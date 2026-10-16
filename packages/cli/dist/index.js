@@ -61162,7 +61162,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.15";
+var SERVER_VERSION = "0.10.16";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -63094,7 +63094,7 @@ function registerToolSubset(server, options) {
   const imageDir = configuredImageDir(env);
   register("candle_launch_token", {
     title: "Launch a token on Candle",
-    description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything." + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
+    description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything. " + CUSTOM_CURVE_RULE + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
     inputSchema: imageDir ? localLaunchTokenShape : launchTokenShape
   }, async (args) => {
     const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch);
@@ -63345,7 +63345,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   });
   register("candle_launch_and_seed", {
     title: "Launch a token and seed it",
-    description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed (in the " + "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " + "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " + "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " + "launch, then top up with candle_trade." + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
+    description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed (in the " + "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " + "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " + "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " + "launch, then top up with candle_trade. " + CUSTOM_CURVE_RULE + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
     inputSchema: imageDir ? localLaunchAndSeedShape : launchAndSeedShape
   }, async (args) => {
     const result = await executeLaunchAndSeed(args, getConfig(), doFetch, imageDir);
@@ -63429,7 +63429,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. Outside the account's main wallet, sCNDL earns no Hood staking rewards; Pro eligibility follows the deployment's tier mode (main-wallet mode excludes it). CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name2) => PROFILE_EDIT_TOOL_NAMES.includes(name2), OPERATION_NOT_FOUND_RULE, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, vampCandidatesShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape;
+var VAMP_CANDIDATES_DESCRIPTION, CUSTOM_CURVE_RULE, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. Outside the account's main wallet, sCNDL earns no Hood staking rewards; Pro eligibility follows the deployment's tier mode (main-wallet mode excludes it). CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name2) => PROFILE_EDIT_TOOL_NAMES.includes(name2), OPERATION_NOT_FOUND_RULE, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, vampCandidatesShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape;
 var init_tools = __esm(() => {
   init_zod();
   init_convert();
@@ -63440,6 +63440,7 @@ var init_tools = __esm(() => {
   init_plans();
   init_update_notice();
   VAMP_CANDIDATES_DESCRIPTION = "Lists Solana tokens that are close to graduating or graduated in the last 6 hours whose ticker other tokens " + "are copying, most-copied in the last 24 hours first. Each entry carries a launch draft (name, ticker, image URL) " + "for `candle_launch_token` or `candle_launch_and_seed`; draft notes identify fields you must supply or adjust. " + "Upload your own image through the agent image upload when the image is unavailable. Use `dryRun: true` first. " + "Counts exclude the candidate itself and cover both Solana and Hood launches at the venues returned in " + "`coverage`, not Candle's own. `coverage.since` is the returned Solana coverage date; Hood history may differ.";
+  CUSTOM_CURVE_RULE = 'mode "exp-custom" with curve { virtualQuote, threshold } launches a Solana curve with your own V (the virtual ' + "quote it starts with) and G (the quote it raises before graduating), in whole SOL or CNDL as decimal strings, " + "accepted when V is 1 to 100 SOL and G 1 to 250 SOL (66,000 to 6,600,000 and 66,000 to 16,500,000 CNDL), when " + "every price up to 20 x G stays under the ceiling (V + 20G)^2 < V x X at this stakerAllocationBps, when neither " + "is finer than the quote's decimals, and when the dev buy is at most 10% of G; a curve past a limit is " + "CURVE_OUT_OF_RANGE, and at the ceiling it carries maxThresholdRaw, the largest G that fits. " + "Dry-run it first (dryRun: true): the dry run spends nothing and returns curveTerms, the market cap at start and " + "at graduation and the supply sold by graduation. Only where the API has EXP_CURVES and EXP_CUSTOM_CURVES on; " + "elsewhere exp-custom is refused as an unknown mode.";
   localProfileTools = new WeakMap;
   stakingWriteShape = {
     payer: exports_external.enum(["main", "linked"]).optional().describe("main is the embedded wallet; linked names a linked or TEE wallet"),
@@ -63505,7 +63506,11 @@ var init_tools = __esm(() => {
     bannerUrl: exports_external.string().optional().describe("Optional https URL to WIDE artwork for the token page's banner strip (wider than 1.5:1, " + "e.g. 1200x630). This is where a share card or OG image belongs. A square image here is " + "rejected with BANNER_WRONG_SHAPE. Omit it and the strip falls back to imageUrl"),
     chain: exports_external.string().optional().describe('"solana" or "hood"; defaults to solana'),
     quoteAsset: exports_external.string().optional().describe("Quote asset symbol; defaults per chain"),
-    mode: exports_external.string().optional().describe('"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' + "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on"),
+    mode: exports_external.string().optional().describe('"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' + "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on. " + '"exp-custom" launches a Solana curve with your own V and G, given in curve, where the API has it ' + "switched on"),
+    curve: exports_external.object({
+      virtualQuote: exports_external.string().describe('V: the virtual quote the curve starts with, in whole quote units, e.g. "12" SOL'),
+      threshold: exports_external.string().describe('G: the quote the curve raises before it graduates, in whole quote units, e.g. "40" SOL')
+    }).strict().optional().describe('mode "exp-custom" only, and required there. Decimal strings in whole units of the quote asset (sol or ' + "cndl), never raw units. Dry-run first: the API checks the limits and returns the curve's terms"),
     stakerAllocationBps: exports_external.number().optional().describe("Staker allocation in basis points"),
     dexVersion: exports_external.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
     buyAmount: exports_external.union([exports_external.string(), exports_external.number()]).optional().describe("Initial buy, in quote base units (string or number)"),
@@ -63942,7 +63947,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.27";
+var CLI_VERSION = "0.11.28";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();

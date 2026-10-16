@@ -55,6 +55,12 @@ Both take decimal amounts, never raw base units, and resolve the scale themselve
   there the caller genuinely picks the new token's quote pair: `quoteAsset` if given, otherwise
   SOL on Solana and ETH on Hood.
 
+Both launch tools also take `mode: "exp-custom"` with `curve: { virtualQuote, threshold }`: a
+Solana curve with your own V and G, in whole SOL or CNDL as decimal strings, inside limits the
+API enforces and each tool's description states. Dry-run first: the dry run returns the curve's
+terms. It works only where the deployment has switched it on. See
+[Custom curves](https://docs.candle.tv/developers/headless-launch#custom-curves-choose-v-and-g-switched-off).
+
 For a full walkthrough of `candle_launch_and_seed` and `candle_trade`, including the keyless read
 tools, getting a key, funding the embedded wallet, and idempotent retries, see
 [Candle MCP server](https://docs.candle.tv/developers/mcp-server).

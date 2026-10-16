@@ -77,6 +77,24 @@ export const VAMP_CANDIDATES_DESCRIPTION =
   "Counts exclude the candidate itself and cover both Solana and Hood launches at the venues returned in " +
   "`coverage`, not Candle's own. `coverage.since` is the returned Solana coverage date; Hood history may differ."
 
+/**
+ * The launcher-chosen curve's rule in one sentence, then the dry-run instruction, shared word for
+ * word by both launch tools here and on the hosted server
+ * (docs/superpowers/specs/2026-10-16-launcher-chosen-curves-design.md, sections 3 and 5). The API
+ * is the validator; this only tells a model what it will accept. The limits are the API's
+ * (`EXP_CUSTOM_CURVE_LIMITS` in packages/shared), which tools.test.ts holds this to.
+ */
+export const CUSTOM_CURVE_RULE =
+  'mode "exp-custom" with curve { virtualQuote, threshold } launches a Solana curve with your own V (the virtual ' +
+  "quote it starts with) and G (the quote it raises before graduating), in whole SOL or CNDL as decimal strings, " +
+  "accepted when V is 1 to 100 SOL and G 1 to 250 SOL (66,000 to 6,600,000 and 66,000 to 16,500,000 CNDL), when " +
+  "every price up to 20 x G stays under the ceiling (V + 20G)^2 < V x X at this stakerAllocationBps, when neither " +
+  "is finer than the quote's decimals, and when the dev buy is at most 10% of G; a curve past a limit is " +
+  "CURVE_OUT_OF_RANGE, and at the ceiling it carries maxThresholdRaw, the largest G that fits. " +
+  "Dry-run it first (dryRun: true): the dry run spends nothing and returns curveTerms, the market cap at start and " +
+  "at graduation and the supply sold by graduation. Only where the API has EXP_CURVES and EXP_CUSTOM_CURVES on; " +
+  "elsewhere exp-custom is refused as an unknown mode."
+
 const localProfileTools = new WeakMap<McpServer, Map<ToolName, RegisteredTool>>()
 export const STAKING_DISCLOSURE =
   "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. Outside the account's main wallet, sCNDL earns no Hood staking rewards; Pro eligibility follows the deployment's tier mode (main-wallet mode excludes it). CNDL in a pending withdrawal counts toward nothing for Pro."
@@ -698,7 +716,24 @@ const launchTokenShape = {
     .optional()
     .describe(
       '"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' +
-        "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on",
+        "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on. " +
+        '"exp-custom" launches a Solana curve with your own V and G, given in curve, where the API has it ' +
+        "switched on",
+    ),
+  curve: z
+    .object({
+      virtualQuote: z
+        .string()
+        .describe('V: the virtual quote the curve starts with, in whole quote units, e.g. "12" SOL'),
+      threshold: z
+        .string()
+        .describe('G: the quote the curve raises before it graduates, in whole quote units, e.g. "40" SOL'),
+    })
+    .strict()
+    .optional()
+    .describe(
+      'mode "exp-custom" only, and required there. Decimal strings in whole units of the quote asset (sol or ' +
+        "cndl), never raw units. Dry-run first: the API checks the limits and returns the curve's terms",
     ),
   stakerAllocationBps: z.number().optional().describe("Staker allocation in basis points"),
   dexVersion: z.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
@@ -1140,7 +1175,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Launch a token on Candle",
       description:
-        "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything." +
+        "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything. " +
+        CUSTOM_CURVE_RULE +
         (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
       inputSchema: (imageDir ? localLaunchTokenShape : launchTokenShape) as typeof localLaunchTokenShape,
     },
@@ -1768,7 +1804,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " +
         "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " +
         "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " +
-        "launch, then top up with candle_trade." +
+        "launch, then top up with candle_trade. " +
+        CUSTOM_CURVE_RULE +
         (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
       inputSchema: (imageDir ? localLaunchAndSeedShape : launchAndSeedShape) as typeof localLaunchAndSeedShape,
     },

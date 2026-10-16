@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import { z } from "zod"
 import type { FetchLike } from "./orchestrate"
 import {
   buildRequest,
+  CUSTOM_CURVE_RULE,
   PROFILE_EDIT_TOOL_NAMES,
   registerToolSubset,
   registerTools,
@@ -769,5 +771,87 @@ describe("candle_swap: the request always carries an id, and every result return
     expect(described).toContain("generated")
     expect(described).toContain("returned in the result")
     expect(described).not.toContain("nothing is coalesced")
+  })
+})
+
+/*
+  BE-1515: the launcher-chosen curve on the agent surface (spec
+  2026-10-16-launcher-chosen-curves-design.md, section 5). No new tool: both launch tools take
+  `curve` beside mode exp-custom, and their descriptions carry the section 3 rule and the dry run.
+*/
+describe("exp-custom on both launch tools", () => {
+  const LAUNCH_TOOLS = ["candle_launch_token", "candle_launch_and_seed"] as const
+  const registered = () => {
+    const tools: Record<string, { description: string; inputSchema: z.ZodRawShape }> = {}
+    const server = {
+      registerTool(name: string, config: { description?: string; inputSchema: z.ZodRawShape }) {
+        tools[name] = { description: config.description ?? "", inputSchema: config.inputSchema }
+      },
+    }
+    registerTools(server as never, {})
+    return tools
+  }
+  const CURVE = { virtualQuote: "12", threshold: "40" }
+  const BASE = { clientLaunchId: "c1", name: "T", symbol: "T", imageUrl: "https://x/y.png" }
+
+  test("the rule states the API's limits in one sentence, then tells the agent to dry-run first", () => {
+    // Inlined, like QUOTE_DECIMALS: this package builds without @candle/shared. hosted.test.ts in
+    // apps/api holds these figures to EXP_CUSTOM_CURVE_LIMITS.
+    for (const figure of [
+      "V is 1 to 100 SOL",
+      "G 1 to 250 SOL",
+      "66,000 to 6,600,000 and 66,000 to 16,500,000 CNDL",
+      "(V + 20G)^2 < V x X",
+      "at most 10% of G",
+      "CURVE_OUT_OF_RANGE",
+      "maxThresholdRaw",
+    ]) {
+      expect(CUSTOM_CURVE_RULE).toContain(figure)
+    }
+    // The rule is one sentence: its only full stop before the dry run ends it.
+    const [rule, rest] = CUSTOM_CURVE_RULE.split(". Dry-run it first")
+    expect(rule?.split(". ")).toHaveLength(1)
+    expect(rest).toContain("dryRun: true")
+    expect(rest).toContain("curveTerms")
+    expect(rest).toContain("EXP_CUSTOM_CURVES")
+  })
+
+  test.each([...LAUNCH_TOOLS])("%s describes exp-custom and takes curve", (name) => {
+    const tool = registered()[name]
+    expect(tool?.description).toContain(CUSTOM_CURVE_RULE)
+    expect(tool?.inputSchema.mode?.description).toContain('"exp-custom"')
+    expect(tool?.inputSchema.curve?.description).toContain('mode "exp-custom" only')
+    // The schema the MCP SDK parses with keeps curve, so it reaches the API.
+    const parsed = z.object(tool?.inputSchema ?? {}).parse({ ...BASE, mode: "exp-custom", curve: CURVE })
+    expect(parsed.curve).toEqual(CURVE)
+    // An unknown curve key is refused here rather than stripped, so the API never sees a curve
+    // with a field missing from what the caller meant.
+    expect(() => z.object(tool?.inputSchema ?? {}).parse({ ...BASE, curve: { ...CURVE, v: "1" } })).toThrow()
+    expect(() =>
+      z.object(tool?.inputSchema ?? {}).parse({ ...BASE, curve: { virtualQuote: 12, threshold: "40" } }),
+    ).toThrow()
+  })
+
+  test("candle_launch_token forwards curve verbatim, to the dry run and to the launch", () => {
+    for (const dryRun of [true, false]) {
+      const r = buildRequest(
+        "candle_launch_token",
+        { ...BASE, mode: "exp-custom", curve: CURVE, dryRun },
+        { apiUrl: "https://api.test", apiKey: "k" },
+      )
+      expect(r.url).toBe(`https://api.test/api/v1/launch/headless${dryRun ? "/dry-run" : ""}`)
+      expect(JSON.parse(String(r.init.body))).toEqual({ ...BASE, mode: "exp-custom", curve: CURVE })
+    }
+  })
+
+  test("candle_launch_and_seed forwards curve with its converted seed", async () => {
+    const bodies: unknown[] = []
+    const fetchLike: FetchLike = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ success: true, dryRun: true }), { status: 200 })
+    }
+    const { call } = toolsWith(["candle_launch_and_seed"], fetchLike)
+    await call("candle_launch_and_seed", { ...BASE, mode: "exp-custom", curve: CURVE, devBuy: "2", dryRun: true })
+    expect(bodies).toEqual([{ ...BASE, mode: "exp-custom", curve: CURVE, buyAmount: "2000000000" }])
   })
 })
