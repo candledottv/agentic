@@ -164,7 +164,7 @@ export type {
   VerifyResult,
   WalletKind,
 } from "./client"
-export { CandleClient, perpsDepositProblem } from "./client"
+export { CandleClient, CrossOriginRedirectError, perpsDepositProblem } from "./client"
 export type {
   BridgeErrorCode,
   CandleErrorPayload,
@@ -192,8 +192,10 @@ export {
   HYPERLIQUID_ALLOWED_ACTION_TYPES,
   HYPERLIQUID_EXCHANGE_URLS,
   type HyperliquidNetwork,
+  type HyperliquidOrderMarket,
   type HyperliquidTypedData,
   hyperliquidActionHash,
+  hyperliquidOrderMarket,
   type PerpsBuildCheck,
   type PerpsBuildToVerify,
   type VerifyPerpsBuildOptions,

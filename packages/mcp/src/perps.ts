@@ -30,6 +30,7 @@ import {
   hyperliquidCanonicalJson,
   hyperliquidCloseOrder,
   hyperliquidExchangeBody,
+  hyperliquidOrderMarket,
   hyperliquidRelayBody,
   verifyPerpsBuild,
 } from "./hyperliquid"
@@ -251,6 +252,19 @@ export async function executePerps(
       })
       if (!closeCheck.ok)
         return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${closeCheck.reason}. Nothing was signed.`)
+    }
+    if (method === "open") {
+      // The asset index and price against Hyperliquid's own market, not the build's (SEC-004).
+      const market = await hyperliquidOrderMarket(fetch, network, row.address, method, fields)
+      const marketCheck = verifyPerpsBuild(build as never, {
+        builder,
+        network,
+        address: row.address,
+        intent: { method, params: fields },
+        market,
+      })
+      if (!marketCheck.ok)
+        return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${marketCheck.reason}. Nothing was signed.`)
     }
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) }

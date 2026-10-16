@@ -130,6 +130,78 @@ describe("the pin (D3, T5)", () => {
   })
 })
 
+describe("the pin is derived here, not taken from the server (SEC-002)", () => {
+  const honest = pair()
+  const honestFp = keySignerFingerprint(honest.spkiSha256)
+
+  test("an honest signer read: the hash of its DER is pinned after the operator types its fingerprint", async () => {
+    const { deps: d } = deps([honestFp])
+    const result = await confirmSignerPin({ deps: d }, "Tr2KeyAb", {
+      fingerprint: honestFp,
+      spkiSha256: honest.spkiSha256,
+      publicKeyDer: honest.publicKeyDer,
+    })
+    expect(result).toEqual({ ok: true, pinned: "first" })
+    expect(await readPin(d, "Tr2KeyAb")).toMatchObject({ spkiSha256: honest.spkiSha256, fingerprint: honestFp })
+  })
+
+  test("attacker DER beside the honest fingerprint and hash is refused before any prompt, and nothing is pinned", async () => {
+    const attacker = pair()
+    const { deps: d, prompts } = deps([honestFp])
+    const result = await confirmSignerPin({ deps: d }, "Tr2KeyAb", {
+      fingerprint: honestFp,
+      spkiSha256: honest.spkiSha256,
+      publicKeyDer: attacker.publicKeyDer,
+    })
+    expect(result.ok === false && result.failure.code).toBe("KEY_SIGNER_UNVERIFIED")
+    expect(prompts).toHaveLength(0)
+    expect(await readPin(d, "Tr2KeyAb")).toBeUndefined()
+  })
+
+  test("attacker DER and its own hash beside the honest fingerprint is refused, and nothing is pinned", async () => {
+    const attacker = pair()
+    const { deps: d, prompts } = deps([honestFp])
+    const result = await confirmSignerPin({ deps: d }, "Tr2KeyAb", {
+      fingerprint: honestFp,
+      spkiSha256: attacker.spkiSha256,
+      publicKeyDer: attacker.publicKeyDer,
+    })
+    expect(result.ok === false && result.failure.code).toBe("KEY_SIGNER_UNVERIFIED")
+    expect(prompts).toHaveLength(0)
+    expect(await readPin(d, "Tr2KeyAb")).toBeUndefined()
+  })
+
+  test("a signer read with no DER, or DER that is not a P-256 SPKI, is refused", async () => {
+    const rsa = generateKeyPairSync("rsa", { modulusLength: 1024 })
+      .publicKey.export({ format: "der", type: "spki" })
+      .toString("base64")
+    for (const publicKeyDer of [null, "", "AAAA", rsa]) {
+      const spkiSha256 =
+        typeof publicKeyDer === "string" && publicKeyDer.length > 0 ? spkiSha256Of(publicKeyDer) : honest.spkiSha256
+      const { deps: d } = deps([keySignerFingerprint(spkiSha256)])
+      const result = await confirmSignerPin({ deps: d }, "Tr2KeyAb", {
+        fingerprint: keySignerFingerprint(spkiSha256),
+        spkiSha256,
+        publicKeyDer,
+      })
+      expect(result.ok === false && result.failure.code).toBe("KEY_SIGNER_UNVERIFIED")
+      expect(await readPin(d, "Tr2KeyAb")).toBeUndefined()
+    }
+  })
+
+  test("a rebind preview (hash only) whose fingerprint is not its hash's is refused, even when the hash is already pinned", async () => {
+    const { deps: d } = deps([honestFp])
+    await confirmSignerPin({ deps: d }, "Tr2KeyAb", { fingerprint: honestFp, spkiSha256: honest.spkiSha256 })
+    const other = pair()
+    const result = await confirmSignerPin({ deps: d }, "Tr2KeyAb", {
+      fingerprint: honestFp,
+      spkiSha256: other.spkiSha256,
+    })
+    expect(result.ok === false && result.failure.code).toBe("KEY_SIGNER_UNVERIFIED")
+    expect((await readPin(d, "Tr2KeyAb"))?.spkiSha256).toBe(honest.spkiSha256)
+  })
+})
+
 describe("which local signer owns a wallet (5.3, T7, T10)", () => {
   test("the key-signer entry whose quorum is the wallet's owner, of any key, active or not; else the legacy slot", async () => {
     const active = pair()

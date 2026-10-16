@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { checkEvmAddress, formatUnits, sameEvmAddress, toChecksumAddress } from "../evm-lite"
+import { createCurveLegOk, feeLegOk, LAUNCH_FEE_MAX_BPS, launchFeeCap } from "../hood-legs"
 import { writeUsageFailure } from "../render"
 import { postSignatureRateLimitMessage, postSignatureSuggestion } from "../solana-endpoint"
 import { isRateLimited } from "../solana-lite"
@@ -35,7 +36,14 @@ import {
   walletNameChain,
 } from "../trading"
 import { type LocalImage, readLocalImage, uploadImage, uploadNotice } from "./image"
-import { lookupOperation, printTradingResult, recordTradedToken, tradingFailure, validClientId } from "./swap"
+import {
+  lazyEvmRpc,
+  lookupOperation,
+  printTradingResult,
+  recordTradedToken,
+  tradingFailure,
+  validClientId,
+} from "./swap"
 
 const USAGE =
   "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
@@ -49,9 +57,12 @@ const QUOTE_CHAIN: Record<string, TradeChain> = {
   usdg: "hood",
 }
 
-/** A Hood TEE launch signs these legs and no other (D9): the curve, then the fee when one applies. */
-const HOOD_LAUNCH_LEGS = ["createCurve", "feeTransfer"] as const
-/** With `--buy` (BE-869): Candle's server-built curve buy follows the curve and the fee. */
+/**
+ * A Hood TEE launch without `--buy` signs the curve and nothing else (D9): Candle charges its fee
+ * on the first buy, so a launch with none has no fee leg.
+ */
+const HOOD_LAUNCH_LEGS = ["createCurve"] as const
+/** With `--buy` (BE-869): the curve, Candle's fee when one applies, then its server-built curve buy. */
 const HOOD_LAUNCH_BUY_LEGS = ["createCurve", "feeTransfer", "trade"] as const
 
 /** A launch's first buy (BE-869): `--buy` in whole units of the quote asset, and the same in base units. */
@@ -414,6 +425,10 @@ async function hoodLaunch(
     curveAddress: curve.address,
     operationId: first.operationId,
   }
+  // The build does not echo the fee, so the quote shows the ceiling its leg is held to.
+  const feeCap = buy && first.plannedLegCount === 3 ? launchFeeCap(buy.raw) : undefined
+  if (feeCap !== undefined)
+    quote.candleFee = `at most ${formatUnits(feeCap, 18)} ETH (the tier fee on the first buy, never above ${Number(LAUNCH_FEE_MAX_BPS) / 100}% of it)`
   ctx.deps.stderr.write(buyNotice(buy, "hood"))
   if (!(await confirmQuote(ctx, quote, args.yes))) {
     // The build holds the wallet (D4, one operation per wallet) until its window closes.
@@ -438,6 +453,7 @@ async function hoodLaunch(
       : ["createCurve", "trade"]
     : undefined
   let position = 0
+  const evm = lazyEvmRpc(ctx, flags["--rpc-url"])
   const run = await runSequencedLegs(ctx, key, {
     wallet,
     first,
@@ -448,15 +464,16 @@ async function hoodLaunch(
     kind: "launch",
     primaryLeg: "createCurve",
     allowedLegs,
-    // The factory's createCurve is not payable. A fee leg may still carry ETH. The buy leg pays
-    // this launch's own curve exactly the amount confirmed.
-    checkLeg: (kind, leg) => {
+    // createCurve calls the pinned factory with no ETH and names this wallet the creator. The fee
+    // is plain ETH, no more than the ceiling the quote showed. The buy leg pays this launch's own
+    // curve exactly the amount confirmed.
+    checkLeg: async (kind, leg) => {
       // With a buy, the confirmed sequence is the only one signed: each leg must be the kind the
       // plan puts at its position, so a fee in the buy's slot or after it is never signed.
       if (confirmedPlan && confirmedPlan[position++] !== kind) return false
-      return kind === "createCurve"
-        ? leg.value === "0"
-        : kind !== "trade" || (buy !== undefined && leg.value === buy.raw && sameEvmAddress(leg.to, curve.address))
+      if (kind === "createCurve") return await createCurveLegOk(leg, wallet.address, evm())
+      if (kind === "feeTransfer") return feeCap !== undefined && feeLegOk(leg, { cap: feeCap, asset: "eth" })
+      return kind === "trade" && buy !== undefined && leg.value === buy.raw && sameEvmAddress(leg.to, curve.address)
     },
     onLanded: async () => {},
   })
@@ -487,15 +504,12 @@ async function hoodLaunch(
 
 /** What the gas line says about the legs after createCurve, which Candle prices when each becomes next. */
 function hoodLaterLegsGas(count: number, buys: boolean): string {
-  if (count < 2) return ""
-  return buys
-    ? "; the later legs are priced by Candle when each becomes next"
-    : "; the fee leg is priced by Candle when it becomes next"
+  return count < 2 || !buys ? "" : "; the later legs are priced by Candle when each becomes next"
 }
 
 /** The legs a Hood launch names before its confirm, from the planned count and whether it buys. */
 function hoodLaunchLegNames(count: number, buys: boolean): string[] {
-  if (!buys) return count === 2 ? ["create curve", "fee"] : ["create curve"]
+  if (!buys) return ["create curve"]
   return count === 3 ? ["create curve", "fee", "first buy"] : ["create curve", "first buy"]
 }
 

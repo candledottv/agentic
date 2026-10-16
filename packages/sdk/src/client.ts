@@ -72,6 +72,7 @@ import {
   type HyperliquidTypedData,
   hyperliquidCloseOrder,
   hyperliquidExchangeBody,
+  hyperliquidOrderMarket,
   hyperliquidRelayBody,
   verifyPerpsBuild,
 } from "./hyperliquid"
@@ -2900,6 +2901,60 @@ function assertTransportSecurity(apiUrl: string, allowInsecureHttp: boolean): vo
   )
 }
 
+/** The statuses fetch would follow, the ones that carry a Location to go to. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+const MAX_REDIRECTS = 5
+
+/** A keyed request was redirected to another origin; the key was not sent there. */
+export class CrossOriginRedirectError extends Error {
+  constructor(
+    readonly from: string,
+    readonly to: string,
+  ) {
+    super(`The API at ${from} redirected to ${to}, another origin. Not followed, so the API key was not sent there.`)
+    this.name = "CrossOriginRedirectError"
+  }
+}
+
+/**
+ * Wraps the client's fetch so a request that carries `x-api-key` never follows a redirect off its
+ * own origin. fetch's own redirect handling forwards custom headers such as `x-api-key` to
+ * wherever a Location points, another host included, so a redirect from the API (or anything
+ * between it and the caller) would hand the key to a third party. A keyed request goes out with
+ * `redirect: "manual"`: a Location on the same origin is re-issued with the same headers (the
+ * API's legacy routes redirect that way), and any other origin throws
+ * {@link CrossOriginRedirectError} without a request being made to it. 303, and 301/302 after a
+ * POST, continue as a body-less GET, as fetch would. Requests without the key pass through.
+ */
+export function keyedRedirectGuard(doFetch: typeof fetch): typeof fetch {
+  const guarded = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    if (input instanceof Request || !init?.headers || !new Headers(init.headers).has("x-api-key")) {
+      return doFetch(input, init)
+    }
+    const url = input.toString()
+    let current = url
+    let next: RequestInit = { ...init, redirect: "manual" }
+    for (let hops = 0; ; hops++) {
+      const response = await doFetch(current, next)
+      const location = REDIRECT_STATUSES.has(response.status) ? response.headers?.get?.("location") : null
+      if (!location) return response
+      const from = new URL(current)
+      const target = new URL(location, from)
+      if (target.origin !== from.origin) throw new CrossOriginRedirectError(from.origin, target.origin)
+      if (hops >= MAX_REDIRECTS) throw new Error(`More than ${MAX_REDIRECTS} redirects from ${url}`)
+      const method = (next.method ?? "GET").toUpperCase()
+      if (
+        (response.status === 303 && method !== "GET" && method !== "HEAD") ||
+        ((response.status === 301 || response.status === 302) && method === "POST")
+      ) {
+        next = { ...next, method: "GET", body: undefined }
+      }
+      current = target.href
+    }
+  }
+  return guarded as typeof fetch
+}
+
 export class CandleClient {
   private readonly apiUrl: string
   private readonly apiKey?: string
@@ -2984,7 +3039,8 @@ export class CandleClient {
     assertTransportSecurity(opts.apiUrl, opts.allowInsecureHttp === true)
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "")
     if (opts.apiKey !== undefined) this.apiKey = opts.apiKey
-    this.fetchImpl = opts.fetch ?? fetch
+    // Every request this client makes goes through fetchImpl, so the guard covers each keyed one.
+    this.fetchImpl = keyedRedirectGuard(opts.fetch ?? fetch)
     // Validated rather than trusted: the retry loop is `attempt <= maxRetries`, so a negative
     // value runs zero attempts and falls through to `throw lastError` before any error exists,
     // surfacing as a confusing TypeError instead of the caller's actual mistake.
@@ -4869,6 +4925,23 @@ export class CandleClient {
       })
       if (!closeCheck.ok) throw new Error(`perps: refused to sign this build: ${closeCheck.reason}`)
     }
+    if (method === "open" || method === "modify") {
+      // The asset index and price against Hyperliquid's own market, not the build's (SEC-004).
+      const market = await hyperliquidOrderMarket(
+        this.fetchImpl,
+        this.hyperliquidNetwork,
+        build.address,
+        method,
+        ref as unknown as Record<string, unknown>,
+      )
+      const marketCheck = verifyPerpsBuild(build, {
+        builder: await this.perpsBuilder(),
+        network: this.hyperliquidNetwork,
+        intent: { method, params: ref as unknown as Record<string, unknown> },
+        market,
+      })
+      if (!marketCheck.ok) throw new Error(`perps: refused to sign this build: ${marketCheck.reason}`)
+    }
     if (ref.submit === false) return { build, signature: null, submitted: false, exchange: null }
     const signature = await this.signLinkedTypedData({
       linkedWalletId: ref.walletId,
@@ -5223,7 +5296,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.0"
+export const SDK_VERSION = "0.6.1"
 
 let sdkUpdateWarned = false
 

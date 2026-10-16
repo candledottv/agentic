@@ -94,6 +94,60 @@ function assertTransportSecurity(apiUrl: string, env: Record<string, string | un
   )
 }
 
+/** The statuses fetch would follow, the ones that carry a Location to go to. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+const MAX_REDIRECTS = 5
+
+/** A keyed request was redirected to another origin; the key was not sent there. */
+export class CrossOriginRedirectError extends Error {
+  constructor(
+    readonly from: string,
+    readonly to: string,
+  ) {
+    super(`The API at ${from} redirected to ${to}, another origin. Not followed, so the API key was not sent there.`)
+    this.name = "CrossOriginRedirectError"
+  }
+}
+
+type GuardableFetch<R> = (url: string, init?: RequestInit) => Promise<R>
+
+/**
+ * Wraps a fetch so a request that carries `x-api-key` never follows a redirect off its own origin.
+ * fetch's own redirect handling forwards custom headers such as `x-api-key` to wherever a Location
+ * points, another host included, so a redirect from the API (or anything between it and this
+ * server) would hand the key to a third party. A keyed request goes out with `redirect: "manual"`:
+ * a Location on the same origin is re-issued with the same headers (the API's legacy routes
+ * redirect that way), and any other origin throws {@link CrossOriginRedirectError} without a
+ * request being made to it. 303, and 301/302 after a POST, continue as a body-less GET, as fetch
+ * would. Requests without the key pass through untouched. Every tool's fetch is wrapped once, where
+ * the tools are registered.
+ */
+export function keyedRedirectGuard<R extends { status: number }>(doFetch: GuardableFetch<R>): GuardableFetch<R> {
+  return async (url, init) => {
+    if (!init?.headers || !new Headers(init.headers).has("x-api-key")) return doFetch(url, init)
+    let current = url
+    let next: RequestInit = { ...init, redirect: "manual" }
+    for (let hops = 0; ; hops++) {
+      const response = await doFetch(current, next)
+      const headers = (response as { headers?: { get?: (name: string) => string | null } }).headers
+      const location = REDIRECT_STATUSES.has(response.status) ? headers?.get?.("location") : null
+      if (!location) return response
+      const from = new URL(current)
+      const target = new URL(location, from)
+      if (target.origin !== from.origin) throw new CrossOriginRedirectError(from.origin, target.origin)
+      if (hops >= MAX_REDIRECTS) throw new Error(`More than ${MAX_REDIRECTS} redirects from ${url}`)
+      const method = (next.method ?? "GET").toUpperCase()
+      if (
+        (response.status === 303 && method !== "GET" && method !== "HEAD") ||
+        ((response.status === 301 || response.status === 302) && method === "POST")
+      ) {
+        next = { ...next, method: "GET", body: undefined }
+      }
+      current = target.href
+    }
+  }
+}
+
 /**
  * `env` is a parameter rather than a direct `process.env` read so an in-process host can pass the
  * environment it means. `candle mcp` runs this server inside its own process having stripped every

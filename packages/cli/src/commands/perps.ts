@@ -38,11 +38,14 @@ import {
   hyperliquidCanonicalJson,
   hyperliquidCloseOrder,
   hyperliquidExchangeBody,
+  hyperliquidOrderMarket,
   hyperliquidRelayBody,
   verifyPerpsBuild,
 } from "../hyperliquid"
 import { writeUsageFailure } from "../render"
+import { solanaSpendProblem } from "../solana-verify"
 import {
+  BASES,
   completeTradingWallet,
   decimalAmount,
   describeWallet,
@@ -248,6 +251,22 @@ async function runPerpsWrite(
       throw new TradingError(
         "PERPS_BUILD_REFUSED",
         `Refused to sign this build: ${closeCheck.reason}. Nothing was signed.`,
+      )
+  }
+  if (method === "open") {
+    // The asset index and price against Hyperliquid's own market, not the build's (SEC-004).
+    const market = await hyperliquidOrderMarket(ctx.deps.fetch, net, wallet.address, method, opts.body)
+    const marketCheck = verifyPerpsBuild(build as never, {
+      builder,
+      network: net,
+      address: wallet.address,
+      intent: { method, params: opts.body },
+      market,
+    })
+    if (!marketCheck.ok)
+      throw new TradingError(
+        "PERPS_BUILD_REFUSED",
+        `Refused to sign this build: ${marketCheck.reason}. Nothing was signed.`,
       )
   }
   if (!opts.submit) return printTradingResult(ctx, { ...build, signed: false, submitted: false })
@@ -684,6 +703,16 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
         relaySolanaDepositProblem(transaction as string, wallet.address, reader.rpc),
       )
       if (solanaProblem) throw refused(solanaProblem)
+      // SEC-003: as for a bridge, the simulation holds the deposit to the confirmed amount of the
+      // confirmed asset; the wallet loses nothing else and keeps control of every account it owns.
+      const spent = await tradingRead(ctx, reader, () =>
+        solanaSpendProblem(transaction as string, wallet.address, reader.rpc, {
+          kind: "swap",
+          spend: asset === "SOL" ? "SOL" : (BASES[asset]?.mint ?? asset),
+          maxSpendRaw: BigInt(amountRaw),
+        }),
+      )
+      if (spent) throw refused(spent)
     }
 
     const decimals = Number(build.outDecimals)

@@ -2510,6 +2510,23 @@ export type LaunchAtomicRequest = Omit<BuildAtomicLaunchRequest, "payer" | "firs
     payer: LaunchAtomicPayer;
     firstBuys: LaunchAtomicFirstBuyRequest[];
 };
+/** A keyed request was redirected to another origin; the key was not sent there. */
+export declare class CrossOriginRedirectError extends Error {
+    readonly from: string;
+    readonly to: string;
+    constructor(from: string, to: string);
+}
+/**
+ * Wraps the client's fetch so a request that carries `x-api-key` never follows a redirect off its
+ * own origin. fetch's own redirect handling forwards custom headers such as `x-api-key` to
+ * wherever a Location points, another host included, so a redirect from the API (or anything
+ * between it and the caller) would hand the key to a third party. A keyed request goes out with
+ * `redirect: "manual"`: a Location on the same origin is re-issued with the same headers (the
+ * API's legacy routes redirect that way), and any other origin throws
+ * {@link CrossOriginRedirectError} without a request being made to it. 303, and 301/302 after a
+ * POST, continue as a body-less GET, as fetch would. Requests without the key pass through.
+ */
+export declare function keyedRedirectGuard(doFetch: typeof fetch): typeof fetch;
 export declare class CandleClient {
     private readonly apiUrl;
     private readonly apiKey?;
@@ -3334,7 +3351,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.0";
+export declare const SDK_VERSION = "0.6.1";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

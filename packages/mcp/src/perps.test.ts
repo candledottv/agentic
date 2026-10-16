@@ -52,7 +52,7 @@ function build(action: Record<string, unknown>) {
   }
 }
 
-function fake(opts: { build?: unknown; scopes?: string[]; exchange?: unknown } = {}) {
+function fake(opts: { build?: unknown; scopes?: string[]; exchange?: unknown; mid?: string } = {}) {
   const calls: { url: string; body?: Record<string, unknown> }[] = []
   const fetch: FetchLike = async (url, init) => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
@@ -60,6 +60,11 @@ function fake(opts: { build?: unknown; scopes?: string[]; exchange?: unknown } =
     const ok = (value: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(value) })
     if (url === "https://api.hyperliquid.xyz/info") {
       if (body?.type === "meta") return ok({ universe: [{ name: "BTC" }] })
+      if (body?.type === "metaAndAssetCtxs")
+        return ok([
+          { universe: [{ name: "BTC" }, { name: "ETH" }] },
+          [{ midPx: opts.mid ?? "60000" }, { midPx: "3000" }],
+        ])
       return ok({ assetPositions: [{ position: { coin: "BTC", szi: "-0.5" } }] })
     }
     if (url === "https://api.test/api/v1/agent/wallets/trading")
@@ -89,11 +94,13 @@ describe("candle_perps_open", () => {
     expect(f.calls.map((c) => c.url)).toEqual([
       "https://api.test/api/v1/agent/wallets/trading",
       "https://api.test/api/v1/agent/perps/open",
+      "https://api.hyperliquid.xyz/info",
       "https://api.test/api/v1/agent/wallets/wallet/sign",
       "https://api.hyperliquid.xyz/exchange",
     ])
     expect(f.calls[1]?.body).toEqual({ walletId: "wallet", ...OPEN, type: "market" })
-    const relay = f.calls[2]?.body as { authorizationSignature: string; body: unknown }
+    expect(f.calls[2]?.body).toEqual({ type: "metaAndAssetCtxs" })
+    const relay = f.calls[3]?.body as { authorizationSignature: string; body: unknown }
     const payload = hyperliquidCanonicalJson({
       body: relay.body,
       headers: { "privy-app-id": "app" },
@@ -112,6 +119,19 @@ describe("candle_perps_open", () => {
       const f = fake({ build: bad })
       const result = await executePerps("candle_perps_open", OPEN, cfg, env(), f.fetch)
       expect(result.isError).toBe(true)
+      expect(JSON.parse(result.text).error.code).toBe("PERPS_BUILD_REFUSED")
+      expect(f.calls.some((c) => c.url.endsWith("/sign"))).toBe(false)
+    }
+  })
+
+  test("SEC-004: an order on another asset, or a market price far from Hyperliquid's mid, is refused before the relay", async () => {
+    const ethIndex = { ...order(), orders: [{ ...order().orders[0], a: 1 }] }
+    for (const [bad, mid] of [
+      [build(ethIndex), "60000"],
+      [build(order()), "30000"],
+    ] as const) {
+      const f = fake({ build: bad, mid })
+      const result = await executePerps("candle_perps_open", OPEN, cfg, env(), f.fetch)
       expect(JSON.parse(result.text).error.code).toBe("PERPS_BUILD_REFUSED")
       expect(f.calls.some((c) => c.url.endsWith("/sign"))).toBe(false)
     }

@@ -23,7 +23,7 @@ import {
 import type { Deps } from "../deps"
 import { run } from "../index"
 import { ADDRESS_LOOKUP_TABLE_PROGRAM_ID, decodeTransaction } from "../solana-alt"
-import { SYSTEM_PROGRAM_ID } from "../solana-lite"
+import { SYSTEM_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { createCapture, createFakeConfigStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
 import type { KeyEntry } from "../vault/format"
 import { deriveSolanaKey, solanaExternalPath, solanaTeePath, solanaVaultPath } from "../vault/hd"
@@ -455,6 +455,136 @@ describe("BE-355 T11: a rate-limited --broadcast", () => {
     const k = await harness(failing, base64Of(wire))
     expect(await run(signArgs("--wallet", "trader", "--yes", "--broadcast", "--json"), k.deps)).toBe(1)
     expect(JSON.parse(k.stdout.text.trim()).code).toBe("SIGN_BROADCAST_FAILED")
+  })
+})
+
+/**
+ * SEC-001: a transaction that hands a signer's account to someone else moves no balance, so the
+ * deltas alone said "no other account gains a balance". It is now displayed and refused as
+ * `SIGN_CONTROL_CHANGE`, with `--yes` too, while an ordinary token transfer signs as before.
+ */
+describe("SEC-001: candle sign refuses a change of control over a signer's account", () => {
+  const TOKEN = TOKEN_PROGRAM_ID
+  const mint = Keypair.generate().publicKey
+  const attacker = Keypair.generate().publicKey
+  const ata = Keypair.generate().publicKey
+  const theirAta = Keypair.generate().publicKey
+
+  function tokenData(owner: PublicKey, amount: bigint, delegate?: PublicKey, delegatedAmount = 0n): Uint8Array {
+    const data = new Uint8Array(165)
+    const dv = new DataView(data.buffer)
+    data.set(mint.toBytes(), 0)
+    data.set(owner.toBytes(), 32)
+    dv.setBigUint64(64, amount, true)
+    if (delegate) {
+      dv.setUint32(72, 1, true)
+      data.set(delegate.toBytes(), 76)
+      dv.setBigUint64(121, delegatedAmount, true)
+    }
+    data[108] = 1
+    return data
+  }
+
+  function tokenTx(data: Uint8Array, keys: Array<{ pubkey: PublicKey; isSigner: boolean; isWritable: boolean }>) {
+    const from = new PublicKey(external0.address)
+    const tx = new Transaction({ feePayer: from, recentBlockhash: BLOCKHASH }).add(
+      new TransactionInstruction({ programId: new PublicKey(TOKEN), keys, data: Buffer.from(data) }),
+    )
+    return new Uint8Array(tx.serialize({ requireAllSignatures: false, verifySignatures: false }))
+  }
+
+  const owner = () => new PublicKey(external0.address)
+
+  test("SetAuthority(AccountOwner) to another wallet is refused with --yes, naming the account, both owners and what changed", async () => {
+    // SetAuthority: [6, authority type 2 (AccountOwner), Some, new owner].
+    const data = new Uint8Array([6, 2, 1, ...attacker.toBytes()])
+    const wire = tokenTx(data, [
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: owner(), isSigner: true, isWritable: false },
+    ])
+    const pre = {
+      [external0.address]: systemPre(50_000),
+      [ata.toBase58()]: account(TOKEN, 2_039_280, tokenData(owner(), 1_000n)),
+    }
+    const post = {
+      [external0.address]: systemPre(45_000),
+      [ata.toBase58()]: account(TOKEN, 2_039_280, tokenData(attacker, 1_000n)),
+    }
+    for (const json of [true, false]) {
+      const rpc = rpcFake({ pre, post })
+      const h = await harness(rpc, base64Of(wire))
+      expect(await run(signArgs("--wallet", "trader", "--yes", ...(json ? ["--json"] : [])), h.deps)).toBe(1)
+      const text = json ? JSON.parse(h.stdout.text.trim()).message : h.stderr.text
+      if (json) expect(JSON.parse(h.stdout.text.trim()).code).toBe("SIGN_CONTROL_CHANGE")
+      expect(text).toContain(
+        `token account ${ata.toBase58()} (mint ${mint.toBase58()}, owned by ${external0.address}): owner changes from ${external0.address} to ${attacker.toBase58()}`,
+      )
+      if (!json) {
+        expect(h.stderr.text).toContain(`CONTROL     token account ${ata.toBase58()}`)
+        expect(h.stderr.text).not.toContain("no other account gains a balance")
+        expect(h.stderr.text).toContain("control of an account changes hands")
+        // The signer's own line still lists the account it is about to lose.
+        expect(h.stderr.text).toContain(`in ${ata.toBase58()}`)
+      }
+      expect(h.stdout.text).not.toMatch(/^[A-Za-z0-9+/]{80,}={0,2}\n$/)
+      expect(rpc.sent).toBeUndefined()
+      // The unlock only: the refusal comes before the confirmation prompt.
+      expect(h.secretPrompts).toBe(1)
+    }
+  })
+
+  test("Approve to a delegate is refused, naming the delegate and the amount it may move", async () => {
+    const amount = new Uint8Array(8)
+    new DataView(amount.buffer).setBigUint64(0, 1_000n, true)
+    const wire = tokenTx(new Uint8Array([4, ...amount]), [
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: attacker, isSigner: false, isWritable: false },
+      { pubkey: owner(), isSigner: true, isWritable: false },
+    ])
+    const pre = {
+      [external0.address]: systemPre(50_000),
+      [ata.toBase58()]: account(TOKEN, 2_039_280, tokenData(owner(), 1_000n)),
+    }
+    const post = { ...pre, [ata.toBase58()]: account(TOKEN, 2_039_280, tokenData(owner(), 1_000n, attacker, 1_000n)) }
+    const h = await harness(rpcFake({ pre, post }), base64Of(wire))
+    expect(await run(signArgs("--wallet", "trader", "--yes", "--json"), h.deps)).toBe(1)
+    const body = JSON.parse(h.stdout.text.trim())
+    expect(body.code).toBe("SIGN_CONTROL_CHANGE")
+    expect(body.message).toContain(
+      `token account ${ata.toBase58()} (mint ${mint.toBase58()}, owned by ${external0.address}): delegate changes from none to ${attacker.toBase58()} (may move up to 1000 raw)`,
+    )
+  })
+
+  test("an ordinary token transfer still previews and signs as before", async () => {
+    const amount = new Uint8Array(8)
+    new DataView(amount.buffer).setBigUint64(0, 400n, true)
+    const wire = tokenTx(new Uint8Array([3, ...amount]), [
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: theirAta, isSigner: false, isWritable: true },
+      { pubkey: owner(), isSigner: true, isWritable: false },
+    ])
+    const pre = {
+      [external0.address]: systemPre(50_000),
+      [ata.toBase58()]: account(TOKEN, 2_039_280, tokenData(owner(), 1_000n)),
+      [theirAta.toBase58()]: account(TOKEN, 2_039_280, tokenData(recipient, 0n)),
+    }
+    const post = {
+      [external0.address]: systemPre(45_000),
+      [ata.toBase58()]: account(TOKEN, 2_039_280, tokenData(owner(), 600n)),
+      [theirAta.toBase58()]: account(TOKEN, 2_039_280, tokenData(recipient, 400n)),
+    }
+    const rpc = rpcFake({ pre, post })
+    const h = await harness(rpc, base64Of(wire))
+    expect(await run(signArgs("--wallet", "trader", "--yes"), h.deps)).toBe(0)
+    expect(h.stderr.text).toContain(`${mint.toBase58()}: 1000 raw -> 600 raw (-400 raw) in ${ata.toBase58()}`)
+    expect(h.stderr.text).toContain(
+      `receives    ${recipient.toBase58()} receives +400 raw of ${mint.toBase58()} (account ${theirAta.toBase58()})`,
+    )
+    expect(h.stderr.text).not.toContain("CONTROL")
+    const signed = decodeTransaction(new Uint8Array(Buffer.from(h.stdout.text.trim(), "base64")))
+    expect(
+      ed25519.verify(signed.signatures[0] as Uint8Array, signed.message.bytes, base58.decode(external0.address)),
+    ).toBe(true)
   })
 })
 

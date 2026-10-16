@@ -81,6 +81,9 @@ export const VAULT_ERROR_CODES = [
   "SIGN_LOOKUP_TABLE_UNRESOLVED",
   "SIGN_TRANSACTION_UNDECODABLE",
   "SIGN_BROADCAST_FAILED",
+  // SEC-001: the simulation hands an account a signer controlled (its owner, a delegate, a close
+  // authority, or a System account's program owner) to someone else. Refused with `--yes` too.
+  "SIGN_CONTROL_CHANGE",
   // BE-259 (spec 2026-09-22-cli-vault-key-naming-design.md, D11): `candle vault rename`. Every one
   // is decided after the unlock, about the vault's state, so every one is exit 1; each is thrown
   // by exactly one site in `commands/vault-rename.ts`.

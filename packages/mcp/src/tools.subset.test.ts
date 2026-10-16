@@ -81,3 +81,48 @@ test("metadata overrides descriptions without changing the shared schema, and fe
     "http://local-api/api/v1/markets/hood/0x1111111111111111111111111111111111111111",
   ])
 })
+
+test("SEC-009: a keyed tool call redirected to another origin is refused without sending the key there", async () => {
+  const { server, tools } = recorder()
+  const calls: Array<{ url: string; redirect: RequestRedirect | undefined }> = []
+  registerToolSubset(server, {
+    tools: ["candle_report_activity"],
+    getConfig: () => ({ apiUrl: "https://api.candle.example", apiKey: "secret-key" }),
+    fetch: async (url, init) => {
+      calls.push({ url, redirect: init?.redirect })
+      return url.startsWith("https://api.candle.example")
+        ? new Response(null, { status: 307, headers: { location: "https://attacker.example/report" } })
+        : Response.json({ success: true })
+    },
+  })
+  const tool = tools.get("candle_report_activity") as { handler: Handler }
+  const outcome = await tool.handler({ chain: "solana", signature: "one" }).then(
+    (result) => JSON.stringify(result),
+    (error: unknown) => String(error),
+  )
+  expect(outcome).toContain("another origin")
+  expect(outcome).not.toContain("secret-key")
+  expect(calls).toEqual([{ url: "https://api.candle.example/api/v1/activity/report", redirect: "manual" }])
+})
+
+test("SEC-009: a same-origin redirect is followed with the key", async () => {
+  const { server, tools } = recorder()
+  const calls: Array<{ url: string; key: string | null }> = []
+  registerToolSubset(server, {
+    tools: ["candle_report_activity"],
+    getConfig: () => ({ apiUrl: "https://api.candle.example", apiKey: "secret-key" }),
+    fetch: async (url, init) => {
+      calls.push({ url, key: new Headers(init?.headers).get("x-api-key") })
+      return calls.length === 1
+        ? new Response(null, { status: 308, headers: { location: "/api/v1/activity/report2" } })
+        : Response.json({ success: true })
+    },
+  })
+  const tool = tools.get("candle_report_activity") as { handler: Handler }
+  const result = await tool.handler({ chain: "solana", signature: "one" })
+  expect(result.isError).toBeUndefined()
+  expect(calls).toEqual([
+    { url: "https://api.candle.example/api/v1/activity/report", key: "secret-key" },
+    { url: "https://api.candle.example/api/v1/activity/report2", key: "secret-key" },
+  ])
+})

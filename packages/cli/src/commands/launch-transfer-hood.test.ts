@@ -28,6 +28,7 @@ import {
   signTransaction,
   toChecksumAddress,
 } from "../evm-lite"
+import { CREATE_CURVE_SELECTOR, HOOD_CURVE_FACTORY, HOOD_SPLITTER_FACTORY } from "../hood-legs"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
@@ -39,7 +40,7 @@ const pem = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString()
 const teeSecret = hexToBytes(`0x${"11".repeat(32)}`)
 const hoodTee = evmAddressFromSecret(teeSecret)
 const solanaTee = "7ZL9FvkpCMgdvzfoMSYZSuCXLCYN25dfgtDXej1BBJaB"
-const factory = toChecksumAddress("0x4444444444444444444444444444444444444444")
+const factory = HOOD_CURVE_FACTORY
 const curve = toChecksumAddress("0x5555555555555555555555555555555555555555")
 const launched = toChecksumAddress("0x6666666666666666666666666666666666666666")
 const treasury = toChecksumAddress("0x3333333333333333333333333333333333333333")
@@ -70,6 +71,19 @@ function leg(nonce: number, to: string, data = "0x", value = "0"): SequencedLeg 
     value,
   }
 }
+
+/**
+ * `createCurve` calldata as far as the CLI reads it: the selector, the init tuple's offset, the
+ * three scalars after it, and the tuple head with `creator` its sixth field.
+ */
+function createCurveData(creator: string, feeRecipient = splitter): string {
+  const word = (hex: string) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0")
+  const head = [word("80"), word("1"), word("0"), word("ab".repeat(32))]
+  const tuple = [word(""), word(""), word(""), word(feeRecipient), word(""), word(creator)]
+  return `${CREATE_CURVE_SELECTOR}${[...head, ...tuple].join("")}`
+}
+const splitter = "0x7777777777777777777777777777777777777777"
+const curveCall = createCurveData(hoodTee)
 
 type Outcome = "land" | "revert" | "unconfirmed"
 
@@ -106,6 +120,8 @@ interface FixtureOptions {
    * offer another leg without raising the count the CLI accepted.
    */
   trailingLeg?: { kind: string; leg: SequencedLeg; plannedLegCount?: number }
+  /** The `dev` the launch's fee splitter reports; default the wallet itself. */
+  splitterDev?: string
   /** BE-1283: a Candle error POST /uploads/agent-image answers instead of a URL. */
   uploadError?: { code: string; message: string }
 }
@@ -151,7 +167,21 @@ async function fixture(opts: FixtureOptions = {}) {
       return opts.uploadError ? candleError(opts.uploadError) : ok({ success: true, imageUrl: hostedImage })
     if (url.startsWith(EVM_RPC)) {
       const selector = body.method === "eth_call" ? String(body.params[0].data).slice(0, 10) : ""
-      const result = selector === "0x313ce567" ? `0x${"0".repeat(62)}12` : "0x0"
+      const to = body.method === "eth_call" ? String(body.params[0].to).toLowerCase() : ""
+      const word = (hex: string) => `0x${hex.replace(/^0x/, "").toLowerCase().padStart(64, "0")}`
+      // The splitter factory vouches for the one splitter; its `dev` is the owner unless a test says otherwise.
+      const result =
+        selector === "0x313ce567"
+          ? `0x${"0".repeat(62)}12`
+          : selector === "0xa4c597d1"
+            ? word(
+                to === HOOD_SPLITTER_FACTORY.toLowerCase() && String(body.params[0].data).endsWith(splitter.slice(2))
+                  ? "1"
+                  : "0",
+              )
+            : selector === "0x91cca3db"
+              ? word(opts.splitterDev ?? hoodTee)
+              : "0x0"
       return ok({ jsonrpc: "2.0", id: body.id, result })
     }
     if (path.startsWith("/api/v1/launch/headless/jobs/"))
@@ -210,10 +240,8 @@ async function fixture(opts: FixtureOptions = {}) {
           expiresAt: 10_000,
           walletAddress: hoodTee,
         })
-      planned = opts.launchLegs ?? [
-        { kind: "createCurve", leg: leg(3, factory, "0xc0ffee") },
-        { kind: "feeTransfer", leg: leg(4, treasury, "0x", "5000") },
-      ]
+      // Without a first buy Candle charges no fee, so a launch is its createCurve leg alone.
+      planned = opts.launchLegs ?? [{ kind: "createCurve", leg: leg(3, factory, curveCall) }]
       return ok({
         success: true,
         status: "built",
@@ -408,7 +436,7 @@ const launchArgs = (extra: string[] = []) => [
 const hoodLaunch = (extra: string[] = []) => launchArgs(["--wallet", "hood", "--dex-version", "v4", ...extra])
 
 describe("H11: candle launch from a Hood TEE wallet", () => {
-  test("createCurve then the fee, each relay-signed with eth_signTransaction and confirmed alone; the launched token is recorded", async () => {
+  test("createCurve, relay-signed with eth_signTransaction and confirmed alone; the launched token is recorded", async () => {
     const f = await fixture({ appendEvmRecord: async () => ({ appended: true }) })
     expect(await run(hoodLaunch(), f.deps)).toBe(0)
     const build = builds(f.calls)
@@ -425,7 +453,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       dexVersion: "v4",
     })
     const signed = signs(f.calls)
-    expect(signed).toHaveLength(2)
+    expect(signed).toHaveLength(1)
     for (const [i, sign] of signed.entries()) {
       const relay = sign.body as { body: { method: string; params: { transaction: Record<string, unknown> } } }
       expect(sign.path).toBe("/api/v1/agent/wallets/hood-tee/sign")
@@ -434,23 +462,24 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       expect(relay.body.params.transaction).toMatchObject({ chain_id: 4663, type: 2, nonce: 3 + i, from: hoodTee })
     }
     const confirms = f.calls.filter((call) => call.path === "/api/v1/launch/self/confirm")
-    expect(confirms).toHaveLength(2)
+    expect(confirms).toHaveLength(1)
     for (const confirm of confirms) {
       expect(Object.keys(confirm.body ?? {}).sort()).toEqual(["clientLaunchId", "operationId", "signedTransaction"])
       expect(confirm.body).toMatchObject({ clientLaunchId: "hl-1", operationId: "op-1" })
     }
-    // Sign one, send one: the fee leg is signed only after the curve's confirm answered.
     const order = f.calls
       .filter((call) => call.path.endsWith("/sign") || call.path.endsWith("/confirm"))
       .map((call) => call.path.split("/").at(-1))
-    expect(order).toEqual(["sign", "confirm", "sign", "confirm"])
+    expect(order).toEqual(["sign", "confirm"])
     const result = lastJson(f.stdout.text)
     expect(result).toMatchObject({ mint: launched, chain: "hood", kind: "launch", operationId: "op-1" })
-    expect((result.landedLegs as Array<{ kind: string }>).map((l) => l.kind)).toEqual(["createCurve", "feeTransfer"])
+    expect((result.landedLegs as Array<{ kind: string }>).map((l) => l.kind)).toEqual(["createCurve"])
     expect(f.appended).toEqual([{ kind: "token", wallet: hoodTee, token: launched }])
     expect(result.evmRecord).toEqual({ token: launched, notices: [] })
-    // Nothing is read or sent over any RPC: Candle sets nonces and fees, broadcasts, and reads receipts.
-    expect(f.calls.some((call) => call.url.startsWith(EVM_RPC))).toBe(false)
+    // The only RPC use is the two eth_call reads that vouch for the fee splitter: Candle sets nonces
+    // and fees, broadcasts, and reads receipts.
+    const rpcMethods = f.calls.filter((call) => call.url.startsWith(EVM_RPC)).map((call) => call.body?.method)
+    expect(rpcMethods).toEqual(["eth_call", "eth_call"])
   })
 
   test("the dev buy is not part of the launch: buyAmount is 0, no trade is built, and the quote says to swap", async () => {
@@ -459,15 +488,16 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     expect(builds(f.calls)[0]?.body).toMatchObject({ buyAmount: 0, quoteAsset: "usdg" })
     expect(paths(f.calls).some((path) => path.includes("/trade/") || path.includes("/swap/"))).toBe(false)
     expect(f.stderr.text).toContain("Make the first buy with a separate candle swap")
-    expect(f.stderr.text).toContain("Legs, signed one at a time: create curve, fee")
+    expect(f.stderr.text).toContain("Legs, signed one at a time: create curve\n")
     expect(f.stderr.text).toContain("Gas: the createCurve leg up to 0.0006 ETH")
+    expect(f.stderr.text).not.toContain("Candle fee")
     expect(f.stderr.text).toContain("Gas reserve: at least")
     expect(f.stderr.text).not.toContain("Tier fee")
   })
 
   const ONE_MILLI_ETH = (10n ** 15n).toString()
   const buyLegs = (value = ONE_MILLI_ETH, to = curve) => [
-    { kind: "createCurve", leg: leg(3, factory, "0xc0ffee") },
+    { kind: "createCurve", leg: leg(3, factory, curveCall) },
     { kind: "feeTransfer", leg: leg(4, treasury, "0x", "5000") },
     { kind: "trade", leg: leg(5, to, "0xd96a094a", value) },
   ]
@@ -478,6 +508,9 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     expect(builds(f.calls)[0]?.body).toMatchObject({ chain: "hood", buyAmount: ONE_MILLI_ETH, dexVersion: "v4" })
     expect(f.stderr.text).toContain("with a first buy of 0.001000000000000000 ETH")
     expect(f.stderr.text).toContain("Legs, signed one at a time: create curve, fee, first buy")
+    expect(f.stderr.text).toContain(
+      "Candle fee: at most 0.0001 ETH (the tier fee on the first buy, never above 10% of it)",
+    )
     expect(f.stderr.text).toContain("spends 0.001000000000000000 ETH on a first buy on the new curve")
     expect(f.stderr.text).toContain("the later legs are priced by Candle")
     expect(f.stderr.text).toContain("If the buy leg never lands, the token exists with no first buy")
@@ -509,7 +542,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       expect(signs(f.calls)).toHaveLength(2)
     })
 
-  const curveLeg = { kind: "createCurve", leg: leg(3, factory, "0xc0ffee") }
+  const curveLeg = { kind: "createCurve", leg: leg(3, factory, curveCall) }
   const feeLeg = { kind: "feeTransfer", leg: leg(4, treasury, "0x", "5000") }
   const tradeLeg = (nonce = 5) => ({ kind: "trade", leg: leg(nonce, curve, "0xd96a094a", ONE_MILLI_ETH) })
 
@@ -586,11 +619,27 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
   })
 
   test("a single-leg launch (no fee) signs one leg and records the token", async () => {
-    const f = await fixture({ launchLegs: [{ kind: "createCurve", leg: leg(3, factory, "0xc0ffee") }] })
+    const f = await fixture({ launchLegs: [{ kind: "createCurve", leg: leg(3, factory, curveCall) }] })
     expect(await run(hoodLaunch(), f.deps)).toBe(0)
     expect(signs(f.calls)).toHaveLength(1)
     expect(f.stderr.text).toContain("Legs, signed one at a time: create curve\n")
     expect(f.stderr.text).toContain("no sealed EVM record writer")
+  })
+
+  test("SEC-001: a createCurve whose fee splitter pays another dev is never signed", async () => {
+    const f = await fixture({
+      launchLegs: [{ kind: "createCurve", leg: leg(3, factory, curveCall) }],
+      splitterDev: "0x9999999999999999999999999999999999999999",
+    })
+    expect(await run(hoodLaunch(), f.deps)).toBe(1)
+    expect(signs(f.calls)).toEqual([])
+  })
+
+  test("SEC-001: a createCurve whose fee recipient is not a splitter the factory vouches for is never signed", async () => {
+    const stranger = createCurveData(hoodTee, "0x8888888888888888888888888888888888888888")
+    const f = await fixture({ launchLegs: [{ kind: "createCurve", leg: leg(3, factory, stranger) }] })
+    expect(await run(hoodLaunch(), f.deps)).toBe(1)
+    expect(signs(f.calls)).toEqual([])
   })
 
   const beforeAnyRequest: Array<[string, string[]]> = [
@@ -653,11 +702,12 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
   test("a later leg of a kind a launch never signs is refused, and the landed curve is listed", async () => {
     const f = await fixture({
       launchLegs: [
-        { kind: "createCurve", leg: leg(3, factory, "0xc0ffee") },
+        { kind: "createCurve", leg: leg(3, factory, curveCall) },
         { kind: "transfer", leg: leg(4, treasury, "0x", "5") },
+        { kind: "trade", leg: leg(5, curve, "0xd96a094a", (10n ** 15n).toString()) },
       ],
     })
-    expect(await run(hoodLaunch(), f.deps)).toBe(1)
+    expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("INVALID_RESPONSE")
     expect(String(failure.message)).toContain("Landed: createCurve")
@@ -666,7 +716,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
 
   test("a second createCurve after a one-leg launch is not signed, and the landed curve is listed", async () => {
     const f = await fixture({
-      launchLegs: [{ kind: "createCurve", leg: leg(3, factory, "0xc0ffee") }],
+      launchLegs: [{ kind: "createCurve", leg: leg(3, factory, curveCall) }],
       trailingLeg: {
         kind: "createCurve",
         plannedLegCount: 1,
@@ -686,9 +736,10 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
 
   test("a later body that changes plannedLegCount is not signed, and the landed curve is listed", async () => {
     const f = await fixture({
-      plannedLegCountAt: (index) => (index === 0 ? 2 : 3),
+      launchLegs: buyLegs(),
+      plannedLegCountAt: (index) => (index === 0 ? 3 : 2),
     })
-    expect(await run(hoodLaunch(), f.deps)).toBe(1)
+    expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("INVALID_RESPONSE")
     expect(String(failure.message)).toContain("planned leg count")
@@ -699,11 +750,12 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
   test("a second createCurve inside a two-leg plan is not signed, and the landed curve is listed", async () => {
     const f = await fixture({
       launchLegs: [
-        { kind: "createCurve", leg: leg(3, factory, "0xc0ffee") },
+        { kind: "createCurve", leg: leg(3, factory, curveCall) },
         { kind: "createCurve", leg: leg(4, treasury, "0x", FIVE_ETH) },
+        { kind: "trade", leg: leg(5, curve, "0xd96a094a", (10n ** 15n).toString()) },
       ],
     })
-    expect(await run(hoodLaunch(), f.deps)).toBe(1)
+    expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("INVALID_RESPONSE")
     expect(String(failure.message)).toContain(`Landed: createCurve 0x${"1".repeat(64)}`)
@@ -713,13 +765,67 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
 
   test("a createCurve leg that carries ETH is not signed", async () => {
     const f = await fixture({
-      launchLegs: [{ kind: "createCurve", leg: leg(3, factory, "0xc0ffee", FIVE_ETH) }],
+      launchLegs: [{ kind: "createCurve", leg: leg(3, factory, curveCall, FIVE_ETH) }],
     })
     expect(await run(hoodLaunch(), f.deps)).toBe(1)
     expect(lastJson(f.stdout.text).code).toBe("INVALID_RESPONSE")
     expect(String(lastJson(f.stdout.text).message)).toContain("No leg landed.")
     expect(signs(f.calls)).toEqual([])
   })
+
+  const notACurve: Array<[string, SequencedLeg]> = [
+    // Zero ETH, but an ERC-20 transfer of the wallet's USDG: the old value-only check signed this.
+    [
+      "an ERC-20 transfer to the factory's slot",
+      leg(3, HOOD_USDG_ADDRESS, bytesToHex(encodeErc20Transfer(treasury, 10n ** 12n))),
+    ],
+    ["an ERC-20 transfer calldata sent to the factory", leg(3, factory, bytesToHex(encodeErc20Transfer(treasury, 1n)))],
+    ["createCurve calldata sent to another contract", leg(3, treasury, curveCall)],
+    ["a curve that names another creator", leg(3, factory, createCurveData(treasury))],
+    ["createCurve calldata cut short", leg(3, factory, curveCall.slice(0, 74))],
+  ]
+  for (const [name, curveLeg] of notACurve)
+    test(`a createCurve leg that is ${name} is never signed`, async () => {
+      const f = await fixture({ launchLegs: [{ kind: "createCurve", leg: curveLeg }] })
+      expect(await run(hoodLaunch(), f.deps)).toBe(1)
+      expect(lastJson(f.stdout.text).code).toBe("INVALID_RESPONSE")
+      expect(String(lastJson(f.stdout.text).message)).toContain("No leg landed.")
+      expect(signs(f.calls)).toEqual([])
+    })
+
+  test("without --buy a fee leg is refused before anything is signed: Candle charges no fee on a launch with no buy", async () => {
+    const f = await fixture({
+      launchLegs: [
+        { kind: "createCurve", leg: leg(3, factory, curveCall) },
+        { kind: "feeTransfer", leg: leg(4, treasury, "0x", "5000") },
+      ],
+    })
+    expect(await run(hoodLaunch(), f.deps)).toBe(1)
+    expect(lastJson(f.stdout.text).code).toBe("INVALID_RESPONSE")
+    expect(signs(f.calls)).toEqual([])
+  })
+
+  const badFees: Array<[string, SequencedLeg]> = [
+    ["more than the fee the quote showed", leg(4, treasury, "0x", (10n ** 14n + 1n).toString())],
+    ["the whole first buy", leg(4, treasury, "0x", (10n ** 15n).toString())],
+    ["ETH with calldata", leg(4, treasury, "0xa9059cbb", "5000")],
+    ["a USDG transfer", leg(4, HOOD_USDG_ADDRESS, bytesToHex(encodeErc20Transfer(treasury, 5000n)))],
+  ]
+  for (const [name, feeLeg] of badFees)
+    test(`a launch fee leg carrying ${name} is never signed; the landed curve is listed`, async () => {
+      const f = await fixture({
+        launchLegs: [
+          { kind: "createCurve", leg: leg(3, factory, curveCall) },
+          { kind: "feeTransfer", leg: feeLeg },
+          { kind: "trade", leg: leg(5, curve, "0xd96a094a", (10n ** 15n).toString()) },
+        ],
+      })
+      expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
+      const failure = lastJson(f.stdout.text)
+      expect(failure.code).toBe("INVALID_RESPONSE")
+      expect(String(failure.message)).toContain("Landed: createCurve")
+      expect(signs(f.calls)).toHaveLength(1)
+    })
 
   test("declining signs nothing and says the build holds the wallet", async () => {
     const f = await fixture({ prompt: "n" })

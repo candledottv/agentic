@@ -255,12 +255,20 @@ export function allSignerWallets(view: SignerView): SignerWallet[] {
   return [...view.wallets.onSigner, ...view.wallets.legacy, ...view.wallets.moving]
 }
 
-/** The key's ACTIVE signer, when it has one. */
+/**
+ * The key's ACTIVE signer, when it has one. Its fingerprint and hash are the server's word;
+ * `confirmSignerPin` re-derives both from `publicKeyDer` before anything is pinned.
+ */
 export function activeSigner(
   view: SignerView,
-): { fingerprint: string; spkiSha256: string; signerQuorumId: string } | null {
+): { fingerprint: string; spkiSha256: string; signerQuorumId: string; publicKeyDer: string | null } | null {
   if (view.state !== "active" || !view.signerQuorumId || !view.fingerprint || !view.spkiSha256) return null
-  return { fingerprint: view.fingerprint, spkiSha256: view.spkiSha256, signerQuorumId: view.signerQuorumId }
+  return {
+    fingerprint: view.fingerprint,
+    spkiSha256: view.spkiSha256,
+    signerQuorumId: view.signerQuorumId,
+    publicKeyDer: typeof view.publicKeyDer === "string" ? view.publicKeyDer : null,
+  }
 }
 
 type Api = Pick<CommandContext, "apiUrl"> & { deps: Pick<Deps, "fetch" | "env"> }
@@ -334,22 +342,74 @@ export interface PinFailure {
 }
 
 /**
+ * The signer's fingerprint and full hash as THIS machine derives them, never as the server states
+ * them. With `publicKeyDer` present in `signer` (a signer read, which always carries the key), the
+ * DER must be a P-256 SPKI and its sha256 must be the hash the server named. Without it (a rebind
+ * preview names only the hash), the hash is checked for shape. Either way the fingerprint is
+ * computed from the hash, and a server fingerprint that disagrees is refused: otherwise a server
+ * could show a fingerprint the operator recognizes beside a hash for a key it holds.
+ */
+export function verifiedSigner(signer: {
+  fingerprint: string
+  spkiSha256: string
+  publicKeyDer?: string | null
+}): { ok: true; fingerprint: string; spkiSha256: string } | { ok: false; problem: string } {
+  let spkiSha256 = signer.spkiSha256
+  if (signer.publicKeyDer !== undefined) {
+    if (typeof signer.publicKeyDer !== "string" || signer.publicKeyDer.length === 0) {
+      return { ok: false, problem: "the server did not send the signer's public key" }
+    }
+    try {
+      const key = createPublicKey({ key: Buffer.from(signer.publicKeyDer, "base64"), format: "der", type: "spki" })
+      if (key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
+        return { ok: false, problem: "the server's public key is not a P-256 key" }
+      }
+    } catch {
+      return { ok: false, problem: "the server's public key is not a valid SPKI DER key" }
+    }
+    spkiSha256 = spkiSha256Of(signer.publicKeyDer)
+    if (spkiSha256 !== signer.spkiSha256) {
+      return { ok: false, problem: "the hash the server reports is not the hash of the public key it sent" }
+    }
+  }
+  if (!isSpkiSha256(spkiSha256)) return { ok: false, problem: "the server's signer hash is not a sha256" }
+  const fingerprint = keySignerFingerprint(spkiSha256)
+  if (normalizeFingerprint(signer.fingerprint) !== normalizeFingerprint(fingerprint)) {
+    return { ok: false, problem: "the fingerprint the server reports is not the one its hash gives" }
+  }
+  return { ok: true, fingerprint, spkiSha256 }
+}
+
+/**
  * D3, before anything is imported onto or signed to a key's signer. The pin stores the FULL
  * sha256 and only that is compared. With no pin yet (trust on first use), or when the active
  * signer's full hash differs from the pin, the operator types the full group string they read on
  * the trading machine; the prompt does not echo, and one group never passes. A match (re)pins the
  * full hash. The same hash as the pin passes silently. With no terminal to type into, anything
  * but the same hash is refused. `nothing` is the refusal's "what did not happen" sentence, for a
- * caller that is not an import (an owner-changing rebind).
+ * caller that is not an import (an owner-changing rebind). Everything compared and pinned is what
+ * `verifiedSigner` derives here; a server whose facts disagree with each other pins nothing.
  */
 export async function confirmSignerPin(
   ctx: Pick<CommandContext, "deps">,
   keyPrefix: string,
-  active: { fingerprint: string; spkiSha256: string },
+  signer: { fingerprint: string; spkiSha256: string; publicKeyDer?: string | null },
   opts: { nothing?: string } = {},
 ): Promise<{ ok: true; pinned: "same" | "first" | "changed" } | { ok: false; failure: PinFailure }> {
   const { deps } = ctx
   const nothing = opts.nothing ?? "Nothing was imported and nothing was pinned."
+  const verified = verifiedSigner(signer)
+  if (!verified.ok) {
+    return {
+      ok: false,
+      failure: {
+        code: "KEY_SIGNER_UNVERIFIED",
+        message: `Key ${keyPrefix}'s signer cannot be checked on this machine: ${verified.problem}. ${nothing}`,
+        suggestion: "Do not trust this signer. Check the API address this CLI uses, and run the command again.",
+      },
+    }
+  }
+  const active = { fingerprint: verified.fingerprint, spkiSha256: verified.spkiSha256 }
   const pin = await readPin(deps, keyPrefix)
   if (pin && pin.spkiSha256 === active.spkiSha256) return { ok: true, pinned: "same" }
   if (!deps.isTTY.stdin) {

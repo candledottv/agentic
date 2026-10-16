@@ -81,26 +81,34 @@ function orderBuild(action?: Record<string, unknown>): PerpsBuild {
 
 const OPEN = { walletId: WALLET, privyWalletId: PRIVY_WALLET, coin: "BTC", side: "long" as const, size: "0.01" }
 
+/** Hyperliquid's `/info` metaAndAssetCtxs: BTC at index 0, ETH at 1. */
+const market = (btcMid = "60000") =>
+  json(200, [{ universe: [{ name: "BTC" }, { name: "ETH" }] }, [{ midPx: btcMid }, { midPx: "3000" }]])
+
 describe("perpsOpen: build, check, sign, submit", () => {
   test("an honest build is signed through the relay and posted to Hyperliquid's own endpoint", async () => {
     const build = orderBuild()
     const { client: c, calls } = await client([
       json(200, build),
+      market(),
       json(200, { success: true, signature: SIGNATURE }),
       json(200, { status: "ok", response: { type: "order", data: { statuses: [{ filled: { oid: 1 } }] } } }),
     ])
     const result = await c.perpsOpen(OPEN)
     expect(calls.map((call) => call.url)).toEqual([
       "https://api.test/api/v1/agent/perps/open",
+      // The asset index and mid, from Hyperliquid itself (SEC-004).
+      "https://api.hyperliquid.xyz/info",
       `https://api.test/api/v1/agent/wallets/${WALLET}/sign`,
       // Never the server's exchangeUrl.
       "https://api.hyperliquid.xyz/exchange",
     ])
     expect(calls[0]?.body).toEqual({ walletId: WALLET, coin: "BTC", side: "long", size: "0.01" })
-    const relay = calls[1]?.body as { authorizationSignature: string; body: unknown }
+    expect(calls[1]?.body).toEqual({ type: "metaAndAssetCtxs" })
+    const relay = calls[2]?.body as { authorizationSignature: string; body: unknown }
     expect(relay.body).toEqual({ method: "eth_signTypedData_v4", params: { typed_data: build.typedData } })
     expect(relay.authorizationSignature.length).toBeGreaterThan(0)
-    expect(calls[2]?.body).toEqual({
+    expect(calls[3]?.body).toEqual({
       action: build.action,
       nonce: build.nonce,
       signature: { r: `0x${"a".repeat(64)}`, s: `0x${"b".repeat(64)}`, v: 28 },
@@ -122,15 +130,63 @@ describe("perpsOpen: build, check, sign, submit", () => {
   })
 
   test("submit: false stops after the check, signing nothing", async () => {
-    const { client: c, calls } = await client([json(200, orderBuild())])
+    const { client: c, calls } = await client([json(200, orderBuild()), market()])
     const result = await c.perpsOpen({ ...OPEN, submit: false })
     expect(result).toMatchObject({ signature: null, submitted: false })
-    expect(calls).toHaveLength(1)
+    expect(calls).toHaveLength(2)
+  })
+
+  test("SEC-004: an order on another coin's asset index, or a market price far from Hyperliquid's mid, is refused with no relay call", async () => {
+    const honest = orderBuild().action as { orders: Record<string, unknown>[] }
+    const ethIndex = orderBuild({ ...orderBuild().action, orders: [{ ...honest.orders[0], a: 1 }] })
+    for (const [build, mid] of [
+      [ethIndex, "60000"],
+      // The build's 60600 is twice a 30300 mid: far past the 100 bps default plus the drift allowance.
+      [orderBuild(), "30300"],
+    ] as const) {
+      const { client: c, calls } = await client([json(200, build), market(mid)])
+      await expect(c.perpsOpen(OPEN)).rejects.toThrow("refused to sign")
+      expect(calls.some((call) => call.url.endsWith("/sign"))).toBe(false)
+    }
+    // A requested slippage widens the bound: 60600 is 3% over a 58835 mid, inside 250 + 100 bps.
+    const { client: wide } = await client([json(200, orderBuild()), market("58835")])
+    expect((await wide.perpsOpen({ ...OPEN, slippageBps: 250, submit: false })).signature).toBeNull()
+    const { client: narrow } = await client([json(200, orderBuild()), market("58835")])
+    await expect(narrow.perpsOpen({ ...OPEN, submit: false })).rejects.toThrow("slippage")
+  })
+
+  test("SEC-004: a modify is held to the resting order's asset, side and price as Hyperliquid reports them", async () => {
+    const cloid = `0x${"1".repeat(32)}`
+    const resting = (coin: string, side: string) =>
+      json(200, { status: "order", order: { order: { coin, side, limitPx: "60600", sz: "0.01", cloid } } })
+    const modify = (change: Record<string, unknown> = {}) =>
+      orderBuild({
+        type: "modify",
+        oid: cloid,
+        order: {
+          ...(orderBuild().action.orders as Record<string, unknown>[])[0],
+          t: { limit: { tif: "Gtc" } },
+          ...change,
+        },
+      })
+    const request = { walletId: WALLET, privyWalletId: PRIVY_WALLET, cloid, size: "0.01", submit: false }
+    const { client: ok } = await client([json(200, modify()), resting("BTC", "B"), market()])
+    expect((await ok.perpsModify(request)).signature).toBeNull()
+    for (const [build, order] of [
+      [modify(), resting("ETH", "B")],
+      [modify(), resting("BTC", "A")],
+      [modify({ p: "90000" }), resting("BTC", "B")],
+    ] as const) {
+      const { client: c, calls } = await client([json(200, build), order, market()])
+      await expect(c.perpsModify(request)).rejects.toThrow("refused to sign")
+      expect(calls.some((call) => call.url.endsWith("/sign"))).toBe(false)
+    }
   })
 
   test("a failed submit keeps the signature for a retry", async () => {
     const { client: c } = await client([
       json(200, orderBuild()),
+      market(),
       json(200, { success: true, signature: SIGNATURE }),
       json(502, { error: "bad gateway" }),
     ])
@@ -140,7 +196,7 @@ describe("perpsOpen: build, check, sign, submit", () => {
   })
 
   test("a relay answer that is not a signature throws", async () => {
-    const { client: c } = await client([json(200, orderBuild()), json(200, { success: true })])
+    const { client: c } = await client([json(200, orderBuild()), market(), json(200, { success: true })])
     await expect(c.perpsOpen(OPEN)).rejects.toThrow("no signature")
   })
 
@@ -158,6 +214,7 @@ describe("the builder pin", () => {
       [
         json(200, orderBuild()),
         json(200, { success: true, builder: BUILDER }),
+        market(),
         json(200, { success: true, signature: SIGNATURE }),
         json(200, { status: "ok" }),
       ],

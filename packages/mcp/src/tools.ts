@@ -46,7 +46,7 @@ import { randomUUID } from "node:crypto"
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
-import { type RequestConfig, resolveConfig } from "./client"
+import { keyedRedirectGuard, type RequestConfig, resolveConfig } from "./client"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
 import { configuredImageDir, imageRefusalBody, resolveLaunchImage, UPLOADED_IMAGE_NOTE } from "./image"
 import { EXTERNAL_MARKET_DISCLOSURE } from "./market-disclosure"
@@ -1144,7 +1144,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
   const getConfig = options.getConfig
   const env = options.env ?? {}
   // Preserve stdio's late-bound global fetch (including a host's test seam).
-  const doFetch: FetchLike = options.fetch ?? ((url, init) => fetch(url, init))
+  // Keyed requests never follow a redirect to another origin (keyedRedirectGuard).
+  const doFetch: FetchLike = keyedRedirectGuard(options.fetch ?? ((url, init) => fetch(url, init)))
   // Every registration goes through this guard, so the subset cannot drift past it.
   // Our schemas are Zod 3 raw shapes. Keeping this wrapper specific avoids expanding the
   // SDK's Zod 3/4 and output-schema overloads at every registration.
@@ -1951,7 +1952,7 @@ export async function registerEligibleProfileTool(
   let eligible = false
   if (cfg.apiKey && wanted.length > 0) {
     try {
-      const res = await doFetch(`${cfg.apiUrl}/api/v1/agent/keys/self/public-profile`, {
+      const res = await keyedRedirectGuard(doFetch)(`${cfg.apiUrl}/api/v1/agent/keys/self/public-profile`, {
         method: "GET",
         headers: { "x-api-key": cfg.apiKey },
         signal: AbortSignal.timeout(15000),

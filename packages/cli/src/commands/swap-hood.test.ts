@@ -24,6 +24,7 @@ import { canonicalAuthorizationPayloadBytes } from "../../../sdk/src/authorizati
 import type { EvmRecordAppendOutcome, EvmRecordTokenEntry } from "../deps"
 import {
   bytesToHex,
+  encodeErc20Transfer,
   evmAddressFromSecret,
   HOOD_USDG_ADDRESS,
   HOOD_WETH_ADDRESS,
@@ -33,8 +34,31 @@ import {
   signTransaction,
   toChecksumAddress,
 } from "../evm-lite"
+import {
+  CURVE_BUY_SELECTOR,
+  CURVE_SELL_SELECTOR,
+  ERC20_APPROVE_SELECTOR,
+  HOOD_KYBER_ROUTER,
+  HOOD_PERMIT2,
+  HOOD_UNIV2_ROUTER,
+  HOOD_UNIV3_ROUTER,
+  HOOD_V4_UNIVERSAL_ROUTER,
+  PERMIT2_APPROVE_SELECTOR,
+} from "../hood-legs"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
+import {
+  kyberSwap,
+  v2Sell,
+  v3Buy,
+  v3Multicall,
+  v3Refund,
+  v3Sell,
+  v3Single,
+  v3Unwrap,
+  v4Direct,
+  v4Raw,
+} from "../test-hood-calldata"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
 import {
   classifyAsset,
@@ -58,8 +82,20 @@ const otherSecret = hexToBytes(`0x${"22".repeat(32)}`)
 const hoodEmbedded = evmAddressFromSecret(hexToBytes(`0x${"33".repeat(32)}`))
 const solanaTee = "7ZL9FvkpCMgdvzfoMSYZSuCXLCYN25dfgtDXej1BBJaB"
 const token = toChecksumAddress("0x1111111111111111111111111111111111111111")
-const router = toChecksumAddress("0x2222222222222222222222222222222222222222")
+const router = toChecksumAddress(HOOD_UNIV3_ROUTER)
 const treasury = toChecksumAddress("0x3333333333333333333333333333333333333333")
+/** The token's Candle curve, as the registry's `curveForBaseToken` names it. */
+const tokenCurve = toChecksumAddress("0x5555555555555555555555555555555555555555")
+const attacker = toChecksumAddress("0x6666666666666666666666666666666666666666")
+/** What `--amount 0.01` is in base units, at the fake RPC's 18 decimals. */
+const AMOUNT = 10n ** 16n
+const word = (hex: string | bigint) =>
+  (typeof hex === "bigint" ? hex.toString(16) : hex.replace(/^0x/, "").toLowerCase()).padStart(64, "0")
+/** `approve(spender, amount)`, exactly as the server's `buildApproveTx` encodes it. */
+const approveData = (spender: string, amount = AMOUNT) => `${ERC20_APPROVE_SELECTOR}${word(spender)}${word(amount)}`
+/** Permit2's `approve(token, spender, amount, expiration)`. */
+const permit2Data = (spender: string, amount = AMOUNT, asset = token) =>
+  `${PERMIT2_APPROVE_SELECTOR}${word(asset)}${word(spender)}${word(amount)}${word(9_999_999_999n)}`
 const EVM_RPC = "https://hood.test/rpc"
 
 const folders: string[] = []
@@ -106,6 +142,12 @@ interface FixtureOptions {
   prompt?: string
   appendEvmRecord?: (entry: EvmRecordTokenEntry) => Promise<EvmRecordAppendOutcome>
   fee?: string
+  /** `fee.treasury` on the trade build. Default: `treasury`; null as a build with none configured. */
+  feeTreasury?: string | null
+  /** `artifacts.venue` on the trade build. Default: `dex`. */
+  venue?: string
+  /** The curve the registry's `curveForBaseToken` names. Default: `tokenCurve`; null names none. */
+  registeredCurve?: string | null
   expiresAt?: number
   /** BE-500: `teeReadiness` on GET /keys/self/limits. Absent by default, as an older API answers. */
   readiness?: unknown
@@ -117,9 +159,10 @@ async function fixture(opts: FixtureOptions = {}) {
   const dir = await mkdtemp(join(tmpdir(), "candle-hood-trade-"))
   folders.push(dir)
   const calls: { path: string; body: Record<string, unknown> | undefined; url: string }[] = []
+  // A token sell on the v3 router: approve the router for the input, swap, then the ETH fee.
   const planned = opts.legs ?? [
-    { kind: "approval", leg: leg(7, token) },
-    { kind: "trade", leg: leg(8, router, "0xabcdef") },
+    { kind: "approval", leg: leg(7, token, approveData(router)) },
+    { kind: "trade", leg: leg(8, router, v3Sell(token, AMOUNT, hoodTee)) },
     { kind: "feeTransfer", leg: leg(9, treasury, "0x", "5000") },
   ]
   const outcomes = [...(opts.outcomes ?? planned.map(() => "land" as Outcome))]
@@ -153,11 +196,13 @@ async function fixture(opts: FixtureOptions = {}) {
             ? `0x${"0".repeat(62)}12`
             : selector === "0x70a08231"
               ? `0x${4_000_000_000_000_000_000n.toString(16).padStart(64, "0")}`
-              : method === "eth_feeHistory"
-                ? { baseFeePerGas: ["0x3b9aca00", "0x3b9aca00"], reward: [["0x0"]] }
-                : method === "eth_maxPriorityFeePerGas"
-                  ? "0xf4240"
-                  : "0x0"
+              : selector === "0x446b9253"
+                ? `0x${word(opts.registeredCurve === null ? "0x0" : (opts.registeredCurve ?? tokenCurve))}`
+                : method === "eth_feeHistory"
+                  ? { baseFeePerGas: ["0x3b9aca00", "0x3b9aca00"], reward: [["0x0"]] }
+                  : method === "eth_maxPriorityFeePerGas"
+                    ? "0xf4240"
+                    : "0x0"
       return ok({ jsonrpc: "2.0", id: body.id, result })
     }
     if (path.includes("/jobs/"))
@@ -219,10 +264,14 @@ async function fixture(opts: FixtureOptions = {}) {
         chain: "hood",
         minOutRaw: "123456",
         expectedOutRaw: "130000",
-        fee: { bps: 100, feeRaw: opts.fee ?? "5000" },
+        fee: {
+          bps: 100,
+          feeRaw: opts.fee ?? "5000",
+          treasury: opts.feeTreasury === undefined ? treasury : opts.feeTreasury,
+        },
         expiresAt: opts.expiresAt ?? 10_000,
         walletAddress: main ? hoodEmbedded : hoodTee,
-        artifacts: { venue: "curve", quoteAsset: body.quoteAsset, tokenRisks: [] },
+        artifacts: { venue: opts.venue ?? "dex", quoteAsset: body.quoteAsset, tokenRisks: [] },
       }
       if (main || opts.allLegs) return ok({ ...quote, artifacts: { ...quote.artifacts, legs: planned } })
       return ok({ ...quote, ...sequenced(0, "trade") })
@@ -373,6 +422,26 @@ const buyArgs = (extra: string[] = []) => [
   "--json",
   ...extra,
 ]
+/** A token sell for ETH: the approval, trade and fee legs a sell plans. */
+const sellArgs = (extra: string[] = []) => [
+  "swap",
+  token,
+  "ETH",
+  "--amount",
+  "0.01",
+  "--client-trade-id",
+  "hood-1",
+  "--yes",
+  "--json",
+  ...extra,
+]
+/** An ETH buy on the v3 router: no approval (the input rides msg.value), the trade, then the fee. */
+const buyLegs: Planned[] = [
+  { kind: "trade", leg: leg(7, router, v3Buy(token, AMOUNT, hoodTee), AMOUNT.toString()) },
+  { kind: "feeTransfer", leg: leg(8, treasury, "0x", "5000") },
+]
+/** An ETH to USDG base swap through Kyber for the confirmed 0.5 ETH, paid to the wallet. */
+const ethToUsdg = kyberSwap({ dstReceiver: hoodTee, amount: 5n * 10n ** 17n })
 const builds = <T extends { path: string }>(calls: T[]) => calls.filter((call) => call.path.endsWith("/build"))
 const apiCalls = <T extends { url: string }>(calls: T[]) => calls.filter((call) => !call.url.startsWith(EVM_RPC))
 
@@ -428,7 +497,7 @@ describe("H7: chain selection", () => {
   })
 
   test("without --wallet the key's single Hood TEE wallet pays, even when a Solana TEE wallet is also bound", async () => {
-    const f = await fixture({ rows: ["hood", "solana"] })
+    const f = await fixture({ rows: ["hood", "solana"], legs: buyLegs })
     expect(await run(buyArgs(), f.deps)).toBe(0)
     const build = builds(f.calls)[0]
     expect(build?.path).toBe("/api/v1/trade/agent/build")
@@ -473,7 +542,7 @@ describe("H8: the sequenced leg loop", () => {
         return { appended: true }
       },
     })
-    expect(await run(buyArgs(), f.deps)).toBe(0)
+    expect(await run(sellArgs(), f.deps)).toBe(0)
     const signs = f.calls.filter((call) => call.path.endsWith("/sign"))
     const submits = f.calls.filter((call) => call.path.endsWith("/submit"))
     expect(signs).toHaveLength(3)
@@ -534,7 +603,7 @@ describe("H8: the sequenced leg loop", () => {
 
   test("the quote names every leg, the gas estimate and the reserve before the confirmation", async () => {
     const f = await fixture()
-    expect(await run(buyArgs(), f.deps)).toBe(0)
+    expect(await run(sellArgs(), f.deps)).toBe(0)
     expect(f.stderr.text).toContain("Legs, signed one at a time: approve, trade, fee")
     expect(f.stderr.text).toContain("Gas: the approval leg up to 0.00024 ETH")
     expect(f.stderr.text).toContain("Gas reserve: at least")
@@ -547,7 +616,7 @@ describe("H8: the sequenced leg loop", () => {
     f.deps.isTTY.stdin = true
     expect(
       await run(
-        buyArgs().filter((arg) => arg !== "--yes"),
+        sellArgs().filter((arg) => arg !== "--yes"),
         f.deps,
       ),
     ).toBe(0)
@@ -560,7 +629,7 @@ describe("H8: the sequenced leg loop", () => {
 
   test("a reverted leg exits 1 and lists the legs that landed", async () => {
     const f = await fixture({ outcomes: ["land", "revert"] })
-    expect(await run(buyArgs(), f.deps)).toBe(1)
+    expect(await run(sellArgs(), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("TRADE_REVERTED")
     expect(String(failure.message)).toContain(`Landed: approval 0x${"1".repeat(64)}`)
@@ -573,7 +642,7 @@ describe("H8: the sequenced leg loop", () => {
 
   test("an uncertain leg (no receipt) exits 3 with its hash and resends nothing", async () => {
     const f = await fixture({ outcomes: ["land", "unconfirmed"] })
-    expect(await run(buyArgs(), f.deps)).toBe(3)
+    expect(await run(sellArgs(), f.deps)).toBe(3)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("LEG_UNCONFIRMED")
     expect((failure.details as { hash: string }).hash).toBe(`0x${"2".repeat(64)}`)
@@ -583,7 +652,7 @@ describe("H8: the sequenced leg loop", () => {
 
   test("BE-1397: an uncertain leg keeps the server's stage and signature beside its hash", async () => {
     const f = await fixture({ outcomes: ["land", "unconfirmed"] })
-    expect(await run(buyArgs(), f.deps)).toBe(3)
+    expect(await run(sellArgs(), f.deps)).toBe(3)
     expect(lastJson(f.stdout.text).details).toMatchObject({
       stage: "unconfirmed",
       signature: `0x${"2".repeat(64)}`,
@@ -593,7 +662,7 @@ describe("H8: the sequenced leg loop", () => {
 
   test("BE-1397: a fee leg refused after the trade landed (stage executed) exits 3 with the trade's hash", async () => {
     const f = await fixture({ outcomes: ["land", "land", "executed"] })
-    expect(await run(buyArgs(), f.deps)).toBe(3)
+    expect(await run(sellArgs(), f.deps)).toBe(3)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("SWAP_FAILED")
     const details = failure.details as { stage: string; signature: string; landedLegs: Array<{ kind: string }> }
@@ -606,7 +675,7 @@ describe("H8: the sequenced leg loop", () => {
 
   test("a submit that gets no answer at all exits 3 with the hash of the bytes it posted", async () => {
     const f = await fixture({ outcomes: ["lost"] })
-    expect(await run(buyArgs(), f.deps)).toBe(3)
+    expect(await run(sellArgs(), f.deps)).toBe(3)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("LEG_UNCONFIRMED")
     const posted = f.calls.find((call) => call.path.endsWith("/submit"))?.body?.signedTransaction as string
@@ -616,7 +685,7 @@ describe("H8: the sequenced leg loop", () => {
 
   test("swap status reads the operation without resending anything", async () => {
     const f = await fixture({ outcomes: ["land", "unconfirmed"] })
-    expect(await run(buyArgs(), f.deps)).toBe(3)
+    expect(await run(sellArgs(), f.deps)).toBe(3)
     const before = f.calls.length
     f.stdout.text = ""
     expect(await run(["swap", "status", "hood-1", "--json"], f.deps)).toBe(0)
@@ -632,14 +701,14 @@ describe("H8: the sequenced leg loop", () => {
 
   test("a relay signature over another nonce is refused and never posted", async () => {
     const f = await fixture({ relay: "wrong-nonce" })
-    expect(await run(buyArgs(), f.deps)).toBe(1)
+    expect(await run(sellArgs(), f.deps)).toBe(1)
     expect(lastJson(f.stdout.text).code).toBe("INVALID_RESPONSE")
     expect(f.calls.some((call) => call.path.endsWith("/submit"))).toBe(false)
   })
 
   test("a fee leg offered before the trade landed is refused and never signed", async () => {
     const f = await fixture({ legs: [{ kind: "feeTransfer", leg: leg(1, treasury, "0x", "5") }] })
-    expect(await run(buyArgs(), f.deps)).toBe(1)
+    expect(await run(sellArgs(), f.deps)).toBe(1)
     expect(lastJson(f.stdout.text).code).toBe("INVALID_RESPONSE")
     expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
   })
@@ -647,7 +716,7 @@ describe("H8: the sequenced leg loop", () => {
   test("a launch or transfer leg kind offered to a swap is refused and never signed (Phase 4b-2)", async () => {
     for (const kind of ["createCurve", "transfer"]) {
       const f = await fixture({ legs: [{ kind: kind as Kind, leg: leg(1, router) }] })
-      expect(await run(buyArgs(), f.deps)).toBe(1)
+      expect(await run(sellArgs(), f.deps)).toBe(1)
       expect(lastJson(f.stdout.text).code).toBe("INVALID_RESPONSE")
       expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
     }
@@ -655,20 +724,20 @@ describe("H8: the sequenced leg loop", () => {
 
   test("a leg on another chain id is refused and never signed", async () => {
     const f = await fixture({ legs: [{ kind: "trade", leg: { ...leg(1, router), chainId: 1 } }] })
-    expect(await run(buyArgs(), f.deps)).toBe(1)
+    expect(await run(sellArgs(), f.deps)).toBe(1)
     expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
   })
 
   test("a deployment without the sequenced rail never has a Hood TEE leg signed", async () => {
     const f = await fixture({ allLegs: true })
-    expect(await run(buyArgs(), f.deps)).toBe(1)
+    expect(await run(sellArgs(), f.deps)).toBe(1)
     expect(lastJson(f.stdout.text).code).toBe("SEQUENCED_RAIL_REQUIRED")
     expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
   })
 
   test("ETH to USDG runs on the swap rail with swapId, and records USDG", async () => {
     const f = await fixture({
-      legs: [{ kind: "trade", leg: leg(4, router, "0x01", "1000") }],
+      legs: [{ kind: "trade", leg: leg(4, HOOD_KYBER_ROUTER, ethToUsdg, "500000000000000000") }],
       appendEvmRecord: async () => ({ appended: true }),
     })
     expect(
@@ -691,7 +760,10 @@ describe("H8: the sequenced leg loop", () => {
       settledOutSource: "tx_balance_delta",
       measuredAt: { blockNumber: 123 },
     }
-    const f = await fixture({ legs: [{ kind: "trade", leg: leg(4, router, "0x01", "1000") }], settlement })
+    const f = await fixture({
+      legs: [{ kind: "trade", leg: leg(4, HOOD_KYBER_ROUTER, ethToUsdg, "500000000000000000") }],
+      settlement,
+    })
     expect(
       await run(["swap", "ETH", "USDG", "--amount", "0.5", "--client-trade-id", "hood-2", "--yes", "--json"], f.deps),
     ).toBe(0)
@@ -705,7 +777,7 @@ describe("H8: the sequenced leg loop", () => {
       undefined,
     ]) {
       const f = await fixture({
-        legs: [{ kind: "trade", leg: leg(4, router, "0x01", "1000") }],
+        legs: [{ kind: "trade", leg: leg(4, HOOD_KYBER_ROUTER, ethToUsdg, "500000000000000000") }],
         ...(settlement ? { settlement } : {}),
       })
       expect(
@@ -720,7 +792,7 @@ describe("H8: the sequenced leg loop", () => {
 
   test("BE-505 (R8.4): a Hood token trade prints no settlement line", async () => {
     const f = await fixture()
-    expect(await run(buyArgs(), f.deps)).toBe(0)
+    expect(await run(sellArgs(), f.deps)).toBe(0)
     expect(f.stderr.text).not.toContain("Settlement")
     expect(f.stderr.text).not.toMatch(/^settled /m)
   })
@@ -736,14 +808,14 @@ describe("H8: the sequenced leg loop", () => {
 
   test("the embedded Hood wallet trades a token through the deferred build, never the leg loop", async () => {
     const f = await fixture({ rows: [], embedded: { evm: hoodEmbedded } })
-    expect(await run(buyArgs(), f.deps)).toBe(0)
+    expect(await run(sellArgs(), f.deps)).toBe(0)
     expect(builds(f.calls)[0]?.body).toMatchObject({ payer: { type: "main" }, deferExecution: true })
     expect(f.calls.some((call) => call.path.endsWith("/sign") || call.path.endsWith("/submit"))).toBe(false)
   })
 
   test("a skipped record append never fails a landed leg; it prints a notice", async () => {
     const f = await fixture({ appendEvmRecord: async () => ({ appended: false, notice: "the header is version 3" }) })
-    expect(await run(buyArgs(), f.deps)).toBe(0)
+    expect(await run(sellArgs(), f.deps)).toBe(0)
     expect(f.stderr.text).toContain("the sealed EVM record was not updated")
     expect(f.stderr.text).toContain("the header is version 3")
     const thrown = await fixture({
@@ -751,10 +823,10 @@ describe("H8: the sequenced leg loop", () => {
         throw new Error("lock busy")
       },
     })
-    expect(await run(buyArgs(), thrown.deps)).toBe(0)
+    expect(await run(sellArgs(), thrown.deps)).toBe(0)
     expect(thrown.stderr.text).toContain("lock busy")
     const none = await fixture()
-    expect(await run(buyArgs(), none.deps)).toBe(0)
+    expect(await run(sellArgs(), none.deps)).toBe(0)
     expect(none.stderr.text).toContain("no sealed EVM record writer")
   })
 
@@ -764,6 +836,482 @@ describe("H8: the sequenced leg loop", () => {
     await run(["swap", "SOL", "USDC", "--amount", "1", "--wallet", "sol", "--yes", "--json"], f.deps).catch(() => 1)
     expect(apiCalls(f.calls).some((call) => call.path.endsWith("/submit"))).toBe(false)
   })
+})
+
+describe("every leg is held to what was confirmed (hood-legs.ts)", () => {
+  const signCount = <T extends { path: string }>(calls: T[]) => calls.filter((c) => c.path.endsWith("/sign")).length
+  const approval = (data: string, to = token): Planned => ({ kind: "approval", leg: leg(7, to, data) })
+  const sellData = v3Sell(token, AMOUNT, hoodTee)
+  const buyData = v3Buy(token, AMOUNT, hoodTee)
+  const v4SellData = v4Direct({ token, zeroForOne: false, amountIn: AMOUNT })
+  const trade = (to: string, data: string = sellData, value = "0", nonce = 8): Planned => ({
+    kind: "trade",
+    leg: leg(nonce, to, data, value),
+  })
+  const fee = (to = treasury, data = "0x", value = "5000", nonce = 9): Planned => ({
+    kind: "feeTransfer",
+    leg: leg(nonce, to, data, value),
+  })
+  const curveSell = (amount = AMOUNT, minimum = 123456n) => `${CURVE_SELL_SELECTOR}${word(amount)}${word(minimum)}`
+  const usdgFee = (recipient: string, amount: bigint) =>
+    fee(HOOD_USDG_ADDRESS, bytesToHex(encodeErc20Transfer(recipient, amount)), "0")
+
+  const honest: Array<[string, Planned[], string[], FixtureOptions]> = [
+    [
+      "a v4 sell: Permit2 approve, Permit2's grant to the Universal Router, the router, the fee",
+      [
+        approval(approveData(HOOD_PERMIT2)),
+        { kind: "permit2Approval", leg: leg(8, HOOD_PERMIT2, permit2Data(HOOD_V4_UNIVERSAL_ROUTER)) },
+        trade(HOOD_V4_UNIVERSAL_ROUTER, v4SellData, "0", 9),
+        fee(treasury, "0x", "5000", 10),
+      ],
+      sellArgs(),
+      {},
+    ],
+    [
+      "a sell through the aggregator",
+      [
+        approval(approveData(HOOD_KYBER_ROUTER)),
+        trade(HOOD_KYBER_ROUTER, kyberSwap({ srcToken: token, dstReceiver: hoodTee, amount: AMOUNT })),
+        fee(),
+      ],
+      sellArgs(),
+      {},
+    ],
+    [
+      "a curve sell to the curve the registry names",
+      [approval(approveData(tokenCurve)), trade(tokenCurve, curveSell()), fee()],
+      sellArgs(),
+      { venue: "curve" },
+    ],
+    [
+      "a curve buy paying the curve its ETH",
+      [
+        trade(tokenCurve, `${CURVE_BUY_SELECTOR}${word(123456n)}`, AMOUNT.toString(), 7),
+        fee(treasury, "0x", "5000", 8),
+      ],
+      buyArgs(),
+      { venue: "curve" },
+    ],
+    [
+      "a sell for USDG whose fee is a USDG transfer to the treasury",
+      [
+        approval(approveData(router)),
+        trade(
+          router,
+          v3Multicall([
+            v3Single({ tokenIn: token, tokenOut: HOOD_USDG_ADDRESS, recipient: hoodTee, amountIn: AMOUNT }),
+          ]),
+        ),
+        usdgFee(treasury, 5000n),
+      ],
+      ["swap", token, "USDG", ...sellArgs().slice(3)],
+      {},
+    ],
+  ]
+  for (const [name, legs, argv, options] of honest)
+    test(`honest: ${name} signs every leg`, async () => {
+      const f = await fixture({ legs, ...options })
+      expect(await run(argv, f.deps)).toBe(0)
+      expect(signCount(f.calls)).toBe(legs.length)
+    })
+
+  // [name, legs, argv, fixture options, legs signed before the refusal]
+  const refused: Array<[string, Planned[], string[], FixtureOptions, number]> = [
+    [
+      "a v3 buy of a different output token",
+      [trade(router, v3Buy(attacker, AMOUNT, hoodTee), AMOUNT.toString(), 7)],
+      buyArgs(),
+      {},
+      0,
+    ],
+    [
+      "a v3 sell with an unwrap minimum below the quote",
+      [
+        approval(approveData(router)),
+        trade(
+          router,
+          v3Multicall([
+            v3Single({
+              tokenIn: token,
+              tokenOut: HOOD_WETH_ADDRESS,
+              recipient: "0x0000000000000000000000000000000000000002",
+              amountIn: AMOUNT,
+            }),
+            v3Unwrap(hoodTee, 123455n),
+          ]),
+        ),
+      ],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a v2 sell with a minimum below the quote",
+      [approval(approveData(HOOD_UNIV2_ROUTER)), trade(HOOD_UNIV2_ROUTER, v2Sell(token, AMOUNT, hoodTee, 123455n))],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a v4 sell with a TAKE_ALL minimum below the quote",
+      [
+        trade(
+          HOOD_V4_UNIVERSAL_ROUTER,
+          v4Direct({ token, zeroForOne: false, amountIn: AMOUNT, takeMinimum: 123455n }),
+          "0",
+          7,
+        ),
+      ],
+      sellArgs(),
+      {},
+      0,
+    ],
+    [
+      "the Kyber attacker source-receiver reproduction",
+      [
+        trade(
+          HOOD_KYBER_ROUTER,
+          kyberSwap({
+            srcToken: token,
+            dstToken: attacker,
+            dstReceiver: hoodTee,
+            amount: AMOUNT,
+            srcReceivers: [attacker],
+            minimum: 0n,
+          }),
+          "0",
+          7,
+        ),
+      ],
+      sellArgs(),
+      {},
+      0,
+    ],
+    [
+      "a base swap whose minimum is below its build floor",
+      [
+        trade(
+          HOOD_KYBER_ROUTER,
+          kyberSwap({ dstReceiver: hoodTee, amount: 5n * 10n ** 17n, minimum: 98n }),
+          "500000000000000000",
+          4,
+        ),
+      ],
+      ["swap", "ETH", "USDG", "--amount", "0.5", "--client-trade-id", "hood-2", "--yes", "--json"],
+      {},
+      0,
+    ],
+    [
+      "a curve sell using the net floor instead of the pre-fee floor",
+      [approval(approveData(tokenCurve)), trade(tokenCurve, curveSell(AMOUNT, 123456n - 5000n))],
+      sellArgs(),
+      { venue: "curve" },
+      1,
+    ],
+    [
+      "a curve buy with a zero minimum",
+      [trade(tokenCurve, `${CURVE_BUY_SELECTOR}${word(0n)}`, AMOUNT.toString(), 7)],
+      buyArgs(),
+      { venue: "curve" },
+      0,
+    ],
+    ["an approval to an unknown spender", [approval(approveData(attacker)), trade(router), fee()], sellArgs(), {}, 0],
+    [
+      "an approval for more than the input",
+      [approval(approveData(router, AMOUNT + 1n)), trade(router), fee()],
+      sellArgs(),
+      {},
+      0,
+    ],
+    [
+      "an approval of another token",
+      [approval(approveData(router), HOOD_USDG_ADDRESS), trade(router), fee()],
+      sellArgs(),
+      {},
+      0,
+    ],
+    [
+      "an approval leg that is an ERC-20 transfer",
+      [approval(bytesToHex(encodeErc20Transfer(attacker, AMOUNT))), trade(router), fee()],
+      sellArgs(),
+      {},
+      0,
+    ],
+    [
+      "an approval on an ETH buy",
+      [approval(approveData(router)), trade(router, buyData, "1"), fee()],
+      buyArgs(),
+      {},
+      0,
+    ],
+    ["a trade leg to an unknown address", [approval(approveData(router)), trade(attacker), fee()], sellArgs(), {}, 1],
+    [
+      "a sell's trade leg carrying ETH",
+      [approval(approveData(router)), trade(router, "0xabcdef", "1"), fee()],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a buy's trade leg carrying more than the input",
+      [trade(router, buyData, (AMOUNT + 1n).toString(), 7)],
+      buyArgs(),
+      {},
+      0,
+    ],
+    [
+      "a Permit2 grant to another spender",
+      [
+        approval(approveData(HOOD_PERMIT2)),
+        { kind: "permit2Approval", leg: leg(8, HOOD_PERMIT2, permit2Data(attacker)) },
+        trade(HOOD_V4_UNIVERSAL_ROUTER, v4SellData, "0", 9),
+      ],
+      sellArgs(),
+      {},
+      1,
+    ],
+    ["a fee leg to an attacker", [approval(approveData(router)), trade(router), fee(attacker)], sellArgs(), {}, 2],
+    [
+      "a fee leg carrying more than the quoted fee",
+      [approval(approveData(router)), trade(router), fee(treasury, "0x", "5001")],
+      sellArgs(),
+      {},
+      2,
+    ],
+    [
+      "a fee leg when the build named no treasury",
+      [approval(approveData(router)), trade(router), fee()],
+      sellArgs(),
+      { feeTreasury: null },
+      2,
+    ],
+    [
+      "a USDG fee transferred to an attacker",
+      [
+        approval(approveData(router)),
+        trade(
+          router,
+          v3Multicall([
+            v3Single({ tokenIn: token, tokenOut: HOOD_USDG_ADDRESS, recipient: hoodTee, amountIn: AMOUNT }),
+          ]),
+        ),
+        usdgFee(attacker, 5000n),
+      ],
+      ["swap", token, "USDG", ...sellArgs().slice(3)],
+      {},
+      2,
+    ],
+    [
+      "a fee leg on a base swap, which carries none",
+      [trade(HOOD_KYBER_ROUTER, ethToUsdg, "500000000000000000", 4), fee(treasury, "0x", "1", 5)],
+      ["swap", "ETH", "USDG", "--amount", "0.5", "--client-trade-id", "hood-2", "--yes", "--json"],
+      {},
+      1,
+    ],
+    [
+      "a curve approval to a contract the registry does not name",
+      [approval(approveData(attacker)), trade(attacker, curveSell()), fee()],
+      sellArgs(),
+      { venue: "curve" },
+      0,
+    ],
+    [
+      "a curve trade when the registry names no curve for the token",
+      [trade(tokenCurve, `${CURVE_BUY_SELECTOR}${word(123456n)}`, AMOUNT.toString(), 7)],
+      buyArgs(),
+      { venue: "curve", registeredCurve: null },
+      0,
+    ],
+    [
+      "a curve sell of more than the input",
+      [approval(approveData(tokenCurve)), trade(tokenCurve, curveSell(AMOUNT + 1n)), fee()],
+      sellArgs(),
+      { venue: "curve" },
+      1,
+    ],
+    [
+      "a v3 sell of another token than the one confirmed",
+      [approval(approveData(router)), trade(router, v3Sell(HOOD_USDG_ADDRESS, AMOUNT, hoodTee)), fee()],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a v3 sell of a larger amount than the one confirmed",
+      [approval(approveData(router)), trade(router, v3Sell(token, AMOUNT * 5n, hoodTee)), fee()],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a v3 sell that pays another recipient",
+      [approval(approveData(router)), trade(router, v3Sell(token, AMOUNT, attacker)), fee()],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a v3 swap straight to another recipient",
+      [
+        approval(approveData(router)),
+        trade(
+          router,
+          v3Multicall([
+            v3Single({ tokenIn: token, tokenOut: HOOD_WETH_ADDRESS, recipient: attacker, amountIn: AMOUNT }),
+          ]),
+        ),
+        fee(),
+      ],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a v3 swap left in the router with no unwrap to the wallet",
+      [
+        approval(approveData(router)),
+        trade(
+          router,
+          v3Multicall([
+            v3Single({
+              tokenIn: token,
+              tokenOut: HOOD_WETH_ADDRESS,
+              recipient: "0x0000000000000000000000000000000000000002",
+              amountIn: AMOUNT,
+            }),
+            v3Unwrap(attacker),
+          ]),
+        ),
+        fee(),
+      ],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a v3 buy of another input token than WETH",
+      [
+        trade(
+          router,
+          v3Multicall([
+            v3Single({ tokenIn: token, tokenOut: HOOD_WETH_ADDRESS, recipient: hoodTee, amountIn: AMOUNT }),
+            v3Refund(),
+          ]),
+          AMOUNT.toString(),
+          7,
+        ),
+      ],
+      buyArgs(),
+      {},
+      0,
+    ],
+    [
+      "a v2 sell that pays another recipient",
+      [approval(approveData(HOOD_UNIV2_ROUTER)), trade(HOOD_UNIV2_ROUTER, v2Sell(token, AMOUNT, attacker)), fee()],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a v4 sell of a larger amount than the one confirmed",
+      [
+        approval(approveData(HOOD_PERMIT2)),
+        { kind: "permit2Approval", leg: leg(8, HOOD_PERMIT2, permit2Data(HOOD_V4_UNIVERSAL_ROUTER)) },
+        trade(HOOD_V4_UNIVERSAL_ROUTER, v4Direct({ token, zeroForOne: false, amountIn: AMOUNT * 5n }), "0", 9),
+      ],
+      sellArgs(),
+      {},
+      2,
+    ],
+    [
+      "a v4 call this check does not decode",
+      [
+        approval(approveData(HOOD_PERMIT2)),
+        { kind: "permit2Approval", leg: leg(8, HOOD_PERMIT2, permit2Data(HOOD_V4_UNIVERSAL_ROUTER)) },
+        trade(HOOD_V4_UNIVERSAL_ROUTER, v4Raw("0x0a", ["0x"]), "0", 9),
+      ],
+      sellArgs(),
+      {},
+      2,
+    ],
+    [
+      "a Kyber swap of another token than the one confirmed",
+      [
+        approval(approveData(HOOD_KYBER_ROUTER)),
+        trade(HOOD_KYBER_ROUTER, kyberSwap({ srcToken: HOOD_USDG_ADDRESS, dstReceiver: hoodTee, amount: AMOUNT })),
+        fee(),
+      ],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a Kyber swap of a larger amount than the one confirmed",
+      [
+        approval(approveData(HOOD_KYBER_ROUTER)),
+        trade(HOOD_KYBER_ROUTER, kyberSwap({ srcToken: token, dstReceiver: hoodTee, amount: AMOUNT * 5n })),
+        fee(),
+      ],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a Kyber swap that pays another recipient",
+      [
+        approval(approveData(HOOD_KYBER_ROUTER)),
+        trade(HOOD_KYBER_ROUTER, kyberSwap({ srcToken: token, dstReceiver: attacker, amount: AMOUNT, simple: true })),
+        fee(),
+      ],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a Kyber swap with a fee receiver",
+      [
+        approval(approveData(HOOD_KYBER_ROUTER)),
+        trade(
+          HOOD_KYBER_ROUTER,
+          kyberSwap({
+            srcToken: token,
+            dstReceiver: hoodTee,
+            amount: AMOUNT,
+            feeReceivers: [attacker],
+            feeAmounts: [1n],
+          }),
+        ),
+        fee(),
+      ],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a router call with calldata this check does not decode",
+      [approval(approveData(HOOD_KYBER_ROUTER)), trade(HOOD_KYBER_ROUTER, "0xabcdef"), fee()],
+      sellArgs(),
+      {},
+      1,
+    ],
+    [
+      "a DEX router named on the curve venue",
+      [approval(approveData(router)), trade(router), fee()],
+      sellArgs(),
+      { venue: "curve" },
+      0,
+    ],
+  ]
+  for (const [name, legs, argv, options, signed] of refused)
+    test(`refused before signing: ${name}`, async () => {
+      const f = await fixture({ legs, ...options })
+      expect(await run(argv, f.deps)).toBe(1)
+      const failure = lastJson(f.stdout.text)
+      expect(failure.code).toBe("INVALID_RESPONSE")
+      expect(String(failure.message)).toContain("does not match what this operation confirmed; nothing was signed")
+      expect(signCount(f.calls)).toBe(signed)
+    })
 })
 
 describe("Phase 4b helpers", () => {
@@ -831,7 +1379,7 @@ describe("Phase 4b helpers", () => {
 describe("TEE limits on Hood: only the server decides", () => {
   const caps = { SOL: false, USDC: false, CNDL: false, ETH: false, USDG: false }
   test("a buy with ETH and no limits set goes on to the build", async () => {
-    const f = await fixture({ readiness: { txLimit: false, rawCaps: caps } })
+    const f = await fixture({ readiness: { txLimit: false, rawCaps: caps }, legs: buyLegs })
     expect(await run(buyArgs(), f.deps)).toBe(0)
     expect(builds(f.calls)).toHaveLength(1)
   })

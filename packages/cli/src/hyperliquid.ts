@@ -267,6 +267,13 @@ export interface VerifyPerpsBuildOptions {
   /** The wallet address this client expects to act for, when it knows it. */
   address?: string
   closeOrder?: { asset: number; isBuy: boolean; size: string }
+  /**
+   * The market an open or modify names, as Hyperliquid's own `/info` reports it
+   * (`hyperliquidOrderMarket`), never as the build does. With it, every order leg must carry this
+   * asset index, a market open's limit price must sit within its slippage of this mid, and a modify
+   * that keeps its price must keep the resting order's price and side.
+   */
+  market?: HyperliquidOrderMarket
   /** Bind the plaintext action to the method and arguments the caller actually requested. */
   intent?: {
     method: "setup" | "open" | "close" | "cancel" | "modify" | "leverage" | "margin"
@@ -439,8 +446,109 @@ export async function hyperliquidCloseOrder(
 }
 
 /**
+ * The slippage a market open is held to when the request names none: the API's default
+ * (`defaultSlippageBps`, 100), which is also what the build used.
+ */
+export const HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100
+
+/**
+ * Added to the requested slippage before a market open's price is refused. The build priced the
+ * order from the API's read of the mid and this client checks it against its own, a moment later,
+ * and the price is rounded to five significant figures; 100 bps covers both on any liquid market
+ * while still refusing a price far from the venue's (a buy at twice the mid, a sell at half).
+ */
+export const HYPERLIQUID_MID_DRIFT_BPS = 100
+
+/** What Hyperliquid's own `/info` says about the market an open or modify names. */
+export interface HyperliquidOrderMarket {
+  /** The coin's index in Hyperliquid's main perp universe. */
+  asset: number
+  /** Hyperliquid's mid for the coin (its mark price when the book has no mid). */
+  midPx: string
+  /** For a modify: the resting order it replaces, read from the venue by its cloid. */
+  order?: { isBuy: boolean; limitPx: string }
+}
+
+/**
+ * Read the asset index and mid for an open (its `coin`) or a modify (the coin of the resting order
+ * its `cloid` names) from the pinned venue before signing, the same way a close reads its position.
+ * The build's own asset index and price are what this is checked against, so none of it may come
+ * from the build or from Candle.
+ */
+export async function hyperliquidOrderMarket(
+  fetcher: (url: string, init?: RequestInit) => Promise<{ ok: boolean; text(): Promise<string> }>,
+  network: HyperliquidNetwork,
+  address: string,
+  method: "open" | "modify",
+  params: Record<string, unknown>,
+): Promise<HyperliquidOrderMarket> {
+  const read = async (body: Record<string, unknown>) => {
+    const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error("Cannot read the market from Hyperliquid")
+    return JSON.parse(await res.text())
+  }
+  let coin = String(params.coin ?? "").toUpperCase()
+  let order: HyperliquidOrderMarket["order"]
+  if (method === "modify") {
+    const status = await read({ type: "orderStatus", user: address, oid: params.cloid })
+    const resting = (status?.order?.order ?? null) as { coin?: unknown; side?: unknown; limitPx?: unknown } | null
+    if (!resting || typeof resting.coin !== "string" || decimal(resting.limitPx) === null)
+      throw new Error("No resting order with this cloid on Hyperliquid")
+    coin = resting.coin.toUpperCase()
+    order = { isBuy: resting.side === "B", limitPx: String(resting.limitPx) }
+  }
+  const [meta, contexts] = (await read({ type: "metaAndAssetCtxs" })) as [
+    { universe: { name: string }[] },
+    { midPx?: string | null; markPx?: string | null }[],
+  ]
+  const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin)
+  if (asset < 0 || asset >= 10000) throw new Error("No main-universe market for this coin on Hyperliquid")
+  const context = contexts[asset]
+  const midPx = context?.midPx ?? context?.markPx
+  if ((decimal(midPx) ?? 0n) <= 0n) throw new Error("No Hyperliquid price for this coin")
+  return { asset, midPx: String(midPx), ...(order ? { order } : {}) }
+}
+
+/** An open or modify checked against the venue's market (`opts.market`). */
+function checkOrderMarket(
+  action: Record<string, unknown>,
+  intent: NonNullable<VerifyPerpsBuildOptions["intent"]>,
+  market: HyperliquidOrderMarket,
+): string | null {
+  const list = (action.type === "modify" ? [action.order] : action.orders) as Record<string, unknown>[]
+  if (!Array.isArray(list) || list.length === 0) return "missing requested order"
+  if (list.some((o) => !o || o.a !== market.asset)) return "order asset is not the requested coin's on Hyperliquid"
+  const first = list[0] as Record<string, unknown>
+  const p = intent.params
+  if (intent.method === "open" && p.price == null) {
+    const requested = p.slippageBps
+    const slippage =
+      typeof requested === "number" && Number.isInteger(requested) && requested > 0
+        ? requested
+        : HYPERLIQUID_DEFAULT_SLIPPAGE_BPS
+    const bound = BigInt(slippage + HYPERLIQUID_MID_DRIFT_BPS)
+    const px = decimal(first.p) ?? 0n
+    const mid = decimal(market.midPx) ?? 0n
+    const within = first.b === true ? px * 10_000n <= mid * (10_000n + bound) : px * 10_000n >= mid * (10_000n - bound)
+    if (mid <= 0n || !within) return "market order price is outside its slippage of Hyperliquid's mid"
+  }
+  if (intent.method === "modify") {
+    if (!market.order) return "no resting order on Hyperliquid to check the modify against"
+    if (first.b !== market.order.isBuy) return "modify changes the resting order's side"
+    if (p.price == null && decimal(first.p) !== decimal(market.order.limitPx))
+      return "modify changes the resting order's price"
+  }
+  return null
+}
+
+/**
  * Check a build before signing it. Never throws; a refusal names what failed. Callers must not
- * sign, and must not call the relay, unless this returns `ok: true`.
+ * sign, and must not call the relay, unless this returns `ok: true`. An open or modify is not
+ * fully checked until it passes with `market` read from Hyperliquid (`hyperliquidOrderMarket`).
  */
 export function verifyPerpsBuild(build: PerpsBuildToVerify, opts: VerifyPerpsBuildOptions): PerpsBuildCheck {
   try {
@@ -471,6 +579,12 @@ export function verifyPerpsBuild(build: PerpsBuildToVerify, opts: VerifyPerpsBui
         order.r !== true
       )
         return { ok: false, reason: "close side, asset or size does not match the requested position" }
+    }
+    if (opts.market) {
+      if (opts.intent?.method !== "open" && opts.intent?.method !== "modify")
+        return { ok: false, reason: "a market check needs an open or modify intent" }
+      const marketRefusal = checkOrderMarket(action, opts.intent, opts.market)
+      if (marketRefusal) return { ok: false, reason: marketRefusal }
     }
 
     if (typed.primary_type === "Agent") {

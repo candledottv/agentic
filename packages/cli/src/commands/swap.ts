@@ -27,10 +27,12 @@ import {
   sameEvmAddress,
   toChecksumAddress,
 } from "../evm-lite"
+import { hoodTradeLegCheck, registeredCurveFor } from "../hood-legs"
 import { apiKeyPrefix } from "../profiles"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { describeRpcFailure, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { solanaSpendProblem } from "../solana-verify"
 import {
   BASES,
   baseAsset,
@@ -629,6 +631,31 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     if (kind === "swap" && data.transactionsBase64?.length !== 1)
       throw new TradingError("INVALID_RESPONSE", "A TEE swap must contain exactly one same-chain transaction.")
     if (!transaction) throw new TradingError("INVALID_RESPONSE", "Missing transaction.")
+    // SEC-003: decode and simulate before the relay signs. The wallet pays the fee, spends at most
+    // the confirmed amount (plus the tier fee on a buy, the one place it is a separate transfer out
+    // of the input), receives at least the minimum the quote displayed (already net of the tier fee
+    // wherever that comes out of the output), loses nothing else, and keeps control of every
+    // account it owns.
+    const feeRaw = BigInt(data.fee.feeRaw)
+    const feeInInput = kind === "trade" && Boolean(fromBase)
+    const solanaAssetOf = (asset: string) => (asset === "SOL" ? "SOL" : (BASES[asset]?.mint ?? asset))
+    const reader = await solana()
+    const problem = await tradingRead(ctx, reader, () =>
+      solanaSpendProblem(transaction, wallet.address, reader.rpc, {
+        kind: "swap",
+        spend: solanaAssetOf(from),
+        maxSpendRaw: BigInt(amountRaw) + (feeInInput ? feeRaw : 0n),
+        receive: {
+          asset: solanaAssetOf(to),
+          minRaw: BigInt(minimumRaw),
+        },
+      }),
+    )
+    if (problem)
+      throw new TradingError(
+        "INVALID_RESPONSE",
+        `The transaction Candle built does not match the confirmed quote (${safeText(problem)}); nothing was signed.`,
+      )
     const signed = await relaySign(ctx, key, payerWallet.wallet, transaction)
     const result =
       kind === "swap"
@@ -921,6 +948,24 @@ async function hoodSwap(
     throw chainMismatch(`TEE wallet ${wallet.id}`, wallet.chain === "evm" ? "hood" : "solana", "hood")
   const recorded = kind === "trade" ? token : HOOD_USDG_ADDRESS
   const notices: string[] = []
+  // Every leg is held to what was confirmed here (hood-legs.ts): the input asset and amount, the
+  // pinned routers or the registry's curve for this token, and the fee the quote showed, paid to
+  // the treasury the build named. A base swap carries no fee, so any fee leg on it is refused.
+  const feeRaw = BigInt(data.fee.feeRaw)
+  const treasury = data.fee.treasury
+  const feeAsset = artifacts.quoteAsset === "usdg" ? "usdg" : "eth"
+  const checkLeg = hoodTradeLegCheck({
+    wallet: wallet.address,
+    inputToken: from.asset === "ETH" ? undefined : from.asset === "USDG" ? HOOD_USDG_ADDRESS : from.asset,
+    amountRaw: BigInt(amountRaw),
+    outputToken: to.asset === "ETH" ? undefined : to.asset === "USDG" ? HOOD_USDG_ADDRESS : to.asset,
+    minOutRaw: BigInt(data.minOutRaw),
+    venue: kind === "trade" && artifacts.venue === "curve" ? "curve" : "dex",
+    ...(kind === "trade" && feeRaw > 0n && typeof treasury === "string"
+      ? { fee: { cap: feeRaw, asset: feeAsset, treasury } }
+      : {}),
+    curve: () => registeredCurveFor(rpc(), token),
+  })
   const run = await runSequencedLegs(ctx, key, {
     wallet,
     first: sequenced,
@@ -930,6 +975,7 @@ async function hoodSwap(
     clientId: id,
     kind,
     allowedLegs: HOOD_TRADE_LEGS,
+    checkLeg,
     onLanded: async (_leg: LandedLeg) => {
       const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded))
       if (notice) notices.push(notice)
@@ -1175,6 +1221,17 @@ async function bridgeSwap(
       relaySolanaDepositProblem(transaction as string, wallet.address, reader.rpc),
     )
     if (problem) throw refused(problem)
+    // SEC-003: the depository is the only program called; the simulation holds it to the amount.
+    // The wallet deposits at most the confirmed amount of the confirmed asset, loses nothing else,
+    // and keeps control of every account it owns. Where Relay holds the deposit is Relay's.
+    const spent = await tradingRead(ctx, reader, () =>
+      solanaSpendProblem(transaction as string, wallet.address, reader.rpc, {
+        kind: "swap",
+        spend: from === "SOL" ? "SOL" : (BASES[from]?.mint ?? from),
+        maxSpendRaw: BigInt(amountRaw),
+      }),
+    )
+    if (spent) throw refused(spent)
   }
 
   const outDecimals = BRIDGE_ASSETS[to].decimals

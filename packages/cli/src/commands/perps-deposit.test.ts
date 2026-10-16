@@ -87,6 +87,19 @@ function lookupTableData(addresses: PublicKey[]): string {
   return Buffer.from(data).toString("base64")
 }
 
+/**
+ * The deposit's writable accounts before and after its simulation. By default only the network fee
+ * leaves the wallet; `spentLamports` makes the simulation move SOL out of it into Relay's account.
+ */
+function solanaAccounts(after: boolean, spentLamports = 0): Record<string, Record<string, unknown>> {
+  const system = (lamports: number) => ({ owner: "11111111111111111111111111111111", lamports, data: ["", "base64"] })
+  return {
+    [solanaTee]: system(after ? 5_000_000_000 - spentLamports - 5_000 : 5_000_000_000),
+    [(tableAddresses[0] as PublicKey).toBase58()]: system(after ? 1_000_000 + spentLamports : 1_000_000),
+    [(tableAddresses[1] as PublicKey).toBase58()]: system(1_000_000),
+  }
+}
+
 function solanaDeposit(program = RELAY_SOLANA_DEPOSITORY_PROGRAM): string {
   const deposit = new TransactionInstruction({
     programId: new PublicKey(program),
@@ -121,6 +134,8 @@ interface Options {
   legs?: Array<{ kind: "approval" | "bridgeDeposit"; leg: SequencedLeg }>
   transaction?: string
   evmRows?: number
+  /** SOL the simulated Solana deposit moves out of the wallet (SEC-003). */
+  spentLamports?: number
 }
 
 async function fixture(opts: Options = {}) {
@@ -168,8 +183,23 @@ async function fixture(opts: Options = {}) {
                     lamports: 1,
                     data: [lookupTableData(tableAddresses), "base64"],
                   }
-                : null,
+                : (solanaAccounts(false)[address] ?? null),
             ),
+          },
+        })
+      // SEC-003: the deposit's simulation, which the CLI holds to the confirmed amount.
+      if (body.method === "simulateTransaction")
+        return ok({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            value: {
+              err: null,
+              logs: [],
+              accounts: (body.params[1].accounts.addresses as string[]).map(
+                (address) => solanaAccounts(true, opts.spentLamports)[address] ?? null,
+              ),
+            },
           },
         })
       throw new Error(`unexpected Solana RPC ${body.method}`)
@@ -375,6 +405,14 @@ describe("candle perps deposit from Solana", () => {
     const f = await fixture({ transaction: solanaDeposit(Keypair.generate().publicKey.toBase58()) })
     const args = ["perps", "deposit", "20", "USDC", "--rpc-url", SOLANA_RPC, "--yes", "--json"]
     expect(await run(args, f.deps)).toBe(1)
+    expect(paths(f.calls).some((p) => p.endsWith("/sign"))).toBe(false)
+  })
+
+  test("SEC-003: a USDC deposit that also simulates SOL out of the wallet is refused before the relay signs", async () => {
+    const f = await fixture({ spentLamports: 1_000_000_000 })
+    const args = ["perps", "deposit", "20", "USDC", "--rpc-url", SOLANA_RPC, "--yes", "--json"]
+    expect(await run(args, f.deps)).toBe(1)
+    expect(f.stderr.text + f.stdout.text).toContain("PERPS_BUILD_REFUSED")
     expect(paths(f.calls).some((p) => p.endsWith("/sign"))).toBe(false)
   })
 })

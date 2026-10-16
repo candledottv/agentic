@@ -76,6 +76,8 @@ interface Options {
   exchange?: Response | Error
   pinBuilder?: boolean
   setupReady?: boolean
+  /** Hyperliquid's BTC mid, as `/info` metaAndAssetCtxs reports it. */
+  mid?: string
 }
 
 async function fixture(opts: Options = {}) {
@@ -89,6 +91,11 @@ async function fixture(opts: Options = {}) {
     const ok = (value: unknown) => Response.json(value)
     if (url.host === "api.hyperliquid.xyz" && url.pathname === "/info") {
       if (body.type === "meta") return ok({ universe: [{ name: "BTC" }] })
+      if (body.type === "metaAndAssetCtxs")
+        return ok([
+          { universe: [{ name: "BTC" }, { name: "ETH" }] },
+          [{ midPx: opts.mid ?? "60000" }, { midPx: "3000" }],
+        ])
       return ok({ assetPositions: [{ position: { coin: "BTC", szi: "-0.5" } }] })
     }
     if (url.host === "api.hyperliquid.xyz") {
@@ -168,11 +175,13 @@ describe("candle perps open", () => {
     expect(f.calls.map((c) => `${c.host === "api.hyperliquid.xyz" ? "hl:" : ""}${c.path}`)).toEqual([
       "/api/v1/agent/wallets/trading",
       "/api/v1/agent/perps/open",
+      "hl:/info",
       "/api/v1/agent/wallets/wallet/sign",
       "hl:/exchange",
     ])
     expect(f.calls[1]?.body).toEqual({ walletId: "wallet", coin: "BTC", side: "long", size: "0.01", type: "market" })
-    const relay = f.calls[2]?.body as { authorizationSignature: string; body: Record<string, unknown> }
+    expect(f.calls[2]?.body).toEqual({ type: "metaAndAssetCtxs" })
+    const relay = f.calls[3]?.body as { authorizationSignature: string; body: Record<string, unknown> }
     const build = buildFor(orderAction())
     expect(relay.body).toEqual({ method: "eth_signTypedData_v4", params: { typed_data: build.typedData } })
     // The authorization covers Privy's canonical payload, whatever order the server sent.
@@ -186,7 +195,7 @@ describe("candle perps open", () => {
     expect(
       verify("sha256", Buffer.from(payload), pair.publicKey, Buffer.from(relay.authorizationSignature, "base64")),
     ).toBe(true)
-    expect(f.calls[3]?.body).toEqual({
+    expect(f.calls[4]?.body).toEqual({
       action: build.action,
       nonce: NONCE,
       signature: { r: `0x${"a".repeat(64)}`, s: `0x${"b".repeat(64)}`, v: 27 },
@@ -315,11 +324,29 @@ describe("the other commands", () => {
   })
 })
 
+describe("the order is held to Hyperliquid's own market (SEC-004)", () => {
+  test("another coin's asset index is refused before the relay", async () => {
+    const action = orderAction()
+    const f = await fixture({ build: buildFor({ ...action, orders: [{ ...action.orders[0], a: 1 }] }) })
+    expect(await run(OPEN, f.deps)).not.toBe(0)
+    expect(f.stdout.text + f.stderr.text).toContain("PERPS_BUILD_REFUSED")
+    expect(f.calls.some((c) => c.path.endsWith("/sign"))).toBe(false)
+  })
+
+  test("a market open priced far from Hyperliquid's mid is refused before the relay", async () => {
+    const f = await fixture({ mid: "30300" })
+    expect(await run(OPEN, f.deps)).not.toBe(0)
+    expect(f.stdout.text + f.stderr.text).toContain("slippage")
+    expect(f.calls.some((c) => c.path.endsWith("/sign"))).toBe(false)
+  })
+})
+
 describe("--sign-only (V4)", () => {
   test("the relay signs; nothing is posted to Hyperliquid; the exchange body is printed", async () => {
     const f = await fixture()
     expect(await run([...OPEN, "--sign-only"], f.deps)).toBe(0)
-    expect(f.calls.some((c) => c.host === "api.hyperliquid.xyz")).toBe(false)
+    // Hyperliquid is only read (the market check), never posted to.
+    expect(f.calls.some((c) => c.host === "api.hyperliquid.xyz" && c.path !== "/info")).toBe(false)
     expect(f.calls.some((c) => c.path.endsWith("/sign"))).toBe(true)
     const out = JSON.parse(f.stdout.text.trim())
     expect(out).toMatchObject({ signature: SIGNATURE, submitted: false, exchangeBody: { nonce: NONCE } })

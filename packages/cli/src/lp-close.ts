@@ -63,6 +63,8 @@ import {
   resolveCompiledKeys,
   type SimulationSnapshot,
   simulateWithSnapshots,
+  TOKEN_ACCOUNT_SIZE,
+  TOKEN_CONTROL_RANGES,
   TransactionDecodeError,
   tokenBalanceOf,
 } from "./solana-alt"
@@ -130,19 +132,8 @@ const MINT_BASE_SIZE = 82
 const ACCOUNT_TYPE_OFFSET = 165
 const ACCOUNT_TYPE_MINT = 1
 const MULTISIG_SIZE = 355
-/** SPL token account layout: mint 0..32, authority 32..64, amount 64..72, delegate COption 72..108,
- * state 108, is_native COption 109..121, delegated amount 121..129, close authority COption 129..165. */
-const TOKEN_ACCOUNT_SIZE = 165
+/** The token account layout and its control ranges are `solana-alt`'s, shared with `candle sign`. */
 const TOKEN_ACCOUNT_STATE_INITIALIZED = 1
-/** The byte ranges of a token account that decide who controls it, compared before and after. */
-const CONTROL_RANGES: ReadonlyArray<readonly [number, number, string]> = [
-  [0, 32, "mint"],
-  [32, 64, "authority"],
-  [72, 108, "delegate"],
-  [108, 109, "state"],
-  [121, 129, "delegated amount"],
-  [129, 165, "close authority"],
-]
 
 /** SPL Token instruction discriminators (identical under Token-2022). */
 const TOKEN_IX_CLOSE_ACCOUNT = 9
@@ -330,7 +321,7 @@ export async function verifyCloseArtifact(input: {
       if (controlled !== undefined && allowedOwner(controlled.owner)) {
         if (after.data.length < TOKEN_ACCOUNT_SIZE)
           return refuse(`token account ${address} would no longer decode as a token account`)
-        for (const [start, end, what] of CONTROL_RANGES) {
+        for (const [start, end, what] of TOKEN_CONTROL_RANGES) {
           if (!bytesEqual(before.data.subarray(start, end), after.data.subarray(start, end)))
             return refuse(`token account ${address} would change its ${what}, which a close never does`)
         }

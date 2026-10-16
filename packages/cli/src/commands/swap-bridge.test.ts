@@ -97,6 +97,16 @@ function lookupTableData(addresses: PublicKey[]): string {
   return Buffer.from(data).toString("base64")
 }
 
+/** The deposit's writable accounts before and after its simulation: 1 SOL and the fee leave the wallet. */
+function solanaAccounts(after: boolean): Record<string, Record<string, unknown>> {
+  const system = (lamports: number) => ({ owner: "11111111111111111111111111111111", lamports, data: ["", "base64"] })
+  return {
+    [solanaTee]: system(after ? 5_000_000_000 - 1_000_000_000 - 5_000 : 5_000_000_000),
+    [(tableAddresses[0] as PublicKey).toBase58()]: system(after ? 1_001_000_000 : 1_000_000),
+    [(tableAddresses[1] as PublicKey).toBase58()]: system(1_000_000),
+  }
+}
+
 function solanaDeposit(extra: TransactionInstruction[] = []): string {
   const deposit = new TransactionInstruction({
     programId: new PublicKey(RELAY_SOLANA_DEPOSITORY_PROGRAM),
@@ -187,8 +197,23 @@ async function fixture(opts: Options = {}) {
                     lamports: 1,
                     data: [lookupTableData(tableAddresses), "base64"],
                   }
-                : null,
+                : (solanaAccounts(false)[address] ?? null),
             ),
+          },
+        })
+      // SEC-003: the deposit's simulation, 1 SOL from the wallet into Relay's account.
+      if (body.method === "simulateTransaction")
+        return ok({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            value: {
+              err: null,
+              logs: [],
+              accounts: (body.params[1].accounts.addresses as string[]).map(
+                (address) => solanaAccounts(true)[address] ?? null,
+              ),
+            },
           },
         })
       if (body.method === "getBalance") return ok({ jsonrpc: "2.0", id: body.id, result: { value: 4_000_000_000 } })
@@ -439,6 +464,16 @@ describe("Solana origin (4c-ED-6)", () => {
     expect(f.stderr.text).toContain("candle swap status b-1")
     // No job read after the submit without --wait.
     expect(apiPaths(f.calls).filter((path) => path.includes("/jobs/"))).toHaveLength(1)
+  })
+
+  test("SEC-003: a deposit that simulates to more than the confirmed amount refuses before the relay signs", async () => {
+    // The fixture's deposit moves 1 SOL; the operator confirmed half of that.
+    const f = await fixture()
+    expect(await run(bridgeArgs("SOL", "ETH", "0.5"), f.deps)).toBe(1)
+    const out = lastJson(f.stdout.text)
+    expect(out.code).toBe("RELAY_STEP_REFUSED")
+    expect(String(out.message)).toContain("more than the 500000000 confirmed")
+    expect(apiPaths(f.calls).some((path) => path.endsWith("/sign"))).toBe(false)
   })
 
   test("a Compute Budget instruction in the deposit refuses RELAY_STEP_REFUSED before the relay signs", async () => {

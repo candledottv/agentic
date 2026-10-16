@@ -934,10 +934,12 @@ export async function runSequencedLegs(
     /** The leg kinds this operation may sign; any other is refused before it is signed. Default: any. */
     allowedLegs?: readonly LegKind[]
     /**
-     * Refuses one leg of an allowed kind. Transfer checks the asset, the amount and the
-     * destination; a launch's `createCurve` must carry no ETH, because the factory is not payable.
+     * Refuses one leg of an allowed kind, before it is signed. Required: a key-signer wallet's
+     * legs are checked here or nowhere, since Candle cannot sign for it. Transfer checks the asset,
+     * the amount and the destination; a launch pins the factory, the fee and its buy; a trade pins
+     * its approvals, router or curve, and fee (`hood-legs.ts`).
      */
-    checkLeg?: (kind: LegKind, leg: SequencedLeg) => boolean
+    checkLeg: (kind: LegKind, leg: SequencedLeg) => boolean | Promise<boolean>
     /** Runs once per leg that landed, in order. It must not throw. */
     onLanded: (leg: LandedLeg) => Promise<void>
   },
@@ -1002,7 +1004,7 @@ export async function runSequencedLegs(
         `Candle offered another ${current.legKind} leg after one of that kind already landed; nothing was signed.`,
         1,
       )
-    if (opts.checkLeg && !opts.checkLeg(current.legKind, leg))
+    if (!(await opts.checkLeg(current.legKind, leg)))
       throw failWith(
         "INVALID_RESPONSE",
         `The ${current.legKind} leg does not match what this operation confirmed; nothing was signed.`,

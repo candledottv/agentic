@@ -8,9 +8,10 @@
  * half has its own small runner below, on the same fixture vault.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
+import { generateKeyPairSync } from "node:crypto"
 import { readFile, writeFile } from "node:fs/promises"
 import { run } from "../index"
-import { keySignerFingerprint, readPin } from "../key-signers"
+import { keySignerFingerprint, readPin, spkiSha256Of } from "../key-signers"
 import { walletSignerRef } from "../secret-store"
 import {
   type CapturedRequest,
@@ -52,6 +53,11 @@ const TO = "Ab3dEf9h"
 const TO_LABEL = "tr-01"
 /** What the fixture's submit reports as `boundKeyPrefix`: the calling key, as the server names it. */
 const IMPORTED_TO = "ck_live_p"
+/** The target's signer: a real P-256 key, because the pin re-derives its hash from the DER (SEC-002). */
+const SIGNER_DER = generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+  .publicKey.export({ format: "der", type: "spki" })
+  .toString("base64")
+const SIGNER_SHA = spkiSha256Of(SIGNER_DER)
 
 type KeyRowIn = Record<string, unknown>
 
@@ -1083,14 +1089,14 @@ describe("vault promote --to-key", () => {
 
 describe("vault promote --to-key and key signers", () => {
   const inPlace = ["--in-place", "subject", "--sweep-to", "cold", "--rpc-url", RPC, "--to-key", TO_LABEL]
-  const signerSha = "5f".repeat(32)
+  const signerSha = SIGNER_SHA
   const signerFp = keySignerFingerprint(signerSha)
   const activeSigner = () =>
     signerView(TO, {
       state: "active",
       fingerprint: signerFp,
       spkiSha256: signerSha,
-      publicKeyDer: "AAAA",
+      publicKeyDer: SIGNER_DER,
       signerQuorumId: "q-to",
     })
   const submitCall = (r: { calls: CapturedRequest[] }) =>
@@ -1250,7 +1256,7 @@ describe("promote-batch --to-key onto a key with a signer (5.2)", () => {
   test("every import goes onto the target's signer with the device token; the rebind preview finds them there and commits nothing", async () => {
     const f = await fixture(["a", "b", "cold"])
     const file = await pairsFile(f.dir, "a cold\nb cold\n")
-    const sha = "5f".repeat(32)
+    const sha = SIGNER_SHA
     const fp = keySignerFingerprint(sha)
     const a = linkedId(f.addresses.a as string)
     const b = linkedId(f.addresses.b as string)
@@ -1271,7 +1277,7 @@ describe("promote-batch --to-key onto a key with a signer (5.2)", () => {
               state: "active",
               fingerprint: fp,
               spkiSha256: sha,
-              publicKeyDer: "AAAA",
+              publicKeyDer: SIGNER_DER,
               signerQuorumId: "q-to",
             }),
           "/api/v1/agent/wallets/import/submit": (req) => {

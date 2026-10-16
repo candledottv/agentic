@@ -172,6 +172,25 @@ export function insecureApiUrlFault(
 }
 
 /**
+ * The URL a browser may be launched at, normalized, or `null` when it must only be printed. The
+ * URL comes from the server (the device-code `verificationUriComplete`), and the launcher is a
+ * shell on some platforms, so anything but `https:` (or `http:` on loopback, the local dev API) is
+ * refused, and the caller passes on the parsed `href` rather than the server's text.
+ */
+export function browserUrl(url: string): string | null {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return null
+  }
+  if (parsed.username || parsed.password) return null
+  if (parsed.protocol === "https:") return parsed.href
+  if (parsed.protocol === "http:" && isLoopbackHost(parsed.hostname)) return parsed.href
+  return null
+}
+
+/**
  * Resolves the API base URL a command should use: `CANDLE_API_URL` (an explicit override, e.g. for
  * pointing at a local dev API) beats the value stored in `CliConfig.apiUrl` (set during `candle
  * login`, e.g. for a staging deployment) beats {@link DEFAULT_API_URL}. Does not read the config
@@ -205,6 +224,56 @@ function buildHeaders(opts: ApiRequestOptions): Record<string, string> {
   // apiRequest never throws on a missing credential; the server's resulting 401 is what surfaces
   // through the normal ok:false path, one error-handling shape for the caller either way.
   return headers
+}
+
+/** The statuses fetch would follow, the ones that carry a Location to go to. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+const MAX_REDIRECTS = 5
+
+/** A credentialed request was redirected to another origin; the credential was not sent there. */
+export class CrossOriginRedirectError extends Error {
+  constructor(
+    readonly from: string,
+    readonly to: string,
+  ) {
+    super(`The API at ${from} redirected to ${to}, another origin. Not followed, so the credential was not sent there.`)
+    this.name = "CrossOriginRedirectError"
+  }
+}
+
+/**
+ * fetch for a request that carries the API key or the device token. fetch's own redirect handling
+ * forwards custom headers such as `x-api-key` to wherever a Location points, another host
+ * included, so a redirect from the API (or anything between it and this machine) would hand the
+ * key to a third party. Here every hop is `redirect: "manual"`: a Location on the request's own
+ * origin is re-issued with the same headers (the API's legacy routes redirect that way), and any
+ * other origin throws {@link CrossOriginRedirectError} without a request being made to it. 303,
+ * and 301/302 after a POST, continue as a body-less GET, as fetch would.
+ */
+export async function fetchSameOriginRedirects(
+  doFetch: typeof fetch,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  let current = url
+  let next: RequestInit = { ...init, redirect: "manual" }
+  for (let hops = 0; ; hops++) {
+    const response = await doFetch(current, next)
+    const location = REDIRECT_STATUSES.has(response.status) ? response.headers?.get?.("location") : null
+    if (!location) return response
+    const from = new URL(current)
+    const target = new URL(location, from)
+    if (target.origin !== from.origin) throw new CrossOriginRedirectError(from.origin, target.origin)
+    if (hops >= MAX_REDIRECTS) throw new Error(`More than ${MAX_REDIRECTS} redirects from ${url}`)
+    const method = (next.method ?? "GET").toUpperCase()
+    if (
+      (response.status === 303 && method !== "GET" && method !== "HEAD") ||
+      ((response.status === 301 || response.status === 302) && method === "POST")
+    ) {
+      next = { ...next, method: "GET", body: undefined }
+    }
+    current = target.href
+  }
 }
 
 function buildUrl(apiUrl: string, path: string): string {
@@ -308,14 +377,16 @@ export async function apiRequest(path: string, opts: ApiRequestOptions): Promise
   const body = opts.raw ? (opts.raw.bytes as BodyInit) : opts.body === undefined ? undefined : JSON.stringify(opts.body)
   const doFetch = opts.fetch ?? fetch
 
+  const init: RequestInit = { method: opts.method ?? "GET", headers, body }
+  const credentialed = "x-api-key" in headers || "authorization" in headers
+
   let response: Response
   try {
-    response = await doFetch(url, {
-      method: opts.method ?? "GET",
-      headers,
-      body,
-    })
+    response = credentialed ? await fetchSameOriginRedirects(doFetch, url, init) : await doFetch(url, init)
   } catch (err) {
+    if (err instanceof CrossOriginRedirectError) {
+      return { ok: false, status: 0, code: "CROSS_ORIGIN_REDIRECT", message: err.message, raw: undefined }
+    }
     const reason = err instanceof Error ? err.message : String(err)
     const env = opts.env ?? process.env
     const envOverride = env.CANDLE_API_URL?.trim()

@@ -8,8 +8,13 @@ import { base58 } from "@scure/base"
 import { canonicalAuthorizationPayloadBytes } from "../../../sdk/src/authorization-signature"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
+import { type SolanaScenario, scenarioRpcResult, swapScenario, tokenApprove } from "../solana-verify.fixtures"
 import { createCapture, createFakeConfigStore, createFakeStore, createTestDeps } from "../test-support"
-import { authorizationSignature, rawAmount } from "../trading"
+import { authorizationSignature, BASES, rawAmount } from "../trading"
+
+type SwapBuild = Parameters<typeof swapScenario>[0]
+/** A build's asset as the verifier names it: SOL, or a mint. */
+const solanaAsset = (asset: string) => (asset === "SOL" ? "SOL" : (BASES[asset]?.mint ?? asset))
 
 const pair = generateKeyPairSync("ec", { namedCurve: "P-256" })
 const pem = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString()
@@ -63,8 +68,11 @@ async function fixture(
     launchBuildError?: Record<string, unknown>
     /** BE-1283: a Candle error POST /uploads/agent-image answers instead of a URL, until cleared. */
     uploadError?: { code: string; message: string } | null
+    /** SEC-003: the transaction a Solana build returns and the chain it simulates against. Honest by default. */
+    scenario?: (honest: SwapBuild) => SolanaScenario
   } = {},
 ) {
+  let scenario: SolanaScenario | undefined
   const dir = await mkdtemp(join(tmpdir(), "candle-trade-"))
   folders.push(dir)
   /** `claims` is how many operation ids this machine had claimed when the request was made. */
@@ -153,13 +161,34 @@ async function fixture(
         transactionsBase64: ["unsigned"],
       }
       const main = body?.payer?.type === "main"
+      if (!main) {
+        // SEC-003: a TEE build is a real transaction that pays `amountRaw` and receives the minimum.
+        const quoteSide = solanaAsset(String(body.quoteAsset ?? "").toUpperCase())
+        const [spend, receive] = path.includes("trade/agent")
+          ? body.side === "buy"
+            ? [quoteSide, String(body.mint)]
+            : [String(body.mint), quoteSide]
+          : [solanaAsset(String(body.from)), solanaAsset(String(body.to))]
+        scenario = (opts.scenario ?? swapScenario)({
+          wallet: mint,
+          spend,
+          spendRaw: BigInt(body.amountRaw),
+          receive,
+          receiveRaw: BigInt(quote.minOutRaw),
+        })
+        quote.transactionsBase64 = [scenario.transaction]
+      }
       return path.includes("trade/agent")
         ? ok({
             ...quote,
             ...(main && opts.mainBuildStatus ? { status: opts.mainBuildStatus } : {}),
             chain: "solana",
             walletAddress: main ? embedded : mint,
-            artifacts: { ...quote, quoteAsset: opts.quoteAsset ?? body.quoteAsset, transactionBase64: "unsigned" },
+            artifacts: {
+              ...quote,
+              quoteAsset: opts.quoteAsset ?? body.quoteAsset,
+              transactionBase64: quote.transactionsBase64[0],
+            },
           })
         : ok({ success: true, payload: quote })
     }
@@ -173,6 +202,8 @@ async function fixture(
       return ok({ success: true, status: "executed", signature })
     if (path === "/rpc") {
       if (opts.rpcRateLimit?.includes(body.method)) return new Response("rate limited", { status: 429 })
+      const read = scenario && scenarioRpcResult(scenario, body.method, body.params)
+      if (read !== undefined) return ok({ jsonrpc: "2.0", id: 1, result: read })
       const result =
         body.method === "getTokenSupply"
           ? { value: { decimals: 6 } }
@@ -269,7 +300,11 @@ describe("TEE CLI trading", () => {
       clientTradeId: "test-1",
       swapId: "server-swap",
     })
-    expect(f.calls.every((call) => call.headers.get("x-api-key") === "bound-key")).toBe(true)
+    // Every Candle call carries the bound key; the Solana RPC (SEC-003's simulation) carries none.
+    expect(
+      f.calls.filter((call) => call.path !== "/rpc").every((call) => call.headers.get("x-api-key") === "bound-key"),
+    ).toBe(true)
+    expect(f.calls.filter((call) => call.path === "/rpc").some((call) => call.headers.has("x-api-key"))).toBe(false)
     expect(JSON.parse(f.stdout.text).quote).toMatchObject({ venue: "jupiter", minimumReceived: "0.123456 USDC" })
     expect(f.stderr.text).toContain("Tier fee: 50 bps")
     expect(f.stderr.text).toContain("Price impact: 0.1%")
@@ -304,6 +339,63 @@ describe("TEE CLI trading", () => {
     const f = await fixture({ venue: "curve" })
     expect(await run(["swap", mint, "SOL", "--amount", "1", "--wallet", "tee", "--yes", "--json"], f.deps)).toBe(0)
     expect(JSON.parse(f.stdout.text).quote.minimumReceivedRaw).toBe("118456")
+  })
+  describe("SEC-003: a TEE build is decoded and simulated before the relay signs it", () => {
+    const stranger = "8pM1nYvQ6HqS8VqLFPzWx5W2sTQeXKZbLqBTdrBGTsGb"
+    const tampered: [string, (honest: SwapBuild) => ReturnType<typeof swapScenario>, string][] = [
+      [
+        "spends more than confirmed",
+        (honest) => swapScenario({ ...honest, spendRaw: honest.spendRaw * 2n }),
+        "more than the 1000005000 confirmed",
+      ],
+      ["delivers a different mint", (honest) => swapScenario({ ...honest, receive: embedded }), "less than the 123456"],
+      [
+        "adds an Approve",
+        (honest) => swapScenario({ ...honest, extra: [tokenApprove(embedded, stranger, honest.wallet, 10n ** 12n)] }),
+        "approves a delegate",
+      ],
+    ]
+    for (const [what, build, reason] of tampered)
+      test(`a token buy whose build ${what} is refused, and nothing is signed`, async () => {
+        const f = await fixture({ scenario: build })
+        expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", "tee", "--yes", "--json"], f.deps)).toBe(1)
+        const failure = JSON.parse(f.stdout.text)
+        expect(failure.code).toBe("INVALID_RESPONSE")
+        expect(failure.message).toContain(reason)
+        expect(failure.message).toContain("nothing was signed.")
+        expect(f.calls.some((call) => /\/(sign|submit)$/.test(call.path))).toBe(false)
+      })
+    test("a base swap whose build pays someone else's account is refused", async () => {
+      const f = await fixture({ scenario: (honest) => swapScenario({ ...honest, receiveRaw: 0n }) })
+      expect(await run(swapArgs, f.deps)).toBe(1)
+      expect(JSON.parse(f.stdout.text).message).toContain("receive 0 raw")
+      expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
+    })
+    test("a Jupiter sell that delivers less than the minimum shown is refused, even by less than the fee", async () => {
+      // The quote shows 123456 and the platform fee (5000) is already inside the swap, so the wallet
+      // must receive all of 123456; a floor lowered by the fee would let 118456 through.
+      // USDC out: a SOL receive carries the network-fee allowance, which would hide a 1000 shortfall.
+      const f = await fixture({ scenario: (honest) => swapScenario({ ...honest, receiveRaw: 123456n - 1000n }) })
+      expect(await run(["swap", mint, "USDC", "--amount", "1", "--wallet", "tee", "--yes", "--json"], f.deps)).toBe(1)
+      const failure = JSON.parse(f.stdout.text)
+      expect(failure.code).toBe("INVALID_RESPONSE")
+      expect(failure.message).toContain("less than the 123456 confirmed")
+      expect(f.calls.some((call) => /\/(sign|submit)$/.test(call.path))).toBe(false)
+    })
+    test("a base swap that delivers less than the minimum shown is refused", async () => {
+      const f = await fixture({ scenario: (honest) => swapScenario({ ...honest, receiveRaw: 123456n - 1000n }) })
+      expect(await run(swapArgs, f.deps)).toBe(1)
+      expect(JSON.parse(f.stdout.text).message).toContain("less than the 123456 confirmed")
+      expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
+    })
+    test("the honest build is simulated over the wallet's RPC, then signed", async () => {
+      const f = await fixture()
+      expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", "tee", "--yes", "--json"], f.deps)).toBe(0)
+      const methods = f.calls.filter((call) => call.path === "/rpc").map((call) => call.body?.method)
+      expect(methods).toContain("simulateTransaction")
+      const simulated = f.calls.findIndex((call) => call.body?.method === "simulateTransaction")
+      expect(simulated).toBeLessThan(f.calls.findIndex((call) => call.path.endsWith("/sign")))
+    })
   })
   test("declining confirmation makes no sign or submit request", async () => {
     const f = await fixture({ prompt: "n" })

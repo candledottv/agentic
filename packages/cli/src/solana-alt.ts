@@ -26,7 +26,8 @@
  * - **Deltas come from the simulation.** `simulateTransaction` answers the outcome, the logs and
  *   the post-simulation state of the accounts it is asked about; the pre-simulation state is read
  *   with `getMultipleAccounts` first. The difference, per writable account, is what the operator
- *   sees: lamports before and after, and for a token account its mint, owner and amount.
+ *   sees: lamports before and after, and for a token account its mint, owner and amount. A change
+ *   of control moves no balance, so `controlChanges` reads it from the same snapshots.
  *
  * `solana-alt.test.ts` pins the decoder and the compiled order against `@solana/web3.js` as an
  * independent oracle; the package itself ships no Solana runtime dependency.
@@ -405,8 +406,19 @@ export async function simulateWithSnapshots(
   }
 }
 
-/** SPL token account layout: mint(32) owner(32) amount(8 LE) ... 165 bytes, plus Token-2022's extensions. */
-const TOKEN_ACCOUNT_SIZE = 165
+/** SPL token account layout: mint 0..32, owner 32..64, amount 64..72, delegate COption 72..108,
+ * state 108, is_native COption 109..121, delegated amount 121..129, close authority COption 129..165;
+ * 165 bytes, plus Token-2022's extensions. */
+export const TOKEN_ACCOUNT_SIZE = 165
+/** The byte ranges of a token account that decide who controls it, compared before and after. */
+export const TOKEN_CONTROL_RANGES: ReadonlyArray<readonly [number, number, string]> = [
+  [0, 32, "mint"],
+  [32, 64, "authority"],
+  [72, 108, "delegate"],
+  [108, 109, "state"],
+  [121, 129, "delegated amount"],
+  [129, 165, "close authority"],
+]
 
 export interface TokenBalance {
   mint: string
@@ -429,6 +441,29 @@ export function tokenBalanceOf(view: AccountView | null): TokenBalance | undefin
   }
 }
 
+/** Who besides the owner can move or close a token account: its delegate and its close authority. */
+export interface TokenAuthorities {
+  delegate: string | null
+  delegatedAmount: bigint
+  closeAuthority: string | null
+}
+
+function optionalPubkey(data: Uint8Array, at: number): string | null {
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  return dv.getUint32(at, true) === 0 ? null : encodePubkey(data.subarray(at + 4, at + 36))
+}
+
+/** The delegate and close authority a token account names, or undefined when it is not a token account. */
+export function tokenAuthoritiesOf(view: AccountView | null): TokenAuthorities | undefined {
+  if (view === null || tokenBalanceOf(view) === undefined) return undefined
+  const dv = new DataView(view.data.buffer, view.data.byteOffset, view.data.byteLength)
+  return {
+    delegate: optionalPubkey(view.data, 72),
+    delegatedAmount: dv.getBigUint64(121, true),
+    closeAuthority: optionalPubkey(view.data, 129),
+  }
+}
+
 export interface SolDelta {
   address: string
   before: bigint
@@ -437,7 +472,16 @@ export interface SolDelta {
 
 export interface TokenDelta {
   account: string
+  /** The owner after the simulation, or before it when the account is gone. */
   owner: string
+  /** The owner before the simulation; absent when the account was not a token account then. */
+  ownerBefore?: string
+  /** The owner after the simulation; absent when the account is not a token account afterwards. */
+  ownerAfter?: string
+  delegateBefore?: string | null
+  delegateAfter?: string | null
+  closeAuthorityBefore?: string | null
+  closeAuthorityAfter?: string | null
   mint: string
   tokenProgram: string
   before: bigint
@@ -458,9 +502,15 @@ export function computeDeltas(snapshots: AccountSnapshot[]): { sol: SolDelta[]; 
     const post = tokenBalanceOf(snapshot.after)
     const shape = post ?? pre
     if (shape === undefined) continue
+    const preAuth = tokenAuthoritiesOf(snapshot.before)
+    const postAuth = tokenAuthoritiesOf(snapshot.after)
     tokens.push({
       account: snapshot.address,
       owner: shape.owner,
+      ...(pre ? { ownerBefore: pre.owner } : {}),
+      ...(post ? { ownerAfter: post.owner } : {}),
+      ...(preAuth ? { delegateBefore: preAuth.delegate, closeAuthorityBefore: preAuth.closeAuthority } : {}),
+      ...(postAuth ? { delegateAfter: postAuth.delegate, closeAuthorityAfter: postAuth.closeAuthority } : {}),
       mint: shape.mint,
       tokenProgram: shape.tokenProgram,
       before: pre?.amount ?? 0n,
@@ -468,6 +518,105 @@ export function computeDeltas(snapshots: AccountSnapshot[]): { sol: SolDelta[]; 
     })
   }
   return { sol, tokens }
+}
+
+/** One account whose control the simulation hands to someone else (SEC-001). */
+export interface ControlChange {
+  account: string
+  /** The wallet that controlled the account before the transaction (or that it is created for). */
+  controller: string
+  /** "program owner" is a System account's; the other three are a token account's. */
+  what: "owner" | "delegate" | "close authority" | "program owner"
+  from: string | null
+  to: string | null
+  /** The mint, for a token account. */
+  mint?: string
+}
+
+/**
+ * Every change of control the simulation makes over an account `controlled` names, read from the
+ * same snapshots the deltas come from. A `SetAuthority`, an `Approve` or an `Assign` moves no
+ * balance, so the deltas alone never show it; this does. It is `lp-close`'s step 3b in the form a
+ * generic signer needs, where the transaction may legitimately move value but never control:
+ *
+ * - A controlled System account (the wallet itself) that still exists afterwards stays
+ *   System-owned with the same data length: `Assign` or `Allocate` is a change of program owner.
+ *   Draining it to zero (the account gone) is a balance move the deltas already show.
+ * - A token account the wallet owned before keeps that owner and gains no delegate (a new one, or
+ *   a larger approval) and no close authority other than none. Closing it is a balance move, and
+ *   revoking a delegate or a close authority gives control back, so neither is listed.
+ * - A token account created for the wallet starts with no delegate and no close authority held by
+ *   anyone else.
+ */
+export function controlChanges(
+  snapshots: AccountSnapshot[],
+  controlled: (address: string) => boolean,
+): ControlChange[] {
+  const changes: ControlChange[] = []
+  for (const { address, before, after } of snapshots) {
+    if (after === null) continue
+    if (controlled(address) && before !== null && before.owner === SYSTEM_PROGRAM_ID) {
+      if (after.owner !== before.owner || after.data.length !== before.data.length)
+        changes.push({
+          account: address,
+          controller: address,
+          what: "program owner",
+          from: before.owner,
+          to:
+            after.data.length !== before.data.length
+              ? `${after.owner} with ${after.data.length} data bytes`
+              : after.owner,
+        })
+      continue
+    }
+    const pre = tokenBalanceOf(before)
+    const preAuth = tokenAuthoritiesOf(before)
+    const post = tokenBalanceOf(after)
+    const postAuth = tokenAuthoritiesOf(after)
+    if (pre !== undefined && preAuth !== undefined && controlled(pre.owner)) {
+      const base = { account: address, controller: pre.owner, mint: pre.mint }
+      if (post === undefined || postAuth === undefined) {
+        changes.push({ ...base, what: "owner", from: pre.owner, to: `${after.owner} (no longer a token account)` })
+        continue
+      }
+      if (post.owner !== pre.owner) changes.push({ ...base, what: "owner", from: pre.owner, to: post.owner })
+      if (
+        postAuth.delegate !== null &&
+        (postAuth.delegate !== preAuth.delegate || postAuth.delegatedAmount > preAuth.delegatedAmount)
+      )
+        changes.push({
+          ...base,
+          what: "delegate",
+          from: preAuth.delegate,
+          to: `${postAuth.delegate} (may move up to ${postAuth.delegatedAmount} raw)`,
+        })
+      if (postAuth.closeAuthority !== null && postAuth.closeAuthority !== preAuth.closeAuthority)
+        changes.push({ ...base, what: "close authority", from: preAuth.closeAuthority, to: postAuth.closeAuthority })
+      continue
+    }
+    if (pre === undefined && post !== undefined && postAuth !== undefined && controlled(post.owner)) {
+      const base = { account: address, controller: post.owner, mint: post.mint }
+      if (postAuth.delegate !== null && postAuth.delegate !== post.owner)
+        changes.push({
+          ...base,
+          what: "delegate",
+          from: null,
+          to: `${postAuth.delegate} (may move up to ${postAuth.delegatedAmount} raw)`,
+        })
+      if (postAuth.closeAuthority !== null && postAuth.closeAuthority !== post.owner)
+        changes.push({ ...base, what: "close authority", from: null, to: postAuth.closeAuthority })
+    }
+  }
+  return changes
+}
+
+/** One line per change: the account, what changed, and the old and new controller. */
+export function describeControlChange(change: ControlChange): string {
+  const subject =
+    change.mint === undefined
+      ? `wallet ${change.account}`
+      : `token account ${change.account} (mint ${change.mint}, owned by ${change.controller})`
+  return `${subject}: ${change.what} changes from ${change.from ?? "none"} to ${change.to ?? "none"}`
 }
 
 /** A plain name for the programs the operator meets most; the address for every other one. */

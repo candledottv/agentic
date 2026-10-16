@@ -11,6 +11,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
+import { decodePubkey, systemTransfer } from "../solana-lite"
+import {
+  type SolanaScenario,
+  scenarioRpcResult,
+  tokenApprove,
+  transferScenario,
+  unsignedTransaction,
+} from "../solana-verify.fixtures"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
 
 const pair = generateKeyPairSync("ec", { namedCurve: "P-256" })
@@ -48,11 +56,14 @@ async function fixture(
     build?: Record<string, unknown> | { error: { code: string; message: string } }
     /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded; absent as an older API answers. */
     embeddedPermission?: "allowed" | "denied"
+    /** SEC-003: the transaction /transfer/build returns and the chain it simulates against. Honest by default. */
+    scenario?: (honest: TransferBuild) => SolanaScenario
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "candle-transfer-"))
   folders.push(dir)
   const calls: { path: string; body: Record<string, unknown> | undefined }[] = []
+  let scenario: SolanaScenario | undefined
   const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
     const path = url.pathname
@@ -99,15 +110,23 @@ async function fixture(
       })
     if (path === "/api/v1/agent/transfer/build") {
       if (opts.build && "error" in opts.build) return Response.json({ error: opts.build.error }, { status: 403 })
+      const amountRaw = body?.amountRaw === "max" ? "999990000" : String(body?.amountRaw)
+      const honest: TransferBuild = {
+        wallet: TEE,
+        recipient: String(body?.to),
+        asset: body?.asset === "SOL" ? "SOL" : body?.asset === "USDC" ? MINT : String(body?.mint),
+        amountRaw: BigInt(amountRaw),
+      }
+      scenario = (opts.scenario ?? transferScenario)(honest)
       return ok({
         success: true,
         transferId: "tr-1",
         walletId: "wallet",
         payerAddress: TEE,
-        amountRaw: body?.amountRaw === "max" ? "999990000" : body?.amountRaw,
+        amountRaw,
         destinationClass: "own",
         destinationKind: body?.to === VAULT ? "vault" : "linked",
-        unsignedTransactionsBase64: ["unsigned"],
+        unsignedTransactionsBase64: [scenario.transaction],
         expiresAt: 10_000,
         ...(opts.build ?? {}),
       })
@@ -124,7 +143,10 @@ async function fixture(
         destinationKind: "linked",
         walletId: "wallet",
       })
-    if (path === "/rpc") return ok({ jsonrpc: "2.0", id: 1, result: { value: { decimals: 6 } } })
+    if (path === "/rpc") {
+      const read = scenario && scenarioRpcResult(scenario, String(body?.method), body?.params as unknown[])
+      return ok({ jsonrpc: "2.0", id: 1, result: read ?? { value: { decimals: 6 } } })
+    }
     throw new Error(`Unexpected ${path}`)
   }) as typeof fetch
   const stdout = createCapture()
@@ -139,8 +161,17 @@ async function fixture(
     isTTY: { stdin: tty, stdout: tty, stderr: tty },
     promptLine: async () => opts.prompt ?? "y",
   })
-  return { deps, calls, stdout, stderr, paths: () => calls.map((call) => call.path) }
+  return {
+    deps,
+    calls,
+    stdout,
+    stderr,
+    paths: () => calls.map((call) => call.path),
+    built: () => scenario?.transaction,
+  }
 }
+
+type TransferBuild = Parameters<typeof transferScenario>[0]
 
 const base = ["transfer", "--wallet", "agent-one"]
 
@@ -162,7 +193,15 @@ describe("candle transfer (R19)", () => {
       to: TREASURY,
     })
     const sign = f.calls.find((call) => call.path === "/api/v1/agent/wallets/wallet/sign")
-    expect((sign?.body as { body: { params: { transaction: string } } }).body.params.transaction).toBe("unsigned")
+    expect((sign?.body as { body: { params: { transaction: string } } }).body.params.transaction).toBe(
+      f.built() as string,
+    )
+    // SEC-003: the simulation ran over this machine's RPC before the relay was asked to sign.
+    expect(f.stderr.text).toContain(
+      `Checked locally: it moves 250.000000 USDC from ${TEE} to ${TREASURY} and nothing else`,
+    )
+    const rpc = f.calls.filter((call) => call.path === "/rpc").map((call) => call.body?.method)
+    expect(rpc).toContain("simulateTransaction")
     expect(typeof (sign?.body as Record<string, unknown>).authorizationSignature).toBe("string")
     const submit = f.calls.find((call) => call.path === "/api/v1/agent/transfer/submit")
     expect(submit?.body).toEqual({ transferId: "tr-1", signedTransactionsBase64: [SIGNED] })
@@ -378,6 +417,67 @@ describe("candle transfer (R19)", () => {
     expect(await run([...base, "--to", "vault", "--asset", "SOL", "--amount", "abc", "--json"], f.deps)).toBe(1)
     expect(JSON.parse(f.stdout.text).code).toBe("INVALID_AMOUNT")
     expect(f.calls).toHaveLength(0)
+  })
+
+  describe("SEC-003: the built transaction is decoded and simulated before the relay signs it", () => {
+    const tampered: [string, (honest: TransferBuild) => SolanaScenario, string][] = [
+      ["pays a different recipient", (honest) => transferScenario({ ...honest, recipient: STRANGER }), STRANGER],
+      ["moves a different mint", (honest) => transferScenario({ ...honest, asset: EMBEDDED }), EMBEDDED],
+      [
+        "moves a larger amount",
+        (honest) => transferScenario({ ...honest, amountRaw: honest.amountRaw + 1n }),
+        "send 250000001 raw",
+      ],
+      [
+        "adds an Approve",
+        (honest) => {
+          const scenario = transferScenario(honest)
+          return {
+            ...scenario,
+            transaction: unsignedTransaction(TEE, [
+              systemTransfer(decodePubkey(TEE), decodePubkey(TREASURY), honest.amountRaw),
+              tokenApprove(TEE, STRANGER, TEE, 1n),
+            ]),
+          }
+        },
+        "approves a delegate",
+      ],
+    ]
+    for (const [what, build, reason] of tampered)
+      test(`a build that ${what} is refused, and nothing is signed`, async () => {
+        const f = await fixture({ scenario: build })
+        const code = await run(
+          [...base, "--to", "treasury", "--asset", "USDC", "--amount", "250", "--yes", "--json"],
+          f.deps,
+        )
+        expect(code).toBe(1)
+        const failure = JSON.parse(f.stdout.text)
+        expect(failure.code).toBe("INVALID_RESPONSE")
+        expect(failure.message).toContain(reason)
+        expect(failure.message).toEndWith("nothing was signed.")
+        expect(f.paths().some((p) => p.endsWith("/sign") || p.endsWith("/transfer/submit"))).toBe(false)
+      })
+
+    test("a SOL build to another address is refused before signing", async () => {
+      const f = await fixture({ scenario: (honest) => transferScenario({ ...honest, recipient: STRANGER }) })
+      const code = await run([...base, "--to", "vault", "--asset", "SOL", "--amount", "1", "--yes", "--json"], f.deps)
+      expect(code).toBe(1)
+      expect(JSON.parse(f.stdout.text).message).toContain(`${STRANGER} would receive`)
+      expect(f.paths().some((p) => p.endsWith("/sign"))).toBe(false)
+    })
+
+    test("a build that does not echo the confirmed amount is refused before any simulation", async () => {
+      const f = await fixture({ build: { amountRaw: "250000001" } })
+      const code = await run(
+        [...base, "--to", "treasury", "--asset", "USDC", "--amount", "250", "--yes", "--json"],
+        f.deps,
+      )
+      expect(code).toBe(1)
+      expect(JSON.parse(f.stdout.text).message).toBe(
+        "The transfer build does not name the confirmed amount; nothing was signed.",
+      )
+      expect(f.paths().some((p) => p.endsWith("/sign"))).toBe(false)
+    })
   })
 
   test("a device credential alone cannot transfer", async () => {

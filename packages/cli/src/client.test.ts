@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { apiRequest, DEFAULT_API_URL, insecureApiUrlFault, resolveApiUrl } from "./client"
+import { apiRequest, browserUrl, DEFAULT_API_URL, insecureApiUrlFault, resolveApiUrl } from "./client"
 
 type CapturedRequest = { url: string; init: RequestInit }
 
@@ -216,6 +216,127 @@ describe("apiRequest: auth header selection", () => {
     const headers = lastRequest?.init.headers as Record<string, string>
     expect(headers.authorization).toBeUndefined()
     expect(headers["x-api-key"]).toBeUndefined()
+  })
+})
+
+describe("apiRequest: redirects never carry the credential to another origin (SEC-009)", () => {
+  function redirect(status: number, location: string): Response {
+    return new Response(null, { status, headers: { location } })
+  }
+
+  test("a keyed request redirected to another origin is refused, and nothing is sent there", async () => {
+    const seen: CapturedRequest[] = []
+    stubFetch((req) => {
+      seen.push(req)
+      return req.url.startsWith("https://api.candle.tv")
+        ? redirect(302, "https://attacker.example/steal")
+        : jsonResponse(200, { success: true })
+    })
+
+    const result = await apiRequest("/v1/me", {
+      auth: "key",
+      credentials: { apiKey: "ck_live_xyz" },
+      apiUrl: "https://api.candle.tv",
+    })
+
+    expect(result.ok === false && result.code).toBe("CROSS_ORIGIN_REDIRECT")
+    expect(seen.map((r) => r.url)).toEqual(["https://api.candle.tv/v1/me"])
+    expect(seen[0]?.init.redirect).toBe("manual")
+    expect(JSON.stringify(result)).not.toContain("ck_live_xyz")
+  })
+
+  test("a device-token request redirected to another origin is refused the same way", async () => {
+    const seen: CapturedRequest[] = []
+    stubFetch((req) => {
+      seen.push(req)
+      return redirect(307, "https://api.candle.tv.attacker.example/v1/me")
+    })
+
+    const result = await apiRequest("/v1/me", {
+      auth: "device",
+      credentials: { deviceToken: "dtok_abc123" },
+      apiUrl: "https://api.candle.tv",
+    })
+
+    expect(result.ok === false && result.code).toBe("CROSS_ORIGIN_REDIRECT")
+    expect(seen).toHaveLength(1)
+  })
+
+  test("a same-origin redirect is followed with the key, and a 301 after a POST continues as a GET", async () => {
+    const seen: CapturedRequest[] = []
+    stubFetch((req) => {
+      seen.push(req)
+      return req.url.endsWith("/v1/old") ? redirect(301, "/v1/new") : jsonResponse(200, { success: true, at: "new" })
+    })
+
+    const result = await apiRequest("/v1/old", {
+      method: "POST",
+      body: { a: 1 },
+      auth: "key",
+      credentials: { apiKey: "ck_live_xyz" },
+      apiUrl: "https://api.candle.tv",
+    })
+
+    expect(result).toMatchObject({ ok: true, body: { at: "new" } })
+    expect(seen.map((r) => r.url)).toEqual(["https://api.candle.tv/v1/old", "https://api.candle.tv/v1/new"])
+    expect((seen[1]?.init.headers as Record<string, string>)["x-api-key"]).toBe("ck_live_xyz")
+    expect(seen[1]?.init.method).toBe("GET")
+    expect(seen[1]?.init.body).toBeUndefined()
+  })
+
+  test("a 307 keeps the method and body", async () => {
+    const seen: CapturedRequest[] = []
+    stubFetch((req) => {
+      seen.push(req)
+      return seen.length === 1 ? redirect(307, "https://api.candle.tv/v1/b") : jsonResponse(200, { success: true })
+    })
+
+    await apiRequest("/v1/a", {
+      method: "POST",
+      body: { a: 1 },
+      auth: "key",
+      credentials: { apiKey: "ck_live_xyz" },
+      apiUrl: "https://api.candle.tv",
+    })
+
+    expect(seen[1]?.init.method).toBe("POST")
+    expect(seen[1]?.init.body).toBe('{"a":1}')
+  })
+
+  test("an unauthenticated request is left to fetch's own redirect handling", async () => {
+    stubFetch(() => jsonResponse(200, { success: true }))
+    await apiRequest("/v1/health", { auth: "none", credentials: {}, apiUrl: "https://api.candle.tv" })
+    expect(lastRequest?.init.redirect).toBeUndefined()
+  })
+})
+
+describe("browserUrl: what the CLI may launch a browser at (SEC-005)", () => {
+  test("https and loopback http open, as the parsed href", () => {
+    expect(browserUrl("https://candle.tv/device?code=AB-CD")).toBe("https://candle.tv/device?code=AB-CD")
+    expect(browserUrl("http://localhost:3000/device")).toBe("http://localhost:3000/device")
+    expect(browserUrl("http://127.0.0.1:3000/device")).toBe("http://127.0.0.1:3000/device")
+  })
+
+  test("anything else is only printed", () => {
+    for (const url of [
+      "http://candle.tv/device",
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "calc.exe",
+      "https://x & calc.exe",
+      "-a Calculator",
+      "ms-settings:",
+      "https://user:pass@candle.tv/",
+      "",
+    ]) {
+      expect(browserUrl(url)).toBeNull()
+    }
+  })
+
+  test("shell metacharacters in an https URL reach the launcher only in their parsed form", () => {
+    const opened = browserUrl('https://candle.tv/device?code=1&calc|"x"') as string
+    expect(opened.startsWith("https://candle.tv/")).toBe(true)
+    expect(opened).not.toContain('"')
   })
 })
 

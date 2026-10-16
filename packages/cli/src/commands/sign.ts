@@ -25,6 +25,10 @@
  *    deltas in lamports and per token account, every other account taking a positive delta, and
  *    R5's warnings for every mint involved (warn, never refuse). The display says that a
  *    simulation is evidence and not a guarantee.
+ *    **A change of control is refused (SEC-001).** A token account a signer owned before that
+ *    changes owner, gains a delegate or a close authority, or a signer's own account reassigned
+ *    to another program moves no balance, so the deltas cannot show it. It is displayed and then
+ *    refused as `SIGN_CONTROL_CHANGE`, with `--yes` too and with no override flag.
  * 5. **Confirm, then sign.** The factor is presented a second time (the passphrase typed again,
  *    or the key touched again), as every other ceremony that moves value does; `--yes` skips
  *    that and nothing else. `--broadcast` sends over the user's RPC (`SIGN_BROADCAST_FAILED`).
@@ -44,10 +48,13 @@ import type { CommandContext } from "../deps"
 import {
   attachSignatures,
   type CompiledKeys,
+  type ControlChange,
   computeDeltas,
+  controlChanges,
   type DecodedTransaction,
   decodeStrictBase64,
   decodeTransaction,
+  describeControlChange,
   LookupTableError,
   programNameOf,
   resolveCompiledKeys,
@@ -174,6 +181,12 @@ function formatSol(lamports: bigint): string {
   return `${formatAmount(lamports, 9)} SOL`
 }
 
+/** Every change of control the simulation makes over a signer's own accounts (SEC-001, step 4b). */
+export function signerControlChanges(signers: KeyEntry[], simulation: SimulationSnapshot): ControlChange[] {
+  const addresses = new Set(signers.map((entry) => entry.address))
+  return controlChanges(simulation.snapshots, (address) => addresses.has(address))
+}
+
 /** The lines the operator reads before the prompt (step 4). Pure, so a test can pin them. */
 export function displayLines(input: {
   tx: DecodedTransaction
@@ -195,6 +208,7 @@ export function displayLines(input: {
   for (const program of programs) lines.push(`program     ${programNameOf(program)}`)
 
   const deltas = computeDeltas(simulation.snapshots)
+  const changes = signerControlChanges(signers, simulation)
   for (const entry of signers) {
     const sol = deltas.sol.find((delta) => delta.address === entry.address)
     if (sol) {
@@ -204,7 +218,10 @@ export function displayLines(input: {
     } else {
       lines.push(`${entry.label.padEnd(11)} SOL unchanged (not a writable account of this transaction)`)
     }
-    for (const token of deltas.tokens.filter((delta) => delta.owner === entry.address)) {
+    // Either owner: an account handed to someone else is still this wallet's line (SEC-001).
+    for (const token of deltas.tokens.filter(
+      (delta) => delta.ownerBefore === entry.address || delta.ownerAfter === entry.address,
+    )) {
       const info = mints.get(token.mint)
       lines.push(
         `            ${token.mint}: ${formatAmount(token.before, info?.decimals)} -> ${formatAmount(token.after, info?.decimals)} (${token.after >= token.before ? "+" : ""}${formatAmount(token.after - token.before, info?.decimals)}${info?.decimals === undefined ? "" : `, ${info.decimals} dp`}) in ${token.account}`,
@@ -225,8 +242,14 @@ export function displayLines(input: {
       `${token.owner} receives +${formatAmount(token.after - token.before, info?.decimals)} of ${token.mint} (account ${token.account})`,
     )
   }
-  if (others.length === 0) lines.push("others      no other account gains a balance in the simulation")
+  // A change of control moves no balance, so "no other account gains a balance" would be true and
+  // misleading at once: it is never printed beside one.
+  if (others.length === 0 && changes.length === 0)
+    lines.push("others      no other account gains a balance in the simulation")
+  if (others.length === 0 && changes.length > 0)
+    lines.push("others      no balance moves elsewhere, but control of an account changes hands (below)")
   for (const line of others) lines.push(`receives    ${line}`)
+  for (const change of changes) lines.push(`CONTROL     ${describeControlChange(change)}`)
   for (const [mint, info] of mints) for (const risk of info.risks) lines.push(`warning     ${mint}: ${risk}`)
   if (simulation.result.unitsConsumed !== undefined)
     lines.push(`compute     ${simulation.result.unitsConsumed} units in simulation`)
@@ -369,6 +392,20 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
     if (!ctx.json) {
       deps.stderr.write("Decoded transaction (simulated, unsigned):\n")
       for (const line of lines) deps.stderr.write(`  ${line}\n`)
+    }
+
+    // Step 4b (SEC-001): a change of control over a signer's own account is refused, shown first
+    // and then refused, with `--yes` too. It moves no balance, so nothing above would bound it.
+    const changes = signerControlChanges(signers, simulation)
+    if (changes.length > 0) {
+      throw new VaultError(
+        "SIGN_CONTROL_CHANGE",
+        `The simulation hands control of a signer's account to someone else. Nothing was signed; there is no override.\n${changes.map((change) => `  ${describeControlChange(change)}`).join("\n")}`,
+        {
+          suggestion:
+            "A transfer, swap or close never needs this. If you meant to change an authority, do it from a wallet you can inspect directly.",
+        },
+      )
     }
 
     // Step 5: confirm (unless --yes), sign, and hand the transaction back or broadcast it.

@@ -22,9 +22,12 @@ import {
 import {
   ADDRESS_LOOKUP_TABLE_PROGRAM_ID,
   attachSignatures,
+  type ControlChange,
   computeDeltas,
+  controlChanges,
   decodeStrictBase64,
   decodeTransaction,
+  describeControlChange,
   LookupTableError,
   parseLookupTableAddresses,
   resolveCompiledKeys,
@@ -243,16 +246,31 @@ describe("a v0 transaction with a lookup table reconstructs the compiled order w
   })
 })
 
-describe("deltas", () => {
-  function tokenAccount(mint: PublicKey, owner: PublicKey, amount: bigint): AccountView {
-    const data = new Uint8Array(165)
-    data.set(mint.toBytes(), 0)
-    data.set(owner.toBytes(), 32)
-    new DataView(data.buffer).setBigUint64(64, amount, true)
-    data[108] = 1
-    return { owner: TOKEN_PROGRAM_ID, lamports: 2_039_280n, data }
+function tokenAccount(
+  mint: PublicKey,
+  owner: PublicKey,
+  amount: bigint,
+  authorities: { delegate?: PublicKey; delegatedAmount?: bigint; closeAuthority?: PublicKey } = {},
+): AccountView {
+  const data = new Uint8Array(165)
+  const dv = new DataView(data.buffer)
+  data.set(mint.toBytes(), 0)
+  data.set(owner.toBytes(), 32)
+  dv.setBigUint64(64, amount, true)
+  if (authorities.delegate) {
+    dv.setUint32(72, 1, true)
+    data.set(authorities.delegate.toBytes(), 76)
+    dv.setBigUint64(121, authorities.delegatedAmount ?? 0n, true)
   }
+  data[108] = 1
+  if (authorities.closeAuthority) {
+    dv.setUint32(129, 1, true)
+    data.set(authorities.closeAuthority.toBytes(), 133)
+  }
+  return { owner: TOKEN_PROGRAM_ID, lamports: 2_039_280n, data }
+}
 
+describe("deltas", () => {
   test("a token account's mint, owner and amount are read; a system account is not a token account", () => {
     const mint = Keypair.generate().publicKey
     const view = tokenAccount(mint, other.publicKey, 42n)
@@ -287,11 +305,168 @@ describe("deltas", () => {
       {
         account: ata,
         owner: other.publicKey.toBase58(),
+        ownerAfter: other.publicKey.toBase58(),
+        delegateAfter: null,
+        closeAuthorityAfter: null,
         mint: mint.toBase58(),
         tokenProgram: TOKEN_PROGRAM_ID,
         before: 0n,
         after: 5n,
       },
     ])
+  })
+
+  test("a token delta keeps the owner before and after, and the delegate and close authority on both sides", () => {
+    const mint = Keypair.generate().publicKey
+    const attacker = Keypair.generate().publicKey
+    const account = Keypair.generate().publicKey.toBase58()
+    const [delta] = computeDeltas([
+      {
+        address: account,
+        before: tokenAccount(mint, payer.publicKey, 9n),
+        after: tokenAccount(mint, attacker, 9n, { delegate: attacker, delegatedAmount: 9n }),
+      },
+    ]).tokens
+    expect(delta).toMatchObject({
+      owner: attacker.toBase58(),
+      ownerBefore: payer.publicKey.toBase58(),
+      ownerAfter: attacker.toBase58(),
+      delegateBefore: null,
+      delegateAfter: attacker.toBase58(),
+      closeAuthorityBefore: null,
+      closeAuthorityAfter: null,
+    })
+  })
+})
+
+describe("SEC-001: control changes over a signer's accounts", () => {
+  const mint = Keypair.generate().publicKey
+  const attacker = Keypair.generate().publicKey
+  const ata = Keypair.generate().publicKey.toBase58()
+  const wallet = payer.publicKey.toBase58()
+  const signerOnly = (address: string) => address === wallet
+  const system = (lamports: bigint, data = new Uint8Array(0), owner = SystemProgram.programId.toBase58()) => ({
+    owner,
+    lamports,
+    data,
+  })
+
+  test("SetAuthority(AccountOwner) to another wallet, with the amount unchanged, is an owner change", () => {
+    const snapshots = [
+      { address: ata, before: tokenAccount(mint, payer.publicKey, 100n), after: tokenAccount(mint, attacker, 100n) },
+    ]
+    expect(computeDeltas(snapshots).tokens[0]?.after).toBe(100n)
+    const changes = controlChanges(snapshots, signerOnly)
+    expect(changes).toEqual([
+      { account: ata, controller: wallet, mint: mint.toBase58(), what: "owner", from: wallet, to: attacker.toBase58() },
+    ])
+    expect(describeControlChange(changes[0] as ControlChange)).toBe(
+      `token account ${ata} (mint ${mint.toBase58()}, owned by ${wallet}): owner changes from ${wallet} to ${attacker.toBase58()}`,
+    )
+  })
+
+  test("Approve to a delegate, a larger re-approval, and a close authority are each a change; a revoke is not", () => {
+    const approve = controlChanges(
+      [
+        {
+          address: ata,
+          before: tokenAccount(mint, payer.publicKey, 100n),
+          after: tokenAccount(mint, payer.publicKey, 100n, { delegate: attacker, delegatedAmount: 100n }),
+        },
+      ],
+      signerOnly,
+    )
+    expect(approve).toMatchObject([
+      { what: "delegate", from: null, to: `${attacker.toBase58()} (may move up to 100 raw)` },
+    ])
+    const larger = controlChanges(
+      [
+        {
+          address: ata,
+          before: tokenAccount(mint, payer.publicKey, 100n, { delegate: attacker, delegatedAmount: 1n }),
+          after: tokenAccount(mint, payer.publicKey, 100n, { delegate: attacker, delegatedAmount: 100n }),
+        },
+      ],
+      signerOnly,
+    )
+    expect(larger).toMatchObject([{ what: "delegate", from: attacker.toBase58() }])
+    const close = controlChanges(
+      [
+        {
+          address: ata,
+          before: tokenAccount(mint, payer.publicKey, 100n),
+          after: tokenAccount(mint, payer.publicKey, 100n, { closeAuthority: attacker }),
+        },
+      ],
+      signerOnly,
+    )
+    expect(close).toMatchObject([{ what: "close authority", from: null, to: attacker.toBase58() }])
+    const revoke = controlChanges(
+      [
+        {
+          address: ata,
+          before: tokenAccount(mint, payer.publicKey, 100n, { delegate: attacker, delegatedAmount: 5n }),
+          after: tokenAccount(mint, payer.publicKey, 100n),
+        },
+      ],
+      signerOnly,
+    )
+    expect(revoke).toEqual([])
+  })
+
+  test("System Assign or Allocate on the signer's own wallet is a program owner change; draining it is not", () => {
+    const program = Keypair.generate().publicKey.toBase58()
+    expect(
+      controlChanges(
+        [{ address: wallet, before: system(10n), after: system(10n, new Uint8Array(0), program) }],
+        signerOnly,
+      ),
+    ).toEqual([
+      {
+        account: wallet,
+        controller: wallet,
+        what: "program owner",
+        from: SystemProgram.programId.toBase58(),
+        to: program,
+      },
+    ])
+    expect(
+      controlChanges([{ address: wallet, before: system(10n), after: system(10n, new Uint8Array(8)) }], signerOnly),
+    ).toMatchObject([{ what: "program owner" }])
+    expect(controlChanges([{ address: wallet, before: system(10n), after: null }], signerOnly)).toEqual([])
+  })
+
+  test("an ordinary transfer, a closed account, and someone else's account changing hands are not the signer's change", () => {
+    const theirs = Keypair.generate().publicKey
+    expect(
+      controlChanges(
+        [
+          { address: wallet, before: system(10n), after: system(4n) },
+          {
+            address: ata,
+            before: tokenAccount(mint, payer.publicKey, 100n),
+            after: tokenAccount(mint, payer.publicKey, 40n),
+          },
+          { address: "closed", before: tokenAccount(mint, payer.publicKey, 0n), after: null },
+          { address: "theirs", before: tokenAccount(mint, theirs, 1n), after: tokenAccount(mint, attacker, 1n) },
+        ],
+        signerOnly,
+      ),
+    ).toEqual([])
+  })
+
+  test("a token account created for the signer with someone else as delegate or close authority is a change", () => {
+    expect(
+      controlChanges(
+        [
+          {
+            address: ata,
+            before: null,
+            after: tokenAccount(mint, payer.publicKey, 0n, { delegate: attacker, closeAuthority: attacker }),
+          },
+        ],
+        signerOnly,
+      ).map((change) => change.what),
+    ).toEqual(["delegate", "close authority"])
   })
 })

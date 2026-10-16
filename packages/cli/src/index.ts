@@ -23,7 +23,7 @@ import { realpathSync } from "node:fs"
 import { chmod, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises"
 import { homedir, hostname } from "node:os"
 import { pathToFileURL } from "node:url"
-import { resolveApiUrl } from "./client"
+import { browserUrl, resolveApiUrl } from "./client"
 import { agentPost } from "./commands/agent-post"
 import { agentProfile } from "./commands/agent-profile"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
@@ -736,20 +736,25 @@ async function migrateProfiles(deps: Deps): Promise<CliConfig> {
   return config
 }
 
-/** Best-effort browser launch: `open` on macOS, `start` via `cmd` on Windows, `xdg-open`
- * elsewhere. Failure (no launcher on PATH, no display) is swallowed -- the URL is always printed
- * by the caller regardless, which is the actual guarantee for a headless/SSH session. Not unit
- * tested: it spawns a real OS process, the same reason secret-store.ts's
- * `promptHiddenPassphrase` (which needs a real TTY) is left untested; command tests inject their
- * own `openBrowser` fake instead (see `deps.openBrowser`). */
-function realOpenBrowser(url: string): void {
+/** Best-effort browser launch: `open` on macOS, the URL protocol handler via `rundll32` on
+ * Windows, `xdg-open` elsewhere. Failure (no launcher on PATH, no display) is swallowed -- the URL
+ * is always printed by the caller regardless, which is the actual guarantee for a headless/SSH
+ * session. The URL is the server's, so only what `browserUrl` accepts (https, or http on loopback)
+ * is opened, as its parsed `href`; anything else is left printed. Windows never goes through
+ * `cmd`, which would run whatever follows a `&` or `|` in the URL as a command. Not unit tested:
+ * it spawns a real OS process, the same reason secret-store.ts's `promptHiddenPassphrase` (which
+ * needs a real TTY) is left untested; the gate is tested in client.test.ts, and command tests
+ * inject their own `openBrowser` fake instead (see `deps.openBrowser`). */
+function realOpenBrowser(serverUrl: string): void {
+  const url = browserUrl(serverUrl)
+  if (url === null) return
   try {
     const platform = process.platform
     const child =
       platform === "darwin"
         ? spawn("open", [url], { stdio: "ignore", detached: true })
         : platform === "win32"
-          ? spawn("cmd", ["/c", "start", "", url], { stdio: "ignore", detached: true })
+          ? spawn("rundll32", ["url.dll,FileProtocolHandler", url], { stdio: "ignore", detached: true })
           : spawn("xdg-open", [url], { stdio: "ignore", detached: true })
     child.on("error", () => {})
     child.unref()

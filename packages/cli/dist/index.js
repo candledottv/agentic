@@ -92,6 +92,21 @@ function insecureApiUrlFault(url, env = process.env) {
     return;
   return `Refusing to send credentials in the clear to ${parsed.origin}. Use https://` + (isPrivateHost(parsed.hostname) ? `, or set ${ALLOW_INSECURE_HTTP_ENV}=1 if this really is a trusted local endpoint.` : `. ${ALLOW_INSECURE_HTTP_ENV} does not apply here: it covers private networks only, and this is a public address.`);
 }
+function browserUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.username || parsed.password)
+    return null;
+  if (parsed.protocol === "https:")
+    return parsed.href;
+  if (parsed.protocol === "http:" && isLoopbackHost(parsed.hostname))
+    return parsed.href;
+  return null;
+}
 function resolveApiUrl(configuredApiUrl, env = process.env) {
   const fromEnv = env.CANDLE_API_URL?.trim();
   const resolved = fromEnv || configuredApiUrl?.trim() || DEFAULT_API_URL;
@@ -108,6 +123,27 @@ function buildHeaders(opts) {
     headers["x-api-key"] = opts.credentials.apiKey;
   }
   return headers;
+}
+async function fetchSameOriginRedirects(doFetch, url, init) {
+  let current = url;
+  let next = { ...init, redirect: "manual" };
+  for (let hops = 0;; hops++) {
+    const response = await doFetch(current, next);
+    const location = REDIRECT_STATUSES.has(response.status) ? response.headers?.get?.("location") : null;
+    if (!location)
+      return response;
+    const from = new URL(current);
+    const target = new URL(location, from);
+    if (target.origin !== from.origin)
+      throw new CrossOriginRedirectError(from.origin, target.origin);
+    if (hops >= MAX_REDIRECTS)
+      throw new Error(`More than ${MAX_REDIRECTS} redirects from ${url}`);
+    const method = (next.method ?? "GET").toUpperCase();
+    if (response.status === 303 && method !== "GET" && method !== "HEAD" || (response.status === 301 || response.status === 302) && method === "POST") {
+      next = { ...next, method: "GET", body: undefined };
+    }
+    current = target.href;
+  }
 }
 function buildUrl(apiUrl, path) {
   const base = trimTrailingSlashes(apiUrl);
@@ -161,14 +197,15 @@ async function apiRequest(path, opts) {
   const headers = buildHeaders(opts);
   const body = opts.raw ? opts.raw.bytes : opts.body === undefined ? undefined : JSON.stringify(opts.body);
   const doFetch = opts.fetch ?? fetch;
+  const init = { method: opts.method ?? "GET", headers, body };
+  const credentialed = "x-api-key" in headers || "authorization" in headers;
   let response;
   try {
-    response = await doFetch(url, {
-      method: opts.method ?? "GET",
-      headers,
-      body
-    });
+    response = credentialed ? await fetchSameOriginRedirects(doFetch, url, init) : await doFetch(url, init);
   } catch (err) {
+    if (err instanceof CrossOriginRedirectError) {
+      return { ok: false, status: 0, code: "CROSS_ORIGIN_REDIRECT", message: err.message, raw: undefined };
+    }
     const reason = err instanceof Error ? err.message : String(err);
     const env = opts.env ?? process.env;
     const envOverride = env.CANDLE_API_URL?.trim();
@@ -190,7 +227,20 @@ async function apiRequest(path, opts) {
   const classified = classifyError(response.status, raw);
   return { ok: false, status: response.status, raw, ...classified };
 }
-var DEFAULT_API_URL = "https://api.alpha.candle.tv", ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP", latestCliVersionSeen = null;
+var DEFAULT_API_URL = "https://api.alpha.candle.tv", ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP", REDIRECT_STATUSES, MAX_REDIRECTS = 5, CrossOriginRedirectError, latestCliVersionSeen = null;
+var init_client = __esm(() => {
+  REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+  CrossOriginRedirectError = class CrossOriginRedirectError extends Error {
+    from;
+    to;
+    constructor(from, to) {
+      super(`The API at ${from} redirected to ${to}, another origin. Not followed, so the credential was not sent there.`);
+      this.from = from;
+      this.to = to;
+      this.name = "CrossOriginRedirectError";
+    }
+  };
+});
 
 // src/args.ts
 function refuseUnexpandedTilde(name, value) {
@@ -9099,7 +9149,12 @@ function allSignerWallets(view) {
 function activeSigner(view) {
   if (view.state !== "active" || !view.signerQuorumId || !view.fingerprint || !view.spkiSha256)
     return null;
-  return { fingerprint: view.fingerprint, spkiSha256: view.spkiSha256, signerQuorumId: view.signerQuorumId };
+  return {
+    fingerprint: view.fingerprint,
+    spkiSha256: view.spkiSha256,
+    signerQuorumId: view.signerQuorumId,
+    publicKeyDer: typeof view.publicKeyDer === "string" ? view.publicKeyDer : null
+  };
 }
 async function readSigner(ctx, keyPrefix, auth) {
   return apiRequest(`/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/signer`, {
@@ -9145,9 +9200,48 @@ function errorDetails(result) {
   const error = result.raw?.error;
   return error && typeof error === "object" ? error : {};
 }
-async function confirmSignerPin(ctx, keyPrefix, active, opts = {}) {
+function verifiedSigner(signer) {
+  let spkiSha256 = signer.spkiSha256;
+  if (signer.publicKeyDer !== undefined) {
+    if (typeof signer.publicKeyDer !== "string" || signer.publicKeyDer.length === 0) {
+      return { ok: false, problem: "the server did not send the signer's public key" };
+    }
+    try {
+      const key = createPublicKey({ key: Buffer.from(signer.publicKeyDer, "base64"), format: "der", type: "spki" });
+      if (key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
+        return { ok: false, problem: "the server's public key is not a P-256 key" };
+      }
+    } catch {
+      return { ok: false, problem: "the server's public key is not a valid SPKI DER key" };
+    }
+    spkiSha256 = spkiSha256Of(signer.publicKeyDer);
+    if (spkiSha256 !== signer.spkiSha256) {
+      return { ok: false, problem: "the hash the server reports is not the hash of the public key it sent" };
+    }
+  }
+  if (!isSpkiSha256(spkiSha256))
+    return { ok: false, problem: "the server's signer hash is not a sha256" };
+  const fingerprint = keySignerFingerprint(spkiSha256);
+  if (normalizeFingerprint(signer.fingerprint) !== normalizeFingerprint(fingerprint)) {
+    return { ok: false, problem: "the fingerprint the server reports is not the one its hash gives" };
+  }
+  return { ok: true, fingerprint, spkiSha256 };
+}
+async function confirmSignerPin(ctx, keyPrefix, signer, opts = {}) {
   const { deps } = ctx;
   const nothing = opts.nothing ?? "Nothing was imported and nothing was pinned.";
+  const verified = verifiedSigner(signer);
+  if (!verified.ok) {
+    return {
+      ok: false,
+      failure: {
+        code: "KEY_SIGNER_UNVERIFIED",
+        message: `Key ${keyPrefix}'s signer cannot be checked on this machine: ${verified.problem}. ${nothing}`,
+        suggestion: "Do not trust this signer. Check the API address this CLI uses, and run the command again."
+      }
+    };
+  }
+  const active = { fingerprint: verified.fingerprint, spkiSha256: verified.spkiSha256 };
   const pin = await readPin(deps, keyPrefix);
   if (pin && pin.spkiSha256 === active.spkiSha256)
     return { ok: true, pinned: "same" };
@@ -9206,6 +9300,7 @@ function signerSlotProblem(stored, expectSpkiSha256) {
 }
 var KEY_PREFIX_RE, CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 var init_key_signers = __esm(() => {
+  init_client();
   init_secret_store();
   KEY_PREFIX_RE = /^[A-Za-z0-9_-]{8}$/;
 });
@@ -10851,6 +10946,7 @@ var init_errors2 = __esm(() => {
     "SIGN_LOOKUP_TABLE_UNRESOLVED",
     "SIGN_TRANSACTION_UNDECODABLE",
     "SIGN_BROADCAST_FAILED",
+    "SIGN_CONTROL_CHANGE",
     "VAULT_LABEL_NOT_FOUND",
     "VAULT_LABEL_AMBIGUOUS",
     "VAULT_LABEL_TAKEN",
@@ -11472,7 +11568,7 @@ async function runSequencedLegs(ctx, key, opts) {
       throw failWith("INVALID_RESPONSE", `Candle offered another ${current.legKind} leg after the ${plannedCount} planned ${plannedCount === 1 ? "leg" : "legs"}; nothing was signed.`, 1);
     if (signedKinds.has(current.legKind) || landed.some((done) => done.kind === current.legKind))
       throw failWith("INVALID_RESPONSE", `Candle offered another ${current.legKind} leg after one of that kind already landed; nothing was signed.`, 1);
-    if (opts.checkLeg && !opts.checkLeg(current.legKind, leg))
+    if (!await opts.checkLeg(current.legKind, leg))
       throw failWith("INVALID_RESPONSE", `The ${current.legKind} leg does not match what this operation confirmed; nothing was signed.`, 1);
     if (!Number.isFinite(current.expiresAt) || current.expiresAt <= ctx.deps.now())
       throw failWith("QUOTE_EXPIRED", `Operation ${current.operationId}'s window closed before the ${current.legKind} leg was signed.`, 1);
@@ -11692,6 +11788,7 @@ var init_trading = __esm(() => {
   init_sha3();
   init_esm();
   init_zod();
+  init_client();
   init_deps();
   init_evm_lite();
   init_key_signers();
@@ -12128,6 +12225,20 @@ function tokenBalanceOf(view) {
     tokenProgram: view.owner
   };
 }
+function optionalPubkey(data, at) {
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  return dv.getUint32(at, true) === 0 ? null : encodePubkey(data.subarray(at + 4, at + 36));
+}
+function tokenAuthoritiesOf(view) {
+  if (view === null || tokenBalanceOf(view) === undefined)
+    return;
+  const dv = new DataView(view.data.buffer, view.data.byteOffset, view.data.byteLength);
+  return {
+    delegate: optionalPubkey(view.data, 72),
+    delegatedAmount: dv.getBigUint64(121, true),
+    closeAuthority: optionalPubkey(view.data, 129)
+  };
+}
 function computeDeltas(snapshots) {
   const sol = [];
   const tokens = [];
@@ -12142,9 +12253,15 @@ function computeDeltas(snapshots) {
     const shape = post ?? pre;
     if (shape === undefined)
       continue;
+    const preAuth = tokenAuthoritiesOf(snapshot.before);
+    const postAuth = tokenAuthoritiesOf(snapshot.after);
     tokens.push({
       account: snapshot.address,
       owner: shape.owner,
+      ...pre ? { ownerBefore: pre.owner } : {},
+      ...post ? { ownerAfter: post.owner } : {},
+      ...preAuth ? { delegateBefore: preAuth.delegate, closeAuthorityBefore: preAuth.closeAuthority } : {},
+      ...postAuth ? { delegateAfter: postAuth.delegate, closeAuthorityAfter: postAuth.closeAuthority } : {},
       mint: shape.mint,
       tokenProgram: shape.tokenProgram,
       before: pre?.amount ?? 0n,
@@ -12152,6 +12269,64 @@ function computeDeltas(snapshots) {
     });
   }
   return { sol, tokens };
+}
+function controlChanges(snapshots, controlled) {
+  const changes = [];
+  for (const { address, before, after } of snapshots) {
+    if (after === null)
+      continue;
+    if (controlled(address) && before !== null && before.owner === SYSTEM_PROGRAM_ID) {
+      if (after.owner !== before.owner || after.data.length !== before.data.length)
+        changes.push({
+          account: address,
+          controller: address,
+          what: "program owner",
+          from: before.owner,
+          to: after.data.length !== before.data.length ? `${after.owner} with ${after.data.length} data bytes` : after.owner
+        });
+      continue;
+    }
+    const pre = tokenBalanceOf(before);
+    const preAuth = tokenAuthoritiesOf(before);
+    const post = tokenBalanceOf(after);
+    const postAuth = tokenAuthoritiesOf(after);
+    if (pre !== undefined && preAuth !== undefined && controlled(pre.owner)) {
+      const base = { account: address, controller: pre.owner, mint: pre.mint };
+      if (post === undefined || postAuth === undefined) {
+        changes.push({ ...base, what: "owner", from: pre.owner, to: `${after.owner} (no longer a token account)` });
+        continue;
+      }
+      if (post.owner !== pre.owner)
+        changes.push({ ...base, what: "owner", from: pre.owner, to: post.owner });
+      if (postAuth.delegate !== null && (postAuth.delegate !== preAuth.delegate || postAuth.delegatedAmount > preAuth.delegatedAmount))
+        changes.push({
+          ...base,
+          what: "delegate",
+          from: preAuth.delegate,
+          to: `${postAuth.delegate} (may move up to ${postAuth.delegatedAmount} raw)`
+        });
+      if (postAuth.closeAuthority !== null && postAuth.closeAuthority !== preAuth.closeAuthority)
+        changes.push({ ...base, what: "close authority", from: preAuth.closeAuthority, to: postAuth.closeAuthority });
+      continue;
+    }
+    if (pre === undefined && post !== undefined && postAuth !== undefined && controlled(post.owner)) {
+      const base = { account: address, controller: post.owner, mint: post.mint };
+      if (postAuth.delegate !== null && postAuth.delegate !== post.owner)
+        changes.push({
+          ...base,
+          what: "delegate",
+          from: null,
+          to: `${postAuth.delegate} (may move up to ${postAuth.delegatedAmount} raw)`
+        });
+      if (postAuth.closeAuthority !== null && postAuth.closeAuthority !== post.owner)
+        changes.push({ ...base, what: "close authority", from: null, to: postAuth.closeAuthority });
+    }
+  }
+  return changes;
+}
+function describeControlChange(change) {
+  const subject = change.mint === undefined ? `wallet ${change.account}` : `token account ${change.account} (mint ${change.mint}, owned by ${change.controller})`;
+  return `${subject}: ${change.what} changes from ${change.from ?? "none"} to ${change.to ?? "none"}`;
 }
 function programNameOf(programId) {
   switch (programId) {
@@ -12173,7 +12348,7 @@ function programNameOf(programId) {
       return programId;
   }
 }
-var ADDRESS_LOOKUP_TABLE_PROGRAM_ID = "AddressLookupTab1e1111111111111111111111111", COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111", MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", TransactionDecodeError, LookupTableError, SIGNATURE_BYTES = 64, PUBKEY_BYTES = 32, BLOCKHASH_BYTES = 32, LOOKUP_TABLE_META_SIZE = 56, TOKEN_ACCOUNT_SIZE = 165;
+var ADDRESS_LOOKUP_TABLE_PROGRAM_ID = "AddressLookupTab1e1111111111111111111111111", COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111", MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", TransactionDecodeError, LookupTableError, SIGNATURE_BYTES = 64, PUBKEY_BYTES = 32, BLOCKHASH_BYTES = 32, LOOKUP_TABLE_META_SIZE = 56, TOKEN_ACCOUNT_SIZE = 165, TOKEN_CONTROL_RANGES;
 var init_solana_alt = __esm(() => {
   init_esm();
   init_solana_lite();
@@ -12181,6 +12356,14 @@ var init_solana_alt = __esm(() => {
   };
   LookupTableError = class LookupTableError extends Error {
   };
+  TOKEN_CONTROL_RANGES = [
+    [0, 32, "mint"],
+    [32, 64, "authority"],
+    [72, 108, "delegate"],
+    [108, 109, "state"],
+    [121, 129, "delegated amount"],
+    [129, 165, "close authority"]
+  ];
 });
 
 // src/bridge.ts
@@ -12414,6 +12597,683 @@ var init_bridge = __esm(() => {
     exports_external.object({ state: exports_external.literal("uncertain") }).passthrough()
   ]);
   BRIDGE_WAIT_MS = 10 * 60 * 1000;
+});
+
+// src/hood-legs.ts
+function bytesOf(hex2) {
+  try {
+    return hexToBytes2(hex2);
+  } catch {
+    return;
+  }
+}
+function selectorOf(data) {
+  return data.length < 4 ? "" : bytesToHex2(data.subarray(0, 4));
+}
+function word2(data, index, base = 4) {
+  const start = base + index * 32;
+  return start + 32 <= data.length ? data.subarray(start, start + 32) : undefined;
+}
+function wordUint2(w) {
+  return w === undefined ? undefined : BigInt(bytesToHex2(w));
+}
+function wordAddress2(w) {
+  if (w === undefined || w.subarray(0, 12).some((b) => b !== 0))
+    return;
+  return bytesToHex2(w.subarray(12));
+}
+function isDecimal(value) {
+  return /^\d+$/.test(value);
+}
+function among(address, list) {
+  return list.some((known) => sameEvmAddress(address, known));
+}
+function decodeApprove(data) {
+  if (data.length !== 68 || selectorOf(data) !== ERC20_APPROVE_SELECTOR)
+    return;
+  const spender = wordAddress2(word2(data, 0));
+  const amount = wordUint2(word2(data, 1));
+  return spender === undefined || amount === undefined ? undefined : { spender, amount };
+}
+function isDynamicType(type) {
+  if (typeof type === "string")
+    return type === "bytes";
+  return "array" in type || type.tuple.some(isDynamicType);
+}
+function headSize(type) {
+  return typeof type === "object" && "tuple" in type && !isDynamicType(type) ? type.tuple.reduce((sum, member) => sum + headSize(member), 0) : 32;
+}
+function readWord(data, position) {
+  if (!Number.isSafeInteger(position) || position < 0 || position + 32 > data.length)
+    throw new Error("abi: short data");
+  return data.subarray(position, position + 32);
+}
+function readNumber(data, position) {
+  const value = BigInt(bytesToHex2(readWord(data, position)));
+  if (value > BigInt(data.length))
+    throw new Error("abi: offset past the data");
+  return Number(value);
+}
+function decodeAbiTuple(data, start, types2) {
+  const out = [];
+  let cursor = start;
+  for (const type of types2) {
+    if (isDynamicType(type)) {
+      out.push(decodeAbiDynamic(data, start + readNumber(data, cursor), type));
+      cursor += 32;
+    } else {
+      out.push(decodeAbiStatic(data, cursor, type));
+      cursor += headSize(type);
+    }
+  }
+  return out;
+}
+function decodeAbiStatic(data, position, type) {
+  if (typeof type === "object" && "tuple" in type)
+    return decodeAbiTuple(data, position, type.tuple);
+  const w = readWord(data, position);
+  if (type === "address") {
+    const address = wordAddress2(w);
+    if (address === undefined)
+      throw new Error("abi: dirty address");
+    return address;
+  }
+  if (type === "bool")
+    return BigInt(bytesToHex2(w)) === 1n;
+  return BigInt(bytesToHex2(w));
+}
+function decodeAbiDynamic(data, position, type) {
+  if (type === "bytes") {
+    const length = readNumber(data, position);
+    if (position + 32 + length > data.length)
+      throw new Error("abi: short bytes");
+    return data.subarray(position + 32, position + 32 + length);
+  }
+  if (typeof type === "object" && "array" in type) {
+    const length = readNumber(data, position);
+    if (length > MAX_ABI_ARRAY)
+      throw new Error("abi: array too long");
+    return decodeAbiTuple(data, position + 32, Array.from({ length }, () => type.array));
+  }
+  return decodeAbiTuple(data, position, type.tuple);
+}
+function decodeArgs(data, types2, base = 4) {
+  try {
+    return decodeAbiTuple(data, base, types2);
+  } catch {
+    return;
+  }
+}
+function v2CallOk(data, value, terms) {
+  const selector = selectorOf(data);
+  if (selector === V2_SWAP_ETH_FOR_TOKENS_SELECTOR) {
+    const args = decodeArgs(data, ["uint", ADDRESSES, "address", "uint"]);
+    if (!args || terms.inputToken !== undefined)
+      return false;
+    const path = asList(args[1]);
+    return path.length >= 2 && sameEvmAddress(asAddress(path[0]), HOOD_WETH_ADDRESS) && terms.outputToken !== undefined && sameEvmAddress(asAddress(path[path.length - 1]), terms.outputToken) && asNumber(args[0]) >= terms.minOutRaw && sameEvmAddress(asAddress(args[2]), terms.wallet);
+  }
+  if (selector === V2_SWAP_TOKENS_FOR_ETH_SELECTOR) {
+    const args = decodeArgs(data, ["uint", "uint", ADDRESSES, "address", "uint"]);
+    if (!args || terms.inputToken === undefined || value !== 0n)
+      return false;
+    const path = asList(args[2]);
+    return asNumber(args[0]) <= terms.amountRaw && asNumber(args[1]) >= terms.minOutRaw && terms.outputToken === undefined && path.length >= 2 && sameEvmAddress(asAddress(path[0]), terms.inputToken) && sameEvmAddress(asAddress(path[path.length - 1]), HOOD_WETH_ADDRESS) && sameEvmAddress(asAddress(args[3]), terms.wallet);
+  }
+  return false;
+}
+function v3SwapOf(call) {
+  const selector = selectorOf(call);
+  if (selector === V3_EXACT_INPUT_SINGLE_SELECTOR) {
+    const args = decodeArgs(call, [V3_SINGLE]);
+    if (!args)
+      return;
+    const fields = asList(args[0]);
+    return {
+      tokenIn: asAddress(fields[0]),
+      tokenOut: asAddress(fields[1]),
+      amountIn: asNumber(fields[4]),
+      minimum: asNumber(fields[5]),
+      recipient: asAddress(fields[3])
+    };
+  }
+  if (selector === V3_EXACT_INPUT_SELECTOR) {
+    const args = decodeArgs(call, [V3_PATH]);
+    if (!args)
+      return;
+    const fields = asList(args[0]);
+    const path = asBytes(fields[0]);
+    if (path.length < 43 || (path.length - 20) % 23 !== 0)
+      return;
+    return {
+      tokenIn: bytesToHex2(path.subarray(0, 20)),
+      tokenOut: bytesToHex2(path.subarray(-20)),
+      amountIn: asNumber(fields[2]),
+      minimum: asNumber(fields[3]),
+      recipient: asAddress(fields[1])
+    };
+  }
+  return;
+}
+function v3CallOk(data, terms) {
+  if (selectorOf(data) !== V3_MULTICALL_SELECTOR)
+    return false;
+  const args = decodeArgs(data, ["uint", { array: "bytes" }]);
+  if (!args)
+    return false;
+  const calls = asList(args[1]).map(asBytes);
+  if (calls.length === 0 || calls.length > 4)
+    return false;
+  let swaps = 0;
+  let spent = 0n;
+  let heldByRouter = false;
+  let unwrappedToWallet = false;
+  for (const call of calls) {
+    const selector = selectorOf(call);
+    if (selector === V3_REFUND_ETH_SELECTOR) {
+      if (call.length !== 4)
+        return false;
+    } else if (selector === V3_UNWRAP_WETH9_SELECTOR) {
+      const unwrap = decodeArgs(call, ["uint", "address"]);
+      if (!unwrap || terms.outputToken !== undefined || !heldByRouter || unwrappedToWallet || asNumber(unwrap[0]) < terms.minOutRaw || !sameEvmAddress(asAddress(unwrap[1]), terms.wallet))
+        return false;
+      unwrappedToWallet = true;
+    } else {
+      const swap = v3SwapOf(call);
+      if (!swap || unwrappedToWallet || !sameEvmAddress(swap.tokenIn, routedInput(terms)) || !sameEvmAddress(swap.tokenOut, routedOutput(terms)) || swap.minimum < terms.minOutRaw || !sameEvmAddress(swap.recipient, terms.outputToken === undefined ? ADDRESS_THIS : terms.wallet))
+        return false;
+      if (!sameEvmAddress(swap.recipient, terms.wallet))
+        heldByRouter = true;
+      swaps++;
+      spent += swap.amountIn;
+    }
+  }
+  return swaps > 0 && spent <= terms.amountRaw && (!heldByRouter || unwrappedToWallet);
+}
+function bytesAre(bytes, expected) {
+  return bytes.length === expected.length && expected.every((byte, i) => bytes[i] === byte);
+}
+function v4Sides(params) {
+  const key = asList(params[0]);
+  const zeroForOne = params[1] === true;
+  return { input: asAddress(zeroForOne ? key[0] : key[1]), output: asAddress(zeroForOne ? key[1] : key[0]) };
+}
+function v4InputIs(currency, terms) {
+  return sameEvmAddress(currency, terms.inputToken ?? NATIVE_CURRENCY);
+}
+function v4CallOk(data, terms) {
+  if (selectorOf(data) !== UNIVERSAL_EXECUTE_SELECTOR)
+    return false;
+  const args = decodeArgs(data, ["bytes", { array: "bytes" }, "uint"]);
+  if (!args)
+    return false;
+  const commands = asBytes(args[0]);
+  const inputs = asList(args[1]).map(asBytes);
+  try {
+    if (bytesAre(commands, [UR_V4_SWAP]) && inputs.length === 1)
+      return v4DirectOk(inputs[0], terms);
+    if (bytesAre(commands, [UR_WRAP_ETH, UR_V3_SWAP_EXACT_IN, UR_V4_SWAP]) && inputs.length === 3)
+      return v4BridgedBuyOk(inputs, terms);
+    if (bytesAre(commands, [UR_V4_SWAP, UR_V3_SWAP_EXACT_IN, UR_UNWRAP_WETH]) && inputs.length === 3)
+      return v4BridgedSellOk(inputs, terms);
+  } catch {
+    return false;
+  }
+  return false;
+}
+function v4DirectOk(input, terms) {
+  const top = decodeArgs(input, ["bytes", { array: "bytes" }], 0);
+  if (!top || !bytesAre(asBytes(top[0]), [V4_SWAP_EXACT_IN_SINGLE, V4_SETTLE_ALL, V4_TAKE_ALL]))
+    return false;
+  const params = asList(top[1]).map(asBytes);
+  if (params.length !== 3)
+    return false;
+  const swap = decodeArgs(params[0], [V4_SWAP_PARAMS], 0);
+  const settle = decodeArgs(params[1], ["address", "uint"], 0);
+  const take2 = decodeArgs(params[2], ["address", "uint"], 0);
+  if (!swap || !settle || !take2)
+    return false;
+  const fields = asList(swap[0]);
+  const { input: inCurrency, output: outCurrency } = v4Sides(fields);
+  return v4InputIs(inCurrency, terms) && sameEvmAddress(outCurrency, terms.outputToken ?? NATIVE_CURRENCY) && asNumber(fields[3]) >= terms.minOutRaw && asNumber(take2[1]) >= terms.minOutRaw && asNumber(fields[2]) <= terms.amountRaw && sameEvmAddress(asAddress(settle[0]), inCurrency) && asNumber(settle[1]) <= terms.amountRaw && sameEvmAddress(asAddress(take2[0]), outCurrency);
+}
+function v3IntoRouterOk(input, firstToken, lastToken) {
+  const args = decodeArgs(input, ["address", "uint", "uint", "bytes", "bool"], 0);
+  if (!args)
+    return false;
+  const path = asBytes(args[3]);
+  return sameEvmAddress(asAddress(args[0]), ADDRESS_THIS) && args[4] === false && path.length >= 43 && (path.length - 20) % 23 === 0 && sameEvmAddress(bytesToHex2(path.subarray(0, 20)), firstToken) && sameEvmAddress(bytesToHex2(path.subarray(-20)), lastToken);
+}
+function v4BridgedBuyOk([wrap, v3, v4], terms) {
+  if (terms.inputToken !== undefined || terms.outputToken === undefined)
+    return false;
+  const wrapped = decodeArgs(wrap, ["address", "uint"], 0);
+  if (!wrapped || !sameEvmAddress(asAddress(wrapped[0]), ADDRESS_THIS) || asNumber(wrapped[1]) > terms.amountRaw)
+    return false;
+  const top = decodeArgs(v4, ["bytes", { array: "bytes" }], 0);
+  if (!top || !bytesAre(asBytes(top[0]), [V4_SETTLE, V4_SWAP_EXACT_IN_SINGLE, V4_TAKE_ALL]))
+    return false;
+  const params = asList(top[1]).map(asBytes);
+  if (params.length !== 3)
+    return false;
+  const settle = decodeArgs(params[0], ["address", "uint", "bool"], 0);
+  const swap = decodeArgs(params[1], [V4_SWAP_PARAMS], 0);
+  const take2 = decodeArgs(params[2], ["address", "uint"], 0);
+  if (!settle || !swap || !take2 || settle[2] !== false)
+    return false;
+  const fields = asList(swap[0]);
+  const { input, output } = v4Sides(fields);
+  return v3IntoRouterOk(v3, HOOD_WETH_ADDRESS, input) && sameEvmAddress(output, terms.outputToken) && asNumber(fields[3]) >= terms.minOutRaw && asNumber(take2[1]) >= terms.minOutRaw && sameEvmAddress(asAddress(settle[0]), input) && sameEvmAddress(asAddress(take2[0]), output);
+}
+function v4BridgedSellOk([v4, v3, unwrap], terms) {
+  if (terms.inputToken === undefined || terms.outputToken !== undefined)
+    return false;
+  const top = decodeArgs(v4, ["bytes", { array: "bytes" }], 0);
+  if (!top || !bytesAre(asBytes(top[0]), [V4_SETTLE, V4_SWAP_EXACT_IN_SINGLE, V4_TAKE]))
+    return false;
+  const params = asList(top[1]).map(asBytes);
+  if (params.length !== 3)
+    return false;
+  const settle = decodeArgs(params[0], ["address", "uint", "bool"], 0);
+  const swap = decodeArgs(params[1], [V4_SWAP_PARAMS], 0);
+  const take2 = decodeArgs(params[2], ["address", "address", "uint"], 0);
+  if (!settle || !swap || !take2)
+    return false;
+  const { input, output } = v4Sides(asList(swap[0]));
+  if (!v4InputIs(input, terms) || !sameEvmAddress(asAddress(settle[0]), input) || asNumber(settle[1]) > terms.amountRaw || settle[2] !== true || !sameEvmAddress(asAddress(take2[0]), output) || !sameEvmAddress(asAddress(take2[1]), HOOD_V4_UNIVERSAL_ROUTER))
+    return false;
+  if (!v3IntoRouterOk(v3, output, HOOD_WETH_ADDRESS))
+    return false;
+  const unwrapped = decodeArgs(unwrap, ["address", "uint"], 0);
+  return unwrapped !== undefined && asNumber(unwrapped[1]) >= terms.minOutRaw && sameEvmAddress(asAddress(unwrapped[0]), terms.wallet);
+}
+function kyberCallOk(data, terms) {
+  const selector = selectorOf(data);
+  let desc;
+  if (selector === KYBER_SWAP_SELECTOR || selector === KYBER_SWAP_GENERIC_SELECTOR) {
+    const args = decodeArgs(data, [KYBER_EXECUTION]);
+    desc = args && asList(asList(args[0])[3]);
+  } else if (selector === KYBER_SWAP_SIMPLE_SELECTOR) {
+    const args = decodeArgs(data, ["address", KYBER_DESC, "bytes", "bytes"]);
+    desc = args && asList(args[1]);
+  }
+  if (!desc)
+    return false;
+  const amount = asNumber(desc[7]);
+  return sameEvmAddress(asAddress(desc[0]), terms.inputToken ?? KYBER_NATIVE) && sameEvmAddress(asAddress(desc[1]), terms.outputToken ?? KYBER_NATIVE) && asNumber(desc[8]) >= terms.minOutRaw && sameEvmAddress(asAddress(desc[6]), terms.wallet) && amount === terms.amountRaw && asList(desc[3]).reduce((sum, part) => sum + asNumber(part), 0n) <= amount && asList(desc[4]).length === 0 && asList(desc[5]).every((part) => asNumber(part) === 0n) && asBytes(desc[10]).length === 0;
+}
+function dexCallOk(to, data, value, terms) {
+  if (sameEvmAddress(to, HOOD_UNIV2_ROUTER))
+    return v2CallOk(data, value, terms);
+  if (sameEvmAddress(to, HOOD_UNIV3_ROUTER))
+    return v3CallOk(data, terms);
+  if (sameEvmAddress(to, HOOD_V4_UNIVERSAL_ROUTER))
+    return v4CallOk(data, terms);
+  if (sameEvmAddress(to, HOOD_KYBER_ROUTER))
+    return kyberCallOk(data, terms);
+  return false;
+}
+async function createCurveLegOk(leg, wallet, rpc) {
+  if (leg.value !== "0" || !sameEvmAddress(leg.to, HOOD_CURVE_FACTORY))
+    return false;
+  const data = bytesOf(leg.data);
+  if (!data || selectorOf(data) !== CREATE_CURVE_SELECTOR)
+    return false;
+  const offset = wordUint2(word2(data, 0));
+  if (offset === undefined || offset % 32n !== 0n || offset > BigInt(data.length))
+    return false;
+  const creator = wordAddress2(word2(data, 5, 4 + Number(offset)));
+  if (creator === undefined || !sameEvmAddress(creator, wallet))
+    return false;
+  const splitter = wordAddress2(word2(data, 3, 4 + Number(offset)));
+  if (splitter === undefined)
+    return false;
+  try {
+    const vouched = await rpc.call({
+      to: HOOD_SPLITTER_FACTORY,
+      data: hexToBytes2(`${SPLITTER_IS_SPLITTER_SELECTOR}${"0".repeat(24)}${splitter.slice(2)}`)
+    });
+    if (wordUint2(word2(vouched, 0, 0)) !== 1n)
+      return false;
+    const dev = wordAddress2(word2(await rpc.call({ to: splitter, data: hexToBytes2(SPLITTER_DEV_SELECTOR) }), 0, 0));
+    return dev !== undefined && sameEvmAddress(dev, wallet);
+  } catch {
+    return false;
+  }
+}
+function launchFeeCap(buyRaw) {
+  return (BigInt(buyRaw) * LAUNCH_FEE_MAX_BPS + 9999n) / 10000n;
+}
+function feeLegOk(leg, fee) {
+  if (!isDecimal(leg.value))
+    return false;
+  if (fee.asset === "eth") {
+    if (leg.data !== "0x" && leg.data !== "")
+      return false;
+    if (BigInt(leg.value) > fee.cap)
+      return false;
+    return fee.treasury === undefined || sameEvmAddress(leg.to, fee.treasury);
+  }
+  if (leg.value !== "0" || !sameEvmAddress(leg.to, HOOD_USDG_ADDRESS))
+    return false;
+  const data = bytesOf(leg.data);
+  const decoded = data ? decodeErc20Transfer(data) : undefined;
+  if (!decoded || decoded.amount > fee.cap)
+    return false;
+  return fee.treasury === undefined || sameEvmAddress(decoded.recipient, fee.treasury);
+}
+function hoodTradeLegCheck(terms) {
+  let curve;
+  const registeredCurve = () => {
+    curve ??= terms.curve ? terms.curve().catch(() => {
+      return;
+    }) : Promise.resolve(undefined);
+    return curve;
+  };
+  const spenderOk = async (spender) => {
+    if (terms.venue !== "curve")
+      return among(spender, DEX_SPENDERS);
+    const registered = await registeredCurve();
+    return registered !== undefined && sameEvmAddress(spender, registered);
+  };
+  return async (kind, leg) => {
+    if (!isDecimal(leg.value))
+      return false;
+    const data = bytesOf(leg.data);
+    if (!data)
+      return false;
+    if (kind === "feeTransfer")
+      return terms.fee !== undefined && feeLegOk(leg, terms.fee);
+    if (kind === "approval") {
+      if (terms.inputToken === undefined || leg.value !== "0" || !sameEvmAddress(leg.to, terms.inputToken))
+        return false;
+      const approve = decodeApprove(data);
+      return approve !== undefined && approve.amount <= terms.amountRaw && await spenderOk(approve.spender);
+    }
+    if (kind === "permit2Approval") {
+      if (terms.inputToken === undefined || terms.venue !== "dex" || leg.value !== "0")
+        return false;
+      if (!sameEvmAddress(leg.to, HOOD_PERMIT2) || data.length !== 132)
+        return false;
+      if (selectorOf(data) !== PERMIT2_APPROVE_SELECTOR)
+        return false;
+      const token = wordAddress2(word2(data, 0));
+      const spender = wordAddress2(word2(data, 1));
+      const amount = wordUint2(word2(data, 2));
+      return token !== undefined && sameEvmAddress(token, terms.inputToken) && spender !== undefined && sameEvmAddress(spender, HOOD_V4_UNIVERSAL_ROUTER) && amount !== undefined && amount <= terms.amountRaw;
+    }
+    if (kind !== "trade")
+      return false;
+    const value = BigInt(leg.value);
+    if (terms.inputToken !== undefined ? value !== 0n : value > terms.amountRaw)
+      return false;
+    if (terms.venue === "dex")
+      return dexCallOk(leg.to, data, value, {
+        wallet: terms.wallet,
+        ...terms.inputToken !== undefined ? { inputToken: terms.inputToken } : {},
+        amountRaw: terms.amountRaw,
+        outputToken: terms.outputToken,
+        minOutRaw: terms.minOutRaw
+      });
+    const registered = await registeredCurve();
+    if (registered === undefined || !sameEvmAddress(leg.to, registered))
+      return false;
+    const selector = selectorOf(data);
+    if (terms.inputToken === undefined)
+      return selector === CURVE_BUY_SELECTOR && data.length === 36 && wordUint2(word2(data, 0)) >= terms.minOutRaw;
+    if (data.length !== 68)
+      return false;
+    const amountIn = wordUint2(word2(data, 0));
+    if (amountIn > terms.amountRaw || wordUint2(word2(data, 1)) < terms.minOutRaw)
+      return false;
+    return selector === (sameEvmAddress(terms.inputToken, HOOD_USDG_ADDRESS) ? CURVE_BUY_WITH_QUOTE_SELECTOR : CURVE_SELL_SELECTOR);
+  };
+}
+async function registeredCurveFor(rpc, token) {
+  const call = hexToBytes2(`${CURVE_FOR_BASE_TOKEN_SELECTOR}${"0".repeat(24)}${token.toLowerCase().replace(/^0x/, "")}`);
+  for (const registry of HOOD_CURVE_REGISTRIES) {
+    let answer;
+    try {
+      answer = await rpc.call({ to: registry, data: call });
+    } catch {
+      continue;
+    }
+    const curve = wordAddress2(word2(answer, 0, 0));
+    if (curve !== undefined && BigInt(curve) !== 0n)
+      return curve;
+  }
+  return;
+}
+var HOOD_CURVE_FACTORY = "0xD08f8489F026957EdeD3Bb8Ef8A9d151A7B1DF22", HOOD_CURVE_REGISTRIES, HOOD_UNIV2_ROUTER = "0x89e5db8b5aa49aa85ac63f691524311aeb649eba", HOOD_UNIV3_ROUTER = "0xCaf681a66D020601342297493863E78C959E5cb2", HOOD_V4_UNIVERSAL_ROUTER = "0x8876789976decbfcbbbe364623c63652db8c0904", HOOD_KYBER_ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5", HOOD_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3", HOOD_SPLITTER_FACTORY = "0x9318bD328Ac32DBAe08bbD85B634E6B6B06683BF", KYBER_NATIVE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", ADDRESS_THIS = "0x0000000000000000000000000000000000000002", DEX_SPENDERS, CREATE_CURVE_SELECTOR = "0xe5ab9610", ERC20_APPROVE_SELECTOR = "0x095ea7b3", PERMIT2_APPROVE_SELECTOR = "0x87517c45", CURVE_BUY_SELECTOR = "0xd96a094a", CURVE_BUY_WITH_QUOTE_SELECTOR = "0x6818735c", CURVE_SELL_SELECTOR = "0xd79875eb", V2_SWAP_ETH_FOR_TOKENS_SELECTOR = "0xb6f9de95", V2_SWAP_TOKENS_FOR_ETH_SELECTOR = "0x791ac947", V3_MULTICALL_SELECTOR = "0x5ae401dc", V3_EXACT_INPUT_SINGLE_SELECTOR = "0x04e45aaf", V3_EXACT_INPUT_SELECTOR = "0xb858183f", V3_UNWRAP_WETH9_SELECTOR = "0x49404b7c", V3_REFUND_ETH_SELECTOR = "0x12210e8a", UNIVERSAL_EXECUTE_SELECTOR = "0x3593564c", KYBER_SWAP_SELECTOR = "0xe21fd0e9", KYBER_SWAP_GENERIC_SELECTOR = "0x59e50fed", KYBER_SWAP_SIMPLE_SELECTOR = "0x8af033fb", SPLITTER_DEV_SELECTOR = "0x91cca3db", SPLITTER_IS_SPLITTER_SELECTOR = "0xa4c597d1", CURVE_FOR_BASE_TOKEN_SELECTOR = "0x446b9253", LAUNCH_FEE_MAX_BPS = 1000n, MAX_ABI_ARRAY = 64, ADDRESSES, V3_SINGLE, V3_PATH, KYBER_DESC, KYBER_EXECUTION, V4_POOL_KEY, V4_SWAP_PARAMS, asBytes = (value) => value, asAddress = (value) => value, asNumber = (value) => value, asList = (value) => value, routedInput = (terms) => terms.inputToken ?? HOOD_WETH_ADDRESS, routedOutput = (terms) => terms.outputToken ?? HOOD_WETH_ADDRESS, UR_V3_SWAP_EXACT_IN = 0, UR_WRAP_ETH = 11, UR_UNWRAP_WETH = 12, UR_V4_SWAP = 16, V4_SWAP_EXACT_IN_SINGLE = 6, V4_SETTLE = 11, V4_SETTLE_ALL = 12, V4_TAKE = 14, V4_TAKE_ALL = 15, NATIVE_CURRENCY = "0x0000000000000000000000000000000000000000";
+var init_hood_legs = __esm(() => {
+  init_evm_lite();
+  HOOD_CURVE_REGISTRIES = [
+    "0xb789E2711445488407c120563B29dF7c376cC9Ea",
+    "0x75934c16162075583435358f9F042D8D6E42Bd5C",
+    "0xFD54D094ad93349CA316bA309A3C8573E3D6C0cd"
+  ];
+  DEX_SPENDERS = [HOOD_UNIV2_ROUTER, HOOD_UNIV3_ROUTER, HOOD_KYBER_ROUTER, HOOD_PERMIT2];
+  ADDRESSES = { array: "address" };
+  V3_SINGLE = { tuple: ["address", "address", "uint", "address", "uint", "uint", "uint"] };
+  V3_PATH = { tuple: ["bytes", "address", "uint", "uint"] };
+  KYBER_DESC = {
+    tuple: [
+      "address",
+      "address",
+      { array: "address" },
+      { array: "uint" },
+      { array: "address" },
+      { array: "uint" },
+      "address",
+      "uint",
+      "uint",
+      "uint",
+      "bytes"
+    ]
+  };
+  KYBER_EXECUTION = { tuple: ["address", "address", "bytes", KYBER_DESC, "bytes"] };
+  V4_POOL_KEY = { tuple: ["address", "address", "uint", "uint", "address"] };
+  V4_SWAP_PARAMS = { tuple: [V4_POOL_KEY, "bool", "uint", "uint", "uint", "bytes"] };
+});
+
+// src/solana-verify.ts
+function isTokenProgram(program) {
+  return program === TOKEN_PROGRAM_ID || program === TOKEN_2022_PROGRAM_ID;
+}
+function systemIndex(data) {
+  if (data.length < 4)
+    return -1;
+  return new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(0, true);
+}
+function assetOf(asset) {
+  return asset === NATIVE_MINT ? "SOL" : asset;
+}
+function instructionProblem(tx, compiled, wallet, expect) {
+  for (const [i, ix] of tx.message.instructions.entries()) {
+    const program = compiled.keys[ix.programIdIndex];
+    const account = (at) => compiled.keys[ix.accountIndexes[at] ?? -1];
+    const kind = ix.data[0];
+    if (isTokenProgram(program)) {
+      if (kind === TOKEN_IX_APPROVE || kind === TOKEN_IX_APPROVE_CHECKED)
+        return `instruction ${i} approves a delegate over a token account`;
+      if (kind === TOKEN_IX_SET_AUTHORITY)
+        return `instruction ${i} changes a token account's authority`;
+      if (kind === TOKEN_IX_CLOSE_ACCOUNT && account(1) !== wallet)
+        return `instruction ${i} closes a token account to ${account(1) ?? "?"}, not this wallet`;
+    }
+    if (program === SYSTEM_PROGRAM_ID) {
+      const index = systemIndex(ix.data);
+      if ((index === SYSTEM_IX_ASSIGN || index === SYSTEM_IX_ALLOCATE) && account(0) === wallet)
+        return `instruction ${i} reassigns this wallet to another program`;
+    }
+    if (expect.kind !== "transfer")
+      continue;
+    if (program === undefined || !TRANSFER_PROGRAMS.has(program))
+      return `instruction ${i} calls ${program ?? "an unknown program"}, which a transfer never does`;
+    if (program === SYSTEM_PROGRAM_ID && systemIndex(ix.data) !== SYSTEM_IX_TRANSFER)
+      return `instruction ${i} is a System instruction other than Transfer`;
+    if (isTokenProgram(program) && kind !== TOKEN_IX_TRANSFER && kind !== TOKEN_IX_TRANSFER_CHECKED)
+      return `instruction ${i} is a token instruction other than Transfer`;
+    if (program === ASSOCIATED_TOKEN_PROGRAM_ID) {
+      const create = ix.data.length === 0 ? ATA_IX_CREATE : ix.data.length === 1 ? ix.data[0] : -1;
+      if (create !== ATA_IX_CREATE && create !== ATA_IX_CREATE_IDEMPOTENT)
+        return `instruction ${i} is an Associated Token instruction other than Create`;
+      const owner = account(2);
+      if (account(0) !== wallet || owner !== expect.recipient && owner !== wallet)
+        return `instruction ${i} creates a token account for ${owner ?? "?"}, not ${expect.recipient}`;
+    }
+  }
+  return null;
+}
+function holdings(views, wallet) {
+  const out = new Map;
+  const add2 = (asset, amount) => out.set(asset, (out.get(asset) ?? 0n) + amount);
+  for (const { address, view } of views) {
+    if (view === null)
+      continue;
+    if (address === wallet) {
+      add2("SOL", view.lamports);
+      continue;
+    }
+    const balance = tokenBalanceOf(view);
+    if (balance === undefined || balance.owner !== wallet)
+      continue;
+    add2("SOL", view.lamports);
+    if (balance.mint !== NATIVE_MINT)
+      add2(balance.mint, balance.amount);
+  }
+  return out;
+}
+function walletDeltas(simulation, wallet) {
+  const before = holdings(simulation.snapshots.map((s) => ({ address: s.address, view: s.before })), wallet);
+  const after = holdings(simulation.snapshots.map((s) => ({ address: s.address, view: s.after })), wallet);
+  const deltas = new Map;
+  for (const asset of new Set([...before.keys(), ...after.keys()]))
+    deltas.set(asset, (after.get(asset) ?? 0n) - (before.get(asset) ?? 0n));
+  if (!deltas.has("SOL"))
+    deltas.set("SOL", 0n);
+  return deltas;
+}
+function transferProblem(simulation, wallet, expect) {
+  const allowed = (address) => address === wallet || address === expect.recipient;
+  for (const { address, before, after } of simulation.snapshots) {
+    const lamportsBefore = before?.lamports ?? 0n;
+    const lamportsAfter = after?.lamports ?? 0n;
+    const tokenAfter = tokenBalanceOf(after);
+    const tokenBefore = tokenBalanceOf(before);
+    if (lamportsAfter > lamportsBefore && !allowed(address) && !allowed(tokenAfter?.owner))
+      return `${address} would receive ${lamportsAfter - lamportsBefore} lamports, and only ${expect.recipient} may`;
+    const amountBefore = tokenBefore?.amount ?? 0n;
+    const amountAfter = tokenAfter?.amount ?? 0n;
+    if (tokenAfter !== undefined && amountAfter > amountBefore && !allowed(tokenAfter.owner))
+      return `${tokenAfter.owner} would receive ${amountAfter - amountBefore} raw of ${tokenAfter.mint}, and only ${expect.recipient} may`;
+  }
+  const asset = assetOf(expect.asset);
+  const deltas = walletDeltas(simulation, wallet);
+  const sol = deltas.get("SOL") ?? 0n;
+  for (const [mint, delta] of deltas) {
+    if (mint === "SOL" || mint === asset || delta >= 0n)
+      continue;
+    return `the wallet would also lose ${-delta} raw of ${mint}`;
+  }
+  if (asset === "SOL") {
+    if (-sol < expect.amountRaw || -sol > expect.amountRaw + SOLANA_OVERHEAD_LAMPORTS)
+      return `the wallet would lose ${-sol} lamports, not the ${expect.amountRaw} confirmed plus network fees`;
+    const recipient = simulation.snapshots.find((s) => s.address === expect.recipient);
+    const received2 = (recipient?.after?.lamports ?? 0n) - (recipient?.before?.lamports ?? 0n);
+    if (received2 !== expect.amountRaw)
+      return `${expect.recipient} would receive ${received2} lamports, not the ${expect.amountRaw} confirmed`;
+    return null;
+  }
+  const moved = -(deltas.get(asset) ?? 0n);
+  if (moved !== expect.amountRaw)
+    return `the wallet would send ${moved} raw of ${asset}, not the ${expect.amountRaw} confirmed`;
+  if (-sol > SOLANA_OVERHEAD_LAMPORTS)
+    return `the wallet would also lose ${-sol} lamports, more than network fees and rent`;
+  let received = 0n;
+  for (const { before, after } of simulation.snapshots) {
+    const post = tokenBalanceOf(after);
+    if (post === undefined || post.owner !== expect.recipient || post.mint !== asset)
+      continue;
+    received += post.amount - (tokenBalanceOf(before)?.amount ?? 0n);
+  }
+  if (received <= 0n)
+    return `${expect.recipient} would receive none of ${asset}`;
+  return null;
+}
+function swapProblem(simulation, wallet, expect) {
+  const spend = assetOf(expect.spend);
+  const receive = expect.receive === undefined ? undefined : assetOf(expect.receive.asset);
+  const deltas = walletDeltas(simulation, wallet);
+  for (const [asset, delta] of deltas) {
+    if (asset === "SOL" || asset === spend || asset === receive || delta >= 0n)
+      continue;
+    return `the wallet would also lose ${-delta} raw of ${asset}`;
+  }
+  const sol = deltas.get("SOL") ?? 0n;
+  const spent = -(deltas.get(spend) ?? 0n);
+  const spendLimit = expect.maxSpendRaw + (spend === "SOL" ? SOLANA_OVERHEAD_LAMPORTS : 0n);
+  if (spent > spendLimit)
+    return `the wallet would spend ${spent} raw of ${spend}, more than the ${expect.maxSpendRaw} confirmed${spend === "SOL" ? " plus network fees" : ""}`;
+  if (spend !== "SOL" && receive !== "SOL" && -sol > SOLANA_OVERHEAD_LAMPORTS)
+    return `the wallet would also lose ${-sol} lamports, more than network fees and rent`;
+  if (expect.receive === undefined || receive === undefined)
+    return null;
+  const received = deltas.get(receive) ?? 0n;
+  const floor = expect.receive.minRaw - (receive === "SOL" ? SOLANA_OVERHEAD_LAMPORTS : 0n);
+  if (received < floor || receive !== "SOL" && received <= 0n)
+    return `the wallet would receive ${received} raw of ${receive}, less than the ${expect.receive.minRaw} confirmed`;
+  return null;
+}
+async function solanaSpendProblem(transactionBase64, wallet, rpc, expect) {
+  let tx;
+  try {
+    tx = decodeTransaction(decodeStrictBase64(transactionBase64));
+  } catch (error) {
+    if (error instanceof TransactionDecodeError)
+      return `the transaction does not decode: ${error.message}`;
+    throw error;
+  }
+  if (tx.message.staticKeys[0] !== wallet)
+    return `the fee payer is ${tx.message.staticKeys[0]}, not this wallet`;
+  let compiled;
+  try {
+    compiled = await resolveCompiledKeys(tx.message, rpc);
+  } catch (error) {
+    if (error instanceof LookupTableError)
+      return `a lookup table did not resolve: ${error.message}`;
+    throw error;
+  }
+  const refused = instructionProblem(tx, compiled, wallet, expect);
+  if (refused)
+    return refused;
+  let simulation;
+  try {
+    simulation = await simulateWithSnapshots(rpc, transactionBase64, compiled);
+  } catch (error) {
+    if (isRateLimited(error))
+      throw error;
+    return `the simulation could not be run: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (simulation.result.err !== null && simulation.result.err !== undefined)
+    return `the simulation failed: ${JSON.stringify(simulation.result.err)}`;
+  const control = controlChanges(simulation.snapshots, (address) => address === wallet);
+  if (control[0] !== undefined)
+    return describeControlChange(control[0]);
+  return expect.kind === "transfer" ? transferProblem(simulation, wallet, expect) : swapProblem(simulation, wallet, expect);
+}
+var NATIVE_MINT = "So11111111111111111111111111111111111111112", SOLANA_OVERHEAD_LAMPORTS = 20000000n, TOKEN_IX_TRANSFER = 3, TOKEN_IX_APPROVE = 4, TOKEN_IX_SET_AUTHORITY = 6, TOKEN_IX_CLOSE_ACCOUNT = 9, TOKEN_IX_TRANSFER_CHECKED = 12, TOKEN_IX_APPROVE_CHECKED = 13, SYSTEM_IX_ASSIGN = 1, SYSTEM_IX_TRANSFER = 2, SYSTEM_IX_ALLOCATE = 8, ATA_IX_CREATE = 0, ATA_IX_CREATE_IDEMPOTENT = 1, TRANSFER_PROGRAMS;
+var init_solana_verify = __esm(() => {
+  init_solana_alt();
+  init_solana_lite();
+  TRANSFER_PROGRAMS = new Set([
+    SYSTEM_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+    COMPUTE_BUDGET_PROGRAM_ID,
+    MEMO_PROGRAM_ID
+  ]);
 });
 
 // src/commands/swap.ts
@@ -12680,15 +13540,15 @@ async function swap(args, ctx) {
     const outDecimals = await decimalsFor(ctx, to, solana);
     let amountRaw;
     if (percent !== undefined) {
-      const reader = await solana();
+      const reader2 = await solana();
       let balance;
       if (from === "SOL")
-        balance = await tradingRead(ctx, reader, () => reader.rpc.getBalance(wallet.address));
+        balance = await tradingRead(ctx, reader2, () => reader2.rpc.getBalance(wallet.address));
       else {
         const mint = BASES[from]?.mint ?? from;
-        const accounts = (await tradingRead(ctx, reader, () => Promise.all([
-          reader.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_PROGRAM_ID),
-          reader.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_2022_PROGRAM_ID)
+        const accounts = (await tradingRead(ctx, reader2, () => Promise.all([
+          reader2.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_PROGRAM_ID),
+          reader2.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_2022_PROGRAM_ID)
         ]))).flat();
         balance = accounts.filter((account) => account.mint === mint).reduce((sum, account) => sum + BigInt(account.amountRaw), 0n);
       }
@@ -12771,6 +13631,21 @@ async function swap(args, ctx) {
       throw new TradingError("INVALID_RESPONSE", "A TEE swap must contain exactly one same-chain transaction.");
     if (!transaction)
       throw new TradingError("INVALID_RESPONSE", "Missing transaction.");
+    const feeRaw = BigInt(data.fee.feeRaw);
+    const feeInInput = kind === "trade" && Boolean(fromBase);
+    const solanaAssetOf = (asset) => asset === "SOL" ? "SOL" : BASES[asset]?.mint ?? asset;
+    const reader = await solana();
+    const problem = await tradingRead(ctx, reader, () => solanaSpendProblem(transaction, wallet.address, reader.rpc, {
+      kind: "swap",
+      spend: solanaAssetOf(from),
+      maxSpendRaw: BigInt(amountRaw) + (feeInInput ? feeRaw : 0n),
+      receive: {
+        asset: solanaAssetOf(to),
+        minRaw: BigInt(minimumRaw)
+      }
+    }));
+    if (problem)
+      throw new TradingError("INVALID_RESPONSE", `The transaction Candle built does not match the confirmed quote (${safeText(problem)}); nothing was signed.`);
     const signed = await relaySign(ctx, key, payerWallet.wallet, transaction);
     const result = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/submit", {
       clientTradeId: id,
@@ -12980,6 +13855,19 @@ async function hoodSwap(ctx, args) {
     throw chainMismatch(`TEE wallet ${wallet.id}`, wallet.chain === "evm" ? "hood" : "solana", "hood");
   const recorded = kind === "trade" ? token : HOOD_USDG_ADDRESS;
   const notices = [];
+  const feeRaw = BigInt(data.fee.feeRaw);
+  const treasury = data.fee.treasury;
+  const feeAsset = artifacts.quoteAsset === "usdg" ? "usdg" : "eth";
+  const checkLeg = hoodTradeLegCheck({
+    wallet: wallet.address,
+    inputToken: from.asset === "ETH" ? undefined : from.asset === "USDG" ? HOOD_USDG_ADDRESS : from.asset,
+    amountRaw: BigInt(amountRaw),
+    outputToken: to.asset === "ETH" ? undefined : to.asset === "USDG" ? HOOD_USDG_ADDRESS : to.asset,
+    minOutRaw: BigInt(data.minOutRaw),
+    venue: kind === "trade" && artifacts.venue === "curve" ? "curve" : "dex",
+    ...kind === "trade" && feeRaw > 0n && typeof treasury === "string" ? { fee: { cap: feeRaw, asset: feeAsset, treasury } } : {},
+    curve: () => registeredCurveFor(rpc(), token)
+  });
   const run = await runSequencedLegs(ctx, key, {
     wallet,
     first: sequenced,
@@ -12989,6 +13877,7 @@ async function hoodSwap(ctx, args) {
     clientId: id,
     kind,
     allowedLegs: HOOD_TRADE_LEGS,
+    checkLeg,
     onLanded: async (_leg) => {
       const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded));
       if (notice)
@@ -13141,6 +14030,13 @@ async function bridgeSwap(ctx, args) {
     const problem = await tradingRead(ctx, reader, () => relaySolanaDepositProblem(transaction, wallet.address, reader.rpc));
     if (problem)
       throw refused(problem);
+    const spent = await tradingRead(ctx, reader, () => solanaSpendProblem(transaction, wallet.address, reader.rpc, {
+      kind: "swap",
+      spend: from === "SOL" ? "SOL" : BASES[from]?.mint ?? from,
+      maxSpendRaw: BigInt(amountRaw)
+    }));
+    if (spent)
+      throw refused(spent);
   }
   const outDecimals = BRIDGE_ASSETS[to].decimals;
   const minimumRaw = (BigInt(data.expectedOutRaw) * BigInt(1e4 - args.slippage) / 10000n).toString();
@@ -13253,10 +14149,12 @@ var init_swap = __esm(() => {
   init_args();
   init_bridge();
   init_evm_lite();
+  init_hood_legs();
   init_profiles();
   init_render();
   init_solana_endpoint();
   init_solana_lite();
+  init_solana_verify();
   init_trading();
   settlementSchema = exports_external.object({
     state: exports_external.enum(["settled", "pending", "failed", "uncertain"]),
@@ -13596,6 +14494,7 @@ var KEYS_PATH = "/api/v1/agent/keys", ACCESS_LEVELS, NO_DEVICE_TOKEN;
 var init_keys = __esm(() => {
   init_agent_key_access();
   init_args();
+  init_client();
   init_deps();
   init_profiles();
   init_render();
@@ -16293,6 +17192,7 @@ async function runRoleCheck(ctx, rpc, addresses) {
 }
 var SENTENCE_PREFIX = "You are about to accept ", CONFIRM_WORD = "confirm";
 var init_promote_support = __esm(() => {
+  init_client();
   init_keys();
   init_deps();
   init_profiles();
@@ -16315,11 +17215,11 @@ function parseCloseArtifact(body) {
     return;
   return { transaction, accountKeys };
 }
-function isTokenProgram(owner) {
+function isTokenProgram2(owner) {
   return owner === TOKEN_PROGRAM_ID || owner === TOKEN_2022_PROGRAM_ID;
 }
 function isMintAccount(view) {
-  if (view === null || !isTokenProgram(view.owner))
+  if (view === null || !isTokenProgram2(view.owner))
     return false;
   if (view.data.length === MINT_BASE_SIZE)
     return true;
@@ -16383,8 +17283,8 @@ async function verifyCloseArtifact(input) {
       case COMPUTE_BUDGET_PROGRAM_ID:
         break;
       case ASSOCIATED_TOKEN_PROGRAM_ID: {
-        const kind = ix.data.length === 0 ? ATA_IX_CREATE : ix.data.length === 1 ? ix.data[0] : -1;
-        if (kind !== ATA_IX_CREATE && kind !== ATA_IX_CREATE_IDEMPOTENT)
+        const kind = ix.data.length === 0 ? ATA_IX_CREATE2 : ix.data.length === 1 ? ix.data[0] : -1;
+        if (kind !== ATA_IX_CREATE2 && kind !== ATA_IX_CREATE_IDEMPOTENT2)
           return refuse2(`instruction ${i} is an Associated Token instruction other than Create, which a close never needs`);
         if (account(0) !== tee || !allowedOwner(account(2) ?? ""))
           return refuse2(`instruction ${i} creates a token account for ${account(2) ?? "?"}, not the TEE wallet or its vault`);
@@ -16392,7 +17292,7 @@ async function verifyCloseArtifact(input) {
       }
       case TOKEN_PROGRAM_ID:
       case TOKEN_2022_PROGRAM_ID: {
-        if (ix.data[0] !== TOKEN_IX_CLOSE_ACCOUNT || ix.data.length !== 1)
+        if (ix.data[0] !== TOKEN_IX_CLOSE_ACCOUNT2 || ix.data.length !== 1)
           return refuse2(`instruction ${i} is a token instruction other than CloseAccount, which a close never issues at the top level`);
         if (account(1) !== tee || account(2) !== tee)
           return refuse2(`instruction ${i} closes a token account to ${account(1) ?? "?"}, not the TEE wallet`);
@@ -16446,9 +17346,9 @@ async function verifyCloseArtifact(input) {
     if (before !== null) {
       const controlled = tokenBalanceOf(before);
       if (controlled !== undefined && allowedOwner(controlled.owner)) {
-        if (after.data.length < TOKEN_ACCOUNT_SIZE2)
+        if (after.data.length < TOKEN_ACCOUNT_SIZE)
           return refuse2(`token account ${address} would no longer decode as a token account`);
-        for (const [start, end, what] of CONTROL_RANGES) {
+        for (const [start, end, what] of TOKEN_CONTROL_RANGES) {
           if (!bytesEqual2(before.data.subarray(start, end), after.data.subarray(start, end)))
             return refuse2(`token account ${address} would change its ${what}, which a close never does`);
         }
@@ -16488,7 +17388,7 @@ async function verifyCloseArtifact(input) {
         continue;
       return refuse2(`writable account ${key} does not exist and is not a TEE or vault associated token account for a mint this transaction names`);
     }
-    if (isTokenProgram(view.owner)) {
+    if (isTokenProgram2(view.owner)) {
       if (key === nftMint)
         continue;
       const balance = tokenBalanceOf(view);
@@ -16548,7 +17448,7 @@ function describeClose(input) {
   lines.push("note        the simulation is evidence, not a guarantee: a program can behave differently once signed");
   return lines;
 }
-var DAMM_V2_PROGRAM_ID = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG", CLOSE_PROGRAM_ALLOWLIST, DAMM_POSITION_CLOSE_UNAVAILABLE = "DAMM_POSITION_CLOSE_UNAVAILABLE", DAMM_CLOSE_TRANSACTION_REFUSED = "DAMM_CLOSE_TRANSACTION_REFUSED", MINT_BASE_SIZE = 82, ACCOUNT_TYPE_OFFSET = 165, ACCOUNT_TYPE_MINT = 1, MULTISIG_SIZE = 355, TOKEN_ACCOUNT_SIZE2 = 165, TOKEN_ACCOUNT_STATE_INITIALIZED = 1, CONTROL_RANGES, TOKEN_IX_CLOSE_ACCOUNT = 9, ATA_IX_CREATE = 0, ATA_IX_CREATE_IDEMPOTENT = 1;
+var DAMM_V2_PROGRAM_ID = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG", CLOSE_PROGRAM_ALLOWLIST, DAMM_POSITION_CLOSE_UNAVAILABLE = "DAMM_POSITION_CLOSE_UNAVAILABLE", DAMM_CLOSE_TRANSACTION_REFUSED = "DAMM_CLOSE_TRANSACTION_REFUSED", MINT_BASE_SIZE = 82, ACCOUNT_TYPE_OFFSET = 165, ACCOUNT_TYPE_MINT = 1, MULTISIG_SIZE = 355, TOKEN_ACCOUNT_STATE_INITIALIZED = 1, TOKEN_IX_CLOSE_ACCOUNT2 = 9, ATA_IX_CREATE2 = 0, ATA_IX_CREATE_IDEMPOTENT2 = 1;
 var init_lp_close = __esm(() => {
   init_solana_alt();
   init_solana_lite();
@@ -16560,14 +17460,6 @@ var init_lp_close = __esm(() => {
     COMPUTE_BUDGET_PROGRAM_ID,
     SYSTEM_PROGRAM_ID
   ]);
-  CONTROL_RANGES = [
-    [0, 32, "mint"],
-    [32, 64, "authority"],
-    [72, 108, "delegate"],
-    [108, 109, "state"],
-    [121, 129, "delegated amount"],
-    [129, 165, "close authority"]
-  ];
 });
 
 // src/sweep-pending.ts
@@ -27581,14 +28473,14 @@ function availabilityText(envelope, facts) {
   return availability.state === "available" ? availabilityLabel(availability) : `${availabilityLabel(availability)}: ${availability.reason}`;
 }
 async function chooseFactor(ctx, vaultId, allEnvelopes, facts, requested, opts = {}) {
-  const among = opts.among;
-  const envelopes = among === undefined ? allEnvelopes : allEnvelopes.filter((envelope) => among.envelopeIds.includes(envelope.id));
+  const among2 = opts.among;
+  const envelopes = among2 === undefined ? allEnvelopes : allEnvelopes.filter((envelope) => among2.envelopeIds.includes(envelope.id));
   const hasOtherFactor = allEnvelopes.some((envelope) => !isPassphraseEnvelope(envelope));
   let flag = requested;
-  if (among !== undefined && flag !== undefined && flag !== "passphrase") {
+  if (among2 !== undefined && flag !== undefined && flag !== "passphrase") {
     const namesExcluded = envelopes.every((envelope) => !matchesFlag(envelope, flag)) && allEnvelopes.some((envelope) => matchesFlag(envelope, flag));
     if (namesExcluded) {
-      ctx.deps.stderr.write(`--factor ${flag} is not used here: ${among.excludedBecause}
+      ctx.deps.stderr.write(`--factor ${flag} is not used here: ${among2.excludedBecause}
 `);
       flag = undefined;
     }
@@ -27615,8 +28507,8 @@ async function chooseFactor(ctx, vaultId, allEnvelopes, facts, requested, opts =
       }
       if (!hasOtherFactor)
         return { kind: "passphrase" };
-      if (among !== undefined)
-        return { kind: "passphrase", onlyBecause: among.because(unusable()) };
+      if (among2 !== undefined)
+        return { kind: "passphrase", onlyBecause: among2.because(unusable()) };
       const detail = unusable().map((entry) => `${entry.id} ${entry.word}: ${entry.availability}`).join("; ");
       return {
         kind: "passphrase",
@@ -28072,7 +28964,9 @@ async function completeLinkedWalletRead(ctx, apiKey) {
   };
 }
 var MAX_PAGES = 100, PAGE_LIMIT = 100;
-var init_linked_wallets = () => {};
+var init_linked_wallets = __esm(() => {
+  init_client();
+});
 
 // src/vault/reconcile-grant.ts
 async function reconcileGrant(ctx, entry, opts = {}) {
@@ -28254,6 +29148,7 @@ function sameWalletAddress(a, b) {
   return a === b;
 }
 var init_reconcile_grant = __esm(() => {
+  init_client();
   init_deps();
   init_errors2();
   init_format();
@@ -31222,6 +32117,7 @@ async function runImportFlow(params) {
 }
 var TEE_PROFILE = "ember-tee";
 var init_wallet_import_flow = __esm(() => {
+  init_client();
   init_secret_store();
   init_wallet_import();
 });
@@ -31402,12 +32298,12 @@ async function readEvmHoldings(rpc, address) {
   ]);
   return { eth, usdg, weth };
 }
-function holdingsLines(address, holdings, observedAt) {
+function holdingsLines(address, holdings2, observedAt) {
   return [
     `Holdings at ${address} on Hood (observed ${observedAt}):`,
-    `  ETH   ${formatUnits(holdings.eth, NATIVE_DECIMALS)}  (${holdings.eth} wei)`,
-    `  USDG  ${formatUnits(holdings.usdg, HOOD_USDG_DECIMALS)}  (${holdings.usdg} raw)`,
-    `  WETH  ${formatUnits(holdings.weth, NATIVE_DECIMALS)}  (${holdings.weth} raw)`,
+    `  ETH   ${formatUnits(holdings2.eth, NATIVE_DECIMALS)}  (${holdings2.eth} wei)`,
+    `  USDG  ${formatUnits(holdings2.usdg, HOOD_USDG_DECIMALS)}  (${holdings2.usdg} raw)`,
+    `  WETH  ${formatUnits(holdings2.weth, NATIVE_DECIMALS)}  (${holdings2.weth} raw)`,
     "  Other tokens are not listed: an EVM RPC has no token-account listing."
   ];
 }
@@ -31528,6 +32424,7 @@ function assertWalletLockFree(entry, lock, now) {
 }
 var init_evm_tee = __esm(() => {
   init_bridge();
+  init_client();
   init_deps();
   init_evm_lite();
   init_errors2();
@@ -32347,6 +33244,7 @@ var TEE_PROFILES, LINKED_WALLETS_PAGE_LIMIT = 100, LINKED_WALLETS_PAGE_CAP = 25,
 var init_wallets = __esm(() => {
   init_esm();
   init_args();
+  init_client();
   init_deps();
   init_key_signers();
   init_profiles();
@@ -33218,6 +34116,7 @@ var MAX_TOKEN_TRANSFER_GAS = 1000000n;
 var init_tee_evm = __esm(() => {
   init_args();
   init_bridge();
+  init_client();
   init_deps();
   init_evm_lite();
   init_profiles();
@@ -33433,6 +34332,7 @@ async function teeStatusEvm(ctx, parsed, address) {
 }
 var GAS_LOW_RESERVE_MULTIPLE = 2n;
 var init_tee_status_evm = __esm(() => {
+  init_client();
   init_deps();
   init_evm_lite();
   init_render();
@@ -35294,6 +36194,7 @@ var init_tee = __esm(() => {
   init_esm();
   init_args();
   init_bridge();
+  init_client();
   init_deps();
   init_lp_close();
   init_profiles();
@@ -35805,6 +36706,7 @@ async function teeRebinds(args, ctx) {
 var REBIND_PATH = "/api/v1/agent/tee-wallets/rebind", REBINDS_PATH = "/api/v1/agent/tee-wallets/rebinds", KEYS_PATH2 = "/api/v1/agent/keys", USAGE_REBIND = "Usage: candle tee rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>] [--json]", USAGE_REBINDS = "Usage: candle tee rebinds [wallet] [--json]", DEVICE_TOKEN_REQUIRED, KEY_PREFIX_RE2, REBIND_NOTHING_PINNED = "Nothing was signed, nothing moved and nothing was pinned.", RELAY_SIGNER_LINE = "The relay signer does not move: trade these wallets from the machine that promoted them.", PORTAL_REVOKE_LINE = "A device token cannot revoke devices: revoke a device you do not recognise from the portal, with a signed-in session.";
 var init_tee_rebind = __esm(() => {
   init_args();
+  init_client();
   init_deps();
   init_key_signers();
   init_profiles();
@@ -36056,6 +36958,7 @@ function writeChanged(ctx, result, command) {
 var KEYS_PATH3 = "/api/v1/agent/keys", EMBEDDED_WALLET_CHOICES, USAGE_UPDATE = "Usage: candle keys update <prefix|label> --embedded-wallet <allow|deny> [--yes] [--json]", USAGE_SELF = "Usage: candle keys self embedded-wallet deny [--json]", ALLOW_REQUIRES_TTY, NO_API_KEY, SELF_CANNOT_ALLOW;
 var init_keys_embedded_wallet = __esm(() => {
   init_args();
+  init_client();
   init_deps();
   init_profiles();
   init_render();
@@ -61108,13 +62011,52 @@ function assertTransportSecurity(apiUrl, env) {
     return;
   throw new Error(`Refusing to send credentials in the clear to ${parsed.origin}. Set CANDLE_API_URL to an https:// ` + (isPrivateHost2(parsed.hostname) ? "URL, or set CANDLE_ALLOW_INSECURE_HTTP=1 if this really is a trusted local endpoint." : "URL. CANDLE_ALLOW_INSECURE_HTTP does not apply here: it covers private networks only, " + "and this is a public address."));
 }
+function keyedRedirectGuard(doFetch) {
+  return async (url, init) => {
+    if (!init?.headers || !new Headers(init.headers).has("x-api-key"))
+      return doFetch(url, init);
+    let current = url;
+    let next = { ...init, redirect: "manual" };
+    for (let hops = 0;; hops++) {
+      const response = await doFetch(current, next);
+      const headers = response.headers;
+      const location = REDIRECT_STATUSES2.has(response.status) ? headers?.get?.("location") : null;
+      if (!location)
+        return response;
+      const from = new URL(current);
+      const target = new URL(location, from);
+      if (target.origin !== from.origin)
+        throw new CrossOriginRedirectError2(from.origin, target.origin);
+      if (hops >= MAX_REDIRECTS2)
+        throw new Error(`More than ${MAX_REDIRECTS2} redirects from ${url}`);
+      const method = (next.method ?? "GET").toUpperCase();
+      if (response.status === 303 && method !== "GET" && method !== "HEAD" || (response.status === 301 || response.status === 302) && method === "POST") {
+        next = { ...next, method: "GET", body: undefined };
+      }
+      current = target.href;
+    }
+  };
+}
 function resolveConfig(env = process.env) {
   const apiUrl = env.CANDLE_API_URL?.trim() || DEFAULT_API_URL2;
   assertTransportSecurity(apiUrl, env);
   const apiKey = env.CANDLE_AGENT_API_KEY?.trim() || env.CANDLE_API_KEY?.trim();
   return apiKey ? { apiUrl, apiKey } : { apiUrl };
 }
-var DEFAULT_API_URL2 = "https://api.alpha.candle.tv";
+var DEFAULT_API_URL2 = "https://api.alpha.candle.tv", REDIRECT_STATUSES2, MAX_REDIRECTS2 = 5, CrossOriginRedirectError2;
+var init_client2 = __esm(() => {
+  REDIRECT_STATUSES2 = new Set([301, 302, 303, 307, 308]);
+  CrossOriginRedirectError2 = class CrossOriginRedirectError2 extends Error {
+    from;
+    to;
+    constructor(from, to) {
+      super(`The API at ${from} redirected to ${to}, another origin. Not followed, so the API key was not sent there.`);
+      this.from = from;
+      this.to = to;
+      this.name = "CrossOriginRedirectError";
+    }
+  };
+});
 
 // ../mcp/src/convert.ts
 function defaultQuoteId(chain2) {
@@ -61162,7 +62104,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.16";
+var SERVER_VERSION = "0.10.17";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -62136,6 +63078,65 @@ async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
   const size = asked < held ? String(params.size) : String(szi).replace(/^-/, "");
   return { asset, isBuy: signed < 0n, size };
 }
+async function hyperliquidOrderMarket2(fetcher, network2, address, method, params) {
+  const read = async (body) => {
+    const res = await fetcher(HYPERLIQUID_INFO_URLS2[network2], {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok)
+      throw new Error("Cannot read the market from Hyperliquid");
+    return JSON.parse(await res.text());
+  };
+  let coin = String(params.coin ?? "").toUpperCase();
+  let order;
+  if (method === "modify") {
+    const status = await read({ type: "orderStatus", user: address, oid: params.cloid });
+    const resting = status?.order?.order ?? null;
+    if (!resting || typeof resting.coin !== "string" || decimal2(resting.limitPx) === null)
+      throw new Error("No resting order with this cloid on Hyperliquid");
+    coin = resting.coin.toUpperCase();
+    order = { isBuy: resting.side === "B", limitPx: String(resting.limitPx) };
+  }
+  const [meta2, contexts] = await read({ type: "metaAndAssetCtxs" });
+  const asset = meta2.universe.findIndex((m) => m.name.toUpperCase() === coin);
+  if (asset < 0 || asset >= 1e4)
+    throw new Error("No main-universe market for this coin on Hyperliquid");
+  const context = contexts[asset];
+  const midPx = context?.midPx ?? context?.markPx;
+  if ((decimal2(midPx) ?? 0n) <= 0n)
+    throw new Error("No Hyperliquid price for this coin");
+  return { asset, midPx: String(midPx), ...order ? { order } : {} };
+}
+function checkOrderMarket2(action, intent, market) {
+  const list = action.type === "modify" ? [action.order] : action.orders;
+  if (!Array.isArray(list) || list.length === 0)
+    return "missing requested order";
+  if (list.some((o) => !o || o.a !== market.asset))
+    return "order asset is not the requested coin's on Hyperliquid";
+  const first = list[0];
+  const p = intent.params;
+  if (intent.method === "open" && p.price == null) {
+    const requested = p.slippageBps;
+    const slippage2 = typeof requested === "number" && Number.isInteger(requested) && requested > 0 ? requested : HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2;
+    const bound = BigInt(slippage2 + HYPERLIQUID_MID_DRIFT_BPS2);
+    const px = decimal2(first.p) ?? 0n;
+    const mid = decimal2(market.midPx) ?? 0n;
+    const within = first.b === true ? px * 10000n <= mid * (10000n + bound) : px * 10000n >= mid * (10000n - bound);
+    if (mid <= 0n || !within)
+      return "market order price is outside its slippage of Hyperliquid's mid";
+  }
+  if (intent.method === "modify") {
+    if (!market.order)
+      return "no resting order on Hyperliquid to check the modify against";
+    if (first.b !== market.order.isBuy)
+      return "modify changes the resting order's side";
+    if (p.price == null && decimal2(first.p) !== decimal2(market.order.limitPx))
+      return "modify changes the resting order's price";
+  }
+  return null;
+}
 function verifyPerpsBuild2(build, opts) {
   try {
     const network2 = opts.network ?? "mainnet";
@@ -62162,6 +63163,13 @@ function verifyPerpsBuild2(build, opts) {
       const order = action.orders[0];
       if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal2(order.s) !== decimal2(opts.closeOrder.size) || order.r !== true)
         return { ok: false, reason: "close side, asset or size does not match the requested position" };
+    }
+    if (opts.market) {
+      if (opts.intent?.method !== "open" && opts.intent?.method !== "modify")
+        return { ok: false, reason: "a market check needs an open or modify intent" };
+      const marketRefusal = checkOrderMarket2(action, opts.intent, opts.market);
+      if (marketRefusal)
+        return { ok: false, reason: marketRefusal };
     }
     if (typed.primary_type === "Agent") {
       const type = action.type;
@@ -62220,7 +63228,7 @@ function hyperliquidExchangeBody2(action, nonce, signature) {
 function hyperliquidRelayBody2(typedData) {
   return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
 }
-var HYPERLIQUID_ALLOWED_ACTION_TYPES2, HYPERLIQUID_EXCHANGE_URLS2, CANDLE_HYPERLIQUID_BUILDER_ADDRESS2 = null, HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS2 = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE2 = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID2 = "0xa4b1", ZERO_ADDRESS2 = "0x0000000000000000000000000000000000000000", UINT64_MAX2, INT64_MIN2, EVM_ADDRESS_RE2;
+var HYPERLIQUID_ALLOWED_ACTION_TYPES2, HYPERLIQUID_EXCHANGE_URLS2, HYPERLIQUID_INFO_URLS2, CANDLE_HYPERLIQUID_BUILDER_ADDRESS2 = null, HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS2 = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE2 = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID2 = "0xa4b1", ZERO_ADDRESS2 = "0x0000000000000000000000000000000000000000", UINT64_MAX2, INT64_MIN2, EVM_ADDRESS_RE2, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2 = 100, HYPERLIQUID_MID_DRIFT_BPS2 = 100;
 var init_hyperliquid = __esm(() => {
   init_sha3();
   HYPERLIQUID_ALLOWED_ACTION_TYPES2 = [
@@ -62233,6 +63241,10 @@ var init_hyperliquid = __esm(() => {
   HYPERLIQUID_EXCHANGE_URLS2 = {
     mainnet: "https://api.hyperliquid.xyz/exchange",
     testnet: "https://api.hyperliquid-testnet.xyz/exchange"
+  };
+  HYPERLIQUID_INFO_URLS2 = {
+    mainnet: "https://api.hyperliquid.xyz/info",
+    testnet: "https://api.hyperliquid-testnet.xyz/info"
   };
   UINT64_MAX2 = (1n << 64n) - 1n;
   INT64_MIN2 = -(1n << 63n);
@@ -62343,6 +63355,18 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       });
       if (!closeCheck.ok)
         return fail3("PERPS_BUILD_REFUSED", `Refused to sign this build: ${closeCheck.reason}. Nothing was signed.`);
+    }
+    if (method === "open") {
+      const market = await hyperliquidOrderMarket2(fetch2, network2, row.address, method, fields);
+      const marketCheck = verifyPerpsBuild2(build, {
+        builder,
+        network: network2,
+        address: row.address,
+        intent: { method, params: fields },
+        market
+      });
+      if (!marketCheck.ok)
+        return fail3("PERPS_BUILD_REFUSED", `Refused to sign this build: ${marketCheck.reason}. Nothing was signed.`);
     }
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
@@ -63080,7 +64104,7 @@ function registerToolSubset(server, options) {
   const allowed = new Set(options.tools);
   const getConfig = options.getConfig;
   const env = options.env ?? {};
-  const doFetch = options.fetch ?? ((url, init) => fetch(url, init));
+  const doFetch = keyedRedirectGuard(options.fetch ?? ((url, init) => fetch(url, init)));
   const register = (name2, definition, handler) => {
     if (!allowed.has(name2))
       return;
@@ -63407,7 +64431,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   let eligible = false;
   if (cfg.apiKey && wanted.length > 0) {
     try {
-      const res = await doFetch(`${cfg.apiUrl}/api/v1/agent/keys/self/public-profile`, {
+      const res = await keyedRedirectGuard(doFetch)(`${cfg.apiUrl}/api/v1/agent/keys/self/public-profile`, {
         method: "GET",
         headers: { "x-api-key": cfg.apiKey },
         signal: AbortSignal.timeout(15000)
@@ -63432,6 +64456,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
 var VAMP_CANDIDATES_DESCRIPTION, CUSTOM_CURVE_RULE, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name2) => PROFILE_EDIT_TOOL_NAMES.includes(name2), OPERATION_NOT_FOUND_RULE, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, vampCandidatesShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape;
 var init_tools = __esm(() => {
   init_zod();
+  init_client2();
   init_convert();
   init_image();
   init_market_disclosure();
@@ -63739,6 +64764,7 @@ Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv â
 });
 
 // src/index.ts
+init_client();
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { chmod as chmod8, readFile as readFile10, realpath as realpath2, rename as rename6, unlink, writeFile as writeFile7 } from "node:fs/promises";
@@ -63747,6 +64773,7 @@ import { pathToFileURL } from "node:url";
 
 // src/commands/agent-post.ts
 init_args();
+init_client();
 init_render();
 init_trading();
 init_swap();
@@ -63842,6 +64869,7 @@ ${USAGE}`);
 
 // src/commands/agent-profile.ts
 init_args();
+init_client();
 init_render();
 init_trading();
 init_swap();
@@ -63907,6 +64935,7 @@ import { homedir as homedir3 } from "node:os";
 import { join as join8 } from "node:path";
 
 // src/account.ts
+init_client();
 async function fetchAccount(deps, apiUrl, apiKey) {
   const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
     auth: "key",
@@ -63927,6 +64956,7 @@ init_agent_key_access();
 init_args();
 
 // src/checks.ts
+init_client();
 init_render();
 async function runLiveCheck(params) {
   const { deps, apiUrl, path, auth, credential, check, passDetail } = params;
@@ -63941,13 +64971,14 @@ async function runLiveCheck(params) {
 }
 
 // src/commands/auth.ts
+init_client();
 init_deps();
 init_profiles();
 init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.28";
+var CLI_VERSION = "0.11.29";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -65295,10 +66326,10 @@ var HELP = {
     examples: ["candle help", "candle help vault", "candle help completion"]
   }
 };
-function topicFor(word2) {
-  if (Object.hasOwn(HELP, word2))
-    return HELP[word2];
-  return Object.values(HELP).find((topic) => topic.display === word2);
+function topicFor(word3) {
+  if (Object.hasOwn(HELP, word3))
+    return HELP[word3];
+  return Object.values(HELP).find((topic) => topic.display === word3);
 }
 function displayName(canonical) {
   return HELP[canonical]?.display ?? canonical;
@@ -65332,14 +66363,14 @@ function wrap(text, width) {
     return [text];
   const lines = [];
   let line = "";
-  for (const word2 of text.split(" ")) {
+  for (const word3 of text.split(" ")) {
     if (line === "")
-      line = word2;
-    else if (`${line} ${word2}`.length <= width)
-      line = `${line} ${word2}`;
+      line = word3;
+    else if (`${line} ${word3}`.length <= width)
+      line = `${line} ${word3}`;
     else {
       lines.push(line);
-      line = word2;
+      line = word3;
     }
   }
   if (line !== "")
@@ -65376,14 +66407,14 @@ function renderTopLevel() {
     "       candle help <command>                a command's subcommands, flags and examples"
   ];
   const entries = Object.entries(HELP);
-  const longest = Math.max(...entries.map(([word2]) => displayName(word2).length));
+  const longest = Math.max(...entries.map(([word3]) => displayName(word3).length));
   const column = 2 + longest + 2;
   for (const group of GROUPS) {
     out.push("", group);
-    for (const [word2, topic] of entries) {
+    for (const [word3, topic] of entries) {
       if (topic.group !== group)
         continue;
-      out.push(`  ${displayName(word2).padEnd(column - 2)}${topic.summary}`);
+      out.push(`  ${displayName(word3).padEnd(column - 2)}${topic.summary}`);
     }
   }
   out.push("", "Global flags", ...renderRows(GLOBAL_FLAGS, 28));
@@ -65393,11 +66424,11 @@ function renderTopLevel() {
 `)}
 `;
 }
-function renderTopic(word2) {
-  const topic = topicFor(word2);
+function renderTopic(word3) {
+  const topic = topicFor(word3);
   if (!topic)
     return;
-  const canonical = Object.keys(HELP).find((key) => HELP[key] === topic) ?? word2;
+  const canonical = Object.keys(HELP).find((key) => HELP[key] === topic) ?? word3;
   const display = displayName(canonical);
   const out = [wrap(`candle ${display}: ${topic.description}`, WIDTH).join(`
 `)];
@@ -65465,8 +66496,8 @@ function zshScript() {
     "  _candle_flags=()",
     '  case "${words[2]}" in'
   ];
-  for (const { word: word2, subcommands, flags } of perWord()) {
-    lines.push(`    ${word2})`);
+  for (const { word: word3, subcommands, flags } of perWord()) {
+    lines.push(`    ${word3})`);
     if (subcommands.length > 0)
       lines.push(`      _candle_subs=(${subcommands.join(" ")})`);
     if (flags.length > 0)
@@ -65495,8 +66526,8 @@ function bashScript() {
     "  fi",
     '  case "${COMP_WORDS[1]}" in'
   ];
-  for (const { word: word2, subcommands, flags } of perWord()) {
-    lines.push(`    ${word2})`);
+  for (const { word: word3, subcommands, flags } of perWord()) {
+    lines.push(`    ${word3})`);
     if (subcommands.length > 0)
       lines.push(`      candle_subs="${subcommands.join(" ")}"`);
     if (flags.length > 0)
@@ -65516,8 +66547,8 @@ function fishScript() {
     ""
   ];
   for (const [canonical, topic] of Object.entries(HELP)) {
-    for (const word2 of topic.display ? [canonical, topic.display] : [canonical]) {
-      lines.push(`complete -c candle -n '__fish_use_subcommand' -a '${word2}' -d '${safe(topic.summary)}'`);
+    for (const word3 of topic.display ? [canonical, topic.display] : [canonical]) {
+      lines.push(`complete -c candle -n '__fish_use_subcommand' -a '${word3}' -d '${safe(topic.summary)}'`);
     }
   }
   lines.push("");
@@ -65530,18 +66561,18 @@ function fishScript() {
       }
     }
   }
-  for (const { word: word2, subcommands, flags } of perWord()) {
+  for (const { word: word3, subcommands, flags } of perWord()) {
     if (subcommands.length === 0 && flags.length === 0)
       continue;
     lines.push("");
     for (const sub of subcommands) {
-      lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word2}' -a '${sub}'`);
+      lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word3}' -a '${sub}'`);
     }
     for (const flag of flags) {
       if (flag.startsWith("--")) {
-        lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word2}' -l '${flag.slice(2)}'`);
+        lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word3}' -l '${flag.slice(2)}'`);
       } else
-        lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word2}' -s '${flag.slice(1)}'`);
+        lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word3}' -s '${flag.slice(1)}'`);
     }
   }
   lines.push("");
@@ -65580,6 +66611,7 @@ async function completion(args, ctx) {
 // src/commands/doctor.ts
 init_agent_key_access();
 init_args();
+init_client();
 init_deps();
 
 // src/keychain.ts
@@ -65773,6 +66805,7 @@ init_store();
 
 // src/commands/key-signer.ts
 init_args();
+init_client();
 init_deps();
 init_key_signers();
 import { generateKeyPairSync as generateKeyPairSync2 } from "node:crypto";
@@ -65781,6 +66814,7 @@ init_render();
 init_secret_store();
 
 // src/vault/promote-to-key.ts
+init_client();
 init_tee_rebind();
 init_deps();
 init_key_signers();
@@ -70773,14 +71807,14 @@ async function feesClaim(args, ctx) {
 
 // src/commands/help.ts
 async function help(args, ctx) {
-  const word2 = args[0];
-  if (word2 === undefined) {
+  const word3 = args[0];
+  if (word3 === undefined) {
     ctx.deps.stdout.write(renderTopLevel());
     return 0;
   }
-  const topic = renderTopic(word2);
+  const topic = renderTopic(word3);
   if (topic === undefined) {
-    ctx.deps.stderr.write(`Unknown command: ${word2}
+    ctx.deps.stderr.write(`Unknown command: ${word3}
 `);
     ctx.deps.stderr.write(renderTopLevel());
     return 1;
@@ -70791,6 +71825,7 @@ async function help(args, ctx) {
 
 // src/commands/image.ts
 init_args();
+init_client();
 init_deps();
 init_render();
 init_trading();
@@ -70910,6 +71945,7 @@ init_keys();
 // src/commands/keys-access.ts
 init_agent_key_access();
 init_args();
+init_client();
 init_deps();
 init_profiles();
 init_render();
@@ -71236,6 +72272,7 @@ init_keys_embedded_wallet();
 
 // src/commands/keys-wallets.ts
 init_args();
+init_client();
 init_deps();
 init_profiles();
 init_render();
@@ -71418,6 +72455,7 @@ async function keysWallets(args, ctx) {
 // src/commands/launch.ts
 init_args();
 init_evm_lite();
+init_hood_legs();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
@@ -71432,7 +72470,7 @@ var QUOTE_CHAIN = {
   eth: "hood",
   usdg: "hood"
 };
-var HOOD_LAUNCH_LEGS = ["createCurve", "feeTransfer"];
+var HOOD_LAUNCH_LEGS = ["createCurve"];
 var HOOD_LAUNCH_BUY_LEGS = ["createCurve", "feeTransfer", "trade"];
 function launchBuy(flags, chain2) {
   const amount = flags["--buy"];
@@ -71677,6 +72715,9 @@ async function hoodLaunch(ctx, key, args) {
     curveAddress: curve.address,
     operationId: first.operationId
   };
+  const feeCap = buy && first.plannedLegCount === 3 ? launchFeeCap(buy.raw) : undefined;
+  if (feeCap !== undefined)
+    quote.candleFee = `at most ${formatUnits(feeCap, 18)} ETH (the tier fee on the first buy, never above ${Number(LAUNCH_FEE_MAX_BPS) / 100}% of it)`;
   ctx.deps.stderr.write(buyNotice(buy, "hood"));
   if (!await confirmQuote(ctx, quote, args.yes)) {
     ctx.deps.stderr.write(`Nothing was signed. Operation ${first.operationId} holds this wallet until ${new Date(first.expiresAt).toISOString()}; a new Hood operation from it is refused as WALLET_BUSY until then.
@@ -71695,6 +72736,7 @@ async function hoodLaunch(ctx, key, args) {
   }
   const confirmedPlan = buy ? first.plannedLegCount === 3 ? ["createCurve", "feeTransfer", "trade"] : ["createCurve", "trade"] : undefined;
   let position = 0;
+  const evm = lazyEvmRpc(ctx, flags["--rpc-url"]);
   const run2 = await runSequencedLegs(ctx, key, {
     wallet,
     first,
@@ -71705,10 +72747,14 @@ async function hoodLaunch(ctx, key, args) {
     kind: "launch",
     primaryLeg: "createCurve",
     allowedLegs,
-    checkLeg: (kind, leg2) => {
+    checkLeg: async (kind, leg2) => {
       if (confirmedPlan && confirmedPlan[position++] !== kind)
         return false;
-      return kind === "createCurve" ? leg2.value === "0" : kind !== "trade" || buy !== undefined && leg2.value === buy.raw && sameEvmAddress(leg2.to, curve.address);
+      if (kind === "createCurve")
+        return await createCurveLegOk(leg2, wallet.address, evm());
+      if (kind === "feeTransfer")
+        return feeCap !== undefined && feeLegOk(leg2, { cap: feeCap, asset: "eth" });
+      return kind === "trade" && buy !== undefined && leg2.value === buy.raw && sameEvmAddress(leg2.to, curve.address);
     },
     onLanded: async () => {}
   });
@@ -71728,13 +72774,11 @@ async function hoodLaunch(ctx, key, args) {
   });
 }
 function hoodLaterLegsGas(count, buys) {
-  if (count < 2)
-    return "";
-  return buys ? "; the later legs are priced by Candle when each becomes next" : "; the fee leg is priced by Candle when it becomes next";
+  return count < 2 || !buys ? "" : "; the later legs are priced by Candle when each becomes next";
 }
 function hoodLaunchLegNames(count, buys) {
   if (!buys)
-    return count === 2 ? ["create curve", "fee"] : ["create curve"];
+    return ["create curve"];
   return count === 3 ? ["create curve", "fee", "first buy"] : ["create curve", "first buy"];
 }
 async function recordLaunchedToken(ctx, wallet, final) {
@@ -71759,6 +72803,7 @@ async function resumeHoodLaunch(ctx, key, id, operationId, prior) {
 
 // src/commands/lp.ts
 init_args();
+init_client();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
@@ -72301,6 +73346,7 @@ async function mcp(args, ctx) {
 // src/commands/perps.ts
 init_args();
 init_bridge();
+init_client();
 init_evm_lite();
 import { randomUUID as randomUUID4, sign as sign3 } from "node:crypto";
 
@@ -72316,6 +73362,10 @@ var HYPERLIQUID_ALLOWED_ACTION_TYPES = [
 var HYPERLIQUID_EXCHANGE_URLS = {
   mainnet: "https://api.hyperliquid.xyz/exchange",
   testnet: "https://api.hyperliquid-testnet.xyz/exchange"
+};
+var HYPERLIQUID_INFO_URLS = {
+  mainnet: "https://api.hyperliquid.xyz/info",
+  testnet: "https://api.hyperliquid-testnet.xyz/info"
 };
 var CANDLE_HYPERLIQUID_BUILDER_ADDRESS = null;
 var HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS = 100;
@@ -72622,6 +73672,67 @@ async function hyperliquidCloseOrder(fetcher, network, address, params) {
   const size = asked < held ? String(params.size) : String(szi).replace(/^-/, "");
   return { asset, isBuy: signed < 0n, size };
 }
+var HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100;
+var HYPERLIQUID_MID_DRIFT_BPS = 100;
+async function hyperliquidOrderMarket(fetcher, network, address, method, params) {
+  const read = async (body) => {
+    const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok)
+      throw new Error("Cannot read the market from Hyperliquid");
+    return JSON.parse(await res.text());
+  };
+  let coin = String(params.coin ?? "").toUpperCase();
+  let order;
+  if (method === "modify") {
+    const status = await read({ type: "orderStatus", user: address, oid: params.cloid });
+    const resting = status?.order?.order ?? null;
+    if (!resting || typeof resting.coin !== "string" || decimal(resting.limitPx) === null)
+      throw new Error("No resting order with this cloid on Hyperliquid");
+    coin = resting.coin.toUpperCase();
+    order = { isBuy: resting.side === "B", limitPx: String(resting.limitPx) };
+  }
+  const [meta, contexts] = await read({ type: "metaAndAssetCtxs" });
+  const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin);
+  if (asset < 0 || asset >= 1e4)
+    throw new Error("No main-universe market for this coin on Hyperliquid");
+  const context = contexts[asset];
+  const midPx = context?.midPx ?? context?.markPx;
+  if ((decimal(midPx) ?? 0n) <= 0n)
+    throw new Error("No Hyperliquid price for this coin");
+  return { asset, midPx: String(midPx), ...order ? { order } : {} };
+}
+function checkOrderMarket(action, intent, market) {
+  const list = action.type === "modify" ? [action.order] : action.orders;
+  if (!Array.isArray(list) || list.length === 0)
+    return "missing requested order";
+  if (list.some((o) => !o || o.a !== market.asset))
+    return "order asset is not the requested coin's on Hyperliquid";
+  const first = list[0];
+  const p = intent.params;
+  if (intent.method === "open" && p.price == null) {
+    const requested = p.slippageBps;
+    const slippage = typeof requested === "number" && Number.isInteger(requested) && requested > 0 ? requested : HYPERLIQUID_DEFAULT_SLIPPAGE_BPS;
+    const bound = BigInt(slippage + HYPERLIQUID_MID_DRIFT_BPS);
+    const px = decimal(first.p) ?? 0n;
+    const mid = decimal(market.midPx) ?? 0n;
+    const within = first.b === true ? px * 10000n <= mid * (10000n + bound) : px * 10000n >= mid * (10000n - bound);
+    if (mid <= 0n || !within)
+      return "market order price is outside its slippage of Hyperliquid's mid";
+  }
+  if (intent.method === "modify") {
+    if (!market.order)
+      return "no resting order on Hyperliquid to check the modify against";
+    if (first.b !== market.order.isBuy)
+      return "modify changes the resting order's side";
+    if (p.price == null && decimal(first.p) !== decimal(market.order.limitPx))
+      return "modify changes the resting order's price";
+  }
+  return null;
+}
 function verifyPerpsBuild(build, opts) {
   try {
     const network = opts.network ?? "mainnet";
@@ -72648,6 +73759,13 @@ function verifyPerpsBuild(build, opts) {
       const order = action.orders[0];
       if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal(order.s) !== decimal(opts.closeOrder.size) || order.r !== true)
         return { ok: false, reason: "close side, asset or size does not match the requested position" };
+    }
+    if (opts.market) {
+      if (opts.intent?.method !== "open" && opts.intent?.method !== "modify")
+        return { ok: false, reason: "a market check needs an open or modify intent" };
+      const marketRefusal = checkOrderMarket(action, opts.intent, opts.market);
+      if (marketRefusal)
+        return { ok: false, reason: marketRefusal };
     }
     if (typed.primary_type === "Agent") {
       const type = action.type;
@@ -72709,6 +73827,7 @@ function hyperliquidRelayBody(typedData) {
 
 // src/commands/perps.ts
 init_render();
+init_solana_verify();
 init_trading();
 init_swap();
 var PERPS_SCOPE = "perps:write";
@@ -72854,6 +73973,18 @@ async function runPerpsWrite(ctx, opts) {
     });
     if (!closeCheck.ok)
       throw new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this build: ${closeCheck.reason}. Nothing was signed.`);
+  }
+  if (method === "open") {
+    const market = await hyperliquidOrderMarket(ctx.deps.fetch, net, wallet.address, method, opts.body);
+    const marketCheck = verifyPerpsBuild(build, {
+      builder,
+      network: net,
+      address: wallet.address,
+      intent: { method, params: opts.body },
+      market
+    });
+    if (!marketCheck.ok)
+      throw new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this build: ${marketCheck.reason}. Nothing was signed.`);
   }
   if (!opts.submit)
     return printTradingResult(ctx, { ...build, signed: false, submitted: false });
@@ -73247,6 +74378,13 @@ async function perpsDeposit(args, ctx) {
       const solanaProblem = await tradingRead(ctx, reader, () => relaySolanaDepositProblem(transaction, wallet.address, reader.rpc));
       if (solanaProblem)
         throw refused(solanaProblem);
+      const spent = await tradingRead(ctx, reader, () => solanaSpendProblem(transaction, wallet.address, reader.rpc, {
+        kind: "swap",
+        spend: asset === "SOL" ? "SOL" : BASES[asset]?.mint ?? asset,
+        maxSpendRaw: BigInt(amountRaw)
+      }));
+      if (spent)
+        throw refused(spent);
     }
     const decimals = Number(build.outDecimals);
     const minimum = decimalAmount(String(build.minimumOutRaw), decimals);
@@ -73312,6 +74450,7 @@ async function perpsDeposit(args, ctx) {
 
 // src/commands/plans.ts
 init_args();
+init_client();
 
 // src/plans.ts
 var PLAN_CAPABILITY_NOTE = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs. Every plan can launch a token from its embedded wallet, with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the headless launch; the two launch rows are additional routes, not the only ones.";
@@ -73817,6 +74956,7 @@ async function runPlugin(name2, rawArgs, ctx) {
 
 // src/commands/pnl.ts
 init_args();
+init_client();
 init_deps();
 init_profiles();
 init_render();
@@ -74264,6 +75404,7 @@ ${renderTable(headers, rows.map((row) => row.map(terminalText)))}
 
 // src/commands/portfolio.ts
 init_args();
+init_client();
 init_deps();
 init_evm_lite();
 init_profiles();
@@ -74870,7 +76011,7 @@ function hoodHoldings(read, prices, tokensPart) {
       ...token.symbol ? { symbol: token.symbol } : {}
     });
   }
-  const holdings = raw.map(({ symbol, ...h }) => {
+  const holdings2 = raw.map(({ symbol, ...h }) => {
     const price = prices[hoodPriceKey(h.mint)];
     const priceUsd = price?.priceUsd ?? null;
     const amount = formatAmount(h.amountRaw, h.decimals);
@@ -74887,7 +76028,7 @@ function hoodHoldings(read, prices, tokensPart) {
     };
   });
   return {
-    holdings,
+    holdings: holdings2,
     unread: [...read.wei === null ? ["eth"] : [], ...read.tokens === null ? [tokensPart] : []],
     ...read.truncated ? { truncated: true } : {}
   };
@@ -75024,6 +76165,7 @@ ${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEE
 
 // src/commands/profile.ts
 init_args();
+init_client();
 init_profiles();
 init_render();
 init_solana_endpoint();
@@ -75298,6 +76440,7 @@ async function profileRemove(args, ctx) {
 
 // src/commands/setup.ts
 init_args();
+init_client();
 init_deps();
 init_profiles();
 init_render();
@@ -75495,6 +76638,10 @@ function formatAmount2(raw, decimals) {
 function formatSol2(lamports) {
   return `${formatAmount2(lamports, 9)} SOL`;
 }
+function signerControlChanges(signers, simulation) {
+  const addresses = new Set(signers.map((entry) => entry.address));
+  return controlChanges(simulation.snapshots, (address) => addresses.has(address));
+}
 function displayLines(input) {
   const { tx, compiled, signers, simulation, mints } = input;
   const lines = [];
@@ -75507,6 +76654,7 @@ function displayLines(input) {
   for (const program of programs)
     lines.push(`program     ${programNameOf(program)}`);
   const deltas = computeDeltas(simulation.snapshots);
+  const changes = signerControlChanges(signers, simulation);
   for (const entry of signers) {
     const sol = deltas.sol.find((delta) => delta.address === entry.address);
     if (sol) {
@@ -75514,7 +76662,7 @@ function displayLines(input) {
     } else {
       lines.push(`${entry.label.padEnd(11)} SOL unchanged (not a writable account of this transaction)`);
     }
-    for (const token of deltas.tokens.filter((delta) => delta.owner === entry.address)) {
+    for (const token of deltas.tokens.filter((delta) => delta.ownerBefore === entry.address || delta.ownerAfter === entry.address)) {
       const info = mints.get(token.mint);
       lines.push(`            ${token.mint}: ${formatAmount2(token.before, info?.decimals)} -> ${formatAmount2(token.after, info?.decimals)} (${token.after >= token.before ? "+" : ""}${formatAmount2(token.after - token.before, info?.decimals)}${info?.decimals === undefined ? "" : `, ${info.decimals} dp`}) in ${token.account}`);
     }
@@ -75533,10 +76681,14 @@ function displayLines(input) {
     const info = mints.get(token.mint);
     others.push(`${token.owner} receives +${formatAmount2(token.after - token.before, info?.decimals)} of ${token.mint} (account ${token.account})`);
   }
-  if (others.length === 0)
+  if (others.length === 0 && changes.length === 0)
     lines.push("others      no other account gains a balance in the simulation");
+  if (others.length === 0 && changes.length > 0)
+    lines.push("others      no balance moves elsewhere, but control of an account changes hands (below)");
   for (const line of others)
     lines.push(`receives    ${line}`);
+  for (const change of changes)
+    lines.push(`CONTROL     ${describeControlChange(change)}`);
   for (const [mint, info] of mints)
     for (const risk of info.risks)
       lines.push(`warning     ${mint}: ${risk}`);
@@ -75649,6 +76801,14 @@ ${simulation.result.logs.map((line) => `  ${line}`).join(`
       for (const line of lines)
         deps.stderr.write(`  ${line}
 `);
+    }
+    const changes = signerControlChanges(signers, simulation);
+    if (changes.length > 0) {
+      throw new VaultError("SIGN_CONTROL_CHANGE", `The simulation hands control of a signer's account to someone else. Nothing was signed; there is no override.
+${changes.map((change) => `  ${describeControlChange(change)}`).join(`
+`)}`, {
+        suggestion: "A transfer, swap or close never needs this. If you meant to change an authority, do it from a wallet you can inspect directly."
+      });
     }
     if (!yes)
       await opened.confirm(`sign with ${signers.map((entry) => entry.label).join(", ")}`);
@@ -76027,6 +77187,7 @@ init_tee_rebind();
 
 // src/commands/tee-rename.ts
 init_args();
+init_client();
 init_deps();
 init_profiles();
 init_render();
@@ -76668,6 +77829,7 @@ init_args();
 init_evm_lite();
 init_profiles();
 init_render();
+init_solana_verify();
 init_trading();
 init_swap();
 var USAGE6 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
@@ -76782,11 +77944,12 @@ async function transfer(args, ctx) {
     const wallet = payer.wallet;
     const destination = await resolveDestination(ctx, key, wallet, to);
     const label = asset ?? flags["--mint"];
+    const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
     let amountRaw;
     if (isMax)
       amountRaw = "max";
     else {
-      const decimals = asset ? BASES[asset]?.decimals ?? 9 : await decimalsFor(ctx, flags["--mint"], lazySolanaClient(ctx, flags["--rpc-url"]));
+      const decimals = asset ? BASES[asset]?.decimals ?? 9 : await decimalsFor(ctx, flags["--mint"], solana);
       amountRaw = rawAmount(flags["--amount"], decimals);
     }
     const amountText2 = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`;
@@ -76809,8 +77972,22 @@ async function transfer(args, ctx) {
       throw new TradingError("INVALID_RESPONSE", "Candle did not return one unsigned transfer transaction; nothing was signed.");
     if (typeof built.payerAddress === "string" && built.payerAddress !== wallet.address)
       throw new TradingError("INVALID_RESPONSE", "The transfer build does not name the requested payer; nothing was signed.");
-    const builtAmount = typeof built.amountRaw === "string" ? built.amountRaw : amountRaw;
-    ctx.deps.stderr.write(`Built transfer ${transferId}: ${asset ? `${decimalAmount(builtAmount, BASES[asset]?.decimals ?? 0)} ${asset}` : `${builtAmount} raw units of ${label}`}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}.
+    const builtAmount = typeof built.amountRaw === "string" && /^[1-9]\d*$/.test(built.amountRaw) ? built.amountRaw : null;
+    if (builtAmount === null || !isMax && builtAmount !== amountRaw)
+      throw new TradingError("INVALID_RESPONSE", "The transfer build does not name the confirmed amount; nothing was signed.");
+    const amountShown = asset ? `${decimalAmount(builtAmount, BASES[asset]?.decimals ?? 0)} ${asset}` : `${builtAmount} raw units of ${label}`;
+    ctx.deps.stderr.write(`Built transfer ${transferId}: ${amountShown}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}.
+`);
+    const reader = await solana();
+    const problem = await tradingRead(ctx, reader, () => solanaSpendProblem(unsigned[0], wallet.address, reader.rpc, {
+      kind: "transfer",
+      asset: asset === undefined ? flags["--mint"] : asset === "SOL" ? "SOL" : BASES[asset]?.mint ?? asset,
+      amountRaw: BigInt(builtAmount),
+      recipient: destination.address
+    }));
+    if (problem)
+      throw new TradingError("INVALID_RESPONSE", `The transaction Candle built does not move ${safeText(amountShown)} to ${destination.address} and nothing else (${safeText(problem)}); nothing was signed.`);
+    ctx.deps.stderr.write(`Checked locally: it moves ${safeText(amountShown)} from ${wallet.address} to ${destination.address} and nothing else (simulated; a program can still behave differently once signed).
 `);
     const signed = await relaySign(ctx, key, wallet, unsigned[0]);
     const result = await request(ctx, key, "/api/v1/agent/transfer/submit", {
@@ -77870,8 +79047,8 @@ function assertFloorCarried(copy, live) {
     details: { step: "floor", missing: ids }
   });
 }
-function verifiedWithLine(word2, envelopeId, how, floorClause) {
-  return `  verified with ${word2} ${envelopeId} (${how}); ${floorClause}`;
+function verifiedWithLine(word3, envelopeId, how, floorClause) {
+  return `  verified with ${word3} ${envelopeId} (${how}); ${floorClause}`;
 }
 function carriedClause(passphraseIds) {
   return `passphrase ${passphraseIds.join(", ")} carried byte for byte`;
@@ -79372,7 +80549,7 @@ Anyone who reads them can move every derived key's funds.
   deps.stdout.write(`
 `);
   for (let i = 0;i < words.length; i += 4) {
-    const row = words.slice(i, i + 4).map((word2, offset) => `${String(i + offset + 1).padStart(2, " ")}. ${word2.padEnd(9, " ")}`).join("  ");
+    const row = words.slice(i, i + 4).map((word3, offset) => `${String(i + offset + 1).padStart(2, " ")}. ${word3.padEnd(9, " ")}`).join("  ");
     deps.stdout.write(`    ${row.trimEnd()}
 `);
   }
@@ -79793,8 +80970,8 @@ async function collectOwn(ctx) {
 // src/commands/vault-factor-dispatch.ts
 init_vault_support();
 async function vaultFactor(args, ctx) {
-  const [word2, ...rest] = args;
-  switch (word2) {
+  const [word3, ...rest] = args;
+  switch (word3) {
     case "list":
       return vaultFactorList(rest, ctx);
     case "add":
@@ -79804,7 +80981,7 @@ async function vaultFactor(args, ctx) {
     case undefined:
       return usage(ctx, "Usage: candle vault factor <list | add passphrase | add security-key | add touch-id | add passkey | remove <id>>");
     default:
-      return usage(ctx, `Unknown subcommand: vault factor ${word2}. Try: list, add, remove`);
+      return usage(ctx, `Unknown subcommand: vault factor ${word3}. Try: list, add, remove`);
   }
 }
 
@@ -81001,12 +82178,12 @@ function matches2(entry, filter) {
 // src/commands/vault-phrase-dispatch.ts
 init_vault_support();
 async function vaultPhrase(args, ctx) {
-  const [word2, ...rest] = args;
-  if (word2 === "show")
+  const [word3, ...rest] = args;
+  if (word3 === "show")
     return vaultPhraseShow(rest, ctx);
-  if (word2 === undefined)
+  if (word3 === undefined)
     return usage(ctx, "Usage: candle vault phrase show");
-  return usage(ctx, `Unknown subcommand: vault phrase ${word2}. The only one is: show`);
+  return usage(ctx, `Unknown subcommand: vault phrase ${word3}. The only one is: show`);
 }
 
 // src/commands/vault-promote.ts
@@ -81019,6 +82196,7 @@ init_solana_endpoint();
 init_solana_lite();
 
 // src/vault/account-room.ts
+init_client();
 init_deps();
 init_errors2();
 async function readAccountRoom(ctx) {
@@ -81316,8 +82494,8 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
     ...toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}
   });
   const height = await promoteHeight(ctx, client);
-  const holdings = await readEvmHoldings(client.rpc, first.subject.address);
-  for (const line of holdingsLines(first.subject.address, holdings, new Date(ctx.deps.now()).toISOString())) {
+  const holdings2 = await readEvmHoldings(client.rpc, first.subject.address);
+  for (const line of holdingsLines(first.subject.address, holdings2, new Date(ctx.deps.now()).toISOString())) {
     ctx.deps.stdout.write(`${line}
 `);
   }
@@ -81411,7 +82589,7 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
       lifecycle: updated?.tee?.lifecycle ?? null,
       linkedWalletId: updated?.linkedWalletId ?? null,
       controlledBy: controlledByJson(controlledBy),
-      holdings: { eth: holdings.eth.toString(), usdg: holdings.usdg.toString(), weth: holdings.weth.toString() },
+      holdings: { eth: holdings2.eth.toString(), usdg: holdings2.usdg.toString(), weth: holdings2.weth.toString() },
       scanStart: { block: scanStart.block, recorded: scanStart.recorded },
       vaultVersion: reopened.file.version,
       ...rebound?.json ?? {}
@@ -84353,6 +85531,7 @@ init_promote_support();
 init_store();
 
 // src/vault/tee-transfer.ts
+init_client();
 init_errors2();
 function assertNoPendingSweep(entry) {
   const pending = entry.tee?.sweepPending?.length ?? 0;
@@ -84694,6 +85873,7 @@ init_wallets();
 
 // src/commands/wallets-allow-launch.ts
 init_args();
+init_client();
 init_deps();
 init_profiles();
 init_render();
@@ -85012,6 +86192,7 @@ async function walletsCloseEmpty(args, ctx) {
 
 // src/commands/wallets-trust.ts
 init_args();
+init_client();
 init_deps();
 init_profiles();
 init_render();
@@ -85269,6 +86450,7 @@ init_render();
 init_secret_store();
 
 // src/update-notice.ts
+init_client();
 init_release();
 var DAY_MS = 24 * 60 * 60 * 1000;
 async function maybeWriteUpdateNotice(deps, opts = {}) {
@@ -85469,12 +86651,12 @@ var COMMANDS = {
 };
 var ROUTED_COMMANDS = new Set(Object.keys(COMMANDS));
 var ALIASES = { wallet: "wallets" };
-function canonicalCommand(word2) {
-  return word2 !== undefined && Object.hasOwn(ALIASES, word2) ? ALIASES[word2] : word2;
+function canonicalCommand(word3) {
+  return word3 !== undefined && Object.hasOwn(ALIASES, word3) ? ALIASES[word3] : word3;
 }
-var ROUTED_SUBCOMMANDS = Object.fromEntries(Object.entries(COMMANDS).filter(([, route]) => route.subcommands !== undefined).map(([word2, route]) => [word2, Object.keys(route.subcommands ?? {})]));
-function routeFor(word2) {
-  return word2 !== undefined && Object.hasOwn(COMMANDS, word2) ? COMMANDS[word2] : undefined;
+var ROUTED_SUBCOMMANDS = Object.fromEntries(Object.entries(COMMANDS).filter(([, route]) => route.subcommands !== undefined).map(([word3, route]) => [word3, Object.keys(route.subcommands ?? {})]));
+function routeFor(word3) {
+  return word3 !== undefined && Object.hasOwn(COMMANDS, word3) ? COMMANDS[word3] : undefined;
 }
 function subHandlerFor(route, sub) {
   const subcommands = route?.subcommands;
@@ -85516,8 +86698,8 @@ async function run2(argv, deps) {
     return 1;
   }
   const extractedForNotice = extractGlobalFlags(argv);
-  const word2 = "error" in extractedForNotice ? undefined : canonicalCommand(extractedForNotice.rest[0] === "candle" ? extractedForNotice.rest[1] : extractedForNotice.rest[0]);
-  await maybeWriteUpdateNotice(deps, { command: word2 });
+  const word3 = "error" in extractedForNotice ? undefined : canonicalCommand(extractedForNotice.rest[0] === "candle" ? extractedForNotice.rest[1] : extractedForNotice.rest[0]);
+  await maybeWriteUpdateNotice(deps, { command: word3 });
   return code;
 }
 async function runCommand(argv, deps) {
@@ -85528,7 +86710,7 @@ async function runCommand(argv, deps) {
     return 2;
   }
   const { rest, flags } = extracted;
-  const plugin = pluginInvocation(argv, deps.env, (word3) => ROUTED_COMMANDS.has(canonicalCommand(word3) ?? ""));
+  const plugin = pluginInvocation(argv, deps.env, (word4) => ROUTED_COMMANDS.has(canonicalCommand(word4) ?? ""));
   if (plugin !== undefined) {
     const leading = extractGlobalFlags(argv.slice(0, argv.length - plugin.args.length - 1));
     const pluginFlags = "error" in leading ? flags : leading.flags;
@@ -85609,9 +86791,9 @@ async function runCommand(argv, deps) {
     vaultFactor: flags.vaultFactor,
     vaultDevice: flags.vaultDevice
   };
-  const word2 = cmd ?? "";
-  const actsAsIdentity = word2 !== "mcp" || mcpActsAsIdentity(tokens.slice(1));
-  if (ROUTED_COMMANDS.has(word2) && !NEVER_GUARDED.has(word2) && routesToCommand(cmd, sub) && actsAsIdentity) {
+  const word3 = cmd ?? "";
+  const actsAsIdentity = word3 !== "mcp" || mcpActsAsIdentity(tokens.slice(1));
+  if (ROUTED_COMMANDS.has(word3) && !NEVER_GUARDED.has(word3) && routesToCommand(cmd, sub) && actsAsIdentity) {
     const verdict = await verifyProfileAccount(ctx, config2);
     if (!verdict.ok) {
       writeLocalFailure(deps, { code: "ACCOUNT_MISMATCH", message: verdict.message, suggestion: verdict.suggestion }, flags.json);
@@ -85645,11 +86827,11 @@ function splitFix(message) {
   const fixAt = message.indexOf(" Run: ");
   return fixAt === -1 ? { message } : { message: message.slice(0, fixAt), suggestion: message.slice(fixAt + 1) };
 }
-function unknownCommand(deps, token, word2) {
+function unknownCommand(deps, token, word3) {
   if (token !== undefined)
     deps.stderr.write(`Unknown command: ${token}
 `);
-  deps.stderr.write((word2 === undefined ? undefined : renderTopic(word2)) ?? renderTopLevel());
+  deps.stderr.write((word3 === undefined ? undefined : renderTopic(word3)) ?? renderTopLevel());
   return 1;
 }
 async function migrateProfiles(deps) {
@@ -85670,10 +86852,13 @@ async function migrateProfiles(deps) {
   await deps.writeConfig({ profiles: config2.profiles, activeProfile: config2.activeProfile });
   return config2;
 }
-function realOpenBrowser(url) {
+function realOpenBrowser(serverUrl) {
+  const url = browserUrl(serverUrl);
+  if (url === null)
+    return;
   try {
     const platform = process.platform;
-    const child = platform === "darwin" ? spawn3("open", [url], { stdio: "ignore", detached: true }) : platform === "win32" ? spawn3("cmd", ["/c", "start", "", url], { stdio: "ignore", detached: true }) : spawn3("xdg-open", [url], { stdio: "ignore", detached: true });
+    const child = platform === "darwin" ? spawn3("open", [url], { stdio: "ignore", detached: true }) : platform === "win32" ? spawn3("rundll32", ["url.dll,FileProtocolHandler", url], { stdio: "ignore", detached: true }) : spawn3("xdg-open", [url], { stdio: "ignore", detached: true });
     child.on("error", () => {});
     child.unref();
   } catch {}

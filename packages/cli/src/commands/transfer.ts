@@ -8,6 +8,9 @@
  * to this profile's key, named by id, address or label, whose relay authorization key this
  * machine holds. Candle builds the transaction, this machine approves the relay request with that
  * key, Privy signs, and Candle broadcasts. No vault or TEE private key is ever opened here.
+ * Before it approves, this machine decodes the transaction and simulates it over its own RPC
+ * (SEC-003, `solana-verify.ts`): the wallet pays the fee and sends exactly the confirmed amount of
+ * the confirmed asset to the destination it resolved, and to no one else.
  *
  * Where the funds may go is Candle's decision, not this command's: from a TEE wallet, only that
  * wallet's own pinned vault or another of the account's wallets the owner linked while signed in
@@ -25,6 +28,7 @@ import type { CommandContext } from "../deps"
 import { checkEvmAddress, decodeErc20Transfer, formatUnits, hexToBytes, sameEvmAddress } from "../evm-lite"
 import { apiKeyPrefix } from "../profiles"
 import { writeUsageFailure } from "../render"
+import { solanaSpendProblem } from "../solana-verify"
 import {
   BASES,
   chainMismatch,
@@ -45,7 +49,15 @@ import {
   tradingPayer,
   walletNameChain,
 } from "../trading"
-import { decimalsFor, hoodDecimals, lazyEvmRpc, lazySolanaClient, printTradingResult, tradingFailure } from "./swap"
+import {
+  decimalsFor,
+  hoodDecimals,
+  lazyEvmRpc,
+  lazySolanaClient,
+  printTradingResult,
+  tradingFailure,
+  tradingRead,
+} from "./swap"
 
 const USAGE =
   "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]"
@@ -230,12 +242,11 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
     const wallet = payer.wallet
     const destination = await resolveDestination(ctx, key, wallet, to)
     const label = asset ?? (flags["--mint"] as string)
+    const solana = lazySolanaClient(ctx, flags["--rpc-url"])
     let amountRaw: string
     if (isMax) amountRaw = "max"
     else {
-      const decimals = asset
-        ? (BASES[asset]?.decimals ?? 9)
-        : await decimalsFor(ctx, flags["--mint"] as string, lazySolanaClient(ctx, flags["--rpc-url"]))
+      const decimals = asset ? (BASES[asset]?.decimals ?? 9) : await decimalsFor(ctx, flags["--mint"] as string, solana)
       amountRaw = rawAmount(flags["--amount"], decimals)
     }
     const amountText = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`
@@ -277,9 +288,40 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
         "INVALID_RESPONSE",
         "The transfer build does not name the requested payer; nothing was signed.",
       )
-    const builtAmount = typeof built.amountRaw === "string" ? built.amountRaw : amountRaw
+    // SEC-003: the amount the transaction must move. A "max" build names it; any other must echo it.
+    const builtAmount =
+      typeof built.amountRaw === "string" && /^[1-9]\d*$/.test(built.amountRaw) ? built.amountRaw : null
+    if (builtAmount === null || (!isMax && builtAmount !== amountRaw))
+      throw new TradingError(
+        "INVALID_RESPONSE",
+        "The transfer build does not name the confirmed amount; nothing was signed.",
+      )
+    const amountShown = asset
+      ? `${decimalAmount(builtAmount, BASES[asset]?.decimals ?? 0)} ${asset}`
+      : `${builtAmount} raw units of ${label}`
     ctx.deps.stderr.write(
-      `Built transfer ${transferId}: ${asset ? `${decimalAmount(builtAmount, BASES[asset]?.decimals ?? 0)} ${asset}` : `${builtAmount} raw units of ${label}`}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}.\n`,
+      `Built transfer ${transferId}: ${amountShown}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}.\n`,
+    )
+    // SEC-003: decode and simulate before the relay signs. The wallet must pay the fee, send
+    // exactly that amount of that asset, and nothing it moves may land anywhere but the wallet and
+    // the destination this command resolved; no account of the wallet's may change hands.
+    const reader = await solana()
+    const problem = await tradingRead(ctx, reader, () =>
+      solanaSpendProblem(unsigned[0] as string, wallet.address, reader.rpc, {
+        kind: "transfer",
+        asset:
+          asset === undefined ? (flags["--mint"] as string) : asset === "SOL" ? "SOL" : (BASES[asset]?.mint ?? asset),
+        amountRaw: BigInt(builtAmount),
+        recipient: destination.address,
+      }),
+    )
+    if (problem)
+      throw new TradingError(
+        "INVALID_RESPONSE",
+        `The transaction Candle built does not move ${safeText(amountShown)} to ${destination.address} and nothing else (${safeText(problem)}); nothing was signed.`,
+      )
+    ctx.deps.stderr.write(
+      `Checked locally: it moves ${safeText(amountShown)} from ${wallet.address} to ${destination.address} and nothing else (simulated; a program can still behave differently once signed).\n`,
     )
     const signed = await relaySign(ctx, key, wallet, unsigned[0])
     const result = await request(ctx, key, "/api/v1/agent/transfer/submit", {

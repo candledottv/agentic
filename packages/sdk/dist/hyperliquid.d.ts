@@ -59,6 +59,13 @@ export interface VerifyPerpsBuildOptions {
         isBuy: boolean;
         size: string;
     };
+    /**
+     * The market an open or modify names, as Hyperliquid's own `/info` reports it
+     * (`hyperliquidOrderMarket`), never as the build does. With it, every order leg must carry this
+     * asset index, a market open's limit price must sit within its slippage of this mid, and a modify
+     * that keeps its price must keep the resting order's price and side.
+     */
+    market?: HyperliquidOrderMarket;
     /** Bind the plaintext action to the method and arguments the caller actually requested. */
     intent?: {
         method: "setup" | "open" | "close" | "cancel" | "modify" | "leverage" | "margin";
@@ -84,8 +91,43 @@ export declare function hyperliquidCloseOrder(fetcher: (url: string, init?: Requ
     size: string;
 }>;
 /**
+ * The slippage a market open is held to when the request names none: the API's default
+ * (`defaultSlippageBps`, 100), which is also what the build used.
+ */
+export declare const HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100;
+/**
+ * Added to the requested slippage before a market open's price is refused. The build priced the
+ * order from the API's read of the mid and this client checks it against its own, a moment later,
+ * and the price is rounded to five significant figures; 100 bps covers both on any liquid market
+ * while still refusing a price far from the venue's (a buy at twice the mid, a sell at half).
+ */
+export declare const HYPERLIQUID_MID_DRIFT_BPS = 100;
+/** What Hyperliquid's own `/info` says about the market an open or modify names. */
+export interface HyperliquidOrderMarket {
+    /** The coin's index in Hyperliquid's main perp universe. */
+    asset: number;
+    /** Hyperliquid's mid for the coin (its mark price when the book has no mid). */
+    midPx: string;
+    /** For a modify: the resting order it replaces, read from the venue by its cloid. */
+    order?: {
+        isBuy: boolean;
+        limitPx: string;
+    };
+}
+/**
+ * Read the asset index and mid for an open (its `coin`) or a modify (the coin of the resting order
+ * its `cloid` names) from the pinned venue before signing, the same way a close reads its position.
+ * The build's own asset index and price are what this is checked against, so none of it may come
+ * from the build or from Candle.
+ */
+export declare function hyperliquidOrderMarket(fetcher: (url: string, init?: RequestInit) => Promise<{
+    ok: boolean;
+    text(): Promise<string>;
+}>, network: HyperliquidNetwork, address: string, method: "open" | "modify", params: Record<string, unknown>): Promise<HyperliquidOrderMarket>;
+/**
  * Check a build before signing it. Never throws; a refusal names what failed. Callers must not
- * sign, and must not call the relay, unless this returns `ok: true`.
+ * sign, and must not call the relay, unless this returns `ok: true`. An open or modify is not
+ * fully checked until it passes with `market` read from Hyperliquid (`hyperliquidOrderMarket`).
  */
 export declare function verifyPerpsBuild(build: PerpsBuildToVerify, opts: VerifyPerpsBuildOptions): PerpsBuildCheck;
 /** A 65-byte `0x` signature split the way `/exchange` takes it. */
