@@ -68,7 +68,7 @@
     },
     "request_validation": {
       "retryable": false,
-      "action": "The request is malformed. Fix the named field. For TRANSACTION_TOO_LARGE the error carries the exact name-byte budget.",
+      "action": "The request is malformed. Fix the named field. For TRANSACTION_TOO_LARGE the error carries the exact name-byte budget; for CURVE_OUT_OF_RANGE with reason price_ceiling, maxThresholdRaw is the largest threshold that fits.",
       "codes": [
         "VALIDATION_FAILED",
         "INVALID_NAME_BYTES",
@@ -87,7 +87,8 @@
         "REBIND_WALLET_INVALID",
         "REBIND_TOO_MANY",
         "KEY_SIGNER_CODE_INVALID",
-        "KEY_SIGNER_FINGERPRINT_MISMATCH"
+        "KEY_SIGNER_FINGERPRINT_MISMATCH",
+        "CURVE_OUT_OF_RANGE"
       ]
     },
     "market": {
