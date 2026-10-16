@@ -27,7 +27,7 @@ import {
   sameEvmAddress,
   toChecksumAddress,
 } from "../evm-lite"
-import { hoodTradeLegCheck, registeredCurveFor } from "../hood-legs"
+import { hoodFeeTreasury, hoodTradeLegCheck, registeredCurveFor } from "../hood-legs"
 import { apiKeyPrefix } from "../profiles"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { describeRpcFailure, type SolanaClient } from "../solana-endpoint"
@@ -950,9 +950,9 @@ async function hoodSwap(
   const notices: string[] = []
   // Every leg is held to what was confirmed here (hood-legs.ts): the input asset and amount, the
   // pinned routers or the registry's curve for this token, and the fee the quote showed, paid to
-  // the treasury the build named. A base swap carries no fee, so any fee leg on it is refused.
+  // the treasury the chain names (the build's `fee.treasury` is display only). A base swap carries
+  // no fee, so any fee leg on it is refused.
   const feeRaw = BigInt(data.fee.feeRaw)
-  const treasury = data.fee.treasury
   const feeAsset = artifacts.quoteAsset === "usdg" ? "usdg" : "eth"
   const checkLeg = hoodTradeLegCheck({
     wallet: wallet.address,
@@ -961,9 +961,8 @@ async function hoodSwap(
     outputToken: to.asset === "ETH" ? undefined : to.asset === "USDG" ? HOOD_USDG_ADDRESS : to.asset,
     minOutRaw: BigInt(data.minOutRaw),
     venue: kind === "trade" && artifacts.venue === "curve" ? "curve" : "dex",
-    ...(kind === "trade" && feeRaw > 0n && typeof treasury === "string"
-      ? { fee: { cap: feeRaw, asset: feeAsset, treasury } }
-      : {}),
+    ...(kind === "trade" && feeRaw > 0n ? { fee: { cap: feeRaw, asset: feeAsset } } : {}),
+    treasury: () => hoodFeeTreasury(rpc()),
     curve: () => registeredCurveFor(rpc(), token),
   })
   const run = await runSequencedLegs(ctx, key, {

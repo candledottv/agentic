@@ -5296,7 +5296,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.1"
+export const SDK_VERSION = "0.6.2"
 
 let sdkUpdateWarned = false
 

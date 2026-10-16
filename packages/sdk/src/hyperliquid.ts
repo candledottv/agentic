@@ -393,6 +393,14 @@ function checkActionIntent(action: Record<string, unknown>, intent: VerifyPerpsB
           decimal(trigger.triggerPx) !== decimal(p[field])
         )
           return "trigger side, size, reduce-only flag or price does not match the request"
+        // The trigger is the user's own price, so its leg's limit is held to it directly: a close
+        // that may fill no worse than the trigger moved by the build's slippage and the margin.
+        const px = decimal(leg.p) ?? 0n
+        const triggerPx = decimal(trigger.triggerPx) ?? 0n
+        const bound = BigInt(HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS)
+        const within =
+          leg.b === true ? px * 10_000n <= triggerPx * (10_000n + bound) : px * 10_000n >= triggerPx * (10_000n - bound)
+        if (triggerPx <= 0n || !within) return "trigger order price is outside its slippage of the trigger price"
       }
     } else {
       if (list.length !== 1) return "unexpected extra orders"
@@ -458,6 +466,15 @@ export const HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100
  * while still refusing a price far from the venue's (a buy at twice the mid, a sell at half).
  */
 export const HYPERLIQUID_MID_DRIFT_BPS = 100
+
+/**
+ * The slippage a take-profit or stop-loss leg's limit price may carry past its trigger, before
+ * `HYPERLIQUID_MID_DRIFT_BPS` is added for rounding. The API prices those legs at its
+ * `maxSlippageBps` from the trigger, whatever the request's slippage: 500 unless
+ * `HYPERLIQUID_MAX_SLIPPAGE_BPS` says otherwise (`apps/api/src/lib/perps-gate.ts`). A deployment
+ * that raises it has its TP/SL legs refused here until this release follows.
+ */
+export const HYPERLIQUID_TPSL_SLIPPAGE_BPS = 500
 
 /** What Hyperliquid's own `/info` says about the market an open or modify names. */
 export interface HyperliquidOrderMarket {

@@ -9,9 +9,11 @@
  * Every address is pinned in code rather than read from Candle, as `relay-constants.ts` pins Relay's.
  * The routers and Permit2 are the defaults in `packages/shared/src/hood-dex.ts` (the server's own
  * planner reads them there), and the factory is the live launch stack in `docs/contracts.md`.
- * `hood-legs.test.ts` diffs both. A move of any of them is a PR to this file.
+ * `hood-legs.test.ts` diffs both. A move of any of them is a PR to this file. What those pinned
+ * contracts hold is read from them over the user's RPC: the treasury a fee leg pays, the curve a
+ * token trades on, and the curve a launch's own `createCurve` made.
  */
-import type { EvmRpc } from "./evm-lite"
+import type { EvmReceipt, EvmRpc } from "./evm-lite"
 import {
   bytesToHex,
   decodeErc20Transfer,
@@ -81,6 +83,10 @@ export const SPLITTER_DEV_SELECTOR = "0x91cca3db"
 export const SPLITTER_IS_SPLITTER_SELECTOR = "0xa4c597d1"
 /** `CandleCurveRegistry.curveForBaseToken(address)`. */
 const CURVE_FOR_BASE_TOKEN_SELECTOR = "0x446b9253"
+/** `CandleFeeSplitterFactory.platformVault()`. */
+export const SPLITTER_PLATFORM_VAULT_SELECTOR = "0x20f094f8"
+/** `CandleCurveFactory`'s `CurveCreated(address indexed curve, address indexed baseToken, address indexed creator, uint8, bytes32, bytes32)`. */
+export const CURVE_CREATED_TOPIC = "0xed3a740542131b3621499825e40efbcaf096e3b1608de865c08a2109378bb36b"
 
 /**
  * The most a launch's fee leg may carry, in basis points of the first buy. The server clamps every
@@ -602,22 +608,77 @@ export function launchFeeCap(buyRaw: string): bigint {
 }
 
 /**
- * A fee leg: no more than `cap`, in the asset the trade settles in. ETH is a plain transfer (empty
- * data); USDG is exactly `transfer(recipient, amount)` on the USDG contract with no ETH. When the
- * build named the treasury, the fee goes there and nowhere else.
+ * A fee leg: no more than `cap`, in the asset the trade settles in, to `treasury` and nowhere else.
+ * ETH is a plain transfer (empty data); USDG is exactly `transfer(recipient, amount)` on the USDG
+ * contract with no ETH. The treasury is `hoodFeeTreasury`'s, never the build's.
  */
-export function feeLegOk(leg: Leg, fee: { cap: bigint; asset: "eth" | "usdg"; treasury?: string }): boolean {
+export function feeLegOk(leg: Leg, fee: { cap: bigint; asset: "eth" | "usdg"; treasury: string }): boolean {
   if (!isDecimal(leg.value)) return false
   if (fee.asset === "eth") {
     if (leg.data !== "0x" && leg.data !== "") return false
     if (BigInt(leg.value) > fee.cap) return false
-    return fee.treasury === undefined || sameEvmAddress(leg.to, fee.treasury)
+    return sameEvmAddress(leg.to, fee.treasury)
   }
   if (leg.value !== "0" || !sameEvmAddress(leg.to, HOOD_USDG_ADDRESS)) return false
   const data = bytesOf(leg.data)
   const decoded = data ? decodeErc20Transfer(data) : undefined
   if (!decoded || decoded.amount > fee.cap) return false
-  return fee.treasury === undefined || sameEvmAddress(decoded.recipient, fee.treasury)
+  return sameEvmAddress(decoded.recipient, fee.treasury)
+}
+
+/**
+ * Candle's fee treasury on Hood, as the chain names it: `platformVault()` on the pinned splitter
+ * factory, the Safe that takes the platform half of every curve's trading fees. The API pays every
+ * Hood agent fee to that same Safe (`AGENT_FEE_TREASURY_HOOD`, 0x0ed31DBF... on staging and on
+ * production, read from both environments' landed fee legs on 2026-10-16). Only the Safe can move
+ * it, so no server build can. Undefined when the RPC cannot answer, which refuses the fee leg.
+ */
+export async function hoodFeeTreasury(rpc: EvmRpc): Promise<string | undefined> {
+  try {
+    const answer = await rpc.call({ to: HOOD_SPLITTER_FACTORY, data: hexToBytes(SPLITTER_PLATFORM_VAULT_SELECTOR) })
+    const vault = wordAddress(word(answer, 0, 0))
+    return vault !== undefined && BigInt(vault) !== 0n ? vault : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The curve a launch's own `createCurve` made, read from that transaction's receipt: the one
+ * `CurveCreated` the pinned factory logged, naming `wallet` as the creator. The hash is the one the
+ * CLI computed from the bytes it had signed, never one Candle reports, so an earlier curve of this
+ * wallet's cannot stand in. Undefined for a missing or reverted receipt, or any other log shape.
+ */
+export function curveCreatedBy(receipt: EvmReceipt | null, wallet: string): string | undefined {
+  if (!receipt || receipt.status !== 1) return undefined
+  const created = (receipt.logs ?? []).filter(
+    (log) => sameEvmAddress(log.address, HOOD_CURVE_FACTORY) && log.topics[0]?.toLowerCase() === CURVE_CREATED_TOPIC,
+  )
+  if (created.length !== 1) return undefined
+  const topics = (created[0] as { topics: string[] }).topics
+  const topicAddress = (topic: string | undefined) => {
+    const bytes = topic === undefined ? undefined : bytesOf(topic)
+    return bytes?.length === 32 ? wordAddress(bytes) : undefined
+  }
+  const curve = topicAddress(topics[1])
+  const creator = topicAddress(topics[3])
+  if (curve === undefined || BigInt(curve) === 0n || creator === undefined) return undefined
+  return sameEvmAddress(creator, wallet) ? curve : undefined
+}
+
+/**
+ * A launch's buy leg: exactly `buy(minAmountOut)` on the curve this launch created, carrying exactly
+ * the confirmed amount. The curve pays `msg.sender`, so the tokens come to the wallet.
+ */
+export function launchBuyLegOk(leg: Leg, buyRaw: string, curve: string): boolean {
+  const data = bytesOf(leg.data)
+  return (
+    data !== undefined &&
+    leg.value === buyRaw &&
+    sameEvmAddress(leg.to, curve) &&
+    data.length === 36 &&
+    selectorOf(data) === CURVE_BUY_SELECTOR
+  )
 }
 
 /** What a Hood trade or base swap confirmed, which every one of its legs is held to. */
@@ -635,7 +696,9 @@ export interface HoodTradeTerms {
   /** `curve` trades on a Candle curve, held to the registry's curve; anything else is a DEX router. */
   venue: "curve" | "dex"
   /** The fee the quote showed; undefined when the trade carries none, so any fee leg is refused. */
-  fee?: { cap: bigint; asset: "eth" | "usdg"; treasury?: string }
+  fee?: { cap: bigint; asset: "eth" | "usdg" }
+  /** Candle's treasury as the chain names it (`hoodFeeTreasury`). Called only for a fee leg, once. */
+  treasury?: () => Promise<string | undefined>
   /** The curve the registry names for the traded token. Called only on the curve venue, once. */
   curve?: () => Promise<string | undefined>
 }
@@ -647,13 +710,18 @@ export interface HoodTradeTerms {
  * trade goes to the registered curve, or to a pinned router with its calldata decoded and held to
  * the confirmed assets, input ceiling, output floor and wallet recipient. Undecoded calls are
  * refused. It carries ETH only when ETH is the input and never more than it. The fee is
- * `feeLegOk` against the quoted fee.
+ * `feeLegOk` against the quoted fee and the treasury the chain names; without one it is refused.
  */
 export function hoodTradeLegCheck(terms: HoodTradeTerms): (kind: LegKind, leg: Leg) => Promise<boolean> {
   let curve: Promise<string | undefined> | undefined
   const registeredCurve = () => {
     curve ??= terms.curve ? terms.curve().catch(() => undefined) : Promise.resolve(undefined)
     return curve
+  }
+  let treasury: Promise<string | undefined> | undefined
+  const chainTreasury = () => {
+    treasury ??= terms.treasury ? terms.treasury().catch(() => undefined) : Promise.resolve(undefined)
+    return treasury
   }
   const spenderOk = async (spender: string) => {
     if (terms.venue !== "curve") return among(spender, DEX_SPENDERS)
@@ -664,7 +732,11 @@ export function hoodTradeLegCheck(terms: HoodTradeTerms): (kind: LegKind, leg: L
     if (!isDecimal(leg.value)) return false
     const data = bytesOf(leg.data)
     if (!data) return false
-    if (kind === "feeTransfer") return terms.fee !== undefined && feeLegOk(leg, terms.fee)
+    if (kind === "feeTransfer") {
+      if (terms.fee === undefined) return false
+      const named = await chainTreasury()
+      return named !== undefined && feeLegOk(leg, { ...terms.fee, treasury: named })
+    }
     if (kind === "approval") {
       if (terms.inputToken === undefined || leg.value !== "0" || !sameEvmAddress(leg.to, terms.inputToken)) return false
       const approve = decodeApprove(data)

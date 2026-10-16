@@ -17,6 +17,7 @@ import { readdirSync } from "node:fs"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { keccak_256 } from "@noble/hashes/sha3"
 import type { EvmRecordAppendOutcome, EvmRecordTokenEntry } from "../deps"
 import {
   bytesToHex,
@@ -28,7 +29,14 @@ import {
   signTransaction,
   toChecksumAddress,
 } from "../evm-lite"
-import { CREATE_CURVE_SELECTOR, HOOD_CURVE_FACTORY, HOOD_SPLITTER_FACTORY } from "../hood-legs"
+import {
+  CREATE_CURVE_SELECTOR,
+  CURVE_BUY_SELECTOR,
+  CURVE_CREATED_TOPIC,
+  HOOD_CURVE_FACTORY,
+  HOOD_SPLITTER_FACTORY,
+  SPLITTER_PLATFORM_VAULT_SELECTOR,
+} from "../hood-legs"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
@@ -84,6 +92,8 @@ function createCurveData(creator: string, feeRecipient = splitter): string {
 }
 const splitter = "0x7777777777777777777777777777777777777777"
 const curveCall = createCurveData(hoodTee)
+/** `CandleCurve.buy(minAmountOut)` with a floor of 1, as the server's `planCurveBuy` encodes it. */
+const BUY_DATA = `${CURVE_BUY_SELECTOR}${"0".repeat(63)}1`
 
 type Outcome = "land" | "revert" | "unconfirmed"
 
@@ -122,11 +132,18 @@ interface FixtureOptions {
   trailingLeg?: { kind: string; leg: SequencedLeg; plannedLegCount?: number }
   /** The `dev` the launch's fee splitter reports; default the wallet itself. */
   splitterDev?: string
+  /** The splitter factory's `platformVault()`. Default: `treasury`; "error" fails the read. */
+  chainTreasury?: string | "error"
+  /** The curve the createCurve receipt's `CurveCreated` names. Default: `curve`. */
+  createdCurve?: string
+  /** The createCurve receipt over the RPC: "none" never appears, "error" fails, "error-once" fails on the first read only, "reverted" is status 0. */
+  receipt?: "none" | "error" | "error-once" | "reverted"
   /** BE-1283: a Candle error POST /uploads/agent-image answers instead of a URL. */
   uploadError?: { code: string; message: string }
 }
 
 async function fixture(opts: FixtureOptions = {}) {
+  let receiptErrored = false
   const dir = await mkdtemp(join(tmpdir(), "candle-hood-4b2-"))
   folders.push(dir)
   /** `claims` is how many operation ids this machine had claimed when the request was made. */
@@ -144,6 +161,8 @@ async function fixture(opts: FixtureOptions = {}) {
   let index = 0
   let built = false
   let trailed = false
+  /** The hash of every createCurve the fake relay signed, as keccak over the signed bytes. */
+  const createCurveHashes: string[] = []
   const sequenced = (i: number) => ({
     mode: "sequenced",
     operationId: "op-1",
@@ -169,6 +188,36 @@ async function fixture(opts: FixtureOptions = {}) {
       const selector = body.method === "eth_call" ? String(body.params[0].data).slice(0, 10) : ""
       const to = body.method === "eth_call" ? String(body.params[0].to).toLowerCase() : ""
       const word = (hex: string) => `0x${hex.replace(/^0x/, "").toLowerCase().padStart(64, "0")}`
+      const rpcError = () => ok({ jsonrpc: "2.0", id: body.id, error: { code: -32000, message: "unavailable" } })
+      if (selector === SPLITTER_PLATFORM_VAULT_SELECTOR)
+        return opts.chainTreasury === "error" || to !== HOOD_SPLITTER_FACTORY.toLowerCase()
+          ? rpcError()
+          : ok({ jsonrpc: "2.0", id: body.id, result: word(opts.chainTreasury ?? treasury) })
+      if (body.method === "eth_getTransactionReceipt") {
+        if (opts.receipt === "error") return rpcError()
+        if (opts.receipt === "error-once" && !receiptErrored) {
+          receiptErrored = true
+          return rpcError()
+        }
+        // Only the createCurve this wallet signed has a receipt, under the hash of its signed bytes.
+        if (opts.receipt === "none" || !createCurveHashes.includes(String(body.params[0])))
+          return ok({ jsonrpc: "2.0", id: body.id, result: null })
+        const created = {
+          address: factory.toLowerCase(),
+          topics: [CURVE_CREATED_TOPIC, word(opts.createdCurve ?? curve), word(launched), word(hoodTee)],
+          data: "0x",
+        }
+        return ok({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            status: opts.receipt === "reverted" ? "0x0" : "0x1",
+            blockNumber: "0x10",
+            transactionHash: body.params[0],
+            logs: opts.receipt === "reverted" ? [] : [created],
+          },
+        })
+      }
       // The splitter factory vouches for the one splitter; its `dev` is the owner unless a test says otherwise.
       const result =
         selector === "0x313ce567"
@@ -295,7 +344,9 @@ async function fixture(opts: FixtureOptions = {}) {
         value: hexToBigInt(wire.value),
         data: hexToBytes(wire.data),
       }
-      return ok({ success: true, signedTransaction: bytesToHex(signTransaction(tx, teeSecret).raw), encoding: "rlp" })
+      const raw = signTransaction(tx, teeSecret).raw
+      if (String(wire.to).toLowerCase() === factory.toLowerCase()) createCurveHashes.push(bytesToHex(keccak_256(raw)))
+      return ok({ success: true, signedTransaction: bytesToHex(raw), encoding: "rlp" })
     }
     if (path === "/api/v1/launch/self/confirm" || path === "/api/v1/agent/transfer/submit") {
       const launch = path.includes("launch")
@@ -397,7 +448,7 @@ async function fixture(opts: FixtureOptions = {}) {
     await writeFile(path, bytes)
     return path
   }
-  return { deps, calls, stdout, stderr, appended, file }
+  return { deps, calls, stdout, stderr, appended, file, createCurveHashes }
 }
 
 function lastJson(text: string): Record<string, unknown> {
@@ -499,7 +550,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
   const buyLegs = (value = ONE_MILLI_ETH, to = curve) => [
     { kind: "createCurve", leg: leg(3, factory, curveCall) },
     { kind: "feeTransfer", leg: leg(4, treasury, "0x", "5000") },
-    { kind: "trade", leg: leg(5, to, "0xd96a094a", value) },
+    { kind: "trade", leg: leg(5, to, BUY_DATA, value) },
   ]
 
   test("BE-869: --buy sends the buy in wei; Candle's buy leg is signed last, to the curve, for exactly that amount", async () => {
@@ -544,7 +595,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
 
   const curveLeg = { kind: "createCurve", leg: leg(3, factory, curveCall) }
   const feeLeg = { kind: "feeTransfer", leg: leg(4, treasury, "0x", "5000") }
-  const tradeLeg = (nonce = 5) => ({ kind: "trade", leg: leg(nonce, curve, "0xd96a094a", ONE_MILLI_ETH) })
+  const tradeLeg = (nonce = 5) => ({ kind: "trade", leg: leg(nonce, curve, BUY_DATA, ONE_MILLI_ETH) })
 
   test("BE-869: a two-leg plan with --buy is the curve then the buy, and lands", async () => {
     const f = await fixture({ launchLegs: [curveLeg, tradeLeg(4)] })
@@ -555,6 +606,64 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       "trade",
     ])
   })
+
+  test("the fee is held to the chain's treasury and the buy to the curve this launch's own createCurve made", async () => {
+    const f = await fixture({ launchLegs: buyLegs() })
+    expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(0)
+    const rpc = f.calls
+      .filter((call) => call.url.startsWith(EVM_RPC))
+      .map((call) => call.body as { method: string; params: Array<{ data?: string } | string> })
+    expect(rpc.some((body) => (body.params[0] as { data?: string }).data === SPLITTER_PLATFORM_VAULT_SELECTOR)).toBe(
+      true,
+    )
+    // The receipt is read under the hash of the bytes this machine signed, never one Candle reported.
+    const receipts = rpc.filter((body) => body.method === "eth_getTransactionReceipt")
+    expect(f.createCurveHashes).toHaveLength(1)
+    expect(receipts.map((body) => body.params[0])).toEqual(f.createCurveHashes)
+  })
+
+  test("a read of the createCurve receipt that throws once is asked again, and the launch goes through", async () => {
+    const f = await fixture({ launchLegs: buyLegs(), receipt: "error-once" })
+    expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(0)
+    expect(signs(f.calls)).toHaveLength(3)
+  })
+
+  const other = toChecksumAddress("0x9999999999999999999999999999999999999999")
+  // [name, fixture options, legs signed before the refusal]: with a fee leg, a buy that cannot be
+  // shown to go to the launched curve is refused before the fee is signed
+  const unpinned: Array<[string, FixtureOptions, number]> = [
+    ["a fee to a treasury the chain does not name", { launchLegs: buyLegs(), chainTreasury: other }, 1],
+    ["a fee when the RPC cannot read the treasury", { launchLegs: buyLegs(), chainTreasury: "error" }, 1],
+    ["a buy to a curve this launch's createCurve did not make", { launchLegs: buyLegs(), createdCurve: other }, 1],
+    [
+      "a buy to another curve the build also names",
+      { launchLegs: buyLegs(ONE_MILLI_ETH, other), launchBuild: { curveAddress: other } },
+      1,
+    ],
+    ["a buy when the RPC cannot read the createCurve receipt", { launchLegs: buyLegs(), receipt: "error" }, 1],
+    ["a buy when the RPC never shows the createCurve receipt", { launchLegs: buyLegs(), receipt: "none" }, 1],
+    ["a buy after a reverted createCurve receipt", { launchLegs: buyLegs(), receipt: "reverted" }, 1],
+    [
+      "a buy leg that is not exactly buy(minAmountOut)",
+      {
+        launchLegs: [
+          { kind: "createCurve", leg: leg(3, factory, curveCall) },
+          { kind: "trade", leg: leg(4, curve, CURVE_BUY_SELECTOR, ONE_MILLI_ETH) },
+        ],
+      },
+      1,
+    ],
+  ]
+  for (const [name, options, signed] of unpinned)
+    test(`${name} is never signed; the legs that landed are listed`, async () => {
+      const f = await fixture(options)
+      expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
+      const failure = lastJson(f.stdout.text)
+      expect(failure.code).toBe("INVALID_RESPONSE")
+      expect(String(failure.message)).toContain("does not match what this operation confirmed")
+      expect(String(failure.message)).toContain("Landed: createCurve")
+      expect(signs(f.calls)).toHaveLength(signed)
+    })
 
   const wrongOrders: Array<[string, FixtureOptions, number, string]> = [
     ["a fee-only two-leg plan", { launchLegs: [curveLeg, feeLeg] }, 1, "createCurve"],
@@ -704,7 +813,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       launchLegs: [
         { kind: "createCurve", leg: leg(3, factory, curveCall) },
         { kind: "transfer", leg: leg(4, treasury, "0x", "5") },
-        { kind: "trade", leg: leg(5, curve, "0xd96a094a", (10n ** 15n).toString()) },
+        { kind: "trade", leg: leg(5, curve, BUY_DATA, (10n ** 15n).toString()) },
       ],
     })
     expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
@@ -752,7 +861,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       launchLegs: [
         { kind: "createCurve", leg: leg(3, factory, curveCall) },
         { kind: "createCurve", leg: leg(4, treasury, "0x", FIVE_ETH) },
-        { kind: "trade", leg: leg(5, curve, "0xd96a094a", (10n ** 15n).toString()) },
+        { kind: "trade", leg: leg(5, curve, BUY_DATA, (10n ** 15n).toString()) },
       ],
     })
     expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
@@ -817,7 +926,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
         launchLegs: [
           { kind: "createCurve", leg: leg(3, factory, curveCall) },
           { kind: "feeTransfer", leg: feeLeg },
-          { kind: "trade", leg: leg(5, curve, "0xd96a094a", (10n ** 15n).toString()) },
+          { kind: "trade", leg: leg(5, curve, BUY_DATA, (10n ** 15n).toString()) },
         ],
       })
       expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import {
   HYPERLIQUID_EXCHANGE_URLS,
+  HYPERLIQUID_TPSL_SLIPPAGE_BPS,
   hyperliquidActionHash,
   hyperliquidApproveBuilderFeeTypedData,
   hyperliquidExchangeBody,
@@ -130,6 +133,69 @@ describe("verifyPerpsBuild refuses before any relay call", () => {
 
   test("no builder to check against is a refusal, not a pass", () => {
     expect(verifyPerpsBuild(orderBuild(), { builder: "" }).ok).toBe(false)
+  })
+})
+
+describe("take-profit and stop-loss limit prices are held to their triggers", () => {
+  const order = (b: boolean, p: string, tif: Record<string, unknown>, r = true) => ({
+    a: 0,
+    b,
+    p,
+    s: "0.01",
+    r,
+    t: tif,
+    c: `0x${"1".repeat(32)}`,
+  })
+  const trigger = (tpsl: "tp" | "sl", triggerPx: string) => ({ trigger: { isMarket: true, triggerPx, tpsl } })
+  /** A long market open at a 60000 mid with a TP at 66000 and an SL at 57000, priced as the API prices them. */
+  const openWith = (side: "long" | "short", tpPx: string, slPx: string) => {
+    const long = side === "long"
+    const action = {
+      type: "order",
+      orders: [
+        order(long, long ? "60600" : "59400", { limit: { tif: "Ioc" } }, false),
+        order(!long, tpPx, trigger("tp", long ? "66000" : "54000")),
+        order(!long, slPx, trigger("sl", long ? "57000" : "63000")),
+      ],
+      grouping: "normalTpsl",
+      builder: { b: BUILDER, f: 100 },
+    }
+    const intent = {
+      method: "open" as const,
+      params: {
+        coin: "BTC",
+        side,
+        size: "0.01",
+        takeProfit: long ? "66000" : "54000",
+        stopLoss: long ? "57000" : "63000",
+      },
+    }
+    return verifyPerpsBuild(orderBuild({}, action), { builder: BUILDER, intent })
+  }
+
+  test("legs at the API's 500 bps from their triggers pass, long and short", () => {
+    expect(openWith("long", "62700", "54150")).toEqual({ ok: true, kind: "l1" })
+    expect(openWith("short", "56700", "66150")).toEqual({ ok: true, kind: "l1" })
+  })
+
+  test("a sell leg priced far below its trigger, or a buy leg far above, is refused", () => {
+    for (const result of [
+      openWith("long", "1", "54150"),
+      openWith("long", "62700", "53000"),
+      openWith("short", "56700", "99999"),
+      openWith("short", "60000", "66150"),
+    ]) {
+      expect(result.ok).toBe(false)
+      expect(result.ok ? "" : result.reason).toContain("slippage of the trigger price")
+    }
+  })
+
+  test("the bound follows the API's default maximum slippage", () => {
+    const file = join(import.meta.dir, "..", "..", "..", "apps", "api", "src", "lib", "perps-gate.ts")
+    if (!existsSync(file)) return
+    expect(readFileSync(file, "utf8")).toContain(
+      `envInt(env.HYPERLIQUID_MAX_SLIPPAGE_BPS, ${HYPERLIQUID_TPSL_SLIPPAGE_BPS},`,
+    )
   })
 })
 

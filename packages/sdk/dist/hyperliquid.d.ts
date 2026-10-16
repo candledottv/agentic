@@ -102,6 +102,14 @@ export declare const HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100;
  * while still refusing a price far from the venue's (a buy at twice the mid, a sell at half).
  */
 export declare const HYPERLIQUID_MID_DRIFT_BPS = 100;
+/**
+ * The slippage a take-profit or stop-loss leg's limit price may carry past its trigger, before
+ * `HYPERLIQUID_MID_DRIFT_BPS` is added for rounding. The API prices those legs at its
+ * `maxSlippageBps` from the trigger, whatever the request's slippage: 500 unless
+ * `HYPERLIQUID_MAX_SLIPPAGE_BPS` says otherwise (`apps/api/src/lib/perps-gate.ts`). A deployment
+ * that raises it has its TP/SL legs refused here until this release follows.
+ */
+export declare const HYPERLIQUID_TPSL_SLIPPAGE_BPS = 500;
 /** What Hyperliquid's own `/info` says about the market an open or modify names. */
 export interface HyperliquidOrderMarket {
     /** The coin's index in Hyperliquid's main perp universe. */

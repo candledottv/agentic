@@ -1,8 +1,23 @@
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
-import { checkEvmAddress, formatUnits, sameEvmAddress, toChecksumAddress } from "../evm-lite"
-import { createCurveLegOk, feeLegOk, LAUNCH_FEE_MAX_BPS, launchFeeCap } from "../hood-legs"
+import {
+  checkEvmAddress,
+  type EvmReceipt,
+  type EvmRpc,
+  formatUnits,
+  sameEvmAddress,
+  toChecksumAddress,
+} from "../evm-lite"
+import {
+  createCurveLegOk,
+  curveCreatedBy,
+  feeLegOk,
+  hoodFeeTreasury,
+  LAUNCH_FEE_MAX_BPS,
+  launchBuyLegOk,
+  launchFeeCap,
+} from "../hood-legs"
 import { writeUsageFailure } from "../render"
 import { postSignatureRateLimitMessage, postSignatureSuggestion } from "../solana-endpoint"
 import { isRateLimited } from "../solana-lite"
@@ -337,8 +352,9 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
  * `eth_signTransaction` and sent by Candle, which answers only after its receipt. Without `--buy`
  * the build's `buyAmount` is 0 and the first buy is a separate `candle swap`. With it (BE-869),
  * Candle adds its own curve buy as the last leg, for exactly that amount, and reserves it against
- * the key's spend window when the operation opens. Nothing here reads or writes over a Hood RPC:
- * the server sets nonces and fees, broadcasts, and records the launch from the legs it sent.
+ * the key's spend window when the operation opens. Nothing here writes over a Hood RPC: the server
+ * sets nonces and fees, broadcasts, and records the launch from the legs it sent. The leg checks
+ * only read over it (the splitter, the treasury, and the createCurve receipt the buy is held to).
  */
 async function hoodLaunch(
   ctx: CommandContext,
@@ -453,6 +469,8 @@ async function hoodLaunch(
       : ["createCurve", "trade"]
     : undefined
   let position = 0
+  let createCurveHash: string | undefined
+  let quotedCurve: Promise<string | undefined> | undefined
   const evm = lazyEvmRpc(ctx, flags["--rpc-url"])
   const run = await runSequencedLegs(ctx, key, {
     wallet,
@@ -465,15 +483,35 @@ async function hoodLaunch(
     primaryLeg: "createCurve",
     allowedLegs,
     // createCurve calls the pinned factory with no ETH and names this wallet the creator. The fee
-    // is plain ETH, no more than the ceiling the quote showed. The buy leg pays this launch's own
-    // curve exactly the amount confirmed.
+    // is plain ETH, no more than the ceiling the quote showed, to the treasury the chain names. The
+    // buy leg pays exactly the amount confirmed to the curve the quote showed, which must be the
+    // one this launch's own createCurve made, as its receipt says. That is settled before the fee
+    // is signed, so a buy that would be refused never costs the fee.
+    onSigned: (kind, hash) => {
+      if (kind === "createCurve") createCurveHash = hash
+    },
     checkLeg: async (kind, leg) => {
+      // The curve the createCurve receipt names, only if it is the one the quote showed; read once.
+      const buyCurve = (): Promise<string | undefined> => {
+        if (createCurveHash === undefined) return Promise.resolve(undefined)
+        quotedCurve ??= launchedCurve(ctx, evm(), createCurveHash, wallet.address).then((created) =>
+          created !== undefined && sameEvmAddress(created, curve.address) ? created : undefined,
+        )
+        return quotedCurve
+      }
       // With a buy, the confirmed sequence is the only one signed: each leg must be the kind the
       // plan puts at its position, so a fee in the buy's slot or after it is never signed.
       if (confirmedPlan && confirmedPlan[position++] !== kind) return false
       if (kind === "createCurve") return await createCurveLegOk(leg, wallet.address, evm())
-      if (kind === "feeTransfer") return feeCap !== undefined && feeLegOk(leg, { cap: feeCap, asset: "eth" })
-      return kind === "trade" && buy !== undefined && leg.value === buy.raw && sameEvmAddress(leg.to, curve.address)
+      if (kind === "feeTransfer") {
+        if (feeCap === undefined) return false
+        if (buy !== undefined && (await buyCurve()) === undefined) return false
+        const treasury = await hoodFeeTreasury(evm())
+        return treasury !== undefined && feeLegOk(leg, { cap: feeCap, asset: "eth", treasury })
+      }
+      if (kind !== "trade" || buy === undefined) return false
+      const created = await buyCurve()
+      return created !== undefined && launchBuyLegOk(leg, buy.raw, created)
     },
     onLanded: async () => {},
   })
@@ -500,6 +538,34 @@ async function hoodLaunch(
     landedLegs: run.landed,
     ...args.used,
   })
+}
+
+/** How often a buy's check asks the RPC for the createCurve receipt Candle has already seen. */
+const RECEIPT_ATTEMPTS = 5
+const RECEIPT_RETRY_MS = 1_000
+
+/**
+ * The curve this launch's own createCurve made (`curveCreatedBy`), from its receipt over the
+ * user's RPC. Candle answers only after it saw the receipt, so a missing one is a node a block or
+ * two behind and is asked again, briefly; an RPC error is asked again the same way, and no receipt after the attempts refuses the buy.
+ */
+async function launchedCurve(
+  ctx: CommandContext,
+  rpc: EvmRpc,
+  hash: string,
+  wallet: string,
+): Promise<string | undefined> {
+  for (let attempt = 1; ; attempt++) {
+    let receipt: EvmReceipt | null = null
+    try {
+      receipt = await rpc.getTransactionReceipt(hash)
+    } catch {
+      // A thrown read is asked again like a missing receipt.
+    }
+    if (receipt !== null) return curveCreatedBy(receipt, wallet)
+    if (attempt >= RECEIPT_ATTEMPTS) return undefined
+    await ctx.deps.sleep(RECEIPT_RETRY_MS)
+  }
 }
 
 /** What the gas line says about the legs after createCurve, which Candle prices when each becomes next. */

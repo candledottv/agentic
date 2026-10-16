@@ -718,6 +718,12 @@ function checkActionIntent(action, intent) {
         const trigger = leg.t?.trigger;
         if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal(leg.s) !== decimal(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal(trigger.triggerPx) !== decimal(p[field]))
           return "trigger side, size, reduce-only flag or price does not match the request";
+        const px = decimal(leg.p) ?? 0n;
+        const triggerPx = decimal(trigger.triggerPx) ?? 0n;
+        const bound = BigInt(HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS);
+        const within = leg.b === true ? px * 10000n <= triggerPx * (10000n + bound) : px * 10000n >= triggerPx * (10000n - bound);
+        if (triggerPx <= 0n || !within)
+          return "trigger order price is outside its slippage of the trigger price";
       }
     } else {
       if (list.length !== 1)
@@ -759,6 +765,7 @@ async function hyperliquidCloseOrder(fetcher, network, address, params) {
 }
 var HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100;
 var HYPERLIQUID_MID_DRIFT_BPS = 100;
+var HYPERLIQUID_TPSL_SLIPPAGE_BPS = 500;
 async function hyperliquidOrderMarket(fetcher, network, address, method, params) {
   const read = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
@@ -2424,7 +2431,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.1";
+var SDK_VERSION = "0.6.2";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

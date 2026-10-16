@@ -940,6 +940,12 @@ export async function runSequencedLegs(
      * its approvals, router or curve, and fee (`hood-legs.ts`).
      */
     checkLeg: (kind: LegKind, leg: SequencedLeg) => boolean | Promise<boolean>
+    /**
+     * Runs once per leg, after it is signed and before it is posted, with the hash computed here
+     * from the signed bytes: a later leg's check can read that transaction's own receipt (a launch
+     * finds the curve its `createCurve` made) without trusting a hash Candle reports.
+     */
+    onSigned?: (kind: LegKind, hash: string) => void
     /** Runs once per leg that landed, in order. It must not throw. */
     onLanded: (leg: LandedLeg) => Promise<void>
   },
@@ -1019,6 +1025,7 @@ export async function runSequencedLegs(
     const signed = await relaySignEvmLeg(ctx, key, opts.wallet, leg)
     signedCount += 1
     signedKinds.add(current.legKind)
+    opts.onSigned?.(current.legKind, signed.hash)
     // Before the post, as the Solana rail saves its payer signature: a restart can read this hash.
     if (opts.clientId !== undefined && opts.kind !== undefined)
       await saveOperationHash(ctx, key, opts.clientId, opts.kind, signed.hash, current.operationId)

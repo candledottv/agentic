@@ -428,6 +428,8 @@ export interface EvmReceipt {
   status: 0 | 1
   blockNumber: bigint
   transactionHash: string
+  /** Each log's emitter and topics, for a check that reads what a transaction it signed created. */
+  logs?: Array<{ address: string; topics: string[] }>
 }
 
 export interface FeeHistory {
@@ -602,16 +604,27 @@ export function createEvmRpc(url: string, fetchFn: typeof fetch): EvmRpc {
       return r
     },
     async getTransactionReceipt(hash) {
-      const r = await call<{ status?: unknown; blockNumber?: unknown; transactionHash?: unknown } | null>(
-        "eth_getTransactionReceipt",
-        [hash],
-      )
+      const r = await call<{
+        status?: unknown
+        blockNumber?: unknown
+        transactionHash?: unknown
+        logs?: unknown
+      } | null>("eth_getTransactionReceipt", [hash])
       if (r === null || r === undefined) return null
       const status = asQuantity(r.status, "eth_getTransactionReceipt")
+      // A log of any other shape is left out rather than guessed at; a check that needs it refuses.
+      const logs = (Array.isArray(r.logs) ? r.logs : []).flatMap((log: { address?: unknown; topics?: unknown }) =>
+        typeof log?.address === "string" &&
+        Array.isArray(log.topics) &&
+        log.topics.every((topic) => typeof topic === "string")
+          ? [{ address: log.address, topics: log.topics as string[] }]
+          : [],
+      )
       return {
         status: status === 1n ? 1 : 0,
         blockNumber: asQuantity(r.blockNumber, "eth_getTransactionReceipt"),
         transactionHash: typeof r.transactionHash === "string" ? r.transactionHash : hash,
+        logs,
       }
     },
     async getTransactionByHash(hash) {

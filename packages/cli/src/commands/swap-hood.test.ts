@@ -40,6 +40,7 @@ import {
   ERC20_APPROVE_SELECTOR,
   HOOD_KYBER_ROUTER,
   HOOD_PERMIT2,
+  HOOD_SPLITTER_FACTORY,
   HOOD_UNIV2_ROUTER,
   HOOD_UNIV3_ROUTER,
   HOOD_V4_UNIVERSAL_ROUTER,
@@ -144,6 +145,8 @@ interface FixtureOptions {
   fee?: string
   /** `fee.treasury` on the trade build. Default: `treasury`; null as a build with none configured. */
   feeTreasury?: string | null
+  /** The splitter factory's `platformVault()`. Default: `treasury`; "error" fails the read. */
+  chainTreasury?: string | "error"
   /** `artifacts.venue` on the trade build. Default: `dex`. */
   venue?: string
   /** The curve the registry's `curveForBaseToken` names. Default: `tokenCurve`; null names none. */
@@ -189,6 +192,14 @@ async function fixture(opts: FixtureOptions = {}) {
     if (url.startsWith(EVM_RPC)) {
       const method = body.method as string
       const selector = method === "eth_call" ? String(body.params[0].data).slice(0, 10) : ""
+      if (selector === "0x20f094f8") {
+        if (
+          opts.chainTreasury === "error" ||
+          String(body.params[0].to).toLowerCase() !== HOOD_SPLITTER_FACTORY.toLowerCase()
+        )
+          return ok({ jsonrpc: "2.0", id: body.id, error: { code: -32000, message: "execution reverted" } })
+        return ok({ jsonrpc: "2.0", id: body.id, result: `0x${word(opts.chainTreasury ?? treasury)}` })
+      }
       const result =
         method === "eth_getBalance"
           ? "0xde0b6b3a7640000"
@@ -908,6 +919,12 @@ describe("every leg is held to what was confirmed (hood-legs.ts)", () => {
       ["swap", token, "USDG", ...sellArgs().slice(3)],
       {},
     ],
+    [
+      "a fee to the treasury the chain names, when the build names none",
+      [approval(approveData(router)), trade(router), fee()],
+      sellArgs(),
+      { feeTreasury: null },
+    ],
   ]
   for (const [name, legs, argv, options] of honest)
     test(`honest: ${name} signs every leg`, async () => {
@@ -1080,10 +1097,24 @@ describe("every leg is held to what was confirmed (hood-legs.ts)", () => {
       2,
     ],
     [
-      "a fee leg when the build named no treasury",
+      "a fee leg to the treasury the build named, when the chain names another",
+      [approval(approveData(router)), trade(router), fee(attacker)],
+      sellArgs(),
+      { feeTreasury: attacker },
+      2,
+    ],
+    [
+      "a fee leg when the RPC cannot read the chain's treasury",
       [approval(approveData(router)), trade(router), fee()],
       sellArgs(),
-      { feeTreasury: null },
+      { chainTreasury: "error" },
+      2,
+    ],
+    [
+      "a fee leg to a treasury the chain no longer names",
+      [approval(approveData(router)), trade(router), fee()],
+      sellArgs(),
+      { chainTreasury: attacker },
       2,
     ],
     [

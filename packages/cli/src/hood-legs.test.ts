@@ -15,8 +15,10 @@ import {
   CREATE_CURVE_SELECTOR,
   CURVE_BUY_SELECTOR,
   CURVE_BUY_WITH_QUOTE_SELECTOR,
+  CURVE_CREATED_TOPIC,
   CURVE_SELL_SELECTOR,
   createCurveLegOk,
+  curveCreatedBy,
   ERC20_APPROVE_SELECTOR,
   feeLegOk,
   HOOD_CURVE_FACTORY,
@@ -27,15 +29,18 @@ import {
   HOOD_UNIV2_ROUTER,
   HOOD_UNIV3_ROUTER,
   HOOD_V4_UNIVERSAL_ROUTER,
+  hoodFeeTreasury,
   hoodTradeLegCheck,
   KYBER_SWAP_GENERIC_SELECTOR,
   KYBER_SWAP_SELECTOR,
   KYBER_SWAP_SIMPLE_SELECTOR,
+  launchBuyLegOk,
   launchFeeCap,
   PERMIT2_APPROVE_SELECTOR,
   registeredCurveFor,
   SPLITTER_DEV_SELECTOR,
   SPLITTER_IS_SPLITTER_SELECTOR,
+  SPLITTER_PLATFORM_VAULT_SELECTOR,
   UNIVERSAL_EXECUTE_SELECTOR,
   V2_SWAP_ETH_FOR_TOKENS_SELECTOR,
   V2_SWAP_TOKENS_FOR_ETH_SELECTOR,
@@ -63,6 +68,12 @@ import {
 const selector = (signature: string) => bytesToHex(keccak_256(new TextEncoder().encode(signature)).subarray(0, 4))
 const root = join(import.meta.dir, "..", "..", "..")
 const treasury = "0x3333333333333333333333333333333333333333"
+/** An address as the 32-byte word an `eth_call` answers. */
+const wordOf = (address: string) => {
+  const out = new Uint8Array(32)
+  out.set(Buffer.from(address.slice(2), "hex"), 12)
+  return out
+}
 
 describe("pinned selectors", () => {
   test("each selector is the keccak of its signature", () => {
@@ -96,6 +107,19 @@ describe("pinned selectors", () => {
     expect(KYBER_SWAP_SIMPLE_SELECTOR).toBe(selector(`swapSimpleMode(address,${desc},bytes,bytes)`))
     expect(SPLITTER_DEV_SELECTOR).toBe(selector("dev()"))
     expect(SPLITTER_IS_SPLITTER_SELECTOR).toBe(selector("isSplitter(address)"))
+    expect(SPLITTER_PLATFORM_VAULT_SELECTOR).toBe(selector("platformVault()"))
+    // `DexVersion` is an enum, so the event's ABI signature carries it as uint8.
+    expect(CURVE_CREATED_TOPIC).toBe(
+      bytesToHex(keccak_256(new TextEncoder().encode("CurveCreated(address,address,address,uint8,bytes32,bytes32)"))),
+    )
+  })
+
+  test("CurveCreated is the factory's event, with curve, base token and creator indexed in that order", () => {
+    const file = join(root, "packages", "contracts-evm", "src", "CandleCurveFactory.sol")
+    if (!existsSync(file)) return
+    expect(readFileSync(file, "utf8").replace(/\s+/g, " ")).toContain(
+      "event CurveCreated( address indexed curve, address indexed baseToken, address indexed creator, DexVersion dexVersion, bytes32 configHash, bytes32 launcherSalt );",
+    )
   })
 })
 
@@ -133,13 +157,98 @@ describe("fee legs", () => {
     expect(launchFeeCap("11")).toBe(2n)
   })
 
-  test("ETH: empty data, at most the cap, to the treasury when one is named", () => {
+  test("ETH: empty data, at most the cap, to the treasury and nowhere else", () => {
     const ok = { to: treasury, data: "0x", value: "10" }
     expect(feeLegOk(ok, { cap: 10n, asset: "eth", treasury })).toBe(true)
     expect(feeLegOk({ ...ok, value: "11" }, { cap: 10n, asset: "eth", treasury })).toBe(false)
     expect(feeLegOk({ ...ok, data: "0x00" }, { cap: 10n, asset: "eth", treasury })).toBe(false)
     expect(feeLegOk({ ...ok, to: HOOD_USDG_ADDRESS }, { cap: 10n, asset: "eth", treasury })).toBe(false)
-    expect(feeLegOk({ ...ok, value: "-1" }, { cap: 10n, asset: "eth" })).toBe(false)
+    expect(feeLegOk({ ...ok, value: "-1" }, { cap: 10n, asset: "eth", treasury })).toBe(false)
+    expect(feeLegOk({ ...ok, to: HOOD_SPLITTER_FACTORY }, { cap: 10n, asset: "eth", treasury })).toBe(false)
+  })
+
+  test("hoodFeeTreasury is the splitter factory's platformVault; a zero answer or an RPC error is none", async () => {
+    const asked: Array<{ to: string; data: string }> = []
+    const rpcAnswering = (answer: Uint8Array | Error): EvmRpc =>
+      ({
+        call: async (req: { to: string; data: Uint8Array }) => {
+          asked.push({ to: req.to, data: bytesToHex(req.data) })
+          if (answer instanceof Error) throw answer
+          return answer
+        },
+      }) as unknown as EvmRpc
+    expect(await hoodFeeTreasury(rpcAnswering(wordOf(treasury)))).toBe(treasury)
+    expect(asked[0]).toEqual({ to: HOOD_SPLITTER_FACTORY, data: SPLITTER_PLATFORM_VAULT_SELECTOR })
+    expect(await hoodFeeTreasury(rpcAnswering(new Uint8Array(32)))).toBe(undefined)
+    expect(await hoodFeeTreasury(rpcAnswering(new Error("rpc down")))).toBe(undefined)
+  })
+
+  test("a trade's fee leg is refused when the chain names another treasury, or none", async () => {
+    const wallet = "0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa"
+    const check = (named: () => Promise<string | undefined>) =>
+      hoodTradeLegCheck({
+        wallet,
+        venue: "dex",
+        amountRaw: 10n,
+        outputToken: "0x1111111111111111111111111111111111111111",
+        minOutRaw: 1n,
+        fee: { cap: 5n, asset: "eth" },
+        treasury: named,
+      })
+    const leg = { to: treasury, data: "0x", value: "5" }
+    expect(await check(async () => treasury)("feeTransfer", leg)).toBe(true)
+    expect(await check(async () => "0x9999999999999999999999999999999999999999")("feeTransfer", leg)).toBe(false)
+    expect(await check(async () => undefined)("feeTransfer", leg)).toBe(false)
+    expect(
+      await check(async () => {
+        throw new Error("rpc down")
+      })("feeTransfer", leg),
+    ).toBe(false)
+  })
+})
+
+describe("a launch's buy is held to the curve its own createCurve made", () => {
+  const wallet = "0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa"
+  const curve = "0x5555555555555555555555555555555555555555"
+  const topic = (address: string) => `0x${address.slice(2).toLowerCase().padStart(64, "0")}`
+  const created = (overrides: { address?: string; creator?: string; curve?: string } = {}) => ({
+    address: overrides.address ?? HOOD_CURVE_FACTORY,
+    topics: [
+      CURVE_CREATED_TOPIC,
+      topic(overrides.curve ?? curve),
+      topic("0x6666666666666666666666666666666666666666"),
+      topic(overrides.creator ?? wallet),
+    ],
+  })
+  const receipt = (logs: Array<{ address: string; topics: string[] }>, status: 0 | 1 = 1) => ({
+    status,
+    blockNumber: 1n,
+    transactionHash: `0x${"ab".repeat(32)}`,
+    logs,
+  })
+
+  test("the one CurveCreated the pinned factory logged for this wallet names the curve", () => {
+    expect(curveCreatedBy(receipt([created()]), wallet)).toBe(curve)
+  })
+
+  test("another creator, another emitter, two curves, a revert or no receipt name none", () => {
+    expect(curveCreatedBy(receipt([created({ creator: treasury })]), wallet)).toBe(undefined)
+    expect(curveCreatedBy(receipt([created({ address: treasury })]), wallet)).toBe(undefined)
+    expect(curveCreatedBy(receipt([created(), created({ curve: treasury })]), wallet)).toBe(undefined)
+    expect(curveCreatedBy(receipt([created()], 0), wallet)).toBe(undefined)
+    expect(curveCreatedBy(receipt([]), wallet)).toBe(undefined)
+    expect(curveCreatedBy(null, wallet)).toBe(undefined)
+  })
+
+  test("the buy leg is exactly buy(minAmountOut) on that curve for the confirmed amount", () => {
+    const data = `${CURVE_BUY_SELECTOR}${"0".repeat(63)}1`
+    expect(launchBuyLegOk({ to: curve, data, value: "1000" }, "1000", curve)).toBe(true)
+    expect(launchBuyLegOk({ to: treasury, data, value: "1000" }, "1000", curve)).toBe(false)
+    expect(launchBuyLegOk({ to: curve, data, value: "1001" }, "1000", curve)).toBe(false)
+    expect(launchBuyLegOk({ to: curve, data: CURVE_BUY_SELECTOR, value: "1000" }, "1000", curve)).toBe(false)
+    expect(
+      launchBuyLegOk({ to: curve, data: `${CURVE_SELL_SELECTOR}${"0".repeat(64)}`, value: "1000" }, "1000", curve),
+    ).toBe(false)
   })
 })
 
@@ -152,11 +261,6 @@ describe("registeredCurveFor", () => {
         return next
       },
     }) as unknown as EvmRpc
-  const wordOf = (address: string) => {
-    const out = new Uint8Array(32)
-    out.set(Buffer.from(address.slice(2), "hex"), 12)
-    return out
-  }
 
   test("the newest registry that names a curve wins; a zero answer or a revert falls to the next", async () => {
     const curve = "0x5555555555555555555555555555555555555555"

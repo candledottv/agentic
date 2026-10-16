@@ -339,6 +339,30 @@ describe("the order is held to Hyperliquid's own market (SEC-004)", () => {
     expect(f.stdout.text + f.stderr.text).toContain("slippage")
     expect(f.calls.some((c) => c.path.endsWith("/sign"))).toBe(false)
   })
+
+  test("a take-profit leg is signed at the API's slippage from its trigger, and refused far below it", async () => {
+    const withTakeProfit = (limitPx: string) => {
+      const action = orderAction()
+      const tp = {
+        a: 0,
+        b: false,
+        p: limitPx,
+        s: "0.01",
+        r: true,
+        t: { trigger: { isMarket: true, triggerPx: "66000", tpsl: "tp" } },
+        c: CLOID,
+      }
+      return buildFor({ ...action, orders: [...action.orders, tp], grouping: "normalTpsl" })
+    }
+    const honest = await fixture({ build: withTakeProfit("62700") })
+    expect(await run([...OPEN, "--tp", "66000"], honest.deps)).toBe(0)
+    expect(honest.calls.some((c) => c.path.endsWith("/sign"))).toBe(true)
+
+    const dishonest = await fixture({ build: withTakeProfit("1") })
+    expect(await run([...OPEN, "--tp", "66000"], dishonest.deps)).not.toBe(0)
+    expect(dishonest.stdout.text + dishonest.stderr.text).toContain("slippage of the trigger price")
+    expect(dishonest.calls.some((c) => c.path.endsWith("/sign"))).toBe(false)
+  })
 })
 
 describe("--sign-only (V4)", () => {

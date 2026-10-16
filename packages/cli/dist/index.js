@@ -8898,10 +8898,12 @@ function createEvmRpc(url, fetchFn) {
       if (r === null || r === undefined)
         return null;
       const status = asQuantity(r.status, "eth_getTransactionReceipt");
+      const logs = (Array.isArray(r.logs) ? r.logs : []).flatMap((log) => typeof log?.address === "string" && Array.isArray(log.topics) && log.topics.every((topic) => typeof topic === "string") ? [{ address: log.address, topics: log.topics }] : []);
       return {
         status: status === 1n ? 1 : 0,
         blockNumber: asQuantity(r.blockNumber, "eth_getTransactionReceipt"),
-        transactionHash: typeof r.transactionHash === "string" ? r.transactionHash : hash
+        transactionHash: typeof r.transactionHash === "string" ? r.transactionHash : hash,
+        logs
       };
     },
     async getTransactionByHash(hash) {
@@ -11575,6 +11577,7 @@ async function runSequencedLegs(ctx, key, opts) {
     const signed = await relaySignEvmLeg(ctx, key, opts.wallet, leg);
     signedCount += 1;
     signedKinds.add(current.legKind);
+    opts.onSigned?.(current.legKind, signed.hash);
     if (opts.clientId !== undefined && opts.kind !== undefined)
       await saveOperationHash(ctx, key, opts.clientId, opts.kind, signed.hash, current.operationId);
     const posted = await apiRequest(opts.submitPath, {
@@ -12952,7 +12955,7 @@ function feeLegOk(leg, fee) {
       return false;
     if (BigInt(leg.value) > fee.cap)
       return false;
-    return fee.treasury === undefined || sameEvmAddress(leg.to, fee.treasury);
+    return sameEvmAddress(leg.to, fee.treasury);
   }
   if (leg.value !== "0" || !sameEvmAddress(leg.to, HOOD_USDG_ADDRESS))
     return false;
@@ -12960,7 +12963,37 @@ function feeLegOk(leg, fee) {
   const decoded = data ? decodeErc20Transfer(data) : undefined;
   if (!decoded || decoded.amount > fee.cap)
     return false;
-  return fee.treasury === undefined || sameEvmAddress(decoded.recipient, fee.treasury);
+  return sameEvmAddress(decoded.recipient, fee.treasury);
+}
+async function hoodFeeTreasury(rpc) {
+  try {
+    const answer = await rpc.call({ to: HOOD_SPLITTER_FACTORY, data: hexToBytes2(SPLITTER_PLATFORM_VAULT_SELECTOR) });
+    const vault = wordAddress2(word2(answer, 0, 0));
+    return vault !== undefined && BigInt(vault) !== 0n ? vault : undefined;
+  } catch {
+    return;
+  }
+}
+function curveCreatedBy(receipt, wallet) {
+  if (!receipt || receipt.status !== 1)
+    return;
+  const created = (receipt.logs ?? []).filter((log) => sameEvmAddress(log.address, HOOD_CURVE_FACTORY) && log.topics[0]?.toLowerCase() === CURVE_CREATED_TOPIC);
+  if (created.length !== 1)
+    return;
+  const topics = created[0].topics;
+  const topicAddress = (topic) => {
+    const bytes = topic === undefined ? undefined : bytesOf(topic);
+    return bytes?.length === 32 ? wordAddress2(bytes) : undefined;
+  };
+  const curve = topicAddress(topics[1]);
+  const creator = topicAddress(topics[3]);
+  if (curve === undefined || BigInt(curve) === 0n || creator === undefined)
+    return;
+  return sameEvmAddress(creator, wallet) ? curve : undefined;
+}
+function launchBuyLegOk(leg, buyRaw, curve) {
+  const data = bytesOf(leg.data);
+  return data !== undefined && leg.value === buyRaw && sameEvmAddress(leg.to, curve) && data.length === 36 && selectorOf(data) === CURVE_BUY_SELECTOR;
 }
 function hoodTradeLegCheck(terms) {
   let curve;
@@ -12969,6 +13002,13 @@ function hoodTradeLegCheck(terms) {
       return;
     }) : Promise.resolve(undefined);
     return curve;
+  };
+  let treasury;
+  const chainTreasury = () => {
+    treasury ??= terms.treasury ? terms.treasury().catch(() => {
+      return;
+    }) : Promise.resolve(undefined);
+    return treasury;
   };
   const spenderOk = async (spender) => {
     if (terms.venue !== "curve")
@@ -12982,8 +13022,12 @@ function hoodTradeLegCheck(terms) {
     const data = bytesOf(leg.data);
     if (!data)
       return false;
-    if (kind === "feeTransfer")
-      return terms.fee !== undefined && feeLegOk(leg, terms.fee);
+    if (kind === "feeTransfer") {
+      if (terms.fee === undefined)
+        return false;
+      const named = await chainTreasury();
+      return named !== undefined && feeLegOk(leg, { ...terms.fee, treasury: named });
+    }
     if (kind === "approval") {
       if (terms.inputToken === undefined || leg.value !== "0" || !sameEvmAddress(leg.to, terms.inputToken))
         return false;
@@ -13044,7 +13088,7 @@ async function registeredCurveFor(rpc, token) {
   }
   return;
 }
-var HOOD_CURVE_FACTORY = "0xD08f8489F026957EdeD3Bb8Ef8A9d151A7B1DF22", HOOD_CURVE_REGISTRIES, HOOD_UNIV2_ROUTER = "0x89e5db8b5aa49aa85ac63f691524311aeb649eba", HOOD_UNIV3_ROUTER = "0xCaf681a66D020601342297493863E78C959E5cb2", HOOD_V4_UNIVERSAL_ROUTER = "0x8876789976decbfcbbbe364623c63652db8c0904", HOOD_KYBER_ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5", HOOD_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3", HOOD_SPLITTER_FACTORY = "0x9318bD328Ac32DBAe08bbD85B634E6B6B06683BF", KYBER_NATIVE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", ADDRESS_THIS = "0x0000000000000000000000000000000000000002", DEX_SPENDERS, CREATE_CURVE_SELECTOR = "0xe5ab9610", ERC20_APPROVE_SELECTOR = "0x095ea7b3", PERMIT2_APPROVE_SELECTOR = "0x87517c45", CURVE_BUY_SELECTOR = "0xd96a094a", CURVE_BUY_WITH_QUOTE_SELECTOR = "0x6818735c", CURVE_SELL_SELECTOR = "0xd79875eb", V2_SWAP_ETH_FOR_TOKENS_SELECTOR = "0xb6f9de95", V2_SWAP_TOKENS_FOR_ETH_SELECTOR = "0x791ac947", V3_MULTICALL_SELECTOR = "0x5ae401dc", V3_EXACT_INPUT_SINGLE_SELECTOR = "0x04e45aaf", V3_EXACT_INPUT_SELECTOR = "0xb858183f", V3_UNWRAP_WETH9_SELECTOR = "0x49404b7c", V3_REFUND_ETH_SELECTOR = "0x12210e8a", UNIVERSAL_EXECUTE_SELECTOR = "0x3593564c", KYBER_SWAP_SELECTOR = "0xe21fd0e9", KYBER_SWAP_GENERIC_SELECTOR = "0x59e50fed", KYBER_SWAP_SIMPLE_SELECTOR = "0x8af033fb", SPLITTER_DEV_SELECTOR = "0x91cca3db", SPLITTER_IS_SPLITTER_SELECTOR = "0xa4c597d1", CURVE_FOR_BASE_TOKEN_SELECTOR = "0x446b9253", LAUNCH_FEE_MAX_BPS = 1000n, MAX_ABI_ARRAY = 64, ADDRESSES, V3_SINGLE, V3_PATH, KYBER_DESC, KYBER_EXECUTION, V4_POOL_KEY, V4_SWAP_PARAMS, asBytes = (value) => value, asAddress = (value) => value, asNumber = (value) => value, asList = (value) => value, routedInput = (terms) => terms.inputToken ?? HOOD_WETH_ADDRESS, routedOutput = (terms) => terms.outputToken ?? HOOD_WETH_ADDRESS, UR_V3_SWAP_EXACT_IN = 0, UR_WRAP_ETH = 11, UR_UNWRAP_WETH = 12, UR_V4_SWAP = 16, V4_SWAP_EXACT_IN_SINGLE = 6, V4_SETTLE = 11, V4_SETTLE_ALL = 12, V4_TAKE = 14, V4_TAKE_ALL = 15, NATIVE_CURRENCY = "0x0000000000000000000000000000000000000000";
+var HOOD_CURVE_FACTORY = "0xD08f8489F026957EdeD3Bb8Ef8A9d151A7B1DF22", HOOD_CURVE_REGISTRIES, HOOD_UNIV2_ROUTER = "0x89e5db8b5aa49aa85ac63f691524311aeb649eba", HOOD_UNIV3_ROUTER = "0xCaf681a66D020601342297493863E78C959E5cb2", HOOD_V4_UNIVERSAL_ROUTER = "0x8876789976decbfcbbbe364623c63652db8c0904", HOOD_KYBER_ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5", HOOD_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3", HOOD_SPLITTER_FACTORY = "0x9318bD328Ac32DBAe08bbD85B634E6B6B06683BF", KYBER_NATIVE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", ADDRESS_THIS = "0x0000000000000000000000000000000000000002", DEX_SPENDERS, CREATE_CURVE_SELECTOR = "0xe5ab9610", ERC20_APPROVE_SELECTOR = "0x095ea7b3", PERMIT2_APPROVE_SELECTOR = "0x87517c45", CURVE_BUY_SELECTOR = "0xd96a094a", CURVE_BUY_WITH_QUOTE_SELECTOR = "0x6818735c", CURVE_SELL_SELECTOR = "0xd79875eb", V2_SWAP_ETH_FOR_TOKENS_SELECTOR = "0xb6f9de95", V2_SWAP_TOKENS_FOR_ETH_SELECTOR = "0x791ac947", V3_MULTICALL_SELECTOR = "0x5ae401dc", V3_EXACT_INPUT_SINGLE_SELECTOR = "0x04e45aaf", V3_EXACT_INPUT_SELECTOR = "0xb858183f", V3_UNWRAP_WETH9_SELECTOR = "0x49404b7c", V3_REFUND_ETH_SELECTOR = "0x12210e8a", UNIVERSAL_EXECUTE_SELECTOR = "0x3593564c", KYBER_SWAP_SELECTOR = "0xe21fd0e9", KYBER_SWAP_GENERIC_SELECTOR = "0x59e50fed", KYBER_SWAP_SIMPLE_SELECTOR = "0x8af033fb", SPLITTER_DEV_SELECTOR = "0x91cca3db", SPLITTER_IS_SPLITTER_SELECTOR = "0xa4c597d1", CURVE_FOR_BASE_TOKEN_SELECTOR = "0x446b9253", SPLITTER_PLATFORM_VAULT_SELECTOR = "0x20f094f8", CURVE_CREATED_TOPIC = "0xed3a740542131b3621499825e40efbcaf096e3b1608de865c08a2109378bb36b", LAUNCH_FEE_MAX_BPS = 1000n, MAX_ABI_ARRAY = 64, ADDRESSES, V3_SINGLE, V3_PATH, KYBER_DESC, KYBER_EXECUTION, V4_POOL_KEY, V4_SWAP_PARAMS, asBytes = (value) => value, asAddress = (value) => value, asNumber = (value) => value, asList = (value) => value, routedInput = (terms) => terms.inputToken ?? HOOD_WETH_ADDRESS, routedOutput = (terms) => terms.outputToken ?? HOOD_WETH_ADDRESS, UR_V3_SWAP_EXACT_IN = 0, UR_WRAP_ETH = 11, UR_UNWRAP_WETH = 12, UR_V4_SWAP = 16, V4_SWAP_EXACT_IN_SINGLE = 6, V4_SETTLE = 11, V4_SETTLE_ALL = 12, V4_TAKE = 14, V4_TAKE_ALL = 15, NATIVE_CURRENCY = "0x0000000000000000000000000000000000000000";
 var init_hood_legs = __esm(() => {
   init_evm_lite();
   HOOD_CURVE_REGISTRIES = [
@@ -13856,7 +13900,6 @@ async function hoodSwap(ctx, args) {
   const recorded = kind === "trade" ? token : HOOD_USDG_ADDRESS;
   const notices = [];
   const feeRaw = BigInt(data.fee.feeRaw);
-  const treasury = data.fee.treasury;
   const feeAsset = artifacts.quoteAsset === "usdg" ? "usdg" : "eth";
   const checkLeg = hoodTradeLegCheck({
     wallet: wallet.address,
@@ -13865,7 +13908,8 @@ async function hoodSwap(ctx, args) {
     outputToken: to.asset === "ETH" ? undefined : to.asset === "USDG" ? HOOD_USDG_ADDRESS : to.asset,
     minOutRaw: BigInt(data.minOutRaw),
     venue: kind === "trade" && artifacts.venue === "curve" ? "curve" : "dex",
-    ...kind === "trade" && feeRaw > 0n && typeof treasury === "string" ? { fee: { cap: feeRaw, asset: feeAsset, treasury } } : {},
+    ...kind === "trade" && feeRaw > 0n ? { fee: { cap: feeRaw, asset: feeAsset } } : {},
+    treasury: () => hoodFeeTreasury(rpc()),
     curve: () => registeredCurveFor(rpc(), token)
   });
   const run = await runSequencedLegs(ctx, key, {
@@ -62104,7 +62148,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.17";
+var SERVER_VERSION = "0.10.18";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -63039,6 +63083,12 @@ function checkActionIntent2(action, intent) {
         const trigger = leg.t?.trigger;
         if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal2(leg.s) !== decimal2(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal2(trigger.triggerPx) !== decimal2(p[field]))
           return "trigger side, size, reduce-only flag or price does not match the request";
+        const px = decimal2(leg.p) ?? 0n;
+        const triggerPx = decimal2(trigger.triggerPx) ?? 0n;
+        const bound = BigInt(HYPERLIQUID_TPSL_SLIPPAGE_BPS2 + HYPERLIQUID_MID_DRIFT_BPS2);
+        const within = leg.b === true ? px * 10000n <= triggerPx * (10000n + bound) : px * 10000n >= triggerPx * (10000n - bound);
+        if (triggerPx <= 0n || !within)
+          return "trigger order price is outside its slippage of the trigger price";
       }
     } else {
       if (list.length !== 1)
@@ -63228,7 +63278,7 @@ function hyperliquidExchangeBody2(action, nonce, signature) {
 function hyperliquidRelayBody2(typedData) {
   return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
 }
-var HYPERLIQUID_ALLOWED_ACTION_TYPES2, HYPERLIQUID_EXCHANGE_URLS2, HYPERLIQUID_INFO_URLS2, CANDLE_HYPERLIQUID_BUILDER_ADDRESS2 = null, HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS2 = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE2 = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID2 = "0xa4b1", ZERO_ADDRESS2 = "0x0000000000000000000000000000000000000000", UINT64_MAX2, INT64_MIN2, EVM_ADDRESS_RE2, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2 = 100, HYPERLIQUID_MID_DRIFT_BPS2 = 100;
+var HYPERLIQUID_ALLOWED_ACTION_TYPES2, HYPERLIQUID_EXCHANGE_URLS2, HYPERLIQUID_INFO_URLS2, CANDLE_HYPERLIQUID_BUILDER_ADDRESS2 = null, HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS2 = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE2 = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID2 = "0xa4b1", ZERO_ADDRESS2 = "0x0000000000000000000000000000000000000000", UINT64_MAX2, INT64_MIN2, EVM_ADDRESS_RE2, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2 = 100, HYPERLIQUID_MID_DRIFT_BPS2 = 100, HYPERLIQUID_TPSL_SLIPPAGE_BPS2 = 500;
 var init_hyperliquid = __esm(() => {
   init_sha3();
   HYPERLIQUID_ALLOWED_ACTION_TYPES2 = [
@@ -64978,7 +65028,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.29";
+var CLI_VERSION = "0.11.30";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -72736,6 +72786,8 @@ async function hoodLaunch(ctx, key, args) {
   }
   const confirmedPlan = buy ? first.plannedLegCount === 3 ? ["createCurve", "feeTransfer", "trade"] : ["createCurve", "trade"] : undefined;
   let position = 0;
+  let createCurveHash;
+  let quotedCurve;
   const evm = lazyEvmRpc(ctx, flags["--rpc-url"]);
   const run2 = await runSequencedLegs(ctx, key, {
     wallet,
@@ -72747,14 +72799,33 @@ async function hoodLaunch(ctx, key, args) {
     kind: "launch",
     primaryLeg: "createCurve",
     allowedLegs,
+    onSigned: (kind, hash) => {
+      if (kind === "createCurve")
+        createCurveHash = hash;
+    },
     checkLeg: async (kind, leg2) => {
+      const buyCurve = () => {
+        if (createCurveHash === undefined)
+          return Promise.resolve(undefined);
+        quotedCurve ??= launchedCurve(ctx, evm(), createCurveHash, wallet.address).then((created2) => created2 !== undefined && sameEvmAddress(created2, curve.address) ? created2 : undefined);
+        return quotedCurve;
+      };
       if (confirmedPlan && confirmedPlan[position++] !== kind)
         return false;
       if (kind === "createCurve")
         return await createCurveLegOk(leg2, wallet.address, evm());
-      if (kind === "feeTransfer")
-        return feeCap !== undefined && feeLegOk(leg2, { cap: feeCap, asset: "eth" });
-      return kind === "trade" && buy !== undefined && leg2.value === buy.raw && sameEvmAddress(leg2.to, curve.address);
+      if (kind === "feeTransfer") {
+        if (feeCap === undefined)
+          return false;
+        if (buy !== undefined && await buyCurve() === undefined)
+          return false;
+        const treasury = await hoodFeeTreasury(evm());
+        return treasury !== undefined && feeLegOk(leg2, { cap: feeCap, asset: "eth", treasury });
+      }
+      if (kind !== "trade" || buy === undefined)
+        return false;
+      const created = await buyCurve();
+      return created !== undefined && launchBuyLegOk(leg2, buy.raw, created);
     },
     onLanded: async () => {}
   });
@@ -72772,6 +72843,21 @@ async function hoodLaunch(ctx, key, args) {
     landedLegs: run2.landed,
     ...args.used
   });
+}
+var RECEIPT_ATTEMPTS = 5;
+var RECEIPT_RETRY_MS = 1000;
+async function launchedCurve(ctx, rpc, hash, wallet) {
+  for (let attempt = 1;; attempt++) {
+    let receipt = null;
+    try {
+      receipt = await rpc.getTransactionReceipt(hash);
+    } catch {}
+    if (receipt !== null)
+      return curveCreatedBy(receipt, wallet);
+    if (attempt >= RECEIPT_ATTEMPTS)
+      return;
+    await ctx.deps.sleep(RECEIPT_RETRY_MS);
+  }
 }
 function hoodLaterLegsGas(count, buys) {
   return count < 2 || !buys ? "" : "; the later legs are priced by Candle when each becomes next";
@@ -73633,6 +73719,12 @@ function checkActionIntent(action, intent) {
         const trigger = leg.t?.trigger;
         if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal(leg.s) !== decimal(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal(trigger.triggerPx) !== decimal(p[field]))
           return "trigger side, size, reduce-only flag or price does not match the request";
+        const px = decimal(leg.p) ?? 0n;
+        const triggerPx = decimal(trigger.triggerPx) ?? 0n;
+        const bound = BigInt(HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS);
+        const within = leg.b === true ? px * 10000n <= triggerPx * (10000n + bound) : px * 10000n >= triggerPx * (10000n - bound);
+        if (triggerPx <= 0n || !within)
+          return "trigger order price is outside its slippage of the trigger price";
       }
     } else {
       if (list.length !== 1)
@@ -73674,6 +73766,7 @@ async function hyperliquidCloseOrder(fetcher, network, address, params) {
 }
 var HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100;
 var HYPERLIQUID_MID_DRIFT_BPS = 100;
+var HYPERLIQUID_TPSL_SLIPPAGE_BPS = 500;
 async function hyperliquidOrderMarket(fetcher, network, address, method, params) {
   const read = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
