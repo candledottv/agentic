@@ -60,6 +60,12 @@ import {
   transportError,
 } from "./orchestrate"
 import { executePerps, executePerpsDeposit, type PerpsToolName, perpsDepositShape, perpsShapes } from "./perps"
+import {
+  createPerpsMarketExecutor,
+  PERPS_MARKET_TOOL_NAMES,
+  type PerpsMarketToolName,
+  perpsMarketShapes,
+} from "./perps-markets"
 import { PLAN_CAPABILITY_NOTE, type PlanTable, planPromotionLine, planTableMarkdown } from "./plans"
 import { noteVersionHeaders } from "./update-notice"
 
@@ -154,6 +160,7 @@ export const TOOL_NAMES = [
   "candle_claim_staking_reward",
 
   // Hyperliquid perps B (BE-646): the `candle perps` mirror (perps.ts).
+  ...PERPS_MARKET_TOOL_NAMES,
   "candle_perps_setup",
   "candle_perps_open",
   "candle_perps_close",
@@ -218,6 +225,7 @@ type RestToolName = Exclude<
   | "candle_resolve_token"
   | "candle_execution_status"
   | PerpsToolName
+  | PerpsMarketToolName
   | "candle_perps_deposit"
 >
 
@@ -1151,7 +1159,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
   // SDK's Zod 3/4 and output-schema overloads at every registration.
   const register = <Shape extends z.ZodRawShape>(
     name: ToolName,
-    definition: { title: string; description: string; inputSchema: Shape },
+    definition: { title: string; description: string; inputSchema: Shape; annotations?: ToolAnnotations },
     handler: (args: z.infer<z.ZodObject<Shape>>) => Promise<CallToolResult>,
   ): void => {
     if (!allowed.has(name)) return
@@ -1815,6 +1823,24 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
   )
+
+  const marketRead = createPerpsMarketExecutor(getConfig, env, doFetch)
+  for (const name of PERPS_MARKET_TOOL_NAMES) {
+    register(
+      name,
+      {
+        title: name.replace("candle_perps_", "Hyperliquid "),
+        description:
+          "Read live market data directly from Hyperliquid's public API on this machine. Needs a Candle agent key of any scope, no signer. candle.tradeable is Candle's build gate at read time, not a promise; OI caps may still refuse an order. The hosted connector does not carry these tools.",
+        inputSchema: perpsMarketShapes[name],
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      },
+      async (args) => {
+        const result = await marketRead(name, args as Record<string, unknown>)
+        return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
+      },
+    )
+  }
 
   // Hyperliquid perps B (BE-646): perpetuals from the key's EVM TEE wallet. Every write is built by
   // Candle, checked here before signing (hash, action type, builder), relay-signed, and submitted

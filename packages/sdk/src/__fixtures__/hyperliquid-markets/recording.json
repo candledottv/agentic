@@ -1,0 +1,28 @@
+{
+  "recordedAt": "2026-10-17T20:11:17.513163+00:00",
+  "url": "https://api.hyperliquid.xyz/info",
+  "requests": [
+    {
+      "type": "metaAndAssetCtxs"
+    },
+    {
+      "type": "predictedFundings"
+    },
+    {
+      "type": "perpsAtOpenInterestCap"
+    },
+    {
+      "type": "l2Book",
+      "coin": "BTC"
+    },
+    {
+      "type": "candleSnapshot",
+      "req": {
+        "coin": "BTC",
+        "interval": "1h",
+        "startTime": 1792257073471,
+        "endTime": 1792267873471
+      }
+    }
+  ]
+}

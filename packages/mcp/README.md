@@ -324,3 +324,24 @@ writes MOVE REAL FUNDS. Linked/TEE builds return bytes for signing and SDK submi
 Reward claims pay only the recorded owner and resolve the same signature when retried.
 
 Public page editing is on by default for new keys and existing absent-field keys; explicit denial stays off. Only a signed-in Privy session can restore a denied permission. Read keys and hosted Read connections never get `candle_update_profile`, `candle_create_post` or `candle_delete_post`. Discovery refreshes permission and the admin lock; direct calls still enforce both. SDK/CLI/local MCP additions are unreleased source until the next npm release.
+
+## Hyperliquid market reads (local clients)
+
+These additions are unreleased source until the next human-managed npm release.
+
+A configured Candle agent key of any scope is required; no wallet, signer, or `perps:write` is needed. Without a key, these reads fail with `PERPS_KEY_REQUIRED` before any request. Market data goes directly from your machine to Hyperliquid's public `/info`; only the gate configuration is read from Candle's `/api/v1/agent/perps/config`.
+
+| CLI (all support `--json`) | Local MCP tool | SDK method |
+| --- | --- | --- |
+| `candle perps markets [--sort <metric>] [--limit <1-500>] [--all]` | `candle_perps_markets({ sort?, limit?, all? })` | `client.perpsMarkets(opts)` |
+| `candle perps market <coin>` | `candle_perps_market({ coin })` | `client.perpsMarket(coin)` |
+| `candle perps book <coin> [--depth <1-20>] [--sig-figs <2-5>]` | `candle_perps_book({ coin, depth?, sigFigs? })` | `client.perpsBook(coin, opts)` |
+| `candle perps candles <coin> [--interval <i>] [--count <1-5000>] [--end <time>]` | `candle_perps_candles({ coin, interval?, count?, end? })` | `client.perpsCandles(coin, opts)` |
+
+`markets` defaults to all markets Candle's build gate allows, descending by 24-hour notional volume; `--all` includes refused markets with reasons. `--sort` accepts `volume`, `oi`, `funding`, `change` or `name`. Name sorting is ascending; the other sorts are descending. Funding is hourly (four decimal places for %/h); APR is a simple annualization, not a forecast. OI caps are reported separately: Hyperliquid can reject OI-increasing or overly aggressive orders at the cap even when `candle.tradeable` is true. Tradeability is the build gate at read time, not a promise of execution. On a server/client network mismatch it is `null` (`networkMismatch`), and rows remain visible so you can inspect the selected network.
+
+`market` adds margin tiers, impact prices and size/price rules. `book` defaults to 20 levels per side and reports spread and mid; aggregation passes `nSigFigs` to Hyperliquid. `candles` defaults to `1h` and 100 candles, oldest first. Intervals: `1m 3m 5m 15m 30m 1h 2h 4h 8h 12h 1d 3d 1w 1M`. End time is ISO 8601 or epoch milliseconds, no later than now. The requested window is `[end - count * interval, end]`, using 31 days per `1M` step, trimmed to the newest count. Returned volume is base volume.
+
+Every JSON result carries `network`, epoch-ms `readAt`, `gate: { minOpenInterestUsd, source }`, and `warnings`. Decimals are strings; USD display values use two decimals. The config is read once per SDK client/local MCP configuration (once per CLI command). If unavailable, the OI floor falls back to 1,000,000 USD, labeled `gate.source: "default"` with a warning. Predicted-funding or OI-cap failures produce null fields and warnings; core Hyperliquid failures give retryable `PERPS_UNAVAILABLE`. Unknown or ambiguous coins give `PERPS_MARKET_NOT_FOUND`. The CLI exits 0 on success (including warnings), 1 on runtime failure, 2 on usage error.
+
+SDK and local MCP cache market reads for five seconds; book and candle snapshots are never cached. CLI/MCP select testnet with `CANDLE_HYPERLIQUID_NETWORK=testnet`; SDK uses `hyperliquidNetwork: "testnet"`. These four tools are local-only and are absent from hosted MCP tool sets. MCP uses the existing `CANDLE_API_KEY` or `CANDLE_AGENT_API_KEY` configuration, with no signer PEM required. No signing, relay or `/exchange` request occurs.

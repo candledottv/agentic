@@ -207,6 +207,7 @@ export {
   type VerifyPerpsBuildOptions,
   verifyPerpsBuild,
 } from "./hyperliquid"
+export * from "./hyperliquid-markets"
 export type { HyperliquidPnlFigures, HyperliquidPnlSection, HyperliquidWalletPnl } from "./hyperliquid-pnl"
 export {
   CANDLE_PERPS_WITHDRAW_PINS,

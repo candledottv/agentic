@@ -37045,11 +37045,11 @@ var require_envelope = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Signature = exports.Envelope = undefined;
   exports.Envelope = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        payload: isSet(object.payload) ? Buffer.from(bytesFromBase64(object.payload)) : Buffer.alloc(0),
-        payloadType: isSet(object.payloadType) ? globalThis.String(object.payloadType) : "",
-        signatures: globalThis.Array.isArray(object?.signatures) ? object.signatures.map((e) => exports.Signature.fromJSON(e)) : []
+        payload: isSet(object2.payload) ? Buffer.from(bytesFromBase64(object2.payload)) : Buffer.alloc(0),
+        payloadType: isSet(object2.payloadType) ? globalThis.String(object2.payloadType) : "",
+        signatures: globalThis.Array.isArray(object2?.signatures) ? object2.signatures.map((e) => exports.Signature.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -37067,10 +37067,10 @@ var require_envelope = __commonJS((exports) => {
     }
   };
   exports.Signature = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        sig: isSet(object.sig) ? Buffer.from(bytesFromBase64(object.sig)) : Buffer.alloc(0),
-        keyid: isSet(object.keyid) ? globalThis.String(object.keyid) : ""
+        sig: isSet(object2.sig) ? Buffer.from(bytesFromBase64(object2.sig)) : Buffer.alloc(0),
+        keyid: isSet(object2.keyid) ? globalThis.String(object2.keyid) : ""
       };
     },
     toJSON(message) {
@@ -37100,10 +37100,10 @@ var require_timestamp = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Timestamp = undefined;
   exports.Timestamp = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        seconds: isSet(object.seconds) ? globalThis.String(object.seconds) : "0",
-        nanos: isSet(object.nanos) ? globalThis.Number(object.nanos) : 0
+        seconds: isSet(object2.seconds) ? globalThis.String(object2.seconds) : "0",
+        nanos: isSet(object2.nanos) ? globalThis.Number(object2.nanos) : 0
       };
     },
     toJSON(message) {
@@ -37142,8 +37142,8 @@ var require_sigstore_common = __commonJS((exports) => {
     HashAlgorithm2[HashAlgorithm2["SHA3_256"] = 4] = "SHA3_256";
     HashAlgorithm2[HashAlgorithm2["SHA3_384"] = 5] = "SHA3_384";
   })(HashAlgorithm || (exports.HashAlgorithm = HashAlgorithm = {}));
-  function hashAlgorithmFromJSON(object) {
-    switch (object) {
+  function hashAlgorithmFromJSON(object2) {
+    switch (object2) {
       case 0:
       case "HASH_ALGORITHM_UNSPECIFIED":
         return HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED;
@@ -37163,11 +37163,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "SHA3_384":
         return HashAlgorithm.SHA3_384;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object + " for enum HashAlgorithm");
+        throw new globalThis.Error("Unrecognized enum value " + object2 + " for enum HashAlgorithm");
     }
   }
-  function hashAlgorithmToJSON(object) {
-    switch (object) {
+  function hashAlgorithmToJSON(object2) {
+    switch (object2) {
       case HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED:
         return "HASH_ALGORITHM_UNSPECIFIED";
       case HashAlgorithm.SHA2_256:
@@ -37181,7 +37181,7 @@ var require_sigstore_common = __commonJS((exports) => {
       case HashAlgorithm.SHA3_384:
         return "SHA3_384";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object + " for enum HashAlgorithm");
+        throw new globalThis.Error("Unrecognized enum value " + object2 + " for enum HashAlgorithm");
     }
   }
   var PublicKeyDetails;
@@ -37211,8 +37211,8 @@ var require_sigstore_common = __commonJS((exports) => {
     PublicKeyDetails2[PublicKeyDetails2["ML_DSA_65"] = 21] = "ML_DSA_65";
     PublicKeyDetails2[PublicKeyDetails2["ML_DSA_87"] = 22] = "ML_DSA_87";
   })(PublicKeyDetails || (exports.PublicKeyDetails = PublicKeyDetails = {}));
-  function publicKeyDetailsFromJSON(object) {
-    switch (object) {
+  function publicKeyDetailsFromJSON(object2) {
+    switch (object2) {
       case 0:
       case "PUBLIC_KEY_DETAILS_UNSPECIFIED":
         return PublicKeyDetails.PUBLIC_KEY_DETAILS_UNSPECIFIED;
@@ -37286,11 +37286,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "ML_DSA_87":
         return PublicKeyDetails.ML_DSA_87;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object + " for enum PublicKeyDetails");
+        throw new globalThis.Error("Unrecognized enum value " + object2 + " for enum PublicKeyDetails");
     }
   }
-  function publicKeyDetailsToJSON(object) {
-    switch (object) {
+  function publicKeyDetailsToJSON(object2) {
+    switch (object2) {
       case PublicKeyDetails.PUBLIC_KEY_DETAILS_UNSPECIFIED:
         return "PUBLIC_KEY_DETAILS_UNSPECIFIED";
       case PublicKeyDetails.PKCS1_RSA_PKCS1V5:
@@ -37340,7 +37340,7 @@ var require_sigstore_common = __commonJS((exports) => {
       case PublicKeyDetails.ML_DSA_87:
         return "ML_DSA_87";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object + " for enum PublicKeyDetails");
+        throw new globalThis.Error("Unrecognized enum value " + object2 + " for enum PublicKeyDetails");
     }
   }
   var SubjectAlternativeNameType;
@@ -37350,8 +37350,8 @@ var require_sigstore_common = __commonJS((exports) => {
     SubjectAlternativeNameType2[SubjectAlternativeNameType2["URI"] = 2] = "URI";
     SubjectAlternativeNameType2[SubjectAlternativeNameType2["OTHER_NAME"] = 3] = "OTHER_NAME";
   })(SubjectAlternativeNameType || (exports.SubjectAlternativeNameType = SubjectAlternativeNameType = {}));
-  function subjectAlternativeNameTypeFromJSON(object) {
-    switch (object) {
+  function subjectAlternativeNameTypeFromJSON(object2) {
+    switch (object2) {
       case 0:
       case "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED":
         return SubjectAlternativeNameType.SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED;
@@ -37365,11 +37365,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "OTHER_NAME":
         return SubjectAlternativeNameType.OTHER_NAME;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object + " for enum SubjectAlternativeNameType");
+        throw new globalThis.Error("Unrecognized enum value " + object2 + " for enum SubjectAlternativeNameType");
     }
   }
-  function subjectAlternativeNameTypeToJSON(object) {
-    switch (object) {
+  function subjectAlternativeNameTypeToJSON(object2) {
+    switch (object2) {
       case SubjectAlternativeNameType.SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED:
         return "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED";
       case SubjectAlternativeNameType.EMAIL:
@@ -37379,14 +37379,14 @@ var require_sigstore_common = __commonJS((exports) => {
       case SubjectAlternativeNameType.OTHER_NAME:
         return "OTHER_NAME";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object + " for enum SubjectAlternativeNameType");
+        throw new globalThis.Error("Unrecognized enum value " + object2 + " for enum SubjectAlternativeNameType");
     }
   }
   exports.HashOutput = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        algorithm: isSet(object.algorithm) ? hashAlgorithmFromJSON(object.algorithm) : 0,
-        digest: isSet(object.digest) ? Buffer.from(bytesFromBase64(object.digest)) : Buffer.alloc(0)
+        algorithm: isSet(object2.algorithm) ? hashAlgorithmFromJSON(object2.algorithm) : 0,
+        digest: isSet(object2.digest) ? Buffer.from(bytesFromBase64(object2.digest)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -37401,10 +37401,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.MessageSignature = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        messageDigest: isSet(object.messageDigest) ? exports.HashOutput.fromJSON(object.messageDigest) : undefined,
-        signature: isSet(object.signature) ? Buffer.from(bytesFromBase64(object.signature)) : Buffer.alloc(0)
+        messageDigest: isSet(object2.messageDigest) ? exports.HashOutput.fromJSON(object2.messageDigest) : undefined,
+        signature: isSet(object2.signature) ? Buffer.from(bytesFromBase64(object2.signature)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -37419,8 +37419,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.LogId = {
-    fromJSON(object) {
-      return { keyId: isSet(object.keyId) ? Buffer.from(bytesFromBase64(object.keyId)) : Buffer.alloc(0) };
+    fromJSON(object2) {
+      return { keyId: isSet(object2.keyId) ? Buffer.from(bytesFromBase64(object2.keyId)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -37431,9 +37431,9 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.RFC3161SignedTimestamp = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        signedTimestamp: isSet(object.signedTimestamp) ? Buffer.from(bytesFromBase64(object.signedTimestamp)) : Buffer.alloc(0)
+        signedTimestamp: isSet(object2.signedTimestamp) ? Buffer.from(bytesFromBase64(object2.signedTimestamp)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -37445,11 +37445,11 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.PublicKey = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        rawBytes: isSet(object.rawBytes) ? Buffer.from(bytesFromBase64(object.rawBytes)) : undefined,
-        keyDetails: isSet(object.keyDetails) ? publicKeyDetailsFromJSON(object.keyDetails) : 0,
-        validFor: isSet(object.validFor) ? exports.TimeRange.fromJSON(object.validFor) : undefined
+        rawBytes: isSet(object2.rawBytes) ? Buffer.from(bytesFromBase64(object2.rawBytes)) : undefined,
+        keyDetails: isSet(object2.keyDetails) ? publicKeyDetailsFromJSON(object2.keyDetails) : 0,
+        validFor: isSet(object2.validFor) ? exports.TimeRange.fromJSON(object2.validFor) : undefined
       };
     },
     toJSON(message) {
@@ -37467,8 +37467,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.PublicKeyIdentifier = {
-    fromJSON(object) {
-      return { hint: isSet(object.hint) ? globalThis.String(object.hint) : "" };
+    fromJSON(object2) {
+      return { hint: isSet(object2.hint) ? globalThis.String(object2.hint) : "" };
     },
     toJSON(message) {
       const obj = {};
@@ -37479,8 +37479,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.ObjectIdentifier = {
-    fromJSON(object) {
-      return { id: globalThis.Array.isArray(object?.id) ? object.id.map((e) => globalThis.Number(e)) : [] };
+    fromJSON(object2) {
+      return { id: globalThis.Array.isArray(object2?.id) ? object2.id.map((e) => globalThis.Number(e)) : [] };
     },
     toJSON(message) {
       const obj = {};
@@ -37491,10 +37491,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.ObjectIdentifierValuePair = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        oid: isSet(object.oid) ? exports.ObjectIdentifier.fromJSON(object.oid) : undefined,
-        value: isSet(object.value) ? Buffer.from(bytesFromBase64(object.value)) : Buffer.alloc(0)
+        oid: isSet(object2.oid) ? exports.ObjectIdentifier.fromJSON(object2.oid) : undefined,
+        value: isSet(object2.value) ? Buffer.from(bytesFromBase64(object2.value)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -37509,10 +37509,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.DistinguishedName = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        organization: isSet(object.organization) ? globalThis.String(object.organization) : "",
-        commonName: isSet(object.commonName) ? globalThis.String(object.commonName) : ""
+        organization: isSet(object2.organization) ? globalThis.String(object2.organization) : "",
+        commonName: isSet(object2.commonName) ? globalThis.String(object2.commonName) : ""
       };
     },
     toJSON(message) {
@@ -37527,8 +37527,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.X509Certificate = {
-    fromJSON(object) {
-      return { rawBytes: isSet(object.rawBytes) ? Buffer.from(bytesFromBase64(object.rawBytes)) : Buffer.alloc(0) };
+    fromJSON(object2) {
+      return { rawBytes: isSet(object2.rawBytes) ? Buffer.from(bytesFromBase64(object2.rawBytes)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -37539,10 +37539,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.SubjectAlternativeName = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        type: isSet(object.type) ? subjectAlternativeNameTypeFromJSON(object.type) : 0,
-        identity: isSet(object.regexp) ? { $case: "regexp", regexp: globalThis.String(object.regexp) } : isSet(object.value) ? { $case: "value", value: globalThis.String(object.value) } : undefined
+        type: isSet(object2.type) ? subjectAlternativeNameTypeFromJSON(object2.type) : 0,
+        identity: isSet(object2.regexp) ? { $case: "regexp", regexp: globalThis.String(object2.regexp) } : isSet(object2.value) ? { $case: "value", value: globalThis.String(object2.value) } : undefined
       };
     },
     toJSON(message) {
@@ -37559,9 +37559,9 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.X509CertificateChain = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        certificates: globalThis.Array.isArray(object?.certificates) ? object.certificates.map((e) => exports.X509Certificate.fromJSON(e)) : []
+        certificates: globalThis.Array.isArray(object2?.certificates) ? object2.certificates.map((e) => exports.X509Certificate.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -37573,10 +37573,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.TimeRange = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        start: isSet(object.start) ? fromJsonTimestamp(object.start) : undefined,
-        end: isSet(object.end) ? fromJsonTimestamp(object.end) : undefined
+        start: isSet(object2.start) ? fromJsonTimestamp(object2.start) : undefined,
+        end: isSet(object2.end) ? fromJsonTimestamp(object2.end) : undefined
       };
     },
     toJSON(message) {
@@ -37621,10 +37621,10 @@ var require_sigstore_rekor = __commonJS((exports) => {
   exports.TransparencyLogEntry = exports.InclusionPromise = exports.InclusionProof = exports.Checkpoint = exports.KindVersion = undefined;
   var sigstore_common_1 = require_sigstore_common();
   exports.KindVersion = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        kind: isSet(object.kind) ? globalThis.String(object.kind) : "",
-        version: isSet(object.version) ? globalThis.String(object.version) : ""
+        kind: isSet(object2.kind) ? globalThis.String(object2.kind) : "",
+        version: isSet(object2.version) ? globalThis.String(object2.version) : ""
       };
     },
     toJSON(message) {
@@ -37639,8 +37639,8 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.Checkpoint = {
-    fromJSON(object) {
-      return { envelope: isSet(object.envelope) ? globalThis.String(object.envelope) : "" };
+    fromJSON(object2) {
+      return { envelope: isSet(object2.envelope) ? globalThis.String(object2.envelope) : "" };
     },
     toJSON(message) {
       const obj = {};
@@ -37651,13 +37651,13 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.InclusionProof = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        logIndex: isSet(object.logIndex) ? globalThis.String(object.logIndex) : "0",
-        rootHash: isSet(object.rootHash) ? Buffer.from(bytesFromBase64(object.rootHash)) : Buffer.alloc(0),
-        treeSize: isSet(object.treeSize) ? globalThis.String(object.treeSize) : "0",
-        hashes: globalThis.Array.isArray(object?.hashes) ? object.hashes.map((e) => Buffer.from(bytesFromBase64(e))) : [],
-        checkpoint: isSet(object.checkpoint) ? exports.Checkpoint.fromJSON(object.checkpoint) : undefined
+        logIndex: isSet(object2.logIndex) ? globalThis.String(object2.logIndex) : "0",
+        rootHash: isSet(object2.rootHash) ? Buffer.from(bytesFromBase64(object2.rootHash)) : Buffer.alloc(0),
+        treeSize: isSet(object2.treeSize) ? globalThis.String(object2.treeSize) : "0",
+        hashes: globalThis.Array.isArray(object2?.hashes) ? object2.hashes.map((e) => Buffer.from(bytesFromBase64(e))) : [],
+        checkpoint: isSet(object2.checkpoint) ? exports.Checkpoint.fromJSON(object2.checkpoint) : undefined
       };
     },
     toJSON(message) {
@@ -37681,9 +37681,9 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.InclusionPromise = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        signedEntryTimestamp: isSet(object.signedEntryTimestamp) ? Buffer.from(bytesFromBase64(object.signedEntryTimestamp)) : Buffer.alloc(0)
+        signedEntryTimestamp: isSet(object2.signedEntryTimestamp) ? Buffer.from(bytesFromBase64(object2.signedEntryTimestamp)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -37695,15 +37695,15 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.TransparencyLogEntry = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        logIndex: isSet(object.logIndex) ? globalThis.String(object.logIndex) : "0",
-        logId: isSet(object.logId) ? sigstore_common_1.LogId.fromJSON(object.logId) : undefined,
-        kindVersion: isSet(object.kindVersion) ? exports.KindVersion.fromJSON(object.kindVersion) : undefined,
-        integratedTime: isSet(object.integratedTime) ? globalThis.String(object.integratedTime) : "0",
-        inclusionPromise: isSet(object.inclusionPromise) ? exports.InclusionPromise.fromJSON(object.inclusionPromise) : undefined,
-        inclusionProof: isSet(object.inclusionProof) ? exports.InclusionProof.fromJSON(object.inclusionProof) : undefined,
-        canonicalizedBody: isSet(object.canonicalizedBody) ? Buffer.from(bytesFromBase64(object.canonicalizedBody)) : Buffer.alloc(0)
+        logIndex: isSet(object2.logIndex) ? globalThis.String(object2.logIndex) : "0",
+        logId: isSet(object2.logId) ? sigstore_common_1.LogId.fromJSON(object2.logId) : undefined,
+        kindVersion: isSet(object2.kindVersion) ? exports.KindVersion.fromJSON(object2.kindVersion) : undefined,
+        integratedTime: isSet(object2.integratedTime) ? globalThis.String(object2.integratedTime) : "0",
+        inclusionPromise: isSet(object2.inclusionPromise) ? exports.InclusionPromise.fromJSON(object2.inclusionPromise) : undefined,
+        inclusionProof: isSet(object2.inclusionProof) ? exports.InclusionProof.fromJSON(object2.inclusionProof) : undefined,
+        canonicalizedBody: isSet(object2.canonicalizedBody) ? Buffer.from(bytesFromBase64(object2.canonicalizedBody)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -37751,9 +37751,9 @@ var require_sigstore_bundle = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var sigstore_rekor_1 = require_sigstore_rekor();
   exports.TimestampVerificationData = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        rfc3161Timestamps: globalThis.Array.isArray(object?.rfc3161Timestamps) ? object.rfc3161Timestamps.map((e) => sigstore_common_1.RFC3161SignedTimestamp.fromJSON(e)) : []
+        rfc3161Timestamps: globalThis.Array.isArray(object2?.rfc3161Timestamps) ? object2.rfc3161Timestamps.map((e) => sigstore_common_1.RFC3161SignedTimestamp.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -37765,14 +37765,14 @@ var require_sigstore_bundle = __commonJS((exports) => {
     }
   };
   exports.VerificationMaterial = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        content: isSet(object.publicKey) ? { $case: "publicKey", publicKey: sigstore_common_1.PublicKeyIdentifier.fromJSON(object.publicKey) } : isSet(object.x509CertificateChain) ? {
+        content: isSet(object2.publicKey) ? { $case: "publicKey", publicKey: sigstore_common_1.PublicKeyIdentifier.fromJSON(object2.publicKey) } : isSet(object2.x509CertificateChain) ? {
           $case: "x509CertificateChain",
-          x509CertificateChain: sigstore_common_1.X509CertificateChain.fromJSON(object.x509CertificateChain)
-        } : isSet(object.certificate) ? { $case: "certificate", certificate: sigstore_common_1.X509Certificate.fromJSON(object.certificate) } : undefined,
-        tlogEntries: globalThis.Array.isArray(object?.tlogEntries) ? object.tlogEntries.map((e) => sigstore_rekor_1.TransparencyLogEntry.fromJSON(e)) : [],
-        timestampVerificationData: isSet(object.timestampVerificationData) ? exports.TimestampVerificationData.fromJSON(object.timestampVerificationData) : undefined
+          x509CertificateChain: sigstore_common_1.X509CertificateChain.fromJSON(object2.x509CertificateChain)
+        } : isSet(object2.certificate) ? { $case: "certificate", certificate: sigstore_common_1.X509Certificate.fromJSON(object2.certificate) } : undefined,
+        tlogEntries: globalThis.Array.isArray(object2?.tlogEntries) ? object2.tlogEntries.map((e) => sigstore_rekor_1.TransparencyLogEntry.fromJSON(e)) : [],
+        timestampVerificationData: isSet(object2.timestampVerificationData) ? exports.TimestampVerificationData.fromJSON(object2.timestampVerificationData) : undefined
       };
     },
     toJSON(message) {
@@ -37794,11 +37794,11 @@ var require_sigstore_bundle = __commonJS((exports) => {
     }
   };
   exports.Bundle = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        mediaType: isSet(object.mediaType) ? globalThis.String(object.mediaType) : "",
-        verificationMaterial: isSet(object.verificationMaterial) ? exports.VerificationMaterial.fromJSON(object.verificationMaterial) : undefined,
-        content: isSet(object.messageSignature) ? { $case: "messageSignature", messageSignature: sigstore_common_1.MessageSignature.fromJSON(object.messageSignature) } : isSet(object.dsseEnvelope) ? { $case: "dsseEnvelope", dsseEnvelope: envelope_1.Envelope.fromJSON(object.dsseEnvelope) } : undefined
+        mediaType: isSet(object2.mediaType) ? globalThis.String(object2.mediaType) : "",
+        verificationMaterial: isSet(object2.verificationMaterial) ? exports.VerificationMaterial.fromJSON(object2.verificationMaterial) : undefined,
+        content: isSet(object2.messageSignature) ? { $case: "messageSignature", messageSignature: sigstore_common_1.MessageSignature.fromJSON(object2.messageSignature) } : isSet(object2.dsseEnvelope) ? { $case: "dsseEnvelope", dsseEnvelope: envelope_1.Envelope.fromJSON(object2.dsseEnvelope) } : undefined
       };
     },
     toJSON(message) {
@@ -37836,8 +37836,8 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     ServiceSelector2[ServiceSelector2["ANY"] = 2] = "ANY";
     ServiceSelector2[ServiceSelector2["EXACT"] = 3] = "EXACT";
   })(ServiceSelector || (exports.ServiceSelector = ServiceSelector = {}));
-  function serviceSelectorFromJSON(object) {
-    switch (object) {
+  function serviceSelectorFromJSON(object2) {
+    switch (object2) {
       case 0:
       case "SERVICE_SELECTOR_UNDEFINED":
         return ServiceSelector.SERVICE_SELECTOR_UNDEFINED;
@@ -37851,11 +37851,11 @@ var require_sigstore_trustroot = __commonJS((exports) => {
       case "EXACT":
         return ServiceSelector.EXACT;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object + " for enum ServiceSelector");
+        throw new globalThis.Error("Unrecognized enum value " + object2 + " for enum ServiceSelector");
     }
   }
-  function serviceSelectorToJSON(object) {
-    switch (object) {
+  function serviceSelectorToJSON(object2) {
+    switch (object2) {
       case ServiceSelector.SERVICE_SELECTOR_UNDEFINED:
         return "SERVICE_SELECTOR_UNDEFINED";
       case ServiceSelector.ALL:
@@ -37865,18 +37865,18 @@ var require_sigstore_trustroot = __commonJS((exports) => {
       case ServiceSelector.EXACT:
         return "EXACT";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object + " for enum ServiceSelector");
+        throw new globalThis.Error("Unrecognized enum value " + object2 + " for enum ServiceSelector");
     }
   }
   exports.TransparencyLogInstance = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        baseUrl: isSet(object.baseUrl) ? globalThis.String(object.baseUrl) : "",
-        hashAlgorithm: isSet(object.hashAlgorithm) ? (0, sigstore_common_1.hashAlgorithmFromJSON)(object.hashAlgorithm) : 0,
-        publicKey: isSet(object.publicKey) ? sigstore_common_1.PublicKey.fromJSON(object.publicKey) : undefined,
-        logId: isSet(object.logId) ? sigstore_common_1.LogId.fromJSON(object.logId) : undefined,
-        checkpointKeyId: isSet(object.checkpointKeyId) ? sigstore_common_1.LogId.fromJSON(object.checkpointKeyId) : undefined,
-        operator: isSet(object.operator) ? globalThis.String(object.operator) : ""
+        baseUrl: isSet(object2.baseUrl) ? globalThis.String(object2.baseUrl) : "",
+        hashAlgorithm: isSet(object2.hashAlgorithm) ? (0, sigstore_common_1.hashAlgorithmFromJSON)(object2.hashAlgorithm) : 0,
+        publicKey: isSet(object2.publicKey) ? sigstore_common_1.PublicKey.fromJSON(object2.publicKey) : undefined,
+        logId: isSet(object2.logId) ? sigstore_common_1.LogId.fromJSON(object2.logId) : undefined,
+        checkpointKeyId: isSet(object2.checkpointKeyId) ? sigstore_common_1.LogId.fromJSON(object2.checkpointKeyId) : undefined,
+        operator: isSet(object2.operator) ? globalThis.String(object2.operator) : ""
       };
     },
     toJSON(message) {
@@ -37903,13 +37903,13 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.CertificateAuthority = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        subject: isSet(object.subject) ? sigstore_common_1.DistinguishedName.fromJSON(object.subject) : undefined,
-        uri: isSet(object.uri) ? globalThis.String(object.uri) : "",
-        certChain: isSet(object.certChain) ? sigstore_common_1.X509CertificateChain.fromJSON(object.certChain) : undefined,
-        validFor: isSet(object.validFor) ? sigstore_common_1.TimeRange.fromJSON(object.validFor) : undefined,
-        operator: isSet(object.operator) ? globalThis.String(object.operator) : ""
+        subject: isSet(object2.subject) ? sigstore_common_1.DistinguishedName.fromJSON(object2.subject) : undefined,
+        uri: isSet(object2.uri) ? globalThis.String(object2.uri) : "",
+        certChain: isSet(object2.certChain) ? sigstore_common_1.X509CertificateChain.fromJSON(object2.certChain) : undefined,
+        validFor: isSet(object2.validFor) ? sigstore_common_1.TimeRange.fromJSON(object2.validFor) : undefined,
+        operator: isSet(object2.operator) ? globalThis.String(object2.operator) : ""
       };
     },
     toJSON(message) {
@@ -37933,13 +37933,13 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.TrustedRoot = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        mediaType: isSet(object.mediaType) ? globalThis.String(object.mediaType) : "",
-        tlogs: globalThis.Array.isArray(object?.tlogs) ? object.tlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
-        certificateAuthorities: globalThis.Array.isArray(object?.certificateAuthorities) ? object.certificateAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : [],
-        ctlogs: globalThis.Array.isArray(object?.ctlogs) ? object.ctlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
-        timestampAuthorities: globalThis.Array.isArray(object?.timestampAuthorities) ? object.timestampAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : []
+        mediaType: isSet(object2.mediaType) ? globalThis.String(object2.mediaType) : "",
+        tlogs: globalThis.Array.isArray(object2?.tlogs) ? object2.tlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
+        certificateAuthorities: globalThis.Array.isArray(object2?.certificateAuthorities) ? object2.certificateAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : [],
+        ctlogs: globalThis.Array.isArray(object2?.ctlogs) ? object2.ctlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
+        timestampAuthorities: globalThis.Array.isArray(object2?.timestampAuthorities) ? object2.timestampAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -37963,15 +37963,15 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.SigningConfig = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        mediaType: isSet(object.mediaType) ? globalThis.String(object.mediaType) : "",
-        caUrls: globalThis.Array.isArray(object?.caUrls) ? object.caUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        oidcUrls: globalThis.Array.isArray(object?.oidcUrls) ? object.oidcUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        rekorTlogUrls: globalThis.Array.isArray(object?.rekorTlogUrls) ? object.rekorTlogUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        rekorTlogConfig: isSet(object.rekorTlogConfig) ? exports.ServiceConfiguration.fromJSON(object.rekorTlogConfig) : undefined,
-        tsaUrls: globalThis.Array.isArray(object?.tsaUrls) ? object.tsaUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        tsaConfig: isSet(object.tsaConfig) ? exports.ServiceConfiguration.fromJSON(object.tsaConfig) : undefined
+        mediaType: isSet(object2.mediaType) ? globalThis.String(object2.mediaType) : "",
+        caUrls: globalThis.Array.isArray(object2?.caUrls) ? object2.caUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        oidcUrls: globalThis.Array.isArray(object2?.oidcUrls) ? object2.oidcUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        rekorTlogUrls: globalThis.Array.isArray(object2?.rekorTlogUrls) ? object2.rekorTlogUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        rekorTlogConfig: isSet(object2.rekorTlogConfig) ? exports.ServiceConfiguration.fromJSON(object2.rekorTlogConfig) : undefined,
+        tsaUrls: globalThis.Array.isArray(object2?.tsaUrls) ? object2.tsaUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        tsaConfig: isSet(object2.tsaConfig) ? exports.ServiceConfiguration.fromJSON(object2.tsaConfig) : undefined
       };
     },
     toJSON(message) {
@@ -38001,12 +38001,12 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.Service = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        url: isSet(object.url) ? globalThis.String(object.url) : "",
-        majorApiVersion: isSet(object.majorApiVersion) ? globalThis.Number(object.majorApiVersion) : 0,
-        validFor: isSet(object.validFor) ? sigstore_common_1.TimeRange.fromJSON(object.validFor) : undefined,
-        operator: isSet(object.operator) ? globalThis.String(object.operator) : ""
+        url: isSet(object2.url) ? globalThis.String(object2.url) : "",
+        majorApiVersion: isSet(object2.majorApiVersion) ? globalThis.Number(object2.majorApiVersion) : 0,
+        validFor: isSet(object2.validFor) ? sigstore_common_1.TimeRange.fromJSON(object2.validFor) : undefined,
+        operator: isSet(object2.operator) ? globalThis.String(object2.operator) : ""
       };
     },
     toJSON(message) {
@@ -38027,10 +38027,10 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.ServiceConfiguration = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        selector: isSet(object.selector) ? serviceSelectorFromJSON(object.selector) : 0,
-        count: isSet(object.count) ? globalThis.Number(object.count) : 0
+        selector: isSet(object2.selector) ? serviceSelectorFromJSON(object2.selector) : 0,
+        count: isSet(object2.count) ? globalThis.Number(object2.count) : 0
       };
     },
     toJSON(message) {
@@ -38045,11 +38045,11 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.ClientTrustConfig = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        mediaType: isSet(object.mediaType) ? globalThis.String(object.mediaType) : "",
-        trustedRoot: isSet(object.trustedRoot) ? exports.TrustedRoot.fromJSON(object.trustedRoot) : undefined,
-        signingConfig: isSet(object.signingConfig) ? exports.SigningConfig.fromJSON(object.signingConfig) : undefined
+        mediaType: isSet(object2.mediaType) ? globalThis.String(object2.mediaType) : "",
+        trustedRoot: isSet(object2.trustedRoot) ? exports.TrustedRoot.fromJSON(object2.trustedRoot) : undefined,
+        signingConfig: isSet(object2.signingConfig) ? exports.SigningConfig.fromJSON(object2.signingConfig) : undefined
       };
     },
     toJSON(message) {
@@ -38079,11 +38079,11 @@ var require_sigstore_verification = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var sigstore_trustroot_1 = require_sigstore_trustroot();
   exports.CertificateIdentity = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        issuer: isSet(object.issuer) ? globalThis.String(object.issuer) : "",
-        san: isSet(object.san) ? sigstore_common_1.SubjectAlternativeName.fromJSON(object.san) : undefined,
-        oids: globalThis.Array.isArray(object?.oids) ? object.oids.map((e) => sigstore_common_1.ObjectIdentifierValuePair.fromJSON(e)) : []
+        issuer: isSet(object2.issuer) ? globalThis.String(object2.issuer) : "",
+        san: isSet(object2.san) ? sigstore_common_1.SubjectAlternativeName.fromJSON(object2.san) : undefined,
+        oids: globalThis.Array.isArray(object2?.oids) ? object2.oids.map((e) => sigstore_common_1.ObjectIdentifierValuePair.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -38101,9 +38101,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.CertificateIdentities = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        identities: globalThis.Array.isArray(object?.identities) ? object.identities.map((e) => exports.CertificateIdentity.fromJSON(e)) : []
+        identities: globalThis.Array.isArray(object2?.identities) ? object2.identities.map((e) => exports.CertificateIdentity.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -38115,9 +38115,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.PublicKeyIdentities = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        publicKeys: globalThis.Array.isArray(object?.publicKeys) ? object.publicKeys.map((e) => sigstore_common_1.PublicKey.fromJSON(e)) : []
+        publicKeys: globalThis.Array.isArray(object2?.publicKeys) ? object2.publicKeys.map((e) => sigstore_common_1.PublicKey.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -38129,17 +38129,17 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        signers: isSet(object.certificateIdentities) ? {
+        signers: isSet(object2.certificateIdentities) ? {
           $case: "certificateIdentities",
-          certificateIdentities: exports.CertificateIdentities.fromJSON(object.certificateIdentities)
-        } : isSet(object.publicKeys) ? { $case: "publicKeys", publicKeys: exports.PublicKeyIdentities.fromJSON(object.publicKeys) } : undefined,
-        tlogOptions: isSet(object.tlogOptions) ? exports.ArtifactVerificationOptions_TlogOptions.fromJSON(object.tlogOptions) : undefined,
-        ctlogOptions: isSet(object.ctlogOptions) ? exports.ArtifactVerificationOptions_CtlogOptions.fromJSON(object.ctlogOptions) : undefined,
-        tsaOptions: isSet(object.tsaOptions) ? exports.ArtifactVerificationOptions_TimestampAuthorityOptions.fromJSON(object.tsaOptions) : undefined,
-        integratedTsOptions: isSet(object.integratedTsOptions) ? exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions.fromJSON(object.integratedTsOptions) : undefined,
-        observerOptions: isSet(object.observerOptions) ? exports.ArtifactVerificationOptions_ObserverTimestampOptions.fromJSON(object.observerOptions) : undefined
+          certificateIdentities: exports.CertificateIdentities.fromJSON(object2.certificateIdentities)
+        } : isSet(object2.publicKeys) ? { $case: "publicKeys", publicKeys: exports.PublicKeyIdentities.fromJSON(object2.publicKeys) } : undefined,
+        tlogOptions: isSet(object2.tlogOptions) ? exports.ArtifactVerificationOptions_TlogOptions.fromJSON(object2.tlogOptions) : undefined,
+        ctlogOptions: isSet(object2.ctlogOptions) ? exports.ArtifactVerificationOptions_CtlogOptions.fromJSON(object2.ctlogOptions) : undefined,
+        tsaOptions: isSet(object2.tsaOptions) ? exports.ArtifactVerificationOptions_TimestampAuthorityOptions.fromJSON(object2.tsaOptions) : undefined,
+        integratedTsOptions: isSet(object2.integratedTsOptions) ? exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions.fromJSON(object2.integratedTsOptions) : undefined,
+        observerOptions: isSet(object2.observerOptions) ? exports.ArtifactVerificationOptions_ObserverTimestampOptions.fromJSON(object2.observerOptions) : undefined
       };
     },
     toJSON(message) {
@@ -38168,11 +38168,11 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TlogOptions = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        threshold: isSet(object.threshold) ? globalThis.Number(object.threshold) : 0,
-        performOnlineVerification: isSet(object.performOnlineVerification) ? globalThis.Boolean(object.performOnlineVerification) : false,
-        disable: isSet(object.disable) ? globalThis.Boolean(object.disable) : false
+        threshold: isSet(object2.threshold) ? globalThis.Number(object2.threshold) : 0,
+        performOnlineVerification: isSet(object2.performOnlineVerification) ? globalThis.Boolean(object2.performOnlineVerification) : false,
+        disable: isSet(object2.disable) ? globalThis.Boolean(object2.disable) : false
       };
     },
     toJSON(message) {
@@ -38190,10 +38190,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_CtlogOptions = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        threshold: isSet(object.threshold) ? globalThis.Number(object.threshold) : 0,
-        disable: isSet(object.disable) ? globalThis.Boolean(object.disable) : false
+        threshold: isSet(object2.threshold) ? globalThis.Number(object2.threshold) : 0,
+        disable: isSet(object2.disable) ? globalThis.Boolean(object2.disable) : false
       };
     },
     toJSON(message) {
@@ -38208,10 +38208,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TimestampAuthorityOptions = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        threshold: isSet(object.threshold) ? globalThis.Number(object.threshold) : 0,
-        disable: isSet(object.disable) ? globalThis.Boolean(object.disable) : false
+        threshold: isSet(object2.threshold) ? globalThis.Number(object2.threshold) : 0,
+        disable: isSet(object2.disable) ? globalThis.Boolean(object2.disable) : false
       };
     },
     toJSON(message) {
@@ -38226,10 +38226,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        threshold: isSet(object.threshold) ? globalThis.Number(object.threshold) : 0,
-        disable: isSet(object.disable) ? globalThis.Boolean(object.disable) : false
+        threshold: isSet(object2.threshold) ? globalThis.Number(object2.threshold) : 0,
+        disable: isSet(object2.disable) ? globalThis.Boolean(object2.disable) : false
       };
     },
     toJSON(message) {
@@ -38244,10 +38244,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_ObserverTimestampOptions = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        threshold: isSet(object.threshold) ? globalThis.Number(object.threshold) : 0,
-        disable: isSet(object.disable) ? globalThis.Boolean(object.disable) : false
+        threshold: isSet(object2.threshold) ? globalThis.Number(object2.threshold) : 0,
+        disable: isSet(object2.disable) ? globalThis.Boolean(object2.disable) : false
       };
     },
     toJSON(message) {
@@ -38262,9 +38262,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.Artifact = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        data: isSet(object.artifactUri) ? { $case: "artifactUri", artifactUri: globalThis.String(object.artifactUri) } : isSet(object.artifact) ? { $case: "artifact", artifact: Buffer.from(bytesFromBase64(object.artifact)) } : isSet(object.artifactDigest) ? { $case: "artifactDigest", artifactDigest: sigstore_common_1.HashOutput.fromJSON(object.artifactDigest) } : undefined
+        data: isSet(object2.artifactUri) ? { $case: "artifactUri", artifactUri: globalThis.String(object2.artifactUri) } : isSet(object2.artifact) ? { $case: "artifact", artifact: Buffer.from(bytesFromBase64(object2.artifact)) } : isSet(object2.artifactDigest) ? { $case: "artifactDigest", artifactDigest: sigstore_common_1.HashOutput.fromJSON(object2.artifactDigest) } : undefined
       };
     },
     toJSON(message) {
@@ -38280,12 +38280,12 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.Input = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        artifactTrustRoot: isSet(object.artifactTrustRoot) ? sigstore_trustroot_1.TrustedRoot.fromJSON(object.artifactTrustRoot) : undefined,
-        artifactVerificationOptions: isSet(object.artifactVerificationOptions) ? exports.ArtifactVerificationOptions.fromJSON(object.artifactVerificationOptions) : undefined,
-        bundle: isSet(object.bundle) ? sigstore_bundle_1.Bundle.fromJSON(object.bundle) : undefined,
-        artifact: isSet(object.artifact) ? exports.Artifact.fromJSON(object.artifact) : undefined
+        artifactTrustRoot: isSet(object2.artifactTrustRoot) ? sigstore_trustroot_1.TrustedRoot.fromJSON(object2.artifactTrustRoot) : undefined,
+        artifactVerificationOptions: isSet(object2.artifactVerificationOptions) ? exports.ArtifactVerificationOptions.fromJSON(object2.artifactVerificationOptions) : undefined,
+        bundle: isSet(object2.bundle) ? sigstore_bundle_1.Bundle.fromJSON(object2.bundle) : undefined,
+        artifact: isSet(object2.artifact) ? exports.Artifact.fromJSON(object2.artifact) : undefined
       };
     },
     toJSON(message) {
@@ -39278,14 +39278,14 @@ var require_encoding = __commonJS((exports) => {
 var require_json = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.canonicalize = canonicalize;
-  function canonicalize(object) {
+  function canonicalize(object2) {
     let buffer = "";
-    if (object === null || typeof object !== "object" || object.toJSON != null) {
-      buffer += JSON.stringify(object);
-    } else if (Array.isArray(object)) {
+    if (object2 === null || typeof object2 !== "object" || object2.toJSON != null) {
+      buffer += JSON.stringify(object2);
+    } else if (Array.isArray(object2)) {
       buffer += "[";
       let first = true;
-      object.forEach((element) => {
+      object2.forEach((element) => {
         if (!first) {
           buffer += ",";
         }
@@ -39296,14 +39296,14 @@ var require_json = __commonJS((exports) => {
     } else {
       buffer += "{";
       let first = true;
-      Object.keys(object).sort().forEach((property) => {
+      Object.keys(object2).sort().forEach((property) => {
         if (!first) {
           buffer += ",";
         }
         first = false;
         buffer += JSON.stringify(property);
         buffer += ":";
-        buffer += canonicalize(object[property]);
+        buffer += canonicalize(object2[property]);
       });
       buffer += "}";
     }
@@ -40867,8 +40867,8 @@ var require_verifier = __commonJS((exports) => {
   exports.Signature = exports.Verifier = exports.PublicKey = undefined;
   var sigstore_common_1 = require_sigstore_common();
   exports.PublicKey = {
-    fromJSON(object) {
-      return { rawBytes: isSet(object.rawBytes) ? Buffer.from(bytesFromBase64(object.rawBytes)) : Buffer.alloc(0) };
+    fromJSON(object2) {
+      return { rawBytes: isSet(object2.rawBytes) ? Buffer.from(bytesFromBase64(object2.rawBytes)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -40879,10 +40879,10 @@ var require_verifier = __commonJS((exports) => {
     }
   };
   exports.Verifier = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        verifier: isSet(object.publicKey) ? { $case: "publicKey", publicKey: exports.PublicKey.fromJSON(object.publicKey) } : isSet(object.x509Certificate) ? { $case: "x509Certificate", x509Certificate: sigstore_common_1.X509Certificate.fromJSON(object.x509Certificate) } : undefined,
-        keyDetails: isSet(object.keyDetails) ? (0, sigstore_common_1.publicKeyDetailsFromJSON)(object.keyDetails) : 0
+        verifier: isSet(object2.publicKey) ? { $case: "publicKey", publicKey: exports.PublicKey.fromJSON(object2.publicKey) } : isSet(object2.x509Certificate) ? { $case: "x509Certificate", x509Certificate: sigstore_common_1.X509Certificate.fromJSON(object2.x509Certificate) } : undefined,
+        keyDetails: isSet(object2.keyDetails) ? (0, sigstore_common_1.publicKeyDetailsFromJSON)(object2.keyDetails) : 0
       };
     },
     toJSON(message) {
@@ -40899,10 +40899,10 @@ var require_verifier = __commonJS((exports) => {
     }
   };
   exports.Signature = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        content: isSet(object.content) ? Buffer.from(bytesFromBase64(object.content)) : Buffer.alloc(0),
-        verifier: isSet(object.verifier) ? exports.Verifier.fromJSON(object.verifier) : undefined
+        content: isSet(object2.content) ? Buffer.from(bytesFromBase64(object2.content)) : Buffer.alloc(0),
+        verifier: isSet(object2.verifier) ? exports.Verifier.fromJSON(object2.verifier) : undefined
       };
     },
     toJSON(message) {
@@ -40935,10 +40935,10 @@ var require_dsse3 = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var verifier_1 = require_verifier();
   exports.DSSERequestV002 = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        envelope: isSet(object.envelope) ? envelope_1.Envelope.fromJSON(object.envelope) : undefined,
-        verifiers: globalThis.Array.isArray(object?.verifiers) ? object.verifiers.map((e) => verifier_1.Verifier.fromJSON(e)) : []
+        envelope: isSet(object2.envelope) ? envelope_1.Envelope.fromJSON(object2.envelope) : undefined,
+        verifiers: globalThis.Array.isArray(object2?.verifiers) ? object2.verifiers.map((e) => verifier_1.Verifier.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -40953,10 +40953,10 @@ var require_dsse3 = __commonJS((exports) => {
     }
   };
   exports.DSSELogEntryV002 = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        payloadHash: isSet(object.payloadHash) ? sigstore_common_1.HashOutput.fromJSON(object.payloadHash) : undefined,
-        signatures: globalThis.Array.isArray(object?.signatures) ? object.signatures.map((e) => verifier_1.Signature.fromJSON(e)) : []
+        payloadHash: isSet(object2.payloadHash) ? sigstore_common_1.HashOutput.fromJSON(object2.payloadHash) : undefined,
+        signatures: globalThis.Array.isArray(object2?.signatures) ? object2.signatures.map((e) => verifier_1.Signature.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -40982,10 +40982,10 @@ var require_hashedrekord = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var verifier_1 = require_verifier();
   exports.HashedRekordRequestV002 = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        digest: isSet(object.digest) ? Buffer.from(bytesFromBase64(object.digest)) : Buffer.alloc(0),
-        signature: isSet(object.signature) ? verifier_1.Signature.fromJSON(object.signature) : undefined
+        digest: isSet(object2.digest) ? Buffer.from(bytesFromBase64(object2.digest)) : Buffer.alloc(0),
+        signature: isSet(object2.signature) ? verifier_1.Signature.fromJSON(object2.signature) : undefined
       };
     },
     toJSON(message) {
@@ -41000,10 +41000,10 @@ var require_hashedrekord = __commonJS((exports) => {
     }
   };
   exports.HashedRekordLogEntryV002 = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        data: isSet(object.data) ? sigstore_common_1.HashOutput.fromJSON(object.data) : undefined,
-        signature: isSet(object.signature) ? verifier_1.Signature.fromJSON(object.signature) : undefined
+        data: isSet(object2.data) ? sigstore_common_1.HashOutput.fromJSON(object2.data) : undefined,
+        signature: isSet(object2.signature) ? verifier_1.Signature.fromJSON(object2.signature) : undefined
       };
     },
     toJSON(message) {
@@ -41035,11 +41035,11 @@ var require_entry = __commonJS((exports) => {
   var dsse_1 = require_dsse3();
   var hashedrekord_1 = require_hashedrekord();
   exports.Entry = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        kind: isSet(object.kind) ? globalThis.String(object.kind) : "",
-        apiVersion: isSet(object.apiVersion) ? globalThis.String(object.apiVersion) : "",
-        spec: isSet(object.spec) ? exports.Spec.fromJSON(object.spec) : undefined
+        kind: isSet(object2.kind) ? globalThis.String(object2.kind) : "",
+        apiVersion: isSet(object2.apiVersion) ? globalThis.String(object2.apiVersion) : "",
+        spec: isSet(object2.spec) ? exports.Spec.fromJSON(object2.spec) : undefined
       };
     },
     toJSON(message) {
@@ -41057,9 +41057,9 @@ var require_entry = __commonJS((exports) => {
     }
   };
   exports.Spec = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        spec: isSet(object.hashedRekordV002) ? { $case: "hashedRekordV002", hashedRekordV002: hashedrekord_1.HashedRekordLogEntryV002.fromJSON(object.hashedRekordV002) } : isSet(object.dsseV002) ? { $case: "dsseV002", dsseV002: dsse_1.DSSELogEntryV002.fromJSON(object.dsseV002) } : undefined
+        spec: isSet(object2.hashedRekordV002) ? { $case: "hashedRekordV002", hashedRekordV002: hashedrekord_1.HashedRekordLogEntryV002.fromJSON(object2.hashedRekordV002) } : isSet(object2.dsseV002) ? { $case: "dsseV002", dsseV002: dsse_1.DSSELogEntryV002.fromJSON(object2.dsseV002) } : undefined
       };
     },
     toJSON(message) {
@@ -41073,12 +41073,12 @@ var require_entry = __commonJS((exports) => {
     }
   };
   exports.CreateEntryRequest = {
-    fromJSON(object) {
+    fromJSON(object2) {
       return {
-        spec: isSet(object.hashedRekordRequestV002) ? {
+        spec: isSet(object2.hashedRekordRequestV002) ? {
           $case: "hashedRekordRequestV002",
-          hashedRekordRequestV002: hashedrekord_1.HashedRekordRequestV002.fromJSON(object.hashedRekordRequestV002)
-        } : isSet(object.dsseRequestV002) ? { $case: "dsseRequestV002", dsseRequestV002: dsse_1.DSSERequestV002.fromJSON(object.dsseRequestV002) } : undefined
+          hashedRekordRequestV002: hashedrekord_1.HashedRekordRequestV002.fromJSON(object2.hashedRekordRequestV002)
+        } : isSet(object2.dsseRequestV002) ? { $case: "dsseRequestV002", dsseRequestV002: dsse_1.DSSERequestV002.fromJSON(object2.dsseRequestV002) } : undefined
       };
     },
     toJSON(message) {
@@ -41868,10 +41868,10 @@ var init_util2 = __esm(() => {
         return obj[e];
       });
     };
-    util4.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object) => {
+    util4.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object2) => {
       const keys = [];
-      for (const key in object) {
-        if (Object.prototype.hasOwnProperty.call(object, key)) {
+      for (const key in object2) {
+        if (Object.prototype.hasOwnProperty.call(object2, key)) {
           keys.push(key);
         }
       }
@@ -45809,9 +45809,9 @@ function floatSafeRemainder3(val, step) {
   const stepInt = Number.parseInt(step.toFixed(decCount).replace(".", ""));
   return valInt % stepInt / 10 ** decCount;
 }
-function defineLazy(object, key, getter) {
+function defineLazy(object2, key, getter) {
   let value = undefined;
-  Object.defineProperty(object, key, {
+  Object.defineProperty(object2, key, {
     get() {
       if (value === EVALUATING) {
         return;
@@ -45823,7 +45823,7 @@ function defineLazy(object, key, getter) {
       return value;
     },
     set(v) {
-      Object.defineProperty(object, key, {
+      Object.defineProperty(object2, key, {
         value: v
       });
     },
@@ -46532,7 +46532,7 @@ var cuid, cuid2, ulid, xid, ksuid, nanoid, duration, guid, uuid = (version) => {
 }, email, _emoji = `^(\\p{Extended_Pictographic}|\\p{Emoji_Component})+$`, ipv4, ipv6, cidrv4, cidrv6, base642, base64url2, e164, dateSource = `(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))`, date, string = (params) => {
   const regex = params ? `[\\s\\S]{${params?.minimum ?? 0},${params?.maximum ?? ""}}` : `[\\s\\S]*`;
   return new RegExp(`^${regex}$`);
-}, integer, number, boolean, _null, lowercase, uppercase;
+}, integer2, number, boolean, _null, lowercase, uppercase;
 var init_regexes = __esm(() => {
   cuid = /^[cC][^\s-]{8,}$/;
   cuid2 = /^[0-9a-z]+$/;
@@ -46551,7 +46551,7 @@ var init_regexes = __esm(() => {
   base64url2 = /^[A-Za-z0-9_-]*$/;
   e164 = /^\+[1-9]\d{6,14}$/;
   date = /* @__PURE__ */ new RegExp(`^${dateSource}$`);
-  integer = /^-?\d+$/;
+  integer2 = /^-?\d+$/;
   number = /^-?\d+(?:\.\d+)?$/;
   boolean = /^(?:true|false)$/i;
   _null = /^null$/i;
@@ -46666,7 +46666,7 @@ var init_checks = __esm(() => {
       bag.minimum = minimum;
       bag.maximum = maximum;
       if (isInt)
-        bag.pattern = integer;
+        bag.pattern = integer2;
     });
     inst._zod.check = (payload) => {
       const input = payload.value;
@@ -49920,7 +49920,7 @@ var init_parse2 = __esm(() => {
 });
 
 // ../../node_modules/@modelcontextprotocol/sdk/node_modules/zod/v4/mini/schemas.js
-function object(shape, params) {
+function object2(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -50002,11 +50002,11 @@ function isZ4Schema(s) {
 function objectFromShape(shape) {
   const values = Object.values(shape);
   if (values.length === 0)
-    return object({});
+    return object2({});
   const allV4 = values.every(isZ4Schema);
   const allV3 = values.every((s) => !isZ4Schema(s));
   if (allV4)
-    return object(shape);
+    return object2(shape);
   if (allV3)
     return objectType2(shape);
   throw new Error("Mixed Zod versions detected in object shape.");
@@ -50277,7 +50277,7 @@ function never(params) {
 function array(element, params) {
   return _array(ZodArray3, element, params);
 }
-function object2(shape, params) {
+function object3(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -50959,30 +50959,30 @@ var init_types3 = __esm(() => {
     ttl: union([number2(), _null3()]).optional(),
     pollInterval: number2().optional()
   });
-  TaskMetadataSchema = object2({
+  TaskMetadataSchema = object3({
     ttl: number2().optional()
   });
-  RelatedTaskMetadataSchema = object2({
+  RelatedTaskMetadataSchema = object3({
     taskId: string2()
   });
   RequestMetaSchema = looseObject({
     progressToken: ProgressTokenSchema.optional(),
     [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
   });
-  BaseRequestParamsSchema = object2({
+  BaseRequestParamsSchema = object3({
     _meta: RequestMetaSchema.optional()
   });
   TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema.extend({
     task: TaskMetadataSchema.optional()
   });
-  RequestSchema = object2({
+  RequestSchema = object3({
     method: string2(),
     params: BaseRequestParamsSchema.loose().optional()
   });
-  NotificationsParamsSchema = object2({
+  NotificationsParamsSchema = object3({
     _meta: RequestMetaSchema.optional()
   });
-  NotificationSchema = object2({
+  NotificationSchema = object3({
     method: string2(),
     params: NotificationsParamsSchema.loose().optional()
   });
@@ -50990,16 +50990,16 @@ var init_types3 = __esm(() => {
     _meta: RequestMetaSchema.optional()
   });
   RequestIdSchema = union([string2(), number2().int()]);
-  JSONRPCRequestSchema = object2({
+  JSONRPCRequestSchema = object3({
     jsonrpc: literal(JSONRPC_VERSION),
     id: RequestIdSchema,
     ...RequestSchema.shape
   }).strict();
-  JSONRPCNotificationSchema = object2({
+  JSONRPCNotificationSchema = object3({
     jsonrpc: literal(JSONRPC_VERSION),
     ...NotificationSchema.shape
   }).strict();
-  JSONRPCResultResponseSchema = object2({
+  JSONRPCResultResponseSchema = object3({
     jsonrpc: literal(JSONRPC_VERSION),
     id: RequestIdSchema,
     result: ResultSchema
@@ -51014,10 +51014,10 @@ var init_types3 = __esm(() => {
     ErrorCode2[ErrorCode2["InternalError"] = -32603] = "InternalError";
     ErrorCode2[ErrorCode2["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
   })(ErrorCode || (ErrorCode = {}));
-  JSONRPCErrorResponseSchema = object2({
+  JSONRPCErrorResponseSchema = object3({
     jsonrpc: literal(JSONRPC_VERSION),
     id: RequestIdSchema.optional(),
-    error: object2({
+    error: object3({
       code: number2().int(),
       message: string2(),
       data: unknown().optional()
@@ -51039,16 +51039,16 @@ var init_types3 = __esm(() => {
     method: literal("notifications/cancelled"),
     params: CancelledNotificationParamsSchema
   });
-  IconSchema = object2({
+  IconSchema = object3({
     src: string2(),
     mimeType: string2().optional(),
     sizes: array(string2()).optional(),
     theme: _enum(["light", "dark"]).optional()
   });
-  IconsSchema = object2({
+  IconsSchema = object3({
     icons: array(IconSchema).optional()
   });
-  BaseMetadataSchema = object2({
+  BaseMetadataSchema = object3({
     name: string2(),
     title: string2().optional()
   });
@@ -51059,7 +51059,7 @@ var init_types3 = __esm(() => {
     websiteUrl: string2().optional(),
     description: string2().optional()
   });
-  FormElicitationCapabilitySchema = intersection(object2({
+  FormElicitationCapabilitySchema = intersection(object3({
     applyDefaults: boolean2().optional()
   }), record(string2(), unknown()));
   ElicitationCapabilitySchema = preprocess((value) => {
@@ -51069,7 +51069,7 @@ var init_types3 = __esm(() => {
       }
     }
     return value;
-  }, intersection(object2({
+  }, intersection(object3({
     form: FormElicitationCapabilitySchema.optional(),
     url: AssertObjectSchema.optional()
   }), record(string2(), unknown()).optional()));
@@ -51094,14 +51094,14 @@ var init_types3 = __esm(() => {
       }).optional()
     }).optional()
   });
-  ClientCapabilitiesSchema = object2({
+  ClientCapabilitiesSchema = object3({
     experimental: record(string2(), AssertObjectSchema).optional(),
-    sampling: object2({
+    sampling: object3({
       context: AssertObjectSchema.optional(),
       tools: AssertObjectSchema.optional()
     }).optional(),
     elicitation: ElicitationCapabilitySchema.optional(),
-    roots: object2({
+    roots: object3({
       listChanged: boolean2().optional()
     }).optional(),
     tasks: ClientTasksCapabilitySchema.optional()
@@ -51115,18 +51115,18 @@ var init_types3 = __esm(() => {
     method: literal("initialize"),
     params: InitializeRequestParamsSchema
   });
-  ServerCapabilitiesSchema = object2({
+  ServerCapabilitiesSchema = object3({
     experimental: record(string2(), AssertObjectSchema).optional(),
     logging: AssertObjectSchema.optional(),
     completions: AssertObjectSchema.optional(),
-    prompts: object2({
+    prompts: object3({
       listChanged: boolean2().optional()
     }).optional(),
-    resources: object2({
+    resources: object3({
       subscribe: boolean2().optional(),
       listChanged: boolean2().optional()
     }).optional(),
-    tools: object2({
+    tools: object3({
       listChanged: boolean2().optional()
     }).optional(),
     tasks: ServerTasksCapabilitySchema.optional()
@@ -51145,12 +51145,12 @@ var init_types3 = __esm(() => {
     method: literal("ping"),
     params: BaseRequestParamsSchema.optional()
   });
-  ProgressSchema = object2({
+  ProgressSchema = object3({
     progress: number2(),
     total: optional(number2()),
     message: optional(string2())
   });
-  ProgressNotificationParamsSchema = object2({
+  ProgressNotificationParamsSchema = object3({
     ...NotificationsParamsSchema.shape,
     ...ProgressSchema.shape,
     progressToken: ProgressTokenSchema
@@ -51169,7 +51169,7 @@ var init_types3 = __esm(() => {
     nextCursor: CursorSchema.optional()
   });
   TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-  TaskSchema = object2({
+  TaskSchema = object3({
     taskId: string2(),
     status: TaskStatusSchema,
     ttl: union([number2(), _null3()]),
@@ -51213,7 +51213,7 @@ var init_types3 = __esm(() => {
     })
   });
   CancelTaskResultSchema = ResultSchema.merge(TaskSchema);
-  ResourceContentsSchema = object2({
+  ResourceContentsSchema = object3({
     uri: string2(),
     mimeType: optional(string2()),
     _meta: record(string2(), unknown()).optional()
@@ -51233,12 +51233,12 @@ var init_types3 = __esm(() => {
     blob: Base64Schema
   });
   RoleSchema = _enum(["user", "assistant"]);
-  AnnotationsSchema = object2({
+  AnnotationsSchema = object3({
     audience: array(RoleSchema).optional(),
     priority: number2().min(0).max(1).optional(),
     lastModified: exports_iso2.datetime({ offset: true }).optional()
   });
-  ResourceSchema = object2({
+  ResourceSchema = object3({
     ...BaseMetadataSchema.shape,
     ...IconsSchema.shape,
     uri: string2(),
@@ -51247,7 +51247,7 @@ var init_types3 = __esm(() => {
     annotations: AnnotationsSchema.optional(),
     _meta: optional(looseObject({}))
   });
-  ResourceTemplateSchema = object2({
+  ResourceTemplateSchema = object3({
     ...BaseMetadataSchema.shape,
     ...IconsSchema.shape,
     uriTemplate: string2(),
@@ -51300,12 +51300,12 @@ var init_types3 = __esm(() => {
     method: literal("notifications/resources/updated"),
     params: ResourceUpdatedNotificationParamsSchema
   });
-  PromptArgumentSchema = object2({
+  PromptArgumentSchema = object3({
     name: string2(),
     description: optional(string2()),
     required: optional(boolean2())
   });
-  PromptSchema = object2({
+  PromptSchema = object3({
     ...BaseMetadataSchema.shape,
     ...IconsSchema.shape,
     description: optional(string2()),
@@ -51326,34 +51326,34 @@ var init_types3 = __esm(() => {
     method: literal("prompts/get"),
     params: GetPromptRequestParamsSchema
   });
-  TextContentSchema = object2({
+  TextContentSchema = object3({
     type: literal("text"),
     text: string2(),
     annotations: AnnotationsSchema.optional(),
     _meta: record(string2(), unknown()).optional()
   });
-  ImageContentSchema = object2({
+  ImageContentSchema = object3({
     type: literal("image"),
     data: Base64Schema,
     mimeType: string2(),
     annotations: AnnotationsSchema.optional(),
     _meta: record(string2(), unknown()).optional()
   });
-  AudioContentSchema = object2({
+  AudioContentSchema = object3({
     type: literal("audio"),
     data: Base64Schema,
     mimeType: string2(),
     annotations: AnnotationsSchema.optional(),
     _meta: record(string2(), unknown()).optional()
   });
-  ToolUseContentSchema = object2({
+  ToolUseContentSchema = object3({
     type: literal("tool_use"),
     name: string2(),
     id: string2(),
     input: record(string2(), unknown()),
     _meta: record(string2(), unknown()).optional()
   });
-  EmbeddedResourceSchema = object2({
+  EmbeddedResourceSchema = object3({
     type: literal("resource"),
     resource: union([TextResourceContentsSchema, BlobResourceContentsSchema]),
     annotations: AnnotationsSchema.optional(),
@@ -51369,7 +51369,7 @@ var init_types3 = __esm(() => {
     ResourceLinkSchema,
     EmbeddedResourceSchema
   ]);
-  PromptMessageSchema = object2({
+  PromptMessageSchema = object3({
     role: RoleSchema,
     content: ContentBlockSchema
   });
@@ -51381,26 +51381,26 @@ var init_types3 = __esm(() => {
     method: literal("notifications/prompts/list_changed"),
     params: NotificationsParamsSchema.optional()
   });
-  ToolAnnotationsSchema = object2({
+  ToolAnnotationsSchema = object3({
     title: string2().optional(),
     readOnlyHint: boolean2().optional(),
     destructiveHint: boolean2().optional(),
     idempotentHint: boolean2().optional(),
     openWorldHint: boolean2().optional()
   });
-  ToolExecutionSchema = object2({
+  ToolExecutionSchema = object3({
     taskSupport: _enum(["required", "optional", "forbidden"]).optional()
   });
-  ToolSchema = object2({
+  ToolSchema = object3({
     ...BaseMetadataSchema.shape,
     ...IconsSchema.shape,
     description: string2().optional(),
-    inputSchema: object2({
+    inputSchema: object3({
       type: literal("object"),
       properties: record(string2(), AssertObjectSchema).optional(),
       required: array(string2()).optional()
     }).catchall(unknown()),
-    outputSchema: object2({
+    outputSchema: object3({
       type: literal("object"),
       properties: record(string2(), AssertObjectSchema).optional(),
       required: array(string2()).optional()
@@ -51435,7 +51435,7 @@ var init_types3 = __esm(() => {
     method: literal("notifications/tools/list_changed"),
     params: NotificationsParamsSchema.optional()
   });
-  ListChangedOptionsBaseSchema = object2({
+  ListChangedOptionsBaseSchema = object3({
     autoRefresh: boolean2().default(true),
     debounceMs: number2().int().nonnegative().default(300)
   });
@@ -51456,23 +51456,23 @@ var init_types3 = __esm(() => {
     method: literal("notifications/message"),
     params: LoggingMessageNotificationParamsSchema
   });
-  ModelHintSchema = object2({
+  ModelHintSchema = object3({
     name: string2().optional()
   });
-  ModelPreferencesSchema = object2({
+  ModelPreferencesSchema = object3({
     hints: array(ModelHintSchema).optional(),
     costPriority: number2().min(0).max(1).optional(),
     speedPriority: number2().min(0).max(1).optional(),
     intelligencePriority: number2().min(0).max(1).optional()
   });
-  ToolChoiceSchema = object2({
+  ToolChoiceSchema = object3({
     mode: _enum(["auto", "required", "none"]).optional()
   });
-  ToolResultContentSchema = object2({
+  ToolResultContentSchema = object3({
     type: literal("tool_result"),
     toolUseId: string2().describe("The unique identifier for the corresponding tool call."),
     content: array(ContentBlockSchema).default([]),
-    structuredContent: object2({}).loose().optional(),
+    structuredContent: object3({}).loose().optional(),
     isError: boolean2().optional(),
     _meta: record(string2(), unknown()).optional()
   });
@@ -51484,7 +51484,7 @@ var init_types3 = __esm(() => {
     ToolUseContentSchema,
     ToolResultContentSchema
   ]);
-  SamplingMessageSchema = object2({
+  SamplingMessageSchema = object3({
     role: RoleSchema,
     content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)]),
     _meta: record(string2(), unknown()).optional()
@@ -51517,13 +51517,13 @@ var init_types3 = __esm(() => {
     role: RoleSchema,
     content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)])
   });
-  BooleanSchemaSchema = object2({
+  BooleanSchemaSchema = object3({
     type: literal("boolean"),
     title: string2().optional(),
     description: string2().optional(),
     default: boolean2().optional()
   });
-  StringSchemaSchema = object2({
+  StringSchemaSchema = object3({
     type: literal("string"),
     title: string2().optional(),
     description: string2().optional(),
@@ -51532,7 +51532,7 @@ var init_types3 = __esm(() => {
     format: _enum(["email", "uri", "date", "date-time"]).optional(),
     default: string2().optional()
   });
-  NumberSchemaSchema = object2({
+  NumberSchemaSchema = object3({
     type: _enum(["number", "integer"]),
     title: string2().optional(),
     description: string2().optional(),
@@ -51540,24 +51540,24 @@ var init_types3 = __esm(() => {
     maximum: number2().optional(),
     default: number2().optional()
   });
-  UntitledSingleSelectEnumSchemaSchema = object2({
+  UntitledSingleSelectEnumSchemaSchema = object3({
     type: literal("string"),
     title: string2().optional(),
     description: string2().optional(),
     enum: array(string2()),
     default: string2().optional()
   });
-  TitledSingleSelectEnumSchemaSchema = object2({
+  TitledSingleSelectEnumSchemaSchema = object3({
     type: literal("string"),
     title: string2().optional(),
     description: string2().optional(),
-    oneOf: array(object2({
+    oneOf: array(object3({
       const: string2(),
       title: string2()
     })),
     default: string2().optional()
   });
-  LegacyTitledEnumSchemaSchema = object2({
+  LegacyTitledEnumSchemaSchema = object3({
     type: literal("string"),
     title: string2().optional(),
     description: string2().optional(),
@@ -51566,26 +51566,26 @@ var init_types3 = __esm(() => {
     default: string2().optional()
   });
   SingleSelectEnumSchemaSchema = union([UntitledSingleSelectEnumSchemaSchema, TitledSingleSelectEnumSchemaSchema]);
-  UntitledMultiSelectEnumSchemaSchema = object2({
+  UntitledMultiSelectEnumSchemaSchema = object3({
     type: literal("array"),
     title: string2().optional(),
     description: string2().optional(),
     minItems: number2().optional(),
     maxItems: number2().optional(),
-    items: object2({
+    items: object3({
       type: literal("string"),
       enum: array(string2())
     }),
     default: array(string2()).optional()
   });
-  TitledMultiSelectEnumSchemaSchema = object2({
+  TitledMultiSelectEnumSchemaSchema = object3({
     type: literal("array"),
     title: string2().optional(),
     description: string2().optional(),
     minItems: number2().optional(),
     maxItems: number2().optional(),
-    items: object2({
-      anyOf: array(object2({
+    items: object3({
+      anyOf: array(object3({
         const: string2(),
         title: string2()
       }))
@@ -51598,7 +51598,7 @@ var init_types3 = __esm(() => {
   ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
     mode: literal("form").optional(),
     message: string2(),
-    requestedSchema: object2({
+    requestedSchema: object3({
       type: literal("object"),
       properties: record(string2(), PrimitiveSchemaDefinitionSchema),
       required: array(string2()).optional()
@@ -51626,21 +51626,21 @@ var init_types3 = __esm(() => {
     action: _enum(["accept", "decline", "cancel"]),
     content: preprocess((val) => val === null ? undefined : val, record(string2(), union([string2(), number2(), boolean2(), array(string2())])).optional())
   });
-  ResourceTemplateReferenceSchema = object2({
+  ResourceTemplateReferenceSchema = object3({
     type: literal("ref/resource"),
     uri: string2()
   });
-  PromptReferenceSchema = object2({
+  PromptReferenceSchema = object3({
     type: literal("ref/prompt"),
     name: string2()
   });
   CompleteRequestParamsSchema = BaseRequestParamsSchema.extend({
     ref: union([PromptReferenceSchema, ResourceTemplateReferenceSchema]),
-    argument: object2({
+    argument: object3({
       name: string2(),
       value: string2()
     }),
-    context: object2({
+    context: object3({
       arguments: record(string2(), string2()).optional()
     }).optional()
   });
@@ -51655,7 +51655,7 @@ var init_types3 = __esm(() => {
       hasMore: optional(boolean2())
     })
   });
-  RootSchema = object2({
+  RootSchema = object3({
     uri: string2().startsWith("file://"),
     name: string2().optional(),
     _meta: record(string2(), unknown()).optional()
@@ -52324,12 +52324,12 @@ function stringifyRegExpWithFlags(regex, refs) {
   if (!refs.applyRegexFlags || !regex.flags) {
     return regex.source;
   }
-  const flags = {
+  const flags2 = {
     i: regex.flags.includes("i"),
     m: regex.flags.includes("m"),
     s: regex.flags.includes("s")
   };
-  const source = flags.i ? regex.source.toLowerCase() : regex.source;
+  const source = flags2.i ? regex.source.toLowerCase() : regex.source;
   let pattern = "";
   let isEscaped = false;
   let inCharGroup = false;
@@ -52340,7 +52340,7 @@ function stringifyRegExpWithFlags(regex, refs) {
       isEscaped = false;
       continue;
     }
-    if (flags.i) {
+    if (flags2.i) {
       if (inCharGroup) {
         if (source[i].match(/[a-z]/)) {
           if (inCharRange) {
@@ -52360,7 +52360,7 @@ function stringifyRegExpWithFlags(regex, refs) {
         continue;
       }
     }
-    if (flags.m) {
+    if (flags2.m) {
       if (source[i] === "^") {
         pattern += `(^|(?<=[\r
 ]))`;
@@ -52371,7 +52371,7 @@ function stringifyRegExpWithFlags(regex, refs) {
         continue;
       }
     }
-    if (flags.s && source[i] === ".") {
+    if (flags2.s && source[i] === ".") {
       pattern += inCharGroup ? `${source[i]}\r
 ` : `[${source[i]}\r
 ]`;
@@ -52511,11 +52511,11 @@ var init_map = __esm(() => {
 
 // ../../node_modules/zod-to-json-schema/dist/esm/parsers/nativeEnum.js
 function parseNativeEnumDef(def) {
-  const object3 = def.values;
+  const object4 = def.values;
   const actualKeys = Object.keys(def.values).filter((key) => {
-    return typeof object3[object3[key]] !== "number";
+    return typeof object4[object4[key]] !== "number";
   });
-  const actualValues = actualKeys.map((key) => object3[key]);
+  const actualValues = actualKeys.map((key) => object4[key]);
   const parsedTypes = Array.from(new Set(actualValues.map((values) => typeof values)));
   return {
     type: parsedTypes.length === 1 ? parsedTypes[0] === "string" ? "string" : "number" : ["string", "number"],
@@ -53372,25 +53372,25 @@ class Protocol {
     });
   }
   _resetTimeout(messageId) {
-    const info = this._timeoutInfo.get(messageId);
-    if (!info)
+    const info2 = this._timeoutInfo.get(messageId);
+    if (!info2)
       return false;
-    const totalElapsed = Date.now() - info.startTime;
-    if (info.maxTotalTimeout && totalElapsed >= info.maxTotalTimeout) {
+    const totalElapsed = Date.now() - info2.startTime;
+    if (info2.maxTotalTimeout && totalElapsed >= info2.maxTotalTimeout) {
       this._timeoutInfo.delete(messageId);
       throw McpError.fromError(ErrorCode.RequestTimeout, "Maximum total timeout exceeded", {
-        maxTotalTimeout: info.maxTotalTimeout,
+        maxTotalTimeout: info2.maxTotalTimeout,
         totalElapsed
       });
     }
-    clearTimeout(info.timeoutId);
-    info.timeoutId = setTimeout(info.onTimeout, info.timeout);
+    clearTimeout(info2.timeoutId);
+    info2.timeoutId = setTimeout(info2.onTimeout, info2.timeout);
     return true;
   }
   _cleanupTimeout(messageId) {
-    const info = this._timeoutInfo.get(messageId);
-    if (info) {
-      clearTimeout(info.timeoutId);
+    const info2 = this._timeoutInfo.get(messageId);
+    if (info2) {
+      clearTimeout(info2.timeoutId);
       this._timeoutInfo.delete(messageId);
     }
   }
@@ -53682,7 +53682,7 @@ class Protocol {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1000;
-        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
+        await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -53694,7 +53694,7 @@ class Protocol {
   }
   request(request2, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -53772,7 +53772,7 @@ class Protocol {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve4(parseResult.data);
+            resolve5(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -53963,12 +53963,12 @@ class Protocol {
         interval = task.pollInterval;
       }
     } catch {}
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve4, interval);
+      const timeoutId = setTimeout(resolve5, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -56953,7 +56953,7 @@ var require_compile = __commonJS((exports) => {
     const schOrFunc = root.refs[ref];
     if (schOrFunc)
       return schOrFunc;
-    let _sch = resolve4.call(this, root, ref);
+    let _sch = resolve5.call(this, root, ref);
     if (_sch === undefined) {
       const schema = (_a2 = root.localRefs) === null || _a2 === undefined ? undefined : _a2[ref];
       const { schemaId } = this.opts;
@@ -56980,7 +56980,7 @@ var require_compile = __commonJS((exports) => {
   function sameSchemaEnv(s1, s2) {
     return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
   }
-  function resolve4(root, ref) {
+  function resolve5(root, ref) {
     let sch;
     while (typeof (sch = this.refs[ref]) == "string")
       ref = sch;
@@ -57566,7 +57566,7 @@ var require_fast_uri = __commonJS((exports, module) => {
     }
     return uri;
   }
-  function resolve4(baseURI, relativeURI, options) {
+  function resolve5(baseURI, relativeURI, options) {
     const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
     const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
     const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
@@ -57851,7 +57851,7 @@ var require_fast_uri = __commonJS((exports, module) => {
   var fastUri = {
     SCHEMES,
     normalize: normalize4,
-    resolve: resolve4,
+    resolve: resolve5,
     resolveComponent,
     equal,
     serialize,
@@ -57907,7 +57907,7 @@ var require_core = __commonJS((exports) => {
   var util_1 = require_util();
   var $dataRefSchema = require_data();
   var uri_1 = require_uri();
-  var defaultRegExp = (str, flags) => new RegExp(str, flags);
+  var defaultRegExp = (str, flags2) => new RegExp(str, flags2);
   defaultRegExp.code = "new RegExp";
   var META_IGNORE_OPTIONS = ["removeAdditional", "useDefaults", "coerceTypes"];
   var EXT_SCOPE_NAMES = new Set([
@@ -61376,7 +61376,7 @@ class McpServer {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5000;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
+      await new Promise((resolve5) => setTimeout(resolve5, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -62000,12 +62000,12 @@ class StdioServerTransport {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve4) => {
+    return new Promise((resolve5) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve4();
+        resolve5();
       } else {
-        this._stdout.once("drain", resolve4);
+        this._stdout.once("drain", resolve5);
       }
     });
   }
@@ -62201,14 +62201,14 @@ function configuredImageDir(env) {
   return env.CANDLE_IMAGE_DIR?.trim() || undefined;
 }
 function sniffImageType2(bytes) {
-  const at = (offset, signature) => signature.every((byte, i) => bytes[offset + i] === byte);
-  if (at(0, [137, 80, 78, 71, 13, 10, 26, 10]))
+  const at2 = (offset, signature) => signature.every((byte, i) => bytes[offset + i] === byte);
+  if (at2(0, [137, 80, 78, 71, 13, 10, 26, 10]))
     return "image/png";
-  if (at(0, [255, 216, 255]))
+  if (at2(0, [255, 216, 255]))
     return "image/jpeg";
-  if (at(0, [71, 73, 70, 56]) && (bytes[4] === 55 || bytes[4] === 57) && bytes[5] === 97)
+  if (at2(0, [71, 73, 70, 56]) && (bytes[4] === 55 || bytes[4] === 57) && bytes[5] === 97)
     return "image/gif";
-  if (at(0, [82, 73, 70, 70]) && at(8, [87, 69, 66, 80]))
+  if (at2(0, [82, 73, 70, 70]) && at2(8, [87, 69, 66, 80]))
     return "image/webp";
   return;
 }
@@ -62530,26 +62530,26 @@ async function executeTrade(args, cfg, doFetch) {
   try {
     if (args.side === "buy") {
       const amount = args.amount;
-      const read = await readMarket(args.mint, cfg, doFetch, { clientTradeId });
+      const read2 = await readMarket(args.mint, cfg, doFetch, { clientTradeId });
       let decimals;
-      if ("market" in read && (read.market.external === true || read.market.candleLaunched === false)) {
+      if ("market" in read2 && (read2.market.external === true || read2.market.candleLaunched === false)) {
         const q = quoteIdDecimals(args.quoteAsset, chainForMint(args.mint), { clientTradeId });
         if ("err" in q)
           return q.err;
         decimals = q.decimals;
-      } else if ("market" in read) {
-        const quoteDecimals = read.market.quoteDecimals;
+      } else if ("market" in read2) {
+        const quoteDecimals = read2.market.quoteDecimals;
         if (typeof quoteDecimals !== "number") {
           return errText(`could not resolve the quote decimals for mint ${args.mint}; a buy is denominated in that token's own quote asset and this market does not report its scale. Read the market with candle_get_market, then trade a raw amount via the SDK instead`, { clientTradeId });
         }
         decimals = quoteDecimals;
-      } else if (read.status === 404 && read.reason !== "chain_mismatch") {
+      } else if (read2.status === 404 && read2.reason !== "chain_mismatch") {
         const q = quoteIdDecimals(args.quoteAsset, chainForMint(args.mint), { clientTradeId });
         if ("err" in q)
           return q.err;
         decimals = q.decimals;
       } else {
-        return read.err;
+        return read2.err;
       }
       const converted = rawOrError(amount, decimals, { clientTradeId });
       if ("err" in converted)
@@ -62557,29 +62557,29 @@ async function executeTrade(args, cfg, doFetch) {
       amountRaw = converted.raw;
       resolved = { amountDecimal: amount, decimals, amountRaw };
     } else if (args.amount !== undefined) {
-      const read = await readMarket(args.mint, cfg, doFetch, { clientTradeId });
+      const read2 = await readMarket(args.mint, cfg, doFetch, { clientTradeId });
       let decimals;
-      if ("market" in read) {
-        if (typeof read.market.decimals !== "number") {
+      if ("market" in read2) {
+        if (typeof read2.market.decimals !== "number") {
           return errText(`could not resolve decimals for mint ${args.mint}; pass a raw-ready amount via the SDK instead`, { clientTradeId });
         }
-        decimals = read.market.decimals;
-      } else if (read.status === 404 && read.reason !== "chain_mismatch") {
+        decimals = read2.market.decimals;
+      } else if (read2.status === 404 && read2.reason !== "chain_mismatch") {
         const inventory = await readPaperInventory(cfg, doFetch, { clientTradeId });
         if ("err" in inventory) {
-          return paper ? inventory.err : read.err;
+          return paper ? inventory.err : read2.err;
         }
         const held = heldPaperPosition(inventory.positions, args.mint);
         if (typeof held?.tokenDecimals !== "number") {
           if (paper) {
             return errText(`could not resolve decimals for mint ${args.mint}; no Candle market and no paper position with a known scale. Buy it in paper first, or pass a raw amount via the SDK`, { clientTradeId });
           }
-          return read.err;
+          return read2.err;
         }
         decimals = held.tokenDecimals;
         paper = true;
       } else {
-        return read.err;
+        return read2.err;
       }
       const converted = rawOrError(args.amount, decimals, { clientTradeId });
       if ("err" in converted)
@@ -62779,10 +62779,10 @@ async function executeSweep(args, cfg, doFetch) {
 }
 async function resolveToken(args, cfg, doFetch) {
   const chain2 = chainForMint(args.mint);
-  const read = await readMarket(args.mint, cfg, doFetch, { mint: args.mint, chain: chain2 });
-  if ("err" in read)
-    return read.err;
-  return { text: JSON.stringify({ success: true, chain: chain2, mint: args.mint, market: read.market }, null, 2) };
+  const read2 = await readMarket(args.mint, cfg, doFetch, { mint: args.mint, chain: chain2 });
+  if ("err" in read2)
+    return read2.err;
+  return { text: JSON.stringify({ success: true, chain: chain2, mint: args.mint, market: read2.market }, null, 2) };
 }
 async function executionStatus(cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
@@ -63013,7 +63013,7 @@ function checkBuilderField2(action, builder) {
   }
   return null;
 }
-function decimal2(value) {
+function decimal3(value) {
   if (typeof value !== "string" || !/^-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value))
     return null;
   const negative = value.startsWith("-");
@@ -63032,7 +63032,7 @@ function checkActionIntent2(action, intent) {
     const o = raw;
     if (!mainAsset(o.a))
       return "order asset is outside the main perp universe";
-    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal2(o.s) ?? 0n) <= 0n || (decimal2(o.p) ?? 0n) <= 0n)
+    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal3(o.s) ?? 0n) <= 0n || (decimal3(o.p) ?? 0n) <= 0n)
       return "invalid order side, size, price or reduce-only flag";
   }
   if (action.type === "cancel") {
@@ -63060,7 +63060,7 @@ function checkActionIntent2(action, intent) {
       return "leverage or mode does not match the request";
   }
   if (method === "margin") {
-    const amount = decimal2(p.amount);
+    const amount = decimal3(p.amount);
     if (amount === null || amount % 10n ** 12n !== 0n || !Number.isSafeInteger(action.ntli) || BigInt(action.ntli) !== amount / 10n ** 12n || action.isBuy !== true)
       return "isolated margin amount does not match the request";
   }
@@ -63074,7 +63074,7 @@ function checkActionIntent2(action, intent) {
       return "requested order is not a limit/IOC order";
     if (method === "open") {
       const buy = p.side === "long" || p.side === "buy";
-      if (first.b !== buy || first.r !== false || decimal2(first.s) !== decimal2(p.size))
+      if (first.b !== buy || first.r !== false || decimal3(first.s) !== decimal3(p.size))
         return "order side, size or reduce-only flag does not match the request";
       const tif = (p.type ?? (p.price === undefined ? "market" : "limit")) === "market" ? "Ioc" : p.tif ?? "Gtc";
       if (typ.limit.tif !== tif)
@@ -63091,10 +63091,10 @@ function checkActionIntent2(action, intent) {
         if (!leg)
           return "missing trigger order";
         const trigger = leg.t?.trigger;
-        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal2(leg.s) !== decimal2(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal2(trigger.triggerPx) !== decimal2(p[field]))
+        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal3(leg.s) !== decimal3(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal3(trigger.triggerPx) !== decimal3(p[field]))
           return "trigger side, size, reduce-only flag or price does not match the request";
-        const px = decimal2(leg.p) ?? 0n;
-        const triggerPx = decimal2(trigger.triggerPx) ?? 0n;
+        const px = decimal3(leg.p) ?? 0n;
+        const triggerPx = decimal3(trigger.triggerPx) ?? 0n;
         const bound = BigInt(HYPERLIQUID_TPSL_SLIPPAGE_BPS2 + HYPERLIQUID_MID_DRIFT_BPS2);
         const within = leg.b === true ? px * 10000n <= triggerPx * (10000n + bound) : px * 10000n >= triggerPx * (10000n - bound);
         if (triggerPx <= 0n || !within)
@@ -63103,18 +63103,18 @@ function checkActionIntent2(action, intent) {
     } else {
       if (list.length !== 1)
         return "unexpected extra orders";
-      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || p.size != null && (decimal2(first.s) ?? 0n) > (decimal2(p.size) ?? 0n)))
+      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || p.size != null && (decimal3(first.s) ?? 0n) > (decimal3(p.size) ?? 0n)))
         return "close size or reduce-only flag does not match the request";
-      if (method === "modify" && p.size != null && decimal2(first.s) !== decimal2(p.size))
+      if (method === "modify" && p.size != null && decimal3(first.s) !== decimal3(p.size))
         return "replacement size does not match the request";
     }
-    if (p.price != null && decimal2(first.p) !== decimal2(p.price))
+    if (p.price != null && decimal3(first.p) !== decimal3(p.price))
       return "order price does not match the request";
   }
   return null;
 }
 async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
-  const read = async (body) => {
+  const read2 = async (body) => {
     const res = await fetcher(HYPERLIQUID_EXCHANGE_URLS2[network2].replace("/exchange", "/info"), {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -63124,22 +63124,22 @@ async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
       throw new Error("Cannot read the close position from Hyperliquid");
     return JSON.parse(await res.text());
   };
-  const [meta2, state] = await Promise.all([read({ type: "meta" }), read({ type: "clearinghouseState", user: address })]);
+  const [meta2, state] = await Promise.all([read2({ type: "meta" }), read2({ type: "clearinghouseState", user: address })]);
   const coin = String(params.coin).toUpperCase();
   const asset = meta2.universe.findIndex((m) => m.name.toUpperCase() === coin);
   const szi = state.assetPositions.find((p) => p.position.coin.toUpperCase() === coin)?.position.szi;
-  const signed = decimal2(szi);
+  const signed = decimal3(szi);
   if (asset < 0 || asset >= 1e4 || signed === null || signed === 0n)
     throw new Error("No main-universe position to close");
   const held = signed < 0n ? -signed : signed;
-  const asked = params.size == null ? held : decimal2(params.size);
+  const asked = params.size == null ? held : decimal3(params.size);
   if (asked === null || asked <= 0n)
     throw new Error("Invalid close size");
   const size = asked < held ? String(params.size) : String(szi).replace(/^-/, "");
   return { asset, isBuy: signed < 0n, size };
 }
 async function hyperliquidOrderMarket2(fetcher, network2, address, method, params) {
-  const read = async (body) => {
+  const read2 = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS2[network2], {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -63152,20 +63152,20 @@ async function hyperliquidOrderMarket2(fetcher, network2, address, method, param
   let coin = String(params.coin ?? "").toUpperCase();
   let order;
   if (method === "modify") {
-    const status = await read({ type: "orderStatus", user: address, oid: params.cloid });
+    const status = await read2({ type: "orderStatus", user: address, oid: params.cloid });
     const resting = status?.order?.order ?? null;
-    if (!resting || typeof resting.coin !== "string" || decimal2(resting.limitPx) === null)
+    if (!resting || typeof resting.coin !== "string" || decimal3(resting.limitPx) === null)
       throw new Error("No resting order with this cloid on Hyperliquid");
     coin = resting.coin.toUpperCase();
     order = { isBuy: resting.side === "B", limitPx: String(resting.limitPx) };
   }
-  const [meta2, contexts] = await read({ type: "metaAndAssetCtxs" });
+  const [meta2, contexts] = await read2({ type: "metaAndAssetCtxs" });
   const asset = meta2.universe.findIndex((m) => m.name.toUpperCase() === coin);
   if (asset < 0 || asset >= 1e4)
     throw new Error("No main-universe market for this coin on Hyperliquid");
   const context = contexts[asset];
   const midPx = context?.midPx ?? context?.markPx;
-  if ((decimal2(midPx) ?? 0n) <= 0n)
+  if ((decimal3(midPx) ?? 0n) <= 0n)
     throw new Error("No Hyperliquid price for this coin");
   return { asset, midPx: String(midPx), ...order ? { order } : {} };
 }
@@ -63181,8 +63181,8 @@ function checkOrderMarket2(action, intent, market) {
     const requested = p.slippageBps;
     const slippage2 = typeof requested === "number" && Number.isInteger(requested) && requested > 0 ? requested : HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2;
     const bound = BigInt(slippage2 + HYPERLIQUID_MID_DRIFT_BPS2);
-    const px = decimal2(first.p) ?? 0n;
-    const mid = decimal2(market.midPx) ?? 0n;
+    const px = decimal3(first.p) ?? 0n;
+    const mid = decimal3(market.midPx) ?? 0n;
     const within = first.b === true ? px * 10000n <= mid * (10000n + bound) : px * 10000n >= mid * (10000n - bound);
     if (mid <= 0n || !within)
       return "market order price is outside its slippage of Hyperliquid's mid";
@@ -63192,7 +63192,7 @@ function checkOrderMarket2(action, intent, market) {
       return "no resting order on Hyperliquid to check the modify against";
     if (first.b !== market.order.isBuy)
       return "modify changes the resting order's side";
-    if (p.price == null && decimal2(first.p) !== decimal2(market.order.limitPx))
+    if (p.price == null && decimal3(first.p) !== decimal3(market.order.limitPx))
       return "modify changes the resting order's price";
   }
   return null;
@@ -63221,7 +63221,7 @@ function verifyPerpsBuild2(build, opts) {
       return { ok: false, reason: intentRefusal };
     if (opts.closeOrder) {
       const order = action.orders[0];
-      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal2(order.s) !== decimal2(opts.closeOrder.size) || order.r !== true)
+      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal3(order.s) !== decimal3(opts.closeOrder.size) || order.r !== true)
         return { ok: false, reason: "close side, asset or size does not match the requested position" };
     }
     if (opts.market) {
@@ -63642,11 +63642,11 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
     return fail3("MCP_TRANSPORT", error2 instanceof Error ? error2.message : "The deposit call failed.");
   }
 }
-var decimal3, wallet, submit, perpsShapes, PATHS, Refusal, HYPERLIQUID_RELAY_CHAIN_ID2 = 1337, HYPERLIQUID_RELAY_USDC2 = "0x00000000000000000000000000000000", DEPOSIT_ASSETS, perpsDepositShape;
+var decimal4, wallet, submit, perpsShapes, PATHS, Refusal, HYPERLIQUID_RELAY_CHAIN_ID2 = 1337, HYPERLIQUID_RELAY_USDC2 = "0x00000000000000000000000000000000", DEPOSIT_ASSETS, perpsDepositShape;
 var init_perps = __esm(() => {
   init_zod();
   init_hyperliquid();
-  decimal3 = exports_external.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decimal string");
+  decimal4 = exports_external.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decimal string");
   wallet = exports_external.string().optional().describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.");
   submit = exports_external.boolean().optional().describe("false: build and check only, sign and submit nothing. Default true.");
   perpsShapes = {
@@ -63654,18 +63654,18 @@ var init_perps = __esm(() => {
     candle_perps_open: {
       coin: exports_external.string().describe("A market on Hyperliquid's main perp exchange, e.g. BTC"),
       side: exports_external.enum(["long", "short"]),
-      size: decimal3.describe('Size in the coin, decimal (e.g. "0.01")'),
-      price: decimal3.optional().describe("Limit price. Omit for a market order (IOC within slippageBps of the mid)."),
+      size: decimal4.describe('Size in the coin, decimal (e.g. "0.01")'),
+      price: decimal4.optional().describe("Limit price. Omit for a market order (IOC within slippageBps of the mid)."),
       tif: exports_external.enum(["Gtc", "Alo", "Ioc"]).optional().describe("With price: time in force (default Gtc)"),
       slippageBps: exports_external.number().int().min(1).optional(),
-      takeProfit: decimal3.optional().describe("Reduce-only take-profit trigger price"),
-      stopLoss: decimal3.optional().describe("Reduce-only stop-loss trigger price"),
+      takeProfit: decimal4.optional().describe("Reduce-only take-profit trigger price"),
+      stopLoss: decimal4.optional().describe("Reduce-only stop-loss trigger price"),
       wallet,
       submit
     },
     candle_perps_close: {
       coin: exports_external.string(),
-      size: decimal3.optional().describe("Part of the position to close; the whole position when omitted"),
+      size: decimal4.optional().describe("Part of the position to close; the whole position when omitted"),
       slippageBps: exports_external.number().int().min(1).optional(),
       wallet,
       submit
@@ -63709,12 +63709,572 @@ var init_perps = __esm(() => {
   };
   perpsDepositShape = {
     asset: exports_external.enum(["SOL", "USDC", "ETH", "USDG"]).describe("What to deposit. SOL or USDC pay from the key's Solana TEE wallet; ETH or USDG from its Hood one."),
-    amount: decimal3.describe('Amount of the asset, decimal (e.g. "25")'),
+    amount: decimal4.describe('Amount of the asset, decimal (e.g. "25")'),
     wallet: exports_external.string().optional().describe("The paying TEE wallet by id, address or label. Omit when the key has exactly one on that chain."),
     perpsWallet: exports_external.string().optional().describe("From Solana only: the EVM TEE wallet whose Hyperliquid account receives it. Omit when the key has one."),
     clientDepositId: exports_external.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).optional().describe("Idempotency id; the same id answers the deposit it already built. Default: a new one."),
     maxSlippageBps: exports_external.number().int().min(1).max(1000).optional().describe("Relay slippage (default 100)"),
     submit
+  };
+});
+
+// ../mcp/src/hyperliquid-markets.ts
+function unavailable2() {
+  throw new PerpsMarketError2("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
+}
+function usage8(message) {
+  throw new PerpsMarketError2("PERPS_USAGE", message);
+}
+function object5(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function decimal5(value) {
+  return typeof value === "string" && value.length <= 100 && DECIMAL2.test(value) && (value.split(".")[1]?.length ?? 0) <= 18;
+}
+function scaled2(value) {
+  const negative = value.startsWith("-");
+  const [whole = "0", fraction = ""] = (negative ? value.slice(1) : value).split(".");
+  const result = BigInt(whole) * ONE2 + BigInt(fraction.padEnd(18, "0"));
+  return negative ? -result : result;
+}
+function nonnegative2(value) {
+  return decimal5(value) && !value.startsWith("-") ? scaled2(value) : null;
+}
+function fixed2(value, places) {
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const divisor = 10n ** BigInt(18 - places);
+  const rounded = (abs + divisor / 2n) / divisor;
+  const digits = rounded.toString().padStart(places + 1, "0");
+  return `${negative && rounded !== 0n ? "-" : ""}${places ? `${digits.slice(0, -places)}.${digits.slice(-places)}` : digits}`;
+}
+function at2(values, index) {
+  const value = values[index];
+  if (value === undefined)
+    return unavailable2();
+  return value;
+}
+function integer3(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+function parseMarkets2(value) {
+  if (!Array.isArray(value) || value.length !== 2)
+    return unavailable2();
+  const [meta2, ctxs] = value;
+  if (!object5(meta2) || !Array.isArray(meta2.universe) || !Array.isArray(ctxs) || meta2.universe.length !== ctxs.length)
+    return unavailable2();
+  for (const row of meta2.universe) {
+    if (!object5(row) || typeof row.name !== "string" || !integer3(row.szDecimals) || row.szDecimals > 6 || !integer3(row.maxLeverage))
+      return unavailable2();
+    for (const key of ["isDelisted", "onlyIsolated"])
+      if (row[key] !== undefined && typeof row[key] !== "boolean")
+        return unavailable2();
+    if (row.marginTableId !== undefined && !integer3(row.marginTableId))
+      return unavailable2();
+  }
+  for (const ctx of ctxs) {
+    if (!object5(ctx))
+      return unavailable2();
+    for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
+      if (ctx[key] !== undefined && ctx[key] !== null && !decimal5(ctx[key]))
+        return unavailable2();
+    }
+    if (ctx.impactPxs != null && (!Array.isArray(ctx.impactPxs) || ctx.impactPxs.length !== 2 || !ctx.impactPxs.every(decimal5)))
+      return unavailable2();
+  }
+  const marginTables = new Map;
+  if (meta2.marginTables !== undefined) {
+    if (!Array.isArray(meta2.marginTables))
+      return unavailable2();
+    for (const entry of meta2.marginTables) {
+      if (!Array.isArray(entry) || !integer3(entry[0]) || !object5(entry[1]) || !Array.isArray(entry[1].marginTiers))
+        return unavailable2();
+      const tiers = [];
+      for (const tier of entry[1].marginTiers) {
+        if (!object5(tier) || nonnegative2(tier.lowerBound) === null || !integer3(tier.maxLeverage))
+          return unavailable2();
+        tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
+      }
+      marginTables.set(entry[0], tiers);
+    }
+  }
+  return { universe: meta2.universe, ctxs, marginTables };
+}
+async function info2(fetcher, network2, body) {
+  try {
+    const response = await fetcher(INFO_URLS2[network2], {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+      redirect: "error"
+    });
+    if (!response.ok)
+      return unavailable2();
+    return JSON.parse(await response.text());
+  } catch {
+    return unavailable2();
+  }
+}
+async function readHyperliquidMarkets2(fetcher, network2) {
+  return parseMarkets2(await info2(fetcher, network2, { type: "metaAndAssetCtxs" }));
+}
+function perpsMarketGate2(meta2, ctx, minOpenInterestUsd) {
+  if (meta2.isDelisted === true)
+    return { tradeable: false, reason: "delisted" };
+  const mark = nonnegative2(ctx.markPx);
+  const mid = nonnegative2(typeof ctx.midPx === "string" ? ctx.midPx : ctx.markPx);
+  const oi = nonnegative2(ctx.openInterest);
+  if (mark === null || mid === null || oi === null)
+    return { tradeable: false, reason: "noPrice" };
+  const divisor = 10n ** 30n;
+  const micros = (oi * mark + divisor - 1n) / divisor;
+  if (micros > BigInt(Number.MAX_SAFE_INTEGER))
+    return unavailable2();
+  if (minOpenInterestUsd > 0 && micros < BigInt(minOpenInterestUsd) * 1000000n)
+    return { tradeable: false, reason: "minOpenInterest" };
+  return { tradeable: true, reason: null };
+}
+function resolve5(snapshot, coin) {
+  if (/^[A-Za-z0-9]{1,20}$/.test(coin)) {
+    const exact = snapshot.universe.findIndex((row) => row.name === coin);
+    if (exact !== -1)
+      return exact;
+    const matches3 = snapshot.universe.map((row, i) => ({ row, i })).filter(({ row }) => row.name.toLowerCase() === coin.toLowerCase());
+    if (matches3.length === 1)
+      return at2(matches3, 0).i;
+  }
+  throw new PerpsMarketError2("PERPS_MARKET_NOT_FOUND", `${coin} is not a market on Hyperliquid's main perp exchange.`);
+}
+function perpsCandleWindow2(opts, now) {
+  const interval = opts.interval ?? "1h";
+  const index = PERPS_CANDLE_INTERVALS2.indexOf(interval);
+  if (index < 0)
+    return usage8(`interval must be one of ${PERPS_CANDLE_INTERVALS2.join(" ")}.`);
+  const count2 = bounded2(opts.count, 100, 1, 5000, "count");
+  const raw = opts.end;
+  const endTime = raw === undefined ? now : typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+  const startTime = endTime - count2 * at2(INTERVAL_MS3, index);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
+    return usage8("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  return { interval, count: count2, startTime, endTime };
+}
+function bounded2(value, fallback, min, max, name2) {
+  const n = value ?? fallback;
+  if (!Number.isInteger(n) || n < min || n > max)
+    return usage8(`${name2} must be an integer from ${min} to ${max}.`);
+  return n;
+}
+
+class PerpsMarketReader2 {
+  opts;
+  configPromise;
+  coreCache;
+  extrasCache;
+  corePending;
+  extrasPending;
+  now;
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+  }
+  key() {
+    if (!this.opts.apiKey?.trim())
+      throw new PerpsMarketError2("PERPS_KEY_REQUIRED", "Configure a Candle agent key (any scope) to read perps markets.");
+  }
+  config() {
+    this.key();
+    this.configPromise ??= (async () => {
+      try {
+        const value = await this.opts.readConfig();
+        if (!object5(value) || !object5(value.limits) || !integer3(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
+          throw new Error("config shape");
+        return {
+          minOpenInterestUsd: value.limits.minOpenInterestUsd,
+          source: "server",
+          network: value.network,
+          warnings: []
+        };
+      } catch {
+        return {
+          minOpenInterestUsd: 1e6,
+          source: "default",
+          warnings: ["Candle config unavailable; using the release's default OI floor."]
+        };
+      }
+    })();
+    return this.configPromise;
+  }
+  core() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.coreCache && ttl > 0 && this.now() - this.coreCache.at < ttl)
+      return Promise.resolve(this.coreCache.value);
+    this.corePending ??= readHyperliquidMarkets2(this.opts.fetcher, this.opts.network).then((value) => {
+      this.coreCache = { value, at: this.now() };
+      return value;
+    }).finally(() => {
+      this.corePending = undefined;
+    });
+    return this.corePending;
+  }
+  extras() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.extrasCache && ttl > 0 && this.now() - this.extrasCache.at < ttl)
+      return Promise.resolve(this.extrasCache.value);
+    this.extrasPending ??= (async () => {
+      const warnings = [];
+      const [predicted, cap] = await Promise.all([
+        info2(this.opts.fetcher, this.opts.network, { type: "predictedFundings" }).then((value2) => {
+          if (!Array.isArray(value2))
+            return unavailable2();
+          const map2 = new Map;
+          for (const entry of value2) {
+            if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1]))
+              return unavailable2();
+            for (const venue of entry[1]) {
+              if (!Array.isArray(venue) || typeof venue[0] !== "string")
+                return unavailable2();
+              if (venue[0] === "HlPerp" && venue[1] !== null) {
+                if (!object5(venue[1]) || !decimal5(venue[1].fundingRate) || !integer3(venue[1].nextFundingTime))
+                  return unavailable2();
+                map2.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
+              }
+            }
+          }
+          return map2;
+        }).catch(() => {
+          warnings.push("Predicted funding unavailable.");
+          return null;
+        }),
+        info2(this.opts.fetcher, this.opts.network, { type: "perpsAtOpenInterestCap" }).then((value2) => {
+          if (!Array.isArray(value2) || !value2.every((v) => typeof v === "string"))
+            return unavailable2();
+          return new Set(value2);
+        }).catch(() => {
+          warnings.push("Open-interest caps unavailable.");
+          return null;
+        })
+      ]);
+      const value = { predicted, cap, warnings: warnings.sort() };
+      this.extrasCache = { value, at: this.now() };
+      return value;
+    })().finally(() => {
+      this.extrasPending = undefined;
+    });
+    return this.extrasPending;
+  }
+  envelope(config2, warnings = [], readAt = this.now()) {
+    const mismatch = config2.network !== undefined && config2.network !== this.opts.network;
+    return {
+      success: true,
+      network: this.opts.network,
+      readAt,
+      gate: { minOpenInterestUsd: config2.minOpenInterestUsd, source: config2.source },
+      warnings: [
+        ...config2.warnings,
+        ...warnings,
+        ...mismatch ? ["Candle and client networks differ; tradeability is unknown."] : []
+      ]
+    };
+  }
+  row(core2, extras, config2, asset) {
+    const meta2 = at2(core2.universe, asset);
+    const ctx = at2(core2.ctxs, asset);
+    const mark = ctx.markPx == null ? null : scaled2(ctx.markPx);
+    const oi = ctx.openInterest == null ? null : scaled2(ctx.openInterest);
+    const prev = ctx.prevDayPx == null ? null : scaled2(ctx.prevDayPx);
+    const predicted = extras.predicted?.get(meta2.name);
+    return {
+      coin: meta2.name,
+      asset,
+      markPx: ctx.markPx ?? null,
+      oraclePx: ctx.oraclePx ?? null,
+      midPx: ctx.midPx ?? null,
+      fundingRate: ctx.funding ?? null,
+      fundingAprPct: ctx.funding == null ? null : fixed2(scaled2(ctx.funding) * 876000n, 2),
+      predictedFundingRate: predicted?.fundingRate ?? null,
+      nextFundingTime: predicted?.nextFundingTime ?? null,
+      openInterest: ctx.openInterest ?? null,
+      openInterestUsd: oi === null || mark === null ? null : fixed2(oi * mark / ONE2, 2),
+      dayNotionalVolumeUsd: ctx.dayNtlVlm ?? null,
+      prevDayPx: ctx.prevDayPx ?? null,
+      change24hPct: prev === null || prev === 0n || mark === null ? null : fixed2((mark - prev) * 100n * ONE2 / prev, 1),
+      maxLeverage: meta2.maxLeverage,
+      onlyIsolated: meta2.onlyIsolated === true,
+      isDelisted: meta2.isDelisted === true,
+      atOpenInterestCap: extras.cap?.has(meta2.name) ?? null,
+      candle: config2.network !== undefined && config2.network !== this.opts.network ? { tradeable: null, reason: "networkMismatch" } : perpsMarketGate2(meta2, ctx, config2.minOpenInterestUsd)
+    };
+  }
+  async markets(opts = {}) {
+    this.key();
+    const sort = opts.sort ?? "volume";
+    if (!["volume", "oi", "funding", "change", "name"].includes(sort))
+      return usage8("sort must be volume, oi, funding, change or name.");
+    const limit = opts.limit === undefined ? undefined : bounded2(opts.limit, 500, 1, 500, "limit");
+    const [config2, core2, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
+    const rows = core2.universe.map((_, asset) => this.row(core2, extras, config2, asset)).filter((row) => opts.all || row.candle.tradeable !== false);
+    const field = {
+      volume: "dayNotionalVolumeUsd",
+      oi: "openInterestUsd",
+      funding: "fundingRate",
+      change: "change24hPct"
+    };
+    rows.sort((a, b) => {
+      if (sort !== "name") {
+        const av = a[field[sort]];
+        const bv = b[field[sort]];
+        if (av === null && bv !== null)
+          return 1;
+        if (bv === null && av !== null)
+          return -1;
+        if (av !== null && bv !== null) {
+          const diff = scaled2(bv) - scaled2(av);
+          if (diff !== 0n)
+            return diff > 0n ? 1 : -1;
+        }
+      }
+      return a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0;
+    });
+    return {
+      ...this.envelope(config2, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
+      markets: limit === undefined ? rows : rows.slice(0, limit)
+    };
+  }
+  async market(coin) {
+    this.key();
+    const [config2, core2, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
+    const asset = resolve5(core2, coin);
+    const meta2 = at2(core2.universe, asset);
+    const ctx = at2(core2.ctxs, asset);
+    return {
+      ...this.envelope(config2, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
+      market: {
+        ...this.row(core2, extras, config2, asset),
+        szDecimals: meta2.szDecimals,
+        maxPriceDecimals: 6 - meta2.szDecimals,
+        priceRule: "at most 5 significant figures",
+        minOrderUsd: 10,
+        impactBidPx: ctx.impactPxs?.[0] ?? null,
+        impactAskPx: ctx.impactPxs?.[1] ?? null,
+        premium: ctx.premium ?? null,
+        marginTiers: core2.marginTables.get(meta2.marginTableId ?? -1) ?? [
+          { lowerBoundUsd: "0", maxLeverage: meta2.maxLeverage }
+        ]
+      }
+    };
+  }
+  async book(coin, opts = {}) {
+    this.key();
+    const depth = bounded2(opts.depth, 20, 1, 20, "depth");
+    if (opts.sigFigs !== undefined)
+      bounded2(opts.sigFigs, 5, 2, 5, "sigFigs");
+    const [config2, core2] = await Promise.all([this.config(), this.core()]);
+    const canonical3 = at2(core2.universe, resolve5(core2, coin)).name;
+    const value = await info2(this.opts.fetcher, this.opts.network, {
+      type: "l2Book",
+      coin: canonical3,
+      ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
+    });
+    if (!object5(value) || value.coin !== canonical3 || !integer3(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
+      return unavailable2();
+    const sides = [];
+    for (const side of value.levels) {
+      if (!Array.isArray(side))
+        return unavailable2();
+      const levels = [];
+      for (const level of side) {
+        if (!object5(level) || nonnegative2(level.px) === null || nonnegative2(level.sz) === null || !integer3(level.n))
+          return unavailable2();
+        levels.push({ px: level.px, sz: level.sz, n: level.n });
+      }
+      sides.push(levels);
+    }
+    const bids = at2(sides, 0).sort((a, b) => scaled2(a.px) > scaled2(b.px) ? -1 : scaled2(a.px) < scaled2(b.px) ? 1 : 0).slice(0, depth);
+    const asks = at2(sides, 1).sort((a, b) => scaled2(a.px) < scaled2(b.px) ? -1 : scaled2(a.px) > scaled2(b.px) ? 1 : 0).slice(0, depth);
+    const bid = bids[0];
+    const ask = asks[0];
+    const spread = bid && ask ? scaled2(ask.px) - scaled2(bid.px) : null;
+    const mid = bid && ask ? (scaled2(ask.px) + scaled2(bid.px)) / 2n : null;
+    return {
+      ...this.envelope(config2),
+      coin: canonical3,
+      time: value.time,
+      bids,
+      asks,
+      spreadPx: spread === null ? null : fixed2(spread, 18).replace(/\.?0+$/, ""),
+      midPx: mid === null ? null : fixed2(mid, 18).replace(/\.?0+$/, ""),
+      spreadBps: spread === null || mid === null || mid === 0n ? null : fixed2(spread * 10000n * ONE2 / mid, 2)
+    };
+  }
+  async candles(coin, opts = {}) {
+    this.key();
+    const window = perpsCandleWindow2(opts, this.now());
+    const [config2, core2] = await Promise.all([this.config(), this.core()]);
+    const canonical3 = at2(core2.universe, resolve5(core2, coin)).name;
+    const value = await info2(this.opts.fetcher, this.opts.network, {
+      type: "candleSnapshot",
+      req: { coin: canonical3, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
+    });
+    if (!Array.isArray(value))
+      return unavailable2();
+    const candles = [];
+    for (const c of value) {
+      if (!object5(c) || !integer3(c.t) || !integer3(c.T) || !integer3(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative2(v) !== null) || c.s !== canonical3 || c.i !== window.interval)
+        return unavailable2();
+      if (c.t <= window.endTime && c.T >= window.startTime)
+        candles.push({
+          t: c.t,
+          T: c.T,
+          o: c.o,
+          h: c.h,
+          l: c.l,
+          c: c.c,
+          v: c.v,
+          n: c.n
+        });
+    }
+    candles.sort((a, b) => a.t - b.t);
+    return {
+      ...this.envelope(config2),
+      coin: canonical3,
+      interval: window.interval,
+      candles: candles.slice(-window.count)
+    };
+  }
+}
+var INFO_URLS2, ONE2, DECIMAL2, PerpsMarketError2, PERPS_CANDLE_INTERVALS2, INTERVAL_MS3;
+var init_hyperliquid_markets = __esm(() => {
+  INFO_URLS2 = {
+    mainnet: "https://api.hyperliquid.xyz/info",
+    testnet: "https://api.hyperliquid-testnet.xyz/info"
+  };
+  ONE2 = 10n ** 18n;
+  DECIMAL2 = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/;
+  PerpsMarketError2 = class PerpsMarketError2 extends Error {
+    code;
+    retryable;
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+      this.name = "PerpsMarketError";
+      this.retryable = code === "PERPS_UNAVAILABLE";
+    }
+  };
+  PERPS_CANDLE_INTERVALS2 = [
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
+    "1M"
+  ];
+  INTERVAL_MS3 = [
+    60000,
+    180000,
+    300000,
+    900000,
+    1800000,
+    3600000,
+    7200000,
+    14400000,
+    28800000,
+    43200000,
+    86400000,
+    259200000,
+    604800000,
+    2678400000
+  ];
+});
+
+// ../mcp/src/perps-markets.ts
+function createPerpsMarketExecutor(getConfig, env, fetcher, now = Date.now) {
+  let previous;
+  let reader;
+  return async (tool, args) => {
+    try {
+      const cfg = getConfig();
+      if (!reader || previous?.apiUrl !== cfg.apiUrl || previous?.apiKey !== cfg.apiKey) {
+        previous = { ...cfg };
+        reader = new PerpsMarketReader2({
+          apiKey: cfg.apiKey,
+          network: env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet",
+          fetcher,
+          now,
+          readConfig: async () => {
+            const response = await fetcher(`${cfg.apiUrl.replace(/\/+$/, "")}/api/v1/agent/perps/config`, {
+              method: "GET",
+              headers: { "x-api-key": cfg.apiKey },
+              signal: AbortSignal.timeout(5000),
+              redirect: "error"
+            });
+            if (!response.ok)
+              throw new Error("config unavailable");
+            return JSON.parse(await response.text());
+          }
+        });
+      }
+      if (!cfg.apiKey?.trim())
+        throw new PerpsMarketError2("PERPS_KEY_REQUIRED", "Configure a Candle agent key (any scope) to read perps markets.");
+      const parsed = exports_external.object(perpsMarketShapes[tool]).strict().safeParse(args);
+      if (!parsed.success)
+        return {
+          text: JSON.stringify({ success: false, error: { code: "MCP_VALIDATION", message: parsed.error.message } }),
+          isError: true
+        };
+      const result = tool === "candle_perps_markets" ? await reader.markets(parsed.data) : tool === "candle_perps_market" ? await reader.market(args.coin) : tool === "candle_perps_book" ? await reader.book(args.coin, parsed.data) : await reader.candles(args.coin, parsed.data);
+      return { text: JSON.stringify(result) };
+    } catch (error2) {
+      return {
+        text: JSON.stringify({
+          success: false,
+          error: {
+            code: error2 instanceof PerpsMarketError2 ? error2.code : "PERPS_UNAVAILABLE",
+            message: error2 instanceof Error ? error2.message : "Market read failed.",
+            retryable: error2 instanceof PerpsMarketError2 ? error2.retryable : true
+          }
+        }),
+        isError: true
+      };
+    }
+  };
+}
+var PERPS_MARKET_TOOL_NAMES, perpsMarketShapes;
+var init_perps_markets = __esm(() => {
+  init_zod();
+  init_hyperliquid_markets();
+  PERPS_MARKET_TOOL_NAMES = [
+    "candle_perps_markets",
+    "candle_perps_market",
+    "candle_perps_book",
+    "candle_perps_candles"
+  ];
+  perpsMarketShapes = {
+    candle_perps_markets: {
+      sort: exports_external.enum(["volume", "oi", "funding", "change", "name"]).optional(),
+      limit: exports_external.number().int().min(1).max(500).optional(),
+      all: exports_external.boolean().optional()
+    },
+    candle_perps_market: { coin: exports_external.string() },
+    candle_perps_book: {
+      coin: exports_external.string(),
+      depth: exports_external.number().int().min(1).max(20).optional(),
+      sigFigs: exports_external.number().int().min(2).max(5).optional()
+    },
+    candle_perps_candles: {
+      coin: exports_external.string(),
+      interval: exports_external.enum(PERPS_CANDLE_INTERVALS2).optional(),
+      count: exports_external.number().int().min(1).max(5000).optional(),
+      end: exports_external.union([exports_external.string(), exports_external.number()]).optional()
+    }
   };
 });
 
@@ -64435,6 +64995,18 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     const result = await executeLaunchAndSeed(args, getConfig(), doFetch, imageDir);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
+  const marketRead = createPerpsMarketExecutor(getConfig, env, doFetch);
+  for (const name2 of PERPS_MARKET_TOOL_NAMES) {
+    register(name2, {
+      title: name2.replace("candle_perps_", "Hyperliquid "),
+      description: "Read live market data directly from Hyperliquid's public API on this machine. Needs a Candle agent key of any scope, no signer. candle.tradeable is Candle's build gate at read time, not a promise; OI caps may still refuse an order. The hosted connector does not carry these tools.",
+      inputSchema: perpsMarketShapes[name2],
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+    }, async (args) => {
+      const result = await marketRead(name2, args);
+      return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+    });
+  }
   const perpsTool = (tool) => async (args) => {
     const result = await executePerps(tool, args, getConfig(), env, doFetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
@@ -64522,6 +65094,7 @@ var init_tools = __esm(() => {
   init_market_disclosure();
   init_orchestrate();
   init_perps();
+  init_perps_markets();
   init_plans();
   init_update_notice();
   VAMP_CANDIDATES_DESCRIPTION = "Lists Solana tokens that are close to graduating or graduated in the last 6 hours whose ticker other tokens " + "are copying, most-copied in the last 24 hours first. Each entry carries a launch draft (name, ticker, image URL) " + "for `candle_launch_token` or `candle_launch_and_seed`; draft notes identify fields you must supply or adjust. " + "Upload your own image through the agent image upload when the image is unavailable. Use `dryRun: true` first. " + "Counts exclude the candidate itself and cover both Solana and Hood launches at the venues returned in " + "`coverage`, not Candle's own. `coverage.since` is the returned Solana coverage date; Hood history may differ.";
@@ -64568,6 +65141,7 @@ var init_tools = __esm(() => {
     "candle_unstake",
     "candle_finish_unstake",
     "candle_claim_staking_reward",
+    ...PERPS_MARKET_TOOL_NAMES,
     "candle_perps_setup",
     "candle_perps_open",
     "candle_perps_close",
@@ -64759,11 +65333,11 @@ async function runStdioServer(env = process.env, transport = new StdioServerTran
     } else
       dispatch?.(message, extra);
   };
-  await new Promise((resolve4) => {
+  await new Promise((resolve6) => {
     const sdkOnClose = transport.onclose;
     transport.onclose = () => {
       sdkOnClose?.();
-      resolve4();
+      resolve6();
     };
   });
 }
@@ -65661,10 +66235,23 @@ var HELP = {
   },
   perps: {
     group: "Trade",
-    summary: "Hyperliquid perpetuals from your EVM TEE wallet: setup, deposit, withdraw, open, close, cancel, orders, positions, leverage",
-    description: "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section.",
+    summary: "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, orders, positions, leverage",
+    description: "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
+      {
+        invocation: "markets [--sort <volume|oi|funding|change|name>] [--limit <n>] [--all]",
+        description: "List live main-perp markets directly from Hyperliquid; any Candle agent key required"
+      },
+      { invocation: "market <coin>", description: "Market detail, margin tiers, impact prices and precision rules" },
+      {
+        invocation: "book <coin> [--depth <1-20>] [--sig-figs <2-5>]",
+        description: "Live order book, spread and mid, directly from Hyperliquid"
+      },
+      {
+        invocation: "candles <coin> [--interval <i>] [--count <1-5000>] [--end <time>]",
+        description: "OHLCV candles (default 1h, 100); oldest first, directly from Hyperliquid"
+      },
       {
         invocation: "setup [--wallet <tee>]",
         description: "Approve Candle's builder fee once; shows the account's mode and balance"
@@ -65694,6 +66281,26 @@ var HELP = {
       { invocation: "leverage <coin> <x> [--isolated]", description: "Set a market's leverage and margin mode" }
     ],
     flags: [
+      {
+        invocation: "--sort <volume|oi|funding|change|name>",
+        description: "markets: descending metric, ascending name (default volume)"
+      },
+      { invocation: "--limit <1-500>", description: "markets: maximum rows; default all tradeable markets" },
+      {
+        invocation: "--all",
+        description: "markets: include refused markets and reasons; OI caps can still refuse an order"
+      },
+      { invocation: "--depth <1-20>", description: "book: levels per side (default 20)" },
+      { invocation: "--sig-figs <2-5>", description: "book: Hyperliquid price aggregation" },
+      {
+        invocation: "--interval <i>",
+        description: "candles: 1m 3m 5m 15m 30m 1h 2h 4h 8h 12h 1d 3d 1w 1M (default 1h)"
+      },
+      {
+        invocation: "--count <1-5000>",
+        description: "candles: newest count (default 100); 1M window uses 31 days per step"
+      },
+      { invocation: "--end <time>", description: "candles: ISO 8601 or epoch milliseconds, no later than now" },
       {
         invocation: "--wallet <tee>",
         description: "The EVM TEE wallet by id, address or unique label (default: the only one); for deposit, the paying TEE wallet"
@@ -74578,6 +75185,591 @@ async function perpsDeposit(args, ctx) {
   }
 }
 
+// src/commands/perps-markets.ts
+init_args();
+init_deps();
+
+// src/hyperliquid-markets.ts
+var INFO_URLS = {
+  mainnet: "https://api.hyperliquid.xyz/info",
+  testnet: "https://api.hyperliquid-testnet.xyz/info"
+};
+var ONE = 10n ** 18n;
+var DECIMAL = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/;
+
+class PerpsMarketError extends Error {
+  code;
+  retryable;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "PerpsMarketError";
+    this.retryable = code === "PERPS_UNAVAILABLE";
+  }
+}
+function unavailable() {
+  throw new PerpsMarketError("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
+}
+function usage5(message) {
+  throw new PerpsMarketError("PERPS_USAGE", message);
+}
+function object(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function decimal2(value) {
+  return typeof value === "string" && value.length <= 100 && DECIMAL.test(value) && (value.split(".")[1]?.length ?? 0) <= 18;
+}
+function scaled(value) {
+  const negative = value.startsWith("-");
+  const [whole = "0", fraction = ""] = (negative ? value.slice(1) : value).split(".");
+  const result = BigInt(whole) * ONE + BigInt(fraction.padEnd(18, "0"));
+  return negative ? -result : result;
+}
+function nonnegative(value) {
+  return decimal2(value) && !value.startsWith("-") ? scaled(value) : null;
+}
+function fixed(value, places) {
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const divisor = 10n ** BigInt(18 - places);
+  const rounded = (abs + divisor / 2n) / divisor;
+  const digits = rounded.toString().padStart(places + 1, "0");
+  return `${negative && rounded !== 0n ? "-" : ""}${places ? `${digits.slice(0, -places)}.${digits.slice(-places)}` : digits}`;
+}
+function at(values, index) {
+  const value = values[index];
+  if (value === undefined)
+    return unavailable();
+  return value;
+}
+function integer(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+function parseMarkets(value) {
+  if (!Array.isArray(value) || value.length !== 2)
+    return unavailable();
+  const [meta, ctxs] = value;
+  if (!object(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
+    return unavailable();
+  for (const row of meta.universe) {
+    if (!object(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
+      return unavailable();
+    for (const key of ["isDelisted", "onlyIsolated"])
+      if (row[key] !== undefined && typeof row[key] !== "boolean")
+        return unavailable();
+    if (row.marginTableId !== undefined && !integer(row.marginTableId))
+      return unavailable();
+  }
+  for (const ctx of ctxs) {
+    if (!object(ctx))
+      return unavailable();
+    for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
+      if (ctx[key] !== undefined && ctx[key] !== null && !decimal2(ctx[key]))
+        return unavailable();
+    }
+    if (ctx.impactPxs != null && (!Array.isArray(ctx.impactPxs) || ctx.impactPxs.length !== 2 || !ctx.impactPxs.every(decimal2)))
+      return unavailable();
+  }
+  const marginTables = new Map;
+  if (meta.marginTables !== undefined) {
+    if (!Array.isArray(meta.marginTables))
+      return unavailable();
+    for (const entry of meta.marginTables) {
+      if (!Array.isArray(entry) || !integer(entry[0]) || !object(entry[1]) || !Array.isArray(entry[1].marginTiers))
+        return unavailable();
+      const tiers = [];
+      for (const tier of entry[1].marginTiers) {
+        if (!object(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
+          return unavailable();
+        tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
+      }
+      marginTables.set(entry[0], tiers);
+    }
+  }
+  return { universe: meta.universe, ctxs, marginTables };
+}
+async function info(fetcher, network2, body) {
+  try {
+    const response = await fetcher(INFO_URLS[network2], {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+      redirect: "error"
+    });
+    if (!response.ok)
+      return unavailable();
+    return JSON.parse(await response.text());
+  } catch {
+    return unavailable();
+  }
+}
+async function readHyperliquidMarkets(fetcher, network2) {
+  return parseMarkets(await info(fetcher, network2, { type: "metaAndAssetCtxs" }));
+}
+function perpsMarketGate(meta, ctx, minOpenInterestUsd) {
+  if (meta.isDelisted === true)
+    return { tradeable: false, reason: "delisted" };
+  const mark = nonnegative(ctx.markPx);
+  const mid = nonnegative(typeof ctx.midPx === "string" ? ctx.midPx : ctx.markPx);
+  const oi = nonnegative(ctx.openInterest);
+  if (mark === null || mid === null || oi === null)
+    return { tradeable: false, reason: "noPrice" };
+  const divisor = 10n ** 30n;
+  const micros = (oi * mark + divisor - 1n) / divisor;
+  if (micros > BigInt(Number.MAX_SAFE_INTEGER))
+    return unavailable();
+  if (minOpenInterestUsd > 0 && micros < BigInt(minOpenInterestUsd) * 1000000n)
+    return { tradeable: false, reason: "minOpenInterest" };
+  return { tradeable: true, reason: null };
+}
+function resolve2(snapshot, coin) {
+  if (/^[A-Za-z0-9]{1,20}$/.test(coin)) {
+    const exact = snapshot.universe.findIndex((row) => row.name === coin);
+    if (exact !== -1)
+      return exact;
+    const matches = snapshot.universe.map((row, i) => ({ row, i })).filter(({ row }) => row.name.toLowerCase() === coin.toLowerCase());
+    if (matches.length === 1)
+      return at(matches, 0).i;
+  }
+  throw new PerpsMarketError("PERPS_MARKET_NOT_FOUND", `${coin} is not a market on Hyperliquid's main perp exchange.`);
+}
+var PERPS_CANDLE_INTERVALS = [
+  "1m",
+  "3m",
+  "5m",
+  "15m",
+  "30m",
+  "1h",
+  "2h",
+  "4h",
+  "8h",
+  "12h",
+  "1d",
+  "3d",
+  "1w",
+  "1M"
+];
+var INTERVAL_MS = [
+  60000,
+  180000,
+  300000,
+  900000,
+  1800000,
+  3600000,
+  7200000,
+  14400000,
+  28800000,
+  43200000,
+  86400000,
+  259200000,
+  604800000,
+  2678400000
+];
+function perpsCandleWindow(opts, now) {
+  const interval = opts.interval ?? "1h";
+  const index = PERPS_CANDLE_INTERVALS.indexOf(interval);
+  if (index < 0)
+    return usage5(`interval must be one of ${PERPS_CANDLE_INTERVALS.join(" ")}.`);
+  const count = bounded(opts.count, 100, 1, 5000, "count");
+  const raw = opts.end;
+  const endTime = raw === undefined ? now : typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+  const startTime = endTime - count * at(INTERVAL_MS, index);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
+    return usage5("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  return { interval, count, startTime, endTime };
+}
+function bounded(value, fallback, min, max, name2) {
+  const n = value ?? fallback;
+  if (!Number.isInteger(n) || n < min || n > max)
+    return usage5(`${name2} must be an integer from ${min} to ${max}.`);
+  return n;
+}
+
+class PerpsMarketReader {
+  opts;
+  configPromise;
+  coreCache;
+  extrasCache;
+  corePending;
+  extrasPending;
+  now;
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+  }
+  key() {
+    if (!this.opts.apiKey?.trim())
+      throw new PerpsMarketError("PERPS_KEY_REQUIRED", "Configure a Candle agent key (any scope) to read perps markets.");
+  }
+  config() {
+    this.key();
+    this.configPromise ??= (async () => {
+      try {
+        const value = await this.opts.readConfig();
+        if (!object(value) || !object(value.limits) || !integer(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
+          throw new Error("config shape");
+        return {
+          minOpenInterestUsd: value.limits.minOpenInterestUsd,
+          source: "server",
+          network: value.network,
+          warnings: []
+        };
+      } catch {
+        return {
+          minOpenInterestUsd: 1e6,
+          source: "default",
+          warnings: ["Candle config unavailable; using the release's default OI floor."]
+        };
+      }
+    })();
+    return this.configPromise;
+  }
+  core() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.coreCache && ttl > 0 && this.now() - this.coreCache.at < ttl)
+      return Promise.resolve(this.coreCache.value);
+    this.corePending ??= readHyperliquidMarkets(this.opts.fetcher, this.opts.network).then((value) => {
+      this.coreCache = { value, at: this.now() };
+      return value;
+    }).finally(() => {
+      this.corePending = undefined;
+    });
+    return this.corePending;
+  }
+  extras() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.extrasCache && ttl > 0 && this.now() - this.extrasCache.at < ttl)
+      return Promise.resolve(this.extrasCache.value);
+    this.extrasPending ??= (async () => {
+      const warnings = [];
+      const [predicted, cap] = await Promise.all([
+        info(this.opts.fetcher, this.opts.network, { type: "predictedFundings" }).then((value2) => {
+          if (!Array.isArray(value2))
+            return unavailable();
+          const map = new Map;
+          for (const entry of value2) {
+            if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1]))
+              return unavailable();
+            for (const venue of entry[1]) {
+              if (!Array.isArray(venue) || typeof venue[0] !== "string")
+                return unavailable();
+              if (venue[0] === "HlPerp" && venue[1] !== null) {
+                if (!object(venue[1]) || !decimal2(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
+                  return unavailable();
+                map.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
+              }
+            }
+          }
+          return map;
+        }).catch(() => {
+          warnings.push("Predicted funding unavailable.");
+          return null;
+        }),
+        info(this.opts.fetcher, this.opts.network, { type: "perpsAtOpenInterestCap" }).then((value2) => {
+          if (!Array.isArray(value2) || !value2.every((v) => typeof v === "string"))
+            return unavailable();
+          return new Set(value2);
+        }).catch(() => {
+          warnings.push("Open-interest caps unavailable.");
+          return null;
+        })
+      ]);
+      const value = { predicted, cap, warnings: warnings.sort() };
+      this.extrasCache = { value, at: this.now() };
+      return value;
+    })().finally(() => {
+      this.extrasPending = undefined;
+    });
+    return this.extrasPending;
+  }
+  envelope(config, warnings = [], readAt = this.now()) {
+    const mismatch = config.network !== undefined && config.network !== this.opts.network;
+    return {
+      success: true,
+      network: this.opts.network,
+      readAt,
+      gate: { minOpenInterestUsd: config.minOpenInterestUsd, source: config.source },
+      warnings: [
+        ...config.warnings,
+        ...warnings,
+        ...mismatch ? ["Candle and client networks differ; tradeability is unknown."] : []
+      ]
+    };
+  }
+  row(core, extras, config, asset) {
+    const meta = at(core.universe, asset);
+    const ctx = at(core.ctxs, asset);
+    const mark = ctx.markPx == null ? null : scaled(ctx.markPx);
+    const oi = ctx.openInterest == null ? null : scaled(ctx.openInterest);
+    const prev = ctx.prevDayPx == null ? null : scaled(ctx.prevDayPx);
+    const predicted = extras.predicted?.get(meta.name);
+    return {
+      coin: meta.name,
+      asset,
+      markPx: ctx.markPx ?? null,
+      oraclePx: ctx.oraclePx ?? null,
+      midPx: ctx.midPx ?? null,
+      fundingRate: ctx.funding ?? null,
+      fundingAprPct: ctx.funding == null ? null : fixed(scaled(ctx.funding) * 876000n, 2),
+      predictedFundingRate: predicted?.fundingRate ?? null,
+      nextFundingTime: predicted?.nextFundingTime ?? null,
+      openInterest: ctx.openInterest ?? null,
+      openInterestUsd: oi === null || mark === null ? null : fixed(oi * mark / ONE, 2),
+      dayNotionalVolumeUsd: ctx.dayNtlVlm ?? null,
+      prevDayPx: ctx.prevDayPx ?? null,
+      change24hPct: prev === null || prev === 0n || mark === null ? null : fixed((mark - prev) * 100n * ONE / prev, 1),
+      maxLeverage: meta.maxLeverage,
+      onlyIsolated: meta.onlyIsolated === true,
+      isDelisted: meta.isDelisted === true,
+      atOpenInterestCap: extras.cap?.has(meta.name) ?? null,
+      candle: config.network !== undefined && config.network !== this.opts.network ? { tradeable: null, reason: "networkMismatch" } : perpsMarketGate(meta, ctx, config.minOpenInterestUsd)
+    };
+  }
+  async markets(opts = {}) {
+    this.key();
+    const sort = opts.sort ?? "volume";
+    if (!["volume", "oi", "funding", "change", "name"].includes(sort))
+      return usage5("sort must be volume, oi, funding, change or name.");
+    const limit = opts.limit === undefined ? undefined : bounded(opts.limit, 500, 1, 500, "limit");
+    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
+    const rows = core.universe.map((_, asset) => this.row(core, extras, config, asset)).filter((row) => opts.all || row.candle.tradeable !== false);
+    const field = {
+      volume: "dayNotionalVolumeUsd",
+      oi: "openInterestUsd",
+      funding: "fundingRate",
+      change: "change24hPct"
+    };
+    rows.sort((a, b) => {
+      if (sort !== "name") {
+        const av = a[field[sort]];
+        const bv = b[field[sort]];
+        if (av === null && bv !== null)
+          return 1;
+        if (bv === null && av !== null)
+          return -1;
+        if (av !== null && bv !== null) {
+          const diff = scaled(bv) - scaled(av);
+          if (diff !== 0n)
+            return diff > 0n ? 1 : -1;
+        }
+      }
+      return a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0;
+    });
+    return {
+      ...this.envelope(config, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
+      markets: limit === undefined ? rows : rows.slice(0, limit)
+    };
+  }
+  async market(coin) {
+    this.key();
+    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
+    const asset = resolve2(core, coin);
+    const meta = at(core.universe, asset);
+    const ctx = at(core.ctxs, asset);
+    return {
+      ...this.envelope(config, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
+      market: {
+        ...this.row(core, extras, config, asset),
+        szDecimals: meta.szDecimals,
+        maxPriceDecimals: 6 - meta.szDecimals,
+        priceRule: "at most 5 significant figures",
+        minOrderUsd: 10,
+        impactBidPx: ctx.impactPxs?.[0] ?? null,
+        impactAskPx: ctx.impactPxs?.[1] ?? null,
+        premium: ctx.premium ?? null,
+        marginTiers: core.marginTables.get(meta.marginTableId ?? -1) ?? [
+          { lowerBoundUsd: "0", maxLeverage: meta.maxLeverage }
+        ]
+      }
+    };
+  }
+  async book(coin, opts = {}) {
+    this.key();
+    const depth = bounded(opts.depth, 20, 1, 20, "depth");
+    if (opts.sigFigs !== undefined)
+      bounded(opts.sigFigs, 5, 2, 5, "sigFigs");
+    const [config, core] = await Promise.all([this.config(), this.core()]);
+    const canonical2 = at(core.universe, resolve2(core, coin)).name;
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "l2Book",
+      coin: canonical2,
+      ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
+    });
+    if (!object(value) || value.coin !== canonical2 || !integer(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
+      return unavailable();
+    const sides = [];
+    for (const side of value.levels) {
+      if (!Array.isArray(side))
+        return unavailable();
+      const levels = [];
+      for (const level of side) {
+        if (!object(level) || nonnegative(level.px) === null || nonnegative(level.sz) === null || !integer(level.n))
+          return unavailable();
+        levels.push({ px: level.px, sz: level.sz, n: level.n });
+      }
+      sides.push(levels);
+    }
+    const bids = at(sides, 0).sort((a, b) => scaled(a.px) > scaled(b.px) ? -1 : scaled(a.px) < scaled(b.px) ? 1 : 0).slice(0, depth);
+    const asks = at(sides, 1).sort((a, b) => scaled(a.px) < scaled(b.px) ? -1 : scaled(a.px) > scaled(b.px) ? 1 : 0).slice(0, depth);
+    const bid = bids[0];
+    const ask = asks[0];
+    const spread = bid && ask ? scaled(ask.px) - scaled(bid.px) : null;
+    const mid = bid && ask ? (scaled(ask.px) + scaled(bid.px)) / 2n : null;
+    return {
+      ...this.envelope(config),
+      coin: canonical2,
+      time: value.time,
+      bids,
+      asks,
+      spreadPx: spread === null ? null : fixed(spread, 18).replace(/\.?0+$/, ""),
+      midPx: mid === null ? null : fixed(mid, 18).replace(/\.?0+$/, ""),
+      spreadBps: spread === null || mid === null || mid === 0n ? null : fixed(spread * 10000n * ONE / mid, 2)
+    };
+  }
+  async candles(coin, opts = {}) {
+    this.key();
+    const window = perpsCandleWindow(opts, this.now());
+    const [config, core] = await Promise.all([this.config(), this.core()]);
+    const canonical2 = at(core.universe, resolve2(core, coin)).name;
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "candleSnapshot",
+      req: { coin: canonical2, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
+    });
+    if (!Array.isArray(value))
+      return unavailable();
+    const candles = [];
+    for (const c of value) {
+      if (!object(c) || !integer(c.t) || !integer(c.T) || !integer(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative(v) !== null) || c.s !== canonical2 || c.i !== window.interval)
+        return unavailable();
+      if (c.t <= window.endTime && c.T >= window.startTime)
+        candles.push({
+          t: c.t,
+          T: c.T,
+          o: c.o,
+          h: c.h,
+          l: c.l,
+          c: c.c,
+          v: c.v,
+          n: c.n
+        });
+    }
+    candles.sort((a, b) => a.t - b.t);
+    return {
+      ...this.envelope(config),
+      coin: canonical2,
+      interval: window.interval,
+      candles: candles.slice(-window.count)
+    };
+  }
+}
+
+// src/commands/perps-markets.ts
+init_render();
+init_trading();
+init_swap();
+var flags = {
+  markets: ["--sort", "--limit"],
+  market: [],
+  book: ["--depth", "--sig-figs"],
+  candles: ["--interval", "--count", "--end"]
+};
+async function read(ctx, argv, command) {
+  const parsed = parseArgs(argv, { valueFlags: flags[command], booleanFlags: command === "markets" ? ["--all"] : [] });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  if (parsed.positionals.length !== (command === "markets" ? 0 : 1)) {
+    writeUsageFailure(ctx.deps, `Usage: candle perps ${command}${command === "markets" ? "" : " <coin>"} [flags]`, ctx.json);
+    return 2;
+  }
+  const values = parsed.values;
+  const number = (flag) => values[flag] === undefined ? undefined : Number(values[flag]);
+  try {
+    const key = await resolveApiKey(ctx.deps, ctx.profile);
+    const reader = new PerpsMarketReader({
+      apiKey: key,
+      network: ctx.deps.env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet",
+      fetcher: ctx.deps.fetch,
+      now: ctx.deps.now,
+      cacheMs: 0,
+      readConfig: async () => perpsRequest(ctx, key, "/api/v1/agent/perps/config")
+    });
+    const coin = parsed.positionals[0] ?? "";
+    const result = command === "markets" ? await reader.markets({
+      sort: values["--sort"],
+      limit: number("--limit"),
+      all: parsed.booleans.has("--all")
+    }) : command === "market" ? await reader.market(coin) : command === "book" ? await reader.book(coin, { depth: number("--depth"), sigFigs: number("--sig-figs") }) : await reader.candles(coin, {
+      interval: values["--interval"],
+      count: number("--count"),
+      end: values["--end"]
+    });
+    if (ctx.json) {
+      ctx.deps.stdout.write(`${JSON.stringify(result)}
+`);
+      return 0;
+    }
+    for (const warning of result.warnings)
+      ctx.deps.stderr.write(`${safeText(warning)}
+`);
+    const out = (line) => ctx.deps.stdout.write(`${line}
+`);
+    out(`Hyperliquid ${result.network}; OI floor $${result.gate.minOpenInterestUsd} (${result.gate.source}). Tradeability is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`);
+    const money = (n) => n === null ? "-" : Number(n).toFixed(2);
+    if ("markets" in result) {
+      out("COIN  MARK USD  24H %  FUNDING %/h  APR %  OI USD  24H VOLUME USD  LEVERAGE  FLAGS");
+      for (const row of result.markets)
+        out([
+          safeText(row.coin),
+          money(row.markPx),
+          row.change24hPct ?? "-",
+          row.fundingRate === null ? "-" : (Number(row.fundingRate) * 100).toFixed(4),
+          row.fundingAprPct ?? "-",
+          row.openInterestUsd ?? "-",
+          money(row.dayNotionalVolumeUsd),
+          `${row.maxLeverage}x`,
+          [
+            row.onlyIsolated ? "iso" : "",
+            row.atOpenInterestCap ? "cap" : "",
+            row.candle.tradeable === false ? `x:${row.candle.reason}` : row.candle.tradeable === null ? "?:networkMismatch" : ""
+          ].filter(Boolean).join(",")
+        ].join("  "));
+    } else if ("market" in result) {
+      out(JSON.stringify({ ...result.market, coin: safeText(result.market.coin) }, null, 2));
+    } else if ("bids" in result) {
+      out(`${safeText(result.coin)}: BID PX / SIZE / ORDERS | ASK PX / SIZE / ORDERS`);
+      for (let i = 0;i < Math.max(result.bids.length, result.asks.length); i++) {
+        const b = result.bids[i];
+        const a = result.asks[i];
+        out(`${b ? `${b.px} / ${b.sz} / ${b.n}` : "-"} | ${a ? `${a.px} / ${a.sz} / ${a.n}` : "-"}`);
+      }
+      out(`Spread ${result.spreadPx ?? "-"} (${result.spreadBps ?? "-"} bps); mid ${result.midPx ?? "-"}`);
+    } else {
+      out(`${safeText(result.coin)} ${result.interval}: TIME  OPEN  HIGH  LOW  CLOSE  BASE VOLUME  TRADES`);
+      for (const c of result.candles)
+        out(`${new Date(c.t).toISOString()}  ${c.o}  ${c.h}  ${c.l}  ${c.c}  ${c.v}  ${c.n}`);
+    }
+    return 0;
+  } catch (error) {
+    if (error instanceof PerpsMarketError) {
+      if (error.code === "PERPS_USAGE") {
+        writeUsageFailure(ctx.deps, error.message, ctx.json);
+        return 2;
+      }
+      const failure = { code: error.code, message: error.message, retryable: error.retryable };
+      writeLocalFailure(ctx.deps, failure, ctx.json);
+      return 1;
+    }
+    return tradingFailure(ctx, error);
+  }
+}
+var perpsMarkets = (argv, ctx) => read(ctx, argv, "markets");
+var perpsMarket = (argv, ctx) => read(ctx, argv, "market");
+var perpsBook = (argv, ctx) => read(ctx, argv, "book");
+var perpsCandles = (argv, ctx) => read(ctx, argv, "candles");
+
 // src/commands/perps-withdraw.ts
 init_args();
 import { randomUUID as randomUUID5 } from "node:crypto";
@@ -74765,7 +75957,7 @@ var USAGE5 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <
 var WITHDRAW_POLL_MS = 10 * 60 * 1000;
 var WITHDRAW_POLL_INTERVAL_MS = 5000;
 var TERMINAL = new Set(["settled", "refunded", "failed"]);
-function usage5(ctx, line) {
+function usage6(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
@@ -74804,7 +75996,7 @@ async function withdrawStatus(ctx, id) {
 async function perpsWithdraw(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !ID_RE.test(args[1]))
-      return usage5(ctx, USAGE5);
+      return usage6(ctx, USAGE5);
     try {
       return await withdrawStatus(ctx, args[1]);
     } catch (error) {
@@ -74812,31 +76004,31 @@ async function perpsWithdraw(args, ctx) {
     }
   }
   if (args.includes("--yes") || args.includes("-y")) {
-    return usage5(ctx, "candle perps withdraw has no --yes: every withdrawal is confirmed at the terminal.");
+    return usage6(ctx, "candle perps withdraw has no --yes: every withdrawal is confirmed at the terminal.");
   }
   const parsed = parseArgs(args, {
     valueFlags: ["--to", "--wallet", "--id", "--keystore"],
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   const [amount] = parsed.positionals;
   const to = parsed.values["--to"];
   if (parsed.positionals.length !== 1 || !amount || to !== "solana" && to !== "hood")
-    return usage5(ctx, USAGE5);
+    return usage6(ctx, USAGE5);
   const amountMicros = parseWithdrawAmount(amount);
   if (amountMicros === null)
-    return usage5(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
+    return usage6(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
   const id = parsed.values["--id"] ?? `withdraw-${randomUUID5()}`;
   if (!ID_RE.test(id))
-    return usage5(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
+    return usage6(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "perps withdraw"))
     return 1;
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
-    return usage5(ctx, resolvedVault.error);
+    return usage6(ctx, resolvedVault.error);
   try {
     const pins = withdrawPins(ctx.deps.env);
     if (pins === null) {
@@ -75204,16 +76396,16 @@ function pluginEnvironment(input) {
   return env;
 }
 function realRunPlugin(path, args, env) {
-  return new Promise((resolve2) => {
+  return new Promise((resolve3) => {
     let child;
     try {
       child = spawn2(path, args, { stdio: "inherit", env });
     } catch {
-      resolve2(1);
+      resolve3(1);
       return;
     }
-    child.on("error", () => resolve2(1));
-    child.on("close", (code) => resolve2(code ?? 1));
+    child.on("error", () => resolve3(1));
+    child.on("close", (code) => resolve3(code ?? 1));
   });
 }
 function pluginInvocation(argv, env, isBuiltIn) {
@@ -75272,20 +76464,20 @@ async function writeSecretNames(deps, profile, names) {
   else
     await deps.updateProfile(profile, { secretNames: sorted });
 }
-function usage6(ctx, line) {
+function usage7(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
 async function secretsSet(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage6(ctx, parsed.error);
+    return usage7(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage6(ctx, "Usage: candle secrets set <name>");
+    return usage7(ctx, "Usage: candle secrets set <name>");
   const name2 = canonicalSecretName(raw);
   if (name2 === undefined) {
-    return usage6(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage7(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
     writeLocalFailure(ctx.deps, {
@@ -75297,7 +76489,7 @@ async function secretsSet(args, ctx) {
   }
   const value = await ctx.deps.promptSecret(`Value for ${name2} (input hidden): `);
   if (value.length === 0)
-    return usage6(ctx, "An empty value was typed; nothing was stored.");
+    return usage7(ctx, "An empty value was typed; nothing was stored.");
   try {
     await ctx.deps.secretsStore.set(secretRef(ctx.profile, name2), value);
   } catch (error) {
@@ -75317,9 +76509,9 @@ async function secretsSet(args, ctx) {
 async function secretsList(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage6(ctx, parsed.error);
+    return usage7(ctx, parsed.error);
   if (parsed.positionals.length > 0)
-    return usage6(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+    return usage7(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   const names = await storedSecretNames(ctx.deps, ctx.profile);
   if (ctx.json) {
     ctx.deps.stdout.write(`${JSON.stringify({ ok: true, names, backend: ctx.deps.backend })}
@@ -75338,13 +76530,13 @@ async function secretsList(args, ctx) {
 async function secretsRemove(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage6(ctx, parsed.error);
+    return usage7(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage6(ctx, "Usage: candle secrets remove <name>");
+    return usage7(ctx, "Usage: candle secrets remove <name>");
   const name2 = canonicalSecretName(raw);
   if (name2 === undefined) {
-    return usage6(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage7(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   await ctx.deps.secretsStore.delete(secretRef(ctx.profile, name2));
   const names = await storedSecretNames(ctx.deps, ctx.profile);
@@ -76073,10 +77265,10 @@ async function portfolio(args, ctx) {
           wanted.add(token.mint);
       }
       const missing = [...wanted].filter((mint) => prices[mint] === undefined);
-      for (let at = 0;at < missing.length; at += CHUNK) {
+      for (let at2 = 0;at2 < missing.length; at2 += CHUNK) {
         const priced = await apiRequest("/api/v1/agent/prices", {
           method: "POST",
-          body: { mints: missing.slice(at, at + CHUNK) },
+          body: { mints: missing.slice(at2, at2 + CHUNK) },
           auth: "key",
           credentials: { apiKey },
           apiUrl: ctx.apiUrl,
@@ -76128,19 +77320,19 @@ async function portfolio(args, ctx) {
       lpOf(position.wallet).positions.push(lpRow(position, prices));
     for (const unread of lpSection?.unreadable ?? [])
       lpOf(unread.wallet).unread.push(unread.position);
-    const wallet = (chain2, address, read, extra) => {
+    const wallet = (chain2, address, read2, extra) => {
       const lp2 = chain2 === "solana" && lpSection ? lpOf(address) : undefined;
       return {
         chain: chain2,
         address,
         ...extra,
-        holdings: read.holdings,
-        ...read.unread.length > 0 ? { unread: read.unread } : {},
-        ...read.truncated ? { truncated: true } : {},
+        holdings: read2.holdings,
+        ...read2.unread.length > 0 ? { unread: read2.unread } : {},
+        ...read2.truncated ? { truncated: true } : {},
         ...lp2 ? { lpPositions: lp2.positions } : {},
         ...lp2 && lp2.unread.length > 0 ? { lpUnread: lp2.unread } : {},
-        valueUsd: (read.holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0) + (lp2?.positions ?? []).reduce((sum, p) => sum + (p.valueUsd ?? 0), 0),
-        unpriced: (read.holdings ?? []).filter((h) => h.priceUsd === null).length + (lp2?.positions ?? []).filter((p) => p.valueUsd === null).length
+        valueUsd: (read2.holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0) + (lp2?.positions ?? []).reduce((sum, p) => sum + (p.valueUsd ?? 0), 0),
+        unpriced: (read2.holdings ?? []).filter((h) => h.priceUsd === null).length + (lp2?.positions ?? []).filter((p) => p.valueUsd === null).length
       };
     };
     const subtotals = (wallets2) => Object.fromEntries(chains.map((chain2) => {
@@ -76153,9 +77345,9 @@ async function portfolio(args, ctx) {
         }
       ];
     }));
-    const group = (name2, wallets2, read, reason) => ({
+    const group = (name2, wallets2, read2, reason) => ({
       group: name2,
-      read,
+      read: read2,
       ...reason !== undefined ? { reason } : {},
       wallets: wallets2,
       valueUsd: wallets2.reduce((sum, w) => sum + w.valueUsd, 0),
@@ -76170,13 +77362,13 @@ async function portfolio(args, ctx) {
           role: entry.role
         })),
         ...(evmEntries ?? []).map((entry) => {
-          const read = evmBalances?.byAddress.get(entry.address);
-          return wallet("hood", entry.address, hoodHoldings(read && {
-            wei: read.wei === null ? null : read.wei.toString(),
-            tokens: read.usdg === null ? null : read.usdg > 0n ? [
+          const read2 = evmBalances?.byAddress.get(entry.address);
+          return wallet("hood", entry.address, hoodHoldings(read2 && {
+            wei: read2.wei === null ? null : read2.wei.toString(),
+            tokens: read2.usdg === null ? null : read2.usdg > 0n ? [
               {
                 mint: HOOD_USDG,
-                amountRaw: read.usdg.toString(),
+                amountRaw: read2.usdg.toString(),
                 decimals: HOOD_USDG_DECIMALS,
                 symbol: "USDG"
               }
@@ -76205,10 +77397,10 @@ async function portfolio(args, ctx) {
       solana: showSolana ? [...vaultRead?.unavailable ?? [], ...fromCandle.unavailable ?? []] : [],
       hood: [...evmBalances?.unavailable ?? [], ...candleHood?.unavailable ?? []]
     };
-    const unavailable = chains.flatMap((chain2) => unavailableByChain[chain2]);
+    const unavailable2 = chains.flatMap((chain2) => unavailableByChain[chain2]);
     const lpUnread = (lpSection?.unreadable ?? []).length;
     const listStatus = walletListStatus(answered);
-    const shownUnread = unavailable.length > 0 || lpUnread > 0;
+    const shownUnread = unavailable2.length > 0 || lpUnread > 0;
     const listNote = listStatus === "cut-off" ? "cut-off" : listStatus === "unknown" && !shownUnread ? "unknown" : null;
     const complete = listNote === null && !shownUnread;
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0);
@@ -76259,7 +77451,7 @@ async function portfolio(args, ctx) {
         totalUsd,
         unpriced,
         complete,
-        unavailable,
+        unavailable: unavailable2,
         unavailableByChain: Object.fromEntries(chains.map((chain2) => [chain2, unavailableByChain[chain2]])),
         rpcHost: rpcHost ?? null,
         ...evmHost !== undefined ? { evmRpcHost: evmHost } : {},
@@ -76373,7 +77565,7 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
       await Promise.all(Array.from({ length: Math.min(EVM_READS_IN_FLIGHT, unique.length) }, async () => {
         while (next < unique.length) {
           const address = unique[next++];
-          const read = async (call) => {
+          const read2 = async (call) => {
             try {
               return await call();
             } catch (error) {
@@ -76381,16 +77573,16 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
               return null;
             }
           };
-          const wei = await read(() => rpc.getBalance(address));
-          const usdg = await read(() => rpc.erc20BalanceOf(HOOD_USDG, address));
+          const wei = await read2(() => rpc.getBalance(address));
+          const usdg = await read2(() => rpc.erc20BalanceOf(HOOD_USDG, address));
           byAddress.set(address, { wei, usdg });
         }
       }));
-      const unavailable = unique.filter((address) => {
-        const read = byAddress.get(address);
-        return read === undefined || read.wei === null || read.usdg === null;
+      const unavailable2 = unique.filter((address) => {
+        const read2 = byAddress.get(address);
+        return read2 === undefined || read2.wei === null || read2.usdg === null;
       });
-      return { byAddress, unavailable, ...failure === undefined ? {} : { failure } };
+      return { byAddress, unavailable: unavailable2, ...failure === undefined ? {} : { failure } };
     }
   };
 }
@@ -76407,8 +77599,8 @@ async function readOwnRpc(addresses, solana, ctx) {
     } else
       failure ??= describeRpcFailure(error);
   };
-  for (let at = 0;at < unique.length; at += CHUNK) {
-    const chunk = unique.slice(at, at + CHUNK);
+  for (let at2 = 0;at2 < unique.length; at2 += CHUNK) {
+    const chunk = unique.slice(at2, at2 + CHUNK);
     if (rateLimited) {
       for (const address of chunk)
         lamports.set(address, null);
@@ -76459,30 +77651,30 @@ async function readOwnRpc(addresses, solana, ctx) {
     }
   }));
   const byAddress = new Map;
-  const unavailable = [];
+  const unavailable2 = [];
   for (const address of unique) {
     const sol = lamports.get(address) ?? null;
     const held = failed.has(address) ? null : [...tokens.get(address)?.values() ?? []];
     byAddress.set(address, { lamports: sol, tokens: held });
     if (sol === null || held === null)
-      unavailable.push(address);
+      unavailable2.push(address);
   }
-  return { byAddress, unavailable, ...failure === undefined ? {} : { failure } };
+  return { byAddress, unavailable: unavailable2, ...failure === undefined ? {} : { failure } };
 }
-function solanaHoldings(read, prices) {
-  if (read === undefined || read.lamports === null && read.tokens === null)
+function solanaHoldings(read2, prices) {
+  if (read2 === undefined || read2.lamports === null && read2.tokens === null)
     return { holdings: null, unread: [] };
   return {
-    holdings: valueHoldings(read, prices),
-    unread: [...read.lamports === null ? ["sol"] : [], ...read.tokens === null ? ["tokens"] : []]
+    holdings: valueHoldings(read2, prices),
+    unread: [...read2.lamports === null ? ["sol"] : [], ...read2.tokens === null ? ["tokens"] : []]
   };
 }
-function valueHoldings(read, prices) {
+function valueHoldings(read2, prices) {
   const raw = [];
-  if (read.lamports !== null && BigInt(read.lamports) > 0n) {
-    raw.push({ mint: SOL_MINT, amountRaw: read.lamports, decimals: 9, program: "native" });
+  if (read2.lamports !== null && BigInt(read2.lamports) > 0n) {
+    raw.push({ mint: SOL_MINT, amountRaw: read2.lamports, decimals: 9, program: "native" });
   }
-  for (const token of read.tokens ?? [])
+  for (const token of read2.tokens ?? [])
     raw.push(token);
   return raw.map((h) => {
     const price = prices[h.mint];
@@ -76499,14 +77691,14 @@ function valueHoldings(read, prices) {
     };
   });
 }
-function hoodHoldings(read, prices, tokensPart) {
-  if (read === undefined || read.wei === null && read.tokens === null)
+function hoodHoldings(read2, prices, tokensPart) {
+  if (read2 === undefined || read2.wei === null && read2.tokens === null)
     return { holdings: null, unread: [] };
   const raw = [];
-  if (read.wei !== null && BigInt(read.wei) > 0n) {
-    raw.push({ mint: HOOD_NATIVE, amountRaw: read.wei, decimals: NATIVE_DECIMALS, program: "native", symbol: "ETH" });
+  if (read2.wei !== null && BigInt(read2.wei) > 0n) {
+    raw.push({ mint: HOOD_NATIVE, amountRaw: read2.wei, decimals: NATIVE_DECIMALS, program: "native", symbol: "ETH" });
   }
-  for (const token of read.tokens ?? []) {
+  for (const token of read2.tokens ?? []) {
     if (!/^\d+$/.test(token.amountRaw) || BigInt(token.amountRaw) === 0n)
       continue;
     raw.push({
@@ -76535,8 +77727,8 @@ function hoodHoldings(read, prices, tokensPart) {
   });
   return {
     holdings: holdings2,
-    unread: [...read.wei === null ? ["eth"] : [], ...read.tokens === null ? [tokensPart] : []],
-    ...read.truncated ? { truncated: true } : {}
+    unread: [...read2.wei === null ? ["eth"] : [], ...read2.tokens === null ? [tokensPart] : []],
+    ...read2.truncated ? { truncated: true } : {}
   };
 }
 function lpRow(position, prices) {
@@ -76647,9 +77839,9 @@ ${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEE
 `);
   }
   const unreadByChain = totals.chains.map((chain2) => [chain2, totals.unavailableByChain[chain2].length]).filter(([, n]) => n > 0);
-  const unavailable = unreadByChain.reduce((sum, [, n]) => sum + n, 0);
-  if (unavailable > 0) {
-    deps.stdout.write(`${unavailable} ${unavailable === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain2, n]) => `${n} on ${CHAIN_NAMES[chain2]}`).join(", ")}). What was not read is marked "not read" and is not in the total.
+  const unavailable2 = unreadByChain.reduce((sum, [, n]) => sum + n, 0);
+  if (unavailable2 > 0) {
+    deps.stdout.write(`${unavailable2} ${unavailable2 === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain2, n]) => `${n} on ${CHAIN_NAMES[chain2]}`).join(", ")}). What was not read is marked "not read" and is not in the total.
 `);
   }
   writeListNote(deps.stdout, totals.listNote);
@@ -77169,8 +78361,8 @@ function displayLines(input) {
       lines.push(`${entry.label.padEnd(11)} SOL unchanged (not a writable account of this transaction)`);
     }
     for (const token of deltas.tokens.filter((delta) => delta.ownerBefore === entry.address || delta.ownerAfter === entry.address)) {
-      const info = mints.get(token.mint);
-      lines.push(`            ${token.mint}: ${formatAmount2(token.before, info?.decimals)} -> ${formatAmount2(token.after, info?.decimals)} (${token.after >= token.before ? "+" : ""}${formatAmount2(token.after - token.before, info?.decimals)}${info?.decimals === undefined ? "" : `, ${info.decimals} dp`}) in ${token.account}`);
+      const info2 = mints.get(token.mint);
+      lines.push(`            ${token.mint}: ${formatAmount2(token.before, info2?.decimals)} -> ${formatAmount2(token.after, info2?.decimals)} (${token.after >= token.before ? "+" : ""}${formatAmount2(token.after - token.before, info2?.decimals)}${info2?.decimals === undefined ? "" : `, ${info2.decimals} dp`}) in ${token.account}`);
     }
   }
   const others = [];
@@ -77184,8 +78376,8 @@ function displayLines(input) {
   for (const token of deltas.tokens) {
     if (signerAddresses.has(token.owner) || token.after <= token.before)
       continue;
-    const info = mints.get(token.mint);
-    others.push(`${token.owner} receives +${formatAmount2(token.after - token.before, info?.decimals)} of ${token.mint} (account ${token.account})`);
+    const info2 = mints.get(token.mint);
+    others.push(`${token.owner} receives +${formatAmount2(token.after - token.before, info2?.decimals)} of ${token.mint} (account ${token.account})`);
   }
   if (others.length === 0 && changes.length === 0)
     lines.push("others      no other account gains a balance in the simulation");
@@ -77195,8 +78387,8 @@ function displayLines(input) {
     lines.push(`receives    ${line}`);
   for (const change of changes)
     lines.push(`CONTROL     ${describeControlChange(change)}`);
-  for (const [mint, info] of mints)
-    for (const risk of info.risks)
+  for (const [mint, info2] of mints)
+    for (const risk of info2.risks)
       lines.push(`warning     ${mint}: ${risk}`);
   if (simulation.result.unitsConsumed !== undefined)
     lines.push(`compute     ${simulation.result.unitsConsumed} units in simulation`);
@@ -77547,7 +78739,7 @@ async function runStake(action, args, ctx) {
     valueFlags: ["--wallet", "--client-stake-id"],
     booleanFlags: ["--yes", ...action === "claim" ? ["--all"] : []]
   });
-  const usage7 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
+  const usage8 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
@@ -77556,7 +78748,7 @@ async function runStake(action, args, ctx) {
   const id = values["--client-stake-id"] ?? `stake-${randomUUID6()}`;
   const all = booleans.has("--all");
   if (!validClientId(id) || id.length > 128 || (action === "positions" ? positionals.length !== 0 : action === "finish" ? positionals.length > 1 : action === "claim" ? all ? positionals.length !== 0 : positionals.length !== 1 : positionals.length !== 1)) {
-    writeUsageFailure(ctx.deps, usage7, ctx.json);
+    writeUsageFailure(ctx.deps, usage8, ctx.json);
     return 2;
   }
   try {
@@ -77800,7 +78992,7 @@ function csvCells(text) {
   return cells;
 }
 function parseRenamePairs(contents) {
-  const lines = contents.split(/\r?\n/).map((text, at) => ({ text, line: at + 1 })).filter(({ text }) => text.trim() !== "" && !/^\s*#/.test(text));
+  const lines = contents.split(/\r?\n/).map((text, at2) => ({ text, line: at2 + 1 })).filter(({ text }) => text.trim() !== "" && !/^\s*#/.test(text));
   const rows = [];
   const findings = [];
   const header = csvCells(lines[0]?.text ?? "")?.map((cell) => cell.trim()) ?? [];
@@ -78196,7 +79388,7 @@ async function teeRename(args, ctx) {
     return serverFailure(ctx, preview, pairs, batch);
   const shown = preview.body;
   const rows = [...shown.renamed ?? [], ...shown.unchanged ?? []].sort((a, b) => a.row - b.row);
-  if (rows.length !== pairs.length || rows.some((row, at) => row.row !== at || row.label !== pairs[at]?.to)) {
+  if (rows.length !== pairs.length || rows.some((row, at2) => row.row !== at2 || row.label !== pairs[at2]?.to)) {
     writeLocalFailure(deps, {
       code: "TEE_RENAME_PREVIEW_INVALID",
       message: "The API's preview did not answer every row; nothing was changed."
@@ -78421,44 +79613,44 @@ async function transfer(args, ctx) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
   }
-  const flags = parsed.values;
-  const asset = flags["--asset"]?.toUpperCase();
-  if (parsed.positionals.length !== 0 || !flags["--to"] || !flags["--amount"] || [flags["--asset"], flags["--mint"], flags["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags["--mint"] !== undefined && !BASE58_ADDRESS.test(flags["--mint"]) || flags["--token"] !== undefined && !checkEvmAddress(flags["--token"]).ok) {
+  const flags2 = parsed.values;
+  const asset = flags2["--asset"]?.toUpperCase();
+  if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok) {
     writeUsageFailure(ctx.deps, USAGE7, ctx.json);
     return 2;
   }
-  const to = flags["--to"];
-  const isMax = flags["--amount"] === "max";
+  const to = flags2["--to"];
+  const isMax = flags2["--amount"] === "max";
   try {
-    const chain2 = flags["--token"] !== undefined || asset !== undefined && HOOD_BASES[asset] ? "hood" : "solana";
-    const named = walletNameChain(flags["--wallet"] ?? "");
+    const chain2 = flags2["--token"] !== undefined || asset !== undefined && HOOD_BASES[asset] ? "hood" : "solana";
+    const named = walletNameChain(flags2["--wallet"] ?? "");
     if (named !== undefined && named !== chain2)
-      throw chainMismatch(`--wallet ${safeText(flags["--wallet"])}`, named, chain2);
+      throw chainMismatch(`--wallet ${safeText(flags2["--wallet"])}`, named, chain2);
     const toNamed = walletNameChain(to);
     if (toNamed !== undefined && toNamed !== chain2)
       throw new TradingError("CHAIN_MISMATCH", `--to ${safeText(to)} is a Hood address and ${asset ?? "this mint"} is on Solana; a transfer stays on one chain. Nothing was built.`);
     if (chain2 === "hood")
-      return await hoodTransfer(ctx, { flags, asset, to, isMax, yes: parsed.booleans.has("--yes") });
+      return await hoodTransfer(ctx, { flags: flags2, asset, to, isMax, yes: parsed.booleans.has("--yes") });
     if (!isMax)
-      rawAmount(flags["--amount"], 18);
+      rawAmount(flags2["--amount"], 18);
     const key = await tradingKey(ctx);
-    const payer = await tradingPayer(ctx, key, flags["--wallet"], "transfer:write");
+    const payer = await tradingPayer(ctx, key, flags2["--wallet"], "transfer:write");
     if (payer.kind === "embedded")
       throw new TradingError("PAYER_UNSUPPORTED", "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a TEE wallet with --wallet.");
     if (!payer.scopes.includes("transfer:bound"))
       throw new TradingError("SCOPE_MISSING", `Moving funds out of a TEE wallet needs a Withdraw key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access withdraw. Or mint one with: candle keys create --access withdraw, then bind the wallet to it with: candle tee rebind`);
     const wallet = payer.wallet;
     const destination = await resolveDestination(ctx, key, wallet, to);
-    const label = asset ?? flags["--mint"];
-    const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
+    const label = asset ?? flags2["--mint"];
+    const solana = lazySolanaClient(ctx, flags2["--rpc-url"]);
     let amountRaw;
     if (isMax)
       amountRaw = "max";
     else {
-      const decimals = asset ? BASES[asset]?.decimals ?? 9 : await decimalsFor(ctx, flags["--mint"], solana);
-      amountRaw = rawAmount(flags["--amount"], decimals);
+      const decimals = asset ? BASES[asset]?.decimals ?? 9 : await decimalsFor(ctx, flags2["--mint"], solana);
+      amountRaw = rawAmount(flags2["--amount"], decimals);
     }
-    const amountText2 = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`;
+    const amountText2 = isMax ? `the full spendable balance of ${label}` : `${flags2["--amount"]} ${label}`;
     const confirmed = await confirmTransfer(ctx, [
       `Transfer ${amountText2} from ${wallet.address} (${wallet.id}) to ${describeDestination(destination)}`,
       destination.kind === "vault" ? "Destination: this wallet's own vault, pinned when it was imported." : destination.kind === "linked" ? "Destination: a linked wallet on this account. Candle allows it only if you linked it while signed in or marked it trusted, and the amount counts against this key's spend caps." : "Destination: an address Candle will classify at build; from a TEE wallet only its vault or a trusted linked wallet is allowed."
@@ -78468,7 +79660,7 @@ async function transfer(args, ctx) {
     const built = await request(ctx, key, "/api/v1/agent/transfer/build", {
       walletId: wallet.id,
       chain: "solana",
-      ...asset ? { asset } : { mint: flags["--mint"] },
+      ...asset ? { asset } : { mint: flags2["--mint"] },
       amountRaw,
       to: destination.address
     });
@@ -78487,7 +79679,7 @@ async function transfer(args, ctx) {
     const reader = await solana();
     const problem = await tradingRead(ctx, reader, () => solanaSpendProblem(unsigned[0], wallet.address, reader.rpc, {
       kind: "transfer",
-      asset: asset === undefined ? flags["--mint"] : asset === "SOL" ? "SOL" : BASES[asset]?.mint ?? asset,
+      asset: asset === undefined ? flags2["--mint"] : asset === "SOL" ? "SOL" : BASES[asset]?.mint ?? asset,
       amountRaw: BigInt(builtAmount),
       recipient: destination.address
     }));
@@ -78522,23 +79714,23 @@ function transferLegMoves(leg, expected) {
   return decoded !== undefined && sameEvmAddress(decoded.recipient, expected.to) && decoded.amount.toString() === expected.amountRaw;
 }
 async function hoodTransfer(ctx, args) {
-  const { flags, asset, to, isMax } = args;
-  const checked = flags["--token"] === undefined ? undefined : checkEvmAddress(flags["--token"]);
+  const { flags: flags2, asset, to, isMax } = args;
+  const checked = flags2["--token"] === undefined ? undefined : checkEvmAddress(flags2["--token"]);
   const tokenAddress = asset !== undefined ? HOOD_BASES[asset]?.address ?? null : checked?.ok ? checked.address : null;
   const label = asset ?? tokenAddress;
   if (!isMax)
-    rawAmount(flags["--amount"], 18);
+    rawAmount(flags2["--amount"], 18);
   const key = await tradingKey(ctx);
-  const payer = await tradingPayer(ctx, key, flags["--wallet"], "transfer:write", "hood");
+  const payer = await tradingPayer(ctx, key, flags2["--wallet"], "transfer:write", "hood");
   if (payer.kind === "embedded")
     throw new TradingError("PAYER_UNSUPPORTED", "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a Hood TEE wallet with --wallet.");
   if (!payer.scopes.includes("transfer:bound"))
     throw new TradingError("SCOPE_MISSING", `Moving funds out of a TEE wallet needs a Withdraw key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access withdraw. Or mint one with: candle keys create --access withdraw, then bind the wallet to it with: candle tee rebind`);
   const wallet = payer.wallet;
   const destination = await resolveDestination(ctx, key, wallet, to, "hood");
-  const decimals = asset ? HOOD_BASES[asset]?.decimals ?? 18 : await hoodDecimals({ chain: "hood", asset: tokenAddress }, lazyEvmRpc(ctx, flags["--rpc-url"]));
-  const requested = isMax ? "max" : rawAmount(flags["--amount"], decimals);
-  const amountText2 = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`;
+  const decimals = asset ? HOOD_BASES[asset]?.decimals ?? 18 : await hoodDecimals({ chain: "hood", asset: tokenAddress }, lazyEvmRpc(ctx, flags2["--rpc-url"]));
+  const requested = isMax ? "max" : rawAmount(flags2["--amount"], decimals);
+  const amountText2 = isMax ? `the full spendable balance of ${label}` : `${flags2["--amount"]} ${label}`;
   const confirmed = await confirmTransfer(ctx, [
     `Transfer ${amountText2} on Hood from ${wallet.address} (${wallet.id}) to ${describeDestination(destination)}`,
     destination.kind === "vault" ? "Destination: this wallet's own vault, pinned when it was imported." : destination.kind === "linked" ? "Destination: a linked wallet on this account. Candle allows it only if you linked it while signed in or marked it trusted, only for ETH or USDG, and the amount counts against this key's spend caps." : "Destination: an address Candle will classify at build; from a TEE wallet only its vault or a trusted linked wallet is allowed.",
@@ -78606,7 +79798,7 @@ import { randomBytes as randomBytes3 } from "node:crypto";
 
 // src/progress.ts
 var FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-var INTERVAL_MS = 80;
+var INTERVAL_MS2 = 80;
 function stepReporter(write, tty) {
   let timer = null;
   let frame = 0;
@@ -78633,7 +79825,7 @@ function stepReporter(write, tty) {
       timer = setInterval(() => {
         write(`\r\x1B[2K${FRAMES[frame % FRAMES.length]} ${current}`);
         frame++;
-      }, INTERVAL_MS);
+      }, INTERVAL_MS2);
       if (typeof timer === "object" && "unref" in timer)
         timer.unref();
     },
@@ -79234,7 +80426,7 @@ async function discard(deps, path) {
 // src/commands/vault-backup.ts
 init_args();
 import { chmod as chmod5, copyFile, mkdir as mkdir6, stat as stat4 } from "node:fs/promises";
-import nodePath, { dirname as dirname8, resolve as resolve2 } from "node:path";
+import nodePath, { dirname as dirname8, resolve as resolve3 } from "node:path";
 init_crypto();
 init_errors2();
 init_evm_record();
@@ -79568,7 +80760,7 @@ function wroteLines(destination, size, mode) {
 }
 function resolveBackupDestination(to, deps) {
   if (to.trim().toLowerCase() !== ICLOUD_SHORTHAND)
-    return { path: resolve2(to) };
+    return { path: resolve3(to) };
   const home = homeDirOf(deps.env);
   return { path: icloudBackupPath(home, deps.now()), requires: icloudDriveDir(home) };
 }
@@ -79647,7 +80839,7 @@ async function vaultVerifyBackup(args, ctx) {
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
-    const target = resolve2(copyPath);
+    const target = resolve3(copyPath);
     const copyRaw = await readVaultRaw(target);
     if (copyRaw === null)
       throw new VaultError("VAULT_MISSING", `No file at ${target}.`, {
@@ -80034,7 +81226,7 @@ init_promote_support();
 init_store();
 init_vault_support();
 import { access as access3, chmod as chmod6, constants as constants4, lstat, writeFile as writeFile5 } from "node:fs/promises";
-import { dirname as dirname9, resolve as resolve3 } from "node:path";
+import { dirname as dirname9, resolve as resolve4 } from "node:path";
 async function vaultExportKey(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--to"],
@@ -80054,7 +81246,7 @@ async function vaultExportKey(args, ctx) {
     return 1;
   if (!requireTty(ctx, "vault export-key"))
     return 1;
-  const destination = resolve3(to);
+  const destination = resolve4(to);
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
     return usage(ctx, resolvedVault.error);
@@ -80135,8 +81327,8 @@ async function markEverExported(vault, entry, ctx) {
 }
 async function assertExportTargetWritable(destination) {
   try {
-    const info = await lstat(destination);
-    if (info.isSymbolicLink()) {
+    const info2 = await lstat(destination);
+    if (info2.isSymbolicLink()) {
       throw new VaultError("EXPORT_TARGET_SYMLINK", `${destination} is a symlink; this CLI refuses to write a private key through one.`, { suggestion: "Nothing was written. Choose a path that does not exist yet." });
     }
     throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite an export.`, { suggestion: "Nothing was written. Choose a path that does not exist yet." });
@@ -80497,8 +81689,8 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
   const envelopeId = freshEnvelopeId();
   const vaultId = file.vaultId;
   const keysInHeader = file.envelopes.filter(isCtap2Envelope);
-  const { helperPath, info } = await listSecurityKeys(deps, { vaultId, envelopeId });
-  assertHelperExcludeList(info, helperPath, keysInHeader.length);
+  const { helperPath, info: info2 } = await listSecurityKeys(deps, { vaultId, envelopeId });
+  assertHelperExcludeList(info2, helperPath, keysInHeader.length);
   const attached = keysInHeader.length > 0 ? await probeAttachedKeys(deps, { vaultId, envelopes: keysInHeader }) : undefined;
   const excludeCountNow = keysInHeader.length;
   const addingLine = (device) => deps.stderr.write(`Adding: ${device.product || "security key"} (--device ${device.deviceId}), a different key from the one that opened the vault.
@@ -80527,7 +81719,7 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
       }
       if (chosen.kind !== "security-key")
         return;
-      const plan = planDevices(ctx, chosen.envelope, info.devices, attached);
+      const plan = planDevices(ctx, chosen.envelope, info2.devices, attached);
       if (plan.enrolling !== undefined) {
         refuseIfEnrolled(plan.enrolling, attached);
         assertDeviceServesFactor(plan.enrolling);
@@ -80915,7 +82107,7 @@ async function createVault(request2, clock) {
   if (indexRequiresVersion4(seedIndex)) {
     orphaned = await moveAsideOrphanRecord(request2.path, {
       now: clock.now,
-      sleep: clock.sleep ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms)))
+      sleep: clock.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)))
     });
   }
   const dek = freshDek();
@@ -81043,8 +82235,8 @@ Anyone who reads them can move every derived key's funds.
 `);
     return 1;
   }
-  const at = new Date(deps.now()).toISOString();
-  const written = await commitVault(vault, { index: { ...vault.index, hd: { ...vault.index.hd, rootExported: true, rootExportedAt: at } } }, deps);
+  const at2 = new Date(deps.now()).toISOString();
+  const written = await commitVault(vault, { index: { ...vault.index, hd: { ...vault.index.hd, rootExported: true, rootExportedAt: at2 } } }, deps);
   const entropy = await decryptRoot(written);
   let words;
   try {
@@ -81572,10 +82764,10 @@ init_solana_lite();
 init_token_2022();
 init_errors2();
 var USDC_MINT2 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-function decimalToRaw2(decimal2, decimals) {
-  if (!/^\d+(\.\d+)?$/.test(decimal2))
+function decimalToRaw2(decimal3, decimals) {
+  if (!/^\d+(\.\d+)?$/.test(decimal3))
     return null;
-  const [whole, frac = ""] = decimal2.split(".");
+  const [whole, frac = ""] = decimal3.split(".");
   if (frac.length > decimals)
     return null;
   return BigInt((whole ?? "0") + frac.padEnd(decimals, "0"));
@@ -82487,13 +83679,13 @@ function formatSol3(lamports) {
 async function readLamports(addresses, solana, ctx) {
   const { rpc } = solana;
   const lamports = new Map;
-  const unavailable = [];
+  const unavailable2 = [];
   let failure;
   let rateLimited = false;
-  for (let at = 0;at < addresses.length; at += CHUNK2) {
-    const chunk = addresses.slice(at, at + CHUNK2);
+  for (let at2 = 0;at2 < addresses.length; at2 += CHUNK2) {
+    const chunk = addresses.slice(at2, at2 + CHUNK2);
     if (rateLimited) {
-      unavailable.push(...chunk);
+      unavailable2.push(...chunk);
       continue;
     }
     try {
@@ -82501,7 +83693,7 @@ async function readLamports(addresses, solana, ctx) {
       for (const [i, address] of chunk.entries())
         lamports.set(address, accounts[i]?.lamports ?? 0n);
     } catch (error) {
-      unavailable.push(...chunk);
+      unavailable2.push(...chunk);
       if (isRateLimited(error)) {
         rateLimited = true;
         failure ??= rateLimitedReadFailure(ctx, error);
@@ -82509,11 +83701,11 @@ async function readLamports(addresses, solana, ctx) {
         failure ??= describeRpcFailure(error);
     }
   }
-  return { lamports, unavailable, ...failure === undefined ? {} : { failure } };
+  return { lamports, unavailable: unavailable2, ...failure === undefined ? {} : { failure } };
 }
 async function readEvmBalances(addresses, rpcUrl, fetchFn) {
   const rpc = createEvmRpc(rpcUrl, fetchFn);
-  const read = {
+  const read2 = {
     host: rpcHostOf2(rpcUrl),
     chainId: undefined,
     requests: 0,
@@ -82522,30 +83714,30 @@ async function readEvmBalances(addresses, rpcUrl, fetchFn) {
     unavailable: []
   };
   try {
-    read.requests += 1;
-    read.chainId = await rpc.chainId();
+    read2.requests += 1;
+    read2.chainId = await rpc.chainId();
   } catch (error) {
-    read.unavailable.push(...addresses);
-    read.failure = error instanceof Error ? error.message : String(error);
-    return read;
+    read2.unavailable.push(...addresses);
+    read2.failure = error instanceof Error ? error.message : String(error);
+    return read2;
   }
-  const hood = read.chainId === BigInt(HOOD_CHAIN_ID);
+  const hood = read2.chainId === BigInt(HOOD_CHAIN_ID);
   for (const address of addresses) {
     try {
-      read.requests += 1;
-      read.wei.set(address, await rpc.getBalance(address));
+      read2.requests += 1;
+      read2.wei.set(address, await rpc.getBalance(address));
       if (hood) {
-        read.requests += 1;
-        read.usdg.set(address, await rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, address));
+        read2.requests += 1;
+        read2.usdg.set(address, await rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, address));
       }
     } catch (error) {
-      read.wei.delete(address);
-      read.usdg.delete(address);
-      read.unavailable.push(address);
-      read.failure ??= error instanceof Error ? error.message : String(error);
+      read2.wei.delete(address);
+      read2.usdg.delete(address);
+      read2.unavailable.push(address);
+      read2.failure ??= error instanceof Error ? error.message : String(error);
     }
   }
-  return read;
+  return read2;
 }
 function evmRequestsPlanned(count2) {
   return `${1 + count2} to ${1 + 2 * count2}`;
@@ -82604,18 +83796,18 @@ async function vaultList(args, ctx) {
 `);
     }
     let lamports = new Map;
-    let unavailable = [];
+    let unavailable2 = [];
     let failure;
     if (balances && solana.length > 0 && solanaClient !== undefined) {
       const outcome = await readLamports(solana.map((entry) => entry.address), solanaClient, ctx);
       lamports = outcome.lamports;
-      unavailable = outcome.unavailable;
+      unavailable2 = outcome.unavailable;
       failure = outcome.failure;
     }
-    const solanaComplete = unavailable.length === 0;
+    const solanaComplete = unavailable2.length === 0;
     const totalLamports = [...lamports.values()].reduce((sum, value) => sum + value, 0n);
     if (!solanaComplete) {
-      deps.stderr.write(`${unavailable.length} ${unavailable.length === 1 ? "address" : "addresses"} could not be read: ${failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
+      deps.stderr.write(`${unavailable2.length} ${unavailable2.length === 1 ? "address" : "addresses"} could not be read: ${failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
 `);
     }
     const evm = balances ? matched.filter((entry) => entry.chain === "evm") : [];
@@ -82656,7 +83848,7 @@ async function vaultList(args, ctx) {
             requests,
             complete: solanaComplete,
             totalLamports: totalLamports.toString(),
-            unavailable
+            unavailable: unavailable2
           }
         } : {},
         ...evmRead2 !== undefined ? {
@@ -82711,7 +83903,7 @@ ${renderTable(headers, rows)}
       deps.stdout.write(solanaComplete ? `
 total  ${formatSol3(totalLamports)} SOL across ${solana.length} keys
 ` : `
-total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable.length} of ${solana.length} keys read
+total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable2.length} of ${solana.length} keys read
 `);
     }
     if (evmRead2 !== undefined) {
@@ -83398,12 +84590,12 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
   });
 }
 async function refuseWithoutRoom(ctx) {
-  const read = await readAccountRoom(ctx);
-  if (!read.ok) {
-    ctx.deps.stderr.write(unreadableRoomLine(read.reason));
+  const read2 = await readAccountRoom(ctx);
+  if (!read2.ok) {
+    ctx.deps.stderr.write(unreadableRoomLine(read2.reason));
     return;
   }
-  const refusal2 = singleRoomRefusal(read.room);
+  const refusal2 = singleRoomRefusal(read2.room);
   if (refusal2 !== null)
     throw refusal2;
 }
@@ -83890,10 +85082,10 @@ function parsePairsFile(contents, opts) {
   const findings = [];
   const lines = contents.split(/\r?\n/);
   const meaningful = [];
-  for (const [at, raw] of lines.entries()) {
+  for (const [at2, raw] of lines.entries()) {
     if (raw.trim().length === 0 || COMMENT.test(raw))
       continue;
-    meaningful.push({ line: at + 1, text: raw });
+    meaningful.push({ line: at2 + 1, text: raw });
   }
   const first = meaningful[0];
   if (first === undefined) {
@@ -83907,11 +85099,11 @@ function parsePairsFile(contents, opts) {
   const namesSweepTo = headerCells.includes("sweep_to");
   if (namesLabel && namesSweepTo) {
     format = "csv";
-    const at = (name2) => headerCells.indexOf(name2);
-    const labelAt = at("label");
-    const sweepAt = at("sweep_to");
-    const orderAt = at("order");
-    const valueAt = at("value_usd");
+    const at2 = (name2) => headerCells.indexOf(name2);
+    const labelAt = at2("label");
+    const sweepAt = at2("sweep_to");
+    const orderAt = at2("order");
+    const valueAt = at2("value_usd");
     hasValueUsd = valueAt !== -1;
     for (const { line, text } of meaningful.slice(1)) {
       const cells = text.split(",").map((cell) => cell.trim());
@@ -84431,7 +85623,7 @@ async function vaultPromoteBatch(args, ctx) {
       host = solana.endpoint.host;
       try {
         const accounts = await rpc.getMultipleAccounts(addresses);
-        lamports = new Map(addresses.map((address, at) => [address, accounts[at]?.lamports ?? 0n]));
+        lamports = new Map(addresses.map((address, at2) => [address, accounts[at2]?.lamports ?? 0n]));
         deps.stderr.write(`✓ SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)
 `);
       } catch (error) {
@@ -85215,14 +86407,14 @@ function parseCounts(count2, teeCount, externalCount, rpcUrl, evmCount, evmTeeCo
     return evmTeeParsed;
   const allOmitted = vaultCount === undefined && teeParsed === undefined && externalParsed === undefined;
   const scan = rpcUrl !== undefined;
-  const resolve4 = (value) => {
+  const resolve5 = (value) => {
     if (value !== undefined)
       return value;
     return scan ? undefined : 1;
   };
-  const solanaVault = allOmitted && !scan ? 1 : resolve4(vaultCount);
-  const solanaTee = allOmitted && !scan ? 1 : resolve4(teeParsed);
-  const solanaExternal = allOmitted && !scan ? 1 : resolve4(externalParsed);
+  const solanaVault = allOmitted && !scan ? 1 : resolve5(vaultCount);
+  const solanaTee = allOmitted && !scan ? 1 : resolve5(teeParsed);
+  const solanaExternal = allOmitted && !scan ? 1 : resolve5(externalParsed);
   return {
     solanaVault,
     solanaTee,
@@ -85324,21 +86516,21 @@ async function addressLooksUsed(rpc, address) {
   return rpc.hasSignatureHistory(address);
 }
 async function matchAgainstAccount(ctx, apiKey, derived) {
-  const read = await completeLinkedWalletRead(ctx, apiKey);
-  if (!read.complete) {
+  const read2 = await completeLinkedWalletRead(ctx, apiKey);
+  if (!read2.complete) {
     return {
       matched: [],
       unmatched: [],
-      account: read.account || undefined,
+      account: read2.account || undefined,
       complete: false,
-      reason: read.incompleteReason
+      reason: read2.incompleteReason
     };
   }
   ctx.deps.stdout.write(`
-This profile acts as account ${read.account}.
+This profile acts as account ${read2.account}.
 `);
   const typed = (await ctx.deps.promptLine(`Type the last six characters of that account to confirm before any exposure is recorded: `)).trim();
-  if (typed !== read.account.slice(-6)) {
+  if (typed !== read2.account.slice(-6)) {
     return {
       matched: [],
       unmatched: [],
@@ -85351,7 +86543,7 @@ This profile acts as account ${read.account}.
   const matched = [];
   const unmatched = [];
   const externalListed = [];
-  for (const row of read.rows) {
+  for (const row of read2.rows) {
     if (typeof row.address !== "string")
       continue;
     const entry = derived.byAddress.get(lookupKey(row.address));
@@ -85362,7 +86554,7 @@ This profile acts as account ${read.account}.
     else
       unmatched.push(row.address);
   }
-  return { matched, unmatched, externalListed, account: read.account, complete: true };
+  return { matched, unmatched, externalListed, account: read2.account, complete: true };
 }
 async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
   const now = new Date(ctx.deps.now()).toISOString();
@@ -85603,17 +86795,17 @@ async function vaultReconcileExposure(args, ctx) {
         suggestion: "Run: candle auth login"
       });
     }
-    const read = await completeLinkedWalletRead(ctx, apiKey);
-    if (!read.complete) {
-      throw new VaultError("VAULT_UNREADABLE", `The linked-wallet read did not complete: ${read.incompleteReason}. Nothing was flagged.`, {
+    const read2 = await completeLinkedWalletRead(ctx, apiKey);
+    if (!read2.complete) {
+      throw new VaultError("VAULT_UNREADABLE", `The linked-wallet read did not complete: ${read2.incompleteReason}. Nothing was flagged.`, {
         suggestion: "A partial list that happened to list nothing would read as good news, so no exposure is recorded from an incomplete read."
       });
     }
     const recorded = vault.index.hd.discovery?.account;
-    if (recorded !== undefined && recorded !== "" && recorded !== read.account) {
-      throw new VaultError("EXPOSURE_ACCOUNT_MISMATCH", `This vault recorded its discovery against account ${recorded}, and this profile acts as ${read.account}.`, { suggestion: "Switch profile and run it again. Nothing was flagged." });
+    if (recorded !== undefined && recorded !== "" && recorded !== read2.account) {
+      throw new VaultError("EXPOSURE_ACCOUNT_MISMATCH", `This vault recorded its discovery against account ${recorded}, and this profile acts as ${read2.account}.`, { suggestion: "Switch profile and run it again. Nothing was flagged." });
     }
-    const listed = new Set(read.rows.map((row) => lookupKey(row.address)));
+    const listed = new Set(read2.rows.map((row) => lookupKey(row.address)));
     const entries = vault.index.entries.map((entry) => entry.role !== "external" && listed.has(lookupKey(entry.address)) && !entry.exposure.everRemoteExposed ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } } : entry);
     const added = entries.filter((entry, i) => entry !== vault.index.entries[i]);
     const exposedIndexes = { ...vault.index.hd.exposedIndexes };
@@ -85653,15 +86845,15 @@ async function vaultReconcileExposure(args, ctx) {
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
-        account: read.account,
-        listed: read.rows.length,
+        account: read2.account,
+        listed: read2.rows.length,
         newlyFlagged: added.length,
         cleared: 0,
         exposureReconciledAt: now
       });
       return 0;
     }
-    deps.stdout.write(`Reconciled against account ${read.account}: ${read.rows.length} linked wallet(s) read, ${added.length} vault address(es) newly flagged as remotely exposed.
+    deps.stdout.write(`Reconciled against account ${read2.account}: ${read2.rows.length} linked wallet(s) read, ${added.length} vault address(es) newly flagged as remotely exposed.
 `);
     deps.stdout.write(`Nothing was cleared. This command only ever adds exposure: no read can establish that an address is cold.
 `);
@@ -86497,7 +87689,7 @@ function writeFailure2(ctx, result) {
 }
 async function setAllowLaunch(args, ctx, enabled) {
   const { deps, apiUrl, json } = ctx;
-  const usage7 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
+  const usage8 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
   const command = enabled ? "wallets allow-launch" : "wallets disallow-launch";
   const parsed = parseArgs(args, enabled ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -86505,7 +87697,7 @@ async function setAllowLaunch(args, ctx, enabled) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeUsageFailure(deps, `Name at least one wallet. ${usage7}`, json);
+    writeUsageFailure(deps, `Name at least one wallet. ${usage8}`, json);
     return 2;
   }
   const skipConfirm = !enabled && parsed.booleans.has("--yes");
@@ -86824,7 +88016,7 @@ function trustTable(rows) {
 }
 async function setTrust(args, ctx, trusted) {
   const { deps, apiUrl, json } = ctx;
-  const usage7 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
+  const usage8 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
   const command = trusted ? "wallets trust" : "wallets untrust";
   const parsed = parseArgs(args, trusted ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -86832,7 +88024,7 @@ async function setTrust(args, ctx, trusted) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeUsageFailure(deps, `Name at least one wallet. ${usage7}`, json);
+    writeUsageFailure(deps, `Name at least one wallet. ${usage8}`, json);
     return 2;
   }
   const skipConfirm = !trusted && parsed.booleans.has("--yes");
@@ -87054,49 +88246,49 @@ var RELEASE_POLICY = parseReleasePolicy(release_policy_default);
 // src/index.ts
 function extractGlobalFlags(argv) {
   const rest = [];
-  const flags = { json: false, help: false, version: false, noVerifyAccount: false };
+  const flags2 = { json: false, help: false, version: false, noVerifyAccount: false };
   for (let i = 0;i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--json")
-      flags.json = true;
+      flags2.json = true;
     else if (arg === "--help" || arg === "-h")
-      flags.help = true;
+      flags2.help = true;
     else if (arg === "--version" || arg === "-v")
-      flags.version = true;
+      flags2.version = true;
     else if (arg === "--no-verify-account")
-      flags.noVerifyAccount = true;
+      flags2.noVerifyAccount = true;
     else if (arg === "--api-url") {
       const value = argv[++i];
       if (value === undefined)
         return { error: "--api-url requires a value" };
-      flags.apiUrl = value;
+      flags2.apiUrl = value;
     } else if (arg?.startsWith("--api-url="))
-      flags.apiUrl = arg.slice("--api-url=".length);
+      flags2.apiUrl = arg.slice("--api-url=".length);
     else if (arg === "--profile") {
       const value = argv[++i];
       if (value === undefined)
         return { error: "--profile requires a value" };
-      flags.profile = value;
+      flags2.profile = value;
     } else if (arg?.startsWith("--profile="))
-      flags.profile = arg.slice("--profile=".length);
+      flags2.profile = arg.slice("--profile=".length);
     else if (arg === "--factor") {
       const value = argv[++i];
       if (value === undefined)
         return { error: "--factor requires a value" };
-      flags.vaultFactor = value;
+      flags2.vaultFactor = value;
     } else if (arg?.startsWith("--factor="))
-      flags.vaultFactor = arg.slice("--factor=".length);
+      flags2.vaultFactor = arg.slice("--factor=".length);
     else if (arg === "--device") {
       const value = argv[++i];
       if (value === undefined)
         return { error: "--device requires a value" };
-      flags.vaultDevice = value;
+      flags2.vaultDevice = value;
     } else if (arg?.startsWith("--device="))
-      flags.vaultDevice = arg.slice("--device=".length);
+      flags2.vaultDevice = arg.slice("--device=".length);
     else if (arg !== undefined)
       rest.push(arg);
   }
-  return { rest, flags };
+  return { rest, flags: flags2 };
 }
 var COMMANDS = {
   stake: { bare: stake, subcommands: { add: stakeAdd, remove: stakeRemove, finish: stakeFinish, claim: stakeClaim } },
@@ -87112,6 +88304,10 @@ var COMMANDS = {
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
   perps: {
     subcommands: {
+      markets: perpsMarkets,
+      market: perpsMarket,
+      book: perpsBook,
+      candles: perpsCandles,
       setup: perpsSetup,
       deposit: perpsDeposit,
       open: perpsOpen,
@@ -87271,11 +88467,11 @@ async function runCommand(argv, deps) {
 `);
     return 2;
   }
-  const { rest, flags } = extracted;
+  const { rest, flags: flags2 } = extracted;
   const plugin = pluginInvocation(argv, deps.env, (word4) => ROUTED_COMMANDS.has(canonicalCommand(word4) ?? ""));
   if (plugin !== undefined) {
     const leading = extractGlobalFlags(argv.slice(0, argv.length - plugin.args.length - 1));
-    const pluginFlags = "error" in leading ? flags : leading.flags;
+    const pluginFlags = "error" in leading ? flags2 : leading.flags;
     const config3 = await migrateProfiles(deps);
     const resolution2 = resolveProfileName(config3, { flag: pluginFlags.profile, env: deps.env });
     if (!resolution2.ok) {
@@ -87297,18 +88493,18 @@ async function runCommand(argv, deps) {
     });
   }
   const tokens = rest[0] === "candle" ? rest.slice(1) : rest;
-  if (flags.version) {
+  if (flags2.version) {
     const versionWord = canonicalCommand(tokens[0]);
     if (versionWord !== undefined && ROUTED_COMMANDS.has(versionWord)) {
       const fix = "--version prints the CLI version; to pin a release use: candle update --to <tag>";
-      writeUsageFailure(deps, fix, flags.json);
+      writeUsageFailure(deps, fix, flags2.json);
       return 2;
     }
     deps.stdout.write(`${CLI_VERSION}
 `);
     return 0;
   }
-  if (flags.help) {
+  if (flags2.help) {
     deps.stdout.write(renderTopic(canonicalCommand(tokens[0]) ?? "") ?? renderTopLevel());
     return 0;
   }
@@ -87317,48 +88513,49 @@ async function runCommand(argv, deps) {
   if (cmd === "help" || cmd === "completion") {
     return dispatch(cmd, sub, cmdArgs, tokens, {
       deps,
-      json: flags.json,
-      apiUrl: flags.apiUrl ?? resolveApiUrl(undefined, deps.env),
-      apiUrlFlag: flags.apiUrl,
+      json: flags2.json,
+      apiUrl: flags2.apiUrl ?? resolveApiUrl(undefined, deps.env),
+      apiUrlFlag: flags2.apiUrl,
       profile: undefined,
-      profileFlag: flags.profile,
-      verifyAccount: !flags.noVerifyAccount,
-      vaultFactor: flags.vaultFactor,
-      vaultDevice: flags.vaultDevice
+      profileFlag: flags2.profile,
+      verifyAccount: !flags2.noVerifyAccount,
+      vaultFactor: flags2.vaultFactor,
+      vaultDevice: flags2.vaultDevice
     });
   }
   const config2 = cmd === "doctor" ? await deps.readConfig() : await migrateProfiles(deps);
   const isAuthLogin = cmd === "auth" && sub === "login";
   const isProfileCommand = cmd === "profile";
-  const resolution = isAuthLogin ? resolveProfileNameForLogin(config2, { flag: flags.profile, env: deps.env }) : isProfileCommand ? { ok: true, name: undefined } : resolveProfileName(config2, { flag: flags.profile, env: deps.env });
+  const resolution = isAuthLogin ? resolveProfileNameForLogin(config2, { flag: flags2.profile, env: deps.env }) : isProfileCommand ? { ok: true, name: undefined } : resolveProfileName(config2, { flag: flags2.profile, env: deps.env });
   if (!resolution.ok) {
     if (isAuthLogin) {
-      writeUsageFailure(deps, resolution.message, flags.json);
+      writeUsageFailure(deps, resolution.message, flags2.json);
       return 2;
     }
-    writeLocalFailure(deps, { code: "PROFILE_UNRESOLVED", ...splitFix(resolution.message) }, flags.json);
+    writeLocalFailure(deps, { code: "PROFILE_UNRESOLVED", ...splitFix(resolution.message) }, flags2.json);
     return 1;
   }
   const profile = resolution.name;
   const profileApiUrl = profile ? config2.profiles?.[profile]?.apiUrl?.trim() || config2.apiUrl : config2.apiUrl;
-  const apiUrl = flags.apiUrl ?? resolveApiUrl(profileApiUrl, deps.env);
+  const apiUrl = flags2.apiUrl ?? resolveApiUrl(profileApiUrl, deps.env);
   const ctx = {
     deps,
-    json: flags.json,
+    json: flags2.json,
     apiUrl,
-    apiUrlFlag: flags.apiUrl,
+    apiUrlFlag: flags2.apiUrl,
     profile,
-    profileFlag: flags.profile,
-    verifyAccount: !flags.noVerifyAccount,
-    vaultFactor: flags.vaultFactor,
-    vaultDevice: flags.vaultDevice
+    profileFlag: flags2.profile,
+    verifyAccount: !flags2.noVerifyAccount,
+    vaultFactor: flags2.vaultFactor,
+    vaultDevice: flags2.vaultDevice
   };
   const word3 = cmd ?? "";
-  const actsAsIdentity = word3 !== "mcp" || mcpActsAsIdentity(tokens.slice(1));
+  const publicPerpsRead = word3 === "perps" && ["markets", "market", "book", "candles"].includes(sub ?? "");
+  const actsAsIdentity = !publicPerpsRead && (word3 !== "mcp" || mcpActsAsIdentity(tokens.slice(1)));
   if (ROUTED_COMMANDS.has(word3) && !NEVER_GUARDED.has(word3) && routesToCommand(cmd, sub) && actsAsIdentity) {
     const verdict = await verifyProfileAccount(ctx, config2);
     if (!verdict.ok) {
-      writeLocalFailure(deps, { code: "ACCOUNT_MISMATCH", message: verdict.message, suggestion: verdict.suggestion }, flags.json);
+      writeLocalFailure(deps, { code: "ACCOUNT_MISMATCH", message: verdict.message, suggestion: verdict.suggestion }, flags2.json);
       return 1;
     }
     if (verdict.warning)
@@ -87427,12 +88624,12 @@ function realOpenBrowser(serverUrl) {
 }
 var HELPER_WORKING_DIRECTORY = "/";
 function realSpawnHelper(path, requestLine, opts) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve6) => {
     let child;
     try {
       child = spawn3(path, opts.args ?? [], { stdio: ["pipe", "pipe", "pipe"], cwd: HELPER_WORKING_DIRECTORY });
     } catch (error2) {
-      resolve4({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf4(error2) });
+      resolve6({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf4(error2) });
       return;
     }
     const out = [];
@@ -87445,7 +88642,7 @@ function realSpawnHelper(path, requestLine, opts) {
         return;
       settled = true;
       clearTimeout(timer);
-      resolve4({ stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), ...result });
+      resolve6({ stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), ...result });
     };
     let exited;
     const timer = setTimeout(() => {
@@ -87494,7 +88691,7 @@ async function buildRealDeps() {
       }
     },
     now: () => Date.now(),
-    sleep: (ms) => new Promise((resolve4) => setTimeout(resolve4, ms)),
+    sleep: (ms) => new Promise((resolve6) => setTimeout(resolve6, ms)),
     openBrowser: realOpenBrowser,
     env: process.env,
     nodeVersion: process.versions.node,
@@ -87507,10 +88704,10 @@ async function buildRealDeps() {
     },
     readFile: (path) => readFile10(path, "utf8"),
     readBytes: (path) => readFile10(path),
-    readStdin: () => new Promise((resolve4, reject) => {
+    readStdin: () => new Promise((resolve6, reject) => {
       const chunks = [];
       process.stdin.on("data", (chunk) => chunks.push(chunk));
-      process.stdin.on("end", () => resolve4(new Uint8Array(Buffer.concat(chunks))));
+      process.stdin.on("end", () => resolve6(new Uint8Array(Buffer.concat(chunks))));
       process.stdin.on("error", reject);
       process.stdin.resume();
     }),

@@ -24,3 +24,9 @@ describe("SDK public exports", () => {
     expect(missing).toEqual([])
   })
 })
+
+// AC12: market method signature types come from the shared module, not client.ts.
+test("market read types and reader are exported from the SDK root", () => {
+  const index = readFileSync(join(import.meta.dir, "index.ts"), "utf8")
+  expect(index).toContain('export * from "./hyperliquid-markets"')
+})

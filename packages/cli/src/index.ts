@@ -51,6 +51,7 @@ import {
   perpsPositions,
   perpsSetup,
 } from "./commands/perps"
+import { perpsBook, perpsCandles, perpsMarket, perpsMarkets } from "./commands/perps-markets"
 import { perpsWithdraw } from "./commands/perps-withdraw"
 import { plans } from "./commands/plans"
 import { plugins, runPlugin } from "./commands/plugins"
@@ -198,6 +199,10 @@ const COMMANDS: Record<string, CommandRoute> = {
   // opt-in `perps:write`. Server-built, checked here before signing, relay-signed, submitted here.
   perps: {
     subcommands: {
+      markets: perpsMarkets,
+      market: perpsMarket,
+      book: perpsBook,
+      candles: perpsCandles,
       setup: perpsSetup,
       deposit: perpsDeposit,
       open: perpsOpen,
@@ -636,7 +641,10 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   // parse them, and guessing at them here is how the gate would come to disagree with the command
   // about whether it was going to run.
   const word = cmd ?? ""
-  const actsAsIdentity = word !== "mcp" || mcpActsAsIdentity(tokens.slice(1))
+  // Spec B: these key-required reads expose no account data and act as no profile. The config
+  // read is their only Candle request; an account lookup would violate that public-read contract.
+  const publicPerpsRead = word === "perps" && ["markets", "market", "book", "candles"].includes(sub ?? "")
+  const actsAsIdentity = !publicPerpsRead && (word !== "mcp" || mcpActsAsIdentity(tokens.slice(1)))
   if (ROUTED_COMMANDS.has(word) && !NEVER_GUARDED.has(word) && routesToCommand(cmd, sub) && actsAsIdentity) {
     const verdict = await verifyProfileAccount(ctx, config)
     if (!verdict.ok) {

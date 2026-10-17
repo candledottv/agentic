@@ -76,6 +76,16 @@ import {
   hyperliquidRelayBody,
   verifyPerpsBuild,
 } from "./hyperliquid"
+import {
+  type PerpsBookOptions,
+  type PerpsBookResult,
+  type PerpsCandlesOptions,
+  type PerpsCandlesResult,
+  PerpsMarketReader,
+  type PerpsMarketResult,
+  type PerpsMarketsOptions,
+  type PerpsMarketsResult,
+} from "./hyperliquid-markets"
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl"
 import {
   CANDLE_PERPS_WITHDRAW_PINS,
@@ -3051,6 +3061,7 @@ export class CandleClient {
   private readonly solanaRpcUrl?: string
   private readonly evmRpcUrl?: string
   private readonly hyperliquidNetwork: HyperliquidNetwork
+  private perpsMarketReader?: PerpsMarketReader
   private hyperliquidBuilder?: string
   private readonly perpsWithdrawPins: PerpsWithdrawPins | null
 
@@ -4787,6 +4798,31 @@ export class CandleClient {
   }
 
   // -- Hyperliquid perps (spec 2026-10-01-hyperliquid-perps-tee-design.md) ---
+
+  /** Public Hyperliquid reads on this machine. A Candle key of any scope is required.
+   * The only Candle call is perpsConfig(), once per client; market data is cached for 5 seconds.
+   */
+  private marketReader(): PerpsMarketReader {
+    this.perpsMarketReader ??= new PerpsMarketReader({
+      apiKey: this.apiKey,
+      network: this.hyperliquidNetwork,
+      fetcher: this.fetchImpl,
+      readConfig: () => this.perpsConfig(),
+    })
+    return this.perpsMarketReader
+  }
+  async perpsMarkets(opts: PerpsMarketsOptions = {}): Promise<PerpsMarketsResult> {
+    return this.marketReader().markets(opts)
+  }
+  async perpsMarket(coin: string): Promise<PerpsMarketResult> {
+    return this.marketReader().market(coin)
+  }
+  async perpsBook(coin: string, opts: PerpsBookOptions = {}): Promise<PerpsBookResult> {
+    return this.marketReader().book(coin, opts)
+  }
+  async perpsCandles(coin: string, opts: PerpsCandlesOptions = {}): Promise<PerpsCandlesResult> {
+    return this.marketReader().candles(coin, opts)
+  }
 
   /** The server's perps settings: network, Candle's builder, this key's fee, and its limits. */
   async perpsConfig(): Promise<PerpsConfig> {

@@ -40,6 +40,7 @@
  */
 import { type SignedTradeLeg } from "./errors";
 import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliquid";
+import { type PerpsBookOptions, type PerpsBookResult, type PerpsCandlesOptions, type PerpsCandlesResult, type PerpsMarketResult, type PerpsMarketsOptions, type PerpsMarketsResult } from "./hyperliquid-markets";
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
 import { type PerpsWithdrawAuthorization, type PerpsWithdrawBuild, type PerpsWithdrawPins } from "./hyperliquid-withdraw";
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans";
@@ -2623,6 +2624,7 @@ export declare class CandleClient {
     private readonly solanaRpcUrl?;
     private readonly evmRpcUrl?;
     private readonly hyperliquidNetwork;
+    private perpsMarketReader?;
     private hyperliquidBuilder?;
     private readonly perpsWithdrawPins;
     /**
@@ -3338,6 +3340,14 @@ export declare class CandleClient {
      */
     private signBroadcastAndWaitEvmLeg;
     private broadcastAndWaitEvmLeg;
+    /** Public Hyperliquid reads on this machine. A Candle key of any scope is required.
+     * The only Candle call is perpsConfig(), once per client; market data is cached for 5 seconds.
+     */
+    private marketReader;
+    perpsMarkets(opts?: PerpsMarketsOptions): Promise<PerpsMarketsResult>;
+    perpsMarket(coin: string): Promise<PerpsMarketResult>;
+    perpsBook(coin: string, opts?: PerpsBookOptions): Promise<PerpsBookResult>;
+    perpsCandles(coin: string, opts?: PerpsCandlesOptions): Promise<PerpsCandlesResult>;
     /** The server's perps settings: network, Candle's builder, this key's fee, and its limits. */
     perpsConfig(): Promise<PerpsConfig>;
     /**

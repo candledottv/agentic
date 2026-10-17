@@ -3,6 +3,7 @@ export { CandleClient, CrossOriginRedirectError, perpsDepositProblem } from "./c
 export type { BridgeErrorCode, CandleErrorPayload, CandleRoutingDetail, OperationIds, SelfLaunchFeeOutcome, SelfLaunchOutcomeErrorArgs, SolanaRpcErrorData, } from "./errors";
 export { BRIDGE_ERROR_CODES, CandleApiError, CandleOperationError, isSolanaRpcErrorData, JsonRpcError, operationIds, SelfLaunchOutcomeError, type SignedTradeLeg, TradeLandedFeeLegError, TradeLandedUnconfirmedError, TradeLegOutcomeError, } from "./errors";
 export { CANDLE_HYPERLIQUID_BUILDER_ADDRESS, HYPERLIQUID_ALLOWED_ACTION_TYPES, HYPERLIQUID_EXCHANGE_URLS, type HyperliquidNetwork, type HyperliquidOrderMarket, type HyperliquidTypedData, hyperliquidActionHash, hyperliquidOrderMarket, type PerpsBuildCheck, type PerpsBuildToVerify, type VerifyPerpsBuildOptions, verifyPerpsBuild, } from "./hyperliquid";
+export * from "./hyperliquid-markets";
 export type { HyperliquidPnlFigures, HyperliquidPnlSection, HyperliquidWalletPnl } from "./hyperliquid-pnl";
 export { CANDLE_PERPS_WITHDRAW_PINS, type PerpsWithdrawAuthorization, type PerpsWithdrawBuild, type PerpsWithdrawPins, parseSendAssetAmount, parseWithdrawAmount, relayRecipientProblem, verifyWithdrawMapping, verifyWithdrawSendAsset, type WithdrawCheck, } from "./hyperliquid-withdraw";
 export { KeychainSecretStore } from "./keychain-secret-store";

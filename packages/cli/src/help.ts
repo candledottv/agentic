@@ -351,11 +351,24 @@ export const HELP: Record<string, Topic> = {
   perps: {
     group: "Trade",
     summary:
-      "Hyperliquid perpetuals from your EVM TEE wallet: setup, deposit, withdraw, open, close, cancel, orders, positions, leverage",
+      "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, orders, positions, leverage",
     description:
-      "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section.",
+      "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
+      {
+        invocation: "markets [--sort <volume|oi|funding|change|name>] [--limit <n>] [--all]",
+        description: "List live main-perp markets directly from Hyperliquid; any Candle agent key required",
+      },
+      { invocation: "market <coin>", description: "Market detail, margin tiers, impact prices and precision rules" },
+      {
+        invocation: "book <coin> [--depth <1-20>] [--sig-figs <2-5>]",
+        description: "Live order book, spread and mid, directly from Hyperliquid",
+      },
+      {
+        invocation: "candles <coin> [--interval <i>] [--count <1-5000>] [--end <time>]",
+        description: "OHLCV candles (default 1h, 100); oldest first, directly from Hyperliquid",
+      },
       {
         invocation: "setup [--wallet <tee>]",
         description: "Approve Candle's builder fee once; shows the account's mode and balance",
@@ -387,6 +400,26 @@ export const HELP: Record<string, Topic> = {
       { invocation: "leverage <coin> <x> [--isolated]", description: "Set a market's leverage and margin mode" },
     ],
     flags: [
+      {
+        invocation: "--sort <volume|oi|funding|change|name>",
+        description: "markets: descending metric, ascending name (default volume)",
+      },
+      { invocation: "--limit <1-500>", description: "markets: maximum rows; default all tradeable markets" },
+      {
+        invocation: "--all",
+        description: "markets: include refused markets and reasons; OI caps can still refuse an order",
+      },
+      { invocation: "--depth <1-20>", description: "book: levels per side (default 20)" },
+      { invocation: "--sig-figs <2-5>", description: "book: Hyperliquid price aggregation" },
+      {
+        invocation: "--interval <i>",
+        description: "candles: 1m 3m 5m 15m 30m 1h 2h 4h 8h 12h 1d 3d 1w 1M (default 1h)",
+      },
+      {
+        invocation: "--count <1-5000>",
+        description: "candles: newest count (default 100); 1M window uses 31 days per step",
+      },
+      { invocation: "--end <time>", description: "candles: ISO 8601 or epoch milliseconds, no later than now" },
       {
         invocation: "--wallet <tee>",
         description:
