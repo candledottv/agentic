@@ -624,6 +624,43 @@ function sameValue(a, b) {
   return canonical(a) === canonical(b);
 }
 var EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+var HYPERLIQUID_CLOID_RE = /^0x[0-9a-f]{32}$/;
+var HYPERLIQUID_STANDARD_ACCOUNT_MODES = ["default", "disabled"];
+async function hyperliquidAccountMode(fetcher, network, address) {
+  const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "userAbstraction", user: address.toLowerCase() })
+  });
+  if (!res.ok)
+    throw new Error("Cannot read the account mode from Hyperliquid");
+  let mode;
+  try {
+    mode = JSON.parse(await res.text());
+  } catch {
+    throw new Error("Hyperliquid returned an unreadable account mode");
+  }
+  if (typeof mode !== "string" || mode.length === 0 || mode.length > 64)
+    throw new Error("Hyperliquid returned an unreadable account mode");
+  return mode;
+}
+function perpsSetupStatusProblem(status, expect) {
+  if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(expect.mode))
+    return `the account is in ${expect.mode} mode on Hyperliquid; Candle trades only a standard account`;
+  if (status.network !== expect.network)
+    return `the setup answer is for ${String(status.network)}`;
+  if (typeof status.address !== "string" || status.address.toLowerCase() !== expect.address.toLowerCase())
+    return "the setup answer is for a different wallet";
+  if (status.mode !== expect.mode)
+    return "the setup answer reports a mode Hyperliquid does not";
+  if (status.standardMode !== true)
+    return "the setup answer does not report standard mode";
+  if (typeof status.builder !== "string" || status.builder.toLowerCase() !== expect.builder.toLowerCase())
+    return "the setup answer names a builder that is not Candle's";
+  if (status.ready === true && (typeof status.approvedFeeTenthsBps !== "number" || status.approvedFeeTenthsBps < HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS))
+    return "the setup answer reports ready without Candle's builder approval";
+  return null;
+}
 function checkBuilderField(action, builder) {
   if (!("builder" in action) || action.builder === undefined)
     return null;
@@ -694,6 +731,14 @@ function checkActionIntent(action, intent) {
     const first = list[0];
     if (!first)
       return "missing requested order";
+    if ((method === "open" || method === "close") && p.clientId != null) {
+      const clientId = typeof p.clientId === "string" ? p.clientId.toLowerCase() : null;
+      if (clientId === null || !HYPERLIQUID_CLOID_RE.test(clientId) || first.c !== clientId)
+        return "the order does not carry the requested client order id";
+      const ids = list.map((o) => o.c);
+      if (ids.some((c) => typeof c !== "string" || !HYPERLIQUID_CLOID_RE.test(c)) || new Set(ids).size !== ids.length)
+        return "the order legs do not carry distinct client order ids";
+    }
     const typ = first.t;
     if (!typ?.limit)
       return "requested order is not a limit/IOC order";
@@ -1567,6 +1612,288 @@ function describeRpcEndpoint(url) {
   }
 }
 
+// src/perps-history.ts
+var PERPS_HISTORY_INFO_URLS = {
+  mainnet: "https://api.hyperliquid.xyz/info",
+  testnet: "https://api.hyperliquid-testnet.xyz/info"
+};
+var PERPS_HISTORY_DEFAULT_LIMIT = 100;
+var PERPS_HISTORY_MAX_LIMIT = { fills: 2000, funding: 500 };
+var PERPS_HISTORY_DEFAULT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+var PERPS_HISTORY_REQUEST_BUDGET = 10;
+var PERPS_HISTORY_FILL_RETENTION = 1e4;
+var PERPS_HISTORY_MAX_CURSOR_LENGTH = 200000;
+var PERPS_HISTORY_TIMEOUT_MS = 15000;
+
+class PerpsHistoryError extends Error {
+  code;
+  extra;
+  constructor(code, message, extra = {}) {
+    super(message);
+    this.code = code;
+    this.extra = extra;
+    this.name = "PerpsHistoryError";
+  }
+}
+var RETENTION_TEXT = "Hyperliquid serves only the 10,000 most recent fills for an account; older fills cannot be read here, and this history is not an all-time total.";
+var EVM_ADDRESS_RE3 = /^0x[0-9a-f]{40}$/;
+function isTime(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+function invalid(field, message) {
+  return new PerpsHistoryError("VALIDATION_FAILED", message, { field });
+}
+function unavailable2(message, retryAfterMs) {
+  return new PerpsHistoryError("PERPS_UNAVAILABLE", message, {
+    retryable: true,
+    ...retryAfterMs !== undefined ? { retryAfterMs } : {}
+  });
+}
+function base64UrlEncode(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (const b of bytes)
+    binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function base64UrlDecode(text) {
+  if (!/^[A-Za-z0-9_-]*$/.test(text))
+    throw new Error("not base64url");
+  const padded = text.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - text.length % 4) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0;i < binary.length; i++)
+    bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+function encodeCursor(state) {
+  return `ph1.${base64UrlEncode(JSON.stringify(state))}`;
+}
+function decodeCursor(cursor) {
+  if (cursor.length > PERPS_HISTORY_MAX_CURSOR_LENGTH || !cursor.startsWith("ph1."))
+    throw invalid("cursor", "cursor is not one this client issued");
+  let state;
+  try {
+    state = JSON.parse(base64UrlDecode(cursor.slice(4)));
+  } catch {
+    throw invalid("cursor", "cursor is not one this client issued");
+  }
+  const ok = state !== null && typeof state === "object" && state.v === 1 && (state.k === "fills" || state.k === "funding") && (state.n === "mainnet" || state.n === "testnet") && typeof state.w === "string" && EVM_ADDRESS_RE3.test(state.w) && isTime(state.s) && isTime(state.e) && state.s <= state.e && Number.isSafeInteger(state.l) && state.l >= 1 && state.l <= PERPS_HISTORY_MAX_LIMIT[state.k] && isTime(state.t) && state.t >= state.s && state.t <= state.e && Array.isArray(state.b) && state.b.every((id) => typeof id === "string" && id.length <= 512) && Number.isSafeInteger(state.c) && state.c >= 0;
+  if (!ok)
+    throw invalid("cursor", "cursor is not one this client issued");
+  return state;
+}
+function canonical2(value) {
+  if (value === null || typeof value !== "object")
+    return JSON.stringify(value);
+  if (Array.isArray(value))
+    return `[${value.map(canonical2).join(",")}]`;
+  const record = value;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical2(record[key])}`).join(",")}}`;
+}
+function isDecimalString(value) {
+  return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
+}
+function asFill(raw) {
+  const row = raw;
+  if (!row || typeof row !== "object" || typeof row.coin !== "string" || !isTime(row.time) || !Number.isSafeInteger(row.tid) || !Number.isSafeInteger(row.oid) || !isDecimalString(row.px) || !isDecimalString(row.sz) || typeof row.side !== "string" || !isDecimalString(row.closedPnl) || !isDecimalString(row.fee) || row.builderFee !== undefined && !isDecimalString(row.builderFee))
+    throw unavailable2("Hyperliquid returned a fill this client cannot read");
+  return row;
+}
+function asFunding(raw) {
+  const row = raw;
+  const delta = row?.delta;
+  if (!row || typeof row !== "object" || !isTime(row.time) || typeof row.hash !== "string" || !delta || typeof delta !== "object" || typeof delta.coin !== "string" || !isDecimalString(delta.usdc) || !isDecimalString(delta.fundingRate) || !isDecimalString(delta.szi))
+    throw unavailable2("Hyperliquid returned a funding payment this client cannot read");
+  return row;
+}
+function identity(kind, row) {
+  if (kind === "fills") {
+    const fill = row;
+    return `${fill.coin}|${fill.tid}|${fill.oid}`;
+  }
+  const funding = row;
+  return `${funding.hash}|${funding.time}|${funding.delta.coin}|${canonical2(funding.delta)}`;
+}
+function rowCoin(kind, row) {
+  return kind === "fills" ? row.coin : row.delta.coin;
+}
+async function postInfo(req, body, what) {
+  const controller = typeof AbortController === "function" ? new AbortController : null;
+  const timer = controller ? setTimeout(() => controller.abort(), PERPS_HISTORY_TIMEOUT_MS) : null;
+  let res;
+  try {
+    res = await req.fetch(PERPS_HISTORY_INFO_URLS[req.network], {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      ...controller ? { signal: controller.signal } : {}
+    });
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === "AbortError";
+    throw unavailable2(aborted ? `Hyperliquid did not answer the ${what} read in time; retry shortly` : `Hyperliquid could not be reached for the ${what} read; retry shortly`);
+  } finally {
+    if (timer)
+      clearTimeout(timer);
+  }
+  if (!res.ok) {
+    if (res.status === 429) {
+      const header = res.headers?.get("retry-after") ?? null;
+      const seconds = header !== null && /^[0-9]{1,6}$/.test(header.trim()) ? Number(header.trim()) : undefined;
+      throw unavailable2(`Hyperliquid rate-limited the ${what} read${seconds !== undefined ? `; retry after ${seconds}s` : "; retry shortly"}`, seconds !== undefined ? seconds * 1000 : undefined);
+    }
+    throw unavailable2(`Hyperliquid answered the ${what} read with HTTP ${res.status}; retry shortly`);
+  }
+  try {
+    return JSON.parse(await res.text());
+  } catch {
+    throw unavailable2(`Hyperliquid returned an unreadable ${what} response`);
+  }
+}
+async function mainPerpCoins(req) {
+  let universe;
+  try {
+    universe = (await readHyperliquidMarkets(req.fetch, req.network)).universe;
+  } catch {
+    throw unavailable2("Hyperliquid's market list could not be read; history is not reported without it");
+  }
+  if (universe.length === 0)
+    throw unavailable2("Hyperliquid's market list could not be read; history is not reported without it");
+  return new Set(universe.map((market) => market.name));
+}
+function resolveWindow(req) {
+  const options = req.options ?? {};
+  const kind = req.kind;
+  const address = req.address.toLowerCase();
+  if (!EVM_ADDRESS_RE3.test(address))
+    throw invalid("wallet", "The wallet's Hyperliquid account is not an EVM address");
+  for (const field of ["startTime", "endTime"]) {
+    const value = options[field];
+    if (value !== undefined && !isTime(value))
+      throw invalid(field, `${field} must be a whole, non-negative number of epoch milliseconds`);
+  }
+  const max = PERPS_HISTORY_MAX_LIMIT[kind];
+  if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > max))
+    throw invalid("limit", `limit must be a whole number from 1 to ${max} for ${kind}`);
+  if (options.cursor !== undefined) {
+    if (typeof options.cursor !== "string" || options.cursor.length === 0)
+      throw invalid("cursor", "cursor is not one this client issued");
+    const state = decodeCursor(options.cursor);
+    if (state.k !== kind)
+      throw invalid("cursor", `This cursor pages ${state.k}, not ${kind}`);
+    if (state.n !== req.network)
+      throw invalid("cursor", `This cursor pages ${state.n}, not ${req.network}`);
+    if (state.w !== address)
+      throw invalid("cursor", "This cursor pages another wallet");
+    if (options.startTime !== undefined && options.startTime !== state.s || options.endTime !== undefined && options.endTime !== state.e || options.limit !== undefined && options.limit !== state.l)
+      throw invalid("cursor", "The window or page size changed; start again without a cursor");
+    return { state };
+  }
+  const endTime = options.endTime ?? req.now();
+  const startTime = options.startTime ?? Math.max(0, endTime - PERPS_HISTORY_DEFAULT_WINDOW_MS);
+  if (!isTime(endTime))
+    throw invalid("endTime", "endTime must be epoch milliseconds");
+  if (startTime > endTime)
+    throw invalid("startTime", "startTime must not be after endTime");
+  return {
+    state: {
+      v: 1,
+      k: kind,
+      n: req.network,
+      w: address,
+      s: startTime,
+      e: endTime,
+      l: options.limit ?? PERPS_HISTORY_DEFAULT_LIMIT,
+      t: startTime,
+      b: [],
+      c: 0
+    }
+  };
+}
+async function readPerpsHistoryPage(req) {
+  const { state } = resolveWindow(req);
+  const kind = req.kind;
+  const max = PERPS_HISTORY_MAX_LIMIT[kind];
+  const readAt = req.now();
+  const coins = await mainPerpCoins(req);
+  const page = [];
+  const warnings = [];
+  let t = state.t;
+  let boundary = new Set(state.b);
+  let consumed = state.c;
+  let done = false;
+  let truncated = false;
+  let requests = 0;
+  const stop = (code, message, ends) => {
+    warnings.push({ code, message });
+    if (ends) {
+      done = true;
+      truncated = true;
+    }
+  };
+  walk:
+    while (page.length < state.l && !done) {
+      if (requests >= PERPS_HISTORY_REQUEST_BUDGET) {
+        stop("PERPS_HISTORY_PAGE_BUDGET", `Stopped after ${PERPS_HISTORY_REQUEST_BUDGET} Hyperliquid reads; pass nextCursor to continue`, false);
+        break;
+      }
+      const body = kind === "fills" ? { type: "userFillsByTime", user: state.w, startTime: t, endTime: state.e, aggregateByTime: false } : { type: "userFunding", user: state.w, startTime: t, endTime: state.e };
+      const raw = await postInfo(req, body, kind === "fills" ? "fills" : "funding");
+      requests++;
+      if (!Array.isArray(raw))
+        throw unavailable2(`Hyperliquid returned an unreadable ${kind} response`);
+      const rows = raw.map((r) => kind === "fills" ? asFill(r) : asFunding(r));
+      const keyed = rows.map((row) => ({ row, id: identity(kind, row) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const full = rows.length >= max;
+      const startedAt = t;
+      let previousId = null;
+      for (const { row, id } of keyed) {
+        if (id === previousId)
+          continue;
+        previousId = id;
+        if (row.time < t || row.time > state.e || row.time === t && boundary.has(id))
+          continue;
+        if (page.length >= state.l)
+          break walk;
+        if (row.time > t) {
+          t = row.time;
+          boundary = new Set;
+        }
+        boundary.add(id);
+        consumed++;
+        if (coins.has(rowCoin(kind, row)))
+          page.push(row);
+        if (kind === "fills" && consumed >= PERPS_HISTORY_FILL_RETENTION) {
+          stop("PERPS_HISTORY_RETENTION_LIMIT", "Reached Hyperliquid's 10,000-fill retention across this cursor chain; older fills are not available", true);
+          break walk;
+        }
+      }
+      if (!full) {
+        done = true;
+      } else if (t === startedAt) {
+        stop("PERPS_HISTORY_BOUNDARY_LIMIT", `More than ${max} ${kind === "fills" ? "fills" : "funding rows"} share one millisecond (${t}); coverage stops there`, true);
+      }
+    }
+  if (kind === "fills" && !warnings.some((w) => w.code === "PERPS_HISTORY_RETENTION_LIMIT"))
+    warnings.unshift({ code: "PERPS_HISTORY_RETENTION_LIMIT", message: RETENTION_TEXT });
+  const nextCursor = done ? null : encodeCursor({ ...state, t, b: [...boundary], c: consumed });
+  const envelope = {
+    success: true,
+    walletId: req.walletId,
+    address: state.w,
+    network: state.n,
+    source: "hyperliquid",
+    readAt,
+    startTime: state.s,
+    endTime: state.e,
+    nextCursor,
+    hasMore: nextCursor !== null,
+    truncated,
+    warnings
+  };
+  return kind === "fills" ? { ...envelope, fills: page } : { ...envelope, funding: page };
+}
+
 // src/wallet-import.ts
 import { Chacha20Poly1305 } from "@hpke/chacha20poly1305";
 import { CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
@@ -1653,6 +1980,32 @@ function historyTime(value) {
 }
 var HYPERLIQUID_RELAY_CHAIN_ID = 1337;
 var HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000";
+function perpsClientId(clientId) {
+  if (clientId === undefined)
+    return;
+  const lower = typeof clientId === "string" ? clientId.toLowerCase() : "";
+  if (!HYPERLIQUID_CLOID_RE.test(lower))
+    throw new Error("perps: clientId must be 0x followed by 32 hex digits");
+  return lower;
+}
+function perpsReplayOf(build, walletId, clientId) {
+  const answer = build;
+  if (answer.replayed === true) {
+    if (clientId === undefined || answer.clientId !== clientId || answer.walletId !== walletId)
+      throw new Error("perps: refused a replay that does not name this request's client id and wallet");
+    return {
+      replayed: true,
+      replay: build,
+      build: null,
+      signature: null,
+      submitted: false,
+      exchange: null
+    };
+  }
+  if (clientId !== undefined && (answer.clientId !== clientId || answer.cloid !== clientId))
+    throw new Error("perps: PERPS_CLIENT_ID_UNSUPPORTED: this Candle API did not echo the client order id, so its order could not be deduplicated. Nothing was signed.");
+  return null;
+}
 function perpsDepositProblem(build, params) {
   const same = (a, b) => typeof a === "string" && a.toLowerCase() === b.toLowerCase();
   if (build.walletId !== params.walletId)
@@ -2685,7 +3038,20 @@ class CandleClient {
   }
   async perpsSetup(params) {
     this.requireKey("perpsSetup()");
+    const address = await this.perpsWalletAddress(params.walletId);
+    const builder = await this.perpsBuilder();
+    const mode = await hyperliquidAccountMode(this.fetchImpl, this.hyperliquidNetwork, address);
+    if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
+      throw new Error(`perps: PERPS_ACCOUNT_MODE: the account is in ${mode} mode on Hyperliquid; Candle trades only a standard account. Nothing was requested or signed.`);
     const res = await this.requestJson("POST", "/api/v1/agent/perps/setup", { walletId: params.walletId });
+    const problem = perpsSetupStatusProblem(res, {
+      network: this.hyperliquidNetwork,
+      address,
+      builder,
+      mode
+    });
+    if (problem)
+      throw new Error(`perps: refused this setup answer: ${problem}. Nothing was signed.`);
     const status = {
       walletId: res.walletId,
       address: res.address,
@@ -2705,14 +3071,30 @@ class CandleClient {
   async perpsOpen(params) {
     this.requireKey("perpsOpen()");
     const { walletId, privyWalletId: _p, submit: _s, ...order } = params;
-    const build = await this.requestJson("POST", "/api/v1/agent/perps/open", { walletId, ...order });
-    return this.perpsComplete(build, params, "open");
+    const clientId = perpsClientId(params.clientId);
+    const build = await this.requestJson("POST", "/api/v1/agent/perps/open", {
+      walletId,
+      ...order,
+      ...clientId !== undefined ? { clientId } : {}
+    });
+    const replay = perpsReplayOf(build, walletId, clientId);
+    if (replay)
+      return replay;
+    return this.perpsComplete(build, { ...params, ...clientId ? { clientId } : {} }, "open");
   }
   async perpsClose(params) {
     this.requireKey("perpsClose()");
     const { walletId, privyWalletId: _p, submit: _s, ...close } = params;
-    const build = await this.requestJson("POST", "/api/v1/agent/perps/close", { walletId, ...close });
-    return this.perpsComplete(build, params, "close");
+    const clientId = perpsClientId(params.clientId);
+    const build = await this.requestJson("POST", "/api/v1/agent/perps/close", {
+      walletId,
+      ...close,
+      ...clientId !== undefined ? { clientId } : {}
+    });
+    const replay = perpsReplayOf(build, walletId, clientId);
+    if (replay)
+      return replay;
+    return this.perpsComplete(build, { ...params, ...clientId ? { clientId } : {} }, "close");
   }
   async perpsCancel(params) {
     this.requireKey("perpsCancel()");
@@ -2753,6 +3135,43 @@ class CandleClient {
     if (opts.limit !== undefined)
       params.set("limit", String(opts.limit));
     return this.requestJson("GET", `/api/v1/agent/perps/orders?${params}`);
+  }
+  async perpsFillsPage(walletId, options = {}) {
+    this.requireKey("perpsFillsPage()");
+    return await this.perpsHistoryPage("fills", walletId, options);
+  }
+  async perpsFundingPage(walletId, options = {}) {
+    this.requireKey("perpsFundingPage()");
+    return await this.perpsHistoryPage("funding", walletId, options);
+  }
+  async perpsHistoryPage(kind, walletId, options) {
+    const address = await this.perpsWalletAddress(walletId);
+    return readPerpsHistoryPage({
+      kind,
+      network: this.hyperliquidNetwork,
+      walletId,
+      address,
+      options,
+      fetch: this.fetchImpl,
+      now: Date.now
+    });
+  }
+  async perpsWalletAddress(walletId) {
+    let cursor = null;
+    for (let page = 0;page < 10; page++) {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+      const listed = await this.requestJson("GET", `/api/v1/agent/wallets/trading${query}`);
+      const row = (listed.page ?? []).find((r) => r.id === walletId);
+      if (row) {
+        if (row.chain !== "evm" || !/^0x[0-9a-fA-F]{40}$/.test(row.address))
+          throw new Error(`perps: wallet ${walletId} is not an EVM TEE wallet`);
+        return row.address.toLowerCase();
+      }
+      if (listed.isDone !== false || !listed.continueCursor)
+        break;
+      cursor = listed.continueCursor;
+    }
+    throw new Error(`perps: wallet ${walletId} is not an EVM TEE wallet bound to this key`);
   }
   async perpsFills(walletId) {
     this.requireKey("perpsFills()");
@@ -3557,11 +3976,13 @@ export {
   verifyWebhookSignature,
   verifyPerpsBuild,
   relayRecipientProblem,
+  readPerpsHistoryPage,
   readHyperliquidMarkets,
   planTableRows,
   planTableMarkdown,
   planPromotionLine,
   planLabel,
+  perpsSetupStatusProblem,
   perpsMarketGate,
   perpsDepositProblem,
   perpsCandleWindow,
@@ -3571,6 +3992,7 @@ export {
   isSolanaRpcErrorData,
   hyperliquidOrderMarket,
   hyperliquidActionHash,
+  hyperliquidAccountMode,
   generateSignerKeypair,
   formatPlanBps,
   encryptWalletKeyForImport,
@@ -3580,12 +4002,16 @@ export {
   SelfLaunchOutcomeError,
   PerpsMarketReader,
   PerpsMarketError,
+  PerpsHistoryError,
   PLAN_CAPABILITY_NOTE,
   PLAN_CAPABILITY_LABELS,
+  PERPS_HISTORY_MAX_LIMIT,
+  PERPS_HISTORY_DEFAULT_LIMIT,
   PERPS_CANDLE_INTERVALS,
   KeychainSecretStore,
   JsonRpcError,
   InMemorySecretStore,
+  HYPERLIQUID_STANDARD_ACCOUNT_MODES,
   HYPERLIQUID_EXCHANGE_URLS,
   HYPERLIQUID_ALLOWED_ACTION_TYPES,
   EncryptedFileSecretStore,

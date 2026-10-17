@@ -52,7 +52,16 @@ function build(action: Record<string, unknown>) {
   }
 }
 
-function fake(opts: { build?: unknown; scopes?: string[]; exchange?: unknown; mid?: string } = {}) {
+function fake(
+  opts: {
+    build?: unknown
+    scopes?: string[]
+    exchange?: unknown
+    mid?: string
+    mode?: unknown
+    history?: (body: Record<string, unknown>) => unknown
+  } = {},
+) {
   const calls: { url: string; body?: Record<string, unknown> }[] = []
   const fetch: FetchLike = async (url, init) => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
@@ -60,9 +69,16 @@ function fake(opts: { build?: unknown; scopes?: string[]; exchange?: unknown; mi
     const ok = (value: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(value) })
     if (url === "https://api.hyperliquid.xyz/info") {
       if (body?.type === "meta") return ok({ universe: [{ name: "BTC" }] })
+      if (body?.type === "userAbstraction") return ok(opts.mode ?? "default")
+      if (body?.type === "userFillsByTime" || body?.type === "userFunding") return ok(opts.history?.(body) ?? [])
       if (body?.type === "metaAndAssetCtxs")
         return ok([
-          { universe: [{ name: "BTC" }, { name: "ETH" }] },
+          {
+            universe: [
+              { name: "BTC", szDecimals: 5, maxLeverage: 40 },
+              { name: "ETH", szDecimals: 4, maxLeverage: 25 },
+            ],
+          },
           [{ midPx: opts.mid ?? "60000" }, { midPx: "3000" }],
         ])
       return ok({ assetPositions: [{ position: { coin: "BTC", szi: "-0.5" } }] })
@@ -219,4 +235,130 @@ test("MCP close binds side and clamped size to the venue position", async () => 
     expect(JSON.parse(result.text).error.code).toBe("PERPS_BUILD_REFUSED")
     expect(f.calls.some((c) => c.url.endsWith("/sign") || c.url.endsWith("/exchange"))).toBe(false)
   }
+})
+
+// ── BE-1583 (spec 2026-10-17 C) ──────────────────────────────────────────────────────────────
+
+describe("candle_perps_setup and the account mode", () => {
+  const ready = (extra: Record<string, unknown> = {}) => ({
+    success: true,
+    ready: true,
+    walletId: "wallet",
+    address: ADDRESS,
+    network: "mainnet",
+    mode: "default",
+    standardMode: true,
+    accountValue: "1",
+    withdrawable: "1",
+    builder: BUILDER,
+    approvedFeeTenthsBps: 100,
+    ...extra,
+  })
+
+  test("an unsupported mode is refused before setup is requested, submit or not", async () => {
+    for (const mode of ["unifiedAccount", "portfolioMargin", "dexAbstraction", "next"]) {
+      for (const submit of [true, false]) {
+        const f = fake({ mode, build: ready() })
+        const result = await executePerps("candle_perps_setup", { submit }, cfg, env(), f.fetch)
+        expect(result.isError).toBe(true)
+        expect(JSON.parse(result.text).error.code).toBe("PERPS_ACCOUNT_MODE")
+        expect(f.calls.some((c) => c.url.endsWith("/perps/setup"))).toBe(false)
+      }
+    }
+  })
+
+  test("a dishonest ready answer is refused; an honest one is returned", async () => {
+    for (const lie of [{ mode: "disabled" }, { builder: OTHER }, { address: OTHER }]) {
+      const f = fake({ build: ready(lie) })
+      const result = await executePerps("candle_perps_setup", {}, cfg, env(), f.fetch)
+      expect(JSON.parse(result.text).error.code).toBe("PERPS_BUILD_REFUSED")
+    }
+    const f = fake({ build: ready() })
+    const result = await executePerps("candle_perps_setup", {}, cfg, env(), f.fetch)
+    expect(JSON.parse(result.text)).toMatchObject({ ready: true })
+  })
+})
+
+describe("clientId on candle_perps_open and candle_perps_close", () => {
+  const ID = "0x0123456789abcdef0123456789abcdef"
+  const withId = () => {
+    const action = { ...order(), orders: [{ ...order().orders[0], c: ID }] }
+    return { ...build(action), cloid: ID, clientId: ID }
+  }
+  const replay = { success: true, replayed: true, walletId: "wallet", clientId: ID, cloid: ID, status: "filled" }
+
+  test("sent lowercased and held to the order's cloid", async () => {
+    const f = fake({ build: withId() })
+    const result = await executePerps(
+      "candle_perps_open",
+      { ...OPEN, clientId: ID.toUpperCase().replace("0X", "0x"), submit: false },
+      cfg,
+      env(),
+      f.fetch,
+    )
+    expect(result.isError).toBeUndefined()
+    expect(f.calls[1]?.body).toMatchObject({ clientId: ID })
+  })
+
+  test("a replay is returned with nothing signed or sent", async () => {
+    for (const tool of ["candle_perps_open", "candle_perps_close"] as const) {
+      const f = fake({ build: replay })
+      const result = await executePerps(tool, { ...OPEN, clientId: ID }, cfg, env(), f.fetch)
+      expect(JSON.parse(result.text)).toMatchObject({ replayed: true, status: "filled" })
+      expect(f.calls.some((c) => c.url.endsWith("/sign") || c.url.includes("hyperliquid"))).toBe(false)
+    }
+    const unasked = fake({ build: replay })
+    expect(JSON.parse((await executePerps("candle_perps_open", OPEN, cfg, env(), unasked.fetch)).text).error.code).toBe(
+      "PERPS_BUILD_REFUSED",
+    )
+  })
+
+  test("an API that does not echo the id is refused before signing", async () => {
+    const f = fake({ build: build(order()) })
+    const result = await executePerps("candle_perps_open", { ...OPEN, clientId: ID }, cfg, env(), f.fetch)
+    expect(JSON.parse(result.text).error.code).toBe("PERPS_CLIENT_ID_UNSUPPORTED")
+    expect(f.calls.some((c) => c.url.endsWith("/sign"))).toBe(false)
+  })
+})
+
+describe("candle_perps_fills and candle_perps_funding", () => {
+  const fill = { coin: "BTC", px: "1", sz: "1", side: "B", time: 5, closedPnl: "0", fee: "0.1", tid: 1, oid: 2 }
+
+  test("read Hyperliquid directly with only the API key: no signer, no perps:write, key never sent there", async () => {
+    const f = fake({ scopes: ["account:read"], history: () => [fill] })
+    const result = await executePerps("candle_perps_fills", { startTime: 0, endTime: 10 }, cfg, {}, f.fetch)
+    const page = JSON.parse(result.text)
+    expect(page).toMatchObject({ success: true, walletId: "wallet", address: ADDRESS, source: "hyperliquid" })
+    expect(page.fills).toHaveLength(1)
+    expect(f.calls.filter((c) => c.url.startsWith("https://api.test")).map((c) => c.url)).toEqual([
+      "https://api.test/api/v1/agent/wallets/trading",
+    ])
+    expect(f.calls.find((c) => c.body?.type === "userFillsByTime")?.body).toEqual({
+      type: "userFillsByTime",
+      user: ADDRESS,
+      startTime: 0,
+      endTime: 10,
+      aggregateByTime: false,
+    })
+  })
+
+  test("funding pages the same way", async () => {
+    const f = fake({
+      history: () => [{ time: 5, hash: "0x1", delta: { coin: "BTC", usdc: "-1", szi: "1", fundingRate: "0.1" } }],
+    })
+    const page = JSON.parse(
+      (await executePerps("candle_perps_funding", { startTime: 0, endTime: 10 }, cfg, {}, f.fetch)).text,
+    )
+    expect(page.funding[0].delta.usdc).toBe("-1")
+  })
+
+  test("a bad cursor is a validation error naming the field; an upstream failure is PERPS_UNAVAILABLE", async () => {
+    const f = fake()
+    const bad = await executePerps("candle_perps_fills", { cursor: "nope" }, cfg, {}, f.fetch)
+    expect(JSON.parse(bad.text)).toMatchObject({ error: { code: "VALIDATION_FAILED" }, field: "cursor" })
+    const down = fake({ history: () => ({ not: "an array" }) })
+    const failed = await executePerps("candle_perps_funding", {}, cfg, {}, down.fetch)
+    expect(failed.isError).toBe(true)
+    expect(JSON.parse(failed.text).error.code).toBe("PERPS_UNAVAILABLE")
+  })
 })

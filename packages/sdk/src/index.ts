@@ -101,6 +101,8 @@ export type {
   PerpsOrderRecord,
   PerpsOrders,
   PerpsPositions,
+  PerpsReplay,
+  PerpsReplayResult,
   PerpsSetupResult,
   PerpsSide,
   PerpsWalletRef,
@@ -197,13 +199,16 @@ export {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   HYPERLIQUID_ALLOWED_ACTION_TYPES,
   HYPERLIQUID_EXCHANGE_URLS,
+  HYPERLIQUID_STANDARD_ACCOUNT_MODES,
   type HyperliquidNetwork,
   type HyperliquidOrderMarket,
   type HyperliquidTypedData,
+  hyperliquidAccountMode,
   hyperliquidActionHash,
   hyperliquidOrderMarket,
   type PerpsBuildCheck,
   type PerpsBuildToVerify,
+  perpsSetupStatusProblem,
   type VerifyPerpsBuildOptions,
   verifyPerpsBuild,
 } from "./hyperliquid"
@@ -222,6 +227,18 @@ export {
   type WithdrawCheck,
 } from "./hyperliquid-withdraw"
 export { KeychainSecretStore } from "./keychain-secret-store"
+export {
+  PERPS_HISTORY_DEFAULT_LIMIT,
+  PERPS_HISTORY_MAX_LIMIT,
+  type PerpsFillRow,
+  type PerpsFillsPage,
+  type PerpsFundingPage,
+  type PerpsFundingRow,
+  PerpsHistoryError,
+  type PerpsHistoryOptions,
+  type PerpsHistoryWarning,
+  readPerpsHistoryPage,
+} from "./perps-history"
 export {
   type AgentPlansResult,
   formatPlanBps,

@@ -3,7 +3,9 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   HYPERLIQUID_EXCHANGE_URLS,
+  HYPERLIQUID_STANDARD_ACCOUNT_MODES,
   HYPERLIQUID_TPSL_SLIPPAGE_BPS,
+  hyperliquidAccountMode,
   hyperliquidActionHash,
   hyperliquidApproveBuilderFeeTypedData,
   hyperliquidExchangeBody,
@@ -12,6 +14,7 @@ import {
   hyperliquidSplitSignature,
   msgpackEncode,
   type PerpsBuildToVerify,
+  perpsSetupStatusProblem,
   verifyPerpsBuild,
 } from "./hyperliquid"
 import fixture from "./hyperliquid.vectors.fixture.json"
@@ -252,5 +255,183 @@ describe("submission", () => {
     const typed = hyperliquidL1TypedData(`0x${"0".repeat(64)}`, "mainnet")
     expect(hyperliquidRelayBody(typed)).toEqual({ method: "eth_signTypedData_v4", params: { typed_data: typed } })
     expect(HYPERLIQUID_EXCHANGE_URLS.mainnet).toBe("https://api.hyperliquid.xyz/exchange")
+  })
+})
+
+// Spec 2026-10-17 C, section 8: an order carrying the caller's client order id. The vectors are the
+// official Python SDK's own (the cloid is an ordinary field of the order wire), so the hash these
+// builds commit to is the venue's; what is added is the pre-sign binding of the id to the request.
+describe("client order ids, against the official SDK vectors", () => {
+  const vector = (name: string) => {
+    const found = l1.find((c) => c.name === name)
+    if (!found) throw new Error(`no vector ${name}`)
+    return found
+  }
+  const buildOf = (v: L1Vector, action = v.action): PerpsBuildToVerify => ({
+    network: "mainnet",
+    nonce: v.nonce,
+    action,
+    typedData: hyperliquidL1TypedData(hyperliquidActionHash(v.action, v.nonce), "mainnet"),
+  })
+
+  test("an open with take-profit and stop-loss whose primary cloid is the caller's id passes", () => {
+    const v = vector("order_normal_tpsl")
+    expect(hyperliquidActionHash(v.action, v.nonce)).toBe(v.actionHash)
+    const params = {
+      coin: "BTC",
+      side: "long",
+      size: "0.01",
+      price: "60000",
+      takeProfit: "66000",
+      stopLoss: "57000.5",
+      clientId: "0x11111111111111111111111111111111",
+    }
+    const check = verifyPerpsBuild(buildOf(v), { builder: BUILDER, intent: { method: "open", params } })
+    expect(check).toEqual({ ok: true, kind: "l1" })
+    // Upper-case input normalizes to the same id.
+    expect(
+      verifyPerpsBuild(buildOf(v), {
+        builder: BUILDER,
+        intent: { method: "open", params: { ...params, clientId: params.clientId.toUpperCase().replace("0X", "0x") } },
+      }).ok,
+    ).toBe(true)
+  })
+
+  test("a reduce-only close whose cloid is the caller's id passes", () => {
+    const v = vector("order_ioc_reduce_only_close")
+    expect(hyperliquidActionHash(v.action, v.nonce)).toBe(v.actionHash)
+    const check = verifyPerpsBuild(buildOf(v), {
+      builder: BUILDER,
+      intent: { method: "close", params: { coin: "SOL", clientId: "0x000102030405060708090a0b0c0d0e0f" } },
+    })
+    expect(check).toEqual({ ok: true, kind: "l1" })
+  })
+
+  test("an altered or missing id is refused before signing", () => {
+    const v = vector("order_normal_tpsl")
+    const params = { coin: "BTC", side: "long", size: "0.01", price: "60000", takeProfit: "66000", stopLoss: "57000.5" }
+    for (const clientId of ["0x22222222222222222222222222222222", "0x1111", "not-hex", 7]) {
+      const check = verifyPerpsBuild(buildOf(v), {
+        builder: BUILDER,
+        intent: { method: "open", params: { ...params, clientId } },
+      })
+      expect(check.ok).toBe(false)
+    }
+    // The build's id altered to the request's would no longer match the stamped hash.
+    const action = structuredClone(v.action) as { orders: { c: string }[] }
+    ;(action.orders[0] as { c: string }).c = "0x99999999999999999999999999999999"
+    const forged = verifyPerpsBuild(
+      { ...buildOf(v), action },
+      {
+        builder: BUILDER,
+        intent: { method: "open", params: { ...params, clientId: "0x99999999999999999999999999999999" } },
+      },
+    )
+    expect(forged).toEqual({ ok: false, reason: "the typed data does not commit to this action and nonce" })
+  })
+
+  test("a child leg reusing the primary id is refused", () => {
+    const v = vector("order_normal_tpsl")
+    const action = structuredClone(v.action) as { orders: { c: string }[] }
+    ;(action.orders[1] as { c: string }).c = "0x11111111111111111111111111111111"
+    const nonce = v.nonce
+    const check = verifyPerpsBuild(
+      {
+        network: "mainnet",
+        nonce,
+        action,
+        typedData: hyperliquidL1TypedData(hyperliquidActionHash(action, nonce), "mainnet"),
+      },
+      {
+        builder: BUILDER,
+        intent: {
+          method: "open",
+          params: {
+            coin: "BTC",
+            side: "long",
+            size: "0.01",
+            price: "60000",
+            takeProfit: "66000",
+            stopLoss: "57000.5",
+            clientId: "0x11111111111111111111111111111111",
+          },
+        },
+      },
+    )
+    expect(check).toEqual({ ok: false, reason: "the order legs do not carry distinct client order ids" })
+  })
+
+  test("without a client id the check is unchanged", () => {
+    const v = vector("order_ioc_reduce_only_close")
+    expect(
+      verifyPerpsBuild(buildOf(v), { builder: BUILDER, intent: { method: "close", params: { coin: "SOL" } } }).ok,
+    ).toBe(true)
+  })
+})
+
+describe("setup: account mode and the setup answer", () => {
+  const ADDR = "0x00000000000000000000000000000000000000aa"
+  const status = (over: Record<string, unknown> = {}) => ({
+    walletId: "w1",
+    address: ADDR,
+    network: "mainnet",
+    mode: "default",
+    standardMode: true,
+    accountValue: "10",
+    withdrawable: "10",
+    builder: BUILDER,
+    approvedFeeTenthsBps: 100,
+    ready: true,
+    ...over,
+  })
+  const expectOk = { network: "mainnet" as const, address: ADDR, builder: BUILDER, mode: "default" }
+
+  test("only default and disabled are standard", () => {
+    expect(HYPERLIQUID_STANDARD_ACCOUNT_MODES).toEqual(["default", "disabled"])
+    expect(perpsSetupStatusProblem(status(), expectOk)).toBeNull()
+    expect(perpsSetupStatusProblem(status({ mode: "disabled" }), { ...expectOk, mode: "disabled" })).toBeNull()
+    for (const mode of ["unifiedAccount", "portfolioMargin", "dexAbstraction", "somethingNew"]) {
+      expect(perpsSetupStatusProblem(status({ mode }), { ...expectOk, mode })).toContain(`${mode} mode`)
+    }
+  })
+
+  test("a dishonest ready answer is rejected", () => {
+    expect(perpsSetupStatusProblem(status({ mode: "default" }), { ...expectOk, mode: "unifiedAccount" })).toContain(
+      "unifiedAccount",
+    )
+    expect(perpsSetupStatusProblem(status({ mode: "disabled" }), expectOk)).toBe(
+      "the setup answer reports a mode Hyperliquid does not",
+    )
+    expect(perpsSetupStatusProblem(status({ builder: OTHER }), expectOk)).toBe(
+      "the setup answer names a builder that is not Candle's",
+    )
+    expect(perpsSetupStatusProblem(status({ address: OTHER }), expectOk)).toBe(
+      "the setup answer is for a different wallet",
+    )
+    expect(perpsSetupStatusProblem(status({ network: "testnet" }), expectOk)).toBe("the setup answer is for testnet")
+    expect(perpsSetupStatusProblem(status({ standardMode: false }), expectOk)).toBe(
+      "the setup answer does not report standard mode",
+    )
+    expect(perpsSetupStatusProblem(status({ approvedFeeTenthsBps: 10 }), expectOk)).toBe(
+      "the setup answer reports ready without Candle's builder approval",
+    )
+    // A not-ready answer needs no approval yet.
+    expect(perpsSetupStatusProblem(status({ ready: false, approvedFeeTenthsBps: 0 }), expectOk)).toBeNull()
+  })
+
+  test("the mode is read from the pinned venue's userAbstraction", async () => {
+    const calls: { url: string; body: unknown }[] = []
+    const fetcher = async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init?.body)) })
+      return new Response(JSON.stringify("portfolioMargin"))
+    }
+    expect(await hyperliquidAccountMode(fetcher, "mainnet", ADDR.toUpperCase().replace("0X", "0x"))).toBe(
+      "portfolioMargin",
+    )
+    expect(calls).toEqual([{ url: "https://api.hyperliquid.xyz/info", body: { type: "userAbstraction", user: ADDR } }])
+    const broken = async () => new Response(JSON.stringify({ mode: "default" }))
+    expect(hyperliquidAccountMode(broken, "mainnet", ADDR)).rejects.toThrow("unreadable account mode")
+    const down = async () => new Response("no", { status: 500 })
+    expect(hyperliquidAccountMode(down, "mainnet", ADDR)).rejects.toThrow("Cannot read the account mode")
   })
 })

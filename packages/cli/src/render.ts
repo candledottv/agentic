@@ -26,22 +26,28 @@ export const ALL_AGENT_SCOPES = [
   // Read:Write:Transfer (2026-09-24 spec, D1): move funds out of the wallet this key runs. Never
   // in the default, and never put on a device login by this CLI (the API refuses it there).
   "transfer:bound",
+  // Hyperliquid perps: set up and trade perps from the key's EVM TEE wallet. Never in the default;
+  // `keys create --access trade-perps` grants it with `account:read` (2026-10-17 C spec, section 7).
+  "perps:write",
 ] as const
 export type AgentScope = (typeof ALL_AGENT_SCOPES)[number]
 
 /** Mirrors `DEFAULT_AGENT_KEY_SCOPES`: what `POST /keys` grants when `scopes` is omitted.
  * `swap:write` moves real funds on every call, so it is deliberately excluded from the default. */
 export const DEFAULT_AGENT_SCOPES: readonly AgentScope[] = ALL_AGENT_SCOPES.filter(
-  (scope) => scope !== "swap:write" && scope !== "transfer:write" && scope !== "transfer:bound",
+  (scope) =>
+    scope !== "swap:write" && scope !== "transfer:write" && scope !== "transfer:bound" && scope !== "perps:write",
 )
 
 const SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf"
 const TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets"
 const TRANSFER_BOUND_NOTE =
   "moves funds -- this key can move funds out of the wallet it runs, to your linked wallets and its vault"
+const PERPS_WRITE_NOTE =
+  "trades Hyperliquid perps -- this key can open and close positions from its EVM TEE wallet, within its limits"
 
 /** Renders a scope list for a human, calling `swap:write`, `transfer:write` and `transfer:bound`
- * out explicitly as fund-moving. Every other scope renders as its raw name. Sorted first, in the one order raw
+ * out explicitly as fund-moving, and `perps:write` as perps trading. Every other scope renders as its raw name. Sorted first, in the one order raw
  * scopes are shown to a person everywhere (`keys list --scopes`, the web key detail), so the same
  * set never reads as two different lists (keys list Access and Name spec, 2026-09-23, D6). */
 export function formatScopesForSummary(scopes: readonly string[]): string {
@@ -53,7 +59,9 @@ export function formatScopesForSummary(scopes: readonly string[]): string {
           ? `${scope} (${TRANSFER_WRITE_NOTE})`
           : scope === "transfer:bound"
             ? `${scope} (${TRANSFER_BOUND_NOTE})`
-            : scope,
+            : scope === "perps:write"
+              ? `${scope} (${PERPS_WRITE_NOTE})`
+              : scope,
     )
     .join(", ")
 }

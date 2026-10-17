@@ -16,6 +16,12 @@
  * `CANDLE_HYPERLIQUID_BUILDER` pins Candle's builder address for the check. Unset, this release's
  * `CANDLE_HYPERLIQUID_BUILDER_ADDRESS` applies when it carries one, and otherwise the builder the
  * server's `/perps/config` reports. `CANDLE_HYPERLIQUID_NETWORK=testnet` trades testnet.
+ *
+ * BE-1583 (spec 2026-10-17-hyperliquid-phase1-c-small-items-design.md): `fills` and `funding` read
+ * history straight from Hyperliquid's `/info` (`perps-history.ts`, the SDK's file byte for byte);
+ * `setup` reads the account mode from Hyperliquid before asking Candle, and checks Candle's answer,
+ * `ready` included; `open` and `close` take `--client-id`, and a retry under it returns the
+ * original operation without signing anything.
  */
 import { randomUUID, sign } from "node:crypto"
 import { parseArgs } from "../args"
@@ -32,16 +38,28 @@ import type { CommandContext } from "../deps"
 import { sameEvmAddress } from "../evm-lite"
 import {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
+  HYPERLIQUID_CLOID_RE,
   HYPERLIQUID_EXCHANGE_URLS,
+  HYPERLIQUID_STANDARD_ACCOUNT_MODES,
   type HyperliquidNetwork,
   type HyperliquidTypedData,
+  hyperliquidAccountMode,
   hyperliquidCanonicalJson,
   hyperliquidCloseOrder,
   hyperliquidExchangeBody,
   hyperliquidOrderMarket,
   hyperliquidRelayBody,
+  perpsSetupStatusProblem,
   verifyPerpsBuild,
 } from "../hyperliquid"
+import {
+  PERPS_HISTORY_MAX_LIMIT,
+  type PerpsFillsPage,
+  type PerpsFundingPage,
+  PerpsHistoryError,
+  perpsHistoryLines,
+  readPerpsHistoryPage,
+} from "../perps-history"
 import { writeUsageFailure } from "../render"
 import { solanaSpendProblem } from "../solana-verify"
 import {
@@ -225,11 +243,58 @@ async function runPerpsWrite(
   const { wallet } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE)
   if (!wallet) throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.")
   const builder = await builderPin(ctx, key)
-  const build = await perpsRequest(ctx, key, opts.path, { walletId: wallet.id, ...opts.body })
-  // Setup with the builder already approved on Hyperliquid builds nothing: report the account.
-  if (build.ready === true) return printTradingResult(ctx, build)
   const net = network(ctx)
   const method = opts.path.split("/").at(-1) as "setup" | "open" | "close" | "cancel" | "leverage"
+  // Setup (spec 2026-10-17 C, section 5): the mode comes from Hyperliquid itself, before Candle is
+  // asked, and an unsupported one stops here with nothing requested, reserved or signed.
+  let mode: string | undefined
+  if (method === "setup") {
+    try {
+      mode = await hyperliquidAccountMode(ctx.deps.fetch, net, wallet.address)
+    } catch (error) {
+      throw new TradingError(
+        "PERPS_UNAVAILABLE",
+        `${error instanceof Error ? error.message : "Cannot read the account mode from Hyperliquid"}. Nothing was requested.`,
+      )
+    }
+    if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
+      throw new TradingError(
+        "PERPS_ACCOUNT_MODE",
+        `This Hyperliquid account is in ${safeText(mode)} mode. Candle trades only a standard account and does not change modes; switch it back to standard mode on Hyperliquid, then run setup again. This is not a missing fee approval. Nothing was requested or signed.`,
+      )
+  }
+  const clientId = typeof opts.body.clientId === "string" ? opts.body.clientId : undefined
+  const build = await perpsRequest(ctx, key, opts.path, { walletId: wallet.id, ...opts.body })
+  if (method === "setup") {
+    const problem = perpsSetupStatusProblem(build, {
+      network: net,
+      address: wallet.address,
+      builder,
+      mode: mode as string,
+    })
+    if (problem)
+      throw new TradingError("PERPS_BUILD_REFUSED", `Refused this setup answer: ${problem}. Nothing was signed.`)
+  }
+  // Setup with the builder already approved on Hyperliquid builds nothing: report the account.
+  if (build.ready === true) return printTradingResult(ctx, build)
+  // A retry under a client order id: the original operation, reported, and nothing signed or sent.
+  if (build.replayed === true) {
+    if (clientId === undefined || build.clientId !== clientId || build.walletId !== wallet.id)
+      throw new TradingError(
+        "PERPS_BUILD_REFUSED",
+        "Refused a replay that does not name this request's client id and wallet. Nothing was signed.",
+      )
+    ctx.deps.stderr.write(
+      `Client id ${clientId} already names order ${safeText(build.perpOrderId)} (${safeText(build.status)}${build.venueStatus ? `, ${safeText(build.venueStatus)} on Hyperliquid` : ""}). Nothing was signed or sent; use a new --client-id for a new order.\n`,
+    )
+    return printTradingResult(ctx, build)
+  }
+  // An API that predates client ids drops the field and builds under a random cloid: refused.
+  if (clientId !== undefined && (build.clientId !== clientId || build.cloid !== clientId))
+    throw new TradingError(
+      "PERPS_CLIENT_ID_UNSUPPORTED",
+      "This Candle API did not echo the client order id, so a retry could not be recognized. Nothing was signed.",
+    )
   const check = verifyPerpsBuild(build as never, {
     builder,
     network: net,
@@ -376,11 +441,20 @@ export async function perpsSetup(args: string[], ctx: CommandContext): Promise<n
 // ── open ─────────────────────────────────────────────────────────────────────────────────────
 
 const OPEN_USAGE =
-  "Usage: candle perps open <coin> <long|short> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--tp <px>] [--sl <px>] [--wallet <tee>] [--yes]"
+  "Usage: candle perps open <coin> <long|short> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--tp <px>] [--sl <px>] [--client-id <0x+32 hex>] [--wallet <tee>] [--yes]"
+
+/** `--client-id`: a cloid the caller chose, lowercased; null when malformed. */
+function clientIdFlag(value: string | undefined): string | undefined | null {
+  if (value === undefined) return undefined
+  const lower = value.toLowerCase()
+  return HYPERLIQUID_CLOID_RE.test(lower) ? lower : null
+}
+
+const CLIENT_ID_USAGE = "--client-id must be 0x followed by 32 hex digits."
 
 export async function perpsOpen(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--wallet", "--price", "--tif", "--slippage-bps", "--tp", "--sl"],
+    valueFlags: ["--wallet", "--price", "--tif", "--slippage-bps", "--tp", "--sl", "--client-id"],
     booleanFlags: ["--yes", "--no-submit", "--sign-only"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
@@ -399,10 +473,13 @@ export async function perpsOpen(args: string[], ctx: CommandContext): Promise<nu
     return usage(ctx, "--tif Gtc or Alo needs --price.")
   const slippageBps = slippage(values["--slippage-bps"])
   if (slippageBps === null) return usage(ctx, "--slippage-bps must be a whole number of at least 1.")
+  const clientId = clientIdFlag(values["--client-id"])
+  if (clientId === null) return usage(ctx, CLIENT_ID_USAGE)
   const body: Json = {
     coin,
     side,
     size,
+    ...(clientId !== undefined ? { clientId } : {}),
     type: values["--price"] === undefined ? "market" : "limit",
     ...(values["--price"] !== undefined ? { price: values["--price"] } : {}),
     ...(tif !== undefined && values["--price"] !== undefined ? { tif } : {}),
@@ -421,19 +498,25 @@ export async function perpsOpen(args: string[], ctx: CommandContext): Promise<nu
 
 export async function perpsClose(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--wallet", "--size", "--slippage-bps"],
+    valueFlags: ["--wallet", "--size", "--slippage-bps", "--client-id"],
     booleanFlags: ["--yes", "--no-submit", "--sign-only"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [coin] = parsed.positionals
   if (parsed.positionals.length !== 1 || !coin)
-    return usage(ctx, "Usage: candle perps close <coin> [--size <n>] [--slippage-bps <n>] [--wallet <tee>] [--yes]")
+    return usage(
+      ctx,
+      "Usage: candle perps close <coin> [--size <n>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee>] [--yes]",
+    )
   const size = parsed.values["--size"]
   if (size !== undefined && !DEC_RE.test(size)) return usage(ctx, "--size must be a plain decimal.")
   const slippageBps = slippage(parsed.values["--slippage-bps"])
   if (slippageBps === null) return usage(ctx, "--slippage-bps must be a whole number of at least 1.")
+  const clientId = clientIdFlag(parsed.values["--client-id"])
+  if (clientId === null) return usage(ctx, CLIENT_ID_USAGE)
   const body: Json = {
     coin,
+    ...(clientId !== undefined ? { clientId } : {}),
     ...(size !== undefined ? { size } : {}),
     ...(slippageBps !== undefined ? { slippageBps } : {}),
   }
@@ -570,6 +653,89 @@ export async function perpsOrders(args: string[], ctx: CommandContext): Promise<
   } catch (error) {
     return tradingFailure(ctx, error)
   }
+}
+
+// ── fills and funding (BE-1583, spec 2026-10-17 C, sections 3 and 4) ─────────────────────────
+
+const HISTORY_FLAGS = { valueFlags: ["--wallet", "--start-time", "--end-time", "--limit", "--cursor"] }
+
+function epochMs(value: string | undefined): number | undefined | null {
+  if (value === undefined) return undefined
+  return /^[0-9]{1,16}$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null
+}
+
+/**
+ * `candle perps fills|funding`: one page of the wallet's history, read directly from Hyperliquid's
+ * `/info`. Candle only resolves which EVM TEE wallet is this key's; no Candle credential reaches
+ * Hyperliquid, and a read-only key with no signer is enough. Wallet-level live venue data, not
+ * Candle's ledger.
+ */
+async function perpsHistory(kind: "fills" | "funding", args: string[], ctx: CommandContext): Promise<number> {
+  const usageLine = `Usage: candle perps ${kind} [--wallet <tee>] [--start-time <ms>] [--end-time <ms>] [--limit <n>] [--cursor <cursor>]`
+  const parsed = parseArgs(args, HISTORY_FLAGS)
+  if ("error" in parsed) return usage(ctx, parsed.error)
+  if (parsed.positionals.length !== 0) return usage(ctx, usageLine)
+  const { values } = parsed
+  const startTime = epochMs(values["--start-time"])
+  const endTime = epochMs(values["--end-time"])
+  if (startTime === null || endTime === null)
+    return usage(ctx, "--start-time and --end-time are epoch milliseconds, e.g. 1790000000000.")
+  const max = PERPS_HISTORY_MAX_LIMIT[kind]
+  const limitRaw = values["--limit"]
+  const limit = limitRaw === undefined ? undefined : Number(limitRaw)
+  if (limit !== undefined && (!/^[0-9]{1,4}$/.test(limitRaw as string) || limit < 1 || limit > max))
+    return usage(ctx, `--limit must be a whole number from 1 to ${max}.`)
+  if (startTime !== undefined && endTime !== undefined && startTime > endTime)
+    return usage(ctx, "--start-time must not be after --end-time.")
+  const cursor = values["--cursor"]
+  try {
+    const key = await tradingKey(ctx)
+    const { row } = await perpsWallet(ctx, key, values["--wallet"])
+    const page = (await readPerpsHistoryPage({
+      kind,
+      network: network(ctx),
+      walletId: row.id,
+      address: row.address,
+      options: {
+        ...(startTime !== undefined ? { startTime } : {}),
+        ...(endTime !== undefined ? { endTime } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+      },
+      fetch: ctx.deps.fetch,
+      now: ctx.deps.now,
+    })) as PerpsFillsPage | PerpsFundingPage
+    if (ctx.json) return printTradingResult(ctx, page as unknown as Json)
+    const walletFlag = values["--wallet"] !== undefined ? ` --wallet ${values["--wallet"]}` : ""
+    for (const line of perpsHistoryLines(
+      page,
+      (next) => `Next page: candle perps ${kind}${walletFlag} --cursor ${next}`,
+    ))
+      ctx.deps.stdout.write(`${line}\n`)
+    return 0
+  } catch (error) {
+    if (error instanceof PerpsHistoryError) {
+      if (error.code === "VALIDATION_FAILED") return usage(ctx, error.message)
+      return tradingFailure(
+        ctx,
+        new TradingError(error.code, error.message, {
+          suggestion:
+            error.extra.retryAfterMs !== undefined
+              ? `Retry after ${Math.ceil(error.extra.retryAfterMs / 1000)}s with the same command${cursor ? " and --cursor" : ""}.`
+              : `Retry shortly with the same command${cursor ? " and --cursor" : ""}.`,
+        }),
+      )
+    }
+    return tradingFailure(ctx, error)
+  }
+}
+
+export function perpsFills(args: string[], ctx: CommandContext): Promise<number> {
+  return perpsHistory("fills", args, ctx)
+}
+
+export function perpsFunding(args: string[], ctx: CommandContext): Promise<number> {
+  return perpsHistory("funding", args, ctx)
 }
 
 // ── deposit (BE-647, HL-ED-8, R2) ────────────────────────────────────────────────────────────

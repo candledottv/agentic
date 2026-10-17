@@ -351,7 +351,7 @@ export const HELP: Record<string, Topic> = {
   perps: {
     group: "Trade",
     summary:
-      "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, orders, positions, leverage",
+      "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, orders, positions, fills, funding, leverage",
     description:
       "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section.",
     usage: ["candle perps <subcommand> [flags]"],
@@ -371,7 +371,8 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation: "setup [--wallet <tee>]",
-        description: "Approve Candle's builder fee once; shows the account's mode and balance",
+        description:
+          "Approve Candle's builder fee once; shows the account's mode and balance. Refused, with nothing signed, unless Hyperliquid shows the account in standard mode",
       },
       {
         invocation: "deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee>] [--to <evm tee>] | deposit status <id>",
@@ -397,6 +398,16 @@ export const HELP: Record<string, Topic> = {
         invocation: "positions [--wallet <tee>]",
         description: "Positions, account value and withdrawable USDC, read live, and any withdrawal in flight",
       },
+      {
+        invocation: "fills [--start-time <ms>] [--end-time <ms>] [--limit <n>] [--cursor <c>]",
+        description:
+          "One page of the wallet's fills, read directly from Hyperliquid (any read-capable key; no signer). Default: the last 7 days, 100 rows. Closed P&L is gross and the fee already includes the builder fee. Hyperliquid keeps only the 10,000 most recent fills",
+      },
+      {
+        invocation: "funding [--start-time <ms>] [--end-time <ms>] [--limit <n>] [--cursor <c>]",
+        description:
+          "One page of the wallet's funding payments, signed (paid or received), read directly from Hyperliquid; at most 500 rows a page",
+      },
       { invocation: "leverage <coin> <x> [--isolated]", description: "Set a market's leverage and margin mode" },
     ],
     flags: [
@@ -404,7 +415,11 @@ export const HELP: Record<string, Topic> = {
         invocation: "--sort <volume|oi|funding|change|name>",
         description: "markets: descending metric, ascending name (default volume)",
       },
-      { invocation: "--limit <1-500>", description: "markets: maximum rows; default all tradeable markets" },
+      {
+        invocation: "--limit <n>",
+        description:
+          "markets: maximum rows, 1 to 500 (default all tradeable markets); orders: rows (default 50); fills and funding: rows per page (default 100)",
+      },
       {
         invocation: "--all",
         description: "markets: include refused markets and reasons; OI caps can still refuse an order",
@@ -432,6 +447,19 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "--tp <px> / --sl <px>", description: "open: reduce-only take-profit and stop-loss triggers" },
       {
+        invocation: "--client-id <0x+32 hex>",
+        description:
+          "open and close: your own order id. Retrying the same command with the same id returns the original order instead of placing another, and signs nothing; the same id with a different order is refused. It deduplicates, it does not resume a build you stopped with --no-submit. Use a new id for a new order",
+      },
+      {
+        invocation: "--start-time <ms> / --end-time <ms>",
+        description: "fills and funding: the window in epoch milliseconds (default: the 7 days before now)",
+      },
+      {
+        invocation: "--cursor <c>",
+        description: "fills and funding: the next page, as the previous page printed it; the window must not change",
+      },
+      {
         invocation: "--to <evm tee>",
         description: "deposit from Solana: the EVM TEE wallet whose account receives it",
       },
@@ -448,6 +476,9 @@ export const HELP: Record<string, Topic> = {
       "candle perps open BTC long 0.01",
       "candle perps open ETH short 0.5 --price 3200 --tp 2900 --sl 3400",
       "candle perps close BTC",
+      "candle perps open BTC long 0.01 --client-id 0x0123456789abcdef0123456789abcdef",
+      "candle perps fills --limit 50",
+      "candle perps funding --start-time 1790000000000",
       "candle perps leverage BTC 5 --isolated",
       "candle perps withdraw 25 --to solana",
     ],
@@ -672,9 +703,9 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation:
-          "create [--access read|write|withdraw | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
+          "create [--access read|write|withdraw|trade-perps | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
         description:
-          "Create an API key; --access mints one of the three levels (write trades and launches; only withdraw can move funds). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal",
+          "Create an API key; --access mints one of the levels (write trades and launches; only withdraw can move funds; trade-perps is exactly account:read and perps:write, for Hyperliquid perps setup and orders, and it cannot fund its own Hyperliquid account: a Relay deposit needs swap:write and a withdrawal needs perps:withdraw, each a separate grant through --scopes). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal",
       },
       {
         invocation: "access <prefix|label|self> (--access read|write|withdraw [--yes] | --history)",
@@ -723,6 +754,7 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle keys list",
       "candle keys create --access withdraw --label rebalancer",
+      "candle keys create --access trade-perps --label perps-bot",
       "candle keys create --scopes trade:write --label agent-one",
       "candle keys access cndl --access withdraw",
       "candle keys access self --access read --yes",

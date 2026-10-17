@@ -285,6 +285,70 @@ export type PerpsBuildCheck = { ok: true; kind: "l1" | "approveBuilderFee" } | {
 
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
 
+/** A Hyperliquid cloid, lowercase: `0x` and 32 hex digits. Also the shape of a caller's client order id. */
+export const HYPERLIQUID_CLOID_RE = /^0x[0-9a-f]{32}$/
+
+/**
+ * The account modes Candle builds for: Hyperliquid's standard mode (`default`, or `disabled` for an
+ * account that never chose one). `unifiedAccount`, `portfolioMargin`, `dexAbstraction` and any
+ * unknown string are not standard (spec 2026-10-17 C, section 5).
+ */
+export const HYPERLIQUID_STANDARD_ACCOUNT_MODES: readonly string[] = ["default", "disabled"]
+
+/**
+ * The account's mode, read directly from the pinned venue's `userAbstraction` before setup is
+ * requested, so a server cannot report a mode the venue does not. Throws when it cannot be read.
+ */
+export async function hyperliquidAccountMode(
+  fetcher: (url: string, init?: RequestInit) => Promise<{ ok: boolean; text(): Promise<string> }>,
+  network: HyperliquidNetwork,
+  address: string,
+): Promise<string> {
+  const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "userAbstraction", user: address.toLowerCase() }),
+  })
+  if (!res.ok) throw new Error("Cannot read the account mode from Hyperliquid")
+  let mode: unknown
+  try {
+    mode = JSON.parse(await res.text())
+  } catch {
+    throw new Error("Hyperliquid returned an unreadable account mode")
+  }
+  if (typeof mode !== "string" || mode.length === 0 || mode.length > 64)
+    throw new Error("Hyperliquid returned an unreadable account mode")
+  return mode
+}
+
+/**
+ * Why a setup response must not be trusted, or null. Runs on every setup answer, the no-action
+ * `ready: true` one included (it carries no action for `verifyPerpsBuild` to check): the wallet,
+ * network and builder must be this client's, and the mode the one this client read from the venue,
+ * which must be standard.
+ */
+export function perpsSetupStatusProblem(
+  status: Record<string, unknown>,
+  expect: { network: HyperliquidNetwork; address: string; builder: string; mode: string },
+): string | null {
+  if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(expect.mode))
+    return `the account is in ${expect.mode} mode on Hyperliquid; Candle trades only a standard account`
+  if (status.network !== expect.network) return `the setup answer is for ${String(status.network)}`
+  if (typeof status.address !== "string" || status.address.toLowerCase() !== expect.address.toLowerCase())
+    return "the setup answer is for a different wallet"
+  if (status.mode !== expect.mode) return "the setup answer reports a mode Hyperliquid does not"
+  if (status.standardMode !== true) return "the setup answer does not report standard mode"
+  if (typeof status.builder !== "string" || status.builder.toLowerCase() !== expect.builder.toLowerCase())
+    return "the setup answer names a builder that is not Candle's"
+  if (
+    status.ready === true &&
+    (typeof status.approvedFeeTenthsBps !== "number" ||
+      status.approvedFeeTenthsBps < HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS)
+  )
+    return "the setup answer reports ready without Candle's builder approval"
+  return null
+}
+
 function checkBuilderField(action: Record<string, unknown>, builder: string): string | null {
   if (!("builder" in action) || action.builder === undefined) return null
   const field = action.builder as { b?: unknown; f?: unknown }
@@ -364,6 +428,16 @@ function checkActionIntent(action: Record<string, unknown>, intent: VerifyPerpsB
     const list = orderList as Record<string, unknown>[]
     const first = list[0]
     if (!first) return "missing requested order"
+    // A caller's client order id (spec 2026-10-17 C, section 8) must be the primary order's cloid,
+    // and every leg's cloid distinct, so a retry under that id names this order and no other.
+    if ((method === "open" || method === "close") && p.clientId != null) {
+      const clientId = typeof p.clientId === "string" ? p.clientId.toLowerCase() : null
+      if (clientId === null || !HYPERLIQUID_CLOID_RE.test(clientId) || first.c !== clientId)
+        return "the order does not carry the requested client order id"
+      const ids = list.map((o) => o.c)
+      if (ids.some((c) => typeof c !== "string" || !HYPERLIQUID_CLOID_RE.test(c)) || new Set(ids).size !== ids.length)
+        return "the order legs do not carry distinct client order ids"
+    }
     const typ = first.t as { limit?: { tif?: unknown } } | undefined
     if (!typ?.limit) return "requested order is not a limit/IOC order"
     if (method === "open") {

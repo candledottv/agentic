@@ -76,8 +76,14 @@ interface Options {
   exchange?: Response | Error
   pinBuilder?: boolean
   setupReady?: boolean
+  /** What the setup answer says, over an honest ready answer. */
+  setupAnswer?: Record<string, unknown>
   /** Hyperliquid's BTC mid, as `/info` metaAndAssetCtxs reports it. */
   mid?: string
+  /** Hyperliquid's `userAbstraction` for the account. */
+  mode?: unknown
+  /** `/info` history answers: userFillsByTime and userFunding. */
+  history?: (body: Record<string, unknown>) => unknown
 }
 
 async function fixture(opts: Options = {}) {
@@ -91,9 +97,16 @@ async function fixture(opts: Options = {}) {
     const ok = (value: unknown) => Response.json(value)
     if (url.host === "api.hyperliquid.xyz" && url.pathname === "/info") {
       if (body.type === "meta") return ok({ universe: [{ name: "BTC" }] })
+      if (body.type === "userAbstraction") return ok(opts.mode ?? "default")
+      if (body.type === "userFillsByTime" || body.type === "userFunding") return ok(opts.history?.(body) ?? [])
       if (body.type === "metaAndAssetCtxs")
         return ok([
-          { universe: [{ name: "BTC" }, { name: "ETH" }] },
+          {
+            universe: [
+              { name: "BTC", szDecimals: 5, maxLeverage: 40 },
+              { name: "ETH", szDecimals: 4, maxLeverage: 25 },
+            ],
+          },
           [{ midPx: opts.mid ?? "60000" }, { midPx: "3000" }],
         ])
       return ok({ assetPositions: [{ position: { coin: "BTC", szi: "-0.5" } }] })
@@ -133,7 +146,20 @@ async function fixture(opts: Options = {}) {
       if (opts.perpsDisabled) return new Response("404 Not Found", { status: 404 })
       if (url.pathname === "/api/v1/agent/perps/config") return ok({ success: true, builder: BUILDER })
       if (url.pathname === "/api/v1/agent/perps/setup" && opts.setupReady)
-        return ok({ success: true, ready: true, mode: "default", accountValue: "0", builder: BUILDER })
+        return ok({
+          success: true,
+          ready: true,
+          walletId: "wallet",
+          address: ADDRESS,
+          network: "mainnet",
+          mode: "default",
+          standardMode: true,
+          accountValue: "0",
+          withdrawable: "0",
+          builder: BUILDER,
+          approvedFeeTenthsBps: 100,
+          ...opts.setupAnswer,
+        })
       if (url.pathname === "/api/v1/agent/perps/positions")
         return ok({
           success: true,
@@ -408,4 +434,222 @@ test("close checks side and exact clamped size against the venue position", asyn
     expect(JSON.parse(f.stdout.text).code).toBe("PERPS_BUILD_REFUSED")
     expect(f.calls.some((c) => c.path.endsWith("/sign") || c.path === "/exchange")).toBe(false)
   }
+})
+
+// ── BE-1583 (spec 2026-10-17 C): setup mode, client order ids, fills and funding ─────────────
+
+describe("setup refuses an unsupported account mode", () => {
+  test("read from Hyperliquid before Candle is asked; nothing requested or signed", async () => {
+    for (const mode of ["unifiedAccount", "portfolioMargin", "dexAbstraction", "brandNew"]) {
+      for (const extra of [[], ["--yes"], ["--no-submit"]]) {
+        const f = await fixture({ mode, setupReady: true })
+        expect(await run(["perps", "setup", ...extra, "--json"], f.deps)).toBe(1)
+        const out = JSON.parse(f.stdout.text.trim())
+        expect(out.code).toBe("PERPS_ACCOUNT_MODE")
+        expect(out.message).toContain(`${mode} mode`)
+        expect(out.message).toContain("not a missing fee approval")
+        expect(f.calls.some((c) => c.path === "/api/v1/agent/perps/setup")).toBe(false)
+        expect(f.calls.find((c) => c.host === "api.hyperliquid.xyz")?.body).toEqual({
+          type: "userAbstraction",
+          user: ADDRESS,
+        })
+      }
+    }
+  })
+
+  test("an unreadable mode is PERPS_UNAVAILABLE, not a pass", async () => {
+    const f = await fixture({ mode: { nope: true }, setupReady: true })
+    expect(await run(["perps", "setup", "--json"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text.trim()).code).toBe("PERPS_UNAVAILABLE")
+    expect(f.calls.some((c) => c.path === "/api/v1/agent/perps/setup")).toBe(false)
+  })
+
+  test("a dishonest ready answer is refused: another mode, builder or wallet", async () => {
+    for (const setupAnswer of [{ mode: "disabled" }, { builder: OTHER }, { address: OTHER }, { standardMode: false }]) {
+      const f = await fixture({ setupReady: true, setupAnswer })
+      expect(await run(["perps", "setup", "--json"], f.deps)).toBe(1)
+      expect(JSON.parse(f.stdout.text.trim()).code).toBe("PERPS_BUILD_REFUSED")
+    }
+    const ok = await fixture({ setupReady: true, mode: "disabled", setupAnswer: { mode: "disabled" } })
+    expect(await run(["perps", "setup", "--json"], ok.deps)).toBe(0)
+  })
+})
+
+describe("--client-id", () => {
+  const ID = "0x0123456789abcdef0123456789abcdef"
+  const withId = (extra: Record<string, unknown> = {}) => {
+    const action = { ...orderAction(), orders: [{ ...orderAction().orders[0], c: ID }] }
+    return buildFor(action, { cloid: ID, clientId: ID, ...extra })
+  }
+
+  test("sent lowercased, held to the primary order's cloid, then signed as usual", async () => {
+    const f = await fixture({ build: withId() })
+    expect(await run([...OPEN, "--client-id", ID.toUpperCase().replace("0X", "0x")], f.deps)).toBe(0)
+    expect(f.calls[1]?.body).toMatchObject({ clientId: ID })
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ success: true, cloid: ID })
+  })
+
+  test("a replay is reported, and nothing is checked, signed or sent", async () => {
+    const replay = {
+      success: true,
+      replayed: true,
+      perpOrderId: "perp-1",
+      kind: "open",
+      network: "mainnet",
+      walletId: "wallet",
+      address: ADDRESS,
+      clientId: ID,
+      cloid: ID,
+      childCloids: [],
+      nonce: NONCE,
+      status: "filled",
+      venueStatus: "filled",
+      filledSz: "0.01",
+      preview: {},
+    }
+    const f = await fixture({ build: replay })
+    expect(await run([...OPEN, "--client-id", ID], f.deps)).toBe(0)
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ replayed: true, status: "filled" })
+    expect(f.stderr.text).toContain("Nothing was signed or sent")
+    expect(f.calls.some((c) => c.path.endsWith("/sign") || c.host === "api.hyperliquid.xyz")).toBe(false)
+    const close = await fixture({ build: { ...replay, kind: "close" } })
+    expect(await run(["perps", "close", "BTC", "--client-id", ID, "--yes", "--json"], close.deps)).toBe(0)
+    expect(close.calls.some((c) => c.path.endsWith("/sign"))).toBe(false)
+    // A replay nobody asked for, or for another id, is refused.
+    const unasked = await fixture({ build: replay })
+    expect(await run(OPEN, unasked.deps)).toBe(1)
+    const other = await fixture({ build: { ...replay, clientId: "0xfedcba9876543210fedcba9876543210" } })
+    expect(await run([...OPEN, "--client-id", ID], other.deps)).toBe(1)
+  })
+
+  test("an API that does not echo the id is refused before signing", async () => {
+    for (const build of [buildFor(orderAction()), withId({ clientId: undefined })]) {
+      const f = await fixture({ build })
+      expect(await run([...OPEN, "--client-id", ID], f.deps)).toBe(1)
+      expect(JSON.parse(f.stdout.text.trim()).code).toBe("PERPS_CLIENT_ID_UNSUPPORTED")
+      expect(f.calls.some((c) => c.path.endsWith("/sign"))).toBe(false)
+    }
+  })
+
+  test("a malformed id is a usage error before any request", async () => {
+    for (const argv of [
+      [...OPEN, "--client-id", "0x12"],
+      ["perps", "close", "BTC", "--client-id", "nope", "--json"],
+    ]) {
+      const f = await fixture()
+      expect(await run(argv, f.deps)).toBe(2)
+      expect(f.calls).toEqual([])
+    }
+  })
+})
+
+describe("fills and funding", () => {
+  const fill = (time: number, tid: number, coin = "BTC") => ({
+    coin,
+    px: "60000.5",
+    sz: "0.01",
+    side: "B",
+    dir: "Open Long",
+    time,
+    closedPnl: "-1.5",
+    fee: "0.3",
+    builderFee: "0.06",
+    feeToken: "USDC",
+    tid,
+    oid: tid + 100,
+    hash: "0x1",
+  })
+
+  test("read directly from Hyperliquid with a read-only key and no signer; Candle only lists the wallets", async () => {
+    const f = await fixture({ scopes: ["account:read"], history: () => [fill(5, 1), fill(6, 2, "@107")] })
+    f.deps.store = createFakeStore({})
+    expect(await run(["perps", "fills", "--start-time", "0", "--end-time", "10", "--json"], f.deps)).toBe(0)
+    const page = JSON.parse(f.stdout.text.trim())
+    expect(page).toMatchObject({
+      success: true,
+      walletId: "wallet",
+      address: ADDRESS,
+      network: "mainnet",
+      source: "hyperliquid",
+      startTime: 0,
+      endTime: 10,
+      nextCursor: null,
+      hasMore: false,
+      truncated: false,
+    })
+    expect(page.fills.map((r: { tid: number }) => r.tid)).toEqual([1])
+    expect(page.fills[0].closedPnl).toBe("-1.5")
+    expect(page.warnings[0].code).toBe("PERPS_HISTORY_RETENTION_LIMIT")
+    expect(f.calls.filter((c) => c.host !== "api.hyperliquid.xyz").map((c) => c.path)).toEqual([
+      "/api/v1/agent/wallets/trading",
+    ])
+  })
+
+  test("human output: UTC window, two-decimal money, the next-page command", async () => {
+    const rows = [fill(1_790_000_000_000, 1), fill(1_790_000_000_001, 2)]
+    const f = await fixture({ history: () => rows })
+    expect(
+      await run(
+        ["perps", "fills", "--limit", "1", "--start-time", "1789999999000", "--end-time", "1790000001000"],
+        f.deps,
+      ),
+    ).toBe(0)
+    const out = f.stdout.text
+    expect(out).toContain("2026-09-21T") // the UTC window
+    expect(out).toContain("closed P&L -1.50 (gross), fee 0.30 USDC, builder fee 0.06 (in fee)")
+    expect(out).toContain("Next page: candle perps fills --cursor ph1.")
+    expect(out).toContain("10,000 most recent fills")
+  })
+
+  test("funding is signed and labelled", async () => {
+    const f = await fixture({
+      history: () => [
+        {
+          time: 5,
+          hash: "0xa",
+          delta: { type: "funding", coin: "BTC", usdc: "-0.25", szi: "1", fundingRate: "0.0001" },
+        },
+      ],
+    })
+    expect(await run(["perps", "funding", "--start-time", "0", "--end-time", "10"], f.deps)).toBe(0)
+    expect(f.stdout.text).toContain("BTC paid 0.25 USDC, rate 0.0001, position 1")
+    expect(f.calls.find((c) => c.body?.type === "userFunding")?.body).toEqual({
+      type: "userFunding",
+      user: ADDRESS,
+      startTime: 0,
+      endTime: 10,
+    })
+  })
+
+  test("bad bounds, limits and cursors are usage errors before any read", async () => {
+    for (const argv of [
+      ["perps", "fills", "--start-time", "-5"],
+      ["perps", "fills", "--start-time", "10", "--end-time", "5"],
+      ["perps", "fills", "--limit", "2001"],
+      ["perps", "funding", "--limit", "501"],
+      ["perps", "fills", "--limit", "0"],
+      ["perps", "fills", "extra"],
+    ]) {
+      const f = await fixture()
+      expect([argv.join(" "), await run([...argv, "--json"], f.deps)]).toEqual([argv.join(" "), 2])
+      expect(f.calls).toEqual([])
+    }
+    const f = await fixture()
+    expect(await run(["perps", "fills", "--cursor", "garbage", "--json"], f.deps)).toBe(2)
+    expect(f.calls.some((c) => c.host === "api.hyperliquid.xyz")).toBe(false)
+  })
+
+  test("a rate limit is PERPS_UNAVAILABLE with retry guidance, never an empty success", async () => {
+    const f = await fixture({ history: () => [] })
+    const inner = f.deps.fetch
+    f.deps.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {}
+      if (body.type === "userFillsByTime") return new Response("", { status: 429, headers: { "retry-after": "3" } })
+      return inner(input, init)
+    }) as typeof fetch
+    expect(await run(["perps", "fills", "--json"], f.deps)).toBe(1)
+    const out = JSON.parse(f.stdout.text.trim())
+    expect(out.code).toBe("PERPS_UNAVAILABLE")
+    expect(out.suggestion).toContain("Retry after 3s")
+  })
 })

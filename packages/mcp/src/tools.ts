@@ -167,6 +167,9 @@ export const TOOL_NAMES = [
   "candle_perps_cancel",
   "candle_perps_orders",
   "candle_perps_positions",
+  // BE-1583: history read directly from Hyperliquid (perps.ts, perps-history.ts).
+  "candle_perps_fills",
+  "candle_perps_funding",
   "candle_perps_leverage",
   // Hyperliquid perps C (BE-647): the Relay deposit (perps.ts).
   "candle_perps_deposit",
@@ -1862,7 +1865,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       title: "Set up Hyperliquid perps",
       description:
         "Approve Candle's Hyperliquid builder fee (0.1%) once for the key's EVM TEE wallet, and report the " +
-        "account's mode and balance. Idempotent: nothing is signed when the approval is already on Hyperliquid." +
+        "account's mode and balance. Idempotent: nothing is signed when the approval is already on Hyperliquid. " +
+        "Refused (PERPS_ACCOUNT_MODE) unless Hyperliquid itself shows the account in standard mode." +
         perpsWrite,
       inputSchema: perpsShapes.candle_perps_setup,
     },
@@ -1877,7 +1881,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "Open or add to a perpetual position on Hyperliquid's main perp exchange: a market order (IOC within " +
         "slippageBps of the mid) without `price`, a limit order with it, and optional reduce-only takeProfit and " +
         "stopLoss triggers. Every plan except Max pays Candle a builder fee on each order (0.1% today; perpFeeBps in " +
-        "candle_get_plans); Max pays none." +
+        "candle_get_plans); Max pays none. Pass clientId to make a retry return the original order instead of placing another." +
         perpsWrite,
       inputSchema: perpsShapes.candle_perps_open,
     },
@@ -1890,7 +1894,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       title: "Close a perps position",
       description:
         "Close all or part of a position with a reduce-only IOC order. It reserves nothing, so a key at its USD " +
-        "cap can still close." +
+        "cap can still close. With clientId, a retry after the close filled returns that close, not a new one." +
         perpsWrite,
       inputSchema: perpsShapes.candle_perps_close,
     },
@@ -1930,6 +1934,40 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: perpsShapes.candle_perps_positions,
     },
     perpsTool("candle_perps_positions"),
+  )
+
+  const historyNote =
+    " Read directly from Hyperliquid's public /info for the key's EVM TEE wallet (Candle only resolves which wallet; " +
+    "the API key never goes to Hyperliquid), so any key that can list its wallets can read it and no signer is needed. " +
+    "Wallet-level live venue data, not Candle's ledger and not an all-time total. Default window: the last 7 days, " +
+    "fixed on the first page; pass nextCursor back as cursor for the next. truncated means coverage stopped short " +
+    "(warnings say why). Rate limits and timeouts are errors (PERPS_UNAVAILABLE), never an empty page. Reads only."
+
+  register(
+    "candle_perps_fills",
+    {
+      title: "Perps fills",
+      description:
+        "One page of the wallet's Hyperliquid perp fills: time, coin, side, size, price, closedPnl (gross), fee " +
+        "(already includes builderFee; never subtract it again). Hyperliquid serves only the 10,000 most recent " +
+        "fills." +
+        historyNote,
+      inputSchema: perpsShapes.candle_perps_fills,
+    },
+    perpsTool("candle_perps_fills"),
+  )
+
+  register(
+    "candle_perps_funding",
+    {
+      title: "Perps funding",
+      description:
+        "One page of the wallet's Hyperliquid funding payments: time, coin, signed USDC (negative was paid, " +
+        "positive received), funding rate and position size. At most 500 rows a page." +
+        historyNote,
+      inputSchema: perpsShapes.candle_perps_funding,
+    },
+    perpsTool("candle_perps_funding"),
   )
 
   register(

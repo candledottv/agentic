@@ -771,6 +771,8 @@ describe("keys create --access (R17)", () => {
   ]
   // Both generations of spellings send identical scopes, without deprecation output.
   LEVELS.push(["write", LEVELS[1]?.[1] ?? []], ["withdraw", LEVELS[2]?.[1] ?? []], ["transfer", LEVELS[2]?.[1] ?? []])
+  // Trade perps (BE-1583, 2026-10-17 C spec, section 7): exactly these two, nothing else.
+  LEVELS.push(["trade-perps", ["account:read", "perps:write"]])
   for (const [level, scopes] of LEVELS) {
     test(`--access ${level} sends exactly the preset's scope list`, async () => {
       const { fetch, calls } = createRoutedFetch({
@@ -841,6 +843,38 @@ describe("keys create --access (R17)", () => {
     const stderr = createCapture()
     const code = await run(
       ["keys", "create", "--access", "full"],
+      createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }), stderr }),
+    )
+    expect(code).toBe(2)
+    expect(calls).toHaveLength(0)
+    expect(stderr.text).toContain("read, write, withdraw")
+  })
+
+  test("trade-perps names perps:write when the key is minted, and Trade perps is its Access", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () =>
+        jsonResponse(200, {
+          success: true,
+          key: "ck_live_FIXTURE_PERPS_KEY",
+          keyPrefix: "ck_liveprp",
+          scopes: ["account:read", "perps:write"],
+          environment: "production",
+        }),
+    })
+    const stdout = createCapture()
+    const code = await run(
+      ["keys", "create", "--access", "trade-perps"],
+      createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }), stdout }),
+    )
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("perps:write (trades Hyperliquid perps")
+  })
+
+  test("keys access cannot move a key to trade-perps: the access change knows only three levels", async () => {
+    const { fetch, calls } = createRoutedFetch({})
+    const stderr = createCapture()
+    const code = await run(
+      ["keys", "access", "abcd1234", "--access", "trade-perps"],
       createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }), stderr }),
     )
     expect(code).toBe(2)

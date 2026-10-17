@@ -45,6 +45,8 @@ import {
   perpsCancel,
   perpsClose,
   perpsDeposit,
+  perpsFills,
+  perpsFunding,
   perpsLeverage,
   perpsOpen,
   perpsOrders,
@@ -209,6 +211,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       close: perpsClose,
       cancel: perpsCancel,
       orders: perpsOrders,
+      fills: perpsFills,
+      funding: perpsFunding,
       positions: perpsPositions,
       leverage: perpsLeverage,
       // BE-1573 (withdrawals W1): HyperCore to the key's own Solana or Hood TEE wallet, under the

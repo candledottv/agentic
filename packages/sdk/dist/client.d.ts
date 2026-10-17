@@ -43,6 +43,7 @@ import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliqui
 import { type PerpsBookOptions, type PerpsBookResult, type PerpsCandlesOptions, type PerpsCandlesResult, type PerpsMarketResult, type PerpsMarketsOptions, type PerpsMarketsResult } from "./hyperliquid-markets";
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
 import { type PerpsWithdrawAuthorization, type PerpsWithdrawBuild, type PerpsWithdrawPins } from "./hyperliquid-withdraw";
+import { type PerpsFillsPage, type PerpsFundingPage, type PerpsHistoryOptions } from "./perps-history";
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans";
 import type { SecretStore } from "./secret-store";
 import type { CandleStaking } from "./staking";
@@ -1808,12 +1809,22 @@ export interface PerpsOpenParams extends PerpsWalletRef {
     takeProfit?: string;
     /** Optional reduce-only stop-loss trigger price. */
     stopLoss?: string;
+    /**
+     * Optional client order id: `0x` and 32 hex digits, chosen by the caller and used as the order's
+     * cloid. A retry with the same id and the same request returns the original operation
+     * (`replayed: true`) instead of placing another order; the same id with a different request is
+     * refused (`PERPS_CLIENT_ID_CONFLICT`). It deduplicates, it does not resume: a retry never signs or
+     * submits, so a build-only first call stays unsubmitted. Use a new id for a genuinely new order.
+     */
+    clientId?: string;
 }
 export interface PerpsCloseParams extends PerpsWalletRef {
     coin: string;
     /** Part of the position to close; the whole position when omitted. */
     size?: string;
     slippageBps?: number;
+    /** Optional client order id, as on `PerpsOpenParams.clientId`. */
+    clientId?: string;
 }
 export interface PerpsCancelParams extends PerpsWalletRef {
     /** The cloid of an order Candle built (an open, or one of its take-profit / stop-loss legs). */
@@ -1867,11 +1878,46 @@ export interface PerpsBuild {
  * statuses for an order).
  */
 export interface PerpsActionResult {
+    replayed?: false;
     build: PerpsBuild;
     signature: string | null;
     submitted: boolean;
     exchange: unknown | null;
     submitError?: string;
+}
+/**
+ * The original operation a client order id already names, as `POST /perps/open` or `/perps/close`
+ * returns it for a retry (spec 2026-10-17 C, section 8). Nothing signable: `status` is Candle's
+ * record (`building` / `built` mean not yet seen on the venue), `venueStatus` what reconcile observed.
+ */
+export interface PerpsReplay {
+    success: true;
+    replayed: true;
+    perpOrderId: string;
+    kind: "open" | "close";
+    network: HyperliquidNetwork;
+    walletId: string;
+    address: string;
+    clientId: string;
+    cloid: string;
+    childCloids: string[];
+    nonce: number;
+    status: string;
+    venueStatus: string | null;
+    filledSz: string | null;
+    notionalUsdMicros: number | null;
+    builtAt: number;
+    settledAt: number | null;
+    preview: Record<string, unknown> | null;
+}
+/** A retry under a client order id: the original operation, and nothing signed, submitted or charged. */
+export interface PerpsReplayResult {
+    replayed: true;
+    replay: PerpsReplay;
+    build: null;
+    signature: null;
+    submitted: false;
+    exchange: null;
 }
 /** `POST /agent/perps/withdraw`: a quote for a withdrawal to this key's own Solana or Hood TEE wallet. */
 export interface PerpsWithdrawBuildRequest {
@@ -1995,6 +2041,8 @@ export interface PerpsOrderRecord {
     coin: string | null;
     nonce: number;
     cloid: string | null;
+    /** The caller's client order id, on rows built with one (absent from an older API). */
+    clientId?: string | null;
     childCloids: string[];
     targetCloid: string | null;
     status: string;
@@ -2103,7 +2151,6 @@ export interface PerpsDepositResult {
     /** `/perps/deposit/submit`'s final answer: `status: "submitted"` and the chain hashes. */
     result: Record<string, unknown> | null;
 }
-/** Why a deposit build must not be signed, or null. */
 export declare function perpsDepositProblem(build: PerpsDepositBuild, params: PerpsDepositParams): string | null;
 /**
  * The base assets `swap()` converts between. Inlined rather than imported from `@candle/shared`'s
@@ -3355,10 +3402,19 @@ export declare class CandleClient {
      * it, and reports the account's mode and balance. Idempotent.
      */
     perpsSetup(params: PerpsWalletRef): Promise<PerpsSetupResult>;
-    /** Open (or add to) a position: build, check, sign through the relay, submit to Hyperliquid. */
-    perpsOpen(params: PerpsOpenParams): Promise<PerpsActionResult>;
-    /** Close all or part of a position with a reduce-only IOC order. Reserves nothing. */
-    perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult>;
+    /**
+     * Open (or add to) a position: build, check, sign through the relay, submit to Hyperliquid. With
+     * `clientId`, a retry of the same request returns the original operation (`replayed: true`).
+     */
+    perpsOpen(params: PerpsOpenParams & {
+        clientId?: undefined;
+    }): Promise<PerpsActionResult>;
+    perpsOpen(params: PerpsOpenParams): Promise<PerpsActionResult | PerpsReplayResult>;
+    /** Close all or part of a position with a reduce-only IOC order. Reserves nothing. Takes `clientId` as open does. */
+    perpsClose(params: PerpsCloseParams & {
+        clientId?: undefined;
+    }): Promise<PerpsActionResult>;
+    perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult | PerpsReplayResult>;
     /** Cancel an order Candle built, by its cloid. */
     perpsCancel(params: PerpsCancelParams): Promise<PerpsActionResult>;
     /** Change a resting order's price or size. The replacement gets a new cloid. */
@@ -3373,6 +3429,20 @@ export declare class CandleClient {
     perpsOrders(walletId: string, opts?: {
         limit?: number;
     }): Promise<PerpsOrders>;
+    /**
+     * One page of the wallet's fills, read directly from Hyperliquid's `/info` (spec 2026-10-17 C,
+     * sections 3 and 4). Candle resolves only the wallet's address; no Candle credential reaches
+     * Hyperliquid, and a read-capable key is enough. Default window: the last seven days, fixed on the
+     * first page; pass `nextCursor` back as `cursor` for the next one. Live venue data for this wallet,
+     * not Candle's ledger and not an all-time total: Hyperliquid serves only the 10,000 most recent
+     * fills. `closedPnl` is gross and `fee` already includes `builderFee`. Throws `PerpsHistoryError`.
+     */
+    perpsFillsPage(walletId: string, options?: PerpsHistoryOptions): Promise<PerpsFillsPage>;
+    /** One page of the wallet's funding payments, as `perpsFillsPage()` reads fills. `delta.usdc` is signed: negative was paid. */
+    perpsFundingPage(walletId: string, options?: PerpsHistoryOptions): Promise<PerpsFundingPage>;
+    private perpsHistoryPage;
+    /** The address of an EVM TEE wallet bound to this key, from Candle's own list of the key's wallets. */
+    private perpsWalletAddress;
     /** Fills, read live from Hyperliquid by the wallet's address. */
     perpsFills(walletId: string): Promise<{
         success: true;

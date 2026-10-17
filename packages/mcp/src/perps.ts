@@ -17,6 +17,12 @@
  * `CANDLE_HYPERLIQUID_BUILDER` pins Candle's builder; unset, this release's constant applies when
  * it carries one, else the builder `/perps/config` reports. `CANDLE_HYPERLIQUID_NETWORK=testnet`
  * trades testnet.
+ *
+ * BE-1583 (spec 2026-10-17-hyperliquid-phase1-c-small-items-design.md): `candle_perps_fills` and
+ * `candle_perps_funding` page history straight from Hyperliquid's `/info` (`perps-history.ts`, the
+ * SDK's file byte for byte) and need only the API key; setup reads the account mode from
+ * Hyperliquid first and checks Candle's answer, `ready` included; open and close take `clientId`,
+ * and a retry under it returns the original operation with nothing signed.
  */
 import { createPrivateKey, sign } from "node:crypto"
 import { readFile } from "node:fs/promises"
@@ -25,16 +31,20 @@ import type { RequestConfig } from "./client"
 import {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   HYPERLIQUID_EXCHANGE_URLS,
+  HYPERLIQUID_STANDARD_ACCOUNT_MODES,
   type HyperliquidNetwork,
   type HyperliquidTypedData,
+  hyperliquidAccountMode,
   hyperliquidCanonicalJson,
   hyperliquidCloseOrder,
   hyperliquidExchangeBody,
   hyperliquidOrderMarket,
   hyperliquidRelayBody,
+  perpsSetupStatusProblem,
   verifyPerpsBuild,
 } from "./hyperliquid"
 import type { FetchLike, ToolText } from "./orchestrate"
+import { PERPS_HISTORY_MAX_LIMIT, PerpsHistoryError, readPerpsHistoryPage } from "./perps-history"
 
 export const PERPS_TOOL_NAMES = [
   "candle_perps_setup",
@@ -43,6 +53,8 @@ export const PERPS_TOOL_NAMES = [
   "candle_perps_cancel",
   "candle_perps_orders",
   "candle_perps_positions",
+  "candle_perps_fills",
+  "candle_perps_funding",
   "candle_perps_leverage",
 ] as const
 export type PerpsToolName = (typeof PERPS_TOOL_NAMES)[number]
@@ -53,6 +65,28 @@ const wallet = z
   .optional()
   .describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.")
 const submit = z.boolean().optional().describe("false: build and check only, sign and submit nothing. Default true.")
+const clientId = z
+  .string()
+  .regex(/^0x[0-9a-fA-F]{32}$/)
+  .optional()
+  .describe(
+    "Optional client order id (0x + 32 hex) used as the order's cloid. Retrying with the same id and request returns " +
+      "the original operation (replayed: true) and signs nothing; the same id with another request is refused " +
+      "(PERPS_CLIENT_ID_CONFLICT). It deduplicates, it does not resume. Use a new id for a new order.",
+  )
+const epochMs = z.number().int().min(0)
+const history = (max: number) => ({
+  wallet,
+  startTime: epochMs.optional().describe("Inclusive epoch milliseconds. Default: 7 days before endTime."),
+  endTime: epochMs.optional().describe("Inclusive epoch milliseconds. Default: now, fixed into the cursor."),
+  limit: z.number().int().min(1).max(max).optional().describe(`Rows per page (default 100, at most ${max}).`),
+  cursor: z
+    .string()
+    .min(1)
+    .max(200_000)
+    .optional()
+    .describe("nextCursor from the previous page. The window and limit must not change."),
+})
 
 export const perpsShapes = {
   candle_perps_setup: { wallet, submit },
@@ -65,6 +99,7 @@ export const perpsShapes = {
     slippageBps: z.number().int().min(1).optional(),
     takeProfit: decimal.optional().describe("Reduce-only take-profit trigger price"),
     stopLoss: decimal.optional().describe("Reduce-only stop-loss trigger price"),
+    clientId,
     wallet,
     submit,
   },
@@ -72,6 +107,7 @@ export const perpsShapes = {
     coin: z.string(),
     size: decimal.optional().describe("Part of the position to close; the whole position when omitted"),
     slippageBps: z.number().int().min(1).optional(),
+    clientId,
     wallet,
     submit,
   },
@@ -85,6 +121,8 @@ export const perpsShapes = {
   },
   candle_perps_orders: { wallet, limit: z.number().int().min(1).max(200).optional() },
   candle_perps_positions: { wallet },
+  candle_perps_fills: history(PERPS_HISTORY_MAX_LIMIT.fills),
+  candle_perps_funding: history(PERPS_HISTORY_MAX_LIMIT.funding),
   candle_perps_leverage: {
     coin: z.string(),
     leverage: z.number().int().min(1),
@@ -101,6 +139,8 @@ const PATHS: Record<PerpsToolName, string> = {
   candle_perps_cancel: "/api/v1/agent/perps/cancel",
   candle_perps_orders: "/api/v1/agent/perps/orders",
   candle_perps_positions: "/api/v1/agent/perps/positions",
+  candle_perps_fills: "",
+  candle_perps_funding: "",
   candle_perps_leverage: "/api/v1/agent/perps/leverage",
 }
 
@@ -205,6 +245,36 @@ export async function executePerps(
       if (typeof args.limit === "number") query.set("limit", String(args.limit))
       return { text: JSON.stringify(await call(cfg, fetch, "GET", `${PATHS[tool]}?${query}`)) }
     }
+    if (tool === "candle_perps_fills" || tool === "candle_perps_funding") {
+      // Candle resolves only which EVM TEE wallet is this key's; the history comes straight from
+      // Hyperliquid, and the API key never goes there.
+      const { row } = await walletFor(cfg, fetch, name)
+      try {
+        const page = await readPerpsHistoryPage({
+          kind: tool === "candle_perps_fills" ? "fills" : "funding",
+          network,
+          walletId: row.id,
+          address: row.address,
+          options: {
+            ...(typeof args.startTime === "number" ? { startTime: args.startTime } : {}),
+            ...(typeof args.endTime === "number" ? { endTime: args.endTime } : {}),
+            ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+            ...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}),
+          },
+          fetch: fetch as never,
+          now: Date.now,
+        })
+        return { text: JSON.stringify(page) }
+      } catch (error) {
+        if (error instanceof PerpsHistoryError)
+          return fail(error.code, error.message, {
+            ...(error.extra.field ? { field: error.extra.field } : {}),
+            ...(error.extra.retryable ? { retryable: true } : {}),
+            ...(error.extra.retryAfterMs !== undefined ? { retryAfterMs: error.extra.retryAfterMs } : {}),
+          })
+        throw error
+      }
+    }
 
     // A write. The signer is checked before any build, so a server that cannot sign stamps nothing.
     const willSubmit = args.submit !== false
@@ -225,14 +295,53 @@ export async function executePerps(
     }
     const { row, appId } = await walletFor(cfg, fetch, name, "perps:write")
     const builder = await builderPin(cfg, fetch, env)
-    const { wallet: _w, submit: _s, ...fields } = args
+    const { wallet: _w, submit: _s, ...rest } = args
+    const clientId = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined
+    const fields: Record<string, unknown> = { ...rest, ...(clientId !== undefined ? { clientId } : {}) }
+    const method = PATHS[tool].split("/").at(-1) as "setup" | "open" | "close" | "cancel" | "leverage"
+    // Setup (spec 2026-10-17 C, section 5): the mode is read from Hyperliquid before Candle is asked.
+    let mode: string | undefined
+    if (method === "setup") {
+      try {
+        mode = await hyperliquidAccountMode(fetch as never, network, row.address)
+      } catch (error) {
+        return fail(
+          "PERPS_UNAVAILABLE",
+          `${error instanceof Error ? error.message : "Cannot read the account mode"}. Nothing was requested.`,
+        )
+      }
+      if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
+        return fail(
+          "PERPS_ACCOUNT_MODE",
+          `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`,
+          { mode },
+        )
+    }
     const build = await call(cfg, fetch, "POST", PATHS[tool], {
       walletId: row.id,
       ...fields,
       ...(tool === "candle_perps_open" ? { type: fields.price === undefined ? "market" : "limit" } : {}),
     })
+    if (method === "setup") {
+      const problem = perpsSetupStatusProblem(build, { network, address: row.address, builder, mode: mode as string })
+      if (problem) return fail("PERPS_BUILD_REFUSED", `Refused this setup answer: ${problem}. Nothing was signed.`)
+    }
     if (build.ready === true) return { text: JSON.stringify(build) }
-    const method = PATHS[tool].split("/").at(-1) as "setup" | "open" | "close" | "cancel" | "leverage"
+    // A retry under a client order id: the original operation, and nothing signed or sent.
+    if (build.replayed === true) {
+      if (clientId === undefined || build.clientId !== clientId || build.walletId !== row.id)
+        return fail(
+          "PERPS_BUILD_REFUSED",
+          "Refused a replay that does not name this request's client id and wallet. Nothing was signed.",
+        )
+      return { text: JSON.stringify(build) }
+    }
+    // An API that predates client ids drops the field and builds under a random cloid: refused.
+    if (clientId !== undefined && (build.clientId !== clientId || build.cloid !== clientId))
+      return fail(
+        "PERPS_CLIENT_ID_UNSUPPORTED",
+        "This Candle API did not echo the client order id, so a retry could not be recognized. Nothing was signed.",
+      )
     const check = verifyPerpsBuild(build as never, {
       builder,
       network,

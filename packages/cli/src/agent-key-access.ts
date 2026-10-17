@@ -1,7 +1,7 @@
 /**
- * What an agent key GRANTS, in one place: the scope mirror, the three portal presets, the
- * capability chips, and the inverse that turns a key's stored scopes back into `Read` /
- * `Write` / `Withdraw`.
+ * What an agent key GRANTS, in one place: the scope mirror, the presets, the capability chips, and
+ * the inverse that turns a key's stored scopes back into `Read` / `Write` / `Withdraw` /
+ * `Trade perps`.
  *
  * The web imports this through `@candle/shared`. The CLI carries a byte-identical copy
  * (`packages/cli/src/agent-key-access.ts`), because the CLI is published alone into the agentic
@@ -16,8 +16,8 @@
  * dependency-free convention the agent SDK follows for this same string union. Order matches the
  * API's own array.
  *
- * Deliberately NOT the API's whole list: `lp:write`, `entitlement:read` and `hacc:sync` are
- * absent, and stay absent. The two partner-only scopes cannot be named through self-service
+ * Deliberately NOT the API's whole list: `lp:write`, `perps:withdraw`, `entitlement:read` and
+ * `hacc:sync` are absent, and stay absent. The two partner-only scopes cannot be named through self-service
  * issuance at all, and `lp:write` was never part of Full Access, so adding it here would widen
  * what Write grants (Read and Read:Write agent key scopes, 2026-09-22 spec, A5 and 3.8).
  * `scripts/check-agent-key-scope-mirrors.test.ts` checks this mirror carries `account:read`.
@@ -38,23 +38,29 @@ export const AGENT_KEY_SCOPES = [
   // wallets the owner linked while signed in or marked trusted, or to that wallet's own vault.
   // Only the third preset grants it; never Write.
   "transfer:bound",
+  // Hyperliquid perps (2026-10-01 spec, HL-ED-3): set up and trade perps from the key's EVM TEE
+  // wallet under its limits. Owner-granted and in no default; only the Trade perps preset names it
+  // (2026-10-17 C spec, section 7). It moves no funds off the account: no transfer, no withdrawal.
+  "perps:write",
 ] as const
 export type AgentKeyScope = (typeof AGENT_KEY_SCOPES)[number]
 
 /**
- * Three presets. Read and Read:Write (2026-09-22 spec, R1) replaced "Launch only" / "Full
+ * Four presets. Read and Read:Write (2026-09-22 spec, R1) replaced "Launch only" / "Full
  * access": the old split asked "can this key move funds", and every read on the account rode
  * along on whichever WRITE scope gated it, so there was no way to grant reading without granting
  * doing. Read:Write:Transfer (2026-09-24 spec, D1 / R3) is Write plus `transfer:bound`: the
  * same key can also move funds out of the wallet it is bound to, to the account's own wallets.
  * Since the 2026-10-08 spec (D1) it also holds `transfer:write`, which Write no longer does, so
- * Withdraw is the one preset that moves funds.
+ * Withdraw is the one preset that moves funds. Trade perps (2026-10-17 C spec, section 7) reads the
+ * account and trades Hyperliquid perps, and nothing else; it is minted from the CLI, and no web
+ * picker offers it yet.
  *
  * The ids are new rather than reused (`launcher` / `full`) on purpose: `scopesForPreset("full")`
  * would otherwise keep a name no surface shows, and the retired Launch Only must not survive as
  * a code path.
  */
-export type AgentKeyPreset = "read" | "readwrite" | "readwritetransfer"
+export type AgentKeyPreset = "read" | "readwrite" | "readwritetransfer" | "tradeperps"
 
 /** Read: see the account, change nothing. One member, so the guarantee is legible from the list. */
 const READ_SCOPES: readonly AgentKeyScope[] = ["account:read"]
@@ -91,6 +97,16 @@ const READWRITETRANSFER_SCOPES: readonly AgentKeyScope[] = [
 ]
 
 /**
+ * Trade perps (2026-10-17 C spec, section 7): read the account, and set up and trade Hyperliquid
+ * perps under the key's existing limits. Exactly these two, as an EXPLICIT list. Not Write plus
+ * perps: it cannot trade tokens, launch or move funds. Deposit's `swap:write` and the withdrawal
+ * scope `perps:withdraw` stay separate explicit grants, so a Trade perps key cannot fund its own
+ * Hyperliquid account through Relay. Minted through `POST /keys` (`candle keys create --access
+ * trade-perps`); the device-approval page still refuses `perps:write`.
+ */
+const TRADEPERPS_SCOPES: readonly AgentKeyScope[] = ["account:read", "perps:write"]
+
+/**
  * Scopes granted by each portal preset, sent verbatim as `POST /keys`'s `scopes` field.
  *   read              -- `account:read` only: trades, positions, P&L, transactions, workers, the
  *                        tier snapshot, and the hacc.fun tape; no trades, no launches, no transfers.
@@ -100,6 +116,8 @@ const READWRITETRANSFER_SCOPES: readonly AgentKeyScope[] = [
  *                        the account's own wallets and to approved addresses, and out of the
  *                        wallet the key runs to the owner's session-linked or trusted wallets and
  *                        its vault.
+ *   tradeperps        -- `account:read` and `perps:write` only: Hyperliquid perps setup and orders
+ *                        under the key's limits; no token trades, launches, transfers or withdrawals.
  */
 export function scopesForPreset(preset: AgentKeyPreset): AgentKeyScope[] {
   switch (preset) {
@@ -109,6 +127,8 @@ export function scopesForPreset(preset: AgentKeyPreset): AgentKeyScope[] {
       return [...READWRITE_SCOPES]
     case "readwritetransfer":
       return [...READWRITETRANSFER_SCOPES]
+    case "tradeperps":
+      return [...TRADEPERPS_SCOPES]
   }
 }
 
@@ -117,6 +137,7 @@ export const AGENT_KEY_PRESET_LABELS = {
   read: "Read",
   readwrite: "Write",
   readwritetransfer: "Withdraw",
+  tradeperps: "Trade perps",
 } as const satisfies Record<AgentKeyPreset, string>
 
 function sameSet(scopes: readonly string[], preset: readonly string[]): boolean {
@@ -134,6 +155,7 @@ export function presetForScopes(scopes: readonly string[]): AgentKeyPreset | nul
   if (sameSet(scopes, READ_SCOPES)) return "read"
   if (sameSet(scopes, READWRITE_SCOPES)) return "readwrite"
   if (sameSet(scopes, READWRITETRANSFER_SCOPES)) return "readwritetransfer"
+  if (sameSet(scopes, TRADEPERPS_SCOPES)) return "tradeperps"
   return null
 }
 

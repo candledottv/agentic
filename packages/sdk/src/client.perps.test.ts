@@ -80,6 +80,12 @@ function orderBuild(action?: Record<string, unknown>): PerpsBuild {
 }
 
 const OPEN = { walletId: WALLET, privyWalletId: PRIVY_WALLET, coin: "BTC", side: "long" as const, size: "0.01" }
+const ADDRESS = "0x14791697260e4c9a71f18484c9f997b308e59325"
+/** Candle's list of the key's TEE wallets, which resolves the wallet id to its Hyperliquid account. */
+const trading = (rows = [{ id: WALLET, address: ADDRESS, chain: "evm" }]) =>
+  json(200, { success: true, page: rows, isDone: true, continueCursor: null })
+/** Hyperliquid's `userAbstraction`. */
+const abstraction = (mode = "default") => json(200, mode)
 
 /** Hyperliquid's `/info` metaAndAssetCtxs: BTC at index 0, ETH at 1. */
 const market = (btcMid = "60000") =>
@@ -231,7 +237,7 @@ describe("perpsSetup", () => {
       success: true,
       ready: true,
       walletId: WALLET,
-      address: "0xabc",
+      address: ADDRESS,
       network: "mainnet",
       mode: "default",
       standardMode: true,
@@ -240,11 +246,61 @@ describe("perpsSetup", () => {
       builder: BUILDER,
       approvedFeeTenthsBps: 100,
     }
-    const { client: c, calls } = await client([json(200, status)])
+    const { client: c, calls } = await client([trading(), abstraction(), json(200, status)])
     const result = await c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })
     expect(result.ready).toBe(true)
     expect(result.action).toBeUndefined()
-    expect(calls).toHaveLength(1)
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.test/api/v1/agent/wallets/trading",
+      "https://api.hyperliquid.xyz/info",
+      "https://api.test/api/v1/agent/perps/setup",
+    ])
+    expect(calls[1]?.body).toEqual({ type: "userAbstraction", user: ADDRESS })
+  })
+
+  // Spec 2026-10-17 C, section 5.
+  test("an unsupported mode on Hyperliquid is refused before setup is requested", async () => {
+    for (const mode of ["unifiedAccount", "portfolioMargin", "dexAbstraction", "unknownNewMode"]) {
+      const { client: c, calls } = await client([trading(), abstraction(mode)])
+      await expect(c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })).rejects.toThrow(
+        `PERPS_ACCOUNT_MODE: the account is in ${mode} mode`,
+      )
+      expect(calls.some((call) => call.url.endsWith("/perps/setup"))).toBe(false)
+    }
+  })
+
+  test("an unreadable mode is an error, not a pass", async () => {
+    const { client: c, calls } = await client([trading(), json(200, { mode: "default" })])
+    await expect(c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })).rejects.toThrow("account mode")
+    expect(calls).toHaveLength(2)
+  })
+
+  test("a dishonest ready answer is refused: another mode, builder, wallet or a missing approval", async () => {
+    const honest = {
+      success: true,
+      ready: true,
+      walletId: WALLET,
+      address: ADDRESS,
+      network: "mainnet",
+      mode: "default",
+      standardMode: true,
+      accountValue: "10",
+      withdrawable: "10",
+      builder: BUILDER,
+      approvedFeeTenthsBps: 100,
+    }
+    for (const lie of [
+      { mode: "disabled" },
+      { builder: OTHER },
+      { address: OTHER },
+      { network: "testnet" },
+      { approvedFeeTenthsBps: 0 },
+    ]) {
+      const { client: c } = await client([trading(), abstraction(), json(200, { ...honest, ...lie })])
+      await expect(c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })).rejects.toThrow(
+        "refused this setup answer",
+      )
+    }
   })
 
   test("not ready: the approval is checked against the pinned builder, then signed and submitted", async () => {
@@ -270,6 +326,8 @@ describe("perpsSetup", () => {
       approvedFeeTenthsBps: 0,
     }
     const { client: c, calls } = await client([
+      trading(),
+      abstraction(),
       json(200, { ...setup, builder: BUILDER }),
       json(200, { success: true, signature: SIGNATURE }),
       json(200, { status: "ok", response: { type: "default" } }),
@@ -277,7 +335,7 @@ describe("perpsSetup", () => {
     const result = await c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })
     expect(result.ready).toBe(false)
     expect(result.action?.submitted).toBe(true)
-    expect((calls[2]?.body as { action: unknown }).action).toEqual(setup.action)
+    expect((calls[4]?.body as { action: unknown }).action).toEqual(setup.action)
   })
 
   test("an approval for another builder is refused", async () => {
@@ -295,11 +353,18 @@ describe("perpsSetup", () => {
         nonce,
       },
       ready: false,
-      builder: OTHER,
+      mode: "default",
+      standardMode: true,
+      builder: BUILDER,
     }
-    const { client: c, calls } = await client([json(200, setup)])
+    const { client: c, calls } = await client([trading(), abstraction(), json(200, setup)])
     await expect(c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })).rejects.toThrow("refused to sign")
-    expect(calls).toHaveLength(1)
+    expect(calls).toHaveLength(3)
+    // And the answer naming that other builder is refused before the action is even checked.
+    const { client: c2 } = await client([trading(), abstraction(), json(200, { ...setup, builder: OTHER })])
+    await expect(c2.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })).rejects.toThrow(
+      "refused this setup answer",
+    )
   })
 })
 
@@ -401,4 +466,170 @@ test("SDK closes verify the side and exact clamped size from venue state", async
       "https://api.hyperliquid.xyz/info",
     ])
   }
+})
+
+// ── Client order ids (spec 2026-10-17 C, section 8) ─────────────────────────────────────────
+
+describe("client order ids", () => {
+  const ID = "0x0123456789abcdef0123456789abcdef"
+  const withId = (extra: Record<string, unknown> = {}) => {
+    const action = {
+      type: "order",
+      orders: [{ a: 0, b: true, p: "60600", s: "0.01", r: false, t: { limit: { tif: "Ioc" } }, c: ID }],
+      grouping: "na",
+      builder: { b: BUILDER, f: 100 },
+    }
+    return { ...orderBuild(action), cloid: ID, clientId: ID, ...extra }
+  }
+  const replay = (extra: Record<string, unknown> = {}) => ({
+    success: true,
+    replayed: true,
+    perpOrderId: "perp-1",
+    kind: "open",
+    network: "mainnet",
+    walletId: WALLET,
+    address: ADDRESS,
+    clientId: ID,
+    cloid: ID,
+    childCloids: [],
+    nonce: 1,
+    status: "filled",
+    venueStatus: "filled",
+    filledSz: "0.01",
+    notionalUsdMicros: 606_000_000,
+    builtAt: 1,
+    settledAt: 2,
+    preview: {},
+    ...extra,
+  })
+
+  test("the id is sent lowercased and must be the primary order's cloid", async () => {
+    const { client: c, calls } = await client([json(200, withId()), market()])
+    const result = await c.perpsOpen({ ...OPEN, clientId: ID.toUpperCase().replace("0X", "0x"), submit: false })
+    expect(result.replayed).not.toBe(true)
+    expect(calls[0]?.body).toMatchObject({ clientId: ID })
+  })
+
+  test("a replay is returned before any check or signature", async () => {
+    const { client: c, calls } = await client([json(200, replay())])
+    const result = await c.perpsOpen({ ...OPEN, clientId: ID })
+    expect(result).toMatchObject({ replayed: true, build: null, signature: null, submitted: false })
+    if (result.replayed) expect(result.replay.status).toBe("filled")
+    expect(calls).toHaveLength(1)
+    const close = await client([json(200, replay({ kind: "close" }))])
+    expect((await close.client.perpsClose({ ...OPEN, clientId: ID })).replayed).toBe(true)
+    expect(close.calls).toHaveLength(1)
+  })
+
+  test("a replay for another id or wallet, or one nobody asked for, is refused", async () => {
+    for (const [answer, params] of [
+      [replay({ clientId: "0xfedcba9876543210fedcba9876543210" }), { ...OPEN, clientId: ID }],
+      [replay({ walletId: "other" }), { ...OPEN, clientId: ID }],
+      [replay(), OPEN],
+    ] as const) {
+      const { client: c } = await client([json(200, answer)])
+      await expect(c.perpsOpen(params)).rejects.toThrow("refused a replay")
+    }
+  })
+
+  test("an API that does not echo the id is refused before signing (an older API dropped it)", async () => {
+    for (const build of [orderBuild(), withId({ clientId: undefined }), withId({ cloid: `0x${"1".repeat(32)}` })]) {
+      const { client: c, calls } = await client([json(200, build)])
+      await expect(c.perpsOpen({ ...OPEN, clientId: ID })).rejects.toThrow("PERPS_CLIENT_ID_UNSUPPORTED")
+      expect(calls).toHaveLength(1)
+    }
+  })
+
+  test("an altered order id behind an honest echo is refused by the pre-sign check", async () => {
+    const forged = withId()
+    ;(forged.action.orders as { c: string }[])[0] = {
+      ...(forged.action.orders as Record<string, unknown>[])[0],
+      c: `0x${"9".repeat(32)}`,
+    } as never
+    forged.typedData = hyperliquidL1TypedData(hyperliquidActionHash(forged.action, forged.nonce), "mainnet")
+    const { client: c, calls } = await client([json(200, forged)])
+    await expect(c.perpsOpen({ ...OPEN, clientId: ID })).rejects.toThrow("client order id")
+    expect(calls).toHaveLength(1)
+  })
+
+  test("a malformed id is refused before any request", async () => {
+    const { client: c, calls } = await client([])
+    await expect(c.perpsOpen({ ...OPEN, clientId: "0x12" })).rejects.toThrow("clientId must be")
+    expect(calls).toHaveLength(0)
+  })
+})
+
+// ── History, direct from Hyperliquid (spec 2026-10-17 C, sections 3 and 4) ───────────────────
+
+describe("perpsFillsPage and perpsFundingPage", () => {
+  test("resolve the wallet through Candle, then read Hyperliquid directly with no Candle credential", async () => {
+    const { client: c, calls } = await client([
+      trading(),
+      json(200, [{ universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] }, [{ markPx: "1" }]]),
+      json(200, [
+        {
+          coin: "BTC",
+          px: "1",
+          sz: "1",
+          side: "B",
+          time: 5,
+          closedPnl: "0",
+          fee: "0.1",
+          tid: 1,
+          oid: 2,
+          hash: "0x1",
+        },
+      ]),
+    ])
+    const page = await c.perpsFillsPage(WALLET, { startTime: 0, endTime: 10 })
+    expect(page.fills).toHaveLength(1)
+    expect(page).toMatchObject({ walletId: WALLET, address: ADDRESS, network: "mainnet", source: "hyperliquid" })
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.test/api/v1/agent/wallets/trading",
+      "https://api.hyperliquid.xyz/info",
+      "https://api.hyperliquid.xyz/info",
+    ])
+    expect(calls[2]?.body).toEqual({
+      type: "userFillsByTime",
+      user: ADDRESS,
+      startTime: 0,
+      endTime: 10,
+      aggregateByTime: false,
+    })
+  })
+
+  test("the Candle key never reaches Hyperliquid", async () => {
+    const seen: { url: string; headers: Record<string, string> }[] = []
+    const responses = [
+      trading(),
+      json(200, [{ universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] }, [{ markPx: "1" }]]),
+      json(200, []),
+    ]
+    const impl = (async (input: unknown, init?: RequestInit) => {
+      seen.push({ url: String(input), headers: Object.fromEntries(new Headers(init?.headers).entries()) })
+      return responses.shift() as Response
+    }) as unknown as typeof fetch
+    const c = new CandleClient({ apiUrl: "https://api.test", apiKey: "cndl_test_key", fetch: impl })
+    await c.perpsFundingPage(WALLET)
+    for (const call of seen.filter((s) => s.url.includes("hyperliquid")))
+      expect(JSON.stringify(call.headers)).not.toContain("cndl_test_key")
+  })
+
+  test("a wallet id that is not one of the key's EVM TEE wallets is refused before Hyperliquid is read", async () => {
+    const { client: c, calls } = await client([trading([{ id: WALLET, address: "SoLaNa", chain: "solana" }])])
+    await expect(c.perpsFillsPage(WALLET)).rejects.toThrow("not an EVM TEE wallet")
+    expect(calls).toHaveLength(1)
+    const { client: c2 } = await client([trading([])])
+    await expect(c2.perpsFundingPage(WALLET)).rejects.toThrow("not an EVM TEE wallet bound to this key")
+  })
+
+  test("legacy perpsFills and perpsFunding keep their signatures and routes", async () => {
+    const { client: c, calls } = await client([json(200, { success: true, fills: [] }), json(200, { success: true })])
+    expect((await c.perpsFills(WALLET)).fills).toEqual([])
+    await c.perpsFunding(WALLET)
+    expect(calls.map((call) => call.url)).toEqual([
+      `https://api.test/api/v1/agent/perps/fills?walletId=${WALLET}`,
+      `https://api.test/api/v1/agent/perps/funding?walletId=${WALLET}`,
+    ])
+  })
 })

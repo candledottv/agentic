@@ -43,6 +43,8 @@ test("all registered tools are listed", () => {
     "candle_perps_candles",
     "candle_perps_close",
     "candle_perps_deposit",
+    "candle_perps_fills",
+    "candle_perps_funding",
     "candle_perps_leverage",
     "candle_perps_market",
     "candle_perps_markets",

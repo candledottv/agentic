@@ -103,6 +103,8 @@ anyone signs up for anything.
 | `candle_perps_deposit` | yes | deposit onto the Hyperliquid account through Relay from the Solana or Hood TEE wallet (needs `swap:write`) |
 | `candle_perps_orders` | yes | open orders and every action Candle built |
 | `candle_perps_positions` | yes | positions and account value, read live |
+| `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed |
+| `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed |
 
 ## Which CLI command do I need?
 

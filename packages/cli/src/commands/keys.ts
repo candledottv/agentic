@@ -50,6 +50,16 @@ export const ACCESS_LEVELS: Record<string, AgentKeyPreset> = {
   "read-write-transfer": "readwritetransfer",
 }
 
+/**
+ * What `keys create --access` accepts: the levels above plus `trade-perps` (2026-10-17 C spec,
+ * section 7), which mints exactly `account:read` and `perps:write`. Not a level `keys access` can
+ * move a key to: the API's access change knows only Read, Write and Withdraw.
+ */
+export const CREATE_ACCESS_LEVELS: Record<string, AgentKeyPreset> = {
+  ...ACCESS_LEVELS,
+  "trade-perps": "tradeperps",
+}
+
 /** The one precondition all three `keys` subcommands share. Written through `writeLocalFailure`
  * so `--json` gets an object here too: this exit is as much a result of the command as an API
  * error is, and a `--json` caller must never have to fall back to parsing a sentence. */
@@ -228,9 +238,9 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   }
   let accessScopes: string[] | undefined
   if (parsed.values["--access"] !== undefined) {
-    const preset = ACCESS_LEVELS[parsed.values["--access"]]
+    const preset = CREATE_ACCESS_LEVELS[parsed.values["--access"]]
     if (preset === undefined) {
-      writeUsageFailure(deps, "--access must be one of: read, write, withdraw.", json)
+      writeUsageFailure(deps, "--access must be one of: read, write, withdraw, trade-perps.", json)
       return 2
     }
     accessScopes = scopesForPreset(preset)

@@ -79,6 +79,34 @@ export type PerpsBuildCheck = {
     ok: false;
     reason: string;
 };
+/** A Hyperliquid cloid, lowercase: `0x` and 32 hex digits. Also the shape of a caller's client order id. */
+export declare const HYPERLIQUID_CLOID_RE: RegExp;
+/**
+ * The account modes Candle builds for: Hyperliquid's standard mode (`default`, or `disabled` for an
+ * account that never chose one). `unifiedAccount`, `portfolioMargin`, `dexAbstraction` and any
+ * unknown string are not standard (spec 2026-10-17 C, section 5).
+ */
+export declare const HYPERLIQUID_STANDARD_ACCOUNT_MODES: readonly string[];
+/**
+ * The account's mode, read directly from the pinned venue's `userAbstraction` before setup is
+ * requested, so a server cannot report a mode the venue does not. Throws when it cannot be read.
+ */
+export declare function hyperliquidAccountMode(fetcher: (url: string, init?: RequestInit) => Promise<{
+    ok: boolean;
+    text(): Promise<string>;
+}>, network: HyperliquidNetwork, address: string): Promise<string>;
+/**
+ * Why a setup response must not be trusted, or null. Runs on every setup answer, the no-action
+ * `ready: true` one included (it carries no action for `verifyPerpsBuild` to check): the wallet,
+ * network and builder must be this client's, and the mode the one this client read from the venue,
+ * which must be standard.
+ */
+export declare function perpsSetupStatusProblem(status: Record<string, unknown>, expect: {
+    network: HyperliquidNetwork;
+    address: string;
+    builder: string;
+    mode: string;
+}): string | null;
 /** Read the position directly from the pinned venue before signing a close. The request
  * names no side and can omit size, so neither may be inferred from the build's preview.
  */

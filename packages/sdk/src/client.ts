@@ -67,13 +67,17 @@ import {
 } from "./evm-tx"
 import {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
+  HYPERLIQUID_CLOID_RE,
   HYPERLIQUID_EXCHANGE_URLS,
+  HYPERLIQUID_STANDARD_ACCOUNT_MODES,
   type HyperliquidNetwork,
   type HyperliquidTypedData,
+  hyperliquidAccountMode,
   hyperliquidCloseOrder,
   hyperliquidExchangeBody,
   hyperliquidOrderMarket,
   hyperliquidRelayBody,
+  perpsSetupStatusProblem,
   verifyPerpsBuild,
 } from "./hyperliquid"
 import {
@@ -99,6 +103,12 @@ import {
 } from "./hyperliquid-withdraw"
 import { fromBase64 } from "./internal/encoding"
 import { describeRpcEndpoint } from "./internal/rpc-endpoint"
+import {
+  type PerpsFillsPage,
+  type PerpsFundingPage,
+  type PerpsHistoryOptions,
+  readPerpsHistoryPage,
+} from "./perps-history"
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans"
 import type { SecretStore } from "./secret-store"
 import type { CandleStaking, StakingPositions, StakingResult, StakingRewardClaim } from "./staking"
@@ -1907,6 +1917,14 @@ export interface PerpsOpenParams extends PerpsWalletRef {
   takeProfit?: string
   /** Optional reduce-only stop-loss trigger price. */
   stopLoss?: string
+  /**
+   * Optional client order id: `0x` and 32 hex digits, chosen by the caller and used as the order's
+   * cloid. A retry with the same id and the same request returns the original operation
+   * (`replayed: true`) instead of placing another order; the same id with a different request is
+   * refused (`PERPS_CLIENT_ID_CONFLICT`). It deduplicates, it does not resume: a retry never signs or
+   * submits, so a build-only first call stays unsubmitted. Use a new id for a genuinely new order.
+   */
+  clientId?: string
 }
 
 export interface PerpsCloseParams extends PerpsWalletRef {
@@ -1914,6 +1932,8 @@ export interface PerpsCloseParams extends PerpsWalletRef {
   /** Part of the position to close; the whole position when omitted. */
   size?: string
   slippageBps?: number
+  /** Optional client order id, as on `PerpsOpenParams.clientId`. */
+  clientId?: string
 }
 
 export interface PerpsCancelParams extends PerpsWalletRef {
@@ -1970,11 +1990,48 @@ export interface PerpsBuild {
  * statuses for an order).
  */
 export interface PerpsActionResult {
+  replayed?: false
   build: PerpsBuild
   signature: string | null
   submitted: boolean
   exchange: unknown | null
   submitError?: string
+}
+
+/**
+ * The original operation a client order id already names, as `POST /perps/open` or `/perps/close`
+ * returns it for a retry (spec 2026-10-17 C, section 8). Nothing signable: `status` is Candle's
+ * record (`building` / `built` mean not yet seen on the venue), `venueStatus` what reconcile observed.
+ */
+export interface PerpsReplay {
+  success: true
+  replayed: true
+  perpOrderId: string
+  kind: "open" | "close"
+  network: HyperliquidNetwork
+  walletId: string
+  address: string
+  clientId: string
+  cloid: string
+  childCloids: string[]
+  nonce: number
+  status: string
+  venueStatus: string | null
+  filledSz: string | null
+  notionalUsdMicros: number | null
+  builtAt: number
+  settledAt: number | null
+  preview: Record<string, unknown> | null
+}
+
+/** A retry under a client order id: the original operation, and nothing signed, submitted or charged. */
+export interface PerpsReplayResult {
+  replayed: true
+  replay: PerpsReplay
+  build: null
+  signature: null
+  submitted: false
+  exchange: null
 }
 
 // -- Hyperliquid withdrawals (spec 2026-10-17-hyperliquid-withdrawals-design.md) ------------------
@@ -2091,6 +2148,8 @@ export interface PerpsOrderRecord {
   coin: string | null
   nonce: number
   cloid: string | null
+  /** The caller's client order id, on rows built with one (absent from an older API). */
+  clientId?: string | null
   childCloids: string[]
   targetCloid: string | null
   status: string
@@ -2197,6 +2256,44 @@ const HYPERLIQUID_RELAY_CHAIN_ID = 1337
 const HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000"
 
 /** Why a deposit build must not be signed, or null. */
+/** A caller's client order id, lowercased; refused before any request when it is not a cloid. */
+function perpsClientId(clientId: string | undefined): string | undefined {
+  if (clientId === undefined) return undefined
+  const lower = typeof clientId === "string" ? clientId.toLowerCase() : ""
+  if (!HYPERLIQUID_CLOID_RE.test(lower)) throw new Error("perps: clientId must be 0x followed by 32 hex digits")
+  return lower
+}
+
+/**
+ * A replay of the original operation, recognized before anything is checked or signed; or null for
+ * a fresh build. A fresh build for a client id must echo it: an API that predates client ids would
+ * drop the field and build an order under a random cloid, so that build is refused here.
+ */
+function perpsReplayOf(
+  build: PerpsBuild | PerpsReplay,
+  walletId: string,
+  clientId: string | undefined,
+): PerpsReplayResult | null {
+  const answer = build as unknown as Record<string, unknown>
+  if (answer.replayed === true) {
+    if (clientId === undefined || answer.clientId !== clientId || answer.walletId !== walletId)
+      throw new Error("perps: refused a replay that does not name this request's client id and wallet")
+    return {
+      replayed: true,
+      replay: build as PerpsReplay,
+      build: null,
+      signature: null,
+      submitted: false,
+      exchange: null,
+    }
+  }
+  if (clientId !== undefined && (answer.clientId !== clientId || answer.cloid !== clientId))
+    throw new Error(
+      "perps: PERPS_CLIENT_ID_UNSUPPORTED: this Candle API did not echo the client order id, so its order could not be deduplicated. Nothing was signed.",
+    )
+  return null
+}
+
 export function perpsDepositProblem(build: PerpsDepositBuild, params: PerpsDepositParams): string | null {
   const same = (a: unknown, b: string) => typeof a === "string" && a.toLowerCase() === b.toLowerCase()
   if (build.walletId !== params.walletId) return "the build names another paying wallet"
@@ -4836,11 +4933,27 @@ export class CandleClient {
    */
   async perpsSetup(params: PerpsWalletRef): Promise<PerpsSetupResult> {
     this.requireKey("perpsSetup()")
+    // Spec 2026-10-17 C, section 5: the mode is read from Hyperliquid before setup is requested,
+    // and the answer, `ready` included, is checked against it, this client's network and builder.
+    const address = await this.perpsWalletAddress(params.walletId)
+    const builder = await this.perpsBuilder()
+    const mode = await hyperliquidAccountMode(this.fetchImpl, this.hyperliquidNetwork, address)
+    if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
+      throw new Error(
+        `perps: PERPS_ACCOUNT_MODE: the account is in ${mode} mode on Hyperliquid; Candle trades only a standard account. Nothing was requested or signed.`,
+      )
     const res = await this.requestJson<PerpsAccountStatus & { ready: boolean } & Partial<PerpsBuild>>(
       "POST",
       "/api/v1/agent/perps/setup",
       { walletId: params.walletId },
     )
+    const problem = perpsSetupStatusProblem(res as unknown as Record<string, unknown>, {
+      network: this.hyperliquidNetwork,
+      address,
+      builder,
+      mode,
+    })
+    if (problem) throw new Error(`perps: refused this setup answer: ${problem}. Nothing was signed.`)
     const status: PerpsAccountStatus & { ready: boolean } = {
       walletId: res.walletId as string,
       address: res.address as string,
@@ -4857,20 +4970,41 @@ export class CandleClient {
     return { ...status, action: await this.perpsComplete(res as PerpsBuild, params, "setup") }
   }
 
-  /** Open (or add to) a position: build, check, sign through the relay, submit to Hyperliquid. */
-  async perpsOpen(params: PerpsOpenParams): Promise<PerpsActionResult> {
+  /**
+   * Open (or add to) a position: build, check, sign through the relay, submit to Hyperliquid. With
+   * `clientId`, a retry of the same request returns the original operation (`replayed: true`).
+   */
+  async perpsOpen(params: PerpsOpenParams & { clientId?: undefined }): Promise<PerpsActionResult>
+  async perpsOpen(params: PerpsOpenParams): Promise<PerpsActionResult | PerpsReplayResult>
+  async perpsOpen(params: PerpsOpenParams): Promise<PerpsActionResult | PerpsReplayResult> {
     this.requireKey("perpsOpen()")
     const { walletId, privyWalletId: _p, submit: _s, ...order } = params
-    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/open", { walletId, ...order })
-    return this.perpsComplete(build, params, "open")
+    const clientId = perpsClientId(params.clientId)
+    const build = await this.requestJson<PerpsBuild | PerpsReplay>("POST", "/api/v1/agent/perps/open", {
+      walletId,
+      ...order,
+      ...(clientId !== undefined ? { clientId } : {}),
+    })
+    const replay = perpsReplayOf(build, walletId, clientId)
+    if (replay) return replay
+    return this.perpsComplete(build as PerpsBuild, { ...params, ...(clientId ? { clientId } : {}) }, "open")
   }
 
-  /** Close all or part of a position with a reduce-only IOC order. Reserves nothing. */
-  async perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult> {
+  /** Close all or part of a position with a reduce-only IOC order. Reserves nothing. Takes `clientId` as open does. */
+  async perpsClose(params: PerpsCloseParams & { clientId?: undefined }): Promise<PerpsActionResult>
+  async perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult | PerpsReplayResult>
+  async perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult | PerpsReplayResult> {
     this.requireKey("perpsClose()")
     const { walletId, privyWalletId: _p, submit: _s, ...close } = params
-    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/close", { walletId, ...close })
-    return this.perpsComplete(build, params, "close")
+    const clientId = perpsClientId(params.clientId)
+    const build = await this.requestJson<PerpsBuild | PerpsReplay>("POST", "/api/v1/agent/perps/close", {
+      walletId,
+      ...close,
+      ...(clientId !== undefined ? { clientId } : {}),
+    })
+    const replay = perpsReplayOf(build, walletId, clientId)
+    if (replay) return replay
+    return this.perpsComplete(build as PerpsBuild, { ...params, ...(clientId ? { clientId } : {}) }, "close")
   }
 
   /** Cancel an order Candle built, by its cloid. */
@@ -4925,6 +5059,60 @@ export class CandleClient {
     const params = new URLSearchParams({ walletId })
     if (opts.limit !== undefined) params.set("limit", String(opts.limit))
     return this.requestJson<PerpsOrders>("GET", `/api/v1/agent/perps/orders?${params}`)
+  }
+
+  /**
+   * One page of the wallet's fills, read directly from Hyperliquid's `/info` (spec 2026-10-17 C,
+   * sections 3 and 4). Candle resolves only the wallet's address; no Candle credential reaches
+   * Hyperliquid, and a read-capable key is enough. Default window: the last seven days, fixed on the
+   * first page; pass `nextCursor` back as `cursor` for the next one. Live venue data for this wallet,
+   * not Candle's ledger and not an all-time total: Hyperliquid serves only the 10,000 most recent
+   * fills. `closedPnl` is gross and `fee` already includes `builderFee`. Throws `PerpsHistoryError`.
+   */
+  async perpsFillsPage(walletId: string, options: PerpsHistoryOptions = {}): Promise<PerpsFillsPage> {
+    this.requireKey("perpsFillsPage()")
+    return (await this.perpsHistoryPage("fills", walletId, options)) as PerpsFillsPage
+  }
+
+  /** One page of the wallet's funding payments, as `perpsFillsPage()` reads fills. `delta.usdc` is signed: negative was paid. */
+  async perpsFundingPage(walletId: string, options: PerpsHistoryOptions = {}): Promise<PerpsFundingPage> {
+    this.requireKey("perpsFundingPage()")
+    return (await this.perpsHistoryPage("funding", walletId, options)) as PerpsFundingPage
+  }
+
+  private async perpsHistoryPage(kind: "fills" | "funding", walletId: string, options: PerpsHistoryOptions) {
+    const address = await this.perpsWalletAddress(walletId)
+    return readPerpsHistoryPage({
+      kind,
+      network: this.hyperliquidNetwork,
+      walletId,
+      address,
+      options,
+      fetch: this.fetchImpl,
+      now: Date.now,
+    })
+  }
+
+  /** The address of an EVM TEE wallet bound to this key, from Candle's own list of the key's wallets. */
+  private async perpsWalletAddress(walletId: string): Promise<string> {
+    let cursor: string | null = null
+    for (let page = 0; page < 10; page++) {
+      const query: string = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""
+      const listed: {
+        page?: { id: string; address: string; chain: string }[]
+        isDone?: boolean
+        continueCursor?: string | null
+      } = await this.requestJson("GET", `/api/v1/agent/wallets/trading${query}`)
+      const row = (listed.page ?? []).find((r) => r.id === walletId)
+      if (row) {
+        if (row.chain !== "evm" || !/^0x[0-9a-fA-F]{40}$/.test(row.address))
+          throw new Error(`perps: wallet ${walletId} is not an EVM TEE wallet`)
+        return row.address.toLowerCase()
+      }
+      if (listed.isDone !== false || !listed.continueCursor) break
+      cursor = listed.continueCursor
+    }
+    throw new Error(`perps: wallet ${walletId} is not an EVM TEE wallet bound to this key`)
   }
 
   /** Fills, read live from Hyperliquid by the wallet's address. */

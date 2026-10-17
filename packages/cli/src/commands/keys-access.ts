@@ -49,6 +49,8 @@ const CLI_SPELLING: Record<AgentKeyPreset, string> = {
   read: "read",
   readwrite: "write",
   readwritetransfer: "withdraw",
+  // Minted by `keys create --access trade-perps` only; `keys access` moves keys between the other three.
+  tradeperps: "trade-perps",
 }
 
 const NO_API_KEY = {
