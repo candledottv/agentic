@@ -89,6 +89,12 @@ import {
   rpcHostOf,
   toChecksumAddress,
 } from "../evm-lite"
+import {
+  type HyperliquidInfoFetcher,
+  PERPS_PORTFOLIO_MAX_ACCOUNTS,
+  type PerpsPortfolioSection,
+  perpsPortfolioSection,
+} from "../hyperliquid-risk"
 import { printIdentity } from "../profiles"
 import { renderTable, terminalText, writeFailure, writeLocalFailure } from "../render"
 import { describeRpcFailure, openSolanaClient, rateLimitedReadFailure, type SolanaClient } from "../solana-endpoint"
@@ -300,6 +306,7 @@ const NO_API_KEY = {
 export async function portfolio(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--rpc-url", "--evm-rpc-url", "--keystore", "--chain"],
+    booleanFlags: ["--no-perps"],
     pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
@@ -447,6 +454,30 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     const prices: Record<string, MintPrice> = { ...(fromCandle.prices ?? {}) }
     // An API that predates 4d sends no `hood` section: no Hood wallets, not an error.
     const candleHood = showHood ? fromCandle.hood : undefined
+
+    // BE-1582 (spec A-11): the EVM TEE wallets' Hyperliquid accounts, read from this machine. Not
+    // with --chain solana or --no-perps, which send nothing to Hyperliquid. Never in the total.
+    let perps: PerpsPortfolioSection | undefined
+    if (showHood && !parsed.booleans.has("--no-perps")) {
+      const accounts = (candleHood?.tee ?? []).map((row) => ({
+        address: row.address,
+        ...(row.label !== undefined ? { label: row.label } : {}),
+        walletId: row.id,
+      }))
+      if (accounts.length > 0) {
+        const n = Math.min(accounts.length, PERPS_PORTFOLIO_MAX_ACCOUNTS)
+        deps.stderr.write(
+          `Reading ${n} EVM TEE ${n === 1 ? "address" : "addresses"} from Hyperliquid's public API in ${n + 1} requests. Pass --no-perps to skip.\n`,
+        )
+      }
+      perps = await perpsPortfolioSection(
+        deps.fetch as unknown as HyperliquidInfoFetcher,
+        deps.env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet",
+        accounts,
+        { sleep: deps.sleep, now: deps.now },
+      )
+    }
+    const perpsPartial = perps !== undefined && (!perps.read || perps.unread.length > 0)
 
     // Mints only, and only the ones Candle's answer did not already carry.
     let priceFailure: string | undefined
@@ -655,7 +686,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     // instead of reporting the result complete.
     const listNote: "cut-off" | "unknown" | null =
       listStatus === "cut-off" ? "cut-off" : listStatus === "unknown" && !shownUnread ? "unknown" : null
-    const complete = listNote === null && !shownUnread
+    const complete = listNote === null && !shownUnread && !perpsPartial
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0)
     const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0)
     const lp = lpSection
@@ -724,6 +755,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
         ...(lp ? { lp } : {}),
         byChain,
         groups,
+        ...(perps ? { hyperliquid: perps } : {}),
       })
       return complete ? 0 : 3
     }
@@ -751,6 +783,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       listNote,
       lp,
     })
+    if (perps) writePerpsSection(ctx, perps)
     return complete ? 0 : 3
   })
 }
@@ -1251,4 +1284,47 @@ function writeTable(
   if (groups.some((g) => g.group === "vault" && g.wallets.some((w) => w.chain === "hood"))) {
     deps.stdout.write("EVM vault keys are read for ETH and USDG only; other tokens they hold are not shown.\n")
   }
+}
+
+/**
+ * BE-1582 (spec A-11): the Hyperliquid accounts of the EVM TEE wallets shown, after the table and
+ * its totals, and never in them (D4). Levels are at the default thresholds: portfolio is
+ * account-wide and thresholds are per key.
+ */
+function writePerpsSection(ctx: CommandContext, section: PerpsPortfolioSection): void {
+  const out = ctx.deps.stdout
+  out.write("\nHyperliquid (live from Hyperliquid, not in the ledger; not in the total above)\n")
+  if (!section.read) {
+    out.write(`Not read: ${terminalText(section.reason)}. The EVM TEE wallets' Hyperliquid accounts are unknown.\n`)
+    return
+  }
+  if (section.accounts.length > 0) {
+    out.write(
+      `${renderTable(
+        ["WALLET", "ACCOUNT VALUE", "UNREALIZED", "POSITIONS", "RISK AT DEFAULT THRESHOLDS"],
+        section.accounts.map((a) =>
+          [
+            `${a.label ? `${a.label} ` : ""}(${shortAddress(a.address)})`,
+            formatUsd(Number(a.accountValueUsd)),
+            formatUsd(Number(a.unrealizedPnlUsd)),
+            String(a.positionCount),
+            a.level,
+          ].map(terminalText),
+        ),
+      )}\n`,
+    )
+    out.write(
+      `Hyperliquid subtotal: ${formatUsd(Number(section.subtotal.accountValueUsd))} account value, ${formatUsd(Number(section.subtotal.unrealizedPnlUsd))} unrealized.\n`,
+    )
+  }
+  if (section.empty > 0)
+    out.write(
+      `${section.empty} EVM TEE ${section.empty === 1 ? "wallet holds" : "wallets hold"} nothing on Hyperliquid.\n`,
+    )
+  if (section.accounts.length === 0 && section.empty === 0 && section.unread.length === 0)
+    out.write("No EVM TEE wallet to read.\n")
+  if (section.unread.length > 0)
+    out.write(
+      `${section.unread.length} EVM TEE ${section.unread.length === 1 ? "wallet" : "wallets"} not read on Hyperliquid (${terminalText(section.unread[0]?.reason ?? "read failed")}${section.unread.length > 1 ? ", ..." : ""}). Their accounts are unknown, not empty.\n`,
+    )
 }

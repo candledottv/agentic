@@ -46,6 +46,17 @@ import {
 import type { FetchLike, ToolText } from "./orchestrate"
 import { PERPS_HISTORY_MAX_LIMIT, PerpsHistoryError, readPerpsHistoryPage } from "./perps-history"
 
+import { executePerpsRisk, positionsAdditions } from "./perps-risk"
+
+/** BE-1582 (spec A-12): the read-only risk tools; perps-risk.ts runs them. None signs. */
+export const PERPS_RISK_TOOL_NAMES = [
+  "candle_perps_account",
+  "candle_perps_risk",
+  "candle_perps_thresholds",
+  "candle_perps_set_thresholds",
+] as const
+export type PerpsRiskToolName = (typeof PERPS_RISK_TOOL_NAMES)[number]
+
 export const PERPS_TOOL_NAMES = [
   "candle_perps_setup",
   "candle_perps_open",
@@ -56,8 +67,12 @@ export const PERPS_TOOL_NAMES = [
   "candle_perps_fills",
   "candle_perps_funding",
   "candle_perps_leverage",
+  ...PERPS_RISK_TOOL_NAMES,
 ] as const
 export type PerpsToolName = (typeof PERPS_TOOL_NAMES)[number]
+
+const isRiskTool = (tool: PerpsToolName): tool is PerpsRiskToolName =>
+  (PERPS_RISK_TOOL_NAMES as readonly string[]).includes(tool)
 
 const decimal = z.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decimal string")
 const wallet = z
@@ -132,7 +147,7 @@ export const perpsShapes = {
   },
 } as const
 
-const PATHS: Record<PerpsToolName, string> = {
+const PATHS: Record<Exclude<PerpsToolName, PerpsRiskToolName>, string> = {
   candle_perps_setup: "/api/v1/agent/perps/setup",
   candle_perps_open: "/api/v1/agent/perps/open",
   candle_perps_close: "/api/v1/agent/perps/close",
@@ -144,7 +159,7 @@ const PATHS: Record<PerpsToolName, string> = {
   candle_perps_leverage: "/api/v1/agent/perps/leverage",
 }
 
-function fail(code: string, message: string, extra: Record<string, unknown> = {}): ToolText {
+export function fail(code: string, message: string, extra: Record<string, unknown> = {}): ToolText {
   return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true }
 }
 
@@ -156,16 +171,16 @@ interface WalletRow {
   privyWalletId?: string
 }
 
-class Refusal extends Error {
+export class Refusal extends Error {
   constructor(readonly tool: ToolText) {
     super("refused")
   }
 }
 
-async function call(
+export async function call(
   cfg: RequestConfig,
   fetch: FetchLike,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT",
   path: string,
   body?: unknown,
 ): Promise<Record<string, unknown>> {
@@ -191,7 +206,7 @@ async function call(
   return parsed as Record<string, unknown>
 }
 
-async function walletFor(
+export async function walletFor(
   cfg: RequestConfig,
   fetch: FetchLike,
   name: string | undefined,
@@ -236,6 +251,7 @@ export async function executePerps(
   fetch: FetchLike,
 ): Promise<ToolText> {
   if (!cfg.apiKey) return fail("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.")
+  if (isRiskTool(tool)) return executePerpsRisk(tool, args, cfg, env, fetch)
   const network: HyperliquidNetwork = env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet"
   const name = typeof args.wallet === "string" ? args.wallet : undefined
   try {
@@ -243,7 +259,12 @@ export async function executePerps(
       const { row } = await walletFor(cfg, fetch, name)
       const query = new URLSearchParams({ walletId: row.id })
       if (typeof args.limit === "number") query.set("limit", String(args.limit))
-      return { text: JSON.stringify(await call(cfg, fetch, "GET", `${PATHS[tool]}?${query}`)) }
+      const result = await call(cfg, fetch, "GET", `${PATHS[tool]}?${query}`)
+      // BE-1582 (spec A-3): positions keeps the server's fields and adds rows, accountLine and risk
+      // from a direct read of Hyperliquid by this server.
+      if (tool === "candle_perps_positions")
+        return { text: JSON.stringify({ ...result, ...(await positionsAdditions(cfg, fetch, env, row)) }) }
+      return { text: JSON.stringify(result) }
     }
     if (tool === "candle_perps_fills" || tool === "candle_perps_funding") {
       // Candle resolves only which EVM TEE wallet is this key's; the history comes straight from

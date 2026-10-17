@@ -92,6 +92,26 @@ import {
 } from "./hyperliquid-markets"
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl"
 import {
+  type HyperliquidInfoFetcher,
+  PERPS_RECENT_MAX_MS,
+  type PerpsAccountLine,
+  type PerpsAccountReport,
+  type PerpsPortfolioSection,
+  type PerpsPositionRow,
+  type PerpsRiskReport,
+  type PerpsRiskSettings,
+  type PerpsRiskThresholds,
+  type PerpsRiskThresholdsReport,
+  type PerpsWatchEvent,
+  perpsAccountReport,
+  perpsPortfolioSection,
+  perpsRiskFromLimits,
+  readPerpsRecent,
+  readPerpsRisk,
+  unknownRiskReport,
+  watchPerpsRisk,
+} from "./hyperliquid-risk"
+import {
   CANDLE_PERPS_WITHDRAW_PINS,
   type PerpsWithdrawAuthorization,
   type PerpsWithdrawBuild,
@@ -2144,7 +2164,35 @@ export interface PerpsPositions {
   account: Record<string, string>
   withdrawable: string
   positions: Record<string, unknown>[]
+  /**
+   * BE-1582 (spec A-3): the section 4 table, account line and risk report, from a direct read of
+   * Hyperliquid on this machine (the fields above are Candle's server read, unchanged). `rows` is
+   * empty and `accountLine` null when that read failed or no level could be computed, and `risk`
+   * then says why (`level: "unknown"`).
+   */
+  rows: PerpsPositionRow[]
+  accountLine: PerpsAccountLine | null
+  risk: Omit<PerpsRiskReport, "positions">
 }
+
+/** `GET /keys/self/limits`'s risk thresholds for the calling key (BE-1582, spec A-4). */
+export interface PerpsRiskSettingsResult {
+  /** What the key stores, or null. */
+  perpsRisk: PerpsRiskSettings | null
+  /** What the engine applies, and where it came from (`defaults (server did not report)` on an older API). */
+  effective: PerpsRiskThresholdsReport
+}
+
+/** `PUT /keys/self/perps-risk` or `/keys/:prefix/perps-risk`. */
+export interface PerpsRiskWriteResult {
+  success: true
+  keyPrefix: string
+  perpsRisk: PerpsRiskSettings | null
+  effective: PerpsRiskThresholds
+}
+
+/** A threshold write: each named field set (`null` clears that field), or `null` to clear them all. */
+export type PerpsRiskWrite = { [K in keyof PerpsRiskThresholds]?: number | null } | null
 
 export interface PerpsOrderRecord {
   perpOrderId: string
@@ -5049,13 +5097,32 @@ export class CandleClient {
     return this.perpsComplete(build, params, "margin")
   }
 
-  /** Positions and account value, read live from Hyperliquid by the wallet's address. */
+  /**
+   * Positions and account value, read live from Hyperliquid by the wallet's address. The server's
+   * fields are unchanged; `rows`, `accountLine` and `risk` (BE-1582, spec A-3) come from a direct
+   * read on this machine at the key's thresholds.
+   */
   async perpsPositions(walletId: string): Promise<PerpsPositions> {
     this.requireKey("perpsPositions()")
-    return this.requestJson<PerpsPositions>(
+    const server = await this.requestJson<Omit<PerpsPositions, "rows" | "accountLine" | "risk">>(
       "GET",
       `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(walletId)}`,
     )
+    const { effective } = await this.perpsThresholdsOrDefaults()
+    const identity = { walletId, address: server.address, network: this.hyperliquidNetwork }
+    let report: PerpsRiskReport
+    try {
+      report = await readPerpsRisk({
+        ...identity,
+        fetcher: this.fetchImpl as unknown as HyperliquidInfoFetcher,
+        thresholds: effective,
+        now: Date.now,
+      })
+    } catch {
+      report = unknownRiskReport(identity, effective, "PERPS_READ_FAILED", Date.now())
+    }
+    const { positions: rows, ...risk } = report
+    return { ...server, rows, accountLine: report.account, risk }
   }
 
   /** Open orders on Hyperliquid, and Candle's record of every action it built, settled first. */
@@ -5135,6 +5202,151 @@ export class CandleClient {
     const params = new URLSearchParams({ walletId })
     if (startTime !== undefined) params.set("startTime", String(startTime))
     return this.requestJson("GET", `/api/v1/agent/perps/funding?${params}`)
+  }
+
+  // -- Hyperliquid risk and visibility (BE-1582, spec 2026-10-17-hyperliquid-phase1-a-risk-visibility-design.md) --
+  //
+  // Every venue read below goes from this machine straight to Hyperliquid's public /info, through
+  // the one engine in hyperliquid-risk.ts. Candle is asked only for the wallet's address and the
+  // key's thresholds. Nothing here signs, builds or submits.
+
+  /** The key's risk thresholds: stored and effective. An older API reports none: the defaults, sourced so. */
+  async getPerpsRisk(): Promise<PerpsRiskSettingsResult> {
+    this.requireKey("getPerpsRisk()")
+    const { thresholds, stored } = perpsRiskFromLimits(
+      await this.requestJson<unknown>("GET", "/api/v1/agent/keys/self/limits"),
+    )
+    return { perpsRisk: stored, effective: thresholds }
+  }
+
+  /**
+   * Tighten the calling key's own thresholds (`PUT /keys/self/perps-risk`). Anything looser than
+   * the effective set, including clearing a field stored stricter than its default, is refused with
+   * 403 LOOSEN_REQUIRES_SESSION: the owner loosens with `setKeyPerpsRisk()`.
+   */
+  async setPerpsRisk(fields: PerpsRiskWrite): Promise<PerpsRiskWriteResult> {
+    this.requireKey("setPerpsRisk()")
+    return this.requestJson<PerpsRiskWriteResult>("PUT", "/api/v1/agent/keys/self/perps-risk", { perpsRisk: fields })
+  }
+
+  /**
+   * The owner's write on any of the account's keys (`PUT /keys/:prefix/perps-risk`): may loosen or
+   * clear. Needs an owner credential, the CLI's device token or a Privy session token, sent as a
+   * bearer token; the client's API key is not sent and would be refused.
+   */
+  async setKeyPerpsRisk(
+    keyPrefix: string,
+    fields: PerpsRiskWrite,
+    owner: { bearerToken: string },
+  ): Promise<PerpsRiskWriteResult> {
+    const res = await this.fetchImpl(`${this.apiUrl}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/perps-risk`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", authorization: `Bearer ${owner.bearerToken}` },
+      body: JSON.stringify({ perpsRisk: fields }),
+    })
+    return this.parseResponse<PerpsRiskWriteResult>(res)
+  }
+
+  /**
+   * One-shot risk (spec A-8): `ok`, `warn` or `critical` with its drivers, from a direct read of
+   * Hyperliquid at the key's thresholds. `unknown` for a non-standard account mode or a stale read.
+   * A failed venue read throws `HyperliquidReadError` (`code: "PERPS_READ_FAILED"`). Stateless: no
+   * hysteresis (that is `watchPerpsRisk()`).
+   */
+  async perpsRisk(params: { walletId: string; address?: string }): Promise<PerpsRiskReport> {
+    this.requireKey("perpsRisk()")
+    const address = params.address ?? (await this.perpsWalletAddress(params.walletId))
+    const { effective } = await this.perpsThresholdsOrDefaults()
+    return readPerpsRisk({
+      fetcher: this.fetchImpl as unknown as HyperliquidInfoFetcher,
+      network: this.hyperliquidNetwork,
+      walletId: params.walletId,
+      address,
+      thresholds: effective,
+      now: Date.now,
+    })
+  }
+
+  /**
+   * The account line (spec A-10): account value, margin, free margin, withdrawable, the margin
+   * ratio, and realized P&L, fees and funding over a recent window (`since`, epoch ms; default the
+   * last 24 hours, at most 30 days).
+   */
+  async perpsAccount(params: { walletId: string; address?: string; since?: number }): Promise<PerpsAccountReport> {
+    this.requireKey("perpsAccount()")
+    const now = Date.now()
+    const startTime = params.since ?? now - 24 * 60 * 60 * 1_000
+    if (!Number.isSafeInteger(startTime) || startTime >= now || now - startTime > PERPS_RECENT_MAX_MS)
+      throw new Error("perpsAccount(): since must be an epoch-ms time within the last 30 days")
+    const address = params.address ?? (await this.perpsWalletAddress(params.walletId))
+    const { effective } = await this.perpsThresholdsOrDefaults()
+    const fetcher = this.fetchImpl as unknown as HyperliquidInfoFetcher
+    const [report, recent] = await Promise.all([
+      readPerpsRisk({
+        fetcher,
+        network: this.hyperliquidNetwork,
+        walletId: params.walletId,
+        address,
+        thresholds: effective,
+        now: Date.now,
+      }),
+      readPerpsRecent(fetcher, this.hyperliquidNetwork, address, { startTime, endTime: now }),
+    ])
+    return perpsAccountReport(report, recent)
+  }
+
+  /**
+   * The loop `candle perps watch` runs (spec A-9): polls Hyperliquid every `intervalMs` (default
+   * 10 s), calls `onEvent` with a start event, one event per level change (rising immediately,
+   * falling past the clear band), heartbeats and errors, and resolves with the last level when
+   * `signal` aborts. Candle is asked for thresholds at start and every 5 minutes only.
+   */
+  async watchPerpsRisk(params: {
+    walletId: string
+    address?: string
+    intervalMs?: number
+    heartbeatMs?: number
+    signal?: AbortSignal
+    onceLevelChange?: boolean
+    onEvent: (event: PerpsWatchEvent) => void | Promise<void>
+  }): Promise<{ level: PerpsRiskReport["level"] }> {
+    this.requireKey("watchPerpsRisk()")
+    const address = params.address ?? (await this.perpsWalletAddress(params.walletId))
+    return watchPerpsRisk({
+      fetcher: this.fetchImpl as unknown as HyperliquidInfoFetcher,
+      network: this.hyperliquidNetwork,
+      walletId: params.walletId,
+      address,
+      thresholds: async () => (await this.getPerpsRisk()).effective,
+      ...(params.intervalMs !== undefined ? { intervalMs: params.intervalMs } : {}),
+      ...(params.heartbeatMs !== undefined ? { heartbeatMs: params.heartbeatMs } : {}),
+      ...(params.signal ? { signal: params.signal } : {}),
+      ...(params.onceLevelChange ? { onceLevelChange: true } : {}),
+      now: Date.now,
+      sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+      onEvent: params.onEvent,
+    })
+  }
+
+  /**
+   * The portfolio's Hyperliquid section (spec A-11) for EVM TEE addresses: account value, unrealized
+   * P&L, positions and level at the default thresholds per account, and a subtotal. Live from
+   * Hyperliquid and never part of any portfolio total.
+   */
+  async perpsPortfolioSection(
+    wallets: readonly { address: string; label?: string; walletId?: string }[],
+  ): Promise<PerpsPortfolioSection> {
+    return perpsPortfolioSection(this.fetchImpl as unknown as HyperliquidInfoFetcher, this.hyperliquidNetwork, wallets)
+  }
+
+  private async perpsThresholdsOrDefaults(): Promise<PerpsRiskSettingsResult> {
+    try {
+      return await this.getPerpsRisk()
+    } catch {
+      // E6: a failed thresholds read is never a refusal.
+      const { thresholds, stored } = perpsRiskFromLimits(null)
+      return { perpsRisk: stored, effective: thresholds }
+    }
   }
 
   /**

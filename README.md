@@ -126,7 +126,11 @@ signs up.
 | | `candle_perps_leverage` | yes | set a market's leverage and margin mode |
 | | `candle_perps_deposit` | yes | deposit onto the Hyperliquid account through Relay (needs `swap:write`) |
 | | `candle_perps_orders` | yes | open orders and every action Candle built |
-| | `candle_perps_positions` | yes | positions and account value, read live |
+| | `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level |
+| | `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly |
+| | `candle_perps_risk` | yes | the liquidation risk level (ok, warn, critical) and what drives it; poll it to watch |
+| | `candle_perps_thresholds` | yes | the key's risk thresholds, stored and effective |
+| | `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; it can never loosen them |
 | | `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed |
 | | `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed |
 

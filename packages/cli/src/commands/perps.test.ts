@@ -343,9 +343,11 @@ describe("the other commands", () => {
   test("positions reads without perps:write", async () => {
     const f = await fixture({ scopes: ["account:read"] })
     expect(await run(["perps", "positions", "--json"], f.deps)).toBe(0)
-    expect(f.calls.map((c) => `${c.path}${c.query}`)).toEqual([
+    // BE-1582: the thresholds read joins Candle's calls; the rest is Hyperliquid, read directly.
+    expect(f.calls.filter((c) => c.host !== "api.hyperliquid.xyz").map((c) => `${c.path}${c.query}`)).toEqual([
       "/api/v1/agent/wallets/trading",
       "/api/v1/agent/perps/positions?walletId=wallet",
+      "/api/v1/agent/keys/self/limits",
     ])
   })
 })

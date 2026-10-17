@@ -351,9 +351,9 @@ export const HELP: Record<string, Topic> = {
   perps: {
     group: "Trade",
     summary:
-      "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, orders, positions, fills, funding, leverage",
+      "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, orders, positions, fills, funding, leverage, account, risk, watch, thresholds",
     description:
-      "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section.",
+      "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
@@ -409,6 +409,27 @@ export const HELP: Record<string, Topic> = {
           "One page of the wallet's funding payments, signed (paid or received), read directly from Hyperliquid; at most 500 rows a page",
       },
       { invocation: "leverage <coin> <x> [--isolated]", description: "Set a market's leverage and margin mode" },
+      {
+        invocation: "account [--wallet <tee>] [--since <30m|24h|7d|ISO>]",
+        description:
+          "Account value, margin used, free margin, withdrawable, margin ratio, and realized P&L, fees and funding over a window (default 24h, at most 30 days)",
+      },
+      {
+        invocation: "risk [--wallet <tee>]",
+        description: "The level now (ok, warn, critical) with what drives it; exit 0, 10 or 11, and 1 when unknown",
+      },
+      {
+        invocation:
+          "watch [--interval <s>] [--heartbeat <s>] [--on-warn <cmd>] [--on-critical <cmd>] [--once-level-change]",
+        description:
+          "Poll from this machine and print one JSON line per level change, heartbeat or error; runs until stopped and exits with the last level's code",
+      },
+      {
+        invocation:
+          "thresholds | thresholds set [--warn-distance <pct>] ... [--key <prefix|label|self>] | thresholds clear",
+        description:
+          "Show this key's risk thresholds; set or clear them. As self (the default) a key may only tighten; a prefix or label uses the device token and may loosen",
+      },
     ],
     flags: [
       {
@@ -469,6 +490,31 @@ export const HELP: Record<string, Topic> = {
       { invocation: "--no-submit", description: "Build and check only; sign and submit nothing" },
       { invocation: "--sign-only", description: "Build, check and sign through the relay; submit nothing" },
       { invocation: "--yes", description: "Skip the confirmation prompt" },
+      { invocation: "--since <window>", description: "account: the recent window, 30m, 24h, 7d or an ISO time" },
+      {
+        invocation: "--interval <seconds>",
+        description: "watch: seconds between polls, 5 to 300 (default 10, about 136 request weight a minute)",
+      },
+      { invocation: "--heartbeat <seconds>", description: "watch: a heartbeat line this often (default 60, 0 is off)" },
+      {
+        invocation: "--on-warn <command> / --on-critical <command>",
+        description:
+          "watch: run through your shell once per rise to warn (or critical) or critical, with the level line on stdin and CANDLE_PERPS_RISK_LEVEL set; killed after 30 s",
+      },
+      { invocation: "--once-level-change", description: "watch: exit at the first level change, with its code" },
+      {
+        invocation: "--warn-distance <pct> / --critical-distance <pct>",
+        description: "thresholds set: liquidation distance thresholds in percent (default 15 and 7)",
+      },
+      {
+        invocation: "--warn-margin-ratio <r> / --critical-margin-ratio <r>",
+        description: "thresholds set: cross margin ratio thresholds, 1 is liquidation (default 0.6 and 0.8)",
+      },
+      { invocation: "--clear-band <pct>", description: "thresholds set: watch's clear band in points (default 2)" },
+      {
+        invocation: "--key <prefix|label|self>",
+        description: "thresholds set and clear: the key (default self, which may only tighten)",
+      },
     ],
     examples: [
       "candle perps setup",
@@ -481,6 +527,9 @@ export const HELP: Record<string, Topic> = {
       "candle perps funding --start-time 1790000000000",
       "candle perps leverage BTC 5 --isolated",
       "candle perps withdraw 25 --to solana",
+      "candle perps risk --json",
+      "candle perps watch --on-critical 'notify-send perps critical'",
+      "candle perps thresholds set --warn-distance 20",
     ],
     env: [...ENV_API, "CANDLE_HYPERLIQUID_BUILDER", "CANDLE_HYPERLIQUID_NETWORK", "CANDLE_PERPS_WITHDRAW_PINS"],
   },
@@ -579,8 +628,10 @@ export const HELP: Record<string, Topic> = {
     group: "Account",
     summary: "Every wallet's holdings, prices and value on Solana and Hood (vault read over your own RPCs)",
     description:
-      "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so.",
-    usage: ["candle portfolio [<filter>] [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--json]"],
+      "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so. After the totals, a Hyperliquid section (live from Hyperliquid, not in the ledger, and never in the total) lists each EVM TEE wallet's Hyperliquid account value, unrealized P&L, positions and risk at the default thresholds, read from Hyperliquid's public API on this machine; a failed read there is not read and the exit is 3. --chain solana and --no-perps read nothing from Hyperliquid.",
+    usage: [
+      "candle portfolio [<filter>] [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--no-perps] [--json]",
+    ],
     rows: [
       {
         invocation: "<filter>",
@@ -598,6 +649,10 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "--evm-rpc-url <url>",
         description: "Your Hood RPC, for EVM vault keys. Without one: CANDLE_EVM_RPC_URL, then the built-in Hood RPC",
+      },
+      {
+        invocation: "--no-perps",
+        description: "Skip the Hyperliquid section: send no EVM TEE address to Hyperliquid's public API",
       },
       KEYSTORE_FLAG,
     ],

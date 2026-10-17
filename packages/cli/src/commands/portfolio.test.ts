@@ -169,6 +169,11 @@ function harness(opts: {
   legacyPortfolio?: boolean
   /** Force Candle's combined `complete`. */
   candleComplete?: boolean
+  /**
+   * BE-1582: Hyperliquid's `clearinghouseState` by lowercased address. An address not named holds
+   * nothing there. `"down"` answers every Hyperliquid request with HTTP 502.
+   */
+  hyperliquid?: Record<string, unknown> | "down"
 }) {
   const stdout = createCapture()
   const stderr = createCapture()
@@ -243,6 +248,22 @@ function harness(opts: {
         },
       })
     }
+    if (url.host === "api.hyperliquid.xyz") {
+      if (opts.hyperliquid === "down") return new Response("bad gateway", { status: 502 })
+      const info = JSON.parse(body) as { type: string; user?: string }
+      if (info.type === "metaAndAssetCtxs")
+        return Response.json([{ universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] }, [{ markPx: "100.0" }]])
+      const empty = { accountValue: "0.0", totalMarginUsed: "0.0" }
+      return Response.json(
+        opts.hyperliquid?.[String(info.user)] ?? {
+          marginSummary: empty,
+          crossMarginSummary: empty,
+          crossMaintenanceMarginUsed: "0.0",
+          withdrawable: "0.0",
+          assetPositions: [],
+        },
+      )
+    }
     if (url.pathname === "/api/v1/agent/portfolio") {
       if (opts.candleStatus && opts.candleStatus !== 200) {
         return Response.json(
@@ -309,7 +330,19 @@ function harness(opts: {
   const candleRequests = () => requests.filter((r) => r.host === "api.example.test")
   const rpcRequests = () => requests.filter((r) => r.host === "rpc.example.test")
   const evmRequests = () => requests.filter((r) => r.host === "evm.example.test")
-  return { deps, stdout, stderr, asked, requests, candleRequests, rpcRequests, evmRequests, peak: () => peak }
+  const hyperliquidRequests = () => requests.filter((r) => r.host === "api.hyperliquid.xyz")
+  return {
+    deps,
+    stdout,
+    stderr,
+    asked,
+    requests,
+    candleRequests,
+    rpcRequests,
+    evmRequests,
+    hyperliquidRequests,
+    peak: () => peak,
+  }
 }
 
 async function emptyConfigDir(): Promise<string> {
@@ -1402,5 +1435,121 @@ describe("BE-767: a cut-off wallet list stays partial on its own", () => {
     expect(shown.code).toBe(3)
     expect(shown.h.stdout.text).toContain("could not be read in full")
     expect(shown.h.stdout.text).toContain(CUT_OFF)
+  })
+})
+
+describe("BE-1582: the Hyperliquid section (spec A-11, AC16)", () => {
+  /** HOOD_TEE's Hyperliquid account: 1,500.50 of value and one BTC long 10% from liquidation (warn at defaults). */
+  const HL_ACCOUNT = {
+    marginSummary: { accountValue: "1500.5", totalMarginUsed: "50.0" },
+    crossMarginSummary: { accountValue: "1500.5", totalMarginUsed: "50.0" },
+    crossMaintenanceMarginUsed: "5.0",
+    withdrawable: "1400.0",
+    assetPositions: [
+      {
+        position: {
+          coin: "BTC",
+          szi: "1.0",
+          leverage: { type: "cross", value: 10 },
+          entryPx: "95.0",
+          positionValue: "100.0",
+          unrealizedPnl: "5.25",
+          returnOnEquity: "0.5",
+          liquidationPx: "90.0",
+          marginUsed: "10.0",
+          cumFunding: { allTime: "0.0", sinceOpen: "0.1", sinceChange: "0.0" },
+        },
+      },
+    ],
+  }
+  const scenario = async (extra: Partial<Parameters<typeof harness>[0]> = {}) =>
+    harness({
+      dir: extra.dir ?? (await emptyConfigDir()),
+      tee: [{ id: "w1", address: teeAddress(1), label: "tee-1", active: true, lamports: "500000000", tokens: [] }],
+      candlePrices: HOOD_PRICES,
+      hood: hoodSection(),
+      hyperliquid: { [HOOD_TEE.toLowerCase()]: HL_ACCOUNT },
+      ...extra,
+    })
+
+  test("a section after the totals, listing the TEE account, its subtotal and level, kept out of the total", async () => {
+    const h = await scenario()
+    expect(await run(["portfolio"], h.deps)).toBe(0)
+    const out = h.stdout.text
+    // The existing figures are unchanged (D4): the total is the one the Hood test above reads.
+    expect(out).toMatch(/total\s+\$3,276\.50\s+1 unpriced holding not counted/)
+    expect(out).toContain("Hyperliquid (live from Hyperliquid, not in the ledger; not in the total above)")
+    expect(out).toMatch(/hood-1 \(0x11…1111\)\s+\$1,500\.50\s+\$5\.25\s+1\s+warn/)
+    expect(out).toContain("Hyperliquid subtotal: $1,500.50 account value, $5.25 unrealized.")
+    expect(out.indexOf("total ")).toBeLessThan(out.indexOf("Hyperliquid ("))
+    // The embedded EVM wallet is never read on Hyperliquid; one market read and one account read.
+    const users = h.hyperliquidRequests().map((r) => JSON.parse(r.body).user ?? JSON.parse(r.body).type)
+    expect(users.sort()).toEqual([HOOD_TEE.toLowerCase(), "metaAndAssetCtxs"].sort())
+    expect(h.stderr.text).toContain("Reading 1 EVM TEE address from Hyperliquid's public API in 2 requests.")
+  })
+
+  test("--json: a top-level hyperliquid object; every existing field as it was", async () => {
+    const dir = await emptyConfigDir()
+    const without = await scenario({ dir })
+    expect(await run(["portfolio", "--json", "--no-perps"], without.deps)).toBe(0)
+    const before = JSON.parse(without.stdout.text)
+    const h = await scenario({ dir })
+    expect(await run(["portfolio", "--json"], h.deps)).toBe(0)
+    const doc = JSON.parse(h.stdout.text)
+    const { hyperliquid, ...rest } = doc
+    expect(rest).toEqual(before)
+    expect(hyperliquid).toEqual({
+      read: true,
+      network: "mainnet",
+      accounts: [
+        {
+          address: HOOD_TEE,
+          label: "hood-1",
+          walletId: "hw1",
+          accountValueUsd: "1500.5",
+          unrealizedPnlUsd: "5.25",
+          positionCount: 1,
+          level: "warn",
+        },
+      ],
+      subtotal: { accountValueUsd: "1500.5", unrealizedPnlUsd: "5.25" },
+      empty: 0,
+      unread: [],
+      thresholds: "defaults",
+    })
+    expect(doc.totalUsd).toBe(before.totalUsd)
+  })
+
+  test("a failed Hyperliquid read marks the section not read and the exit partial (3)", async () => {
+    const h = await scenario({ hyperliquid: "down" })
+    expect(await run(["portfolio", "--json"], h.deps)).toBe(3)
+    const doc = JSON.parse(h.stdout.text)
+    expect(doc.hyperliquid).toEqual({
+      read: false,
+      reason: "Hyperliquid metaAndAssetCtxs read failed (PERPS_UNAVAILABLE)",
+    })
+    expect(doc.complete).toBe(false)
+    const text = await scenario({ hyperliquid: "down" })
+    expect(await run(["portfolio"], text.deps)).toBe(3)
+    expect(text.stdout.text).toContain("Not read: Hyperliquid metaAndAssetCtxs read failed (PERPS_UNAVAILABLE).")
+  })
+
+  test("--chain solana and --no-perps send nothing to Hyperliquid", async () => {
+    for (const argv of [
+      ["portfolio", "--chain", "solana", "--json"],
+      ["portfolio", "--no-perps", "--json"],
+    ]) {
+      const h = await scenario()
+      expect(await run(argv, h.deps)).toBe(0)
+      expect(h.hyperliquidRequests()).toEqual([])
+      expect("hyperliquid" in JSON.parse(h.stdout.text)).toBe(false)
+    }
+  })
+
+  test("a TEE account holding nothing is counted, not listed", async () => {
+    const h = await scenario({ hyperliquid: {} })
+    expect(await run(["portfolio"], h.deps)).toBe(0)
+    expect(h.stdout.text).toContain("1 EVM TEE wallet holds nothing on Hyperliquid.")
+    expect(h.stdout.text).not.toContain("Hyperliquid subtotal")
   })
 })

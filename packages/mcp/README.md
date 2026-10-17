@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-forty-four tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
+forty-eight tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, report on-chain activity, and check an agent profile without hand-rolling HTTP
 calls.
@@ -31,7 +31,7 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all forty-four. An unknown name fails startup with the valid names in the message, rather
+Unset means all forty-eight. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -139,7 +139,11 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_perps_leverage` | Set a market's leverage and margin mode | `POST /api/v1/agent/perps/leverage`, the same | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_deposit` | Deposit onto the key's Hyperliquid account through Relay, from its Solana or Hood TEE wallet | `POST /api/v1/agent/perps/deposit`, checked here, relay-signed, `POST /api/v1/agent/perps/deposit/submit` | `CANDLE_AGENT_API_KEY` (`swap:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_orders` | Open Hyperliquid orders and every action Candle built | `GET /api/v1/agent/perps/orders` | `CANDLE_AGENT_API_KEY` |
-| `candle_perps_positions` | Perps positions and account value, read live | `GET /api/v1/agent/perps/positions` | `CANDLE_AGENT_API_KEY` |
+| `candle_perps_positions` | Perps positions and account value, read live, with the per-position table, account line and risk | `GET /api/v1/agent/perps/positions`, then Hyperliquid `/info` directly | `CANDLE_AGENT_API_KEY` |
+| `candle_perps_account` | The Hyperliquid account line and recent realized P&L, fees and funding | Hyperliquid `/info` directly; wallet and thresholds from Candle | `CANDLE_AGENT_API_KEY` |
+| `candle_perps_risk` | The liquidation risk level (ok, warn, critical) and what drives it; poll it to watch | Hyperliquid `/info` directly; wallet and thresholds from Candle | `CANDLE_AGENT_API_KEY` |
+| `candle_perps_thresholds` | The key's stored and effective risk thresholds | `GET /api/v1/agent/keys/self/limits` | `CANDLE_AGENT_API_KEY` |
+| `candle_perps_set_thresholds` | Tighten the key's own risk thresholds (never loosen) | `PUT /api/v1/agent/keys/self/perps-risk` | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_fills` | One page of the wallet's perp fills, read directly from Hyperliquid | Hyperliquid `/info` (`userFillsByTime`); Candle only lists the key's wallets | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_funding` | One page of the wallet's funding payments, read directly from Hyperliquid | Hyperliquid `/info` (`userFunding`); Candle only lists the key's wallets | `CANDLE_AGENT_API_KEY` |
 
@@ -187,7 +191,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-forty-four tools:
+forty-eight tools:
 
 - `candle_launch_token`, `candle_get_market`, and `candle_get_feed` hit endpoints that use the
   structured envelope `{ success: false, error: { code, message, ... } }`. Branch on `error.code`.

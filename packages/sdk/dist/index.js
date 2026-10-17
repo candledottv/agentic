@@ -1437,6 +1437,760 @@ class PerpsMarketReader {
   }
 }
 
+// src/hyperliquid-risk.ts
+var HYPERLIQUID_RISK_INFO_URLS = {
+  mainnet: "https://api.hyperliquid.xyz/info",
+  testnet: "https://api.hyperliquid-testnet.xyz/info"
+};
+var PERPS_RISK_FIELDS = [
+  "warnDistanceBps",
+  "criticalDistanceBps",
+  "warnMarginRatioBps",
+  "criticalMarginRatioBps",
+  "clearBandBps"
+];
+var HYPERLIQUID_RISK_DEFAULTS = {
+  warnDistanceBps: 1500,
+  criticalDistanceBps: 700,
+  warnMarginRatioBps: 6000,
+  criticalMarginRatioBps: 8000,
+  clearBandBps: 200
+};
+function effectivePerpsRisk(stored) {
+  const out = { ...HYPERLIQUID_RISK_DEFAULTS };
+  for (const field of PERPS_RISK_FIELDS) {
+    const value = stored?.[field];
+    if (typeof value === "number")
+      out[field] = value;
+  }
+  return out;
+}
+function perpsRiskProblem(t) {
+  const ranges = {
+    warnDistanceBps: [1, 9900],
+    criticalDistanceBps: [1, 9900],
+    warnMarginRatioBps: [1, 9999],
+    criticalMarginRatioBps: [1, 9999],
+    clearBandBps: [0, 1000]
+  };
+  for (const field of PERPS_RISK_FIELDS) {
+    const value = t[field];
+    const [min, max] = ranges[field];
+    if (!Number.isInteger(value) || value < min || value > max)
+      return `${field} must be a whole number of bps from ${min} to ${max}`;
+  }
+  if (t.criticalDistanceBps >= t.warnDistanceBps)
+    return "criticalDistanceBps must be below warnDistanceBps";
+  if (t.warnMarginRatioBps >= t.criticalMarginRatioBps)
+    return "warnMarginRatioBps must be below criticalMarginRatioBps";
+  return null;
+}
+function perpsRiskFromLimits(body) {
+  const record = isRecord(body) ? body : {};
+  const reported = "perpsRisk" in record || "perpsRiskEffective" in record;
+  const stored = isRecord(record.perpsRisk) ? pickSettings(record.perpsRisk) : null;
+  if (!reported)
+    return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" }, stored };
+  const effective = isRecord(record.perpsRiskEffective) ? effectivePerpsRisk(pickSettings(record.perpsRiskEffective)) : effectivePerpsRisk(stored);
+  if (perpsRiskProblem(effective) !== null)
+    return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" }, stored };
+  const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
+  return { thresholds: { ...effective, source }, stored };
+}
+function pickSettings(raw) {
+  const out = {};
+  for (const field of PERPS_RISK_FIELDS)
+    if (typeof raw[field] === "number")
+      out[field] = raw[field];
+  return out;
+}
+
+class HyperliquidReadError extends Error {
+  rateLimited;
+  code = "PERPS_READ_FAILED";
+  constructor(message, rateLimited = false) {
+    super(message);
+    this.rateLimited = rateLimited;
+    this.name = "HyperliquidReadError";
+  }
+}
+var INFO_TIMEOUT_MS = 5000;
+var RATE_LIMIT_RETRY_MS = 1000;
+async function hyperliquidInfo(fetcher, network, body, opts = {}) {
+  const sleep2 = opts.sleep ?? ((ms) => new Promise((resolve2) => setTimeout(resolve2, ms)));
+  for (let attempt = 0;; attempt++) {
+    const controller = new AbortController;
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? INFO_TIMEOUT_MS);
+    let res;
+    let text;
+    try {
+      res = await fetcher(HYPERLIQUID_RISK_INFO_URLS[network], {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      text = res.ok ? await res.text() : "";
+    } catch {
+      throw new HyperliquidReadError(`Hyperliquid ${String(body.type)} read failed or timed out`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 429) {
+      if (attempt === 0) {
+        await sleep2(RATE_LIMIT_RETRY_MS);
+        continue;
+      }
+      throw new HyperliquidReadError(`Hyperliquid rate-limited the ${String(body.type)} read (HTTP 429)`, true);
+    }
+    if (!res.ok)
+      throw new HyperliquidReadError(`Hyperliquid ${String(body.type)} answered HTTP ${res.status ?? "?"}`);
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new HyperliquidReadError(`Hyperliquid ${String(body.type)} answered with something other than JSON`);
+    }
+  }
+}
+async function readHyperliquidMarketSnapshot(fetcher, network, opts = {}) {
+  const sleep2 = opts.sleep ?? ((ms) => new Promise((resolve2) => setTimeout(resolve2, ms)));
+  let limited = false;
+  const watched = async (url, init) => {
+    const res = await fetcher(url, init);
+    limited = res.status === 429;
+    return res;
+  };
+  try {
+    return await readHyperliquidMarkets(watched, network);
+  } catch {
+    await sleep2(RATE_LIMIT_RETRY_MS);
+  }
+  try {
+    return await readHyperliquidMarkets(watched, network);
+  } catch (error) {
+    throw new HyperliquidReadError(`Hyperliquid metaAndAssetCtxs read failed${error instanceof PerpsMarketError ? ` (${error.code})` : ""}`, limited);
+  }
+}
+function hyperliquidMark(markets, coin) {
+  const index = markets.universe.findIndex((m) => m.name === coin);
+  const mark = index < 0 ? undefined : markets.ctxs[index]?.markPx;
+  if (typeof mark !== "string")
+    return null;
+  const parsed = dec(mark);
+  return parsed !== null && parsed > 0n ? mark : null;
+}
+async function readHyperliquidClearinghouse(fetcher, network, address, opts = {}) {
+  return parseClearinghouse(await hyperliquidInfo(fetcher, network, { type: "clearinghouseState", user: address.toLowerCase() }, opts));
+}
+async function readHyperliquidAccountMode(fetcher, network, address, opts = {}) {
+  const body = await hyperliquidInfo(fetcher, network, { type: "userAbstraction", user: address.toLowerCase() }, opts);
+  if (typeof body !== "string" || body === "")
+    throw new HyperliquidReadError("Unexpected userAbstraction shape");
+  return body;
+}
+var HYPERLIQUID_STANDARD_MODES = ["default", "disabled"];
+function parseClearinghouse(body) {
+  const bad = (what) => new HyperliquidReadError(`Unexpected clearinghouseState shape (${what})`);
+  if (!isRecord(body))
+    throw bad("not an object");
+  const summary = (value, name) => {
+    if (!isRecord(value) || !isDecString(value.accountValue) || !isDecString(value.totalMarginUsed))
+      throw bad(name);
+    return { accountValue: value.accountValue, totalMarginUsed: value.totalMarginUsed };
+  };
+  const marginSummary = summary(body.marginSummary, "marginSummary");
+  const crossMarginSummary = summary(body.crossMarginSummary, "crossMarginSummary");
+  if (!isDecString(body.crossMaintenanceMarginUsed))
+    throw bad("crossMaintenanceMarginUsed");
+  if (!isDecString(body.withdrawable))
+    throw bad("withdrawable");
+  if (!Array.isArray(body.assetPositions))
+    throw bad("assetPositions");
+  const positions = body.assetPositions.map((entry) => {
+    const p = isRecord(entry) ? entry.position : undefined;
+    if (!isRecord(p) || typeof p.coin !== "string" || p.coin === "")
+      throw bad("position");
+    for (const field of ["szi", "entryPx", "positionValue", "unrealizedPnl", "returnOnEquity", "marginUsed"])
+      if (!isDecString(p[field]))
+        throw bad(`position ${field}`);
+    const leverage = p.leverage;
+    if (!isRecord(leverage) || typeof leverage.type !== "string" || typeof leverage.value !== "number")
+      throw bad("position leverage");
+    if (p.liquidationPx !== null && p.liquidationPx !== undefined && !isDecString(p.liquidationPx))
+      throw bad("position liquidationPx");
+    const funding = p.cumFunding;
+    if (!isRecord(funding) || !isDecString(funding.sinceOpen))
+      throw bad("position cumFunding");
+    return {
+      coin: p.coin,
+      szi: p.szi,
+      entryPx: p.entryPx,
+      positionValue: p.positionValue,
+      unrealizedPnl: p.unrealizedPnl,
+      returnOnEquity: p.returnOnEquity,
+      leverage: { type: leverage.type, value: leverage.value },
+      liquidationPx: p.liquidationPx ?? null,
+      marginUsed: p.marginUsed,
+      cumFunding: { sinceOpen: funding.sinceOpen }
+    };
+  });
+  return {
+    marginSummary,
+    crossMarginSummary,
+    crossMaintenanceMarginUsed: body.crossMaintenanceMarginUsed,
+    withdrawable: body.withdrawable,
+    positions
+  };
+}
+var PERPS_RISK_NOTE = "Phase 1 has no server-side monitor: nothing warns you unless you poll this or run candle perps watch.";
+var RANK = { ok: 0, warn: 1, critical: 2 };
+function worse(a, b) {
+  return RANK[a] >= RANK[b] ? a : b;
+}
+function hyperliquidRiskReport(state, market, mode, thresholds, now, identity = { walletId: "", address: "", network: "mainnet" }) {
+  const base = {
+    schema: "candle.perps.risk/1",
+    walletId: identity.walletId,
+    address: identity.address,
+    network: identity.network,
+    mode,
+    readAt: new Date(now).toISOString(),
+    thresholds,
+    note: PERPS_RISK_NOTE
+  };
+  if (!HYPERLIQUID_STANDARD_MODES.includes(mode)) {
+    return {
+      ...base,
+      level: "unknown",
+      reason: "PERPS_ACCOUNT_MODE",
+      drivers: [],
+      closest: null,
+      account: null,
+      positions: []
+    };
+  }
+  const ch = isParsedClearinghouse(state) ? state : parseClearinghouse(state);
+  if (!market || !Array.isArray(market.universe) || !Array.isArray(market.ctxs))
+    throw new HyperliquidReadError("Unexpected metaAndAssetCtxs shape");
+  const markets = market;
+  const t = thresholds;
+  const drivers = [];
+  const nearest = [];
+  let level = "ok";
+  let unrealized = 0n;
+  const positions = ch.positions.map((p) => {
+    const szi = dec(p.szi);
+    unrealized += dec(p.unrealizedPnl);
+    const markPx = hyperliquidMark(markets, p.coin);
+    const distance = markPx !== null && p.liquidationPx !== null ? distanceParts(markPx, p.liquidationPx) : null;
+    let rowLevel = "none";
+    if (distance) {
+      rowLevel = fracLess(distance.num, distance.den, t.criticalDistanceBps) ? "critical" : fracLess(distance.num, distance.den, t.warnDistanceBps) ? "warn" : "ok";
+    }
+    const liquidationDistance = distance ? ratioNumber(distance.num, distance.den) : null;
+    if (markPx === null) {
+      drivers.push({
+        kind: "position",
+        coin: p.coin,
+        level: "warn",
+        liquidationDistance: null,
+        threshold: null,
+        reason: "unmarked"
+      });
+      level = worse(level, "warn");
+    } else if (rowLevel === "warn" || rowLevel === "critical") {
+      drivers.push({
+        kind: "position",
+        coin: p.coin,
+        level: rowLevel,
+        liquidationDistance,
+        threshold: (rowLevel === "critical" ? t.criticalDistanceBps : t.warnDistanceBps) / 1e4
+      });
+      level = worse(level, rowLevel);
+    } else if (rowLevel === "ok" && liquidationDistance !== null) {
+      nearest.push({
+        driver: {
+          kind: "position",
+          coin: p.coin,
+          level: "ok",
+          liquidationDistance,
+          threshold: t.warnDistanceBps / 1e4
+        },
+        headroom: liquidationDistance / (t.warnDistanceBps / 1e4) - 1
+      });
+    }
+    return {
+      coin: p.coin,
+      side: szi < 0n ? "short" : "long",
+      size: p.szi.replace(/^-/, ""),
+      entryPx: p.entryPx,
+      markPx,
+      unrealizedPnlUsd: p.unrealizedPnl,
+      returnOnEquity: p.returnOnEquity,
+      leverage: { value: p.leverage.value, type: p.leverage.type },
+      liquidationPx: p.liquidationPx,
+      liquidationDistance,
+      fundingSinceOpenUsd: p.cumFunding.sinceOpen,
+      marginUsedUsd: p.marginUsed,
+      positionValueUsd: p.positionValue,
+      level: rowLevel
+    };
+  });
+  const maint = dec(ch.crossMaintenanceMarginUsed);
+  const crossValue = dec(ch.crossMarginSummary.accountValue);
+  let marginRatio = 0;
+  if (positions.length > 0 && maint > 0n) {
+    if (crossValue <= 0n) {
+      marginRatio = null;
+      drivers.push({
+        kind: "margin",
+        level: "critical",
+        marginRatio: null,
+        threshold: t.criticalMarginRatioBps / 1e4,
+        reason: "no equity"
+      });
+      level = "critical";
+    } else {
+      marginRatio = ratioNumber(maint, crossValue);
+      const marginLevel = fracGreater(maint, crossValue, t.criticalMarginRatioBps) ? "critical" : fracGreater(maint, crossValue, t.warnMarginRatioBps) ? "warn" : "ok";
+      if (marginLevel === "ok") {
+        nearest.push({
+          driver: { kind: "margin", level: "ok", marginRatio, threshold: t.warnMarginRatioBps / 1e4 },
+          headroom: 1 - marginRatio / (t.warnMarginRatioBps / 1e4)
+        });
+      } else {
+        drivers.push({
+          kind: "margin",
+          level: marginLevel,
+          marginRatio,
+          threshold: (marginLevel === "critical" ? t.criticalMarginRatioBps : t.warnMarginRatioBps) / 1e4
+        });
+        level = worse(level, marginLevel);
+      }
+    }
+  }
+  drivers.sort((a, b) => RANK[b.level] - RANK[a.level]);
+  nearest.sort((a, b) => a.headroom - b.headroom);
+  const accountValue = dec(ch.marginSummary.accountValue);
+  const marginUsed = dec(ch.marginSummary.totalMarginUsed);
+  const free = accountValue - marginUsed;
+  const account = {
+    accountValueUsd: ch.marginSummary.accountValue,
+    marginUsedUsd: ch.marginSummary.totalMarginUsed,
+    crossAccountValueUsd: ch.crossMarginSummary.accountValue,
+    freeMarginUsd: formatDec(free > 0n ? free : 0n),
+    withdrawableUsd: ch.withdrawable,
+    crossMaintenanceMarginUsedUsd: ch.crossMaintenanceMarginUsed,
+    marginRatio,
+    unrealizedPnlUsd: formatDec(unrealized),
+    positionCount: positions.length,
+    mode,
+    level
+  };
+  return {
+    ...base,
+    level,
+    reason: null,
+    drivers,
+    closest: level === "ok" ? nearest[0]?.driver ?? null : null,
+    account,
+    positions
+  };
+}
+function unknownRiskReport(identity, thresholds, reason, now, mode = null) {
+  return {
+    schema: "candle.perps.risk/1",
+    ...identity,
+    mode,
+    readAt: new Date(now).toISOString(),
+    level: "unknown",
+    reason,
+    drivers: [],
+    closest: null,
+    thresholds,
+    account: null,
+    positions: [],
+    note: PERPS_RISK_NOTE
+  };
+}
+var PERPS_RISK_STALE_MS = 30000;
+async function readPerpsRisk(opts) {
+  const identity = { walletId: opts.walletId, address: opts.address, network: opts.network };
+  const timed = async (read) => {
+    const value = await read;
+    return { value, at: opts.now() };
+  };
+  const [state, market, mode] = await Promise.all([
+    timed(readHyperliquidClearinghouse(opts.fetcher, opts.network, opts.address, opts)),
+    timed(readHyperliquidMarketSnapshot(opts.fetcher, opts.network, opts)),
+    opts.mode !== undefined ? Promise.resolve({ value: opts.mode, at: Number.NaN }) : timed(readHyperliquidAccountMode(opts.fetcher, opts.network, opts.address, opts))
+  ]);
+  const times = [state.at, market.at, mode.at].filter((at2) => !Number.isNaN(at2));
+  const earliest = Math.min(...times);
+  if (Math.max(...times) - earliest > PERPS_RISK_STALE_MS)
+    return unknownRiskReport(identity, opts.thresholds, "PERPS_READ_STALE", earliest, mode.value);
+  return hyperliquidRiskReport(state.value, market.value, mode.value, opts.thresholds, earliest, identity);
+}
+function perpsRiskExitCode(level) {
+  return level === "ok" ? 0 : level === "warn" ? 10 : level === "critical" ? 11 : 1;
+}
+var PERPS_FILLS_RESPONSE_CAP = 2000;
+var PERPS_FUNDING_RESPONSE_CAP = 500;
+var PERPS_RECENT_MAX_MS = 30 * 24 * 60 * 60 * 1000;
+function isMainPerpCoin(coin) {
+  return typeof coin === "string" && coin !== "" && !coin.includes(":") && !coin.includes("/") && !coin.startsWith("@");
+}
+async function readPerpsRecent(fetcher, network, address, window, opts = {}) {
+  const user = address.toLowerCase();
+  const [fills, funding] = await Promise.all([
+    hyperliquidInfo(fetcher, network, { type: "userFillsByTime", user, startTime: window.startTime, endTime: window.endTime }, opts),
+    hyperliquidInfo(fetcher, network, { type: "userFunding", user, startTime: window.startTime, endTime: window.endTime }, opts)
+  ]);
+  return summarizePerpsRecent(fills, funding, window);
+}
+function summarizePerpsRecent(fills, funding, window) {
+  if (!Array.isArray(fills))
+    throw new HyperliquidReadError("Unexpected userFillsByTime shape");
+  if (!Array.isArray(funding))
+    throw new HyperliquidReadError("Unexpected userFunding shape");
+  let realized = 0n;
+  let fees = 0n;
+  let paid = 0n;
+  let fillCount = 0;
+  let fundingCount = 0;
+  for (const row of fills) {
+    if (!isRecord(row))
+      throw new HyperliquidReadError("Unexpected fill row");
+    if (!isMainPerpCoin(row.coin))
+      continue;
+    const closed = dec(row.closedPnl);
+    const fee = dec(row.fee);
+    if (closed === null || fee === null)
+      throw new HyperliquidReadError("Unexpected fill amount");
+    realized += closed;
+    fees += fee;
+    fillCount++;
+  }
+  for (const row of funding) {
+    const delta = isRecord(row) ? row.delta : undefined;
+    if (!isRecord(delta))
+      throw new HyperliquidReadError("Unexpected funding row");
+    if (delta.type !== "funding" || !isMainPerpCoin(delta.coin))
+      continue;
+    const usdc = dec(delta.usdc);
+    if (usdc === null)
+      throw new HyperliquidReadError("Unexpected funding amount");
+    paid += usdc;
+    fundingCount++;
+  }
+  return {
+    startTime: window.startTime,
+    endTime: window.endTime,
+    realizedPnlUsd: formatDec(realized),
+    feesUsd: formatDec(fees),
+    fundingUsd: formatDec(paid),
+    fills: fillCount,
+    fundingPayments: fundingCount,
+    truncated: fills.length >= PERPS_FILLS_RESPONSE_CAP || funding.length >= PERPS_FUNDING_RESPONSE_CAP
+  };
+}
+function perpsAccountReport(report, recent) {
+  const { mode: _mode, level: _level, ...line } = report.account ?? {};
+  return {
+    schema: "candle.perps.account/1",
+    walletId: report.walletId,
+    address: report.address,
+    network: report.network,
+    mode: report.mode,
+    readAt: report.readAt,
+    ...line,
+    recent,
+    risk: { level: report.level, reason: report.reason, drivers: report.drivers }
+  };
+}
+function perpsRiskClears(report, leaving) {
+  const t = report.thresholds;
+  const account = report.account;
+  if (!account)
+    return false;
+  const distanceBps = (leaving === "warn" ? t.warnDistanceBps : t.criticalDistanceBps) + t.clearBandBps;
+  const ratioBps = (leaving === "warn" ? t.warnMarginRatioBps : t.criticalMarginRatioBps) - t.clearBandBps;
+  for (const p of report.positions) {
+    if (p.markPx === null) {
+      if (leaving === "warn")
+        return false;
+      continue;
+    }
+    if (p.liquidationPx === null)
+      continue;
+    const d = distanceParts(p.markPx, p.liquidationPx);
+    if (d && fracLess(d.num, d.den, distanceBps))
+      return false;
+  }
+  const maint = dec(account.crossMaintenanceMarginUsedUsd);
+  if (report.positions.length > 0 && maint > 0n) {
+    const crossValue = dec(account.crossAccountValueUsd);
+    if (crossValue <= 0n)
+      return false;
+    if (fracGreater(maint, crossValue, ratioBps))
+      return false;
+  }
+  return true;
+}
+function perpsRiskStep(previous, report) {
+  const rule = report.level;
+  if (rule === "unknown" || previous === "unknown")
+    return rule;
+  if (RANK[rule] >= RANK[previous])
+    return rule;
+  if (rule === "ok" && perpsRiskClears(report, "warn"))
+    return "ok";
+  if (previous === "critical" && perpsRiskClears(report, "critical"))
+    return "warn";
+  return previous;
+}
+var PERPS_WATCH_DEFAULT_INTERVAL_MS = 1e4;
+var PERPS_WATCH_MAX_INTERVAL_MS = 300000;
+var PERPS_WATCH_DEFAULT_HEARTBEAT_MS = 60000;
+var PERPS_WATCH_REFRESH_MS = 300000;
+var HYPERLIQUID_INFO_WEIGHTS = { clearinghouseState: 2, metaAndAssetCtxs: 20, userAbstraction: 20 };
+function perpsWatchWeightPerMinute(intervalMs) {
+  const polls = 60000 / intervalMs;
+  const modeReads = 60000 / PERPS_WATCH_REFRESH_MS;
+  return Math.round(polls * (HYPERLIQUID_INFO_WEIGHTS.clearinghouseState + HYPERLIQUID_INFO_WEIGHTS.metaAndAssetCtxs) + modeReads * HYPERLIQUID_INFO_WEIGHTS.userAbstraction);
+}
+async function watchPerpsRisk(opts) {
+  const baseInterval = opts.intervalMs ?? PERPS_WATCH_DEFAULT_INTERVAL_MS;
+  const heartbeatMs = opts.heartbeatMs ?? PERPS_WATCH_DEFAULT_HEARTBEAT_MS;
+  const identity = { walletId: opts.walletId, address: opts.address, network: opts.network };
+  const sleep2 = (ms) => abortableSleep(opts.sleep, ms, opts.signal);
+  const info2 = { sleep: opts.sleep };
+  let thresholds;
+  try {
+    thresholds = await opts.thresholds();
+  } catch {
+    thresholds = { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" };
+  }
+  let thresholdsAt = opts.now();
+  let mode;
+  let modeAt = Number.NEGATIVE_INFINITY;
+  let level = "unknown";
+  let lastGoodAt = null;
+  let staleReported = false;
+  let interval = baseInterval;
+  let lastHeartbeat = opts.now();
+  let established = false;
+  await opts.onEvent({
+    event: "start",
+    ...identity,
+    at: new Date(opts.now()).toISOString(),
+    intervalSeconds: baseInterval / 1000,
+    heartbeatSeconds: heartbeatMs / 1000,
+    thresholds,
+    weightPerMinute: perpsWatchWeightPerMinute(baseInterval)
+  });
+  while (!opts.signal?.aborted) {
+    if (opts.now() - thresholdsAt >= PERPS_WATCH_REFRESH_MS) {
+      thresholdsAt = opts.now();
+      try {
+        thresholds = await opts.thresholds();
+      } catch {}
+    }
+    let report = null;
+    try {
+      if (mode === undefined || opts.now() - modeAt >= PERPS_WATCH_REFRESH_MS) {
+        mode = await readHyperliquidAccountMode(opts.fetcher, opts.network, opts.address, info2);
+        modeAt = opts.now();
+      }
+      report = await readPerpsRisk({ ...identity, fetcher: opts.fetcher, thresholds, now: opts.now, mode, ...info2 });
+      interval = baseInterval;
+    } catch (error) {
+      const rateLimited = error instanceof HyperliquidReadError && error.rateLimited;
+      if (rateLimited)
+        interval = Math.min(interval * 2, PERPS_WATCH_MAX_INTERVAL_MS);
+      await opts.onEvent({
+        event: "error",
+        at: new Date(opts.now()).toISOString(),
+        code: error instanceof HyperliquidReadError ? error.code : "PERPS_READ_FAILED",
+        message: error instanceof Error ? error.message : "Hyperliquid read failed",
+        nextPollSeconds: interval / 1000
+      });
+      if (level !== "unknown" && !staleReported && lastGoodAt !== null && opts.now() - lastGoodAt > PERPS_RISK_STALE_MS) {
+        const previous = level;
+        level = "unknown";
+        staleReported = true;
+        const stale = unknownRiskReport(identity, thresholds, "PERPS_READ_STALE", opts.now(), mode ?? null);
+        await opts.onEvent({ ...stale, event: "level", level, ruleLevel: "unknown", previous });
+        if (opts.onceLevelChange && established)
+          return { level };
+      }
+    }
+    if (report) {
+      const previous = level;
+      const next = perpsRiskStep(previous, report);
+      if (report.level !== "unknown") {
+        lastGoodAt = opts.now();
+        staleReported = false;
+      }
+      if (next !== previous) {
+        level = next;
+        const cleared = next === "ok" && (previous === "warn" || previous === "critical");
+        await opts.onEvent({
+          ...report,
+          event: "level",
+          level: next,
+          ruleLevel: report.level,
+          previous,
+          ...cleared ? { cleared: true } : {}
+        });
+        if (opts.onceLevelChange && established)
+          return { level };
+        if (next !== "unknown")
+          established = true;
+      } else if (next !== "unknown") {
+        established = true;
+      }
+      if (heartbeatMs > 0 && opts.now() - lastHeartbeat >= heartbeatMs) {
+        lastHeartbeat = opts.now();
+        await opts.onEvent({ ...report, event: "heartbeat", level, ruleLevel: report.level });
+      }
+    }
+    if (opts.signal?.aborted)
+      break;
+    await sleep2(interval);
+  }
+  return { level };
+}
+function abortableSleep(sleep2, ms, signal) {
+  if (!signal)
+    return sleep2(ms);
+  if (signal.aborted)
+    return Promise.resolve();
+  return new Promise((resolve2) => {
+    const done = () => {
+      signal.removeEventListener("abort", done);
+      resolve2();
+    };
+    signal.addEventListener("abort", done);
+    sleep2(ms).then(done, done);
+  });
+}
+var PERPS_PORTFOLIO_MAX_ACCOUNTS = 100;
+var PORTFOLIO_READS_IN_FLIGHT = 8;
+async function perpsPortfolioSection(fetcher, network, wallets, opts = {}) {
+  const now = opts.now ?? Date.now;
+  const considered = wallets.slice(0, PERPS_PORTFOLIO_MAX_ACCOUNTS);
+  const unread = wallets.slice(PERPS_PORTFOLIO_MAX_ACCOUNTS).map((w) => ({ ...w, reason: `past the ${PERPS_PORTFOLIO_MAX_ACCOUNTS}-address cap` }));
+  let markets = { universe: [], ctxs: [], marginTables: new Map };
+  if (considered.length > 0) {
+    try {
+      markets = await readHyperliquidMarketSnapshot(fetcher, network, opts);
+    } catch (error) {
+      return { read: false, reason: error instanceof Error ? error.message : "Hyperliquid market read failed" };
+    }
+  }
+  const thresholds = { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults" };
+  const results = new Array(considered.length).fill(null);
+  const failures = new Array(considered.length).fill(null);
+  let next = 0;
+  const worker = async () => {
+    while (next < considered.length) {
+      const at2 = next++;
+      const wallet = considered[at2];
+      try {
+        const state = await readHyperliquidClearinghouse(fetcher, network, wallet.address, opts);
+        const report = hyperliquidRiskReport(state, markets, "default", thresholds, now());
+        results[at2] = {
+          address: wallet.address,
+          ...wallet.label !== undefined ? { label: wallet.label } : {},
+          ...wallet.walletId !== undefined ? { walletId: wallet.walletId } : {},
+          accountValueUsd: report.account?.accountValueUsd ?? "0",
+          unrealizedPnlUsd: report.account?.unrealizedPnlUsd ?? "0",
+          positionCount: report.positions.length,
+          level: report.level
+        };
+      } catch (error) {
+        failures[at2] = error instanceof Error ? error.message : "read failed";
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PORTFOLIO_READS_IN_FLIGHT, considered.length) }, worker));
+  const accounts = [];
+  let empty = 0;
+  let value = 0n;
+  let pnl = 0n;
+  considered.forEach((wallet, at2) => {
+    const result = results[at2];
+    if (!result) {
+      unread.push({ ...wallet, reason: failures[at2] ?? "read failed" });
+      return;
+    }
+    if (result.positionCount === 0 && dec(result.accountValueUsd) === 0n) {
+      empty++;
+      return;
+    }
+    accounts.push(result);
+    value += dec(result.accountValueUsd);
+    pnl += dec(result.unrealizedPnlUsd);
+  });
+  return {
+    read: true,
+    network,
+    accounts,
+    subtotal: { accountValueUsd: formatDec(value), unrealizedPnlUsd: formatDec(pnl) },
+    empty,
+    unread,
+    thresholds: "defaults"
+  };
+}
+var SCALE = 18;
+var ONE2 = 10n ** BigInt(SCALE);
+var DEC_RE = /^-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/;
+var LOOSE_DEC_RE = /^-?[0-9]+(\.[0-9]{1,18})?$/;
+function isDecString(value) {
+  return typeof value === "string" && (DEC_RE.test(value) || LOOSE_DEC_RE.test(value));
+}
+function dec(value) {
+  if (!isDecString(value))
+    return null;
+  const negative = value.startsWith("-");
+  const [whole = "0", fraction = ""] = value.replace(/^-/, "").split(".");
+  const scaled2 = BigInt(whole) * ONE2 + BigInt(fraction.padEnd(SCALE, "0"));
+  return negative ? -scaled2 : scaled2;
+}
+function formatDec(value) {
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const whole = abs / ONE2;
+  const fraction = (abs % ONE2).toString().padStart(SCALE, "0").replace(/0+$/, "");
+  const text = fraction ? `${whole}.${fraction}` : `${whole}`;
+  return negative && text !== "0" ? `-${text}` : text;
+}
+function distanceParts(markPx, liquidationPx) {
+  const mark = dec(markPx);
+  const liq = dec(liquidationPx);
+  if (mark === null || liq === null || mark <= 0n)
+    return null;
+  const diff = mark - liq;
+  return { num: diff < 0n ? -diff : diff, den: mark };
+}
+function fracLess(num, den, bps) {
+  return num * 10000n < BigInt(bps) * den;
+}
+function fracGreater(num, den, bps) {
+  return num * 10000n > BigInt(bps) * den;
+}
+function ratioNumber(num, den) {
+  const micro = num * 1000000000000n / den;
+  return Number(micro) / 1000000000000;
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isParsedClearinghouse(value) {
+  return isRecord(value) && Array.isArray(value.positions) && !("assetPositions" in value);
+}
+
 // src/hyperliquid-withdraw.ts
 var CANDLE_PERPS_WITHDRAW_PINS = null;
 var RELAY_API_URL = "https://api.relay.link";
@@ -3127,7 +3881,22 @@ class CandleClient {
   }
   async perpsPositions(walletId) {
     this.requireKey("perpsPositions()");
-    return this.requestJson("GET", `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(walletId)}`);
+    const server = await this.requestJson("GET", `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(walletId)}`);
+    const { effective } = await this.perpsThresholdsOrDefaults();
+    const identity2 = { walletId, address: server.address, network: this.hyperliquidNetwork };
+    let report;
+    try {
+      report = await readPerpsRisk({
+        ...identity2,
+        fetcher: this.fetchImpl,
+        thresholds: effective,
+        now: Date.now
+      });
+    } catch {
+      report = unknownRiskReport(identity2, effective, "PERPS_READ_FAILED", Date.now());
+    }
+    const { positions: rows, ...risk } = report;
+    return { ...server, rows, accountLine: report.account, risk };
   }
   async perpsOrders(walletId, opts = {}) {
     this.requireKey("perpsOrders()");
@@ -3183,6 +3952,87 @@ class CandleClient {
     if (startTime !== undefined)
       params.set("startTime", String(startTime));
     return this.requestJson("GET", `/api/v1/agent/perps/funding?${params}`);
+  }
+  async getPerpsRisk() {
+    this.requireKey("getPerpsRisk()");
+    const { thresholds, stored } = perpsRiskFromLimits(await this.requestJson("GET", "/api/v1/agent/keys/self/limits"));
+    return { perpsRisk: stored, effective: thresholds };
+  }
+  async setPerpsRisk(fields) {
+    this.requireKey("setPerpsRisk()");
+    return this.requestJson("PUT", "/api/v1/agent/keys/self/perps-risk", { perpsRisk: fields });
+  }
+  async setKeyPerpsRisk(keyPrefix, fields, owner) {
+    const res = await this.fetchImpl(`${this.apiUrl}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/perps-risk`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", authorization: `Bearer ${owner.bearerToken}` },
+      body: JSON.stringify({ perpsRisk: fields })
+    });
+    return this.parseResponse(res);
+  }
+  async perpsRisk(params) {
+    this.requireKey("perpsRisk()");
+    const address = params.address ?? await this.perpsWalletAddress(params.walletId);
+    const { effective } = await this.perpsThresholdsOrDefaults();
+    return readPerpsRisk({
+      fetcher: this.fetchImpl,
+      network: this.hyperliquidNetwork,
+      walletId: params.walletId,
+      address,
+      thresholds: effective,
+      now: Date.now
+    });
+  }
+  async perpsAccount(params) {
+    this.requireKey("perpsAccount()");
+    const now = Date.now();
+    const startTime = params.since ?? now - 24 * 60 * 60 * 1000;
+    if (!Number.isSafeInteger(startTime) || startTime >= now || now - startTime > PERPS_RECENT_MAX_MS)
+      throw new Error("perpsAccount(): since must be an epoch-ms time within the last 30 days");
+    const address = params.address ?? await this.perpsWalletAddress(params.walletId);
+    const { effective } = await this.perpsThresholdsOrDefaults();
+    const fetcher = this.fetchImpl;
+    const [report, recent] = await Promise.all([
+      readPerpsRisk({
+        fetcher,
+        network: this.hyperliquidNetwork,
+        walletId: params.walletId,
+        address,
+        thresholds: effective,
+        now: Date.now
+      }),
+      readPerpsRecent(fetcher, this.hyperliquidNetwork, address, { startTime, endTime: now })
+    ]);
+    return perpsAccountReport(report, recent);
+  }
+  async watchPerpsRisk(params) {
+    this.requireKey("watchPerpsRisk()");
+    const address = params.address ?? await this.perpsWalletAddress(params.walletId);
+    return watchPerpsRisk({
+      fetcher: this.fetchImpl,
+      network: this.hyperliquidNetwork,
+      walletId: params.walletId,
+      address,
+      thresholds: async () => (await this.getPerpsRisk()).effective,
+      ...params.intervalMs !== undefined ? { intervalMs: params.intervalMs } : {},
+      ...params.heartbeatMs !== undefined ? { heartbeatMs: params.heartbeatMs } : {},
+      ...params.signal ? { signal: params.signal } : {},
+      ...params.onceLevelChange ? { onceLevelChange: true } : {},
+      now: Date.now,
+      sleep: (ms) => new Promise((resolve2) => setTimeout(resolve2, ms)),
+      onEvent: params.onEvent
+    });
+  }
+  async perpsPortfolioSection(wallets) {
+    return perpsPortfolioSection(this.fetchImpl, this.hyperliquidNetwork, wallets);
+  }
+  async perpsThresholdsOrDefaults() {
+    try {
+      return await this.getPerpsRisk();
+    } catch {
+      const { thresholds, stored } = perpsRiskFromLimits(null);
+      return { perpsRisk: stored, effective: thresholds };
+    }
   }
   async perpsDeposit(params) {
     this.requireKey("perpsDeposit()");
@@ -3971,11 +4821,13 @@ function verifyWebhookSignature(secret, header, body, nowSec, toleranceSec = 300
   return timingSafeEqual(provided, expected);
 }
 export {
+  watchPerpsRisk,
   verifyWithdrawSendAsset,
   verifyWithdrawMapping,
   verifyWebhookSignature,
   verifyPerpsBuild,
   relayRecipientProblem,
+  readPerpsRisk,
   readPerpsHistoryPage,
   readHyperliquidMarkets,
   planTableRows,
@@ -3983,6 +4835,9 @@ export {
   planPromotionLine,
   planLabel,
   perpsSetupStatusProblem,
+  perpsRiskStep,
+  perpsRiskExitCode,
+  perpsPortfolioSection,
   perpsMarketGate,
   perpsDepositProblem,
   perpsCandleWindow,
@@ -3990,12 +4845,14 @@ export {
   parseSendAssetAmount,
   operationIds,
   isSolanaRpcErrorData,
+  hyperliquidRiskReport,
   hyperliquidOrderMarket,
   hyperliquidActionHash,
   hyperliquidAccountMode,
   generateSignerKeypair,
   formatPlanBps,
   encryptWalletKeyForImport,
+  effectivePerpsRisk,
   TradeLegOutcomeError,
   TradeLandedUnconfirmedError,
   TradeLandedFeeLegError,
@@ -4011,7 +4868,9 @@ export {
   KeychainSecretStore,
   JsonRpcError,
   InMemorySecretStore,
+  HyperliquidReadError,
   HYPERLIQUID_STANDARD_ACCOUNT_MODES,
+  HYPERLIQUID_RISK_DEFAULTS,
   HYPERLIQUID_EXCHANGE_URLS,
   HYPERLIQUID_ALLOWED_ACTION_TYPES,
   EncryptedFileSecretStore,

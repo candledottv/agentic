@@ -369,19 +369,17 @@ describe("perpsSetup", () => {
 })
 
 describe("reads", () => {
-  test("positions, orders, fills and funding pass the wallet id", async () => {
+  // perpsPositions() also reads Hyperliquid directly since BE-1582; client.perps-risk.test.ts covers it.
+  test("orders, fills and funding pass the wallet id", async () => {
     const { client: c, calls } = await client([
       json(200, { success: true }),
       json(200, { success: true }),
       json(200, { success: true }),
-      json(200, { success: true }),
     ])
-    await c.perpsPositions(WALLET)
     await c.perpsOrders(WALLET, { limit: 5 })
     await c.perpsFills(WALLET)
     await c.perpsFunding(WALLET, 123)
     expect(calls.map((call) => call.url)).toEqual([
-      `https://api.test/api/v1/agent/perps/positions?walletId=${WALLET}`,
       `https://api.test/api/v1/agent/perps/orders?walletId=${WALLET}&limit=5`,
       `https://api.test/api/v1/agent/perps/fills?walletId=${WALLET}`,
       `https://api.test/api/v1/agent/perps/funding?walletId=${WALLET}&startTime=123`,

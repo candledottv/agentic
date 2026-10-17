@@ -54,6 +54,7 @@ import {
   perpsSetup,
 } from "./commands/perps"
 import { perpsBook, perpsCandles, perpsMarket, perpsMarkets } from "./commands/perps-markets"
+import { perpsAccount, perpsRisk, perpsThresholds, perpsWatch } from "./commands/perps-risk"
 import { perpsWithdraw } from "./commands/perps-withdraw"
 import { plans } from "./commands/plans"
 import { plugins, runPlugin } from "./commands/plugins"
@@ -215,6 +216,12 @@ const COMMANDS: Record<string, CommandRoute> = {
       funding: perpsFunding,
       positions: perpsPositions,
       leverage: perpsLeverage,
+      // BE-1582 (spec A): read-only risk and visibility, read from Hyperliquid on this machine.
+      // `risk` and `watch` exit 0, 10 or 11 by level; `thresholds set` may only tighten as `self`.
+      account: perpsAccount,
+      risk: perpsRisk,
+      watch: perpsWatch,
+      thresholds: perpsThresholds,
       // BE-1573 (withdrawals W1): HyperCore to the key's own Solana or Hood TEE wallet, under the
       // bound key's opt-in `perps:withdraw`. One unlock and one typed confirm; no --yes.
       withdraw: perpsWithdraw,
@@ -938,7 +945,61 @@ export async function buildRealDeps(): Promise<Deps> {
     },
     rename: (from, to) => rename(from, to),
     unlink: (path) => unlink(path),
+    runHook: realRunHook,
+    onTerminate: (handler) => {
+      process.once("SIGINT", handler)
+      process.once("SIGTERM", handler)
+      return () => {
+        process.off("SIGINT", handler)
+        process.off("SIGTERM", handler)
+      }
+    },
   }
+}
+
+/**
+ * `candle perps watch`'s hook (BE-1582, spec A-9): the user's own command through their shell, with
+ * the level line on stdin and `CANDLE_PERPS_RISK_LEVEL` in its environment. Nothing from the network
+ * is put on its command line. Its stdout and stderr go to this process's stderr, so watch's stdout
+ * stays one JSON line per event. Killed past `timeoutMs`.
+ */
+function realRunHook(
+  command: string,
+  stdin: string,
+  env: Record<string, string>,
+  timeoutMs: number,
+): Promise<{ exitCode: number | null; signal: string | null; timedOut: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    let timedOut = false
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(command, { shell: true, env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] })
+    } catch (err) {
+      resolve({
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return
+    }
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill("SIGKILL")
+    }, timeoutMs)
+    child.stdout?.on("data", (chunk) => process.stderr.write(chunk))
+    child.stderr?.on("data", (chunk) => process.stderr.write(chunk))
+    child.stdin?.on("error", () => {})
+    child.stdin?.end(stdin)
+    child.on("error", (err) => {
+      clearTimeout(timer)
+      resolve({ exitCode: null, signal: null, timedOut, error: err.message })
+    })
+    child.on("close", (exitCode, signal) => {
+      clearTimeout(timer)
+      resolve({ exitCode, signal, timedOut })
+    })
+  })
 }
 
 async function main(): Promise<void> {

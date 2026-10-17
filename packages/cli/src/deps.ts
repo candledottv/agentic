@@ -200,6 +200,25 @@ export interface Deps {
    * any append that cannot run. It never throws for a skip; a throw is treated as a skip too.
    */
   appendEvmRecord?: (ctx: CommandContext, entry: EvmRecordTokenEntry) => Promise<EvmRecordAppendOutcome>
+  /**
+   * BE-1582 (spec A-9): runs a `candle perps watch` hook, `command`, through the user's shell with
+   * `stdin` piped in and `env` added to this process's environment. The hook's own output goes to
+   * stderr, never stdout, which carries watch's JSON lines. Past `timeoutMs` it is killed and the
+   * result says so. Never rejects: a hook that cannot start reports `error`. Optional so a test that
+   * never runs a hook needs no fake; absent, watch reports the hook as not run.
+   */
+  runHook?: (
+    command: string,
+    stdin: string,
+    env: Record<string, string>,
+    timeoutMs: number,
+  ) => Promise<{ exitCode: number | null; signal: string | null; timedOut: boolean; error?: string }>
+  /**
+   * BE-1582 (spec A-9): calls `handler` once on SIGINT or SIGTERM, so `candle perps watch` can stop
+   * polling and exit with the code of the last level it knew. Returns the unsubscribe. Optional:
+   * absent, watch runs until `--once-level-change` or the process is killed.
+   */
+  onTerminate?: (handler: () => void) => () => void
 }
 
 /** A `token` line of the sealed EVM record (D1): a token a landed leg on `wallet` traded. */

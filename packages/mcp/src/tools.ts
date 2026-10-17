@@ -66,6 +66,7 @@ import {
   type PerpsMarketToolName,
   perpsMarketShapes,
 } from "./perps-markets"
+import { perpsRiskShapes, withPortfolioSection } from "./perps-risk"
 import { PLAN_CAPABILITY_NOTE, type PlanTable, planPromotionLine, planTableMarkdown } from "./plans"
 import { noteVersionHeaders } from "./update-notice"
 
@@ -173,6 +174,11 @@ export const TOOL_NAMES = [
   "candle_perps_leverage",
   // Hyperliquid perps C (BE-647): the Relay deposit (perps.ts).
   "candle_perps_deposit",
+  // BE-1582 (spec A-12): read-only risk and visibility, read from Hyperliquid by this server.
+  "candle_perps_account",
+  "candle_perps_risk",
+  "candle_perps_thresholds",
+  "candle_perps_set_thresholds",
 ] as const
 
 export type ToolName = (typeof TOOL_NAMES)[number]
@@ -1127,6 +1133,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
     tools: [...allowed].filter((name) => !isProfileEditTool(name)),
     getConfig: () => cfg,
     env,
+    localHyperliquid: true,
   })
 }
 
@@ -1145,6 +1152,12 @@ export interface ToolSubsetOptions {
   metadata?: Partial<Record<ToolName, ToolRegistrationMetadata>>
   /** Local signer settings for hosts that explicitly register the perps tools. */
   env?: Record<string, string | undefined>
+  /**
+   * BE-1582 (spec A-11, D6): add the Hyperliquid section to `candle_get_portfolio`, read from this
+   * process. Set by the local server only (`registerTools`); the hosted server never sets it, so
+   * Candle's server sends nothing to Hyperliquid on a hosted call.
+   */
+  localHyperliquid?: boolean
 }
 
 /** Reusable registration only; the caller owns transport, request context and result policy. */
@@ -1657,10 +1670,21 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "not included: Candle does not know their addresses (the Candle CLI's `candle portfolio` reads " +
         "them over your own RPC). Needs a key with the account:read scope; without it the answer is " +
         "SCOPE_MISSING. A server that predates Hood in the portfolio omits `hood` and `chain`. Reads " +
-        "only; moves nothing.",
+        "only; moves nothing." +
+        (options.localHyperliquid
+          ? " This local server adds `hyperliquid`: each Hood TEE wallet's Hyperliquid account (account value, " +
+            "unrealized P&L, positions, risk level at the default thresholds) read live from Hyperliquid, with a " +
+            "subtotal. It is not in the ledger and is never part of any total. `read: false` with a reason, or " +
+            "entries in `unread`, means those accounts are unknown, not empty."
+          : ""),
       inputSchema: {},
     },
-    async () => callAndRelay("candle_get_portfolio", {}, getConfig(), doFetch),
+    async () => {
+      const result = await callAndRelay("candle_get_portfolio", {}, getConfig(), doFetch)
+      if (!options.localHyperliquid || result.isError) return result
+      const text = await withPortfolioSection(result.content[0]?.text ?? "", doFetch, env)
+      return { ...result, content: [{ type: "text" as const, text }] }
+    },
   )
 
   register(
@@ -1930,10 +1954,75 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       title: "Perps positions",
       description:
         "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE wallet, read " +
-        "live by its address. Reads only; moves nothing.",
+        "live by its address. Also `rows` (per position: side, size, entry, mark, unrealized P&L, ROE, leverage, " +
+        "liquidation price, liquidation distance, funding since open with Hyperliquid's sign where positive is paid, " +
+        "margin, value, level), `accountLine` and `risk` (the candle_perps_risk report without positions), read by " +
+        "this server from Hyperliquid directly. Reads only; moves nothing.",
       inputSchema: perpsShapes.candle_perps_positions,
     },
     perpsTool("candle_perps_positions"),
+  )
+
+  // BE-1582 (spec A-12): read-only risk and visibility. Nothing signs, so no signer PEM is needed.
+  const riskRead =
+    " Read by this server from Hyperliquid's public API; Candle is asked only for the wallet and the key's " +
+    "thresholds. Reads only; moves nothing. Phase 1 has no server-side monitor: nothing warns you unless you " +
+    "poll candle_perps_risk."
+  register(
+    "candle_perps_account",
+    {
+      title: "Perps account line",
+      description:
+        "The Hyperliquid account line for the key's EVM TEE wallet: account value and margin used (totals, " +
+        "isolated included), cross account value, free margin (an estimate), withdrawable (what can leave), " +
+        "cross maintenance margin and the cross margin ratio (liquidation at 1), unrealized P&L, and over a recent " +
+        "window (`since`, default 24h) realized P&L, fees and funding (positive received), with the risk level." +
+        riskRead,
+      inputSchema: perpsRiskShapes.candle_perps_account,
+    },
+    perpsTool("candle_perps_account"),
+  )
+  register(
+    "candle_perps_risk",
+    {
+      title: "Perps liquidation risk",
+      description:
+        "The risk level now for the key's EVM TEE wallet: `level` ok, warn or critical, the `drivers` that put it " +
+        "there (a position closer to liquidation than the warn or critical distance, default 15% and 7%; the cross " +
+        "margin ratio above 0.6 or 0.8; a position with no mark is at least warn), `closest` at ok, the thresholds " +
+        "applied, the account line and every position. warn and critical are results, not errors. An account mode " +
+        "this cannot read, or a stale read, is an error with code PERPS_ACCOUNT_MODE or PERPS_READ_STALE: never " +
+        "treat it as ok. One stateless read; poll it to watch (no hysteresis here)." +
+        riskRead,
+      inputSchema: perpsRiskShapes.candle_perps_risk,
+    },
+    perpsTool("candle_perps_risk"),
+  )
+  register(
+    "candle_perps_thresholds",
+    {
+      title: "Perps risk thresholds",
+      description:
+        "This key's Hyperliquid risk thresholds in bps: `stored` (or null), `effective` (defaults overlaid: warn " +
+        "distance 1500, critical distance 700, warn ratio 6000, critical ratio 8000, clear band 200) and `source`. " +
+        "Reads only; moves nothing.",
+      inputSchema: perpsRiskShapes.candle_perps_thresholds,
+    },
+    perpsTool("candle_perps_thresholds"),
+  )
+  register(
+    "candle_perps_set_thresholds",
+    {
+      title: "Tighten perps risk thresholds",
+      description:
+        "Tighten this key's own Hyperliquid risk thresholds (bps): a higher distance, a lower ratio or a wider " +
+        "band. A field set to null clears it; clear: true clears all. Anything looser than what applies now, " +
+        "defaults included (clearing a field stored stricter than its default counts), is refused with " +
+        "LOOSEN_REQUIRES_SESSION: only the owner loosens, with candle perps thresholds set --key <prefix>. " +
+        "Changes only when warnings fire; moves no funds.",
+      inputSchema: perpsRiskShapes.candle_perps_set_thresholds,
+    },
+    perpsTool("candle_perps_set_thresholds"),
   )
 
   const historyNote =

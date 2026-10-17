@@ -82,6 +82,7 @@ import {
   tradingKey,
   tradingPayer,
 } from "../trading"
+import { positionsAdditions, writePositionsText } from "./perps-risk"
 import { lazySolanaClient, printTradingResult, tradingFailure, tradingRead } from "./swap"
 
 const PERPS_SCOPE = "perps:write"
@@ -121,7 +122,7 @@ export async function perpsRequest(ctx: CommandContext, key: string, path: strin
   return result.body as Json
 }
 
-function network(ctx: CommandContext): HyperliquidNetwork {
+export function perpsNetwork(ctx: CommandContext): HyperliquidNetwork {
   return ctx.deps.env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet"
 }
 
@@ -243,7 +244,7 @@ async function runPerpsWrite(
   const { wallet } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE)
   if (!wallet) throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.")
   const builder = await builderPin(ctx, key)
-  const net = network(ctx)
+  const net = perpsNetwork(ctx)
   const method = opts.path.split("/").at(-1) as "setup" | "open" | "close" | "cancel" | "leverage"
   // Setup (spec 2026-10-17 C, section 5): the mode comes from Hyperliquid itself, before Candle is
   // asked, and an unsupported one stops here with nothing requested, reserved or signed.
@@ -590,20 +591,14 @@ export async function perpsPositions(args: string[], ctx: CommandContext): Promi
     const key = await tradingKey(ctx)
     const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"])
     const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(row.id)}`)
-    if (ctx.json) return printTradingResult(ctx, result)
+    // BE-1582 (spec A-3): every field the server sends, unchanged, plus `rows`, `accountLine` and
+    // `risk` from a direct read of Hyperliquid on this machine. The two reads are separate requests
+    // (the server caches for about 2 s); the three additions all come from the direct one.
+    const additions = await positionsAdditions(ctx, key, row)
+    if (ctx.json) return printTradingResult(ctx, { ...result, ...additions })
     const out = ctx.deps.stdout
-    const account = (result.account ?? {}) as Record<string, unknown>
-    out.write(
-      `${safeText(result.address)} (${safeText(result.network)}, ${safeText(result.mode)} mode): account value ${safeText(account.accountValue)} USD, withdrawable ${safeText(result.withdrawable)} USD\n`,
-    )
-    const positions = (result.positions ?? []) as Record<string, unknown>[]
-    if (positions.length === 0) out.write("No open positions.\n")
-    for (const p of positions) {
-      const leverage = (p.leverage ?? {}) as Record<string, unknown>
-      out.write(
-        `  ${safeText(p.coin)} ${safeText(p.szi)} at ${safeText(p.entryPx)}, value ${safeText(p.positionValue)}, uPnL ${safeText(p.unrealizedPnl)}, ${safeText(leverage.value)}x ${safeText(leverage.type)}, liq ${safeText(p.liquidationPx ?? "none")}\n`,
-      )
-    }
+    out.write(`${safeText(result.address)} (${safeText(result.network)}, ${safeText(result.mode)} mode)\n`)
+    writePositionsText(ctx, additions)
     // BE-1573 (withdrawals W1): what can leave the account now, and any withdrawal in flight. An API
     // that predates withdrawals sends no `openWithdrawals`, and the line says only what it knows.
     const open = Array.isArray(result.openWithdrawals) ? (result.openWithdrawals as Record<string, unknown>[]) : null
@@ -693,7 +688,7 @@ async function perpsHistory(kind: "fills" | "funding", args: string[], ctx: Comm
     const { row } = await perpsWallet(ctx, key, values["--wallet"])
     const page = (await readPerpsHistoryPage({
       kind,
-      network: network(ctx),
+      network: perpsNetwork(ctx),
       walletId: row.id,
       address: row.address,
       options: {

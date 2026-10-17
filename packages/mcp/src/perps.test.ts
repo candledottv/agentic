@@ -200,9 +200,11 @@ describe("reads", () => {
     const f = fake()
     const result = await executePerps("candle_perps_positions", {}, cfg, {}, f.fetch)
     expect(result.isError).toBeUndefined()
-    expect(f.calls.map((c) => c.url)).toEqual([
+    // BE-1582: the thresholds read joins Candle's calls; the rest is Hyperliquid, read directly.
+    expect(f.calls.map((c) => c.url).filter((url) => !url.includes("hyperliquid"))).toEqual([
       "https://api.test/api/v1/agent/wallets/trading",
       "https://api.test/api/v1/agent/perps/positions?walletId=wallet",
+      "https://api.test/api/v1/agent/keys/self/limits",
     ])
   })
 

@@ -87,6 +87,11 @@ export const MCP_TOOL_NAMES = [
   "candle_perps_funding",
   "candle_perps_leverage",
   "candle_perps_deposit",
+  // BE-1582: read-only Hyperliquid risk tools. They need the API key, so --read-only leaves them out.
+  "candle_perps_account",
+  "candle_perps_risk",
+  "candle_perps_thresholds",
+  "candle_perps_set_thresholds",
 ] as const
 
 /**

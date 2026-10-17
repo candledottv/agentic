@@ -103,6 +103,9 @@ export type {
   PerpsPositions,
   PerpsReplay,
   PerpsReplayResult,
+  PerpsRiskSettingsResult,
+  PerpsRiskWrite,
+  PerpsRiskWriteResult,
   PerpsSetupResult,
   PerpsSide,
   PerpsWalletRef,
@@ -214,6 +217,32 @@ export {
 } from "./hyperliquid"
 export * from "./hyperliquid-markets"
 export type { HyperliquidPnlFigures, HyperliquidPnlSection, HyperliquidWalletPnl } from "./hyperliquid-pnl"
+// BE-1582: the Hyperliquid risk engine, for bots that run the same rule as the CLI and MCP.
+export {
+  effectivePerpsRisk,
+  HYPERLIQUID_RISK_DEFAULTS,
+  type HyperliquidInfoFetcher,
+  HyperliquidReadError,
+  hyperliquidRiskReport,
+  type PerpsAccountLine,
+  type PerpsAccountReport,
+  type PerpsPortfolioAccount,
+  type PerpsPortfolioSection,
+  type PerpsPositionRow,
+  type PerpsRecentFigures,
+  type PerpsRiskDriver,
+  type PerpsRiskLevel,
+  type PerpsRiskReport,
+  type PerpsRiskSettings,
+  type PerpsRiskThresholds,
+  type PerpsRiskThresholdsReport,
+  type PerpsWatchEvent,
+  perpsPortfolioSection,
+  perpsRiskExitCode,
+  perpsRiskStep,
+  readPerpsRisk,
+  watchPerpsRisk,
+} from "./hyperliquid-risk"
 export {
   CANDLE_PERPS_WITHDRAW_PINS,
   type PerpsWithdrawAuthorization,

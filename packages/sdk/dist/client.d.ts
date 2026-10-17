@@ -42,6 +42,7 @@ import { type SignedTradeLeg } from "./errors";
 import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliquid";
 import { type PerpsBookOptions, type PerpsBookResult, type PerpsCandlesOptions, type PerpsCandlesResult, type PerpsMarketResult, type PerpsMarketsOptions, type PerpsMarketsResult } from "./hyperliquid-markets";
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
+import { type PerpsAccountLine, type PerpsAccountReport, type PerpsPortfolioSection, type PerpsPositionRow, type PerpsRiskReport, type PerpsRiskSettings, type PerpsRiskThresholds, type PerpsRiskThresholdsReport, type PerpsWatchEvent } from "./hyperliquid-risk";
 import { type PerpsWithdrawAuthorization, type PerpsWithdrawBuild, type PerpsWithdrawPins } from "./hyperliquid-withdraw";
 import { type PerpsFillsPage, type PerpsFundingPage, type PerpsHistoryOptions } from "./perps-history";
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans";
@@ -2038,7 +2039,34 @@ export interface PerpsPositions {
     account: Record<string, string>;
     withdrawable: string;
     positions: Record<string, unknown>[];
+    /**
+     * BE-1582 (spec A-3): the section 4 table, account line and risk report, from a direct read of
+     * Hyperliquid on this machine (the fields above are Candle's server read, unchanged). `rows` is
+     * empty and `accountLine` null when that read failed or no level could be computed, and `risk`
+     * then says why (`level: "unknown"`).
+     */
+    rows: PerpsPositionRow[];
+    accountLine: PerpsAccountLine | null;
+    risk: Omit<PerpsRiskReport, "positions">;
 }
+/** `GET /keys/self/limits`'s risk thresholds for the calling key (BE-1582, spec A-4). */
+export interface PerpsRiskSettingsResult {
+    /** What the key stores, or null. */
+    perpsRisk: PerpsRiskSettings | null;
+    /** What the engine applies, and where it came from (`defaults (server did not report)` on an older API). */
+    effective: PerpsRiskThresholdsReport;
+}
+/** `PUT /keys/self/perps-risk` or `/keys/:prefix/perps-risk`. */
+export interface PerpsRiskWriteResult {
+    success: true;
+    keyPrefix: string;
+    perpsRisk: PerpsRiskSettings | null;
+    effective: PerpsRiskThresholds;
+}
+/** A threshold write: each named field set (`null` clears that field), or `null` to clear them all. */
+export type PerpsRiskWrite = {
+    [K in keyof PerpsRiskThresholds]?: number | null;
+} | null;
 export interface PerpsOrderRecord {
     perpOrderId: string;
     kind: PerpsBuild["kind"];
@@ -3428,7 +3456,11 @@ export declare class CandleClient {
     perpsLeverage(params: PerpsLeverageParams): Promise<PerpsActionResult>;
     /** Add (positive) or remove (negative) isolated margin on an isolated position. */
     perpsMargin(params: PerpsMarginParams): Promise<PerpsActionResult>;
-    /** Positions and account value, read live from Hyperliquid by the wallet's address. */
+    /**
+     * Positions and account value, read live from Hyperliquid by the wallet's address. The server's
+     * fields are unchanged; `rows`, `accountLine` and `risk` (BE-1582, spec A-3) come from a direct
+     * read on this machine at the key's thresholds.
+     */
     perpsPositions(walletId: string): Promise<PerpsPositions>;
     /** Open orders on Hyperliquid, and Candle's record of every action it built, settled first. */
     perpsOrders(walletId: string, opts?: {
@@ -3459,6 +3491,70 @@ export declare class CandleClient {
         startTime: number;
         funding: Record<string, unknown>[];
     }>;
+    /** The key's risk thresholds: stored and effective. An older API reports none: the defaults, sourced so. */
+    getPerpsRisk(): Promise<PerpsRiskSettingsResult>;
+    /**
+     * Tighten the calling key's own thresholds (`PUT /keys/self/perps-risk`). Anything looser than
+     * the effective set, including clearing a field stored stricter than its default, is refused with
+     * 403 LOOSEN_REQUIRES_SESSION: the owner loosens with `setKeyPerpsRisk()`.
+     */
+    setPerpsRisk(fields: PerpsRiskWrite): Promise<PerpsRiskWriteResult>;
+    /**
+     * The owner's write on any of the account's keys (`PUT /keys/:prefix/perps-risk`): may loosen or
+     * clear. Needs an owner credential, the CLI's device token or a Privy session token, sent as a
+     * bearer token; the client's API key is not sent and would be refused.
+     */
+    setKeyPerpsRisk(keyPrefix: string, fields: PerpsRiskWrite, owner: {
+        bearerToken: string;
+    }): Promise<PerpsRiskWriteResult>;
+    /**
+     * One-shot risk (spec A-8): `ok`, `warn` or `critical` with its drivers, from a direct read of
+     * Hyperliquid at the key's thresholds. `unknown` for a non-standard account mode or a stale read.
+     * A failed venue read throws `HyperliquidReadError` (`code: "PERPS_READ_FAILED"`). Stateless: no
+     * hysteresis (that is `watchPerpsRisk()`).
+     */
+    perpsRisk(params: {
+        walletId: string;
+        address?: string;
+    }): Promise<PerpsRiskReport>;
+    /**
+     * The account line (spec A-10): account value, margin, free margin, withdrawable, the margin
+     * ratio, and realized P&L, fees and funding over a recent window (`since`, epoch ms; default the
+     * last 24 hours, at most 30 days).
+     */
+    perpsAccount(params: {
+        walletId: string;
+        address?: string;
+        since?: number;
+    }): Promise<PerpsAccountReport>;
+    /**
+     * The loop `candle perps watch` runs (spec A-9): polls Hyperliquid every `intervalMs` (default
+     * 10 s), calls `onEvent` with a start event, one event per level change (rising immediately,
+     * falling past the clear band), heartbeats and errors, and resolves with the last level when
+     * `signal` aborts. Candle is asked for thresholds at start and every 5 minutes only.
+     */
+    watchPerpsRisk(params: {
+        walletId: string;
+        address?: string;
+        intervalMs?: number;
+        heartbeatMs?: number;
+        signal?: AbortSignal;
+        onceLevelChange?: boolean;
+        onEvent: (event: PerpsWatchEvent) => void | Promise<void>;
+    }): Promise<{
+        level: PerpsRiskReport["level"];
+    }>;
+    /**
+     * The portfolio's Hyperliquid section (spec A-11) for EVM TEE addresses: account value, unrealized
+     * P&L, positions and level at the default thresholds per account, and a subtotal. Live from
+     * Hyperliquid and never part of any portfolio total.
+     */
+    perpsPortfolioSection(wallets: readonly {
+        address: string;
+        label?: string;
+        walletId?: string;
+    }[]): Promise<PerpsPortfolioSection>;
+    private perpsThresholdsOrDefaults;
     /**
      * Deposit onto the key's Hyperliquid account through Relay (Perps C, HL-ED-8): build, check the
      * build names `account` on chain 1337 with no Candle fee, then sign through the relay and submit.

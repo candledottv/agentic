@@ -62963,7 +62963,7 @@ function hyperliquidActionHash2(action, nonce) {
   out.push(0);
   return `0x${toHex2(keccak_256(Uint8Array.from(out)))}`;
 }
-function hyperliquidL1TypedData2(connectionId, network2) {
+function hyperliquidL1TypedData2(connectionId, network) {
   return {
     domain: { name: "Exchange", version: "1", chainId: 1337, verifyingContract: ZERO_ADDRESS2 },
     types: {
@@ -62973,7 +62973,7 @@ function hyperliquidL1TypedData2(connectionId, network2) {
       ]
     },
     primary_type: "Agent",
-    message: { source: network2 === "mainnet" ? "a" : "b", connectionId }
+    message: { source: network === "mainnet" ? "a" : "b", connectionId }
   };
 }
 function hyperliquidApproveBuilderFeeTypedData2(builder, nonce) {
@@ -63010,8 +63010,8 @@ function canonical3(value) {
 function sameValue2(a, b) {
   return canonical3(a) === canonical3(b);
 }
-async function hyperliquidAccountMode2(fetcher, network2, address) {
-  const res = await fetcher(HYPERLIQUID_INFO_URLS2[network2], {
+async function hyperliquidAccountMode2(fetcher, network, address) {
+  const res = await fetcher(HYPERLIQUID_INFO_URLS2[network], {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ type: "userAbstraction", user: address.toLowerCase() })
@@ -63167,9 +63167,9 @@ function checkActionIntent2(action, intent) {
   }
   return null;
 }
-async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
+async function hyperliquidCloseOrder2(fetcher, network, address, params) {
   const read2 = async (body) => {
-    const res = await fetcher(HYPERLIQUID_EXCHANGE_URLS2[network2].replace("/exchange", "/info"), {
+    const res = await fetcher(HYPERLIQUID_EXCHANGE_URLS2[network].replace("/exchange", "/info"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
@@ -63192,9 +63192,9 @@ async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
   const size = asked < held ? String(params.size) : String(szi).replace(/^-/, "");
   return { asset, isBuy: signed < 0n, size };
 }
-async function hyperliquidOrderMarket2(fetcher, network2, address, method, params) {
+async function hyperliquidOrderMarket2(fetcher, network, address, method, params) {
   const read2 = async (body) => {
-    const res = await fetcher(HYPERLIQUID_INFO_URLS2[network2], {
+    const res = await fetcher(HYPERLIQUID_INFO_URLS2[network], {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
@@ -63253,11 +63253,11 @@ function checkOrderMarket2(action, intent, market) {
 }
 function verifyPerpsBuild2(build, opts) {
   try {
-    const network2 = opts.network ?? "mainnet";
+    const network = opts.network ?? "mainnet";
     if (!EVM_ADDRESS_RE4.test(opts.builder))
       return { ok: false, reason: "no valid Candle builder address to check against" };
-    if (build.network !== undefined && build.network !== network2) {
-      return { ok: false, reason: `the build is for ${build.network}, this client trades ${network2}` };
+    if (build.network !== undefined && build.network !== network) {
+      return { ok: false, reason: `the build is for ${build.network}, this client trades ${network}` };
     }
     if (opts.address && build.address && build.address.toLowerCase() !== opts.address.toLowerCase()) {
       return { ok: false, reason: "the build is for a different wallet" };
@@ -63299,7 +63299,7 @@ function verifyPerpsBuild2(build, opts) {
       }
       if ("vaultAddress" in action)
         return { ok: false, reason: "the action names a vault" };
-      const expected = hyperliquidL1TypedData2(hyperliquidActionHash2(action, build.nonce), network2);
+      const expected = hyperliquidL1TypedData2(hyperliquidActionHash2(action, build.nonce), network);
       if (!sameValue2(typed, expected)) {
         return { ok: false, reason: "the typed data does not commit to this action and nonce" };
       }
@@ -63371,7 +63371,7 @@ var init_hyperliquid = __esm(() => {
 function unavailable3() {
   throw new PerpsMarketError2("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
 }
-function usage8(message) {
+function usage9(message) {
   throw new PerpsMarketError2("PERPS_USAGE", message);
 }
 function object5(value) {
@@ -63383,7 +63383,7 @@ function decimal4(value) {
 function scaled2(value) {
   const negative = value.startsWith("-");
   const [whole = "0", fraction = ""] = (negative ? value.slice(1) : value).split(".");
-  const result = BigInt(whole) * ONE2 + BigInt(fraction.padEnd(18, "0"));
+  const result = BigInt(whole) * ONE3 + BigInt(fraction.padEnd(18, "0"));
   return negative ? -result : result;
 }
 function nonnegative2(value) {
@@ -63449,9 +63449,9 @@ function parseMarkets2(value) {
   }
   return { universe: meta2.universe, ctxs, marginTables };
 }
-async function info2(fetcher, network2, body) {
+async function info2(fetcher, network, body) {
   try {
-    const response = await fetcher(INFO_URLS2[network2], {
+    const response = await fetcher(INFO_URLS2[network], {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -63465,8 +63465,8 @@ async function info2(fetcher, network2, body) {
     return unavailable3();
   }
 }
-async function readHyperliquidMarkets2(fetcher, network2) {
-  return parseMarkets2(await info2(fetcher, network2, { type: "metaAndAssetCtxs" }));
+async function readHyperliquidMarkets2(fetcher, network) {
+  return parseMarkets2(await info2(fetcher, network, { type: "metaAndAssetCtxs" }));
 }
 function perpsMarketGate2(meta2, ctx, minOpenInterestUsd) {
   if (meta2.isDelisted === true)
@@ -63499,19 +63499,19 @@ function perpsCandleWindow2(opts, now) {
   const interval = opts.interval ?? "1h";
   const index = PERPS_CANDLE_INTERVALS2.indexOf(interval);
   if (index < 0)
-    return usage8(`interval must be one of ${PERPS_CANDLE_INTERVALS2.join(" ")}.`);
+    return usage9(`interval must be one of ${PERPS_CANDLE_INTERVALS2.join(" ")}.`);
   const count2 = bounded2(opts.count, 100, 1, 5000, "count");
   const raw = opts.end;
   const endTime = raw === undefined ? now : typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
   const startTime = endTime - count2 * at2(INTERVAL_MS3, index);
   if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
-    return usage8("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+    return usage9("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
   return { interval, count: count2, startTime, endTime };
 }
 function bounded2(value, fallback, min, max, name2) {
   const n = value ?? fallback;
   if (!Number.isInteger(n) || n < min || n > max)
-    return usage8(`${name2} must be an integer from ${min} to ${max}.`);
+    return usage9(`${name2} must be an integer from ${min} to ${max}.`);
   return n;
 }
 
@@ -63644,10 +63644,10 @@ class PerpsMarketReader2 {
       predictedFundingRate: predicted?.fundingRate ?? null,
       nextFundingTime: predicted?.nextFundingTime ?? null,
       openInterest: ctx.openInterest ?? null,
-      openInterestUsd: oi === null || mark === null ? null : fixed2(oi * mark / ONE2, 2),
+      openInterestUsd: oi === null || mark === null ? null : fixed2(oi * mark / ONE3, 2),
       dayNotionalVolumeUsd: ctx.dayNtlVlm ?? null,
       prevDayPx: ctx.prevDayPx ?? null,
-      change24hPct: prev === null || prev === 0n || mark === null ? null : fixed2((mark - prev) * 100n * ONE2 / prev, 1),
+      change24hPct: prev === null || prev === 0n || mark === null ? null : fixed2((mark - prev) * 100n * ONE3 / prev, 1),
       maxLeverage: meta2.maxLeverage,
       onlyIsolated: meta2.onlyIsolated === true,
       isDelisted: meta2.isDelisted === true,
@@ -63659,7 +63659,7 @@ class PerpsMarketReader2 {
     this.key();
     const sort = opts.sort ?? "volume";
     if (!["volume", "oi", "funding", "change", "name"].includes(sort))
-      return usage8("sort must be volume, oi, funding, change or name.");
+      return usage9("sort must be volume, oi, funding, change or name.");
     const limit = opts.limit === undefined ? undefined : bounded2(opts.limit, 500, 1, 500, "limit");
     const [config2, core2, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
     const rows = core2.universe.map((_, asset) => this.row(core2, extras, config2, asset)).filter((row) => opts.all || row.candle.tradeable !== false);
@@ -63753,7 +63753,7 @@ class PerpsMarketReader2 {
       asks,
       spreadPx: spread === null ? null : fixed2(spread, 18).replace(/\.?0+$/, ""),
       midPx: mid === null ? null : fixed2(mid, 18).replace(/\.?0+$/, ""),
-      spreadBps: spread === null || mid === null || mid === 0n ? null : fixed2(spread * 10000n * ONE2 / mid, 2)
+      spreadBps: spread === null || mid === null || mid === 0n ? null : fixed2(spread * 10000n * ONE3 / mid, 2)
     };
   }
   async candles(coin, opts = {}) {
@@ -63792,13 +63792,13 @@ class PerpsMarketReader2 {
     };
   }
 }
-var INFO_URLS2, ONE2, DECIMAL2, PerpsMarketError2, PERPS_CANDLE_INTERVALS2, INTERVAL_MS3;
+var INFO_URLS2, ONE3, DECIMAL2, PerpsMarketError2, PERPS_CANDLE_INTERVALS2, INTERVAL_MS3;
 var init_hyperliquid_markets = __esm(() => {
   INFO_URLS2 = {
     mainnet: "https://api.hyperliquid.xyz/info",
     testnet: "https://api.hyperliquid-testnet.xyz/info"
   };
-  ONE2 = 10n ** 18n;
+  ONE3 = 10n ** 18n;
   DECIMAL2 = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/;
   PerpsMarketError2 = class PerpsMarketError2 extends Error {
     code;
@@ -64123,6 +64123,714 @@ var init_perps_history = __esm(() => {
   EVM_ADDRESS_RE5 = /^0x[0-9a-f]{40}$/;
 });
 
+// ../mcp/src/hyperliquid-risk.ts
+function effectivePerpsRisk2(stored) {
+  const out = { ...HYPERLIQUID_RISK_DEFAULTS2 };
+  for (const field of PERPS_RISK_FIELDS2) {
+    const value = stored?.[field];
+    if (typeof value === "number")
+      out[field] = value;
+  }
+  return out;
+}
+function perpsRiskProblem2(t) {
+  const ranges = {
+    warnDistanceBps: [1, 9900],
+    criticalDistanceBps: [1, 9900],
+    warnMarginRatioBps: [1, 9999],
+    criticalMarginRatioBps: [1, 9999],
+    clearBandBps: [0, 1000]
+  };
+  for (const field of PERPS_RISK_FIELDS2) {
+    const value = t[field];
+    const [min, max] = ranges[field];
+    if (!Number.isInteger(value) || value < min || value > max)
+      return `${field} must be a whole number of bps from ${min} to ${max}`;
+  }
+  if (t.criticalDistanceBps >= t.warnDistanceBps)
+    return "criticalDistanceBps must be below warnDistanceBps";
+  if (t.warnMarginRatioBps >= t.criticalMarginRatioBps)
+    return "warnMarginRatioBps must be below criticalMarginRatioBps";
+  return null;
+}
+function perpsRiskFromLimits2(body) {
+  const record3 = isRecord3(body) ? body : {};
+  const reported = "perpsRisk" in record3 || "perpsRiskEffective" in record3;
+  const stored = isRecord3(record3.perpsRisk) ? pickSettings2(record3.perpsRisk) : null;
+  if (!reported)
+    return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
+  const effective = isRecord3(record3.perpsRiskEffective) ? effectivePerpsRisk2(pickSettings2(record3.perpsRiskEffective)) : effectivePerpsRisk2(stored);
+  if (perpsRiskProblem2(effective) !== null)
+    return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
+  const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
+  return { thresholds: { ...effective, source }, stored };
+}
+function pickSettings2(raw) {
+  const out = {};
+  for (const field of PERPS_RISK_FIELDS2)
+    if (typeof raw[field] === "number")
+      out[field] = raw[field];
+  return out;
+}
+async function hyperliquidInfo2(fetcher, network, body, opts = {}) {
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve6) => setTimeout(resolve6, ms)));
+  for (let attempt = 0;; attempt++) {
+    const controller = new AbortController;
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? INFO_TIMEOUT_MS2);
+    let res;
+    let text;
+    try {
+      res = await fetcher(HYPERLIQUID_RISK_INFO_URLS2[network], {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      text = res.ok ? await res.text() : "";
+    } catch {
+      throw new HyperliquidReadError2(`Hyperliquid ${String(body.type)} read failed or timed out`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 429) {
+      if (attempt === 0) {
+        await sleep(RATE_LIMIT_RETRY_MS2);
+        continue;
+      }
+      throw new HyperliquidReadError2(`Hyperliquid rate-limited the ${String(body.type)} read (HTTP 429)`, true);
+    }
+    if (!res.ok)
+      throw new HyperliquidReadError2(`Hyperliquid ${String(body.type)} answered HTTP ${res.status ?? "?"}`);
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new HyperliquidReadError2(`Hyperliquid ${String(body.type)} answered with something other than JSON`);
+    }
+  }
+}
+async function readHyperliquidMarketSnapshot2(fetcher, network, opts = {}) {
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve6) => setTimeout(resolve6, ms)));
+  let limited = false;
+  const watched = async (url, init) => {
+    const res = await fetcher(url, init);
+    limited = res.status === 429;
+    return res;
+  };
+  try {
+    return await readHyperliquidMarkets2(watched, network);
+  } catch {
+    await sleep(RATE_LIMIT_RETRY_MS2);
+  }
+  try {
+    return await readHyperliquidMarkets2(watched, network);
+  } catch (error2) {
+    throw new HyperliquidReadError2(`Hyperliquid metaAndAssetCtxs read failed${error2 instanceof PerpsMarketError2 ? ` (${error2.code})` : ""}`, limited);
+  }
+}
+function hyperliquidMark2(markets, coin) {
+  const index = markets.universe.findIndex((m) => m.name === coin);
+  const mark = index < 0 ? undefined : markets.ctxs[index]?.markPx;
+  if (typeof mark !== "string")
+    return null;
+  const parsed = dec2(mark);
+  return parsed !== null && parsed > 0n ? mark : null;
+}
+async function readHyperliquidClearinghouse2(fetcher, network, address, opts = {}) {
+  return parseClearinghouse2(await hyperliquidInfo2(fetcher, network, { type: "clearinghouseState", user: address.toLowerCase() }, opts));
+}
+async function readHyperliquidAccountMode2(fetcher, network, address, opts = {}) {
+  const body = await hyperliquidInfo2(fetcher, network, { type: "userAbstraction", user: address.toLowerCase() }, opts);
+  if (typeof body !== "string" || body === "")
+    throw new HyperliquidReadError2("Unexpected userAbstraction shape");
+  return body;
+}
+function parseClearinghouse2(body) {
+  const bad = (what) => new HyperliquidReadError2(`Unexpected clearinghouseState shape (${what})`);
+  if (!isRecord3(body))
+    throw bad("not an object");
+  const summary = (value, name2) => {
+    if (!isRecord3(value) || !isDecString2(value.accountValue) || !isDecString2(value.totalMarginUsed))
+      throw bad(name2);
+    return { accountValue: value.accountValue, totalMarginUsed: value.totalMarginUsed };
+  };
+  const marginSummary = summary(body.marginSummary, "marginSummary");
+  const crossMarginSummary = summary(body.crossMarginSummary, "crossMarginSummary");
+  if (!isDecString2(body.crossMaintenanceMarginUsed))
+    throw bad("crossMaintenanceMarginUsed");
+  if (!isDecString2(body.withdrawable))
+    throw bad("withdrawable");
+  if (!Array.isArray(body.assetPositions))
+    throw bad("assetPositions");
+  const positions = body.assetPositions.map((entry) => {
+    const p = isRecord3(entry) ? entry.position : undefined;
+    if (!isRecord3(p) || typeof p.coin !== "string" || p.coin === "")
+      throw bad("position");
+    for (const field of ["szi", "entryPx", "positionValue", "unrealizedPnl", "returnOnEquity", "marginUsed"])
+      if (!isDecString2(p[field]))
+        throw bad(`position ${field}`);
+    const leverage = p.leverage;
+    if (!isRecord3(leverage) || typeof leverage.type !== "string" || typeof leverage.value !== "number")
+      throw bad("position leverage");
+    if (p.liquidationPx !== null && p.liquidationPx !== undefined && !isDecString2(p.liquidationPx))
+      throw bad("position liquidationPx");
+    const funding = p.cumFunding;
+    if (!isRecord3(funding) || !isDecString2(funding.sinceOpen))
+      throw bad("position cumFunding");
+    return {
+      coin: p.coin,
+      szi: p.szi,
+      entryPx: p.entryPx,
+      positionValue: p.positionValue,
+      unrealizedPnl: p.unrealizedPnl,
+      returnOnEquity: p.returnOnEquity,
+      leverage: { type: leverage.type, value: leverage.value },
+      liquidationPx: p.liquidationPx ?? null,
+      marginUsed: p.marginUsed,
+      cumFunding: { sinceOpen: funding.sinceOpen }
+    };
+  });
+  return {
+    marginSummary,
+    crossMarginSummary,
+    crossMaintenanceMarginUsed: body.crossMaintenanceMarginUsed,
+    withdrawable: body.withdrawable,
+    positions
+  };
+}
+function worse2(a, b) {
+  return RANK3[a] >= RANK3[b] ? a : b;
+}
+function hyperliquidRiskReport2(state, market, mode, thresholds, now, identity3 = { walletId: "", address: "", network: "mainnet" }) {
+  const base2 = {
+    schema: "candle.perps.risk/1",
+    walletId: identity3.walletId,
+    address: identity3.address,
+    network: identity3.network,
+    mode,
+    readAt: new Date(now).toISOString(),
+    thresholds,
+    note: PERPS_RISK_NOTE2
+  };
+  if (!HYPERLIQUID_STANDARD_MODES2.includes(mode)) {
+    return {
+      ...base2,
+      level: "unknown",
+      reason: "PERPS_ACCOUNT_MODE",
+      drivers: [],
+      closest: null,
+      account: null,
+      positions: []
+    };
+  }
+  const ch = isParsedClearinghouse2(state) ? state : parseClearinghouse2(state);
+  if (!market || !Array.isArray(market.universe) || !Array.isArray(market.ctxs))
+    throw new HyperliquidReadError2("Unexpected metaAndAssetCtxs shape");
+  const markets = market;
+  const t = thresholds;
+  const drivers = [];
+  const nearest = [];
+  let level = "ok";
+  let unrealized = 0n;
+  const positions = ch.positions.map((p) => {
+    const szi = dec2(p.szi);
+    unrealized += dec2(p.unrealizedPnl);
+    const markPx = hyperliquidMark2(markets, p.coin);
+    const distance = markPx !== null && p.liquidationPx !== null ? distanceParts2(markPx, p.liquidationPx) : null;
+    let rowLevel = "none";
+    if (distance) {
+      rowLevel = fracLess2(distance.num, distance.den, t.criticalDistanceBps) ? "critical" : fracLess2(distance.num, distance.den, t.warnDistanceBps) ? "warn" : "ok";
+    }
+    const liquidationDistance = distance ? ratioNumber2(distance.num, distance.den) : null;
+    if (markPx === null) {
+      drivers.push({
+        kind: "position",
+        coin: p.coin,
+        level: "warn",
+        liquidationDistance: null,
+        threshold: null,
+        reason: "unmarked"
+      });
+      level = worse2(level, "warn");
+    } else if (rowLevel === "warn" || rowLevel === "critical") {
+      drivers.push({
+        kind: "position",
+        coin: p.coin,
+        level: rowLevel,
+        liquidationDistance,
+        threshold: (rowLevel === "critical" ? t.criticalDistanceBps : t.warnDistanceBps) / 1e4
+      });
+      level = worse2(level, rowLevel);
+    } else if (rowLevel === "ok" && liquidationDistance !== null) {
+      nearest.push({
+        driver: {
+          kind: "position",
+          coin: p.coin,
+          level: "ok",
+          liquidationDistance,
+          threshold: t.warnDistanceBps / 1e4
+        },
+        headroom: liquidationDistance / (t.warnDistanceBps / 1e4) - 1
+      });
+    }
+    return {
+      coin: p.coin,
+      side: szi < 0n ? "short" : "long",
+      size: p.szi.replace(/^-/, ""),
+      entryPx: p.entryPx,
+      markPx,
+      unrealizedPnlUsd: p.unrealizedPnl,
+      returnOnEquity: p.returnOnEquity,
+      leverage: { value: p.leverage.value, type: p.leverage.type },
+      liquidationPx: p.liquidationPx,
+      liquidationDistance,
+      fundingSinceOpenUsd: p.cumFunding.sinceOpen,
+      marginUsedUsd: p.marginUsed,
+      positionValueUsd: p.positionValue,
+      level: rowLevel
+    };
+  });
+  const maint = dec2(ch.crossMaintenanceMarginUsed);
+  const crossValue = dec2(ch.crossMarginSummary.accountValue);
+  let marginRatio = 0;
+  if (positions.length > 0 && maint > 0n) {
+    if (crossValue <= 0n) {
+      marginRatio = null;
+      drivers.push({
+        kind: "margin",
+        level: "critical",
+        marginRatio: null,
+        threshold: t.criticalMarginRatioBps / 1e4,
+        reason: "no equity"
+      });
+      level = "critical";
+    } else {
+      marginRatio = ratioNumber2(maint, crossValue);
+      const marginLevel = fracGreater2(maint, crossValue, t.criticalMarginRatioBps) ? "critical" : fracGreater2(maint, crossValue, t.warnMarginRatioBps) ? "warn" : "ok";
+      if (marginLevel === "ok") {
+        nearest.push({
+          driver: { kind: "margin", level: "ok", marginRatio, threshold: t.warnMarginRatioBps / 1e4 },
+          headroom: 1 - marginRatio / (t.warnMarginRatioBps / 1e4)
+        });
+      } else {
+        drivers.push({
+          kind: "margin",
+          level: marginLevel,
+          marginRatio,
+          threshold: (marginLevel === "critical" ? t.criticalMarginRatioBps : t.warnMarginRatioBps) / 1e4
+        });
+        level = worse2(level, marginLevel);
+      }
+    }
+  }
+  drivers.sort((a, b) => RANK3[b.level] - RANK3[a.level]);
+  nearest.sort((a, b) => a.headroom - b.headroom);
+  const accountValue = dec2(ch.marginSummary.accountValue);
+  const marginUsed = dec2(ch.marginSummary.totalMarginUsed);
+  const free = accountValue - marginUsed;
+  const account = {
+    accountValueUsd: ch.marginSummary.accountValue,
+    marginUsedUsd: ch.marginSummary.totalMarginUsed,
+    crossAccountValueUsd: ch.crossMarginSummary.accountValue,
+    freeMarginUsd: formatDec2(free > 0n ? free : 0n),
+    withdrawableUsd: ch.withdrawable,
+    crossMaintenanceMarginUsedUsd: ch.crossMaintenanceMarginUsed,
+    marginRatio,
+    unrealizedPnlUsd: formatDec2(unrealized),
+    positionCount: positions.length,
+    mode,
+    level
+  };
+  return {
+    ...base2,
+    level,
+    reason: null,
+    drivers,
+    closest: level === "ok" ? nearest[0]?.driver ?? null : null,
+    account,
+    positions
+  };
+}
+function unknownRiskReport2(identity3, thresholds, reason, now, mode = null) {
+  return {
+    schema: "candle.perps.risk/1",
+    ...identity3,
+    mode,
+    readAt: new Date(now).toISOString(),
+    level: "unknown",
+    reason,
+    drivers: [],
+    closest: null,
+    thresholds,
+    account: null,
+    positions: [],
+    note: PERPS_RISK_NOTE2
+  };
+}
+async function readPerpsRisk2(opts) {
+  const identity3 = { walletId: opts.walletId, address: opts.address, network: opts.network };
+  const timed = async (read2) => {
+    const value = await read2;
+    return { value, at: opts.now() };
+  };
+  const [state, market, mode] = await Promise.all([
+    timed(readHyperliquidClearinghouse2(opts.fetcher, opts.network, opts.address, opts)),
+    timed(readHyperliquidMarketSnapshot2(opts.fetcher, opts.network, opts)),
+    opts.mode !== undefined ? Promise.resolve({ value: opts.mode, at: Number.NaN }) : timed(readHyperliquidAccountMode2(opts.fetcher, opts.network, opts.address, opts))
+  ]);
+  const times = [state.at, market.at, mode.at].filter((at3) => !Number.isNaN(at3));
+  const earliest = Math.min(...times);
+  if (Math.max(...times) - earliest > PERPS_RISK_STALE_MS2)
+    return unknownRiskReport2(identity3, opts.thresholds, "PERPS_READ_STALE", earliest, mode.value);
+  return hyperliquidRiskReport2(state.value, market.value, mode.value, opts.thresholds, earliest, identity3);
+}
+function isMainPerpCoin2(coin) {
+  return typeof coin === "string" && coin !== "" && !coin.includes(":") && !coin.includes("/") && !coin.startsWith("@");
+}
+async function readPerpsRecent2(fetcher, network, address, window, opts = {}) {
+  const user = address.toLowerCase();
+  const [fills, funding] = await Promise.all([
+    hyperliquidInfo2(fetcher, network, { type: "userFillsByTime", user, startTime: window.startTime, endTime: window.endTime }, opts),
+    hyperliquidInfo2(fetcher, network, { type: "userFunding", user, startTime: window.startTime, endTime: window.endTime }, opts)
+  ]);
+  return summarizePerpsRecent2(fills, funding, window);
+}
+function summarizePerpsRecent2(fills, funding, window) {
+  if (!Array.isArray(fills))
+    throw new HyperliquidReadError2("Unexpected userFillsByTime shape");
+  if (!Array.isArray(funding))
+    throw new HyperliquidReadError2("Unexpected userFunding shape");
+  let realized = 0n;
+  let fees = 0n;
+  let paid = 0n;
+  let fillCount = 0;
+  let fundingCount = 0;
+  for (const row of fills) {
+    if (!isRecord3(row))
+      throw new HyperliquidReadError2("Unexpected fill row");
+    if (!isMainPerpCoin2(row.coin))
+      continue;
+    const closed = dec2(row.closedPnl);
+    const fee = dec2(row.fee);
+    if (closed === null || fee === null)
+      throw new HyperliquidReadError2("Unexpected fill amount");
+    realized += closed;
+    fees += fee;
+    fillCount++;
+  }
+  for (const row of funding) {
+    const delta = isRecord3(row) ? row.delta : undefined;
+    if (!isRecord3(delta))
+      throw new HyperliquidReadError2("Unexpected funding row");
+    if (delta.type !== "funding" || !isMainPerpCoin2(delta.coin))
+      continue;
+    const usdc = dec2(delta.usdc);
+    if (usdc === null)
+      throw new HyperliquidReadError2("Unexpected funding amount");
+    paid += usdc;
+    fundingCount++;
+  }
+  return {
+    startTime: window.startTime,
+    endTime: window.endTime,
+    realizedPnlUsd: formatDec2(realized),
+    feesUsd: formatDec2(fees),
+    fundingUsd: formatDec2(paid),
+    fills: fillCount,
+    fundingPayments: fundingCount,
+    truncated: fills.length >= PERPS_FILLS_RESPONSE_CAP2 || funding.length >= PERPS_FUNDING_RESPONSE_CAP2
+  };
+}
+function perpsAccountReport2(report, recent) {
+  const { mode: _mode, level: _level, ...line } = report.account ?? {};
+  return {
+    schema: "candle.perps.account/1",
+    walletId: report.walletId,
+    address: report.address,
+    network: report.network,
+    mode: report.mode,
+    readAt: report.readAt,
+    ...line,
+    recent,
+    risk: { level: report.level, reason: report.reason, drivers: report.drivers }
+  };
+}
+async function perpsPortfolioSection2(fetcher, network, wallets2, opts = {}) {
+  const now = opts.now ?? Date.now;
+  const considered = wallets2.slice(0, PERPS_PORTFOLIO_MAX_ACCOUNTS2);
+  const unread = wallets2.slice(PERPS_PORTFOLIO_MAX_ACCOUNTS2).map((w) => ({ ...w, reason: `past the ${PERPS_PORTFOLIO_MAX_ACCOUNTS2}-address cap` }));
+  let markets = { universe: [], ctxs: [], marginTables: new Map };
+  if (considered.length > 0) {
+    try {
+      markets = await readHyperliquidMarketSnapshot2(fetcher, network, opts);
+    } catch (error2) {
+      return { read: false, reason: error2 instanceof Error ? error2.message : "Hyperliquid market read failed" };
+    }
+  }
+  const thresholds = { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults" };
+  const results = new Array(considered.length).fill(null);
+  const failures = new Array(considered.length).fill(null);
+  let next = 0;
+  const worker = async () => {
+    while (next < considered.length) {
+      const at3 = next++;
+      const wallet = considered[at3];
+      try {
+        const state = await readHyperliquidClearinghouse2(fetcher, network, wallet.address, opts);
+        const report = hyperliquidRiskReport2(state, markets, "default", thresholds, now());
+        results[at3] = {
+          address: wallet.address,
+          ...wallet.label !== undefined ? { label: wallet.label } : {},
+          ...wallet.walletId !== undefined ? { walletId: wallet.walletId } : {},
+          accountValueUsd: report.account?.accountValueUsd ?? "0",
+          unrealizedPnlUsd: report.account?.unrealizedPnlUsd ?? "0",
+          positionCount: report.positions.length,
+          level: report.level
+        };
+      } catch (error2) {
+        failures[at3] = error2 instanceof Error ? error2.message : "read failed";
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PORTFOLIO_READS_IN_FLIGHT2, considered.length) }, worker));
+  const accounts = [];
+  let empty = 0;
+  let value = 0n;
+  let pnl2 = 0n;
+  considered.forEach((wallet, at3) => {
+    const result = results[at3];
+    if (!result) {
+      unread.push({ ...wallet, reason: failures[at3] ?? "read failed" });
+      return;
+    }
+    if (result.positionCount === 0 && dec2(result.accountValueUsd) === 0n) {
+      empty++;
+      return;
+    }
+    accounts.push(result);
+    value += dec2(result.accountValueUsd);
+    pnl2 += dec2(result.unrealizedPnlUsd);
+  });
+  return {
+    read: true,
+    network,
+    accounts,
+    subtotal: { accountValueUsd: formatDec2(value), unrealizedPnlUsd: formatDec2(pnl2) },
+    empty,
+    unread,
+    thresholds: "defaults"
+  };
+}
+function isDecString2(value) {
+  return typeof value === "string" && (DEC_RE3.test(value) || LOOSE_DEC_RE2.test(value));
+}
+function dec2(value) {
+  if (!isDecString2(value))
+    return null;
+  const negative = value.startsWith("-");
+  const [whole = "0", fraction = ""] = value.replace(/^-/, "").split(".");
+  const scaled3 = BigInt(whole) * ONE4 + BigInt(fraction.padEnd(SCALE2, "0"));
+  return negative ? -scaled3 : scaled3;
+}
+function formatDec2(value) {
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const whole = abs / ONE4;
+  const fraction = (abs % ONE4).toString().padStart(SCALE2, "0").replace(/0+$/, "");
+  const text = fraction ? `${whole}.${fraction}` : `${whole}`;
+  return negative && text !== "0" ? `-${text}` : text;
+}
+function distanceParts2(markPx, liquidationPx) {
+  const mark = dec2(markPx);
+  const liq = dec2(liquidationPx);
+  if (mark === null || liq === null || mark <= 0n)
+    return null;
+  const diff = mark - liq;
+  return { num: diff < 0n ? -diff : diff, den: mark };
+}
+function fracLess2(num, den, bps) {
+  return num * 10000n < BigInt(bps) * den;
+}
+function fracGreater2(num, den, bps) {
+  return num * 10000n > BigInt(bps) * den;
+}
+function ratioNumber2(num, den) {
+  const micro = num * 1000000000000n / den;
+  return Number(micro) / 1000000000000;
+}
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isParsedClearinghouse2(value) {
+  return isRecord3(value) && Array.isArray(value.positions) && !("assetPositions" in value);
+}
+var HYPERLIQUID_RISK_INFO_URLS2, PERPS_RISK_FIELDS2, HYPERLIQUID_RISK_DEFAULTS2, HyperliquidReadError2, INFO_TIMEOUT_MS2 = 5000, RATE_LIMIT_RETRY_MS2 = 1000, HYPERLIQUID_STANDARD_MODES2, PERPS_RISK_NOTE2 = "Phase 1 has no server-side monitor: nothing warns you unless you poll this or run candle perps watch.", RANK3, PERPS_RISK_STALE_MS2 = 30000, PERPS_FILLS_RESPONSE_CAP2 = 2000, PERPS_FUNDING_RESPONSE_CAP2 = 500, PERPS_RECENT_MAX_MS2, PERPS_PORTFOLIO_MAX_ACCOUNTS2 = 100, PORTFOLIO_READS_IN_FLIGHT2 = 8, SCALE2 = 18, ONE4, DEC_RE3, LOOSE_DEC_RE2;
+var init_hyperliquid_risk = __esm(() => {
+  init_hyperliquid_markets();
+  HYPERLIQUID_RISK_INFO_URLS2 = {
+    mainnet: "https://api.hyperliquid.xyz/info",
+    testnet: "https://api.hyperliquid-testnet.xyz/info"
+  };
+  PERPS_RISK_FIELDS2 = [
+    "warnDistanceBps",
+    "criticalDistanceBps",
+    "warnMarginRatioBps",
+    "criticalMarginRatioBps",
+    "clearBandBps"
+  ];
+  HYPERLIQUID_RISK_DEFAULTS2 = {
+    warnDistanceBps: 1500,
+    criticalDistanceBps: 700,
+    warnMarginRatioBps: 6000,
+    criticalMarginRatioBps: 8000,
+    clearBandBps: 200
+  };
+  HyperliquidReadError2 = class HyperliquidReadError2 extends Error {
+    rateLimited;
+    code = "PERPS_READ_FAILED";
+    constructor(message, rateLimited = false) {
+      super(message);
+      this.rateLimited = rateLimited;
+      this.name = "HyperliquidReadError";
+    }
+  };
+  HYPERLIQUID_STANDARD_MODES2 = ["default", "disabled"];
+  RANK3 = { ok: 0, warn: 1, critical: 2 };
+  PERPS_RECENT_MAX_MS2 = 30 * 24 * 60 * 60 * 1000;
+  ONE4 = 10n ** BigInt(SCALE2);
+  DEC_RE3 = /^-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/;
+  LOOSE_DEC_RE2 = /^-?[0-9]+(\.[0-9]{1,18})?$/;
+});
+
+// ../mcp/src/perps-risk.ts
+async function thresholds(cfg, fetch2) {
+  try {
+    return perpsRiskFromLimits2(await call(cfg, fetch2, "GET", "/api/v1/agent/keys/self/limits")).thresholds;
+  } catch {
+    return perpsRiskFromLimits2(null).thresholds;
+  }
+}
+function sinceStart(value, now) {
+  if (value === undefined)
+    return now - 24 * 3600000;
+  if (typeof value !== "string")
+    return "since must be a string";
+  const duration3 = /^([1-9][0-9]*)(m|h|d)$/.exec(value);
+  const start = duration3 ? now - Number(duration3[1]) * (duration3[2] === "m" ? 60000 : duration3[2] === "h" ? 3600000 : 86400000) : Date.parse(value);
+  if (!Number.isFinite(start))
+    return "since takes a duration (30m, 24h, 7d) or an ISO time";
+  if (start >= now)
+    return "since must be in the past";
+  if (now - start > PERPS_RECENT_MAX_MS2)
+    return "since reaches back 30 days at most";
+  return start;
+}
+async function executePerpsRisk(tool, args, cfg, env, fetch2) {
+  try {
+    if (tool === "candle_perps_thresholds") {
+      const { thresholds: report2, stored } = perpsRiskFromLimits2(await call(cfg, fetch2, "GET", "/api/v1/agent/keys/self/limits"));
+      const { source, ...effective } = report2;
+      return { text: JSON.stringify({ stored, effective, source }) };
+    }
+    if (tool === "candle_perps_set_thresholds") {
+      const { clear, ...rest } = args;
+      const fields = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
+      if (clear === true && Object.keys(fields).length > 0)
+        return fail3("MCP_VALIDATION", "Pass clear: true alone, or the thresholds to set; not both.");
+      if (clear !== true && Object.keys(fields).length === 0)
+        return fail3("MCP_VALIDATION", "Name at least one threshold, or pass clear: true.");
+      const answer = await call(cfg, fetch2, "PUT", "/api/v1/agent/keys/self/perps-risk", {
+        perpsRisk: clear === true ? null : fields
+      });
+      return { text: JSON.stringify(answer) };
+    }
+    const name2 = typeof args.wallet === "string" ? args.wallet : undefined;
+    const { row } = await walletFor(cfg, fetch2, name2);
+    const now = Date.now();
+    const start = tool === "candle_perps_account" ? sinceStart(args.since, now) : now;
+    if (typeof start === "string")
+      return fail3("MCP_VALIDATION", start);
+    const net = network(env);
+    const report = readPerpsRisk2({
+      fetcher: fetcherOf2(fetch2),
+      network: net,
+      walletId: row.id,
+      address: row.address,
+      thresholds: await thresholds(cfg, fetch2),
+      now: Date.now
+    });
+    if (tool === "candle_perps_account") {
+      const [risk2, recent] = await Promise.all([
+        report,
+        readPerpsRecent2(fetcherOf2(fetch2), net, row.address, { startTime: start, endTime: now })
+      ]);
+      return { text: JSON.stringify(perpsAccountReport2(risk2, recent)) };
+    }
+    const risk = await report;
+    if (risk.level === "unknown")
+      return fail3(risk.reason ?? "PERPS_READ_FAILED", "No level was computed.", { report: risk });
+    return { text: JSON.stringify(risk) };
+  } catch (error2) {
+    if (error2 instanceof Refusal)
+      return error2.tool;
+    if (error2 instanceof HyperliquidReadError2)
+      return fail3("PERPS_READ_FAILED", `${error2.message}. No level was computed.`);
+    return fail3("PERPS_READ_FAILED", error2 instanceof Error ? error2.message : "Hyperliquid read failed");
+  }
+}
+async function positionsAdditions2(cfg, fetch2, env, row) {
+  const t = await thresholds(cfg, fetch2);
+  const identity3 = { walletId: row.id, address: row.address, network: network(env) };
+  let report;
+  try {
+    report = await readPerpsRisk2({ ...identity3, fetcher: fetcherOf2(fetch2), thresholds: t, now: Date.now });
+  } catch {
+    report = unknownRiskReport2(identity3, t, "PERPS_READ_FAILED", Date.now());
+  }
+  const { positions, ...risk } = report;
+  return { rows: positions, accountLine: report.account, risk };
+}
+async function withPortfolioSection(text, fetch2, env) {
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    return text;
+  const hood = body.hood;
+  const accounts = (hood?.tee ?? []).filter((row) => typeof row.address === "string").map((row) => ({
+    address: row.address,
+    ...typeof row.label === "string" ? { label: row.label } : {},
+    ...typeof row.id === "string" ? { walletId: row.id } : {}
+  }));
+  const section2 = await perpsPortfolioSection2(fetcherOf2(fetch2), network(env), accounts);
+  return JSON.stringify({ ...body, hyperliquid: section2 });
+}
+var wallet, bps = (what) => exports_external.number().int().nullable().optional().describe(`${what}, in bps; null clears it`), perpsRiskShapes, network = (env) => env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet", fetcherOf2 = (fetch2) => fetch2;
+var init_perps_risk = __esm(() => {
+  init_zod();
+  init_hyperliquid_risk();
+  init_perps();
+  wallet = exports_external.string().optional().describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.");
+  perpsRiskShapes = {
+    candle_perps_account: {
+      wallet,
+      since: exports_external.string().optional().describe("The recent window: a duration back from now (30m, 24h, 7d) or an ISO time; default 24h, at most 30 days")
+    },
+    candle_perps_risk: { wallet },
+    candle_perps_thresholds: {},
+    candle_perps_set_thresholds: {
+      warnDistanceBps: bps("Warn when a position is closer to liquidation than this (default 1500, 15%)"),
+      criticalDistanceBps: bps("Critical when closer than this (default 700, 7%)"),
+      warnMarginRatioBps: bps("Warn when the cross margin ratio is above this (default 6000, 0.6)"),
+      criticalMarginRatioBps: bps("Critical when above this (default 8000, 0.8)"),
+      clearBandBps: bps("How far past a threshold a watched level must move to clear (default 200)"),
+      clear: exports_external.boolean().optional().describe("true clears every stored threshold (refused when that would loosen)")
+    }
+  };
+});
+
 // ../mcp/src/perps.ts
 import { createPrivateKey as createPrivateKey2, sign as sign5 } from "node:crypto";
 import { readFile as readFile9 } from "node:fs/promises";
@@ -64174,6 +64882,8 @@ async function builderPin2(cfg, fetch2, env) {
 async function executePerps(tool, args, cfg, env, fetch2) {
   if (!cfg.apiKey)
     return fail3("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
+  if (isRiskTool(tool))
+    return executePerpsRisk(tool, args, cfg, env, fetch2);
   const network2 = env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet";
   const name2 = typeof args.wallet === "string" ? args.wallet : undefined;
   try {
@@ -64182,7 +64892,10 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       const query = new URLSearchParams({ walletId: row2.id });
       if (typeof args.limit === "number")
         query.set("limit", String(args.limit));
-      return { text: JSON.stringify(await call(cfg, fetch2, "GET", `${PATHS[tool]}?${query}`)) };
+      const result = await call(cfg, fetch2, "GET", `${PATHS[tool]}?${query}`);
+      if (tool === "candle_perps_positions")
+        return { text: JSON.stringify({ ...result, ...await positionsAdditions2(cfg, fetch2, env, row2) }) };
+      return { text: JSON.stringify(result) };
     }
     if (tool === "candle_perps_fills" || tool === "candle_perps_funding") {
       const { row: row2 } = await walletFor(cfg, fetch2, name2);
@@ -64506,8 +65219,8 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
     return fail3("MCP_TRANSPORT", error2 instanceof Error ? error2.message : "The deposit call failed.");
   }
 }
-var decimal5, wallet, submit, clientId, epochMs2, history = (max) => ({
-  wallet,
+var PERPS_RISK_TOOL_NAMES, PERPS_TOOL_NAMES, isRiskTool = (tool) => PERPS_RISK_TOOL_NAMES.includes(tool), decimal5, wallet2, submit, clientId, epochMs2, history = (max) => ({
+  wallet: wallet2,
   startTime: epochMs2.optional().describe("Inclusive epoch milliseconds. Default: 7 days before endTime."),
   endTime: epochMs2.optional().describe("Inclusive epoch milliseconds. Default: now, fixed into the cursor."),
   limit: exports_external.number().int().min(1).max(max).optional().describe(`Rows per page (default 100, at most ${max}).`),
@@ -64517,13 +65230,32 @@ var init_perps = __esm(() => {
   init_zod();
   init_hyperliquid();
   init_perps_history();
+  init_perps_risk();
+  PERPS_RISK_TOOL_NAMES = [
+    "candle_perps_account",
+    "candle_perps_risk",
+    "candle_perps_thresholds",
+    "candle_perps_set_thresholds"
+  ];
+  PERPS_TOOL_NAMES = [
+    "candle_perps_setup",
+    "candle_perps_open",
+    "candle_perps_close",
+    "candle_perps_cancel",
+    "candle_perps_orders",
+    "candle_perps_positions",
+    "candle_perps_fills",
+    "candle_perps_funding",
+    "candle_perps_leverage",
+    ...PERPS_RISK_TOOL_NAMES
+  ];
   decimal5 = exports_external.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decimal string");
-  wallet = exports_external.string().optional().describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.");
+  wallet2 = exports_external.string().optional().describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.");
   submit = exports_external.boolean().optional().describe("false: build and check only, sign and submit nothing. Default true.");
   clientId = exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Optional client order id (0x + 32 hex) used as the order's cloid. Retrying with the same id and request returns " + "the original operation (replayed: true) and signs nothing; the same id with another request is refused " + "(PERPS_CLIENT_ID_CONFLICT). It deduplicates, it does not resume. Use a new id for a new order.");
   epochMs2 = exports_external.number().int().min(0);
   perpsShapes = {
-    candle_perps_setup: { wallet, submit },
+    candle_perps_setup: { wallet: wallet2, submit },
     candle_perps_open: {
       coin: exports_external.string().describe("A market on Hyperliquid's main perp exchange, e.g. BTC"),
       side: exports_external.enum(["long", "short"]),
@@ -64534,7 +65266,7 @@ var init_perps = __esm(() => {
       takeProfit: decimal5.optional().describe("Reduce-only take-profit trigger price"),
       stopLoss: decimal5.optional().describe("Reduce-only stop-loss trigger price"),
       clientId,
-      wallet,
+      wallet: wallet2,
       submit
     },
     candle_perps_close: {
@@ -64542,23 +65274,23 @@ var init_perps = __esm(() => {
       size: decimal5.optional().describe("Part of the position to close; the whole position when omitted"),
       slippageBps: exports_external.number().int().min(1).optional(),
       clientId,
-      wallet,
+      wallet: wallet2,
       submit
     },
     candle_perps_cancel: {
       cloid: exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).describe("The cloid of an order Candle built (an open, or one of its take-profit / stop-loss legs)"),
-      wallet,
+      wallet: wallet2,
       submit
     },
-    candle_perps_orders: { wallet, limit: exports_external.number().int().min(1).max(200).optional() },
-    candle_perps_positions: { wallet },
+    candle_perps_orders: { wallet: wallet2, limit: exports_external.number().int().min(1).max(200).optional() },
+    candle_perps_positions: { wallet: wallet2 },
     candle_perps_fills: history(PERPS_HISTORY_MAX_LIMIT2.fills),
     candle_perps_funding: history(PERPS_HISTORY_MAX_LIMIT2.funding),
     candle_perps_leverage: {
       coin: exports_external.string(),
       leverage: exports_external.number().int().min(1),
       mode: exports_external.enum(["cross", "isolated"]).optional(),
-      wallet,
+      wallet: wallet2,
       submit
     }
   };
@@ -64684,8 +65416,8 @@ var init_perps_markets = __esm(() => {
 function planLabel2(plan) {
   return Object.hasOwn(PLAN_LABELS2, plan) ? PLAN_LABELS2[plan] : plan;
 }
-function formatPlanBps2(bps) {
-  return bps === 0 ? "none" : `${Number((bps / 100).toFixed(4))}%`;
+function formatPlanBps2(bps2) {
+  return bps2 === 0 ? "none" : `${Number((bps2 / 100).toFixed(4))}%`;
 }
 function count2(n) {
   return n.toLocaleString("en-US");
@@ -65116,7 +65848,8 @@ function registerTools(server, env = process.env) {
   registerToolSubset(server, {
     tools: [...allowed].filter((name2) => !isProfileEditTool(name2)),
     getConfig: () => cfg,
-    env
+    env,
+    localHyperliquid: true
   });
 }
 function registerToolSubset(server, options) {
@@ -65317,9 +66050,15 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_get_profile_trades", args, getConfig(), doFetch));
   register("candle_get_portfolio", {
     title: "Read what the account holds, on Solana and Hood",
-    description: "Balances and prices for the wallets Candle already knows on this account, on both chains: the " + "embedded wallet and every TEE wallet. Solana wallets are in `embedded` and `tee` (SOL as raw " + "`lamports`, tokens as raw `amountRaw` with `decimals`). Hood wallets are in `hood.embedded` and " + "`hood.tee` (ETH as raw `wei`, ERC-20s including USDG), never in the top-level arrays. Every " + "wallet and holding carries `chain`. Prices are in `prices`: a Solana mint under its own " + "address, Hood ETH under `hood:native`, and a Hood token under `hood:<contract lowercased>`, so " + "lowercase the address before looking it up. An unpriced entry is `priceUsd: null`, never zero; " + "a Hood one says why in `unpricedReason` (no-market-row, unusable-price, stale-mark, " + "source-unavailable), and `hood.unpriced` / `hood.unpricedByReason` count them. A Hood token " + "mark older than six hours is not used, so many Hood tokens read unpriced. A wallet whose read " + "failed has null balances, never zero, and is listed in `unavailable` (Solana) or " + "`hood.unavailable`; check `complete` before quoting a total. `walletsComplete` is false only " + "when the wallet list itself was cut off, and is absent on a server that predates it: then " + "`complete: false` may be a cut-off list or a failed read. Vault and external wallets are " + "not included: Candle does not know their addresses (the Candle CLI's `candle portfolio` reads " + "them over your own RPC). Needs a key with the account:read scope; without it the answer is " + "SCOPE_MISSING. A server that predates Hood in the portfolio omits `hood` and `chain`. Reads " + "only; moves nothing.",
+    description: "Balances and prices for the wallets Candle already knows on this account, on both chains: the " + "embedded wallet and every TEE wallet. Solana wallets are in `embedded` and `tee` (SOL as raw " + "`lamports`, tokens as raw `amountRaw` with `decimals`). Hood wallets are in `hood.embedded` and " + "`hood.tee` (ETH as raw `wei`, ERC-20s including USDG), never in the top-level arrays. Every " + "wallet and holding carries `chain`. Prices are in `prices`: a Solana mint under its own " + "address, Hood ETH under `hood:native`, and a Hood token under `hood:<contract lowercased>`, so " + "lowercase the address before looking it up. An unpriced entry is `priceUsd: null`, never zero; " + "a Hood one says why in `unpricedReason` (no-market-row, unusable-price, stale-mark, " + "source-unavailable), and `hood.unpriced` / `hood.unpricedByReason` count them. A Hood token " + "mark older than six hours is not used, so many Hood tokens read unpriced. A wallet whose read " + "failed has null balances, never zero, and is listed in `unavailable` (Solana) or " + "`hood.unavailable`; check `complete` before quoting a total. `walletsComplete` is false only " + "when the wallet list itself was cut off, and is absent on a server that predates it: then " + "`complete: false` may be a cut-off list or a failed read. Vault and external wallets are " + "not included: Candle does not know their addresses (the Candle CLI's `candle portfolio` reads " + "them over your own RPC). Needs a key with the account:read scope; without it the answer is " + "SCOPE_MISSING. A server that predates Hood in the portfolio omits `hood` and `chain`. Reads " + "only; moves nothing." + (options.localHyperliquid ? " This local server adds `hyperliquid`: each Hood TEE wallet's Hyperliquid account (account value, " + "unrealized P&L, positions, risk level at the default thresholds) read live from Hyperliquid, with a " + "subtotal. It is not in the ledger and is never part of any total. `read: false` with a reason, or " + "entries in `unread`, means those accounts are unknown, not empty." : ""),
     inputSchema: {}
-  }, async () => callAndRelay("candle_get_portfolio", {}, getConfig(), doFetch));
+  }, async () => {
+    const result = await callAndRelay("candle_get_portfolio", {}, getConfig(), doFetch);
+    if (!options.localHyperliquid || result.isError)
+      return result;
+    const text = await withPortfolioSection(result.content[0]?.text ?? "", doFetch, env);
+    return { ...result, content: [{ type: "text", text }] };
+  });
   register("candle_resolve_token", {
     title: "Resolve a contract address to a token",
     description: "Turn a bare contract address or mint into Candle's market for it: chain, symbol, " + "decimals, quote asset, and whether Candle can trade it. Start here when a human gives " + "you an address and nothing else. The chain is read off the address's own shape and is " + "not guessed, so it does not need to be supplied. Reads only; moves nothing. A 404 means " + "Candle has no market for that address, which is an answer, not a failure to retry. " + EXTERNAL_MARKET_DISCLOSURE,
@@ -65441,9 +66180,30 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, perpsTool("candle_perps_orders"));
   register("candle_perps_positions", {
     title: "Perps positions",
-    description: "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE wallet, read " + "live by its address. Reads only; moves nothing.",
+    description: "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE wallet, read " + "live by its address. Also `rows` (per position: side, size, entry, mark, unrealized P&L, ROE, leverage, " + "liquidation price, liquidation distance, funding since open with Hyperliquid's sign where positive is paid, " + "margin, value, level), `accountLine` and `risk` (the candle_perps_risk report without positions), read by " + "this server from Hyperliquid directly. Reads only; moves nothing.",
     inputSchema: perpsShapes.candle_perps_positions
   }, perpsTool("candle_perps_positions"));
+  const riskRead = " Read by this server from Hyperliquid's public API; Candle is asked only for the wallet and the key's " + "thresholds. Reads only; moves nothing. Phase 1 has no server-side monitor: nothing warns you unless you " + "poll candle_perps_risk.";
+  register("candle_perps_account", {
+    title: "Perps account line",
+    description: "The Hyperliquid account line for the key's EVM TEE wallet: account value and margin used (totals, " + "isolated included), cross account value, free margin (an estimate), withdrawable (what can leave), " + "cross maintenance margin and the cross margin ratio (liquidation at 1), unrealized P&L, and over a recent " + "window (`since`, default 24h) realized P&L, fees and funding (positive received), with the risk level." + riskRead,
+    inputSchema: perpsRiskShapes.candle_perps_account
+  }, perpsTool("candle_perps_account"));
+  register("candle_perps_risk", {
+    title: "Perps liquidation risk",
+    description: "The risk level now for the key's EVM TEE wallet: `level` ok, warn or critical, the `drivers` that put it " + "there (a position closer to liquidation than the warn or critical distance, default 15% and 7%; the cross " + "margin ratio above 0.6 or 0.8; a position with no mark is at least warn), `closest` at ok, the thresholds " + "applied, the account line and every position. warn and critical are results, not errors. An account mode " + "this cannot read, or a stale read, is an error with code PERPS_ACCOUNT_MODE or PERPS_READ_STALE: never " + "treat it as ok. One stateless read; poll it to watch (no hysteresis here)." + riskRead,
+    inputSchema: perpsRiskShapes.candle_perps_risk
+  }, perpsTool("candle_perps_risk"));
+  register("candle_perps_thresholds", {
+    title: "Perps risk thresholds",
+    description: "This key's Hyperliquid risk thresholds in bps: `stored` (or null), `effective` (defaults overlaid: warn " + "distance 1500, critical distance 700, warn ratio 6000, critical ratio 8000, clear band 200) and `source`. " + "Reads only; moves nothing.",
+    inputSchema: perpsRiskShapes.candle_perps_thresholds
+  }, perpsTool("candle_perps_thresholds"));
+  register("candle_perps_set_thresholds", {
+    title: "Tighten perps risk thresholds",
+    description: "Tighten this key's own Hyperliquid risk thresholds (bps): a higher distance, a lower ratio or a wider " + "band. A field set to null clears it; clear: true clears all. Anything looser than what applies now, " + "defaults included (clearing a field stored stricter than its default counts), is refused with " + "LOOSEN_REQUIRES_SESSION: only the owner loosens, with candle perps thresholds set --key <prefix>. " + "Changes only when warnings fire; moves no funds.",
+    inputSchema: perpsRiskShapes.candle_perps_set_thresholds
+  }, perpsTool("candle_perps_set_thresholds"));
   const historyNote = " Read directly from Hyperliquid's public /info for the key's EVM TEE wallet (Candle only resolves which wallet; " + "the API key never goes to Hyperliquid), so any key that can list its wallets can read it and no signer is needed. " + "Wallet-level live venue data, not Candle's ledger and not an all-time total. Default window: the last 7 days, " + "fixed on the first page; pass nextCursor back as cursor for the next. truncated means coverage stopped short " + "(warnings say why). Rate limits and timeouts are errors (PERPS_UNAVAILABLE), never an empty page. Reads only.";
   register("candle_perps_fills", {
     title: "Perps fills",
@@ -65508,6 +66268,7 @@ var init_tools = __esm(() => {
   init_orchestrate();
   init_perps();
   init_perps_markets();
+  init_perps_risk();
   init_plans();
   init_update_notice();
   VAMP_CANDIDATES_DESCRIPTION = "Lists Solana tokens that are close to graduating or graduated in the last 6 hours whose ticker other tokens " + "are copying, most-copied in the last 24 hours first. Each entry carries a launch draft (name, ticker, image URL) " + "for `candle_launch_token` or `candle_launch_and_seed`; draft notes identify fields you must supply or adjust. " + "Upload your own image through the agent image upload when the image is unavailable. Use `dryRun: true` first. " + "Counts exclude the candidate itself and cover both Solana and Hood launches at the venues returned in " + "`coverage`, not Candle's own. `coverage.since` is the returned Solana coverage date; Hood history may differ.";
@@ -65564,7 +66325,11 @@ var init_tools = __esm(() => {
     "candle_perps_fills",
     "candle_perps_funding",
     "candle_perps_leverage",
-    "candle_perps_deposit"
+    "candle_perps_deposit",
+    "candle_perps_account",
+    "candle_perps_risk",
+    "candle_perps_thresholds",
+    "candle_perps_set_thresholds"
   ];
   PROFILE_EDIT_TOOL_NAMES = [
     "candle_update_profile",
@@ -66650,8 +67415,8 @@ var HELP = {
   },
   perps: {
     group: "Trade",
-    summary: "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, orders, positions, fills, funding, leverage",
-    description: "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section.",
+    summary: "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, orders, positions, fills, funding, leverage, account, risk, watch, thresholds",
+    description: "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
@@ -66701,7 +67466,23 @@ var HELP = {
         invocation: "funding [--start-time <ms>] [--end-time <ms>] [--limit <n>] [--cursor <c>]",
         description: "One page of the wallet's funding payments, signed (paid or received), read directly from Hyperliquid; at most 500 rows a page"
       },
-      { invocation: "leverage <coin> <x> [--isolated]", description: "Set a market's leverage and margin mode" }
+      { invocation: "leverage <coin> <x> [--isolated]", description: "Set a market's leverage and margin mode" },
+      {
+        invocation: "account [--wallet <tee>] [--since <30m|24h|7d|ISO>]",
+        description: "Account value, margin used, free margin, withdrawable, margin ratio, and realized P&L, fees and funding over a window (default 24h, at most 30 days)"
+      },
+      {
+        invocation: "risk [--wallet <tee>]",
+        description: "The level now (ok, warn, critical) with what drives it; exit 0, 10 or 11, and 1 when unknown"
+      },
+      {
+        invocation: "watch [--interval <s>] [--heartbeat <s>] [--on-warn <cmd>] [--on-critical <cmd>] [--once-level-change]",
+        description: "Poll from this machine and print one JSON line per level change, heartbeat or error; runs until stopped and exits with the last level's code"
+      },
+      {
+        invocation: "thresholds | thresholds set [--warn-distance <pct>] ... [--key <prefix|label|self>] | thresholds clear",
+        description: "Show this key's risk thresholds; set or clear them. As self (the default) a key may only tighten; a prefix or label uses the device token and may loosen"
+      }
     ],
     flags: [
       {
@@ -66758,7 +67539,31 @@ var HELP = {
       { invocation: "--rpc-url <url>", description: "deposit from Solana: the RPC the deposit check reads" },
       { invocation: "--no-submit", description: "Build and check only; sign and submit nothing" },
       { invocation: "--sign-only", description: "Build, check and sign through the relay; submit nothing" },
-      { invocation: "--yes", description: "Skip the confirmation prompt" }
+      { invocation: "--yes", description: "Skip the confirmation prompt" },
+      { invocation: "--since <window>", description: "account: the recent window, 30m, 24h, 7d or an ISO time" },
+      {
+        invocation: "--interval <seconds>",
+        description: "watch: seconds between polls, 5 to 300 (default 10, about 136 request weight a minute)"
+      },
+      { invocation: "--heartbeat <seconds>", description: "watch: a heartbeat line this often (default 60, 0 is off)" },
+      {
+        invocation: "--on-warn <command> / --on-critical <command>",
+        description: "watch: run through your shell once per rise to warn (or critical) or critical, with the level line on stdin and CANDLE_PERPS_RISK_LEVEL set; killed after 30 s"
+      },
+      { invocation: "--once-level-change", description: "watch: exit at the first level change, with its code" },
+      {
+        invocation: "--warn-distance <pct> / --critical-distance <pct>",
+        description: "thresholds set: liquidation distance thresholds in percent (default 15 and 7)"
+      },
+      {
+        invocation: "--warn-margin-ratio <r> / --critical-margin-ratio <r>",
+        description: "thresholds set: cross margin ratio thresholds, 1 is liquidation (default 0.6 and 0.8)"
+      },
+      { invocation: "--clear-band <pct>", description: "thresholds set: watch's clear band in points (default 2)" },
+      {
+        invocation: "--key <prefix|label|self>",
+        description: "thresholds set and clear: the key (default self, which may only tighten)"
+      }
     ],
     examples: [
       "candle perps setup",
@@ -66770,7 +67575,10 @@ var HELP = {
       "candle perps fills --limit 50",
       "candle perps funding --start-time 1790000000000",
       "candle perps leverage BTC 5 --isolated",
-      "candle perps withdraw 25 --to solana"
+      "candle perps withdraw 25 --to solana",
+      "candle perps risk --json",
+      "candle perps watch --on-critical 'notify-send perps critical'",
+      "candle perps thresholds set --warn-distance 20"
     ],
     env: [...ENV_API, "CANDLE_HYPERLIQUID_BUILDER", "CANDLE_HYPERLIQUID_NETWORK", "CANDLE_PERPS_WITHDRAW_PINS"]
   },
@@ -66860,8 +67668,10 @@ var HELP = {
   portfolio: {
     group: "Account",
     summary: "Every wallet's holdings, prices and value on Solana and Hood (vault read over your own RPCs)",
-    description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so.",
-    usage: ["candle portfolio [<filter>] [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--json]"],
+    description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so. After the totals, a Hyperliquid section (live from Hyperliquid, not in the ledger, and never in the total) lists each EVM TEE wallet's Hyperliquid account value, unrealized P&L, positions and risk at the default thresholds, read from Hyperliquid's public API on this machine; a failed read there is not read and the exit is 3. --chain solana and --no-perps read nothing from Hyperliquid.",
+    usage: [
+      "candle portfolio [<filter>] [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--no-perps] [--json]"
+    ],
     rows: [
       {
         invocation: "<filter>",
@@ -66877,6 +67687,10 @@ var HELP = {
       {
         invocation: "--evm-rpc-url <url>",
         description: "Your Hood RPC, for EVM vault keys. Without one: CANDLE_EVM_RPC_URL, then the built-in Hood RPC"
+      },
+      {
+        invocation: "--no-perps",
+        description: "Skip the Hyperliquid section: send no EVM TEE address to Hyperliquid's public API"
       },
       KEYSTORE_FLAG
     ],
@@ -74393,7 +75207,11 @@ var MCP_TOOL_NAMES = [
   "candle_perps_fills",
   "candle_perps_funding",
   "candle_perps_leverage",
-  "candle_perps_deposit"
+  "candle_perps_deposit",
+  "candle_perps_account",
+  "candle_perps_risk",
+  "candle_perps_thresholds",
+  "candle_perps_set_thresholds"
 ];
 var READ_ONLY_TOOL_NAMES = [
   "candle_get_market",
@@ -75840,11 +76658,1271 @@ function perpsHistoryLines(page, nextHint) {
 init_render();
 init_solana_verify();
 init_trading();
+
+// src/commands/perps-risk.ts
+init_args();
+init_client();
+init_deps();
+
+// src/hyperliquid-risk.ts
+var HYPERLIQUID_RISK_INFO_URLS = {
+  mainnet: "https://api.hyperliquid.xyz/info",
+  testnet: "https://api.hyperliquid-testnet.xyz/info"
+};
+var PERPS_RISK_FIELDS = [
+  "warnDistanceBps",
+  "criticalDistanceBps",
+  "warnMarginRatioBps",
+  "criticalMarginRatioBps",
+  "clearBandBps"
+];
+var HYPERLIQUID_RISK_DEFAULTS = {
+  warnDistanceBps: 1500,
+  criticalDistanceBps: 700,
+  warnMarginRatioBps: 6000,
+  criticalMarginRatioBps: 8000,
+  clearBandBps: 200
+};
+function effectivePerpsRisk(stored) {
+  const out = { ...HYPERLIQUID_RISK_DEFAULTS };
+  for (const field of PERPS_RISK_FIELDS) {
+    const value = stored?.[field];
+    if (typeof value === "number")
+      out[field] = value;
+  }
+  return out;
+}
+function perpsRiskProblem(t) {
+  const ranges = {
+    warnDistanceBps: [1, 9900],
+    criticalDistanceBps: [1, 9900],
+    warnMarginRatioBps: [1, 9999],
+    criticalMarginRatioBps: [1, 9999],
+    clearBandBps: [0, 1000]
+  };
+  for (const field of PERPS_RISK_FIELDS) {
+    const value = t[field];
+    const [min, max] = ranges[field];
+    if (!Number.isInteger(value) || value < min || value > max)
+      return `${field} must be a whole number of bps from ${min} to ${max}`;
+  }
+  if (t.criticalDistanceBps >= t.warnDistanceBps)
+    return "criticalDistanceBps must be below warnDistanceBps";
+  if (t.warnMarginRatioBps >= t.criticalMarginRatioBps)
+    return "warnMarginRatioBps must be below criticalMarginRatioBps";
+  return null;
+}
+function perpsRiskFromLimits(body) {
+  const record = isRecord2(body) ? body : {};
+  const reported = "perpsRisk" in record || "perpsRiskEffective" in record;
+  const stored = isRecord2(record.perpsRisk) ? pickSettings(record.perpsRisk) : null;
+  if (!reported)
+    return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" }, stored };
+  const effective = isRecord2(record.perpsRiskEffective) ? effectivePerpsRisk(pickSettings(record.perpsRiskEffective)) : effectivePerpsRisk(stored);
+  if (perpsRiskProblem(effective) !== null)
+    return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" }, stored };
+  const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
+  return { thresholds: { ...effective, source }, stored };
+}
+function pickSettings(raw) {
+  const out = {};
+  for (const field of PERPS_RISK_FIELDS)
+    if (typeof raw[field] === "number")
+      out[field] = raw[field];
+  return out;
+}
+
+class HyperliquidReadError extends Error {
+  rateLimited;
+  code = "PERPS_READ_FAILED";
+  constructor(message, rateLimited = false) {
+    super(message);
+    this.rateLimited = rateLimited;
+    this.name = "HyperliquidReadError";
+  }
+}
+var INFO_TIMEOUT_MS = 5000;
+var RATE_LIMIT_RETRY_MS = 1000;
+async function hyperliquidInfo(fetcher, network, body, opts = {}) {
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve3) => setTimeout(resolve3, ms)));
+  for (let attempt = 0;; attempt++) {
+    const controller = new AbortController;
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? INFO_TIMEOUT_MS);
+    let res;
+    let text;
+    try {
+      res = await fetcher(HYPERLIQUID_RISK_INFO_URLS[network], {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      text = res.ok ? await res.text() : "";
+    } catch {
+      throw new HyperliquidReadError(`Hyperliquid ${String(body.type)} read failed or timed out`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 429) {
+      if (attempt === 0) {
+        await sleep(RATE_LIMIT_RETRY_MS);
+        continue;
+      }
+      throw new HyperliquidReadError(`Hyperliquid rate-limited the ${String(body.type)} read (HTTP 429)`, true);
+    }
+    if (!res.ok)
+      throw new HyperliquidReadError(`Hyperliquid ${String(body.type)} answered HTTP ${res.status ?? "?"}`);
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new HyperliquidReadError(`Hyperliquid ${String(body.type)} answered with something other than JSON`);
+    }
+  }
+}
+async function readHyperliquidMarketSnapshot(fetcher, network, opts = {}) {
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve3) => setTimeout(resolve3, ms)));
+  let limited = false;
+  const watched = async (url, init) => {
+    const res = await fetcher(url, init);
+    limited = res.status === 429;
+    return res;
+  };
+  try {
+    return await readHyperliquidMarkets(watched, network);
+  } catch {
+    await sleep(RATE_LIMIT_RETRY_MS);
+  }
+  try {
+    return await readHyperliquidMarkets(watched, network);
+  } catch (error) {
+    throw new HyperliquidReadError(`Hyperliquid metaAndAssetCtxs read failed${error instanceof PerpsMarketError ? ` (${error.code})` : ""}`, limited);
+  }
+}
+function hyperliquidMark(markets, coin) {
+  const index = markets.universe.findIndex((m) => m.name === coin);
+  const mark = index < 0 ? undefined : markets.ctxs[index]?.markPx;
+  if (typeof mark !== "string")
+    return null;
+  const parsed = dec(mark);
+  return parsed !== null && parsed > 0n ? mark : null;
+}
+async function readHyperliquidClearinghouse(fetcher, network, address, opts = {}) {
+  return parseClearinghouse(await hyperliquidInfo(fetcher, network, { type: "clearinghouseState", user: address.toLowerCase() }, opts));
+}
+async function readHyperliquidAccountMode(fetcher, network, address, opts = {}) {
+  const body = await hyperliquidInfo(fetcher, network, { type: "userAbstraction", user: address.toLowerCase() }, opts);
+  if (typeof body !== "string" || body === "")
+    throw new HyperliquidReadError("Unexpected userAbstraction shape");
+  return body;
+}
+var HYPERLIQUID_STANDARD_MODES = ["default", "disabled"];
+function parseClearinghouse(body) {
+  const bad = (what) => new HyperliquidReadError(`Unexpected clearinghouseState shape (${what})`);
+  if (!isRecord2(body))
+    throw bad("not an object");
+  const summary = (value, name2) => {
+    if (!isRecord2(value) || !isDecString(value.accountValue) || !isDecString(value.totalMarginUsed))
+      throw bad(name2);
+    return { accountValue: value.accountValue, totalMarginUsed: value.totalMarginUsed };
+  };
+  const marginSummary = summary(body.marginSummary, "marginSummary");
+  const crossMarginSummary = summary(body.crossMarginSummary, "crossMarginSummary");
+  if (!isDecString(body.crossMaintenanceMarginUsed))
+    throw bad("crossMaintenanceMarginUsed");
+  if (!isDecString(body.withdrawable))
+    throw bad("withdrawable");
+  if (!Array.isArray(body.assetPositions))
+    throw bad("assetPositions");
+  const positions = body.assetPositions.map((entry) => {
+    const p = isRecord2(entry) ? entry.position : undefined;
+    if (!isRecord2(p) || typeof p.coin !== "string" || p.coin === "")
+      throw bad("position");
+    for (const field of ["szi", "entryPx", "positionValue", "unrealizedPnl", "returnOnEquity", "marginUsed"])
+      if (!isDecString(p[field]))
+        throw bad(`position ${field}`);
+    const leverage = p.leverage;
+    if (!isRecord2(leverage) || typeof leverage.type !== "string" || typeof leverage.value !== "number")
+      throw bad("position leverage");
+    if (p.liquidationPx !== null && p.liquidationPx !== undefined && !isDecString(p.liquidationPx))
+      throw bad("position liquidationPx");
+    const funding = p.cumFunding;
+    if (!isRecord2(funding) || !isDecString(funding.sinceOpen))
+      throw bad("position cumFunding");
+    return {
+      coin: p.coin,
+      szi: p.szi,
+      entryPx: p.entryPx,
+      positionValue: p.positionValue,
+      unrealizedPnl: p.unrealizedPnl,
+      returnOnEquity: p.returnOnEquity,
+      leverage: { type: leverage.type, value: leverage.value },
+      liquidationPx: p.liquidationPx ?? null,
+      marginUsed: p.marginUsed,
+      cumFunding: { sinceOpen: funding.sinceOpen }
+    };
+  });
+  return {
+    marginSummary,
+    crossMarginSummary,
+    crossMaintenanceMarginUsed: body.crossMaintenanceMarginUsed,
+    withdrawable: body.withdrawable,
+    positions
+  };
+}
+var PERPS_RISK_NOTE = "Phase 1 has no server-side monitor: nothing warns you unless you poll this or run candle perps watch.";
+var RANK = { ok: 0, warn: 1, critical: 2 };
+function worse(a, b) {
+  return RANK[a] >= RANK[b] ? a : b;
+}
+function hyperliquidRiskReport(state, market, mode, thresholds, now, identity2 = { walletId: "", address: "", network: "mainnet" }) {
+  const base = {
+    schema: "candle.perps.risk/1",
+    walletId: identity2.walletId,
+    address: identity2.address,
+    network: identity2.network,
+    mode,
+    readAt: new Date(now).toISOString(),
+    thresholds,
+    note: PERPS_RISK_NOTE
+  };
+  if (!HYPERLIQUID_STANDARD_MODES.includes(mode)) {
+    return {
+      ...base,
+      level: "unknown",
+      reason: "PERPS_ACCOUNT_MODE",
+      drivers: [],
+      closest: null,
+      account: null,
+      positions: []
+    };
+  }
+  const ch = isParsedClearinghouse(state) ? state : parseClearinghouse(state);
+  if (!market || !Array.isArray(market.universe) || !Array.isArray(market.ctxs))
+    throw new HyperliquidReadError("Unexpected metaAndAssetCtxs shape");
+  const markets = market;
+  const t = thresholds;
+  const drivers = [];
+  const nearest = [];
+  let level = "ok";
+  let unrealized = 0n;
+  const positions = ch.positions.map((p) => {
+    const szi = dec(p.szi);
+    unrealized += dec(p.unrealizedPnl);
+    const markPx = hyperliquidMark(markets, p.coin);
+    const distance = markPx !== null && p.liquidationPx !== null ? distanceParts(markPx, p.liquidationPx) : null;
+    let rowLevel = "none";
+    if (distance) {
+      rowLevel = fracLess(distance.num, distance.den, t.criticalDistanceBps) ? "critical" : fracLess(distance.num, distance.den, t.warnDistanceBps) ? "warn" : "ok";
+    }
+    const liquidationDistance = distance ? ratioNumber(distance.num, distance.den) : null;
+    if (markPx === null) {
+      drivers.push({
+        kind: "position",
+        coin: p.coin,
+        level: "warn",
+        liquidationDistance: null,
+        threshold: null,
+        reason: "unmarked"
+      });
+      level = worse(level, "warn");
+    } else if (rowLevel === "warn" || rowLevel === "critical") {
+      drivers.push({
+        kind: "position",
+        coin: p.coin,
+        level: rowLevel,
+        liquidationDistance,
+        threshold: (rowLevel === "critical" ? t.criticalDistanceBps : t.warnDistanceBps) / 1e4
+      });
+      level = worse(level, rowLevel);
+    } else if (rowLevel === "ok" && liquidationDistance !== null) {
+      nearest.push({
+        driver: {
+          kind: "position",
+          coin: p.coin,
+          level: "ok",
+          liquidationDistance,
+          threshold: t.warnDistanceBps / 1e4
+        },
+        headroom: liquidationDistance / (t.warnDistanceBps / 1e4) - 1
+      });
+    }
+    return {
+      coin: p.coin,
+      side: szi < 0n ? "short" : "long",
+      size: p.szi.replace(/^-/, ""),
+      entryPx: p.entryPx,
+      markPx,
+      unrealizedPnlUsd: p.unrealizedPnl,
+      returnOnEquity: p.returnOnEquity,
+      leverage: { value: p.leverage.value, type: p.leverage.type },
+      liquidationPx: p.liquidationPx,
+      liquidationDistance,
+      fundingSinceOpenUsd: p.cumFunding.sinceOpen,
+      marginUsedUsd: p.marginUsed,
+      positionValueUsd: p.positionValue,
+      level: rowLevel
+    };
+  });
+  const maint = dec(ch.crossMaintenanceMarginUsed);
+  const crossValue = dec(ch.crossMarginSummary.accountValue);
+  let marginRatio = 0;
+  if (positions.length > 0 && maint > 0n) {
+    if (crossValue <= 0n) {
+      marginRatio = null;
+      drivers.push({
+        kind: "margin",
+        level: "critical",
+        marginRatio: null,
+        threshold: t.criticalMarginRatioBps / 1e4,
+        reason: "no equity"
+      });
+      level = "critical";
+    } else {
+      marginRatio = ratioNumber(maint, crossValue);
+      const marginLevel = fracGreater(maint, crossValue, t.criticalMarginRatioBps) ? "critical" : fracGreater(maint, crossValue, t.warnMarginRatioBps) ? "warn" : "ok";
+      if (marginLevel === "ok") {
+        nearest.push({
+          driver: { kind: "margin", level: "ok", marginRatio, threshold: t.warnMarginRatioBps / 1e4 },
+          headroom: 1 - marginRatio / (t.warnMarginRatioBps / 1e4)
+        });
+      } else {
+        drivers.push({
+          kind: "margin",
+          level: marginLevel,
+          marginRatio,
+          threshold: (marginLevel === "critical" ? t.criticalMarginRatioBps : t.warnMarginRatioBps) / 1e4
+        });
+        level = worse(level, marginLevel);
+      }
+    }
+  }
+  drivers.sort((a, b) => RANK[b.level] - RANK[a.level]);
+  nearest.sort((a, b) => a.headroom - b.headroom);
+  const accountValue = dec(ch.marginSummary.accountValue);
+  const marginUsed = dec(ch.marginSummary.totalMarginUsed);
+  const free = accountValue - marginUsed;
+  const account = {
+    accountValueUsd: ch.marginSummary.accountValue,
+    marginUsedUsd: ch.marginSummary.totalMarginUsed,
+    crossAccountValueUsd: ch.crossMarginSummary.accountValue,
+    freeMarginUsd: formatDec(free > 0n ? free : 0n),
+    withdrawableUsd: ch.withdrawable,
+    crossMaintenanceMarginUsedUsd: ch.crossMaintenanceMarginUsed,
+    marginRatio,
+    unrealizedPnlUsd: formatDec(unrealized),
+    positionCount: positions.length,
+    mode,
+    level
+  };
+  return {
+    ...base,
+    level,
+    reason: null,
+    drivers,
+    closest: level === "ok" ? nearest[0]?.driver ?? null : null,
+    account,
+    positions
+  };
+}
+function unknownRiskReport(identity2, thresholds, reason, now, mode = null) {
+  return {
+    schema: "candle.perps.risk/1",
+    ...identity2,
+    mode,
+    readAt: new Date(now).toISOString(),
+    level: "unknown",
+    reason,
+    drivers: [],
+    closest: null,
+    thresholds,
+    account: null,
+    positions: [],
+    note: PERPS_RISK_NOTE
+  };
+}
+var PERPS_RISK_STALE_MS = 30000;
+async function readPerpsRisk(opts) {
+  const identity2 = { walletId: opts.walletId, address: opts.address, network: opts.network };
+  const timed = async (read) => {
+    const value = await read;
+    return { value, at: opts.now() };
+  };
+  const [state, market, mode] = await Promise.all([
+    timed(readHyperliquidClearinghouse(opts.fetcher, opts.network, opts.address, opts)),
+    timed(readHyperliquidMarketSnapshot(opts.fetcher, opts.network, opts)),
+    opts.mode !== undefined ? Promise.resolve({ value: opts.mode, at: Number.NaN }) : timed(readHyperliquidAccountMode(opts.fetcher, opts.network, opts.address, opts))
+  ]);
+  const times = [state.at, market.at, mode.at].filter((at2) => !Number.isNaN(at2));
+  const earliest = Math.min(...times);
+  if (Math.max(...times) - earliest > PERPS_RISK_STALE_MS)
+    return unknownRiskReport(identity2, opts.thresholds, "PERPS_READ_STALE", earliest, mode.value);
+  return hyperliquidRiskReport(state.value, market.value, mode.value, opts.thresholds, earliest, identity2);
+}
+function perpsRiskExitCode(level) {
+  return level === "ok" ? 0 : level === "warn" ? 10 : level === "critical" ? 11 : 1;
+}
+var PERPS_FILLS_RESPONSE_CAP = 2000;
+var PERPS_FUNDING_RESPONSE_CAP = 500;
+var PERPS_RECENT_MAX_MS = 30 * 24 * 60 * 60 * 1000;
+function isMainPerpCoin(coin) {
+  return typeof coin === "string" && coin !== "" && !coin.includes(":") && !coin.includes("/") && !coin.startsWith("@");
+}
+async function readPerpsRecent(fetcher, network, address, window, opts = {}) {
+  const user = address.toLowerCase();
+  const [fills, funding] = await Promise.all([
+    hyperliquidInfo(fetcher, network, { type: "userFillsByTime", user, startTime: window.startTime, endTime: window.endTime }, opts),
+    hyperliquidInfo(fetcher, network, { type: "userFunding", user, startTime: window.startTime, endTime: window.endTime }, opts)
+  ]);
+  return summarizePerpsRecent(fills, funding, window);
+}
+function summarizePerpsRecent(fills, funding, window) {
+  if (!Array.isArray(fills))
+    throw new HyperliquidReadError("Unexpected userFillsByTime shape");
+  if (!Array.isArray(funding))
+    throw new HyperliquidReadError("Unexpected userFunding shape");
+  let realized = 0n;
+  let fees = 0n;
+  let paid = 0n;
+  let fillCount = 0;
+  let fundingCount = 0;
+  for (const row of fills) {
+    if (!isRecord2(row))
+      throw new HyperliquidReadError("Unexpected fill row");
+    if (!isMainPerpCoin(row.coin))
+      continue;
+    const closed = dec(row.closedPnl);
+    const fee = dec(row.fee);
+    if (closed === null || fee === null)
+      throw new HyperliquidReadError("Unexpected fill amount");
+    realized += closed;
+    fees += fee;
+    fillCount++;
+  }
+  for (const row of funding) {
+    const delta = isRecord2(row) ? row.delta : undefined;
+    if (!isRecord2(delta))
+      throw new HyperliquidReadError("Unexpected funding row");
+    if (delta.type !== "funding" || !isMainPerpCoin(delta.coin))
+      continue;
+    const usdc = dec(delta.usdc);
+    if (usdc === null)
+      throw new HyperliquidReadError("Unexpected funding amount");
+    paid += usdc;
+    fundingCount++;
+  }
+  return {
+    startTime: window.startTime,
+    endTime: window.endTime,
+    realizedPnlUsd: formatDec(realized),
+    feesUsd: formatDec(fees),
+    fundingUsd: formatDec(paid),
+    fills: fillCount,
+    fundingPayments: fundingCount,
+    truncated: fills.length >= PERPS_FILLS_RESPONSE_CAP || funding.length >= PERPS_FUNDING_RESPONSE_CAP
+  };
+}
+function perpsAccountReport(report, recent) {
+  const { mode: _mode, level: _level, ...line } = report.account ?? {};
+  return {
+    schema: "candle.perps.account/1",
+    walletId: report.walletId,
+    address: report.address,
+    network: report.network,
+    mode: report.mode,
+    readAt: report.readAt,
+    ...line,
+    recent,
+    risk: { level: report.level, reason: report.reason, drivers: report.drivers }
+  };
+}
+function perpsRiskClears(report, leaving) {
+  const t = report.thresholds;
+  const account = report.account;
+  if (!account)
+    return false;
+  const distanceBps = (leaving === "warn" ? t.warnDistanceBps : t.criticalDistanceBps) + t.clearBandBps;
+  const ratioBps = (leaving === "warn" ? t.warnMarginRatioBps : t.criticalMarginRatioBps) - t.clearBandBps;
+  for (const p of report.positions) {
+    if (p.markPx === null) {
+      if (leaving === "warn")
+        return false;
+      continue;
+    }
+    if (p.liquidationPx === null)
+      continue;
+    const d = distanceParts(p.markPx, p.liquidationPx);
+    if (d && fracLess(d.num, d.den, distanceBps))
+      return false;
+  }
+  const maint = dec(account.crossMaintenanceMarginUsedUsd);
+  if (report.positions.length > 0 && maint > 0n) {
+    const crossValue = dec(account.crossAccountValueUsd);
+    if (crossValue <= 0n)
+      return false;
+    if (fracGreater(maint, crossValue, ratioBps))
+      return false;
+  }
+  return true;
+}
+function perpsRiskStep(previous, report) {
+  const rule = report.level;
+  if (rule === "unknown" || previous === "unknown")
+    return rule;
+  if (RANK[rule] >= RANK[previous])
+    return rule;
+  if (rule === "ok" && perpsRiskClears(report, "warn"))
+    return "ok";
+  if (previous === "critical" && perpsRiskClears(report, "critical"))
+    return "warn";
+  return previous;
+}
+var PERPS_WATCH_DEFAULT_INTERVAL_MS = 1e4;
+var PERPS_WATCH_MIN_INTERVAL_MS = 5000;
+var PERPS_WATCH_MAX_INTERVAL_MS = 300000;
+var PERPS_WATCH_DEFAULT_HEARTBEAT_MS = 60000;
+var PERPS_WATCH_REFRESH_MS = 300000;
+var HYPERLIQUID_INFO_WEIGHTS = { clearinghouseState: 2, metaAndAssetCtxs: 20, userAbstraction: 20 };
+function perpsWatchWeightPerMinute(intervalMs) {
+  const polls = 60000 / intervalMs;
+  const modeReads = 60000 / PERPS_WATCH_REFRESH_MS;
+  return Math.round(polls * (HYPERLIQUID_INFO_WEIGHTS.clearinghouseState + HYPERLIQUID_INFO_WEIGHTS.metaAndAssetCtxs) + modeReads * HYPERLIQUID_INFO_WEIGHTS.userAbstraction);
+}
+async function watchPerpsRisk(opts) {
+  const baseInterval = opts.intervalMs ?? PERPS_WATCH_DEFAULT_INTERVAL_MS;
+  const heartbeatMs = opts.heartbeatMs ?? PERPS_WATCH_DEFAULT_HEARTBEAT_MS;
+  const identity2 = { walletId: opts.walletId, address: opts.address, network: opts.network };
+  const sleep = (ms) => abortableSleep(opts.sleep, ms, opts.signal);
+  const info2 = { sleep: opts.sleep };
+  let thresholds;
+  try {
+    thresholds = await opts.thresholds();
+  } catch {
+    thresholds = { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" };
+  }
+  let thresholdsAt = opts.now();
+  let mode;
+  let modeAt = Number.NEGATIVE_INFINITY;
+  let level = "unknown";
+  let lastGoodAt = null;
+  let staleReported = false;
+  let interval = baseInterval;
+  let lastHeartbeat = opts.now();
+  let established = false;
+  await opts.onEvent({
+    event: "start",
+    ...identity2,
+    at: new Date(opts.now()).toISOString(),
+    intervalSeconds: baseInterval / 1000,
+    heartbeatSeconds: heartbeatMs / 1000,
+    thresholds,
+    weightPerMinute: perpsWatchWeightPerMinute(baseInterval)
+  });
+  while (!opts.signal?.aborted) {
+    if (opts.now() - thresholdsAt >= PERPS_WATCH_REFRESH_MS) {
+      thresholdsAt = opts.now();
+      try {
+        thresholds = await opts.thresholds();
+      } catch {}
+    }
+    let report = null;
+    try {
+      if (mode === undefined || opts.now() - modeAt >= PERPS_WATCH_REFRESH_MS) {
+        mode = await readHyperliquidAccountMode(opts.fetcher, opts.network, opts.address, info2);
+        modeAt = opts.now();
+      }
+      report = await readPerpsRisk({ ...identity2, fetcher: opts.fetcher, thresholds, now: opts.now, mode, ...info2 });
+      interval = baseInterval;
+    } catch (error) {
+      const rateLimited = error instanceof HyperliquidReadError && error.rateLimited;
+      if (rateLimited)
+        interval = Math.min(interval * 2, PERPS_WATCH_MAX_INTERVAL_MS);
+      await opts.onEvent({
+        event: "error",
+        at: new Date(opts.now()).toISOString(),
+        code: error instanceof HyperliquidReadError ? error.code : "PERPS_READ_FAILED",
+        message: error instanceof Error ? error.message : "Hyperliquid read failed",
+        nextPollSeconds: interval / 1000
+      });
+      if (level !== "unknown" && !staleReported && lastGoodAt !== null && opts.now() - lastGoodAt > PERPS_RISK_STALE_MS) {
+        const previous = level;
+        level = "unknown";
+        staleReported = true;
+        const stale = unknownRiskReport(identity2, thresholds, "PERPS_READ_STALE", opts.now(), mode ?? null);
+        await opts.onEvent({ ...stale, event: "level", level, ruleLevel: "unknown", previous });
+        if (opts.onceLevelChange && established)
+          return { level };
+      }
+    }
+    if (report) {
+      const previous = level;
+      const next = perpsRiskStep(previous, report);
+      if (report.level !== "unknown") {
+        lastGoodAt = opts.now();
+        staleReported = false;
+      }
+      if (next !== previous) {
+        level = next;
+        const cleared = next === "ok" && (previous === "warn" || previous === "critical");
+        await opts.onEvent({
+          ...report,
+          event: "level",
+          level: next,
+          ruleLevel: report.level,
+          previous,
+          ...cleared ? { cleared: true } : {}
+        });
+        if (opts.onceLevelChange && established)
+          return { level };
+        if (next !== "unknown")
+          established = true;
+      } else if (next !== "unknown") {
+        established = true;
+      }
+      if (heartbeatMs > 0 && opts.now() - lastHeartbeat >= heartbeatMs) {
+        lastHeartbeat = opts.now();
+        await opts.onEvent({ ...report, event: "heartbeat", level, ruleLevel: report.level });
+      }
+    }
+    if (opts.signal?.aborted)
+      break;
+    await sleep(interval);
+  }
+  return { level };
+}
+function abortableSleep(sleep, ms, signal) {
+  if (!signal)
+    return sleep(ms);
+  if (signal.aborted)
+    return Promise.resolve();
+  return new Promise((resolve3) => {
+    const done = () => {
+      signal.removeEventListener("abort", done);
+      resolve3();
+    };
+    signal.addEventListener("abort", done);
+    sleep(ms).then(done, done);
+  });
+}
+var PERPS_PORTFOLIO_MAX_ACCOUNTS = 100;
+var PORTFOLIO_READS_IN_FLIGHT = 8;
+async function perpsPortfolioSection(fetcher, network, wallets2, opts = {}) {
+  const now = opts.now ?? Date.now;
+  const considered = wallets2.slice(0, PERPS_PORTFOLIO_MAX_ACCOUNTS);
+  const unread = wallets2.slice(PERPS_PORTFOLIO_MAX_ACCOUNTS).map((w) => ({ ...w, reason: `past the ${PERPS_PORTFOLIO_MAX_ACCOUNTS}-address cap` }));
+  let markets = { universe: [], ctxs: [], marginTables: new Map };
+  if (considered.length > 0) {
+    try {
+      markets = await readHyperliquidMarketSnapshot(fetcher, network, opts);
+    } catch (error) {
+      return { read: false, reason: error instanceof Error ? error.message : "Hyperliquid market read failed" };
+    }
+  }
+  const thresholds = { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults" };
+  const results = new Array(considered.length).fill(null);
+  const failures = new Array(considered.length).fill(null);
+  let next = 0;
+  const worker = async () => {
+    while (next < considered.length) {
+      const at2 = next++;
+      const wallet = considered[at2];
+      try {
+        const state = await readHyperliquidClearinghouse(fetcher, network, wallet.address, opts);
+        const report = hyperliquidRiskReport(state, markets, "default", thresholds, now());
+        results[at2] = {
+          address: wallet.address,
+          ...wallet.label !== undefined ? { label: wallet.label } : {},
+          ...wallet.walletId !== undefined ? { walletId: wallet.walletId } : {},
+          accountValueUsd: report.account?.accountValueUsd ?? "0",
+          unrealizedPnlUsd: report.account?.unrealizedPnlUsd ?? "0",
+          positionCount: report.positions.length,
+          level: report.level
+        };
+      } catch (error) {
+        failures[at2] = error instanceof Error ? error.message : "read failed";
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PORTFOLIO_READS_IN_FLIGHT, considered.length) }, worker));
+  const accounts = [];
+  let empty = 0;
+  let value = 0n;
+  let pnl = 0n;
+  considered.forEach((wallet, at2) => {
+    const result = results[at2];
+    if (!result) {
+      unread.push({ ...wallet, reason: failures[at2] ?? "read failed" });
+      return;
+    }
+    if (result.positionCount === 0 && dec(result.accountValueUsd) === 0n) {
+      empty++;
+      return;
+    }
+    accounts.push(result);
+    value += dec(result.accountValueUsd);
+    pnl += dec(result.unrealizedPnlUsd);
+  });
+  return {
+    read: true,
+    network,
+    accounts,
+    subtotal: { accountValueUsd: formatDec(value), unrealizedPnlUsd: formatDec(pnl) },
+    empty,
+    unread,
+    thresholds: "defaults"
+  };
+}
+var SCALE = 18;
+var ONE2 = 10n ** BigInt(SCALE);
+var DEC_RE = /^-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/;
+var LOOSE_DEC_RE = /^-?[0-9]+(\.[0-9]{1,18})?$/;
+function isDecString(value) {
+  return typeof value === "string" && (DEC_RE.test(value) || LOOSE_DEC_RE.test(value));
+}
+function dec(value) {
+  if (!isDecString(value))
+    return null;
+  const negative = value.startsWith("-");
+  const [whole = "0", fraction = ""] = value.replace(/^-/, "").split(".");
+  const scaled2 = BigInt(whole) * ONE2 + BigInt(fraction.padEnd(SCALE, "0"));
+  return negative ? -scaled2 : scaled2;
+}
+function formatDec(value) {
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const whole = abs / ONE2;
+  const fraction = (abs % ONE2).toString().padStart(SCALE, "0").replace(/0+$/, "");
+  const text = fraction ? `${whole}.${fraction}` : `${whole}`;
+  return negative && text !== "0" ? `-${text}` : text;
+}
+function distanceParts(markPx, liquidationPx) {
+  const mark = dec(markPx);
+  const liq = dec(liquidationPx);
+  if (mark === null || liq === null || mark <= 0n)
+    return null;
+  const diff = mark - liq;
+  return { num: diff < 0n ? -diff : diff, den: mark };
+}
+function fracLess(num, den, bps) {
+  return num * 10000n < BigInt(bps) * den;
+}
+function fracGreater(num, den, bps) {
+  return num * 10000n > BigInt(bps) * den;
+}
+function ratioNumber(num, den) {
+  const micro = num * 1000000000000n / den;
+  return Number(micro) / 1000000000000;
+}
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isParsedClearinghouse(value) {
+  return isRecord2(value) && Array.isArray(value.positions) && !("assetPositions" in value);
+}
+
+// src/commands/perps-risk.ts
+init_render();
+init_trading();
+init_keys();
+init_swap();
+init_tee_rebind();
+function usage5(ctx, line) {
+  writeUsageFailure(ctx.deps, line, ctx.json);
+  return 2;
+}
+var fetcherOf = (ctx) => ctx.deps.fetch;
+var infoOpts = (ctx) => ({ sleep: ctx.deps.sleep });
+async function perpsThresholdsFor(ctx, key) {
+  try {
+    return await perpsThresholdsStrict(ctx, key);
+  } catch {
+    return perpsRiskFromLimits(null).thresholds;
+  }
+}
+async function perpsThresholdsStrict(ctx, key) {
+  const result = await apiRequest("/api/v1/agent/keys/self/limits", {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok)
+    throw new Error("thresholds read failed");
+  return perpsRiskFromLimits(result.body).thresholds;
+}
+function readFailure(error) {
+  if (error instanceof HyperliquidReadError)
+    return new TradingError("PERPS_READ_FAILED", `${error.message}. No level was computed.`);
+  return error;
+}
+function unknownFailure(report) {
+  const message = report.reason === "PERPS_ACCOUNT_MODE" ? `Hyperliquid reports this account in ${safeText(report.mode)} mode, whose perps margin clearinghouseState does not describe. No level was computed.` : report.reason === "PERPS_READ_STALE" ? "The Hyperliquid reads completed more than 30 s apart. No level was computed; run it again." : "Hyperliquid could not be read. No level was computed.";
+  return new TradingError(report.reason ?? "PERPS_READ_FAILED", message, { details: { report } });
+}
+var usd = (value) => {
+  if (value === null || value === undefined)
+    return "-";
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : safeText(value);
+};
+var pct = (fraction) => fraction === null ? "-" : `${(fraction * 100).toFixed(1)}%`;
+function describeDriver(d) {
+  if (d.kind === "position") {
+    if (d.reason === "unmarked")
+      return `${safeText(d.coin)} has no Hyperliquid mark, so its distance is unknown`;
+    return `${safeText(d.coin)} ${pct(d.liquidationDistance)} from liquidation, ${d.level === "ok" ? "warn" : d.level} under ${pct(d.threshold)}`;
+  }
+  if (d.reason === "no equity")
+    return "cross margin in use with no cross equity";
+  return `margin ratio ${d.marginRatio === null ? "-" : d.marginRatio.toFixed(2)}, ${d.level === "ok" ? "warn" : d.level} above ${d.threshold === null ? "-" : d.threshold.toFixed(2)}`;
+}
+function riskLine(report) {
+  if (report.level === "unknown")
+    return `Risk: UNKNOWN (${safeText(report.reason ?? "not read")})`;
+  const lead = report.drivers[0] ?? report.closest;
+  const more = report.drivers.length > 1 ? `; ${report.drivers.length - 1} more` : "";
+  return `Risk: ${report.level.toUpperCase()}${lead ? ` (${report.level === "ok" ? "closest: " : ""}${describeDriver(lead)}${more})` : ""}`;
+}
+function accountText(line) {
+  return `Account value ${usd(line.accountValueUsd)} USD (cross ${usd(line.crossAccountValueUsd)}), margin used ${usd(line.marginUsedUsd)}, free margin ${usd(line.freeMarginUsd)}, withdrawable ${usd(line.withdrawableUsd)}, margin ratio ${line.marginRatio === null ? "none (no cross equity)" : line.marginRatio.toFixed(4)}, unrealized ${usd(line.unrealizedPnlUsd)}, ${line.positionCount} ${line.positionCount === 1 ? "position" : "positions"}, ${safeText(line.mode)} mode`;
+}
+function positionsTable(rows) {
+  if (rows.length === 0)
+    return "No open positions.";
+  return renderTable([
+    "COIN",
+    "SIDE",
+    "SIZE",
+    "ENTRY",
+    "MARK",
+    "UPNL",
+    "ROE",
+    "LEV",
+    "LIQ",
+    "DIST",
+    "FUNDING PAID",
+    "MARGIN",
+    "VALUE",
+    "LEVEL"
+  ], rows.map((r) => [
+    r.coin,
+    r.side,
+    r.size,
+    r.entryPx,
+    r.markPx ?? "no mark",
+    usd(r.unrealizedPnlUsd),
+    pct(Number(r.returnOnEquity)),
+    `${r.leverage.value}x ${r.leverage.type}`,
+    r.liquidationPx ?? "none",
+    pct(r.liquidationDistance),
+    usd(r.fundingSinceOpenUsd),
+    usd(r.marginUsedUsd),
+    usd(r.positionValueUsd),
+    r.level
+  ].map((cell) => safeText(cell))));
+}
+function thresholdsText(t) {
+  return `Thresholds (${t.source}): warn under ${(t.warnDistanceBps / 100).toFixed(1)}% or ratio above ${(t.warnMarginRatioBps / 1e4).toFixed(2)}; critical under ${(t.criticalDistanceBps / 100).toFixed(1)}% or above ${(t.criticalMarginRatioBps / 1e4).toFixed(2)}; clear band ${(t.clearBandBps / 100).toFixed(1)} points`;
+}
+var NO_MONITOR = "Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch.";
+async function perpsRisk(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
+  if ("error" in parsed)
+    return usage5(ctx, parsed.error);
+  if (parsed.positionals.length !== 0)
+    return usage5(ctx, "Usage: candle perps risk [--wallet <tee>] [--json]");
+  try {
+    const key = await tradingKey(ctx);
+    const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
+    const thresholds = await perpsThresholdsFor(ctx, key);
+    const report = await readPerpsRisk({
+      fetcher: fetcherOf(ctx),
+      network: perpsNetwork(ctx),
+      walletId: row.id,
+      address: row.address,
+      thresholds,
+      now: ctx.deps.now,
+      ...infoOpts(ctx)
+    }).catch((error) => {
+      throw readFailure(error);
+    });
+    if (report.level === "unknown")
+      throw unknownFailure(report);
+    if (ctx.json)
+      ctx.deps.stdout.write(`${JSON.stringify(report)}
+`);
+    else {
+      const out = ctx.deps.stdout;
+      out.write(`${riskLine(report)}
+`);
+      for (const d of report.drivers.slice(1))
+        out.write(`  also: ${describeDriver(d)}
+`);
+      if (report.account)
+        out.write(`${accountText(report.account)}
+`);
+      out.write(`${positionsTable(report.positions)}
+`);
+      out.write(`${thresholdsText(report.thresholds)}
+${NO_MONITOR}
+`);
+    }
+    return perpsRiskExitCode(report.level);
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+var DURATION_RE = /^([1-9][0-9]*)(m|h|d)$/;
+function parseSince(value, now) {
+  const duration = DURATION_RE.exec(value);
+  let start;
+  if (duration) {
+    const n = Number(duration[1]);
+    start = now - n * (duration[2] === "m" ? 60000 : duration[2] === "h" ? 3600000 : 86400000);
+  } else {
+    start = Date.parse(value);
+    if (!Number.isFinite(start))
+      return "--since takes a duration (30m, 24h, 7d) or an ISO time.";
+  }
+  if (start >= now)
+    return "--since must be in the past.";
+  if (now - start > PERPS_RECENT_MAX_MS)
+    return "--since reaches back 30 days at most.";
+  return start;
+}
+async function perpsAccount(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--wallet", "--since"] });
+  if ("error" in parsed)
+    return usage5(ctx, parsed.error);
+  if (parsed.positionals.length !== 0)
+    return usage5(ctx, "Usage: candle perps account [--wallet <tee>] [--since <30m|24h|7d|ISO>] [--json]");
+  const now = ctx.deps.now();
+  const startTime = parseSince(parsed.values["--since"] ?? "24h", now);
+  if (typeof startTime === "string")
+    return usage5(ctx, startTime);
+  try {
+    const key = await tradingKey(ctx);
+    const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
+    const thresholds = await perpsThresholdsFor(ctx, key);
+    const network = perpsNetwork(ctx);
+    const [report, recent] = await Promise.all([
+      readPerpsRisk({
+        fetcher: fetcherOf(ctx),
+        network,
+        walletId: row.id,
+        address: row.address,
+        thresholds,
+        now: ctx.deps.now,
+        ...infoOpts(ctx)
+      }),
+      readPerpsRecent(fetcherOf(ctx), network, row.address, { startTime, endTime: now }, infoOpts(ctx))
+    ]).catch((error) => {
+      throw readFailure(error);
+    });
+    const account = perpsAccountReport(report, recent);
+    if (ctx.json) {
+      ctx.deps.stdout.write(`${JSON.stringify(account)}
+`);
+      return 0;
+    }
+    writeAccountText(ctx, account, report);
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+function writeAccountText(ctx, account, report) {
+  const out = ctx.deps.stdout;
+  out.write(`${safeText(account.address)} on Hyperliquid ${account.network}, read ${account.readAt}
+`);
+  if (report.account)
+    out.write(`${accountText(report.account)}
+`);
+  else
+    out.write(`No account figures: ${safeText(report.reason)}.
+`);
+  const r = account.recent;
+  const hours = Math.round((r.endTime - r.startTime) / 3600000);
+  out.write(`Last ${hours} h (main perps): realized ${usd(r.realizedPnlUsd)}, fees ${usd(r.feesUsd)}, funding ${usd(r.fundingUsd)} (positive received); ${r.fills} fills, ${r.fundingPayments} funding payments${r.truncated ? "; Hyperliquid's response cap was hit, so these are partial" : ""}
+`);
+  out.write(`${riskLine(report)}
+`);
+}
+async function positionsAdditions(ctx, key, row) {
+  const thresholds = await perpsThresholdsFor(ctx, key);
+  const identity2 = { walletId: row.id, address: row.address, network: perpsNetwork(ctx) };
+  let report;
+  try {
+    report = await readPerpsRisk({
+      ...identity2,
+      fetcher: fetcherOf(ctx),
+      thresholds,
+      now: ctx.deps.now,
+      ...infoOpts(ctx)
+    });
+  } catch {
+    report = {
+      schema: "candle.perps.risk/1",
+      ...identity2,
+      mode: null,
+      readAt: new Date(ctx.deps.now()).toISOString(),
+      level: "unknown",
+      reason: "PERPS_READ_FAILED",
+      drivers: [],
+      closest: null,
+      thresholds,
+      account: null,
+      positions: [],
+      note: NO_MONITOR
+    };
+  }
+  const { positions, ...risk } = report;
+  return { rows: positions, accountLine: report.account, risk };
+}
+function writePositionsText(ctx, additions) {
+  const out = ctx.deps.stdout;
+  out.write(`${positionsTable(additions.rows)}
+`);
+  if (additions.accountLine)
+    out.write(`${accountText(additions.accountLine)}
+`);
+  out.write(`${riskLine(additions.risk)}
+`);
+}
+var WATCH_USAGE = "Usage: candle perps watch [--wallet <tee>] [--interval <seconds>] [--heartbeat <seconds>] [--on-warn <command>] [--on-critical <command>] [--once-level-change]";
+var HOOK_TIMEOUT_MS = 30000;
+var RANK2 = { ok: 0, warn: 1, critical: 2 };
+async function perpsWatch(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet", "--interval", "--heartbeat", "--on-warn", "--on-critical"],
+    booleanFlags: ["--once-level-change"]
+  });
+  if ("error" in parsed)
+    return usage5(ctx, parsed.error);
+  if (parsed.positionals.length !== 0)
+    return usage5(ctx, WATCH_USAGE);
+  const interval = Number(parsed.values["--interval"] ?? "10");
+  if (!Number.isInteger(interval) || interval * 1000 < PERPS_WATCH_MIN_INTERVAL_MS || interval * 1000 > PERPS_WATCH_MAX_INTERVAL_MS)
+    return usage5(ctx, "--interval is a whole number of seconds from 5 to 300.");
+  const heartbeat = Number(parsed.values["--heartbeat"] ?? String(PERPS_WATCH_DEFAULT_HEARTBEAT_MS / 1000));
+  if (!Number.isInteger(heartbeat) || heartbeat < 0 || heartbeat > 86400)
+    return usage5(ctx, "--heartbeat is a whole number of seconds (0 turns heartbeats off).");
+  const onWarn = parsed.values["--on-warn"];
+  const onCritical = parsed.values["--on-critical"];
+  const out = ctx.deps.stdout;
+  const line = (event) => out.write(`${JSON.stringify(event)}
+`);
+  let key;
+  let row;
+  try {
+    key = await tradingKey(ctx);
+    row = (await perpsWallet(ctx, key, parsed.values["--wallet"])).row;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+  const controller = new AbortController;
+  const unsubscribe = ctx.deps.onTerminate?.(() => controller.abort()) ?? (() => {});
+  const hooks = [];
+  let basis = "ok";
+  const runHook = (name2, command, event, level) => {
+    const started = ctx.deps.now();
+    const stdin = `${JSON.stringify(event)}
+`;
+    const run2 = ctx.deps.runHook ? ctx.deps.runHook(command, stdin, { CANDLE_PERPS_RISK_LEVEL: level }, HOOK_TIMEOUT_MS) : Promise.resolve({ exitCode: null, signal: null, timedOut: false, error: "hooks are not available here" });
+    hooks.push(run2.then((result) => {
+      line({ event: "hook", hook: name2, level, ...result, durationMs: ctx.deps.now() - started });
+    }));
+  };
+  try {
+    const result = await watchPerpsRisk({
+      fetcher: fetcherOf(ctx),
+      network: perpsNetwork(ctx),
+      walletId: row.id,
+      address: row.address,
+      thresholds: () => perpsThresholdsStrict(ctx, key),
+      intervalMs: interval * 1000,
+      heartbeatMs: heartbeat * 1000,
+      now: ctx.deps.now,
+      sleep: ctx.deps.sleep,
+      signal: controller.signal,
+      onceLevelChange: parsed.booleans.has("--once-level-change"),
+      onEvent: (event) => {
+        line(event);
+        if (event.event !== "level" || event.level === "unknown")
+          return;
+        const level = event.level;
+        if (level !== "ok" && RANK2[level] > RANK2[basis]) {
+          if (level === "critical" && onCritical !== undefined)
+            runHook("on-critical", onCritical, event, level);
+          else if (onWarn !== undefined)
+            runHook("on-warn", onWarn, event, level);
+        }
+        basis = level;
+      }
+    });
+    await Promise.all(hooks);
+    return perpsRiskExitCode(result.level);
+  } finally {
+    unsubscribe();
+  }
+}
+var THRESHOLDS_USAGE = "Usage: candle perps thresholds [--json] | candle perps thresholds set [--warn-distance <pct>] [--critical-distance <pct>] [--warn-margin-ratio <r>] [--critical-margin-ratio <r>] [--clear-band <pct>] [--key <prefix|label|self>] | candle perps thresholds clear [--key <prefix|label|self>]";
+var SET_FLAGS = {
+  "--warn-distance": { field: "warnDistanceBps", kind: "pct" },
+  "--critical-distance": { field: "criticalDistanceBps", kind: "pct" },
+  "--warn-margin-ratio": { field: "warnMarginRatioBps", kind: "ratio" },
+  "--critical-margin-ratio": { field: "criticalMarginRatioBps", kind: "ratio" },
+  "--clear-band": { field: "clearBandBps", kind: "pct" }
+};
+function thresholdBps(value, kind) {
+  const text = kind === "pct" ? value.replace(/%$/, "") : value;
+  const re = kind === "pct" ? /^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$/ : /^(0|[1-9][0-9]*)(\.[0-9]{1,4})?$/;
+  if (!re.test(text))
+    return null;
+  const [whole = "0", fraction = ""] = text.split(".");
+  const digits = kind === "pct" ? 2 : 4;
+  return Number(whole) * 10 ** digits + Number(fraction.padEnd(digits, "0"));
+}
+async function perpsThresholds(args, ctx) {
+  const [verb, ...rest] = args;
+  if (verb === "set" || verb === "clear")
+    return thresholdsWrite(verb, rest, ctx);
+  const parsed = parseArgs(args, { valueFlags: [] });
+  if ("error" in parsed)
+    return usage5(ctx, parsed.error);
+  if (parsed.positionals.length !== 0)
+    return usage5(ctx, THRESHOLDS_USAGE);
+  try {
+    const key = await tradingKey(ctx);
+    const result = await apiRequest("/api/v1/agent/keys/self/limits", {
+      apiUrl: ctx.apiUrl,
+      credentials: { apiKey: key },
+      auth: "key",
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+    if (!result.ok) {
+      writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
+      return 1;
+    }
+    const { thresholds, stored } = perpsRiskFromLimits(result.body);
+    const { source, ...effective } = thresholds;
+    if (ctx.json) {
+      ctx.deps.stdout.write(`${JSON.stringify({ stored, effective, source, defaults: HYPERLIQUID_RISK_DEFAULTS })}
+`);
+      return 0;
+    }
+    ctx.deps.stdout.write(`${thresholdsText(thresholds)}
+`);
+    ctx.deps.stdout.write(stored && Object.keys(stored).length > 0 ? `Stored on this key: ${Object.entries(stored).map(([field, value]) => `${field} ${value}`).join(", ")}
+` : `Nothing stored on this key; the defaults apply.
+`);
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function thresholdsWrite(verb, args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--key", ...verb === "set" ? Object.keys(SET_FLAGS) : []] });
+  if ("error" in parsed)
+    return usage5(ctx, parsed.error);
+  if (parsed.positionals.length !== 0)
+    return usage5(ctx, THRESHOLDS_USAGE);
+  let body;
+  if (verb === "clear")
+    body = { perpsRisk: null };
+  else {
+    const fields = {};
+    for (const [flag, spec] of Object.entries(SET_FLAGS)) {
+      const raw = parsed.values[flag];
+      if (raw === undefined)
+        continue;
+      const bps = thresholdBps(raw, spec.kind);
+      if (bps === null)
+        return usage5(ctx, `${flag} takes ${spec.kind === "pct" ? "a percentage such as 17 or 17.5" : "a ratio such as 0.6"}, not ${raw}.`);
+      fields[spec.field] = bps;
+    }
+    if (Object.keys(fields).length === 0)
+      return usage5(ctx, `Name at least one threshold. ${THRESHOLDS_USAGE}`);
+    body = { perpsRisk: fields };
+  }
+  const target = parsed.values["--key"] ?? "self";
+  const self = target === "self";
+  let result;
+  let keyPrefix = "self";
+  if (self) {
+    let key;
+    try {
+      key = await tradingKey(ctx);
+    } catch (error) {
+      return tradingFailure(ctx, error);
+    }
+    result = await apiRequest("/api/v1/agent/keys/self/perps-risk", {
+      method: "PUT",
+      body,
+      apiUrl: ctx.apiUrl,
+      credentials: { apiKey: key },
+      auth: "key",
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+  } else {
+    const deviceToken = await resolveDeviceToken(ctx.deps, ctx.profile);
+    if (!deviceToken) {
+      writeLocalFailure(ctx.deps, NO_DEVICE_TOKEN, ctx.json);
+      return 1;
+    }
+    const resolved = await resolveTargetKey(ctx, deviceToken, target, { codePrefix: "PERPS_THRESHOLDS" });
+    if (!resolved.ok)
+      return resolved.code;
+    keyPrefix = resolved.keyPrefix;
+    result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/perps-risk`, {
+      method: "PUT",
+      body,
+      apiUrl: ctx.apiUrl,
+      credentials: { deviceToken },
+      auth: "device",
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+  }
+  if (!result.ok) {
+    if (result.code === "LOOSEN_REQUIRES_SESSION") {
+      writeLocalFailure(ctx.deps, {
+        code: "LOOSEN_REQUIRES_SESSION",
+        message: "This key may only tighten its own thresholds, judged against what applies now (defaults included), so nothing was written.",
+        suggestion: "Ask the owner to run: candle perps thresholds set --key <prefix> ... (the device token), or to change it from a signed-in session."
+      }, ctx.json);
+      return 1;
+    }
+    if (result.status === 404 && result.code === undefined) {
+      writeLocalFailure(ctx.deps, {
+        code: "PERPS_THRESHOLDS_UNSUPPORTED",
+        message: "This Candle API cannot store risk thresholds yet; nothing changed. The defaults apply."
+      }, ctx.json);
+      return 1;
+    }
+    writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: self ? "key" : "device" }, ctx.json);
+    return 1;
+  }
+  const answer = result.body;
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify(answer)}
+`);
+    return 0;
+  }
+  const effective = { ...HYPERLIQUID_RISK_DEFAULTS, ...answer.effective ?? {} };
+  ctx.deps.stdout.write(`${verb === "clear" ? "Cleared" : "Stored"} on key ${safeText(answer.keyPrefix ?? keyPrefix)}. ${thresholdsText({ ...effective, source: answer.perpsRisk ? "key" : "defaults" })}
+`);
+  return 0;
+}
+
+// src/commands/perps.ts
 init_swap();
 var PERPS_SCOPE = "perps:write";
-var DEC_RE = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
+var DEC_RE2 = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
 var CLOID_RE = /^0x[0-9a-fA-F]{32}$/;
-function usage5(ctx, line) {
+function usage6(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
@@ -75867,7 +77945,7 @@ async function perpsRequest(ctx, key, path, body) {
     throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.");
   return result.body;
 }
-function network(ctx) {
+function perpsNetwork(ctx) {
   return ctx.deps.env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet";
 }
 async function builderPin(ctx, key) {
@@ -75960,7 +78038,7 @@ async function runPerpsWrite(ctx, opts) {
   if (!wallet)
     throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.");
   const builder = await builderPin(ctx, key);
-  const net = network(ctx);
+  const net = perpsNetwork(ctx);
   const method = opts.path.split("/").at(-1);
   let mode;
   if (method === "setup") {
@@ -76099,9 +78177,9 @@ function slippage(value) {
 async function perpsSetup(args, ctx) {
   const parsed = parseArgs(args, WRITE_FLAGS);
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage5(ctx, "Usage: candle perps setup [--wallet <tee>] [--yes]");
+    return usage6(ctx, "Usage: candle perps setup [--wallet <tee>] [--yes]");
   try {
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/setup",
@@ -76126,31 +78204,31 @@ async function perpsOpen(args, ctx) {
     booleanFlags: ["--yes", "--no-submit", "--sign-only"]
   });
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   const [coin, side, size] = parsed.positionals;
   if (parsed.positionals.length !== 3 || !coin || !side || !size)
-    return usage5(ctx, OPEN_USAGE);
+    return usage6(ctx, OPEN_USAGE);
   if (side !== "long" && side !== "short")
-    return usage5(ctx, OPEN_USAGE);
-  if (!DEC_RE.test(size))
-    return usage5(ctx, "The size must be a plain decimal, e.g. 0.01.");
+    return usage6(ctx, OPEN_USAGE);
+  if (!DEC_RE2.test(size))
+    return usage6(ctx, "The size must be a plain decimal, e.g. 0.01.");
   const { values } = parsed;
   for (const flag of ["--price", "--tp", "--sl"]) {
     const value = values[flag];
-    if (value !== undefined && !DEC_RE.test(value))
-      return usage5(ctx, `${flag} must be a plain decimal.`);
+    if (value !== undefined && !DEC_RE2.test(value))
+      return usage6(ctx, `${flag} must be a plain decimal.`);
   }
   const tif = values["--tif"];
   if (tif !== undefined && !["Gtc", "Alo", "Ioc"].includes(tif))
-    return usage5(ctx, "--tif must be Gtc, Alo or Ioc.");
+    return usage6(ctx, "--tif must be Gtc, Alo or Ioc.");
   if (tif !== undefined && tif !== "Ioc" && values["--price"] === undefined)
-    return usage5(ctx, "--tif Gtc or Alo needs --price.");
+    return usage6(ctx, "--tif Gtc or Alo needs --price.");
   const slippageBps = slippage(values["--slippage-bps"]);
   if (slippageBps === null)
-    return usage5(ctx, "--slippage-bps must be a whole number of at least 1.");
+    return usage6(ctx, "--slippage-bps must be a whole number of at least 1.");
   const clientId = clientIdFlag(values["--client-id"]);
   if (clientId === null)
-    return usage5(ctx, CLIENT_ID_USAGE);
+    return usage6(ctx, CLIENT_ID_USAGE);
   const body = {
     coin,
     side,
@@ -76175,19 +78253,19 @@ async function perpsClose(args, ctx) {
     booleanFlags: ["--yes", "--no-submit", "--sign-only"]
   });
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   const [coin] = parsed.positionals;
   if (parsed.positionals.length !== 1 || !coin)
-    return usage5(ctx, "Usage: candle perps close <coin> [--size <n>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee>] [--yes]");
+    return usage6(ctx, "Usage: candle perps close <coin> [--size <n>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee>] [--yes]");
   const size = parsed.values["--size"];
-  if (size !== undefined && !DEC_RE.test(size))
-    return usage5(ctx, "--size must be a plain decimal.");
+  if (size !== undefined && !DEC_RE2.test(size))
+    return usage6(ctx, "--size must be a plain decimal.");
   const slippageBps = slippage(parsed.values["--slippage-bps"]);
   if (slippageBps === null)
-    return usage5(ctx, "--slippage-bps must be a whole number of at least 1.");
+    return usage6(ctx, "--slippage-bps must be a whole number of at least 1.");
   const clientId = clientIdFlag(parsed.values["--client-id"]);
   if (clientId === null)
-    return usage5(ctx, CLIENT_ID_USAGE);
+    return usage6(ctx, CLIENT_ID_USAGE);
   const body = {
     coin,
     ...clientId !== undefined ? { clientId } : {},
@@ -76207,10 +78285,10 @@ async function perpsClose(args, ctx) {
 async function perpsCancel(args, ctx) {
   const parsed = parseArgs(args, WRITE_FLAGS);
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   const [cloid] = parsed.positionals;
   if (parsed.positionals.length !== 1 || !cloid || !CLOID_RE.test(cloid))
-    return usage5(ctx, "Usage: candle perps cancel <cloid> [--wallet <tee>] [--yes]  (cloid: 0x + 32 hex)");
+    return usage6(ctx, "Usage: candle perps cancel <cloid> [--wallet <tee>] [--yes]  (cloid: 0x + 32 hex)");
   try {
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/cancel",
@@ -76227,11 +78305,11 @@ async function perpsLeverage(args, ctx) {
     booleanFlags: ["--yes", "--no-submit", "--sign-only", "--isolated"]
   });
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   const [coin, leverage] = parsed.positionals;
   const n = Number(leverage);
   if (parsed.positionals.length !== 2 || !coin || !Number.isInteger(n) || n < 1)
-    return usage5(ctx, "Usage: candle perps leverage <coin> <x> [--isolated] [--wallet <tee>] [--yes]");
+    return usage6(ctx, "Usage: candle perps leverage <coin> <x> [--isolated] [--wallet <tee>] [--yes]");
   try {
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/leverage",
@@ -76252,28 +78330,20 @@ function formatUsdcMicros(value) {
 async function perpsPositions(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage5(ctx, "Usage: candle perps positions [--wallet <tee>]");
+    return usage6(ctx, "Usage: candle perps positions [--wallet <tee>]");
   try {
     const key = await tradingKey(ctx);
     const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
     const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(row.id)}`);
+    const additions = await positionsAdditions(ctx, key, row);
     if (ctx.json)
-      return printTradingResult(ctx, result);
+      return printTradingResult(ctx, { ...result, ...additions });
     const out = ctx.deps.stdout;
-    const account = result.account ?? {};
-    out.write(`${safeText(result.address)} (${safeText(result.network)}, ${safeText(result.mode)} mode): account value ${safeText(account.accountValue)} USD, withdrawable ${safeText(result.withdrawable)} USD
+    out.write(`${safeText(result.address)} (${safeText(result.network)}, ${safeText(result.mode)} mode)
 `);
-    const positions = result.positions ?? [];
-    if (positions.length === 0)
-      out.write(`No open positions.
-`);
-    for (const p of positions) {
-      const leverage = p.leverage ?? {};
-      out.write(`  ${safeText(p.coin)} ${safeText(p.szi)} at ${safeText(p.entryPx)}, value ${safeText(p.positionValue)}, uPnL ${safeText(p.unrealizedPnl)}, ${safeText(leverage.value)}x ${safeText(leverage.type)}, liq ${safeText(p.liquidationPx ?? "none")}
-`);
-    }
+    writePositionsText(ctx, additions);
     const open5 = Array.isArray(result.openWithdrawals) ? result.openWithdrawals : null;
     out.write(`Withdrawable now: ${safeText(result.withdrawable)} USDC${open5 === null ? "" : open5.length === 0 ? "; no withdrawal in flight" : ""}.
 `);
@@ -76289,10 +78359,10 @@ async function perpsPositions(args, ctx) {
 async function perpsOrders(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet", "--limit"] });
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   const limit = parsed.values["--limit"];
   if (parsed.positionals.length !== 0 || limit !== undefined && !/^[1-9][0-9]{0,2}$/.test(limit))
-    return usage5(ctx, "Usage: candle perps orders [--wallet <tee>] [--limit <n>]");
+    return usage6(ctx, "Usage: candle perps orders [--wallet <tee>] [--limit <n>]");
   try {
     const key = await tradingKey(ctx);
     const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
@@ -76332,28 +78402,28 @@ async function perpsHistory(kind, args, ctx) {
   const usageLine = `Usage: candle perps ${kind} [--wallet <tee>] [--start-time <ms>] [--end-time <ms>] [--limit <n>] [--cursor <cursor>]`;
   const parsed = parseArgs(args, HISTORY_FLAGS);
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage5(ctx, usageLine);
+    return usage6(ctx, usageLine);
   const { values } = parsed;
   const startTime = epochMs(values["--start-time"]);
   const endTime = epochMs(values["--end-time"]);
   if (startTime === null || endTime === null)
-    return usage5(ctx, "--start-time and --end-time are epoch milliseconds, e.g. 1790000000000.");
+    return usage6(ctx, "--start-time and --end-time are epoch milliseconds, e.g. 1790000000000.");
   const max = PERPS_HISTORY_MAX_LIMIT[kind];
   const limitRaw = values["--limit"];
   const limit = limitRaw === undefined ? undefined : Number(limitRaw);
   if (limit !== undefined && (!/^[0-9]{1,4}$/.test(limitRaw) || limit < 1 || limit > max))
-    return usage5(ctx, `--limit must be a whole number from 1 to ${max}.`);
+    return usage6(ctx, `--limit must be a whole number from 1 to ${max}.`);
   if (startTime !== undefined && endTime !== undefined && startTime > endTime)
-    return usage5(ctx, "--start-time must not be after --end-time.");
+    return usage6(ctx, "--start-time must not be after --end-time.");
   const cursor = values["--cursor"];
   try {
     const key = await tradingKey(ctx);
     const { row } = await perpsWallet(ctx, key, values["--wallet"]);
     const page = await readPerpsHistoryPage({
       kind,
-      network: network(ctx),
+      network: perpsNetwork(ctx),
       walletId: row.id,
       address: row.address,
       options: {
@@ -76375,7 +78445,7 @@ async function perpsHistory(kind, args, ctx) {
   } catch (error) {
     if (error instanceof PerpsHistoryError) {
       if (error.code === "VALIDATION_FAILED")
-        return usage5(ctx, error.message);
+        return usage6(ctx, error.message);
       return tradingFailure(ctx, new TradingError(error.code, error.message, {
         suggestion: error.extra.retryAfterMs !== undefined ? `Retry after ${Math.ceil(error.extra.retryAfterMs / 1000)}s with the same command${cursor ? " and --cursor" : ""}.` : `Retry shortly with the same command${cursor ? " and --cursor" : ""}.`
       }));
@@ -76428,7 +78498,7 @@ async function perpsDepositStatus(ctx, id) {
 async function perpsDeposit(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !DEPOSIT_ID_RE.test(args[1]))
-      return usage5(ctx, DEPOSIT_USAGE);
+      return usage6(ctx, DEPOSIT_USAGE);
     try {
       return await perpsDepositStatus(ctx, args[1]);
     } catch (error) {
@@ -76440,17 +78510,17 @@ async function perpsDeposit(args, ctx) {
     booleanFlags: ["--yes", "--no-submit"]
   });
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   const [amount, asset] = parsed.positionals;
-  if (parsed.positionals.length !== 2 || !amount || !DEC_RE.test(amount) || !isDepositAsset(asset))
-    return usage5(ctx, DEPOSIT_USAGE);
+  if (parsed.positionals.length !== 2 || !amount || !DEC_RE2.test(amount) || !isDepositAsset(asset))
+    return usage6(ctx, DEPOSIT_USAGE);
   const { values } = parsed;
   const id = values["--id"] ?? `deposit-${randomUUID4()}`;
   if (!DEPOSIT_ID_RE.test(id))
-    return usage5(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
+    return usage6(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
   const slippageBps = Number(values["--slippage-bps"] ?? "100");
   if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 1000)
-    return usage5(ctx, "--slippage-bps must be a whole number from 1 to 1000.");
+    return usage6(ctx, "--slippage-bps must be a whole number from 1 to 1000.");
   const origin = BRIDGE_ASSETS[asset].chain;
   try {
     const key = await tradingKey(ctx);
@@ -76880,7 +78950,7 @@ var USAGE5 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <
 var WITHDRAW_POLL_MS = 10 * 60 * 1000;
 var WITHDRAW_POLL_INTERVAL_MS = 5000;
 var TERMINAL = new Set(["settled", "refunded", "failed"]);
-function usage6(ctx, line) {
+function usage7(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
@@ -76919,7 +78989,7 @@ async function withdrawStatus(ctx, id) {
 async function perpsWithdraw(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !ID_RE.test(args[1]))
-      return usage6(ctx, USAGE5);
+      return usage7(ctx, USAGE5);
     try {
       return await withdrawStatus(ctx, args[1]);
     } catch (error) {
@@ -76927,31 +78997,31 @@ async function perpsWithdraw(args, ctx) {
     }
   }
   if (args.includes("--yes") || args.includes("-y")) {
-    return usage6(ctx, "candle perps withdraw has no --yes: every withdrawal is confirmed at the terminal.");
+    return usage7(ctx, "candle perps withdraw has no --yes: every withdrawal is confirmed at the terminal.");
   }
   const parsed = parseArgs(args, {
     valueFlags: ["--to", "--wallet", "--id", "--keystore"],
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
-    return usage6(ctx, parsed.error);
+    return usage7(ctx, parsed.error);
   const [amount] = parsed.positionals;
   const to = parsed.values["--to"];
   if (parsed.positionals.length !== 1 || !amount || to !== "solana" && to !== "hood")
-    return usage6(ctx, USAGE5);
+    return usage7(ctx, USAGE5);
   const amountMicros = parseWithdrawAmount(amount);
   if (amountMicros === null)
-    return usage6(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
+    return usage7(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
   const id = parsed.values["--id"] ?? `withdraw-${randomUUID5()}`;
   if (!ID_RE.test(id))
-    return usage6(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
+    return usage7(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "perps withdraw"))
     return 1;
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
-    return usage6(ctx, resolvedVault.error);
+    return usage7(ctx, resolvedVault.error);
   try {
     const pins = withdrawPins(ctx.deps.env);
     if (pins === null) {
@@ -77387,20 +79457,20 @@ async function writeSecretNames(deps, profile, names) {
   else
     await deps.updateProfile(profile, { secretNames: sorted });
 }
-function usage7(ctx, line) {
+function usage8(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
 async function secretsSet(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage7(ctx, "Usage: candle secrets set <name>");
+    return usage8(ctx, "Usage: candle secrets set <name>");
   const name2 = canonicalSecretName(raw);
   if (name2 === undefined) {
-    return usage7(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage8(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
     writeLocalFailure(ctx.deps, {
@@ -77412,7 +79482,7 @@ async function secretsSet(args, ctx) {
   }
   const value = await ctx.deps.promptSecret(`Value for ${name2} (input hidden): `);
   if (value.length === 0)
-    return usage7(ctx, "An empty value was typed; nothing was stored.");
+    return usage8(ctx, "An empty value was typed; nothing was stored.");
   try {
     await ctx.deps.secretsStore.set(secretRef(ctx.profile, name2), value);
   } catch (error) {
@@ -77432,9 +79502,9 @@ async function secretsSet(args, ctx) {
 async function secretsList(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   if (parsed.positionals.length > 0)
-    return usage7(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+    return usage8(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   const names = await storedSecretNames(ctx.deps, ctx.profile);
   if (ctx.json) {
     ctx.deps.stdout.write(`${JSON.stringify({ ok: true, names, backend: ctx.deps.backend })}
@@ -77453,13 +79523,13 @@ async function secretsList(args, ctx) {
 async function secretsRemove(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage7(ctx, "Usage: candle secrets remove <name>");
+    return usage8(ctx, "Usage: candle secrets remove <name>");
   const name2 = canonicalSecretName(raw);
   if (name2 === undefined) {
-    return usage7(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage8(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   await ctx.deps.secretsStore.delete(secretRef(ctx.profile, name2));
   const names = await storedSecretNames(ctx.deps, ctx.profile);
@@ -78066,6 +80136,7 @@ var NO_API_KEY5 = {
 async function portfolio(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--rpc-url", "--evm-rpc-url", "--keystore", "--chain"],
+    booleanFlags: ["--no-perps"],
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
@@ -78178,6 +80249,21 @@ async function portfolio(args, ctx) {
     const fromCandle = filter === undefined ? answered : filterCandle(answered, keep);
     const prices = { ...fromCandle.prices ?? {} };
     const candleHood = showHood ? fromCandle.hood : undefined;
+    let perps;
+    if (showHood && !parsed.booleans.has("--no-perps")) {
+      const accounts = (candleHood?.tee ?? []).map((row) => ({
+        address: row.address,
+        ...row.label !== undefined ? { label: row.label } : {},
+        walletId: row.id
+      }));
+      if (accounts.length > 0) {
+        const n = Math.min(accounts.length, PERPS_PORTFOLIO_MAX_ACCOUNTS);
+        deps.stderr.write(`Reading ${n} EVM TEE ${n === 1 ? "address" : "addresses"} from Hyperliquid's public API in ${n + 1} requests. Pass --no-perps to skip.
+`);
+      }
+      perps = await perpsPortfolioSection(deps.fetch, deps.env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet", accounts, { sleep: deps.sleep, now: deps.now });
+    }
+    const perpsPartial = perps !== undefined && (!perps.read || perps.unread.length > 0);
     let priceFailure;
     if (vaultRead) {
       const wanted = new Set;
@@ -78325,7 +80411,7 @@ async function portfolio(args, ctx) {
     const listStatus = walletListStatus(answered);
     const shownUnread = unavailable3.length > 0 || lpUnread > 0;
     const listNote = listStatus === "cut-off" ? "cut-off" : listStatus === "unknown" && !shownUnread ? "unknown" : null;
-    const complete = listNote === null && !shownUnread;
+    const complete = listNote === null && !shownUnread && !perpsPartial;
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0);
     const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0);
     const lp = lpSection ? {
@@ -78380,7 +80466,8 @@ async function portfolio(args, ctx) {
         ...evmHost !== undefined ? { evmRpcHost: evmHost } : {},
         ...lp ? { lp } : {},
         byChain,
-        groups
+        groups,
+        ...perps ? { hyperliquid: perps } : {}
       });
       return complete ? 0 : 3;
     }
@@ -78402,6 +80489,8 @@ async function portfolio(args, ctx) {
       listNote,
       lp
     });
+    if (perps)
+      writePerpsSection(ctx, perps);
     return complete ? 0 : 3;
   });
 }
@@ -78782,6 +80871,38 @@ ${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEE
     deps.stdout.write(`EVM vault keys are read for ETH and USDG only; other tokens they hold are not shown.
 `);
   }
+}
+function writePerpsSection(ctx, section) {
+  const out = ctx.deps.stdout;
+  out.write(`
+Hyperliquid (live from Hyperliquid, not in the ledger; not in the total above)
+`);
+  if (!section.read) {
+    out.write(`Not read: ${terminalText(section.reason)}. The EVM TEE wallets' Hyperliquid accounts are unknown.
+`);
+    return;
+  }
+  if (section.accounts.length > 0) {
+    out.write(`${renderTable(["WALLET", "ACCOUNT VALUE", "UNREALIZED", "POSITIONS", "RISK AT DEFAULT THRESHOLDS"], section.accounts.map((a) => [
+      `${a.label ? `${a.label} ` : ""}(${shortAddress2(a.address)})`,
+      formatUsd(Number(a.accountValueUsd)),
+      formatUsd(Number(a.unrealizedPnlUsd)),
+      String(a.positionCount),
+      a.level
+    ].map(terminalText)))}
+`);
+    out.write(`Hyperliquid subtotal: ${formatUsd(Number(section.subtotal.accountValueUsd))} account value, ${formatUsd(Number(section.subtotal.unrealizedPnlUsd))} unrealized.
+`);
+  }
+  if (section.empty > 0)
+    out.write(`${section.empty} EVM TEE ${section.empty === 1 ? "wallet holds" : "wallets hold"} nothing on Hyperliquid.
+`);
+  if (section.accounts.length === 0 && section.empty === 0 && section.unread.length === 0)
+    out.write(`No EVM TEE wallet to read.
+`);
+  if (section.unread.length > 0)
+    out.write(`${section.unread.length} EVM TEE ${section.unread.length === 1 ? "wallet" : "wallets"} not read on Hyperliquid (${terminalText(section.unread[0]?.reason ?? "read failed")}${section.unread.length > 1 ? ", ..." : ""}). Their accounts are unknown, not empty.
+`);
 }
 
 // src/commands/profile.ts
@@ -79662,7 +81783,7 @@ async function runStake(action, args, ctx) {
     valueFlags: ["--wallet", "--client-stake-id"],
     booleanFlags: ["--yes", ...action === "claim" ? ["--all"] : []]
   });
-  const usage8 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
+  const usage9 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
@@ -79671,7 +81792,7 @@ async function runStake(action, args, ctx) {
   const id = values["--client-stake-id"] ?? `stake-${randomUUID6()}`;
   const all = booleans.has("--all");
   if (!validClientId(id) || id.length > 128 || (action === "positions" ? positionals.length !== 0 : action === "finish" ? positionals.length > 1 : action === "claim" ? all ? positionals.length !== 0 : positionals.length !== 1 : positionals.length !== 1)) {
-    writeUsageFailure(ctx.deps, usage8, ctx.json);
+    writeUsageFailure(ctx.deps, usage9, ctx.json);
     return 2;
   }
   try {
@@ -84310,11 +86431,11 @@ function mapLegacyTeeEntry(entry, keyId, grant, createdAtFallback) {
 }
 function buildTeeMeta(entry, lifecycle, grant) {
   const source = entry.tee;
-  const network2 = source?.network ?? "solana-mainnet";
-  if (network2 !== "solana-mainnet") {
-    throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry.address} names network ${String(network2)}; only solana-mainnet migrates.`);
+  const network = source?.network ?? "solana-mainnet";
+  if (network !== "solana-mainnet") {
+    throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry.address} names network ${String(network)}; only solana-mainnet migrates.`);
   }
-  const meta = { network: network2, lifecycle };
+  const meta = { network, lifecycle };
   carryOptional(meta, source, [
     "vaultDestination",
     "boundKeyPrefix",
@@ -84326,7 +86447,7 @@ function buildTeeMeta(entry, lifecycle, grant) {
     "sweptAt"
   ]);
   if (lifecycle === "local-candidate") {
-    return { network: network2, lifecycle };
+    return { network, lifecycle };
   }
   if (lifecycle === "enabled") {
     if (meta.vaultDestination === undefined) {
@@ -87586,7 +89707,7 @@ async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
   await commitVault(vault, { index: { hd, entries }, addKeys: derived.entries.map((entry) => entry.blob) }, ctx.deps);
   return { entries, hd };
 }
-function teeFieldsFor(row, ctx, network2 = "solana-mainnet") {
+function teeFieldsFor(row, ctx, network = "solana-mainnet") {
   const remoteState = row.sweptAt !== undefined ? "swept" : row.revokedAt !== undefined ? "quarantined" : "enabled";
   const grantIdentity = {
     account: "",
@@ -87594,7 +89715,7 @@ function teeFieldsFor(row, ctx, network2 = "solana-mainnet") {
     source: "recorded-at-operation"
   };
   const common = {
-    network: network2,
+    network,
     ...row.vaultDestination !== undefined ? { vaultDestination: row.vaultDestination } : {},
     ...row.boundKeyPrefix !== undefined ? { boundKeyPrefix: row.boundKeyPrefix } : {},
     ...row.remoteAuthority !== undefined ? { remoteAuthority: row.remoteAuthority } : {},
@@ -88612,7 +90733,7 @@ function writeFailure2(ctx, result) {
 }
 async function setAllowLaunch(args, ctx, enabled) {
   const { deps, apiUrl, json } = ctx;
-  const usage8 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
+  const usage9 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
   const command = enabled ? "wallets allow-launch" : "wallets disallow-launch";
   const parsed = parseArgs(args, enabled ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -88620,7 +90741,7 @@ async function setAllowLaunch(args, ctx, enabled) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeUsageFailure(deps, `Name at least one wallet. ${usage8}`, json);
+    writeUsageFailure(deps, `Name at least one wallet. ${usage9}`, json);
     return 2;
   }
   const skipConfirm = !enabled && parsed.booleans.has("--yes");
@@ -88939,7 +91060,7 @@ function trustTable(rows) {
 }
 async function setTrust(args, ctx, trusted) {
   const { deps, apiUrl, json } = ctx;
-  const usage8 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
+  const usage9 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
   const command = trusted ? "wallets trust" : "wallets untrust";
   const parsed = parseArgs(args, trusted ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -88947,7 +91068,7 @@ async function setTrust(args, ctx, trusted) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeUsageFailure(deps, `Name at least one wallet. ${usage8}`, json);
+    writeUsageFailure(deps, `Name at least one wallet. ${usage9}`, json);
     return 2;
   }
   const skipConfirm = !trusted && parsed.booleans.has("--yes");
@@ -89241,6 +91362,10 @@ var COMMANDS = {
       funding: perpsFunding,
       positions: perpsPositions,
       leverage: perpsLeverage,
+      account: perpsAccount,
+      risk: perpsRisk,
+      watch: perpsWatch,
+      thresholds: perpsThresholds,
       withdraw: perpsWithdraw
     }
   },
@@ -89658,8 +91783,50 @@ async function buildRealDeps() {
       await chmod8(path, 493);
     },
     rename: (from, to) => rename6(from, to),
-    unlink: (path) => unlink(path)
+    unlink: (path) => unlink(path),
+    runHook: realRunHook,
+    onTerminate: (handler) => {
+      process.once("SIGINT", handler);
+      process.once("SIGTERM", handler);
+      return () => {
+        process.off("SIGINT", handler);
+        process.off("SIGTERM", handler);
+      };
+    }
   };
+}
+function realRunHook(command, stdin, env, timeoutMs) {
+  return new Promise((resolve6) => {
+    let timedOut = false;
+    let child;
+    try {
+      child = spawn3(command, { shell: true, env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+    } catch (err) {
+      resolve6({
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        error: err instanceof Error ? err.message : String(err)
+      });
+      return;
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk) => process.stderr.write(chunk));
+    child.stderr?.on("data", (chunk) => process.stderr.write(chunk));
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(stdin);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve6({ exitCode: null, signal: null, timedOut, error: err.message });
+    });
+    child.on("close", (exitCode, signal) => {
+      clearTimeout(timer);
+      resolve6({ exitCode, signal, timedOut });
+    });
+  });
 }
 async function main() {
   const deps = await buildRealDeps();
