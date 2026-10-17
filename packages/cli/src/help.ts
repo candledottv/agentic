@@ -392,7 +392,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "withdraw <amount> --to solana|hood [--wallet <evm tee>] | withdraw status <id>",
         description:
-          "Move USDC from the Hyperliquid account to this key's own Solana or Hood TEE wallet through Relay (perps:withdraw); one vault unlock and a typed confirm, no --yes",
+          "Move USDC from the Hyperliquid account to this key's own Solana or Hood TEE wallet through Relay (perps:withdraw); at least 10 USDC, with Relay's fees at most 5% (Hyperliquid's one-time 1 USDC activation fee on a first withdrawal not counted); one vault unlock and a typed confirm, no --yes",
       },
       {
         invocation: "positions [--wallet <tee>]",

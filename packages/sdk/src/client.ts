@@ -2039,7 +2039,12 @@ export interface PerpsReplayResult {
 /** `POST /agent/perps/withdraw`: a quote for a withdrawal to this key's own Solana or Hood TEE wallet. */
 export interface PerpsWithdrawBuildRequest {
   clientWithdrawalId: string
-  /** USDC, a decimal string with at most 6 decimals. */
+  /**
+   * USDC, a decimal string with at most 6 decimals, at least 10 USDC. The server refuses
+   * `PERPS_WITHDRAW_BELOW_MINIMUM` under 10 USDC (`limit: "minimumAmount"`), and when Relay guarantees
+   * under 5 USDC or its fees are above 5% of the amount (`limit: "minimum"`); Hyperliquid's one-time
+   * 1 USDC activation fee on the account's first withdrawal or transfer does not count toward the 5%.
+   */
   amountUsdc: string
   to: "solana" | "hood"
   /** The key's EVM TEE wallet row id; the key's only one when omitted. */
