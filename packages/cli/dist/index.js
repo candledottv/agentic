@@ -65038,7 +65038,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.31";
+var CLI_VERSION = "0.11.32";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
