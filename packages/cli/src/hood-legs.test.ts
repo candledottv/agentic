@@ -26,7 +26,6 @@ import {
   HOOD_KYBER_ROUTER,
   HOOD_PERMIT2,
   HOOD_SPLITTER_FACTORY,
-  HOOD_UNIV2_ROUTER,
   HOOD_UNIV3_ROUTER,
   HOOD_V4_UNIVERSAL_ROUTER,
   hoodFeeTreasury,
@@ -42,8 +41,6 @@ import {
   SPLITTER_IS_SPLITTER_SELECTOR,
   SPLITTER_PLATFORM_VAULT_SELECTOR,
   UNIVERSAL_EXECUTE_SELECTOR,
-  V2_SWAP_ETH_FOR_TOKENS_SELECTOR,
-  V2_SWAP_TOKENS_FOR_ETH_SELECTOR,
   V3_EXACT_INPUT_SELECTOR,
   V3_EXACT_INPUT_SINGLE_SELECTOR,
   V3_MULTICALL_SELECTOR,
@@ -52,8 +49,6 @@ import {
 } from "./hood-legs"
 import {
   kyberSwap,
-  v2Buy,
-  v2Sell,
   v3Buy,
   v3Multicall,
   v3Path,
@@ -87,12 +82,6 @@ describe("pinned selectors", () => {
     expect(CURVE_BUY_SELECTOR).toBe(selector("buy(uint256)"))
     expect(CURVE_BUY_WITH_QUOTE_SELECTOR).toBe(selector("buyWithQuote(uint256,uint256)"))
     expect(CURVE_SELL_SELECTOR).toBe(selector("sell(uint256,uint256)"))
-    expect(V2_SWAP_ETH_FOR_TOKENS_SELECTOR).toBe(
-      selector("swapExactETHForTokensSupportingFeeOnTransferTokens(uint256,address[],address,uint256)"),
-    )
-    expect(V2_SWAP_TOKENS_FOR_ETH_SELECTOR).toBe(
-      selector("swapExactTokensForETHSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)"),
-    )
     expect(V3_MULTICALL_SELECTOR).toBe(selector("multicall(uint256,bytes[])"))
     expect(V3_EXACT_INPUT_SINGLE_SELECTOR).toBe(
       selector("exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))"),
@@ -130,8 +119,8 @@ describe("drift: the pinned contracts are the ones the server builds against", (
     const shared = readFileSync(file, "utf8")
     expect(shared).toContain(`HOOD_UNIV3_ROUTER = "${HOOD_UNIV3_ROUTER}"`)
     expect(shared).toContain(`HOOD_KYBER_ROUTER = "${HOOD_KYBER_ROUTER}"`)
-    // v4, v2 and Permit2 keep an env override on the server; the defaults are what the CLI pins.
-    for (const address of [HOOD_V4_UNIVERSAL_ROUTER, HOOD_PERMIT2, HOOD_UNIV2_ROUTER])
+    // v4 and Permit2 keep an env override on the server; the defaults are what the CLI pins.
+    for (const address of [HOOD_V4_UNIVERSAL_ROUTER, HOOD_PERMIT2])
       expect(shared).toContain(`"${address}") as \`0x\${string}\``)
   })
 
@@ -291,9 +280,7 @@ describe("DEX trade legs are decoded and held to what was confirmed", () => {
   const sell = check(token)
   const buy = check(undefined)
 
-  test("honest v2, v3 and Kyber calls pass", async () => {
-    expect(await sell("trade", dexLeg(HOOD_UNIV2_ROUTER, v2Sell(token, AMOUNT, wallet)))).toBe(true)
-    expect(await buy("trade", dexLeg(HOOD_UNIV2_ROUTER, v2Buy(token, wallet), AMOUNT.toString()))).toBe(true)
+  test("honest v3 and Kyber calls pass", async () => {
     expect(await sell("trade", dexLeg(HOOD_UNIV3_ROUTER, v3Sell(token, AMOUNT, wallet)))).toBe(true)
     expect(await buy("trade", dexLeg(HOOD_UNIV3_ROUTER, v3Buy(token, AMOUNT, wallet), AMOUNT.toString()))).toBe(true)
     const hops = v3Multicall([
@@ -339,7 +326,6 @@ describe("DEX trade legs are decoded and held to what was confirmed", () => {
   })
 
   test("a call that names another input token is refused on every router", async () => {
-    expect(await sell("trade", dexLeg(HOOD_UNIV2_ROUTER, v2Sell(other, AMOUNT, wallet)))).toBe(false)
     expect(await sell("trade", dexLeg(HOOD_UNIV3_ROUTER, v3Sell(other, AMOUNT, wallet)))).toBe(false)
     expect(
       await sell(
@@ -369,7 +355,6 @@ describe("DEX trade legs are decoded and held to what was confirmed", () => {
 
   test("a larger amount than confirmed is refused on every router", async () => {
     const more = AMOUNT + 1n
-    expect(await sell("trade", dexLeg(HOOD_UNIV2_ROUTER, v2Sell(token, more, wallet)))).toBe(false)
     expect(await sell("trade", dexLeg(HOOD_UNIV3_ROUTER, v3Sell(token, more, wallet)))).toBe(false)
     const twice = v3Multicall([
       v3Single({ tokenIn: token, tokenOut: HOOD_WETH_ADDRESS, recipient: wallet, amountIn: AMOUNT }),
@@ -385,8 +370,6 @@ describe("DEX trade legs are decoded and held to what was confirmed", () => {
   })
 
   test("another recipient is refused on every router", async () => {
-    expect(await sell("trade", dexLeg(HOOD_UNIV2_ROUTER, v2Sell(token, AMOUNT, other)))).toBe(false)
-    expect(await buy("trade", dexLeg(HOOD_UNIV2_ROUTER, v2Buy(token, other), AMOUNT.toString()))).toBe(false)
     expect(await sell("trade", dexLeg(HOOD_UNIV3_ROUTER, v3Sell(token, AMOUNT, other)))).toBe(false)
     expect(await buy("trade", dexLeg(HOOD_UNIV3_ROUTER, v3Buy(token, AMOUNT, other), AMOUNT.toString()))).toBe(false)
     expect(
@@ -409,7 +392,11 @@ describe("DEX trade legs are decoded and held to what was confirmed", () => {
     // An unknown selector, a Universal Router command it does not know, extra multicall members,
     // truncated data, and a v3 sweep to another address.
     expect(await sell("trade", dexLeg(HOOD_KYBER_ROUTER, "0xabcdef"))).toBe(false)
-    expect(await sell("trade", dexLeg(HOOD_UNIV2_ROUTER, `0xdeadbeef${"00".repeat(64)}`))).toBe(false)
+    expect(await sell("trade", dexLeg(HOOD_UNIV3_ROUTER, `0xdeadbeef${"00".repeat(64)}`))).toBe(false)
+    // The Uniswap v2 router is no longer a known spender or target.
+    expect(
+      await sell("trade", dexLeg("0x89e5db8b5aa49aa85ac63f691524311aeb649eba", `0xdeadbeef${"00".repeat(64)}`)),
+    ).toBe(false)
     expect(await sell("trade", dexLeg(HOOD_UNIV3_ROUTER, `${V3_EXACT_INPUT_SINGLE_SELECTOR}${"00".repeat(32)}`))).toBe(
       false,
     )
@@ -483,15 +470,6 @@ describe("DEX trade legs are decoded and held to what was confirmed", () => {
       deadline,
     })
     expect(await buy("trade", dexLeg(HOOD_UNIV3_ROUTER, v3Buy_.data, AMOUNT.toString()))).toBe(true)
-    const v2 = shared.buildV2Swap({
-      side: "sell",
-      path: [token, HOOD_WETH_ADDRESS],
-      amountInWei: AMOUNT,
-      minAmountOut: 123456n,
-      recipient: wallet,
-      deadline,
-    })
-    expect(await sell("trade", dexLeg(HOOD_UNIV2_ROUTER, v2.data))).toBe(true)
     const v4Sell = shared.buildV4Swap({
       side: "sell",
       poolKey,

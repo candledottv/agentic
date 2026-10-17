@@ -12707,24 +12707,6 @@ function decodeArgs(data, types2, base = 4) {
     return;
   }
 }
-function v2CallOk(data, value, terms) {
-  const selector = selectorOf(data);
-  if (selector === V2_SWAP_ETH_FOR_TOKENS_SELECTOR) {
-    const args = decodeArgs(data, ["uint", ADDRESSES, "address", "uint"]);
-    if (!args || terms.inputToken !== undefined)
-      return false;
-    const path = asList(args[1]);
-    return path.length >= 2 && sameEvmAddress(asAddress(path[0]), HOOD_WETH_ADDRESS) && terms.outputToken !== undefined && sameEvmAddress(asAddress(path[path.length - 1]), terms.outputToken) && asNumber(args[0]) >= terms.minOutRaw && sameEvmAddress(asAddress(args[2]), terms.wallet);
-  }
-  if (selector === V2_SWAP_TOKENS_FOR_ETH_SELECTOR) {
-    const args = decodeArgs(data, ["uint", "uint", ADDRESSES, "address", "uint"]);
-    if (!args || terms.inputToken === undefined || value !== 0n)
-      return false;
-    const path = asList(args[2]);
-    return asNumber(args[0]) <= terms.amountRaw && asNumber(args[1]) >= terms.minOutRaw && terms.outputToken === undefined && path.length >= 2 && sameEvmAddress(asAddress(path[0]), terms.inputToken) && sameEvmAddress(asAddress(path[path.length - 1]), HOOD_WETH_ADDRESS) && sameEvmAddress(asAddress(args[3]), terms.wallet);
-  }
-  return false;
-}
 function v3SwapOf(call) {
   const selector = selectorOf(call);
   if (selector === V3_EXACT_INPUT_SINGLE_SELECTOR) {
@@ -12905,9 +12887,7 @@ function kyberCallOk(data, terms) {
   const amount = asNumber(desc[7]);
   return sameEvmAddress(asAddress(desc[0]), terms.inputToken ?? KYBER_NATIVE) && sameEvmAddress(asAddress(desc[1]), terms.outputToken ?? KYBER_NATIVE) && asNumber(desc[8]) >= terms.minOutRaw && sameEvmAddress(asAddress(desc[6]), terms.wallet) && amount === terms.amountRaw && asList(desc[3]).reduce((sum, part) => sum + asNumber(part), 0n) <= amount && asList(desc[4]).length === 0 && asList(desc[5]).every((part) => asNumber(part) === 0n) && asBytes(desc[10]).length === 0;
 }
-function dexCallOk(to, data, value, terms) {
-  if (sameEvmAddress(to, HOOD_UNIV2_ROUTER))
-    return v2CallOk(data, value, terms);
+function dexCallOk(to, data, terms) {
   if (sameEvmAddress(to, HOOD_UNIV3_ROUTER))
     return v3CallOk(data, terms);
   if (sameEvmAddress(to, HOOD_V4_UNIVERSAL_ROUTER))
@@ -13052,7 +13032,7 @@ function hoodTradeLegCheck(terms) {
     if (terms.inputToken !== undefined ? value !== 0n : value > terms.amountRaw)
       return false;
     if (terms.venue === "dex")
-      return dexCallOk(leg.to, data, value, {
+      return dexCallOk(leg.to, data, {
         wallet: terms.wallet,
         ...terms.inputToken !== undefined ? { inputToken: terms.inputToken } : {},
         amountRaw: terms.amountRaw,
@@ -13088,7 +13068,7 @@ async function registeredCurveFor(rpc, token) {
   }
   return;
 }
-var HOOD_CURVE_FACTORY = "0xD08f8489F026957EdeD3Bb8Ef8A9d151A7B1DF22", HOOD_CURVE_REGISTRIES, HOOD_UNIV2_ROUTER = "0x89e5db8b5aa49aa85ac63f691524311aeb649eba", HOOD_UNIV3_ROUTER = "0xCaf681a66D020601342297493863E78C959E5cb2", HOOD_V4_UNIVERSAL_ROUTER = "0x8876789976decbfcbbbe364623c63652db8c0904", HOOD_KYBER_ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5", HOOD_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3", HOOD_SPLITTER_FACTORY = "0x9318bD328Ac32DBAe08bbD85B634E6B6B06683BF", KYBER_NATIVE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", ADDRESS_THIS = "0x0000000000000000000000000000000000000002", DEX_SPENDERS, CREATE_CURVE_SELECTOR = "0xe5ab9610", ERC20_APPROVE_SELECTOR = "0x095ea7b3", PERMIT2_APPROVE_SELECTOR = "0x87517c45", CURVE_BUY_SELECTOR = "0xd96a094a", CURVE_BUY_WITH_QUOTE_SELECTOR = "0x6818735c", CURVE_SELL_SELECTOR = "0xd79875eb", V2_SWAP_ETH_FOR_TOKENS_SELECTOR = "0xb6f9de95", V2_SWAP_TOKENS_FOR_ETH_SELECTOR = "0x791ac947", V3_MULTICALL_SELECTOR = "0x5ae401dc", V3_EXACT_INPUT_SINGLE_SELECTOR = "0x04e45aaf", V3_EXACT_INPUT_SELECTOR = "0xb858183f", V3_UNWRAP_WETH9_SELECTOR = "0x49404b7c", V3_REFUND_ETH_SELECTOR = "0x12210e8a", UNIVERSAL_EXECUTE_SELECTOR = "0x3593564c", KYBER_SWAP_SELECTOR = "0xe21fd0e9", KYBER_SWAP_GENERIC_SELECTOR = "0x59e50fed", KYBER_SWAP_SIMPLE_SELECTOR = "0x8af033fb", SPLITTER_DEV_SELECTOR = "0x91cca3db", SPLITTER_IS_SPLITTER_SELECTOR = "0xa4c597d1", CURVE_FOR_BASE_TOKEN_SELECTOR = "0x446b9253", SPLITTER_PLATFORM_VAULT_SELECTOR = "0x20f094f8", CURVE_CREATED_TOPIC = "0xed3a740542131b3621499825e40efbcaf096e3b1608de865c08a2109378bb36b", LAUNCH_FEE_MAX_BPS = 1000n, MAX_ABI_ARRAY = 64, ADDRESSES, V3_SINGLE, V3_PATH, KYBER_DESC, KYBER_EXECUTION, V4_POOL_KEY, V4_SWAP_PARAMS, asBytes = (value) => value, asAddress = (value) => value, asNumber = (value) => value, asList = (value) => value, routedInput = (terms) => terms.inputToken ?? HOOD_WETH_ADDRESS, routedOutput = (terms) => terms.outputToken ?? HOOD_WETH_ADDRESS, UR_V3_SWAP_EXACT_IN = 0, UR_WRAP_ETH = 11, UR_UNWRAP_WETH = 12, UR_V4_SWAP = 16, V4_SWAP_EXACT_IN_SINGLE = 6, V4_SETTLE = 11, V4_SETTLE_ALL = 12, V4_TAKE = 14, V4_TAKE_ALL = 15, NATIVE_CURRENCY = "0x0000000000000000000000000000000000000000";
+var HOOD_CURVE_FACTORY = "0xD08f8489F026957EdeD3Bb8Ef8A9d151A7B1DF22", HOOD_CURVE_REGISTRIES, HOOD_UNIV3_ROUTER = "0xCaf681a66D020601342297493863E78C959E5cb2", HOOD_V4_UNIVERSAL_ROUTER = "0x8876789976decbfcbbbe364623c63652db8c0904", HOOD_KYBER_ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5", HOOD_PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3", HOOD_SPLITTER_FACTORY = "0x9318bD328Ac32DBAe08bbD85B634E6B6B06683BF", KYBER_NATIVE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", ADDRESS_THIS = "0x0000000000000000000000000000000000000002", DEX_SPENDERS, CREATE_CURVE_SELECTOR = "0xe5ab9610", ERC20_APPROVE_SELECTOR = "0x095ea7b3", PERMIT2_APPROVE_SELECTOR = "0x87517c45", CURVE_BUY_SELECTOR = "0xd96a094a", CURVE_BUY_WITH_QUOTE_SELECTOR = "0x6818735c", CURVE_SELL_SELECTOR = "0xd79875eb", V3_MULTICALL_SELECTOR = "0x5ae401dc", V3_EXACT_INPUT_SINGLE_SELECTOR = "0x04e45aaf", V3_EXACT_INPUT_SELECTOR = "0xb858183f", V3_UNWRAP_WETH9_SELECTOR = "0x49404b7c", V3_REFUND_ETH_SELECTOR = "0x12210e8a", UNIVERSAL_EXECUTE_SELECTOR = "0x3593564c", KYBER_SWAP_SELECTOR = "0xe21fd0e9", KYBER_SWAP_GENERIC_SELECTOR = "0x59e50fed", KYBER_SWAP_SIMPLE_SELECTOR = "0x8af033fb", SPLITTER_DEV_SELECTOR = "0x91cca3db", SPLITTER_IS_SPLITTER_SELECTOR = "0xa4c597d1", CURVE_FOR_BASE_TOKEN_SELECTOR = "0x446b9253", SPLITTER_PLATFORM_VAULT_SELECTOR = "0x20f094f8", CURVE_CREATED_TOPIC = "0xed3a740542131b3621499825e40efbcaf096e3b1608de865c08a2109378bb36b", LAUNCH_FEE_MAX_BPS = 1000n, MAX_ABI_ARRAY = 64, V3_SINGLE, V3_PATH, KYBER_DESC, KYBER_EXECUTION, V4_POOL_KEY, V4_SWAP_PARAMS, asBytes = (value) => value, asAddress = (value) => value, asNumber = (value) => value, asList = (value) => value, routedInput = (terms) => terms.inputToken ?? HOOD_WETH_ADDRESS, routedOutput = (terms) => terms.outputToken ?? HOOD_WETH_ADDRESS, UR_V3_SWAP_EXACT_IN = 0, UR_WRAP_ETH = 11, UR_UNWRAP_WETH = 12, UR_V4_SWAP = 16, V4_SWAP_EXACT_IN_SINGLE = 6, V4_SETTLE = 11, V4_SETTLE_ALL = 12, V4_TAKE = 14, V4_TAKE_ALL = 15, NATIVE_CURRENCY = "0x0000000000000000000000000000000000000000";
 var init_hood_legs = __esm(() => {
   init_evm_lite();
   HOOD_CURVE_REGISTRIES = [
@@ -13096,8 +13076,7 @@ var init_hood_legs = __esm(() => {
     "0x75934c16162075583435358f9F042D8D6E42Bd5C",
     "0xFD54D094ad93349CA316bA309A3C8573E3D6C0cd"
   ];
-  DEX_SPENDERS = [HOOD_UNIV2_ROUTER, HOOD_UNIV3_ROUTER, HOOD_KYBER_ROUTER, HOOD_PERMIT2];
-  ADDRESSES = { array: "address" };
+  DEX_SPENDERS = [HOOD_UNIV3_ROUTER, HOOD_KYBER_ROUTER, HOOD_PERMIT2];
   V3_SINGLE = { tuple: ["address", "address", "uint", "address", "uint", "uint", "uint"] };
   V3_PATH = { tuple: ["bytes", "address", "uint", "uint"] };
   KYBER_DESC = {
@@ -65028,7 +65007,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.30";
+var CLI_VERSION = "0.11.31";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();

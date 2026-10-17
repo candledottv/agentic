@@ -35,7 +35,6 @@ export const HOOD_CURVE_REGISTRIES: readonly string[] = [
   "0x75934c16162075583435358f9F042D8D6E42Bd5C",
   "0xFD54D094ad93349CA316bA309A3C8573E3D6C0cd",
 ]
-export const HOOD_UNIV2_ROUTER = "0x89e5db8b5aa49aa85ac63f691524311aeb649eba"
 export const HOOD_UNIV3_ROUTER = "0xCaf681a66D020601342297493863E78C959E5cb2"
 export const HOOD_V4_UNIVERSAL_ROUTER = "0x8876789976decbfcbbbe364623c63652db8c0904"
 export const HOOD_KYBER_ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5"
@@ -48,7 +47,7 @@ const KYBER_NATIVE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 const ADDRESS_THIS = "0x0000000000000000000000000000000000000002"
 
 /** The spenders a DEX approval may name: a router that pulls the input, or Permit2 for a v4 sell. */
-const DEX_SPENDERS = [HOOD_UNIV2_ROUTER, HOOD_UNIV3_ROUTER, HOOD_KYBER_ROUTER, HOOD_PERMIT2]
+const DEX_SPENDERS = [HOOD_UNIV3_ROUTER, HOOD_KYBER_ROUTER, HOOD_PERMIT2]
 
 /** `createCurve((...InitParams), uint8, uint16, bytes32)`. */
 export const CREATE_CURVE_SELECTOR = "0xe5ab9610"
@@ -62,10 +61,6 @@ export const CURVE_BUY_SELECTOR = "0xd96a094a"
 export const CURVE_BUY_WITH_QUOTE_SELECTOR = "0x6818735c"
 /** `CandleCurve.sell(uint256 baseIn, uint256 minAmountOut)`. */
 export const CURVE_SELL_SELECTOR = "0xd79875eb"
-/** v2 `swapExactETHForTokensSupportingFeeOnTransferTokens(uint256,address[],address,uint256)`. */
-export const V2_SWAP_ETH_FOR_TOKENS_SELECTOR = "0xb6f9de95"
-/** v2 `swapExactTokensForETHSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)`. */
-export const V2_SWAP_TOKENS_FOR_ETH_SELECTOR = "0x791ac947"
 /** SwapRouter02 `multicall(uint256 deadline, bytes[] data)`. */
 export const V3_MULTICALL_SELECTOR = "0x5ae401dc"
 export const V3_EXACT_INPUT_SINGLE_SELECTOR = "0x04e45aaf"
@@ -228,7 +223,6 @@ function decodeArgs(data: Uint8Array, types: readonly AbiType[], base = 4): AbiV
   }
 }
 
-const ADDRESSES: AbiType = { array: "address" }
 const V3_SINGLE: AbiType = { tuple: ["address", "address", "uint", "address", "uint", "uint", "uint"] }
 const V3_PATH: AbiType = { tuple: ["bytes", "address", "uint", "uint"] }
 const KYBER_DESC: AbiType = {
@@ -261,39 +255,6 @@ const asList = (value: AbiValue | undefined) => value as AbiValue[]
 /** The token a router's first hop must take in: the ERC-20 itself, or WETH for ETH. */
 const routedInput = (terms: DexTerms) => terms.inputToken ?? HOOD_WETH_ADDRESS
 const routedOutput = (terms: DexTerms) => terms.outputToken ?? HOOD_WETH_ADDRESS
-
-/** v2: the path starts at the input, the output goes to the wallet, and the amount is no more than confirmed. */
-function v2CallOk(data: Uint8Array, value: bigint, terms: DexTerms): boolean {
-  const selector = selectorOf(data)
-  if (selector === V2_SWAP_ETH_FOR_TOKENS_SELECTOR) {
-    const args = decodeArgs(data, ["uint", ADDRESSES, "address", "uint"])
-    if (!args || terms.inputToken !== undefined) return false
-    const path = asList(args[1])
-    return (
-      path.length >= 2 &&
-      sameEvmAddress(asAddress(path[0]), HOOD_WETH_ADDRESS) &&
-      terms.outputToken !== undefined &&
-      sameEvmAddress(asAddress(path[path.length - 1]), terms.outputToken) &&
-      asNumber(args[0]) >= terms.minOutRaw &&
-      sameEvmAddress(asAddress(args[2]), terms.wallet)
-    )
-  }
-  if (selector === V2_SWAP_TOKENS_FOR_ETH_SELECTOR) {
-    const args = decodeArgs(data, ["uint", "uint", ADDRESSES, "address", "uint"])
-    if (!args || terms.inputToken === undefined || value !== 0n) return false
-    const path = asList(args[2])
-    return (
-      asNumber(args[0]) <= terms.amountRaw &&
-      asNumber(args[1]) >= terms.minOutRaw &&
-      terms.outputToken === undefined &&
-      path.length >= 2 &&
-      sameEvmAddress(asAddress(path[0]), terms.inputToken) &&
-      sameEvmAddress(asAddress(path[path.length - 1]), HOOD_WETH_ADDRESS) &&
-      sameEvmAddress(asAddress(args[3]), terms.wallet)
-    )
-  }
-  return false
-}
 
 /** The assets, input amount, output minimum and recipient of one SwapRouter02 swap. */
 function v3SwapOf(
@@ -562,8 +523,7 @@ function kyberCallOk(data: Uint8Array, terms: DexTerms): boolean {
  * MAX_UINT256 grant from before 2026-09-03, a live Permit2 grant), so `to` and `value` alone do not
  * bound what a call can take. A call this does not decode is refused.
  */
-function dexCallOk(to: string, data: Uint8Array, value: bigint, terms: DexTerms): boolean {
-  if (sameEvmAddress(to, HOOD_UNIV2_ROUTER)) return v2CallOk(data, value, terms)
+function dexCallOk(to: string, data: Uint8Array, terms: DexTerms): boolean {
   if (sameEvmAddress(to, HOOD_UNIV3_ROUTER)) return v3CallOk(data, terms)
   if (sameEvmAddress(to, HOOD_V4_UNIVERSAL_ROUTER)) return v4CallOk(data, terms)
   if (sameEvmAddress(to, HOOD_KYBER_ROUTER)) return kyberCallOk(data, terms)
@@ -762,7 +722,7 @@ export function hoodTradeLegCheck(terms: HoodTradeTerms): (kind: LegKind, leg: L
     const value = BigInt(leg.value)
     if (terms.inputToken !== undefined ? value !== 0n : value > terms.amountRaw) return false
     if (terms.venue === "dex")
-      return dexCallOk(leg.to, data, value, {
+      return dexCallOk(leg.to, data, {
         wallet: terms.wallet,
         ...(terms.inputToken !== undefined ? { inputToken: terms.inputToken } : {}),
         amountRaw: terms.amountRaw,

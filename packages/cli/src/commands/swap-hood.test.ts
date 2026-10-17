@@ -41,7 +41,6 @@ import {
   HOOD_KYBER_ROUTER,
   HOOD_PERMIT2,
   HOOD_SPLITTER_FACTORY,
-  HOOD_UNIV2_ROUTER,
   HOOD_UNIV3_ROUTER,
   HOOD_V4_UNIVERSAL_ROUTER,
   PERMIT2_APPROVE_SELECTOR,
@@ -50,7 +49,6 @@ import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import {
   kyberSwap,
-  v2Sell,
   v3Buy,
   v3Multicall,
   v3Refund,
@@ -964,13 +962,6 @@ describe("every leg is held to what was confirmed (hood-legs.ts)", () => {
       1,
     ],
     [
-      "a v2 sell with a minimum below the quote",
-      [approval(approveData(HOOD_UNIV2_ROUTER)), trade(HOOD_UNIV2_ROUTER, v2Sell(token, AMOUNT, hoodTee, 123455n))],
-      sellArgs(),
-      {},
-      1,
-    ],
-    [
       "a v4 sell with a TAKE_ALL minimum below the quote",
       [
         trade(
@@ -1236,13 +1227,6 @@ describe("every leg is held to what was confirmed (hood-legs.ts)", () => {
       buyArgs(),
       {},
       0,
-    ],
-    [
-      "a v2 sell that pays another recipient",
-      [approval(approveData(HOOD_UNIV2_ROUTER)), trade(HOOD_UNIV2_ROUTER, v2Sell(token, AMOUNT, attacker)), fee()],
-      sellArgs(),
-      {},
-      1,
     ],
     [
       "a v4 sell of a larger amount than the one confirmed",

@@ -14,7 +14,6 @@ import {
   CURVE_BUY_WITH_QUOTE_SELECTOR,
   CURVE_SELL_SELECTOR,
   HOOD_KYBER_ROUTER,
-  HOOD_UNIV2_ROUTER,
   HOOD_UNIV3_ROUTER,
   HOOD_V4_UNIVERSAL_ROUTER,
   hoodTradeLegCheck,
@@ -25,8 +24,6 @@ import {
   kyberSwap,
   SWAP_PARAMS,
   urAbi,
-  v2Buy,
-  v2Sell,
   v3Multicall,
   v3Path,
   v3Single,
@@ -74,25 +71,6 @@ function editV4(data: Hex, index: number, edit: (params: Hex[]) => void, newActi
 }
 
 describe("Hood output terms are enforced by each router", () => {
-  test("v2 pins both path ends, the minimum and recipient on buys and sells", async () => {
-    const buy = check(true)
-    const sell = check(false)
-    expect(await buy("trade", leg(HOOD_UNIV2_ROUTER, v2Buy(token, wallet), true))).toBe(true)
-    expect(await sell("trade", leg(HOOD_UNIV2_ROUTER, v2Sell(token, amount, wallet)))).toBe(true)
-    for (const bad of [v2Buy(attacker, wallet), v2Buy(token, wallet, minimum - 1n), v2Buy(token, attacker)])
-      expect(await buy("trade", leg(HOOD_UNIV2_ROUTER, bad, true))).toBe(false)
-    const wrongEnd = v2Sell(token, amount, wallet).replaceAll(
-      HOOD_WETH_ADDRESS.slice(2).toLowerCase(),
-      attacker.slice(2),
-    )
-    for (const bad of [wrongEnd, v2Sell(token, amount, wallet, 0n), v2Sell(token, amount, attacker)])
-      expect(await sell("trade", leg(HOOD_UNIV2_ROUTER, bad))).toBe(false)
-    // A v2 sell always unwraps; it cannot satisfy an ERC-20 output quote.
-    expect(await check(false, HOOD_USDG_ADDRESS)("trade", leg(HOOD_UNIV2_ROUTER, v2Sell(token, amount, wallet)))).toBe(
-      false,
-    )
-  })
-
   for (const path of [false, true]) {
     test(`v3 ${path ? "exactInput" : "exactInputSingle"} pins output, minimum and recipient`, async () => {
       const encode = (output = token, floor = minimum, recipient = wallet) =>

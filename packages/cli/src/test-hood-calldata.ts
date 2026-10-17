@@ -13,10 +13,6 @@ const NATIVE = "0x0000000000000000000000000000000000000000" as Address
 const KYBER_NATIVE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE" as Address
 const DEADLINE = 9_999_999_999n
 
-const v2Abi = parseAbi([
-  "function swapExactETHForTokensSupportingFeeOnTransferTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline) payable",
-  "function swapExactTokensForETHSupportingFeeOnTransferTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline)",
-])
 const v3Abi = parseAbi([
   "function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) payable returns (uint256)",
   "function exactInput((bytes path, address recipient, uint256 amountIn, uint256 amountOutMinimum)) payable returns (uint256)",
@@ -80,19 +76,6 @@ export const v3Sell = (token: string, amountIn: bigint, wallet: string): Hex =>
 /** An ETH buy on SwapRouter02: WETH in off `msg.value`, the token to the wallet, dust refunded. */
 export const v3Buy = (token: string, amountIn: bigint, wallet: string): Hex =>
   v3Multicall([v3Single({ tokenIn: HOOD_WETH_ADDRESS, tokenOut: token, recipient: wallet, amountIn }), v3Refund()])
-
-export const v2Buy = (token: string, wallet: string, minimum = 123456n): Hex =>
-  encodeFunctionData({
-    abi: v2Abi,
-    functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
-    args: [minimum, [HOOD_WETH_ADDRESS as Address, token as Address], wallet as Address, DEADLINE],
-  })
-export const v2Sell = (token: string, amountIn: bigint, wallet: string, minimum = 123456n): Hex =>
-  encodeFunctionData({
-    abi: v2Abi,
-    functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
-    args: [amountIn, minimum, [token as Address, HOOD_WETH_ADDRESS as Address], wallet as Address, DEADLINE],
-  })
 
 const v4PoolKey = (token: string) => {
   const [currency0, currency1] = [NATIVE, token as Address]
