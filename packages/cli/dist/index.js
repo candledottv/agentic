@@ -45715,7 +45715,7 @@ __export(exports_util, {
   joinValues: () => joinValues,
   issue: () => issue,
   isPlainObject: () => isPlainObject,
-  isObject: () => isObject,
+  isObject: () => isObject2,
   hexToUint8Array: () => hexToUint8Array,
   getSizableOrigin: () => getSizableOrigin,
   getParsedType: () => getParsedType3,
@@ -45882,11 +45882,11 @@ function esc(str) {
 function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
-function isObject(data) {
+function isObject2(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 function isPlainObject(o) {
-  if (isObject(o) === false)
+  if (isObject2(o) === false)
     return false;
   const ctor = o.constructor;
   if (ctor === undefined)
@@ -45894,7 +45894,7 @@ function isPlainObject(o) {
   if (typeof ctor !== "function")
     return true;
   const prot = ctor.prototype;
-  if (isObject(prot) === false)
+  if (isObject2(prot) === false)
     return false;
   if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) {
     return false;
@@ -47775,13 +47775,13 @@ var init_schemas = __esm(() => {
       }
       return propValues;
     });
-    const isObject2 = isObject;
+    const isObject3 = isObject2;
     const catchall = def.catchall;
     let value;
     inst._zod.parse = (payload, ctx) => {
       value ?? (value = _normalized.value);
       const input = payload.value;
-      if (!isObject2(input)) {
+      if (!isObject3(input)) {
         payload.issues.push({
           expected: "object",
           code: "invalid_type",
@@ -47879,7 +47879,7 @@ var init_schemas = __esm(() => {
       return (payload, ctx) => fn(shape, payload, ctx);
     };
     let fastpass;
-    const isObject2 = isObject;
+    const isObject3 = isObject2;
     const jit = !globalConfig.jitless;
     const allowsEval2 = allowsEval;
     const fastEnabled = jit && allowsEval2.value;
@@ -47888,7 +47888,7 @@ var init_schemas = __esm(() => {
     inst._zod.parse = (payload, ctx) => {
       value ?? (value = _normalized.value);
       const input = payload.value;
-      if (!isObject2(input)) {
+      if (!isObject3(input)) {
         payload.issues.push({
           expected: "object",
           code: "invalid_type",
@@ -47992,7 +47992,7 @@ var init_schemas = __esm(() => {
     });
     inst._zod.parse = (payload, ctx) => {
       const input = payload.value;
-      if (!isObject(input)) {
+      if (!isObject2(input)) {
         payload.issues.push({
           code: "invalid_type",
           expected: "object",
@@ -62401,7 +62401,7 @@ var init_image = __esm(() => {
 });
 
 // ../mcp/src/orchestrate.ts
-import { randomUUID as randomUUID7 } from "node:crypto";
+import { randomUUID as randomUUID8 } from "node:crypto";
 function requireApiKey(cfg) {
   if (!cfg.apiKey) {
     throw new Error("CANDLE_AGENT_API_KEY is required for this tool. Set it in the environment or MCP client config.");
@@ -62514,7 +62514,7 @@ async function readPaperInventory(cfg, doFetch, extra) {
 }
 async function executeTrade(args, cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
-  const clientTradeId = args.clientTradeId ?? randomUUID7();
+  const clientTradeId = args.clientTradeId ?? randomUUID8();
   if (args.amount !== undefined && args.percent !== undefined) {
     return errText("pass exactly one of amount or percent, not both", { clientTradeId });
   }
@@ -62652,7 +62652,7 @@ async function executeTrade(args, cfg, doFetch) {
 }
 async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs) {
   const apiKey = requireApiKey(cfg);
-  const clientLaunchId = args.clientLaunchId ?? randomUUID7();
+  const clientLaunchId = args.clientLaunchId ?? randomUUID8();
   const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...imageFields } = args;
   let buyAmount;
   if (devBuy !== undefined) {
@@ -63200,7 +63200,7 @@ function checkOrderMarket2(action, intent, market) {
 function verifyPerpsBuild2(build, opts) {
   try {
     const network2 = opts.network ?? "mainnet";
-    if (!EVM_ADDRESS_RE2.test(opts.builder))
+    if (!EVM_ADDRESS_RE3.test(opts.builder))
       return { ok: false, reason: "no valid Candle builder address to check against" };
     if (build.network !== undefined && build.network !== network2) {
       return { ok: false, reason: `the build is for ${build.network}, this client trades ${network2}` };
@@ -63288,7 +63288,7 @@ function hyperliquidExchangeBody2(action, nonce, signature) {
 function hyperliquidRelayBody2(typedData) {
   return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
 }
-var HYPERLIQUID_ALLOWED_ACTION_TYPES2, HYPERLIQUID_EXCHANGE_URLS2, HYPERLIQUID_INFO_URLS2, CANDLE_HYPERLIQUID_BUILDER_ADDRESS2 = null, HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS2 = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE2 = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID2 = "0xa4b1", ZERO_ADDRESS2 = "0x0000000000000000000000000000000000000000", UINT64_MAX2, INT64_MIN2, EVM_ADDRESS_RE2, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2 = 100, HYPERLIQUID_MID_DRIFT_BPS2 = 100, HYPERLIQUID_TPSL_SLIPPAGE_BPS2 = 500;
+var HYPERLIQUID_ALLOWED_ACTION_TYPES2, HYPERLIQUID_EXCHANGE_URLS2, HYPERLIQUID_INFO_URLS2, CANDLE_HYPERLIQUID_BUILDER_ADDRESS2 = null, HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS2 = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE2 = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID2 = "0xa4b1", ZERO_ADDRESS2 = "0x0000000000000000000000000000000000000000", UINT64_MAX2, INT64_MIN2, EVM_ADDRESS_RE3, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2 = 100, HYPERLIQUID_MID_DRIFT_BPS2 = 100, HYPERLIQUID_TPSL_SLIPPAGE_BPS2 = 500;
 var init_hyperliquid = __esm(() => {
   init_sha3();
   HYPERLIQUID_ALLOWED_ACTION_TYPES2 = [
@@ -63308,7 +63308,7 @@ var init_hyperliquid = __esm(() => {
   };
   UINT64_MAX2 = (1n << 64n) - 1n;
   INT64_MIN2 = -(1n << 63n);
-  EVM_ADDRESS_RE2 = /^0x[0-9a-fA-F]{40}$/;
+  EVM_ADDRESS_RE3 = /^0x[0-9a-fA-F]{40}$/;
 });
 
 // ../mcp/src/perps.ts
@@ -63795,7 +63795,7 @@ var init_plans = __esm(() => {
 });
 
 // ../mcp/src/tools.ts
-import { randomUUID as randomUUID8 } from "node:crypto";
+import { randomUUID as randomUUID9 } from "node:crypto";
 function resolveToolAllowlist(env) {
   const raw = env.CANDLE_MCP_TOOLS?.trim();
   if (!raw)
@@ -64127,7 +64127,7 @@ async function getOperation(args, cfg, doFetch) {
   };
 }
 async function swap2(args, cfg, doFetch) {
-  const clientSwapId = typeof args.clientSwapId === "string" && args.clientSwapId.length > 0 ? args.clientSwapId : randomUUID8();
+  const clientSwapId = typeof args.clientSwapId === "string" && args.clientSwapId.length > 0 ? args.clientSwapId : randomUUID9();
   const { url, init } = buildRequest("candle_swap", { ...args, clientSwapId }, cfg);
   let ok;
   let body;
@@ -65469,6 +65469,10 @@ var ENVIRONMENT = [
     description: "candle perps: Candle's Hyperliquid builder address, pinned for the check every build passes before it is signed; without it the release's, else the one the server reports"
   },
   { name: "CANDLE_HYPERLIQUID_NETWORK", description: "candle perps: set to testnet to trade Hyperliquid testnet" },
+  {
+    name: "CANDLE_PERPS_WITHDRAW_PINS",
+    description: "candle perps withdraw: JSON {token, destinationDex, depositories, amountForm} pinning what every withdrawal is checked against before it is signed; this release ships none, so without it withdrawals are refused"
+  },
   { name: "CANDLE_NO_UPDATE_NOTIFIER", description: "Set to 1 to silence the update notice" },
   {
     name: "CANDLE_KEYSTORE_PASSPHRASE",
@@ -65657,8 +65661,8 @@ var HELP = {
   },
   perps: {
     group: "Trade",
-    summary: "Hyperliquid perpetuals from your EVM TEE wallet: setup, deposit, open, close, cancel, orders, positions, leverage",
-    description: "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay, and the account's P&L (candle pnl) carries a Hyperliquid section.",
+    summary: "Hyperliquid perpetuals from your EVM TEE wallet: setup, deposit, withdraw, open, close, cancel, orders, positions, leverage",
+    description: "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
@@ -65679,7 +65683,14 @@ var HELP = {
         invocation: "orders [--wallet <tee>]",
         description: "Open orders on Hyperliquid, and every action Candle built"
       },
-      { invocation: "positions [--wallet <tee>]", description: "Positions and account value, read live" },
+      {
+        invocation: "withdraw <amount> --to solana|hood [--wallet <evm tee>] | withdraw status <id>",
+        description: "Move USDC from the Hyperliquid account to this key's own Solana or Hood TEE wallet through Relay (perps:withdraw); one vault unlock and a typed confirm, no --yes"
+      },
+      {
+        invocation: "positions [--wallet <tee>]",
+        description: "Positions, account value and withdrawable USDC, read live, and any withdrawal in flight"
+      },
       { invocation: "leverage <coin> <x> [--isolated]", description: "Set a market's leverage and margin mode" }
     ],
     flags: [
@@ -65697,7 +65708,8 @@ var HELP = {
         invocation: "--to <evm tee>",
         description: "deposit from Solana: the EVM TEE wallet whose account receives it"
       },
-      { invocation: "--id <clientDepositId>", description: "deposit: the idempotency id (default: a new one)" },
+      { invocation: "--id <id>", description: "deposit and withdraw: the idempotency id (default: a new one)" },
+      { invocation: "--keystore <path>", description: "withdraw: the vault whose unlock confirms the withdrawal" },
       { invocation: "--rpc-url <url>", description: "deposit from Solana: the RPC the deposit check reads" },
       { invocation: "--no-submit", description: "Build and check only; sign and submit nothing" },
       { invocation: "--sign-only", description: "Build, check and sign through the relay; submit nothing" },
@@ -65709,9 +65721,10 @@ var HELP = {
       "candle perps open BTC long 0.01",
       "candle perps open ETH short 0.5 --price 3200 --tp 2900 --sl 3400",
       "candle perps close BTC",
-      "candle perps leverage BTC 5 --isolated"
+      "candle perps leverage BTC 5 --isolated",
+      "candle perps withdraw 25 --to solana"
     ],
-    env: [...ENV_API, "CANDLE_HYPERLIQUID_BUILDER", "CANDLE_HYPERLIQUID_NETWORK"]
+    env: [...ENV_API, "CANDLE_HYPERLIQUID_BUILDER", "CANDLE_HYPERLIQUID_NETWORK", "CANDLE_PERPS_WITHDRAW_PINS"]
   },
   transfer: {
     group: "Trade",
@@ -74289,6 +74302,13 @@ async function perpsLeverage(args, ctx) {
     return tradingFailure(ctx, error);
   }
 }
+function formatUsdcMicros(value) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    return "?";
+  const micros = BigInt(value);
+  const frac = (micros % 1000000n).toString().padStart(6, "0").replace(/0+$/, "");
+  return frac ? `${micros / 1000000n}.${frac}` : `${micros / 1000000n}`;
+}
 async function perpsPositions(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
   if ("error" in parsed)
@@ -74312,6 +74332,13 @@ async function perpsPositions(args, ctx) {
     for (const p of positions) {
       const leverage = p.leverage ?? {};
       out.write(`  ${safeText(p.coin)} ${safeText(p.szi)} at ${safeText(p.entryPx)}, value ${safeText(p.positionValue)}, uPnL ${safeText(p.unrealizedPnl)}, ${safeText(leverage.value)}x ${safeText(leverage.type)}, liq ${safeText(p.liquidationPx ?? "none")}
+`);
+    }
+    const open5 = Array.isArray(result.openWithdrawals) ? result.openWithdrawals : null;
+    out.write(`Withdrawable now: ${safeText(result.withdrawable)} USDC${open5 === null ? "" : open5.length === 0 ? "; no withdrawal in flight" : ""}.
+`);
+    for (const w of open5 ?? []) {
+      out.write(`  Withdrawal ${safeText(w.id)}: ${safeText(w.status)}, ${formatUsdcMicros(w.amountUsdcMicros)} USDC to ${safeText(w.to)} (candle perps withdraw status ${safeText(w.id)})
 `);
     }
     return 0;
@@ -74497,7 +74524,7 @@ async function perpsDeposit(args, ctx) {
 `);
     output.write(`Relay delivers at least ${minimum} USDC (estimate ${estimate2})${build.firstDeposit ? "; Hyperliquid keeps 1 USDC to activate this new account" : ""}. Candle fee: none.
 `);
-    output.write("There is no withdrawal from Hyperliquid in this release, and `candle tee disable` or `tee sweep` do not reach it.\n");
+    output.write("To bring it back: candle perps withdraw <amount> --to solana|hood (perps:withdraw). `candle tee disable` and `tee sweep` do not reach it, so withdraw before disabling.\n");
     if (sequenced)
       output.write(`Legs, signed one at a time: ${sequenced.plannedLegCount === 2 ? "approval, bridgeDeposit" : "bridgeDeposit"}
 `);
@@ -74549,6 +74576,382 @@ async function perpsDeposit(args, ctx) {
   } catch (error) {
     return tradingFailure(ctx, error);
   }
+}
+
+// src/commands/perps-withdraw.ts
+init_args();
+import { randomUUID as randomUUID5 } from "node:crypto";
+
+// src/hyperliquid-withdraw.ts
+var CANDLE_PERPS_WITHDRAW_PINS = null;
+var RELAY_API_URL = "https://api.relay.link";
+var ZERO = "0x0000000000000000000000000000000000000000";
+var EVM_ADDRESS_RE2 = /^0x[0-9a-fA-F]{40}$/;
+var BYTES32_RE = /^0x[0-9a-fA-F]{64}$/;
+var RELAY_NONCE_MAPPING_TYPES = {
+  NonceMapping: [
+    { name: "chainId", type: "string" },
+    { name: "wallet", type: "address" },
+    { name: "depositor", type: "address" },
+    { name: "id", type: "bytes32" },
+    { name: "nonce", type: "uint256" }
+  ]
+};
+var HYPERLIQUID_SEND_ASSET_TYPES = {
+  "HyperliquidTransaction:SendAsset": [
+    { name: "hyperliquidChain", type: "string" },
+    { name: "destination", type: "string" },
+    { name: "sourceDex", type: "string" },
+    { name: "destinationDex", type: "string" },
+    { name: "token", type: "string" },
+    { name: "amount", type: "string" },
+    { name: "fromSubAccount", type: "string" },
+    { name: "nonce", type: "uint64" }
+  ]
+};
+var SEND_ASSET_KEYS = HYPERLIQUID_SEND_ASSET_TYPES["HyperliquidTransaction:SendAsset"].map((field) => field.name);
+var REQUEST_AMOUNT_RE = /^(0|[1-9][0-9]{0,11})(\.[0-9]{1,6})?$/;
+var CANONICAL_RE = /^(0|[1-9][0-9]*)(\.[0-9]{0,5}[1-9])?$/;
+var FIXED6_RE = /^(0|[1-9][0-9]*)\.[0-9]{6}$/;
+function parseWithdrawAmount(value) {
+  if (!REQUEST_AMOUNT_RE.test(value))
+    return null;
+  const [whole = "0", frac = ""] = value.split(".");
+  const micros = BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, "0"));
+  return micros > 0n ? micros : null;
+}
+function formatWithdrawAmount(micros) {
+  const frac = (micros % 1000000n).toString().padStart(6, "0").replace(/0+$/, "");
+  return frac ? `${micros / 1000000n}.${frac}` : `${micros / 1000000n}`;
+}
+function parseSendAssetAmount(value, form) {
+  if (typeof value !== "string" || !(form === "canonical" ? CANONICAL_RE : FIXED6_RE).test(value))
+    return null;
+  const [whole = "0", frac = ""] = value.split(".");
+  if (frac.length > 6)
+    return null;
+  return BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, "0"));
+}
+function isObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function exactKeys(value, keys) {
+  const own = Object.keys(value);
+  return own.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+function sameEvm(a, b) {
+  return typeof a === "string" && EVM_ADDRESS_RE2.test(a) && a.toLowerCase() === b.toLowerCase();
+}
+function typesMatch(types2, expected) {
+  if (!isObject(types2) || !exactKeys(types2, Object.keys(expected)))
+    return false;
+  return Object.entries(expected).every(([key, want]) => {
+    const fields = types2[key];
+    return Array.isArray(fields) && fields.length === want.length && fields.every((field, i) => isObject(field) && exactKeys(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
+  });
+}
+function domainMatches(domain, expected) {
+  return isObject(domain) && exactKeys(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
+}
+function verifyWithdrawMapping(build, expect) {
+  const refuse3 = (reason) => ({ ok: false, reason });
+  if (expect.pins === null)
+    return refuse3("the withdrawal pins are pending verification in this release");
+  if (build.id !== expect.id)
+    return refuse3("the build names another withdrawal id");
+  if (!sameEvm(build.from?.address, expect.account))
+    return refuse3("the build withdraws from another account");
+  if (build.to?.chain !== expect.to)
+    return refuse3(`the build lands on ${String(build.to?.chain)}, not ${expect.to}`);
+  const destination = build.to.address;
+  const own = expect.ownDestinations.some((address) => address.startsWith("0x") ? sameEvm(destination, address) : destination === address);
+  if (!own)
+    return refuse3("the build lands on a wallet that is not this key's own");
+  if (parseWithdrawAmount(build.amountUsdc) !== expect.amountMicros)
+    return refuse3("the build is for another amount");
+  const typed = build.typedData;
+  if (!isObject(typed) || typed.primary_type !== "NonceMapping")
+    return refuse3("the typed data is not a NonceMapping");
+  if (!domainMatches(typed.domain, { name: "RelayNonceMapping", version: "2", chainId: 1 }))
+    return refuse3("the NonceMapping domain is not Relay's");
+  if (!typesMatch(typed.types, RELAY_NONCE_MAPPING_TYPES))
+    return refuse3("the NonceMapping type list differs");
+  const message = typed.message;
+  if (!isObject(message) || !exactKeys(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
+    return refuse3("the NonceMapping message has other fields");
+  if (message.chainId !== "hyperliquid")
+    return refuse3("the NonceMapping names another chain");
+  if (!sameEvm(message.wallet, expect.account))
+    return refuse3("the NonceMapping wallet is not this key's account");
+  if (!sameEvm(message.depositor, expect.account))
+    return refuse3("the NonceMapping depositor is not this key's account");
+  if (typeof message.id !== "string" || !BYTES32_RE.test(message.id) || message.id !== build.relayRequestId)
+    return refuse3("the NonceMapping names another Relay request");
+  if (message.nonce !== build.nonce || !Number.isSafeInteger(build.nonce) || build.nonce <= 0)
+    return refuse3("the NonceMapping nonce is not the build's");
+  return { ok: true };
+}
+function verifyWithdrawSendAsset(authorization, expect) {
+  const refuse3 = (reason) => ({ ok: false, reason });
+  const pins = expect.pins;
+  if (pins === null)
+    return refuse3("the withdrawal pins are pending verification in this release");
+  const typed = authorization.typedData;
+  if (!isObject(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
+    return refuse3("the typed data is not a SendAsset");
+  if (!domainMatches(typed.domain, { name: "HyperliquidSignTransaction", version: "1", chainId: 42161 }))
+    return refuse3("the SendAsset domain is not Hyperliquid's user-signed domain");
+  if (!typesMatch(typed.types, HYPERLIQUID_SEND_ASSET_TYPES))
+    return refuse3("the SendAsset type list differs");
+  const m = typed.message;
+  if (!isObject(m) || !exactKeys(m, SEND_ASSET_KEYS))
+    return refuse3("the SendAsset message has other fields");
+  if (m.hyperliquidChain !== "Mainnet")
+    return refuse3("the SendAsset is not on Mainnet");
+  if (m.nonce !== expect.mappingNonce || authorization.nonce !== expect.mappingNonce)
+    return refuse3("the SendAsset nonce is not the NonceMapping's");
+  if (parseSendAssetAmount(m.amount, pins.amountForm) !== expect.amountMicros)
+    return refuse3("the SendAsset amount is not the amount asked for");
+  if (m.fromSubAccount !== "")
+    return refuse3("the SendAsset moves from a sub-account");
+  if (m.sourceDex !== "")
+    return refuse3("the SendAsset moves from another dex");
+  if (m.token !== pins.token)
+    return refuse3("the SendAsset moves another token");
+  if (m.destinationDex !== pins.destinationDex)
+    return refuse3("the SendAsset names another destination dex");
+  if (typeof m.destination !== "string" || !pins.depositories.includes(m.destination.toLowerCase()))
+    return refuse3("the SendAsset destination is not a Relay depository on the allow-list");
+  const action = authorization.action;
+  if (!isObject(action) || !exactKeys(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
+    return refuse3("the action has other fields");
+  if (action.type !== "sendAsset" || action.signatureChainId !== "0xa4b1")
+    return refuse3("the action is not a sendAsset");
+  for (const key of SEND_ASSET_KEYS) {
+    if (action[key] !== m[key])
+      return refuse3(`the action's ${key} differs from what is signed`);
+  }
+  return { ok: true };
+}
+async function relayRecipientProblem(fetchImpl, requestId, recipient, relayUrl = RELAY_API_URL) {
+  let body;
+  try {
+    const res = await fetchImpl(`${relayUrl}/requests/v3?id=${encodeURIComponent(requestId)}`, { method: "GET" });
+    if (!res.ok)
+      return `Relay's record of the request could not be read (HTTP ${res.status})`;
+    body = await res.json();
+  } catch (error) {
+    return `Relay's record of the request could not be read (${error instanceof Error ? error.message : "unknown"})`;
+  }
+  const requests = isObject(body) && Array.isArray(body.requests) ? body.requests : [];
+  const match = requests.find((r) => isObject(r) && r.id === requestId);
+  if (!isObject(match))
+    return "Relay does not list this request";
+  const named = match.recipient;
+  const same = recipient.startsWith("0x") ? sameEvm(named, recipient) : named === recipient;
+  return same ? null : `Relay's request pays ${String(named)}, not this key's wallet ${recipient}`;
+}
+
+// src/commands/perps-withdraw.ts
+init_render();
+init_trading();
+init_errors2();
+init_store();
+init_swap();
+init_vault_support();
+var WITHDRAW_SCOPE = "perps:withdraw";
+var ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+var USAGE5 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
+var WITHDRAW_POLL_MS = 10 * 60 * 1000;
+var WITHDRAW_POLL_INTERVAL_MS = 5000;
+var TERMINAL = new Set(["settled", "refunded", "failed"]);
+function usage5(ctx, line) {
+  writeUsageFailure(ctx.deps, line, ctx.json);
+  return 2;
+}
+function withdrawPins(env) {
+  const raw = env.CANDLE_PERPS_WITHDRAW_PINS;
+  if (raw === undefined || raw.trim() === "")
+    return CANDLE_PERPS_WITHDRAW_PINS;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new TradingError("INVALID_PINS", "CANDLE_PERPS_WITHDRAW_PINS is not JSON.");
+  }
+  const p = parsed;
+  if (typeof p !== "object" || p === null || typeof p.token !== "string" || typeof p.destinationDex !== "string" || !Array.isArray(p.depositories) || p.depositories.length === 0 || !p.depositories.every((d) => typeof d === "string" && /^0x[0-9a-fA-F]{40}$/.test(d)) || p.amountForm !== "canonical" && p.amountForm !== "fixed6") {
+    throw new TradingError("INVALID_PINS", "CANDLE_PERPS_WITHDRAW_PINS must be {token, destinationDex, depositories: [0x...], amountForm: canonical|fixed6}.");
+  }
+  return {
+    token: p.token,
+    destinationDex: p.destinationDex,
+    depositories: p.depositories.map((d) => d.toLowerCase()),
+    amountForm: p.amountForm
+  };
+}
+async function withdrawStatus(ctx, id) {
+  const key = await tradingKey(ctx);
+  const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/withdraw/${encodeURIComponent(id)}`);
+  if (ctx.json)
+    return printTradingResult(ctx, result);
+  const to = result.to ?? {};
+  const relay = result.relay;
+  ctx.deps.stdout.write(`Withdrawal ${safeText(id)}: ${safeText(result.status)}, ${safeText(result.amountUsdc)} USDC to ${safeText(to.address)} (${safeText(to.chain)}), fees ${safeText(result.feesUsdc)} USDC${result.failureReason ? `, ${safeText(result.failureReason)}` : ""}. Relay: ${relay ? safeText(relay.status) : "not read"}.
+`);
+  return 0;
+}
+async function perpsWithdraw(args, ctx) {
+  if (args[0] === "status") {
+    if (args.length !== 2 || !ID_RE.test(args[1]))
+      return usage5(ctx, USAGE5);
+    try {
+      return await withdrawStatus(ctx, args[1]);
+    } catch (error) {
+      return tradingFailure(ctx, error);
+    }
+  }
+  if (args.includes("--yes") || args.includes("-y")) {
+    return usage5(ctx, "candle perps withdraw has no --yes: every withdrawal is confirmed at the terminal.");
+  }
+  const parsed = parseArgs(args, {
+    valueFlags: ["--to", "--wallet", "--id", "--keystore"],
+    pathFlags: ["--keystore"]
+  });
+  if ("error" in parsed)
+    return usage5(ctx, parsed.error);
+  const [amount] = parsed.positionals;
+  const to = parsed.values["--to"];
+  if (parsed.positionals.length !== 1 || !amount || to !== "solana" && to !== "hood")
+    return usage5(ctx, USAGE5);
+  const amountMicros = parseWithdrawAmount(amount);
+  if (amountMicros === null)
+    return usage5(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
+  const id = parsed.values["--id"] ?? `withdraw-${randomUUID5()}`;
+  if (!ID_RE.test(id))
+    return usage5(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "perps withdraw"))
+    return 1;
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage5(ctx, resolvedVault.error);
+  try {
+    const pins = withdrawPins(ctx.deps.env);
+    if (pins === null) {
+      throw new TradingError("PERPS_WITHDRAW_UNVERIFIED", "Hyperliquid withdrawals wait on a recorded verification of Relay's quote shape in this release. Nothing was built.");
+    }
+    const key = await tradingKey(ctx);
+    const { wallet } = await perpsWallet(ctx, key, parsed.values["--wallet"], WITHDRAW_SCOPE);
+    if (!wallet)
+      throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.");
+    const { rows } = await listTradingWallets(ctx, key);
+    const ownDestinations = to === "hood" ? [wallet.address] : rows.filter((row) => row.chain === "solana").map((row) => row.address);
+    if (ownDestinations.length === 0)
+      throw new TradingError("TEE_WALLET_REQUIRED", "This key has no Solana TEE wallet, so --to solana has nowhere to land. Withdraw --to hood instead.");
+    ctx.deps.stderr.write(`Withdrawal: ${id}
+`);
+    const build = await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw", {
+      clientWithdrawalId: id,
+      amountUsdc: amount,
+      to,
+      wallet: wallet.id
+    });
+    if (build.status !== "quoted")
+      return printTradingResult(ctx, build);
+    const refused = (problem) => new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this withdrawal: ${problem}. Nothing was signed.`);
+    const mapping = verifyWithdrawMapping(build, {
+      id,
+      account: wallet.address,
+      to,
+      amountMicros,
+      ownDestinations,
+      pins
+    });
+    if (!mapping.ok)
+      throw refused(mapping.reason);
+    const recipient = await relayRecipientProblem(ctx.deps.fetch, build.relayRequestId, build.to.address);
+    if (recipient)
+      throw refused(recipient);
+    const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+    output.write(`Withdraw ${formatWithdrawAmount(amountMicros)} USDC from Hyperliquid account ${safeText(wallet.address)} through Relay.
+`);
+    output.write(`Relay fees ${safeText(build.feesUsdc)} USDC; you receive about ${safeText(build.netUsdc)} USDC, at least ${safeText(build.minimumOutUsdc)}.
+`);
+    output.write(`To this key's ${to === "hood" ? "Hood" : "Solana"} TEE wallet:
+`);
+    output.write(`to   ${groupAddress(build.to.address)}
+`);
+    const positions = await perpsRequest(ctx, key, `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(wallet.id)}`).catch(() => null);
+    if (Array.isArray(positions?.positions) && positions.positions.length > 0)
+      output.write(`This account has open positions: withdrawing margin raises their liquidation risk.
+`);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, {
+      promptText: "Vault passphrase (input hidden): ",
+      reason: `withdraw ${formatWithdrawAmount(amountMicros)} USDC to ${build.to.address}`
+    });
+    closeVault(opened.vault);
+    const typed = await ctx.deps.promptLine(`Type confirm to withdraw ${formatWithdrawAmount(amountMicros)} USDC to ${build.to.address}: `);
+    if (typed.trim().toLowerCase() !== "confirm")
+      throw new TradingError("CANCELLED", "The withdrawal was not confirmed; nothing was signed.");
+    if (typeof build.expiresAt !== "number" || build.expiresAt <= ctx.deps.now())
+      throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start again with a new --id.");
+    const mappingSignature = await relaySignature(ctx, key, wallet, build.typedData);
+    const authorization = await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw/authorize", {
+      clientWithdrawalId: id,
+      signature: mappingSignature
+    });
+    const send = verifyWithdrawSendAsset(authorization, { mappingNonce: build.nonce, amountMicros, pins });
+    if (!send.ok)
+      throw new TradingError("PERPS_BUILD_REFUSED", `Refused to sign the transfer: ${send.reason}. The nonce mapping was posted; nothing can move without this signature.`);
+    const signature = await relaySignature(ctx, key, wallet, authorization.typedData);
+    const exchangeBody = hyperliquidExchangeBody(authorization.action, authorization.nonce, signature);
+    let exchange;
+    try {
+      const res = await ctx.deps.fetch(HYPERLIQUID_EXCHANGE_URLS.mainnet, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(exchangeBody)
+      });
+      const text = await res.text();
+      if (!res.ok)
+        throw new Error(`HTTP ${res.status}`);
+      exchange = JSON.parse(text);
+    } catch (error) {
+      throw new TradingError("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). The signed transfer is in details.exchangeBody and stays valid for two days; check candle perps withdraw status ${id} before resubmitting.`, { exitCode: 3, details: { clientWithdrawalId: id, exchangeBody } });
+    }
+    await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw/submitted", {
+      clientWithdrawalId: id,
+      exchangeResponse: exchange
+    }).catch(() => null);
+    const refusal = venueRefusal(exchange);
+    if (refusal)
+      throw new TradingError("PERPS_VENUE_REFUSED", refusal, { details: { clientWithdrawalId: id, exchange } });
+    ctx.deps.stderr.write(`Submitted to Hyperliquid; following Relay's fill.
+`);
+    const deadline = ctx.deps.now() + WITHDRAW_POLL_MS;
+    let status = await perpsRequest(ctx, key, `/api/v1/agent/perps/withdraw/${encodeURIComponent(id)}`);
+    while (!TERMINAL.has(String(status.status)) && ctx.deps.now() < deadline) {
+      await ctx.deps.sleep(WITHDRAW_POLL_INTERVAL_MS);
+      status = await perpsRequest(ctx, key, `/api/v1/agent/perps/withdraw/${encodeURIComponent(id)}`);
+    }
+    if (!TERMINAL.has(String(status.status)))
+      ctx.deps.stderr.write(`Still ${safeText(status.status)} after 10 minutes. Check it with candle perps withdraw status ${id}.
+`);
+    return printTradingResult(ctx, { ...status, signature, exchange });
+  } catch (error) {
+    if (isVaultError(error))
+      return writeVaultFailure(ctx, error);
+    return tradingFailure(ctx, error);
+  }
+}
+async function relaySignature(ctx, key, wallet, typedData) {
+  const relay = await perpsRequest(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet.id)}/sign`, typedDataAuthorization(wallet, typedData));
+  if (typeof relay.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(relay.signature))
+    throw new TradingError("INVALID_RESPONSE", "The relay did not return a signature.");
+  return relay.signature;
 }
 
 // src/commands/plans.ts
@@ -74625,12 +75028,12 @@ function planPromotionLine(table) {
 
 // src/commands/plans.ts
 init_render();
-var USAGE5 = "Usage: candle plans";
+var USAGE6 = "Usage: candle plans";
 async function plans(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed || parsed.positionals.length > 0) {
     writeUsageFailure(ctx.deps, "error" in parsed ? `${parsed.error}
-${USAGE5}` : USAGE5, ctx.json);
+${USAGE6}` : USAGE6, ctx.json);
     return 2;
   }
   const result = await apiRequest("/api/v1/agent/plans", {
@@ -74869,20 +75272,20 @@ async function writeSecretNames(deps, profile, names) {
   else
     await deps.updateProfile(profile, { secretNames: sorted });
 }
-function usage5(ctx, line) {
+function usage6(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
 async function secretsSet(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage5(ctx, "Usage: candle secrets set <name>");
+    return usage6(ctx, "Usage: candle secrets set <name>");
   const name2 = canonicalSecretName(raw);
   if (name2 === undefined) {
-    return usage5(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage6(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
     writeLocalFailure(ctx.deps, {
@@ -74894,7 +75297,7 @@ async function secretsSet(args, ctx) {
   }
   const value = await ctx.deps.promptSecret(`Value for ${name2} (input hidden): `);
   if (value.length === 0)
-    return usage5(ctx, "An empty value was typed; nothing was stored.");
+    return usage6(ctx, "An empty value was typed; nothing was stored.");
   try {
     await ctx.deps.secretsStore.set(secretRef(ctx.profile, name2), value);
   } catch (error) {
@@ -74914,9 +75317,9 @@ async function secretsSet(args, ctx) {
 async function secretsList(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   if (parsed.positionals.length > 0)
-    return usage5(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+    return usage6(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   const names = await storedSecretNames(ctx.deps, ctx.profile);
   if (ctx.json) {
     ctx.deps.stdout.write(`${JSON.stringify({ ok: true, names, backend: ctx.deps.backend })}
@@ -74935,13 +75338,13 @@ async function secretsList(args, ctx) {
 async function secretsRemove(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage5(ctx, parsed.error);
+    return usage6(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage5(ctx, "Usage: candle secrets remove <name>");
+    return usage6(ctx, "Usage: candle secrets remove <name>");
   const name2 = canonicalSecretName(raw);
   if (name2 === undefined) {
-    return usage5(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage6(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   await ctx.deps.secretsStore.delete(secretRef(ctx.profile, name2));
   const names = await storedSecretNames(ctx.deps, ctx.profile);
@@ -77095,7 +77498,7 @@ init_args();
 init_render();
 init_trading();
 init_swap();
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 var withdrawal = exports_external.object({ withdrawal: exports_external.string(), amountRaw: exports_external.string(), endTime: exports_external.string(), claimable: exports_external.boolean() }).passthrough();
 var positionsSchema = exports_external.object({
   success: exports_external.literal(true),
@@ -77144,16 +77547,16 @@ async function runStake(action, args, ctx) {
     valueFlags: ["--wallet", "--client-stake-id"],
     booleanFlags: ["--yes", ...action === "claim" ? ["--all"] : []]
   });
-  const usage6 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
+  const usage7 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
   }
   const { values, positionals, booleans } = parsed;
-  const id = values["--client-stake-id"] ?? `stake-${randomUUID5()}`;
+  const id = values["--client-stake-id"] ?? `stake-${randomUUID6()}`;
   const all = booleans.has("--all");
   if (!validClientId(id) || id.length > 128 || (action === "positions" ? positionals.length !== 0 : action === "finish" ? positionals.length > 1 : action === "claim" ? all ? positionals.length !== 0 : positionals.length !== 1 : positionals.length !== 1)) {
-    writeUsageFailure(ctx.deps, usage6, ctx.json);
+    writeUsageFailure(ctx.deps, usage7, ctx.json);
     return 2;
   }
   try {
@@ -77935,7 +78338,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE6 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE7 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -78021,7 +78424,7 @@ async function transfer(args, ctx) {
   const flags = parsed.values;
   const asset = flags["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags["--to"] || !flags["--amount"] || [flags["--asset"], flags["--mint"], flags["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags["--mint"] !== undefined && !BASE58_ADDRESS.test(flags["--mint"]) || flags["--token"] !== undefined && !checkEvmAddress(flags["--token"]).ok) {
-    writeUsageFailure(ctx.deps, USAGE6, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE7, ctx.json);
     return 2;
   }
   const to = flags["--to"];
@@ -85927,7 +86330,7 @@ init_args();
 init_release();
 import { dirname as dirname10, join as join11 } from "node:path";
 init_render();
-var USAGE7 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE8 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -85959,19 +86362,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}
-${USAGE7}`, json);
+${USAGE8}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeUsageFailure(deps, `verify takes exactly one file.
-${USAGE7}`, json);
+${USAGE8}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeUsageFailure(deps, `--bundle is required.
-${USAGE7}`, json);
+${USAGE8}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -85985,7 +86388,7 @@ ${USAGE7}`, json);
   }
   if (resolved.kind === "absent") {
     writeUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE7}`, json);
+${USAGE8}`, json);
     return 2;
   }
   const identity = resolved.uri;
@@ -86094,7 +86497,7 @@ function writeFailure2(ctx, result) {
 }
 async function setAllowLaunch(args, ctx, enabled) {
   const { deps, apiUrl, json } = ctx;
-  const usage6 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
+  const usage7 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
   const command = enabled ? "wallets allow-launch" : "wallets disallow-launch";
   const parsed = parseArgs(args, enabled ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -86102,7 +86505,7 @@ async function setAllowLaunch(args, ctx, enabled) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeUsageFailure(deps, `Name at least one wallet. ${usage6}`, json);
+    writeUsageFailure(deps, `Name at least one wallet. ${usage7}`, json);
     return 2;
   }
   const skipConfirm = !enabled && parsed.booleans.has("--yes");
@@ -86205,8 +86608,8 @@ init_args();
 init_render();
 init_trading();
 init_swap();
-import { randomUUID as randomUUID6 } from "node:crypto";
-var USAGE8 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+import { randomUUID as randomUUID7 } from "node:crypto";
+var USAGE9 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 function splitKeep(args) {
@@ -86281,7 +86684,7 @@ async function embeddedSolana(ctx, key, wallet) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE8}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE9}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -86290,9 +86693,9 @@ async function walletsCloseEmpty(args, ctx) {
     return 2;
   }
   const named = parsed.values["--client-trade-id"];
-  const id = named ?? `close-${randomUUID6()}`;
+  const id = named ?? `close-${randomUUID7()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE8, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE9, ctx.json);
     return 2;
   }
   const keep = lifted.keep;
@@ -86421,7 +86824,7 @@ function trustTable(rows) {
 }
 async function setTrust(args, ctx, trusted) {
   const { deps, apiUrl, json } = ctx;
-  const usage6 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
+  const usage7 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
   const command = trusted ? "wallets trust" : "wallets untrust";
   const parsed = parseArgs(args, trusted ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -86429,7 +86832,7 @@ async function setTrust(args, ctx, trusted) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeUsageFailure(deps, `Name at least one wallet. ${usage6}`, json);
+    writeUsageFailure(deps, `Name at least one wallet. ${usage7}`, json);
     return 2;
   }
   const skipConfirm = !trusted && parsed.booleans.has("--yes");
@@ -86716,7 +87119,8 @@ var COMMANDS = {
       cancel: perpsCancel,
       orders: perpsOrders,
       positions: perpsPositions,
-      leverage: perpsLeverage
+      leverage: perpsLeverage,
+      withdraw: perpsWithdraw
     }
   },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },

@@ -107,6 +107,11 @@ export const ENVIRONMENT: EnvVar[] = [
       "candle perps: Candle's Hyperliquid builder address, pinned for the check every build passes before it is signed; without it the release's, else the one the server reports",
   },
   { name: "CANDLE_HYPERLIQUID_NETWORK", description: "candle perps: set to testnet to trade Hyperliquid testnet" },
+  {
+    name: "CANDLE_PERPS_WITHDRAW_PINS",
+    description:
+      "candle perps withdraw: JSON {token, destinationDex, depositories, amountForm} pinning what every withdrawal is checked against before it is signed; this release ships none, so without it withdrawals are refused",
+  },
   { name: "CANDLE_NO_UPDATE_NOTIFIER", description: "Set to 1 to silence the update notice" },
   {
     name: "CANDLE_KEYSTORE_PASSPHRASE",
@@ -346,9 +351,9 @@ export const HELP: Record<string, Topic> = {
   perps: {
     group: "Trade",
     summary:
-      "Hyperliquid perpetuals from your EVM TEE wallet: setup, deposit, open, close, cancel, orders, positions, leverage",
+      "Hyperliquid perpetuals from your EVM TEE wallet: setup, deposit, withdraw, open, close, cancel, orders, positions, leverage",
     description:
-      "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay, and the account's P&L (candle pnl) carries a Hyperliquid section.",
+      "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
@@ -370,7 +375,15 @@ export const HELP: Record<string, Topic> = {
         invocation: "orders [--wallet <tee>]",
         description: "Open orders on Hyperliquid, and every action Candle built",
       },
-      { invocation: "positions [--wallet <tee>]", description: "Positions and account value, read live" },
+      {
+        invocation: "withdraw <amount> --to solana|hood [--wallet <evm tee>] | withdraw status <id>",
+        description:
+          "Move USDC from the Hyperliquid account to this key's own Solana or Hood TEE wallet through Relay (perps:withdraw); one vault unlock and a typed confirm, no --yes",
+      },
+      {
+        invocation: "positions [--wallet <tee>]",
+        description: "Positions, account value and withdrawable USDC, read live, and any withdrawal in flight",
+      },
       { invocation: "leverage <coin> <x> [--isolated]", description: "Set a market's leverage and margin mode" },
     ],
     flags: [
@@ -389,7 +402,8 @@ export const HELP: Record<string, Topic> = {
         invocation: "--to <evm tee>",
         description: "deposit from Solana: the EVM TEE wallet whose account receives it",
       },
-      { invocation: "--id <clientDepositId>", description: "deposit: the idempotency id (default: a new one)" },
+      { invocation: "--id <id>", description: "deposit and withdraw: the idempotency id (default: a new one)" },
+      { invocation: "--keystore <path>", description: "withdraw: the vault whose unlock confirms the withdrawal" },
       { invocation: "--rpc-url <url>", description: "deposit from Solana: the RPC the deposit check reads" },
       { invocation: "--no-submit", description: "Build and check only; sign and submit nothing" },
       { invocation: "--sign-only", description: "Build, check and sign through the relay; submit nothing" },
@@ -402,8 +416,9 @@ export const HELP: Record<string, Topic> = {
       "candle perps open ETH short 0.5 --price 3200 --tp 2900 --sl 3400",
       "candle perps close BTC",
       "candle perps leverage BTC 5 --isolated",
+      "candle perps withdraw 25 --to solana",
     ],
-    env: [...ENV_API, "CANDLE_HYPERLIQUID_BUILDER", "CANDLE_HYPERLIQUID_NETWORK"],
+    env: [...ENV_API, "CANDLE_HYPERLIQUID_BUILDER", "CANDLE_HYPERLIQUID_NETWORK", "CANDLE_PERPS_WITHDRAW_PINS"],
   },
   transfer: {
     group: "Trade",

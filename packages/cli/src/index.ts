@@ -51,6 +51,7 @@ import {
   perpsPositions,
   perpsSetup,
 } from "./commands/perps"
+import { perpsWithdraw } from "./commands/perps-withdraw"
 import { plans } from "./commands/plans"
 import { plugins, runPlugin } from "./commands/plugins"
 import { pnl } from "./commands/pnl"
@@ -205,6 +206,9 @@ const COMMANDS: Record<string, CommandRoute> = {
       orders: perpsOrders,
       positions: perpsPositions,
       leverage: perpsLeverage,
+      // BE-1573 (withdrawals W1): HyperCore to the key's own Solana or Hood TEE wallet, under the
+      // bound key's opt-in `perps:withdraw`. One unlock and one typed confirm; no --yes.
+      withdraw: perpsWithdraw,
     },
   },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },

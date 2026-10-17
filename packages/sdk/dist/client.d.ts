@@ -41,6 +41,7 @@
 import { type SignedTradeLeg } from "./errors";
 import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliquid";
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
+import { type PerpsWithdrawAuthorization, type PerpsWithdrawBuild, type PerpsWithdrawPins } from "./hyperliquid-withdraw";
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans";
 import type { SecretStore } from "./secret-store";
 import type { CandleStaking } from "./staking";
@@ -115,6 +116,13 @@ export interface CandleClientOptions {
     hyperliquidBuilder?: string;
     /** The Hyperliquid network this client trades on. Default mainnet; a build for another is refused. */
     hyperliquidNetwork?: HyperliquidNetwork;
+    /**
+     * The withdrawal pins every withdrawal is checked against before anything is signed: the
+     * perps-USDC `token`, `destinationDex`, Relay's depository allow-list and the amount's string
+     * form. Unset, this release's `CANDLE_PERPS_WITHDRAW_PINS` applies, which is null until a
+     * recorded verification sets it, and then every withdrawal is refused with nothing signed.
+     */
+    perpsWithdrawPins?: PerpsWithdrawPins;
 }
 /** The bonding-curve terms of one (chain, quote asset, tier) cell. */
 export interface CurveTerms {
@@ -1864,6 +1872,84 @@ export interface PerpsActionResult {
     exchange: unknown | null;
     submitError?: string;
 }
+/** `POST /agent/perps/withdraw`: a quote for a withdrawal to this key's own Solana or Hood TEE wallet. */
+export interface PerpsWithdrawBuildRequest {
+    clientWithdrawalId: string;
+    /** USDC, a decimal string with at most 6 decimals. */
+    amountUsdc: string;
+    to: "solana" | "hood";
+    /** The key's EVM TEE wallet row id; the key's only one when omitted. */
+    wallet?: string;
+}
+/** One withdrawal as the server records it, with Relay's live status on a read. */
+export interface PerpsWithdrawStatus {
+    success: true;
+    id: string;
+    status: "quoted" | "authorized" | "submitted" | "settled" | "refunded" | "failed";
+    from: {
+        walletId: string;
+        address: string;
+        network: string;
+    };
+    to: {
+        chain: "solana" | "hood";
+        walletId: string;
+        address: string;
+    };
+    amountUsdc: string;
+    feesUsdc: string;
+    netUsdc: string;
+    minimumOutUsdc: string;
+    relayRequestId: string;
+    nonce: number;
+    failureReason: string | null;
+    relay?: {
+        status: string | null;
+        txHashes: string[];
+    } | null;
+    [key: string]: unknown;
+}
+/** The four withdraw routes, one call each. No check runs here: `perpsWithdraw()` runs them. */
+export interface CandlePerpsWithdraw {
+    build(request: PerpsWithdrawBuildRequest): Promise<PerpsWithdrawBuild>;
+    authorize(request: {
+        clientWithdrawalId: string;
+        signature: string;
+    }): Promise<PerpsWithdrawAuthorization>;
+    reportSubmitted(request: {
+        clientWithdrawalId: string;
+        exchangeResponse: unknown;
+    }): Promise<PerpsWithdrawStatus>;
+    get(clientWithdrawalId: string): Promise<PerpsWithdrawStatus>;
+}
+export interface CandlePerps {
+    withdraw: CandlePerpsWithdraw;
+}
+export interface PerpsWithdrawParams extends Omit<PerpsWalletRef, "submit"> {
+    amountUsdc: string;
+    to: "solana" | "hood";
+    /** Reuse on retry. A new id is generated when omitted. */
+    clientWithdrawalId?: string;
+    /** This key's EVM TEE wallet address: the HyperCore account the USDC leaves. */
+    account: string;
+    /**
+     * This key's own wallet addresses on the chain asked for: its Solana TEE wallet for `solana`,
+     * the EVM TEE wallet itself for `hood`. A build landing anywhere else is refused.
+     */
+    ownDestinations: string[];
+}
+/**
+ * The outcome of `perpsWithdraw()`. `signature` is the SendAsset's, valid for resubmission until
+ * its nonce leaves Hyperliquid's two-day window; a failed submit keeps it.
+ */
+export interface PerpsWithdrawResult {
+    build: PerpsWithdrawBuild;
+    authorization: PerpsWithdrawAuthorization;
+    signature: string;
+    submitted: boolean;
+    exchange: unknown | null;
+    submitError?: string;
+}
 export interface PerpsAccountStatus {
     walletId: string;
     address: string;
@@ -2538,6 +2624,12 @@ export declare class CandleClient {
     private readonly evmRpcUrl?;
     private readonly hyperliquidNetwork;
     private hyperliquidBuilder?;
+    private readonly perpsWithdrawPins;
+    /**
+     * Hyperliquid withdrawals (spec 2026-10-17-hyperliquid-withdrawals-design.md): the routes, one call
+     * each. Needs `perps:withdraw` on the key. `perpsWithdraw()` is the checked flow.
+     */
+    readonly perps: CandlePerps;
     /** Reads scoped to what this key may spend: a one-shot swap's receipt, and spendable balances. */
     readonly wallets: CandleWallets;
     /** The creator fees this account's launched tokens can pay, and the claim (FE-438). */
@@ -3303,6 +3395,18 @@ export declare class CandleClient {
      * that fails it is refused with nothing signed.
      */
     private perpsComplete;
+    /**
+     * Withdraw USDC from the key's Hyperliquid account to the same key's own Solana or Hood TEE wallet
+     * through Relay (spec 2026-10-17, route A). MOVES REAL FUNDS. Needs `perps:withdraw`.
+     *
+     * Every signature is checked first, and a mismatch throws with nothing signed: the NonceMapping
+     * names this key's account and Relay's request, the build lands on one of `ownDestinations`, and
+     * Relay's own record of the request names that same recipient; then the SendAsset carries the
+     * mapping's nonce, the exact amount asked for, and the pinned token, dex and depository. The
+     * client posts the SendAsset to Hyperliquid itself and reports the answer. There is no
+     * confirmation gate here: the CLI has one (`candle perps withdraw`).
+     */
+    perpsWithdraw(params: PerpsWithdrawParams): Promise<PerpsWithdrawResult>;
     /**
      * Sign EIP-712 typed data with a linked EVM TEE wallet through the relay
      * (`eth_signTypedData_v4`). The relay signs only typed data a perps build stamped.

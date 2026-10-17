@@ -193,7 +193,13 @@
     "availability": {
       "retryable": true,
       "action": "The capability is switched off or a required leg is absent in this environment. Retry later; escalate if it persists.",
-      "codes": ["LAUNCH_DISABLED", "FEE_LEG_MISSING", "HOOD_LAUNCH_UNAVAILABLE", "CLOSE_LEDGER_UNAVAILABLE"]
+      "codes": [
+        "LAUNCH_DISABLED",
+        "FEE_LEG_MISSING",
+        "HOOD_LAUNCH_UNAVAILABLE",
+        "CLOSE_LEDGER_UNAVAILABLE",
+        "PERPS_WITHDRAW_DISABLED"
+      ]
     },
     "venue_refused": {
       "retryable": false,

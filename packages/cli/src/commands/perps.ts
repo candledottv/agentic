@@ -80,7 +80,7 @@ function usage(ctx: CommandContext, line: string): number {
  * error code; naming it separates "this deployment does not serve perps" from "something broke".
  * A refusal keeps the server's `limit`, the limit that refused (R3).
  */
-async function perpsRequest(ctx: CommandContext, key: string, path: string, body?: Json): Promise<Json> {
+export async function perpsRequest(ctx: CommandContext, key: string, path: string, body?: Json): Promise<Json> {
   const result = await apiRequest(path, {
     apiUrl: ctx.apiUrl,
     credentials: { apiKey: key },
@@ -122,7 +122,7 @@ async function builderPin(ctx: CommandContext, key: string): Promise<string> {
 }
 
 /** The key's EVM TEE wallet: the one named, or the only one bound to the key. */
-async function perpsWallet(
+export async function perpsWallet(
   ctx: CommandContext,
   key: string,
   name: string | undefined,
@@ -155,7 +155,7 @@ async function perpsWallet(
  * the signature, and a server-returned typed-data object is not in that order, so the payload is
  * serialized canonically rather than in insertion order.
  */
-function typedDataAuthorization(wallet: TradingWallet, typedData: HyperliquidTypedData) {
+export function typedDataAuthorization(wallet: TradingWallet, typedData: HyperliquidTypedData) {
   const body = hyperliquidRelayBody(typedData)
   const payload = hyperliquidCanonicalJson({
     body,
@@ -201,7 +201,7 @@ async function confirm(ctx: CommandContext, build: Json, address: string, yes: b
 }
 
 /** Did Hyperliquid accept it? `status: "ok"`, and no per-order `error` inside an order answer. */
-function venueRefusal(exchange: unknown): string | null {
+export function venueRefusal(exchange: unknown): string | null {
   if (!exchange || typeof exchange !== "object") return "Hyperliquid returned no answer."
   const answer = exchange as { status?: unknown; response?: unknown }
   if (answer.status !== "ok") return `Hyperliquid refused it: ${safeText(JSON.stringify(answer.response ?? answer))}`
@@ -492,6 +492,13 @@ export async function perpsLeverage(args: string[], ctx: CommandContext): Promis
 
 // ── reads ────────────────────────────────────────────────────────────────────────────────────
 
+function formatUsdcMicros(value: unknown): string {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return "?"
+  const micros = BigInt(value)
+  const frac = (micros % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "")
+  return frac ? `${micros / 1_000_000n}.${frac}` : `${micros / 1_000_000n}`
+}
+
 export async function perpsPositions(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, { valueFlags: ["--wallet"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
@@ -512,6 +519,17 @@ export async function perpsPositions(args: string[], ctx: CommandContext): Promi
       const leverage = (p.leverage ?? {}) as Record<string, unknown>
       out.write(
         `  ${safeText(p.coin)} ${safeText(p.szi)} at ${safeText(p.entryPx)}, value ${safeText(p.positionValue)}, uPnL ${safeText(p.unrealizedPnl)}, ${safeText(leverage.value)}x ${safeText(leverage.type)}, liq ${safeText(p.liquidationPx ?? "none")}\n`,
+      )
+    }
+    // BE-1573 (withdrawals W1): what can leave the account now, and any withdrawal in flight. An API
+    // that predates withdrawals sends no `openWithdrawals`, and the line says only what it knows.
+    const open = Array.isArray(result.openWithdrawals) ? (result.openWithdrawals as Record<string, unknown>[]) : null
+    out.write(
+      `Withdrawable now: ${safeText(result.withdrawable)} USDC${open === null ? "" : open.length === 0 ? "; no withdrawal in flight" : ""}.\n`,
+    )
+    for (const w of open ?? []) {
+      out.write(
+        `  Withdrawal ${safeText(w.id)}: ${safeText(w.status)}, ${formatUsdcMicros(w.amountUsdcMicros)} USDC to ${safeText(w.to)} (candle perps withdraw status ${safeText(w.id)})\n`,
       )
     }
     return 0
@@ -606,9 +624,9 @@ async function perpsDepositStatus(ctx: CommandContext, id: string): Promise<numb
  * `candle perps deposit`: move USDC onto the key's Hyperliquid account through Relay, from its Hood
  * or Solana TEE wallet. The asset decides the paying chain. From Hood the account is the paying
  * wallet's own address; from Solana it is the key's EVM TEE wallet (`--to` names it when the key has
- * more than one). Needs `swap:write` and a raw cap on the asset. No withdrawal exists yet: what is
- * deposited stays on Hyperliquid until a later release adds one, and `tee disable` or `tee sweep`
- * do not reach it.
+ * more than one). Needs `swap:write` and a raw cap on the asset. `candle perps withdraw` brings it
+ * back to the key's own Solana or Hood TEE wallet (`perps:withdraw`); `tee disable` and `tee sweep`
+ * do not reach it, so withdraw before disabling.
  */
 export async function perpsDeposit(args: string[], ctx: CommandContext): Promise<number> {
   if (args[0] === "status") {
@@ -726,7 +744,7 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
       `Relay delivers at least ${minimum} USDC (estimate ${estimate})${build.firstDeposit ? "; Hyperliquid keeps 1 USDC to activate this new account" : ""}. Candle fee: none.\n`,
     )
     output.write(
-      "There is no withdrawal from Hyperliquid in this release, and `candle tee disable` or `tee sweep` do not reach it.\n",
+      "To bring it back: candle perps withdraw <amount> --to solana|hood (perps:withdraw). `candle tee disable` and `tee sweep` do not reach it, so withdraw before disabling.\n",
     )
     if (sequenced)
       output.write(

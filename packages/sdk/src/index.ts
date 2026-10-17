@@ -40,6 +40,8 @@ export type {
   BuildTradeResult,
   CandleClientOptions,
   CandleFees,
+  CandlePerps,
+  CandlePerpsWithdraw,
   CandleWallets,
   Chain,
   CloseEmptyAccountsBatch,
@@ -102,6 +104,10 @@ export type {
   PerpsSetupResult,
   PerpsSide,
   PerpsWalletRef,
+  PerpsWithdrawBuildRequest,
+  PerpsWithdrawParams,
+  PerpsWithdrawResult,
+  PerpsWithdrawStatus,
   PortfolioHoodSection,
   PortfolioHoodTeeWallet,
   PortfolioHoodToken,
@@ -202,6 +208,18 @@ export {
   verifyPerpsBuild,
 } from "./hyperliquid"
 export type { HyperliquidPnlFigures, HyperliquidPnlSection, HyperliquidWalletPnl } from "./hyperliquid-pnl"
+export {
+  CANDLE_PERPS_WITHDRAW_PINS,
+  type PerpsWithdrawAuthorization,
+  type PerpsWithdrawBuild,
+  type PerpsWithdrawPins,
+  parseSendAssetAmount,
+  parseWithdrawAmount,
+  relayRecipientProblem,
+  verifyWithdrawMapping,
+  verifyWithdrawSendAsset,
+  type WithdrawCheck,
+} from "./hyperliquid-withdraw"
 export { KeychainSecretStore } from "./keychain-secret-store"
 export {
   type AgentPlansResult,

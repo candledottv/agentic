@@ -917,6 +917,172 @@ function hyperliquidRelayBody(typedData) {
   return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
 }
 
+// src/hyperliquid-withdraw.ts
+var CANDLE_PERPS_WITHDRAW_PINS = null;
+var RELAY_API_URL = "https://api.relay.link";
+var ZERO = "0x0000000000000000000000000000000000000000";
+var EVM_ADDRESS_RE2 = /^0x[0-9a-fA-F]{40}$/;
+var BYTES32_RE = /^0x[0-9a-fA-F]{64}$/;
+var RELAY_NONCE_MAPPING_TYPES = {
+  NonceMapping: [
+    { name: "chainId", type: "string" },
+    { name: "wallet", type: "address" },
+    { name: "depositor", type: "address" },
+    { name: "id", type: "bytes32" },
+    { name: "nonce", type: "uint256" }
+  ]
+};
+var HYPERLIQUID_SEND_ASSET_TYPES = {
+  "HyperliquidTransaction:SendAsset": [
+    { name: "hyperliquidChain", type: "string" },
+    { name: "destination", type: "string" },
+    { name: "sourceDex", type: "string" },
+    { name: "destinationDex", type: "string" },
+    { name: "token", type: "string" },
+    { name: "amount", type: "string" },
+    { name: "fromSubAccount", type: "string" },
+    { name: "nonce", type: "uint64" }
+  ]
+};
+var SEND_ASSET_KEYS = HYPERLIQUID_SEND_ASSET_TYPES["HyperliquidTransaction:SendAsset"].map((field) => field.name);
+var REQUEST_AMOUNT_RE = /^(0|[1-9][0-9]{0,11})(\.[0-9]{1,6})?$/;
+var CANONICAL_RE = /^(0|[1-9][0-9]*)(\.[0-9]{0,5}[1-9])?$/;
+var FIXED6_RE = /^(0|[1-9][0-9]*)\.[0-9]{6}$/;
+function parseWithdrawAmount(value) {
+  if (!REQUEST_AMOUNT_RE.test(value))
+    return null;
+  const [whole = "0", frac = ""] = value.split(".");
+  const micros = BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, "0"));
+  return micros > 0n ? micros : null;
+}
+function parseSendAssetAmount(value, form) {
+  if (typeof value !== "string" || !(form === "canonical" ? CANONICAL_RE : FIXED6_RE).test(value))
+    return null;
+  const [whole = "0", frac = ""] = value.split(".");
+  if (frac.length > 6)
+    return null;
+  return BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, "0"));
+}
+function isObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function exactKeys(value, keys) {
+  const own = Object.keys(value);
+  return own.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+function sameEvm(a, b) {
+  return typeof a === "string" && EVM_ADDRESS_RE2.test(a) && a.toLowerCase() === b.toLowerCase();
+}
+function typesMatch(types, expected) {
+  if (!isObject(types) || !exactKeys(types, Object.keys(expected)))
+    return false;
+  return Object.entries(expected).every(([key, want]) => {
+    const fields = types[key];
+    return Array.isArray(fields) && fields.length === want.length && fields.every((field, i) => isObject(field) && exactKeys(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
+  });
+}
+function domainMatches(domain, expected) {
+  return isObject(domain) && exactKeys(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
+}
+function verifyWithdrawMapping(build, expect) {
+  const refuse = (reason) => ({ ok: false, reason });
+  if (expect.pins === null)
+    return refuse("the withdrawal pins are pending verification in this release");
+  if (build.id !== expect.id)
+    return refuse("the build names another withdrawal id");
+  if (!sameEvm(build.from?.address, expect.account))
+    return refuse("the build withdraws from another account");
+  if (build.to?.chain !== expect.to)
+    return refuse(`the build lands on ${String(build.to?.chain)}, not ${expect.to}`);
+  const destination = build.to.address;
+  const own = expect.ownDestinations.some((address) => address.startsWith("0x") ? sameEvm(destination, address) : destination === address);
+  if (!own)
+    return refuse("the build lands on a wallet that is not this key's own");
+  if (parseWithdrawAmount(build.amountUsdc) !== expect.amountMicros)
+    return refuse("the build is for another amount");
+  const typed = build.typedData;
+  if (!isObject(typed) || typed.primary_type !== "NonceMapping")
+    return refuse("the typed data is not a NonceMapping");
+  if (!domainMatches(typed.domain, { name: "RelayNonceMapping", version: "2", chainId: 1 }))
+    return refuse("the NonceMapping domain is not Relay's");
+  if (!typesMatch(typed.types, RELAY_NONCE_MAPPING_TYPES))
+    return refuse("the NonceMapping type list differs");
+  const message = typed.message;
+  if (!isObject(message) || !exactKeys(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
+    return refuse("the NonceMapping message has other fields");
+  if (message.chainId !== "hyperliquid")
+    return refuse("the NonceMapping names another chain");
+  if (!sameEvm(message.wallet, expect.account))
+    return refuse("the NonceMapping wallet is not this key's account");
+  if (!sameEvm(message.depositor, expect.account))
+    return refuse("the NonceMapping depositor is not this key's account");
+  if (typeof message.id !== "string" || !BYTES32_RE.test(message.id) || message.id !== build.relayRequestId)
+    return refuse("the NonceMapping names another Relay request");
+  if (message.nonce !== build.nonce || !Number.isSafeInteger(build.nonce) || build.nonce <= 0)
+    return refuse("the NonceMapping nonce is not the build's");
+  return { ok: true };
+}
+function verifyWithdrawSendAsset(authorization, expect) {
+  const refuse = (reason) => ({ ok: false, reason });
+  const pins = expect.pins;
+  if (pins === null)
+    return refuse("the withdrawal pins are pending verification in this release");
+  const typed = authorization.typedData;
+  if (!isObject(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
+    return refuse("the typed data is not a SendAsset");
+  if (!domainMatches(typed.domain, { name: "HyperliquidSignTransaction", version: "1", chainId: 42161 }))
+    return refuse("the SendAsset domain is not Hyperliquid's user-signed domain");
+  if (!typesMatch(typed.types, HYPERLIQUID_SEND_ASSET_TYPES))
+    return refuse("the SendAsset type list differs");
+  const m = typed.message;
+  if (!isObject(m) || !exactKeys(m, SEND_ASSET_KEYS))
+    return refuse("the SendAsset message has other fields");
+  if (m.hyperliquidChain !== "Mainnet")
+    return refuse("the SendAsset is not on Mainnet");
+  if (m.nonce !== expect.mappingNonce || authorization.nonce !== expect.mappingNonce)
+    return refuse("the SendAsset nonce is not the NonceMapping's");
+  if (parseSendAssetAmount(m.amount, pins.amountForm) !== expect.amountMicros)
+    return refuse("the SendAsset amount is not the amount asked for");
+  if (m.fromSubAccount !== "")
+    return refuse("the SendAsset moves from a sub-account");
+  if (m.sourceDex !== "")
+    return refuse("the SendAsset moves from another dex");
+  if (m.token !== pins.token)
+    return refuse("the SendAsset moves another token");
+  if (m.destinationDex !== pins.destinationDex)
+    return refuse("the SendAsset names another destination dex");
+  if (typeof m.destination !== "string" || !pins.depositories.includes(m.destination.toLowerCase()))
+    return refuse("the SendAsset destination is not a Relay depository on the allow-list");
+  const action = authorization.action;
+  if (!isObject(action) || !exactKeys(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
+    return refuse("the action has other fields");
+  if (action.type !== "sendAsset" || action.signatureChainId !== "0xa4b1")
+    return refuse("the action is not a sendAsset");
+  for (const key of SEND_ASSET_KEYS) {
+    if (action[key] !== m[key])
+      return refuse(`the action's ${key} differs from what is signed`);
+  }
+  return { ok: true };
+}
+async function relayRecipientProblem(fetchImpl, requestId, recipient, relayUrl = RELAY_API_URL) {
+  let body;
+  try {
+    const res = await fetchImpl(`${relayUrl}/requests/v3?id=${encodeURIComponent(requestId)}`, { method: "GET" });
+    if (!res.ok)
+      return `Relay's record of the request could not be read (HTTP ${res.status})`;
+    body = await res.json();
+  } catch (error) {
+    return `Relay's record of the request could not be read (${error instanceof Error ? error.message : "unknown"})`;
+  }
+  const requests = isObject(body) && Array.isArray(body.requests) ? body.requests : [];
+  const match = requests.find((r) => isObject(r) && r.id === requestId);
+  if (!isObject(match))
+    return "Relay does not list this request";
+  const named = match.recipient;
+  const same = recipient.startsWith("0x") ? sameEvm(named, recipient) : named === recipient;
+  return same ? null : `Relay's request pays ${String(named)}, not this key's wallet ${recipient}`;
+}
+
 // src/internal/rpc-endpoint.ts
 function describeRpcEndpoint(url) {
   try {
@@ -1204,6 +1370,27 @@ class CandleClient {
   evmRpcUrl;
   hyperliquidNetwork;
   hyperliquidBuilder;
+  perpsWithdrawPins;
+  perps = {
+    withdraw: {
+      build: async (request) => {
+        this.requireKey("perps.withdraw.build()");
+        return this.requestJson("POST", "/api/v1/agent/perps/withdraw", request);
+      },
+      authorize: async (request) => {
+        this.requireKey("perps.withdraw.authorize()");
+        return this.requestJson("POST", "/api/v1/agent/perps/withdraw/authorize", request);
+      },
+      reportSubmitted: async (request) => {
+        this.requireKey("perps.withdraw.reportSubmitted()");
+        return this.requestJson("POST", "/api/v1/agent/perps/withdraw/submitted", request);
+      },
+      get: async (clientWithdrawalId) => {
+        this.requireKey("perps.withdraw.get()");
+        return this.requestJson("GET", `/api/v1/agent/perps/withdraw/${encodeURIComponent(clientWithdrawalId)}`);
+      }
+    }
+  };
   wallets = {
     swapReceipt: async (hash) => {
       this.requireKey("wallets.swapReceipt()");
@@ -1277,6 +1464,7 @@ class CandleClient {
     if (opts.evmRpcUrl !== undefined)
       this.evmRpcUrl = opts.evmRpcUrl;
     this.hyperliquidNetwork = opts.hyperliquidNetwork ?? "mainnet";
+    this.perpsWithdrawPins = opts.perpsWithdrawPins ?? CANDLE_PERPS_WITHDRAW_PINS;
     const builder = opts.hyperliquidBuilder ?? CANDLE_HYPERLIQUID_BUILDER_ADDRESS;
     if (builder)
       this.hyperliquidBuilder = builder.toLowerCase();
@@ -2220,6 +2408,85 @@ class CandleClient {
       };
     }
   }
+  async perpsWithdraw(params) {
+    this.requireKey("perpsWithdraw()");
+    if (this.hyperliquidNetwork !== "mainnet")
+      throw new Error("perpsWithdraw: withdrawals are mainnet only");
+    if (this.perpsWithdrawPins === null) {
+      throw new Error("perpsWithdraw: the withdrawal pins are pending verification in this release; nothing was built");
+    }
+    const amountMicros = parseWithdrawAmount(params.amountUsdc);
+    if (amountMicros === null)
+      throw new Error("perpsWithdraw: amountUsdc must be a positive decimal, at most 6 dp");
+    const id = params.clientWithdrawalId ?? `withdraw-${crypto.randomUUID()}`;
+    const build = await this.perps.withdraw.build({
+      clientWithdrawalId: id,
+      amountUsdc: params.amountUsdc,
+      to: params.to,
+      wallet: params.walletId
+    });
+    if (build.status !== "quoted") {
+      throw new Error(`perpsWithdraw: withdrawal ${id} is already ${build.status}; read it with perps.withdraw.get()`);
+    }
+    const mapping = verifyWithdrawMapping(build, {
+      id,
+      account: params.account,
+      to: params.to,
+      amountMicros,
+      ownDestinations: params.ownDestinations,
+      pins: this.perpsWithdrawPins
+    });
+    if (!mapping.ok)
+      throw new Error(`perpsWithdraw: refused to sign this withdrawal: ${mapping.reason}`);
+    const recipient = await relayRecipientProblem(this.fetchImpl, build.relayRequestId, build.to.address);
+    if (recipient)
+      throw new Error(`perpsWithdraw: refused to sign this withdrawal: ${recipient}`);
+    const mappingSignature = await this.signLinkedTypedData({
+      linkedWalletId: params.walletId,
+      privyWalletId: params.privyWalletId,
+      typedData: build.typedData
+    });
+    const authorization = await this.perps.withdraw.authorize({ clientWithdrawalId: id, signature: mappingSignature });
+    const send = verifyWithdrawSendAsset(authorization, {
+      mappingNonce: build.nonce,
+      amountMicros,
+      pins: this.perpsWithdrawPins
+    });
+    if (!send.ok)
+      throw new Error(`perpsWithdraw: refused to sign the transfer: ${send.reason}`);
+    const signature = await this.signLinkedTypedData({
+      linkedWalletId: params.walletId,
+      privyWalletId: params.privyWalletId,
+      typedData: authorization.typedData
+    });
+    let exchange = null;
+    let submitError;
+    try {
+      const res = await this.fetchImpl(HYPERLIQUID_EXCHANGE_URLS.mainnet, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(hyperliquidExchangeBody(authorization.action, authorization.nonce, signature))
+      });
+      const text = await res.text();
+      if (res.ok)
+        exchange = JSON.parse(text);
+      else
+        submitError = `HTTP ${res.status}: ${text}`;
+    } catch (err) {
+      submitError = err instanceof Error ? err.message : String(err);
+    }
+    if (exchange !== null) {
+      await this.perps.withdraw.reportSubmitted({ clientWithdrawalId: id, exchangeResponse: exchange }).catch(() => {});
+    }
+    return {
+      build,
+      authorization,
+      signature,
+      submitted: exchange !== null,
+      exchange,
+      ...submitError !== undefined ? { submitError } : {}
+    };
+  }
   async signLinkedTypedData(params) {
     if (!this.privyAppId) {
       throw new Error("perps signing requires privyAppId in CandleClientOptions (the relay's Privy app id)");
@@ -2788,13 +3055,18 @@ function verifyWebhookSignature(secret, header, body, nowSec, toleranceSec = 300
   return timingSafeEqual(provided, expected);
 }
 export {
+  verifyWithdrawSendAsset,
+  verifyWithdrawMapping,
   verifyWebhookSignature,
   verifyPerpsBuild,
+  relayRecipientProblem,
   planTableRows,
   planTableMarkdown,
   planPromotionLine,
   planLabel,
   perpsDepositProblem,
+  parseWithdrawAmount,
+  parseSendAssetAmount,
   operationIds,
   isSolanaRpcErrorData,
   hyperliquidOrderMarket,
@@ -2818,6 +3090,7 @@ export {
   CandleOperationError,
   CandleClient,
   CandleApiError,
+  CANDLE_PERPS_WITHDRAW_PINS,
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   BRIDGE_ERROR_CODES
 };
