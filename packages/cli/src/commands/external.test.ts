@@ -265,6 +265,7 @@ function fundRpc() {
   const rpc = rpcFake({
     getLatestBlockhash: () => ({ value: { blockhash: BLOCKHASH } }),
     getFeeForMessage: () => ({ value: 5000 }),
+    getBalance: () => ({ value: 10_000_000_000 }),
     sendTransaction: (params) => {
       const tx = Transaction.from(Buffer.from(String((params as string[])[0]), "base64"))
       expect(tx.verifySignatures()).toBe(true)
@@ -434,7 +435,8 @@ describe("external sweep <external> --to <vault>: both named, neither inferred, 
       destination: expectedVault0,
     })
     stdout.text = ""
-    expect(await run(["vault", "fund", "recovered", "--amount", "0.01", "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    // The fund reads the vault key's balance first (BE-1551): 0.0001 SOL fits in what the fake holds.
+    expect(await run(["vault", "fund", "recovered", "--amount", "0.0001", "--rpc-url", RPC, "--json"], deps)).toBe(0)
     expect(JSON.parse(stdout.text.trim().split("\n").at(-1) ?? "")).toMatchObject({
       ok: true,
       external: expectedExternal0,

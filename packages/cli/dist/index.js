@@ -10972,6 +10972,7 @@ var init_errors2 = __esm(() => {
     "EVM_RECIPIENT_IS_TOKEN",
     "EVM_TRANSFER_REVERTED",
     "TRANSFER_CHAIN_MISMATCH",
+    "TRANSFER_INSUFFICIENT_FUNDS",
     "SOLANA_COMMAND_EVM_KEY",
     "RPC_RATE_LIMITED",
     "EVM_RECORD_ENTRY_TOO_LONG",
@@ -17577,6 +17578,7 @@ function parseMintAccount(mint, owner, data) {
     tokenProgram: owner,
     token2022: owner === TOKEN_2022_PROGRAM_ID,
     decimals,
+    associatedTokenAccountSize: owner === TOKEN_2022_PROGRAM_ID ? TLV_START + 4 : ACCOUNT_TYPE_OFFSET2,
     nonTransferable: false,
     defaultFrozen: false,
     paused: false,
@@ -17601,6 +17603,7 @@ function parseMintAccount(mint, owner, data) {
       throw new MintReadError(`${mint} has an invalid mint extension length or a duplicate extension`);
     }
     seen.add(type);
+    profile.associatedTokenAccountSize += REQUIRED_ACCOUNT_TLV_SIZE.get(type) ?? 0;
     const requireLength = (expected) => {
       if (length !== expected)
         throw new MintReadError(`${mint} has an invalid extension ${type} length`);
@@ -17890,11 +17893,17 @@ function classifyTokenSendFailure(input) {
     return "TOKEN_2022_HOOK_REFUSED";
   return;
 }
-var MintReadError, MINT_DECIMALS_OFFSET = 44, MINT_IS_INITIALIZED_OFFSET = 45, MINT_BASE_SIZE2 = 82, ACCOUNT_TYPE_OFFSET2 = 165, TLV_START = 166, MULTISIG_SIZE2 = 355, EXT_TRANSFER_FEE_CONFIG = 1, EXT_DEFAULT_ACCOUNT_STATE = 6, EXT_NON_TRANSFERABLE = 9, EXT_PERMANENT_DELEGATE = 12, EXT_TRANSFER_HOOK = 14, EXT_PAUSABLE = 26, EXECUTE_DISCRIMINATOR, EXTRA_ACCOUNT_METAS_SEED, EXTRA_ACCOUNT_META_SIZE = 35, HookResolutionError;
+var MintReadError, MINT_DECIMALS_OFFSET = 44, MINT_IS_INITIALIZED_OFFSET = 45, MINT_BASE_SIZE2 = 82, ACCOUNT_TYPE_OFFSET2 = 165, TLV_START = 166, MULTISIG_SIZE2 = 355, EXT_TRANSFER_FEE_CONFIG = 1, EXT_DEFAULT_ACCOUNT_STATE = 6, EXT_NON_TRANSFERABLE = 9, EXT_PERMANENT_DELEGATE = 12, EXT_TRANSFER_HOOK = 14, EXT_PAUSABLE = 26, REQUIRED_ACCOUNT_TLV_SIZE, EXECUTE_DISCRIMINATOR, EXTRA_ACCOUNT_METAS_SEED, EXTRA_ACCOUNT_META_SIZE = 35, HookResolutionError;
 var init_token_2022 = __esm(() => {
   init_solana_lite();
   MintReadError = class MintReadError extends Error {
   };
+  REQUIRED_ACCOUNT_TLV_SIZE = new Map([
+    [EXT_TRANSFER_FEE_CONFIG, 4 + 8],
+    [EXT_NON_TRANSFERABLE, 4],
+    [EXT_TRANSFER_HOOK, 4 + 1],
+    [EXT_PAUSABLE, 4]
+  ]);
   EXECUTE_DISCRIMINATOR = new Uint8Array([105, 37, 101, 197, 75, 251, 102, 26]);
   EXTRA_ACCOUNT_METAS_SEED = new TextEncoder().encode("extra-account-metas");
   HookResolutionError = class HookResolutionError extends Error {
@@ -19194,6 +19203,12 @@ function describeBiometry(report) {
         suggestion: "Unlock the Mac with its password to reset Touch ID, then retry. Nothing was written and no other factor is substituted."
       };
     case "not-interactive":
+      if (report.laError?.name === "systemCancel") {
+        return {
+          message: `Touch ID did not complete${la}: ${SYSTEM_CANCEL_WORDS}${reason}. This Mac ${report.biometryType && report.biometryType !== "none" ? `has ${biometryTypeWord(report.biometryType)}` : "may have Touch ID"}.`,
+          suggestion: SYSTEM_CANCEL_SUGGESTION
+        };
+      }
       return {
         message: `Touch ID is not available from this session${la}: this Mac ${report.biometryType && report.biometryType !== "none" ? `has ${biometryTypeWord(report.biometryType)}, but` : "may have Touch ID, but"} no prompt can be shown to a process outside the interactive login session (SSH, a background agent, the lid closed with no display)${reason}.`,
         suggestion: NOT_INTERACTIVE_SUGGESTION
@@ -19256,6 +19271,11 @@ function translateEnclaveFailure(code, message) {
     DOMAIN_NOT_ASSOCIATED: `macOS did not associate the helper with cli.candle.tv: ${message}. ${AASA_REQUIREMENT}`,
     NO_CREDENTIAL: `No synced passkey with this envelope's credential id is available to this Mac or this Apple account: ${message}.`
   };
+  if (code === "NOT_INTERACTIVE" && /\bsystemCancel\b/.test(message)) {
+    return new VaultError("VAULT_FACTOR_UNAVAILABLE", `Touch ID did not complete: ${SYSTEM_CANCEL_WORDS}: ${message}.`, {
+      suggestion: SYSTEM_CANCEL_SUGGESTION
+    });
+  }
   const suggestion = {
     BIOMETRY_UNAVAILABLE: "Open the lid, or use a keyboard with Touch ID, or unlock the Mac with its password first. Nothing was derived and no other factor was tried; the passphrase still opens the vault.",
     NOT_INTERACTIVE: NOT_INTERACTIVE_SUGGESTION,
@@ -19470,7 +19490,7 @@ async function deleteEnclaveKey(deps, session, opts) {
     return false;
   }
 }
-var ENCLAVE_HELPER_ENV = "CANDLE_ENCLAVE_HELPER", CODESIGN_PATH = "/usr/bin/codesign", ENCLAVE_HELPER_TIMEOUT_MS = 120000, CODESIGN_TIMEOUT_MS = 30000, AASA_URL = "https://cli.candle.tv/.well-known/apple-app-site-association", AASA_REQUIREMENT, ENCLAVE_INSTALL_SUGGESTION = "Install a release build of the CLI that ships the signed helper (the darwin tarball and Homebrew place candle-enclave.app beside candle), or set CANDLE_ENCLAVE_HELPER to the path of a signed candle-enclave.app. No other factor is substituted.", NOT_INTERACTIVE_SUGGESTION = "Run the command from a Terminal window inside the logged-in session on that Mac (not over SSH, not from a background agent, not with the lid closed and no display), then retry. Nothing was derived and no other factor is substituted; the passphrase still opens the vault.";
+var ENCLAVE_HELPER_ENV = "CANDLE_ENCLAVE_HELPER", CODESIGN_PATH = "/usr/bin/codesign", ENCLAVE_HELPER_TIMEOUT_MS = 120000, CODESIGN_TIMEOUT_MS = 30000, AASA_URL = "https://cli.candle.tv/.well-known/apple-app-site-association", AASA_REQUIREMENT, ENCLAVE_INSTALL_SUGGESTION = "Install a release build of the CLI that ships the signed helper (the darwin tarball and Homebrew place candle-enclave.app beside candle), or set CANDLE_ENCLAVE_HELPER to the path of a signed candle-enclave.app. No other factor is substituted.", NOT_INTERACTIVE_SUGGESTION = "Run the command from a Terminal window inside the logged-in session on that Mac (not over SSH, not from a background agent, not with the lid closed and no display), then retry. Nothing was derived and no other factor is substituted; the passphrase still opens the vault.", SYSTEM_CANCEL_SUGGESTION = "Retry with the Terminal window in front, and leave it in front until the prompt is answered. If it is cancelled again, run the command from a Terminal window inside the logged-in session on that Mac (not over SSH, not from a background agent, not with the lid closed and no display). Nothing was derived and no other factor is substituted; the passphrase still opens the vault.", SYSTEM_CANCEL_WORDS = "the system cancelled the prompt (for example another window took focus, or this is not the logged-in session: SSH, a background agent, the lid closed with no display)";
 var init_enclave = __esm(() => {
   init_sha256();
   init_esm();
@@ -28207,6 +28227,7 @@ __export(exports_vault_support, {
   requireVaultRaw: () => requireVaultRaw,
   requireTty: () => requireTty,
   requirePromptStreams: () => requirePromptStreams,
+  refusePromptsWithoutTerminal: () => refusePromptsWithoutTerminal,
   refuseEnvPassphrase: () => refuseEnvPassphrase,
   openWithTypedPassphrase: () => openWithTypedPassphrase,
   nonDefaultVaultFooter: () => nonDefaultVaultFooter,
@@ -28260,6 +28281,16 @@ function requirePromptStreams(ctx, what) {
     return true;
   writeVaultFailure(ctx, new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal for the passphrase prompt: standard input and standard error must both be a terminal. Standard output may be redirected; that is where the listing goes.`));
   return false;
+}
+function refusePromptsWithoutTerminal(ctx, what) {
+  if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stderr)
+    return ctx;
+  const refuse2 = async () => {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal here: this unlock reads a vault passphrase, a security key PIN or a choice from a prompt, and standard input and standard error must both be a terminal for that. Standard output may be redirected.`, {
+      suggestion: "Run it from a terminal, or pass --factor touch-id or --factor passkey to unlock with a factor that reads no prompt. No environment variable or flag supplies a passphrase or PIN."
+    });
+  };
+  return { ...ctx, deps: { ...ctx.deps, promptSecret: refuse2, promptLine: refuse2 } };
 }
 function vaultPathFor(ctx, parsed) {
   const flag = parsed.values["--keystore"];
@@ -81225,9 +81256,11 @@ async function planTransfer(input) {
   const destination = ataFor(profile, toKey);
   const instructions = [];
   const accountCreationLines = [];
+  let accountRent;
   const destinationState = await tokenAccountFrozen(rpc, encodePubkey(destination));
   if (!destinationState.exists) {
-    const rent = await rpc.getMinimumBalanceForRentExemption(165);
+    const rent = await rpc.getMinimumBalanceForRentExemption(profile.associatedTokenAccountSize);
+    accountRent = rent;
     instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint, tokenProgram }));
     accountCreationLines.push(`create associated token account ${encodePubkey(destination)} (idempotent)`, `account owner ${input.to}`, `account rent ${rent} lamports, paid by ${input.from} if created`);
   }
@@ -81263,6 +81296,8 @@ async function planTransfer(input) {
     from: input.from,
     to: input.to,
     instructions,
+    sourceTokenAccount: encodePubkey(source),
+    ...accountRent !== undefined ? { accountRent } : {},
     token: {
       profile,
       extraAccountsMissing: !hook.ok,
@@ -81292,6 +81327,45 @@ async function quoteTransferFee(rpc, from, instructions) {
     instructions
   });
   return rpc.getFeeForMessage(toBase642(message));
+}
+var FALLBACK_FEE_LAMPORTS = 5000n;
+var TOKEN_ACCOUNT_AMOUNT_OFFSET = 64;
+function tokenAccountAmount(data) {
+  if (data.length < TOKEN_ACCOUNT_AMOUNT_OFFSET + 8)
+    return 0n;
+  return new DataView(data.buffer, data.byteOffset + TOKEN_ACCOUNT_AMOUNT_OFFSET, 8).getBigUint64(0, true);
+}
+async function assertTransferAffordable(solana, plan, feeQuote) {
+  const fee = feeQuote ?? FALLBACK_FEE_LAMPORTS;
+  const rent = plan.accountRent ?? 0n;
+  const lamportsNeeded = (plan.asset === "SOL" ? plan.amountRaw : 0n) + fee + rent;
+  const lamports = await solana.read(() => solana.rpc.getBalance(plan.from));
+  if (plan.sourceTokenAccount !== undefined) {
+    const account = await solana.read(() => solana.rpc.getAccountInfo(plan.sourceTokenAccount));
+    const held = account === null ? 0n : tokenAccountAmount(account.data);
+    if (held < plan.amountRaw) {
+      throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${plan.from} holds ${held} raw of ${plan.asset} and this transfer moves ${plan.amountRaw} raw (${plan.amount}). Nothing was signed or sent.`, {
+        suggestion: "Fund the key with this token first, or send a smaller --amount.",
+        details: {
+          from: plan.from,
+          asset: plan.asset,
+          heldRaw: held.toString(),
+          neededRaw: plan.amountRaw.toString()
+        }
+      });
+    }
+  }
+  if (lamports < lamportsNeeded) {
+    const parts = [
+      ...plan.asset === "SOL" ? [`${plan.amountRaw} to send`] : [],
+      `${fee} fee${feeQuote === null ? " (estimated)" : ""}`,
+      ...rent > 0n ? [`${rent} token account rent`] : []
+    ];
+    throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${plan.from} holds ${lamports} lamports and this transfer needs ${lamportsNeeded} (${parts.join(" + ")}). Nothing was signed or sent.`, {
+      suggestion: "Fund the key with SOL first, or send a smaller --amount. candle vault list --balances shows each key's SOL.",
+      details: { from: plan.from, heldLamports: lamports.toString(), neededLamports: lamportsNeeded.toString() }
+    });
+  }
 }
 function displayTransferPlan(ctx, plan, feeQuote) {
   ctx.deps.stdout.write(`Decoded transfer (local signing only):
@@ -81327,8 +81401,9 @@ async function signAndBroadcastTransfer(input) {
   } catch (error) {
     if (isRateLimited(error))
       notePostSignatureRateLimit(input.ctx, sigB58);
-    return { signature: sigB58, finalized: false };
+    return { signature: sigB58, finalized: false, seen: true };
   }
+  let seen = false;
   for (let i = 0;i < 30; i++) {
     await input.ctx.deps.sleep(500);
     let status;
@@ -81337,17 +81412,24 @@ async function signAndBroadcastTransfer(input) {
     } catch (error) {
       if (isRateLimited(error))
         notePostSignatureRateLimit(input.ctx, sigB58);
-      return { signature: sigB58, finalized: false };
+      return { signature: sigB58, finalized: false, seen: true };
     }
+    if (status)
+      seen = true;
     if (status?.confirmationStatus === "finalized") {
       if (status.err) {
         const named = namedSendFailure(input.plan);
         throw new VaultError("VAULT_WRITE_FAILED", `Transfer failed on chain${named ? ` (${named})` : ""}. Any pending funding receipt will be reconciled on a rerun.`);
       }
-      return { signature: sigB58, finalized: true };
+      return { signature: sigB58, finalized: true, seen: true };
     }
   }
-  return { signature: sigB58, finalized: false };
+  return { signature: sigB58, finalized: false, seen };
+}
+function unfinalizedSendLine(result, suffix = "") {
+  return result.seen ? `Submitted ${result.signature}; finality is not yet confirmed.${suffix}
+` : `Sent ${result.signature}, but no status read found it on the network: it was most likely dropped and nothing moved. Check the signature in an explorer before sending again.${suffix}
+`;
 }
 
 // src/commands/vault-fund.ts
@@ -81386,6 +81468,7 @@ async function fundExternal(ctx, vault, external2, input) {
   }));
   const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions));
   displayTransferPlan(ctx, plan, feeQuote);
+  await assertTransferAffordable(solana, plan, feeQuote);
   await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: external2.address });
   const secret = await decryptKey(vault, fromEntry.id);
   try {
@@ -81399,12 +81482,12 @@ async function fundExternal(ctx, vault, external2, input) {
         from: plan.from,
         amount: plan.amount,
         asset: plan.asset,
-        finalized: result.finalized
+        finalized: result.finalized,
+        ...result.finalized ? {} : { seen: result.seen }
       });
     } else {
       ctx.deps.stdout.write(result.finalized ? `Funded ${external2.label} (${external2.address}) with ${plan.amount} ${plan.asset}: ${result.signature}
-` : `Submitted ${result.signature}; finality is not yet confirmed.
-`);
+` : unfinalizedSendLine(result));
     }
     return result.finalized ? 0 : 3;
   } finally {
@@ -81501,6 +81584,7 @@ async function vaultFund(args, ctx) {
     }));
     const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions));
     displayTransferPlan(ctx, plan, feeQuote);
+    await assertTransferAffordable(solana, plan, feeQuote);
     await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: teeAddress });
     const secret = await decryptKey(vault, fromEntry.id);
     try {
@@ -81535,12 +81619,12 @@ async function vaultFund(args, ctx) {
           from: plan.from,
           amount: plan.amount,
           asset: plan.asset,
-          finalized: result.finalized
+          finalized: result.finalized,
+          ...result.finalized ? {} : { seen: result.seen }
         });
       } else {
         ctx.deps.stdout.write(result.finalized ? `Funded ${teeAddress} with ${plan.amount} ${plan.asset}: ${result.signature}
-` : `Submitted ${result.signature}; finality is not yet confirmed. Receipt recorded.
-`);
+` : unfinalizedSendLine(result, " Receipt recorded."));
       }
       return result.finalized ? 0 : 3;
     } finally {
@@ -85350,8 +85434,7 @@ async function vaultStatus(args, ctx) {
     return usage(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   const unlock = parsed.booleans.has("--unlock");
-  if (unlock && !requireTty(ctx, "vault status --unlock"))
-    return 1;
+  const unlockCtx = refusePromptsWithoutTerminal(ctx, "vault status --unlock");
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await readVaultRaw(path);
     if (raw === null)
@@ -85368,7 +85451,9 @@ async function vaultStatus(args, ctx) {
     const backup = sidecar ? describeLastBackup(sidecar, file.envelopes) : undefined;
     let unlocked;
     if (unlock) {
-      const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+      const vault = hold((await unlockInteractively(unlockCtx, path, raw, {
+        acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+      })).vault);
       unlocked = {
         entries: vault.index.entries.map(describeEntry),
         duplicateLabels: duplicateLabels(vault.index).map((duplicate) => ({
@@ -85794,6 +85879,7 @@ async function vaultTransfer(args, ctx) {
     }));
     const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions));
     displayTransferPlan(ctx, plan, feeQuote);
+    await assertTransferAffordable(solana, plan, feeQuote);
     if (promoted) {
       const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey));
       if (notice !== undefined)
@@ -85822,12 +85908,12 @@ async function vaultTransfer(args, ctx) {
           asset: plan.asset,
           amountRaw: plan.amountRaw.toString(),
           finalized: result.finalized,
+          ...result.finalized ? {} : { seen: result.seen },
           ...activityReport !== undefined ? { activityReport } : {}
         });
       } else {
         ctx.deps.stdout.write(result.finalized ? `Transferred ${plan.amount} ${plan.asset} to ${to}: ${result.signature}
-` : `Submitted ${result.signature}; finality is not yet confirmed.
-`);
+` : unfinalizedSendLine(result));
       }
       return result.finalized ? 0 : 3;
     } finally {

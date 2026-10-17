@@ -86,6 +86,10 @@ export interface TransferPlan {
   to: string
   instructions: Instruction[]
   displayLines: string[]
+  /** BE-1551: the token account the move debits (a token plan only), read by `assertTransferAffordable`. */
+  sourceTokenAccount?: string
+  /** BE-1551: rent the fee payer pays to create the destination's token account, when it is missing. */
+  accountRent?: bigint
   /**
    * What a failed send needs to earn one of R5's four names. Present for every token move, so that
    * a classic mint answers `undefined` from one code path rather than two.
@@ -184,9 +188,11 @@ export async function planTransfer(input: {
   const destination = ataFor(profile, toKey)
   const instructions: Instruction[] = []
   const accountCreationLines: string[] = []
+  let accountRent: bigint | undefined
   const destinationState = await tokenAccountFrozen(rpc, encodePubkey(destination))
   if (!destinationState.exists) {
-    const rent = await rpc.getMinimumBalanceForRentExemption(165)
+    const rent = await rpc.getMinimumBalanceForRentExemption(profile.associatedTokenAccountSize)
+    accountRent = rent
     instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint, tokenProgram }))
     accountCreationLines.push(
       `create associated token account ${encodePubkey(destination)} (idempotent)`,
@@ -235,6 +241,8 @@ export async function planTransfer(input: {
     from: input.from,
     to: input.to,
     instructions,
+    sourceTokenAccount: encodePubkey(source),
+    ...(accountRent !== undefined ? { accountRent } : {}),
     token: {
       profile,
       extraAccountsMissing: !hook.ok,
@@ -272,6 +280,72 @@ export async function quoteTransferFee(
   return rpc.getFeeForMessage(toBase64(message))
 }
 
+/** What a signature costs when the RPC would not quote the message (one signature, base fee). */
+const FALLBACK_FEE_LAMPORTS = 5000n
+
+/** SPL token account layout: the u64 amount follows mint(32) and owner(32). */
+const TOKEN_ACCOUNT_AMOUNT_OFFSET = 64
+
+function tokenAccountAmount(data: Uint8Array): bigint {
+  if (data.length < TOKEN_ACCOUNT_AMOUNT_OFFSET + 8) return 0n
+  return new DataView(data.buffer, data.byteOffset + TOKEN_ACCOUNT_AMOUNT_OFFSET, 8).getBigUint64(0, true)
+}
+
+/**
+ * BE-1551 (T48 row A8): the balance read before the typed confirmation. T48 sent 0.001 SOL from a
+ * key holding nothing; the CLI signed it after `confirm`, the RPC took it, the network dropped it
+ * (no fee payer funds) and the command said "Submitted". So the fee payer's lamports must cover
+ * the amount (a SOL move), the fee and any token account rent, and the source token account must
+ * hold the amount (a token move), or the transfer refuses here with nothing signed. A missing fee
+ * quote is costed at one signature's base fee. Reads go through the caller's client, so a rate
+ * limit is the usual `RPC_RATE_LIMITED` before any signature.
+ */
+export async function assertTransferAffordable(
+  solana: SolanaClient,
+  plan: TransferPlan,
+  feeQuote: bigint | null,
+): Promise<void> {
+  const fee = feeQuote ?? FALLBACK_FEE_LAMPORTS
+  const rent = plan.accountRent ?? 0n
+  const lamportsNeeded = (plan.asset === "SOL" ? plan.amountRaw : 0n) + fee + rent
+  const lamports = await solana.read(() => solana.rpc.getBalance(plan.from))
+  if (plan.sourceTokenAccount !== undefined) {
+    const account = await solana.read(() => solana.rpc.getAccountInfo(plan.sourceTokenAccount as string))
+    const held = account === null ? 0n : tokenAccountAmount(account.data)
+    if (held < plan.amountRaw) {
+      throw new VaultError(
+        "TRANSFER_INSUFFICIENT_FUNDS",
+        `${plan.from} holds ${held} raw of ${plan.asset} and this transfer moves ${plan.amountRaw} raw (${plan.amount}). Nothing was signed or sent.`,
+        {
+          suggestion: "Fund the key with this token first, or send a smaller --amount.",
+          details: {
+            from: plan.from,
+            asset: plan.asset,
+            heldRaw: held.toString(),
+            neededRaw: plan.amountRaw.toString(),
+          },
+        },
+      )
+    }
+  }
+  if (lamports < lamportsNeeded) {
+    const parts = [
+      ...(plan.asset === "SOL" ? [`${plan.amountRaw} to send`] : []),
+      `${fee} fee${feeQuote === null ? " (estimated)" : ""}`,
+      ...(rent > 0n ? [`${rent} token account rent`] : []),
+    ]
+    throw new VaultError(
+      "TRANSFER_INSUFFICIENT_FUNDS",
+      `${plan.from} holds ${lamports} lamports and this transfer needs ${lamportsNeeded} (${parts.join(" + ")}). Nothing was signed or sent.`,
+      {
+        suggestion:
+          "Fund the key with SOL first, or send a smaller --amount. candle vault list --balances shows each key's SOL.",
+        details: { from: plan.from, heldLamports: lamports.toString(), neededLamports: lamportsNeeded.toString() },
+      },
+    )
+  }
+}
+
 export function displayTransferPlan(ctx: CommandContext, plan: TransferPlan, feeQuote: bigint | null): void {
   ctx.deps.stdout.write(`Decoded transfer (local signing only):\n`)
   for (const line of plan.displayLines) ctx.deps.stdout.write(`  ${line}\n`)
@@ -291,7 +365,7 @@ export async function signAndBroadcastTransfer(input: {
   secret64: Uint8Array
   plan: TransferPlan
   beforeBroadcast?: (pending: { signature: string; blockhash: string }) => Promise<void>
-}): Promise<{ signature: string; finalized: boolean }> {
+}): Promise<{ signature: string; finalized: boolean; seen: boolean }> {
   const rpc = input.solana.rpc
   const feePayer = pubkeyFromSecret(input.secret64)
   if (encodePubkey(feePayer) !== input.plan.from) {
@@ -313,8 +387,13 @@ export async function signAndBroadcastTransfer(input: {
   } catch (error) {
     // A failed response cannot prove the transaction was not accepted. Keep its pending receipt.
     if (isRateLimited(error)) notePostSignatureRateLimit(input.ctx, sigB58)
-    return { signature: sigB58, finalized: false }
+    return { signature: sigB58, finalized: false, seen: true }
   }
+  // BE-1551 (A8): whether any status read ever found the signature. A send the RPC accepted and the
+  // network never held (T48: a fee payer with nothing) reads `null` every time, and the caller says
+  // it was most likely dropped rather than "submitted". An unreadable status is not evidence of a
+  // drop, so it counts as seen.
+  let seen = false
   for (let i = 0; i < 30; i++) {
     await input.ctx.deps.sleep(500)
     let status: Awaited<ReturnType<typeof rpc.getSignatureStatus>>
@@ -322,8 +401,9 @@ export async function signAndBroadcastTransfer(input: {
       status = await rpc.getSignatureStatus(sigB58)
     } catch (error) {
       if (isRateLimited(error)) notePostSignatureRateLimit(input.ctx, sigB58)
-      return { signature: sigB58, finalized: false }
+      return { signature: sigB58, finalized: false, seen: true }
     }
+    if (status) seen = true
     if (status?.confirmationStatus === "finalized") {
       if (status.err) {
         // Finalized with an error is the one unambiguous failed send, so it is the one place R5's
@@ -335,8 +415,18 @@ export async function signAndBroadcastTransfer(input: {
           `Transfer failed on chain${named ? ` (${named})` : ""}. Any pending funding receipt will be reconciled on a rerun.`,
         )
       }
-      return { signature: sigB58, finalized: true }
+      return { signature: sigB58, finalized: true, seen: true }
     }
   }
-  return { signature: sigB58, finalized: false }
+  return { signature: sigB58, finalized: false, seen }
+}
+
+/**
+ * BE-1551 (A8): the human line for a send that did not finalize. "Submitted" only when the network
+ * was seen holding it; a signature no status read ever found is worded as most likely dropped.
+ */
+export function unfinalizedSendLine(result: { signature: string; seen: boolean }, suffix = ""): string {
+  return result.seen
+    ? `Submitted ${result.signature}; finality is not yet confirmed.${suffix}\n`
+    : `Sent ${result.signature}, but no status read found it on the network: it was most likely dropped and nothing moved. Check the signature in an explorer before sending again.${suffix}\n`
 }

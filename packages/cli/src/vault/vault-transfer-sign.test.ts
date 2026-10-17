@@ -7,12 +7,14 @@ import { createSolanaRpc, encodePubkey, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID 
 import { createCapture, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
 import type { KeyEntry } from "./format"
 import {
+  assertTransferAffordable,
   assertTransferSigner,
   assertVaultSigner,
   displayTransferPlan,
   namedSendFailure,
   planTransfer,
   signAndBroadcastTransfer,
+  type TransferPlan,
   USDC_MINT,
 } from "./vault-transfer-sign"
 
@@ -416,5 +418,57 @@ describe("BE-326: which roles may sign which transfer (ED-10 amendment)", () => 
   test("vault fund stays vault-key-only", () => {
     expect(() => assertVaultSigner(entry("vault"))).not.toThrow()
     expect(() => assertVaultSigner(entry("tee-wallet"))).toThrow(/vault fund signs from vault keys only/)
+  })
+})
+
+describe("BE-1551 (T48 A8): assertTransferAffordable", () => {
+  /** A client whose two reads answer the given lamports and token account amount (null: no account). */
+  function clientWith(lamports: bigint, tokenAmount: bigint | null) {
+    const rpc = {
+      getBalance: async () => lamports,
+      getAccountInfo: async () => {
+        if (tokenAmount === null) return null
+        const data = new Uint8Array(165)
+        new DataView(data.buffer).setBigUint64(64, tokenAmount, true)
+        return { owner: TOKEN_PROGRAM_ID, lamports: 1n, data }
+      },
+    }
+    return { rpc, read: <T>(fn: () => Promise<T>) => fn() } as unknown as Parameters<typeof assertTransferAffordable>[0]
+  }
+  const tokenPlan = (extra: Partial<TransferPlan> = {}): TransferPlan => ({
+    asset: "USDC",
+    amount: "1.5",
+    amountRaw: 1_500_000n,
+    decimals: 6,
+    mint: USDC_MINT,
+    from,
+    to,
+    instructions: [],
+    displayLines: [],
+    sourceTokenAccount: "SourceAta1111111111111111111111111111111111",
+    ...extra,
+  })
+
+  test("a token move refuses when the source account holds less than the amount, or does not exist", async () => {
+    for (const held of [1_499_999n, null]) {
+      const refused = await assertTransferAffordable(clientWith(10_000_000n, held), tokenPlan(), 5000n).catch((e) => e)
+      expect(refused.code).toBe("TRANSFER_INSUFFICIENT_FUNDS")
+      expect(refused.message).toContain(`holds ${held ?? 0n} raw of USDC and this transfer moves 1500000 raw (1.5)`)
+    }
+    await assertTransferAffordable(clientWith(10_000_000n, 1_500_000n), tokenPlan(), 5000n)
+  })
+
+  test("a token move still needs SOL for the fee and the destination's account rent", async () => {
+    const plan = tokenPlan({ accountRent: 2_039_280n })
+    const refused = await assertTransferAffordable(clientWith(2_044_279n, 1_500_000n), plan, 5000n).catch((e) => e)
+    expect(refused.code).toBe("TRANSFER_INSUFFICIENT_FUNDS")
+    expect(refused.message).toContain("needs 2044280 (5000 fee + 2039280 token account rent)")
+    await assertTransferAffordable(clientWith(2_044_280n, 1_500_000n), plan, 5000n)
+  })
+
+  test("an unquoted fee is costed at one signature and says so", async () => {
+    const plan = tokenPlan({ asset: "SOL", amountRaw: 1_000n, sourceTokenAccount: undefined })
+    const refused = await assertTransferAffordable(clientWith(5_999n, null), plan, null).catch((e) => e)
+    expect(refused.message).toContain("needs 6000 (1000 to send + 5000 fee (estimated))")
   })
 })

@@ -139,6 +139,11 @@ export const VAULT_ERROR_CODES = [
   "EVM_RECIPIENT_IS_TOKEN",
   "EVM_TRANSFER_REVERTED",
   "TRANSFER_CHAIN_MISMATCH",
+  // BE-1551 (T48 row A8): a Solana `vault transfer` or `vault fund` whose fee payer cannot cover the
+  // amount, the fee and any token account rent, or whose token account holds less than the amount.
+  // Read before the typed confirmation; exit 1, nothing signed. Thrown from
+  // `vault/vault-transfer-sign.ts` (`assertTransferAffordable`).
+  "TRANSFER_INSUFFICIENT_FUNDS",
   "SOLANA_COMMAND_EVM_KEY",
   // BE-355 (spec 2026-09-24-cli-default-solana-rpc-design.md, D3): the Solana RPC rate-limited a
   // read, the one retry was rate-limited too, and nothing has been signed. Exit 1, thrown from

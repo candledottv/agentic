@@ -130,8 +130,9 @@ export function requireTty(ctx: CommandContext, what: string): boolean {
  *
  * `vault list` is the one command whose whole output is a document an operator redirects, so
  * stdout is the payload channel and carries no part of the ceremony. Every other command keeps
- * `requireTty` unchanged: relaxing `status --unlock --json`, `vault factor list` and `export-key`
- * is a behaviour change on shipped commands and is its own card (the spec's §7).
+ * `requireTty` unchanged, except `vault status --unlock`, which BE-1551 moved to
+ * `refusePromptsWithoutTerminal` (below). `vault factor list` and `export-key` are still the
+ * spec's §7.
  */
 export function requirePromptStreams(ctx: CommandContext, what: string): boolean {
   if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stderr) return true
@@ -143,6 +144,32 @@ export function requirePromptStreams(ctx: CommandContext, what: string): boolean
     ),
   )
   return false
+}
+
+/**
+ * BE-1551 (T48 row A11): the TTY rule applied at the prompt itself, for a command whose unlock may
+ * need no prompt at all. A Touch ID or synced-passkey unlock reads nothing from a hidden prompt, so
+ * refusing it up front because stdout is a file broke `vault status --unlock --json > file`, the
+ * shape an agent or a script uses. This returns a context whose `promptSecret` and `promptLine`
+ * refuse with the terminal message, before writing anything, whenever the prompt's own streams
+ * (stdin and stderr, `realPromptStreams`) are not both a terminal; with both a terminal it returns
+ * `ctx` unchanged. Stdout is never consulted: it carries the result, not the ceremony. So a
+ * passphrase, a security key PIN, a factor menu or an older-copy question still refuses on a pipe,
+ * and a factor that asks nothing goes through.
+ */
+export function refusePromptsWithoutTerminal(ctx: CommandContext, what: string): CommandContext {
+  if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stderr) return ctx
+  const refuse = async (): Promise<string> => {
+    throw new VaultError(
+      "VAULT_UNLOCK_FAILED",
+      `${what} needs a terminal here: this unlock reads a vault passphrase, a security key PIN or a choice from a prompt, and standard input and standard error must both be a terminal for that. Standard output may be redirected.`,
+      {
+        suggestion:
+          "Run it from a terminal, or pass --factor touch-id or --factor passkey to unlock with a factor that reads no prompt. No environment variable or flag supplies a passphrase or PIN.",
+      },
+    )
+  }
+  return { ...ctx, deps: { ...ctx.deps, promptSecret: refuse, promptLine: refuse } }
 }
 
 /** Where the vault path this invocation uses came from (D3). */

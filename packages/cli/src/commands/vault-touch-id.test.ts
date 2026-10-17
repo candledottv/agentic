@@ -454,11 +454,11 @@ describe("factor add touch-id: every refusal is typed, before the passphrase, an
       message: "No fingerprints are enrolled",
       helperRun: true,
     },
-    // BE-135 (constraint 5): the report a process outside the interactive session gets on a Mac
-    // that HAS Touch ID (LAError -4, systemCancel) is worded as "not available from this session",
-    // names the LAError, and is not "no Touch ID hardware".
+    // BE-135 (constraint 5), BE-1551 (T48 A3): LAError -4, systemCancel, on a Mac that HAS Touch
+    // ID names the LAError, says the system cancelled the prompt (focus lost, or not the logged-in
+    // session), and is not "no Touch ID hardware".
     {
-      name: "not available from this session (SSH, a background agent, the lid closed): LAError systemCancel",
+      name: "the system cancelled the prompt (focus lost, or not the logged-in session): LAError systemCancel",
       opts: {
         script: {
           biometry: "not-interactive",
@@ -468,7 +468,8 @@ describe("factor add touch-id: every refusal is typed, before the passphrase, an
         },
       },
       code: "VAULT_FACTOR_UNAVAILABLE",
-      message: "Touch ID is not available from this session (LAError systemCancel, -4): this Mac has Touch ID, but",
+      message:
+        "Touch ID did not complete (LAError systemCancel, -4): the system cancelled the prompt (for example another window took focus",
       helperRun: true,
     },
     {
@@ -554,12 +555,25 @@ describe("BE-135: the biometry report is worded by state, not collapsed to unava
       biometryType: "touchID",
       laError: { code: -4, name: "systemCancel" },
     })
-    expect(session.message).toContain("not available from this session")
+    expect(session.message).toContain("the system cancelled the prompt")
+    expect(session.message).toContain("another window took focus")
+    expect(session.message).toContain("this is not the logged-in session")
     expect(session.message).toContain("LAError systemCancel, -4")
-    expect(session.message).toContain("this Mac has Touch ID")
+    expect(session.message).toContain("This Mac has Touch ID")
     expect(session.message).not.toContain("no Touch ID sensor")
+    expect(session.message).not.toContain("..")
+    expect(session.suggestion).toContain("Retry with the Terminal window in front")
     expect(session.suggestion).toContain("Terminal window inside the logged-in session")
     expect(session.suggestion).toMatch(/no other factor is substituted/)
+
+    // notInteractive means only "outside the session", and keeps that wording.
+    const outside = describeBiometry({
+      biometry: "not-interactive",
+      biometryType: "touchID",
+      laError: { code: -1004, name: "notInteractive" },
+    })
+    expect(outside.message).toContain("not available from this session")
+    expect(outside.message).not.toContain("took focus")
 
     const unknownType = describeBiometry({
       biometry: "not-interactive",
@@ -603,8 +617,16 @@ describe("BE-135: the biometry report is worded by state, not collapsed to unava
       "LAErrorDomain -4: Authentication canceled. (LAError systemCancel)",
     )
     expect(translated.code).toBe("VAULT_FACTOR_UNAVAILABLE")
-    expect(translated.message).toContain("not available from this session")
-    expect(translated.suggestion).toContain("Terminal window inside the logged-in session")
+    expect(translated.message).toContain("the system cancelled the prompt")
+    expect(translated.message).toContain("another window took focus")
+    expect(translated.suggestion).toContain("Retry with the Terminal window in front")
+    const translatedOutside = translateEnclaveFailure(
+      "NOT_INTERACTIVE",
+      "LAErrorDomain -1004: not interactive. (LAError notInteractive)",
+    )
+    expect(translatedOutside.code).toBe("VAULT_FACTOR_UNAVAILABLE")
+    expect(translatedOutside.message).toContain("not available from this session")
+    expect(translatedOutside.suggestion).toContain("Terminal window inside the logged-in session")
   })
 
   test("status --json carries the biometry type and the LAError from the helper's report", async () => {
@@ -693,6 +715,75 @@ describe("unlocking with Touch ID", () => {
       expect(h.stderr.text).toContain(`Confirm with Touch ID to ${reason}.`)
       expect(h.asked).toEqual([])
     }
+  })
+
+  test("BE-1551 (T48 A11): a Touch ID unlock with stdout not a terminal succeeds and writes exactly one JSON line", async () => {
+    const t = await vaultWithTouchId()
+    const h = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, script: { store: t.add.script.store } })
+    h.deps.isTTY = { stdin: true, stdout: false, stderr: true }
+    expect(
+      await run(["vault", "status", "--unlock", "--factor", t.envelopeId, "--json", "--keystore", t.vaultPath], h.deps),
+    ).toBe(0)
+    const lines = h.stdout.text.split("\n").filter((line) => line !== "")
+    expect(lines).toHaveLength(1)
+    expect((JSON.parse(lines[0] as string) as { ok: boolean; unlocked?: unknown }).ok).toBe(true)
+    expect((JSON.parse(lines[0] as string) as { unlocked?: unknown }).unlocked).toBeDefined()
+    expect(h.asked).toEqual([])
+    expect(h.calls.filter((call) => call.op === "decrypt")).toHaveLength(1)
+
+    // No terminal anywhere (a script or an agent): Touch ID still asks nothing, so it still opens.
+    const piped = await harness({
+      env: { CANDLE_CONFIG_DIR: t.dir },
+      script: { store: t.add.script.store },
+      tty: false,
+    })
+    expect(
+      await run(
+        ["vault", "status", "--unlock", "--factor", "touch-id", "--json", "--keystore", t.vaultPath],
+        piped.deps,
+      ),
+    ).toBe(0)
+    expect(piped.stdout.text.trim().split("\n")).toHaveLength(1)
+    expect(piped.asked).toEqual([])
+  })
+
+  test("BE-1551 (T48 A11): a passphrase unlock, or the factor menu, with stdin not a terminal still refuses before any prompt", async () => {
+    const t = await vaultWithTouchId()
+    for (const factor of [["--factor", "passphrase"], []]) {
+      const h = await harness({
+        env: { CANDLE_CONFIG_DIR: t.dir },
+        script: { store: t.add.script.store },
+        secrets: [t.passphrase],
+        lines: [t.envelopeId],
+      })
+      h.deps.isTTY = { stdin: false, stdout: true, stderr: true }
+      expect(await run(["vault", "status", "--unlock", ...factor, "--json", "--keystore", t.vaultPath], h.deps)).toBe(1)
+      expect(h.asked).toEqual([])
+      expect(h.calls.filter((call) => call.op === "decrypt")).toHaveLength(0)
+      expect(failure(h).code).toBe("VAULT_UNLOCK_FAILED")
+      expect(failure(h).message).toContain("vault status --unlock needs a terminal")
+      expect(failure(h).suggestion).toContain("--factor touch-id")
+    }
+    // stderr not a terminal is the same refusal: the prompt is written there.
+    const noStderr = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase] })
+    noStderr.deps.isTTY = { stdin: true, stdout: true, stderr: false }
+    expect(
+      await run(
+        ["vault", "status", "--unlock", "--factor", "passphrase", "--json", "--keystore", t.vaultPath],
+        noStderr.deps,
+      ),
+    ).toBe(1)
+    expect(noStderr.asked).toEqual([])
+    // And a passphrase unlock with only stdout redirected now opens: the prompt never touches stdout.
+    const toFile = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase] })
+    toFile.deps.isTTY = { stdin: true, stdout: false, stderr: true }
+    expect(
+      await run(
+        ["vault", "status", "--unlock", "--factor", "passphrase", "--json", "--keystore", t.vaultPath],
+        toFile.deps,
+      ),
+    ).toBe(0)
+    expect(toFile.stdout.text.trim().split("\n")).toHaveLength(1)
   })
 
   test("with a passphrase and Touch ID both drivable and no --factor, the operator is asked which", async () => {

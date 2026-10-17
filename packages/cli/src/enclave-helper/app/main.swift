@@ -372,6 +372,10 @@ final class PasskeyCeremony: NSObject, ASAuthorizationControllerDelegate,
 {
     private var outcome: Result<ASAuthorization, Error>?
     private var anchor: NSWindow?
+    /// BE-1551 (T48 item 4): held strongly until the ceremony ends. The controller's `delegate` and
+    /// `presentationContextProvider` are weak, and the controller itself was a local whose last use
+    /// was `performRequests()`, so under `-O` nothing kept the pair alive for the callback.
+    private var controller: ASAuthorizationController?
 
     func run(_ request: ASAuthorizationRequest) throws -> ASAuthorization {
         let app = NSApplication.shared
@@ -392,6 +396,7 @@ final class PasskeyCeremony: NSObject, ASAuthorizationControllerDelegate,
         let controller = ASAuthorizationController(authorizationRequests: [request])
         controller.delegate = self
         controller.presentationContextProvider = self
+        self.controller = controller
         controller.performRequests()
 
         let deadline = Date(timeIntervalSinceNow: passkeyCeremonyTimeout)
@@ -400,6 +405,7 @@ final class PasskeyCeremony: NSObject, ASAuthorizationControllerDelegate,
         }
         window.close()
         anchor = nil
+        self.controller = nil
         guard let result = outcome else {
             throw Failure(code: "CANCELLED", message: "the passkey sheet was not answered in time")
         }
@@ -465,7 +471,10 @@ func passkeyRegister(rpId: String, userId: Data, userName: String, clientDataHas
     request.prf = .checkForSupport
     let authorization: ASAuthorization
     do {
-        authorization = try PasskeyCeremony().run(request)
+        // The ceremony is the controller's weak delegate: keep it alive until `run` returns
+        // (BE-1551; a temporary here was the "weak reference will always be nil" warning).
+        let ceremony = PasskeyCeremony()
+        authorization = try withExtendedLifetime(ceremony) { try ceremony.run(request) }
     } catch {
         throw passkeyFailure(error)
     }
@@ -494,7 +503,10 @@ func passkeyAssert(rpId: String, credentialId: Data, clientDataHash: Data, prfSa
     request.prf = .inputValues(.init(saltInput1: prfSalt, saltInput2: nil))
     let authorization: ASAuthorization
     do {
-        authorization = try PasskeyCeremony().run(request)
+        // The ceremony is the controller's weak delegate: keep it alive until `run` returns
+        // (BE-1551; a temporary here was the "weak reference will always be nil" warning).
+        let ceremony = PasskeyCeremony()
+        authorization = try withExtendedLifetime(ceremony) { try ceremony.run(request) }
     } catch {
         throw passkeyFailure(error)
     }

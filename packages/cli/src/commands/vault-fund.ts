@@ -38,11 +38,13 @@ import { wipe } from "../vault/hygiene"
 import { assertNotEvmEntry, sameAddress } from "../vault/promote-support"
 import { decryptKey } from "../vault/store"
 import {
+  assertTransferAffordable,
   assertVaultSigner,
   displayTransferPlan,
   planTransfer,
   quoteTransferFee,
   signAndBroadcastTransfer,
+  unfinalizedSendLine,
 } from "../vault/vault-transfer-sign"
 import {
   confirmSend,
@@ -112,6 +114,7 @@ async function fundExternal(
   )
   const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
   displayTransferPlan(ctx, plan, feeQuote)
+  await assertTransferAffordable(solana, plan, feeQuote)
   await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: external.address })
 
   const secret = await decryptKey(vault, fromEntry.id)
@@ -127,12 +130,13 @@ async function fundExternal(
         amount: plan.amount,
         asset: plan.asset,
         finalized: result.finalized,
+        ...(result.finalized ? {} : { seen: result.seen }),
       })
     } else {
       ctx.deps.stdout.write(
         result.finalized
           ? `Funded ${external.label} (${external.address}) with ${plan.amount} ${plan.asset}: ${result.signature}\n`
-          : `Submitted ${result.signature}; finality is not yet confirmed.\n`,
+          : unfinalizedSendLine(result),
       )
     }
     return result.finalized ? 0 : 3
@@ -262,6 +266,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     )
     const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
     displayTransferPlan(ctx, plan, feeQuote)
+    await assertTransferAffordable(solana, plan, feeQuote)
     // The one typed confirmation; anything but `confirm` refuses with nothing signed.
     await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: teeAddress })
 
@@ -300,12 +305,13 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
           amount: plan.amount,
           asset: plan.asset,
           finalized: result.finalized,
+          ...(result.finalized ? {} : { seen: result.seen }),
         })
       } else {
         ctx.deps.stdout.write(
           result.finalized
             ? `Funded ${teeAddress} with ${plan.amount} ${plan.asset}: ${result.signature}\n`
-            : `Submitted ${result.signature}; finality is not yet confirmed. Receipt recorded.\n`,
+            : unfinalizedSendLine(result, " Receipt recorded."),
         )
       }
       return result.finalized ? 0 : 3

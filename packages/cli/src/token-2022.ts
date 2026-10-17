@@ -75,6 +75,8 @@ export interface MintProfile {
   tokenProgram: string
   token2022: boolean
   decimals: number
+  /** New ATA size: classic base, or Token-2022 with ImmutableOwner and mint-required account TLVs. */
+  associatedTokenAccountSize: number
   nonTransferable: boolean
   defaultFrozen: boolean
   paused: boolean
@@ -102,6 +104,21 @@ const EXT_NON_TRANSFERABLE = 9
 const EXT_PERMANENT_DELEGATE = 12
 const EXT_TRANSFER_HOOK = 14
 const EXT_PAUSABLE = 26
+
+/**
+ * InitializeAccount's required account extensions (Token-2022's
+ * ExtensionType::get_required_init_account_extensions). Each entry includes its 4-byte TLV header.
+ * The ATA program also requests ImmutableOwner (0-byte body), included once in the 170-byte base.
+ * Presence matters even when a fee is zero, a hook is disabled, or a mint is unpaused.
+ * NonTransferable also requires ImmutableOwner, already counted by the ATA base.
+ * https://docs.rs/spl-token-2022-interface/latest/src/spl_token_2022_interface/extension/mod.rs.html
+ */
+const REQUIRED_ACCOUNT_TLV_SIZE = new Map([
+  [EXT_TRANSFER_FEE_CONFIG, 4 + 8], // TransferFeeAmount
+  [EXT_NON_TRANSFERABLE, 4], // NonTransferableAccount
+  [EXT_TRANSFER_HOOK, 4 + 1], // TransferHookAccount
+  [EXT_PAUSABLE, 4], // PausableAccount
+])
 
 /** The `ExecuteInstruction` discriminator of the SPL transfer-hook interface. */
 const EXECUTE_DISCRIMINATOR = new Uint8Array([105, 37, 101, 197, 75, 251, 102, 26])
@@ -140,6 +157,7 @@ export function parseMintAccount(mint: string, owner: string, data: Uint8Array):
     tokenProgram: owner,
     token2022: owner === TOKEN_2022_PROGRAM_ID,
     decimals,
+    associatedTokenAccountSize: owner === TOKEN_2022_PROGRAM_ID ? TLV_START + 4 : ACCOUNT_TYPE_OFFSET,
     nonTransferable: false,
     defaultFrozen: false,
     paused: false,
@@ -164,6 +182,7 @@ export function parseMintAccount(mint: string, owner: string, data: Uint8Array):
       throw new MintReadError(`${mint} has an invalid mint extension length or a duplicate extension`)
     }
     seen.add(type)
+    profile.associatedTokenAccountSize += REQUIRED_ACCOUNT_TLV_SIZE.get(type) ?? 0
     const requireLength = (expected: number) => {
       if (length !== expected) throw new MintReadError(`${mint} has an invalid extension ${type} length`)
     }

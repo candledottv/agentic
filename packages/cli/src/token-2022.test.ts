@@ -11,6 +11,8 @@ import {
   addExtraAccountMetasForExecute,
   calculateFee,
   createTransferCheckedInstruction,
+  ExtensionType,
+  getAccountLen,
   getDefaultAccountState,
   getExtraAccountMetaAddress,
   getNonTransferable,
@@ -282,6 +284,42 @@ describe("parseMintAccount agrees with spl-token on the same bytes", () => {
     const padded = new Uint8Array(real.length + 64)
     padded.set(real, 0)
     expect(parseMintAccount(mint, TOKEN_2022_PROGRAM_ID, padded).nonTransferable).toBe(true)
+  })
+})
+
+describe("BE-1551: ATA sizing includes ImmutableOwner and every required account extension", () => {
+  const extensions = [
+    { type: ExtensionType.TransferFeeConfig, body: new Uint8Array(108), account: ExtensionType.TransferFeeAmount },
+    { type: ExtensionType.NonTransferable, body: new Uint8Array(0), account: ExtensionType.NonTransferableAccount },
+    { type: ExtensionType.TransferHook, body: new Uint8Array(64), account: ExtensionType.TransferHookAccount },
+    { type: ExtensionType.PausableConfig, body: new Uint8Array(33), account: ExtensionType.PausableAccount },
+  ]
+  for (let mask = 0; mask < 16; mask++) {
+    const chosen = extensions.filter((_, i) => mask & (1 << i))
+    test(`required mint extension set ${mask}: agrees with SPL account layout`, () => {
+      const data = chosen.length ? extendedMint(6, chosen) : baseMint(6)
+      const profile = parseMintAccount(mint, TOKEN_2022_PROGRAM_ID, data)
+      expect(profile.associatedTokenAccountSize).toBe(
+        getAccountLen([ExtensionType.ImmutableOwner, ...chosen.map((e) => e.account)]),
+      )
+    })
+  }
+
+  test("classic uses 165 bytes; padded Token-2022 and mint-only extensions still need only 170", () => {
+    expect(parseMintAccount(mint, TOKEN_PROGRAM_ID, baseMint(6)).associatedTokenAccountSize).toBe(getAccountLen([]))
+    for (const data of [
+      extendedMint(6, []),
+      extendedMint(6, [
+        { type: ExtensionType.PermanentDelegate, body: owner.toBytes() },
+        { type: ExtensionType.DefaultAccountState, body: new Uint8Array([1]) },
+        { type: ExtensionType.MetadataPointer, body: new Uint8Array(64) },
+        { type: ExtensionType.TokenMetadata, body: new Uint8Array(400) },
+      ]),
+    ]) {
+      expect(parseMintAccount(mint, TOKEN_2022_PROGRAM_ID, data).associatedTokenAccountSize).toBe(
+        getAccountLen([ExtensionType.ImmutableOwner]),
+      )
+    }
   })
 })
 
@@ -574,6 +612,7 @@ describe("classifyTokenSendFailure names a failed send, never refuses one", () =
     tokenProgram: TOKEN_2022_PROGRAM_ID,
     token2022: true,
     decimals: 6,
+    associatedTokenAccountSize: 170,
     nonTransferable: false,
     defaultFrozen: false,
     paused: false,

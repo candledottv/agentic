@@ -37,7 +37,8 @@ async function fixture() {
         case "getFeeForMessage":
           return reply({ value: 5000 })
         case "getBalance":
-          return reply({ value: lamports })
+          // The TEE wallet's lamports are what the sweep reads; the vault key funding it holds 10 SOL.
+          return reply({ value: params[0] === teeAddress ? lamports : 10_000_000_000 })
         case "getTokenAccountsByOwner":
           return reply({ value: [] })
         case "getSignatureStatuses":

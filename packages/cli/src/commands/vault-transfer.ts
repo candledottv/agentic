@@ -51,11 +51,13 @@ import {
   serverStateNotice,
 } from "../vault/tee-transfer"
 import {
+  assertTransferAffordable,
   assertTransferSigner,
   displayTransferPlan,
   planTransfer,
   quoteTransferFee,
   signAndBroadcastTransfer,
+  unfinalizedSendLine,
 } from "../vault/vault-transfer-sign"
 import {
   confirmSend,
@@ -207,6 +209,8 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
     )
     const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
     displayTransferPlan(ctx, plan, feeQuote)
+    // BE-1551 (A8): a key that cannot pay refuses here, before the confirmation, with nothing signed.
+    await assertTransferAffordable(solana, plan, feeQuote)
     if (promoted) {
       const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey))
       if (notice !== undefined) note(notice)
@@ -238,13 +242,14 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
           asset: plan.asset,
           amountRaw: plan.amountRaw.toString(),
           finalized: result.finalized,
+          ...(result.finalized ? {} : { seen: result.seen }),
           ...(activityReport !== undefined ? { activityReport } : {}),
         })
       } else {
         ctx.deps.stdout.write(
           result.finalized
             ? `Transferred ${plan.amount} ${plan.asset} to ${to}: ${result.signature}\n`
-            : `Submitted ${result.signature}; finality is not yet confirmed.\n`,
+            : unfinalizedSendLine(result),
         )
       }
       return result.finalized ? 0 : 3

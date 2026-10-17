@@ -30,7 +30,7 @@ import {
   describeEntry,
   missingVault,
   refuseEnvPassphrase,
-  requireTty,
+  refusePromptsWithoutTerminal,
   runVaultCommand,
   unlockInteractively,
   usage,
@@ -65,7 +65,10 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
   const path = resolvedVault.path
   const unlock = parsed.booleans.has("--unlock")
-  if (unlock && !requireTty(ctx, "vault status --unlock")) return 1
+  // BE-1551 (A11): no up-front TTY refusal. A passphrase, PIN or menu prompt refuses where it is
+  // reached when stdin or stderr is not a terminal; Touch ID and a synced passkey ask nothing, so
+  // `--unlock --json > file` works with them. Stdout is the result channel and is never checked.
+  const unlockCtx = refusePromptsWithoutTerminal(ctx, "vault status --unlock")
 
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await readVaultRaw(path)
@@ -96,8 +99,11 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
       | undefined
     if (unlock) {
       const vault = hold(
-        (await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") }))
-          .vault,
+        (
+          await unlockInteractively(unlockCtx, path, raw, {
+            acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+          })
+        ).vault,
       )
       unlocked = {
         entries: vault.index.entries.map(describeEntry),

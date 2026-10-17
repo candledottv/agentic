@@ -225,6 +225,19 @@ export const NOT_INTERACTIVE_SUGGESTION =
   "Run the command from a Terminal window inside the logged-in session on that Mac (not over SSH, not from a background agent, not with the lid closed and no display), then retry. Nothing was derived and no other factor is substituted; the passphrase still opens the vault."
 
 /**
+ * BE-1551 (T48 row A3): `LAError` `systemCancel` is not only "outside the logged-in session". It is
+ * also what a prompt gets when its sheet loses focus (another window takes it), and in T48 the
+ * first `factor add touch-id` from an ordinary Terminal window failed that way and the retry
+ * seconds later worked. So `systemCancel` says both and asks for a retry with the window in front;
+ * `notInteractive` keeps the session wording, which is the only thing it means.
+ */
+export const SYSTEM_CANCEL_SUGGESTION =
+  "Retry with the Terminal window in front, and leave it in front until the prompt is answered. If it is cancelled again, run the command from a Terminal window inside the logged-in session on that Mac (not over SSH, not from a background agent, not with the lid closed and no display). Nothing was derived and no other factor is substituted; the passphrase still opens the vault."
+
+const SYSTEM_CANCEL_WORDS =
+  "the system cancelled the prompt (for example another window took focus, or this is not the logged-in session: SSH, a background agent, the lid closed with no display)"
+
+/**
  * Touch ID's state in words, from what the helper's `info` reported (BE-135). The five states are
  * kept apart on purpose: "not available from this session" (`LAError` `systemCancel` or
  * `notInteractive`, which is what a process outside the interactive login session gets on a Mac
@@ -255,6 +268,12 @@ export function describeBiometry(report: {
           "Unlock the Mac with its password to reset Touch ID, then retry. Nothing was written and no other factor is substituted.",
       }
     case "not-interactive":
+      if (report.laError?.name === "systemCancel") {
+        return {
+          message: `Touch ID did not complete${la}: ${SYSTEM_CANCEL_WORDS}${reason}. This Mac ${report.biometryType && report.biometryType !== "none" ? `has ${biometryTypeWord(report.biometryType)}` : "may have Touch ID"}.`,
+          suggestion: SYSTEM_CANCEL_SUGGESTION,
+        }
+      }
       return {
         message: `Touch ID is not available from this session${la}: this Mac ${report.biometryType && report.biometryType !== "none" ? `has ${biometryTypeWord(report.biometryType)}, but` : "may have Touch ID, but"} no prompt can be shown to a process outside the interactive login session (SSH, a background agent, the lid closed with no display)${reason}.`,
         suggestion: NOT_INTERACTIVE_SUGGESTION,
@@ -321,6 +340,15 @@ export function translateEnclaveFailure(code: string, message: string): VaultErr
     PRF_UNSUPPORTED: `The platform authenticator cannot serve this factor: ${message}.`,
     DOMAIN_NOT_ASSOCIATED: `macOS did not associate the helper with cli.candle.tv: ${message}. ${AASA_REQUIREMENT}`,
     NO_CREDENTIAL: `No synced passkey with this envelope's credential id is available to this Mac or this Apple account: ${message}.`,
+  }
+  if (code === "NOT_INTERACTIVE" && /\bsystemCancel\b/.test(message)) {
+    return new VaultError(
+      "VAULT_FACTOR_UNAVAILABLE",
+      `Touch ID did not complete: ${SYSTEM_CANCEL_WORDS}: ${message}.`,
+      {
+        suggestion: SYSTEM_CANCEL_SUGGESTION,
+      },
+    )
   }
   const suggestion: Partial<Record<EnclaveCode, string>> = {
     BIOMETRY_UNAVAILABLE:

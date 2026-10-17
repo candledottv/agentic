@@ -42,6 +42,14 @@ function classicMint(decimals: number): string {
   return Buffer.from(data).toString("base64")
 }
 
+/** An initialized SPL token account holding `amount` raw (layout: mint, owner, amount, ..., state). */
+function tokenAccount(amount: bigint): string {
+  const data = new Uint8Array(165)
+  new DataView(data.buffer).setBigUint64(64, amount, true)
+  data[108] = 1
+  return Buffer.from(data).toString("base64")
+}
+
 async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: boolean; sweepPending?: boolean } = {}) {
   const made = await makeVault()
   closeVault(made.vault)
@@ -52,6 +60,8 @@ async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: b
   let signingPrompts = 0
   // Everything printed before the confirmation prompt was shown.
   let shownAtConfirm = ""
+  // BE-1551: the source token accounts hold USDC, so the pre-confirmation balance read passes.
+  const fundedTokenAccounts = new Set<string>()
   const { fetch, calls } = createRoutedFetch({
     "/rpc": async (req) => {
       const { method, params, id } = JSON.parse(String(req.init.body))
@@ -65,7 +75,14 @@ async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: b
           if (params[0] === USDC_MINT) {
             return reply({ value: { owner: TOKEN_PROGRAM_ID, lamports: 1, data: [classicMint(6), "base64"] } })
           }
+          if (fundedTokenAccounts.has(params[0])) {
+            return reply({
+              value: { owner: TOKEN_PROGRAM_ID, lamports: 1, data: [tokenAccount(1_000_000_000n), "base64"] },
+            })
+          }
           return reply({ value: null })
+        case "getBalance":
+          return reply({ value: 10_000_000_000 })
         case "getMinimumBalanceForRentExemption":
           return reply(2_039_280)
         case "sendTransaction": {
@@ -112,6 +129,9 @@ async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: b
   const cold = opened.index.entries.find((entry) => entry.label === "cold")!.address
   const tee = opened.index.entries.find((entry) => entry.label === "desk")!
   const teeAddress = tee.address
+  for (const owner of [cold, teeAddress]) {
+    fundedTokenAccounts.add(getAssociatedTokenAddressSync(new PublicKey(USDC_MINT), new PublicKey(owner)).toBase58())
+  }
   tee.role = "tee-wallet"
   tee.exposure.everRemoteExposed = true
   tee.linkedWalletId = "lw_test"
