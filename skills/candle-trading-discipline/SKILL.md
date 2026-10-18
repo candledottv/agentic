@@ -18,7 +18,7 @@ is smaller than your edge.
 
 A round trip is two trades, and each one pays:
 
-- **The platform fee**, in basis points, by tier. Free pays 100, Believer 50, Pro 25, Max 0. Paid
+- **The platform fee**, in basis points, by tier. Free pays 100, Pro 50, Max 25. Paid
   on both legs, so a Free account pays 200 basis points to go in and out.
 - **Slippage**, twice. Not the quoted price impact. A measured round trip through a thin pool cost
   604 basis points against a pool reporting 4 basis points of impact. Two orders of magnitude apart.
@@ -29,12 +29,12 @@ A round trip is two trades, and each one pays:
 **Add them up before you trade, not after.** On a Free tier with a thin-pool round trip, you can be
 down 8% the instant you are in and out, having been right about the direction.
 
-This is also why Max exists: at 0 basis points the fee term vanishes and only friction remains.
+This is also why Max exists: at 25 basis points the fee term is a quarter of Free's, and friction is most of what remains.
 
 ## What this costs in practice, measured
 
 Eleven graduated Solana tokens, sampled from the live feed on 2026-09-16. Each one a paper round
-trip of 0.01 SOL in and straight back out, on a **Max** account, so the platform fee is zero and
+trip of 0.01 SOL in and straight back out, on a **Max** account, whose platform fee was zero at that time, and
 these are **quoted prices only**: no slippage charged, no gas charged.
 
 ```

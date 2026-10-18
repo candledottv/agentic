@@ -11,7 +11,7 @@ key carrying the scopes you actually saw and approved. Every other skill that wr
 candle-trade, candle-webhooks) depends on the key this produces. For an agent that trades from the
 terminal, it also sets up the two custody tiers: the vault (Tier 1, self-custody on this machine)
 and a TEE wallet (Tier 2, agent access) promoted out of it. Custody tiers are not the account plans
-(Free, Believer, Pro, Max).
+(Free, Pro, Max).
 
 ## Setup
 
@@ -68,9 +68,11 @@ any of this: they work with no key at all.
    else the public endpoint (which refuses a promote's token-authority scans, so pass your own);
    only `vault restore`'s gap scan needs `--rpc-url` itself.
 7. Mint the agent's key at the access level it needs with `candle keys create --access
-   read|read-write|read-write-transfer`: Read changes nothing, Read:Write trades and launches and
+   read|write|withdraw` (`read-write` and `read-write-transfer` remain aliases for `write` and
+   `withdraw`): Read changes nothing, Read:Write trades and launches and
    cannot move funds, and only Read:Write:Transfer (Withdraw) can move funds: between the account's
-   own wallets, to approved addresses, and out of its TEE wallet with `candle transfer`. A Write key
+   own wallets, to approved addresses, and out of its TEE wallet with `candle transfer`. A perps-only
+   key, `--access trade-perps` (`account:read` plus `perps:write`), arrives with the next npm release. A Write key
    minted before 2026-10-08 still holds `transfer:write` and lists as custom. The levels
    and the active key limit are in https://docs.candle.tv/developers/agent-access#access-levels, and
    what a trusted wallet allows in https://docs.candle.tv/developers/agent-wallets#trusted-wallets.

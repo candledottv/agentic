@@ -17,9 +17,10 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 2. **Get a key** only when you need to write. Install the Candle CLI
    (`curl -fsSL https://candle.tv/install.sh | bash`, or `brew install candledottv/tap/candle`),
    then `candle setup` (or `candle auth login` alone) authorizes a device from the browser and
-   stores a device token plus an agent key in the OS keychain. That key is Read:Write; a key that
-   must also move funds out of its TEE wallet is Read:Write:Transfer, minted by the owner with
-   `candle keys create --access read-write-transfer` (see
+   stores a device token plus an agent key in the OS keychain. That key is Write (Read:Write); a key that
+   must also move funds out of its TEE wallet is Withdraw (Read:Write:Transfer), minted by the owner with
+   `candle keys create --access withdraw` (`read-write-transfer` still works as an alias). A perps-only key,
+   `--access trade-perps` (`account:read` plus `perps:write`), arrives with the next npm release (see
    https://docs.candle.tv/developers/agent-access#access-levels). The
    vault, TEE wallets and moving funds are covered in https://docs.candle.tv/developers/cli-custody. From then on `candle mcp` runs this MCP server with those stored
    credentials -- no env block. The npm package `@candledottv/cli` stays published for CI,
@@ -29,7 +30,7 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 ## The tool surface
 
-Forty-one tools in the current source; public page editing and posts are unreleased until the next npm release. Eight need no key at all, so a client can be pointed at the server and used before
+Fifty-two tools in the current source; the published `@candledottv/mcp` 0.10.18 has forty-two, and the ten perps account, risk, threshold, fills, funding and market tools arrive with the next npm release. Public page editing and posts are released. Eight need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -70,7 +71,7 @@ anyone signs up for anything.
 | `candle_transfer` | yes | move an asset to an own wallet or an owner-approved withdrawal address |
 | `candle_sweep` | yes | sweep a wallet's base assets to one destination |
 | `candle_launch_token` | yes | launch a token on Solana or Hood. On Solana with a `sol` or `cndl` pair, `mode` `exp-a`, `exp-b` or `exp-c` picks an experimental preset curve, and `mode: "exp-custom"` with `curve` picks your own (V and G, within limits the description states) where the deployment has switched it on; `dryRun: true` first returns its terms (see the candle-launch skill) |
-| `candle_launch_and_seed` | yes | launch and seed with a dev buy in one transaction |
+| `candle_launch_and_seed` | yes | launch with a dev buy: in the same transaction on Solana, a best-effort follow-up on Hood |
 | `candle_report_activity` | yes | report agent activity for verification |
 
 **Find out what happened**
@@ -84,14 +85,14 @@ anyone signs up for anything.
 | Tool | Key | What it does |
 | --- | --- | --- |
 | `candle_get_fees` | yes | the creator fees your launched tokens can pay, and the reason a token cannot be claimed |
-| `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch. It has no destination argument. Use `dryRun: true` first; it answers `LAUNCH_DISABLED` until the server enables it |
+| `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch. It has no destination argument. Use `dryRun: true` first. Always on for a key with `launch:write` |
 | `candle_get_staking` | yes | read eligible Solana wallets' CNDL/sCNDL, withdrawals, rewards, pool wait and eligibility notes |
 | `candle_stake` | yes | stake raw CNDL from the embedded wallet or build for a linked/TEE payer; stable clientStakeId, dryRun first |
 | `candle_unstake` | yes | start withdrawing raw sCNDL; no instant unstake, wait for the pool timelock |
 | `candle_finish_unstake` | yes | finish a selected wallet's matured withdrawal; stable clientStakeId, dryRun first |
 | `candle_claim_staking_reward` | yes | pay one Solana reward to its recorded owner; retry the same rewardId to resolve a pending claim |
 
-**Perps on Hyperliquid** (needs `perps:write` on the key and `CANDLE_KEY_SIGNER_PEM_FILE`; each write is checked before it is signed and submitted to Hyperliquid by the server)
+**Perps on Hyperliquid** (the writes need `perps:write` on the key and `CANDLE_KEY_SIGNER_PEM_FILE`; the reads need no signer; each write is checked before it is signed and submitted to Hyperliquid by the server)
 
 | Tool | Key | What it does |
 | --- | --- | --- |
@@ -102,13 +103,17 @@ anyone signs up for anything.
 | `candle_perps_leverage` | yes | set a market's leverage and margin mode |
 | `candle_perps_deposit` | yes | deposit onto the Hyperliquid account through Relay from the Solana or Hood TEE wallet (needs `swap:write`) |
 | `candle_perps_orders` | yes | open orders and every action Candle built |
-| `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level |
-| `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly |
-| `candle_perps_risk` | yes | the liquidation risk level (ok, warn, critical) and what drives it; `unknown` is an error, never ok; poll it to watch |
-| `candle_perps_thresholds` | yes | the key's risk thresholds, stored and effective |
-| `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; loosening is the owner's |
-| `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed |
-| `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed |
+| `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level (those risk fields are unreleased: next npm release) |
+| `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly (unreleased: next npm release) |
+| `candle_perps_risk` | yes | the liquidation risk level (ok, warn, critical) and what drives it; `unknown` is an error, never ok; poll it to watch (unreleased: next npm release) |
+| `candle_perps_thresholds` | yes | the key's risk thresholds, stored and effective (unreleased: next npm release) |
+| `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; loosening is the owner's (unreleased: next npm release) |
+| `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed (unreleased: next npm release) |
+| `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed (unreleased: next npm release) |
+| `candle_perps_markets` | yes, any scope | Hyperliquid perp markets with volume, open interest and funding; read-only market data, no signer, local server only (unreleased: next npm release) |
+| `candle_perps_market` | yes, any scope | one Hyperliquid market in detail; read-only, no signer, local server only (unreleased: next npm release) |
+| `candle_perps_book` | yes, any scope | one market's order book; read-only, no signer, local server only (unreleased: next npm release) |
+| `candle_perps_candles` | yes, any scope | one market's candles; read-only, no signer, local server only (unreleased: next npm release) |
 
 ## Which CLI command do I need?
 
@@ -266,7 +271,7 @@ CLI does, so it distinguishes "no key" from "wrong environment" from "key revoke
 error alone often cannot.
 
 
-Staking writes require `swap:write` and the deployment's agent-staking flag (off by default).
+Staking writes require `swap:write` and the deployment's agent-staking flag (off by default in code, on at api.alpha.candle.tv).
 They MOVE REAL FUNDS; read the pool's wait and SOL costs before approving them. There is no
 instant unstake on agent surfaces. Pending withdrawal CNDL counts toward nothing for Pro.
 sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood reward

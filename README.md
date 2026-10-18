@@ -80,7 +80,7 @@ Ask an agent to call `candle_get_feed` with `{ "bucket": "new" }` and it works b
 
 ## The tool surface
 
-Forty-one tools in the current source; public page editing and posts are unreleased until the next npm release. Eight need no key, so a client can be pointed at the server and used before anyone
+Fifty-two tools in the current source; the published `@candledottv/mcp` 0.10.18 has forty-two, and the ten perps account, risk, threshold, fills, funding and market tools arrive with the next npm release. Public page editing and posts are released. Eight need no key, so a client can be pointed at the server and used before anyone
 signs up.
 
 | | Tool | Key | What it does |
@@ -113,7 +113,7 @@ signs up.
 | | `candle_report_activity` | yes | report agent activity for verification |
 | **What happened?** | `candle_get_operation` | yes | look up a trade or launch by the id its write used |
 | **Creator fees** | `candle_get_fees` | yes | the creator fees your launched tokens can pay, and why one cannot be claimed (needs `account:read`) |
-| | `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch; no destination argument, `dryRun` first (needs `launch:write`; off until the server enables it) |
+| | `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch; no destination argument, `dryRun` first (needs `launch:write`; always on) |
 | **Staking** | `candle_get_staking` | yes | read eligible Solana wallets' CNDL/sCNDL, withdrawals, rewards, pool wait and eligibility notes |
 | **Staking** | `candle_stake` | yes | stake raw CNDL from the embedded wallet or build for a linked/TEE payer; stable clientStakeId, dryRun first |
 | **Staking** | `candle_unstake` | yes | start withdrawing raw sCNDL; no instant unstake, wait for the pool timelock |
@@ -126,13 +126,17 @@ signs up.
 | | `candle_perps_leverage` | yes | set a market's leverage and margin mode |
 | | `candle_perps_deposit` | yes | deposit onto the Hyperliquid account through Relay (needs `swap:write`) |
 | | `candle_perps_orders` | yes | open orders and every action Candle built |
-| | `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level |
-| | `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly |
-| | `candle_perps_risk` | yes | the liquidation risk level (ok, warn, critical) and what drives it; poll it to watch |
-| | `candle_perps_thresholds` | yes | the key's risk thresholds, stored and effective |
-| | `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; it can never loosen them |
-| | `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed |
-| | `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed |
+| | `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level (those risk fields are unreleased: next npm release) |
+| | `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly (unreleased: next npm release) |
+| | `candle_perps_risk` | yes | the liquidation risk level (ok, warn, critical) and what drives it; poll it to watch (unreleased: next npm release) |
+| | `candle_perps_thresholds` | yes | the key's risk thresholds, stored and effective (unreleased: next npm release) |
+| | `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; it can never loosen them (unreleased: next npm release) |
+| | `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed (unreleased: next npm release) |
+| | `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed (unreleased: next npm release) |
+| | `candle_perps_markets` | yes, any scope | Hyperliquid perp markets with volume, open interest and funding; read-only market data, no signer, local server only (unreleased: next npm release) |
+| | `candle_perps_market` | yes, any scope | one Hyperliquid market in detail; read-only, no signer, local server only (unreleased: next npm release) |
+| | `candle_perps_book` | yes, any scope | one market's order book; read-only, no signer, local server only (unreleased: next npm release) |
+| | `candle_perps_candles` | yes, any scope | one market's candles; read-only, no signer, local server only (unreleased: next npm release) |
 
 ### A whole job
 
@@ -210,7 +214,9 @@ trust`), `candle vault transfer` signed locally by the vault, or `candle tee swe
 `candle tee rebind` moves wallets between your keys without moving funds.
 
 API keys come in three access levels, minted with `candle keys create --access
-read|read-write|read-write-transfer`; see
+read|write|withdraw` (the older `read-write` and `read-write-transfer` still work as aliases). A
+fourth preset, `--access trade-perps` (`account:read` plus `perps:write`), arrives with the next npm
+release. See
 [Access levels](https://docs.candle.tv/developers/agent-access#access-levels).
 
 [**CLI custody**](https://docs.candle.tv/developers/cli-custody) is the full guide to the vault,
@@ -463,7 +469,7 @@ MIT, see [LICENSE](LICENSE). That covers everything here: the CLI, the SDK, the 
 skills. The CLI's release binaries are built and signed from this repository's `release.yaml`.
 
 
-Staking writes require `swap:write` and the deployment's agent-staking flag (off by default).
+Staking writes require `swap:write` and the deployment's agent-staking flag (off by default in code, on at api.alpha.candle.tv).
 They MOVE REAL FUNDS; read the pool's wait and SOL costs before approving them. There is no
 instant unstake on agent surfaces. Pending withdrawal CNDL counts toward nothing for Pro.
 sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood reward

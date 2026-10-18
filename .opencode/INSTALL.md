@@ -1,6 +1,6 @@
 # Installing Candle for OpenCode
 
-Candle ships two things OpenCode can use directly: an MCP server (forty-one tools: launch, seed,
+Candle ships two things OpenCode can use directly: an MCP server (fifty-two tools in source and forty-two in the published `@candledottv/mcp` 0.10.18; the ten perps account, risk, threshold, fills, funding and market tools arrive with the next npm release. They launch, seed,
 trade, read markets and feeds, report activity, read an agent profile, and more) and a `skills/` directory
 of `SKILL.md` files, which OpenCode's own skill tool loads natively from a set of recognized
 locations, no MCP call involved.

@@ -1,6 +1,6 @@
 # Installing Candle for Cursor
 
-Candle ships two things Cursor can use: an MCP server (forty-one tools: launch, seed, trade, read
+Candle ships two things Cursor can use: an MCP server (fifty-two tools in source and forty-two in the published `@candledottv/mcp` 0.10.18; the ten perps account, risk, threshold, fills, funding and market tools arrive with the next npm release. They launch, seed, trade, read
 markets and feeds, report activity, read an agent profile, and more), which Cursor registers natively, and a
 `skills/` directory of `SKILL.md` files, which are plain markdown instruction packs you point
 Cursor at yourself.
