@@ -101,6 +101,12 @@ anyone signs up for anything.
 | `candle_perps_close` | yes | close all or part of a position, reduce-only |
 | `candle_perps_cancel` | yes | cancel an order Candle built, by cloid |
 | `candle_perps_leverage` | yes | set a market's leverage and margin mode |
+| `candle_perps_modify` | yes | change a resting order's price or size |
+| `candle_perps_margin` | yes | add isolated margin, or set a coin's margin mode |
+| `candle_perps_tpsl` | yes | attach, move or remove position take-profit / stop-loss |
+| `candle_perps_schedule_cancel` | yes | set or clear Hyperliquid's wallet-wide cancel-all timer |
+| `candle_perps_flatten` | yes | cancel every main-perp order, then close every main-perp position |
+| `candle_perps_reduce_only` | yes | read the key's reduce-only setting, or turn it on |
 | `candle_perps_deposit` | yes | deposit onto the Hyperliquid account through Relay from the Solana or Hood TEE wallet (needs `swap:write`) |
 | `candle_perps_orders` | yes | open orders and every action Candle built |
 | `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level (those risk fields are unreleased: next npm release) |

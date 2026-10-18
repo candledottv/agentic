@@ -351,9 +351,9 @@ export const HELP: Record<string, Topic> = {
   perps: {
     group: "Trade",
     summary:
-      "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, orders, positions, fills, funding, leverage, account, risk, watch, thresholds",
+      "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, modify, margin, tpsl, schedule-cancel, flatten, reduce-only, orders, positions, fills, funding, leverage, account, risk, watch, thresholds",
     description:
-      "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch.",
+      "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch. modify, margin, tpsl, schedule-cancel, flatten and close --pct are built, checked against this machine's own read of Hyperliquid, signed and submitted like every other write; tpsl and flatten are plans of several such steps, confirmed once (or --yes), and a plan that does not finish says so and exits 1 (3 when a signed step's submit did not answer). A key that is reduce-only (reduce-only on) can close, cancel, protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure; only the owner's device token turns it off, and it cancels no resting order and revokes no signed action.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
@@ -383,8 +383,43 @@ export const HELP: Record<string, Topic> = {
         invocation: "open <coin> <long|short> <size> [--price <px>]",
         description: "Market (IOC) without --price, limit with it; optional --tp and --sl",
       },
-      { invocation: "close <coin> [--size <n>]", description: "Reduce-only IOC close of all or part of a position" },
+      {
+        invocation: "close <coin> [--size <n> | --pct <1-100>]",
+        description:
+          "Reduce-only IOC close of all or part of a position; --pct closes a percentage (at most 4 decimals), rounded down to the market's size step, and a result of zero is refused, never rounded up",
+      },
       { invocation: "cancel <cloid>", description: "Cancel an order Candle built, by its cloid" },
+      {
+        invocation: "modify --cloid <cloid> [--price <px>] [--size <n>]",
+        description:
+          "Change a resting order Candle built; side, time in force and reduce-only are kept from Hyperliquid's record. A trigger leg is not modified (use tpsl)",
+      },
+      {
+        invocation: "margin <coin> --amount <usd> | --mode cross|isolated [--leverage <n>]",
+        description:
+          "Add isolated margin (positive only), or set the coin's margin mode keeping its leverage unless --leverage names one; a mode change needs no position and no resting order in the coin",
+      },
+      {
+        invocation:
+          "tpsl <coin> [--take-profit <px>] [--stop-loss <px>] [--remove-tp] [--remove-sl] [--target-tp <cloid>] [--target-sl <cloid>]",
+        description:
+          "Attach, change or remove position take-profit / stop-loss legs, sized to the position now. A change cancels the old leg first (a protection gap). Legs Candle did not build are listed and left alone",
+      },
+      {
+        invocation: "schedule-cancel <seconds> | schedule-cancel --clear",
+        description:
+          "Set (at least 5 s ahead) or clear Hyperliquid's cancel-all timer. Wallet-wide: it cancels every open order, protection included, not positions; 10 triggers per UTC day, not counted by Candle",
+      },
+      {
+        invocation: "flatten [--wallet <tee>]",
+        description:
+          "Cancel every open main-perp order, then close every main-perp position, then read again; at most 100 signed steps a run. Spot, HIP-3 and vaults are not reached",
+      },
+      {
+        invocation: "reduce-only [on|off] [--key <self|prefix|label>]",
+        description:
+          "Read or set the key's reduce-only restriction. This key may turn itself on; off, or another key, needs the owner's device token. Limits new Candle builds only",
+      },
       {
         invocation: "orders [--wallet <tee>]",
         description: "Open orders on Hyperliquid, and every action Candle built",
@@ -526,6 +561,11 @@ export const HELP: Record<string, Topic> = {
       "candle perps fills --limit 50",
       "candle perps funding --start-time 1790000000000",
       "candle perps leverage BTC 5 --isolated",
+      "candle perps close BTC --pct 25",
+      "candle perps tpsl BTC --take-profit 66000 --stop-loss 57000",
+      "candle perps schedule-cancel 300",
+      "candle perps flatten",
+      "candle perps reduce-only on",
       "candle perps withdraw 25 --to solana",
       "candle perps risk --json",
       "candle perps watch --on-critical 'notify-send perps critical'",

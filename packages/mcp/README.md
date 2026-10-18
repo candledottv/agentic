@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-forty-eight tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
+fifty-four tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, report on-chain activity, and check an agent profile without hand-rolling HTTP
 calls.
@@ -31,7 +31,7 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all forty-eight. An unknown name fails startup with the valid names in the message, rather
+Unset means all fifty-four. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -139,6 +139,12 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_perps_close` | Close all or part of a perps position, reduce-only | `POST /api/v1/agent/perps/close`, the same | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_cancel` | Cancel a perps order Candle built, by cloid | `POST /api/v1/agent/perps/cancel`, the same | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_leverage` | Set a market's leverage and margin mode | `POST /api/v1/agent/perps/leverage`, the same | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
+| `candle_perps_modify` | Change a resting order's price or size; side, time in force and reduce-only kept from Hyperliquid's record | `POST /api/v1/agent/perps/modify`, the same | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
+| `candle_perps_margin` | Add isolated margin (positive only), or set a coin's margin mode keeping its leverage | `POST /api/v1/agent/perps/margin` or `/perps/leverage`, the same | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
+| `candle_perps_tpsl` | Attach, move or remove position take-profit / stop-loss; a move cancels the old leg first | `GET` and `POST /api/v1/agent/perps/tpsl`, one checked step at a time | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
+| `candle_perps_schedule_cancel` | Set or clear Hyperliquid's wallet-wide cancel-all timer | `POST /api/v1/agent/perps/schedule-cancel`, the same, then `/schedule-cancel/ack` | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
+| `candle_perps_flatten` | Cancel every main-perp order, then close every main-perp position; at most 100 signed steps a call | `POST /api/v1/agent/perps/flatten/cancel` and `/perps/close`, one checked step at a time | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
+| `candle_perps_reduce_only` | Read this key's reduce-only setting, or turn it on (never off) | `GET` / `PUT /api/v1/agent/keys/self/perps-reduce-only` | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_deposit` | Deposit onto the key's Hyperliquid account through Relay, from its Solana or Hood TEE wallet | `POST /api/v1/agent/perps/deposit`, checked here, relay-signed, `POST /api/v1/agent/perps/deposit/submit` | `CANDLE_AGENT_API_KEY` (`swap:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_orders` | Open Hyperliquid orders and every action Candle built | `GET /api/v1/agent/perps/orders` | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_positions` | Perps positions and account value, read live, with the per-position table, account line and risk | `GET /api/v1/agent/perps/positions`, then Hyperliquid `/info` directly | `CANDLE_AGENT_API_KEY` |
@@ -193,7 +199,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-forty-eight tools:
+fifty-four tools:
 
 - `candle_launch_token`, `candle_get_market`, and `candle_get_feed` hit endpoints that use the
   structured envelope `{ success: false, error: { code, message, ... } }`. Branch on `error.code`.

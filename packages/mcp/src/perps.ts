@@ -24,7 +24,7 @@
  * Hyperliquid first and checks Candle's answer, `ready` included; open and close take `clientId`,
  * and a retry under it returns the original operation with nothing signed.
  */
-import { createPrivateKey, sign } from "node:crypto"
+import { createPrivateKey, randomBytes, sign } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { z } from "zod"
 import type { RequestConfig } from "./client"
@@ -35,14 +35,23 @@ import {
   type HyperliquidTypedData,
   hyperliquidAccountMode,
   hyperliquidCanonicalJson,
-  hyperliquidCloseOrder,
+  hyperliquidClosePct,
   hyperliquidExchangeBody,
-  hyperliquidOrderMarket,
+  hyperliquidExchangeOutcome,
   hyperliquidRelayBody,
+  type PerpsIntentMethod,
   perpsSetupStatusProblem,
   resolveHyperliquidBuilder,
   verifyPerpsBuild,
+  verifyPerpsBuildAgainstVenue,
 } from "./hyperliquid"
+import {
+  PerpsWorkflowError,
+  type PerpsWorkflowIo,
+  perpsTpslParamsProblem,
+  runPerpsFlatten,
+  runPerpsTpsl,
+} from "./hyperliquid-manage"
 import type { FetchLike, ToolText } from "./orchestrate"
 import { PERPS_HISTORY_MAX_LIMIT, PerpsHistoryError, readPerpsHistoryPage } from "./perps-history"
 
@@ -67,6 +76,13 @@ export const PERPS_TOOL_NAMES = [
   "candle_perps_fills",
   "candle_perps_funding",
   "candle_perps_leverage",
+  // Phase 1 D (BE-1584): management actions. Local only; the hosted server registers none of them.
+  "candle_perps_modify",
+  "candle_perps_margin",
+  "candle_perps_tpsl",
+  "candle_perps_schedule_cancel",
+  "candle_perps_flatten",
+  "candle_perps_reduce_only",
   ...PERPS_RISK_TOOL_NAMES,
 ] as const
 export type PerpsToolName = (typeof PERPS_TOOL_NAMES)[number]
@@ -121,6 +137,13 @@ export const perpsShapes = {
   candle_perps_close: {
     coin: z.string(),
     size: decimal.optional().describe("Part of the position to close; the whole position when omitted"),
+    pct: z
+      .string()
+      .regex(/^(0|[1-9][0-9]{0,2})(\.[0-9]{1,4})?$/)
+      .optional()
+      .describe(
+        "Instead of size: a percentage of the position (above 0, at most 100, at most 4 decimals), rounded down to the market's size step; a zero result is refused",
+      ),
     slippageBps: z.number().int().min(1).optional(),
     clientId,
     wallet,
@@ -145,6 +168,64 @@ export const perpsShapes = {
     wallet,
     submit,
   },
+  candle_perps_modify: {
+    cloid: z
+      .string()
+      .regex(/^0x[0-9a-fA-F]{32}$/)
+      .describe("The cloid of a resting order Candle built (not a take-profit / stop-loss leg)"),
+    price: decimal.optional().describe("New limit price; the order's own when omitted"),
+    size: decimal.optional().describe("New size; the order's own when omitted"),
+    slippageBps: z.number().int().min(1).optional(),
+    wallet,
+    submit,
+  },
+  candle_perps_margin: {
+    coin: z.string(),
+    amount: z
+      .string()
+      .regex(/^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$/)
+      .optional()
+      .describe("Add this much USD of isolated margin to an isolated position (positive; never removes)"),
+    mode: z
+      .enum(["cross", "isolated"])
+      .optional()
+      .describe("Instead of amount: set the coin's margin mode (needs no position and no resting order in it)"),
+    leverage: z.number().int().min(1).optional().describe("With mode: the leverage; the current one when omitted"),
+    wallet,
+    submit,
+  },
+  candle_perps_tpsl: {
+    coin: z.string(),
+    takeProfit: decimal.optional().describe("Attach or move the take-profit to this trigger price"),
+    stopLoss: decimal.optional().describe("Attach or move the stop-loss to this trigger price"),
+    removeTp: z.boolean().optional().describe("Remove the take-profit Candle built"),
+    removeSl: z.boolean().optional().describe("Remove the stop-loss Candle built"),
+    targetTp: z
+      .string()
+      .regex(/^0x[0-9a-fA-F]{32}$/)
+      .optional()
+      .describe("Which take-profit, when several match"),
+    targetSl: z
+      .string()
+      .regex(/^0x[0-9a-fA-F]{32}$/)
+      .optional()
+      .describe("Which stop-loss, when several match"),
+    wallet,
+    submit,
+  },
+  candle_perps_schedule_cancel: {
+    seconds: z.number().int().min(5).optional().describe("Set the timer this many seconds from now (at least 5)"),
+    clear: z.boolean().optional().describe("true: clear the timer instead"),
+    wallet,
+    submit,
+  },
+  candle_perps_flatten: { wallet, submit },
+  candle_perps_reduce_only: {
+    on: z
+      .boolean()
+      .optional()
+      .describe("Omit to read. true turns this key's reduce-only on. false is refused: only the owner turns it off"),
+  },
 } as const
 
 const PATHS: Record<Exclude<PerpsToolName, PerpsRiskToolName>, string> = {
@@ -157,6 +238,12 @@ const PATHS: Record<Exclude<PerpsToolName, PerpsRiskToolName>, string> = {
   candle_perps_fills: "",
   candle_perps_funding: "",
   candle_perps_leverage: "/api/v1/agent/perps/leverage",
+  candle_perps_modify: "/api/v1/agent/perps/modify",
+  candle_perps_margin: "/api/v1/agent/perps/margin",
+  candle_perps_tpsl: "/api/v1/agent/perps/tpsl",
+  candle_perps_schedule_cancel: "/api/v1/agent/perps/schedule-cancel",
+  candle_perps_flatten: "",
+  candle_perps_reduce_only: "/api/v1/agent/keys/self/perps-reduce-only",
 }
 
 export function fail(code: string, message: string, extra: Record<string, unknown> = {}): ToolText {
@@ -296,7 +383,54 @@ export async function executePerps(
       }
     }
 
-    // A write. The signer is checked before any build, so a server that cannot sign stamps nothing.
+    if (tool === "candle_perps_reduce_only") return await executeReduceOnly(args, cfg, fetch)
+
+    // A write. Inputs are checked first, then the signer, both before any build, so a request that
+    // cannot be signed stamps nothing.
+    const { wallet: _w, submit: _s, ...rest } = args
+    const clientId = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined
+    let fields: Record<string, unknown> = { ...rest, ...(clientId !== undefined ? { clientId } : {}) }
+    let path = PATHS[tool]
+    let method = path.split("/").at(-1) as PerpsIntentMethod
+    if (tool === "candle_perps_close") {
+      if (fields.pct !== undefined && fields.size !== undefined)
+        return fail("MCP_VALIDATION", "Give size or pct, not both.")
+      if (fields.pct !== undefined && hyperliquidClosePct(fields.pct) === null)
+        return fail("MCP_VALIDATION", "pct must be above 0 and at most 100, with at most 4 decimals.")
+    }
+    if (tool === "candle_perps_modify") {
+      if (fields.price === undefined && fields.size === undefined)
+        return fail("MCP_VALIDATION", "Give price, size, or both.")
+      fields = { ...fields, cloid: String(fields.cloid).toLowerCase() }
+    }
+    if (tool === "candle_perps_margin") {
+      if ((fields.amount === undefined) === (fields.mode === undefined))
+        return fail("MCP_VALIDATION", "Give amount or mode, exactly one.")
+      if (fields.amount !== undefined) {
+        if (fields.leverage !== undefined) return fail("MCP_VALIDATION", "leverage goes with mode.")
+        if (/^0+(\.0+)?$/.test(String(fields.amount))) return fail("MCP_VALIDATION", "amount must be positive.")
+        fields = { coin: fields.coin, amount: fields.amount }
+        method = "margin"
+      } else {
+        path = PATHS.candle_perps_leverage
+        method = "leverage"
+        fields = {
+          coin: fields.coin,
+          mode: fields.mode,
+          ...(fields.leverage !== undefined ? { leverage: fields.leverage } : {}),
+        }
+      }
+    }
+    if (tool === "candle_perps_schedule_cancel") {
+      const clear = fields.clear === true
+      if (clear === (fields.seconds !== undefined)) return fail("MCP_VALIDATION", "Give seconds, or clear: true.")
+      fields = clear ? { clear: true } : { seconds: fields.seconds }
+      method = "scheduleCancel"
+    }
+    if (tool === "candle_perps_tpsl") {
+      const problem = perpsTpslParamsProblem(fields as never)
+      if (problem) return fail("MCP_VALIDATION", problem)
+    }
     const willSubmit = args.submit !== false
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim()
     let signerPem: string | null = null
@@ -315,10 +449,55 @@ export async function executePerps(
     }
     const { row, appId } = await walletFor(cfg, fetch, name, "perps:write")
     const builder = builderPin(env)
-    const { wallet: _w, submit: _s, ...rest } = args
-    const clientId = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined
-    const fields: Record<string, unknown> = { ...rest, ...(clientId !== undefined ? { clientId } : {}) }
-    const method = PATHS[tool].split("/").at(-1) as "setup" | "open" | "close" | "cancel" | "leverage"
+    const relaySign = async (typedData: HyperliquidTypedData): Promise<string> => {
+      if (signerPem === null || !appId || !row.privyWalletId)
+        throw new Refusal(fail("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers."))
+      const body = hyperliquidRelayBody(typedData)
+      const payload = hyperliquidCanonicalJson({
+        body,
+        headers: { "privy-app-id": appId },
+        method: "POST",
+        url: `https://api.privy.io/v1/wallets/${row.privyWalletId}/rpc`,
+        version: 1,
+      })
+      const authorizationSignature = sign("sha256", Buffer.from(payload), signerPem).toString("base64")
+      const relay = await call(cfg, fetch, "POST", `/api/v1/agent/wallets/${encodeURIComponent(row.id)}/sign`, {
+        authorizationSignature,
+        body,
+      })
+      if (typeof relay.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(relay.signature))
+        throw new Refusal(fail("INVALID_RESPONSE", "The relay did not return a signature."))
+      return relay.signature
+    }
+
+    if (tool === "candle_perps_tpsl" || tool === "candle_perps_flatten") {
+      // Calling the tool is the caller's intent: no prompt is invented (spec D, section 3).
+      const reduceOnly = await call(cfg, fetch, "GET", "/api/v1/agent/keys/self/perps-reduce-only").catch(() => null)
+      const io: PerpsWorkflowIo = {
+        network,
+        walletId: row.id,
+        address: row.address,
+        builder,
+        keyReduceOnly: reduceOnly === null ? true : reduceOnly.perpsReduceOnly === true,
+        fetcher: fetch as never,
+        now: Date.now,
+        build: (p, body) => call(cfg, fetch, "POST", p, body),
+        read: (p) => call(cfg, fetch, "GET", p),
+        sign: relaySign,
+        mode: willSubmit ? "submit" : "no-submit",
+        cloid: () => `0x${randomBytes(16).toString("hex")}`,
+      }
+      try {
+        const result =
+          tool === "candle_perps_tpsl" ? await runPerpsTpsl(io, fields as never) : await runPerpsFlatten(io)
+        const failed = willSubmit ? !result.complete : result.steps.some((s) => s.status === "rejected")
+        return { text: JSON.stringify(result), ...(failed ? { isError: true } : {}) }
+      } catch (error) {
+        if (error instanceof PerpsWorkflowError) return fail(error.code, error.message, error.details)
+        throw error
+      }
+    }
+
     // Setup (spec 2026-10-17 C, section 5): the mode is read from Hyperliquid before Candle is asked.
     let mode: string | undefined
     if (method === "setup") {
@@ -337,7 +516,7 @@ export async function executePerps(
           { mode },
         )
     }
-    const build = await call(cfg, fetch, "POST", PATHS[tool], {
+    const build = await call(cfg, fetch, "POST", path, {
       walletId: row.id,
       ...fields,
       ...(tool === "candle_perps_open" ? { type: fields.price === undefined ? "market" : "limit" } : {}),
@@ -369,60 +548,25 @@ export async function executePerps(
         "PERPS_CLIENT_ID_UNSUPPORTED",
         "This Candle API did not echo the client order id, so a retry could not be recognized. Nothing was signed.",
       )
-    const check = verifyPerpsBuild(build as never, {
+    // BE-1584 (spec D, section 4): every method is checked against this server's own read of
+    // Hyperliquid, and against the key's reduce-only setting as the build reports it.
+    const verifyOpts = {
       builder,
       network,
       address: row.address,
       intent: { method, params: fields },
-    })
+      keyReduceOnly: build.perpsReduceOnly === true,
+    }
+    const check =
+      method === "setup"
+        ? verifyPerpsBuild(build as never, verifyOpts)
+        : await verifyPerpsBuildAgainstVenue(build as never, { ...verifyOpts, fetcher: fetch as never })
     if (!check.ok)
       return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`)
-    if (method === "close") {
-      const closeOrder = await hyperliquidCloseOrder(fetch, network, row.address, fields)
-      const closeCheck = verifyPerpsBuild(build as never, {
-        builder,
-        network,
-        address: row.address,
-        intent: { method, params: fields },
-        closeOrder,
-      })
-      if (!closeCheck.ok)
-        return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${closeCheck.reason}. Nothing was signed.`)
-    }
-    if (method === "open") {
-      // The asset index and price against Hyperliquid's own market, not the build's (SEC-004).
-      const market = await hyperliquidOrderMarket(fetch, network, row.address, method, fields)
-      const marketCheck = verifyPerpsBuild(build as never, {
-        builder,
-        network,
-        address: row.address,
-        intent: { method, params: fields },
-        market,
-      })
-      if (!marketCheck.ok)
-        return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${marketCheck.reason}. Nothing was signed.`)
-    }
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) }
-    if (!appId || !row.privyWalletId)
-      return fail("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.")
 
-    const body = hyperliquidRelayBody(build.typedData as HyperliquidTypedData)
-    const payload = hyperliquidCanonicalJson({
-      body,
-      headers: { "privy-app-id": appId },
-      method: "POST",
-      url: `https://api.privy.io/v1/wallets/${row.privyWalletId}/rpc`,
-      version: 1,
-    })
-    const authorizationSignature = sign("sha256", Buffer.from(payload), signerPem).toString("base64")
-    const relay = await call(cfg, fetch, "POST", `/api/v1/agent/wallets/${encodeURIComponent(row.id)}/sign`, {
-      authorizationSignature,
-      body,
-    })
-    const signature = relay.signature
-    if (typeof signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(signature))
-      return fail("INVALID_RESPONSE", "The relay did not return a signature.")
+    const signature = await relaySign(build.typedData as HyperliquidTypedData)
     const exchangeBody = hyperliquidExchangeBody(
       build.action as Record<string, unknown>,
       build.nonce as number,
@@ -446,13 +590,49 @@ export async function executePerps(
         { perpOrderId: build.perpOrderId, exchangeBody },
       )
     }
-    const accepted =
-      typeof exchange === "object" &&
-      exchange !== null &&
-      (exchange as { status?: unknown }).status === "ok" &&
-      !(
-        ((exchange as { response?: { data?: { statuses?: unknown[] } } }).response?.data?.statuses ?? []) as unknown[]
-      ).some((status) => typeof status === "object" && status !== null && "error" in status)
+    // Judged per leg (spec D, section 3): HTTP 200 alone is not confirmation.
+    const outcome = hyperliquidExchangeOutcome(exchange)
+    const accepted = outcome.status === "confirmed"
+    const extra: Record<string, unknown> = {}
+    if (accepted && method === "scheduleCancel") {
+      const ack = await call(cfg, fetch, "POST", "/api/v1/agent/perps/schedule-cancel/ack", {
+        walletId: row.id,
+        perpOrderId: build.perpOrderId,
+        exchange,
+      }).catch(() => null)
+      Object.assign(extra, { time: build.time ?? null, acknowledged: ack?.acknowledged === true, verified: false })
+    }
+    if (accepted && method === "leverage" && typeof fields.mode === "string") {
+      let confirmedMode: string | null = null
+      try {
+        const res = await fetch(HYPERLIQUID_EXCHANGE_URLS[network].replace("/exchange", "/info"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "activeAssetData", user: row.address, coin: String(fields.coin) }),
+        })
+        const type = (JSON.parse(await res.text()) as { leverage?: { type?: unknown } })?.leverage?.type
+        confirmedMode = type === "cross" || type === "isolated" ? type : null
+      } catch {
+        confirmedMode = null
+      }
+      Object.assign(extra, { requestedMode: fields.mode, confirmedMode })
+    }
+    if (outcome.status === "rejected" && method === "scheduleCancel")
+      return fail("PERPS_SCHEDULE_CANCEL_REJECTED", `Hyperliquid refused the scheduled cancel: ${outcome.error}`, {
+        limit: "scheduleCancel",
+        perpOrderId: build.perpOrderId,
+        exchange,
+      })
+    if (outcome.status === "unknown")
+      return fail(
+        "PERPS_SUBMIT_FAILED",
+        `Hyperliquid's answer could not be read (${outcome.error}); reconcile before acting again.`,
+        {
+          perpOrderId: build.perpOrderId,
+          exchangeBody,
+          exchange,
+        },
+      )
     return {
       text: JSON.stringify({
         success: accepted,
@@ -465,6 +645,8 @@ export async function executePerps(
         nonce: build.nonce,
         signature,
         exchange,
+        outcome,
+        ...extra,
         preview: { builderTrust: (build.preview as Record<string, unknown>).builderTrust },
       }),
       ...(accepted ? {} : { isError: true }),
@@ -473,6 +655,27 @@ export async function executePerps(
     if (error instanceof Refusal) return error.tool
     return fail("MCP_TRANSPORT", error instanceof Error ? error.message : "The perps call failed.")
   }
+}
+
+/**
+ * `candle_perps_reduce_only` (spec D, section 9): read the key's setting, or turn it on for this key.
+ * The MCP server holds only the agent credential, so off is refused here as well as by the server.
+ */
+async function executeReduceOnly(
+  args: Record<string, unknown>,
+  cfg: RequestConfig,
+  fetch: FetchLike,
+): Promise<ToolText> {
+  if (args.on === false)
+    return fail(
+      "LOOSEN_REQUIRES_SESSION",
+      "This tool holds only the agent credential, which may turn reduce-only on and never off. The owner turns it off: candle perps reduce-only off --key <prefix>.",
+    )
+  if (args.on === true) {
+    const result = await call(cfg, fetch, "PUT", "/api/v1/agent/keys/self/perps-reduce-only", { perpsReduceOnly: true })
+    return { text: JSON.stringify(result) }
+  }
+  return { text: JSON.stringify(await call(cfg, fetch, "GET", "/api/v1/agent/keys/self/perps-reduce-only")) }
 }
 
 // ── candle_perps_deposit (Perps C, BE-647, HL-ED-8) ──────────────────────────────────────────

@@ -101,11 +101,13 @@ export type {
   PerpsOrderRecord,
   PerpsOrders,
   PerpsPositions,
+  PerpsReduceOnlyResult,
   PerpsReplay,
   PerpsReplayResult,
   PerpsRiskSettingsResult,
   PerpsRiskWrite,
   PerpsRiskWriteResult,
+  PerpsScheduleCancelParams,
   PerpsSetupResult,
   PerpsSide,
   PerpsWalletRef,
@@ -205,16 +207,30 @@ export {
   HYPERLIQUID_STANDARD_ACCOUNT_MODES,
   type HyperliquidNetwork,
   type HyperliquidOrderMarket,
+  type HyperliquidSubmitOutcome,
   type HyperliquidTypedData,
+  type HyperliquidWalletSnapshot,
   hyperliquidAccountMode,
   hyperliquidActionHash,
+  hyperliquidExchangeOutcome,
   hyperliquidOrderMarket,
+  hyperliquidWalletSnapshot,
   type PerpsBuildCheck,
   type PerpsBuildToVerify,
   perpsSetupStatusProblem,
   type VerifyPerpsBuildOptions,
   verifyPerpsBuild,
+  verifyPerpsBuildAgainstVenue,
 } from "./hyperliquid"
+// BE-1584: the management plans the CLI and MCP run the same way.
+export {
+  PERPS_FLATTEN_MAX_STEPS,
+  type PerpsStepStatus,
+  type PerpsTpslParams,
+  PerpsWorkflowError,
+  type PerpsWorkflowResult,
+  type PerpsWorkflowStep,
+} from "./hyperliquid-manage"
 export * from "./hyperliquid-markets"
 export type { HyperliquidPnlFigures, HyperliquidPnlSection, HyperliquidWalletPnl } from "./hyperliquid-pnl"
 // BE-1582: the Hyperliquid risk engine, for bots that run the same rule as the CLI and MCP.

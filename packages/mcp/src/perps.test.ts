@@ -65,6 +65,13 @@ function fake(
     mid?: string
     mode?: unknown
     history?: (body: Record<string, unknown>) => unknown
+    /** BE-1584: the venue's open orders, the account's leverage, a resting order, and positions. */
+    orders?: unknown[]
+    leverage?: { type: string; value: number }
+    resting?: Record<string, unknown>
+    positions?: unknown[]
+    reduceOnly?: Record<string, unknown>
+    builds?: (path: string, body: Record<string, unknown> | undefined) => unknown
   } = {},
 ) {
   const calls: { url: string; body?: Record<string, unknown> }[] = []
@@ -76,6 +83,10 @@ function fake(
       if (body?.type === "meta") return ok({ universe: [{ name: "BTC" }] })
       if (body?.type === "userAbstraction") return ok(opts.mode ?? "default")
       if (body?.type === "userFillsByTime" || body?.type === "userFunding") return ok(opts.history?.(body) ?? [])
+      if (body?.type === "frontendOpenOrders") return ok(opts.orders ?? [])
+      if (body?.type === "activeAssetData") return ok({ leverage: opts.leverage ?? { type: "cross", value: 10 } })
+      if (body?.type === "orderStatus") return ok({ status: "order", order: { order: opts.resting ?? {} } })
+      if (body?.type === "clearinghouseState" && opts.positions) return ok({ assetPositions: opts.positions })
       if (body?.type === "metaAndAssetCtxs")
         return ok([
           {
@@ -84,7 +95,10 @@ function fake(
               { name: "ETH", szDecimals: 4, maxLeverage: 25 },
             ],
           },
-          [{ midPx: opts.mid ?? "60000" }, { midPx: "3000" }],
+          [
+            { midPx: opts.mid ?? "60000", markPx: "60000" },
+            { midPx: "3000", markPx: "3000" },
+          ],
         ])
       return ok({ assetPositions: [{ position: { coin: "BTC", szi: "-0.5" } }] })
     }
@@ -96,9 +110,22 @@ function fake(
         isDone: true,
       })
     if (url.startsWith("https://api.test/api/v1/agent/perps/positions")) return ok({ success: true, positions: [] })
+    if (url === "https://api.test/api/v1/agent/keys/self/perps-reduce-only")
+      return ok(
+        init?.method === "PUT"
+          ? { success: true, keyPrefix: "K", perpsReduceOnly: true, perpsPolicyVersion: 1 }
+          : (opts.reduceOnly ?? { success: true, keyPrefix: "K", perpsReduceOnly: false, perpsPolicyVersion: 0 }),
+      )
+    if (url === "https://api.test/api/v1/agent/perps/schedule-cancel/ack")
+      return ok({ success: true, acknowledged: true })
+    if (opts.builds && url.startsWith("https://api.test/api/v1/agent/perps/")) {
+      const answer = opts.builds(url.replace("https://api.test", "").split("?")[0] as string, body)
+      if (answer !== undefined) return ok(answer)
+    }
     if (url.startsWith("https://api.test/api/v1/agent/perps/")) return ok(opts.build ?? build(order()))
     if (url.endsWith("/sign")) return ok({ success: true, signature: SIGNATURE })
-    if (url === "https://api.hyperliquid.xyz/exchange") return ok(opts.exchange ?? { status: "ok", response: {} })
+    if (url === "https://api.hyperliquid.xyz/exchange")
+      return ok(opts.exchange ?? { status: "ok", response: { type: "default" } })
     throw new Error(`unexpected ${url}`)
   }
   return { calls, fetch }
@@ -429,5 +456,153 @@ describe("candle_perps_fills and candle_perps_funding", () => {
     const failed = await executePerps("candle_perps_funding", {}, cfg, {}, down.fetch)
     expect(failed.isError).toBe(true)
     expect(JSON.parse(failed.text).error.code).toBe("PERPS_UNAVAILABLE")
+  })
+})
+
+// ── Phase 1 D (BE-1584): the management tools ─────────────────────────────────────────────
+
+function stamped(action: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  return { ...build(action), ...extra }
+}
+
+describe("the management tools (BE-1584)", () => {
+  test("bad input is refused before the signer or any request", async () => {
+    for (const [tool, args] of [
+      ["candle_perps_modify", { cloid: `0x${"1".repeat(32)}` }],
+      ["candle_perps_margin", { coin: "BTC" }],
+      ["candle_perps_margin", { coin: "BTC", amount: "5", mode: "cross" }],
+      ["candle_perps_margin", { coin: "BTC", amount: "0" }],
+      ["candle_perps_schedule_cancel", {}],
+      ["candle_perps_schedule_cancel", { seconds: 60, clear: true }],
+      ["candle_perps_close", { coin: "BTC", pct: "25", size: "1" }],
+      ["candle_perps_tpsl", { coin: "BTC" }],
+      ["candle_perps_tpsl", { coin: "BTC", takeProfit: "1", removeTp: true }],
+    ] as const) {
+      const f = fake()
+      const result = await executePerps(tool, args as Record<string, unknown>, cfg, {}, f.fetch)
+      expect([tool, result.isError]).toEqual([tool, true])
+      expect(JSON.parse(result.text).error.code).toBe("MCP_VALIDATION")
+      expect(f.calls).toEqual([])
+    }
+  })
+
+  test("margin: amount builds a top-up; mode routes to leverage, keeps it, and reports both modes", async () => {
+    const topUp = { type: "updateIsolatedMargin", asset: 0, isBuy: true, ntli: 5_000_000 }
+    const iso = [{ position: { coin: "BTC", szi: "0.1", leverage: { type: "isolated", value: 5 } } }]
+    const f = fake({ builds: () => stamped(topUp), positions: iso })
+    const result = await executePerps("candle_perps_margin", { coin: "BTC", amount: "5" }, cfg, env(), f.fetch)
+    expect(result.isError).toBeUndefined()
+    expect(f.calls.find((c) => c.url.endsWith("/perps/margin"))?.body).toEqual({
+      walletId: "wallet",
+      coin: "BTC",
+      amount: "5",
+    })
+
+    const mode = { type: "updateLeverage", asset: 0, isCross: false, leverage: 7 }
+    const g = fake({ builds: () => stamped(mode), leverage: { type: "cross", value: 7 } })
+    const switched = await executePerps("candle_perps_margin", { coin: "BTC", mode: "isolated" }, cfg, env(), g.fetch)
+    expect(switched.isError).toBeUndefined()
+    expect(g.calls.find((c) => c.url.endsWith("/perps/leverage"))?.body).toEqual({
+      walletId: "wallet",
+      coin: "BTC",
+      mode: "isolated",
+    })
+    expect(JSON.parse(switched.text)).toMatchObject({ requestedMode: "isolated", confirmedMode: "cross" })
+  })
+
+  test("modify is checked against the resting order Hyperliquid shows", async () => {
+    const cloid = `0x${"1".repeat(32)}`
+    const resting = { coin: "BTC", side: "A", limitPx: "61000", sz: "0.2", oid: 77, reduceOnly: true, tif: "Gtc" }
+    const order = {
+      a: 0,
+      b: false,
+      p: "61500",
+      s: "0.2",
+      r: true,
+      t: { limit: { tif: "Gtc" } },
+      c: `0x${"2".repeat(32)}`,
+    }
+    const ok = fake({ builds: () => stamped({ type: "modify", oid: 77, order }), resting })
+    expect(
+      (await executePerps("candle_perps_modify", { cloid, price: "61500" }, cfg, env(), ok.fetch)).isError,
+    ).toBeUndefined()
+    const hostile = fake({ builds: () => stamped({ type: "modify", oid: 78, order }), resting })
+    const refused = await executePerps("candle_perps_modify", { cloid, price: "61500" }, cfg, env(), hostile.fetch)
+    expect(JSON.parse(refused.text).error.code).toBe("PERPS_BUILD_REFUSED")
+    expect(hostile.calls.some((c) => c.url.endsWith("/sign"))).toBe(false)
+  })
+
+  test("schedule_cancel sets, records the acknowledgement, and never claims the timer is verified", async () => {
+    const now = Date.now()
+    const f = fake({ builds: () => stamped({ type: "scheduleCancel", time: now + 60_000 }, { time: now + 60_000 }) })
+    const result = await executePerps("candle_perps_schedule_cancel", { seconds: 60 }, cfg, env(), f.fetch)
+    expect(result.isError).toBeUndefined()
+    expect(JSON.parse(result.text)).toMatchObject({ success: true, acknowledged: true, verified: false })
+    expect(f.calls.find((c) => c.url.endsWith("/schedule-cancel"))?.body).toEqual({ walletId: "wallet", seconds: 60 })
+    const g = fake({
+      builds: () => stamped({ type: "scheduleCancel" }),
+      exchange: { status: "err", response: "Too many cancels scheduled today" },
+    })
+    const rejected = await executePerps("candle_perps_schedule_cancel", { clear: true }, cfg, env(), g.fetch)
+    expect(JSON.parse(rejected.text).error.code).toBe("PERPS_SCHEDULE_CANCEL_REJECTED")
+  })
+
+  test("reduce_only reads, turns on, and refuses off locally with no request", async () => {
+    const f = fake({ reduceOnly: { success: true, keyPrefix: "K", perpsReduceOnly: true, perpsPolicyVersion: 2 } })
+    expect(JSON.parse((await executePerps("candle_perps_reduce_only", {}, cfg, {}, f.fetch)).text)).toMatchObject({
+      perpsReduceOnly: true,
+    })
+    const on = await executePerps("candle_perps_reduce_only", { on: true }, cfg, {}, f.fetch)
+    expect(JSON.parse(on.text)).toMatchObject({ perpsReduceOnly: true, perpsPolicyVersion: 1 })
+    const g = fake()
+    const off = await executePerps("candle_perps_reduce_only", { on: false }, cfg, {}, g.fetch)
+    expect(JSON.parse(off.text).error.code).toBe("LOOSEN_REQUIRES_SESSION")
+    expect(g.calls).toEqual([])
+  })
+
+  test("flatten on an empty wallet is complete and signs nothing; tpsl needs the signer like any write", async () => {
+    const f = fake({ positions: [] })
+    const result = await executePerps("candle_perps_flatten", {}, cfg, env(), f.fetch)
+    expect(JSON.parse(result.text)).toMatchObject({
+      operation: "flatten",
+      complete: true,
+      scope: "main-perps",
+      steps: [],
+    })
+    expect(f.calls.some((c) => c.url.endsWith("/sign"))).toBe(false)
+    const g = fake()
+    const noSigner = await executePerps("candle_perps_tpsl", { coin: "BTC", takeProfit: "66000" }, cfg, {}, g.fetch)
+    expect(JSON.parse(noSigner.text).error.code).toBe("SIGNER_UNAVAILABLE")
+  })
+
+  test("tpsl attaches through the plan and reports it complete", async () => {
+    const leg = {
+      type: "order",
+      orders: [
+        {
+          a: 0,
+          b: false,
+          p: "62700",
+          s: "0.5",
+          r: true,
+          t: { trigger: { isMarket: true, triggerPx: "66000", tpsl: "tp" } },
+          c: `0x${"3".repeat(32)}`,
+        },
+      ],
+      grouping: "positionTpsl",
+      builder: { b: BUILDER, f: 100 },
+    }
+    const f = fake({
+      positions: [{ position: { coin: "BTC", szi: "0.5", leverage: { type: "cross", value: 10 } } }],
+      builds: (path, body) =>
+        body === undefined
+          ? { coin: "BTC", tracked: [], unowned: [] }
+          : path.endsWith("/tpsl")
+            ? stamped(leg)
+            : undefined,
+    })
+    const result = await executePerps("candle_perps_tpsl", { coin: "BTC", takeProfit: "66000" }, cfg, env(), f.fetch)
+    expect(result.isError).toBeUndefined()
+    expect(JSON.parse(result.text)).toMatchObject({ operation: "tpsl", complete: true })
   })
 })

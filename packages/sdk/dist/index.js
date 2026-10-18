@@ -445,7 +445,8 @@ var HYPERLIQUID_ALLOWED_ACTION_TYPES = [
   "cancel",
   "modify",
   "updateLeverage",
-  "updateIsolatedMargin"
+  "updateIsolatedMargin",
+  "scheduleCancel"
 ];
 var HYPERLIQUID_EXCHANGE_URLS = {
   mainnet: "https://api.hyperliquid.xyz/exchange",
@@ -689,7 +690,67 @@ function decimal(value) {
   const n = BigInt(whole) * 10n ** 18n + BigInt(frac.padEnd(18, "0"));
   return negative ? -n : n;
 }
-function checkActionIntent(action, intent) {
+var ACTION_KEYS = {
+  order: { required: ["type", "orders", "grouping"], optional: ["builder"] },
+  cancel: { required: ["type", "cancels"], optional: [] },
+  modify: { required: ["type", "oid", "order"], optional: [] },
+  updateLeverage: { required: ["type", "asset", "isCross", "leverage"], optional: [] },
+  updateIsolatedMargin: { required: ["type", "asset", "isBuy", "ntli"], optional: [] },
+  scheduleCancel: { required: ["type"], optional: ["time"] }
+};
+function exactKeys(value, required, optional = []) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const keys = Object.keys(value);
+  return required.every((k) => keys.includes(k)) && keys.every((k) => required.includes(k) || optional.includes(k));
+}
+function actionShapeProblem(action) {
+  const shape = ACTION_KEYS[String(action.type)];
+  if (!shape)
+    return null;
+  if (!exactKeys(action, shape.required, shape.optional))
+    return `the ${String(action.type)} action carries unexpected or missing fields`;
+  if (action.type === "order") {
+    if (!["na", "normalTpsl", "positionTpsl"].includes(action.grouping))
+      return "unexpected order grouping";
+    if (action.builder !== undefined && !exactKeys(action.builder, ["b", "f"]))
+      return "builder field is not an object";
+  }
+  const orders = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
+  if (!Array.isArray(orders))
+    return "invalid orders";
+  for (const raw of orders) {
+    if (!exactKeys(raw, ["a", "b", "p", "s", "r", "t"], ["c"]))
+      return "an order carries unexpected or missing fields";
+    const o = raw;
+    const t = o.t;
+    const limit = exactKeys(t, ["limit"]) && exactKeys(t.limit, ["tif"]);
+    const trigger = exactKeys(t, ["trigger"]) && exactKeys(t.trigger, ["isMarket", "triggerPx", "tpsl"]);
+    if (!limit && !trigger)
+      return "an order type carries unexpected or missing fields";
+    if (o.c !== undefined && (typeof o.c !== "string" || !HYPERLIQUID_CLOID_RE.test(o.c)))
+      return "an order carries a malformed client order id";
+  }
+  if (action.type === "cancel") {
+    const cancels = action.cancels;
+    if (!Array.isArray(cancels) || cancels.some((c) => !exactKeys(c, ["a", "o"]) || !Number.isSafeInteger(c.o) || c.o < 0))
+      return "a cancel carries unexpected or missing fields";
+  }
+  if (action.type === "modify") {
+    const oid = action.oid;
+    if (!(Number.isSafeInteger(oid) && oid >= 0) && !(typeof oid === "string" && HYPERLIQUID_CLOID_RE.test(oid)))
+      return "the modify names no order";
+  }
+  if (action.type === "scheduleCancel" && "time" in action && (!Number.isSafeInteger(action.time) || action.time <= 0))
+    return "the scheduled cancel carries an invalid time";
+  return null;
+}
+function withinBps(px, reference, isBuy, bps) {
+  const bound = BigInt(bps);
+  return isBuy ? px * 10000n <= reference * (10000n + bound) : px * 10000n >= reference * (10000n - bound);
+}
+function checkActionIntent(action, opts) {
+  const intent = opts.intent;
   const mainAsset = (a) => typeof a === "number" && Number.isInteger(a) && a >= 0 && a < 1e4;
   const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
   if (!Array.isArray(orderList))
@@ -702,6 +763,8 @@ function checkActionIntent(action, intent) {
       return "order asset is outside the main perp universe";
     if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal(o.s) ?? 0n) <= 0n || (decimal(o.p) ?? 0n) <= 0n)
       return "invalid order side, size, price or reduce-only flag";
+    if (opts.keyReduceOnly === true && o.r !== true)
+      return "this key is reduce-only and the build is not reducing";
   }
   if (action.type === "cancel") {
     if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !mainAsset(action.cancels[0]?.a))
@@ -719,18 +782,87 @@ function checkActionIntent(action, intent) {
     cancel: "cancel",
     modify: "modify",
     leverage: "updateLeverage",
-    margin: "updateIsolatedMargin"
+    margin: "updateIsolatedMargin",
+    tpsl: "order",
+    scheduleCancel: "scheduleCancel"
   };
   if (action.type !== types[method])
     return "action type does not match the requested method";
+  if (opts.keyReduceOnly === true && method === "open")
+    return "this key is reduce-only and an open is not reducing";
+  if (method === "cancel" && opts.cancelTarget) {
+    const target = action.cancels[0];
+    if (target?.a !== opts.cancelTarget.asset || target?.o !== opts.cancelTarget.oid)
+      return "the cancel does not name the order Hyperliquid shows for this request";
+  }
   if (method === "leverage") {
-    if (action.leverage !== p.leverage || action.isCross !== (p.mode !== "isolated"))
+    const wanted = p.leverage ?? opts.leverageTarget?.leverage;
+    const deferred = wanted === undefined && opts.awaitingVenue === true && Number.isSafeInteger(action.leverage);
+    if (!deferred && (typeof wanted !== "number" || action.leverage !== wanted) || action.isCross !== (p.mode !== "isolated"))
       return "leverage or mode does not match the request";
+    const target = opts.leverageTarget;
+    if (target) {
+      if (action.asset !== target.asset)
+        return "leverage asset is not the requested coin's on Hyperliquid";
+      const mode = action.isCross ? "cross" : "isolated";
+      if (mode !== target.mode && !target.flat)
+        return "a margin-mode change needs no position and no resting order in the coin; close and cancel first";
+      if (opts.keyReduceOnly === true && (mode !== target.mode || action.leverage > target.leverage))
+        return "this key is reduce-only: no leverage increase or margin-mode change";
+    }
   }
   if (method === "margin") {
     const amount = decimal(p.amount);
     if (amount === null || amount % 10n ** 12n !== 0n || !Number.isSafeInteger(action.ntli) || BigInt(action.ntli) !== amount / 10n ** 12n || action.isBuy !== true)
       return "isolated margin amount does not match the request";
+    if (opts.marginTarget && action.asset !== opts.marginTarget.asset)
+      return "margin asset is not the requested coin's on Hyperliquid";
+    if (opts.keyReduceOnly === true && action.ntli <= 0)
+      return "this key is reduce-only: margin may only be added";
+  }
+  if (method === "scheduleCancel") {
+    if (p.clear === true) {
+      if ("time" in action)
+        return "a clear must omit the time";
+    } else {
+      const seconds = p.seconds;
+      const time = action.time;
+      if (!Number.isSafeInteger(seconds) || seconds < 5)
+        return "a scheduled cancel needs at least 5 seconds";
+      if (!Number.isSafeInteger(time))
+        return "a scheduled cancel without a time";
+      if (opts.clock) {
+        const lead = time - opts.clock.now;
+        if (lead < HYPERLIQUID_SCHEDULE_CANCEL_MIN_LEAD_MS)
+          return "the scheduled time is less than 5 seconds ahead; build it again";
+        if (Math.abs(time - (opts.clock.now + seconds * 1000)) > HYPERLIQUID_SCHEDULE_CANCEL_DRIFT_MS)
+          return "the scheduled time is not the requested delay from now";
+      }
+    }
+  }
+  if (method === "tpsl") {
+    const list = orderList;
+    const leg = list[0];
+    if (list.length !== 1 || !leg || action.grouping !== "positionTpsl")
+      return "a take-profit / stop-loss attach is one positionTpsl order";
+    const trigger = leg.t?.trigger;
+    if (!trigger || leg.r !== true || trigger.isMarket !== true || trigger.tpsl !== p.leg || decimal(trigger.triggerPx) !== decimal(p.triggerPx))
+      return "trigger leg, reduce-only flag or price does not match the request";
+    if (typeof leg.c !== "string" || !HYPERLIQUID_CLOID_RE.test(leg.c))
+      return "the trigger leg carries no client order id";
+    const triggerPx = decimal(trigger.triggerPx) ?? 0n;
+    if (triggerPx <= 0n || !withinBps(decimal(leg.p) ?? 0n, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS))
+      return "trigger order price is outside its slippage of the trigger price";
+    const target = opts.tpslTarget;
+    if (target) {
+      if (leg.a !== target.asset || leg.b !== target.isBuy || decimal(leg.s) !== decimal(target.size))
+        return "trigger side, asset or size does not match the position Hyperliquid shows";
+      const mark = decimal(target.markPx) ?? 0n;
+      const above = triggerPx > mark;
+      const ok = p.leg === "tp" === !target.isBuy ? above : triggerPx < mark;
+      if (mark <= 0n || !ok)
+        return "the trigger is already crossed or on the wrong side of the mark";
+    }
   }
   if (method === "open" || method === "close" || method === "modify") {
     const list = orderList;
@@ -771,15 +903,15 @@ function checkActionIntent(action, intent) {
           return "trigger side, size, reduce-only flag or price does not match the request";
         const px = decimal(leg.p) ?? 0n;
         const triggerPx = decimal(trigger.triggerPx) ?? 0n;
-        const bound = BigInt(HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS);
-        const within = leg.b === true ? px * 10000n <= triggerPx * (10000n + bound) : px * 10000n >= triggerPx * (10000n - bound);
-        if (triggerPx <= 0n || !within)
+        if (triggerPx <= 0n || !withinBps(px, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS))
           return "trigger order price is outside its slippage of the trigger price";
       }
     } else {
       if (list.length !== 1)
         return "unexpected extra orders";
-      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || p.size != null && (decimal(first.s) ?? 0n) > (decimal(p.size) ?? 0n)))
+      if (method === "close" && p.pct != null && p.size != null)
+        return "a close takes a size or a percentage, not both";
+      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || action.grouping !== "na" || p.size != null && (decimal(first.s) ?? 0n) > (decimal(p.size) ?? 0n)))
         return "close size or reduce-only flag does not match the request";
       if (method === "modify" && p.size != null && decimal(first.s) !== decimal(p.size))
         return "replacement size does not match the request";
@@ -789,9 +921,38 @@ function checkActionIntent(action, intent) {
   }
   return null;
 }
+function hyperliquidClosePct(value) {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,2})(\.[0-9]{1,4})?$/.test(value))
+    return null;
+  const [whole = "0", frac = ""] = value.split(".");
+  const millionths = BigInt(whole) * 10000n + BigInt(frac.padEnd(4, "0"));
+  return millionths > 0n && millionths <= 1000000n ? millionths : null;
+}
+function hyperliquidPctSize(held, pct, szDecimals) {
+  const scaled = decimal(held);
+  if (scaled === null || scaled < 0n)
+    throw new Error("Invalid held size");
+  if (pct === 1000000n)
+    return held;
+  return hyperliquidFloorSize(formatScaled(scaled * pct / 1000000n), szDecimals);
+}
+function hyperliquidFloorSize(value, szDecimals) {
+  const scaled = decimal(value);
+  if (scaled === null || scaled < 0n)
+    throw new Error("Invalid size");
+  const unit = 10n ** BigInt(18 - Math.max(0, Math.min(18, szDecimals)));
+  return formatScaled(scaled / unit * unit);
+}
+function formatScaled(value) {
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const whole = abs / 10n ** 18n;
+  const frac = (abs % 10n ** 18n).toString().padStart(18, "0").replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
+}
 async function hyperliquidCloseOrder(fetcher, network, address, params) {
   const read = async (body) => {
-    const res = await fetcher(HYPERLIQUID_EXCHANGE_URLS[network].replace("/exchange", "/info"), {
+    const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
@@ -802,16 +963,32 @@ async function hyperliquidCloseOrder(fetcher, network, address, params) {
   };
   const [meta, state] = await Promise.all([read({ type: "meta" }), read({ type: "clearinghouseState", user: address })]);
   const coin = String(params.coin).toUpperCase();
-  const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin);
+  const universe = meta.universe;
+  const asset = universe.findIndex((m) => m.name.toUpperCase() === coin);
   const szi = state.assetPositions.find((p) => p.position.coin.toUpperCase() === coin)?.position.szi;
   const signed = decimal(szi);
   if (asset < 0 || asset >= 1e4 || signed === null || signed === 0n)
     throw new Error("No main-universe position to close");
   const held = signed < 0n ? -signed : signed;
+  const heldSz = String(szi).replace(/^-/, "");
+  if (params.pct != null) {
+    if (params.size != null)
+      throw new Error("A close takes a size or a percentage, not both");
+    const pct = hyperliquidClosePct(params.pct);
+    const szDecimals = universe[asset]?.szDecimals;
+    if (pct === null)
+      throw new Error("pct must be above 0 and at most 100, with at most 4 decimals");
+    if (!Number.isInteger(szDecimals))
+      throw new Error("Hyperliquid did not report this market's size precision");
+    const size2 = hyperliquidPctSize(heldSz, pct, szDecimals);
+    if ((decimal(size2) ?? 0n) <= 0n)
+      throw new Error("This percentage of the position rounds to zero at the market's size step");
+    return { asset, isBuy: signed < 0n, size: size2 };
+  }
   const asked = params.size == null ? held : decimal(params.size);
   if (asked === null || asked <= 0n)
     throw new Error("Invalid close size");
-  const size = asked < held ? String(params.size) : String(szi).replace(/^-/, "");
+  const size = asked < held ? String(params.size) : heldSz;
   return { asset, isBuy: signed < 0n, size };
 }
 var HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100;
@@ -835,8 +1012,18 @@ async function hyperliquidOrderMarket(fetcher, network, address, method, params)
     const resting = status?.order?.order ?? null;
     if (!resting || typeof resting.coin !== "string" || decimal(resting.limitPx) === null)
       throw new Error("No resting order with this cloid on Hyperliquid");
+    if (resting.isTrigger === true)
+      throw new Error("A take-profit or stop-loss leg cannot be modified; cancel it instead");
     coin = resting.coin.toUpperCase();
-    order = { isBuy: resting.side === "B", limitPx: String(resting.limitPx) };
+    const tif = typeof resting.tif === "string" && ["Gtc", "Alo", "Ioc"].includes(resting.tif) ? resting.tif : "Gtc";
+    order = {
+      isBuy: resting.side === "B",
+      limitPx: String(resting.limitPx),
+      ...decimal(resting.sz) !== null ? { size: String(resting.sz) } : {},
+      reduceOnly: resting.reduceOnly === true,
+      tif,
+      ...Number.isSafeInteger(resting.oid) ? { oid: resting.oid } : {}
+    };
   }
   const [meta, contexts] = await read({ type: "metaAndAssetCtxs" });
   const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin);
@@ -873,6 +1060,17 @@ function checkOrderMarket(action, intent, market) {
       return "modify changes the resting order's side";
     if (p.price == null && decimal(first.p) !== decimal(market.order.limitPx))
       return "modify changes the resting order's price";
+    const requested = typeof p.cloid === "string" ? p.cloid.toLowerCase() : null;
+    const byOid = market.order.oid !== undefined && action.oid === market.order.oid;
+    const byCloid = requested !== null && typeof action.oid === "string" && action.oid.toLowerCase() === requested;
+    if (!byOid && !byCloid)
+      return "modify does not name the resting order Hyperliquid shows for this cloid";
+    if (first.r !== market.order.reduceOnly)
+      return "modify changes the resting order's reduce-only flag";
+    if (first.t?.limit?.tif !== market.order.tif)
+      return "modify changes the resting order's time in force";
+    if (p.size == null && (market.order.size === undefined || decimal(first.s) !== decimal(market.order.size)))
+      return "modify changes the resting order's size";
   }
   return null;
 }
@@ -895,7 +1093,7 @@ function verifyPerpsBuild(build, opts) {
     const action = build.action;
     if (!action || typeof action !== "object")
       return { ok: false, reason: "no action" };
-    const intentRefusal = checkActionIntent(action, opts.intent);
+    const intentRefusal = checkActionIntent(action, opts);
     if (intentRefusal)
       return { ok: false, reason: intentRefusal };
     if (opts.closeOrder) {
@@ -915,6 +1113,9 @@ function verifyPerpsBuild(build, opts) {
       if (typeof type !== "string" || !HYPERLIQUID_ALLOWED_ACTION_TYPES.includes(type)) {
         return { ok: false, reason: `action type ${String(type)} is not one Candle builds` };
       }
+      const shapeRefusal = actionShapeProblem(action);
+      if (shapeRefusal)
+        return { ok: false, reason: shapeRefusal };
       if (type === "order") {
         const refusal = checkBuilderField(action, opts.builder);
         if (refusal)
@@ -953,6 +1154,237 @@ function verifyPerpsBuild(build, opts) {
     return { ok: false, reason: err instanceof Error ? err.message : "unreadable build" };
   }
 }
+var HYPERLIQUID_SCHEDULE_CANCEL_MIN_LEAD_MS = 5000;
+var HYPERLIQUID_SCHEDULE_CANCEL_DRIFT_MS = 60000;
+async function infoRead(fetcher, network, body) {
+  const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok)
+    throw new Error(`Hyperliquid ${String(body.type)} answered ${res.status ?? "an error"}`);
+  try {
+    return JSON.parse(await res.text());
+  } catch {
+    throw new Error(`Hyperliquid returned an unreadable ${String(body.type)}`);
+  }
+}
+async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.now) {
+  const user = address.toLowerCase();
+  const [metaAndCtxs, state, open] = await Promise.all([
+    infoRead(fetcher, network, { type: "metaAndAssetCtxs" }),
+    infoRead(fetcher, network, { type: "clearinghouseState", user }),
+    infoRead(fetcher, network, { type: "frontendOpenOrders", user })
+  ]);
+  const readAt = now();
+  if (!Array.isArray(metaAndCtxs) || metaAndCtxs.length < 2 || !Array.isArray(metaAndCtxs[1]))
+    throw new Error("Hyperliquid returned an unreadable market list");
+  const rawUniverse = metaAndCtxs[0]?.universe;
+  if (!Array.isArray(rawUniverse))
+    throw new Error("Hyperliquid returned an unreadable market list");
+  const universe = rawUniverse.map((m) => {
+    const row = m;
+    if (typeof row.name !== "string" || !Number.isInteger(row.szDecimals) || !Number.isInteger(row.maxLeverage))
+      throw new Error("Hyperliquid returned an unreadable market");
+    return {
+      name: row.name,
+      szDecimals: row.szDecimals,
+      maxLeverage: row.maxLeverage,
+      onlyIsolated: row.onlyIsolated === true
+    };
+  });
+  const ctxs = metaAndCtxs[1];
+  const marks = universe.map((_, i) => {
+    const mark = ctxs[i]?.markPx;
+    return typeof mark === "string" && (decimal(mark) ?? 0n) > 0n ? mark : null;
+  });
+  const assetOf = (coin) => universe.findIndex((m) => m.name === coin);
+  const unsupported = [];
+  const positionsRaw = state?.assetPositions;
+  if (!Array.isArray(positionsRaw))
+    throw new Error("Hyperliquid returned an unreadable account state");
+  const positions = [];
+  for (const entry of positionsRaw) {
+    const p = entry?.position;
+    const coin = p?.coin;
+    const lev = p?.leverage;
+    const szi = p?.szi;
+    if (typeof coin !== "string" || typeof szi !== "string" || decimal(szi) === null) {
+      unsupported.push(`an unreadable position (${JSON.stringify(coin ?? null)})`);
+      continue;
+    }
+    const asset = assetOf(coin);
+    if (asset < 0 || asset >= 1e4 || lev?.type !== "cross" && lev?.type !== "isolated" || !Number.isInteger(lev.value)) {
+      unsupported.push(`position ${coin}`);
+      continue;
+    }
+    if (decimal(szi) === 0n)
+      continue;
+    positions.push({ coin, asset, szi, leverage: { type: lev.type, value: lev.value } });
+  }
+  if (!Array.isArray(open))
+    throw new Error("Hyperliquid returned an unreadable order list");
+  const orders = [];
+  for (const raw of open) {
+    const o = raw;
+    const coin = o?.coin;
+    if (typeof coin !== "string") {
+      unsupported.push("an unreadable order");
+      continue;
+    }
+    const asset = assetOf(coin);
+    const oid = o.oid;
+    if (asset < 0 || asset >= 1e4 || !Number.isSafeInteger(oid) || o.side !== "A" && o.side !== "B" || decimal(o.sz) === null || decimal(o.limitPx) === null) {
+      unsupported.push(`order ${coin}${Number.isSafeInteger(oid) ? ` ${oid}` : ""}`);
+      continue;
+    }
+    const orderType = typeof o.orderType === "string" ? o.orderType : "";
+    const isTrigger = o.isTrigger === true;
+    const tpsl = isTrigger ? orderType.startsWith("Take Profit") ? "tp" : orderType.startsWith("Stop") ? "sl" : null : null;
+    if (isTrigger && tpsl === null) {
+      unsupported.push(`order ${coin} ${oid} (${orderType || "unknown trigger"})`);
+      continue;
+    }
+    orders.push({
+      coin,
+      asset,
+      oid,
+      cloid: typeof o.cloid === "string" ? o.cloid.toLowerCase() : null,
+      isBuy: o.side === "B",
+      sz: o.sz,
+      limitPx: o.limitPx,
+      reduceOnly: o.reduceOnly === true,
+      isTrigger,
+      triggerPx: typeof o.triggerPx === "string" ? o.triggerPx : null,
+      tpsl
+    });
+  }
+  orders.sort((a, b) => a.asset - b.asset || a.oid - b.oid);
+  positions.sort((a, b) => a.asset - b.asset);
+  return { readAt, universe, marks, positions, orders, unsupported };
+}
+function snapshotPosition(snapshot, coin) {
+  const upper = coin.toUpperCase();
+  return snapshot.positions.find((p) => p.coin.toUpperCase() === upper) ?? null;
+}
+function hyperliquidTpslTarget(snapshot, coin) {
+  const position = snapshotPosition(snapshot, coin);
+  if (!position)
+    throw new Error(`No ${coin} position on Hyperliquid to protect`);
+  const mark = snapshot.marks[position.asset];
+  const szDecimals = snapshot.universe[position.asset]?.szDecimals;
+  if (!mark || szDecimals === undefined)
+    throw new Error(`No Hyperliquid mark for ${position.coin}`);
+  const held = position.szi.replace(/^-/, "");
+  const size = hyperliquidFloorSize(held, szDecimals);
+  return { asset: position.asset, isBuy: position.szi.startsWith("-"), size, markPx: mark };
+}
+async function venueEvidence(fetcher, network, address, intent, now) {
+  const p = intent.params;
+  switch (intent.method) {
+    case "open":
+    case "modify":
+      return { market: await hyperliquidOrderMarket(fetcher, network, address, intent.method, p) };
+    case "close":
+      return { closeOrder: await hyperliquidCloseOrder(fetcher, network, address, p) };
+    case "cancel": {
+      if (p.oid !== undefined) {
+        const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+        const order = snapshot.orders.find((o) => o.oid === p.oid && (p.coin === undefined || o.coin.toUpperCase() === String(p.coin).toUpperCase()));
+        if (!order)
+          throw new Error("Hyperliquid shows no such open order on this wallet");
+        return { cancelTarget: { asset: order.asset, oid: order.oid } };
+      }
+      const status = await infoRead(fetcher, network, {
+        type: "orderStatus",
+        user: address.toLowerCase(),
+        oid: p.cloid
+      });
+      const resting = status?.order?.order;
+      if (!resting || typeof resting.coin !== "string" || !Number.isSafeInteger(resting.oid))
+        throw new Error("Hyperliquid shows no order with this cloid on this wallet");
+      const meta = await infoRead(fetcher, network, { type: "meta" });
+      const asset = (meta.universe ?? []).findIndex((m) => m.name === resting.coin);
+      if (asset < 0 || asset >= 1e4)
+        throw new Error("The order is not on Hyperliquid's main perp exchange");
+      return { cancelTarget: { asset, oid: resting.oid } };
+    }
+    case "leverage": {
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+      const coin = String(p.coin ?? "").toUpperCase();
+      const asset = snapshot.universe.findIndex((m) => m.name.toUpperCase() === coin);
+      if (asset < 0)
+        throw new Error("No main-universe market for this coin on Hyperliquid");
+      const name = snapshot.universe[asset]?.name;
+      const data = await infoRead(fetcher, network, {
+        type: "activeAssetData",
+        user: address.toLowerCase(),
+        coin: name
+      });
+      const lev = data?.leverage;
+      if (lev?.type !== "cross" && lev?.type !== "isolated" || !Number.isInteger(lev.value))
+        throw new Error("Hyperliquid did not report this market's leverage");
+      const flat = !snapshot.positions.some((x) => x.asset === asset) && !snapshot.orders.some((o) => o.asset === asset);
+      return { leverageTarget: { asset, leverage: lev.value, mode: lev.type, flat } };
+    }
+    case "margin": {
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+      const position = snapshotPosition(snapshot, String(p.coin ?? ""));
+      if (!position || position.leverage.type !== "isolated")
+        throw new Error("Hyperliquid shows no isolated position in this coin");
+      return { marginTarget: { asset: position.asset } };
+    }
+    case "tpsl": {
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+      return { tpslTarget: hyperliquidTpslTarget(snapshot, String(p.coin ?? "")) };
+    }
+    case "scheduleCancel":
+      return { clock: { now: now() } };
+    default:
+      return {};
+  }
+}
+async function verifyPerpsBuildAgainstVenue(build, opts) {
+  const { fetcher, now = Date.now, ...verify } = opts;
+  const first = verifyPerpsBuild(build, { ...verify, awaitingVenue: true });
+  if (!first.ok)
+    return first;
+  let evidence;
+  try {
+    evidence = await venueEvidence(fetcher, verify.network ?? "mainnet", opts.address, opts.intent, now);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `could not check it against Hyperliquid: ${err instanceof Error ? err.message : "read failed"}`
+    };
+  }
+  return verifyPerpsBuild(build, { ...verify, ...evidence });
+}
+function hyperliquidExchangeOutcome(exchange) {
+  if (!exchange || typeof exchange !== "object")
+    return { status: "unknown", error: "Hyperliquid returned no answer" };
+  const answer = exchange;
+  if (answer.status === "err")
+    return {
+      status: "rejected",
+      error: typeof answer.response === "string" ? answer.response : JSON.stringify(answer.response ?? null),
+      legs: []
+    };
+  if (answer.status !== "ok")
+    return { status: "unknown", error: "Hyperliquid's answer has no status" };
+  const response = answer.response;
+  const statuses = response?.data?.statuses;
+  if (statuses === undefined) {
+    return response?.type === "default" || response?.type === "scheduleCancel" || response?.type === "cancel" ? { status: "confirmed", legs: [] } : { status: "unknown", error: "Hyperliquid's answer is not one this client knows" };
+  }
+  if (!Array.isArray(statuses))
+    return { status: "unknown", error: "Hyperliquid's answer has unreadable statuses" };
+  const errors = statuses.filter((s) => s && typeof s === "object" && ("error" in s)).map((s) => String(s.error));
+  if (errors.length > 0)
+    return { status: "rejected", error: errors.join("; "), legs: statuses };
+  return { status: "confirmed", legs: statuses };
+}
 function hyperliquidSplitSignature(signature) {
   if (!/^0x[0-9a-fA-F]{130}$/.test(signature))
     throw new Error("Not a 65-byte signature");
@@ -966,6 +1398,457 @@ function hyperliquidExchangeBody(action, nonce, signature) {
 }
 function hyperliquidRelayBody(typedData) {
   return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
+}
+
+// src/hyperliquid-manage.ts
+var PERPS_FLATTEN_MAX_STEPS = 100;
+
+class PerpsWorkflowError extends Error {
+  code;
+  details;
+  constructor(code, message, details = {}) {
+    super(message);
+    this.code = code;
+    this.details = details;
+  }
+}
+function errorCode(err) {
+  const code = err?.code;
+  return typeof code === "string" ? code : "REQUEST_FAILED";
+}
+function errorText(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+async function runStep(io, step, path, body, intent) {
+  let build;
+  try {
+    build = await io.build(path, { walletId: io.walletId, ...body });
+  } catch (err) {
+    step.status = "rejected";
+    step.detail = `${errorCode(err)}: ${errorText(err)}`;
+    return false;
+  }
+  if (build.replayed === true) {
+    step.status = "skipped";
+    step.detail = "This client id already names an operation; nothing was signed";
+    return false;
+  }
+  step.perpOrderId = typeof build.perpOrderId === "string" ? build.perpOrderId : null;
+  step.nonce = typeof build.nonce === "number" ? build.nonce : null;
+  if (typeof build.cloid === "string")
+    step.cloid = build.cloid;
+  const check = await verifyPerpsBuildAgainstVenue(build, {
+    builder: io.builder,
+    network: io.network,
+    address: io.address,
+    intent,
+    fetcher: io.fetcher,
+    now: io.now,
+    keyReduceOnly: io.keyReduceOnly
+  });
+  if (!check.ok) {
+    step.status = "rejected";
+    step.detail = `Refused to sign this build: ${check.reason}. Nothing was signed.`;
+    return false;
+  }
+  step.status = "built";
+  if (io.mode === "no-submit")
+    return false;
+  let signature;
+  try {
+    signature = await io.sign(build.typedData);
+  } catch (err) {
+    step.status = "rejected";
+    step.detail = `The relay did not sign (${errorCode(err)}: ${errorText(err)}). Nothing was submitted.`;
+    return false;
+  }
+  step.signature = signature;
+  const exchangeBody = hyperliquidExchangeBody(build.action, build.nonce, signature);
+  if (io.mode === "sign-only") {
+    step.exchangeBody = exchangeBody;
+    return false;
+  }
+  let exchange;
+  try {
+    const res = await io.fetcher(HYPERLIQUID_EXCHANGE_URLS[io.network], {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(exchangeBody)
+    });
+    const text = await res.text();
+    if (!res.ok)
+      throw new Error(`HTTP ${res.status ?? "error"}${res.status === 429 ? " (rate limited)" : ""}`);
+    exchange = JSON.parse(text);
+  } catch (err) {
+    step.status = "unknown";
+    step.detail = `Signed, but the submit to Hyperliquid did not answer (${errorText(err)}). Reconcile before acting again.`;
+    step.exchangeBody = exchangeBody;
+    return false;
+  }
+  step.exchange = exchange;
+  const outcome = hyperliquidExchangeOutcome(exchange);
+  if (outcome.status === "confirmed") {
+    step.status = "confirmed";
+    return true;
+  }
+  step.status = outcome.status;
+  step.detail = outcome.error;
+  if (outcome.status === "unknown")
+    step.exchangeBody = exchangeBody;
+  return false;
+}
+function blankStep(n, kind, coin, extra = {}) {
+  return {
+    step: n,
+    kind,
+    coin,
+    target: null,
+    perpOrderId: null,
+    nonce: null,
+    cloid: null,
+    status: "planned",
+    ...extra
+  };
+}
+var DECIMAL_RE = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
+var CLOID_RE = /^0x[0-9a-f]{32}$/;
+function perpsTpslParamsProblem(p) {
+  if (typeof p.coin !== "string" || !/^[A-Za-z0-9]{1,20}$/.test(p.coin))
+    return "coin must be a market name";
+  for (const [field, value] of [
+    ["takeProfit", p.takeProfit],
+    ["stopLoss", p.stopLoss]
+  ])
+    if (value !== undefined && (typeof value !== "string" || !DECIMAL_RE.test(value) || /^0+(\.0+)?$/.test(value)))
+      return `${field} must be a positive decimal`;
+  if (p.takeProfit !== undefined && p.removeTp)
+    return "cannot set and remove the take-profit together";
+  if (p.stopLoss !== undefined && p.removeSl)
+    return "cannot set and remove the stop-loss together";
+  if (p.takeProfit === undefined && p.stopLoss === undefined && !p.removeTp && !p.removeSl)
+    return "name at least one change: a take-profit, a stop-loss, or a removal";
+  for (const [field, value] of [
+    ["targetTp", p.targetTp],
+    ["targetSl", p.targetSl]
+  ])
+    if (value !== undefined && (typeof value !== "string" || !CLOID_RE.test(value.toLowerCase())))
+      return `${field} must be 0x followed by 32 hex digits`;
+  if (p.targetTp !== undefined && p.takeProfit === undefined && !p.removeTp)
+    return "targetTp needs a take-profit change";
+  if (p.targetSl !== undefined && p.stopLoss === undefined && !p.removeSl)
+    return "targetSl needs a stop-loss change";
+  return null;
+}
+function sameDecimal(a, b) {
+  if (typeof a !== "string" || typeof b !== "string")
+    return false;
+  const norm = (v) => (v.includes(".") ? v.replace(/0+$/, "").replace(/\.$/, "") : v).replace(/^0+(?=\d)/, "");
+  return norm(a) === norm(b);
+}
+async function runPerpsTpsl(io, params) {
+  const problem = perpsTpslParamsProblem(params);
+  if (problem)
+    throw new PerpsWorkflowError("VALIDATION_FAILED", problem);
+  const coinQuery = encodeURIComponent(params.coin);
+  const server = await io.read(`/api/v1/agent/perps/tpsl?walletId=${encodeURIComponent(io.walletId)}&coin=${coinQuery}`);
+  let snapshot;
+  try {
+    snapshot = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now);
+  } catch (err) {
+    throw new PerpsWorkflowError("PERPS_UNAVAILABLE", `Cannot read the account from Hyperliquid: ${errorText(err)}`);
+  }
+  const coin = typeof server.coin === "string" ? server.coin : params.coin.toUpperCase();
+  const venueLegs = snapshot.orders.filter((o) => o.coin === coin && o.tpsl !== null);
+  const tracked = [];
+  for (const raw of Array.isArray(server.tracked) ? server.tracked : []) {
+    const seen = venueLegs.find((o) => o.oid === raw.oid && o.tpsl === raw.leg && (o.cloid ?? null) === (raw.cloid ?? null));
+    if (seen)
+      tracked.push({ leg: raw.leg, oid: seen.oid, cloid: seen.cloid, triggerPx: seen.triggerPx });
+  }
+  const trackedOids = new Set(tracked.map((l) => l.oid));
+  const unowned = venueLegs.filter((o) => !trackedOids.has(o.oid)).map((o) => ({ leg: o.tpsl, oid: o.oid, cloid: o.cloid, triggerPx: o.triggerPx }));
+  const position = snapshotPosition(snapshot, coin);
+  const warnings = [];
+  if (unowned.length > 0)
+    warnings.push(`${unowned.length} take-profit / stop-loss leg(s) on ${coin} were not built by Candle; they are left untouched.`);
+  const steps = [];
+  const plans = [];
+  for (const leg of ["tp", "sl"]) {
+    const set = leg === "tp" ? params.takeProfit : params.stopLoss;
+    const remove = leg === "tp" ? params.removeTp === true : params.removeSl === true;
+    if (set === undefined && !remove)
+      continue;
+    const target = (leg === "tp" ? params.targetTp : params.targetSl)?.toLowerCase();
+    let legs = tracked.filter((l) => l.leg === leg);
+    if (target !== undefined) {
+      legs = legs.filter((l) => l.cloid === target);
+      if (legs.length === 0)
+        throw new PerpsWorkflowError("PERPS_ORDER_NOT_FOUND", `No open ${coin} ${leg} leg Candle built carries ${target}`);
+    }
+    if (legs.length > 1)
+      throw new PerpsWorkflowError("PERPS_TPSL_CONFLICT", `${legs.length} ${coin} ${leg === "tp" ? "take-profit" : "stop-loss"} legs match; name one with --target-${leg} <cloid>`, { candidates: legs });
+    const existing = legs[0] ?? null;
+    if (set !== undefined && existing && sameDecimal(existing.triggerPx, set)) {
+      steps.push(blankStep(steps.length, "attach", coin, {
+        leg,
+        target: { oid: existing.oid, cloid: existing.cloid },
+        status: "skipped",
+        detail: "Already in place at this trigger"
+      }));
+      continue;
+    }
+    if (set !== undefined && !position)
+      throw new PerpsWorkflowError("PERPS_NO_POSITION", `No ${coin} position on Hyperliquid to protect`);
+    if (remove && !existing) {
+      steps.push(blankStep(steps.length, "cancel", coin, { leg, status: "skipped", detail: "No tracked leg to remove" }));
+      continue;
+    }
+    const cancel = existing ? blankStep(steps.length, "cancel", coin, { leg, target: { oid: existing.oid, cloid: existing.cloid } }) : null;
+    if (cancel)
+      steps.push(cancel);
+    const attach = set !== undefined ? blankStep(steps.length, "attach", coin, { leg }) : null;
+    if (attach)
+      steps.push(attach);
+    if (cancel && attach)
+      warnings.push(`Changing the ${leg === "tp" ? "take-profit" : "stop-loss"} cancels the current leg first: ${coin} is unprotected on that side until the new one is placed.`);
+    if (cancel && !attach)
+      warnings.push(`Removing the ${leg === "tp" ? "take-profit" : "stop-loss"} leaves ${coin} without it.`);
+    plans.push({ leg, cancel, attach, ...set !== undefined ? { triggerPx: set } : {} });
+  }
+  if (plans.some((p) => p.attach))
+    warnings.push("New legs are sized to the position now and do not grow with later additions; triggering does not guarantee a fill.");
+  const result = {
+    operation: "tpsl",
+    walletId: io.walletId,
+    address: io.address,
+    network: io.network,
+    readAt: snapshot.readAt,
+    complete: false,
+    steps,
+    remaining: [],
+    warnings,
+    unowned
+  };
+  const active = steps.filter((s) => s.status === "planned");
+  if (active.length === 0) {
+    result.complete = true;
+    return result;
+  }
+  if (io.mode !== "no-submit" && io.confirm && !await io.confirm({ steps, warnings }))
+    throw new PerpsWorkflowError("CANCELLED", "Nothing was signed.");
+  const workflowId = `tpsl-${io.cloid().slice(2, 18)}`;
+  let stopped = false;
+  for (const plan of plans) {
+    if (stopped)
+      break;
+    if (plan.cancel) {
+      const step = plan.cancel;
+      const ok = await runStep(io, step, "/api/v1/agent/perps/tpsl", {
+        coin,
+        operation: "cancel",
+        leg: plan.leg,
+        ...step.target?.cloid ? { targetCloid: step.target.cloid } : {},
+        workflowId,
+        workflowStep: step.step
+      }, { method: "cancel", params: { coin, oid: step.target?.oid } });
+      if (!ok) {
+        stopped = true;
+        break;
+      }
+      try {
+        const after = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now);
+        result.readAt = after.readAt;
+        if (after.orders.some((o) => o.oid === step.target?.oid)) {
+          step.status = "unknown";
+          step.detail = "Hyperliquid accepted the cancel but still shows the leg open; no replacement was placed";
+          stopped = true;
+          break;
+        }
+        if (plan.attach && !snapshotPosition(after, coin)) {
+          plan.attach.status = "skipped";
+          plan.attach.detail = "The position closed meanwhile; no replacement was placed";
+          continue;
+        }
+      } catch (err) {
+        step.detail = `Canceled, but the follow-up read failed (${errorText(err)}); no replacement was placed`;
+        stopped = true;
+        break;
+      }
+    }
+    if (plan.attach) {
+      const ok = await runStep(io, plan.attach, "/api/v1/agent/perps/tpsl", {
+        coin,
+        operation: "attach",
+        leg: plan.leg,
+        triggerPx: plan.triggerPx,
+        workflowId,
+        workflowStep: plan.attach.step
+      }, { method: "tpsl", params: { coin, leg: plan.leg, triggerPx: plan.triggerPx } });
+      if (!ok)
+        stopped = true;
+    }
+  }
+  for (const s of steps) {
+    if (s.status === "planned")
+      result.remaining.push({ step: s.step, kind: s.kind, leg: s.leg, coin });
+    if (s.kind === "cancel" && s.status === "confirmed" && plans.find((p) => p.cancel === s)?.attach?.status !== "confirmed")
+      result.remaining.push({ leg: s.leg, coin, state: "old leg canceled, no new leg in place" });
+  }
+  result.complete = steps.every((s) => s.status === "confirmed" || s.status === "skipped") && !stopped;
+  return result;
+}
+function orderTarget(o) {
+  return { oid: o.oid, cloid: o.cloid };
+}
+function snapshotOrError(io) {
+  return hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now);
+}
+async function runPerpsFlatten(io) {
+  let snapshot;
+  try {
+    snapshot = await snapshotOrError(io);
+  } catch (err) {
+    throw new PerpsWorkflowError("PERPS_UNAVAILABLE", `Cannot read the account from Hyperliquid: ${errorText(err)}`);
+  }
+  if (snapshot.unsupported.length > 0)
+    throw new PerpsWorkflowError("PERPS_MARKET_REFUSED", `Flatten reaches Hyperliquid's main perp exchange only, and this wallet holds rows it cannot classify there: ${snapshot.unsupported.slice(0, 5).join(", ")}. Nothing was built.`, { unsupported: snapshot.unsupported });
+  const warnings = [
+    "Scope: Hyperliquid's main perp exchange only. Spot, HIP-3 and vault exposure is not read or closed.",
+    "Every open order is canceled first, take-profit and stop-loss protection included.",
+    "The final state is an observed snapshot; another client can open exposure afterwards."
+  ];
+  const steps = [];
+  for (const o of snapshot.orders)
+    steps.push(blankStep(steps.length, "cancel", o.coin, { target: orderTarget(o) }));
+  const closeIds = new Map;
+  for (const p of snapshot.positions) {
+    const id = io.cloid();
+    closeIds.set(p.coin, id);
+    steps.push(blankStep(steps.length, "close", p.coin, { cloid: id }));
+  }
+  const result = {
+    operation: "flatten",
+    walletId: io.walletId,
+    address: io.address,
+    network: io.network,
+    readAt: snapshot.readAt,
+    complete: false,
+    steps,
+    remaining: [],
+    warnings,
+    scope: "main-perps"
+  };
+  if (steps.length === 0) {
+    result.complete = true;
+    return result;
+  }
+  if (steps.length > PERPS_FLATTEN_MAX_STEPS)
+    warnings.push(`${steps.length} steps planned; this run signs at most ${PERPS_FLATTEN_MAX_STEPS} and reports the rest as remaining. Run flatten again.`);
+  if (io.mode !== "no-submit" && io.confirm && !await io.confirm({ steps, warnings }))
+    throw new PerpsWorkflowError("CANCELLED", "Nothing was signed.");
+  const workflowId = `flat-${io.cloid().slice(2, 18)}`;
+  const cancelStep = (step) => runStep(io, step, "/api/v1/agent/perps/flatten/cancel", { coin: step.coin, oid: step.target?.oid, workflowId, workflowStep: step.step }, { method: "cancel", params: { coin: step.coin, oid: step.target?.oid } });
+  const closeStep = (step) => {
+    const clientId = closeIds.get(step.coin);
+    return runStep(io, step, "/api/v1/agent/perps/close", { coin: step.coin, clientId, workflowId, workflowStep: step.step }, { method: "close", params: { coin: step.coin, clientId } });
+  };
+  if (io.mode !== "submit") {
+    const first = steps[0];
+    await (first.kind === "cancel" ? cancelStep(first) : closeStep(first));
+    for (const s of steps)
+      if (s.status === "planned")
+        result.remaining.push({ step: s.step, kind: s.kind, coin: s.coin, target: s.target });
+    return result;
+  }
+  let signed = 0;
+  let stopped = false;
+  const budgetLeft = () => signed < PERPS_FLATTEN_MAX_STEPS;
+  for (const step of steps.filter((s) => s.kind === "cancel")) {
+    if (stopped || !budgetLeft())
+      break;
+    signed++;
+    if (await cancelStep(step))
+      continue;
+    if (step.status === "rejected" && step.detail?.startsWith("PERPS_ORDER_NOT_OPEN")) {
+      step.status = "skipped";
+      continue;
+    }
+    stopped = true;
+  }
+  if (!stopped && budgetLeft()) {
+    let after = null;
+    try {
+      after = await snapshotOrError(io);
+      result.readAt = after.readAt;
+    } catch (err) {
+      warnings.push(`The read after the cancels failed (${errorText(err)}); no position was closed.`);
+      stopped = true;
+    }
+    if (after) {
+      const fresh = after.orders.filter((o) => !steps.some((s) => s.kind === "cancel" && s.target?.oid === o.oid));
+      if (fresh.length > 0)
+        warnings.push(`${fresh.length} order(s) appeared during the cancels and were not part of this run's plan.`);
+      for (const p of after.positions)
+        if (!closeIds.has(p.coin)) {
+          const id = io.cloid();
+          closeIds.set(p.coin, id);
+          steps.push(blankStep(steps.length, "close", p.coin, { cloid: id }));
+        }
+      for (const step of steps.filter((s) => s.kind === "close")) {
+        if (stopped || !budgetLeft())
+          break;
+        let now;
+        try {
+          now = await snapshotOrError(io);
+          result.readAt = now.readAt;
+        } catch (err) {
+          step.detail = `The read before this close failed (${errorText(err)})`;
+          stopped = true;
+          break;
+        }
+        const held = snapshotPosition(now, step.coin);
+        if (!held) {
+          step.status = "skipped";
+          step.detail = "No position left to close";
+          continue;
+        }
+        signed++;
+        if (await closeStep(step)) {
+          const leg = step.exchange?.response?.data?.statuses?.[0];
+          const filled = typeof leg?.filled?.totalSz === "string" ? leg.filled.totalSz : null;
+          const planned = held.szi.replace(/^-/, "");
+          if (filled !== null) {
+            step.filledSz = filled;
+            if (!sameDecimal(filled, planned)) {
+              step.remainingSz = `${planned} planned, ${filled} filled`;
+              step.detail = "Partly filled; the rest of the position is still open";
+            }
+          }
+          continue;
+        }
+        if (step.status !== "rejected" || /429|rate limit/i.test(step.detail ?? ""))
+          stopped = true;
+      }
+    }
+  }
+  let final = null;
+  try {
+    final = await snapshotOrError(io);
+    result.readAt = final.readAt;
+  } catch (err) {
+    warnings.push(`The final read failed (${errorText(err)}); the outcome is not known.`);
+  }
+  for (const s of steps)
+    if (s.status === "planned")
+      result.remaining.push({ step: s.step, kind: s.kind, coin: s.coin, target: s.target });
+  if (final) {
+    for (const p of final.positions)
+      result.remaining.push({ kind: "position", coin: p.coin, szi: p.szi });
+    for (const o of final.orders)
+      result.remaining.push({ kind: "order", coin: o.coin, oid: o.oid });
+  }
+  result.complete = final !== null && final.positions.length === 0 && final.orders.length === 0 && final.unsupported.length === 0 && !stopped && steps.every((s) => s.status === "confirmed" || s.status === "skipped");
+  return result;
 }
 
 // src/hyperliquid-markets.ts
@@ -2246,7 +3129,7 @@ function parseSendAssetAmount(value, form) {
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function exactKeys(value, keys) {
+function exactKeys2(value, keys) {
   const own = Object.keys(value);
   return own.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 }
@@ -2254,15 +3137,15 @@ function sameEvm(a, b) {
   return typeof a === "string" && EVM_ADDRESS_RE2.test(a) && a.toLowerCase() === b.toLowerCase();
 }
 function typesMatch(types, expected) {
-  if (!isObject(types) || !exactKeys(types, Object.keys(expected)))
+  if (!isObject(types) || !exactKeys2(types, Object.keys(expected)))
     return false;
   return Object.entries(expected).every(([key, want]) => {
     const fields = types[key];
-    return Array.isArray(fields) && fields.length === want.length && fields.every((field, i) => isObject(field) && exactKeys(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
+    return Array.isArray(fields) && fields.length === want.length && fields.every((field, i) => isObject(field) && exactKeys2(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
   });
 }
 function domainMatches(domain, expected) {
-  return isObject(domain) && exactKeys(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
+  return isObject(domain) && exactKeys2(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
 }
 function verifyWithdrawMapping(build, expect) {
   const refuse = (reason) => ({ ok: false, reason });
@@ -2288,7 +3171,7 @@ function verifyWithdrawMapping(build, expect) {
   if (!typesMatch(typed.types, RELAY_NONCE_MAPPING_TYPES))
     return refuse("the NonceMapping type list differs");
   const message = typed.message;
-  if (!isObject(message) || !exactKeys(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
+  if (!isObject(message) || !exactKeys2(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
     return refuse("the NonceMapping message has other fields");
   if (message.chainId !== "hyperliquid")
     return refuse("the NonceMapping names another chain");
@@ -2315,7 +3198,7 @@ function verifyWithdrawSendAsset(authorization, expect) {
   if (!typesMatch(typed.types, HYPERLIQUID_SEND_ASSET_TYPES))
     return refuse("the SendAsset type list differs");
   const m = typed.message;
-  if (!isObject(m) || !exactKeys(m, SEND_ASSET_KEYS))
+  if (!isObject(m) || !exactKeys2(m, SEND_ASSET_KEYS))
     return refuse("the SendAsset message has other fields");
   if (m.hyperliquidChain !== "Mainnet")
     return refuse("the SendAsset is not on Mainnet");
@@ -2334,7 +3217,7 @@ function verifyWithdrawSendAsset(authorization, expect) {
   if (typeof m.destination !== "string" || !pins.depositories.includes(m.destination.toLowerCase()))
     return refuse("the SendAsset destination is not a Relay depository on the allow-list");
   const action = authorization.action;
-  if (!isObject(action) || !exactKeys(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
+  if (!isObject(action) || !exactKeys2(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
     return refuse("the action has other fields");
   if (action.type !== "sendAsset" || action.signatureChainId !== "0xa4b1")
     return refuse("the action is not a sendAsset");
@@ -3845,6 +4728,8 @@ class CandleClient {
   }
   async perpsClose(params) {
     this.requireKey("perpsClose()");
+    if (params.pct !== undefined && params.size !== undefined)
+      throw new Error("perpsClose(): give a size or a pct, not both");
     this.perpsBuilder();
     const { walletId, privyWalletId: _p, submit: _s, ...close } = params;
     const clientId = perpsClientId(params.clientId);
@@ -3876,10 +4761,31 @@ class CandleClient {
   }
   async perpsLeverage(params) {
     this.requireKey("perpsLeverage()");
+    if (params.leverage === undefined && params.mode === undefined)
+      throw new Error("perpsLeverage(): leverage is required unless mode names the margin mode");
     this.perpsBuilder();
     const { walletId, privyWalletId: _p, submit: _s, ...leverage } = params;
     const build = await this.requestJson("POST", "/api/v1/agent/perps/leverage", { walletId, ...leverage });
-    return this.perpsComplete(build, params, "leverage");
+    const result = await this.perpsComplete(build, params, "leverage");
+    if (params.mode === undefined || result.outcome?.status !== "confirmed")
+      return result;
+    let confirmedMode = null;
+    try {
+      const res = await this.fetchImpl(HYPERLIQUID_EXCHANGE_URLS[this.hyperliquidNetwork].replace("/exchange", "/info"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "activeAssetData",
+          user: build.address,
+          coin: String(build.preview.coin ?? params.coin)
+        })
+      });
+      const type = JSON.parse(await res.text())?.leverage?.type;
+      confirmedMode = type === "cross" || type === "isolated" ? type : null;
+    } catch {
+      confirmedMode = null;
+    }
+    return { ...result, requestedMode: params.mode, confirmedMode };
   }
   async perpsMargin(params) {
     this.requireKey("perpsMargin()");
@@ -4130,35 +5036,21 @@ class CandleClient {
   }
   async perpsComplete(build, ref, method) {
     build = { ...build, preview: { ...build.preview, builderTrust: this.perpsBuilderTrust() } };
-    const check = verifyPerpsBuild(build, {
+    const params = ref;
+    const opts = {
       builder: this.perpsBuilder(),
       network: this.hyperliquidNetwork,
-      intent: { method, params: ref }
+      intent: { method, params },
+      keyReduceOnly: build.perpsReduceOnly === true
+    };
+    const check = method === "setup" ? verifyPerpsBuild(build, opts) : await verifyPerpsBuildAgainstVenue(build, {
+      ...opts,
+      address: build.address,
+      fetcher: this.fetchImpl,
+      now: Date.now
     });
     if (!check.ok)
       throw new Error(`perps: refused to sign this build: ${check.reason}`);
-    if (method === "close") {
-      const closeOrder = await hyperliquidCloseOrder(this.fetchImpl, this.hyperliquidNetwork, build.address, ref);
-      const closeCheck = verifyPerpsBuild(build, {
-        builder: this.perpsBuilder(),
-        network: this.hyperliquidNetwork,
-        intent: { method, params: ref },
-        closeOrder
-      });
-      if (!closeCheck.ok)
-        throw new Error(`perps: refused to sign this build: ${closeCheck.reason}`);
-    }
-    if (method === "open" || method === "modify") {
-      const market = await hyperliquidOrderMarket(this.fetchImpl, this.hyperliquidNetwork, build.address, method, ref);
-      const marketCheck = verifyPerpsBuild(build, {
-        builder: this.perpsBuilder(),
-        network: this.hyperliquidNetwork,
-        intent: { method, params: ref },
-        market
-      });
-      if (!marketCheck.ok)
-        throw new Error(`perps: refused to sign this build: ${marketCheck.reason}`);
-    }
     if (ref.submit === false)
       return { build, signature: null, submitted: false, exchange: null };
     const signature = await this.signLinkedTypedData({
@@ -4176,7 +5068,8 @@ class CandleClient {
       if (!res.ok) {
         return { build, signature, submitted: false, exchange: null, submitError: `HTTP ${res.status}: ${text}` };
       }
-      return { build, signature, submitted: true, exchange: JSON.parse(text) };
+      const exchange = JSON.parse(text);
+      return { build, signature, submitted: true, exchange, outcome: hyperliquidExchangeOutcome(exchange) };
     } catch (err) {
       return {
         build,
@@ -4186,6 +5079,83 @@ class CandleClient {
         submitError: err instanceof Error ? err.message : String(err)
       };
     }
+  }
+  async perpsScheduleCancel(params) {
+    this.requireKey("perpsScheduleCancel()");
+    const clear = params.clear === true;
+    if (clear === (params.seconds !== undefined))
+      throw new Error("perpsScheduleCancel(): give seconds, or clear: true");
+    const build = await this.requestJson("POST", "/api/v1/agent/perps/schedule-cancel", {
+      walletId: params.walletId,
+      ...clear ? { clear: true } : { seconds: params.seconds }
+    });
+    const result = await this.perpsComplete(build, params, "scheduleCancel");
+    if (result.outcome?.status === "rejected")
+      return { ...result, submitError: `PERPS_SCHEDULE_CANCEL_REJECTED: ${result.outcome.error}` };
+    if (result.outcome?.status !== "confirmed")
+      return result;
+    let acknowledged = false;
+    try {
+      const ack = await this.requestJson("POST", "/api/v1/agent/perps/schedule-cancel/ack", {
+        walletId: params.walletId,
+        perpOrderId: build.perpOrderId,
+        exchange: result.exchange
+      });
+      acknowledged = ack.acknowledged === true;
+    } catch {
+      acknowledged = false;
+    }
+    return { ...result, acknowledged };
+  }
+  async perpsTpsl(params) {
+    this.requireKey("perpsTpsl()");
+    const { walletId, privyWalletId: _p, submit: _s, ...tpsl } = params;
+    return runPerpsTpsl(await this.perpsWorkflowIo(params), tpsl);
+  }
+  async perpsFlatten(params) {
+    this.requireKey("perpsFlatten()");
+    return runPerpsFlatten(await this.perpsWorkflowIo(params));
+  }
+  async perpsWorkflowIo(ref) {
+    const address = await this.perpsWalletAddress(ref.walletId);
+    const builder = this.perpsBuilder();
+    const reduceOnly = await this.getPerpsReduceOnly().catch(() => null);
+    return {
+      network: this.hyperliquidNetwork,
+      walletId: ref.walletId,
+      address,
+      builder,
+      keyReduceOnly: reduceOnly === null ? true : reduceOnly.perpsReduceOnly,
+      fetcher: this.fetchImpl,
+      now: Date.now,
+      build: (path, body) => this.requestJson("POST", path, body),
+      read: (path) => this.requestJson("GET", path),
+      sign: (typedData) => this.signLinkedTypedData({ linkedWalletId: ref.walletId, privyWalletId: ref.privyWalletId, typedData }),
+      mode: ref.submit === false ? "no-submit" : "submit",
+      cloid: () => {
+        const bytes = new Uint8Array(16);
+        globalThis.crypto.getRandomValues(bytes);
+        return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      }
+    };
+  }
+  async getPerpsReduceOnly() {
+    this.requireKey("getPerpsReduceOnly()");
+    return this.requestJson("GET", "/api/v1/agent/keys/self/perps-reduce-only");
+  }
+  async setPerpsReduceOnly(perpsReduceOnly) {
+    this.requireKey("setPerpsReduceOnly()");
+    return this.requestJson("PUT", "/api/v1/agent/keys/self/perps-reduce-only", {
+      perpsReduceOnly
+    });
+  }
+  async setKeyPerpsReduceOnly(keyPrefix, perpsReduceOnly, owner) {
+    const res = await this.fetchImpl(`${this.apiUrl}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/perps-reduce-only`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", authorization: `Bearer ${owner.bearerToken}` },
+      body: JSON.stringify({ perpsReduceOnly })
+    });
+    return this.parseResponse(res);
   }
   async perpsWithdraw(params) {
     this.requireKey("perpsWithdraw()");
@@ -4838,6 +5808,7 @@ export {
   verifyWithdrawSendAsset,
   verifyWithdrawMapping,
   verifyWebhookSignature,
+  verifyPerpsBuildAgainstVenue,
   verifyPerpsBuild,
   relayRecipientProblem,
   readPerpsRisk,
@@ -4858,8 +5829,10 @@ export {
   parseSendAssetAmount,
   operationIds,
   isSolanaRpcErrorData,
+  hyperliquidWalletSnapshot,
   hyperliquidRiskReport,
   hyperliquidOrderMarket,
+  hyperliquidExchangeOutcome,
   hyperliquidActionHash,
   hyperliquidAccountMode,
   generateSignerKeypair,
@@ -4870,6 +5843,7 @@ export {
   TradeLandedUnconfirmedError,
   TradeLandedFeeLegError,
   SelfLaunchOutcomeError,
+  PerpsWorkflowError,
   PerpsMarketReader,
   PerpsMarketError,
   PerpsHistoryError,
@@ -4877,6 +5851,7 @@ export {
   PLAN_CAPABILITY_LABELS,
   PERPS_HISTORY_MAX_LIMIT,
   PERPS_HISTORY_DEFAULT_LIMIT,
+  PERPS_FLATTEN_MAX_STEPS,
   PERPS_CANDLE_INTERVALS,
   KeychainSecretStore,
   JsonRpcError,

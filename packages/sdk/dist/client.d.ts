@@ -39,7 +39,8 @@
  *   The README's "Retrying a write that failed or timed out" is the caller-facing procedure.
  */
 import { type SignedTradeLeg } from "./errors";
-import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliquid";
+import { type HyperliquidNetwork, type HyperliquidSubmitOutcome, type HyperliquidTypedData } from "./hyperliquid";
+import { type PerpsTpslParams, type PerpsWorkflowResult } from "./hyperliquid-manage";
 import { type PerpsBookOptions, type PerpsBookResult, type PerpsCandlesOptions, type PerpsCandlesResult, type PerpsMarketResult, type PerpsMarketsOptions, type PerpsMarketsResult } from "./hyperliquid-markets";
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
 import { type PerpsAccountLine, type PerpsAccountReport, type PerpsPortfolioSection, type PerpsPositionRow, type PerpsRiskReport, type PerpsRiskSettings, type PerpsRiskThresholds, type PerpsRiskThresholdsReport, type PerpsWatchEvent } from "./hyperliquid-risk";
@@ -1823,6 +1824,13 @@ export interface PerpsCloseParams extends PerpsWalletRef {
     coin: string;
     /** Part of the position to close; the whole position when omitted. */
     size?: string;
+    /**
+     * Phase 1 D (spec 2026-10-17 D, section 8): a percentage of the position instead of a size, a
+     * decimal string above 0 and at most 100 with at most four decimals. Sized by both the server and
+     * this client from a direct position read: `floor(|szi| * pct / 100)` at the market's size step,
+     * never rounded up. Exclusive with `size`.
+     */
+    pct?: string;
     slippageBps?: number;
     /** Optional client order id, as on `PerpsOpenParams.clientId`. */
     clientId?: string;
@@ -1839,7 +1847,12 @@ export interface PerpsModifyParams extends PerpsWalletRef {
 }
 export interface PerpsLeverageParams extends PerpsWalletRef {
     coin: string;
-    leverage: number;
+    /**
+     * Whole-number leverage. Phase 1 D (spec D, section 5): may be omitted when `mode` is named, and
+     * then the account's current leverage is kept (read from Hyperliquid), never defaulted to 1. A
+     * mode change needs no position and no resting order in the coin.
+     */
+    leverage?: number;
     mode?: "cross" | "isolated";
 }
 export interface PerpsMarginParams extends PerpsWalletRef {
@@ -1847,11 +1860,19 @@ export interface PerpsMarginParams extends PerpsWalletRef {
     /** USD, up to 6 decimals; negative removes isolated margin. */
     amount: string;
 }
+/** BE-1584: a scheduled cancel (spec D, section 7). `seconds` sets the venue's timer; `clear` disarms it. */
+export type PerpsScheduleCancelParams = PerpsWalletRef & ({
+    seconds: number;
+    clear?: undefined;
+} | {
+    clear: true;
+    seconds?: undefined;
+});
 /** What a perps build route returns: the plaintext action, its nonce, and the stamped typed data. */
 export interface PerpsBuild {
     success: true;
     perpOrderId: string;
-    kind: "open" | "close" | "modify" | "cancel" | "leverage" | "margin" | "setup";
+    kind: "open" | "close" | "modify" | "cancel" | "leverage" | "margin" | "setup" | "tpsl" | "scheduleCancel";
     network: HyperliquidNetwork;
     walletId: string;
     address: string;
@@ -1870,6 +1891,9 @@ export interface PerpsBuild {
         feeTenthsBps: number;
     } | null;
     exchangeUrl: string;
+    /** BE-1584: the key's reduce-only setting and policy version this build was judged under. Absent from an older API. */
+    perpsReduceOnly?: boolean;
+    perpsPolicyVersion?: number;
     preview: Record<string, unknown>;
 }
 /**
@@ -1885,6 +1909,27 @@ export interface PerpsActionResult {
     submitted: boolean;
     exchange: unknown | null;
     submitError?: string;
+    /**
+     * BE-1584 (spec D, section 3): Hyperliquid's answer judged per leg. `confirmed` only when the venue
+     * said ok and no leg carries an error; HTTP 200 alone is not confirmation. Absent when nothing was
+     * submitted.
+     */
+    outcome?: HyperliquidSubmitOutcome;
+    /** A scheduled cancel: Candle recorded the venue's acknowledgement (not proof the timer will fire). */
+    acknowledged?: boolean;
+    /** A margin-mode change: the mode asked for, and the one Hyperliquid shows after the submit (null when unread). */
+    requestedMode?: "cross" | "isolated";
+    confirmedMode?: "cross" | "isolated" | null;
+}
+/** BE-1584 (spec D, section 9): the key's reduce-only setting. */
+export interface PerpsReduceOnlyResult {
+    success: true;
+    keyPrefix: string;
+    perpsReduceOnly: boolean;
+    perpsPolicyVersion: number;
+    changed?: boolean;
+    /** On enabling: what the setting does not do (no cancel, no revocation of signed actions, no other keys). */
+    limits?: string[];
 }
 /**
  * The original operation a client order id already names, as `POST /perps/open` or `/perps/close`
@@ -3453,7 +3498,12 @@ export declare class CandleClient {
     perpsCancel(params: PerpsCancelParams): Promise<PerpsActionResult>;
     /** Change a resting order's price or size. The replacement gets a new cloid. */
     perpsModify(params: PerpsModifyParams): Promise<PerpsActionResult>;
-    /** Set a market's leverage and margin mode on the account, within the key's maxLeverage. */
+    /**
+     * Set a market's leverage and margin mode on the account, within the key's maxLeverage. With
+     * `mode` and no `leverage`, the current leverage is kept (spec D, section 5); a mode change needs
+     * no position and no resting order in the coin. The answer reports the mode asked for and the one
+     * Hyperliquid shows after the submit, separately.
+     */
     perpsLeverage(params: PerpsLeverageParams): Promise<PerpsActionResult>;
     /** Add (positive) or remove (negative) isolated margin on an isolated position. */
     perpsMargin(params: PerpsMarginParams): Promise<PerpsActionResult>;
@@ -3575,9 +3625,50 @@ export declare class CandleClient {
     private perpsBuilderTrust;
     /**
      * Check, sign, submit (HL-ED-2, HL-ED-5). The check runs before the relay is called; a build
-     * that fails it is refused with nothing signed.
+     * that fails it is refused with nothing signed. BE-1584: every method is checked against this
+     * machine's own read of Hyperliquid (`verifyPerpsBuildAgainstVenue`), and the venue's answer is
+     * judged per leg (`outcome`).
      */
     private perpsComplete;
+    /**
+     * Schedule Hyperliquid's cancel-all timer `seconds` from now (at least 5), or clear it. The timer
+     * is wallet-wide: it cancels every open order on the account, protection included, and no
+     * positions. Candle fixes the time at build and this client refuses to sign one less than five
+     * seconds ahead. An acknowledged set is recorded on Candle (`acknowledged`); no public read can
+     * confirm the timer, and Hyperliquid's 10 triggers per UTC day are never counted here.
+     */
+    perpsScheduleCancel(params: PerpsScheduleCancelParams): Promise<PerpsActionResult>;
+    /**
+     * Attach, change or remove the position's take-profit and stop-loss (spec D, section 6): each leg
+     * a reducing market trigger sized to the position now. A change cancels the old leg first (a
+     * protection gap, named in `warnings`), confirms it gone, re-reads, then places the new one; a
+     * partial result is reported as `complete: false`. Legs Candle did not build are listed in
+     * `unowned` and never touched. Calling this is the caller's intent; there is no prompt.
+     */
+    perpsTpsl(params: PerpsWalletRef & PerpsTpslParams): Promise<PerpsWorkflowResult>;
+    /**
+     * Cancel every open main-perp order on the wallet, then close every main-perp position (spec D,
+     * section 8). At most 100 signed steps per call; `complete` only when a final read shows nothing
+     * left. Spot, HIP-3 and vault exposure is out of scope (`scope: "main-perps"`).
+     */
+    perpsFlatten(params: PerpsWalletRef): Promise<PerpsWorkflowResult>;
+    private perpsWorkflowIo;
+    /** The calling key's perps reduce-only setting (`GET /keys/self/perps-reduce-only`). Throws on a failed read. */
+    getPerpsReduceOnly(): Promise<PerpsReduceOnlyResult>;
+    /**
+     * Turn the calling key's perps reduce-only on (`PUT /keys/self/perps-reduce-only`). The key can
+     * never turn it off (403 LOOSEN_REQUIRES_SESSION): the owner does that with `setKeyPerpsReduceOnly()`.
+     * It constrains future Candle builds only: resting orders stay, signed actions stay valid.
+     */
+    setPerpsReduceOnly(perpsReduceOnly: true): Promise<PerpsReduceOnlyResult>;
+    /**
+     * The owner's write on any of the account's keys (`PUT /keys/:prefix/perps-reduce-only`): on or
+     * off. Needs an owner credential (the CLI's device token or a Privy session token), sent as a
+     * bearer token; the client's API key is not sent and would be refused.
+     */
+    setKeyPerpsReduceOnly(keyPrefix: string, perpsReduceOnly: boolean, owner: {
+        bearerToken: string;
+    }): Promise<PerpsReduceOnlyResult>;
     /**
      * Withdraw USDC from the key's Hyperliquid account to the same key's own Solana or Hood TEE wallet
      * through Relay (spec 2026-10-17, route A). MOVES REAL FUNDS. Needs `perps:withdraw`.

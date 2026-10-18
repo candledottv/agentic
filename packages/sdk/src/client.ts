@@ -70,16 +70,25 @@ import {
   HYPERLIQUID_EXCHANGE_URLS,
   HYPERLIQUID_STANDARD_ACCOUNT_MODES,
   type HyperliquidNetwork,
+  type HyperliquidSubmitOutcome,
   type HyperliquidTypedData,
   hyperliquidAccountMode,
-  hyperliquidCloseOrder,
   hyperliquidExchangeBody,
-  hyperliquidOrderMarket,
+  hyperliquidExchangeOutcome,
   hyperliquidRelayBody,
+  type PerpsIntentMethod,
   perpsSetupStatusProblem,
   resolveHyperliquidBuilder,
   verifyPerpsBuild,
+  verifyPerpsBuildAgainstVenue,
 } from "./hyperliquid"
+import {
+  type PerpsTpslParams,
+  type PerpsWorkflowIo,
+  type PerpsWorkflowResult,
+  runPerpsFlatten,
+  runPerpsTpsl,
+} from "./hyperliquid-manage"
 import {
   type PerpsBookOptions,
   type PerpsBookResult,
@@ -1951,6 +1960,13 @@ export interface PerpsCloseParams extends PerpsWalletRef {
   coin: string
   /** Part of the position to close; the whole position when omitted. */
   size?: string
+  /**
+   * Phase 1 D (spec 2026-10-17 D, section 8): a percentage of the position instead of a size, a
+   * decimal string above 0 and at most 100 with at most four decimals. Sized by both the server and
+   * this client from a direct position read: `floor(|szi| * pct / 100)` at the market's size step,
+   * never rounded up. Exclusive with `size`.
+   */
+  pct?: string
   slippageBps?: number
   /** Optional client order id, as on `PerpsOpenParams.clientId`. */
   clientId?: string
@@ -1970,7 +1986,12 @@ export interface PerpsModifyParams extends PerpsWalletRef {
 
 export interface PerpsLeverageParams extends PerpsWalletRef {
   coin: string
-  leverage: number
+  /**
+   * Whole-number leverage. Phase 1 D (spec D, section 5): may be omitted when `mode` is named, and
+   * then the account's current leverage is kept (read from Hyperliquid), never defaulted to 1. A
+   * mode change needs no position and no resting order in the coin.
+   */
+  leverage?: number
   mode?: "cross" | "isolated"
 }
 
@@ -1980,11 +2001,15 @@ export interface PerpsMarginParams extends PerpsWalletRef {
   amount: string
 }
 
+/** BE-1584: a scheduled cancel (spec D, section 7). `seconds` sets the venue's timer; `clear` disarms it. */
+export type PerpsScheduleCancelParams = PerpsWalletRef &
+  ({ seconds: number; clear?: undefined } | { clear: true; seconds?: undefined })
+
 /** What a perps build route returns: the plaintext action, its nonce, and the stamped typed data. */
 export interface PerpsBuild {
   success: true
   perpOrderId: string
-  kind: "open" | "close" | "modify" | "cancel" | "leverage" | "margin" | "setup"
+  kind: "open" | "close" | "modify" | "cancel" | "leverage" | "margin" | "setup" | "tpsl" | "scheduleCancel"
   network: HyperliquidNetwork
   walletId: string
   address: string
@@ -2000,6 +2025,9 @@ export interface PerpsBuild {
   windowKey: string | null
   builder: { address: string; feeTenthsBps: number } | null
   exchangeUrl: string
+  /** BE-1584: the key's reduce-only setting and policy version this build was judged under. Absent from an older API. */
+  perpsReduceOnly?: boolean
+  perpsPolicyVersion?: number
   preview: Record<string, unknown>
 }
 
@@ -2016,6 +2044,28 @@ export interface PerpsActionResult {
   submitted: boolean
   exchange: unknown | null
   submitError?: string
+  /**
+   * BE-1584 (spec D, section 3): Hyperliquid's answer judged per leg. `confirmed` only when the venue
+   * said ok and no leg carries an error; HTTP 200 alone is not confirmation. Absent when nothing was
+   * submitted.
+   */
+  outcome?: HyperliquidSubmitOutcome
+  /** A scheduled cancel: Candle recorded the venue's acknowledgement (not proof the timer will fire). */
+  acknowledged?: boolean
+  /** A margin-mode change: the mode asked for, and the one Hyperliquid shows after the submit (null when unread). */
+  requestedMode?: "cross" | "isolated"
+  confirmedMode?: "cross" | "isolated" | null
+}
+
+/** BE-1584 (spec D, section 9): the key's reduce-only setting. */
+export interface PerpsReduceOnlyResult {
+  success: true
+  keyPrefix: string
+  perpsReduceOnly: boolean
+  perpsPolicyVersion: number
+  changed?: boolean
+  /** On enabling: what the setting does not do (no cancel, no revocation of signed actions, no other keys). */
+  limits?: string[]
 }
 
 /**
@@ -5053,6 +5103,8 @@ export class CandleClient {
   async perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult | PerpsReplayResult>
   async perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult | PerpsReplayResult> {
     this.requireKey("perpsClose()")
+    if (params.pct !== undefined && params.size !== undefined)
+      throw new Error("perpsClose(): give a size or a pct, not both")
     this.perpsBuilder()
     const { walletId, privyWalletId: _p, submit: _s, ...close } = params
     const clientId = perpsClientId(params.clientId)
@@ -5086,13 +5138,41 @@ export class CandleClient {
     return this.perpsComplete(build, params, "modify")
   }
 
-  /** Set a market's leverage and margin mode on the account, within the key's maxLeverage. */
+  /**
+   * Set a market's leverage and margin mode on the account, within the key's maxLeverage. With
+   * `mode` and no `leverage`, the current leverage is kept (spec D, section 5); a mode change needs
+   * no position and no resting order in the coin. The answer reports the mode asked for and the one
+   * Hyperliquid shows after the submit, separately.
+   */
   async perpsLeverage(params: PerpsLeverageParams): Promise<PerpsActionResult> {
     this.requireKey("perpsLeverage()")
+    if (params.leverage === undefined && params.mode === undefined)
+      throw new Error("perpsLeverage(): leverage is required unless mode names the margin mode")
     this.perpsBuilder()
     const { walletId, privyWalletId: _p, submit: _s, ...leverage } = params
     const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/leverage", { walletId, ...leverage })
-    return this.perpsComplete(build, params, "leverage")
+    const result = await this.perpsComplete(build, params, "leverage")
+    if (params.mode === undefined || result.outcome?.status !== "confirmed") return result
+    let confirmedMode: "cross" | "isolated" | null = null
+    try {
+      const res = await this.fetchImpl(
+        HYPERLIQUID_EXCHANGE_URLS[this.hyperliquidNetwork].replace("/exchange", "/info"),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            type: "activeAssetData",
+            user: build.address,
+            coin: String(build.preview.coin ?? params.coin),
+          }),
+        },
+      )
+      const type = (JSON.parse(await res.text()) as { leverage?: { type?: unknown } })?.leverage?.type
+      confirmedMode = type === "cross" || type === "isolated" ? type : null
+    } catch {
+      confirmedMode = null
+    }
+    return { ...result, requestedMode: params.mode, confirmedMode }
   }
 
   /** Add (positive) or remove (negative) isolated margin on an isolated position. */
@@ -5467,52 +5547,33 @@ export class CandleClient {
 
   /**
    * Check, sign, submit (HL-ED-2, HL-ED-5). The check runs before the relay is called; a build
-   * that fails it is refused with nothing signed.
+   * that fails it is refused with nothing signed. BE-1584: every method is checked against this
+   * machine's own read of Hyperliquid (`verifyPerpsBuildAgainstVenue`), and the venue's answer is
+   * judged per leg (`outcome`).
    */
   private async perpsComplete(
     build: PerpsBuild,
     ref: PerpsWalletRef,
-    method: "setup" | "open" | "close" | "cancel" | "modify" | "leverage" | "margin",
+    method: PerpsIntentMethod,
   ): Promise<PerpsActionResult> {
     build = { ...build, preview: { ...build.preview, builderTrust: this.perpsBuilderTrust() } }
-    const check = verifyPerpsBuild(build, {
+    const params = ref as unknown as Record<string, unknown>
+    const opts = {
       builder: this.perpsBuilder(),
       network: this.hyperliquidNetwork,
-      intent: { method, params: ref as unknown as Record<string, unknown> },
-    })
+      intent: { method, params },
+      keyReduceOnly: build.perpsReduceOnly === true,
+    }
+    const check =
+      method === "setup"
+        ? verifyPerpsBuild(build, opts)
+        : await verifyPerpsBuildAgainstVenue(build, {
+            ...opts,
+            address: build.address,
+            fetcher: this.fetchImpl as never,
+            now: Date.now,
+          })
     if (!check.ok) throw new Error(`perps: refused to sign this build: ${check.reason}`)
-    if (method === "close") {
-      const closeOrder = await hyperliquidCloseOrder(
-        this.fetchImpl,
-        this.hyperliquidNetwork,
-        build.address,
-        ref as unknown as Record<string, unknown>,
-      )
-      const closeCheck = verifyPerpsBuild(build, {
-        builder: this.perpsBuilder(),
-        network: this.hyperliquidNetwork,
-        intent: { method, params: ref as unknown as Record<string, unknown> },
-        closeOrder,
-      })
-      if (!closeCheck.ok) throw new Error(`perps: refused to sign this build: ${closeCheck.reason}`)
-    }
-    if (method === "open" || method === "modify") {
-      // The asset index and price against Hyperliquid's own market, not the build's (SEC-004).
-      const market = await hyperliquidOrderMarket(
-        this.fetchImpl,
-        this.hyperliquidNetwork,
-        build.address,
-        method,
-        ref as unknown as Record<string, unknown>,
-      )
-      const marketCheck = verifyPerpsBuild(build, {
-        builder: this.perpsBuilder(),
-        network: this.hyperliquidNetwork,
-        intent: { method, params: ref as unknown as Record<string, unknown> },
-        market,
-      })
-      if (!marketCheck.ok) throw new Error(`perps: refused to sign this build: ${marketCheck.reason}`)
-    }
     if (ref.submit === false) return { build, signature: null, submitted: false, exchange: null }
     const signature = await this.signLinkedTypedData({
       linkedWalletId: ref.walletId,
@@ -5529,7 +5590,8 @@ export class CandleClient {
       if (!res.ok) {
         return { build, signature, submitted: false, exchange: null, submitError: `HTTP ${res.status}: ${text}` }
       }
-      return { build, signature, submitted: true, exchange: JSON.parse(text) as unknown }
+      const exchange = JSON.parse(text) as unknown
+      return { build, signature, submitted: true, exchange, outcome: hyperliquidExchangeOutcome(exchange) }
     } catch (err) {
       return {
         build,
@@ -5539,6 +5601,133 @@ export class CandleClient {
         submitError: err instanceof Error ? err.message : String(err),
       }
     }
+  }
+
+  // -- Hyperliquid management actions (BE-1584, spec 2026-10-17-hyperliquid-phase1-d-management-actions-design.md) --
+
+  /**
+   * Schedule Hyperliquid's cancel-all timer `seconds` from now (at least 5), or clear it. The timer
+   * is wallet-wide: it cancels every open order on the account, protection included, and no
+   * positions. Candle fixes the time at build and this client refuses to sign one less than five
+   * seconds ahead. An acknowledged set is recorded on Candle (`acknowledged`); no public read can
+   * confirm the timer, and Hyperliquid's 10 triggers per UTC day are never counted here.
+   */
+  async perpsScheduleCancel(params: PerpsScheduleCancelParams): Promise<PerpsActionResult> {
+    this.requireKey("perpsScheduleCancel()")
+    const clear = params.clear === true
+    if (clear === (params.seconds !== undefined)) throw new Error("perpsScheduleCancel(): give seconds, or clear: true")
+    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/schedule-cancel", {
+      walletId: params.walletId,
+      ...(clear ? { clear: true } : { seconds: params.seconds }),
+    })
+    const result = await this.perpsComplete(build, params, "scheduleCancel")
+    if (result.outcome?.status === "rejected")
+      return { ...result, submitError: `PERPS_SCHEDULE_CANCEL_REJECTED: ${result.outcome.error}` }
+    if (result.outcome?.status !== "confirmed") return result
+    let acknowledged = false
+    try {
+      const ack = await this.requestJson<{ acknowledged?: boolean }>(
+        "POST",
+        "/api/v1/agent/perps/schedule-cancel/ack",
+        {
+          walletId: params.walletId,
+          perpOrderId: build.perpOrderId,
+          exchange: result.exchange,
+        },
+      )
+      acknowledged = ack.acknowledged === true
+    } catch {
+      acknowledged = false
+    }
+    return { ...result, acknowledged }
+  }
+
+  /**
+   * Attach, change or remove the position's take-profit and stop-loss (spec D, section 6): each leg
+   * a reducing market trigger sized to the position now. A change cancels the old leg first (a
+   * protection gap, named in `warnings`), confirms it gone, re-reads, then places the new one; a
+   * partial result is reported as `complete: false`. Legs Candle did not build are listed in
+   * `unowned` and never touched. Calling this is the caller's intent; there is no prompt.
+   */
+  async perpsTpsl(params: PerpsWalletRef & PerpsTpslParams): Promise<PerpsWorkflowResult> {
+    this.requireKey("perpsTpsl()")
+    const { walletId, privyWalletId: _p, submit: _s, ...tpsl } = params
+    return runPerpsTpsl(await this.perpsWorkflowIo(params), tpsl)
+  }
+
+  /**
+   * Cancel every open main-perp order on the wallet, then close every main-perp position (spec D,
+   * section 8). At most 100 signed steps per call; `complete` only when a final read shows nothing
+   * left. Spot, HIP-3 and vault exposure is out of scope (`scope: "main-perps"`).
+   */
+  async perpsFlatten(params: PerpsWalletRef): Promise<PerpsWorkflowResult> {
+    this.requireKey("perpsFlatten()")
+    return runPerpsFlatten(await this.perpsWorkflowIo(params))
+  }
+
+  private async perpsWorkflowIo(ref: PerpsWalletRef): Promise<PerpsWorkflowIo> {
+    const address = await this.perpsWalletAddress(ref.walletId)
+    const builder = this.perpsBuilder()
+    const reduceOnly = await this.getPerpsReduceOnly().catch(() => null)
+    return {
+      network: this.hyperliquidNetwork,
+      walletId: ref.walletId,
+      address,
+      builder,
+      // A failed read is never "unrestricted": the client then treats the key as reduce-only.
+      keyReduceOnly: reduceOnly === null ? true : reduceOnly.perpsReduceOnly,
+      fetcher: this.fetchImpl as never,
+      now: Date.now,
+      build: (path, body) => this.requestJson<Record<string, unknown>>("POST", path, body),
+      read: (path) => this.requestJson<Record<string, unknown>>("GET", path),
+      sign: (typedData) =>
+        this.signLinkedTypedData({ linkedWalletId: ref.walletId, privyWalletId: ref.privyWalletId, typedData }),
+      mode: ref.submit === false ? "no-submit" : "submit",
+      cloid: () => {
+        const bytes = new Uint8Array(16)
+        globalThis.crypto.getRandomValues(bytes)
+        return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`
+      },
+    }
+  }
+
+  /** The calling key's perps reduce-only setting (`GET /keys/self/perps-reduce-only`). Throws on a failed read. */
+  async getPerpsReduceOnly(): Promise<PerpsReduceOnlyResult> {
+    this.requireKey("getPerpsReduceOnly()")
+    return this.requestJson<PerpsReduceOnlyResult>("GET", "/api/v1/agent/keys/self/perps-reduce-only")
+  }
+
+  /**
+   * Turn the calling key's perps reduce-only on (`PUT /keys/self/perps-reduce-only`). The key can
+   * never turn it off (403 LOOSEN_REQUIRES_SESSION): the owner does that with `setKeyPerpsReduceOnly()`.
+   * It constrains future Candle builds only: resting orders stay, signed actions stay valid.
+   */
+  async setPerpsReduceOnly(perpsReduceOnly: true): Promise<PerpsReduceOnlyResult> {
+    this.requireKey("setPerpsReduceOnly()")
+    return this.requestJson<PerpsReduceOnlyResult>("PUT", "/api/v1/agent/keys/self/perps-reduce-only", {
+      perpsReduceOnly,
+    })
+  }
+
+  /**
+   * The owner's write on any of the account's keys (`PUT /keys/:prefix/perps-reduce-only`): on or
+   * off. Needs an owner credential (the CLI's device token or a Privy session token), sent as a
+   * bearer token; the client's API key is not sent and would be refused.
+   */
+  async setKeyPerpsReduceOnly(
+    keyPrefix: string,
+    perpsReduceOnly: boolean,
+    owner: { bearerToken: string },
+  ): Promise<PerpsReduceOnlyResult> {
+    const res = await this.fetchImpl(
+      `${this.apiUrl}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/perps-reduce-only`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", authorization: `Bearer ${owner.bearerToken}` },
+        body: JSON.stringify({ perpsReduceOnly }),
+      },
+    )
+    return this.parseResponse<PerpsReduceOnlyResult>(res)
   }
 
   /**

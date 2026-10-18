@@ -53,6 +53,14 @@ import {
   perpsPositions,
   perpsSetup,
 } from "./commands/perps"
+import {
+  perpsFlatten,
+  perpsMargin,
+  perpsModify,
+  perpsReduceOnly,
+  perpsScheduleCancel,
+  perpsTpsl,
+} from "./commands/perps-manage"
 import { perpsBook, perpsCandles, perpsMarket, perpsMarkets } from "./commands/perps-markets"
 import { perpsAccount, perpsRisk, perpsThresholds, perpsWatch } from "./commands/perps-risk"
 import { perpsWithdraw } from "./commands/perps-withdraw"
@@ -216,6 +224,13 @@ const COMMANDS: Record<string, CommandRoute> = {
       funding: perpsFunding,
       positions: perpsPositions,
       leverage: perpsLeverage,
+      // Phase 1 D (BE-1584): management actions, all through the same build/check/sign/submit path.
+      modify: perpsModify,
+      margin: perpsMargin,
+      tpsl: perpsTpsl,
+      "schedule-cancel": perpsScheduleCancel,
+      flatten: perpsFlatten,
+      "reduce-only": perpsReduceOnly,
       // BE-1582 (spec A): read-only risk and visibility, read from Hyperliquid on this machine.
       // `risk` and `watch` exit 0, 10 or 11 by level; `thresholds set` may only tighten as `self`.
       account: perpsAccount,

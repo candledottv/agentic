@@ -172,6 +172,13 @@ export const TOOL_NAMES = [
   "candle_perps_fills",
   "candle_perps_funding",
   "candle_perps_leverage",
+  // Phase 1 D (BE-1584): management actions (perps.ts, hyperliquid-manage.ts). Local only.
+  "candle_perps_modify",
+  "candle_perps_margin",
+  "candle_perps_tpsl",
+  "candle_perps_schedule_cancel",
+  "candle_perps_flatten",
+  "candle_perps_reduce_only",
   // Hyperliquid perps C (BE-647): the Relay deposit (perps.ts).
   "candle_perps_deposit",
   // BE-1582 (spec A-12): read-only risk and visibility, read from Hyperliquid by this server.
@@ -2069,6 +2076,95 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: perpsShapes.candle_perps_leverage,
     },
     perpsTool("candle_perps_leverage"),
+  )
+
+  // Phase 1 D (BE-1584, spec 2026-10-17-hyperliquid-phase1-d-management-actions-design.md): the same
+  // build, check, sign and submit path. TP/SL and flatten are plans of several such steps; each
+  // answer says whether the plan completed, and never reports one accepted step as the whole.
+  register(
+    "candle_perps_modify",
+    {
+      title: "Modify a perps order",
+      description:
+        "Change a resting order Candle built (by cloid): its price, size or both. Side, time in force and reduce-only " +
+        "are kept from Hyperliquid's own record and checked here; the replacement gets a new cloid. A take-profit or " +
+        "stop-loss leg cannot be modified (use candle_perps_tpsl)." +
+        perpsWrite,
+      inputSchema: perpsShapes.candle_perps_modify,
+    },
+    perpsTool("candle_perps_modify"),
+  )
+
+  register(
+    "candle_perps_margin",
+    {
+      title: "Perps margin",
+      description:
+        "Exactly one of: amount, to add isolated margin to an isolated position (positive only; this tool never removes " +
+        "margin); or mode (cross or isolated), to set the coin's margin mode keeping its current leverage unless " +
+        "leverage is given. A mode change needs no position and no resting order in the coin. The answer reports the " +
+        "mode asked for and the one Hyperliquid shows after, separately." +
+        perpsWrite,
+      inputSchema: perpsShapes.candle_perps_margin,
+    },
+    perpsTool("candle_perps_margin"),
+  )
+
+  register(
+    "candle_perps_tpsl",
+    {
+      title: "Perps take-profit / stop-loss",
+      description:
+        "Attach, move or remove the position's take-profit and stop-loss, each a reduce-only market trigger sized to " +
+        "the position now (it does not grow with later additions). Moving a leg cancels the old one first, so that side " +
+        "is briefly unprotected. A leg not named is left alone. Legs Candle did not build are listed in unowned and never " +
+        "touched; several matching legs need targetTp / targetSl. complete is false on any partial result." +
+        perpsWrite,
+      inputSchema: perpsShapes.candle_perps_tpsl,
+    },
+    perpsTool("candle_perps_tpsl"),
+  )
+
+  register(
+    "candle_perps_schedule_cancel",
+    {
+      title: "Perps scheduled cancel",
+      description:
+        "Set Hyperliquid's cancel-all timer seconds from now (at least 5), or clear it. Wallet-wide: when it fires it " +
+        "cancels every open order on the account, protection included, and no positions; orders placed later by any " +
+        "client are canceled too. Hyperliquid allows 10 triggers per UTC day, which Candle does not count. An " +
+        "acknowledged set is recorded, not proof the timer will fire." +
+        perpsWrite,
+      inputSchema: perpsShapes.candle_perps_schedule_cancel,
+    },
+    perpsTool("candle_perps_schedule_cancel"),
+  )
+
+  register(
+    "candle_perps_flatten",
+    {
+      title: "Flatten perps",
+      description:
+        "Cancel every open main-perp order on the wallet (protection included), then close every main-perp position " +
+        "with a reduce-only IOC, then read again. complete is true only when that read shows nothing left. At most 100 " +
+        "signed steps a call; call again for the rest. Spot, HIP-3 and vault exposure is not reached." +
+        perpsWrite,
+      inputSchema: perpsShapes.candle_perps_flatten,
+    },
+    perpsTool("candle_perps_flatten"),
+  )
+
+  register(
+    "candle_perps_reduce_only",
+    {
+      title: "Perps reduce-only",
+      description:
+        "Read this key's perps reduce-only setting, or turn it on (on: true). While on, the key may close, cancel, " +
+        "protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure. This tool can " +
+        "never turn it off; the owner does. It cancels no resting order and revokes no signed action. Needs perps:write to turn on.",
+      inputSchema: perpsShapes.candle_perps_reduce_only,
+    },
+    perpsTool("candle_perps_reduce_only"),
   )
 
   register(

@@ -104,6 +104,14 @@ async function fixture(opts: Options = {}) {
       if (body.type === "meta") return ok({ universe: [{ name: "BTC" }] })
       if (body.type === "userAbstraction") return ok(opts.mode ?? "default")
       if (body.type === "userFillsByTime" || body.type === "userFunding") return ok(opts.history?.(body) ?? [])
+      // BE-1584: the pre-sign reads every method now makes against Hyperliquid itself.
+      if (body.type === "orderStatus")
+        return ok({
+          status: "order",
+          order: { order: { coin: "BTC", oid: 1, side: "B", limitPx: "60000", sz: "0.01" } },
+        })
+      if (body.type === "frontendOpenOrders") return ok([])
+      if (body.type === "activeAssetData") return ok({ leverage: { type: "cross", value: 10 } })
       if (body.type === "metaAndAssetCtxs")
         return ok([
           {
@@ -114,7 +122,9 @@ async function fixture(opts: Options = {}) {
           },
           [{ midPx: opts.mid ?? "60000" }, { midPx: "3000" }],
         ])
-      return ok({ assetPositions: [{ position: { coin: "BTC", szi: "-0.5" } }] })
+      return ok({
+        assetPositions: [{ position: { coin: "BTC", szi: "-0.5", leverage: { type: "cross", value: 10 } } }],
+      })
     }
     if (url.host === "api.hyperliquid.xyz") {
       if (opts.exchange instanceof Error) throw opts.exchange

@@ -44,13 +44,15 @@ import {
   type HyperliquidTypedData,
   hyperliquidAccountMode,
   hyperliquidCanonicalJson,
-  hyperliquidCloseOrder,
+  hyperliquidClosePct,
   hyperliquidExchangeBody,
-  hyperliquidOrderMarket,
+  hyperliquidExchangeOutcome,
   hyperliquidRelayBody,
+  type PerpsIntentMethod,
   perpsSetupStatusProblem,
   resolveHyperliquidBuilder,
   verifyPerpsBuild,
+  verifyPerpsBuildAgainstVenue,
 } from "../hyperliquid"
 import {
   PERPS_HISTORY_MAX_LIMIT,
@@ -85,7 +87,7 @@ import {
 import { positionsAdditions, writePositionsText } from "./perps-risk"
 import { lazySolanaClient, printTradingResult, tradingFailure, tradingRead } from "./swap"
 
-const PERPS_SCOPE = "perps:write"
+export const PERPS_SCOPE = "perps:write"
 const DEC_RE = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/
 const CLOID_RE = /^0x[0-9a-fA-F]{32}$/
 
@@ -127,7 +129,7 @@ export function perpsNetwork(ctx: CommandContext): HyperliquidNetwork {
 }
 
 /** The builder is local configuration, never the API's own assertion of its identity. */
-function builderPin(ctx: CommandContext): string {
+export function builderPin(ctx: CommandContext): string {
   try {
     return resolveHyperliquidBuilder(ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER)
   } catch (error) {
@@ -184,6 +186,26 @@ export function typedDataAuthorization(wallet: TradingWallet, typedData: Hyperli
 function previewLines(build: Json): string[] {
   // Only action fields were bound to the typed data and checked against the request.
   const action = build.action as Record<string, unknown>
+  // BE-1584: what the build's own preview warns about (a wallet-wide timer, a protection gap).
+  const preview = (build.preview ?? {}) as Record<string, unknown>
+  const notes = [
+    ...(Array.isArray(preview.warnings) ? preview.warnings : []),
+    ...(typeof preview.warning === "string" ? [preview.warning] : []),
+    ...(Array.isArray(preview.notes) ? preview.notes : []),
+  ].map((line) => safeText(line))
+  if (preview.reduceOnlyKey === true || build.perpsReduceOnly === true) notes.push("This key is reduce-only.")
+  if (action.type === "scheduleCancel")
+    return [
+      "time" in action
+        ? `Schedule Hyperliquid's cancel-all timer for ${new Date(Number(action.time)).toISOString()}.`
+        : "Clear Hyperliquid's cancel-all timer.",
+      ...notes,
+    ]
+  if (action.type === "updateIsolatedMargin")
+    return [
+      `Add ${safeText(Number(action.ntli) / 1_000_000)} USDC of isolated margin to asset ${safeText(action.asset)}.`,
+      ...notes,
+    ]
   if (action.type === "approveBuilderFee")
     return [`Approve Candle's builder ${safeText(action.builder)} at ${safeText(action.maxFeeRate)} (once).`]
   if (action.type === "cancel")
@@ -201,7 +223,7 @@ function previewLines(build: Json): string[] {
   lines.push(
     builder ? `Candle builder ${safeText(builder.b)} fee: ${builder.f / 10} bps.` : "Candle builder fee: none.",
   )
-  return lines
+  return [...lines, ...notes]
 }
 
 async function confirm(ctx: CommandContext, build: Json, address: string, yes: boolean): Promise<boolean> {
@@ -233,16 +255,25 @@ export function venueRefusal(exchange: unknown): string | null {
  * Build, check, confirm, relay-sign, submit. `submit === false` stops after the check, with nothing
  * signed (`--no-submit`); `signOnly` stops after the relay signs, with nothing submitted.
  */
-async function runPerpsWrite(
+export async function runPerpsWrite(
   ctx: CommandContext,
-  opts: { path: string; body: Json; wallet?: string; yes: boolean; submit: boolean; signOnly: boolean },
+  opts: {
+    path: string
+    body: Json
+    wallet?: string
+    yes: boolean
+    submit: boolean
+    signOnly: boolean
+    /** The intent the build is bound to; by default the route's last segment. */
+    method?: PerpsIntentMethod
+  },
 ): Promise<number> {
   const key = await tradingKey(ctx)
   const { wallet } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE)
   if (!wallet) throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.")
   const builder = builderPin(ctx)
   const net = perpsNetwork(ctx)
-  const method = opts.path.split("/").at(-1) as "setup" | "open" | "close" | "cancel" | "leverage"
+  const method = opts.method ?? (opts.path.split("/").at(-1) as PerpsIntentMethod)
   // Setup (spec 2026-10-17 C, section 5): the mode comes from Hyperliquid itself, before Candle is
   // asked, and an unsupported one stops here with nothing requested, reserved or signed.
   let mode: string | undefined
@@ -300,45 +331,25 @@ async function runPerpsWrite(
       "PERPS_CLIENT_ID_UNSUPPORTED",
       "This Candle API did not echo the client order id, so a retry could not be recognized. Nothing was signed.",
     )
-  const check = verifyPerpsBuild(build as never, {
+  // BE-1584 (spec D, section 4): every method is checked against this machine's own read of
+  // Hyperliquid, and against the key's reduce-only setting as the build reports it.
+  const verifyOpts = {
     builder,
     network: net,
     address: wallet.address,
     intent: { method, params: opts.body },
-  })
+    keyReduceOnly: build.perpsReduceOnly === true,
+  }
+  const check =
+    method === "setup"
+      ? verifyPerpsBuild(build as never, verifyOpts)
+      : await verifyPerpsBuildAgainstVenue(build as never, {
+          ...verifyOpts,
+          fetcher: ctx.deps.fetch,
+          now: ctx.deps.now,
+        })
   if (!check.ok)
     throw new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`)
-  if (method === "close") {
-    const closeOrder = await hyperliquidCloseOrder(ctx.deps.fetch, net, wallet.address, opts.body)
-    const closeCheck = verifyPerpsBuild(build as never, {
-      builder,
-      network: net,
-      address: wallet.address,
-      intent: { method, params: opts.body },
-      closeOrder,
-    })
-    if (!closeCheck.ok)
-      throw new TradingError(
-        "PERPS_BUILD_REFUSED",
-        `Refused to sign this build: ${closeCheck.reason}. Nothing was signed.`,
-      )
-  }
-  if (method === "open") {
-    // The asset index and price against Hyperliquid's own market, not the build's (SEC-004).
-    const market = await hyperliquidOrderMarket(ctx.deps.fetch, net, wallet.address, method, opts.body)
-    const marketCheck = verifyPerpsBuild(build as never, {
-      builder,
-      network: net,
-      address: wallet.address,
-      intent: { method, params: opts.body },
-      market,
-    })
-    if (!marketCheck.ok)
-      throw new TradingError(
-        "PERPS_BUILD_REFUSED",
-        `Refused to sign this build: ${marketCheck.reason}. Nothing was signed.`,
-      )
-  }
   if (!opts.submit) return printTradingResult(ctx, { ...build, signed: false, submitted: false })
   if (!(await confirm(ctx, build, wallet.address, opts.yes))) {
     throw new TradingError("CANCELLED", "Nothing was signed.")
@@ -391,12 +402,29 @@ async function runPerpsWrite(
       { exitCode: 3, details: { perpOrderId: build.perpOrderId, exchangeBody } },
     )
   }
-  const refusal = venueRefusal(exchange)
-  if (refusal)
-    throw new TradingError("PERPS_VENUE_REFUSED", refusal, {
-      details: { perpOrderId: build.perpOrderId, exchange },
-    })
+  // Judged per leg (spec D, section 3): HTTP 200 alone is not confirmation.
+  const outcome = hyperliquidExchangeOutcome(exchange)
+  if (outcome.status === "rejected")
+    throw new TradingError(
+      method === "scheduleCancel" ? "PERPS_SCHEDULE_CANCEL_REJECTED" : "PERPS_VENUE_REFUSED",
+      `Hyperliquid refused it: ${safeText(outcome.error)}`,
+      {
+        details: {
+          perpOrderId: build.perpOrderId,
+          exchange,
+          ...(method === "scheduleCancel" ? { limit: "scheduleCancel" } : {}),
+        },
+      },
+    )
+  if (outcome.status === "unknown")
+    throw new TradingError(
+      "PERPS_SUBMIT_FAILED",
+      `Signed and submitted, but Hyperliquid's answer could not be read (${safeText(outcome.error)}). The signed action is in details.exchangeBody; check candle perps orders before acting again.`,
+      { exitCode: 3, details: { perpOrderId: build.perpOrderId, exchangeBody, exchange } },
+    )
+  const extra = await afterConfirmed(ctx, key, net, wallet, build, method, opts.body, exchange)
   return printTradingResult(ctx, {
+    ...extra,
     success: true,
     perpOrderId: build.perpOrderId,
     kind: build.kind,
@@ -413,7 +441,7 @@ async function runPerpsWrite(
 
 const WRITE_FLAGS = { valueFlags: ["--wallet"], booleanFlags: ["--yes", "--no-submit", "--sign-only"] }
 
-function sharedWrite(values: Record<string, string>, booleans: Set<string>) {
+export function sharedWrite(values: Record<string, string>, booleans: Set<string>) {
   return {
     ...(values["--wallet"] !== undefined ? { wallet: values["--wallet"] } : {}),
     yes: booleans.has("--yes"),
@@ -422,10 +450,68 @@ function sharedWrite(values: Record<string, string>, booleans: Set<string>) {
   }
 }
 
-function slippage(value: string | undefined): number | undefined | null {
+export function slippage(value: string | undefined): number | undefined | null {
   if (value === undefined) return undefined
   const n = Number(value)
   return Number.isInteger(n) && n >= 1 ? n : null
+}
+
+/**
+ * BE-1584: what a confirmed action still records or reads. A scheduled cancel is acknowledged on
+ * Candle (the only record of it; not proof the timer fires). A margin-mode change reports the mode
+ * Hyperliquid shows afterwards beside the one asked for. Neither can turn a confirmed submit into a
+ * failure: a failed follow-up is reported as such.
+ */
+async function afterConfirmed(
+  ctx: CommandContext,
+  key: string,
+  net: HyperliquidNetwork,
+  wallet: TradingWallet,
+  build: Json,
+  method: PerpsIntentMethod,
+  body: Json,
+  exchange: unknown,
+): Promise<Json> {
+  if (method === "scheduleCancel") {
+    const preview = (build.preview ?? {}) as Record<string, unknown>
+    let acknowledged = false
+    try {
+      const ack = await perpsRequest(ctx, key, "/api/v1/agent/perps/schedule-cancel/ack", {
+        walletId: wallet.id,
+        perpOrderId: build.perpOrderId as string,
+        exchange: exchange as Json,
+      })
+      acknowledged = ack.acknowledged === true
+    } catch {
+      acknowledged = false
+    }
+    return {
+      operation: preview.operation ?? null,
+      time: (build.time as number | null | undefined) ?? null,
+      acknowledged,
+      verified: false,
+    } as Json
+  }
+  if (method === "leverage" && typeof body.mode === "string") {
+    let confirmedMode: string | null = null
+    try {
+      const res = await ctx.deps.fetch(HYPERLIQUID_EXCHANGE_URLS[net].replace("/exchange", "/info"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "activeAssetData",
+          user: wallet.address,
+          coin: String((build.preview as Record<string, unknown> | undefined)?.coin ?? body.coin),
+        }),
+      })
+      const type = (JSON.parse(await res.text()) as { leverage?: { type?: unknown } })?.leverage?.type
+      confirmedMode = type === "cross" || type === "isolated" ? type : null
+    } catch {
+      confirmedMode = null
+    }
+    return { requestedMode: body.mode, confirmedMode } as Json
+  }
+  return {}
 }
 
 // ── setup ────────────────────────────────────────────────────────────────────────────────────
@@ -505,7 +591,7 @@ export async function perpsOpen(args: string[], ctx: CommandContext): Promise<nu
 
 export async function perpsClose(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--wallet", "--size", "--slippage-bps", "--client-id"],
+    valueFlags: ["--wallet", "--size", "--pct", "--slippage-bps", "--client-id"],
     booleanFlags: ["--yes", "--no-submit", "--sign-only"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
@@ -513,10 +599,15 @@ export async function perpsClose(args: string[], ctx: CommandContext): Promise<n
   if (parsed.positionals.length !== 1 || !coin)
     return usage(
       ctx,
-      "Usage: candle perps close <coin> [--size <n>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee>] [--yes]",
+      "Usage: candle perps close <coin> [--size <n> | --pct <1-100>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee>] [--yes]",
     )
   const size = parsed.values["--size"]
   if (size !== undefined && !DEC_RE.test(size)) return usage(ctx, "--size must be a plain decimal.")
+  // BE-1584 (spec D, section 8): a percentage of the position, sized from a direct read.
+  const pct = parsed.values["--pct"]
+  if (pct !== undefined && hyperliquidClosePct(pct) === null)
+    return usage(ctx, "--pct must be above 0 and at most 100, with at most 4 decimals.")
+  if (pct !== undefined && size !== undefined) return usage(ctx, "Give --size or --pct, not both.")
   const slippageBps = slippage(parsed.values["--slippage-bps"])
   if (slippageBps === null) return usage(ctx, "--slippage-bps must be a whole number of at least 1.")
   const clientId = clientIdFlag(parsed.values["--client-id"])
@@ -525,6 +616,7 @@ export async function perpsClose(args: string[], ctx: CommandContext): Promise<n
     coin,
     ...(clientId !== undefined ? { clientId } : {}),
     ...(size !== undefined ? { size } : {}),
+    ...(pct !== undefined ? { pct } : {}),
     ...(slippageBps !== undefined ? { slippageBps } : {}),
   }
   try {

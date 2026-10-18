@@ -1,6 +1,6 @@
 export type HyperliquidNetwork = "mainnet" | "testnet";
 /** The L1 action types a Candle build may carry. Anything else is refused before signing. */
-export declare const HYPERLIQUID_ALLOWED_ACTION_TYPES: readonly ["order", "cancel", "modify", "updateLeverage", "updateIsolatedMargin"];
+export declare const HYPERLIQUID_ALLOWED_ACTION_TYPES: readonly ["order", "cancel", "modify", "updateLeverage", "updateIsolatedMargin", "scheduleCancel"];
 /** Hyperliquid's `/exchange` endpoint per network. The client never takes this from the server. */
 export declare const HYPERLIQUID_EXCHANGE_URLS: Readonly<Record<HyperliquidNetwork, string>>;
 /** Hyperliquid's public `/info` endpoint per network. */
@@ -62,6 +62,49 @@ export interface VerifyPerpsBuildOptions {
         size: string;
     };
     /**
+     * Phase 1 D (spec 2026-10-17 D, section 4): the venue order a targeted cancel must name, read from
+     * Hyperliquid by this client (`hyperliquidCancelTarget`).
+     */
+    cancelTarget?: {
+        asset: number;
+        oid: number;
+    };
+    /** Phase 1 D: the held position a take-profit / stop-loss attach protects, read from Hyperliquid. */
+    tpslTarget?: {
+        asset: number;
+        isBuy: boolean;
+        size: string;
+        markPx: string;
+    };
+    /** Phase 1 D: an isolated top-up's market, where Hyperliquid shows an isolated position. */
+    marginTarget?: {
+        asset: number;
+    };
+    /**
+     * Phase 1 D: a leverage or margin-mode change's market and the account's setting there, read from
+     * Hyperliquid. `flat`: no position and no resting order in the coin, which a mode change needs.
+     */
+    leverageTarget?: {
+        asset: number;
+        leverage: number;
+        mode: "cross" | "isolated";
+        flat: boolean;
+    };
+    /** Phase 1 D: this client's clock, for a scheduled cancel's time. */
+    clock?: {
+        now: number;
+    };
+    /**
+     * Phase 1 D, section 9: the key's reduce-only setting as Candle reports it. True refuses any build
+     * that is not reducing, whatever the server checked; it is never a substitute for that check.
+     */
+    keyReduceOnly?: boolean;
+    /**
+     * Set only by `verifyPerpsBuildAgainstVenue`'s first pass: a fact only the venue can supply (the
+     * current leverage an omitted `leverage` keeps) is left to its second pass. Never set it alone.
+     */
+    awaitingVenue?: boolean;
+    /**
      * The market an open or modify names, as Hyperliquid's own `/info` reports it
      * (`hyperliquidOrderMarket`), never as the build does. With it, every order leg must carry this
      * asset index, a market open's limit price must sit within its slippage of this mid, and a modify
@@ -70,10 +113,12 @@ export interface VerifyPerpsBuildOptions {
     market?: HyperliquidOrderMarket;
     /** Bind the plaintext action to the method and arguments the caller actually requested. */
     intent?: {
-        method: "setup" | "open" | "close" | "cancel" | "modify" | "leverage" | "margin";
+        method: PerpsIntentMethod;
         params: Record<string, unknown>;
     };
 }
+/** What a build may be bound to. `tpsl` attaches one leg; `scheduleCancel` sets or clears the timer. */
+export type PerpsIntentMethod = "setup" | "open" | "close" | "cancel" | "modify" | "leverage" | "margin" | "tpsl" | "scheduleCancel";
 export type PerpsBuildCheck = {
     ok: true;
     kind: "l1" | "approveBuilderFee";
@@ -109,8 +154,21 @@ export declare function perpsSetupStatusProblem(status: Record<string, unknown>,
     builder: string;
     mode: string;
 }): string | null;
+/**
+ * A close percentage (spec D, section 8): a decimal above 0 and at most 100 with at most four
+ * decimals, as millionths of the position (`"25"` is 250000). Null when it is not one.
+ */
+export declare function hyperliquidClosePct(value: unknown): bigint | null;
+/**
+ * `floor(held * pct / 100)` at the market's size precision, as a wire decimal; 100% is the held size
+ * itself. Never rounds up: a percentage too small for one size step is "0", which callers refuse.
+ */
+export declare function hyperliquidPctSize(held: string, pct: bigint, szDecimals: number): string;
+/** A non-negative decimal rounded down to `szDecimals` decimals, as a wire decimal. */
+export declare function hyperliquidFloorSize(value: string, szDecimals: number): string;
 /** Read the position directly from the pinned venue before signing a close. The request
- * names no side and can omit size, so neither may be inferred from the build's preview.
+ * names no side and can omit size, so neither may be inferred from the build's preview. A `pct`
+ * request is sized here from that position, independently of the server (spec D, section 8).
  */
 export declare function hyperliquidCloseOrder(fetcher: (url: string, init?: RequestInit) => Promise<{
     ok: boolean;
@@ -146,10 +204,17 @@ export interface HyperliquidOrderMarket {
     asset: number;
     /** Hyperliquid's mid for the coin (its mark price when the book has no mid). */
     midPx: string;
-    /** For a modify: the resting order it replaces, read from the venue by its cloid. */
+    /**
+     * For a modify: the resting order it replaces, read from the venue by its cloid. Everything the
+     * replacement keeps (spec D, section 5) is checked against this, never against the build.
+     */
     order?: {
         isBuy: boolean;
         limitPx: string;
+        size?: string;
+        reduceOnly?: boolean;
+        tif?: string;
+        oid?: number;
     };
 }
 /**
@@ -168,6 +233,102 @@ export declare function hyperliquidOrderMarket(fetcher: (url: string, init?: Req
  * fully checked until it passes with `market` read from Hyperliquid (`hyperliquidOrderMarket`).
  */
 export declare function verifyPerpsBuild(build: PerpsBuildToVerify, opts: VerifyPerpsBuildOptions): PerpsBuildCheck;
+/** Hyperliquid refuses a scheduled cancel less than five seconds ahead; so does this client. */
+export declare const HYPERLIQUID_SCHEDULE_CANCEL_MIN_LEAD_MS = 5000;
+/**
+ * How far a scheduled cancel's fixed time may sit from this client's `now + seconds`: the build
+ * fixed it a moment earlier, from Candle's clock.
+ */
+export declare const HYPERLIQUID_SCHEDULE_CANCEL_DRIFT_MS = 60000;
+/** A venue read older than this is stale for a management decision (slice A's freshness ceiling). */
+export declare const HYPERLIQUID_SNAPSHOT_MAX_AGE_MS = 30000;
+type InfoFetcher = (url: string, init?: RequestInit) => Promise<{
+    ok: boolean;
+    status?: number;
+    text(): Promise<string>;
+}>;
+/** One open order on the main perp exchange, as this client read it from `frontendOpenOrders`. */
+export interface HyperliquidSnapshotOrder {
+    coin: string;
+    asset: number;
+    oid: number;
+    cloid: string | null;
+    isBuy: boolean;
+    sz: string;
+    limitPx: string;
+    reduceOnly: boolean;
+    isTrigger: boolean;
+    triggerPx: string | null;
+    /** `tp` or `sl` for a take-profit or stop-loss trigger, null for any other order. */
+    tpsl: "tp" | "sl" | null;
+}
+/** One main-perp position, as this client read it from `clearinghouseState`. */
+export interface HyperliquidSnapshotPosition {
+    coin: string;
+    asset: number;
+    szi: string;
+    leverage: {
+        type: "cross" | "isolated";
+        value: number;
+    };
+}
+/**
+ * The wallet's main-perp state, read directly from Hyperliquid in one moment: the universe (with
+ * each market's size precision), marks, positions and every open order including triggers.
+ * `unsupported` names any row outside the main perp universe or that could not be classified;
+ * flatten refuses on one rather than silently skip it (spec D, section 8). Throws on a failed or
+ * malformed read: that is an error, never permission to trust a server's preview.
+ */
+export interface HyperliquidWalletSnapshot {
+    readAt: number;
+    universe: {
+        name: string;
+        szDecimals: number;
+        maxLeverage: number;
+        onlyIsolated: boolean;
+    }[];
+    /** Mark price per asset index, null when the venue gave none. */
+    marks: (string | null)[];
+    positions: HyperliquidSnapshotPosition[];
+    orders: HyperliquidSnapshotOrder[];
+    unsupported: string[];
+}
+export declare function hyperliquidWalletSnapshot(fetcher: InfoFetcher, network: HyperliquidNetwork, address: string, now?: () => number): Promise<HyperliquidWalletSnapshot>;
+/** The snapshot's position in `coin` (case-insensitive), or null. */
+export declare function snapshotPosition(snapshot: HyperliquidWalletSnapshot, coin: string): HyperliquidSnapshotPosition | null;
+/** The size a take-profit / stop-loss attach protects: the held size, at the market's precision. */
+export declare function hyperliquidTpslTarget(snapshot: HyperliquidWalletSnapshot, coin: string): NonNullable<VerifyPerpsBuildOptions["tpslTarget"]>;
+/**
+ * `verifyPerpsBuild`, then the same check again against what this client reads from Hyperliquid
+ * itself for the request (the market, the position, the resting order, the account's leverage, the
+ * clock). Every Candle surface calls this one function before it asks the relay to sign, so the
+ * rules cannot fork between the SDK, the CLI and the MCP server. Never throws: a venue that could
+ * not be read is a refusal.
+ */
+export declare function verifyPerpsBuildAgainstVenue(build: PerpsBuildToVerify, opts: VerifyPerpsBuildOptions & {
+    intent: NonNullable<VerifyPerpsBuildOptions["intent"]>;
+    address: string;
+    fetcher: InfoFetcher;
+    now?: () => number;
+}): Promise<PerpsBuildCheck>;
+/**
+ * Hyperliquid's answer to one submitted action, per leg (spec D, section 3: "HTTP 200 alone is not
+ * confirmation"). `confirmed` only when the venue said `ok` and no leg carries an error; `rejected`
+ * when it said `err` or any leg did; `unknown` for anything else, which callers must reconcile
+ * before acting again.
+ */
+export type HyperliquidSubmitOutcome = {
+    status: "confirmed";
+    legs: unknown[];
+} | {
+    status: "rejected";
+    error: string;
+    legs: unknown[];
+} | {
+    status: "unknown";
+    error: string;
+};
+export declare function hyperliquidExchangeOutcome(exchange: unknown): HyperliquidSubmitOutcome;
 /** A 65-byte `0x` signature split the way `/exchange` takes it. */
 export declare function hyperliquidSplitSignature(signature: string): {
     r: string;
@@ -193,4 +354,5 @@ export declare function hyperliquidRelayBody(typedData: HyperliquidTypedData): {
         typed_data: HyperliquidTypedData;
     };
 };
+export {};
 //# sourceMappingURL=hyperliquid.d.ts.map

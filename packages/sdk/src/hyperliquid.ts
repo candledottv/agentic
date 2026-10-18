@@ -5,7 +5,7 @@
  * A perps build route returns a plaintext Hyperliquid action, the nonce, and the EIP-712 typed data
  * Candle stamped a relay claim over. Before anything is signed, the client recomputes the action
  * hash from the plaintext and checks it is the hash inside the typed data, that the action type is
- * one of the five Candle builds, that the builder is Candle's (or absent on a Max order), and that
+ * one of the six Candle builds, that the builder is Candle's (or absent on a Max order), and that
  * the typed data is exactly one of the two shapes the relay forwards. Only then does it ask the
  * relay to sign, and it submits the signed action to Hyperliquid itself. A mismatch is a client
  * refusal, with no relay call. This is what stops a dishonest build: the TEE wallet signs only a
@@ -31,6 +31,9 @@ export const HYPERLIQUID_ALLOWED_ACTION_TYPES = [
   "modify",
   "updateLeverage",
   "updateIsolatedMargin",
+  // Phase 1 D (BE-1584, spec 2026-10-17-hyperliquid-phase1-d-management-actions-design.md, section
+  // 4): the venue's cancel-all timer, `time` present to set and absent to clear. The only type D adds.
+  "scheduleCancel",
 ] as const
 
 /** Hyperliquid's `/exchange` endpoint per network. The client never takes this from the server. */
@@ -281,6 +284,32 @@ export interface VerifyPerpsBuildOptions {
   address?: string
   closeOrder?: { asset: number; isBuy: boolean; size: string }
   /**
+   * Phase 1 D (spec 2026-10-17 D, section 4): the venue order a targeted cancel must name, read from
+   * Hyperliquid by this client (`hyperliquidCancelTarget`).
+   */
+  cancelTarget?: { asset: number; oid: number }
+  /** Phase 1 D: the held position a take-profit / stop-loss attach protects, read from Hyperliquid. */
+  tpslTarget?: { asset: number; isBuy: boolean; size: string; markPx: string }
+  /** Phase 1 D: an isolated top-up's market, where Hyperliquid shows an isolated position. */
+  marginTarget?: { asset: number }
+  /**
+   * Phase 1 D: a leverage or margin-mode change's market and the account's setting there, read from
+   * Hyperliquid. `flat`: no position and no resting order in the coin, which a mode change needs.
+   */
+  leverageTarget?: { asset: number; leverage: number; mode: "cross" | "isolated"; flat: boolean }
+  /** Phase 1 D: this client's clock, for a scheduled cancel's time. */
+  clock?: { now: number }
+  /**
+   * Phase 1 D, section 9: the key's reduce-only setting as Candle reports it. True refuses any build
+   * that is not reducing, whatever the server checked; it is never a substitute for that check.
+   */
+  keyReduceOnly?: boolean
+  /**
+   * Set only by `verifyPerpsBuildAgainstVenue`'s first pass: a fact only the venue can supply (the
+   * current leverage an omitted `leverage` keeps) is left to its second pass. Never set it alone.
+   */
+  awaitingVenue?: boolean
+  /**
    * The market an open or modify names, as Hyperliquid's own `/info` reports it
    * (`hyperliquidOrderMarket`), never as the build does. With it, every order leg must carry this
    * asset index, a market open's limit price must sit within its slippage of this mid, and a modify
@@ -289,10 +318,22 @@ export interface VerifyPerpsBuildOptions {
   market?: HyperliquidOrderMarket
   /** Bind the plaintext action to the method and arguments the caller actually requested. */
   intent?: {
-    method: "setup" | "open" | "close" | "cancel" | "modify" | "leverage" | "margin"
+    method: PerpsIntentMethod
     params: Record<string, unknown>
   }
 }
+
+/** What a build may be bound to. `tpsl` attaches one leg; `scheduleCancel` sets or clears the timer. */
+export type PerpsIntentMethod =
+  | "setup"
+  | "open"
+  | "close"
+  | "cancel"
+  | "modify"
+  | "leverage"
+  | "margin"
+  | "tpsl"
+  | "scheduleCancel"
 
 export type PerpsBuildCheck = { ok: true; kind: "l1" | "approveBuilderFee" } | { ok: false; reason: string }
 
@@ -388,7 +429,81 @@ function decimal(value: unknown): bigint | null {
   return negative ? -n : n
 }
 
-function checkActionIntent(action: Record<string, unknown>, intent: VerifyPerpsBuildOptions["intent"]): string | null {
+// Phase 1 D (spec 2026-10-17 D, section 4): the complete key set of each action family Candle
+// builds, and of each order inside one. Anything else (a vault, an expiry, a fast or always-place
+// flag, a hidden transfer field, an unknown order key) is refused before signing.
+const ACTION_KEYS: Readonly<Record<string, { required: string[]; optional: string[] }>> = {
+  order: { required: ["type", "orders", "grouping"], optional: ["builder"] },
+  cancel: { required: ["type", "cancels"], optional: [] },
+  modify: { required: ["type", "oid", "order"], optional: [] },
+  updateLeverage: { required: ["type", "asset", "isCross", "leverage"], optional: [] },
+  updateIsolatedMargin: { required: ["type", "asset", "isBuy", "ntli"], optional: [] },
+  scheduleCancel: { required: ["type"], optional: ["time"] },
+}
+
+function exactKeys(value: unknown, required: string[], optional: string[] = []): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const keys = Object.keys(value)
+  return required.every((k) => keys.includes(k)) && keys.every((k) => required.includes(k) || optional.includes(k))
+}
+
+function actionShapeProblem(action: Record<string, unknown>): string | null {
+  const shape = ACTION_KEYS[String(action.type)]
+  if (!shape) return null
+  if (!exactKeys(action, shape.required, shape.optional))
+    return `the ${String(action.type)} action carries unexpected or missing fields`
+  if (action.type === "order") {
+    if (!["na", "normalTpsl", "positionTpsl"].includes(action.grouping as string)) return "unexpected order grouping"
+    if (action.builder !== undefined && !exactKeys(action.builder, ["b", "f"])) return "builder field is not an object"
+  }
+  const orders = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : []
+  if (!Array.isArray(orders)) return "invalid orders"
+  for (const raw of orders) {
+    if (!exactKeys(raw, ["a", "b", "p", "s", "r", "t"], ["c"])) return "an order carries unexpected or missing fields"
+    const o = raw as Record<string, unknown>
+    const t = o.t as Record<string, unknown>
+    const limit = exactKeys(t, ["limit"]) && exactKeys(t.limit, ["tif"])
+    const trigger = exactKeys(t, ["trigger"]) && exactKeys(t.trigger, ["isMarket", "triggerPx", "tpsl"])
+    if (!limit && !trigger) return "an order type carries unexpected or missing fields"
+    if (o.c !== undefined && (typeof o.c !== "string" || !HYPERLIQUID_CLOID_RE.test(o.c)))
+      return "an order carries a malformed client order id"
+  }
+  if (action.type === "cancel") {
+    const cancels = action.cancels
+    if (
+      !Array.isArray(cancels) ||
+      cancels.some(
+        (c) =>
+          !exactKeys(c, ["a", "o"]) || !Number.isSafeInteger((c as { o: unknown }).o) || (c as { o: number }).o < 0,
+      )
+    )
+      return "a cancel carries unexpected or missing fields"
+  }
+  if (action.type === "modify") {
+    const oid = action.oid
+    if (
+      !(Number.isSafeInteger(oid) && (oid as number) >= 0) &&
+      !(typeof oid === "string" && HYPERLIQUID_CLOID_RE.test(oid))
+    )
+      return "the modify names no order"
+  }
+  if (
+    action.type === "scheduleCancel" &&
+    "time" in action &&
+    (!Number.isSafeInteger(action.time) || (action.time as number) <= 0)
+  )
+    return "the scheduled cancel carries an invalid time"
+  return null
+}
+
+/** Whether `px` is no worse than `reference` moved by `bps` against an order on side `isBuy`. */
+function withinBps(px: bigint, reference: bigint, isBuy: boolean, bps: number): boolean {
+  const bound = BigInt(bps)
+  return isBuy ? px * 10_000n <= reference * (10_000n + bound) : px * 10_000n >= reference * (10_000n - bound)
+}
+
+function checkActionIntent(action: Record<string, unknown>, opts: VerifyPerpsBuildOptions): string | null {
+  const intent = opts.intent
   const mainAsset = (a: unknown) => typeof a === "number" && Number.isInteger(a) && a >= 0 && a < 10000
   const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : []
   if (!Array.isArray(orderList)) return "invalid orders"
@@ -403,6 +518,8 @@ function checkActionIntent(action: Record<string, unknown>, intent: VerifyPerpsB
       (decimal(o.p) ?? 0n) <= 0n
     )
       return "invalid order side, size, price or reduce-only flag"
+    // Spec D, section 9: a reduce-only key signs only reducing orders, whatever the server built.
+    if (opts.keyReduceOnly === true && o.r !== true) return "this key is reduce-only and the build is not reducing"
   }
   if (action.type === "cancel") {
     if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !mainAsset(action.cancels[0]?.a))
@@ -412,7 +529,7 @@ function checkActionIntent(action: Record<string, unknown>, intent: VerifyPerpsB
     return "invalid action asset"
   if (!intent) return null
   const { method, params: p } = intent
-  const types = {
+  const types: Record<PerpsIntentMethod, string> = {
     setup: "approveBuilderFee",
     open: "order",
     close: "order",
@@ -420,11 +537,34 @@ function checkActionIntent(action: Record<string, unknown>, intent: VerifyPerpsB
     modify: "modify",
     leverage: "updateLeverage",
     margin: "updateIsolatedMargin",
+    tpsl: "order",
+    scheduleCancel: "scheduleCancel",
   }
   if (action.type !== types[method]) return "action type does not match the requested method"
+  if (opts.keyReduceOnly === true && method === "open") return "this key is reduce-only and an open is not reducing"
+  if (method === "cancel" && opts.cancelTarget) {
+    const target = (action.cancels as { a?: unknown; o?: unknown }[])[0]
+    if (target?.a !== opts.cancelTarget.asset || target?.o !== opts.cancelTarget.oid)
+      return "the cancel does not name the order Hyperliquid shows for this request"
+  }
   if (method === "leverage") {
-    if (action.leverage !== p.leverage || action.isCross !== (p.mode !== "isolated"))
+    // Spec D, section 5: an omitted leverage keeps the account's current value, read from the venue.
+    const wanted = p.leverage ?? opts.leverageTarget?.leverage
+    const deferred = wanted === undefined && opts.awaitingVenue === true && Number.isSafeInteger(action.leverage)
+    if (
+      (!deferred && (typeof wanted !== "number" || action.leverage !== wanted)) ||
+      action.isCross !== (p.mode !== "isolated")
+    )
       return "leverage or mode does not match the request"
+    const target = opts.leverageTarget
+    if (target) {
+      if (action.asset !== target.asset) return "leverage asset is not the requested coin's on Hyperliquid"
+      const mode = action.isCross ? "cross" : "isolated"
+      if (mode !== target.mode && !target.flat)
+        return "a margin-mode change needs no position and no resting order in the coin; close and cancel first"
+      if (opts.keyReduceOnly === true && (mode !== target.mode || (action.leverage as number) > target.leverage))
+        return "this key is reduce-only: no leverage increase or margin-mode change"
+    }
   }
   if (method === "margin") {
     const amount = decimal(p.amount)
@@ -436,6 +576,72 @@ function checkActionIntent(action: Record<string, unknown>, intent: VerifyPerpsB
       action.isBuy !== true
     )
       return "isolated margin amount does not match the request"
+    if (opts.marginTarget && action.asset !== opts.marginTarget.asset)
+      return "margin asset is not the requested coin's on Hyperliquid"
+    if (opts.keyReduceOnly === true && (action.ntli as number) <= 0)
+      return "this key is reduce-only: margin may only be added"
+  }
+  if (method === "scheduleCancel") {
+    // Spec D, section 7: a clear omits `time`; a set carries the server's fixed time, at least five
+    // seconds ahead of this client's clock and the requested delay from it.
+    if (p.clear === true) {
+      if ("time" in action) return "a clear must omit the time"
+    } else {
+      const seconds = p.seconds
+      const time = action.time
+      if (!Number.isSafeInteger(seconds) || (seconds as number) < 5)
+        return "a scheduled cancel needs at least 5 seconds"
+      if (!Number.isSafeInteger(time)) return "a scheduled cancel without a time"
+      if (opts.clock) {
+        const lead = (time as number) - opts.clock.now
+        if (lead < HYPERLIQUID_SCHEDULE_CANCEL_MIN_LEAD_MS)
+          return "the scheduled time is less than 5 seconds ahead; build it again"
+        if (
+          Math.abs((time as number) - (opts.clock.now + (seconds as number) * 1000)) >
+          HYPERLIQUID_SCHEDULE_CANCEL_DRIFT_MS
+        )
+          return "the scheduled time is not the requested delay from now"
+      }
+    }
+  }
+  if (method === "tpsl") {
+    // Spec D, section 6: one reducing market trigger per build, grouped with the position.
+    const list = orderList as Record<string, unknown>[]
+    const leg = list[0]
+    if (list.length !== 1 || !leg || action.grouping !== "positionTpsl")
+      return "a take-profit / stop-loss attach is one positionTpsl order"
+    const trigger = (leg.t as { trigger?: { tpsl?: unknown; triggerPx?: unknown; isMarket?: unknown } })?.trigger
+    if (
+      !trigger ||
+      leg.r !== true ||
+      trigger.isMarket !== true ||
+      trigger.tpsl !== p.leg ||
+      decimal(trigger.triggerPx) !== decimal(p.triggerPx)
+    )
+      return "trigger leg, reduce-only flag or price does not match the request"
+    if (typeof leg.c !== "string" || !HYPERLIQUID_CLOID_RE.test(leg.c))
+      return "the trigger leg carries no client order id"
+    const triggerPx = decimal(trigger.triggerPx) ?? 0n
+    if (
+      triggerPx <= 0n ||
+      !withinBps(
+        decimal(leg.p) ?? 0n,
+        triggerPx,
+        leg.b === true,
+        HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS,
+      )
+    )
+      return "trigger order price is outside its slippage of the trigger price"
+    const target = opts.tpslTarget
+    if (target) {
+      if (leg.a !== target.asset || leg.b !== target.isBuy || decimal(leg.s) !== decimal(target.size))
+        return "trigger side, asset or size does not match the position Hyperliquid shows"
+      // Closing a long sells: its take-profit is above the mark, its stop-loss below. A short inverts.
+      const mark = decimal(target.markPx) ?? 0n
+      const above = triggerPx > mark
+      const ok = (p.leg === "tp") === !target.isBuy ? above : triggerPx < mark
+      if (mark <= 0n || !ok) return "the trigger is already crossed or on the wrong side of the mark"
+    }
   }
   if (method === "open" || method === "close" || method === "modify") {
     const list = orderList as Record<string, unknown>[]
@@ -484,17 +690,20 @@ function checkActionIntent(action: Record<string, unknown>, intent: VerifyPerpsB
         // that may fill no worse than the trigger moved by the build's slippage and the margin.
         const px = decimal(leg.p) ?? 0n
         const triggerPx = decimal(trigger.triggerPx) ?? 0n
-        const bound = BigInt(HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS)
-        const within =
-          leg.b === true ? px * 10_000n <= triggerPx * (10_000n + bound) : px * 10_000n >= triggerPx * (10_000n - bound)
-        if (triggerPx <= 0n || !within) return "trigger order price is outside its slippage of the trigger price"
+        if (
+          triggerPx <= 0n ||
+          !withinBps(px, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS)
+        )
+          return "trigger order price is outside its slippage of the trigger price"
       }
     } else {
       if (list.length !== 1) return "unexpected extra orders"
+      if (method === "close" && p.pct != null && p.size != null) return "a close takes a size or a percentage, not both"
       if (
         method === "close" &&
         (first.r !== true ||
           typ.limit.tif !== "Ioc" ||
+          action.grouping !== "na" ||
           (p.size != null && (decimal(first.s) ?? 0n) > (decimal(p.size) ?? 0n)))
       )
         return "close size or reduce-only flag does not match the request"
@@ -506,8 +715,47 @@ function checkActionIntent(action: Record<string, unknown>, intent: VerifyPerpsB
   return null
 }
 
+/**
+ * A close percentage (spec D, section 8): a decimal above 0 and at most 100 with at most four
+ * decimals, as millionths of the position (`"25"` is 250000). Null when it is not one.
+ */
+export function hyperliquidClosePct(value: unknown): bigint | null {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,2})(\.[0-9]{1,4})?$/.test(value)) return null
+  const [whole = "0", frac = ""] = value.split(".")
+  const millionths = BigInt(whole) * 10_000n + BigInt(frac.padEnd(4, "0"))
+  return millionths > 0n && millionths <= 1_000_000n ? millionths : null
+}
+
+/**
+ * `floor(held * pct / 100)` at the market's size precision, as a wire decimal; 100% is the held size
+ * itself. Never rounds up: a percentage too small for one size step is "0", which callers refuse.
+ */
+export function hyperliquidPctSize(held: string, pct: bigint, szDecimals: number): string {
+  const scaled = decimal(held)
+  if (scaled === null || scaled < 0n) throw new Error("Invalid held size")
+  if (pct === 1_000_000n) return held
+  return hyperliquidFloorSize(formatScaled((scaled * pct) / 1_000_000n), szDecimals)
+}
+
+/** A non-negative decimal rounded down to `szDecimals` decimals, as a wire decimal. */
+export function hyperliquidFloorSize(value: string, szDecimals: number): string {
+  const scaled = decimal(value)
+  if (scaled === null || scaled < 0n) throw new Error("Invalid size")
+  const unit = 10n ** BigInt(18 - Math.max(0, Math.min(18, szDecimals)))
+  return formatScaled((scaled / unit) * unit)
+}
+
+function formatScaled(value: bigint): string {
+  const negative = value < 0n
+  const abs = negative ? -value : value
+  const whole = abs / 10n ** 18n
+  const frac = (abs % 10n ** 18n).toString().padStart(18, "0").replace(/0+$/, "")
+  return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`
+}
+
 /** Read the position directly from the pinned venue before signing a close. The request
- * names no side and can omit size, so neither may be inferred from the build's preview.
+ * names no side and can omit size, so neither may be inferred from the build's preview. A `pct`
+ * request is sized here from that position, independently of the server (spec D, section 8).
  */
 export async function hyperliquidCloseOrder(
   fetcher: (url: string, init?: RequestInit) => Promise<{ ok: boolean; text(): Promise<string> }>,
@@ -516,7 +764,7 @@ export async function hyperliquidCloseOrder(
   params: Record<string, unknown>,
 ): Promise<{ asset: number; isBuy: boolean; size: string }> {
   const read = async (body: Record<string, unknown>) => {
-    const res = await fetcher(HYPERLIQUID_EXCHANGE_URLS[network].replace("/exchange", "/info"), {
+    const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -526,7 +774,8 @@ export async function hyperliquidCloseOrder(
   }
   const [meta, state] = await Promise.all([read({ type: "meta" }), read({ type: "clearinghouseState", user: address })])
   const coin = String(params.coin).toUpperCase()
-  const asset = (meta.universe as { name: string }[]).findIndex((m) => m.name.toUpperCase() === coin)
+  const universe = meta.universe as { name: string; szDecimals?: number }[]
+  const asset = universe.findIndex((m) => m.name.toUpperCase() === coin)
   const szi = (state.assetPositions as { position: { coin: string; szi: string } }[]).find(
     (p) => p.position.coin.toUpperCase() === coin,
   )?.position.szi
@@ -534,9 +783,21 @@ export async function hyperliquidCloseOrder(
   if (asset < 0 || asset >= 10000 || signed === null || signed === 0n)
     throw new Error("No main-universe position to close")
   const held = signed < 0n ? -signed : signed
+  const heldSz = String(szi).replace(/^-/, "")
+  if (params.pct != null) {
+    if (params.size != null) throw new Error("A close takes a size or a percentage, not both")
+    const pct = hyperliquidClosePct(params.pct)
+    const szDecimals = universe[asset]?.szDecimals
+    if (pct === null) throw new Error("pct must be above 0 and at most 100, with at most 4 decimals")
+    if (!Number.isInteger(szDecimals)) throw new Error("Hyperliquid did not report this market's size precision")
+    const size = hyperliquidPctSize(heldSz, pct, szDecimals as number)
+    if ((decimal(size) ?? 0n) <= 0n)
+      throw new Error("This percentage of the position rounds to zero at the market's size step")
+    return { asset, isBuy: signed < 0n, size }
+  }
   const asked = params.size == null ? held : decimal(params.size)
   if (asked === null || asked <= 0n) throw new Error("Invalid close size")
-  const size = asked < held ? String(params.size) : String(szi).replace(/^-/, "")
+  const size = asked < held ? String(params.size) : heldSz
   return { asset, isBuy: signed < 0n, size }
 }
 
@@ -569,8 +830,11 @@ export interface HyperliquidOrderMarket {
   asset: number
   /** Hyperliquid's mid for the coin (its mark price when the book has no mid). */
   midPx: string
-  /** For a modify: the resting order it replaces, read from the venue by its cloid. */
-  order?: { isBuy: boolean; limitPx: string }
+  /**
+   * For a modify: the resting order it replaces, read from the venue by its cloid. Everything the
+   * replacement keeps (spec D, section 5) is checked against this, never against the build.
+   */
+  order?: { isBuy: boolean; limitPx: string; size?: string; reduceOnly?: boolean; tif?: string; oid?: number }
 }
 
 /**
@@ -599,11 +863,31 @@ export async function hyperliquidOrderMarket(
   let order: HyperliquidOrderMarket["order"]
   if (method === "modify") {
     const status = await read({ type: "orderStatus", user: address, oid: params.cloid })
-    const resting = (status?.order?.order ?? null) as { coin?: unknown; side?: unknown; limitPx?: unknown } | null
+    const resting = (status?.order?.order ?? null) as {
+      coin?: unknown
+      side?: unknown
+      limitPx?: unknown
+      sz?: unknown
+      reduceOnly?: unknown
+      tif?: unknown
+      oid?: unknown
+      isTrigger?: unknown
+    } | null
     if (!resting || typeof resting.coin !== "string" || decimal(resting.limitPx) === null)
       throw new Error("No resting order with this cloid on Hyperliquid")
+    if (resting.isTrigger === true)
+      throw new Error("A take-profit or stop-loss leg cannot be modified; cancel it instead")
     coin = resting.coin.toUpperCase()
-    order = { isBuy: resting.side === "B", limitPx: String(resting.limitPx) }
+    // The build keeps an unrecognized time in force as Gtc, and so does this check.
+    const tif = typeof resting.tif === "string" && ["Gtc", "Alo", "Ioc"].includes(resting.tif) ? resting.tif : "Gtc"
+    order = {
+      isBuy: resting.side === "B",
+      limitPx: String(resting.limitPx),
+      ...(decimal(resting.sz) !== null ? { size: String(resting.sz) } : {}),
+      reduceOnly: resting.reduceOnly === true,
+      tif,
+      ...(Number.isSafeInteger(resting.oid) ? { oid: resting.oid as number } : {}),
+    }
   }
   const [meta, contexts] = (await read({ type: "metaAndAssetCtxs" })) as [
     { universe: { name: string }[] },
@@ -645,6 +929,17 @@ function checkOrderMarket(
     if (first.b !== market.order.isBuy) return "modify changes the resting order's side"
     if (p.price == null && decimal(first.p) !== decimal(market.order.limitPx))
       return "modify changes the resting order's price"
+    // Spec D, section 5: the omitted fields keep the venue's values, and the target is the venue's.
+    // The venue's oid for the requested cloid, or that cloid itself; never another order.
+    const requested = typeof p.cloid === "string" ? p.cloid.toLowerCase() : null
+    const byOid = market.order.oid !== undefined && action.oid === market.order.oid
+    const byCloid = requested !== null && typeof action.oid === "string" && action.oid.toLowerCase() === requested
+    if (!byOid && !byCloid) return "modify does not name the resting order Hyperliquid shows for this cloid"
+    if (first.r !== market.order.reduceOnly) return "modify changes the resting order's reduce-only flag"
+    if ((first.t as { limit?: { tif?: unknown } })?.limit?.tif !== market.order.tif)
+      return "modify changes the resting order's time in force"
+    if (p.size == null && (market.order.size === undefined || decimal(first.s) !== decimal(market.order.size)))
+      return "modify changes the resting order's size"
   }
   return null
 }
@@ -671,7 +966,7 @@ export function verifyPerpsBuild(build: PerpsBuildToVerify, opts: VerifyPerpsBui
     const action = build.action
     if (!action || typeof action !== "object") return { ok: false, reason: "no action" }
 
-    const intentRefusal = checkActionIntent(action, opts.intent)
+    const intentRefusal = checkActionIntent(action, opts)
     if (intentRefusal) return { ok: false, reason: intentRefusal }
     if (opts.closeOrder) {
       const order = (action.orders as Record<string, unknown>[])[0]
@@ -696,6 +991,8 @@ export function verifyPerpsBuild(build: PerpsBuildToVerify, opts: VerifyPerpsBui
       if (typeof type !== "string" || !(HYPERLIQUID_ALLOWED_ACTION_TYPES as readonly string[]).includes(type)) {
         return { ok: false, reason: `action type ${String(type)} is not one Candle builds` }
       }
+      const shapeRefusal = actionShapeProblem(action)
+      if (shapeRefusal) return { ok: false, reason: shapeRefusal }
       if (type === "order") {
         const refusal = checkBuilderField(action, opts.builder)
         if (refusal) return { ok: false, reason: refusal }
@@ -732,6 +1029,372 @@ export function verifyPerpsBuild(build: PerpsBuildToVerify, opts: VerifyPerpsBui
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : "unreadable build" }
   }
+}
+
+// ── Phase 1 D: the venue evidence a management build is checked against (spec D, section 4) ──
+
+/** Hyperliquid refuses a scheduled cancel less than five seconds ahead; so does this client. */
+export const HYPERLIQUID_SCHEDULE_CANCEL_MIN_LEAD_MS = 5_000
+
+/**
+ * How far a scheduled cancel's fixed time may sit from this client's `now + seconds`: the build
+ * fixed it a moment earlier, from Candle's clock.
+ */
+export const HYPERLIQUID_SCHEDULE_CANCEL_DRIFT_MS = 60_000
+
+/** A venue read older than this is stale for a management decision (slice A's freshness ceiling). */
+export const HYPERLIQUID_SNAPSHOT_MAX_AGE_MS = 30_000
+
+type InfoFetcher = (
+  url: string,
+  init?: RequestInit,
+) => Promise<{ ok: boolean; status?: number; text(): Promise<string> }>
+
+async function infoRead(
+  fetcher: InfoFetcher,
+  network: HyperliquidNetwork,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`Hyperliquid ${String(body.type)} answered ${res.status ?? "an error"}`)
+  try {
+    return JSON.parse(await res.text())
+  } catch {
+    throw new Error(`Hyperliquid returned an unreadable ${String(body.type)}`)
+  }
+}
+
+/** One open order on the main perp exchange, as this client read it from `frontendOpenOrders`. */
+export interface HyperliquidSnapshotOrder {
+  coin: string
+  asset: number
+  oid: number
+  cloid: string | null
+  isBuy: boolean
+  sz: string
+  limitPx: string
+  reduceOnly: boolean
+  isTrigger: boolean
+  triggerPx: string | null
+  /** `tp` or `sl` for a take-profit or stop-loss trigger, null for any other order. */
+  tpsl: "tp" | "sl" | null
+}
+
+/** One main-perp position, as this client read it from `clearinghouseState`. */
+export interface HyperliquidSnapshotPosition {
+  coin: string
+  asset: number
+  szi: string
+  leverage: { type: "cross" | "isolated"; value: number }
+}
+
+/**
+ * The wallet's main-perp state, read directly from Hyperliquid in one moment: the universe (with
+ * each market's size precision), marks, positions and every open order including triggers.
+ * `unsupported` names any row outside the main perp universe or that could not be classified;
+ * flatten refuses on one rather than silently skip it (spec D, section 8). Throws on a failed or
+ * malformed read: that is an error, never permission to trust a server's preview.
+ */
+export interface HyperliquidWalletSnapshot {
+  readAt: number
+  universe: { name: string; szDecimals: number; maxLeverage: number; onlyIsolated: boolean }[]
+  /** Mark price per asset index, null when the venue gave none. */
+  marks: (string | null)[]
+  positions: HyperliquidSnapshotPosition[]
+  orders: HyperliquidSnapshotOrder[]
+  unsupported: string[]
+}
+
+export async function hyperliquidWalletSnapshot(
+  fetcher: InfoFetcher,
+  network: HyperliquidNetwork,
+  address: string,
+  now: () => number = Date.now,
+): Promise<HyperliquidWalletSnapshot> {
+  const user = address.toLowerCase()
+  const [metaAndCtxs, state, open] = await Promise.all([
+    infoRead(fetcher, network, { type: "metaAndAssetCtxs" }),
+    infoRead(fetcher, network, { type: "clearinghouseState", user }),
+    infoRead(fetcher, network, { type: "frontendOpenOrders", user }),
+  ])
+  const readAt = now()
+  if (!Array.isArray(metaAndCtxs) || metaAndCtxs.length < 2 || !Array.isArray(metaAndCtxs[1]))
+    throw new Error("Hyperliquid returned an unreadable market list")
+  const rawUniverse = (metaAndCtxs[0] as { universe?: unknown })?.universe
+  if (!Array.isArray(rawUniverse)) throw new Error("Hyperliquid returned an unreadable market list")
+  const universe = rawUniverse.map((m) => {
+    const row = m as { name?: unknown; szDecimals?: unknown; maxLeverage?: unknown; onlyIsolated?: unknown }
+    if (typeof row.name !== "string" || !Number.isInteger(row.szDecimals) || !Number.isInteger(row.maxLeverage))
+      throw new Error("Hyperliquid returned an unreadable market")
+    return {
+      name: row.name,
+      szDecimals: row.szDecimals as number,
+      maxLeverage: row.maxLeverage as number,
+      onlyIsolated: row.onlyIsolated === true,
+    }
+  })
+  const ctxs = metaAndCtxs[1] as { markPx?: unknown }[]
+  const marks = universe.map((_, i) => {
+    const mark = ctxs[i]?.markPx
+    return typeof mark === "string" && (decimal(mark) ?? 0n) > 0n ? mark : null
+  })
+  const assetOf = (coin: string) => universe.findIndex((m) => m.name === coin)
+  const unsupported: string[] = []
+  const positionsRaw = (state as { assetPositions?: unknown })?.assetPositions
+  if (!Array.isArray(positionsRaw)) throw new Error("Hyperliquid returned an unreadable account state")
+  const positions: HyperliquidSnapshotPosition[] = []
+  for (const entry of positionsRaw) {
+    const p = (entry as { position?: Record<string, unknown> })?.position
+    const coin = p?.coin
+    const lev = p?.leverage as { type?: unknown; value?: unknown } | undefined
+    const szi = p?.szi
+    if (typeof coin !== "string" || typeof szi !== "string" || decimal(szi) === null) {
+      unsupported.push(`an unreadable position (${JSON.stringify(coin ?? null)})`)
+      continue
+    }
+    const asset = assetOf(coin)
+    if (
+      asset < 0 ||
+      asset >= 10000 ||
+      (lev?.type !== "cross" && lev?.type !== "isolated") ||
+      !Number.isInteger(lev.value)
+    ) {
+      unsupported.push(`position ${coin}`)
+      continue
+    }
+    if (decimal(szi) === 0n) continue
+    positions.push({ coin, asset, szi, leverage: { type: lev.type, value: lev.value as number } })
+  }
+  if (!Array.isArray(open)) throw new Error("Hyperliquid returned an unreadable order list")
+  const orders: HyperliquidSnapshotOrder[] = []
+  for (const raw of open) {
+    const o = raw as Record<string, unknown>
+    const coin = o?.coin
+    if (typeof coin !== "string") {
+      unsupported.push("an unreadable order")
+      continue
+    }
+    const asset = assetOf(coin)
+    const oid = o.oid
+    if (
+      asset < 0 ||
+      asset >= 10000 ||
+      !Number.isSafeInteger(oid) ||
+      (o.side !== "A" && o.side !== "B") ||
+      decimal(o.sz) === null ||
+      decimal(o.limitPx) === null
+    ) {
+      unsupported.push(`order ${coin}${Number.isSafeInteger(oid) ? ` ${oid}` : ""}`)
+      continue
+    }
+    const orderType = typeof o.orderType === "string" ? o.orderType : ""
+    const isTrigger = o.isTrigger === true
+    const tpsl = isTrigger
+      ? orderType.startsWith("Take Profit")
+        ? "tp"
+        : orderType.startsWith("Stop")
+          ? "sl"
+          : null
+      : null
+    if (isTrigger && tpsl === null) {
+      unsupported.push(`order ${coin} ${oid} (${orderType || "unknown trigger"})`)
+      continue
+    }
+    orders.push({
+      coin,
+      asset,
+      oid: oid as number,
+      cloid: typeof o.cloid === "string" ? o.cloid.toLowerCase() : null,
+      isBuy: o.side === "B",
+      sz: o.sz as string,
+      limitPx: o.limitPx as string,
+      reduceOnly: o.reduceOnly === true,
+      isTrigger,
+      triggerPx: typeof o.triggerPx === "string" ? o.triggerPx : null,
+      tpsl,
+    })
+  }
+  // Deterministic order (spec D, section 8): asset, then oid.
+  orders.sort((a, b) => a.asset - b.asset || a.oid - b.oid)
+  positions.sort((a, b) => a.asset - b.asset)
+  return { readAt, universe, marks, positions, orders, unsupported }
+}
+
+/** The snapshot's position in `coin` (case-insensitive), or null. */
+export function snapshotPosition(
+  snapshot: HyperliquidWalletSnapshot,
+  coin: string,
+): HyperliquidSnapshotPosition | null {
+  const upper = coin.toUpperCase()
+  return snapshot.positions.find((p) => p.coin.toUpperCase() === upper) ?? null
+}
+
+/** The size a take-profit / stop-loss attach protects: the held size, at the market's precision. */
+export function hyperliquidTpslTarget(
+  snapshot: HyperliquidWalletSnapshot,
+  coin: string,
+): NonNullable<VerifyPerpsBuildOptions["tpslTarget"]> {
+  const position = snapshotPosition(snapshot, coin)
+  if (!position) throw new Error(`No ${coin} position on Hyperliquid to protect`)
+  const mark = snapshot.marks[position.asset]
+  const szDecimals = snapshot.universe[position.asset]?.szDecimals
+  if (!mark || szDecimals === undefined) throw new Error(`No Hyperliquid mark for ${position.coin}`)
+  const held = position.szi.replace(/^-/, "")
+  // Rounded down to the market's size step (spec D, section 6); 100% keeps the held string itself.
+  const size = hyperliquidFloorSize(held, szDecimals)
+  return { asset: position.asset, isBuy: position.szi.startsWith("-"), size, markPx: mark }
+}
+
+/**
+ * What a build must be checked against before it is signed, read directly from Hyperliquid by this
+ * client (spec D, section 4: "independently resolved asset and actual venue target"). Throws when
+ * the venue cannot be read or does not show the target.
+ */
+async function venueEvidence(
+  fetcher: InfoFetcher,
+  network: HyperliquidNetwork,
+  address: string,
+  intent: NonNullable<VerifyPerpsBuildOptions["intent"]>,
+  now: () => number,
+): Promise<Partial<VerifyPerpsBuildOptions>> {
+  const p = intent.params
+  switch (intent.method) {
+    case "open":
+    case "modify":
+      return { market: await hyperliquidOrderMarket(fetcher as never, network, address, intent.method, p) }
+    case "close":
+      return { closeOrder: await hyperliquidCloseOrder(fetcher as never, network, address, p) }
+    case "cancel": {
+      if (p.oid !== undefined) {
+        // A targeted cancel (flatten, a TP/SL leg): the order must be open on this wallet now.
+        const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now)
+        const order = snapshot.orders.find(
+          (o) => o.oid === p.oid && (p.coin === undefined || o.coin.toUpperCase() === String(p.coin).toUpperCase()),
+        )
+        if (!order) throw new Error("Hyperliquid shows no such open order on this wallet")
+        return { cancelTarget: { asset: order.asset, oid: order.oid } }
+      }
+      const status = (await infoRead(fetcher, network, {
+        type: "orderStatus",
+        user: address.toLowerCase(),
+        oid: p.cloid,
+      })) as {
+        order?: { order?: { coin?: unknown; oid?: unknown } }
+      }
+      const resting = status?.order?.order
+      if (!resting || typeof resting.coin !== "string" || !Number.isSafeInteger(resting.oid))
+        throw new Error("Hyperliquid shows no order with this cloid on this wallet")
+      const meta = (await infoRead(fetcher, network, { type: "meta" })) as { universe?: { name: string }[] }
+      const asset = (meta.universe ?? []).findIndex((m) => m.name === resting.coin)
+      if (asset < 0 || asset >= 10000) throw new Error("The order is not on Hyperliquid's main perp exchange")
+      return { cancelTarget: { asset, oid: resting.oid as number } }
+    }
+    case "leverage": {
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now)
+      const coin = String(p.coin ?? "").toUpperCase()
+      const asset = snapshot.universe.findIndex((m) => m.name.toUpperCase() === coin)
+      if (asset < 0) throw new Error("No main-universe market for this coin on Hyperliquid")
+      const name = snapshot.universe[asset]?.name as string
+      const data = (await infoRead(fetcher, network, {
+        type: "activeAssetData",
+        user: address.toLowerCase(),
+        coin: name,
+      })) as { leverage?: { type?: unknown; value?: unknown } }
+      const lev = data?.leverage
+      if ((lev?.type !== "cross" && lev?.type !== "isolated") || !Number.isInteger(lev.value))
+        throw new Error("Hyperliquid did not report this market's leverage")
+      const flat = !snapshot.positions.some((x) => x.asset === asset) && !snapshot.orders.some((o) => o.asset === asset)
+      return { leverageTarget: { asset, leverage: lev.value as number, mode: lev.type, flat } }
+    }
+    case "margin": {
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now)
+      const position = snapshotPosition(snapshot, String(p.coin ?? ""))
+      if (!position || position.leverage.type !== "isolated")
+        throw new Error("Hyperliquid shows no isolated position in this coin")
+      return { marginTarget: { asset: position.asset } }
+    }
+    case "tpsl": {
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now)
+      return { tpslTarget: hyperliquidTpslTarget(snapshot, String(p.coin ?? "")) }
+    }
+    case "scheduleCancel":
+      return { clock: { now: now() } }
+    default:
+      return {}
+  }
+}
+
+/**
+ * `verifyPerpsBuild`, then the same check again against what this client reads from Hyperliquid
+ * itself for the request (the market, the position, the resting order, the account's leverage, the
+ * clock). Every Candle surface calls this one function before it asks the relay to sign, so the
+ * rules cannot fork between the SDK, the CLI and the MCP server. Never throws: a venue that could
+ * not be read is a refusal.
+ */
+export async function verifyPerpsBuildAgainstVenue(
+  build: PerpsBuildToVerify,
+  opts: VerifyPerpsBuildOptions & {
+    intent: NonNullable<VerifyPerpsBuildOptions["intent"]>
+    address: string
+    fetcher: InfoFetcher
+    now?: () => number
+  },
+): Promise<PerpsBuildCheck> {
+  const { fetcher, now = Date.now, ...verify } = opts
+  // A build refused on its face costs no venue read. The one fact only the venue can supply (the
+  // current leverage a mode change keeps) waits for the second pass, which always runs.
+  const first = verifyPerpsBuild(build, { ...verify, awaitingVenue: true })
+  if (!first.ok) return first
+  let evidence: Partial<VerifyPerpsBuildOptions>
+  try {
+    evidence = await venueEvidence(fetcher, verify.network ?? "mainnet", opts.address, opts.intent, now)
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `could not check it against Hyperliquid: ${err instanceof Error ? err.message : "read failed"}`,
+    }
+  }
+  return verifyPerpsBuild(build, { ...verify, ...evidence })
+}
+
+/**
+ * Hyperliquid's answer to one submitted action, per leg (spec D, section 3: "HTTP 200 alone is not
+ * confirmation"). `confirmed` only when the venue said `ok` and no leg carries an error; `rejected`
+ * when it said `err` or any leg did; `unknown` for anything else, which callers must reconcile
+ * before acting again.
+ */
+export type HyperliquidSubmitOutcome =
+  | { status: "confirmed"; legs: unknown[] }
+  | { status: "rejected"; error: string; legs: unknown[] }
+  | { status: "unknown"; error: string }
+
+export function hyperliquidExchangeOutcome(exchange: unknown): HyperliquidSubmitOutcome {
+  if (!exchange || typeof exchange !== "object") return { status: "unknown", error: "Hyperliquid returned no answer" }
+  const answer = exchange as { status?: unknown; response?: unknown }
+  if (answer.status === "err")
+    return {
+      status: "rejected",
+      error: typeof answer.response === "string" ? answer.response : JSON.stringify(answer.response ?? null),
+      legs: [],
+    }
+  if (answer.status !== "ok") return { status: "unknown", error: "Hyperliquid's answer has no status" }
+  const response = answer.response as { type?: unknown; data?: { statuses?: unknown } } | undefined
+  const statuses = response?.data?.statuses
+  if (statuses === undefined) {
+    return response?.type === "default" || response?.type === "scheduleCancel" || response?.type === "cancel"
+      ? { status: "confirmed", legs: [] }
+      : { status: "unknown", error: "Hyperliquid's answer is not one this client knows" }
+  }
+  if (!Array.isArray(statuses)) return { status: "unknown", error: "Hyperliquid's answer has unreadable statuses" }
+  const errors = statuses
+    .filter((s) => s && typeof s === "object" && "error" in s)
+    .map((s) => String((s as { error: unknown }).error))
+  if (errors.length > 0) return { status: "rejected", error: errors.join("; "), legs: statuses }
+  return { status: "confirmed", legs: statuses }
 }
 
 // ── Submission ────────────────────────────────────────────────────────────────────────────
