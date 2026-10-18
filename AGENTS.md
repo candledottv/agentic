@@ -69,7 +69,7 @@ anyone signs up for anything.
 | `candle_swap` | yes | convert between base assets; a pair spanning both chains is a bridge |
 | `candle_transfer` | yes | move an asset to an own wallet or an owner-approved withdrawal address |
 | `candle_sweep` | yes | sweep a wallet's base assets to one destination |
-| `candle_launch_token` | yes | launch a token on Solana or Hood. `mode: "exp-custom"` with `curve` picks your own Solana curve (V and G, within limits the description states) where the deployment has switched it on; `dryRun: true` first returns its terms |
+| `candle_launch_token` | yes | launch a token on Solana or Hood. On Solana with a `sol` or `cndl` pair, `mode` `exp-a`, `exp-b` or `exp-c` picks an experimental preset curve, and `mode: "exp-custom"` with `curve` picks your own (V and G, within limits the description states) where the deployment has switched it on; `dryRun: true` first returns its terms (see the candle-launch skill) |
 | `candle_launch_and_seed` | yes | launch and seed with a dev buy in one transaction |
 | `candle_report_activity` | yes | report agent activity for verification |
 

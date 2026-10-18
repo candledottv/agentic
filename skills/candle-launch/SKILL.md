@@ -68,6 +68,32 @@ point at a different deployment.
    records and verifies it under your account's activity. `activity:write` is already in the
    default key scope set, so this needs no extra setup.
 
+## Choosing a curve (Solana, SOL or CNDL pairs)
+
+By default a launch takes its tier's own curve (`mode` `open` or `exclusive`). A Solana launch
+quoted in `sol` or `cndl` can take an experimental curve instead, set by two numbers in the quote
+asset: V, the virtual liquidity it starts with (a larger V starts the price higher and climbs more
+slowly), and G, how much it raises before it graduates.
+
+- **Presets:** `mode: "exp-a"`, `"exp-b"` or `"exp-c"`, V of 4, 6 or 8 SOL, each graduating at 5 SOL
+  (264,000, 396,000 or 528,000 CNDL, graduating at 330,000 CNDL). The dev buy is at most 0.5 SOL
+  or 33,000 CNDL.
+- **Custom:** `mode: "exp-custom"` with `curve: { "virtualQuote": "12", "threshold": "40" }`, whole
+  units as decimal strings. V from 1 to 100 SOL and G from 1 to 250 SOL (66,000 to 6,600,000 and
+  66,000 to 16,500,000 CNDL), under a price ceiling that binds for a small V on SOL and always
+  binds first on CNDL. The dev buy is at most 10% of G. A refusal is `CURVE_OUT_OF_RANGE` with a
+  `reason`, and at the ceiling `maxThresholdRaw` names the largest G that fits. `GET
+  /api/v1/launch/curve-options` (no key) says whether the deployment takes `exp-custom`.
+- **Open to everyone:** these curves have no Believer NFT gate.
+- **Fees:** 1% on the curve and 0.5% in the pool it graduates into. Over the HTTP API (not these
+  MCP tools) a launch may add `creatorFeeBps: 100` or `200`, an extra 1% or 2% on both, paid to the
+  creator in full.
+
+Dry-run first: the dry run returns `curveTerms` (market cap at start and at graduation, supply sold
+by graduation, what the first 1 SOL buys). Show the user those terms before launching: a small V
+against a large G sells most of the supply cheaply, and a curve's terms cannot be changed after
+launch. Full rules: https://docs.candle.tv/developers/headless-launch#custom-curves-choose-v-and-g
+
 ## If the image is a file
 
 `imageUrl` is always an https URL on the wire. When the image is a file, it is uploaded first and
