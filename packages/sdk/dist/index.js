@@ -3081,7 +3081,12 @@ function isParsedClearinghouse(value) {
 }
 
 // src/hyperliquid-withdraw.ts
-var CANDLE_PERPS_WITHDRAW_PINS = null;
+var CANDLE_PERPS_WITHDRAW_PINS = {
+  token: "USDC:0x6d1e7cde53ba9467b783cb7c530ce054",
+  destinationDex: "",
+  depositories: ["0x66cf0aace1b4e562593bec10ec7868fba9932224"],
+  amountForm: "fixed6"
+};
 var RELAY_API_URL = "https://api.relay.link";
 var ZERO = "0x0000000000000000000000000000000000000000";
 var EVM_ADDRESS_RE2 = /^0x[0-9a-fA-F]{40}$/;
@@ -3150,7 +3155,7 @@ function domainMatches(domain, expected) {
 function verifyWithdrawMapping(build, expect) {
   const refuse = (reason) => ({ ok: false, reason });
   if (expect.pins === null)
-    return refuse("the withdrawal pins are pending verification in this release");
+    return refuse("no withdrawal pins are set");
   if (build.id !== expect.id)
     return refuse("the build names another withdrawal id");
   if (!sameEvm(build.from?.address, expect.account))
@@ -3189,7 +3194,7 @@ function verifyWithdrawSendAsset(authorization, expect) {
   const refuse = (reason) => ({ ok: false, reason });
   const pins = expect.pins;
   if (pins === null)
-    return refuse("the withdrawal pins are pending verification in this release");
+    return refuse("no withdrawal pins are set");
   const typed = authorization.typedData;
   if (!isObject(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
     return refuse("the typed data is not a SendAsset");
@@ -5162,7 +5167,7 @@ class CandleClient {
     if (this.hyperliquidNetwork !== "mainnet")
       throw new Error("perpsWithdraw: withdrawals are mainnet only");
     if (this.perpsWithdrawPins === null) {
-      throw new Error("perpsWithdraw: the withdrawal pins are pending verification in this release; nothing was built");
+      throw new Error("perpsWithdraw: no withdrawal pins are set; nothing was built");
     }
     const amountMicros = parseWithdrawAmount(params.amountUsdc);
     if (amountMicros === null)

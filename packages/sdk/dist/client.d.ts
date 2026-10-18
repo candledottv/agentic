@@ -123,8 +123,8 @@ export interface CandleClientOptions {
     /**
      * The withdrawal pins every withdrawal is checked against before anything is signed: the
      * perps-USDC `token`, `destinationDex`, Relay's depository allow-list and the amount's string
-     * form. Unset, this release's `CANDLE_PERPS_WITHDRAW_PINS` applies, which is null until a
-     * recorded verification sets it, and then every withdrawal is refused with nothing signed.
+     * form. Unset, this release's `CANDLE_PERPS_WITHDRAW_PINS` applies (the values V-A recorded on
+     * 2026-10-18). Pins of null would refuse every withdrawal with nothing signed.
      */
     perpsWithdrawPins?: PerpsWithdrawPins;
 }

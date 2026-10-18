@@ -110,7 +110,7 @@ export const ENVIRONMENT: EnvVar[] = [
   {
     name: "CANDLE_PERPS_WITHDRAW_PINS",
     description:
-      "candle perps withdraw: JSON {token, destinationDex, depositories, amountForm} pinning what every withdrawal is checked against before it is signed; this release ships none, so without it withdrawals are refused",
+      "candle perps withdraw: JSON {token, destinationDex, depositories, amountForm} pinning what every withdrawal is checked against before it is signed; replaces the pins this release ships (Relay's recorded depository and quote shape)",
   },
   { name: "CANDLE_NO_UPDATE_NOTIFIER", description: "Set to 1 to silence the update notice" },
   {

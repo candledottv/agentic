@@ -17,8 +17,8 @@
  *     allow-list, and the primary type, domain and action all match.
  *
  * The pins (`token`, `destinationDex`, the depository allow-list and the amount's string form) are
- * PENDING a recorded verification run (V-A). `CANDLE_PERPS_WITHDRAW_PINS` is null in this release,
- * and with no pins every check refuses: nothing is guessed.
+ * the values three live `/quote/v2` reads recorded on 2026-10-18 (V-A part 2). With no pins every
+ * check refuses: nothing is guessed.
  *
  * `packages/cli/src/hyperliquid-withdraw.ts` is a byte-identical copy of this file (a drift test
  * enforces it). Self-contained on purpose: it imports nothing.
@@ -34,8 +34,17 @@ export interface PerpsWithdrawPins {
   amountForm: WithdrawAmountForm
 }
 
-/** PENDING V-A: null in this release, so every withdrawal check refuses. */
-export const CANDLE_PERPS_WITHDRAW_PINS: PerpsWithdrawPins | null = null
+/**
+ * V-A part 2 (three live `/quote/v2` reads, 2026-10-18). One depository only, by the owner's D10
+ * decision: if Relay rotates it, every withdrawal check refuses until a release records the new one.
+ * Relay's guide example depository (0x865eb9ba...7081) is not on it.
+ */
+export const CANDLE_PERPS_WITHDRAW_PINS: PerpsWithdrawPins | null = {
+  token: "USDC:0x6d1e7cde53ba9467b783cb7c530ce054",
+  destinationDex: "",
+  depositories: ["0x66cf0aace1b4e562593bec10ec7868fba9932224"],
+  amountForm: "fixed6",
+}
 
 export const RELAY_API_URL = "https://api.relay.link"
 
@@ -185,7 +194,7 @@ export function verifyWithdrawMapping(
   },
 ): WithdrawCheck {
   const refuse = (reason: string): WithdrawCheck => ({ ok: false, reason })
-  if (expect.pins === null) return refuse("the withdrawal pins are pending verification in this release")
+  if (expect.pins === null) return refuse("no withdrawal pins are set")
   if (build.id !== expect.id) return refuse("the build names another withdrawal id")
   if (!sameEvm(build.from?.address, expect.account)) return refuse("the build withdraws from another account")
   if (build.to?.chain !== expect.to) return refuse(`the build lands on ${String(build.to?.chain)}, not ${expect.to}`)
@@ -220,7 +229,7 @@ export function verifyWithdrawSendAsset(
 ): WithdrawCheck {
   const refuse = (reason: string): WithdrawCheck => ({ ok: false, reason })
   const pins = expect.pins
-  if (pins === null) return refuse("the withdrawal pins are pending verification in this release")
+  if (pins === null) return refuse("no withdrawal pins are set")
   const typed = authorization.typedData
   if (!isObject(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
     return refuse("the typed data is not a SendAsset")

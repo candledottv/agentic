@@ -1,8 +1,8 @@
 /**
  * Hyperliquid withdrawals (spec 2026-10-17-hyperliquid-withdrawals-design.md, R13): the client
  * recompute. A tampered wallet, nonce, amount (formatting variants included), sub-account, token,
- * dex or destination is refused locally, with no relay call. The pins are TEST VALUES: this
- * release ships `CANDLE_PERPS_WITHDRAW_PINS` null, which refuses before anything is built.
+ * dex or destination is refused locally, with no relay call. The pins are TEST VALUES; the shipped
+ * `CANDLE_PERPS_WITHDRAW_PINS` are V-A part 2's, and null pins refuse before anything is built.
  */
 import { describe, expect, test } from "bun:test"
 import { CandleClient, type PerpsWithdrawParams } from "./client"
@@ -138,10 +138,17 @@ describe("R13: the NonceMapping check", () => {
     expect(reasonOf(verifyWithdrawMapping(c, mappingExpect))).not.toBe("ok")
   })
 
-  test("with the pins pending, everything is refused", () => {
-    expect(CANDLE_PERPS_WITHDRAW_PINS).toBeNull()
-    expect(reasonOf(verifyWithdrawMapping(build(), { ...mappingExpect, pins: null }))).toContain("pending")
-    expect(reasonOf(verifyWithdrawSendAsset(authorization(), { ...sendExpect, pins: null }))).toContain("pending")
+  test("the shipped pins are V-A part 2's; with no pins everything is refused", () => {
+    expect(CANDLE_PERPS_WITHDRAW_PINS).toEqual({
+      token: "USDC:0x6d1e7cde53ba9467b783cb7c530ce054",
+      destinationDex: "",
+      depositories: ["0x66cf0aace1b4e562593bec10ec7868fba9932224"],
+      amountForm: "fixed6",
+    })
+    expect(reasonOf(verifyWithdrawMapping(build(), { ...mappingExpect, pins: null }))).toContain("no withdrawal pins")
+    expect(reasonOf(verifyWithdrawSendAsset(authorization(), { ...sendExpect, pins: null }))).toContain(
+      "no withdrawal pins",
+    )
   })
 })
 
@@ -215,7 +222,7 @@ describe("the Relay recipient lookup", () => {
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
 
-async function client(responses: Response[], pins: PerpsWithdrawPins | null = PINS) {
+async function client(responses: Response[], pins: PerpsWithdrawPins | "shipped" = PINS) {
   const store = new InMemorySecretStore()
   const { privateKeyPem } = await generateSignerKeypair()
   await store.set("evm-tee", privateKeyPem)
@@ -234,7 +241,7 @@ async function client(responses: Response[], pins: PerpsWithdrawPins | null = PI
       fetch: fetchImpl,
       privyAppId: "app-test",
       secretStore: store,
-      ...(pins ? { perpsWithdrawPins: pins } : {}),
+      ...(pins === "shipped" ? {} : { perpsWithdrawPins: pins }),
     }),
   }
 }
@@ -252,10 +259,11 @@ const SIGNATURE = `0x${"1b".repeat(65)}`
 const relayCalls = (calls: { url: string }[]) => calls.filter((c) => c.url.includes("/sign"))
 
 describe("perpsWithdraw()", () => {
-  test("with the shipped (pending) pins it refuses before any request", async () => {
-    const { client: c, calls } = await client([], null)
-    await expect(c.perpsWithdraw(params)).rejects.toThrow("pending")
-    expect(calls).toEqual([])
+  test("with no pins passed, the shipped pins apply and the build is requested", async () => {
+    const { client: c, calls } = await client([], "shipped")
+    await expect(c.perpsWithdraw(params)).rejects.toThrow("no response queued")
+    expect(calls).toHaveLength(1)
+    expect(relayCalls(calls)).toEqual([])
   })
 
   test("a tampered build is refused with no relay call", async () => {

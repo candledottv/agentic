@@ -3,16 +3,21 @@
  * owner gate: no terminal refuses, `--yes` is a usage error, the display shows amount, fees, net
  * and destination before the unlock, then one unlock and one typed confirm) and R13 (a tampered
  * build is refused locally with no relay call). The pins are TEST VALUES passed through
- * `CANDLE_PERPS_WITHDRAW_PINS`; this release ships none.
+ * `CANDLE_PERPS_WITHDRAW_PINS`; with it unset, the shipped V-A part 2 pins apply.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { generateKeyPairSync } from "node:crypto"
-import { HYPERLIQUID_SEND_ASSET_TYPES, RELAY_NONCE_MAPPING_TYPES } from "../hyperliquid-withdraw"
+import {
+  CANDLE_PERPS_WITHDRAW_PINS,
+  HYPERLIQUID_SEND_ASSET_TYPES,
+  RELAY_NONCE_MAPPING_TYPES,
+} from "../hyperliquid-withdraw"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
 import { closeVault } from "../vault/store"
 import { makeVault, useCheapKdf } from "../vault/test-vault"
+import { withdrawPins } from "./perps-withdraw"
 
 setDefaultTimeout(60_000)
 useCheapKdf()
@@ -98,7 +103,6 @@ interface Options {
   recipient?: string
   confirm?: string
   tty?: boolean
-  pins?: boolean
   positions?: unknown[]
 }
 
@@ -176,7 +180,7 @@ async function fixture(opts: Options = {}) {
       CANDLE_CONFIG_DIR: made.dir,
       HOME: made.dir,
       CANDLE_API_KEY: "bound-key",
-      ...(opts.pins === false ? {} : { CANDLE_PERPS_WITHDRAW_PINS: JSON.stringify(PINS) }),
+      CANDLE_PERPS_WITHDRAW_PINS: JSON.stringify(PINS),
     },
     store: createFakeStore({ wallet_signer_wallet: pemToStoredSigner(pem) }),
     stdout,
@@ -234,11 +238,16 @@ describe("R12: the owner gate", () => {
     expect(relayCalls(f.calls)).toEqual([])
   })
 
-  test("with no pins (this release) the command refuses before anything is read", async () => {
-    const f = await fixture({ pins: false })
-    expect(await run([...WITHDRAW, "--json"], f.deps)).toBe(1)
-    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ ok: false, code: "PERPS_WITHDRAW_UNVERIFIED" })
-    expect(f.calls).toEqual([])
+  test("with CANDLE_PERPS_WITHDRAW_PINS unset or blank, the shipped V-A part 2 pins apply", () => {
+    const shipped = {
+      token: "USDC:0x6d1e7cde53ba9467b783cb7c530ce054",
+      destinationDex: "",
+      depositories: ["0x66cf0aace1b4e562593bec10ec7868fba9932224"],
+      amountForm: "fixed6" as const,
+    }
+    expect(CANDLE_PERPS_WITHDRAW_PINS).toEqual(shipped)
+    expect(withdrawPins({})).toEqual(shipped)
+    expect(withdrawPins({ CANDLE_PERPS_WITHDRAW_PINS: "  " })).toEqual(shipped)
   })
 })
 

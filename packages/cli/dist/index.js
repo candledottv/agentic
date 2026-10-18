@@ -68308,7 +68308,7 @@ var ENVIRONMENT = [
   { name: "CANDLE_HYPERLIQUID_NETWORK", description: "candle perps: set to testnet to trade Hyperliquid testnet" },
   {
     name: "CANDLE_PERPS_WITHDRAW_PINS",
-    description: "candle perps withdraw: JSON {token, destinationDex, depositories, amountForm} pinning what every withdrawal is checked against before it is signed; this release ships none, so without it withdrawals are refused"
+    description: "candle perps withdraw: JSON {token, destinationDex, depositories, amountForm} pinning what every withdrawal is checked against before it is signed; replaces the pins this release ships (Relay's recorded depository and quote shape)"
   },
   { name: "CANDLE_NO_UPDATE_NOTIFIER", description: "Set to 1 to silence the update notice" },
   {
@@ -81200,7 +81200,12 @@ init_args();
 import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/hyperliquid-withdraw.ts
-var CANDLE_PERPS_WITHDRAW_PINS = null;
+var CANDLE_PERPS_WITHDRAW_PINS = {
+  token: "USDC:0x6d1e7cde53ba9467b783cb7c530ce054",
+  destinationDex: "",
+  depositories: ["0x66cf0aace1b4e562593bec10ec7868fba9932224"],
+  amountForm: "fixed6"
+};
 var RELAY_API_URL = "https://api.relay.link";
 var ZERO = "0x0000000000000000000000000000000000000000";
 var EVM_ADDRESS_RE3 = /^0x[0-9a-fA-F]{40}$/;
@@ -81273,7 +81278,7 @@ function domainMatches(domain, expected) {
 function verifyWithdrawMapping(build, expect) {
   const refuse3 = (reason) => ({ ok: false, reason });
   if (expect.pins === null)
-    return refuse3("the withdrawal pins are pending verification in this release");
+    return refuse3("no withdrawal pins are set");
   if (build.id !== expect.id)
     return refuse3("the build names another withdrawal id");
   if (!sameEvm(build.from?.address, expect.account))
@@ -81312,7 +81317,7 @@ function verifyWithdrawSendAsset(authorization, expect) {
   const refuse3 = (reason) => ({ ok: false, reason });
   const pins = expect.pins;
   if (pins === null)
-    return refuse3("the withdrawal pins are pending verification in this release");
+    return refuse3("no withdrawal pins are set");
   const typed = authorization.typedData;
   if (!isObject(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
     return refuse3("the typed data is not a SendAsset");

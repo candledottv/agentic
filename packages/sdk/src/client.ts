@@ -217,8 +217,8 @@ export interface CandleClientOptions {
   /**
    * The withdrawal pins every withdrawal is checked against before anything is signed: the
    * perps-USDC `token`, `destinationDex`, Relay's depository allow-list and the amount's string
-   * form. Unset, this release's `CANDLE_PERPS_WITHDRAW_PINS` applies, which is null until a
-   * recorded verification sets it, and then every withdrawal is refused with nothing signed.
+   * form. Unset, this release's `CANDLE_PERPS_WITHDRAW_PINS` applies (the values V-A recorded on
+   * 2026-10-18). Pins of null would refuse every withdrawal with nothing signed.
    */
   perpsWithdrawPins?: PerpsWithdrawPins
 }
@@ -5745,7 +5745,7 @@ export class CandleClient {
     this.requireKey("perpsWithdraw()")
     if (this.hyperliquidNetwork !== "mainnet") throw new Error("perpsWithdraw: withdrawals are mainnet only")
     if (this.perpsWithdrawPins === null) {
-      throw new Error("perpsWithdraw: the withdrawal pins are pending verification in this release; nothing was built")
+      throw new Error("perpsWithdraw: no withdrawal pins are set; nothing was built")
     }
     const amountMicros = parseWithdrawAmount(params.amountUsdc)
     if (amountMicros === null) throw new Error("perpsWithdraw: amountUsdc must be a positive decimal, at most 6 dp")

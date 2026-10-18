@@ -17,8 +17,8 @@
  *     allow-list, and the primary type, domain and action all match.
  *
  * The pins (`token`, `destinationDex`, the depository allow-list and the amount's string form) are
- * PENDING a recorded verification run (V-A). `CANDLE_PERPS_WITHDRAW_PINS` is null in this release,
- * and with no pins every check refuses: nothing is guessed.
+ * the values three live `/quote/v2` reads recorded on 2026-10-18 (V-A part 2). With no pins every
+ * check refuses: nothing is guessed.
  *
  * `packages/cli/src/hyperliquid-withdraw.ts` is a byte-identical copy of this file (a drift test
  * enforces it). Self-contained on purpose: it imports nothing.
@@ -31,7 +31,11 @@ export interface PerpsWithdrawPins {
     depositories: readonly string[];
     amountForm: WithdrawAmountForm;
 }
-/** PENDING V-A: null in this release, so every withdrawal check refuses. */
+/**
+ * V-A part 2 (three live `/quote/v2` reads, 2026-10-18). One depository only, by the owner's D10
+ * decision: if Relay rotates it, every withdrawal check refuses until a release records the new one.
+ * Relay's guide example depository (0x865eb9ba...7081) is not on it.
+ */
 export declare const CANDLE_PERPS_WITHDRAW_PINS: PerpsWithdrawPins | null;
 export declare const RELAY_API_URL = "https://api.relay.link";
 export declare const RELAY_NONCE_MAPPING_TYPES: {

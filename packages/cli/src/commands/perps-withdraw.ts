@@ -14,9 +14,9 @@
  * server cannot see that this gate ran: what bounds a holder of the key and its signer is the
  * scope, the destination (the key's own wallets) and the amount cap.
  *
- * Needs `perps:withdraw` (owner-granted, separate from `perps:write`). The withdrawal pins are
- * pending verification in this release; `CANDLE_PERPS_WITHDRAW_PINS` (JSON) pins them for this
- * machine, and without either every withdrawal is refused before anything is built.
+ * Needs `perps:withdraw` (owner-granted, separate from `perps:write`). This release ships the
+ * withdrawal pins V-A recorded; `CANDLE_PERPS_WITHDRAW_PINS` (JSON) replaces them for this machine,
+ * and with neither every withdrawal would be refused before anything is built.
  */
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
