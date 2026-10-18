@@ -80,7 +80,7 @@ Ask an agent to call `candle_get_feed` with `{ "bucket": "new" }` and it works b
 
 ## The tool surface
 
-Fifty-two tools in the current source; the published `@candledottv/mcp` 0.10.18 has forty-two, and the ten perps account, risk, threshold, fills, funding and market tools arrive with the next npm release. Public page editing and posts are released. Eight need no key, so a client can be pointed at the server and used before anyone
+Fifty-eight tools, all in the published `@candledottv/mcp` 0.10.19. Public page editing and posts are released. Eight need no key, so a client can be pointed at the server and used before anyone
 signs up.
 
 | | Tool | Key | What it does |
@@ -132,17 +132,17 @@ signs up.
 | | `candle_perps_reduce_only` | yes | read the key's reduce-only setting, or turn it on |
 | | `candle_perps_deposit` | yes | deposit onto the Hyperliquid account through Relay (needs `swap:write`) |
 | | `candle_perps_orders` | yes | open orders and every action Candle built |
-| | `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level (those risk fields are unreleased: next npm release) |
-| | `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly (unreleased: next npm release) |
-| | `candle_perps_risk` | yes | the liquidation risk level (ok, warn, critical) and what drives it; poll it to watch (unreleased: next npm release) |
-| | `candle_perps_thresholds` | yes | the key's risk thresholds, stored and effective (unreleased: next npm release) |
-| | `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; it can never loosen them (unreleased: next npm release) |
-| | `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed (unreleased: next npm release) |
-| | `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed (unreleased: next npm release) |
-| | `candle_perps_markets` | yes, any scope | Hyperliquid perp markets with volume, open interest and funding; read-only market data, no signer, local server only (unreleased: next npm release) |
-| | `candle_perps_market` | yes, any scope | one Hyperliquid market in detail; read-only, no signer, local server only (unreleased: next npm release) |
-| | `candle_perps_book` | yes, any scope | one market's order book; read-only, no signer, local server only (unreleased: next npm release) |
-| | `candle_perps_candles` | yes, any scope | one market's candles; read-only, no signer, local server only (unreleased: next npm release) |
+| | `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level (the risk fields are in 0.10.19 and later) |
+| | `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly |
+| | `candle_perps_risk` | yes | the liquidation risk level (ok, warn, critical) and what drives it; poll it to watch |
+| | `candle_perps_thresholds` | yes | the key's risk thresholds, stored and effective |
+| | `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; it can never loosen them |
+| | `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed |
+| | `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed |
+| | `candle_perps_markets` | yes, any scope | Hyperliquid perp markets with volume, open interest and funding; read-only market data, no signer, local server only |
+| | `candle_perps_market` | yes, any scope | one Hyperliquid market in detail; read-only, no signer, local server only |
+| | `candle_perps_book` | yes, any scope | one market's order book; read-only, no signer, local server only |
+| | `candle_perps_candles` | yes, any scope | one market's candles; read-only, no signer, local server only |
 
 ### A whole job
 

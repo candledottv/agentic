@@ -341,7 +341,7 @@ Public page editing is on by default for new keys and existing absent-field keys
 
 ## Hyperliquid market reads (local clients)
 
-These additions are unreleased source until the next human-managed npm release.
+These are in `@candledottv/mcp` 0.10.19, `@candledottv/cli` 0.11.33 and `@candledottv/agent-sdk` 0.6.3.
 
 A configured Candle agent key of any scope is required; no wallet, signer, or `perps:write` is needed. Without a key, these reads fail with `PERPS_KEY_REQUIRED` before any request. Market data goes directly from your machine to Hyperliquid's public `/info`; only the gate configuration is read from Candle's `/api/v1/agent/perps/config`.
 

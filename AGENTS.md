@@ -20,7 +20,7 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
    stores a device token plus an agent key in the OS keychain. That key is Write (Read:Write); a key that
    must also move funds out of its TEE wallet is Withdraw (Read:Write:Transfer), minted by the owner with
    `candle keys create --access withdraw` (`read-write-transfer` still works as an alias). A perps-only key,
-   `--access trade-perps` (`account:read` plus `perps:write`), arrives with the next npm release (see
+   `--access trade-perps` (`account:read` plus `perps:write`), is in `@candledottv/cli` 0.11.33 (see
    https://docs.candle.tv/developers/agent-access#access-levels). The
    vault, TEE wallets and moving funds are covered in https://docs.candle.tv/developers/cli-custody. From then on `candle mcp` runs this MCP server with those stored
    credentials -- no env block. The npm package `@candledottv/cli` stays published for CI,
@@ -30,7 +30,7 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 ## The tool surface
 
-Fifty-two tools in the current source; the published `@candledottv/mcp` 0.10.18 has forty-two, and the ten perps account, risk, threshold, fills, funding and market tools arrive with the next npm release. Public page editing and posts are released. Eight need no key at all, so a client can be pointed at the server and used before
+Fifty-eight tools, all in the published `@candledottv/mcp` 0.10.19. Public page editing and posts are released. Eight need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -109,17 +109,17 @@ anyone signs up for anything.
 | `candle_perps_reduce_only` | yes | read the key's reduce-only setting, or turn it on |
 | `candle_perps_deposit` | yes | deposit onto the Hyperliquid account through Relay from the Solana or Hood TEE wallet (needs `swap:write`) |
 | `candle_perps_orders` | yes | open orders and every action Candle built |
-| `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level (those risk fields are unreleased: next npm release) |
-| `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly (unreleased: next npm release) |
-| `candle_perps_risk` | yes | the liquidation risk level (ok, warn, critical) and what drives it; `unknown` is an error, never ok; poll it to watch (unreleased: next npm release) |
-| `candle_perps_thresholds` | yes | the key's risk thresholds, stored and effective (unreleased: next npm release) |
-| `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; loosening is the owner's (unreleased: next npm release) |
-| `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed (unreleased: next npm release) |
-| `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed (unreleased: next npm release) |
-| `candle_perps_markets` | yes, any scope | Hyperliquid perp markets with volume, open interest and funding; read-only market data, no signer, local server only (unreleased: next npm release) |
-| `candle_perps_market` | yes, any scope | one Hyperliquid market in detail; read-only, no signer, local server only (unreleased: next npm release) |
-| `candle_perps_book` | yes, any scope | one market's order book; read-only, no signer, local server only (unreleased: next npm release) |
-| `candle_perps_candles` | yes, any scope | one market's candles; read-only, no signer, local server only (unreleased: next npm release) |
+| `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level (the risk fields are in 0.10.19 and later) |
+| `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly |
+| `candle_perps_risk` | yes | the liquidation risk level (ok, warn, critical) and what drives it; `unknown` is an error, never ok; poll it to watch |
+| `candle_perps_thresholds` | yes | the key's risk thresholds, stored and effective |
+| `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; loosening is the owner's |
+| `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed |
+| `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed |
+| `candle_perps_markets` | yes, any scope | Hyperliquid perp markets with volume, open interest and funding; read-only market data, no signer, local server only |
+| `candle_perps_market` | yes, any scope | one Hyperliquid market in detail; read-only, no signer, local server only |
+| `candle_perps_book` | yes, any scope | one market's order book; read-only, no signer, local server only |
+| `candle_perps_candles` | yes, any scope | one market's candles; read-only, no signer, local server only |
 
 ## Which CLI command do I need?
 

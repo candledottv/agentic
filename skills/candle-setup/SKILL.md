@@ -72,7 +72,7 @@ any of this: they work with no key at all.
    `withdraw`): Read changes nothing, Read:Write trades and launches and
    cannot move funds, and only Read:Write:Transfer (Withdraw) can move funds: between the account's
    own wallets, to approved addresses, and out of its TEE wallet with `candle transfer`. A perps-only
-   key, `--access trade-perps` (`account:read` plus `perps:write`), arrives with the next npm release. A Write key
+   key, `--access trade-perps` (`account:read` plus `perps:write`), is in `@candledottv/cli` 0.11.33. A Write key
    minted before 2026-10-08 still holds `transfer:write` and lists as custom. The levels
    and the active key limit are in https://docs.candle.tv/developers/agent-access#access-levels, and
    what a trusted wallet allows in https://docs.candle.tv/developers/agent-wallets#trusted-wallets.
