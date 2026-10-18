@@ -104,7 +104,7 @@ export const ENVIRONMENT: EnvVar[] = [
   {
     name: "CANDLE_HYPERLIQUID_BUILDER",
     description:
-      "candle perps: Candle's Hyperliquid builder address, pinned for the check every build passes before it is signed; without it the release's, else the one the server reports",
+      "candle perps: deliberately replace this release's builder trust anchor with a nonzero EVM address; shown in the preview. Unset uses the release pin, never the API's builder",
   },
   { name: "CANDLE_HYPERLIQUID_NETWORK", description: "candle perps: set to testnet to trade Hyperliquid testnet" },
   {

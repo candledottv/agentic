@@ -3,7 +3,12 @@ import { generateKeyPairSync, verify } from "node:crypto"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { hyperliquidActionHash, hyperliquidCanonicalJson, hyperliquidL1TypedData } from "./hyperliquid"
+import {
+  CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
+  hyperliquidActionHash,
+  hyperliquidCanonicalJson,
+  hyperliquidL1TypedData,
+} from "./hyperliquid"
 import type { FetchLike } from "./orchestrate"
 import { executePerps } from "./perps"
 
@@ -101,6 +106,68 @@ function fake(
 
 const env = () => ({ CANDLE_KEY_SIGNER_PEM_FILE: pemFile, CANDLE_HYPERLIQUID_BUILDER: BUILDER })
 const OPEN = { coin: "BTC", side: "long", size: "0.01" }
+
+describe("the release builder pin", () => {
+  test("ships the confirmed address and uses it without reading config", async () => {
+    expect(CANDLE_HYPERLIQUID_BUILDER_ADDRESS).toBe("0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b")
+    const f = fake({ build: build(order(CANDLE_HYPERLIQUID_BUILDER_ADDRESS)) })
+    const result = await executePerps("candle_perps_open", OPEN, cfg, { CANDLE_KEY_SIGNER_PEM_FILE: pemFile }, f.fetch)
+    expect(result.isError).toBeUndefined()
+    expect(f.calls.some((c) => c.url.endsWith("/config"))).toBe(false)
+  })
+
+  test("an API builder mismatch refuses orders and no-action readiness before any signature", async () => {
+    for (const submit of [true, false]) {
+      for (const tool of ["candle_perps_open", "candle_perps_setup"] as const) {
+        const f = fake({
+          build:
+            tool === "candle_perps_open"
+              ? build(order())
+              : {
+                  success: true,
+                  ready: true,
+                  address: ADDRESS,
+                  network: "mainnet",
+                  mode: "default",
+                  standardMode: true,
+                  builder: BUILDER,
+                  approvedFeeTenthsBps: 100,
+                },
+        })
+        const result = await executePerps(
+          tool,
+          { ...OPEN, submit },
+          cfg,
+          { CANDLE_KEY_SIGNER_PEM_FILE: pemFile },
+          f.fetch,
+        )
+        expect(JSON.parse(result.text).error.code).toBe("PERPS_BUILD_REFUSED")
+        expect(
+          f.calls.some((c) => c.url.endsWith("/sign") || c.url.endsWith("/exchange") || c.url.endsWith("/config")),
+        ).toBe(false)
+      }
+    }
+  })
+
+  test("invalid overrides never fall back; an explicit valid override is shown in the preview", async () => {
+    for (const invalid of ["", " ", "bad", `0x${"0".repeat(40)}`]) {
+      const f = fake()
+      const result = await executePerps(
+        "candle_perps_open",
+        OPEN,
+        cfg,
+        { ...env(), CANDLE_HYPERLIQUID_BUILDER: invalid },
+        f.fetch,
+      )
+      expect(JSON.parse(result.text).error.code).toBe("PERPS_BUILD_REFUSED")
+      expect(f.calls.every((c) => c.url.endsWith("/wallets/trading"))).toBe(true)
+    }
+    const f = fake()
+    const result = await executePerps("candle_perps_open", { ...OPEN, submit: false }, cfg, env(), f.fetch)
+    expect(result.isError).toBeUndefined()
+    expect(JSON.parse(result.text).preview.builderTrust).toEqual({ address: BUILDER, source: "override" })
+  })
+})
 
 describe("candle_perps_open", () => {
   test("built, checked, relay-signed over the canonical body, submitted to Hyperliquid", async () => {

@@ -46,10 +46,23 @@ export const HYPERLIQUID_INFO_URLS: Readonly<Record<HyperliquidNetwork, string>>
 }
 
 /**
- * Candle's builder address as this release knows it, for `verifyPerpsBuild`. Null until the address
- * is fixed for a published release; until then a client pins it from its own configuration.
+ * Candle's public builder, confirmed by Andrew on BE-1583 on 2026-10-17 (decision 6a).
+ * Rotation requires a reviewed client release; the API cannot replace this trust anchor.
  */
-export const CANDLE_HYPERLIQUID_BUILDER_ADDRESS: string | null = null
+export const CANDLE_HYPERLIQUID_BUILDER_ADDRESS = "0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b"
+
+/** Resolve only local trust anchors. An explicit invalid override never falls back to the pin. */
+export function resolveHyperliquidBuilder(
+  override?: string,
+  releasePin: string | null = CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
+): string {
+  const builder = override === undefined ? releasePin : override
+  if (typeof builder !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(builder) || /^0x0{40}$/.test(builder))
+    throw new Error(
+      "PERPS_BUILD_REFUSED: no valid nonzero Hyperliquid builder address in the explicit override or release pin.",
+    )
+  return builder.toLowerCase()
+}
 
 /** The builder fee Candle charges at most, in tenths of a basis point (0.1%), and as setup signs it. */
 export const HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS = 100
@@ -644,7 +657,7 @@ function checkOrderMarket(
 export function verifyPerpsBuild(build: PerpsBuildToVerify, opts: VerifyPerpsBuildOptions): PerpsBuildCheck {
   try {
     const network = opts.network ?? "mainnet"
-    if (!EVM_ADDRESS_RE.test(opts.builder))
+    if (!EVM_ADDRESS_RE.test(opts.builder) || opts.builder.toLowerCase() === ZERO_ADDRESS)
       return { ok: false, reason: "no valid Candle builder address to check against" }
     if (build.network !== undefined && build.network !== network) {
       return { ok: false, reason: `the build is for ${build.network}, this client trades ${network}` }

@@ -62846,6 +62846,12 @@ var init_orchestrate = __esm(() => {
 });
 
 // ../mcp/src/hyperliquid.ts
+function resolveHyperliquidBuilder2(override, releasePin = CANDLE_HYPERLIQUID_BUILDER_ADDRESS2) {
+  const builder = override === undefined ? releasePin : override;
+  if (typeof builder !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(builder) || /^0x0{40}$/.test(builder))
+    throw new Error("PERPS_BUILD_REFUSED: no valid nonzero Hyperliquid builder address in the explicit override or release pin.");
+  return builder.toLowerCase();
+}
 function pushUint2(out, value, width) {
   for (let i = width - 1;i >= 0; i--)
     out.push(Number(value >> BigInt(i * 8) & 0xffn));
@@ -63254,7 +63260,7 @@ function checkOrderMarket2(action, intent, market) {
 function verifyPerpsBuild2(build, opts) {
   try {
     const network = opts.network ?? "mainnet";
-    if (!EVM_ADDRESS_RE4.test(opts.builder))
+    if (!EVM_ADDRESS_RE4.test(opts.builder) || opts.builder.toLowerCase() === ZERO_ADDRESS2)
       return { ok: false, reason: "no valid Candle builder address to check against" };
     if (build.network !== undefined && build.network !== network) {
       return { ok: false, reason: `the build is for ${build.network}, this client trades ${network}` };
@@ -63342,7 +63348,7 @@ function hyperliquidExchangeBody2(action, nonce, signature) {
 function hyperliquidRelayBody2(typedData) {
   return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
 }
-var HYPERLIQUID_ALLOWED_ACTION_TYPES2, HYPERLIQUID_EXCHANGE_URLS2, HYPERLIQUID_INFO_URLS2, CANDLE_HYPERLIQUID_BUILDER_ADDRESS2 = null, HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS2 = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE2 = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID2 = "0xa4b1", ZERO_ADDRESS2 = "0x0000000000000000000000000000000000000000", UINT64_MAX2, INT64_MIN2, EVM_ADDRESS_RE4, HYPERLIQUID_CLOID_RE2, HYPERLIQUID_STANDARD_ACCOUNT_MODES2, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2 = 100, HYPERLIQUID_MID_DRIFT_BPS2 = 100, HYPERLIQUID_TPSL_SLIPPAGE_BPS2 = 500;
+var HYPERLIQUID_ALLOWED_ACTION_TYPES2, HYPERLIQUID_EXCHANGE_URLS2, HYPERLIQUID_INFO_URLS2, CANDLE_HYPERLIQUID_BUILDER_ADDRESS2 = "0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b", HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS2 = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE2 = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID2 = "0xa4b1", ZERO_ADDRESS2 = "0x0000000000000000000000000000000000000000", UINT64_MAX2, INT64_MIN2, EVM_ADDRESS_RE4, HYPERLIQUID_CLOID_RE2, HYPERLIQUID_STANDARD_ACCOUNT_MODES2, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2 = 100, HYPERLIQUID_MID_DRIFT_BPS2 = 100, HYPERLIQUID_TPSL_SLIPPAGE_BPS2 = 500;
 var init_hyperliquid = __esm(() => {
   init_sha3();
   HYPERLIQUID_ALLOWED_ACTION_TYPES2 = [
@@ -64870,14 +64876,12 @@ async function walletFor(cfg, fetch2, name2, scope) {
     throw new Refusal(fail3("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row) => row.label ?? row.id).join(", ")}`));
   return { row: matches3[0], appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" };
 }
-async function builderPin2(cfg, fetch2, env) {
-  const pinned = env.CANDLE_HYPERLIQUID_BUILDER?.trim() || CANDLE_HYPERLIQUID_BUILDER_ADDRESS2;
-  if (pinned)
-    return pinned.toLowerCase();
-  const config2 = await call(cfg, fetch2, "GET", "/api/v1/agent/perps/config");
-  if (typeof config2.builder !== "string")
-    throw new Refusal(fail3("PERPS_NOT_CONFIGURED", "The server reports no Hyperliquid builder address."));
-  return config2.builder.toLowerCase();
+function builderPin2(env) {
+  try {
+    return resolveHyperliquidBuilder2(env.CANDLE_HYPERLIQUID_BUILDER);
+  } catch (error2) {
+    throw new Refusal(fail3("PERPS_BUILD_REFUSED", error2.message));
+  }
 }
 async function executePerps(tool, args, cfg, env, fetch2) {
   if (!cfg.apiKey)
@@ -64939,7 +64943,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       }
     }
     const { row, appId } = await walletFor(cfg, fetch2, name2, "perps:write");
-    const builder = await builderPin2(cfg, fetch2, env);
+    const builder = builderPin2(env);
     const { wallet: _w, submit: _s, ...rest } = args;
     const clientId2 = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined;
     const fields = { ...rest, ...clientId2 !== undefined ? { clientId: clientId2 } : {} };
@@ -64959,6 +64963,13 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       ...fields,
       ...tool === "candle_perps_open" ? { type: fields.price === undefined ? "market" : "limit" } : {}
     });
+    build.preview = {
+      ...build.preview,
+      builderTrust: {
+        address: builder,
+        source: env.CANDLE_HYPERLIQUID_BUILDER === undefined ? "release" : "override"
+      }
+    };
     if (method === "setup") {
       const problem = perpsSetupStatusProblem2(build, { network: network2, address: row.address, builder, mode });
       if (problem)
@@ -65052,7 +65063,8 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         ...build.childCloids ? { childCloids: build.childCloids } : {},
         nonce: build.nonce,
         signature,
-        exchange
+        exchange,
+        preview: { builderTrust: build.preview.builderTrust }
       }),
       ...accepted ? {} : { isError: true }
     };
@@ -67220,7 +67232,7 @@ var ENVIRONMENT = [
   },
   {
     name: "CANDLE_HYPERLIQUID_BUILDER",
-    description: "candle perps: Candle's Hyperliquid builder address, pinned for the check every build passes before it is signed; without it the release's, else the one the server reports"
+    description: "candle perps: deliberately replace this release's builder trust anchor with a nonzero EVM address; shown in the preview. Unset uses the release pin, never the API's builder"
   },
   { name: "CANDLE_HYPERLIQUID_NETWORK", description: "candle perps: set to testnet to trade Hyperliquid testnet" },
   {
@@ -75346,7 +75358,13 @@ var HYPERLIQUID_INFO_URLS = {
   mainnet: "https://api.hyperliquid.xyz/info",
   testnet: "https://api.hyperliquid-testnet.xyz/info"
 };
-var CANDLE_HYPERLIQUID_BUILDER_ADDRESS = null;
+var CANDLE_HYPERLIQUID_BUILDER_ADDRESS = "0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b";
+function resolveHyperliquidBuilder(override, releasePin = CANDLE_HYPERLIQUID_BUILDER_ADDRESS) {
+  const builder = override === undefined ? releasePin : override;
+  if (typeof builder !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(builder) || /^0x0{40}$/.test(builder))
+    throw new Error("PERPS_BUILD_REFUSED: no valid nonzero Hyperliquid builder address in the explicit override or release pin.");
+  return builder.toLowerCase();
+}
 var HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS = 100;
 var HYPERLIQUID_MAX_BUILDER_FEE_RATE = "0.1%";
 var HYPERLIQUID_SIGNATURE_CHAIN_ID = "0xa4b1";
@@ -75767,7 +75785,7 @@ function checkOrderMarket(action, intent, market) {
 function verifyPerpsBuild(build, opts) {
   try {
     const network = opts.network ?? "mainnet";
-    if (!EVM_ADDRESS_RE.test(opts.builder))
+    if (!EVM_ADDRESS_RE.test(opts.builder) || opts.builder.toLowerCase() === ZERO_ADDRESS)
       return { ok: false, reason: "no valid Candle builder address to check against" };
     if (build.network !== undefined && build.network !== network) {
       return { ok: false, reason: `the build is for ${build.network}, this client trades ${network}` };
@@ -77948,17 +77966,12 @@ async function perpsRequest(ctx, key, path, body) {
 function perpsNetwork(ctx) {
   return ctx.deps.env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet";
 }
-async function builderPin(ctx, key) {
-  const pinned = ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER ?? CANDLE_HYPERLIQUID_BUILDER_ADDRESS;
-  if (pinned) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(pinned))
-      throw new TradingError("INVALID_ADDRESS", "CANDLE_HYPERLIQUID_BUILDER must be an EVM address.");
-    return pinned.toLowerCase();
+function builderPin(ctx) {
+  try {
+    return resolveHyperliquidBuilder(ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER);
+  } catch (error) {
+    throw new TradingError("PERPS_BUILD_REFUSED", error.message);
   }
-  const config = await perpsRequest(ctx, key, "/api/v1/agent/perps/config");
-  if (typeof config.builder !== "string")
-    throw new TradingError("PERPS_NOT_CONFIGURED", "The server reports no Hyperliquid builder address.");
-  return config.builder.toLowerCase();
 }
 async function perpsWallet(ctx, key, name2, scope) {
   const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, scope);
@@ -78010,6 +78023,9 @@ async function confirm(ctx, build, address, yes) {
   const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
   output.write(`Hyperliquid account: ${safeText(address)} (${safeText(build.network)})
 `);
+  if (ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER !== undefined)
+    output.write(`Builder trust override: ${builderPin(ctx)} (replaces this release's pin).
+`);
   for (const line of previewLines(build))
     output.write(`${line}
 `);
@@ -78037,7 +78053,7 @@ async function runPerpsWrite(ctx, opts) {
   const { wallet } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE);
   if (!wallet)
     throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.");
-  const builder = await builderPin(ctx, key);
+  const builder = builderPin(ctx);
   const net = perpsNetwork(ctx);
   const method = opts.path.split("/").at(-1);
   let mode;
@@ -78052,6 +78068,13 @@ async function runPerpsWrite(ctx, opts) {
   }
   const clientId = typeof opts.body.clientId === "string" ? opts.body.clientId : undefined;
   const build = await perpsRequest(ctx, key, opts.path, { walletId: wallet.id, ...opts.body });
+  build.preview = {
+    ...build.preview,
+    builderTrust: {
+      address: builder,
+      source: ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER === undefined ? "release" : "override"
+    }
+  };
   if (method === "setup") {
     const problem = perpsSetupStatusProblem(build, {
       network: net,
@@ -78125,7 +78148,8 @@ async function runPerpsWrite(ctx, opts) {
       nonce: build.nonce,
       signature,
       submitted: false,
-      exchangeBody
+      exchangeBody,
+      preview: { builderTrust: build.preview.builderTrust }
     });
   let exchange;
   try {
@@ -78156,7 +78180,8 @@ async function runPerpsWrite(ctx, opts) {
     ...build.childCloids ? { childCloids: build.childCloids } : {},
     nonce: build.nonce,
     signature,
-    exchange
+    exchange,
+    preview: { builderTrust: build.preview.builderTrust }
   });
 }
 var WRITE_FLAGS = { valueFlags: ["--wallet"], booleanFlags: ["--yes", "--no-submit", "--sign-only"] };

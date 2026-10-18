@@ -13,9 +13,9 @@
  * The bound key authenticates and must hold `perps:write` (owner-granted, never a default). No
  * vault or TEE private key is opened on any path in this file.
  *
- * `CANDLE_HYPERLIQUID_BUILDER` pins Candle's builder address for the check. Unset, this release's
- * `CANDLE_HYPERLIQUID_BUILDER_ADDRESS` applies when it carries one, and otherwise the builder the
- * server's `/perps/config` reports. `CANDLE_HYPERLIQUID_NETWORK=testnet` trades testnet.
+ * This release pins Candle's builder independently of the API. `CANDLE_HYPERLIQUID_BUILDER` is an
+ * explicit replacement of that trust anchor, shown in the preview and validated before use.
+ * `CANDLE_HYPERLIQUID_NETWORK=testnet` trades testnet.
  *
  * BE-1583 (spec 2026-10-17-hyperliquid-phase1-c-small-items-design.md): `fills` and `funding` read
  * history straight from Hyperliquid's `/info` (`perps-history.ts`, the SDK's file byte for byte);
@@ -37,7 +37,6 @@ import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { sameEvmAddress } from "../evm-lite"
 import {
-  CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   HYPERLIQUID_CLOID_RE,
   HYPERLIQUID_EXCHANGE_URLS,
   HYPERLIQUID_STANDARD_ACCOUNT_MODES,
@@ -50,6 +49,7 @@ import {
   hyperliquidOrderMarket,
   hyperliquidRelayBody,
   perpsSetupStatusProblem,
+  resolveHyperliquidBuilder,
   verifyPerpsBuild,
 } from "../hyperliquid"
 import {
@@ -126,18 +126,13 @@ export function perpsNetwork(ctx: CommandContext): HyperliquidNetwork {
   return ctx.deps.env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet"
 }
 
-/** Candle's builder for the pre-sign check: the operator's pin, this release's, or the server's. */
-async function builderPin(ctx: CommandContext, key: string): Promise<string> {
-  const pinned = ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER ?? CANDLE_HYPERLIQUID_BUILDER_ADDRESS
-  if (pinned) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(pinned))
-      throw new TradingError("INVALID_ADDRESS", "CANDLE_HYPERLIQUID_BUILDER must be an EVM address.")
-    return pinned.toLowerCase()
+/** The builder is local configuration, never the API's own assertion of its identity. */
+function builderPin(ctx: CommandContext): string {
+  try {
+    return resolveHyperliquidBuilder(ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER)
+  } catch (error) {
+    throw new TradingError("PERPS_BUILD_REFUSED", (error as Error).message)
   }
-  const config = await perpsRequest(ctx, key, "/api/v1/agent/perps/config")
-  if (typeof config.builder !== "string")
-    throw new TradingError("PERPS_NOT_CONFIGURED", "The server reports no Hyperliquid builder address.")
-  return config.builder.toLowerCase()
 }
 
 /** The key's EVM TEE wallet: the one named, or the only one bound to the key. */
@@ -212,6 +207,8 @@ function previewLines(build: Json): string[] {
 async function confirm(ctx: CommandContext, build: Json, address: string, yes: boolean): Promise<boolean> {
   const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
   output.write(`Hyperliquid account: ${safeText(address)} (${safeText(build.network)})\n`)
+  if (ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER !== undefined)
+    output.write(`Builder trust override: ${builderPin(ctx)} (replaces this release's pin).\n`)
   for (const line of previewLines(build)) output.write(`${line}\n`)
   if (yes) return true
   if (!ctx.deps.isTTY.stdin)
@@ -243,7 +240,7 @@ async function runPerpsWrite(
   const key = await tradingKey(ctx)
   const { wallet } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE)
   if (!wallet) throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.")
-  const builder = await builderPin(ctx, key)
+  const builder = builderPin(ctx)
   const net = perpsNetwork(ctx)
   const method = opts.path.split("/").at(-1) as "setup" | "open" | "close" | "cancel" | "leverage"
   // Setup (spec 2026-10-17 C, section 5): the mode comes from Hyperliquid itself, before Candle is
@@ -266,6 +263,13 @@ async function runPerpsWrite(
   }
   const clientId = typeof opts.body.clientId === "string" ? opts.body.clientId : undefined
   const build = await perpsRequest(ctx, key, opts.path, { walletId: wallet.id, ...opts.body })
+  build.preview = {
+    ...(build.preview as Json | undefined),
+    builderTrust: {
+      address: builder,
+      source: ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER === undefined ? "release" : "override",
+    },
+  }
   if (method === "setup") {
     const problem = perpsSetupStatusProblem(build, {
       network: net,
@@ -366,6 +370,7 @@ async function runPerpsWrite(
       signature,
       submitted: false,
       exchangeBody,
+      preview: { builderTrust: (build.preview as Json).builderTrust },
     } as unknown as Json)
   let exchange: unknown
   try {
@@ -402,6 +407,7 @@ async function runPerpsWrite(
     nonce: build.nonce,
     signature,
     exchange,
+    preview: { builderTrust: (build.preview as Json).builderTrust },
   } as Json)
 }
 

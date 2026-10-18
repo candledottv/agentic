@@ -66,7 +66,6 @@ import {
   waitForReceipt,
 } from "./evm-tx"
 import {
-  CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   HYPERLIQUID_CLOID_RE,
   HYPERLIQUID_EXCHANGE_URLS,
   HYPERLIQUID_STANDARD_ACCOUNT_MODES,
@@ -78,6 +77,7 @@ import {
   hyperliquidOrderMarket,
   hyperliquidRelayBody,
   perpsSetupStatusProblem,
+  resolveHyperliquidBuilder,
   verifyPerpsBuild,
 } from "./hyperliquid"
 import {
@@ -198,9 +198,9 @@ export interface CandleClientOptions {
   /**
    * Candle's Hyperliquid builder address, pinned by the caller. Every perps build is checked
    * against it before signing: an order must name exactly this builder (or none, on a Max order),
-   * and setup must approve exactly it. Unset, the client uses `CANDLE_HYPERLIQUID_BUILDER_ADDRESS`
-   * when this release carries one, and otherwise trusts the builder `GET /agent/perps/config`
-   * reports the first time and holds every later build to that same address.
+   * and setup must approve exactly it. This deliberately replaces the release trust anchor and
+   * is shown as `preview.builderTrust.source: "override"`. Must be a nonzero EVM address; an
+   * invalid override refuses setup/signing. Unset uses the release pin, never `/perps/config`.
    */
   hyperliquidBuilder?: string
   /** The Hyperliquid network this client trades on. Default mainnet; a build for another is refused. */
@@ -2141,7 +2141,11 @@ export interface PerpsAccountStatus {
 }
 
 /** `ready: true` when the builder approval is already on Hyperliquid; otherwise the setup action's outcome. */
-export type PerpsSetupResult = PerpsAccountStatus & { ready: boolean; action?: PerpsActionResult }
+export type PerpsSetupResult = PerpsAccountStatus & {
+  ready: boolean
+  action?: PerpsActionResult
+  preview?: Record<string, unknown>
+}
 
 export interface PerpsConfig {
   success: true
@@ -3330,8 +3334,7 @@ export class CandleClient {
     if (opts.evmRpcUrl !== undefined) this.evmRpcUrl = opts.evmRpcUrl
     this.hyperliquidNetwork = opts.hyperliquidNetwork ?? "mainnet"
     this.perpsWithdrawPins = opts.perpsWithdrawPins ?? CANDLE_PERPS_WITHDRAW_PINS
-    const builder = opts.hyperliquidBuilder ?? CANDLE_HYPERLIQUID_BUILDER_ADDRESS
-    if (builder) this.hyperliquidBuilder = builder.toLowerCase()
+    if (opts.hyperliquidBuilder !== undefined) this.hyperliquidBuilder = opts.hyperliquidBuilder
   }
 
   // -- reads ----------------------------------------------------------------
@@ -4988,8 +4991,8 @@ export class CandleClient {
     this.requireKey("perpsSetup()")
     // Spec 2026-10-17 C, section 5: the mode is read from Hyperliquid before setup is requested,
     // and the answer, `ready` included, is checked against it, this client's network and builder.
+    const builder = this.perpsBuilder()
     const address = await this.perpsWalletAddress(params.walletId)
-    const builder = await this.perpsBuilder()
     const mode = await hyperliquidAccountMode(this.fetchImpl, this.hyperliquidNetwork, address)
     if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
       throw new Error(
@@ -5007,7 +5010,7 @@ export class CandleClient {
       mode,
     })
     if (problem) throw new Error(`perps: refused this setup answer: ${problem}. Nothing was signed.`)
-    const status: PerpsAccountStatus & { ready: boolean } = {
+    const status: PerpsSetupResult = {
       walletId: res.walletId as string,
       address: res.address as string,
       network: res.network as HyperliquidNetwork,
@@ -5018,6 +5021,7 @@ export class CandleClient {
       builder: res.builder as unknown as string,
       approvedFeeTenthsBps: res.approvedFeeTenthsBps,
       ready: res.ready,
+      preview: { builderTrust: this.perpsBuilderTrust() },
     }
     if (res.ready) return status
     return { ...status, action: await this.perpsComplete(res as PerpsBuild, params, "setup") }
@@ -5031,6 +5035,7 @@ export class CandleClient {
   async perpsOpen(params: PerpsOpenParams): Promise<PerpsActionResult | PerpsReplayResult>
   async perpsOpen(params: PerpsOpenParams): Promise<PerpsActionResult | PerpsReplayResult> {
     this.requireKey("perpsOpen()")
+    this.perpsBuilder()
     const { walletId, privyWalletId: _p, submit: _s, ...order } = params
     const clientId = perpsClientId(params.clientId)
     const build = await this.requestJson<PerpsBuild | PerpsReplay>("POST", "/api/v1/agent/perps/open", {
@@ -5048,6 +5053,7 @@ export class CandleClient {
   async perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult | PerpsReplayResult>
   async perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult | PerpsReplayResult> {
     this.requireKey("perpsClose()")
+    this.perpsBuilder()
     const { walletId, privyWalletId: _p, submit: _s, ...close } = params
     const clientId = perpsClientId(params.clientId)
     const build = await this.requestJson<PerpsBuild | PerpsReplay>("POST", "/api/v1/agent/perps/close", {
@@ -5063,6 +5069,7 @@ export class CandleClient {
   /** Cancel an order Candle built, by its cloid. */
   async perpsCancel(params: PerpsCancelParams): Promise<PerpsActionResult> {
     this.requireKey("perpsCancel()")
+    this.perpsBuilder()
     const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/cancel", {
       walletId: params.walletId,
       cloid: params.cloid,
@@ -5073,6 +5080,7 @@ export class CandleClient {
   /** Change a resting order's price or size. The replacement gets a new cloid. */
   async perpsModify(params: PerpsModifyParams): Promise<PerpsActionResult> {
     this.requireKey("perpsModify()")
+    this.perpsBuilder()
     const { walletId, privyWalletId: _p, submit: _s, ...modify } = params
     const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/modify", { walletId, ...modify })
     return this.perpsComplete(build, params, "modify")
@@ -5081,6 +5089,7 @@ export class CandleClient {
   /** Set a market's leverage and margin mode on the account, within the key's maxLeverage. */
   async perpsLeverage(params: PerpsLeverageParams): Promise<PerpsActionResult> {
     this.requireKey("perpsLeverage()")
+    this.perpsBuilder()
     const { walletId, privyWalletId: _p, submit: _s, ...leverage } = params
     const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/leverage", { walletId, ...leverage })
     return this.perpsComplete(build, params, "leverage")
@@ -5089,6 +5098,7 @@ export class CandleClient {
   /** Add (positive) or remove (negative) isolated margin on an isolated position. */
   async perpsMargin(params: PerpsMarginParams): Promise<PerpsActionResult> {
     this.requireKey("perpsMargin()")
+    this.perpsBuilder()
     const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/margin", {
       walletId: params.walletId,
       coin: params.coin,
@@ -5444,12 +5454,15 @@ export class CandleClient {
   }
 
   /** The builder every perps build is checked against (see `hyperliquidBuilder` in the options). */
-  private async perpsBuilder(): Promise<string> {
-    if (this.hyperliquidBuilder) return this.hyperliquidBuilder
-    const config = await this.perpsConfig()
-    if (!config.builder) throw new Error("perps: the server reports no Hyperliquid builder address")
-    this.hyperliquidBuilder = config.builder.toLowerCase()
-    return this.hyperliquidBuilder
+  private perpsBuilder(): string {
+    return resolveHyperliquidBuilder(this.hyperliquidBuilder)
+  }
+
+  private perpsBuilderTrust() {
+    return {
+      address: this.perpsBuilder(),
+      source: this.hyperliquidBuilder === undefined ? "release" : "override",
+    }
   }
 
   /**
@@ -5461,8 +5474,9 @@ export class CandleClient {
     ref: PerpsWalletRef,
     method: "setup" | "open" | "close" | "cancel" | "modify" | "leverage" | "margin",
   ): Promise<PerpsActionResult> {
+    build = { ...build, preview: { ...build.preview, builderTrust: this.perpsBuilderTrust() } }
     const check = verifyPerpsBuild(build, {
-      builder: await this.perpsBuilder(),
+      builder: this.perpsBuilder(),
       network: this.hyperliquidNetwork,
       intent: { method, params: ref as unknown as Record<string, unknown> },
     })
@@ -5475,7 +5489,7 @@ export class CandleClient {
         ref as unknown as Record<string, unknown>,
       )
       const closeCheck = verifyPerpsBuild(build, {
-        builder: await this.perpsBuilder(),
+        builder: this.perpsBuilder(),
         network: this.hyperliquidNetwork,
         intent: { method, params: ref as unknown as Record<string, unknown> },
         closeOrder,
@@ -5492,7 +5506,7 @@ export class CandleClient {
         ref as unknown as Record<string, unknown>,
       )
       const marketCheck = verifyPerpsBuild(build, {
-        builder: await this.perpsBuilder(),
+        builder: this.perpsBuilder(),
         network: this.hyperliquidNetwork,
         intent: { method, params: ref as unknown as Record<string, unknown> },
         market,

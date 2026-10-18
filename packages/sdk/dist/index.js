@@ -455,7 +455,13 @@ var HYPERLIQUID_INFO_URLS = {
   mainnet: "https://api.hyperliquid.xyz/info",
   testnet: "https://api.hyperliquid-testnet.xyz/info"
 };
-var CANDLE_HYPERLIQUID_BUILDER_ADDRESS = null;
+var CANDLE_HYPERLIQUID_BUILDER_ADDRESS = "0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b";
+function resolveHyperliquidBuilder(override, releasePin = CANDLE_HYPERLIQUID_BUILDER_ADDRESS) {
+  const builder = override === undefined ? releasePin : override;
+  if (typeof builder !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(builder) || /^0x0{40}$/.test(builder))
+    throw new Error("PERPS_BUILD_REFUSED: no valid nonzero Hyperliquid builder address in the explicit override or release pin.");
+  return builder.toLowerCase();
+}
 var HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS = 100;
 var HYPERLIQUID_MAX_BUILDER_FEE_RATE = "0.1%";
 var HYPERLIQUID_SIGNATURE_CHAIN_ID = "0xa4b1";
@@ -873,7 +879,7 @@ function checkOrderMarket(action, intent, market) {
 function verifyPerpsBuild(build, opts) {
   try {
     const network = opts.network ?? "mainnet";
-    if (!EVM_ADDRESS_RE.test(opts.builder))
+    if (!EVM_ADDRESS_RE.test(opts.builder) || opts.builder.toLowerCase() === ZERO_ADDRESS)
       return { ok: false, reason: "no valid Candle builder address to check against" };
     if (build.network !== undefined && build.network !== network) {
       return { ok: false, reason: `the build is for ${build.network}, this client trades ${network}` };
@@ -3048,9 +3054,8 @@ class CandleClient {
       this.evmRpcUrl = opts.evmRpcUrl;
     this.hyperliquidNetwork = opts.hyperliquidNetwork ?? "mainnet";
     this.perpsWithdrawPins = opts.perpsWithdrawPins ?? CANDLE_PERPS_WITHDRAW_PINS;
-    const builder = opts.hyperliquidBuilder ?? CANDLE_HYPERLIQUID_BUILDER_ADDRESS;
-    if (builder)
-      this.hyperliquidBuilder = builder.toLowerCase();
+    if (opts.hyperliquidBuilder !== undefined)
+      this.hyperliquidBuilder = opts.hyperliquidBuilder;
   }
   async getQuotePairs(chain) {
     const query = chain ? `?chain=${chain}` : "";
@@ -3792,8 +3797,8 @@ class CandleClient {
   }
   async perpsSetup(params) {
     this.requireKey("perpsSetup()");
+    const builder = this.perpsBuilder();
     const address = await this.perpsWalletAddress(params.walletId);
-    const builder = await this.perpsBuilder();
     const mode = await hyperliquidAccountMode(this.fetchImpl, this.hyperliquidNetwork, address);
     if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
       throw new Error(`perps: PERPS_ACCOUNT_MODE: the account is in ${mode} mode on Hyperliquid; Candle trades only a standard account. Nothing was requested or signed.`);
@@ -3816,7 +3821,8 @@ class CandleClient {
       withdrawable: res.withdrawable,
       builder: res.builder,
       approvedFeeTenthsBps: res.approvedFeeTenthsBps,
-      ready: res.ready
+      ready: res.ready,
+      preview: { builderTrust: this.perpsBuilderTrust() }
     };
     if (res.ready)
       return status;
@@ -3824,6 +3830,7 @@ class CandleClient {
   }
   async perpsOpen(params) {
     this.requireKey("perpsOpen()");
+    this.perpsBuilder();
     const { walletId, privyWalletId: _p, submit: _s, ...order } = params;
     const clientId = perpsClientId(params.clientId);
     const build = await this.requestJson("POST", "/api/v1/agent/perps/open", {
@@ -3838,6 +3845,7 @@ class CandleClient {
   }
   async perpsClose(params) {
     this.requireKey("perpsClose()");
+    this.perpsBuilder();
     const { walletId, privyWalletId: _p, submit: _s, ...close } = params;
     const clientId = perpsClientId(params.clientId);
     const build = await this.requestJson("POST", "/api/v1/agent/perps/close", {
@@ -3852,6 +3860,7 @@ class CandleClient {
   }
   async perpsCancel(params) {
     this.requireKey("perpsCancel()");
+    this.perpsBuilder();
     const build = await this.requestJson("POST", "/api/v1/agent/perps/cancel", {
       walletId: params.walletId,
       cloid: params.cloid
@@ -3860,18 +3869,21 @@ class CandleClient {
   }
   async perpsModify(params) {
     this.requireKey("perpsModify()");
+    this.perpsBuilder();
     const { walletId, privyWalletId: _p, submit: _s, ...modify } = params;
     const build = await this.requestJson("POST", "/api/v1/agent/perps/modify", { walletId, ...modify });
     return this.perpsComplete(build, params, "modify");
   }
   async perpsLeverage(params) {
     this.requireKey("perpsLeverage()");
+    this.perpsBuilder();
     const { walletId, privyWalletId: _p, submit: _s, ...leverage } = params;
     const build = await this.requestJson("POST", "/api/v1/agent/perps/leverage", { walletId, ...leverage });
     return this.perpsComplete(build, params, "leverage");
   }
   async perpsMargin(params) {
     this.requireKey("perpsMargin()");
+    this.perpsBuilder();
     const build = await this.requestJson("POST", "/api/v1/agent/perps/margin", {
       walletId: params.walletId,
       coin: params.coin,
@@ -4107,18 +4119,19 @@ class CandleClient {
     this.requireKey("perpsDepositStatus()");
     return this.requestJson("GET", `/api/v1/agent/perps/deposit/${encodeURIComponent(clientDepositId)}`);
   }
-  async perpsBuilder() {
-    if (this.hyperliquidBuilder)
-      return this.hyperliquidBuilder;
-    const config = await this.perpsConfig();
-    if (!config.builder)
-      throw new Error("perps: the server reports no Hyperliquid builder address");
-    this.hyperliquidBuilder = config.builder.toLowerCase();
-    return this.hyperliquidBuilder;
+  perpsBuilder() {
+    return resolveHyperliquidBuilder(this.hyperliquidBuilder);
+  }
+  perpsBuilderTrust() {
+    return {
+      address: this.perpsBuilder(),
+      source: this.hyperliquidBuilder === undefined ? "release" : "override"
+    };
   }
   async perpsComplete(build, ref, method) {
+    build = { ...build, preview: { ...build.preview, builderTrust: this.perpsBuilderTrust() } };
     const check = verifyPerpsBuild(build, {
-      builder: await this.perpsBuilder(),
+      builder: this.perpsBuilder(),
       network: this.hyperliquidNetwork,
       intent: { method, params: ref }
     });
@@ -4127,7 +4140,7 @@ class CandleClient {
     if (method === "close") {
       const closeOrder = await hyperliquidCloseOrder(this.fetchImpl, this.hyperliquidNetwork, build.address, ref);
       const closeCheck = verifyPerpsBuild(build, {
-        builder: await this.perpsBuilder(),
+        builder: this.perpsBuilder(),
         network: this.hyperliquidNetwork,
         intent: { method, params: ref },
         closeOrder
@@ -4138,7 +4151,7 @@ class CandleClient {
     if (method === "open" || method === "modify") {
       const market = await hyperliquidOrderMarket(this.fetchImpl, this.hyperliquidNetwork, build.address, method, ref);
       const marketCheck = verifyPerpsBuild(build, {
-        builder: await this.perpsBuilder(),
+        builder: this.perpsBuilder(),
         network: this.hyperliquidNetwork,
         intent: { method, params: ref },
         market

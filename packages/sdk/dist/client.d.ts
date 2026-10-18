@@ -112,9 +112,9 @@ export interface CandleClientOptions {
     /**
      * Candle's Hyperliquid builder address, pinned by the caller. Every perps build is checked
      * against it before signing: an order must name exactly this builder (or none, on a Max order),
-     * and setup must approve exactly it. Unset, the client uses `CANDLE_HYPERLIQUID_BUILDER_ADDRESS`
-     * when this release carries one, and otherwise trusts the builder `GET /agent/perps/config`
-     * reports the first time and holds every later build to that same address.
+     * and setup must approve exactly it. This deliberately replaces the release trust anchor and
+     * is shown as `preview.builderTrust.source: "override"`. Must be a nonzero EVM address; an
+     * invalid override refuses setup/signing. Unset uses the release pin, never `/perps/config`.
      */
     hyperliquidBuilder?: string;
     /** The Hyperliquid network this client trades on. Default mainnet; a build for another is refused. */
@@ -2018,6 +2018,7 @@ export interface PerpsAccountStatus {
 export type PerpsSetupResult = PerpsAccountStatus & {
     ready: boolean;
     action?: PerpsActionResult;
+    preview?: Record<string, unknown>;
 };
 export interface PerpsConfig {
     success: true;
@@ -3571,6 +3572,7 @@ export declare class CandleClient {
     }>;
     /** The builder every perps build is checked against (see `hyperliquidBuilder` in the options). */
     private perpsBuilder;
+    private perpsBuilderTrust;
     /**
      * Check, sign, submit (HL-ED-2, HL-ED-5). The check runs before the relay is called; a build
      * that fails it is refused with nothing signed.

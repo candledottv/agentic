@@ -134,6 +134,14 @@ const fill = await candle.trade({ mint: "9dXSV8...CNDL", side: "buy", amountRaw:
 - The `perps*` methods (`perpsSetup`, `perpsOpen`, `perpsClose`, `perpsOrders`,
   `perpsPositions`, ...) drive Hyperliquid perps.
 
+Perps setup and signing use this release's builder pin,
+`0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b`, independently of the API.
+`hyperliquidBuilder` deliberately replaces that trust anchor with an explicit nonzero EVM
+address; empty or invalid overrides refuse rather than fall back. The local
+`preview.builderTrust` records the expected address and whether it came from the release or
+an override. Setup answers (including `ready`) and fee-bearing actions naming another builder
+are refused before signing. Builder rotation requires a reviewed client release.
+
 Limit orders are a REST surface only (`/api/v1/trade/agent/orders`); the SDK has no method for
 them.
 

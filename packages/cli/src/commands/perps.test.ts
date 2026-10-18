@@ -11,7 +11,12 @@ import { generateKeyPairSync, verify } from "node:crypto"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { hyperliquidActionHash, hyperliquidCanonicalJson, hyperliquidL1TypedData } from "../hyperliquid"
+import {
+  CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
+  hyperliquidActionHash,
+  hyperliquidCanonicalJson,
+  hyperliquidL1TypedData,
+} from "../hyperliquid"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
@@ -248,10 +253,48 @@ describe("candle perps open", () => {
     }
   })
 
-  test("without a pinned builder the server's configured one is read and held to", async () => {
-    const f = await fixture({ pinBuilder: false })
+  test("the shipped builder is used by default without reading config", async () => {
+    expect(CANDLE_HYPERLIQUID_BUILDER_ADDRESS).toBe("0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b")
+    const f = await fixture({ pinBuilder: false, build: buildFor(orderAction(CANDLE_HYPERLIQUID_BUILDER_ADDRESS)) })
     expect(await run(OPEN, f.deps)).toBe(0)
-    expect(f.calls.map((c) => c.path)).toContain("/api/v1/agent/perps/config")
+    expect(f.calls.map((c) => c.path)).not.toContain("/api/v1/agent/perps/config")
+  })
+
+  test("a different API builder refuses before the relay, including no-submit and ready", async () => {
+    for (const argv of [OPEN, [...OPEN, "--no-submit"], ["perps", "setup", "--yes", "--json"]]) {
+      const f = await fixture({ pinBuilder: false, setupReady: true })
+      expect(await run(argv, f.deps)).toBe(1)
+      expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ ok: false, code: "PERPS_BUILD_REFUSED" })
+      expect(
+        f.calls.some((c) => c.path.endsWith("/sign") || c.path.endsWith("/exchange") || c.path.endsWith("/config")),
+      ).toBe(false)
+    }
+    const f = await fixture({
+      pinBuilder: false,
+      setupReady: true,
+      setupAnswer: { builder: CANDLE_HYPERLIQUID_BUILDER_ADDRESS },
+    })
+    expect(await run(["perps", "setup", "--json"], f.deps)).toBe(0)
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({
+      ready: true,
+      preview: { builderTrust: { source: "release" } },
+    })
+  })
+
+  test("invalid explicit overrides fail closed before building; valid overrides are disclosed", async () => {
+    for (const invalid of ["", " ", "bad", `0x${"0".repeat(40)}`]) {
+      const f = await fixture()
+      f.deps.env.CANDLE_HYPERLIQUID_BUILDER = invalid
+      expect(await run(OPEN, f.deps)).toBe(1)
+      expect(JSON.parse(f.stdout.text.trim()).code).toBe("PERPS_BUILD_REFUSED")
+      expect(f.calls.every((c) => c.path === "/api/v1/agent/wallets/trading")).toBe(true)
+    }
+    const f = await fixture()
+    expect(await run([...OPEN, "--no-submit"], f.deps)).toBe(0)
+    expect(JSON.parse(f.stdout.text.trim()).preview.builderTrust).toEqual({ address: BUILDER, source: "override" })
+    const signed = await fixture()
+    expect(await run(OPEN, signed.deps)).toBe(0)
+    expect(signed.stderr.text).toContain("Builder trust override:")
   })
 
   test("--no-submit stops after the check: nothing signed, nothing posted", async () => {

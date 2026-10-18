@@ -89,8 +89,10 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
   to publish. Set, `candle_launch_token` and `candle_launch_and_seed` accept `imagePath` for a
   file inside it; unset, they take `imageUrl` only and the server reads no image file. See
   [Launching with an image file](#launching-with-an-image-file).
-- `CANDLE_HYPERLIQUID_BUILDER` / `CANDLE_HYPERLIQUID_NETWORK` -- the perps tools: pin Candle's
-  Hyperliquid builder address for the pre-sign check, and set `testnet` to trade testnet.
+- `CANDLE_HYPERLIQUID_BUILDER` / `CANDLE_HYPERLIQUID_NETWORK` -- the perps tools: the builder override deliberately
+  replaces this release's trust anchor with a nonzero EVM address and is shown in
+  `preview.builderTrust`. Unset uses the release pin, never the API's builder. Set the network
+  to `testnet` to trade testnet.
 - `CANDLE_API_KEY` -- alias for `CANDLE_AGENT_API_KEY`, the same variable name the Candle CLI uses
   for this credential. Set either one; if both are set, `CANDLE_AGENT_API_KEY` takes precedence.
 

@@ -14,8 +14,8 @@
  * writes for exactly this kind of process. Without it the write tools refuse before any build, so
  * no claim is stamped and nothing is reserved. The reads need only the API key.
  *
- * `CANDLE_HYPERLIQUID_BUILDER` pins Candle's builder; unset, this release's constant applies when
- * it carries one, else the builder `/perps/config` reports. `CANDLE_HYPERLIQUID_NETWORK=testnet`
+ * `CANDLE_HYPERLIQUID_BUILDER` deliberately replaces this release's builder trust anchor; the
+ * override is validated and shown in the preview. `CANDLE_HYPERLIQUID_NETWORK=testnet`
  * trades testnet.
  *
  * BE-1583 (spec 2026-10-17-hyperliquid-phase1-c-small-items-design.md): `candle_perps_fills` and
@@ -29,7 +29,6 @@ import { readFile } from "node:fs/promises"
 import { z } from "zod"
 import type { RequestConfig } from "./client"
 import {
-  CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   HYPERLIQUID_EXCHANGE_URLS,
   HYPERLIQUID_STANDARD_ACCOUNT_MODES,
   type HyperliquidNetwork,
@@ -41,6 +40,7 @@ import {
   hyperliquidOrderMarket,
   hyperliquidRelayBody,
   perpsSetupStatusProblem,
+  resolveHyperliquidBuilder,
   verifyPerpsBuild,
 } from "./hyperliquid"
 import type { FetchLike, ToolText } from "./orchestrate"
@@ -233,13 +233,12 @@ export async function walletFor(
   return { row: matches[0] as WalletRow, appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" }
 }
 
-async function builderPin(cfg: RequestConfig, fetch: FetchLike, env: Record<string, string | undefined>) {
-  const pinned = env.CANDLE_HYPERLIQUID_BUILDER?.trim() || CANDLE_HYPERLIQUID_BUILDER_ADDRESS
-  if (pinned) return pinned.toLowerCase()
-  const config = await call(cfg, fetch, "GET", "/api/v1/agent/perps/config")
-  if (typeof config.builder !== "string")
-    throw new Refusal(fail("PERPS_NOT_CONFIGURED", "The server reports no Hyperliquid builder address."))
-  return config.builder.toLowerCase()
+function builderPin(env: Record<string, string | undefined>) {
+  try {
+    return resolveHyperliquidBuilder(env.CANDLE_HYPERLIQUID_BUILDER)
+  } catch (error) {
+    throw new Refusal(fail("PERPS_BUILD_REFUSED", (error as Error).message))
+  }
 }
 
 /** Run one `candle_perps_*` tool. */
@@ -315,7 +314,7 @@ export async function executePerps(
       }
     }
     const { row, appId } = await walletFor(cfg, fetch, name, "perps:write")
-    const builder = await builderPin(cfg, fetch, env)
+    const builder = builderPin(env)
     const { wallet: _w, submit: _s, ...rest } = args
     const clientId = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined
     const fields: Record<string, unknown> = { ...rest, ...(clientId !== undefined ? { clientId } : {}) }
@@ -343,6 +342,13 @@ export async function executePerps(
       ...fields,
       ...(tool === "candle_perps_open" ? { type: fields.price === undefined ? "market" : "limit" } : {}),
     })
+    build.preview = {
+      ...(build.preview as Record<string, unknown> | undefined),
+      builderTrust: {
+        address: builder,
+        source: env.CANDLE_HYPERLIQUID_BUILDER === undefined ? "release" : "override",
+      },
+    }
     if (method === "setup") {
       const problem = perpsSetupStatusProblem(build, { network, address: row.address, builder, mode: mode as string })
       if (problem) return fail("PERPS_BUILD_REFUSED", `Refused this setup answer: ${problem}. Nothing was signed.`)
@@ -459,6 +465,7 @@ export async function executePerps(
         nonce: build.nonce,
         signature,
         exchange,
+        preview: { builderTrust: (build.preview as Record<string, unknown>).builderTrust },
       }),
       ...(accepted ? {} : { isError: true }),
     }

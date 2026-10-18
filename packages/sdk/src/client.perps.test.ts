@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import { CandleClient, type CandleClientOptions, type PerpsBuild } from "./client"
-import { hyperliquidActionHash, hyperliquidApproveBuilderFeeTypedData, hyperliquidL1TypedData } from "./hyperliquid"
+import {
+  CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
+  hyperliquidActionHash,
+  hyperliquidApproveBuilderFeeTypedData,
+  hyperliquidL1TypedData,
+} from "./hyperliquid"
 import { InMemorySecretStore } from "./secret-store"
 import { generateSignerKeypair } from "./wallet-import"
 
@@ -215,19 +220,81 @@ describe("perpsOpen: build, check, sign, submit", () => {
 })
 
 describe("the builder pin", () => {
-  test("without a pinned builder the client trusts the server's first answer and holds builds to it", async () => {
+  test("the default checks the release pin without reading config", async () => {
+    const action = { ...orderBuild().action, builder: { b: CANDLE_HYPERLIQUID_BUILDER_ADDRESS, f: 100 } }
     const { client: c, calls } = await client(
       [
-        json(200, orderBuild()),
-        json(200, { success: true, builder: BUILDER }),
+        json(200, orderBuild(action)),
         market(),
         json(200, { success: true, signature: SIGNATURE }),
         json(200, { status: "ok" }),
       ],
       { hyperliquidBuilder: undefined },
     )
-    await c.perpsOpen(OPEN)
-    expect(calls[1]?.url).toBe("https://api.test/api/v1/agent/perps/config")
+    const result = await c.perpsOpen(OPEN)
+    expect(result.submitted).toBe(true)
+    expect(result.build.preview.builderTrust).toEqual({
+      address: CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
+      source: "release",
+    })
+    expect(calls.some((call) => call.url.endsWith("/perps/config"))).toBe(false)
+  })
+
+  test("an API naming another builder cannot change the default, even after config is read", async () => {
+    const { client: c, calls } = await client(
+      [json(200, { success: true, builder: BUILDER }), json(200, orderBuild())],
+      { hyperliquidBuilder: undefined },
+    )
+    await c.perpsConfig()
+    await expect(c.perpsOpen(OPEN)).rejects.toThrow("builder that is not Candle's")
+    expect(calls).toHaveLength(2)
+  })
+
+  test("invalid overrides refuse before any build; explicit valid overrides are visible", async () => {
+    for (const hyperliquidBuilder of ["", " ", "bad", `0x${"0".repeat(40)}`]) {
+      const { client: c, calls } = await client([], { hyperliquidBuilder })
+      await expect(c.perpsOpen(OPEN)).rejects.toThrow("PERPS_BUILD_REFUSED")
+      await expect(c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })).rejects.toThrow(
+        "PERPS_BUILD_REFUSED",
+      )
+      expect(calls).toHaveLength(0)
+    }
+    const { client: c } = await client([json(200, orderBuild()), market()])
+    const result = await c.perpsOpen({ ...OPEN, submit: false })
+    expect(result.build.preview.builderTrust).toEqual({ address: BUILDER, source: "override" })
+  })
+
+  test("no-action readiness from a different API builder is refused against the release pin", async () => {
+    for (const builder of [BUILDER, CANDLE_HYPERLIQUID_BUILDER_ADDRESS]) {
+      const { client: c, calls } = await client(
+        [
+          trading(),
+          abstraction(),
+          json(200, {
+            success: true,
+            ready: true,
+            walletId: WALLET,
+            address: ADDRESS,
+            network: "mainnet",
+            mode: "default",
+            standardMode: true,
+            accountValue: "10",
+            withdrawable: "10",
+            builder,
+            approvedFeeTenthsBps: 100,
+          }),
+        ],
+        { hyperliquidBuilder: undefined },
+      )
+      const setup = c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })
+      if (builder === BUILDER) await expect(setup).rejects.toThrow("builder that is not Candle's")
+      else
+        expect(await setup).toMatchObject({
+          ready: true,
+          preview: { builderTrust: { source: "release", address: builder } },
+        })
+      expect(calls.some((call) => call.url.endsWith("/sign") || call.url.endsWith("/perps/config"))).toBe(false)
+    }
   })
 })
 
