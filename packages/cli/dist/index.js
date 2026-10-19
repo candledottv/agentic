@@ -5541,245 +5541,402 @@ var init_profiles = __esm(() => {
   API_KEY_PREFIXES = ["cndl_live_", "cndl_test_"];
 });
 
-// src/file-lock.ts
-import { open, rm, stat } from "node:fs/promises";
-async function withFileLock(target, fn) {
-  const lockPath = `${target}.lock`;
-  const deadline = Date.now() + TIMEOUT_MS;
+// src/wallet-keystore.ts
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join as join2 } from "node:path";
+function defaultTeeKeystorePath(env, home) {
+  return join2(candleConfigDir(env, home), "tee-wallets.enc");
+}
+function legacyTeeKeystorePath(env, home) {
+  return join2(candleConfigDir(env, home), "hot-wallets.enc");
+}
+async function deriveKeystoreKey(passphrase, salt, iterations) {
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
+    "deriveKey"
+  ]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function createKeystore(passphrase) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
+}
+async function serializeKeystore(entries, key, salt, iterations, purpose) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
+  const file = {
+    version: KEYSTORE_VERSION,
+    createdAt: new Date().toISOString(),
+    kdf: "PBKDF2-HMAC-SHA256",
+    iterations,
+    salt: b64(salt),
+    cipher: "AES-256-GCM",
+    iv: b64(iv),
+    ciphertext: b64(new Uint8Array(sealed)),
+    ...purpose !== undefined && purpose !== "wallets" ? { purpose } : {}
+  };
+  return `${JSON.stringify(file, null, 2)}
+`;
+}
+async function readKeystore(raw, passphrase, opts = {}) {
+  let file;
+  try {
+    file = JSON.parse(raw);
+  } catch {
+    throw new Error("The keystore file is not valid JSON.");
+  }
+  if (file.version !== KEYSTORE_VERSION) {
+    throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
+  }
+  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
+  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
+    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
+  }
+  if (purpose === TEE_KEYSTORE_PURPOSE) {
+    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
+      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
+    }
+    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
+      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
+    }
+  }
+  const salt = unb64(file.salt);
+  const key = await deriveKeystoreKey(passphrase, salt, file.iterations);
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(file.iv) }, key, unb64(file.ciphertext));
+  } catch {
+    throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
+  }
+  const decoded = JSON.parse(new TextDecoder().decode(plain));
+  return {
+    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
+    key,
+    salt,
+    iterations: file.iterations
+  };
+}
+async function writeKeystoreFile(path, contents) {
+  const dir = dirname(path);
+  const created = await mkdir(dir, { recursive: true });
+  if (created !== undefined)
+    await chmod(dir, 448).catch(() => {});
+  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
+  await writeFile(tmpPath, contents, { encoding: "utf8", mode: 384 });
+  await chmod(tmpPath, 384);
+  await rename(tmpPath, path);
+}
+function keystoreLockPath(path) {
+  return `${path}.lock`;
+}
+async function withKeystoreLock(path, clock, fn, opts = {}) {
+  const lockPath = keystoreLockPath(path);
+  const waitMs = opts.waitMs ?? 1e4;
+  const pollMs = opts.pollMs ?? 100;
+  await mkdir(dirname(path), { recursive: true });
+  const started = clock.now();
   for (;; ) {
     try {
-      await (await open(lockPath, "wx")).close();
+      await mkdir(lockPath);
       break;
     } catch (error) {
-      if (error.code !== "EEXIST")
+      if (error?.code !== "EEXIST")
         throw error;
-      const age = await stat(lockPath).then((s) => Date.now() - s.mtimeMs).catch(() => 0);
-      if (age > STALE_MS) {
-        await rm(lockPath, { force: true });
-        continue;
+      if (clock.now() - started >= waitMs) {
+        let owner = null;
+        try {
+          owner = (await readFile(join2(lockPath, "owner"), "utf8")).trim() || null;
+        } catch {
+          owner = null;
+        }
+        throw new KeystoreLockedError(lockPath, owner);
       }
-      if (Date.now() > deadline) {
-        throw new Error(`Timed out waiting for ${lockPath}. Another candle process is writing; if none is running, delete that file.`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+      await clock.sleep(pollMs);
     }
   }
   try {
+    await writeFile(join2(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
+`, { encoding: "utf8", mode: 384 }).catch(() => {});
     return await fn();
   } finally {
-    await rm(lockPath, { force: true });
+    await rm(lockPath, { recursive: true, force: true });
   }
 }
-var STALE_MS = 30000, RETRY_MS = 25, TIMEOUT_MS = 1e4;
-var init_file_lock = () => {};
-
-// src/secret-store.ts
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join as join2 } from "node:path";
-function walletSignerRef(walletId) {
-  return `wallet_signer_${walletId}`;
-}
-function importPendingSignerRef(chain2, address) {
-  return `import_pending_${chain2}_${address}`;
-}
-function pemToStoredSigner(pem) {
-  return pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
-}
-function storedSignerToPem(stored) {
-  const lines = stored.match(/.{1,64}/g) ?? [stored];
-  return `-----BEGIN PRIVATE KEY-----
-${lines.join(`
-`)}
------END PRIVATE KEY-----
-`;
-}
-function configDir() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join2(homedir(), ".config", "candle");
-}
-function defaultCredentialsPath() {
-  return join2(configDir(), "credentials.enc");
-}
-function defaultSecretsPath(env = process.env) {
-  return join2(env.CANDLE_CONFIG_DIR?.trim() || join2(homedir(), ".config", "candle"), "secrets.enc");
-}
-async function deriveKey(passphrase, salt, iterations) {
-  const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
-    "deriveKey"
-  ]);
-  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-
-class EncryptedFileSecretStore {
-  path;
-  iterations;
-  cachedPassphrase;
-  constructor(options = {}) {
-    this.path = options.path ?? defaultCredentialsPath();
-    this.iterations = options.iterations ?? PBKDF2_ITERATIONS;
-  }
-  async get(ref) {
-    const passphrase = await this.resolvePassphrase();
-    const contents = await this.readContents();
-    const entry = contents[ref];
-    if (!entry)
-      return null;
-    const salt = fromBase64(entry.salt);
-    const key = await deriveKey(passphrase, salt, entry.iterations);
-    const iv = fromBase64(entry.iv);
-    const ciphertext = fromBase64(entry.ciphertext);
-    let plaintext;
-    try {
-      plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
-    } catch {
-      throw new Error(`Could not decrypt the credential for "${ref}" in ${this.path}. CANDLE_KEYRING_PASSPHRASE is likely wrong for this file.`);
+var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, KEYSTORE_ITERATIONS = 210000, b64 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
+var init_wallet_keystore = __esm(() => {
+  init_store();
+  KeystoreLockedError = class KeystoreLockedError extends Error {
+    lockPath;
+    owner;
+    constructor(lockPath, owner) {
+      super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
+      this.lockPath = lockPath;
+      this.owner = owner;
+      this.name = "KeystoreLockedError";
     }
-    return new TextDecoder().decode(plaintext);
-  }
-  async set(ref, value) {
-    const passphrase = await this.resolvePassphrase();
-    return withFileLock(this.path, async () => {
-      const contents = await this.readContents();
-      const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES));
-      const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES));
-      const key = await deriveKey(passphrase, salt, this.iterations);
-      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
-      contents[ref] = {
-        salt: toBase64(salt),
-        iv: toBase64(iv),
-        ciphertext: toBase64(new Uint8Array(ciphertext)),
-        iterations: this.iterations
-      };
-      await this.writeContents(contents);
-    });
-  }
-  async delete(ref) {
-    await this.resolvePassphrase();
-    return withFileLock(this.path, async () => {
-      const contents = await this.readContents();
-      if (!Object.hasOwn(contents, ref))
-        return;
-      delete contents[ref];
-      await this.writeContents(contents);
-    });
-  }
-  async resolvePassphrase() {
-    if (this.cachedPassphrase !== undefined)
-      return this.cachedPassphrase;
-    const fromEnv = process.env.CANDLE_KEYRING_PASSPHRASE;
-    if (fromEnv) {
-      this.cachedPassphrase = fromEnv;
-      return fromEnv;
-    }
-    if (process.stdin.isTTY) {
-      const prompted = await readHiddenLine("Passphrase for Candle credential store: ", realPromptStreams());
-      this.cachedPassphrase = prompted;
-      return prompted;
-    }
-    throw new Error("No keychain available and no CANDLE_KEYRING_PASSPHRASE set; set it to use the encrypted file store on this machine");
-  }
-  async readContents() {
-    let raw;
-    try {
-      raw = await readFile(this.path, "utf8");
-    } catch (err) {
-      if (err.code === "ENOENT")
-        return {};
-      throw err;
-    }
-    try {
-      return JSON.parse(raw);
-    } catch {
-      throw new Error(`The credentials file at ${this.path} is not valid JSON and cannot be read. Delete it and re-run ` + "the command that stores your device token / API key to recreate it.");
-    }
-  }
-  async writeContents(contents) {
-    const dir = dirname(this.path);
-    await mkdir(dir, { recursive: true });
-    await chmod(dir, 448);
-    const tmpPath = `${this.path}.${crypto.randomUUID()}.tmp`;
-    await writeFile(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 384 });
-    await chmod(tmpPath, 384);
-    await rename(tmpPath, this.path);
-  }
-}
-async function promptHiddenSecret(promptText) {
-  if (!process.stdin.isTTY) {
-    throw new Error("No TTY available for hidden input; run this in a terminal.");
-  }
-  return readHiddenLine(promptText, realPromptStreams());
-}
-function realPromptStreams() {
-  return { input: process.stdin, output: process.stderr };
-}
-async function promptVisibleLine(promptText) {
-  if (!process.stdin.isTTY) {
-    throw new Error("No TTY available for interactive input; this command cannot run unattended");
-  }
-  return readVisibleLine(promptText, realPromptStreams());
-}
-async function readVisibleLine(promptText, io) {
-  const readline = await import("node:readline");
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
-    rl.question(promptText, (answer) => {
-      rl.close();
-      resolve(answer);
-    });
-  });
-}
-async function readHiddenLine(promptText, io) {
-  const readline = await import("node:readline");
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
-    const rlInternals = rl;
-    rlInternals._writeToOutput = (text) => {
-      if (text === promptText)
-        io.output.write(text);
-    };
-    rl.question(promptText, (answer) => {
-      rl.close();
-      io.output.write(`
-`);
-      resolve(answer);
-    });
-  });
-}
-function toBase64(bytes) {
-  return Buffer.from(bytes).toString("base64");
-}
-function fromBase64(base642) {
-  return new Uint8Array(Buffer.from(base642, "base64"));
-}
-var SECRET_REFS, PBKDF2_ITERATIONS = 210000, SALT_LENGTH_BYTES = 16, IV_LENGTH_BYTES = 12;
-var init_secret_store = __esm(() => {
-  init_file_lock();
-  SECRET_REFS = {
-    deviceToken: "device_token",
-    apiKey: "api_key"
   };
 });
 
-// src/deps.ts
-async function resolveDeviceToken(deps, profile) {
-  const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim();
-  if (fromEnv)
-    return fromEnv;
-  const ref = profile ? profileSecretRef(profile, "deviceToken") : SECRET_REFS.deviceToken;
-  const stored = await deps.store.get(ref);
-  return stored ?? undefined;
-}
-async function resolveApiKey(deps, profile) {
-  const fromEnv = deps.env.CANDLE_API_KEY?.trim();
-  if (fromEnv)
-    return fromEnv;
-  const ref = profile ? profileSecretRef(profile, "apiKey") : SECRET_REFS.apiKey;
-  const stored = await deps.store.get(ref);
-  return stored ?? undefined;
-}
-var init_deps = __esm(() => {
-  init_profiles();
-  init_secret_store();
+// ../../node_modules/@noble/hashes/esm/_blake.js
+var BSIGMA;
+var init__blake = __esm(() => {
+  BSIGMA = /* @__PURE__ */ Uint8Array.from([
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    14,
+    10,
+    4,
+    8,
+    9,
+    15,
+    13,
+    6,
+    1,
+    12,
+    0,
+    2,
+    11,
+    7,
+    5,
+    3,
+    11,
+    8,
+    12,
+    0,
+    5,
+    2,
+    15,
+    13,
+    10,
+    14,
+    3,
+    6,
+    7,
+    1,
+    9,
+    4,
+    7,
+    9,
+    3,
+    1,
+    13,
+    12,
+    11,
+    14,
+    2,
+    6,
+    5,
+    10,
+    4,
+    0,
+    15,
+    8,
+    9,
+    0,
+    5,
+    7,
+    2,
+    4,
+    10,
+    15,
+    14,
+    1,
+    11,
+    12,
+    6,
+    8,
+    3,
+    13,
+    2,
+    12,
+    6,
+    10,
+    0,
+    11,
+    8,
+    3,
+    4,
+    13,
+    7,
+    5,
+    15,
+    14,
+    1,
+    9,
+    12,
+    5,
+    1,
+    15,
+    14,
+    13,
+    4,
+    10,
+    0,
+    7,
+    6,
+    3,
+    9,
+    2,
+    8,
+    11,
+    13,
+    11,
+    7,
+    14,
+    12,
+    1,
+    3,
+    9,
+    5,
+    0,
+    15,
+    4,
+    8,
+    6,
+    2,
+    10,
+    6,
+    15,
+    14,
+    9,
+    11,
+    3,
+    0,
+    8,
+    12,
+    2,
+    13,
+    7,
+    1,
+    4,
+    10,
+    5,
+    10,
+    2,
+    8,
+    4,
+    7,
+    6,
+    1,
+    5,
+    15,
+    11,
+    9,
+    14,
+    3,
+    12,
+    13,
+    0,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    14,
+    10,
+    4,
+    8,
+    9,
+    15,
+    13,
+    6,
+    1,
+    12,
+    0,
+    2,
+    11,
+    7,
+    5,
+    3,
+    11,
+    8,
+    12,
+    0,
+    5,
+    2,
+    15,
+    13,
+    10,
+    14,
+    3,
+    6,
+    7,
+    1,
+    9,
+    4,
+    7,
+    9,
+    3,
+    1,
+    13,
+    12,
+    11,
+    14,
+    2,
+    6,
+    5,
+    10,
+    4,
+    0,
+    15,
+    8,
+    9,
+    0,
+    5,
+    7,
+    2,
+    4,
+    10,
+    15,
+    14,
+    1,
+    11,
+    12,
+    6,
+    8,
+    3,
+    13,
+    2,
+    12,
+    6,
+    10,
+    0,
+    11,
+    8,
+    3,
+    4,
+    13,
+    7,
+    5,
+    15,
+    14,
+    1,
+    9
+  ]);
 });
 
 // ../../node_modules/@noble/hashes/esm/_md.js
@@ -5942,6 +6099,581 @@ var init__md = __esm(() => {
   ]);
 });
 
+// ../../node_modules/@noble/hashes/esm/blake2.js
+function G1b(a, b, c, d, msg, x) {
+  const Xl = msg[x], Xh = msg[x + 1];
+  let Al = BBUF[2 * a], Ah = BBUF[2 * a + 1];
+  let Bl = BBUF[2 * b], Bh = BBUF[2 * b + 1];
+  let Cl = BBUF[2 * c], Ch = BBUF[2 * c + 1];
+  let Dl = BBUF[2 * d], Dh = BBUF[2 * d + 1];
+  let ll = add3L(Al, Bl, Xl);
+  Ah = add3H(ll, Ah, Bh, Xh);
+  Al = ll | 0;
+  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
+  ({ Dh, Dl } = { Dh: rotr32H(Dh, Dl), Dl: rotr32L(Dh, Dl) });
+  ({ h: Ch, l: Cl } = add(Ch, Cl, Dh, Dl));
+  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
+  ({ Bh, Bl } = { Bh: rotrSH(Bh, Bl, 24), Bl: rotrSL(Bh, Bl, 24) });
+  BBUF[2 * a] = Al, BBUF[2 * a + 1] = Ah;
+  BBUF[2 * b] = Bl, BBUF[2 * b + 1] = Bh;
+  BBUF[2 * c] = Cl, BBUF[2 * c + 1] = Ch;
+  BBUF[2 * d] = Dl, BBUF[2 * d + 1] = Dh;
+}
+function G2b(a, b, c, d, msg, x) {
+  const Xl = msg[x], Xh = msg[x + 1];
+  let Al = BBUF[2 * a], Ah = BBUF[2 * a + 1];
+  let Bl = BBUF[2 * b], Bh = BBUF[2 * b + 1];
+  let Cl = BBUF[2 * c], Ch = BBUF[2 * c + 1];
+  let Dl = BBUF[2 * d], Dh = BBUF[2 * d + 1];
+  let ll = add3L(Al, Bl, Xl);
+  Ah = add3H(ll, Ah, Bh, Xh);
+  Al = ll | 0;
+  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
+  ({ Dh, Dl } = { Dh: rotrSH(Dh, Dl, 16), Dl: rotrSL(Dh, Dl, 16) });
+  ({ h: Ch, l: Cl } = add(Ch, Cl, Dh, Dl));
+  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
+  ({ Bh, Bl } = { Bh: rotrBH(Bh, Bl, 63), Bl: rotrBL(Bh, Bl, 63) });
+  BBUF[2 * a] = Al, BBUF[2 * a + 1] = Ah;
+  BBUF[2 * b] = Bl, BBUF[2 * b + 1] = Bh;
+  BBUF[2 * c] = Cl, BBUF[2 * c + 1] = Ch;
+  BBUF[2 * d] = Dl, BBUF[2 * d + 1] = Dh;
+}
+function checkBlake2Opts(outputLen, opts = {}, keyLen, saltLen, persLen) {
+  anumber(keyLen);
+  if (outputLen < 0 || outputLen > keyLen)
+    throw new Error("outputLen bigger than keyLen");
+  const { key, salt, personalization } = opts;
+  if (key !== undefined && (key.length < 1 || key.length > keyLen))
+    throw new Error("key length must be undefined or 1.." + keyLen);
+  if (salt !== undefined && salt.length !== saltLen)
+    throw new Error("salt must be undefined or " + saltLen);
+  if (personalization !== undefined && personalization.length !== persLen)
+    throw new Error("personalization must be undefined or " + persLen);
+}
+var B2B_IV, BBUF, BLAKE2, BLAKE2b, blake2b;
+var init_blake2 = __esm(() => {
+  init__blake();
+  init__u64();
+  init_utils();
+  B2B_IV = /* @__PURE__ */ Uint32Array.from([
+    4089235720,
+    1779033703,
+    2227873595,
+    3144134277,
+    4271175723,
+    1013904242,
+    1595750129,
+    2773480762,
+    2917565137,
+    1359893119,
+    725511199,
+    2600822924,
+    4215389547,
+    528734635,
+    327033209,
+    1541459225
+  ]);
+  BBUF = /* @__PURE__ */ new Uint32Array(32);
+  BLAKE2 = class BLAKE2 extends Hash {
+    constructor(blockLen, outputLen) {
+      super();
+      this.finished = false;
+      this.destroyed = false;
+      this.length = 0;
+      this.pos = 0;
+      anumber(blockLen);
+      anumber(outputLen);
+      this.blockLen = blockLen;
+      this.outputLen = outputLen;
+      this.buffer = new Uint8Array(blockLen);
+      this.buffer32 = u32(this.buffer);
+    }
+    update(data) {
+      aexists(this);
+      data = toBytes(data);
+      abytes(data);
+      const { blockLen, buffer, buffer32 } = this;
+      const len = data.length;
+      const offset = data.byteOffset;
+      const buf = data.buffer;
+      for (let pos = 0;pos < len; ) {
+        if (this.pos === blockLen) {
+          swap32IfBE(buffer32);
+          this.compress(buffer32, 0, false);
+          swap32IfBE(buffer32);
+          this.pos = 0;
+        }
+        const take = Math.min(blockLen - this.pos, len - pos);
+        const dataOffset = offset + pos;
+        if (take === blockLen && !(dataOffset % 4) && pos + take < len) {
+          const data32 = new Uint32Array(buf, dataOffset, Math.floor((len - pos) / 4));
+          swap32IfBE(data32);
+          for (let pos32 = 0;pos + blockLen < len; pos32 += buffer32.length, pos += blockLen) {
+            this.length += blockLen;
+            this.compress(data32, pos32, false);
+          }
+          swap32IfBE(data32);
+          continue;
+        }
+        buffer.set(data.subarray(pos, pos + take), this.pos);
+        this.pos += take;
+        this.length += take;
+        pos += take;
+      }
+      return this;
+    }
+    digestInto(out) {
+      aexists(this);
+      aoutput(out, this);
+      const { pos, buffer32 } = this;
+      this.finished = true;
+      clean(this.buffer.subarray(pos));
+      swap32IfBE(buffer32);
+      this.compress(buffer32, 0, true);
+      swap32IfBE(buffer32);
+      const out32 = u32(out);
+      this.get().forEach((v, i) => out32[i] = swap8IfBE(v));
+    }
+    digest() {
+      const { buffer, outputLen } = this;
+      this.digestInto(buffer);
+      const res = buffer.slice(0, outputLen);
+      this.destroy();
+      return res;
+    }
+    _cloneInto(to) {
+      const { buffer, length, finished, destroyed, outputLen, pos } = this;
+      to || (to = new this.constructor({ dkLen: outputLen }));
+      to.set(...this.get());
+      to.buffer.set(buffer);
+      to.destroyed = destroyed;
+      to.finished = finished;
+      to.length = length;
+      to.pos = pos;
+      to.outputLen = outputLen;
+      return to;
+    }
+    clone() {
+      return this._cloneInto();
+    }
+  };
+  BLAKE2b = class BLAKE2b extends BLAKE2 {
+    constructor(opts = {}) {
+      const olen = opts.dkLen === undefined ? 64 : opts.dkLen;
+      super(128, olen);
+      this.v0l = B2B_IV[0] | 0;
+      this.v0h = B2B_IV[1] | 0;
+      this.v1l = B2B_IV[2] | 0;
+      this.v1h = B2B_IV[3] | 0;
+      this.v2l = B2B_IV[4] | 0;
+      this.v2h = B2B_IV[5] | 0;
+      this.v3l = B2B_IV[6] | 0;
+      this.v3h = B2B_IV[7] | 0;
+      this.v4l = B2B_IV[8] | 0;
+      this.v4h = B2B_IV[9] | 0;
+      this.v5l = B2B_IV[10] | 0;
+      this.v5h = B2B_IV[11] | 0;
+      this.v6l = B2B_IV[12] | 0;
+      this.v6h = B2B_IV[13] | 0;
+      this.v7l = B2B_IV[14] | 0;
+      this.v7h = B2B_IV[15] | 0;
+      checkBlake2Opts(olen, opts, 64, 16, 16);
+      let { key, personalization, salt } = opts;
+      let keyLength = 0;
+      if (key !== undefined) {
+        key = toBytes(key);
+        keyLength = key.length;
+      }
+      this.v0l ^= this.outputLen | keyLength << 8 | 1 << 16 | 1 << 24;
+      if (salt !== undefined) {
+        salt = toBytes(salt);
+        const slt = u32(salt);
+        this.v4l ^= swap8IfBE(slt[0]);
+        this.v4h ^= swap8IfBE(slt[1]);
+        this.v5l ^= swap8IfBE(slt[2]);
+        this.v5h ^= swap8IfBE(slt[3]);
+      }
+      if (personalization !== undefined) {
+        personalization = toBytes(personalization);
+        const pers = u32(personalization);
+        this.v6l ^= swap8IfBE(pers[0]);
+        this.v6h ^= swap8IfBE(pers[1]);
+        this.v7l ^= swap8IfBE(pers[2]);
+        this.v7h ^= swap8IfBE(pers[3]);
+      }
+      if (key !== undefined) {
+        const tmp = new Uint8Array(this.blockLen);
+        tmp.set(key);
+        this.update(tmp);
+      }
+    }
+    get() {
+      let { v0l, v0h, v1l, v1h, v2l, v2h, v3l, v3h, v4l, v4h, v5l, v5h, v6l, v6h, v7l, v7h } = this;
+      return [v0l, v0h, v1l, v1h, v2l, v2h, v3l, v3h, v4l, v4h, v5l, v5h, v6l, v6h, v7l, v7h];
+    }
+    set(v0l, v0h, v1l, v1h, v2l, v2h, v3l, v3h, v4l, v4h, v5l, v5h, v6l, v6h, v7l, v7h) {
+      this.v0l = v0l | 0;
+      this.v0h = v0h | 0;
+      this.v1l = v1l | 0;
+      this.v1h = v1h | 0;
+      this.v2l = v2l | 0;
+      this.v2h = v2h | 0;
+      this.v3l = v3l | 0;
+      this.v3h = v3h | 0;
+      this.v4l = v4l | 0;
+      this.v4h = v4h | 0;
+      this.v5l = v5l | 0;
+      this.v5h = v5h | 0;
+      this.v6l = v6l | 0;
+      this.v6h = v6h | 0;
+      this.v7l = v7l | 0;
+      this.v7h = v7h | 0;
+    }
+    compress(msg, offset, isLast) {
+      this.get().forEach((v, i) => BBUF[i] = v);
+      BBUF.set(B2B_IV, 16);
+      let { h, l } = fromBig(BigInt(this.length));
+      BBUF[24] = B2B_IV[8] ^ l;
+      BBUF[25] = B2B_IV[9] ^ h;
+      if (isLast) {
+        BBUF[28] = ~BBUF[28];
+        BBUF[29] = ~BBUF[29];
+      }
+      let j = 0;
+      const s = BSIGMA;
+      for (let i = 0;i < 12; i++) {
+        G1b(0, 4, 8, 12, msg, offset + 2 * s[j++]);
+        G2b(0, 4, 8, 12, msg, offset + 2 * s[j++]);
+        G1b(1, 5, 9, 13, msg, offset + 2 * s[j++]);
+        G2b(1, 5, 9, 13, msg, offset + 2 * s[j++]);
+        G1b(2, 6, 10, 14, msg, offset + 2 * s[j++]);
+        G2b(2, 6, 10, 14, msg, offset + 2 * s[j++]);
+        G1b(3, 7, 11, 15, msg, offset + 2 * s[j++]);
+        G2b(3, 7, 11, 15, msg, offset + 2 * s[j++]);
+        G1b(0, 5, 10, 15, msg, offset + 2 * s[j++]);
+        G2b(0, 5, 10, 15, msg, offset + 2 * s[j++]);
+        G1b(1, 6, 11, 12, msg, offset + 2 * s[j++]);
+        G2b(1, 6, 11, 12, msg, offset + 2 * s[j++]);
+        G1b(2, 7, 8, 13, msg, offset + 2 * s[j++]);
+        G2b(2, 7, 8, 13, msg, offset + 2 * s[j++]);
+        G1b(3, 4, 9, 14, msg, offset + 2 * s[j++]);
+        G2b(3, 4, 9, 14, msg, offset + 2 * s[j++]);
+      }
+      this.v0l ^= BBUF[0] ^ BBUF[16];
+      this.v0h ^= BBUF[1] ^ BBUF[17];
+      this.v1l ^= BBUF[2] ^ BBUF[18];
+      this.v1h ^= BBUF[3] ^ BBUF[19];
+      this.v2l ^= BBUF[4] ^ BBUF[20];
+      this.v2h ^= BBUF[5] ^ BBUF[21];
+      this.v3l ^= BBUF[6] ^ BBUF[22];
+      this.v3h ^= BBUF[7] ^ BBUF[23];
+      this.v4l ^= BBUF[8] ^ BBUF[24];
+      this.v4h ^= BBUF[9] ^ BBUF[25];
+      this.v5l ^= BBUF[10] ^ BBUF[26];
+      this.v5h ^= BBUF[11] ^ BBUF[27];
+      this.v6l ^= BBUF[12] ^ BBUF[28];
+      this.v6h ^= BBUF[13] ^ BBUF[29];
+      this.v7l ^= BBUF[14] ^ BBUF[30];
+      this.v7h ^= BBUF[15] ^ BBUF[31];
+      clean(BBUF);
+    }
+    destroy() {
+      this.destroyed = true;
+      clean(this.buffer32);
+      this.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+  };
+  blake2b = /* @__PURE__ */ createOptHasher((opts) => new BLAKE2b(opts));
+});
+
+// ../../node_modules/@noble/hashes/esm/argon2.js
+function mul(a, b) {
+  const aL = a & 65535;
+  const aH = a >>> 16;
+  const bL = b & 65535;
+  const bH = b >>> 16;
+  const ll = Math.imul(aL, bL);
+  const hl = Math.imul(aH, bL);
+  const lh = Math.imul(aL, bH);
+  const hh = Math.imul(aH, bH);
+  const carry = (ll >>> 16) + (hl & 65535) + lh;
+  const high = hh + (hl >>> 16) + (carry >>> 16) | 0;
+  const low = carry << 16 | ll & 65535;
+  return { h: high, l: low };
+}
+function mul2(a, b) {
+  const { h, l } = mul(a, b);
+  return { h: (h << 1 | l >>> 31) & 4294967295, l: l << 1 & 4294967295 };
+}
+function blamka(Ah, Al, Bh, Bl) {
+  const { h: Ch, l: Cl } = mul2(Al, Bl);
+  const Rll = add3L(Al, Bl, Cl);
+  return { h: add3H(Rll, Ah, Bh, Ch), l: Rll | 0 };
+}
+function G(a, b, c, d) {
+  let Al = A2_BUF[2 * a], Ah = A2_BUF[2 * a + 1];
+  let Bl = A2_BUF[2 * b], Bh = A2_BUF[2 * b + 1];
+  let Cl = A2_BUF[2 * c], Ch = A2_BUF[2 * c + 1];
+  let Dl = A2_BUF[2 * d], Dh = A2_BUF[2 * d + 1];
+  ({ h: Ah, l: Al } = blamka(Ah, Al, Bh, Bl));
+  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
+  ({ Dh, Dl } = { Dh: rotr32H(Dh, Dl), Dl: rotr32L(Dh, Dl) });
+  ({ h: Ch, l: Cl } = blamka(Ch, Cl, Dh, Dl));
+  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
+  ({ Bh, Bl } = { Bh: rotrSH(Bh, Bl, 24), Bl: rotrSL(Bh, Bl, 24) });
+  ({ h: Ah, l: Al } = blamka(Ah, Al, Bh, Bl));
+  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
+  ({ Dh, Dl } = { Dh: rotrSH(Dh, Dl, 16), Dl: rotrSL(Dh, Dl, 16) });
+  ({ h: Ch, l: Cl } = blamka(Ch, Cl, Dh, Dl));
+  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
+  ({ Bh, Bl } = { Bh: rotrBH(Bh, Bl, 63), Bl: rotrBL(Bh, Bl, 63) });
+  A2_BUF[2 * a] = Al, A2_BUF[2 * a + 1] = Ah;
+  A2_BUF[2 * b] = Bl, A2_BUF[2 * b + 1] = Bh;
+  A2_BUF[2 * c] = Cl, A2_BUF[2 * c + 1] = Ch;
+  A2_BUF[2 * d] = Dl, A2_BUF[2 * d + 1] = Dh;
+}
+function P(v00, v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15) {
+  G(v00, v04, v08, v12);
+  G(v01, v05, v09, v13);
+  G(v02, v06, v10, v14);
+  G(v03, v07, v11, v15);
+  G(v00, v05, v10, v15);
+  G(v01, v06, v11, v12);
+  G(v02, v07, v08, v13);
+  G(v03, v04, v09, v14);
+}
+function block(x, xPos, yPos, outPos, needXor) {
+  for (let i = 0;i < 256; i++)
+    A2_BUF[i] = x[xPos + i] ^ x[yPos + i];
+  for (let i = 0;i < 128; i += 16) {
+    P(i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7, i + 8, i + 9, i + 10, i + 11, i + 12, i + 13, i + 14, i + 15);
+  }
+  for (let i = 0;i < 16; i += 2) {
+    P(i, i + 1, i + 16, i + 17, i + 32, i + 33, i + 48, i + 49, i + 64, i + 65, i + 80, i + 81, i + 96, i + 97, i + 112, i + 113);
+  }
+  if (needXor)
+    for (let i = 0;i < 256; i++)
+      x[outPos + i] ^= A2_BUF[i] ^ x[xPos + i] ^ x[yPos + i];
+  else
+    for (let i = 0;i < 256; i++)
+      x[outPos + i] = A2_BUF[i] ^ x[xPos + i] ^ x[yPos + i];
+  clean(A2_BUF);
+}
+function Hp(A, dkLen) {
+  const A8 = u8(A);
+  const T = new Uint32Array(1);
+  const T8 = u8(T);
+  T[0] = dkLen;
+  if (dkLen <= 64)
+    return blake2b.create({ dkLen }).update(T8).update(A8).digest();
+  const out = new Uint8Array(dkLen);
+  let V = blake2b.create({}).update(T8).update(A8).digest();
+  let pos = 0;
+  out.set(V.subarray(0, 32));
+  pos += 32;
+  for (;dkLen - pos > 64; pos += 32) {
+    const Vh = blake2b.create({}).update(V);
+    Vh.digestInto(V);
+    Vh.destroy();
+    out.set(V.subarray(0, 32), pos);
+  }
+  out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
+  clean(V, T);
+  return u32(out);
+}
+function indexAlpha(r, s, laneLen, segmentLen, index, randL, sameLane = false) {
+  let area;
+  if (r === 0) {
+    if (s === 0)
+      area = index - 1;
+    else if (sameLane)
+      area = s * segmentLen + index - 1;
+    else
+      area = s * segmentLen + (index == 0 ? -1 : 0);
+  } else if (sameLane)
+    area = laneLen - segmentLen + index - 1;
+  else
+    area = laneLen - segmentLen + (index == 0 ? -1 : 0);
+  const startPos = r !== 0 && s !== ARGON2_SYNC_POINTS - 1 ? (s + 1) * segmentLen : 0;
+  const rel = area - 1 - mul(area, mul(randL, randL).h).h;
+  return (startPos + rel) % laneLen;
+}
+function isU32(num) {
+  return Number.isSafeInteger(num) && num >= 0 && num < maxUint32;
+}
+function argon2Opts(opts) {
+  const merged = {
+    version: 19,
+    dkLen: 32,
+    maxmem: maxUint32 - 1,
+    asyncTick: 10
+  };
+  for (let [k, v] of Object.entries(opts))
+    if (v != null)
+      merged[k] = v;
+  const { dkLen, p, m, t, version, onProgress } = merged;
+  if (!isU32(dkLen) || dkLen < 4)
+    throw new Error("dkLen should be at least 4 bytes");
+  if (!isU32(p) || p < 1 || p >= Math.pow(2, 24))
+    throw new Error("p should be 1 <= p < 2^24");
+  if (!isU32(m))
+    throw new Error("m should be 0 <= m < 2^32");
+  if (!isU32(t) || t < 1)
+    throw new Error("t (iterations) should be 1 <= t < 2^32");
+  if (onProgress !== undefined && typeof onProgress !== "function")
+    throw new Error("progressCb should be function");
+  if (!isU32(m) || m < 8 * p)
+    throw new Error("memory should be at least 8*p bytes");
+  if (version !== 16 && version !== 19)
+    throw new Error("unknown version=" + version);
+  return merged;
+}
+function argon2Init(password, salt, type, opts) {
+  password = kdfInputToBytes(password);
+  salt = kdfInputToBytes(salt);
+  abytes(password);
+  abytes(salt);
+  if (!isU32(password.length))
+    throw new Error("password should be less than 4 GB");
+  if (!isU32(salt.length) || salt.length < 8)
+    throw new Error("salt should be at least 8 bytes and less than 4 GB");
+  if (!Object.values(AT).includes(type))
+    throw new Error("invalid type");
+  let { p, dkLen, m, t, version, key, personalization, maxmem, onProgress, asyncTick } = argon2Opts(opts);
+  key = abytesOrZero(key);
+  personalization = abytesOrZero(personalization);
+  const h = blake2b.create({});
+  const BUF = new Uint32Array(1);
+  const BUF8 = u8(BUF);
+  for (let item of [p, dkLen, m, t, version, type]) {
+    BUF[0] = item;
+    h.update(BUF8);
+  }
+  for (let i of [password, salt, key, personalization]) {
+    BUF[0] = i.length;
+    h.update(BUF8).update(i);
+  }
+  const H0 = new Uint32Array(18);
+  const H0_8 = u8(H0);
+  h.digestInto(H0_8);
+  const lanes = p;
+  const mP = 4 * p * Math.floor(m / (ARGON2_SYNC_POINTS * p));
+  const laneLen = Math.floor(mP / p);
+  const segmentLen = Math.floor(laneLen / ARGON2_SYNC_POINTS);
+  const memUsed = mP * 256;
+  if (!isU32(maxmem) || memUsed > maxmem)
+    throw new Error("mem should be less than 2**32, got: maxmem=" + maxmem + ", memused=" + memUsed);
+  const B = new Uint32Array(memUsed);
+  for (let l = 0;l < p; l++) {
+    const i = 256 * laneLen * l;
+    H0[17] = l;
+    H0[16] = 0;
+    B.set(Hp(H0, 1024), i);
+    H0[16] = 1;
+    B.set(Hp(H0, 1024), i + 256);
+  }
+  let perBlock = () => {};
+  if (onProgress) {
+    const totalBlock = t * ARGON2_SYNC_POINTS * p * segmentLen;
+    const callbackPer = Math.max(Math.floor(totalBlock / 1e4), 1);
+    let blockCnt = 0;
+    perBlock = () => {
+      blockCnt++;
+      if (onProgress && (!(blockCnt % callbackPer) || blockCnt === totalBlock))
+        onProgress(blockCnt / totalBlock);
+    };
+  }
+  clean(BUF, H0);
+  return { type, mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick };
+}
+function argon2Output(B, p, laneLen, dkLen) {
+  const B_final = new Uint32Array(256);
+  for (let l = 0;l < p; l++)
+    for (let j = 0;j < 256; j++)
+      B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
+  const res = u8(Hp(B_final, dkLen));
+  clean(B_final);
+  return res;
+}
+function processBlock(B, address, l, r, s, index, laneLen, segmentLen, lanes, offset, prev, dataIndependent, needXor) {
+  if (offset % laneLen)
+    prev = offset - 1;
+  let randL, randH;
+  if (dataIndependent) {
+    let i128 = index % 128;
+    if (i128 === 0) {
+      address[256 + 12]++;
+      block(address, 256, 2 * 256, 0, false);
+      block(address, 0, 2 * 256, 0, false);
+    }
+    randL = address[2 * i128];
+    randH = address[2 * i128 + 1];
+  } else {
+    const T = 256 * prev;
+    randL = B[T];
+    randH = B[T + 1];
+  }
+  const refLane = r === 0 && s === 0 ? l : randH % lanes;
+  const refPos = indexAlpha(r, s, laneLen, segmentLen, index, randL, refLane == l);
+  const refBlock = laneLen * refLane + refPos;
+  block(B, 256 * prev, 256 * refBlock, offset * 256, needXor);
+}
+async function argon2Async(type, password, salt, opts) {
+  const { mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick } = argon2Init(password, salt, type, opts);
+  const address = new Uint32Array(3 * 256);
+  address[256 + 6] = mP;
+  address[256 + 8] = t;
+  address[256 + 10] = type;
+  let ts = Date.now();
+  for (let r = 0;r < t; r++) {
+    const needXor = r !== 0 && version === 19;
+    address[256 + 0] = r;
+    for (let s = 0;s < ARGON2_SYNC_POINTS; s++) {
+      address[256 + 4] = s;
+      const dataIndependent = type == AT.Argon2i || type == AT.Argon2id && r === 0 && s < 2;
+      for (let l = 0;l < p; l++) {
+        address[256 + 2] = l;
+        address[256 + 12] = 0;
+        let startPos = 0;
+        if (r === 0 && s === 0) {
+          startPos = 2;
+          if (dataIndependent) {
+            address[256 + 12]++;
+            block(address, 256, 2 * 256, 0, false);
+            block(address, 0, 2 * 256, 0, false);
+          }
+        }
+        let offset = l * laneLen + s * segmentLen + startPos;
+        let prev = offset % laneLen ? offset - 1 : offset + laneLen - 1;
+        for (let index = startPos;index < segmentLen; index++, offset++, prev++) {
+          perBlock();
+          processBlock(B, address, l, r, s, index, laneLen, segmentLen, lanes, offset, prev, dataIndependent, needXor);
+          const diff = Date.now() - ts;
+          if (!(diff >= 0 && diff < asyncTick)) {
+            await nextTick();
+            ts += diff;
+          }
+        }
+      }
+    }
+  }
+  clean(address);
+  return argon2Output(B, p, laneLen, dkLen);
+}
+var AT, ARGON2_SYNC_POINTS = 4, abytesOrZero = (buf) => {
+  if (buf === undefined)
+    return Uint8Array.of();
+  return kdfInputToBytes(buf);
+}, A2_BUF, maxUint32, argon2idAsync = (password, salt, opts) => argon2Async(AT.Argon2id, password, salt, opts);
+var init_argon2 = __esm(() => {
+  init__u64();
+  init_blake2();
+  init_utils();
+  AT = { Argond2d: 0, Argon2i: 1, Argon2id: 2 };
+  A2_BUF = new Uint32Array(256);
+  maxUint32 = Math.pow(2, 32);
+});
+
 // ../../node_modules/@noble/hashes/esm/sha2.js
 var SHA256_K, SHA256_W, SHA256, K512, SHA512_Kh, SHA512_Kl, SHA512_W_H, SHA512_W_L, SHA512, SHA384, sha256, sha512, sha384;
 var init_sha2 = __esm(() => {
@@ -6028,17 +6760,17 @@ var init_sha2 = __esm(() => {
       this.H = SHA256_IV[7] | 0;
     }
     get() {
-      const { A, B, C, D, E, F, G, H } = this;
-      return [A, B, C, D, E, F, G, H];
+      const { A, B, C, D, E, F, G: G2, H } = this;
+      return [A, B, C, D, E, F, G2, H];
     }
-    set(A, B, C, D, E, F, G, H) {
+    set(A, B, C, D, E, F, G2, H) {
       this.A = A | 0;
       this.B = B | 0;
       this.C = C | 0;
       this.D = D | 0;
       this.E = E | 0;
       this.F = F | 0;
-      this.G = G | 0;
+      this.G = G2 | 0;
       this.H = H | 0;
     }
     process(view, offset) {
@@ -6051,14 +6783,14 @@ var init_sha2 = __esm(() => {
         const s1 = rotr(W2, 17) ^ rotr(W2, 19) ^ W2 >>> 10;
         SHA256_W[i] = s1 + SHA256_W[i - 7] + s0 + SHA256_W[i - 16] | 0;
       }
-      let { A, B, C, D, E, F, G, H } = this;
+      let { A, B, C, D, E, F, G: G2, H } = this;
       for (let i = 0;i < 64; i++) {
         const sigma1 = rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25);
-        const T1 = H + sigma1 + Chi(E, F, G) + SHA256_K[i] + SHA256_W[i] | 0;
+        const T1 = H + sigma1 + Chi(E, F, G2) + SHA256_K[i] + SHA256_W[i] | 0;
         const sigma0 = rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22);
         const T2 = sigma0 + Maj(A, B, C) | 0;
-        H = G;
-        G = F;
+        H = G2;
+        G2 = F;
         F = E;
         E = D + T1 | 0;
         D = C;
@@ -6072,9 +6804,9 @@ var init_sha2 = __esm(() => {
       D = D + this.D | 0;
       E = E + this.E | 0;
       F = F + this.F | 0;
-      G = G + this.G | 0;
+      G2 = G2 + this.G | 0;
       H = H + this.H | 0;
-      this.set(A, B, C, D, E, F, G, H);
+      this.set(A, B, C, D, E, F, G2, H);
     }
     roundClean() {
       clean(SHA256_W);
@@ -6305,75 +7037,366 @@ var init_sha2 = __esm(() => {
   sha384 = /* @__PURE__ */ createHasher(() => new SHA384);
 });
 
-// ../../node_modules/@noble/hashes/esm/hmac.js
-var HMAC, hmac = (hash, key, message) => new HMAC(hash, key).update(message).digest();
-var init_hmac = __esm(() => {
-  init_utils();
-  HMAC = class HMAC extends Hash {
-    constructor(hash, _key) {
-      super();
-      this.finished = false;
-      this.destroyed = false;
-      ahash(hash);
-      const key = toBytes(_key);
-      this.iHash = hash.create();
-      if (typeof this.iHash.update !== "function")
-        throw new Error("Expected instance of class which extends utils.Hash");
-      this.blockLen = this.iHash.blockLen;
-      this.outputLen = this.iHash.outputLen;
-      const blockLen = this.blockLen;
-      const pad = new Uint8Array(blockLen);
-      pad.set(key.length > blockLen ? hash.create().update(key).digest() : key);
-      for (let i = 0;i < pad.length; i++)
-        pad[i] ^= 54;
-      this.iHash.update(pad);
-      this.oHash = hash.create();
-      for (let i = 0;i < pad.length; i++)
-        pad[i] ^= 54 ^ 92;
-      this.oHash.update(pad);
-      clean(pad);
-    }
-    update(buf) {
-      aexists(this);
-      this.iHash.update(buf);
-      return this;
-    }
-    digestInto(out) {
-      aexists(this);
-      abytes(out, this.outputLen);
-      this.finished = true;
-      this.iHash.digestInto(out);
-      this.oHash.update(out);
-      this.oHash.digestInto(out);
-      this.destroy();
-    }
-    digest() {
-      const out = new Uint8Array(this.oHash.outputLen);
-      this.digestInto(out);
-      return out;
-    }
-    _cloneInto(to) {
-      to || (to = Object.create(Object.getPrototypeOf(this), {}));
-      const { oHash, iHash, finished, destroyed, blockLen, outputLen } = this;
-      to = to;
-      to.finished = finished;
-      to.destroyed = destroyed;
-      to.blockLen = blockLen;
-      to.outputLen = outputLen;
-      to.oHash = oHash._cloneInto(to.oHash);
-      to.iHash = iHash._cloneInto(to.iHash);
-      return to;
-    }
-    clone() {
-      return this._cloneInto();
-    }
-    destroy() {
-      this.destroyed = true;
-      this.oHash.destroy();
-      this.iHash.destroy();
+// ../../node_modules/@noble/hashes/esm/sha256.js
+var sha2562;
+var init_sha256 = __esm(() => {
+  init_sha2();
+  sha2562 = sha256;
+});
+
+// src/vault/canonical-json.ts
+function canonicalJson(value) {
+  return encode(value, "$");
+}
+function canonicalBytes(value) {
+  return new TextEncoder().encode(canonicalJson(value));
+}
+function encode(value, path) {
+  if (value === null)
+    throw new CanonicalJsonError(`null at ${path}: canonical JSON has no nulls`);
+  switch (typeof value) {
+    case "string":
+      return JSON.stringify(value);
+    case "boolean":
+      return value ? "true" : "false";
+    case "number":
+      if (!Number.isInteger(value)) {
+        throw new CanonicalJsonError(`non-integer number at ${path}: canonical JSON carries integers only`);
+      }
+      if (!Number.isSafeInteger(value)) {
+        throw new CanonicalJsonError(`integer at ${path} is outside the safe range`);
+      }
+      if (Object.is(value, -0))
+        throw new CanonicalJsonError(`negative zero at ${path}`);
+      return String(value);
+    case "object":
+      break;
+    default:
+      throw new CanonicalJsonError(`${typeof value} at ${path} cannot appear in canonical JSON`);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item, i) => encode(item, `${path}[${i}]`)).join(",")}]`;
+  }
+  const record = value;
+  const parts = [];
+  for (const key of Object.keys(record).sort()) {
+    const child = record[key];
+    if (child === undefined)
+      continue;
+    parts.push(`${JSON.stringify(key)}:${encode(child, `${path}.${key}`)}`);
+  }
+  return `{${parts.join(",")}}`;
+}
+var CanonicalJsonError;
+var init_canonical_json = __esm(() => {
+  CanonicalJsonError = class CanonicalJsonError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "CanonicalJsonError";
     }
   };
-  hmac.create = (hash, key) => new HMAC(hash, key);
+});
+
+// src/vault/errors.ts
+var exports_errors = {};
+__export(exports_errors, {
+  isVaultError: () => isVaultError,
+  VaultError: () => VaultError,
+  VAULT_ERROR_CODES: () => VAULT_ERROR_CODES
+});
+function isVaultError(error) {
+  return error instanceof VaultError;
+}
+var VAULT_ERROR_CODES, VaultError;
+var init_errors2 = __esm(() => {
+  VAULT_ERROR_CODES = [
+    "VAULT_MISSING",
+    "VAULT_EXISTS",
+    "VAULT_UNREADABLE",
+    "VAULT_FORMAT_UNKNOWN",
+    "VAULT_VERSION_UNSUPPORTED",
+    "VAULT_FIELD_UNKNOWN",
+    "VAULT_KDF_OUT_OF_BOUNDS",
+    "VAULT_UNLOCK_FAILED",
+    "VAULT_BLOB_TAMPERED",
+    "VAULT_INDEX_INVALID",
+    "VAULT_OLDER_COPY",
+    "VAULT_LOCKED",
+    "VAULT_CHANGED",
+    "VAULT_WRITE_FAILED",
+    "VAULT_VERIFY_FAILED",
+    "VAULT_NO_RECOVERABLE_FACTOR",
+    "VAULT_LAST_PASSPHRASE",
+    "VAULT_FACTOR_UNAVAILABLE",
+    "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
+    "VAULT_AUTHENTICATOR_NOT_READABLE",
+    "VAULT_PRF_UNSUPPORTED",
+    "VAULT_UV_UNSUPPORTED",
+    "VAULT_PIN_REQUIRED",
+    "VAULT_PIN_INVALID",
+    "VAULT_AUTHENTICATOR_BLOCKED",
+    "VAULT_AUTHENTICATOR_CANCELLED",
+    "VAULT_CREDENTIAL_NOT_PRESENT",
+    "VAULT_AUTHENTICATOR_AMBIGUOUS",
+    "VAULT_AUTHENTICATOR_CHANGED",
+    "VAULT_HELPER_MISSING",
+    "VAULT_HELPER_UNTRUSTED",
+    "VAULT_SHARED_DOMAIN",
+    "VAULT_BACKUP_INSIDE_CONFIG",
+    "ENV_PASSPHRASE_REFUSED",
+    "CHAIN_NOT_OFFERED",
+    "DESTINATION_NOT_CONFIRMED",
+    "PHRASE_REQUIRES_TTY",
+    "PHRASE_INVALID",
+    "PHRASE_NOT_CONFIRMED",
+    "PROMOTE_NOT_VAULT_KEY",
+    "PROMOTE_ALREADY_TEE_WALLET",
+    "PROMOTE_SAME_KEY_DESTINATION",
+    "PROMOTE_KEY_IS_PINNED_DESTINATION",
+    "PROMOTE_DESTINATION_NOT_COLD",
+    "PROMOTE_SUBJECT_EXPOSURE_UNKNOWN",
+    "PROMOTE_RECONCILE_INCOMPLETE",
+    "PROMOTE_OUTCOME_UNRESOLVED",
+    "PROMOTE_NOT_ACKNOWLEDGED",
+    "GRANT_IDENTITY_MISMATCH",
+    "GRANT_BINDING_MISMATCH",
+    "GRANT_DESTINATION_UNRESOLVED",
+    "VAULT_ALLOCATION_BOUNDARY_UNKNOWN",
+    "EXPOSURE_ACCOUNT_MISMATCH",
+    "EXPORT_TARGET_EXISTS",
+    "EXPORT_TARGET_SYMLINK",
+    "LEGACY_INCOMPLETE",
+    "LEGACY_UNVERIFIED_BACKUP",
+    "SIGN_SIGNER_NOT_EXTERNAL",
+    "SIGN_SIGNER_NOT_PROVIDED",
+    "SIGN_SIMULATION_FAILED",
+    "SIGN_LOOKUP_TABLE_UNRESOLVED",
+    "SIGN_TRANSACTION_UNDECODABLE",
+    "SIGN_BROADCAST_FAILED",
+    "SIGN_CONTROL_CHANGE",
+    "VAULT_LABEL_NOT_FOUND",
+    "VAULT_LABEL_AMBIGUOUS",
+    "VAULT_LABEL_TAKEN",
+    "VAULT_LABEL_UNCHANGED",
+    "VAULT_RENAME_ROLE_REFUSED",
+    "VAULT_RENAME_BATCH_REFUSED",
+    "PROMOTE_BATCH_REFUSED",
+    "WALLET_LIMIT_REACHED",
+    "TIER_REQUIRED",
+    "LINKED_WALLET_ROOM_UNREADABLE",
+    "PROMOTE_ACCOUNT_UNRESOLVED",
+    "TRANSFER_SWEEP_PENDING",
+    "VAULT_KEY_ALREADY_ENROLLED",
+    "EVM_CHAIN_MISMATCH",
+    "EVM_NONCE_STALE",
+    "EVM_TOKEN_UNREADABLE",
+    "EVM_AMOUNT_PRECISION",
+    "EVM_INSUFFICIENT_FOR_FEES",
+    "EVM_DESTINATION_INVALID",
+    "EVM_SELF_TRANSFER",
+    "EVM_RECIPIENT_IS_TOKEN",
+    "EVM_TRANSFER_REVERTED",
+    "TRANSFER_CHAIN_MISMATCH",
+    "TRANSFER_INSUFFICIENT_FUNDS",
+    "SOLANA_COMMAND_EVM_KEY",
+    "RPC_RATE_LIMITED",
+    "EVM_RECORD_ENTRY_TOO_LONG",
+    "EVM_SWEEP_NEEDS_GAS",
+    "EVM_SWEEP_INCOMPLETE",
+    "WALLET_BUSY",
+    "WALLET_LOCK_UNKNOWN",
+    "EVM_RECORD_UNAVAILABLE"
+  ];
+  VaultError = class VaultError extends Error {
+    code;
+    suggestion;
+    exitCode;
+    details;
+    constructor(code, message, opts = {}) {
+      super(message);
+      this.name = "VaultError";
+      this.code = code;
+      this.suggestion = opts.suggestion;
+      this.exitCode = opts.exitCode ?? 1;
+      this.details = opts.details;
+    }
+  };
+});
+
+// src/vault/hygiene.ts
+function wipe(...buffers) {
+  for (const buffer of buffers) {
+    if (buffer)
+      buffer.fill(0);
+  }
+}
+function secretBuffer(length) {
+  const buffer = new Uint8Array(length);
+  registry?.allocated.push(buffer);
+  return buffer;
+}
+function ownSecret(bytes) {
+  registry?.allocated.push(bytes);
+  return bytes;
+}
+async function withSecret(secret, use) {
+  ownSecret(secret);
+  try {
+    return await use(secret);
+  } finally {
+    wipe(secret);
+  }
+}
+var registry = null;
+
+// src/vault/crypto.ts
+function b64u(bytes) {
+  return base64urlnopad.encode(bytes);
+}
+function unb64u(value, field) {
+  if (typeof value !== "string")
+    throw new VaultError("VAULT_UNREADABLE", `${field} is not a string.`);
+  try {
+    return base64urlnopad.decode(value);
+  } catch {
+    throw new VaultError("VAULT_UNREADABLE", `${field} is not base64url.`);
+  }
+}
+function randomBytes2(length) {
+  return crypto.getRandomValues(secretBuffer(length));
+}
+function bytesEqual(a, b) {
+  if (a.length !== b.length)
+    return false;
+  let diff = 0;
+  for (let i = 0;i < a.length; i++)
+    diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
+  return diff === 0;
+}
+function assertKdfInBounds(kdf) {
+  const fail = (detail) => {
+    throw new VaultError("VAULT_KDF_OUT_OF_BOUNDS", `The vault's KDF parameters are outside the accepted range: ${detail}`, {
+      suggestion: "This file was not written by this CLI. Nothing was derived and nothing was written."
+    });
+  };
+  if (kdf.name !== "argon2id")
+    fail(`kdf.name is ${JSON.stringify(kdf.name)}, expected "argon2id"`);
+  if (kdf.version !== ARGON2_BOUNDS.version)
+    fail(`version ${kdf.version}, expected ${ARGON2_BOUNDS.version}`);
+  for (const [key, bounds] of [
+    ["m", ARGON2_BOUNDS.m],
+    ["t", ARGON2_BOUNDS.t],
+    ["p", ARGON2_BOUNDS.p]
+  ]) {
+    const value = kdf[key];
+    if (!Number.isInteger(value) || value < bounds.min || value > bounds.max) {
+      fail(`${key} is ${value}, accepted range ${bounds.min} to ${bounds.max}`);
+    }
+  }
+  const salt = unb64u(kdf.salt, "kdf.salt");
+  if (salt.length < ARGON2_BOUNDS.saltBytes.min || salt.length > ARGON2_BOUNDS.saltBytes.max) {
+    fail(`salt is ${salt.length} bytes, accepted range ${ARGON2_BOUNDS.saltBytes.min} to ${ARGON2_BOUNDS.saltBytes.max}`);
+  }
+}
+function freshArgon2Params() {
+  const salt = crypto.getRandomValues(new Uint8Array(ARGON2_SALT_BYTES));
+  return { name: "argon2id", ...testCostOverride ?? ARGON2_DEFAULTS, salt: b64u(salt) };
+}
+function kekReuseKey(passphrase, kdf) {
+  const inputs = JSON.stringify([passphrase, kdf.salt, kdf.m, kdf.t, kdf.p, kdf.version]);
+  return b64u(sha2562(new TextEncoder().encode(inputs)));
+}
+async function derivePassphraseKek(passphrase, kdf, notice) {
+  assertKdfInBounds(kdf);
+  notice?.(`Deriving the vault key (Argon2id, ${Math.round(kdf.m / 1024)} MiB)
+`);
+  const reuseKey = testKekReuse ? kekReuseKey(passphrase, kdf) : null;
+  const reused = reuseKey ? testKekReuse?.get(reuseKey) : undefined;
+  if (reused)
+    return ownSecret(Uint8Array.from(reused));
+  const salt = unb64u(kdf.salt, "kdf.salt");
+  const kek = await argon2idAsync(passphrase, salt, {
+    t: kdf.t,
+    m: kdf.m,
+    p: kdf.p,
+    version: kdf.version,
+    dkLen: ARGON2_BOUNDS.outputBytes
+  });
+  if (reuseKey)
+    testKekReuse?.set(reuseKey, Uint8Array.from(kek));
+  return ownSecret(kek);
+}
+async function importAesKey(raw) {
+  if (raw.length !== 32)
+    throw new VaultError("VAULT_UNREADABLE", `expected a 32-byte key, got ${raw.length}`);
+  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM", length: 256 }, false, [
+    "encrypt",
+    "decrypt"
+  ]);
+}
+async function derivePayloadKey(dek, vaultId) {
+  const material = await crypto.subtle.importKey("raw", dek, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({
+    name: "HKDF",
+    hash: "SHA-256",
+    salt: vaultId,
+    info: new TextEncoder().encode("candle-vault/v2/payload")
+  }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function derivePrfKek(prfOutput, vaultId) {
+  if (prfOutput.length !== PRF_OUTPUT_BYTES) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The security key returned ${prfOutput.length} bytes of hmac-secret output; this factor needs ${PRF_OUTPUT_BYTES}.`);
+  }
+  const material = await crypto.subtle.importKey("raw", prfOutput, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({
+    name: "HKDF",
+    hash: "SHA-256",
+    salt: vaultId,
+    info: new TextEncoder().encode("candle-vault/v2/prf")
+  }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function seal(key, plaintext, aad) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, plaintext);
+  return { iv: b64u(iv), ciphertext: b64u(new Uint8Array(sealed)) };
+}
+async function open(key, blob, aad, failure) {
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt({
+      name: "AES-GCM",
+      iv: unb64u(blob.iv, "iv"),
+      additionalData: aad
+    }, key, unb64u(blob.ciphertext, "ciphertext"));
+  } catch {
+    throw new VaultError(failure.code, failure.message, { suggestion: failure.suggestion });
+  }
+  return ownSecret(new Uint8Array(plain));
+}
+async function sealJson(key, value, aad) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  try {
+    return await seal(key, bytes, aad);
+  } finally {
+    wipe(bytes);
+  }
+}
+var ARGON2_DEFAULTS, ARGON2_SALT_BYTES = 16, KEK_BYTES = 32, DEK_BYTES = 32, ARGON2_BOUNDS, testCostOverride = null, testKekReuse = null, PRF_OUTPUT_BYTES = 32;
+var init_crypto = __esm(() => {
+  init_argon2();
+  init_sha256();
+  init_esm();
+  init_canonical_json();
+  init_errors2();
+  ARGON2_DEFAULTS = { version: 19, m: 65536, t: 3, p: 1 };
+  ARGON2_BOUNDS = {
+    m: { min: 19456, max: 1048576 },
+    t: { min: 2, max: 16 },
+    p: { min: 1, max: 4 },
+    version: 19,
+    saltBytes: { min: 16, max: 64 },
+    outputBytes: 32
+  };
 });
 
 // ../../node_modules/@noble/curves/esm/utils.js
@@ -6599,13 +7622,13 @@ function sqrt5mod8(Fp, n) {
   assertIsSquare(Fp, root, n);
   return root;
 }
-function sqrt9mod16(P) {
-  const Fp_ = Field(P);
-  const tn = tonelliShanks(P);
+function sqrt9mod16(P2) {
+  const Fp_ = Field(P2);
+  const tn = tonelliShanks(P2);
   const c1 = tn(Fp_, Fp_.neg(Fp_.ONE));
   const c2 = tn(Fp_, c1);
   const c3 = tn(Fp_, Fp_.neg(c1));
-  const c4 = (P + _7n2) / _16n;
+  const c4 = (P2 + _7n2) / _16n;
   return (Fp, n) => {
     let tv1 = Fp.pow(n, c4);
     let tv2 = Fp.mul(tv1, c1);
@@ -6621,17 +7644,17 @@ function sqrt9mod16(P) {
     return root;
   };
 }
-function tonelliShanks(P) {
-  if (P < _3n)
+function tonelliShanks(P2) {
+  if (P2 < _3n)
     throw new Error("sqrt is not defined for small field");
-  let Q = P - _1n3;
+  let Q = P2 - _1n3;
   let S = 0;
   while (Q % _2n2 === _0n3) {
     Q /= _2n2;
     S++;
   }
   let Z = _2n2;
-  const _Fp = Field(P);
+  const _Fp = Field(P2);
   while (FpLegendre(_Fp, Z) === 1) {
     if (Z++ > 1000)
       throw new Error("Cannot find square root: probably non-prime P");
@@ -6670,14 +7693,14 @@ function tonelliShanks(P) {
     return R;
   };
 }
-function FpSqrt(P) {
-  if (P % _4n === _3n)
+function FpSqrt(P2) {
+  if (P2 % _4n === _3n)
     return sqrt3mod4;
-  if (P % _8n === _5n)
+  if (P2 % _8n === _5n)
     return sqrt5mod8;
-  if (P % _16n === _9n)
-    return sqrt9mod16(P);
-  return tonelliShanks(P);
+  if (P2 % _16n === _9n)
+    return sqrt9mod16(P2);
+  return tonelliShanks(P2);
 }
 function validateField(field) {
   const initial = {
@@ -6945,8 +7968,8 @@ function validateMSMScalars(scalars, field) {
       throw new Error("invalid scalar at index " + i);
   });
 }
-function getW(P) {
-  return pointWindowSizes.get(P) || 1;
+function getW(P2) {
+  return pointWindowSizes.get(P2) || 1;
 }
 function assert0(n) {
   if (n !== _0n4)
@@ -7043,10 +8066,10 @@ class wNAF {
       return this._unsafeLadder(point, scalar, prev);
     return this.wNAFUnsafe(W, this.getPrecomputes(W, point, transform), scalar, prev);
   }
-  createCache(P, W) {
+  createCache(P2, W) {
     validateW(W, this.bits);
-    pointWindowSizes.set(P, W);
-    pointPrecomputes.delete(P);
+    pointWindowSizes.set(P2, W);
+    pointPrecomputes.delete(P2);
   }
   hasCache(elm) {
     return getW(elm) !== 1;
@@ -7148,6 +8171,2812 @@ var init_curve = __esm(() => {
   pointWindowSizes = new WeakMap;
 });
 
+// ../../node_modules/@noble/curves/esm/abstract/edwards.js
+function isEdValidXY(Fp, CURVE, x, y) {
+  const x2 = Fp.sqr(x);
+  const y2 = Fp.sqr(y);
+  const left = Fp.add(Fp.mul(CURVE.a, x2), y2);
+  const right = Fp.add(Fp.ONE, Fp.mul(CURVE.d, Fp.mul(x2, y2)));
+  return Fp.eql(left, right);
+}
+function edwards(params, extraOpts = {}) {
+  const validated = _createCurveFields("edwards", params, extraOpts, extraOpts.FpFnLE);
+  const { Fp, Fn } = validated;
+  let CURVE = validated.CURVE;
+  const { h: cofactor } = CURVE;
+  _validateObject(extraOpts, {}, { uvRatio: "function" });
+  const MASK = _2n3 << BigInt(Fn.BYTES * 8) - _1n5;
+  const modP = (n) => Fp.create(n);
+  const uvRatio = extraOpts.uvRatio || ((u, v) => {
+    try {
+      return { isValid: true, value: Fp.sqrt(Fp.div(u, v)) };
+    } catch (e) {
+      return { isValid: false, value: _0n5 };
+    }
+  });
+  if (!isEdValidXY(Fp, CURVE, CURVE.Gx, CURVE.Gy))
+    throw new Error("bad curve params: generator point");
+  function acoord(title, n, banZero = false) {
+    const min = banZero ? _1n5 : _0n5;
+    aInRange("coordinate " + title, n, min, MASK);
+    return n;
+  }
+  function aextpoint(other) {
+    if (!(other instanceof Point))
+      throw new Error("ExtendedPoint expected");
+  }
+  const toAffineMemo = memoized((p, iz) => {
+    const { X, Y, Z } = p;
+    const is0 = p.is0();
+    if (iz == null)
+      iz = is0 ? _8n2 : Fp.inv(Z);
+    const x = modP(X * iz);
+    const y = modP(Y * iz);
+    const zz = Fp.mul(Z, iz);
+    if (is0)
+      return { x: _0n5, y: _1n5 };
+    if (zz !== _1n5)
+      throw new Error("invZ was invalid");
+    return { x, y };
+  });
+  const assertValidMemo = memoized((p) => {
+    const { a, d } = CURVE;
+    if (p.is0())
+      throw new Error("bad point: ZERO");
+    const { X, Y, Z, T } = p;
+    const X2 = modP(X * X);
+    const Y2 = modP(Y * Y);
+    const Z2 = modP(Z * Z);
+    const Z4 = modP(Z2 * Z2);
+    const aX2 = modP(X2 * a);
+    const left = modP(Z2 * modP(aX2 + Y2));
+    const right = modP(Z4 + modP(d * modP(X2 * Y2)));
+    if (left !== right)
+      throw new Error("bad point: equation left != right (1)");
+    const XY = modP(X * Y);
+    const ZT = modP(Z * T);
+    if (XY !== ZT)
+      throw new Error("bad point: equation left != right (2)");
+    return true;
+  });
+
+  class Point {
+    constructor(X, Y, Z, T) {
+      this.X = acoord("x", X);
+      this.Y = acoord("y", Y);
+      this.Z = acoord("z", Z, true);
+      this.T = acoord("t", T);
+      Object.freeze(this);
+    }
+    static CURVE() {
+      return CURVE;
+    }
+    static fromAffine(p) {
+      if (p instanceof Point)
+        throw new Error("extended point not allowed");
+      const { x, y } = p || {};
+      acoord("x", x);
+      acoord("y", y);
+      return new Point(x, y, _1n5, modP(x * y));
+    }
+    static fromBytes(bytes, zip215 = false) {
+      const len = Fp.BYTES;
+      const { a, d } = CURVE;
+      bytes = copyBytes(_abytes2(bytes, len, "point"));
+      _abool2(zip215, "zip215");
+      const normed = copyBytes(bytes);
+      const lastByte = bytes[len - 1];
+      normed[len - 1] = lastByte & ~128;
+      const y = bytesToNumberLE(normed);
+      const max = zip215 ? MASK : Fp.ORDER;
+      aInRange("point.y", y, _0n5, max);
+      const y2 = modP(y * y);
+      const u = modP(y2 - _1n5);
+      const v = modP(d * y2 - a);
+      let { isValid: isValid2, value: x } = uvRatio(u, v);
+      if (!isValid2)
+        throw new Error("bad point: invalid y coordinate");
+      const isXOdd = (x & _1n5) === _1n5;
+      const isLastByteOdd = (lastByte & 128) !== 0;
+      if (!zip215 && x === _0n5 && isLastByteOdd)
+        throw new Error("bad point: x=0 and x_0=1");
+      if (isLastByteOdd !== isXOdd)
+        x = modP(-x);
+      return Point.fromAffine({ x, y });
+    }
+    static fromHex(bytes, zip215 = false) {
+      return Point.fromBytes(ensureBytes("point", bytes), zip215);
+    }
+    get x() {
+      return this.toAffine().x;
+    }
+    get y() {
+      return this.toAffine().y;
+    }
+    precompute(windowSize = 8, isLazy = true) {
+      wnaf.createCache(this, windowSize);
+      if (!isLazy)
+        this.multiply(_2n3);
+      return this;
+    }
+    assertValidity() {
+      assertValidMemo(this);
+    }
+    equals(other) {
+      aextpoint(other);
+      const { X: X1, Y: Y1, Z: Z1 } = this;
+      const { X: X2, Y: Y2, Z: Z2 } = other;
+      const X1Z2 = modP(X1 * Z2);
+      const X2Z1 = modP(X2 * Z1);
+      const Y1Z2 = modP(Y1 * Z2);
+      const Y2Z1 = modP(Y2 * Z1);
+      return X1Z2 === X2Z1 && Y1Z2 === Y2Z1;
+    }
+    is0() {
+      return this.equals(Point.ZERO);
+    }
+    negate() {
+      return new Point(modP(-this.X), this.Y, this.Z, modP(-this.T));
+    }
+    double() {
+      const { a } = CURVE;
+      const { X: X1, Y: Y1, Z: Z1 } = this;
+      const A = modP(X1 * X1);
+      const B = modP(Y1 * Y1);
+      const C = modP(_2n3 * modP(Z1 * Z1));
+      const D = modP(a * A);
+      const x1y1 = X1 + Y1;
+      const E = modP(modP(x1y1 * x1y1) - A - B);
+      const G2 = D + B;
+      const F = G2 - C;
+      const H = D - B;
+      const X3 = modP(E * F);
+      const Y3 = modP(G2 * H);
+      const T3 = modP(E * H);
+      const Z3 = modP(F * G2);
+      return new Point(X3, Y3, Z3, T3);
+    }
+    add(other) {
+      aextpoint(other);
+      const { a, d } = CURVE;
+      const { X: X1, Y: Y1, Z: Z1, T: T1 } = this;
+      const { X: X2, Y: Y2, Z: Z2, T: T2 } = other;
+      const A = modP(X1 * X2);
+      const B = modP(Y1 * Y2);
+      const C = modP(T1 * d * T2);
+      const D = modP(Z1 * Z2);
+      const E = modP((X1 + Y1) * (X2 + Y2) - A - B);
+      const F = D - C;
+      const G2 = D + C;
+      const H = modP(B - a * A);
+      const X3 = modP(E * F);
+      const Y3 = modP(G2 * H);
+      const T3 = modP(E * H);
+      const Z3 = modP(F * G2);
+      return new Point(X3, Y3, Z3, T3);
+    }
+    subtract(other) {
+      return this.add(other.negate());
+    }
+    multiply(scalar) {
+      if (!Fn.isValidNot0(scalar))
+        throw new Error("invalid scalar: expected 1 <= sc < curve.n");
+      const { p, f } = wnaf.cached(this, scalar, (p2) => normalizeZ(Point, p2));
+      return normalizeZ(Point, [p, f])[0];
+    }
+    multiplyUnsafe(scalar, acc = Point.ZERO) {
+      if (!Fn.isValid(scalar))
+        throw new Error("invalid scalar: expected 0 <= sc < curve.n");
+      if (scalar === _0n5)
+        return Point.ZERO;
+      if (this.is0() || scalar === _1n5)
+        return this;
+      return wnaf.unsafe(this, scalar, (p) => normalizeZ(Point, p), acc);
+    }
+    isSmallOrder() {
+      return this.multiplyUnsafe(cofactor).is0();
+    }
+    isTorsionFree() {
+      return wnaf.unsafe(this, CURVE.n).is0();
+    }
+    toAffine(invertedZ) {
+      return toAffineMemo(this, invertedZ);
+    }
+    clearCofactor() {
+      if (cofactor === _1n5)
+        return this;
+      return this.multiplyUnsafe(cofactor);
+    }
+    toBytes() {
+      const { x, y } = this.toAffine();
+      const bytes = Fp.toBytes(y);
+      bytes[bytes.length - 1] |= x & _1n5 ? 128 : 0;
+      return bytes;
+    }
+    toHex() {
+      return bytesToHex(this.toBytes());
+    }
+    toString() {
+      return `<Point ${this.is0() ? "ZERO" : this.toHex()}>`;
+    }
+    get ex() {
+      return this.X;
+    }
+    get ey() {
+      return this.Y;
+    }
+    get ez() {
+      return this.Z;
+    }
+    get et() {
+      return this.T;
+    }
+    static normalizeZ(points) {
+      return normalizeZ(Point, points);
+    }
+    static msm(points, scalars) {
+      return pippenger(Point, Fn, points, scalars);
+    }
+    _setWindowSize(windowSize) {
+      this.precompute(windowSize);
+    }
+    toRawBytes() {
+      return this.toBytes();
+    }
+  }
+  Point.BASE = new Point(CURVE.Gx, CURVE.Gy, _1n5, modP(CURVE.Gx * CURVE.Gy));
+  Point.ZERO = new Point(_0n5, _1n5, _1n5, _0n5);
+  Point.Fp = Fp;
+  Point.Fn = Fn;
+  const wnaf = new wNAF(Point, Fn.BITS);
+  Point.BASE.precompute(8);
+  return Point;
+}
+
+class PrimeEdwardsPoint {
+  constructor(ep) {
+    this.ep = ep;
+  }
+  static fromBytes(_bytes) {
+    notImplemented();
+  }
+  static fromHex(_hex) {
+    notImplemented();
+  }
+  get x() {
+    return this.toAffine().x;
+  }
+  get y() {
+    return this.toAffine().y;
+  }
+  clearCofactor() {
+    return this;
+  }
+  assertValidity() {
+    this.ep.assertValidity();
+  }
+  toAffine(invertedZ) {
+    return this.ep.toAffine(invertedZ);
+  }
+  toHex() {
+    return bytesToHex(this.toBytes());
+  }
+  toString() {
+    return this.toHex();
+  }
+  isTorsionFree() {
+    return true;
+  }
+  isSmallOrder() {
+    return false;
+  }
+  add(other) {
+    this.assertSame(other);
+    return this.init(this.ep.add(other.ep));
+  }
+  subtract(other) {
+    this.assertSame(other);
+    return this.init(this.ep.subtract(other.ep));
+  }
+  multiply(scalar) {
+    return this.init(this.ep.multiply(scalar));
+  }
+  multiplyUnsafe(scalar) {
+    return this.init(this.ep.multiplyUnsafe(scalar));
+  }
+  double() {
+    return this.init(this.ep.double());
+  }
+  negate() {
+    return this.init(this.ep.negate());
+  }
+  precompute(windowSize, isLazy) {
+    return this.init(this.ep.precompute(windowSize, isLazy));
+  }
+  toRawBytes() {
+    return this.toBytes();
+  }
+}
+function eddsa(Point, cHash, eddsaOpts = {}) {
+  if (typeof cHash !== "function")
+    throw new Error('"hash" function param is required');
+  _validateObject(eddsaOpts, {}, {
+    adjustScalarBytes: "function",
+    randomBytes: "function",
+    domain: "function",
+    prehash: "function",
+    mapToCurve: "function"
+  });
+  const { prehash } = eddsaOpts;
+  const { BASE, Fp, Fn } = Point;
+  const randomBytes3 = eddsaOpts.randomBytes || randomBytes;
+  const adjustScalarBytes = eddsaOpts.adjustScalarBytes || ((bytes) => bytes);
+  const domain = eddsaOpts.domain || ((data, ctx, phflag) => {
+    _abool2(phflag, "phflag");
+    if (ctx.length || phflag)
+      throw new Error("Contexts/pre-hash are not supported");
+    return data;
+  });
+  function modN_LE(hash) {
+    return Fn.create(bytesToNumberLE(hash));
+  }
+  function getPrivateScalar(key) {
+    const len = lengths.secretKey;
+    key = ensureBytes("private key", key, len);
+    const hashed = ensureBytes("hashed private key", cHash(key), 2 * len);
+    const head = adjustScalarBytes(hashed.slice(0, len));
+    const prefix = hashed.slice(len, 2 * len);
+    const scalar = modN_LE(head);
+    return { head, prefix, scalar };
+  }
+  function getExtendedPublicKey(secretKey) {
+    const { head, prefix, scalar } = getPrivateScalar(secretKey);
+    const point = BASE.multiply(scalar);
+    const pointBytes = point.toBytes();
+    return { head, prefix, scalar, point, pointBytes };
+  }
+  function getPublicKey(secretKey) {
+    return getExtendedPublicKey(secretKey).pointBytes;
+  }
+  function hashDomainToScalar(context = Uint8Array.of(), ...msgs) {
+    const msg = concatBytes(...msgs);
+    return modN_LE(cHash(domain(msg, ensureBytes("context", context), !!prehash)));
+  }
+  function sign(msg, secretKey, options = {}) {
+    msg = ensureBytes("message", msg);
+    if (prehash)
+      msg = prehash(msg);
+    const { prefix, scalar, pointBytes } = getExtendedPublicKey(secretKey);
+    const r = hashDomainToScalar(options.context, prefix, msg);
+    const R = BASE.multiply(r).toBytes();
+    const k = hashDomainToScalar(options.context, R, pointBytes, msg);
+    const s = Fn.create(r + k * scalar);
+    if (!Fn.isValid(s))
+      throw new Error("sign failed: invalid s");
+    const rs = concatBytes(R, Fn.toBytes(s));
+    return _abytes2(rs, lengths.signature, "result");
+  }
+  const verifyOpts = { zip215: true };
+  function verify(sig, msg, publicKey, options = verifyOpts) {
+    const { context, zip215 } = options;
+    const len = lengths.signature;
+    sig = ensureBytes("signature", sig, len);
+    msg = ensureBytes("message", msg);
+    publicKey = ensureBytes("publicKey", publicKey, lengths.publicKey);
+    if (zip215 !== undefined)
+      _abool2(zip215, "zip215");
+    if (prehash)
+      msg = prehash(msg);
+    const mid = len / 2;
+    const r = sig.subarray(0, mid);
+    const s = bytesToNumberLE(sig.subarray(mid, len));
+    let A, R, SB;
+    try {
+      A = Point.fromBytes(publicKey, zip215);
+      R = Point.fromBytes(r, zip215);
+      SB = BASE.multiplyUnsafe(s);
+    } catch (error) {
+      return false;
+    }
+    if (!zip215 && A.isSmallOrder())
+      return false;
+    const k = hashDomainToScalar(context, R.toBytes(), A.toBytes(), msg);
+    const RkA = R.add(A.multiplyUnsafe(k));
+    return RkA.subtract(SB).clearCofactor().is0();
+  }
+  const _size = Fp.BYTES;
+  const lengths = {
+    secretKey: _size,
+    publicKey: _size,
+    signature: 2 * _size,
+    seed: _size
+  };
+  function randomSecretKey(seed = randomBytes3(lengths.seed)) {
+    return _abytes2(seed, lengths.seed, "seed");
+  }
+  function keygen(seed) {
+    const secretKey = utils2.randomSecretKey(seed);
+    return { secretKey, publicKey: getPublicKey(secretKey) };
+  }
+  function isValidSecretKey(key) {
+    return isBytes(key) && key.length === Fn.BYTES;
+  }
+  function isValidPublicKey(key, zip215) {
+    try {
+      return !!Point.fromBytes(key, zip215);
+    } catch (error) {
+      return false;
+    }
+  }
+  const utils2 = {
+    getExtendedPublicKey,
+    randomSecretKey,
+    isValidSecretKey,
+    isValidPublicKey,
+    toMontgomery(publicKey) {
+      const { y } = Point.fromBytes(publicKey);
+      const size = lengths.publicKey;
+      const is25519 = size === 32;
+      if (!is25519 && size !== 57)
+        throw new Error("only defined for 25519 and 448");
+      const u = is25519 ? Fp.div(_1n5 + y, _1n5 - y) : Fp.div(y - _1n5, y + _1n5);
+      return Fp.toBytes(u);
+    },
+    toMontgomerySecret(secretKey) {
+      const size = lengths.secretKey;
+      _abytes2(secretKey, size);
+      const hashed = cHash(secretKey.subarray(0, size));
+      return adjustScalarBytes(hashed).subarray(0, size);
+    },
+    randomPrivateKey: randomSecretKey,
+    precompute(windowSize = 8, point = Point.BASE) {
+      return point.precompute(windowSize, false);
+    }
+  };
+  return Object.freeze({
+    keygen,
+    getPublicKey,
+    sign,
+    verify,
+    utils: utils2,
+    Point,
+    lengths
+  });
+}
+function _eddsa_legacy_opts_to_new(c) {
+  const CURVE = {
+    a: c.a,
+    d: c.d,
+    p: c.Fp.ORDER,
+    n: c.n,
+    h: c.h,
+    Gx: c.Gx,
+    Gy: c.Gy
+  };
+  const Fp = c.Fp;
+  const Fn = Field(CURVE.n, c.nBitLength, true);
+  const curveOpts = { Fp, Fn, uvRatio: c.uvRatio };
+  const eddsaOpts = {
+    randomBytes: c.randomBytes,
+    adjustScalarBytes: c.adjustScalarBytes,
+    domain: c.domain,
+    prehash: c.prehash,
+    mapToCurve: c.mapToCurve
+  };
+  return { CURVE, curveOpts, hash: c.hash, eddsaOpts };
+}
+function _eddsa_new_output_to_legacy(c, eddsa2) {
+  const Point = eddsa2.Point;
+  const legacy = Object.assign({}, eddsa2, {
+    ExtendedPoint: Point,
+    CURVE: c,
+    nBitLength: Point.Fn.BITS,
+    nByteLength: Point.Fn.BYTES
+  });
+  return legacy;
+}
+function twistedEdwards(c) {
+  const { CURVE, curveOpts, hash, eddsaOpts } = _eddsa_legacy_opts_to_new(c);
+  const Point = edwards(CURVE, curveOpts);
+  const EDDSA = eddsa(Point, hash, eddsaOpts);
+  return _eddsa_new_output_to_legacy(c, EDDSA);
+}
+var _0n5, _1n5, _2n3, _8n2;
+var init_edwards = __esm(() => {
+  init_utils2();
+  init_curve();
+  init_modular();
+  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  _0n5 = BigInt(0);
+  _1n5 = BigInt(1);
+  _2n3 = BigInt(2);
+  _8n2 = BigInt(8);
+});
+
+// ../../node_modules/@noble/curves/esm/abstract/montgomery.js
+function validateOpts(curve) {
+  _validateObject(curve, {
+    adjustScalarBytes: "function",
+    powPminus2: "function"
+  });
+  return Object.freeze({ ...curve });
+}
+function montgomery(curveDef) {
+  const CURVE = validateOpts(curveDef);
+  const { P: P2, type, adjustScalarBytes, powPminus2, randomBytes: rand } = CURVE;
+  const is25519 = type === "x25519";
+  if (!is25519 && type !== "x448")
+    throw new Error("invalid type");
+  const randomBytes_ = rand || randomBytes;
+  const montgomeryBits = is25519 ? 255 : 448;
+  const fieldLen = is25519 ? 32 : 56;
+  const Gu = is25519 ? BigInt(9) : BigInt(5);
+  const a24 = is25519 ? BigInt(121665) : BigInt(39081);
+  const minScalar = is25519 ? _2n4 ** BigInt(254) : _2n4 ** BigInt(447);
+  const maxAdded = is25519 ? BigInt(8) * _2n4 ** BigInt(251) - _1n6 : BigInt(4) * _2n4 ** BigInt(445) - _1n6;
+  const maxScalar = minScalar + maxAdded + _1n6;
+  const modP = (n) => mod(n, P2);
+  const GuBytes = encodeU(Gu);
+  function encodeU(u) {
+    return numberToBytesLE(modP(u), fieldLen);
+  }
+  function decodeU(u) {
+    const _u = ensureBytes("u coordinate", u, fieldLen);
+    if (is25519)
+      _u[31] &= 127;
+    return modP(bytesToNumberLE(_u));
+  }
+  function decodeScalar(scalar) {
+    return bytesToNumberLE(adjustScalarBytes(ensureBytes("scalar", scalar, fieldLen)));
+  }
+  function scalarMult(scalar, u) {
+    const pu = montgomeryLadder(decodeU(u), decodeScalar(scalar));
+    if (pu === _0n6)
+      throw new Error("invalid private or public key received");
+    return encodeU(pu);
+  }
+  function scalarMultBase(scalar) {
+    return scalarMult(scalar, GuBytes);
+  }
+  function cswap(swap, x_2, x_3) {
+    const dummy = modP(swap * (x_2 - x_3));
+    x_2 = modP(x_2 - dummy);
+    x_3 = modP(x_3 + dummy);
+    return { x_2, x_3 };
+  }
+  function montgomeryLadder(u, scalar) {
+    aInRange("u", u, _0n6, P2);
+    aInRange("scalar", scalar, minScalar, maxScalar);
+    const k = scalar;
+    const x_1 = u;
+    let x_2 = _1n6;
+    let z_2 = _0n6;
+    let x_3 = u;
+    let z_3 = _1n6;
+    let swap = _0n6;
+    for (let t = BigInt(montgomeryBits - 1);t >= _0n6; t--) {
+      const k_t = k >> t & _1n6;
+      swap ^= k_t;
+      ({ x_2, x_3 } = cswap(swap, x_2, x_3));
+      ({ x_2: z_2, x_3: z_3 } = cswap(swap, z_2, z_3));
+      swap = k_t;
+      const A = x_2 + z_2;
+      const AA = modP(A * A);
+      const B = x_2 - z_2;
+      const BB = modP(B * B);
+      const E = AA - BB;
+      const C = x_3 + z_3;
+      const D = x_3 - z_3;
+      const DA = modP(D * A);
+      const CB = modP(C * B);
+      const dacb = DA + CB;
+      const da_cb = DA - CB;
+      x_3 = modP(dacb * dacb);
+      z_3 = modP(x_1 * modP(da_cb * da_cb));
+      x_2 = modP(AA * BB);
+      z_2 = modP(E * (AA + modP(a24 * E)));
+    }
+    ({ x_2, x_3 } = cswap(swap, x_2, x_3));
+    ({ x_2: z_2, x_3: z_3 } = cswap(swap, z_2, z_3));
+    const z2 = powPminus2(z_2);
+    return modP(x_2 * z2);
+  }
+  const lengths = {
+    secretKey: fieldLen,
+    publicKey: fieldLen,
+    seed: fieldLen
+  };
+  const randomSecretKey = (seed = randomBytes_(fieldLen)) => {
+    abytes(seed, lengths.seed);
+    return seed;
+  };
+  function keygen(seed) {
+    const secretKey = randomSecretKey(seed);
+    return { secretKey, publicKey: scalarMultBase(secretKey) };
+  }
+  const utils2 = {
+    randomSecretKey,
+    randomPrivateKey: randomSecretKey
+  };
+  return {
+    keygen,
+    getSharedSecret: (secretKey, publicKey) => scalarMult(secretKey, publicKey),
+    getPublicKey: (secretKey) => scalarMultBase(secretKey),
+    scalarMult,
+    scalarMultBase,
+    utils: utils2,
+    GuBytes: GuBytes.slice(),
+    lengths
+  };
+}
+var _0n6, _1n6, _2n4;
+var init_montgomery = __esm(() => {
+  init_utils2();
+  init_modular();
+  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  _0n6 = BigInt(0);
+  _1n6 = BigInt(1);
+  _2n4 = BigInt(2);
+});
+
+// ../../node_modules/@noble/curves/esm/ed25519.js
+function ed25519_pow_2_252_3(x) {
+  const _10n = BigInt(10), _20n = BigInt(20), _40n = BigInt(40), _80n = BigInt(80);
+  const P2 = ed25519_CURVE_p;
+  const x2 = x * x % P2;
+  const b2 = x2 * x % P2;
+  const b4 = pow2(b2, _2n5, P2) * b2 % P2;
+  const b5 = pow2(b4, _1n7, P2) * x % P2;
+  const b10 = pow2(b5, _5n2, P2) * b5 % P2;
+  const b20 = pow2(b10, _10n, P2) * b10 % P2;
+  const b40 = pow2(b20, _20n, P2) * b20 % P2;
+  const b80 = pow2(b40, _40n, P2) * b40 % P2;
+  const b160 = pow2(b80, _80n, P2) * b80 % P2;
+  const b240 = pow2(b160, _80n, P2) * b80 % P2;
+  const b250 = pow2(b240, _10n, P2) * b10 % P2;
+  const pow_p_5_8 = pow2(b250, _2n5, P2) * x % P2;
+  return { pow_p_5_8, b2 };
+}
+function adjustScalarBytes(bytes) {
+  bytes[0] &= 248;
+  bytes[31] &= 127;
+  bytes[31] |= 64;
+  return bytes;
+}
+function uvRatio(u, v) {
+  const P2 = ed25519_CURVE_p;
+  const v3 = mod(v * v * v, P2);
+  const v7 = mod(v3 * v3 * v, P2);
+  const pow = ed25519_pow_2_252_3(u * v7).pow_p_5_8;
+  let x = mod(u * v3 * pow, P2);
+  const vx2 = mod(v * x * x, P2);
+  const root1 = x;
+  const root2 = mod(x * ED25519_SQRT_M1, P2);
+  const useRoot1 = vx2 === u;
+  const useRoot2 = vx2 === mod(-u, P2);
+  const noRoot = vx2 === mod(-u * ED25519_SQRT_M1, P2);
+  if (useRoot1)
+    x = root1;
+  if (useRoot2 || noRoot)
+    x = root2;
+  if (isNegativeLE(x, P2))
+    x = mod(-x, P2);
+  return { isValid: useRoot1 || useRoot2, value: x };
+}
+function calcElligatorRistrettoMap(r0) {
+  const { d } = ed25519_CURVE;
+  const P2 = ed25519_CURVE_p;
+  const mod2 = (n) => Fp.create(n);
+  const r = mod2(SQRT_M1 * r0 * r0);
+  const Ns = mod2((r + _1n7) * ONE_MINUS_D_SQ);
+  let c = BigInt(-1);
+  const D = mod2((c - d * r) * mod2(r + d));
+  let { isValid: Ns_D_is_sq, value: s } = uvRatio(Ns, D);
+  let s_ = mod2(s * r0);
+  if (!isNegativeLE(s_, P2))
+    s_ = mod2(-s_);
+  if (!Ns_D_is_sq)
+    s = s_;
+  if (!Ns_D_is_sq)
+    c = r;
+  const Nt = mod2(c * (r - _1n7) * D_MINUS_ONE_SQ - D);
+  const s2 = s * s;
+  const W0 = mod2((s + s) * D);
+  const W1 = mod2(Nt * SQRT_AD_MINUS_ONE);
+  const W2 = mod2(_1n7 - s2);
+  const W3 = mod2(_1n7 + s2);
+  return new ed25519.Point(mod2(W0 * W3), mod2(W2 * W1), mod2(W1 * W3), mod2(W0 * W2));
+}
+function ristretto255_map(bytes) {
+  abytes(bytes, 64);
+  const r1 = bytes255ToNumberLE(bytes.subarray(0, 32));
+  const R1 = calcElligatorRistrettoMap(r1);
+  const r2 = bytes255ToNumberLE(bytes.subarray(32, 64));
+  const R2 = calcElligatorRistrettoMap(r2);
+  return new _RistrettoPoint(R1.add(R2));
+}
+var _0n7, _1n7, _2n5, _3n2, _5n2, _8n3, ed25519_CURVE_p, ed25519_CURVE, ED25519_SQRT_M1, Fp, Fn, ed25519Defaults, ed25519, x25519, SQRT_M1, SQRT_AD_MINUS_ONE, INVSQRT_A_MINUS_D, ONE_MINUS_D_SQ, D_MINUS_ONE_SQ, invertSqrt = (number) => uvRatio(_1n7, number), MAX_255B, bytes255ToNumberLE = (bytes) => ed25519.Point.Fp.create(bytesToNumberLE(bytes) & MAX_255B), _RistrettoPoint;
+var init_ed25519 = __esm(() => {
+  init_sha2();
+  init_utils();
+  init_curve();
+  init_edwards();
+  init_modular();
+  init_montgomery();
+  init_utils2();
+  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  _0n7 = /* @__PURE__ */ BigInt(0);
+  _1n7 = BigInt(1);
+  _2n5 = BigInt(2);
+  _3n2 = BigInt(3);
+  _5n2 = BigInt(5);
+  _8n3 = BigInt(8);
+  ed25519_CURVE_p = BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed");
+  ed25519_CURVE = /* @__PURE__ */ (() => ({
+    p: ed25519_CURVE_p,
+    n: BigInt("0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed"),
+    h: _8n3,
+    a: BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffec"),
+    d: BigInt("0x52036cee2b6ffe738cc740797779e89800700a4d4141d8ab75eb4dca135978a3"),
+    Gx: BigInt("0x216936d3cd6e53fec0a4e231fdd6dc5c692cc7609525a7b2c9562d608f25d51a"),
+    Gy: BigInt("0x6666666666666666666666666666666666666666666666666666666666666658")
+  }))();
+  ED25519_SQRT_M1 = /* @__PURE__ */ BigInt("19681161376707505956807079304988542015446066515923890162744021073123829784752");
+  Fp = /* @__PURE__ */ (() => Field(ed25519_CURVE.p, { isLE: true }))();
+  Fn = /* @__PURE__ */ (() => Field(ed25519_CURVE.n, { isLE: true }))();
+  ed25519Defaults = /* @__PURE__ */ (() => ({
+    ...ed25519_CURVE,
+    Fp,
+    hash: sha512,
+    adjustScalarBytes,
+    uvRatio
+  }))();
+  ed25519 = /* @__PURE__ */ (() => twistedEdwards(ed25519Defaults))();
+  x25519 = /* @__PURE__ */ (() => {
+    const P2 = Fp.ORDER;
+    return montgomery({
+      P: P2,
+      type: "x25519",
+      powPminus2: (x) => {
+        const { pow_p_5_8, b2 } = ed25519_pow_2_252_3(x);
+        return mod(pow2(pow_p_5_8, _3n2, P2) * b2, P2);
+      },
+      adjustScalarBytes
+    });
+  })();
+  SQRT_M1 = ED25519_SQRT_M1;
+  SQRT_AD_MINUS_ONE = /* @__PURE__ */ BigInt("25063068953384623474111414158702152701244531502492656460079210482610430750235");
+  INVSQRT_A_MINUS_D = /* @__PURE__ */ BigInt("54469307008909316920995813868745141605393597292927456921205312896311721017578");
+  ONE_MINUS_D_SQ = /* @__PURE__ */ BigInt("1159843021668779879193775521855586647937357759715417654439879720876111806838");
+  D_MINUS_ONE_SQ = /* @__PURE__ */ BigInt("40440834346308536858101042469323190826248399146238708352240133220865137265952");
+  MAX_255B = /* @__PURE__ */ BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+  _RistrettoPoint = class _RistrettoPoint extends PrimeEdwardsPoint {
+    constructor(ep) {
+      super(ep);
+    }
+    static fromAffine(ap) {
+      return new _RistrettoPoint(ed25519.Point.fromAffine(ap));
+    }
+    assertSame(other) {
+      if (!(other instanceof _RistrettoPoint))
+        throw new Error("RistrettoPoint expected");
+    }
+    init(ep) {
+      return new _RistrettoPoint(ep);
+    }
+    static hashToCurve(hex2) {
+      return ristretto255_map(ensureBytes("ristrettoHash", hex2, 64));
+    }
+    static fromBytes(bytes) {
+      abytes(bytes, 32);
+      const { a, d } = ed25519_CURVE;
+      const P2 = ed25519_CURVE_p;
+      const mod2 = (n) => Fp.create(n);
+      const s = bytes255ToNumberLE(bytes);
+      if (!equalBytes(Fp.toBytes(s), bytes) || isNegativeLE(s, P2))
+        throw new Error("invalid ristretto255 encoding 1");
+      const s2 = mod2(s * s);
+      const u1 = mod2(_1n7 + a * s2);
+      const u2 = mod2(_1n7 - a * s2);
+      const u1_2 = mod2(u1 * u1);
+      const u2_2 = mod2(u2 * u2);
+      const v = mod2(a * d * u1_2 - u2_2);
+      const { isValid: isValid2, value: I } = invertSqrt(mod2(v * u2_2));
+      const Dx = mod2(I * u2);
+      const Dy = mod2(I * Dx * v);
+      let x = mod2((s + s) * Dx);
+      if (isNegativeLE(x, P2))
+        x = mod2(-x);
+      const y = mod2(u1 * Dy);
+      const t = mod2(x * y);
+      if (!isValid2 || isNegativeLE(t, P2) || y === _0n7)
+        throw new Error("invalid ristretto255 encoding 2");
+      return new _RistrettoPoint(new ed25519.Point(x, y, _1n7, t));
+    }
+    static fromHex(hex2) {
+      return _RistrettoPoint.fromBytes(ensureBytes("ristrettoHex", hex2, 32));
+    }
+    static msm(points, scalars) {
+      return pippenger(_RistrettoPoint, ed25519.Point.Fn, points, scalars);
+    }
+    toBytes() {
+      let { X, Y, Z, T } = this.ep;
+      const P2 = ed25519_CURVE_p;
+      const mod2 = (n) => Fp.create(n);
+      const u1 = mod2(mod2(Z + Y) * mod2(Z - Y));
+      const u2 = mod2(X * Y);
+      const u2sq = mod2(u2 * u2);
+      const { value: invsqrt } = invertSqrt(mod2(u1 * u2sq));
+      const D1 = mod2(invsqrt * u1);
+      const D2 = mod2(invsqrt * u2);
+      const zInv = mod2(D1 * D2 * T);
+      let D;
+      if (isNegativeLE(T * zInv, P2)) {
+        let _x = mod2(Y * SQRT_M1);
+        let _y = mod2(X * SQRT_M1);
+        X = _x;
+        Y = _y;
+        D = mod2(D1 * INVSQRT_A_MINUS_D);
+      } else {
+        D = D2;
+      }
+      if (isNegativeLE(X * zInv, P2))
+        Y = mod2(-Y);
+      let s = mod2((Z - Y) * D);
+      if (isNegativeLE(s, P2))
+        s = mod2(-s);
+      return Fp.toBytes(s);
+    }
+    equals(other) {
+      this.assertSame(other);
+      const { X: X1, Y: Y1 } = this.ep;
+      const { X: X2, Y: Y2 } = other.ep;
+      const mod2 = (n) => Fp.create(n);
+      const one = mod2(X1 * Y2) === mod2(Y1 * X2);
+      const two = mod2(Y1 * Y2) === mod2(X1 * X2);
+      return one || two;
+    }
+    is0() {
+      return this.equals(_RistrettoPoint.ZERO);
+    }
+  };
+  _RistrettoPoint.BASE = /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.BASE))();
+  _RistrettoPoint.ZERO = /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.ZERO))();
+  _RistrettoPoint.Fp = /* @__PURE__ */ (() => Fp)();
+  _RistrettoPoint.Fn = /* @__PURE__ */ (() => Fn)();
+});
+
+// ../../node_modules/@noble/hashes/esm/hmac.js
+var HMAC, hmac = (hash, key, message) => new HMAC(hash, key).update(message).digest();
+var init_hmac = __esm(() => {
+  init_utils();
+  HMAC = class HMAC extends Hash {
+    constructor(hash, _key) {
+      super();
+      this.finished = false;
+      this.destroyed = false;
+      ahash(hash);
+      const key = toBytes(_key);
+      this.iHash = hash.create();
+      if (typeof this.iHash.update !== "function")
+        throw new Error("Expected instance of class which extends utils.Hash");
+      this.blockLen = this.iHash.blockLen;
+      this.outputLen = this.iHash.outputLen;
+      const blockLen = this.blockLen;
+      const pad = new Uint8Array(blockLen);
+      pad.set(key.length > blockLen ? hash.create().update(key).digest() : key);
+      for (let i = 0;i < pad.length; i++)
+        pad[i] ^= 54;
+      this.iHash.update(pad);
+      this.oHash = hash.create();
+      for (let i = 0;i < pad.length; i++)
+        pad[i] ^= 54 ^ 92;
+      this.oHash.update(pad);
+      clean(pad);
+    }
+    update(buf) {
+      aexists(this);
+      this.iHash.update(buf);
+      return this;
+    }
+    digestInto(out) {
+      aexists(this);
+      abytes(out, this.outputLen);
+      this.finished = true;
+      this.iHash.digestInto(out);
+      this.oHash.update(out);
+      this.oHash.digestInto(out);
+      this.destroy();
+    }
+    digest() {
+      const out = new Uint8Array(this.oHash.outputLen);
+      this.digestInto(out);
+      return out;
+    }
+    _cloneInto(to) {
+      to || (to = Object.create(Object.getPrototypeOf(this), {}));
+      const { oHash, iHash, finished, destroyed, blockLen, outputLen } = this;
+      to = to;
+      to.finished = finished;
+      to.destroyed = destroyed;
+      to.blockLen = blockLen;
+      to.outputLen = outputLen;
+      to.oHash = oHash._cloneInto(to.oHash);
+      to.iHash = iHash._cloneInto(to.iHash);
+      return to;
+    }
+    clone() {
+      return this._cloneInto();
+    }
+    destroy() {
+      this.destroyed = true;
+      this.oHash.destroy();
+      this.iHash.destroy();
+    }
+  };
+  hmac.create = (hash, key) => new HMAC(hash, key);
+});
+
+// ../../node_modules/@noble/hashes/esm/hkdf.js
+function extract(hash, ikm, salt) {
+  ahash(hash);
+  if (salt === undefined)
+    salt = new Uint8Array(hash.outputLen);
+  return hmac(hash, toBytes(salt), toBytes(ikm));
+}
+function expand(hash, prk, info, length = 32) {
+  ahash(hash);
+  anumber(length);
+  const olen = hash.outputLen;
+  if (length > 255 * olen)
+    throw new Error("Length should be <= 255*HashLen");
+  const blocks = Math.ceil(length / olen);
+  if (info === undefined)
+    info = EMPTY_BUFFER;
+  const okm = new Uint8Array(blocks * olen);
+  const HMAC2 = hmac.create(hash, prk);
+  const HMACTmp = HMAC2._cloneInto();
+  const T = new Uint8Array(HMAC2.outputLen);
+  for (let counter = 0;counter < blocks; counter++) {
+    HKDF_COUNTER[0] = counter + 1;
+    HMACTmp.update(counter === 0 ? EMPTY_BUFFER : T).update(info).update(HKDF_COUNTER).digestInto(T);
+    okm.set(T, olen * counter);
+    HMAC2._cloneInto(HMACTmp);
+  }
+  HMAC2.destroy();
+  HMACTmp.destroy();
+  clean(T, HKDF_COUNTER);
+  return okm.slice(0, length);
+}
+var HKDF_COUNTER, EMPTY_BUFFER, hkdf = (hash, ikm, salt, info, length) => expand(hash, extract(hash, ikm, salt), info, length);
+var init_hkdf = __esm(() => {
+  init_hmac();
+  init_utils();
+  HKDF_COUNTER = /* @__PURE__ */ Uint8Array.from([0]);
+  EMPTY_BUFFER = /* @__PURE__ */ Uint8Array.of();
+});
+
+// src/vault/helper-identity.ts
+function isHelperTeamId(value) {
+  return typeof value === "string" && /^[A-Z0-9]{10}$/.test(value);
+}
+function isHelperBundleId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:\.[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)+$/.test(value);
+}
+
+// src/vault/format.ts
+function isPassphraseEnvelope(envelope) {
+  return envelope.factor === "passphrase";
+}
+function isCtap2Envelope(envelope) {
+  return envelope.factor === "passkey-prf" && envelope.transport === "ctap2";
+}
+function isSecureEnclaveEnvelope(envelope) {
+  return envelope.factor === "secure-enclave";
+}
+function isPlatformPasskeyEnvelope(envelope) {
+  return envelope.factor === "passkey-prf" && envelope.transport === "platform-macos";
+}
+function isPrfEnvelope(envelope) {
+  return isCtap2Envelope(envelope) || isPlatformPasskeyEnvelope(envelope);
+}
+function passphraseKdf(envelope) {
+  if (!isPassphraseEnvelope(envelope)) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passphrase one.`);
+  }
+  return envelope.kdf;
+}
+function branchesForVersion(version) {
+  if (version === LEGACY_VAULT_VERSION)
+    return LEGACY_BRANCHES;
+  return version === VAULT_VERSION ? BRANCHES : ALL_BRANCHES;
+}
+function nextIndexOf(hd, branch) {
+  return branch === "evmTee" ? hd.nextIndex.evmTee ?? 0 : hd.nextIndex[branch];
+}
+function exposedIndexesOf(hd, branch) {
+  return branch === "evmTee" ? hd.exposedIndexes.evmTee ?? [] : hd.exposedIndexes[branch];
+}
+function teeNetworkFor(chain2) {
+  return chain2 === "evm" ? "hood-mainnet" : "solana-mainnet";
+}
+function canonicalHeader(file) {
+  const header = {};
+  for (const field of HEADER_FIELDS)
+    header[field] = file[field];
+  return canonicalBytes(header);
+}
+function envelopeAad(file, envelope) {
+  const base = {
+    format: VAULT_FORMAT,
+    version: BLOB_AAD_VERSION,
+    vaultId: file.vaultId,
+    envelopeId: envelope.id,
+    factor: envelope.factor
+  };
+  if (isPassphraseEnvelope(envelope)) {
+    return canonicalBytes({ ...base, kdf: envelope.kdf, strength: envelope.strength });
+  }
+  if (isCtap2Envelope(envelope)) {
+    return canonicalBytes({
+      ...base,
+      transport: envelope.transport,
+      rpId: envelope.rpId,
+      credentialId: envelope.credentialId,
+      prfSalt: envelope.prfSalt,
+      userVerification: envelope.userVerification,
+      backupEligible: envelope.backupEligible,
+      backupState: envelope.backupState,
+      saltDerivation: envelope.saltDerivation
+    });
+  }
+  if (isSecureEnclaveEnvelope(envelope)) {
+    return canonicalBytes({
+      ...base,
+      helper: envelope.helper,
+      publicKey: envelope.publicKey,
+      keyTag: envelope.keyTag,
+      accessControl: envelope.accessControl,
+      kek: envelope.kek
+    });
+  }
+  if (isPlatformPasskeyEnvelope(envelope)) {
+    return canonicalBytes({
+      ...base,
+      transport: envelope.transport,
+      rpId: envelope.rpId,
+      credentialId: envelope.credentialId,
+      prfSalt: envelope.prfSalt,
+      userVerification: envelope.userVerification,
+      backupEligible: envelope.backupEligible,
+      backupState: envelope.backupState,
+      saltDerivation: envelope.saltDerivation,
+      helper: envelope.helper
+    });
+  }
+  throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", `This CLI cannot unwrap a ${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope.`);
+}
+function rootAad(vaultId) {
+  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "root" });
+}
+function keyAad(vaultId, keyId) {
+  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "key", keyId });
+}
+function evmRecordKeyAad(vaultId) {
+  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "evm-record" });
+}
+function refuse(code, message) {
+  throw new VaultError(code, message);
+}
+function parseVaultFile(raw) {
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    refuse("VAULT_UNREADABLE", "The vault file is not valid JSON.");
+  }
+  if (!isRecord(value))
+    refuse("VAULT_UNREADABLE", "The vault file is not a JSON object.");
+  if (value.format !== VAULT_FORMAT) {
+    throw new VaultError("VAULT_FORMAT_UNKNOWN", `Not a Candle vault: format is ${JSON.stringify(value.format)}.`);
+  }
+  if (!SUPPORTED_VAULT_VERSIONS.includes(value.version)) {
+    throw new VaultError("VAULT_VERSION_UNSUPPORTED", `Unsupported vault version ${JSON.stringify(value.version)}: this CLI reads versions ${SUPPORTED_VAULT_VERSIONS.join(", ")}.`);
+  }
+  if (value.cipher !== VAULT_CIPHER) {
+    refuse("VAULT_UNREADABLE", `Unsupported cipher ${JSON.stringify(value.cipher)}: this format is ${VAULT_CIPHER}.`);
+  }
+  for (const field of Object.keys(value)) {
+    if (!TOP_LEVEL_FIELDS.includes(field)) {
+      throw new VaultError("VAULT_FIELD_UNKNOWN", `The vault file carries an unknown top-level field: ${field}.`, {
+        suggestion: "A newer CLI may have written it. This CLI refuses rather than dropping a field it cannot honour."
+      });
+    }
+  }
+  if (typeof value.vaultId !== "string")
+    refuse("VAULT_UNREADABLE", "vaultId is missing or not a string.");
+  if (!Number.isInteger(value.generation) || value.generation < 0) {
+    refuse("VAULT_UNREADABLE", "generation is missing or is not a whole number.");
+  }
+  for (const field of ["createdAt", "updatedAt"]) {
+    if (typeof value[field] !== "string")
+      refuse("VAULT_UNREADABLE", `${field} is missing or not a string.`);
+  }
+  if (!Array.isArray(value.envelopes))
+    refuse("VAULT_UNREADABLE", "envelopes is missing or not an array.");
+  if (!Array.isArray(value.keyIds) || value.keyIds.some((id) => typeof id !== "string")) {
+    refuse("VAULT_UNREADABLE", "keyIds is missing or is not an array of strings.");
+  }
+  if (value.version === EVM_TEE_VAULT_VERSION) {
+    if (typeof value.evmRecordPublicKey !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.evmRecordPublicKey)) {
+      refuse("VAULT_UNREADABLE", "evmRecordPublicKey is missing or is not a 32-byte base64url key; a version 4 vault must carry one.");
+    }
+  } else if (value.evmRecordPublicKey !== undefined) {
+    throw new VaultError("VAULT_FIELD_UNKNOWN", `The vault file carries evmRecordPublicKey, which a version ${String(value.version)} vault does not define.`);
+  }
+  if (!isBlob(value.index))
+    refuse("VAULT_UNREADABLE", "index is missing or malformed.");
+  if (!isBlob(value.root)) {
+    throw new VaultError("VAULT_INDEX_INVALID", `The vault has no root blob; every version ${String(value.version)} vault must carry one.`);
+  }
+  if (!Array.isArray(value.keys))
+    refuse("VAULT_UNREADABLE", "keys is missing or not an array.");
+  for (const blob of value.keys) {
+    if (!isRecord(blob) || typeof blob.id !== "string" || !isBlob(blob)) {
+      refuse("VAULT_UNREADABLE", "A key blob is malformed.");
+    }
+  }
+  for (const envelope of value.envelopes) {
+    if (!isRecord(envelope))
+      refuse("VAULT_UNREADABLE", "An envelope is not a JSON object.");
+    for (const field of ["id", "factor", "domain", "label", "createdAt"]) {
+      if (typeof envelope[field] !== "string") {
+        refuse("VAULT_UNREADABLE", `An envelope is missing its ${field}, which every factor carries.`);
+      }
+    }
+    const wrap = envelope.wrap;
+    if (!isBlob(wrap) || wrap.alg !== VAULT_CIPHER) {
+      refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has a malformed wrap.`);
+    }
+    if (envelope.factor === "passphrase") {
+      if (!isRecord(envelope.kdf))
+        refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has no kdf record.`);
+      if (envelope.strength !== "generated-103" && envelope.strength !== "user-chosen") {
+        refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has an unrecognized strength.`);
+      }
+      assertKdfInBounds(envelope.kdf);
+    }
+    if (envelope.factor === "passkey-prf" && envelope.transport === "ctap2") {
+      assertCtap2EnvelopeShape(envelope);
+    }
+    if (envelope.factor === "passkey-prf" && envelope.transport === "platform-macos") {
+      assertPlatformPasskeyEnvelopeShape(envelope);
+    }
+    if (envelope.factor === "secure-enclave") {
+      assertSecureEnclaveEnvelopeShape(envelope);
+    }
+  }
+  const ids = new Set;
+  for (const envelope of value.envelopes) {
+    if (ids.has(envelope.id))
+      refuse("VAULT_UNREADABLE", `Two envelopes share the id ${envelope.id}.`);
+    ids.add(envelope.id);
+  }
+  return value;
+}
+function assertCtap2EnvelopeShape(envelope) {
+  const id = String(envelope.id);
+  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (security key) ${detail}.`);
+  if (envelope.domain !== "hardware-token")
+    bad(`has domain ${JSON.stringify(envelope.domain)}, expected hardware-token`);
+  if (envelope.rpId !== CTAP2_RP_ID)
+    bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`);
+  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "")
+    bad("has no credentialId");
+  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "")
+    bad("has no prfSalt");
+  if (envelope.userVerification !== "required")
+    bad("does not record userVerification: required");
+  if (typeof envelope.backupEligible !== "boolean")
+    bad("has no backupEligible flag");
+  if (typeof envelope.backupState !== "boolean")
+    bad("has no backupState flag");
+  if (envelope.saltDerivation !== "webauthn-prf")
+    bad("does not record saltDerivation: webauthn-prf");
+  if (typeof envelope.aaguid !== "string")
+    bad("has no aaguid");
+  if (typeof envelope.product !== "string")
+    bad("has no product");
+}
+function assertPlatformPasskeyEnvelopeShape(envelope) {
+  const id = String(envelope.id);
+  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (synced passkey) ${detail}.`);
+  if (envelope.domain !== "apple-account")
+    bad(`has domain ${JSON.stringify(envelope.domain)}, expected apple-account`);
+  if (envelope.rpId !== CTAP2_RP_ID)
+    bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`);
+  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "")
+    bad("has no credentialId");
+  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "")
+    bad("has no prfSalt");
+  if (envelope.userVerification !== "required")
+    bad("does not record userVerification: required");
+  if (envelope.backupEligible !== true)
+    bad("does not record backupEligible: true");
+  if (typeof envelope.backupState !== "boolean")
+    bad("has no backupState flag");
+  if (envelope.saltDerivation !== "platform")
+    bad("does not record saltDerivation: platform");
+  const helper = envelope.helper;
+  if (!isRecord(helper)) {
+    bad("has no helper record");
+    return;
+  }
+  if (!isHelperTeamId(helper.teamId))
+    bad("has an invalid helper.teamId");
+  if (!isHelperBundleId(helper.bundleId))
+    bad("has an invalid helper.bundleId");
+  if (typeof helper.minVersion !== "string" || helper.minVersion === "")
+    bad("has no helper.minVersion");
+}
+function assertSecureEnclaveEnvelopeShape(envelope) {
+  const id = String(envelope.id);
+  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (Secure Enclave) ${detail}.`);
+  if (envelope.domain !== "this-device")
+    bad(`has domain ${JSON.stringify(envelope.domain)}, expected this-device`);
+  const helper = envelope.helper;
+  if (!isRecord(helper)) {
+    bad("has no helper record");
+    return;
+  }
+  if (!isHelperTeamId(helper.teamId))
+    bad("has an invalid helper.teamId");
+  if (!isHelperBundleId(helper.bundleId))
+    bad("has an invalid helper.bundleId");
+  if (typeof helper.minVersion !== "string" || helper.minVersion === "")
+    bad("has no helper.minVersion");
+  if (typeof envelope.publicKey !== "string" || envelope.publicKey === "")
+    bad("has no publicKey");
+  if (typeof envelope.keyTag !== "string" || envelope.keyTag === "")
+    bad("has no keyTag");
+  if (envelope.accessControl !== "biometryCurrentSet")
+    bad("does not record accessControl: biometryCurrentSet");
+  const kek = envelope.kek;
+  if (!isRecord(kek)) {
+    bad("has no kek record");
+    return;
+  }
+  if (kek.alg !== SECURE_ENCLAVE_KEK_ALG)
+    bad(`has kek.alg ${JSON.stringify(kek.alg)}, expected ${SECURE_ENCLAVE_KEK_ALG}`);
+  if (typeof kek.ciphertext !== "string" || kek.ciphertext === "")
+    bad("has no kek.ciphertext");
+}
+function assertKeyIdsAgree(file) {
+  const declared = new Set(file.keyIds);
+  const present = new Set(file.keys.map((blob) => blob.id));
+  const missing = [...declared].filter((id) => !present.has(id));
+  const extra = [...present].filter((id) => !declared.has(id));
+  if (missing.length === 0 && extra.length === 0)
+    return;
+  throw new VaultError("VAULT_INDEX_INVALID", `The vault's keyIds and key blobs disagree: ${missing.length} declared blob(s) absent, ${extra.length} undeclared blob(s) present.`);
+}
+function parseIndexPlaintext(bytes, version = LEGACY_VAULT_VERSION) {
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    refuse("VAULT_INDEX_INVALID", "The vault index is not valid JSON.");
+  }
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", "The vault index is not a JSON object.");
+  for (const field of Object.keys(value)) {
+    if (field === "evmRecordKey" && version === EVM_TEE_VAULT_VERSION)
+      continue;
+    if (field !== "hd" && field !== "entries")
+      refuse("VAULT_INDEX_INVALID", `The index carries an unknown field: ${field}.`);
+  }
+  if (version === EVM_TEE_VAULT_VERSION && !isBlob(value.evmRecordKey)) {
+    refuse("VAULT_INDEX_INVALID", "A version 4 index must carry the sealed EVM record's key (evmRecordKey).");
+  }
+  const hd = parseHd(value.hd, version);
+  if (!Array.isArray(value.entries))
+    refuse("VAULT_INDEX_INVALID", "The index has no entries array.");
+  const entries = value.entries.map((entry) => parseEntry(entry, version));
+  const seen = new Set;
+  for (const entry of entries) {
+    if (seen.has(entry.id))
+      refuse("VAULT_INDEX_INVALID", `Two index entries share the id ${entry.id}.`);
+    seen.add(entry.id);
+  }
+  for (const entry of entries) {
+    if (entry.derivation === undefined)
+      continue;
+    const located = branchOfPath(entry.derivation.path);
+    if (located === undefined)
+      continue;
+    if (nextIndexOf(hd, located.branch) <= located.index) {
+      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${located.branch} is ${nextIndexOf(hd, located.branch)}, at or below the index ${located.index} that entry ${entry.id} already derives.`);
+    }
+  }
+  return { hd, entries, ...version === EVM_TEE_VAULT_VERSION ? { evmRecordKey: value.evmRecordKey } : {} };
+}
+function indexRequiresVersion4(index) {
+  if (index.evmRecordKey !== undefined)
+    return true;
+  if (index.entries.some((entry) => entry.chain === "evm" && entry.role === "tee-wallet"))
+    return true;
+  if (nextIndexOf(index.hd, "evmTee") > 0)
+    return true;
+  return exposedIndexesOf(index.hd, "evmTee").length > 0;
+}
+function indexRequiresVersion3(index) {
+  if (index.entries.some((entry) => entry.role === "external"))
+    return true;
+  if (index.hd.nextIndex.solanaExternal > 0)
+    return true;
+  if (index.hd.exposedIndexes.solanaExternal.length > 0)
+    return true;
+  const discovery = index.hd.discovery;
+  if (discovery === undefined)
+    return false;
+  return discovery.requestedCounts.solanaExternal !== 0 || discovery.highestMatched.solanaExternal !== -1;
+}
+function serializeIndexPlaintext(index, version) {
+  if (version === EVM_TEE_VAULT_VERSION) {
+    if (index.evmRecordKey === undefined) {
+      throw new VaultError("VAULT_INDEX_INVALID", "A version 4 index must carry the sealed EVM record's key.");
+    }
+    return {
+      ...index,
+      hd: {
+        ...index.hd,
+        nextIndex: { ...index.hd.nextIndex, evmTee: nextIndexOf(index.hd, "evmTee") },
+        exposedIndexes: { ...index.hd.exposedIndexes, evmTee: exposedIndexesOf(index.hd, "evmTee") }
+      }
+    };
+  }
+  if (indexRequiresVersion4(index)) {
+    throw new VaultError("VAULT_INDEX_INVALID", `This index carries an EVM TEE wallet and cannot be written as a version ${version} vault.`);
+  }
+  const { evmTee: _nextEvmTee, ...nextIndexV3 } = index.hd.nextIndex;
+  const { evmTee: _exposedEvmTee, ...exposedV3 } = index.hd.exposedIndexes;
+  if (version === VAULT_VERSION) {
+    if (index.hd.nextIndex.evmTee === undefined && index.hd.exposedIndexes.evmTee === undefined)
+      return index;
+    return { hd: { ...index.hd, nextIndex: nextIndexV3, exposedIndexes: exposedV3 }, entries: index.entries };
+  }
+  if (indexRequiresVersion3(index)) {
+    throw new VaultError("VAULT_INDEX_INVALID", "This index carries the external branch and cannot be written as a version 2 vault.");
+  }
+  const { solanaExternal: _nextExternal, ...nextIndex } = nextIndexV3;
+  const { solanaExternal: _exposedExternal, ...exposedIndexes } = exposedV3;
+  const hd = { ...index.hd, nextIndex, exposedIndexes };
+  if (index.hd.discovery !== undefined) {
+    const { solanaExternal: _requested, ...requestedCounts } = index.hd.discovery.requestedCounts;
+    const { solanaExternal: _matched, ...highestMatched } = index.hd.discovery.highestMatched;
+    hd.discovery = { ...index.hd.discovery, requestedCounts, highestMatched };
+  }
+  return { hd, entries: index.entries };
+}
+function parseHd(value, version) {
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", "The index has no hd record.");
+  for (const field of Object.keys(value)) {
+    const allowed = [
+      "scheme",
+      "nextIndex",
+      "rootExported",
+      "rootExportedAt",
+      "exposureReconciledAt",
+      "exposedIndexes",
+      "discovery"
+    ];
+    if (!allowed.includes(field))
+      refuse("VAULT_INDEX_INVALID", `hd carries an unknown field: ${field}.`);
+  }
+  if (value.scheme !== "bip39-24/slip10")
+    refuse("VAULT_INDEX_INVALID", `hd.scheme is ${JSON.stringify(value.scheme)}.`);
+  if (typeof value.rootExported !== "boolean")
+    refuse("VAULT_INDEX_INVALID", "hd.rootExported is not a boolean.");
+  const counters = value.nextIndex;
+  if (!isRecord(counters))
+    refuse("VAULT_INDEX_INVALID", "hd.nextIndex is missing.");
+  const exposed = value.exposedIndexes;
+  if (!isRecord(exposed))
+    refuse("VAULT_INDEX_INVALID", "hd.exposedIndexes is missing.");
+  const nextIndex = {};
+  const exposedIndexes = {};
+  const onDisk = branchesForVersion(version);
+  for (const field of Object.keys(counters)) {
+    if (!onDisk.includes(field)) {
+      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${field} is not a branch a version ${version} vault carries.`);
+    }
+  }
+  for (const field of Object.keys(exposed)) {
+    if (!onDisk.includes(field)) {
+      refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${field} is not a branch a version ${version} vault carries.`);
+    }
+  }
+  for (const branch of ALL_BRANCHES) {
+    if (!onDisk.includes(branch)) {
+      if (branch === "evmTee")
+        continue;
+      nextIndex[branch] = 0;
+      exposedIndexes[branch] = [];
+      continue;
+    }
+    const counter = counters[branch];
+    if (!Number.isInteger(counter) || counter < 0) {
+      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${branch} is missing or is not a whole number.`);
+    }
+    nextIndex[branch] = counter;
+    const list = exposed[branch];
+    if (!Array.isArray(list) || list.some((n) => !Number.isInteger(n) || n < 0)) {
+      refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${branch} is missing or is not a list of whole numbers.`);
+    }
+    exposedIndexes[branch] = [...list].sort((a, b) => a - b);
+  }
+  let discovery;
+  if (value.discovery !== undefined) {
+    const record = value.discovery;
+    if (!isRecord(record))
+      refuse("VAULT_INDEX_INVALID", "hd.discovery is not an object.");
+    if (record.complete !== false) {
+      refuse("VAULT_INDEX_INVALID", "hd.discovery.complete is not false; no command ever writes it true.");
+    }
+    if (typeof record.restoredAt !== "string" || typeof record.account !== "string") {
+      refuse("VAULT_INDEX_INVALID", "hd.discovery is missing restoredAt or account.");
+    }
+    const parsedCounts = {};
+    for (const field of ["requestedCounts", "highestMatched"]) {
+      const counts = record[field];
+      if (!isRecord(counts) || !Number.isInteger(counts.solanaVault) || !Number.isInteger(counts.solanaTee)) {
+        refuse("VAULT_INDEX_INVALID", `hd.discovery.${field} is missing or malformed.`);
+      }
+      if (onDisk.includes("solanaExternal")) {
+        if (!Number.isInteger(counts.solanaExternal)) {
+          refuse("VAULT_INDEX_INVALID", `hd.discovery.${field}.solanaExternal is missing or malformed.`);
+        }
+      } else if (counts.solanaExternal !== undefined) {
+        refuse("VAULT_INDEX_INVALID", `hd.discovery.${field}.solanaExternal is not a field a version 2 vault carries.`);
+      }
+      parsedCounts[field] = {
+        solanaVault: counts.solanaVault,
+        solanaTee: counts.solanaTee,
+        solanaExternal: onDisk.includes("solanaExternal") ? counts.solanaExternal : field === "requestedCounts" ? 0 : -1
+      };
+    }
+    discovery = {
+      ...record,
+      requestedCounts: parsedCounts.requestedCounts,
+      highestMatched: parsedCounts.highestMatched
+    };
+  }
+  return {
+    scheme: "bip39-24/slip10",
+    nextIndex,
+    rootExported: value.rootExported,
+    ...typeof value.rootExportedAt === "string" ? { rootExportedAt: value.rootExportedAt } : {},
+    ...typeof value.exposureReconciledAt === "string" ? { exposureReconciledAt: value.exposureReconciledAt } : {},
+    exposedIndexes,
+    ...discovery ? { discovery } : {}
+  };
+}
+function parseEntry(value, version) {
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", "An index entry is not a JSON object.");
+  for (const field of Object.keys(value)) {
+    if (!KEY_ENTRY_FIELDS.includes(field)) {
+      refuse("VAULT_INDEX_INVALID", `An index entry carries a field this format does not define: ${field}.`);
+    }
+  }
+  for (const field of ["id", "address", "label", "createdAt"]) {
+    if (typeof value[field] !== "string")
+      refuse("VAULT_INDEX_INVALID", `An index entry is missing its ${field}.`);
+  }
+  if (value.chain !== "solana" && value.chain !== "evm") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized chain.`);
+  }
+  if (value.curve !== "ed25519" && value.curve !== "secp256k1") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized curve.`);
+  }
+  if (value.role !== "vault" && value.role !== "tee-wallet" && value.role !== "external") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized role.`);
+  }
+  if (value.role === "external" && version === LEGACY_VAULT_VERSION) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is role:external, which a version 2 vault cannot carry.`);
+  }
+  if (value.chain === "evm" && value.role === "tee-wallet" && version !== EVM_TEE_VAULT_VERSION) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is an EVM TEE wallet, which only a version 4 vault carries.`);
+  }
+  if (value.origin !== "derived" && value.origin !== "migrated-tee") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized origin.`);
+  }
+  if (value.origin === "derived" && value.derivation === undefined) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is derived but records no derivation.`);
+  }
+  if (value.origin === "migrated-tee" && value.derivation !== undefined) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is migrated-tee and must not record a derivation.`);
+  }
+  if (value.derivation !== undefined) {
+    const derivation = value.derivation;
+    if (!isRecord(derivation) || derivation.scheme !== "slip10-ed25519" && derivation.scheme !== "bip32-secp256k1" || typeof derivation.path !== "string") {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed derivation.`);
+    }
+    for (const field of Object.keys(derivation)) {
+      if (field !== "scheme" && field !== "path") {
+        refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s derivation carries an unknown field: ${field}.`);
+      }
+    }
+  }
+  const exposure = value.exposure;
+  if (!isRecord(exposure) || typeof exposure.everRemoteExposed !== "boolean" || typeof exposure.everExported !== "boolean") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed exposure record.`);
+  }
+  for (const field of Object.keys(exposure)) {
+    if (!["everRemoteExposed", "everExported", "exposureUnknown"].includes(field)) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s exposure carries an unknown field: ${field}.`);
+    }
+  }
+  if (exposure.exposureUnknown !== undefined && typeof exposure.exposureUnknown !== "boolean") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s exposureUnknown is not a boolean.`);
+  }
+  if (value.linkedWalletId !== undefined && typeof value.linkedWalletId !== "string") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed linkedWalletId.`);
+  }
+  if (value.role === "vault" || value.role === "external") {
+    const what = value.role === "vault" ? "a vault key" : "an external key";
+    if (value.tee !== undefined)
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is ${what} carrying tee metadata.`);
+    if (value.linkedWalletId !== undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is ${what} carrying a linkedWalletId.`);
+    }
+    if (value.role === "external" && value.origin !== "derived") {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is an external key that is not derived.`);
+    }
+  } else {
+    if (value.tee === undefined)
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is a TEE wallet with no tee metadata.`);
+    parseTee(value.tee, value);
+  }
+  return value;
+}
+function parseTee(value, entry) {
+  const id = entry.id;
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", `Entry ${id} has malformed tee metadata.`);
+  for (const field of Object.keys(value)) {
+    if (!TEE_FIELDS.includes(field))
+      refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee metadata carries an unknown field: ${field}.`);
+  }
+  if (value.lifecycle === undefined)
+    refuse("VAULT_INDEX_INVALID", `Entry ${id} has no tee.lifecycle.`);
+  if (value.network !== undefined) {
+    const expected = entry.chain === "evm" ? "hood-mainnet" : "solana-mainnet";
+    if (value.network !== expected) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is a ${entry.chain} key with tee.network ${JSON.stringify(value.network)}.`);
+    }
+  }
+  if (TEE_REMOTE_STATES.includes(value.lifecycle) && !TEE_LIFECYCLES.includes(value.lifecycle)) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.lifecycle is ${JSON.stringify(value.lifecycle)}, which is a remoteState observation and never a lifecycle value.`);
+  }
+  if (!TEE_LIFECYCLES.includes(value.lifecycle)) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.lifecycle is ${JSON.stringify(value.lifecycle)}, which is not one of the five values.`);
+  }
+  if (value.remoteState !== undefined && !TEE_REMOTE_STATES.includes(value.remoteState)) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.remoteState is not one of SC-03's words.`);
+  }
+  if (value.grantIdentity !== undefined) {
+    const grant = value.grantIdentity;
+    if (!isRecord(grant) || typeof grant.account !== "string" || typeof grant.apiBaseUrl !== "string" || grant.source !== "operator-asserted" && grant.source !== "recorded-at-operation") {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.grantIdentity is malformed.`);
+    }
+  }
+  const rule = LIFECYCLE_TABLE[value.lifecycle];
+  for (const field of rule.tee) {
+    if (value[field] === undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must record tee.${field}.`);
+    }
+  }
+  for (const field of rule.entry) {
+    if (entry[field] === undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must record ${field}.`);
+    }
+  }
+  for (const field of rule.forbiddenEntry) {
+    if (entry[field] !== undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must not carry ${field}.`);
+    }
+  }
+}
+function branchOfPath(path) {
+  let match = /^m\/44'\/501'\/(\d+)'\/0'$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "solanaVault", index: Number(match[1]) };
+  match = /^m\/44'\/501'\/(\d+)'\/1'$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "solanaTee", index: Number(match[1]) };
+  match = /^m\/44'\/501'\/(\d+)'\/2'$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "solanaExternal", index: Number(match[1]) };
+  match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "evm", index: Number(match[1]) };
+  match = /^m\/44'\/60'\/(\d+)'\/1'\/0'$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "evmTee", index: Number(match[1]) };
+  return;
+}
+var VAULT_FORMAT = "candle-vault", VAULT_VERSION = 3, LEGACY_VAULT_VERSION = 2, EVM_TEE_VAULT_VERSION = 4, SUPPORTED_VAULT_VERSIONS, BLOB_AAD_VERSION = 2, VAULT_CIPHER = "AES-256-GCM", CTAP2_RP_ID = "cli.candle.tv", SECURE_ENCLAVE_KEK_ALG = "ECIES-P256-SHA256-AESGCM", NON_HEADER_FIELDS, HEADER_FIELDS, TOP_LEVEL_FIELDS, ALL_BRANCHES, BRANCHES, LEGACY_BRANCHES, TEE_LIFECYCLES, TEE_REMOTE_STATES, KEY_ENTRY_FIELDS, LIFECYCLE_TABLE, isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value), isBlob = (value) => isRecord(value) && typeof value.iv === "string" && typeof value.ciphertext === "string", TEE_FIELDS;
+var init_format = __esm(() => {
+  init_crypto();
+  init_errors2();
+  SUPPORTED_VAULT_VERSIONS = [
+    LEGACY_VAULT_VERSION,
+    VAULT_VERSION,
+    EVM_TEE_VAULT_VERSION
+  ];
+  NON_HEADER_FIELDS = ["index", "root", "keys"];
+  HEADER_FIELDS = [
+    "format",
+    "version",
+    "vaultId",
+    "generation",
+    "createdAt",
+    "updatedAt",
+    "cipher",
+    "envelopes",
+    "keyIds",
+    "evmRecordPublicKey"
+  ];
+  TOP_LEVEL_FIELDS = [...HEADER_FIELDS, ...NON_HEADER_FIELDS];
+  ALL_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal", "evm", "evmTee"];
+  BRANCHES = ["solanaVault", "solanaTee", "solanaExternal", "evm"];
+  LEGACY_BRANCHES = ["solanaVault", "solanaTee", "evm"];
+  TEE_LIFECYCLES = ["local-candidate", "import-pending", "enabled", "stranded", "retired"];
+  TEE_REMOTE_STATES = [
+    "local-only",
+    "enabling",
+    "enabled",
+    "disable-pending",
+    "quarantined",
+    "swept"
+  ];
+  KEY_ENTRY_FIELDS = [
+    "id",
+    "chain",
+    "curve",
+    "address",
+    "label",
+    "createdAt",
+    "role",
+    "origin",
+    "derivation",
+    "exposure",
+    "linkedWalletId",
+    "tee"
+  ];
+  LIFECYCLE_TABLE = {
+    "local-candidate": { tee: ["network"], entry: [], forbiddenEntry: ["linkedWalletId"] },
+    "import-pending": { tee: ["network"], entry: [], forbiddenEntry: ["linkedWalletId"] },
+    enabled: { tee: ["network", "grantIdentity", "vaultDestination"], entry: ["linkedWalletId"], forbiddenEntry: [] },
+    stranded: { tee: ["network", "grantIdentity"], entry: [], forbiddenEntry: ["linkedWalletId"] },
+    retired: { tee: ["network", "vaultDestination"], entry: [], forbiddenEntry: [] }
+  };
+  TEE_FIELDS = [
+    "network",
+    "vaultDestination",
+    "boundKeyPrefix",
+    "remoteAuthority",
+    "enabledAt",
+    "stopRequestedAt",
+    "sweepReceipts",
+    "sweepPending",
+    "sweptAt",
+    "lifecycle",
+    "grantIdentity",
+    "promotedInPlaceAt",
+    "fundingReceipts",
+    "destinationExposureAccepted",
+    "remoteState"
+  ];
+});
+
+// src/vault/evm-record-key.ts
+async function createEvmRecordKey(payloadKey, vaultId) {
+  const secret = x25519.utils.randomPrivateKey();
+  try {
+    const publicKey = x25519.getPublicKey(secret);
+    const blob = await seal(payloadKey, secret, evmRecordKeyAad(vaultId));
+    return { publicKey: b64u(publicKey), blob };
+  } finally {
+    wipe(secret);
+  }
+}
+async function openEvmRecordKey(payloadKey, vaultId, blob, headerPublicKey) {
+  const secret = await open(payloadKey, blob, evmRecordKeyAad(vaultId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: "The sealed EVM record's key failed its authentication tag.",
+    suggestion: "Nothing was written. Restore the file from a verified backup."
+  });
+  if (secret.length !== EVM_RECORD_KEY_BYTES) {
+    wipe(secret);
+    throw new VaultError("VAULT_INDEX_INVALID", "The sealed EVM record's key is the wrong length.");
+  }
+  const derived = x25519.getPublicKey(secret);
+  if (!bytesEqual(derived, unb64u(headerPublicKey, "evmRecordPublicKey"))) {
+    wipe(secret);
+    throw new VaultError("VAULT_INDEX_INVALID", "The sealed EVM record's key does not derive the header's evmRecordPublicKey; the pair was altered.", { suggestion: "Nothing was written. Restore the file from a verified backup." });
+  }
+  return secret;
+}
+function entryJson(entry) {
+  return entry.kind === "token" ? JSON.stringify({ kind: "token", wallet: entry.wallet, token: entry.token }) : JSON.stringify({ kind: "scanStart", wallet: entry.wallet, block: entry.block });
+}
+function paddedEntry(entry) {
+  const json = new TextEncoder().encode(entryJson(entry));
+  if (json.length > EVM_RECORD_PLAINTEXT_BYTES)
+    return;
+  const out = new Uint8Array(EVM_RECORD_PLAINTEXT_BYTES).fill(32);
+  out.set(json, 0);
+  return out;
+}
+function concat(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+async function lineKey(shared, epk, rpk) {
+  const okm = hkdf(sha2562, shared, concat(epk, rpk), new TextEncoder().encode(EVM_RECORD_HKDF_INFO), 32);
+  try {
+    return await crypto.subtle.importKey("raw", okm, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  } finally {
+    wipe(okm);
+  }
+}
+async function sealEvmRecordLine(entry, recordPublicKey, vaultId) {
+  const plaintext = paddedEntry(entry);
+  if (plaintext === undefined) {
+    throw new VaultError("EVM_RECORD_ENTRY_TOO_LONG", `A sealed EVM record entry is at most ${EVM_RECORD_PLAINTEXT_BYTES} bytes; this one is longer and was not written.`);
+  }
+  const rpk = unb64u(recordPublicKey, "evmRecordPublicKey");
+  const esk = x25519.utils.randomPrivateKey();
+  try {
+    const epk = x25519.getPublicKey(esk);
+    const shared = x25519.getSharedSecret(esk, rpk);
+    try {
+      const key = await lineKey(shared, epk, rpk);
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: ZERO_NONCE, additionalData: new TextEncoder().encode(vaultId) }, key, plaintext));
+      return `${JSON.stringify({ v: EVM_RECORD_LINE_VERSION, epk: b64u(epk), ct: b64u(ct) })}
+`;
+    } finally {
+      wipe(shared);
+    }
+  } finally {
+    wipe(esk);
+  }
+}
+function isAddress(value) {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+async function openEvmRecordLine(line, recordSecret, recordPublicKey, vaultId) {
+  try {
+    const parsed = JSON.parse(line);
+    if (parsed.v !== EVM_RECORD_LINE_VERSION || typeof parsed.epk !== "string" || typeof parsed.ct !== "string") {
+      return;
+    }
+    const epk = unb64u(parsed.epk, "epk");
+    const rpk = unb64u(recordPublicKey, "evmRecordPublicKey");
+    const shared = x25519.getSharedSecret(recordSecret, epk);
+    let plaintext;
+    try {
+      const key = await lineKey(shared, epk, rpk);
+      plaintext = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: ZERO_NONCE, additionalData: new TextEncoder().encode(vaultId) }, key, unb64u(parsed.ct, "ct")));
+    } finally {
+      wipe(shared);
+    }
+    if (plaintext.length !== EVM_RECORD_PLAINTEXT_BYTES)
+      return;
+    const value = JSON.parse(new TextDecoder().decode(plaintext).trimEnd());
+    if (value.kind === "token" && isAddress(value.wallet) && isAddress(value.token)) {
+      return { kind: "token", wallet: value.wallet, token: value.token };
+    }
+    if (value.kind === "scanStart" && isAddress(value.wallet) && Number.isSafeInteger(value.block) && value.block >= 0) {
+      return { kind: "scanStart", wallet: value.wallet, block: value.block };
+    }
+    return;
+  } catch {
+    return;
+  }
+}
+var EVM_RECORD_KEY_BYTES = 32, EVM_RECORD_PLAINTEXT_BYTES = 160, EVM_RECORD_HKDF_INFO = "candle-vault/v4/evm-record", EVM_RECORD_LINE_VERSION = 1, ZERO_NONCE;
+var init_evm_record_key = __esm(() => {
+  init_ed25519();
+  init_hkdf();
+  init_sha256();
+  init_crypto();
+  init_errors2();
+  init_format();
+  ZERO_NONCE = new Uint8Array(12);
+});
+
+// src/vault/evm-record.ts
+import { appendFile, readFile as readFile2, rename as rename2, stat, truncate } from "node:fs/promises";
+function evmRecordPath(vaultPath) {
+  return `${vaultPath.replace(/\.enc$/, "")}.evm-record.sealed`;
+}
+function utcStamp(ms) {
+  return new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+async function readIfPresent(path) {
+  try {
+    return await readFile2(path);
+  } catch (error) {
+    if (error?.code === "ENOENT")
+      return null;
+    throw error;
+  }
+}
+function splitRecord(bytes) {
+  const text = new TextDecoder().decode(bytes);
+  if (text.length === 0)
+    return { lines: [], partialTail: false };
+  const pieces = text.split(`
+`);
+  const last = pieces.pop();
+  return { lines: pieces.filter((line) => line.length > 0), partialTail: last.length > 0 };
+}
+async function appendEvmRecordEntry(input) {
+  const path = evmRecordPath(input.vaultPath);
+  let raw;
+  try {
+    const bytes = await readIfPresent(input.vaultPath);
+    raw = bytes === null ? null : bytes.toString("utf8");
+  } catch (error) {
+    return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
+  }
+  if (raw === null)
+    return { written: false, reason: "no-vault", detail: `no vault at ${input.vaultPath}`, path };
+  let publicKey;
+  let vaultId;
+  try {
+    const header = parseVaultFile(raw);
+    vaultId = header.vaultId;
+    publicKey = header.version === EVM_TEE_VAULT_VERSION ? header.evmRecordPublicKey : undefined;
+  } catch (error) {
+    return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
+  }
+  if (publicKey === undefined) {
+    return {
+      written: false,
+      reason: "no-record-key",
+      detail: "the vault is not version 4, so it has no sealed EVM record key",
+      path
+    };
+  }
+  let line;
+  try {
+    line = await sealEvmRecordLine(input.entry, publicKey, vaultId);
+  } catch (error) {
+    const tooLong = error instanceof VaultError && error.code === "EVM_RECORD_ENTRY_TOO_LONG";
+    return { written: false, reason: tooLong ? "too-long" : "write-failed", detail: messageOf(error), path };
+  }
+  try {
+    const repairedPartial = await withKeystoreLock(path, input.clock, async () => {
+      const repaired = await repairTail(path);
+      await appendFile(path, line, { encoding: "utf8", mode: 384 });
+      return repaired;
+    }, input.lockWaitMs !== undefined ? { waitMs: input.lockWaitMs } : {});
+    return { written: true, repairedPartial, path };
+  } catch (error) {
+    if (error instanceof KeystoreLockedError) {
+      return { written: false, reason: "locked", detail: error.message, path };
+    }
+    return { written: false, reason: "write-failed", detail: messageOf(error), path };
+  }
+}
+async function repairTail(path) {
+  const bytes = await readIfPresent(path);
+  if (bytes === null || bytes.length === 0 || bytes[bytes.length - 1] === 10)
+    return false;
+  const lastNewline = bytes.lastIndexOf(10);
+  await truncate(path, lastNewline + 1);
+  return true;
+}
+function appendNotice(outcome, what) {
+  if (outcome.written) {
+    return outcome.repairedPartial ? `The sealed EVM record at ${outcome.path} ended in a partial line (a torn earlier append); it was dropped before ${what} was added.` : undefined;
+  }
+  return `${what} was not added to the sealed EVM record (${outcome.detail}). A sweep can still find it with --token or --from-block.`;
+}
+async function openVaultRecordKey(vault) {
+  const blob = vault.index.evmRecordKey;
+  const publicKey = vault.file.evmRecordPublicKey;
+  if (blob === undefined || publicKey === undefined)
+    return;
+  return openEvmRecordKey(vault.payloadKey, vault.file.vaultId, blob, publicKey);
+}
+async function readEvmRecord(vault, path = evmRecordPath(vault.path)) {
+  const bytes = await readIfPresent(path);
+  const base = { path, entries: [], unreadableLines: 0, partialTail: false };
+  const secret = await openVaultRecordKey(vault);
+  if (secret === undefined)
+    return { ...base, absent: bytes === null || bytes.length === 0, noKey: true };
+  try {
+    if (bytes === null || bytes.length === 0)
+      return { ...base, absent: true, noKey: false };
+    const { lines, partialTail } = splitRecord(bytes);
+    const seen = new Set;
+    const entries = [];
+    let unreadable = 0;
+    for (const line of lines) {
+      const entry = await openEvmRecordLine(line, secret, vault.file.evmRecordPublicKey, vault.file.vaultId);
+      if (entry === undefined) {
+        unreadable += 1;
+        continue;
+      }
+      const key = JSON.stringify(entry).toLowerCase();
+      if (seen.has(key))
+        continue;
+      seen.add(key);
+      entries.push(entry);
+    }
+    return { path, absent: false, noKey: false, entries, unreadableLines: unreadable, partialTail };
+  } finally {
+    wipe(secret);
+  }
+}
+async function copyEvmRecordForBackup(live, copyPath, clock) {
+  const livePath = evmRecordPath(live.path);
+  try {
+    return await withKeystoreLock(livePath, clock, async () => {
+      const bytes = await readIfPresent(livePath);
+      if (bytes === null)
+        return { present: false, copied: 0, dropped: 0, copyPath };
+      const secret = await openVaultRecordKey(live);
+      const kept = [];
+      let dropped = 0;
+      const { lines, partialTail } = splitRecord(bytes);
+      if (partialTail)
+        dropped += 1;
+      try {
+        for (const line of lines) {
+          const entry = secret === undefined ? undefined : await openEvmRecordLine(line, secret, live.file.evmRecordPublicKey, live.file.vaultId);
+          if (entry === undefined)
+            dropped += 1;
+          else
+            kept.push(`${line}
+`);
+        }
+      } finally {
+        if (secret !== undefined)
+          wipe(secret);
+      }
+      await writeKeystoreFile(copyPath, kept.join(""));
+      return { present: true, copied: kept.length, dropped, copyPath };
+    });
+  } catch (error) {
+    if (error instanceof KeystoreLockedError) {
+      throw new VaultError("EVM_RECORD_UNAVAILABLE", `Could not take the sealed EVM record's lock at ${livePath}.lock, so the backup was not completed and no verified backup was recorded.`, { suggestion: "Wait for the trade or sweep holding it to finish, then run the backup again." });
+    }
+    if (error instanceof VaultError)
+      throw error;
+    throw new VaultError("VAULT_WRITE_FAILED", `Could not copy the sealed EVM record to ${copyPath}: ${messageOf(error)}`);
+  }
+}
+async function verifyEvmRecordCopy(copy, path = evmRecordPath(copy.path)) {
+  if (copy.file.version !== EVM_TEE_VAULT_VERSION)
+    return { notApplicable: true, absent: true, lines: 0, path };
+  const bytes = await readIfPresent(path);
+  if (bytes === null)
+    return { notApplicable: false, absent: true, lines: 0, path };
+  const { lines, partialTail } = splitRecord(bytes);
+  if (partialTail) {
+    throw verifyFailed(`the sealed EVM record at ${path} ends in a partial line`);
+  }
+  const secret = await openVaultRecordKey(copy);
+  if (secret === undefined)
+    throw verifyFailed("the copy has no sealed EVM record key");
+  try {
+    for (const [index, line] of lines.entries()) {
+      const entry = await openEvmRecordLine(line, secret, copy.file.evmRecordPublicKey, copy.file.vaultId);
+      if (entry === undefined) {
+        throw verifyFailed(`line ${index + 1} of the sealed EVM record at ${path} does not decrypt under this copy's key`);
+      }
+    }
+  } finally {
+    wipe(secret);
+  }
+  return { notApplicable: false, absent: false, lines: lines.length, path };
+}
+function verifyFailed(message) {
+  return new VaultError("VAULT_VERIFY_FAILED", `Verification failed at step 9: ${message}.`, {
+    suggestion: "The copy's record changed after it was written. Run `candle vault backup` again; a fresh backup of the same vault copies only the lines that decrypt.",
+    details: { step: "9" }
+  });
+}
+async function moveAsideOrphanRecord(vaultPath, clock) {
+  const path = evmRecordPath(vaultPath);
+  if (!await exists(path))
+    return;
+  return withKeystoreLock(path, clock, async () => {
+    if (!await exists(path))
+      return;
+    let target = `${path}.orphaned-${utcStamp(clock.now())}`;
+    for (let n = 2;await exists(target); n++)
+      target = `${path}.orphaned-${utcStamp(clock.now())}-${n}`;
+    await rename2(path, target);
+    return target;
+  });
+}
+async function exists(path) {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+var init_evm_record = __esm(() => {
+  init_wallet_keystore();
+  init_errors2();
+  init_evm_record_key();
+  init_format();
+});
+
+// src/vault/sidecar.ts
+import { chmod as chmod2, mkdir as mkdir2, readFile as readFile3, writeFile as writeFile2 } from "node:fs/promises";
+import { dirname as dirname2 } from "node:path";
+function sidecarPath(vaultPath) {
+  return vaultPath.replace(/\.enc$/, "") + ".state.json";
+}
+function sourceDigest(vaultId, bytes) {
+  const id = new TextEncoder().encode(vaultId);
+  const joined = new Uint8Array(id.length + bytes.length);
+  joined.set(id, 0);
+  joined.set(bytes, id.length);
+  return b64u(sha2562(joined));
+}
+async function readSidecar(path) {
+  let raw;
+  try {
+    raw = await readFile3(path, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.vaultId !== "string" || !Number.isInteger(parsed?.lastGeneration))
+      return null;
+    return {
+      ...parsed,
+      envelopeIds: Array.isArray(parsed.envelopeIds) ? parsed.envelopeIds : [],
+      removedEnvelopeIds: Array.isArray(parsed.removedEnvelopeIds) ? parsed.removedEnvelopeIds : []
+    };
+  } catch {
+    return null;
+  }
+}
+async function writeSidecar(path, state) {
+  const dir = dirname2(path);
+  await mkdir2(dir, { recursive: true });
+  await chmod2(dir, 448).catch(() => {});
+  await writeFile2(path, `${JSON.stringify(state, null, 2)}
+`, { encoding: "utf8", mode: 384 });
+  await chmod2(path, 384).catch(() => {});
+}
+function nextSidecar(previous, file, patch = {}) {
+  const carried = previous !== null && previous.vaultId === file.vaultId ? previous : null;
+  const currentIds = file.envelopes.map((envelope) => envelope.id);
+  const known = carried?.envelopeIds ?? [];
+  const removed = new Set(carried?.removedEnvelopeIds ?? []);
+  for (const id of known)
+    if (!currentIds.includes(id))
+      removed.add(id);
+  const next = {
+    ...carried ?? {},
+    vaultId: file.vaultId,
+    lastGeneration: file.generation,
+    envelopeIds: currentIds,
+    removedEnvelopeIds: [...removed].sort(),
+    ...patch
+  };
+  next.lastGeneration = Math.max(next.lastGeneration, file.generation, carried?.lastGeneration ?? 0);
+  return next;
+}
+var init_sidecar = __esm(() => {
+  init_sha256();
+  init_crypto();
+});
+
+// src/vault/store.ts
+var exports_store = {};
+__export(exports_store, {
+  writeNewVault: () => writeNewVault,
+  wrapDekForPrf: () => wrapDekForPrf,
+  wrapDekForPassphrase: () => wrapDekForPassphrase,
+  wrapDekForKek: () => wrapDekForKek,
+  withVaultLock: () => withVaultLock,
+  unlockWithPassphrase: () => unlockWithPassphrase,
+  unlockVault: () => unlockVault,
+  serializeVault: () => serializeVault,
+  sealKeyBlob: () => sealKeyBlob,
+  sealIndex: () => sealIndex,
+  readVaultRaw: () => readVaultRaw,
+  ownSecret: () => ownSecret,
+  legacyWalletsPath: () => legacyWalletsPath,
+  freshVaultId: () => freshVaultId,
+  freshKeyId: () => freshKeyId,
+  freshEnvelopeId: () => freshEnvelopeId,
+  freshDek: () => freshDek,
+  fileExists: () => fileExists,
+  entriesOf: () => entriesOf,
+  defaultVaultPath: () => defaultVaultPath,
+  decryptRoot: () => decryptRoot,
+  decryptKey: () => decryptKey,
+  commitVault: () => commitVault,
+  closeVault: () => closeVault,
+  candleConfigDir: () => candleConfigDir,
+  CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
+});
+import { chmod as chmod3, mkdir as mkdir3, readFile as readFile4, stat as stat2 } from "node:fs/promises";
+import { join as join3 } from "node:path";
+function candleConfigDir(env, home) {
+  const configured = env.CANDLE_CONFIG_DIR?.trim();
+  if (configured) {
+    const refusal = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured);
+    if (refusal !== undefined)
+      throw new UsageError(refusal);
+    return configured;
+  }
+  return join3(home, ".config", "candle");
+}
+function defaultVaultPath(env, home) {
+  return join3(candleConfigDir(env, home), "vault.enc");
+}
+function legacyWalletsPath(env, home) {
+  return join3(candleConfigDir(env, home), "wallets.enc");
+}
+async function readVaultRaw(path) {
+  try {
+    return await readFile4(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT")
+      return null;
+    throw new VaultError("VAULT_UNREADABLE", `Could not read the vault at ${path}.`);
+  }
+}
+async function fileExists(path) {
+  try {
+    await stat2(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function closeVault(vault) {
+  wipe(vault.dek);
+}
+async function unlockVault(path, raw, request, opts = {}) {
+  const file = parseVaultFile(raw);
+  const envelope = pickEnvelope(file, request);
+  const dek = await unwrapDek(file, envelope, request, opts.notice);
+  if (dek.length !== DEK_BYTES) {
+    wipe(dek);
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
+  }
+  try {
+    const payloadKey = await derivePayloadKey(dek, unb64u(file.vaultId, "vaultId"));
+    const indexBytes = await open(payloadKey, file.index, canonicalHeader(file), {
+      code: "VAULT_BLOB_TAMPERED",
+      message: "The vault header was altered, an envelope was added or removed outside this CLI, or this index is from a different write of the vault.",
+      suggestion: "Nothing was written. Restore the file from a verified backup."
+    });
+    let index;
+    try {
+      index = parseIndexPlaintext(indexBytes, file.version);
+    } finally {
+      wipe(indexBytes);
+    }
+    assertKeyIdsAgree(file);
+    if (file.version === EVM_TEE_VAULT_VERSION && index.evmRecordKey !== undefined) {
+      const secret = await openEvmRecordKey(payloadKey, file.vaultId, index.evmRecordKey, file.evmRecordPublicKey);
+      wipe(secret);
+    }
+    return { path, raw, file, index, payloadKey, dek, envelope };
+  } catch (error) {
+    wipe(dek);
+    throw error;
+  }
+}
+async function unwrapDek(file, envelope, request, notice) {
+  if (request.factor === "passphrase") {
+    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice);
+    return withSecret(kek, async (kekBytes) => {
+      const kekKey2 = await importAesKey(kekBytes);
+      return open(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
+        code: "VAULT_UNLOCK_FAILED",
+        message: "Could not open the vault: wrong passphrase, or the file is corrupt."
+      });
+    });
+  }
+  if (request.factor === "secure-enclave") {
+    if (!isSecureEnclaveEnvelope(envelope)) {
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a Secure Enclave one.`);
+    }
+    const kekKey2 = await importAesKey(request.kek);
+    return open(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
+      code: "VAULT_UNLOCK_FAILED",
+      message: "Could not open the vault with the Secure Enclave: what it unwrapped is not this envelope's key, or the file is corrupt.",
+      suggestion: "Nothing was derived from it and no other factor was tried."
+    });
+  }
+  if (!isPrfEnvelope(envelope)) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passkey one.`);
+  }
+  const kekKey = await derivePrfKek(request.prfOutput, unb64u(file.vaultId, "vaultId"));
+  const what = envelope.transport === "platform-macos" ? "this synced passkey" : "this security key";
+  return open(kekKey, envelope.wrap, envelopeAad(file, envelope), {
+    code: "VAULT_UNLOCK_FAILED",
+    message: `Could not open the vault with ${what}: the assertion did not yield this envelope's key, or the file is corrupt.`,
+    suggestion: "Nothing was derived from it and no other factor was tried."
+  });
+}
+function pickEnvelope(file, request) {
+  const candidates = file.envelopes.filter((envelope) => envelope.factor === request.factor);
+  if (request.envelopeId !== undefined) {
+    const named = candidates.find((envelope) => envelope.id === request.envelopeId);
+    if (!named)
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request.factor} envelope with id ${request.envelopeId}.`);
+    return named;
+  }
+  const first = candidates[0];
+  if (!first) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request.factor} envelope.`, {
+      suggestion: "Run `candle vault status` to see which factors can open it."
+    });
+  }
+  return first;
+}
+async function unlockWithPassphrase(path, raw, passphrase, opts = {}) {
+  const file = parseVaultFile(raw);
+  const envelopes = file.envelopes.filter((envelope) => envelope.factor === "passphrase");
+  if (envelopes.length === 0) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
+  }
+  let last;
+  for (const envelope of envelopes) {
+    try {
+      return await unlockVault(path, raw, { factor: "passphrase", passphrase, envelopeId: envelope.id }, opts);
+    } catch (error) {
+      if (error instanceof VaultError && error.code !== "VAULT_UNLOCK_FAILED")
+        throw error;
+      last = error;
+    }
+  }
+  throw last;
+}
+async function decryptRoot(vault) {
+  return open(vault.payloadKey, vault.file.root, rootAad(vault.file.vaultId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: "The vault's root blob failed its authentication tag.",
+    suggestion: "Nothing was written. Restore the file from a verified backup; `vault verify-backup` checks a copy in full."
+  });
+}
+async function decryptKey(vault, keyId) {
+  const blob = vault.file.keys.find((candidate) => candidate.id === keyId);
+  if (!blob)
+    throw new VaultError("VAULT_INDEX_INVALID", `The vault declares key ${keyId} but holds no blob for it.`);
+  return open(vault.payloadKey, blob, keyAad(vault.file.vaultId, keyId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: `Key blob ${keyId} failed its authentication tag.`,
+    suggestion: "Nothing was written."
+  });
+}
+function freshId(bytes) {
+  for (;; ) {
+    const id = b64u(crypto.getRandomValues(new Uint8Array(bytes)));
+    if (!id.startsWith("-") && !id.startsWith("_"))
+      return id;
+  }
+}
+function freshEnvelopeId() {
+  return freshId(8);
+}
+function freshKeyId() {
+  return freshId(8);
+}
+function freshVaultId() {
+  return freshId(16);
+}
+function freshDek() {
+  return randomBytes2(DEK_BYTES);
+}
+async function wrapDekForPassphrase(dek, passphrase, envelope, header, notice) {
+  const kek = await derivePassphraseKek(passphrase, passphraseKdf(envelope), notice);
+  return withSecret(kek, async (kekBytes) => {
+    const kekKey = await importAesKey(kekBytes);
+    const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+    return { alg: VAULT_CIPHER, ...blob };
+  });
+}
+async function wrapDekForPrf(dek, prfOutput, envelope, header) {
+  const kekKey = await derivePrfKek(prfOutput, unb64u(header.vaultId, "vaultId"));
+  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+  return { alg: VAULT_CIPHER, ...blob };
+}
+async function wrapDekForKek(dek, kek, envelope, header) {
+  const kekKey = await importAesKey(kek);
+  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+  return { alg: VAULT_CIPHER, ...blob };
+}
+function serializeVault(file) {
+  return `${JSON.stringify(file, null, 2)}
+`;
+}
+async function sealIndex(header, index, payloadKey) {
+  const withoutIndex = { ...header };
+  const blob = await sealJson(payloadKey, serializeIndexPlaintext(index, header.version), canonicalHeader(withoutIndex));
+  return { ...withoutIndex, index: blob };
+}
+async function commitVault(vault, plan, clock) {
+  let index = plan.index.evmRecordKey === undefined && vault.index.evmRecordKey !== undefined ? { ...plan.index, evmRecordKey: vault.index.evmRecordKey } : plan.index;
+  let orphaned;
+  const written = await withVaultLock(vault.path, clock, async () => {
+    const current = await readVaultRaw(vault.path);
+    if (current !== vault.raw) {
+      throw new VaultError("VAULT_CHANGED", "The vault changed on disk while this command was running; nothing was written.", {
+        suggestion: "Another candle command wrote to it. Run this one again."
+      });
+    }
+    const envelopes = plan.envelopes ?? vault.file.envelopes;
+    const keys = [...vault.file.keys, ...plan.addKeys ?? []];
+    let evmRecordPublicKey = vault.file.evmRecordPublicKey;
+    if (indexRequiresVersion4(index) && evmRecordPublicKey === undefined) {
+      orphaned = await moveAsideOrphanRecord(vault.path, clock);
+      const created = await createEvmRecordKey(vault.payloadKey, vault.file.vaultId);
+      evmRecordPublicKey = created.publicKey;
+      index = { ...index, evmRecordKey: created.blob };
+    }
+    const version = indexRequiresVersion4(index) ? EVM_TEE_VAULT_VERSION : indexRequiresVersion3(index) ? VAULT_VERSION : vault.file.version;
+    const header = {
+      format: VAULT_FORMAT,
+      version,
+      vaultId: vault.file.vaultId,
+      generation: vault.file.generation + 1,
+      createdAt: vault.file.createdAt,
+      updatedAt: new Date(clock.now()).toISOString(),
+      cipher: VAULT_CIPHER,
+      envelopes,
+      keyIds: keys.map((blob) => blob.id),
+      ...evmRecordPublicKey !== undefined ? { evmRecordPublicKey } : {},
+      root: vault.file.root,
+      keys
+    };
+    const next = await sealIndex(header, index, vault.payloadKey);
+    const contents = serializeVault(next);
+    try {
+      await writeKeystoreFile(vault.path, contents);
+    } catch {
+      throw new VaultError("VAULT_WRITE_FAILED", `Could not write the vault at ${vault.path}.`);
+    }
+    return { next, contents };
+  });
+  const path = sidecarPath(vault.path);
+  await writeSidecar(path, nextSidecar(await readSidecar(path), written.next, plan.sidecar)).catch(() => {});
+  if (orphaned !== undefined) {
+    clock.stderr?.write(`A sealed EVM record from an earlier vault was at ${evmRecordPath(vault.path)}; it was moved to ${orphaned} (never deleted), and this vault starts a fresh record.
+`);
+  }
+  return { ...vault, raw: written.contents, file: written.next, index };
+}
+async function withVaultLock(path, clock, fn) {
+  try {
+    return await withKeystoreLock(path, clock, fn);
+  } catch (error) {
+    if (error instanceof KeystoreLockedError) {
+      throw new VaultError("VAULT_LOCKED", error.message);
+    }
+    throw error;
+  }
+}
+async function sealKeyBlob(vault, keyId, secret) {
+  const blob = await seal(vault.payloadKey, secret, keyAad(vault.file.vaultId, keyId));
+  return { id: keyId, ...blob };
+}
+async function writeNewVault(path, contents) {
+  await mkdir3(candleConfigDirOf(path), { recursive: true });
+  await chmod3(candleConfigDirOf(path), 448).catch(() => {});
+  await writeKeystoreFile(path, contents);
+}
+function candleConfigDirOf(path) {
+  return join3(path, "..");
+}
+function entriesOf(vault) {
+  return vault.index.entries;
+}
+var CONFIG_DIR_ENV = "CANDLE_CONFIG_DIR";
+var init_store = __esm(() => {
+  init_args();
+  init_wallet_keystore();
+  init_crypto();
+  init_errors2();
+  init_evm_record();
+  init_evm_record_key();
+  init_format();
+  init_sidecar();
+});
+
+// src/core/paths.ts
+import { chmod as chmod4, mkdir as mkdir4 } from "node:fs/promises";
+import { join as join4 } from "node:path";
+function corePaths(env, home, profile) {
+  if (!isValidProfileName(profile))
+    throw new Error(`Invalid profile name for the core: ${profile}`);
+  const dir = join4(candleConfigDir(env, home), "core", profile);
+  return {
+    dir,
+    lock: join4(dir, "core.lock"),
+    socket: join4(dir, "core.sock"),
+    journal: join4(dir, "journal.jsonl"),
+    slot: join4(dir, "slot.enc"),
+    tokens: join4(dir, "tokens.json")
+  };
+}
+async function ensureCoreDir(paths) {
+  await mkdir4(paths.dir, { recursive: true, mode: 448 });
+  await chmod4(paths.dir, 448);
+}
+var init_paths = __esm(() => {
+  init_profiles();
+  init_store();
+});
+
+// src/core/ownership.ts
+import { stat as stat3 } from "node:fs/promises";
+function coreOwnedMessage(profile) {
+  return `Profile "${profile}" is owned by the Candle core: its Write key and device token are in the core-only slot, and this command would need one of them.`;
+}
+async function slotExists(paths) {
+  try {
+    await stat3(paths.slot);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return false;
+    return true;
+  }
+}
+async function isCoreOwned(deps, config, profile) {
+  if (profile === undefined)
+    return false;
+  if (config.profiles?.[profile]?.coreOwned === true)
+    return true;
+  let paths;
+  try {
+    paths = corePaths(deps.env, deps.homedir(), profile);
+  } catch {
+    return false;
+  }
+  return slotExists(paths);
+}
+function coreOwnedAllows(input) {
+  const { cmd, sub, isSubcommand, args } = input;
+  if (ALLOWED.has(`${cmd} *`))
+    return true;
+  if (isSubcommand)
+    return ALLOWED.has(`${cmd} ${sub}`);
+  if (!ALLOWED.has(cmd))
+    return false;
+  if (cmd === "mcp")
+    return args.includes("--read-only");
+  return true;
+}
+function profileNamesTouched(sub, args) {
+  if (sub !== "rename" && sub !== "remove")
+    return [];
+  return args.filter((arg) => !arg.startsWith("-"));
+}
+var PROFILE_CORE_OWNED = "PROFILE_CORE_OWNED", ProfileCoreOwnedError, CORE_OWNED_SUGGESTION = "Do this from the Candle TUI, where the core asks for your vault factor, or act as another profile with --profile.", CORE_OWNED_INVOCATIONS, ALLOWED;
+var init_ownership = __esm(() => {
+  init_paths();
+  ProfileCoreOwnedError = class ProfileCoreOwnedError extends Error {
+    profile;
+    code = PROFILE_CORE_OWNED;
+    constructor(profile) {
+      super(coreOwnedMessage(profile));
+      this.profile = profile;
+      this.name = "ProfileCoreOwnedError";
+    }
+  };
+  CORE_OWNED_INVOCATIONS = [
+    "core *",
+    "auth status",
+    "portfolio",
+    "pnl",
+    "plans",
+    "wallets",
+    "swap status",
+    "fees",
+    "lp pools",
+    "lp positions",
+    "tee status",
+    "perps markets",
+    "perps market",
+    "perps book",
+    "perps candles",
+    "perps orders",
+    "perps fills",
+    "perps funding",
+    "perps positions",
+    "perps account",
+    "perps risk",
+    "perps watch",
+    "vault status",
+    "vault list",
+    "external list",
+    "secrets list",
+    "doctor",
+    "verify",
+    "update",
+    "help *",
+    "completion *",
+    "plugins",
+    "profile *",
+    "mcp"
+  ];
+  ALLOWED = new Set(CORE_OWNED_INVOCATIONS);
+});
+
+// src/file-lock.ts
+import { open as open2, rm as rm2, stat as stat4 } from "node:fs/promises";
+async function withFileLock(target, fn) {
+  const lockPath = `${target}.lock`;
+  const deadline = Date.now() + TIMEOUT_MS;
+  for (;; ) {
+    try {
+      await (await open2(lockPath, "wx")).close();
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST")
+        throw error;
+      const age = await stat4(lockPath).then((s) => Date.now() - s.mtimeMs).catch(() => 0);
+      if (age > STALE_MS) {
+        await rm2(lockPath, { force: true });
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`Timed out waiting for ${lockPath}. Another candle process is writing; if none is running, delete that file.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await rm2(lockPath, { force: true });
+  }
+}
+var STALE_MS = 30000, RETRY_MS = 25, TIMEOUT_MS = 1e4;
+var init_file_lock = () => {};
+
+// src/secret-store.ts
+import { chmod as chmod5, mkdir as mkdir5, readFile as readFile5, rename as rename3, writeFile as writeFile3 } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname as dirname3, join as join5 } from "node:path";
+function walletSignerRef(walletId) {
+  return `wallet_signer_${walletId}`;
+}
+function importPendingSignerRef(chain2, address) {
+  return `import_pending_${chain2}_${address}`;
+}
+function pemToStoredSigner(pem) {
+  return pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
+}
+function storedSignerToPem(stored) {
+  const lines = stored.match(/.{1,64}/g) ?? [stored];
+  return `-----BEGIN PRIVATE KEY-----
+${lines.join(`
+`)}
+-----END PRIVATE KEY-----
+`;
+}
+function configDir() {
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join5(homedir(), ".config", "candle");
+}
+function defaultCredentialsPath() {
+  return join5(configDir(), "credentials.enc");
+}
+function defaultSecretsPath(env = process.env) {
+  return join5(env.CANDLE_CONFIG_DIR?.trim() || join5(homedir(), ".config", "candle"), "secrets.enc");
+}
+async function deriveKey(passphrase, salt, iterations) {
+  const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
+    "deriveKey"
+  ]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+
+class EncryptedFileSecretStore {
+  path;
+  iterations;
+  cachedPassphrase;
+  constructor(options = {}) {
+    this.path = options.path ?? defaultCredentialsPath();
+    this.iterations = options.iterations ?? PBKDF2_ITERATIONS;
+  }
+  async get(ref) {
+    const passphrase = await this.resolvePassphrase();
+    const contents = await this.readContents();
+    const entry = contents[ref];
+    if (!entry)
+      return null;
+    const salt = fromBase64(entry.salt);
+    const key = await deriveKey(passphrase, salt, entry.iterations);
+    const iv = fromBase64(entry.iv);
+    const ciphertext = fromBase64(entry.ciphertext);
+    let plaintext;
+    try {
+      plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+    } catch {
+      throw new Error(`Could not decrypt the credential for "${ref}" in ${this.path}. CANDLE_KEYRING_PASSPHRASE is likely wrong for this file.`);
+    }
+    return new TextDecoder().decode(plaintext);
+  }
+  async set(ref, value) {
+    const passphrase = await this.resolvePassphrase();
+    return withFileLock(this.path, async () => {
+      const contents = await this.readContents();
+      const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES));
+      const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES));
+      const key = await deriveKey(passphrase, salt, this.iterations);
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
+      contents[ref] = {
+        salt: toBase64(salt),
+        iv: toBase64(iv),
+        ciphertext: toBase64(new Uint8Array(ciphertext)),
+        iterations: this.iterations
+      };
+      await this.writeContents(contents);
+    });
+  }
+  async delete(ref) {
+    await this.resolvePassphrase();
+    return withFileLock(this.path, async () => {
+      const contents = await this.readContents();
+      if (!Object.hasOwn(contents, ref))
+        return;
+      delete contents[ref];
+      await this.writeContents(contents);
+    });
+  }
+  async resolvePassphrase() {
+    if (this.cachedPassphrase !== undefined)
+      return this.cachedPassphrase;
+    const fromEnv = process.env.CANDLE_KEYRING_PASSPHRASE;
+    if (fromEnv) {
+      this.cachedPassphrase = fromEnv;
+      return fromEnv;
+    }
+    if (process.stdin.isTTY) {
+      const prompted = await readHiddenLine("Passphrase for Candle credential store: ", realPromptStreams());
+      this.cachedPassphrase = prompted;
+      return prompted;
+    }
+    throw new Error("No keychain available and no CANDLE_KEYRING_PASSPHRASE set; set it to use the encrypted file store on this machine");
+  }
+  async readContents() {
+    let raw;
+    try {
+      raw = await readFile5(this.path, "utf8");
+    } catch (err) {
+      if (err.code === "ENOENT")
+        return {};
+      throw err;
+    }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new Error(`The credentials file at ${this.path} is not valid JSON and cannot be read. Delete it and re-run ` + "the command that stores your device token / API key to recreate it.");
+    }
+  }
+  async writeContents(contents) {
+    const dir = dirname3(this.path);
+    await mkdir5(dir, { recursive: true });
+    await chmod5(dir, 448);
+    const tmpPath = `${this.path}.${crypto.randomUUID()}.tmp`;
+    await writeFile3(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 384 });
+    await chmod5(tmpPath, 384);
+    await rename3(tmpPath, this.path);
+  }
+}
+async function promptHiddenSecret(promptText) {
+  if (!process.stdin.isTTY) {
+    throw new Error("No TTY available for hidden input; run this in a terminal.");
+  }
+  return readHiddenLine(promptText, realPromptStreams());
+}
+function realPromptStreams() {
+  return { input: process.stdin, output: process.stderr };
+}
+async function promptVisibleLine(promptText) {
+  if (!process.stdin.isTTY) {
+    throw new Error("No TTY available for interactive input; this command cannot run unattended");
+  }
+  return readVisibleLine(promptText, realPromptStreams());
+}
+async function readVisibleLine(promptText, io) {
+  const readline = await import("node:readline");
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
+    rl.question(promptText, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+async function readHiddenLine(promptText, io) {
+  const readline = await import("node:readline");
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
+    const rlInternals = rl;
+    rlInternals._writeToOutput = (text) => {
+      if (text === promptText)
+        io.output.write(text);
+    };
+    rl.question(promptText, (answer) => {
+      rl.close();
+      io.output.write(`
+`);
+      resolve(answer);
+    });
+  });
+}
+function toBase64(bytes) {
+  return Buffer.from(bytes).toString("base64");
+}
+function fromBase64(base642) {
+  return new Uint8Array(Buffer.from(base642, "base64"));
+}
+var SECRET_REFS, PBKDF2_ITERATIONS = 210000, SALT_LENGTH_BYTES = 16, IV_LENGTH_BYTES = 12;
+var init_secret_store = __esm(() => {
+  init_file_lock();
+  SECRET_REFS = {
+    deviceToken: "device_token",
+    apiKey: "api_key"
+  };
+});
+
+// src/deps.ts
+async function resolveDeviceToken(deps, profile) {
+  const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim();
+  if (fromEnv)
+    return fromEnv;
+  if (profile !== undefined && await isCoreOwned(deps, await deps.readConfig(), profile)) {
+    throw new ProfileCoreOwnedError(profile);
+  }
+  const ref = profile ? profileSecretRef(profile, "deviceToken") : SECRET_REFS.deviceToken;
+  const stored = await deps.store.get(ref);
+  return stored ?? undefined;
+}
+async function resolveApiKey(deps, profile) {
+  const fromEnv = deps.env.CANDLE_API_KEY?.trim();
+  if (fromEnv)
+    return fromEnv;
+  const ref = profile ? profileSecretRef(profile, "apiKey") : SECRET_REFS.apiKey;
+  const stored = await deps.store.get(ref);
+  return stored ?? undefined;
+}
+var init_deps = __esm(() => {
+  init_ownership();
+  init_profiles();
+  init_secret_store();
+});
+
 // ../../node_modules/@noble/curves/esm/abstract/weierstrass.js
 function _splitEndoScalar(k, basis, n) {
   const [[a1, b1], [a2, b2]] = basis;
@@ -7155,14 +10984,14 @@ function _splitEndoScalar(k, basis, n) {
   const c2 = divNearest(-b1 * k, n);
   let k1 = k - c1 * a1 - c2 * a2;
   let k2 = -c1 * b1 - c2 * b2;
-  const k1neg = k1 < _0n5;
-  const k2neg = k2 < _0n5;
+  const k1neg = k1 < _0n8;
+  const k2neg = k2 < _0n8;
   if (k1neg)
     k1 = -k1;
   if (k2neg)
     k2 = -k2;
-  const MAX_NUM = bitMask(Math.ceil(bitLen(n) / 2)) + _1n5;
-  if (k1 < _0n5 || k1 >= MAX_NUM || k2 < _0n5 || k2 >= MAX_NUM) {
+  const MAX_NUM = bitMask(Math.ceil(bitLen(n) / 2)) + _1n8;
+  if (k1 < _0n8 || k1 >= MAX_NUM || k2 < _0n8 || k2 >= MAX_NUM) {
     throw new Error("splitScalar (endomorphism): failed, k=" + k);
   }
   return { k1neg, k1, k2neg, k2 };
@@ -7183,26 +11012,26 @@ function validateSigOpts(opts, def) {
     validateSigFormat(optsn.format);
   return optsn;
 }
-function _normFnElement(Fn, key) {
-  const { BYTES: expected } = Fn;
+function _normFnElement(Fn2, key) {
+  const { BYTES: expected } = Fn2;
   let num;
   if (typeof key === "bigint") {
     num = key;
   } else {
     let bytes = ensureBytes("private key", key);
     try {
-      num = Fn.fromBytes(bytes);
+      num = Fn2.fromBytes(bytes);
     } catch (error) {
       throw new Error(`invalid private key: expected ui8a of size ${expected}, got ${typeof key}`);
     }
   }
-  if (!Fn.isValidNot0(num))
+  if (!Fn2.isValidNot0(num))
     throw new Error("invalid private key: out of range [1..N-1]");
   return num;
 }
 function weierstrassN(params, extraOpts = {}) {
   const validated = _createCurveFields("weierstrass", params, extraOpts);
-  const { Fp, Fn } = validated;
+  const { Fp: Fp2, Fn: Fn2 } = validated;
   let CURVE = validated.CURVE;
   const { h: cofactor, n: CURVE_ORDER } = CURVE;
   _validateObject(extraOpts, {}, {
@@ -7216,25 +11045,25 @@ function weierstrassN(params, extraOpts = {}) {
   });
   const { endo } = extraOpts;
   if (endo) {
-    if (!Fp.is0(CURVE.a) || typeof endo.beta !== "bigint" || !Array.isArray(endo.basises)) {
+    if (!Fp2.is0(CURVE.a) || typeof endo.beta !== "bigint" || !Array.isArray(endo.basises)) {
       throw new Error('invalid endo: expected "beta": bigint and "basises": array');
     }
   }
-  const lengths = getWLengths(Fp, Fn);
+  const lengths = getWLengths(Fp2, Fn2);
   function assertCompressionIsSupported() {
-    if (!Fp.isOdd)
+    if (!Fp2.isOdd)
       throw new Error("compression is not supported: Field does not have .isOdd()");
   }
   function pointToBytes(_c, point, isCompressed) {
     const { x, y } = point.toAffine();
-    const bx = Fp.toBytes(x);
+    const bx = Fp2.toBytes(x);
     _abool2(isCompressed, "isCompressed");
     if (isCompressed) {
       assertCompressionIsSupported();
-      const hasEvenY = !Fp.isOdd(y);
+      const hasEvenY = !Fp2.isOdd(y);
       return concatBytes(pprefix(hasEvenY), bx);
     } else {
-      return concatBytes(Uint8Array.of(4), bx, Fp.toBytes(y));
+      return concatBytes(Uint8Array.of(4), bx, Fp2.toBytes(y));
     }
   }
   function pointFromBytes(bytes) {
@@ -7244,27 +11073,27 @@ function weierstrassN(params, extraOpts = {}) {
     const head = bytes[0];
     const tail = bytes.subarray(1);
     if (length === comp && (head === 2 || head === 3)) {
-      const x = Fp.fromBytes(tail);
-      if (!Fp.isValid(x))
+      const x = Fp2.fromBytes(tail);
+      if (!Fp2.isValid(x))
         throw new Error("bad point: is not on curve, wrong x");
       const y2 = weierstrassEquation(x);
       let y;
       try {
-        y = Fp.sqrt(y2);
+        y = Fp2.sqrt(y2);
       } catch (sqrtError) {
         const err = sqrtError instanceof Error ? ": " + sqrtError.message : "";
         throw new Error("bad point: is not on curve, sqrt error" + err);
       }
       assertCompressionIsSupported();
-      const isYOdd = Fp.isOdd(y);
+      const isYOdd = Fp2.isOdd(y);
       const isHeadOdd = (head & 1) === 1;
       if (isHeadOdd !== isYOdd)
-        y = Fp.neg(y);
+        y = Fp2.neg(y);
       return { x, y };
     } else if (length === uncomp && head === 4) {
-      const L = Fp.BYTES;
-      const x = Fp.fromBytes(tail.subarray(0, L));
-      const y = Fp.fromBytes(tail.subarray(L, L * 2));
+      const L = Fp2.BYTES;
+      const x = Fp2.fromBytes(tail.subarray(0, L));
+      const y = Fp2.fromBytes(tail.subarray(L, L * 2));
       if (!isValidXY(x, y))
         throw new Error("bad point: is not on curve");
       return { x, y };
@@ -7275,23 +11104,23 @@ function weierstrassN(params, extraOpts = {}) {
   const encodePoint = extraOpts.toBytes || pointToBytes;
   const decodePoint = extraOpts.fromBytes || pointFromBytes;
   function weierstrassEquation(x) {
-    const x2 = Fp.sqr(x);
-    const x3 = Fp.mul(x2, x);
-    return Fp.add(Fp.add(x3, Fp.mul(x, CURVE.a)), CURVE.b);
+    const x2 = Fp2.sqr(x);
+    const x3 = Fp2.mul(x2, x);
+    return Fp2.add(Fp2.add(x3, Fp2.mul(x, CURVE.a)), CURVE.b);
   }
   function isValidXY(x, y) {
-    const left = Fp.sqr(y);
+    const left = Fp2.sqr(y);
     const right = weierstrassEquation(x);
-    return Fp.eql(left, right);
+    return Fp2.eql(left, right);
   }
   if (!isValidXY(CURVE.Gx, CURVE.Gy))
     throw new Error("bad curve params: generator point");
-  const _4a3 = Fp.mul(Fp.pow(CURVE.a, _3n2), _4n2);
-  const _27b2 = Fp.mul(Fp.sqr(CURVE.b), BigInt(27));
-  if (Fp.is0(Fp.add(_4a3, _27b2)))
+  const _4a3 = Fp2.mul(Fp2.pow(CURVE.a, _3n3), _4n2);
+  const _27b2 = Fp2.mul(Fp2.sqr(CURVE.b), BigInt(27));
+  if (Fp2.is0(Fp2.add(_4a3, _27b2)))
     throw new Error("bad curve params: a or b");
   function acoord(title, n, banZero = false) {
-    if (!Fp.isValid(n) || banZero && Fp.is0(n))
+    if (!Fp2.isValid(n) || banZero && Fp2.is0(n))
       throw new Error(`bad point coordinate ${title}`);
     return n;
   }
@@ -7302,32 +11131,32 @@ function weierstrassN(params, extraOpts = {}) {
   function splitEndoScalarN(k) {
     if (!endo || !endo.basises)
       throw new Error("no endo");
-    return _splitEndoScalar(k, endo.basises, Fn.ORDER);
+    return _splitEndoScalar(k, endo.basises, Fn2.ORDER);
   }
   const toAffineMemo = memoized((p, iz) => {
     const { X, Y, Z } = p;
-    if (Fp.eql(Z, Fp.ONE))
+    if (Fp2.eql(Z, Fp2.ONE))
       return { x: X, y: Y };
     const is0 = p.is0();
     if (iz == null)
-      iz = is0 ? Fp.ONE : Fp.inv(Z);
-    const x = Fp.mul(X, iz);
-    const y = Fp.mul(Y, iz);
-    const zz = Fp.mul(Z, iz);
+      iz = is0 ? Fp2.ONE : Fp2.inv(Z);
+    const x = Fp2.mul(X, iz);
+    const y = Fp2.mul(Y, iz);
+    const zz = Fp2.mul(Z, iz);
     if (is0)
-      return { x: Fp.ZERO, y: Fp.ZERO };
-    if (!Fp.eql(zz, Fp.ONE))
+      return { x: Fp2.ZERO, y: Fp2.ZERO };
+    if (!Fp2.eql(zz, Fp2.ONE))
       throw new Error("invZ was invalid");
     return { x, y };
   });
   const assertValidMemo = memoized((p) => {
     if (p.is0()) {
-      if (extraOpts.allowInfinityPoint && !Fp.is0(p.Y))
+      if (extraOpts.allowInfinityPoint && !Fp2.is0(p.Y))
         return;
       throw new Error("bad point: ZERO");
     }
     const { x, y } = p.toAffine();
-    if (!Fp.isValid(x) || !Fp.isValid(y))
+    if (!Fp2.isValid(x) || !Fp2.isValid(y))
       throw new Error("bad point: x or y not field elements");
     if (!isValidXY(x, y))
       throw new Error("bad point: equation left != right");
@@ -7336,7 +11165,7 @@ function weierstrassN(params, extraOpts = {}) {
     return true;
   });
   function finishEndo(endoBeta, k1p, k2p, k1neg, k2neg) {
-    k2p = new Point(Fp.mul(k2p.X, endoBeta), k2p.Y, k2p.Z);
+    k2p = new Point(Fp2.mul(k2p.X, endoBeta), k2p.Y, k2p.Z);
     k1p = negateCt(k1neg, k1p);
     k2p = negateCt(k2neg, k2p);
     return k1p.add(k2p);
@@ -7354,18 +11183,18 @@ function weierstrassN(params, extraOpts = {}) {
     }
     static fromAffine(p) {
       const { x, y } = p || {};
-      if (!p || !Fp.isValid(x) || !Fp.isValid(y))
+      if (!p || !Fp2.isValid(x) || !Fp2.isValid(y))
         throw new Error("invalid affine point");
       if (p instanceof Point)
         throw new Error("projective point not allowed");
-      if (Fp.is0(x) && Fp.is0(y))
+      if (Fp2.is0(x) && Fp2.is0(y))
         return Point.ZERO;
-      return new Point(x, y, Fp.ONE);
+      return new Point(x, y, Fp2.ONE);
     }
     static fromBytes(bytes) {
-      const P = Point.fromAffine(decodePoint(_abytes2(bytes, undefined, "point")));
-      P.assertValidity();
-      return P;
+      const P2 = Point.fromAffine(decodePoint(_abytes2(bytes, undefined, "point")));
+      P2.assertValidity();
+      return P2;
     }
     static fromHex(hex2) {
       return Point.fromBytes(ensureBytes("pointHex", hex2));
@@ -7379,7 +11208,7 @@ function weierstrassN(params, extraOpts = {}) {
     precompute(windowSize = 8, isLazy = true) {
       wnaf.createCache(this, windowSize);
       if (!isLazy)
-        this.multiply(_3n2);
+        this.multiply(_3n3);
       return this;
     }
     assertValidity() {
@@ -7387,106 +11216,106 @@ function weierstrassN(params, extraOpts = {}) {
     }
     hasEvenY() {
       const { y } = this.toAffine();
-      if (!Fp.isOdd)
+      if (!Fp2.isOdd)
         throw new Error("Field doesn't support isOdd");
-      return !Fp.isOdd(y);
+      return !Fp2.isOdd(y);
     }
     equals(other) {
       aprjpoint(other);
       const { X: X1, Y: Y1, Z: Z1 } = this;
       const { X: X2, Y: Y2, Z: Z2 } = other;
-      const U1 = Fp.eql(Fp.mul(X1, Z2), Fp.mul(X2, Z1));
-      const U2 = Fp.eql(Fp.mul(Y1, Z2), Fp.mul(Y2, Z1));
+      const U1 = Fp2.eql(Fp2.mul(X1, Z2), Fp2.mul(X2, Z1));
+      const U2 = Fp2.eql(Fp2.mul(Y1, Z2), Fp2.mul(Y2, Z1));
       return U1 && U2;
     }
     negate() {
-      return new Point(this.X, Fp.neg(this.Y), this.Z);
+      return new Point(this.X, Fp2.neg(this.Y), this.Z);
     }
     double() {
       const { a, b } = CURVE;
-      const b3 = Fp.mul(b, _3n2);
+      const b3 = Fp2.mul(b, _3n3);
       const { X: X1, Y: Y1, Z: Z1 } = this;
-      let { ZERO: X3, ZERO: Y3, ZERO: Z3 } = Fp;
-      let t0 = Fp.mul(X1, X1);
-      let t1 = Fp.mul(Y1, Y1);
-      let t2 = Fp.mul(Z1, Z1);
-      let t3 = Fp.mul(X1, Y1);
-      t3 = Fp.add(t3, t3);
-      Z3 = Fp.mul(X1, Z1);
-      Z3 = Fp.add(Z3, Z3);
-      X3 = Fp.mul(a, Z3);
-      Y3 = Fp.mul(b3, t2);
-      Y3 = Fp.add(X3, Y3);
-      X3 = Fp.sub(t1, Y3);
-      Y3 = Fp.add(t1, Y3);
-      Y3 = Fp.mul(X3, Y3);
-      X3 = Fp.mul(t3, X3);
-      Z3 = Fp.mul(b3, Z3);
-      t2 = Fp.mul(a, t2);
-      t3 = Fp.sub(t0, t2);
-      t3 = Fp.mul(a, t3);
-      t3 = Fp.add(t3, Z3);
-      Z3 = Fp.add(t0, t0);
-      t0 = Fp.add(Z3, t0);
-      t0 = Fp.add(t0, t2);
-      t0 = Fp.mul(t0, t3);
-      Y3 = Fp.add(Y3, t0);
-      t2 = Fp.mul(Y1, Z1);
-      t2 = Fp.add(t2, t2);
-      t0 = Fp.mul(t2, t3);
-      X3 = Fp.sub(X3, t0);
-      Z3 = Fp.mul(t2, t1);
-      Z3 = Fp.add(Z3, Z3);
-      Z3 = Fp.add(Z3, Z3);
+      let { ZERO: X3, ZERO: Y3, ZERO: Z3 } = Fp2;
+      let t0 = Fp2.mul(X1, X1);
+      let t1 = Fp2.mul(Y1, Y1);
+      let t2 = Fp2.mul(Z1, Z1);
+      let t3 = Fp2.mul(X1, Y1);
+      t3 = Fp2.add(t3, t3);
+      Z3 = Fp2.mul(X1, Z1);
+      Z3 = Fp2.add(Z3, Z3);
+      X3 = Fp2.mul(a, Z3);
+      Y3 = Fp2.mul(b3, t2);
+      Y3 = Fp2.add(X3, Y3);
+      X3 = Fp2.sub(t1, Y3);
+      Y3 = Fp2.add(t1, Y3);
+      Y3 = Fp2.mul(X3, Y3);
+      X3 = Fp2.mul(t3, X3);
+      Z3 = Fp2.mul(b3, Z3);
+      t2 = Fp2.mul(a, t2);
+      t3 = Fp2.sub(t0, t2);
+      t3 = Fp2.mul(a, t3);
+      t3 = Fp2.add(t3, Z3);
+      Z3 = Fp2.add(t0, t0);
+      t0 = Fp2.add(Z3, t0);
+      t0 = Fp2.add(t0, t2);
+      t0 = Fp2.mul(t0, t3);
+      Y3 = Fp2.add(Y3, t0);
+      t2 = Fp2.mul(Y1, Z1);
+      t2 = Fp2.add(t2, t2);
+      t0 = Fp2.mul(t2, t3);
+      X3 = Fp2.sub(X3, t0);
+      Z3 = Fp2.mul(t2, t1);
+      Z3 = Fp2.add(Z3, Z3);
+      Z3 = Fp2.add(Z3, Z3);
       return new Point(X3, Y3, Z3);
     }
     add(other) {
       aprjpoint(other);
       const { X: X1, Y: Y1, Z: Z1 } = this;
       const { X: X2, Y: Y2, Z: Z2 } = other;
-      let { ZERO: X3, ZERO: Y3, ZERO: Z3 } = Fp;
+      let { ZERO: X3, ZERO: Y3, ZERO: Z3 } = Fp2;
       const a = CURVE.a;
-      const b3 = Fp.mul(CURVE.b, _3n2);
-      let t0 = Fp.mul(X1, X2);
-      let t1 = Fp.mul(Y1, Y2);
-      let t2 = Fp.mul(Z1, Z2);
-      let t3 = Fp.add(X1, Y1);
-      let t4 = Fp.add(X2, Y2);
-      t3 = Fp.mul(t3, t4);
-      t4 = Fp.add(t0, t1);
-      t3 = Fp.sub(t3, t4);
-      t4 = Fp.add(X1, Z1);
-      let t5 = Fp.add(X2, Z2);
-      t4 = Fp.mul(t4, t5);
-      t5 = Fp.add(t0, t2);
-      t4 = Fp.sub(t4, t5);
-      t5 = Fp.add(Y1, Z1);
-      X3 = Fp.add(Y2, Z2);
-      t5 = Fp.mul(t5, X3);
-      X3 = Fp.add(t1, t2);
-      t5 = Fp.sub(t5, X3);
-      Z3 = Fp.mul(a, t4);
-      X3 = Fp.mul(b3, t2);
-      Z3 = Fp.add(X3, Z3);
-      X3 = Fp.sub(t1, Z3);
-      Z3 = Fp.add(t1, Z3);
-      Y3 = Fp.mul(X3, Z3);
-      t1 = Fp.add(t0, t0);
-      t1 = Fp.add(t1, t0);
-      t2 = Fp.mul(a, t2);
-      t4 = Fp.mul(b3, t4);
-      t1 = Fp.add(t1, t2);
-      t2 = Fp.sub(t0, t2);
-      t2 = Fp.mul(a, t2);
-      t4 = Fp.add(t4, t2);
-      t0 = Fp.mul(t1, t4);
-      Y3 = Fp.add(Y3, t0);
-      t0 = Fp.mul(t5, t4);
-      X3 = Fp.mul(t3, X3);
-      X3 = Fp.sub(X3, t0);
-      t0 = Fp.mul(t3, t1);
-      Z3 = Fp.mul(t5, Z3);
-      Z3 = Fp.add(Z3, t0);
+      const b3 = Fp2.mul(CURVE.b, _3n3);
+      let t0 = Fp2.mul(X1, X2);
+      let t1 = Fp2.mul(Y1, Y2);
+      let t2 = Fp2.mul(Z1, Z2);
+      let t3 = Fp2.add(X1, Y1);
+      let t4 = Fp2.add(X2, Y2);
+      t3 = Fp2.mul(t3, t4);
+      t4 = Fp2.add(t0, t1);
+      t3 = Fp2.sub(t3, t4);
+      t4 = Fp2.add(X1, Z1);
+      let t5 = Fp2.add(X2, Z2);
+      t4 = Fp2.mul(t4, t5);
+      t5 = Fp2.add(t0, t2);
+      t4 = Fp2.sub(t4, t5);
+      t5 = Fp2.add(Y1, Z1);
+      X3 = Fp2.add(Y2, Z2);
+      t5 = Fp2.mul(t5, X3);
+      X3 = Fp2.add(t1, t2);
+      t5 = Fp2.sub(t5, X3);
+      Z3 = Fp2.mul(a, t4);
+      X3 = Fp2.mul(b3, t2);
+      Z3 = Fp2.add(X3, Z3);
+      X3 = Fp2.sub(t1, Z3);
+      Z3 = Fp2.add(t1, Z3);
+      Y3 = Fp2.mul(X3, Z3);
+      t1 = Fp2.add(t0, t0);
+      t1 = Fp2.add(t1, t0);
+      t2 = Fp2.mul(a, t2);
+      t4 = Fp2.mul(b3, t4);
+      t1 = Fp2.add(t1, t2);
+      t2 = Fp2.sub(t0, t2);
+      t2 = Fp2.mul(a, t2);
+      t4 = Fp2.add(t4, t2);
+      t0 = Fp2.mul(t1, t4);
+      Y3 = Fp2.add(Y3, t0);
+      t0 = Fp2.mul(t5, t4);
+      X3 = Fp2.mul(t3, X3);
+      X3 = Fp2.sub(X3, t0);
+      t0 = Fp2.mul(t3, t1);
+      Z3 = Fp2.mul(t5, Z3);
+      Z3 = Fp2.add(Z3, t0);
       return new Point(X3, Y3, Z3);
     }
     subtract(other) {
@@ -7497,18 +11326,18 @@ function weierstrassN(params, extraOpts = {}) {
     }
     multiply(scalar) {
       const { endo: endo2 } = extraOpts;
-      if (!Fn.isValidNot0(scalar))
+      if (!Fn2.isValidNot0(scalar))
         throw new Error("invalid scalar: out of range");
       let point, fake;
-      const mul = (n) => wnaf.cached(this, n, (p) => normalizeZ(Point, p));
+      const mul3 = (n) => wnaf.cached(this, n, (p) => normalizeZ(Point, p));
       if (endo2) {
         const { k1neg, k1, k2neg, k2 } = splitEndoScalarN(scalar);
-        const { p: k1p, f: k1f } = mul(k1);
-        const { p: k2p, f: k2f } = mul(k2);
+        const { p: k1p, f: k1f } = mul3(k1);
+        const { p: k2p, f: k2f } = mul3(k2);
         fake = k1f.add(k2f);
         point = finishEndo(endo2.beta, k1p, k2p, k1neg, k2neg);
       } else {
-        const { p, f } = mul(scalar);
+        const { p, f } = mul3(scalar);
         point = p;
         fake = f;
       }
@@ -7517,11 +11346,11 @@ function weierstrassN(params, extraOpts = {}) {
     multiplyUnsafe(sc) {
       const { endo: endo2 } = extraOpts;
       const p = this;
-      if (!Fn.isValid(sc))
+      if (!Fn2.isValid(sc))
         throw new Error("invalid scalar: out of range");
-      if (sc === _0n5 || p.is0())
+      if (sc === _0n8 || p.is0())
         return Point.ZERO;
-      if (sc === _1n5)
+      if (sc === _1n8)
         return p;
       if (wnaf.hasCache(this))
         return this.multiply(sc);
@@ -7542,7 +11371,7 @@ function weierstrassN(params, extraOpts = {}) {
     }
     isTorsionFree() {
       const { isTorsionFree } = extraOpts;
-      if (cofactor === _1n5)
+      if (cofactor === _1n8)
         return true;
       if (isTorsionFree)
         return isTorsionFree(Point, this);
@@ -7550,7 +11379,7 @@ function weierstrassN(params, extraOpts = {}) {
     }
     clearCofactor() {
       const { clearCofactor } = extraOpts;
-      if (cofactor === _1n5)
+      if (cofactor === _1n8)
         return this;
       if (clearCofactor)
         return clearCofactor(Point, this);
@@ -7589,17 +11418,17 @@ function weierstrassN(params, extraOpts = {}) {
       return normalizeZ(Point, points);
     }
     static msm(points, scalars) {
-      return pippenger(Point, Fn, points, scalars);
+      return pippenger(Point, Fn2, points, scalars);
     }
     static fromPrivateKey(privateKey) {
-      return Point.BASE.multiply(_normFnElement(Fn, privateKey));
+      return Point.BASE.multiply(_normFnElement(Fn2, privateKey));
     }
   }
-  Point.BASE = new Point(CURVE.Gx, CURVE.Gy, Fp.ONE);
-  Point.ZERO = new Point(Fp.ZERO, Fp.ONE, Fp.ZERO);
-  Point.Fp = Fp;
-  Point.Fn = Fn;
-  const bits = Fn.BITS;
+  Point.BASE = new Point(CURVE.Gx, CURVE.Gy, Fp2.ONE);
+  Point.ZERO = new Point(Fp2.ZERO, Fp2.ONE, Fp2.ZERO);
+  Point.Fp = Fp2;
+  Point.Fn = Fn2;
+  const bits = Fn2.BITS;
   const wnaf = new wNAF(Point, extraOpts.endo ? Math.ceil(bits / 2) : bits);
   Point.BASE.precompute(8);
   return Point;
@@ -7607,22 +11436,22 @@ function weierstrassN(params, extraOpts = {}) {
 function pprefix(hasEvenY) {
   return Uint8Array.of(hasEvenY ? 2 : 3);
 }
-function getWLengths(Fp, Fn) {
+function getWLengths(Fp2, Fn2) {
   return {
-    secretKey: Fn.BYTES,
-    publicKey: 1 + Fp.BYTES,
-    publicKeyUncompressed: 1 + 2 * Fp.BYTES,
+    secretKey: Fn2.BYTES,
+    publicKey: 1 + Fp2.BYTES,
+    publicKeyUncompressed: 1 + 2 * Fp2.BYTES,
     publicKeyHasPrefix: true,
-    signature: 2 * Fn.BYTES
+    signature: 2 * Fn2.BYTES
   };
 }
 function ecdh(Point, ecdhOpts = {}) {
-  const { Fn } = Point;
+  const { Fn: Fn2 } = Point;
   const randomBytes_ = ecdhOpts.randomBytes || randomBytes;
-  const lengths = Object.assign(getWLengths(Point.Fp, Fn), { seed: getMinHashLength(Fn.ORDER) });
+  const lengths = Object.assign(getWLengths(Point.Fp, Fn2), { seed: getMinHashLength(Fn2.ORDER) });
   function isValidSecretKey(secretKey) {
     try {
-      return !!_normFnElement(Fn, secretKey);
+      return !!_normFnElement(Fn2, secretKey);
     } catch (error) {
       return false;
     }
@@ -7641,10 +11470,10 @@ function ecdh(Point, ecdhOpts = {}) {
     }
   }
   function randomSecretKey(seed = randomBytes_(lengths.seed)) {
-    return mapHashToField(_abytes2(seed, lengths.seed, "seed"), Fn.ORDER);
+    return mapHashToField(_abytes2(seed, lengths.seed, "seed"), Fn2.ORDER);
   }
   function getPublicKey(secretKey, isCompressed = true) {
-    return Point.BASE.multiply(_normFnElement(Fn, secretKey)).toBytes(isCompressed);
+    return Point.BASE.multiply(_normFnElement(Fn2, secretKey)).toBytes(isCompressed);
   }
   function keygen(seed) {
     const secretKey = randomSecretKey(seed);
@@ -7656,7 +11485,7 @@ function ecdh(Point, ecdhOpts = {}) {
     if (item instanceof Point)
       return true;
     const { secretKey, publicKey, publicKeyUncompressed } = lengths;
-    if (Fn.allowedLengths || secretKey === publicKey)
+    if (Fn2.allowedLengths || secretKey === publicKey)
       return;
     const l = ensureBytes("key", item).length;
     return l === publicKey || l === publicKeyUncompressed;
@@ -7666,7 +11495,7 @@ function ecdh(Point, ecdhOpts = {}) {
       throw new Error("first arg must be private key");
     if (isProbPub(publicKeyB) === false)
       throw new Error("second arg must be public key");
-    const s = _normFnElement(Fn, secretKeyA);
+    const s = _normFnElement(Fn2, secretKeyA);
     const b = Point.fromHex(publicKeyB);
     return b.multiply(s).toBytes(isCompressed);
   }
@@ -7676,7 +11505,7 @@ function ecdh(Point, ecdhOpts = {}) {
     randomSecretKey,
     isValidPrivateKey: isValidSecretKey,
     randomPrivateKey: randomSecretKey,
-    normPrivateKeyToScalar: (key) => _normFnElement(Fn, key),
+    normPrivateKeyToScalar: (key) => _normFnElement(Fn2, key),
     precompute(windowSize = 8, point = Point.BASE) {
       return point.precompute(windowSize, false);
     }
@@ -7692,10 +11521,10 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
     bits2int: "function",
     bits2int_modN: "function"
   });
-  const randomBytes2 = ecdsaOpts.randomBytes || randomBytes;
+  const randomBytes3 = ecdsaOpts.randomBytes || randomBytes;
   const hmac2 = ecdsaOpts.hmac || ((key, ...msgs) => hmac(hash, key, concatBytes(...msgs)));
-  const { Fp, Fn } = Point;
-  const { ORDER: CURVE_ORDER, BITS: fnBits } = Fn;
+  const { Fp: Fp2, Fn: Fn2 } = Point;
+  const { ORDER: CURVE_ORDER, BITS: fnBits } = Fn2;
   const { keygen, getPublicKey, getSharedSecret, utils: utils2, lengths } = ecdh(Point, ecdsaOpts);
   const defaultSigOpts = {
     prehash: false,
@@ -7705,11 +11534,11 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
   };
   const defaultSigOpts_format = "compact";
   function isBiggerThanHalfOrder(number) {
-    const HALF = CURVE_ORDER >> _1n5;
+    const HALF = CURVE_ORDER >> _1n8;
     return number > HALF;
   }
   function validateRS(title, num) {
-    if (!Fn.isValidNot0(num))
+    if (!Fn2.isValidNot0(num))
       throw new Error(`invalid signature ${title}: out of range 1..Point.Fn.ORDER`);
     return num;
   }
@@ -7740,10 +11569,10 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
         format = "compact";
         bytes = bytes.subarray(1);
       }
-      const L = Fn.BYTES;
+      const L = Fn2.BYTES;
       const r = bytes.subarray(0, L);
       const s = bytes.subarray(L, L * 2);
-      return new Signature(Fn.fromBytes(r), Fn.fromBytes(s), recid);
+      return new Signature(Fn2.fromBytes(r), Fn2.fromBytes(s), recid);
     }
     static fromHex(hex2, format) {
       return this.fromBytes(hexToBytes(hex2), format);
@@ -7752,22 +11581,22 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
       return new Signature(this.r, this.s, recovery);
     }
     recoverPublicKey(messageHash) {
-      const FIELD_ORDER = Fp.ORDER;
+      const FIELD_ORDER = Fp2.ORDER;
       const { r, s, recovery: rec } = this;
       if (rec == null || ![0, 1, 2, 3].includes(rec))
         throw new Error("recovery id invalid");
-      const hasCofactor = CURVE_ORDER * _2n3 < FIELD_ORDER;
+      const hasCofactor = CURVE_ORDER * _2n6 < FIELD_ORDER;
       if (hasCofactor && rec > 1)
         throw new Error("recovery id is ambiguous for h>1 curve");
       const radj = rec === 2 || rec === 3 ? r + CURVE_ORDER : r;
-      if (!Fp.isValid(radj))
+      if (!Fp2.isValid(radj))
         throw new Error("recovery id 2 or 3 invalid");
-      const x = Fp.toBytes(radj);
+      const x = Fp2.toBytes(radj);
       const R = Point.fromBytes(concatBytes(pprefix((rec & 1) === 0), x));
-      const ir = Fn.inv(radj);
+      const ir = Fn2.inv(radj);
       const h = bits2int_modN(ensureBytes("msgHash", messageHash));
-      const u1 = Fn.create(-h * ir);
-      const u2 = Fn.create(s * ir);
+      const u1 = Fn2.create(-h * ir);
+      const u2 = Fn2.create(s * ir);
       const Q = Point.BASE.multiplyUnsafe(u1).add(R.multiplyUnsafe(u2));
       if (Q.is0())
         throw new Error("point at infinify");
@@ -7781,8 +11610,8 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
       validateSigFormat(format);
       if (format === "der")
         return hexToBytes(DER.hexFromSig(this));
-      const r = Fn.toBytes(this.r);
-      const s = Fn.toBytes(this.s);
+      const r = Fn2.toBytes(this.r);
+      const s = Fn2.toBytes(this.s);
       if (format === "recovered") {
         if (this.recovery == null)
           throw new Error("recovery bit must be present");
@@ -7801,7 +11630,7 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
       return Signature.fromBytes(ensureBytes("sig", hex2), "der");
     }
     normalizeS() {
-      return this.hasHighS() ? new Signature(this.r, Fn.neg(this.s), this.recovery) : this;
+      return this.hasHighS() ? new Signature(this.r, Fn2.neg(this.s), this.recovery) : this;
     }
     toDERRawBytes() {
       return this.toBytes("der");
@@ -7824,12 +11653,12 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
     return delta > 0 ? num >> BigInt(delta) : num;
   };
   const bits2int_modN = ecdsaOpts.bits2int_modN || function bits2int_modN_def(bytes) {
-    return Fn.create(bits2int(bytes));
+    return Fn2.create(bits2int(bytes));
   };
   const ORDER_MASK = bitMask(fnBits);
   function int2octets(num) {
-    aInRange("num < 2^" + fnBits, num, _0n5, ORDER_MASK);
-    return Fn.toBytes(num);
+    aInRange("num < 2^" + fnBits, num, _0n8, ORDER_MASK);
+    return Fn2.toBytes(num);
   }
   function validateMsgAndHash(message, prehash) {
     _abytes2(message, undefined, "message");
@@ -7841,30 +11670,30 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
     const { lowS, prehash, extraEntropy } = validateSigOpts(opts, defaultSigOpts);
     message = validateMsgAndHash(message, prehash);
     const h1int = bits2int_modN(message);
-    const d = _normFnElement(Fn, privateKey);
+    const d = _normFnElement(Fn2, privateKey);
     const seedArgs = [int2octets(d), int2octets(h1int)];
     if (extraEntropy != null && extraEntropy !== false) {
-      const e = extraEntropy === true ? randomBytes2(lengths.secretKey) : extraEntropy;
+      const e = extraEntropy === true ? randomBytes3(lengths.secretKey) : extraEntropy;
       seedArgs.push(ensureBytes("extraEntropy", e));
     }
     const seed = concatBytes(...seedArgs);
     const m = h1int;
     function k2sig(kBytes) {
       const k = bits2int(kBytes);
-      if (!Fn.isValidNot0(k))
+      if (!Fn2.isValidNot0(k))
         return;
-      const ik = Fn.inv(k);
+      const ik = Fn2.inv(k);
       const q = Point.BASE.multiply(k).toAffine();
-      const r = Fn.create(q.x);
-      if (r === _0n5)
+      const r = Fn2.create(q.x);
+      if (r === _0n8)
         return;
-      const s = Fn.create(ik * Fn.create(m + r * d));
-      if (s === _0n5)
+      const s = Fn2.create(ik * Fn2.create(m + r * d));
+      if (s === _0n8)
         return;
-      let recovery = (q.x === r ? 0 : 2) | Number(q.y & _1n5);
+      let recovery = (q.x === r ? 0 : 2) | Number(q.y & _1n8);
       let normS = s;
       if (lowS && isBiggerThanHalfOrder(s)) {
-        normS = Fn.neg(s);
+        normS = Fn2.neg(s);
         recovery ^= 1;
       }
       return new Signature(r, normS, recovery);
@@ -7874,7 +11703,7 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
   function sign(message, secretKey, opts = {}) {
     message = ensureBytes("message", message);
     const { seed, k2sig } = prepSig(message, secretKey, opts);
-    const drbg = createHmacDrbg(hash.outputLen, Fn.BYTES, hmac2);
+    const drbg = createHmacDrbg(hash.outputLen, Fn2.BYTES, hmac2);
     const sig = drbg(seed, k2sig);
     return sig;
   }
@@ -7915,18 +11744,18 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
     if (sig === false)
       return false;
     try {
-      const P = Point.fromBytes(publicKey);
+      const P2 = Point.fromBytes(publicKey);
       if (lowS && sig.hasHighS())
         return false;
       const { r, s } = sig;
       const h = bits2int_modN(message);
-      const is = Fn.inv(s);
-      const u1 = Fn.create(h * is);
-      const u2 = Fn.create(r * is);
-      const R = Point.BASE.multiplyUnsafe(u1).add(P.multiplyUnsafe(u2));
+      const is = Fn2.inv(s);
+      const u1 = Fn2.create(h * is);
+      const u2 = Fn2.create(r * is);
+      const R = Point.BASE.multiplyUnsafe(u1).add(P2.multiplyUnsafe(u2));
       if (R.is0())
         return false;
-      const v = Fn.create(R.x);
+      const v = Fn2.create(R.x);
       return v === r;
     } catch (e) {
       return false;
@@ -7961,16 +11790,16 @@ function _weierstrass_legacy_opts_to_new(c) {
     Gx: c.Gx,
     Gy: c.Gy
   };
-  const Fp = c.Fp;
+  const Fp2 = c.Fp;
   let allowedLengths = c.allowedPrivateKeyLengths ? Array.from(new Set(c.allowedPrivateKeyLengths.map((l) => Math.ceil(l / 2)))) : undefined;
-  const Fn = Field(CURVE.n, {
+  const Fn2 = Field(CURVE.n, {
     BITS: c.nBitLength,
     allowedLengths,
     modFromBytes: c.wrapPrivateKey
   });
   const curveOpts = {
-    Fp,
-    Fn,
+    Fp: Fp2,
+    Fn: Fn2,
     allowInfinityPoint: c.allowInfinityPoint,
     endo: c.endo,
     isTorsionFree: c.isTorsionFree,
@@ -8004,7 +11833,7 @@ function weierstrass(c) {
   const signs = ecdsa(Point, hash, ecdsaOpts);
   return _ecdsa_new_output_to_legacy(c, signs);
 }
-var divNearest = (num, den) => (num + (num >= 0 ? den : -den) / _2n3) / den, DERErr, DER, _0n5, _1n5, _2n3, _3n2, _4n2;
+var divNearest = (num, den) => (num + (num >= 0 ? den : -den) / _2n6) / den, DERErr, DER, _0n8, _1n8, _2n6, _3n3, _4n2;
 var init_weierstrass = __esm(() => {
   init_hmac();
   init_utils();
@@ -8072,7 +11901,7 @@ var init_weierstrass = __esm(() => {
     _int: {
       encode(num) {
         const { Err: E } = DER;
-        if (num < _0n5)
+        if (num < _0n8)
           throw new E("integer: negative integers are not allowed");
         let hex2 = numberToHexUnpadded(num);
         if (Number.parseInt(hex2[0], 16) & 8)
@@ -8110,10 +11939,10 @@ var init_weierstrass = __esm(() => {
       return tlv.encode(48, seq);
     }
   };
-  _0n5 = BigInt(0);
-  _1n5 = BigInt(1);
-  _2n3 = BigInt(2);
-  _3n2 = BigInt(3);
+  _0n8 = BigInt(0);
+  _1n8 = BigInt(1);
+  _2n6 = BigInt(2);
+  _3n3 = BigInt(3);
   _4n2 = BigInt(4);
 });
 
@@ -8129,28 +11958,28 @@ var init__shortw_utils = __esm(() => {
 
 // ../../node_modules/@noble/curves/esm/secp256k1.js
 function sqrtMod(y) {
-  const P = secp256k1_CURVE.p;
-  const _3n3 = BigInt(3), _6n = BigInt(6), _11n = BigInt(11), _22n = BigInt(22);
+  const P2 = secp256k1_CURVE.p;
+  const _3n4 = BigInt(3), _6n = BigInt(6), _11n = BigInt(11), _22n = BigInt(22);
   const _23n = BigInt(23), _44n = BigInt(44), _88n = BigInt(88);
-  const b2 = y * y * y % P;
-  const b3 = b2 * b2 * y % P;
-  const b6 = pow2(b3, _3n3, P) * b3 % P;
-  const b9 = pow2(b6, _3n3, P) * b3 % P;
-  const b11 = pow2(b9, _2n4, P) * b2 % P;
-  const b22 = pow2(b11, _11n, P) * b11 % P;
-  const b44 = pow2(b22, _22n, P) * b22 % P;
-  const b88 = pow2(b44, _44n, P) * b44 % P;
-  const b176 = pow2(b88, _88n, P) * b88 % P;
-  const b220 = pow2(b176, _44n, P) * b44 % P;
-  const b223 = pow2(b220, _3n3, P) * b3 % P;
-  const t1 = pow2(b223, _23n, P) * b22 % P;
-  const t2 = pow2(t1, _6n, P) * b2 % P;
-  const root = pow2(t2, _2n4, P);
+  const b2 = y * y * y % P2;
+  const b3 = b2 * b2 * y % P2;
+  const b6 = pow2(b3, _3n4, P2) * b3 % P2;
+  const b9 = pow2(b6, _3n4, P2) * b3 % P2;
+  const b11 = pow2(b9, _2n7, P2) * b2 % P2;
+  const b22 = pow2(b11, _11n, P2) * b11 % P2;
+  const b44 = pow2(b22, _22n, P2) * b22 % P2;
+  const b88 = pow2(b44, _44n, P2) * b44 % P2;
+  const b176 = pow2(b88, _88n, P2) * b88 % P2;
+  const b220 = pow2(b176, _44n, P2) * b44 % P2;
+  const b223 = pow2(b220, _3n4, P2) * b3 % P2;
+  const t1 = pow2(b223, _23n, P2) * b22 % P2;
+  const t2 = pow2(t1, _6n, P2) * b2 % P2;
+  const root = pow2(t2, _2n7, P2);
   if (!Fpk1.eql(Fpk1.sqr(root), y))
     throw new Error("Cannot find square root");
   return root;
 }
-var secp256k1_CURVE, secp256k1_ENDO, _2n4, Fpk1, secp256k1;
+var secp256k1_CURVE, secp256k1_ENDO, _2n7, Fpk1, secp256k1;
 var init_secp256k1 = __esm(() => {
   init_sha2();
   init__shortw_utils();
@@ -8172,7 +12001,7 @@ var init_secp256k1 = __esm(() => {
       [BigInt("0x114ca50f7a8e2f3f657c1108d9d44cfd8"), BigInt("0x3086d221a7d46bcde86c90e49284eb15")]
     ]
   };
-  _2n4 = /* @__PURE__ */ BigInt(2);
+  _2n7 = /* @__PURE__ */ BigInt(2);
   Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
   secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
 });
@@ -8594,9 +12423,9 @@ function rlpLength(length, offset) {
   if (length < 56)
     return Uint8Array.of(offset + length);
   const lengthBytes = uintToMinimalBytes(BigInt(length));
-  return concat(Uint8Array.of(offset + 55 + lengthBytes.length), lengthBytes);
+  return concat2(Uint8Array.of(offset + 55 + lengthBytes.length), lengthBytes);
 }
-function concat(...parts) {
+function concat2(...parts) {
   const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
   let at = 0;
   for (const part of parts) {
@@ -8609,10 +12438,10 @@ function rlpEncode(item) {
   if (item instanceof Uint8Array) {
     if (item.length === 1 && item[0] < 128)
       return item;
-    return concat(rlpLength(item.length, 128), item);
+    return concat2(rlpLength(item.length, 128), item);
   }
-  const body = concat(...item.map(rlpEncode));
-  return concat(rlpLength(body.length, 192), body);
+  const body = concat2(...item.map(rlpEncode));
+  return concat2(rlpLength(body.length, 192), body);
 }
 function toChecksumAddress(address) {
   const lower = (address.startsWith("0x") ? address.slice(2) : address).toLowerCase();
@@ -8695,7 +12524,7 @@ function abiAddress(address) {
   return out;
 }
 function encodeErc20Transfer(recipient, amount) {
-  return concat(hexToBytes2(ERC20_TRANSFER_SELECTOR), abiAddress(recipient), abiWord(amount));
+  return concat2(hexToBytes2(ERC20_TRANSFER_SELECTOR), abiAddress(recipient), abiWord(amount));
 }
 function decodeErc20Transfer(data) {
   if (data.length !== 68)
@@ -8723,7 +12552,7 @@ function unsignedFields(tx) {
   ];
 }
 function signingPayload(tx) {
-  return keccak_256(concat(TYPE_2, rlpEncode(unsignedFields(tx))));
+  return keccak_256(concat2(TYPE_2, rlpEncode(unsignedFields(tx))));
 }
 function signTransaction(tx, secret) {
   if (secret.length !== EVM_SECRET_BYTES) {
@@ -8731,7 +12560,7 @@ function signTransaction(tx, secret) {
   }
   const signature = secp256k1.sign(signingPayload(tx), secret, { lowS: true, prehash: false });
   const yParity = signature.recovery === 1 ? 1 : 0;
-  const raw = concat(TYPE_2, rlpEncode([
+  const raw = concat2(TYPE_2, rlpEncode([
     ...unsignedFields(tx),
     uintToMinimalBytes(BigInt(yParity)),
     uintToMinimalBytes(signature.r),
@@ -8960,7 +12789,7 @@ function createEvmRpc(url, fetchFn) {
     async erc20BalanceOf(token, owner) {
       const answer = await this.call({
         to: token,
-        data: concat(hexToBytes2(ERC20_BALANCE_OF_SELECTOR), abiAddress(owner))
+        data: concat2(hexToBytes2(ERC20_BALANCE_OF_SELECTOR), abiAddress(owner))
       });
       if (answer.length !== 32)
         throw new EvmRpcError("rpc", "eth_call", "the contract did not answer balanceOf()");
@@ -9314,888 +13143,6 @@ var init_key_signers = __esm(() => {
   KEY_PREFIX_RE = /^[A-Za-z0-9_-]{8}$/;
 });
 
-// ../../node_modules/@noble/curves/esm/abstract/edwards.js
-function isEdValidXY(Fp, CURVE, x, y) {
-  const x2 = Fp.sqr(x);
-  const y2 = Fp.sqr(y);
-  const left = Fp.add(Fp.mul(CURVE.a, x2), y2);
-  const right = Fp.add(Fp.ONE, Fp.mul(CURVE.d, Fp.mul(x2, y2)));
-  return Fp.eql(left, right);
-}
-function edwards(params, extraOpts = {}) {
-  const validated = _createCurveFields("edwards", params, extraOpts, extraOpts.FpFnLE);
-  const { Fp, Fn } = validated;
-  let CURVE = validated.CURVE;
-  const { h: cofactor } = CURVE;
-  _validateObject(extraOpts, {}, { uvRatio: "function" });
-  const MASK = _2n5 << BigInt(Fn.BYTES * 8) - _1n6;
-  const modP = (n) => Fp.create(n);
-  const uvRatio = extraOpts.uvRatio || ((u, v) => {
-    try {
-      return { isValid: true, value: Fp.sqrt(Fp.div(u, v)) };
-    } catch (e) {
-      return { isValid: false, value: _0n6 };
-    }
-  });
-  if (!isEdValidXY(Fp, CURVE, CURVE.Gx, CURVE.Gy))
-    throw new Error("bad curve params: generator point");
-  function acoord(title, n, banZero = false) {
-    const min = banZero ? _1n6 : _0n6;
-    aInRange("coordinate " + title, n, min, MASK);
-    return n;
-  }
-  function aextpoint(other) {
-    if (!(other instanceof Point2))
-      throw new Error("ExtendedPoint expected");
-  }
-  const toAffineMemo = memoized((p, iz) => {
-    const { X, Y, Z } = p;
-    const is0 = p.is0();
-    if (iz == null)
-      iz = is0 ? _8n2 : Fp.inv(Z);
-    const x = modP(X * iz);
-    const y = modP(Y * iz);
-    const zz = Fp.mul(Z, iz);
-    if (is0)
-      return { x: _0n6, y: _1n6 };
-    if (zz !== _1n6)
-      throw new Error("invZ was invalid");
-    return { x, y };
-  });
-  const assertValidMemo = memoized((p) => {
-    const { a, d } = CURVE;
-    if (p.is0())
-      throw new Error("bad point: ZERO");
-    const { X, Y, Z, T } = p;
-    const X2 = modP(X * X);
-    const Y2 = modP(Y * Y);
-    const Z2 = modP(Z * Z);
-    const Z4 = modP(Z2 * Z2);
-    const aX2 = modP(X2 * a);
-    const left = modP(Z2 * modP(aX2 + Y2));
-    const right = modP(Z4 + modP(d * modP(X2 * Y2)));
-    if (left !== right)
-      throw new Error("bad point: equation left != right (1)");
-    const XY = modP(X * Y);
-    const ZT = modP(Z * T);
-    if (XY !== ZT)
-      throw new Error("bad point: equation left != right (2)");
-    return true;
-  });
-
-  class Point2 {
-    constructor(X, Y, Z, T) {
-      this.X = acoord("x", X);
-      this.Y = acoord("y", Y);
-      this.Z = acoord("z", Z, true);
-      this.T = acoord("t", T);
-      Object.freeze(this);
-    }
-    static CURVE() {
-      return CURVE;
-    }
-    static fromAffine(p) {
-      if (p instanceof Point2)
-        throw new Error("extended point not allowed");
-      const { x, y } = p || {};
-      acoord("x", x);
-      acoord("y", y);
-      return new Point2(x, y, _1n6, modP(x * y));
-    }
-    static fromBytes(bytes, zip215 = false) {
-      const len = Fp.BYTES;
-      const { a, d } = CURVE;
-      bytes = copyBytes(_abytes2(bytes, len, "point"));
-      _abool2(zip215, "zip215");
-      const normed = copyBytes(bytes);
-      const lastByte = bytes[len - 1];
-      normed[len - 1] = lastByte & ~128;
-      const y = bytesToNumberLE(normed);
-      const max = zip215 ? MASK : Fp.ORDER;
-      aInRange("point.y", y, _0n6, max);
-      const y2 = modP(y * y);
-      const u = modP(y2 - _1n6);
-      const v = modP(d * y2 - a);
-      let { isValid: isValid2, value: x } = uvRatio(u, v);
-      if (!isValid2)
-        throw new Error("bad point: invalid y coordinate");
-      const isXOdd = (x & _1n6) === _1n6;
-      const isLastByteOdd = (lastByte & 128) !== 0;
-      if (!zip215 && x === _0n6 && isLastByteOdd)
-        throw new Error("bad point: x=0 and x_0=1");
-      if (isLastByteOdd !== isXOdd)
-        x = modP(-x);
-      return Point2.fromAffine({ x, y });
-    }
-    static fromHex(bytes, zip215 = false) {
-      return Point2.fromBytes(ensureBytes("point", bytes), zip215);
-    }
-    get x() {
-      return this.toAffine().x;
-    }
-    get y() {
-      return this.toAffine().y;
-    }
-    precompute(windowSize = 8, isLazy = true) {
-      wnaf.createCache(this, windowSize);
-      if (!isLazy)
-        this.multiply(_2n5);
-      return this;
-    }
-    assertValidity() {
-      assertValidMemo(this);
-    }
-    equals(other) {
-      aextpoint(other);
-      const { X: X1, Y: Y1, Z: Z1 } = this;
-      const { X: X2, Y: Y2, Z: Z2 } = other;
-      const X1Z2 = modP(X1 * Z2);
-      const X2Z1 = modP(X2 * Z1);
-      const Y1Z2 = modP(Y1 * Z2);
-      const Y2Z1 = modP(Y2 * Z1);
-      return X1Z2 === X2Z1 && Y1Z2 === Y2Z1;
-    }
-    is0() {
-      return this.equals(Point2.ZERO);
-    }
-    negate() {
-      return new Point2(modP(-this.X), this.Y, this.Z, modP(-this.T));
-    }
-    double() {
-      const { a } = CURVE;
-      const { X: X1, Y: Y1, Z: Z1 } = this;
-      const A = modP(X1 * X1);
-      const B = modP(Y1 * Y1);
-      const C = modP(_2n5 * modP(Z1 * Z1));
-      const D = modP(a * A);
-      const x1y1 = X1 + Y1;
-      const E = modP(modP(x1y1 * x1y1) - A - B);
-      const G = D + B;
-      const F = G - C;
-      const H = D - B;
-      const X3 = modP(E * F);
-      const Y3 = modP(G * H);
-      const T3 = modP(E * H);
-      const Z3 = modP(F * G);
-      return new Point2(X3, Y3, Z3, T3);
-    }
-    add(other) {
-      aextpoint(other);
-      const { a, d } = CURVE;
-      const { X: X1, Y: Y1, Z: Z1, T: T1 } = this;
-      const { X: X2, Y: Y2, Z: Z2, T: T2 } = other;
-      const A = modP(X1 * X2);
-      const B = modP(Y1 * Y2);
-      const C = modP(T1 * d * T2);
-      const D = modP(Z1 * Z2);
-      const E = modP((X1 + Y1) * (X2 + Y2) - A - B);
-      const F = D - C;
-      const G = D + C;
-      const H = modP(B - a * A);
-      const X3 = modP(E * F);
-      const Y3 = modP(G * H);
-      const T3 = modP(E * H);
-      const Z3 = modP(F * G);
-      return new Point2(X3, Y3, Z3, T3);
-    }
-    subtract(other) {
-      return this.add(other.negate());
-    }
-    multiply(scalar) {
-      if (!Fn.isValidNot0(scalar))
-        throw new Error("invalid scalar: expected 1 <= sc < curve.n");
-      const { p, f } = wnaf.cached(this, scalar, (p2) => normalizeZ(Point2, p2));
-      return normalizeZ(Point2, [p, f])[0];
-    }
-    multiplyUnsafe(scalar, acc = Point2.ZERO) {
-      if (!Fn.isValid(scalar))
-        throw new Error("invalid scalar: expected 0 <= sc < curve.n");
-      if (scalar === _0n6)
-        return Point2.ZERO;
-      if (this.is0() || scalar === _1n6)
-        return this;
-      return wnaf.unsafe(this, scalar, (p) => normalizeZ(Point2, p), acc);
-    }
-    isSmallOrder() {
-      return this.multiplyUnsafe(cofactor).is0();
-    }
-    isTorsionFree() {
-      return wnaf.unsafe(this, CURVE.n).is0();
-    }
-    toAffine(invertedZ) {
-      return toAffineMemo(this, invertedZ);
-    }
-    clearCofactor() {
-      if (cofactor === _1n6)
-        return this;
-      return this.multiplyUnsafe(cofactor);
-    }
-    toBytes() {
-      const { x, y } = this.toAffine();
-      const bytes = Fp.toBytes(y);
-      bytes[bytes.length - 1] |= x & _1n6 ? 128 : 0;
-      return bytes;
-    }
-    toHex() {
-      return bytesToHex(this.toBytes());
-    }
-    toString() {
-      return `<Point ${this.is0() ? "ZERO" : this.toHex()}>`;
-    }
-    get ex() {
-      return this.X;
-    }
-    get ey() {
-      return this.Y;
-    }
-    get ez() {
-      return this.Z;
-    }
-    get et() {
-      return this.T;
-    }
-    static normalizeZ(points) {
-      return normalizeZ(Point2, points);
-    }
-    static msm(points, scalars) {
-      return pippenger(Point2, Fn, points, scalars);
-    }
-    _setWindowSize(windowSize) {
-      this.precompute(windowSize);
-    }
-    toRawBytes() {
-      return this.toBytes();
-    }
-  }
-  Point2.BASE = new Point2(CURVE.Gx, CURVE.Gy, _1n6, modP(CURVE.Gx * CURVE.Gy));
-  Point2.ZERO = new Point2(_0n6, _1n6, _1n6, _0n6);
-  Point2.Fp = Fp;
-  Point2.Fn = Fn;
-  const wnaf = new wNAF(Point2, Fn.BITS);
-  Point2.BASE.precompute(8);
-  return Point2;
-}
-
-class PrimeEdwardsPoint {
-  constructor(ep) {
-    this.ep = ep;
-  }
-  static fromBytes(_bytes) {
-    notImplemented();
-  }
-  static fromHex(_hex) {
-    notImplemented();
-  }
-  get x() {
-    return this.toAffine().x;
-  }
-  get y() {
-    return this.toAffine().y;
-  }
-  clearCofactor() {
-    return this;
-  }
-  assertValidity() {
-    this.ep.assertValidity();
-  }
-  toAffine(invertedZ) {
-    return this.ep.toAffine(invertedZ);
-  }
-  toHex() {
-    return bytesToHex(this.toBytes());
-  }
-  toString() {
-    return this.toHex();
-  }
-  isTorsionFree() {
-    return true;
-  }
-  isSmallOrder() {
-    return false;
-  }
-  add(other) {
-    this.assertSame(other);
-    return this.init(this.ep.add(other.ep));
-  }
-  subtract(other) {
-    this.assertSame(other);
-    return this.init(this.ep.subtract(other.ep));
-  }
-  multiply(scalar) {
-    return this.init(this.ep.multiply(scalar));
-  }
-  multiplyUnsafe(scalar) {
-    return this.init(this.ep.multiplyUnsafe(scalar));
-  }
-  double() {
-    return this.init(this.ep.double());
-  }
-  negate() {
-    return this.init(this.ep.negate());
-  }
-  precompute(windowSize, isLazy) {
-    return this.init(this.ep.precompute(windowSize, isLazy));
-  }
-  toRawBytes() {
-    return this.toBytes();
-  }
-}
-function eddsa(Point2, cHash, eddsaOpts = {}) {
-  if (typeof cHash !== "function")
-    throw new Error('"hash" function param is required');
-  _validateObject(eddsaOpts, {}, {
-    adjustScalarBytes: "function",
-    randomBytes: "function",
-    domain: "function",
-    prehash: "function",
-    mapToCurve: "function"
-  });
-  const { prehash } = eddsaOpts;
-  const { BASE, Fp, Fn } = Point2;
-  const randomBytes2 = eddsaOpts.randomBytes || randomBytes;
-  const adjustScalarBytes = eddsaOpts.adjustScalarBytes || ((bytes) => bytes);
-  const domain = eddsaOpts.domain || ((data, ctx, phflag) => {
-    _abool2(phflag, "phflag");
-    if (ctx.length || phflag)
-      throw new Error("Contexts/pre-hash are not supported");
-    return data;
-  });
-  function modN_LE(hash) {
-    return Fn.create(bytesToNumberLE(hash));
-  }
-  function getPrivateScalar(key) {
-    const len = lengths.secretKey;
-    key = ensureBytes("private key", key, len);
-    const hashed = ensureBytes("hashed private key", cHash(key), 2 * len);
-    const head = adjustScalarBytes(hashed.slice(0, len));
-    const prefix = hashed.slice(len, 2 * len);
-    const scalar = modN_LE(head);
-    return { head, prefix, scalar };
-  }
-  function getExtendedPublicKey(secretKey) {
-    const { head, prefix, scalar } = getPrivateScalar(secretKey);
-    const point = BASE.multiply(scalar);
-    const pointBytes = point.toBytes();
-    return { head, prefix, scalar, point, pointBytes };
-  }
-  function getPublicKey(secretKey) {
-    return getExtendedPublicKey(secretKey).pointBytes;
-  }
-  function hashDomainToScalar(context = Uint8Array.of(), ...msgs) {
-    const msg = concatBytes(...msgs);
-    return modN_LE(cHash(domain(msg, ensureBytes("context", context), !!prehash)));
-  }
-  function sign2(msg, secretKey, options = {}) {
-    msg = ensureBytes("message", msg);
-    if (prehash)
-      msg = prehash(msg);
-    const { prefix, scalar, pointBytes } = getExtendedPublicKey(secretKey);
-    const r = hashDomainToScalar(options.context, prefix, msg);
-    const R = BASE.multiply(r).toBytes();
-    const k = hashDomainToScalar(options.context, R, pointBytes, msg);
-    const s = Fn.create(r + k * scalar);
-    if (!Fn.isValid(s))
-      throw new Error("sign failed: invalid s");
-    const rs = concatBytes(R, Fn.toBytes(s));
-    return _abytes2(rs, lengths.signature, "result");
-  }
-  const verifyOpts = { zip215: true };
-  function verify(sig, msg, publicKey, options = verifyOpts) {
-    const { context, zip215 } = options;
-    const len = lengths.signature;
-    sig = ensureBytes("signature", sig, len);
-    msg = ensureBytes("message", msg);
-    publicKey = ensureBytes("publicKey", publicKey, lengths.publicKey);
-    if (zip215 !== undefined)
-      _abool2(zip215, "zip215");
-    if (prehash)
-      msg = prehash(msg);
-    const mid = len / 2;
-    const r = sig.subarray(0, mid);
-    const s = bytesToNumberLE(sig.subarray(mid, len));
-    let A, R, SB;
-    try {
-      A = Point2.fromBytes(publicKey, zip215);
-      R = Point2.fromBytes(r, zip215);
-      SB = BASE.multiplyUnsafe(s);
-    } catch (error) {
-      return false;
-    }
-    if (!zip215 && A.isSmallOrder())
-      return false;
-    const k = hashDomainToScalar(context, R.toBytes(), A.toBytes(), msg);
-    const RkA = R.add(A.multiplyUnsafe(k));
-    return RkA.subtract(SB).clearCofactor().is0();
-  }
-  const _size = Fp.BYTES;
-  const lengths = {
-    secretKey: _size,
-    publicKey: _size,
-    signature: 2 * _size,
-    seed: _size
-  };
-  function randomSecretKey(seed = randomBytes2(lengths.seed)) {
-    return _abytes2(seed, lengths.seed, "seed");
-  }
-  function keygen(seed) {
-    const secretKey = utils2.randomSecretKey(seed);
-    return { secretKey, publicKey: getPublicKey(secretKey) };
-  }
-  function isValidSecretKey(key) {
-    return isBytes(key) && key.length === Fn.BYTES;
-  }
-  function isValidPublicKey(key, zip215) {
-    try {
-      return !!Point2.fromBytes(key, zip215);
-    } catch (error) {
-      return false;
-    }
-  }
-  const utils2 = {
-    getExtendedPublicKey,
-    randomSecretKey,
-    isValidSecretKey,
-    isValidPublicKey,
-    toMontgomery(publicKey) {
-      const { y } = Point2.fromBytes(publicKey);
-      const size = lengths.publicKey;
-      const is25519 = size === 32;
-      if (!is25519 && size !== 57)
-        throw new Error("only defined for 25519 and 448");
-      const u = is25519 ? Fp.div(_1n6 + y, _1n6 - y) : Fp.div(y - _1n6, y + _1n6);
-      return Fp.toBytes(u);
-    },
-    toMontgomerySecret(secretKey) {
-      const size = lengths.secretKey;
-      _abytes2(secretKey, size);
-      const hashed = cHash(secretKey.subarray(0, size));
-      return adjustScalarBytes(hashed).subarray(0, size);
-    },
-    randomPrivateKey: randomSecretKey,
-    precompute(windowSize = 8, point = Point2.BASE) {
-      return point.precompute(windowSize, false);
-    }
-  };
-  return Object.freeze({
-    keygen,
-    getPublicKey,
-    sign: sign2,
-    verify,
-    utils: utils2,
-    Point: Point2,
-    lengths
-  });
-}
-function _eddsa_legacy_opts_to_new(c) {
-  const CURVE = {
-    a: c.a,
-    d: c.d,
-    p: c.Fp.ORDER,
-    n: c.n,
-    h: c.h,
-    Gx: c.Gx,
-    Gy: c.Gy
-  };
-  const Fp = c.Fp;
-  const Fn = Field(CURVE.n, c.nBitLength, true);
-  const curveOpts = { Fp, Fn, uvRatio: c.uvRatio };
-  const eddsaOpts = {
-    randomBytes: c.randomBytes,
-    adjustScalarBytes: c.adjustScalarBytes,
-    domain: c.domain,
-    prehash: c.prehash,
-    mapToCurve: c.mapToCurve
-  };
-  return { CURVE, curveOpts, hash: c.hash, eddsaOpts };
-}
-function _eddsa_new_output_to_legacy(c, eddsa2) {
-  const Point2 = eddsa2.Point;
-  const legacy = Object.assign({}, eddsa2, {
-    ExtendedPoint: Point2,
-    CURVE: c,
-    nBitLength: Point2.Fn.BITS,
-    nByteLength: Point2.Fn.BYTES
-  });
-  return legacy;
-}
-function twistedEdwards(c) {
-  const { CURVE, curveOpts, hash, eddsaOpts } = _eddsa_legacy_opts_to_new(c);
-  const Point2 = edwards(CURVE, curveOpts);
-  const EDDSA = eddsa(Point2, hash, eddsaOpts);
-  return _eddsa_new_output_to_legacy(c, EDDSA);
-}
-var _0n6, _1n6, _2n5, _8n2;
-var init_edwards = __esm(() => {
-  init_utils2();
-  init_curve();
-  init_modular();
-  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-  _0n6 = BigInt(0);
-  _1n6 = BigInt(1);
-  _2n5 = BigInt(2);
-  _8n2 = BigInt(8);
-});
-
-// ../../node_modules/@noble/curves/esm/abstract/montgomery.js
-function validateOpts(curve) {
-  _validateObject(curve, {
-    adjustScalarBytes: "function",
-    powPminus2: "function"
-  });
-  return Object.freeze({ ...curve });
-}
-function montgomery(curveDef) {
-  const CURVE = validateOpts(curveDef);
-  const { P, type, adjustScalarBytes, powPminus2, randomBytes: rand } = CURVE;
-  const is25519 = type === "x25519";
-  if (!is25519 && type !== "x448")
-    throw new Error("invalid type");
-  const randomBytes_ = rand || randomBytes;
-  const montgomeryBits = is25519 ? 255 : 448;
-  const fieldLen = is25519 ? 32 : 56;
-  const Gu = is25519 ? BigInt(9) : BigInt(5);
-  const a24 = is25519 ? BigInt(121665) : BigInt(39081);
-  const minScalar = is25519 ? _2n6 ** BigInt(254) : _2n6 ** BigInt(447);
-  const maxAdded = is25519 ? BigInt(8) * _2n6 ** BigInt(251) - _1n7 : BigInt(4) * _2n6 ** BigInt(445) - _1n7;
-  const maxScalar = minScalar + maxAdded + _1n7;
-  const modP = (n) => mod(n, P);
-  const GuBytes = encodeU(Gu);
-  function encodeU(u) {
-    return numberToBytesLE(modP(u), fieldLen);
-  }
-  function decodeU(u) {
-    const _u = ensureBytes("u coordinate", u, fieldLen);
-    if (is25519)
-      _u[31] &= 127;
-    return modP(bytesToNumberLE(_u));
-  }
-  function decodeScalar(scalar) {
-    return bytesToNumberLE(adjustScalarBytes(ensureBytes("scalar", scalar, fieldLen)));
-  }
-  function scalarMult(scalar, u) {
-    const pu = montgomeryLadder(decodeU(u), decodeScalar(scalar));
-    if (pu === _0n7)
-      throw new Error("invalid private or public key received");
-    return encodeU(pu);
-  }
-  function scalarMultBase(scalar) {
-    return scalarMult(scalar, GuBytes);
-  }
-  function cswap(swap, x_2, x_3) {
-    const dummy = modP(swap * (x_2 - x_3));
-    x_2 = modP(x_2 - dummy);
-    x_3 = modP(x_3 + dummy);
-    return { x_2, x_3 };
-  }
-  function montgomeryLadder(u, scalar) {
-    aInRange("u", u, _0n7, P);
-    aInRange("scalar", scalar, minScalar, maxScalar);
-    const k = scalar;
-    const x_1 = u;
-    let x_2 = _1n7;
-    let z_2 = _0n7;
-    let x_3 = u;
-    let z_3 = _1n7;
-    let swap = _0n7;
-    for (let t = BigInt(montgomeryBits - 1);t >= _0n7; t--) {
-      const k_t = k >> t & _1n7;
-      swap ^= k_t;
-      ({ x_2, x_3 } = cswap(swap, x_2, x_3));
-      ({ x_2: z_2, x_3: z_3 } = cswap(swap, z_2, z_3));
-      swap = k_t;
-      const A = x_2 + z_2;
-      const AA = modP(A * A);
-      const B = x_2 - z_2;
-      const BB = modP(B * B);
-      const E = AA - BB;
-      const C = x_3 + z_3;
-      const D = x_3 - z_3;
-      const DA = modP(D * A);
-      const CB = modP(C * B);
-      const dacb = DA + CB;
-      const da_cb = DA - CB;
-      x_3 = modP(dacb * dacb);
-      z_3 = modP(x_1 * modP(da_cb * da_cb));
-      x_2 = modP(AA * BB);
-      z_2 = modP(E * (AA + modP(a24 * E)));
-    }
-    ({ x_2, x_3 } = cswap(swap, x_2, x_3));
-    ({ x_2: z_2, x_3: z_3 } = cswap(swap, z_2, z_3));
-    const z2 = powPminus2(z_2);
-    return modP(x_2 * z2);
-  }
-  const lengths = {
-    secretKey: fieldLen,
-    publicKey: fieldLen,
-    seed: fieldLen
-  };
-  const randomSecretKey = (seed = randomBytes_(fieldLen)) => {
-    abytes(seed, lengths.seed);
-    return seed;
-  };
-  function keygen(seed) {
-    const secretKey = randomSecretKey(seed);
-    return { secretKey, publicKey: scalarMultBase(secretKey) };
-  }
-  const utils2 = {
-    randomSecretKey,
-    randomPrivateKey: randomSecretKey
-  };
-  return {
-    keygen,
-    getSharedSecret: (secretKey, publicKey) => scalarMult(secretKey, publicKey),
-    getPublicKey: (secretKey) => scalarMultBase(secretKey),
-    scalarMult,
-    scalarMultBase,
-    utils: utils2,
-    GuBytes: GuBytes.slice(),
-    lengths
-  };
-}
-var _0n7, _1n7, _2n6;
-var init_montgomery = __esm(() => {
-  init_utils2();
-  init_modular();
-  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-  _0n7 = BigInt(0);
-  _1n7 = BigInt(1);
-  _2n6 = BigInt(2);
-});
-
-// ../../node_modules/@noble/curves/esm/ed25519.js
-function ed25519_pow_2_252_3(x) {
-  const _10n = BigInt(10), _20n = BigInt(20), _40n = BigInt(40), _80n = BigInt(80);
-  const P = ed25519_CURVE_p;
-  const x2 = x * x % P;
-  const b2 = x2 * x % P;
-  const b4 = pow2(b2, _2n7, P) * b2 % P;
-  const b5 = pow2(b4, _1n8, P) * x % P;
-  const b10 = pow2(b5, _5n2, P) * b5 % P;
-  const b20 = pow2(b10, _10n, P) * b10 % P;
-  const b40 = pow2(b20, _20n, P) * b20 % P;
-  const b80 = pow2(b40, _40n, P) * b40 % P;
-  const b160 = pow2(b80, _80n, P) * b80 % P;
-  const b240 = pow2(b160, _80n, P) * b80 % P;
-  const b250 = pow2(b240, _10n, P) * b10 % P;
-  const pow_p_5_8 = pow2(b250, _2n7, P) * x % P;
-  return { pow_p_5_8, b2 };
-}
-function adjustScalarBytes(bytes) {
-  bytes[0] &= 248;
-  bytes[31] &= 127;
-  bytes[31] |= 64;
-  return bytes;
-}
-function uvRatio(u, v) {
-  const P = ed25519_CURVE_p;
-  const v3 = mod(v * v * v, P);
-  const v7 = mod(v3 * v3 * v, P);
-  const pow = ed25519_pow_2_252_3(u * v7).pow_p_5_8;
-  let x = mod(u * v3 * pow, P);
-  const vx2 = mod(v * x * x, P);
-  const root1 = x;
-  const root2 = mod(x * ED25519_SQRT_M1, P);
-  const useRoot1 = vx2 === u;
-  const useRoot2 = vx2 === mod(-u, P);
-  const noRoot = vx2 === mod(-u * ED25519_SQRT_M1, P);
-  if (useRoot1)
-    x = root1;
-  if (useRoot2 || noRoot)
-    x = root2;
-  if (isNegativeLE(x, P))
-    x = mod(-x, P);
-  return { isValid: useRoot1 || useRoot2, value: x };
-}
-function calcElligatorRistrettoMap(r0) {
-  const { d } = ed25519_CURVE;
-  const P = ed25519_CURVE_p;
-  const mod2 = (n) => Fp.create(n);
-  const r = mod2(SQRT_M1 * r0 * r0);
-  const Ns = mod2((r + _1n8) * ONE_MINUS_D_SQ);
-  let c = BigInt(-1);
-  const D = mod2((c - d * r) * mod2(r + d));
-  let { isValid: Ns_D_is_sq, value: s } = uvRatio(Ns, D);
-  let s_ = mod2(s * r0);
-  if (!isNegativeLE(s_, P))
-    s_ = mod2(-s_);
-  if (!Ns_D_is_sq)
-    s = s_;
-  if (!Ns_D_is_sq)
-    c = r;
-  const Nt = mod2(c * (r - _1n8) * D_MINUS_ONE_SQ - D);
-  const s2 = s * s;
-  const W0 = mod2((s + s) * D);
-  const W1 = mod2(Nt * SQRT_AD_MINUS_ONE);
-  const W2 = mod2(_1n8 - s2);
-  const W3 = mod2(_1n8 + s2);
-  return new ed25519.Point(mod2(W0 * W3), mod2(W2 * W1), mod2(W1 * W3), mod2(W0 * W2));
-}
-function ristretto255_map(bytes) {
-  abytes(bytes, 64);
-  const r1 = bytes255ToNumberLE(bytes.subarray(0, 32));
-  const R1 = calcElligatorRistrettoMap(r1);
-  const r2 = bytes255ToNumberLE(bytes.subarray(32, 64));
-  const R2 = calcElligatorRistrettoMap(r2);
-  return new _RistrettoPoint(R1.add(R2));
-}
-var _0n8, _1n8, _2n7, _3n3, _5n2, _8n3, ed25519_CURVE_p, ed25519_CURVE, ED25519_SQRT_M1, Fp, Fn, ed25519Defaults, ed25519, x25519, SQRT_M1, SQRT_AD_MINUS_ONE, INVSQRT_A_MINUS_D, ONE_MINUS_D_SQ, D_MINUS_ONE_SQ, invertSqrt = (number) => uvRatio(_1n8, number), MAX_255B, bytes255ToNumberLE = (bytes) => ed25519.Point.Fp.create(bytesToNumberLE(bytes) & MAX_255B), _RistrettoPoint;
-var init_ed25519 = __esm(() => {
-  init_sha2();
-  init_utils();
-  init_curve();
-  init_edwards();
-  init_modular();
-  init_montgomery();
-  init_utils2();
-  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-  _0n8 = /* @__PURE__ */ BigInt(0);
-  _1n8 = BigInt(1);
-  _2n7 = BigInt(2);
-  _3n3 = BigInt(3);
-  _5n2 = BigInt(5);
-  _8n3 = BigInt(8);
-  ed25519_CURVE_p = BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed");
-  ed25519_CURVE = /* @__PURE__ */ (() => ({
-    p: ed25519_CURVE_p,
-    n: BigInt("0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed"),
-    h: _8n3,
-    a: BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffec"),
-    d: BigInt("0x52036cee2b6ffe738cc740797779e89800700a4d4141d8ab75eb4dca135978a3"),
-    Gx: BigInt("0x216936d3cd6e53fec0a4e231fdd6dc5c692cc7609525a7b2c9562d608f25d51a"),
-    Gy: BigInt("0x6666666666666666666666666666666666666666666666666666666666666658")
-  }))();
-  ED25519_SQRT_M1 = /* @__PURE__ */ BigInt("19681161376707505956807079304988542015446066515923890162744021073123829784752");
-  Fp = /* @__PURE__ */ (() => Field(ed25519_CURVE.p, { isLE: true }))();
-  Fn = /* @__PURE__ */ (() => Field(ed25519_CURVE.n, { isLE: true }))();
-  ed25519Defaults = /* @__PURE__ */ (() => ({
-    ...ed25519_CURVE,
-    Fp,
-    hash: sha512,
-    adjustScalarBytes,
-    uvRatio
-  }))();
-  ed25519 = /* @__PURE__ */ (() => twistedEdwards(ed25519Defaults))();
-  x25519 = /* @__PURE__ */ (() => {
-    const P = Fp.ORDER;
-    return montgomery({
-      P,
-      type: "x25519",
-      powPminus2: (x) => {
-        const { pow_p_5_8, b2 } = ed25519_pow_2_252_3(x);
-        return mod(pow2(pow_p_5_8, _3n3, P) * b2, P);
-      },
-      adjustScalarBytes
-    });
-  })();
-  SQRT_M1 = ED25519_SQRT_M1;
-  SQRT_AD_MINUS_ONE = /* @__PURE__ */ BigInt("25063068953384623474111414158702152701244531502492656460079210482610430750235");
-  INVSQRT_A_MINUS_D = /* @__PURE__ */ BigInt("54469307008909316920995813868745141605393597292927456921205312896311721017578");
-  ONE_MINUS_D_SQ = /* @__PURE__ */ BigInt("1159843021668779879193775521855586647937357759715417654439879720876111806838");
-  D_MINUS_ONE_SQ = /* @__PURE__ */ BigInt("40440834346308536858101042469323190826248399146238708352240133220865137265952");
-  MAX_255B = /* @__PURE__ */ BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
-  _RistrettoPoint = class _RistrettoPoint extends PrimeEdwardsPoint {
-    constructor(ep) {
-      super(ep);
-    }
-    static fromAffine(ap) {
-      return new _RistrettoPoint(ed25519.Point.fromAffine(ap));
-    }
-    assertSame(other) {
-      if (!(other instanceof _RistrettoPoint))
-        throw new Error("RistrettoPoint expected");
-    }
-    init(ep) {
-      return new _RistrettoPoint(ep);
-    }
-    static hashToCurve(hex2) {
-      return ristretto255_map(ensureBytes("ristrettoHash", hex2, 64));
-    }
-    static fromBytes(bytes) {
-      abytes(bytes, 32);
-      const { a, d } = ed25519_CURVE;
-      const P = ed25519_CURVE_p;
-      const mod2 = (n) => Fp.create(n);
-      const s = bytes255ToNumberLE(bytes);
-      if (!equalBytes(Fp.toBytes(s), bytes) || isNegativeLE(s, P))
-        throw new Error("invalid ristretto255 encoding 1");
-      const s2 = mod2(s * s);
-      const u1 = mod2(_1n8 + a * s2);
-      const u2 = mod2(_1n8 - a * s2);
-      const u1_2 = mod2(u1 * u1);
-      const u2_2 = mod2(u2 * u2);
-      const v = mod2(a * d * u1_2 - u2_2);
-      const { isValid: isValid2, value: I } = invertSqrt(mod2(v * u2_2));
-      const Dx = mod2(I * u2);
-      const Dy = mod2(I * Dx * v);
-      let x = mod2((s + s) * Dx);
-      if (isNegativeLE(x, P))
-        x = mod2(-x);
-      const y = mod2(u1 * Dy);
-      const t = mod2(x * y);
-      if (!isValid2 || isNegativeLE(t, P) || y === _0n8)
-        throw new Error("invalid ristretto255 encoding 2");
-      return new _RistrettoPoint(new ed25519.Point(x, y, _1n8, t));
-    }
-    static fromHex(hex2) {
-      return _RistrettoPoint.fromBytes(ensureBytes("ristrettoHex", hex2, 32));
-    }
-    static msm(points, scalars) {
-      return pippenger(_RistrettoPoint, ed25519.Point.Fn, points, scalars);
-    }
-    toBytes() {
-      let { X, Y, Z, T } = this.ep;
-      const P = ed25519_CURVE_p;
-      const mod2 = (n) => Fp.create(n);
-      const u1 = mod2(mod2(Z + Y) * mod2(Z - Y));
-      const u2 = mod2(X * Y);
-      const u2sq = mod2(u2 * u2);
-      const { value: invsqrt } = invertSqrt(mod2(u1 * u2sq));
-      const D1 = mod2(invsqrt * u1);
-      const D2 = mod2(invsqrt * u2);
-      const zInv = mod2(D1 * D2 * T);
-      let D;
-      if (isNegativeLE(T * zInv, P)) {
-        let _x = mod2(Y * SQRT_M1);
-        let _y = mod2(X * SQRT_M1);
-        X = _x;
-        Y = _y;
-        D = mod2(D1 * INVSQRT_A_MINUS_D);
-      } else {
-        D = D2;
-      }
-      if (isNegativeLE(X * zInv, P))
-        Y = mod2(-Y);
-      let s = mod2((Z - Y) * D);
-      if (isNegativeLE(s, P))
-        s = mod2(-s);
-      return Fp.toBytes(s);
-    }
-    equals(other) {
-      this.assertSame(other);
-      const { X: X1, Y: Y1 } = this.ep;
-      const { X: X2, Y: Y2 } = other.ep;
-      const mod2 = (n) => Fp.create(n);
-      const one = mod2(X1 * Y2) === mod2(Y1 * X2);
-      const two = mod2(Y1 * Y2) === mod2(X1 * X2);
-      return one || two;
-    }
-    is0() {
-      return this.equals(_RistrettoPoint.ZERO);
-    }
-  };
-  _RistrettoPoint.BASE = /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.BASE))();
-  _RistrettoPoint.ZERO = /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.ZERO))();
-  _RistrettoPoint.Fp = /* @__PURE__ */ (() => Fp)();
-  _RistrettoPoint.Fn = /* @__PURE__ */ (() => Fn)();
-});
-
-// ../../node_modules/@noble/hashes/esm/sha256.js
-var sha2562;
-var init_sha256 = __esm(() => {
-  init_sha2();
-  sha2562 = sha256;
-});
-
 // src/solana-lite.ts
 function decodePubkey(address) {
   let bytes;
@@ -10219,7 +13166,7 @@ function isOnCurve(bytes) {
     return false;
   }
 }
-function concat2(...parts) {
+function concat3(...parts) {
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);
   let offset = 0;
@@ -10231,7 +13178,7 @@ function concat2(...parts) {
 }
 function findProgramAddress(seeds, programId) {
   for (let bump = 255;bump >= 0; bump--) {
-    const candidate = sha2562(concat2(...seeds, new Uint8Array([bump]), programId, PDA_MARKER));
+    const candidate = sha2562(concat3(...seeds, new Uint8Array([bump]), programId, PDA_MARKER));
     if (!isOnCurve(candidate))
       return { address: candidate, bump };
   }
@@ -10266,7 +13213,7 @@ function systemTransfer(from, to, lamports) {
       { pubkey: from, isSigner: true, isWritable: true },
       { pubkey: to, isSigner: false, isWritable: true }
     ],
-    data: concat2(u32le(2), u64le(lamports))
+    data: concat3(u32le(2), u64le(lamports))
   };
 }
 function tokenTransferChecked(input) {
@@ -10279,7 +13226,7 @@ function tokenTransferChecked(input) {
       { pubkey: input.owner, isSigner: true, isWritable: false },
       ...input.extraAccounts ?? []
     ],
-    data: concat2(new Uint8Array([12]), u64le(input.amount), new Uint8Array([input.decimals]))
+    data: concat3(new Uint8Array([12]), u64le(input.amount), new Uint8Array([input.decimals]))
   };
 }
 function tokenCloseAccount(input) {
@@ -10396,7 +13343,7 @@ function compileLegacyMessage(input) {
     const accountIdx = new Uint8Array(ix.keys.map((k) => indexOf(k.pubkey)));
     parts.push(new Uint8Array([indexOf(ix.programId)]), shortvec(accountIdx.length), accountIdx, shortvec(ix.data.length), ix.data);
   }
-  return concat2(...parts);
+  return concat3(...parts);
 }
 function signMessage(message, secret64) {
   if (secret64.length !== 64)
@@ -10415,7 +13362,7 @@ function pubkeyFromSecret(secret64) {
 function serializeSignedTransaction(message, signature) {
   if (signature.length !== 64)
     throw new Error("expected a 64-byte signature");
-  return concat2(shortvec(1), signature, message);
+  return concat3(shortvec(1), signature, message);
 }
 function toBase642(bytes) {
   return Buffer.from(bytes).toString("base64");
@@ -10879,132 +13826,6 @@ var init_solana_lite = __esm(() => {
   NEVER_RETRIED = new Set(["sendTransaction", "getProgramAccounts", "getProgramAccountsV2"]);
 });
 
-// src/vault/errors.ts
-var exports_errors = {};
-__export(exports_errors, {
-  isVaultError: () => isVaultError,
-  VaultError: () => VaultError,
-  VAULT_ERROR_CODES: () => VAULT_ERROR_CODES
-});
-function isVaultError(error) {
-  return error instanceof VaultError;
-}
-var VAULT_ERROR_CODES, VaultError;
-var init_errors2 = __esm(() => {
-  VAULT_ERROR_CODES = [
-    "VAULT_MISSING",
-    "VAULT_EXISTS",
-    "VAULT_UNREADABLE",
-    "VAULT_FORMAT_UNKNOWN",
-    "VAULT_VERSION_UNSUPPORTED",
-    "VAULT_FIELD_UNKNOWN",
-    "VAULT_KDF_OUT_OF_BOUNDS",
-    "VAULT_UNLOCK_FAILED",
-    "VAULT_BLOB_TAMPERED",
-    "VAULT_INDEX_INVALID",
-    "VAULT_OLDER_COPY",
-    "VAULT_LOCKED",
-    "VAULT_CHANGED",
-    "VAULT_WRITE_FAILED",
-    "VAULT_VERIFY_FAILED",
-    "VAULT_NO_RECOVERABLE_FACTOR",
-    "VAULT_LAST_PASSPHRASE",
-    "VAULT_FACTOR_UNAVAILABLE",
-    "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
-    "VAULT_AUTHENTICATOR_NOT_READABLE",
-    "VAULT_PRF_UNSUPPORTED",
-    "VAULT_UV_UNSUPPORTED",
-    "VAULT_PIN_REQUIRED",
-    "VAULT_PIN_INVALID",
-    "VAULT_AUTHENTICATOR_BLOCKED",
-    "VAULT_AUTHENTICATOR_CANCELLED",
-    "VAULT_CREDENTIAL_NOT_PRESENT",
-    "VAULT_AUTHENTICATOR_AMBIGUOUS",
-    "VAULT_AUTHENTICATOR_CHANGED",
-    "VAULT_HELPER_MISSING",
-    "VAULT_HELPER_UNTRUSTED",
-    "VAULT_SHARED_DOMAIN",
-    "VAULT_BACKUP_INSIDE_CONFIG",
-    "ENV_PASSPHRASE_REFUSED",
-    "CHAIN_NOT_OFFERED",
-    "DESTINATION_NOT_CONFIRMED",
-    "PHRASE_REQUIRES_TTY",
-    "PHRASE_INVALID",
-    "PHRASE_NOT_CONFIRMED",
-    "PROMOTE_NOT_VAULT_KEY",
-    "PROMOTE_ALREADY_TEE_WALLET",
-    "PROMOTE_SAME_KEY_DESTINATION",
-    "PROMOTE_KEY_IS_PINNED_DESTINATION",
-    "PROMOTE_DESTINATION_NOT_COLD",
-    "PROMOTE_SUBJECT_EXPOSURE_UNKNOWN",
-    "PROMOTE_RECONCILE_INCOMPLETE",
-    "PROMOTE_OUTCOME_UNRESOLVED",
-    "PROMOTE_NOT_ACKNOWLEDGED",
-    "GRANT_IDENTITY_MISMATCH",
-    "GRANT_BINDING_MISMATCH",
-    "GRANT_DESTINATION_UNRESOLVED",
-    "VAULT_ALLOCATION_BOUNDARY_UNKNOWN",
-    "EXPOSURE_ACCOUNT_MISMATCH",
-    "EXPORT_TARGET_EXISTS",
-    "EXPORT_TARGET_SYMLINK",
-    "LEGACY_INCOMPLETE",
-    "LEGACY_UNVERIFIED_BACKUP",
-    "SIGN_SIGNER_NOT_EXTERNAL",
-    "SIGN_SIGNER_NOT_PROVIDED",
-    "SIGN_SIMULATION_FAILED",
-    "SIGN_LOOKUP_TABLE_UNRESOLVED",
-    "SIGN_TRANSACTION_UNDECODABLE",
-    "SIGN_BROADCAST_FAILED",
-    "SIGN_CONTROL_CHANGE",
-    "VAULT_LABEL_NOT_FOUND",
-    "VAULT_LABEL_AMBIGUOUS",
-    "VAULT_LABEL_TAKEN",
-    "VAULT_LABEL_UNCHANGED",
-    "VAULT_RENAME_ROLE_REFUSED",
-    "VAULT_RENAME_BATCH_REFUSED",
-    "PROMOTE_BATCH_REFUSED",
-    "WALLET_LIMIT_REACHED",
-    "TIER_REQUIRED",
-    "LINKED_WALLET_ROOM_UNREADABLE",
-    "PROMOTE_ACCOUNT_UNRESOLVED",
-    "TRANSFER_SWEEP_PENDING",
-    "VAULT_KEY_ALREADY_ENROLLED",
-    "EVM_CHAIN_MISMATCH",
-    "EVM_NONCE_STALE",
-    "EVM_TOKEN_UNREADABLE",
-    "EVM_AMOUNT_PRECISION",
-    "EVM_INSUFFICIENT_FOR_FEES",
-    "EVM_DESTINATION_INVALID",
-    "EVM_SELF_TRANSFER",
-    "EVM_RECIPIENT_IS_TOKEN",
-    "EVM_TRANSFER_REVERTED",
-    "TRANSFER_CHAIN_MISMATCH",
-    "TRANSFER_INSUFFICIENT_FUNDS",
-    "SOLANA_COMMAND_EVM_KEY",
-    "RPC_RATE_LIMITED",
-    "EVM_RECORD_ENTRY_TOO_LONG",
-    "EVM_SWEEP_NEEDS_GAS",
-    "EVM_SWEEP_INCOMPLETE",
-    "WALLET_BUSY",
-    "WALLET_LOCK_UNKNOWN",
-    "EVM_RECORD_UNAVAILABLE"
-  ];
-  VaultError = class VaultError extends Error {
-    code;
-    suggestion;
-    exitCode;
-    details;
-    constructor(code, message, opts = {}) {
-      super(message);
-      this.name = "VaultError";
-      this.code = code;
-      this.suggestion = opts.suggestion;
-      this.exitCode = opts.exitCode ?? 1;
-      this.details = opts.details;
-    }
-  };
-});
-
 // src/solana-endpoint.ts
 function validateSolanaRpcUrl(url, source) {
   let parsed;
@@ -11205,9 +14026,9 @@ var init_solana_endpoint = __esm(() => {
 
 // src/trading.ts
 import { createHash as createHash2, sign as sign2 } from "node:crypto";
-import { mkdir as mkdir2, open as open2, readFile as readFile2, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir6, open as open3, readFile as readFile6, rename as rename4, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir2 } from "node:os";
-import { join as join3 } from "node:path";
+import { join as join6 } from "node:path";
 function baseAsset(value) {
   return Object.keys(BASES).find((key) => key === value.toUpperCase() || BASES[key]?.mint === value);
 }
@@ -11654,13 +14475,13 @@ function jobPath(kind, id) {
   return `/api/v1/${rail}/jobs/${encodeURIComponent(id)}`;
 }
 function operationPath(ctx, key, id) {
-  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join3(ctx.deps.env.HOME || homedir2(), ".config", "candle");
+  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join6(ctx.deps.env.HOME || homedir2(), ".config", "candle");
   const hash = createHash2("sha256").update(JSON.stringify([ctx.apiUrl, key, id])).digest("hex");
-  return join3(dir, "operations", `${hash}.json`);
+  return join6(dir, "operations", `${hash}.json`);
 }
 async function savedOperation(ctx, key, id) {
   try {
-    return JSON.parse(await readFile2(operationPath(ctx, key, id), "utf8"));
+    return JSON.parse(await readFile6(operationPath(ctx, key, id), "utf8"));
   } catch (error) {
     if (error.code === "ENOENT" || error instanceof SyntaxError)
       return null;
@@ -11669,10 +14490,10 @@ async function savedOperation(ctx, key, id) {
 }
 async function claimOperation(ctx, key, id, kind) {
   const path = operationPath(ctx, key, id);
-  await mkdir2(join3(path, ".."), { recursive: true, mode: 448 });
+  await mkdir6(join6(path, ".."), { recursive: true, mode: 448 });
   let file;
   try {
-    file = await open2(path, "wx", 384);
+    file = await open3(path, "wx", 384);
   } catch (error) {
     if (error.code === "EEXIST")
       return false;
@@ -11752,14 +14573,14 @@ async function keptBridge(ctx, key, id) {
 }
 async function writeOperation(path, record) {
   const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile2(temporary, JSON.stringify(record), { mode: 384 });
-  const file = await open2(temporary, "r");
+  await writeFile4(temporary, JSON.stringify(record), { mode: 384 });
+  const file = await open3(temporary, "r");
   try {
     await file.sync();
   } finally {
     await file.close();
   }
-  await rename2(temporary, path);
+  await rename4(temporary, path);
 }
 async function saveOperationHash(ctx, key, id, kind, hash, operationId) {
   await writeOperation(operationPath(ctx, key, id), {
@@ -12509,14 +15330,14 @@ function bridgeSweepGate(address, bridges) {
   const warnings = [];
   if (bridges === null)
     warnings.push(`Warning: Candle could not say whether a bridge into or out of ${address} is open. If one is, its fill or refund lands after this sweep and needs a second sweep.`);
-  const open3 = (bridges ?? []).find((bridge) => bridge.state === "open");
-  if (open3) {
-    const until = open3.blockingUntil !== undefined ? new Date(open3.blockingUntil).toISOString() : "two hours after it opened";
+  const open4 = (bridges ?? []).find((bridge) => bridge.state === "open");
+  if (open4) {
+    const until = open4.blockingUntil !== undefined ? new Date(open4.blockingUntil).toISOString() : "two hours after it opened";
     return {
       refusal: {
         code: "BRIDGE_IN_FLIGHT",
-        message: `A bridge ${direction(open3)} ${address} is still open (${safeText(open3.clientTradeId)}); its fill or refund may still land here.`,
-        suggestion: `Nothing was signed. Check it with candle swap status ${safeText(open3.clientTradeId)} and sweep once it closes. From ${until} it is a warning and the sweep goes ahead.`,
+        message: `A bridge ${direction(open4)} ${address} is still open (${safeText(open4.clientTradeId)}); its fill or refund may still land here.`,
+        suggestion: `Nothing was signed. Check it with candle swap status ${safeText(open4.clientTradeId)} and sweep once it closes. From ${until} it is a warning and the sweep goes ahead.`,
         details: { bridges }
       },
       warnings
@@ -12533,7 +15354,7 @@ function describeBridgeJob(job, facts) {
   const settlement = jobSettlementSchema.safeParse(job.settlement);
   const reading = settlement.success ? settlement.data : undefined;
   const bridge = jobBridgeSchema.safeParse(job.bridge);
-  const open3 = bridge.success ? bridge.data : undefined;
+  const open4 = bridge.success ? bridge.data : undefined;
   const landed = reading !== undefined && reading.legs.length > 0 && reading.legs.every((l) => l.status === "confirmed");
   let phase;
   let line;
@@ -12563,14 +15384,14 @@ function describeBridgeJob(job, facts) {
   const lines = [line];
   if (facts?.statusCheck && phase !== "not_broadcast")
     lines.push(`Relay status: ${safeText(facts.statusCheck)}`);
-  if (open3?.state === "open")
-    lines.push(`Open: a sweep of the source or destination wallet refuses BRIDGE_IN_FLIGHT until it closes or until ${new Date(open3.blockingUntil).toISOString()}.`);
-  if (open3?.state === "uncertain")
+  if (open4?.state === "open")
+    lines.push(`Open: a sweep of the source or destination wallet refuses BRIDGE_IN_FLIGHT until it closes or until ${new Date(open4.blockingUntil).toISOString()}.`);
+  if (open4?.state === "uncertain")
     lines.push("Warning: no result after two hours. Sweeps now go ahead; if the fill or refund lands later, sweep that wallet again.");
   return {
     phase,
-    ...open3 ? { open: open3.state } : {},
-    ...open3?.state === "open" ? { blockingUntil: open3.blockingUntil } : {},
+    ...open4 ? { open: open4.state } : {},
+    ...open4?.state === "open" ? { blockingUntil: open4.blockingUntil } : {},
     ...reading?.settledOutRaw !== undefined ? { settledOutRaw: reading.settledOutRaw } : {},
     lines
   };
@@ -13063,10 +15884,10 @@ function hoodTradeLegCheck(terms) {
 }
 async function registeredCurveFor(rpc, token) {
   const call = hexToBytes2(`${CURVE_FOR_BASE_TOKEN_SELECTOR}${"0".repeat(24)}${token.toLowerCase().replace(/^0x/, "")}`);
-  for (const registry of HOOD_CURVE_REGISTRIES) {
+  for (const registry2 of HOOD_CURVE_REGISTRIES) {
     let answer;
     try {
-      answer = await rpc.call({ to: registry, data: call });
+      answer = await rpc.call({ to: registry2, data: call });
     } catch {
       continue;
     }
@@ -14550,1805 +17371,12 @@ var init_keys = __esm(() => {
   };
 });
 
-// ../../node_modules/@noble/hashes/esm/_blake.js
-var BSIGMA;
-var init__blake = __esm(() => {
-  BSIGMA = /* @__PURE__ */ Uint8Array.from([
-    0,
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7,
-    8,
-    9,
-    10,
-    11,
-    12,
-    13,
-    14,
-    15,
-    14,
-    10,
-    4,
-    8,
-    9,
-    15,
-    13,
-    6,
-    1,
-    12,
-    0,
-    2,
-    11,
-    7,
-    5,
-    3,
-    11,
-    8,
-    12,
-    0,
-    5,
-    2,
-    15,
-    13,
-    10,
-    14,
-    3,
-    6,
-    7,
-    1,
-    9,
-    4,
-    7,
-    9,
-    3,
-    1,
-    13,
-    12,
-    11,
-    14,
-    2,
-    6,
-    5,
-    10,
-    4,
-    0,
-    15,
-    8,
-    9,
-    0,
-    5,
-    7,
-    2,
-    4,
-    10,
-    15,
-    14,
-    1,
-    11,
-    12,
-    6,
-    8,
-    3,
-    13,
-    2,
-    12,
-    6,
-    10,
-    0,
-    11,
-    8,
-    3,
-    4,
-    13,
-    7,
-    5,
-    15,
-    14,
-    1,
-    9,
-    12,
-    5,
-    1,
-    15,
-    14,
-    13,
-    4,
-    10,
-    0,
-    7,
-    6,
-    3,
-    9,
-    2,
-    8,
-    11,
-    13,
-    11,
-    7,
-    14,
-    12,
-    1,
-    3,
-    9,
-    5,
-    0,
-    15,
-    4,
-    8,
-    6,
-    2,
-    10,
-    6,
-    15,
-    14,
-    9,
-    11,
-    3,
-    0,
-    8,
-    12,
-    2,
-    13,
-    7,
-    1,
-    4,
-    10,
-    5,
-    10,
-    2,
-    8,
-    4,
-    7,
-    6,
-    1,
-    5,
-    15,
-    11,
-    9,
-    14,
-    3,
-    12,
-    13,
-    0,
-    0,
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7,
-    8,
-    9,
-    10,
-    11,
-    12,
-    13,
-    14,
-    15,
-    14,
-    10,
-    4,
-    8,
-    9,
-    15,
-    13,
-    6,
-    1,
-    12,
-    0,
-    2,
-    11,
-    7,
-    5,
-    3,
-    11,
-    8,
-    12,
-    0,
-    5,
-    2,
-    15,
-    13,
-    10,
-    14,
-    3,
-    6,
-    7,
-    1,
-    9,
-    4,
-    7,
-    9,
-    3,
-    1,
-    13,
-    12,
-    11,
-    14,
-    2,
-    6,
-    5,
-    10,
-    4,
-    0,
-    15,
-    8,
-    9,
-    0,
-    5,
-    7,
-    2,
-    4,
-    10,
-    15,
-    14,
-    1,
-    11,
-    12,
-    6,
-    8,
-    3,
-    13,
-    2,
-    12,
-    6,
-    10,
-    0,
-    11,
-    8,
-    3,
-    4,
-    13,
-    7,
-    5,
-    15,
-    14,
-    1,
-    9
-  ]);
-});
-
-// ../../node_modules/@noble/hashes/esm/blake2.js
-function G1b(a, b, c, d, msg, x) {
-  const Xl = msg[x], Xh = msg[x + 1];
-  let Al = BBUF[2 * a], Ah = BBUF[2 * a + 1];
-  let Bl = BBUF[2 * b], Bh = BBUF[2 * b + 1];
-  let Cl = BBUF[2 * c], Ch = BBUF[2 * c + 1];
-  let Dl = BBUF[2 * d], Dh = BBUF[2 * d + 1];
-  let ll = add3L(Al, Bl, Xl);
-  Ah = add3H(ll, Ah, Bh, Xh);
-  Al = ll | 0;
-  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
-  ({ Dh, Dl } = { Dh: rotr32H(Dh, Dl), Dl: rotr32L(Dh, Dl) });
-  ({ h: Ch, l: Cl } = add(Ch, Cl, Dh, Dl));
-  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
-  ({ Bh, Bl } = { Bh: rotrSH(Bh, Bl, 24), Bl: rotrSL(Bh, Bl, 24) });
-  BBUF[2 * a] = Al, BBUF[2 * a + 1] = Ah;
-  BBUF[2 * b] = Bl, BBUF[2 * b + 1] = Bh;
-  BBUF[2 * c] = Cl, BBUF[2 * c + 1] = Ch;
-  BBUF[2 * d] = Dl, BBUF[2 * d + 1] = Dh;
-}
-function G2b(a, b, c, d, msg, x) {
-  const Xl = msg[x], Xh = msg[x + 1];
-  let Al = BBUF[2 * a], Ah = BBUF[2 * a + 1];
-  let Bl = BBUF[2 * b], Bh = BBUF[2 * b + 1];
-  let Cl = BBUF[2 * c], Ch = BBUF[2 * c + 1];
-  let Dl = BBUF[2 * d], Dh = BBUF[2 * d + 1];
-  let ll = add3L(Al, Bl, Xl);
-  Ah = add3H(ll, Ah, Bh, Xh);
-  Al = ll | 0;
-  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
-  ({ Dh, Dl } = { Dh: rotrSH(Dh, Dl, 16), Dl: rotrSL(Dh, Dl, 16) });
-  ({ h: Ch, l: Cl } = add(Ch, Cl, Dh, Dl));
-  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
-  ({ Bh, Bl } = { Bh: rotrBH(Bh, Bl, 63), Bl: rotrBL(Bh, Bl, 63) });
-  BBUF[2 * a] = Al, BBUF[2 * a + 1] = Ah;
-  BBUF[2 * b] = Bl, BBUF[2 * b + 1] = Bh;
-  BBUF[2 * c] = Cl, BBUF[2 * c + 1] = Ch;
-  BBUF[2 * d] = Dl, BBUF[2 * d + 1] = Dh;
-}
-function checkBlake2Opts(outputLen, opts = {}, keyLen, saltLen, persLen) {
-  anumber(keyLen);
-  if (outputLen < 0 || outputLen > keyLen)
-    throw new Error("outputLen bigger than keyLen");
-  const { key, salt, personalization } = opts;
-  if (key !== undefined && (key.length < 1 || key.length > keyLen))
-    throw new Error("key length must be undefined or 1.." + keyLen);
-  if (salt !== undefined && salt.length !== saltLen)
-    throw new Error("salt must be undefined or " + saltLen);
-  if (personalization !== undefined && personalization.length !== persLen)
-    throw new Error("personalization must be undefined or " + persLen);
-}
-var B2B_IV, BBUF, BLAKE2, BLAKE2b, blake2b;
-var init_blake2 = __esm(() => {
-  init__blake();
-  init__u64();
-  init_utils();
-  B2B_IV = /* @__PURE__ */ Uint32Array.from([
-    4089235720,
-    1779033703,
-    2227873595,
-    3144134277,
-    4271175723,
-    1013904242,
-    1595750129,
-    2773480762,
-    2917565137,
-    1359893119,
-    725511199,
-    2600822924,
-    4215389547,
-    528734635,
-    327033209,
-    1541459225
-  ]);
-  BBUF = /* @__PURE__ */ new Uint32Array(32);
-  BLAKE2 = class BLAKE2 extends Hash {
-    constructor(blockLen, outputLen) {
-      super();
-      this.finished = false;
-      this.destroyed = false;
-      this.length = 0;
-      this.pos = 0;
-      anumber(blockLen);
-      anumber(outputLen);
-      this.blockLen = blockLen;
-      this.outputLen = outputLen;
-      this.buffer = new Uint8Array(blockLen);
-      this.buffer32 = u32(this.buffer);
-    }
-    update(data) {
-      aexists(this);
-      data = toBytes(data);
-      abytes(data);
-      const { blockLen, buffer, buffer32 } = this;
-      const len = data.length;
-      const offset = data.byteOffset;
-      const buf = data.buffer;
-      for (let pos = 0;pos < len; ) {
-        if (this.pos === blockLen) {
-          swap32IfBE(buffer32);
-          this.compress(buffer32, 0, false);
-          swap32IfBE(buffer32);
-          this.pos = 0;
-        }
-        const take2 = Math.min(blockLen - this.pos, len - pos);
-        const dataOffset = offset + pos;
-        if (take2 === blockLen && !(dataOffset % 4) && pos + take2 < len) {
-          const data32 = new Uint32Array(buf, dataOffset, Math.floor((len - pos) / 4));
-          swap32IfBE(data32);
-          for (let pos32 = 0;pos + blockLen < len; pos32 += buffer32.length, pos += blockLen) {
-            this.length += blockLen;
-            this.compress(data32, pos32, false);
-          }
-          swap32IfBE(data32);
-          continue;
-        }
-        buffer.set(data.subarray(pos, pos + take2), this.pos);
-        this.pos += take2;
-        this.length += take2;
-        pos += take2;
-      }
-      return this;
-    }
-    digestInto(out) {
-      aexists(this);
-      aoutput(out, this);
-      const { pos, buffer32 } = this;
-      this.finished = true;
-      clean(this.buffer.subarray(pos));
-      swap32IfBE(buffer32);
-      this.compress(buffer32, 0, true);
-      swap32IfBE(buffer32);
-      const out32 = u32(out);
-      this.get().forEach((v, i) => out32[i] = swap8IfBE(v));
-    }
-    digest() {
-      const { buffer, outputLen } = this;
-      this.digestInto(buffer);
-      const res = buffer.slice(0, outputLen);
-      this.destroy();
-      return res;
-    }
-    _cloneInto(to) {
-      const { buffer, length, finished, destroyed, outputLen, pos } = this;
-      to || (to = new this.constructor({ dkLen: outputLen }));
-      to.set(...this.get());
-      to.buffer.set(buffer);
-      to.destroyed = destroyed;
-      to.finished = finished;
-      to.length = length;
-      to.pos = pos;
-      to.outputLen = outputLen;
-      return to;
-    }
-    clone() {
-      return this._cloneInto();
-    }
-  };
-  BLAKE2b = class BLAKE2b extends BLAKE2 {
-    constructor(opts = {}) {
-      const olen = opts.dkLen === undefined ? 64 : opts.dkLen;
-      super(128, olen);
-      this.v0l = B2B_IV[0] | 0;
-      this.v0h = B2B_IV[1] | 0;
-      this.v1l = B2B_IV[2] | 0;
-      this.v1h = B2B_IV[3] | 0;
-      this.v2l = B2B_IV[4] | 0;
-      this.v2h = B2B_IV[5] | 0;
-      this.v3l = B2B_IV[6] | 0;
-      this.v3h = B2B_IV[7] | 0;
-      this.v4l = B2B_IV[8] | 0;
-      this.v4h = B2B_IV[9] | 0;
-      this.v5l = B2B_IV[10] | 0;
-      this.v5h = B2B_IV[11] | 0;
-      this.v6l = B2B_IV[12] | 0;
-      this.v6h = B2B_IV[13] | 0;
-      this.v7l = B2B_IV[14] | 0;
-      this.v7h = B2B_IV[15] | 0;
-      checkBlake2Opts(olen, opts, 64, 16, 16);
-      let { key, personalization, salt } = opts;
-      let keyLength = 0;
-      if (key !== undefined) {
-        key = toBytes(key);
-        keyLength = key.length;
-      }
-      this.v0l ^= this.outputLen | keyLength << 8 | 1 << 16 | 1 << 24;
-      if (salt !== undefined) {
-        salt = toBytes(salt);
-        const slt = u32(salt);
-        this.v4l ^= swap8IfBE(slt[0]);
-        this.v4h ^= swap8IfBE(slt[1]);
-        this.v5l ^= swap8IfBE(slt[2]);
-        this.v5h ^= swap8IfBE(slt[3]);
-      }
-      if (personalization !== undefined) {
-        personalization = toBytes(personalization);
-        const pers = u32(personalization);
-        this.v6l ^= swap8IfBE(pers[0]);
-        this.v6h ^= swap8IfBE(pers[1]);
-        this.v7l ^= swap8IfBE(pers[2]);
-        this.v7h ^= swap8IfBE(pers[3]);
-      }
-      if (key !== undefined) {
-        const tmp = new Uint8Array(this.blockLen);
-        tmp.set(key);
-        this.update(tmp);
-      }
-    }
-    get() {
-      let { v0l, v0h, v1l, v1h, v2l, v2h, v3l, v3h, v4l, v4h, v5l, v5h, v6l, v6h, v7l, v7h } = this;
-      return [v0l, v0h, v1l, v1h, v2l, v2h, v3l, v3h, v4l, v4h, v5l, v5h, v6l, v6h, v7l, v7h];
-    }
-    set(v0l, v0h, v1l, v1h, v2l, v2h, v3l, v3h, v4l, v4h, v5l, v5h, v6l, v6h, v7l, v7h) {
-      this.v0l = v0l | 0;
-      this.v0h = v0h | 0;
-      this.v1l = v1l | 0;
-      this.v1h = v1h | 0;
-      this.v2l = v2l | 0;
-      this.v2h = v2h | 0;
-      this.v3l = v3l | 0;
-      this.v3h = v3h | 0;
-      this.v4l = v4l | 0;
-      this.v4h = v4h | 0;
-      this.v5l = v5l | 0;
-      this.v5h = v5h | 0;
-      this.v6l = v6l | 0;
-      this.v6h = v6h | 0;
-      this.v7l = v7l | 0;
-      this.v7h = v7h | 0;
-    }
-    compress(msg, offset, isLast) {
-      this.get().forEach((v, i) => BBUF[i] = v);
-      BBUF.set(B2B_IV, 16);
-      let { h, l } = fromBig(BigInt(this.length));
-      BBUF[24] = B2B_IV[8] ^ l;
-      BBUF[25] = B2B_IV[9] ^ h;
-      if (isLast) {
-        BBUF[28] = ~BBUF[28];
-        BBUF[29] = ~BBUF[29];
-      }
-      let j = 0;
-      const s = BSIGMA;
-      for (let i = 0;i < 12; i++) {
-        G1b(0, 4, 8, 12, msg, offset + 2 * s[j++]);
-        G2b(0, 4, 8, 12, msg, offset + 2 * s[j++]);
-        G1b(1, 5, 9, 13, msg, offset + 2 * s[j++]);
-        G2b(1, 5, 9, 13, msg, offset + 2 * s[j++]);
-        G1b(2, 6, 10, 14, msg, offset + 2 * s[j++]);
-        G2b(2, 6, 10, 14, msg, offset + 2 * s[j++]);
-        G1b(3, 7, 11, 15, msg, offset + 2 * s[j++]);
-        G2b(3, 7, 11, 15, msg, offset + 2 * s[j++]);
-        G1b(0, 5, 10, 15, msg, offset + 2 * s[j++]);
-        G2b(0, 5, 10, 15, msg, offset + 2 * s[j++]);
-        G1b(1, 6, 11, 12, msg, offset + 2 * s[j++]);
-        G2b(1, 6, 11, 12, msg, offset + 2 * s[j++]);
-        G1b(2, 7, 8, 13, msg, offset + 2 * s[j++]);
-        G2b(2, 7, 8, 13, msg, offset + 2 * s[j++]);
-        G1b(3, 4, 9, 14, msg, offset + 2 * s[j++]);
-        G2b(3, 4, 9, 14, msg, offset + 2 * s[j++]);
-      }
-      this.v0l ^= BBUF[0] ^ BBUF[16];
-      this.v0h ^= BBUF[1] ^ BBUF[17];
-      this.v1l ^= BBUF[2] ^ BBUF[18];
-      this.v1h ^= BBUF[3] ^ BBUF[19];
-      this.v2l ^= BBUF[4] ^ BBUF[20];
-      this.v2h ^= BBUF[5] ^ BBUF[21];
-      this.v3l ^= BBUF[6] ^ BBUF[22];
-      this.v3h ^= BBUF[7] ^ BBUF[23];
-      this.v4l ^= BBUF[8] ^ BBUF[24];
-      this.v4h ^= BBUF[9] ^ BBUF[25];
-      this.v5l ^= BBUF[10] ^ BBUF[26];
-      this.v5h ^= BBUF[11] ^ BBUF[27];
-      this.v6l ^= BBUF[12] ^ BBUF[28];
-      this.v6h ^= BBUF[13] ^ BBUF[29];
-      this.v7l ^= BBUF[14] ^ BBUF[30];
-      this.v7h ^= BBUF[15] ^ BBUF[31];
-      clean(BBUF);
-    }
-    destroy() {
-      this.destroyed = true;
-      clean(this.buffer32);
-      this.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    }
-  };
-  blake2b = /* @__PURE__ */ createOptHasher((opts) => new BLAKE2b(opts));
-});
-
-// ../../node_modules/@noble/hashes/esm/argon2.js
-function mul(a, b) {
-  const aL = a & 65535;
-  const aH = a >>> 16;
-  const bL = b & 65535;
-  const bH = b >>> 16;
-  const ll = Math.imul(aL, bL);
-  const hl = Math.imul(aH, bL);
-  const lh = Math.imul(aL, bH);
-  const hh = Math.imul(aH, bH);
-  const carry = (ll >>> 16) + (hl & 65535) + lh;
-  const high = hh + (hl >>> 16) + (carry >>> 16) | 0;
-  const low = carry << 16 | ll & 65535;
-  return { h: high, l: low };
-}
-function mul2(a, b) {
-  const { h, l } = mul(a, b);
-  return { h: (h << 1 | l >>> 31) & 4294967295, l: l << 1 & 4294967295 };
-}
-function blamka(Ah, Al, Bh, Bl) {
-  const { h: Ch, l: Cl } = mul2(Al, Bl);
-  const Rll = add3L(Al, Bl, Cl);
-  return { h: add3H(Rll, Ah, Bh, Ch), l: Rll | 0 };
-}
-function G(a, b, c, d) {
-  let Al = A2_BUF[2 * a], Ah = A2_BUF[2 * a + 1];
-  let Bl = A2_BUF[2 * b], Bh = A2_BUF[2 * b + 1];
-  let Cl = A2_BUF[2 * c], Ch = A2_BUF[2 * c + 1];
-  let Dl = A2_BUF[2 * d], Dh = A2_BUF[2 * d + 1];
-  ({ h: Ah, l: Al } = blamka(Ah, Al, Bh, Bl));
-  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
-  ({ Dh, Dl } = { Dh: rotr32H(Dh, Dl), Dl: rotr32L(Dh, Dl) });
-  ({ h: Ch, l: Cl } = blamka(Ch, Cl, Dh, Dl));
-  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
-  ({ Bh, Bl } = { Bh: rotrSH(Bh, Bl, 24), Bl: rotrSL(Bh, Bl, 24) });
-  ({ h: Ah, l: Al } = blamka(Ah, Al, Bh, Bl));
-  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
-  ({ Dh, Dl } = { Dh: rotrSH(Dh, Dl, 16), Dl: rotrSL(Dh, Dl, 16) });
-  ({ h: Ch, l: Cl } = blamka(Ch, Cl, Dh, Dl));
-  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
-  ({ Bh, Bl } = { Bh: rotrBH(Bh, Bl, 63), Bl: rotrBL(Bh, Bl, 63) });
-  A2_BUF[2 * a] = Al, A2_BUF[2 * a + 1] = Ah;
-  A2_BUF[2 * b] = Bl, A2_BUF[2 * b + 1] = Bh;
-  A2_BUF[2 * c] = Cl, A2_BUF[2 * c + 1] = Ch;
-  A2_BUF[2 * d] = Dl, A2_BUF[2 * d + 1] = Dh;
-}
-function P(v00, v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15) {
-  G(v00, v04, v08, v12);
-  G(v01, v05, v09, v13);
-  G(v02, v06, v10, v14);
-  G(v03, v07, v11, v15);
-  G(v00, v05, v10, v15);
-  G(v01, v06, v11, v12);
-  G(v02, v07, v08, v13);
-  G(v03, v04, v09, v14);
-}
-function block(x, xPos, yPos, outPos, needXor) {
-  for (let i = 0;i < 256; i++)
-    A2_BUF[i] = x[xPos + i] ^ x[yPos + i];
-  for (let i = 0;i < 128; i += 16) {
-    P(i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7, i + 8, i + 9, i + 10, i + 11, i + 12, i + 13, i + 14, i + 15);
-  }
-  for (let i = 0;i < 16; i += 2) {
-    P(i, i + 1, i + 16, i + 17, i + 32, i + 33, i + 48, i + 49, i + 64, i + 65, i + 80, i + 81, i + 96, i + 97, i + 112, i + 113);
-  }
-  if (needXor)
-    for (let i = 0;i < 256; i++)
-      x[outPos + i] ^= A2_BUF[i] ^ x[xPos + i] ^ x[yPos + i];
-  else
-    for (let i = 0;i < 256; i++)
-      x[outPos + i] = A2_BUF[i] ^ x[xPos + i] ^ x[yPos + i];
-  clean(A2_BUF);
-}
-function Hp(A, dkLen) {
-  const A8 = u8(A);
-  const T = new Uint32Array(1);
-  const T8 = u8(T);
-  T[0] = dkLen;
-  if (dkLen <= 64)
-    return blake2b.create({ dkLen }).update(T8).update(A8).digest();
-  const out = new Uint8Array(dkLen);
-  let V = blake2b.create({}).update(T8).update(A8).digest();
-  let pos = 0;
-  out.set(V.subarray(0, 32));
-  pos += 32;
-  for (;dkLen - pos > 64; pos += 32) {
-    const Vh = blake2b.create({}).update(V);
-    Vh.digestInto(V);
-    Vh.destroy();
-    out.set(V.subarray(0, 32), pos);
-  }
-  out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
-  clean(V, T);
-  return u32(out);
-}
-function indexAlpha(r, s, laneLen, segmentLen, index, randL, sameLane = false) {
-  let area;
-  if (r === 0) {
-    if (s === 0)
-      area = index - 1;
-    else if (sameLane)
-      area = s * segmentLen + index - 1;
-    else
-      area = s * segmentLen + (index == 0 ? -1 : 0);
-  } else if (sameLane)
-    area = laneLen - segmentLen + index - 1;
-  else
-    area = laneLen - segmentLen + (index == 0 ? -1 : 0);
-  const startPos = r !== 0 && s !== ARGON2_SYNC_POINTS - 1 ? (s + 1) * segmentLen : 0;
-  const rel = area - 1 - mul(area, mul(randL, randL).h).h;
-  return (startPos + rel) % laneLen;
-}
-function isU32(num) {
-  return Number.isSafeInteger(num) && num >= 0 && num < maxUint32;
-}
-function argon2Opts(opts) {
-  const merged = {
-    version: 19,
-    dkLen: 32,
-    maxmem: maxUint32 - 1,
-    asyncTick: 10
-  };
-  for (let [k, v] of Object.entries(opts))
-    if (v != null)
-      merged[k] = v;
-  const { dkLen, p, m, t, version, onProgress } = merged;
-  if (!isU32(dkLen) || dkLen < 4)
-    throw new Error("dkLen should be at least 4 bytes");
-  if (!isU32(p) || p < 1 || p >= Math.pow(2, 24))
-    throw new Error("p should be 1 <= p < 2^24");
-  if (!isU32(m))
-    throw new Error("m should be 0 <= m < 2^32");
-  if (!isU32(t) || t < 1)
-    throw new Error("t (iterations) should be 1 <= t < 2^32");
-  if (onProgress !== undefined && typeof onProgress !== "function")
-    throw new Error("progressCb should be function");
-  if (!isU32(m) || m < 8 * p)
-    throw new Error("memory should be at least 8*p bytes");
-  if (version !== 16 && version !== 19)
-    throw new Error("unknown version=" + version);
-  return merged;
-}
-function argon2Init(password, salt, type, opts) {
-  password = kdfInputToBytes(password);
-  salt = kdfInputToBytes(salt);
-  abytes(password);
-  abytes(salt);
-  if (!isU32(password.length))
-    throw new Error("password should be less than 4 GB");
-  if (!isU32(salt.length) || salt.length < 8)
-    throw new Error("salt should be at least 8 bytes and less than 4 GB");
-  if (!Object.values(AT).includes(type))
-    throw new Error("invalid type");
-  let { p, dkLen, m, t, version, key, personalization, maxmem, onProgress, asyncTick } = argon2Opts(opts);
-  key = abytesOrZero(key);
-  personalization = abytesOrZero(personalization);
-  const h = blake2b.create({});
-  const BUF = new Uint32Array(1);
-  const BUF8 = u8(BUF);
-  for (let item of [p, dkLen, m, t, version, type]) {
-    BUF[0] = item;
-    h.update(BUF8);
-  }
-  for (let i of [password, salt, key, personalization]) {
-    BUF[0] = i.length;
-    h.update(BUF8).update(i);
-  }
-  const H0 = new Uint32Array(18);
-  const H0_8 = u8(H0);
-  h.digestInto(H0_8);
-  const lanes = p;
-  const mP = 4 * p * Math.floor(m / (ARGON2_SYNC_POINTS * p));
-  const laneLen = Math.floor(mP / p);
-  const segmentLen = Math.floor(laneLen / ARGON2_SYNC_POINTS);
-  const memUsed = mP * 256;
-  if (!isU32(maxmem) || memUsed > maxmem)
-    throw new Error("mem should be less than 2**32, got: maxmem=" + maxmem + ", memused=" + memUsed);
-  const B = new Uint32Array(memUsed);
-  for (let l = 0;l < p; l++) {
-    const i = 256 * laneLen * l;
-    H0[17] = l;
-    H0[16] = 0;
-    B.set(Hp(H0, 1024), i);
-    H0[16] = 1;
-    B.set(Hp(H0, 1024), i + 256);
-  }
-  let perBlock = () => {};
-  if (onProgress) {
-    const totalBlock = t * ARGON2_SYNC_POINTS * p * segmentLen;
-    const callbackPer = Math.max(Math.floor(totalBlock / 1e4), 1);
-    let blockCnt = 0;
-    perBlock = () => {
-      blockCnt++;
-      if (onProgress && (!(blockCnt % callbackPer) || blockCnt === totalBlock))
-        onProgress(blockCnt / totalBlock);
-    };
-  }
-  clean(BUF, H0);
-  return { type, mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick };
-}
-function argon2Output(B, p, laneLen, dkLen) {
-  const B_final = new Uint32Array(256);
-  for (let l = 0;l < p; l++)
-    for (let j = 0;j < 256; j++)
-      B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
-  const res = u8(Hp(B_final, dkLen));
-  clean(B_final);
-  return res;
-}
-function processBlock(B, address, l, r, s, index, laneLen, segmentLen, lanes, offset, prev, dataIndependent, needXor) {
-  if (offset % laneLen)
-    prev = offset - 1;
-  let randL, randH;
-  if (dataIndependent) {
-    let i128 = index % 128;
-    if (i128 === 0) {
-      address[256 + 12]++;
-      block(address, 256, 2 * 256, 0, false);
-      block(address, 0, 2 * 256, 0, false);
-    }
-    randL = address[2 * i128];
-    randH = address[2 * i128 + 1];
-  } else {
-    const T = 256 * prev;
-    randL = B[T];
-    randH = B[T + 1];
-  }
-  const refLane = r === 0 && s === 0 ? l : randH % lanes;
-  const refPos = indexAlpha(r, s, laneLen, segmentLen, index, randL, refLane == l);
-  const refBlock = laneLen * refLane + refPos;
-  block(B, 256 * prev, 256 * refBlock, offset * 256, needXor);
-}
-async function argon2Async(type, password, salt, opts) {
-  const { mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick } = argon2Init(password, salt, type, opts);
-  const address = new Uint32Array(3 * 256);
-  address[256 + 6] = mP;
-  address[256 + 8] = t;
-  address[256 + 10] = type;
-  let ts = Date.now();
-  for (let r = 0;r < t; r++) {
-    const needXor = r !== 0 && version === 19;
-    address[256 + 0] = r;
-    for (let s = 0;s < ARGON2_SYNC_POINTS; s++) {
-      address[256 + 4] = s;
-      const dataIndependent = type == AT.Argon2i || type == AT.Argon2id && r === 0 && s < 2;
-      for (let l = 0;l < p; l++) {
-        address[256 + 2] = l;
-        address[256 + 12] = 0;
-        let startPos = 0;
-        if (r === 0 && s === 0) {
-          startPos = 2;
-          if (dataIndependent) {
-            address[256 + 12]++;
-            block(address, 256, 2 * 256, 0, false);
-            block(address, 0, 2 * 256, 0, false);
-          }
-        }
-        let offset = l * laneLen + s * segmentLen + startPos;
-        let prev = offset % laneLen ? offset - 1 : offset + laneLen - 1;
-        for (let index = startPos;index < segmentLen; index++, offset++, prev++) {
-          perBlock();
-          processBlock(B, address, l, r, s, index, laneLen, segmentLen, lanes, offset, prev, dataIndependent, needXor);
-          const diff = Date.now() - ts;
-          if (!(diff >= 0 && diff < asyncTick)) {
-            await nextTick();
-            ts += diff;
-          }
-        }
-      }
-    }
-  }
-  clean(address);
-  return argon2Output(B, p, laneLen, dkLen);
-}
-var AT, ARGON2_SYNC_POINTS = 4, abytesOrZero = (buf) => {
-  if (buf === undefined)
-    return Uint8Array.of();
-  return kdfInputToBytes(buf);
-}, A2_BUF, maxUint32, argon2idAsync = (password, salt, opts) => argon2Async(AT.Argon2id, password, salt, opts);
-var init_argon2 = __esm(() => {
-  init__u64();
-  init_blake2();
-  init_utils();
-  AT = { Argond2d: 0, Argon2i: 1, Argon2id: 2 };
-  A2_BUF = new Uint32Array(256);
-  maxUint32 = Math.pow(2, 32);
-});
-
-// src/vault/canonical-json.ts
-function canonicalJson(value) {
-  return encode(value, "$");
-}
-function canonicalBytes(value) {
-  return new TextEncoder().encode(canonicalJson(value));
-}
-function encode(value, path) {
-  if (value === null)
-    throw new CanonicalJsonError(`null at ${path}: canonical JSON has no nulls`);
-  switch (typeof value) {
-    case "string":
-      return JSON.stringify(value);
-    case "boolean":
-      return value ? "true" : "false";
-    case "number":
-      if (!Number.isInteger(value)) {
-        throw new CanonicalJsonError(`non-integer number at ${path}: canonical JSON carries integers only`);
-      }
-      if (!Number.isSafeInteger(value)) {
-        throw new CanonicalJsonError(`integer at ${path} is outside the safe range`);
-      }
-      if (Object.is(value, -0))
-        throw new CanonicalJsonError(`negative zero at ${path}`);
-      return String(value);
-    case "object":
-      break;
-    default:
-      throw new CanonicalJsonError(`${typeof value} at ${path} cannot appear in canonical JSON`);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item, i) => encode(item, `${path}[${i}]`)).join(",")}]`;
-  }
-  const record = value;
-  const parts = [];
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined)
-      continue;
-    parts.push(`${JSON.stringify(key)}:${encode(child, `${path}.${key}`)}`);
-  }
-  return `{${parts.join(",")}}`;
-}
-var CanonicalJsonError;
-var init_canonical_json = __esm(() => {
-  CanonicalJsonError = class CanonicalJsonError extends Error {
-    constructor(message) {
-      super(message);
-      this.name = "CanonicalJsonError";
-    }
-  };
-});
-
-// src/vault/hygiene.ts
-function wipe(...buffers) {
-  for (const buffer of buffers) {
-    if (buffer)
-      buffer.fill(0);
-  }
-}
-function secretBuffer(length) {
-  const buffer = new Uint8Array(length);
-  registry?.allocated.push(buffer);
-  return buffer;
-}
-function ownSecret(bytes) {
-  registry?.allocated.push(bytes);
-  return bytes;
-}
-async function withSecret(secret, use) {
-  ownSecret(secret);
-  try {
-    return await use(secret);
-  } finally {
-    wipe(secret);
-  }
-}
-var registry = null;
-
-// src/vault/crypto.ts
-function b64u(bytes) {
-  return base64urlnopad.encode(bytes);
-}
-function unb64u(value, field) {
-  if (typeof value !== "string")
-    throw new VaultError("VAULT_UNREADABLE", `${field} is not a string.`);
-  try {
-    return base64urlnopad.decode(value);
-  } catch {
-    throw new VaultError("VAULT_UNREADABLE", `${field} is not base64url.`);
-  }
-}
-function randomBytes2(length) {
-  return crypto.getRandomValues(secretBuffer(length));
-}
-function bytesEqual(a, b) {
-  if (a.length !== b.length)
-    return false;
-  let diff = 0;
-  for (let i = 0;i < a.length; i++)
-    diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
-  return diff === 0;
-}
-function assertKdfInBounds(kdf) {
-  const fail2 = (detail) => {
-    throw new VaultError("VAULT_KDF_OUT_OF_BOUNDS", `The vault's KDF parameters are outside the accepted range: ${detail}`, {
-      suggestion: "This file was not written by this CLI. Nothing was derived and nothing was written."
-    });
-  };
-  if (kdf.name !== "argon2id")
-    fail2(`kdf.name is ${JSON.stringify(kdf.name)}, expected "argon2id"`);
-  if (kdf.version !== ARGON2_BOUNDS.version)
-    fail2(`version ${kdf.version}, expected ${ARGON2_BOUNDS.version}`);
-  for (const [key, bounds] of [
-    ["m", ARGON2_BOUNDS.m],
-    ["t", ARGON2_BOUNDS.t],
-    ["p", ARGON2_BOUNDS.p]
-  ]) {
-    const value = kdf[key];
-    if (!Number.isInteger(value) || value < bounds.min || value > bounds.max) {
-      fail2(`${key} is ${value}, accepted range ${bounds.min} to ${bounds.max}`);
-    }
-  }
-  const salt = unb64u(kdf.salt, "kdf.salt");
-  if (salt.length < ARGON2_BOUNDS.saltBytes.min || salt.length > ARGON2_BOUNDS.saltBytes.max) {
-    fail2(`salt is ${salt.length} bytes, accepted range ${ARGON2_BOUNDS.saltBytes.min} to ${ARGON2_BOUNDS.saltBytes.max}`);
-  }
-}
-function freshArgon2Params() {
-  const salt = crypto.getRandomValues(new Uint8Array(ARGON2_SALT_BYTES));
-  return { name: "argon2id", ...testCostOverride ?? ARGON2_DEFAULTS, salt: b64u(salt) };
-}
-function kekReuseKey(passphrase, kdf) {
-  const inputs = JSON.stringify([passphrase, kdf.salt, kdf.m, kdf.t, kdf.p, kdf.version]);
-  return b64u(sha2562(new TextEncoder().encode(inputs)));
-}
-async function derivePassphraseKek(passphrase, kdf, notice) {
-  assertKdfInBounds(kdf);
-  notice?.(`Deriving the vault key (Argon2id, ${Math.round(kdf.m / 1024)} MiB)
-`);
-  const reuseKey = testKekReuse ? kekReuseKey(passphrase, kdf) : null;
-  const reused = reuseKey ? testKekReuse?.get(reuseKey) : undefined;
-  if (reused)
-    return ownSecret(Uint8Array.from(reused));
-  const salt = unb64u(kdf.salt, "kdf.salt");
-  const kek = await argon2idAsync(passphrase, salt, {
-    t: kdf.t,
-    m: kdf.m,
-    p: kdf.p,
-    version: kdf.version,
-    dkLen: ARGON2_BOUNDS.outputBytes
-  });
-  if (reuseKey)
-    testKekReuse?.set(reuseKey, Uint8Array.from(kek));
-  return ownSecret(kek);
-}
-async function importAesKey(raw) {
-  if (raw.length !== 32)
-    throw new VaultError("VAULT_UNREADABLE", `expected a 32-byte key, got ${raw.length}`);
-  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM", length: 256 }, false, [
-    "encrypt",
-    "decrypt"
-  ]);
-}
-async function derivePayloadKey(dek, vaultId) {
-  const material = await crypto.subtle.importKey("raw", dek, "HKDF", false, ["deriveKey"]);
-  return crypto.subtle.deriveKey({
-    name: "HKDF",
-    hash: "SHA-256",
-    salt: vaultId,
-    info: new TextEncoder().encode("candle-vault/v2/payload")
-  }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-async function derivePrfKek(prfOutput, vaultId) {
-  if (prfOutput.length !== PRF_OUTPUT_BYTES) {
-    throw new VaultError("VAULT_UNLOCK_FAILED", `The security key returned ${prfOutput.length} bytes of hmac-secret output; this factor needs ${PRF_OUTPUT_BYTES}.`);
-  }
-  const material = await crypto.subtle.importKey("raw", prfOutput, "HKDF", false, ["deriveKey"]);
-  return crypto.subtle.deriveKey({
-    name: "HKDF",
-    hash: "SHA-256",
-    salt: vaultId,
-    info: new TextEncoder().encode("candle-vault/v2/prf")
-  }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-async function seal(key, plaintext, aad) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, plaintext);
-  return { iv: b64u(iv), ciphertext: b64u(new Uint8Array(sealed)) };
-}
-async function open3(key, blob, aad, failure) {
-  let plain;
-  try {
-    plain = await crypto.subtle.decrypt({
-      name: "AES-GCM",
-      iv: unb64u(blob.iv, "iv"),
-      additionalData: aad
-    }, key, unb64u(blob.ciphertext, "ciphertext"));
-  } catch {
-    throw new VaultError(failure.code, failure.message, { suggestion: failure.suggestion });
-  }
-  return ownSecret(new Uint8Array(plain));
-}
-async function sealJson(key, value, aad) {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  try {
-    return await seal(key, bytes, aad);
-  } finally {
-    wipe(bytes);
-  }
-}
-var ARGON2_DEFAULTS, ARGON2_SALT_BYTES = 16, KEK_BYTES = 32, DEK_BYTES = 32, ARGON2_BOUNDS, testCostOverride = null, testKekReuse = null, PRF_OUTPUT_BYTES = 32;
-var init_crypto = __esm(() => {
-  init_argon2();
-  init_sha256();
-  init_esm();
-  init_canonical_json();
-  init_errors2();
-  ARGON2_DEFAULTS = { version: 19, m: 65536, t: 3, p: 1 };
-  ARGON2_BOUNDS = {
-    m: { min: 19456, max: 1048576 },
-    t: { min: 2, max: 16 },
-    p: { min: 1, max: 4 },
-    version: 19,
-    saltBytes: { min: 16, max: 64 },
-    outputBytes: 32
-  };
-});
-
-// src/vault/helper-identity.ts
-function isHelperTeamId(value) {
-  return typeof value === "string" && /^[A-Z0-9]{10}$/.test(value);
-}
-function isHelperBundleId(value) {
-  return typeof value === "string" && /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:\.[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)+$/.test(value);
-}
-
-// src/vault/format.ts
-function isPassphraseEnvelope(envelope) {
-  return envelope.factor === "passphrase";
-}
-function isCtap2Envelope(envelope) {
-  return envelope.factor === "passkey-prf" && envelope.transport === "ctap2";
-}
-function isSecureEnclaveEnvelope(envelope) {
-  return envelope.factor === "secure-enclave";
-}
-function isPlatformPasskeyEnvelope(envelope) {
-  return envelope.factor === "passkey-prf" && envelope.transport === "platform-macos";
-}
-function isPrfEnvelope(envelope) {
-  return isCtap2Envelope(envelope) || isPlatformPasskeyEnvelope(envelope);
-}
-function passphraseKdf(envelope) {
-  if (!isPassphraseEnvelope(envelope)) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passphrase one.`);
-  }
-  return envelope.kdf;
-}
-function branchesForVersion(version) {
-  if (version === LEGACY_VAULT_VERSION)
-    return LEGACY_BRANCHES;
-  return version === VAULT_VERSION ? BRANCHES : ALL_BRANCHES;
-}
-function nextIndexOf(hd, branch) {
-  return branch === "evmTee" ? hd.nextIndex.evmTee ?? 0 : hd.nextIndex[branch];
-}
-function exposedIndexesOf(hd, branch) {
-  return branch === "evmTee" ? hd.exposedIndexes.evmTee ?? [] : hd.exposedIndexes[branch];
-}
-function teeNetworkFor(chain2) {
-  return chain2 === "evm" ? "hood-mainnet" : "solana-mainnet";
-}
-function canonicalHeader(file) {
-  const header = {};
-  for (const field of HEADER_FIELDS)
-    header[field] = file[field];
-  return canonicalBytes(header);
-}
-function envelopeAad(file, envelope) {
-  const base = {
-    format: VAULT_FORMAT,
-    version: BLOB_AAD_VERSION,
-    vaultId: file.vaultId,
-    envelopeId: envelope.id,
-    factor: envelope.factor
-  };
-  if (isPassphraseEnvelope(envelope)) {
-    return canonicalBytes({ ...base, kdf: envelope.kdf, strength: envelope.strength });
-  }
-  if (isCtap2Envelope(envelope)) {
-    return canonicalBytes({
-      ...base,
-      transport: envelope.transport,
-      rpId: envelope.rpId,
-      credentialId: envelope.credentialId,
-      prfSalt: envelope.prfSalt,
-      userVerification: envelope.userVerification,
-      backupEligible: envelope.backupEligible,
-      backupState: envelope.backupState,
-      saltDerivation: envelope.saltDerivation
-    });
-  }
-  if (isSecureEnclaveEnvelope(envelope)) {
-    return canonicalBytes({
-      ...base,
-      helper: envelope.helper,
-      publicKey: envelope.publicKey,
-      keyTag: envelope.keyTag,
-      accessControl: envelope.accessControl,
-      kek: envelope.kek
-    });
-  }
-  if (isPlatformPasskeyEnvelope(envelope)) {
-    return canonicalBytes({
-      ...base,
-      transport: envelope.transport,
-      rpId: envelope.rpId,
-      credentialId: envelope.credentialId,
-      prfSalt: envelope.prfSalt,
-      userVerification: envelope.userVerification,
-      backupEligible: envelope.backupEligible,
-      backupState: envelope.backupState,
-      saltDerivation: envelope.saltDerivation,
-      helper: envelope.helper
-    });
-  }
-  throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", `This CLI cannot unwrap a ${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope.`);
-}
-function rootAad(vaultId) {
-  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "root" });
-}
-function keyAad(vaultId, keyId) {
-  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "key", keyId });
-}
-function evmRecordKeyAad(vaultId) {
-  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "evm-record" });
-}
-function refuse(code, message) {
-  throw new VaultError(code, message);
-}
-function parseVaultFile(raw) {
-  let value;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    refuse("VAULT_UNREADABLE", "The vault file is not valid JSON.");
-  }
-  if (!isRecord(value))
-    refuse("VAULT_UNREADABLE", "The vault file is not a JSON object.");
-  if (value.format !== VAULT_FORMAT) {
-    throw new VaultError("VAULT_FORMAT_UNKNOWN", `Not a Candle vault: format is ${JSON.stringify(value.format)}.`);
-  }
-  if (!SUPPORTED_VAULT_VERSIONS.includes(value.version)) {
-    throw new VaultError("VAULT_VERSION_UNSUPPORTED", `Unsupported vault version ${JSON.stringify(value.version)}: this CLI reads versions ${SUPPORTED_VAULT_VERSIONS.join(", ")}.`);
-  }
-  if (value.cipher !== VAULT_CIPHER) {
-    refuse("VAULT_UNREADABLE", `Unsupported cipher ${JSON.stringify(value.cipher)}: this format is ${VAULT_CIPHER}.`);
-  }
-  for (const field of Object.keys(value)) {
-    if (!TOP_LEVEL_FIELDS.includes(field)) {
-      throw new VaultError("VAULT_FIELD_UNKNOWN", `The vault file carries an unknown top-level field: ${field}.`, {
-        suggestion: "A newer CLI may have written it. This CLI refuses rather than dropping a field it cannot honour."
-      });
-    }
-  }
-  if (typeof value.vaultId !== "string")
-    refuse("VAULT_UNREADABLE", "vaultId is missing or not a string.");
-  if (!Number.isInteger(value.generation) || value.generation < 0) {
-    refuse("VAULT_UNREADABLE", "generation is missing or is not a whole number.");
-  }
-  for (const field of ["createdAt", "updatedAt"]) {
-    if (typeof value[field] !== "string")
-      refuse("VAULT_UNREADABLE", `${field} is missing or not a string.`);
-  }
-  if (!Array.isArray(value.envelopes))
-    refuse("VAULT_UNREADABLE", "envelopes is missing or not an array.");
-  if (!Array.isArray(value.keyIds) || value.keyIds.some((id) => typeof id !== "string")) {
-    refuse("VAULT_UNREADABLE", "keyIds is missing or is not an array of strings.");
-  }
-  if (value.version === EVM_TEE_VAULT_VERSION) {
-    if (typeof value.evmRecordPublicKey !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.evmRecordPublicKey)) {
-      refuse("VAULT_UNREADABLE", "evmRecordPublicKey is missing or is not a 32-byte base64url key; a version 4 vault must carry one.");
-    }
-  } else if (value.evmRecordPublicKey !== undefined) {
-    throw new VaultError("VAULT_FIELD_UNKNOWN", `The vault file carries evmRecordPublicKey, which a version ${String(value.version)} vault does not define.`);
-  }
-  if (!isBlob(value.index))
-    refuse("VAULT_UNREADABLE", "index is missing or malformed.");
-  if (!isBlob(value.root)) {
-    throw new VaultError("VAULT_INDEX_INVALID", `The vault has no root blob; every version ${String(value.version)} vault must carry one.`);
-  }
-  if (!Array.isArray(value.keys))
-    refuse("VAULT_UNREADABLE", "keys is missing or not an array.");
-  for (const blob of value.keys) {
-    if (!isRecord(blob) || typeof blob.id !== "string" || !isBlob(blob)) {
-      refuse("VAULT_UNREADABLE", "A key blob is malformed.");
-    }
-  }
-  for (const envelope of value.envelopes) {
-    if (!isRecord(envelope))
-      refuse("VAULT_UNREADABLE", "An envelope is not a JSON object.");
-    for (const field of ["id", "factor", "domain", "label", "createdAt"]) {
-      if (typeof envelope[field] !== "string") {
-        refuse("VAULT_UNREADABLE", `An envelope is missing its ${field}, which every factor carries.`);
-      }
-    }
-    const wrap = envelope.wrap;
-    if (!isBlob(wrap) || wrap.alg !== VAULT_CIPHER) {
-      refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has a malformed wrap.`);
-    }
-    if (envelope.factor === "passphrase") {
-      if (!isRecord(envelope.kdf))
-        refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has no kdf record.`);
-      if (envelope.strength !== "generated-103" && envelope.strength !== "user-chosen") {
-        refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has an unrecognized strength.`);
-      }
-      assertKdfInBounds(envelope.kdf);
-    }
-    if (envelope.factor === "passkey-prf" && envelope.transport === "ctap2") {
-      assertCtap2EnvelopeShape(envelope);
-    }
-    if (envelope.factor === "passkey-prf" && envelope.transport === "platform-macos") {
-      assertPlatformPasskeyEnvelopeShape(envelope);
-    }
-    if (envelope.factor === "secure-enclave") {
-      assertSecureEnclaveEnvelopeShape(envelope);
-    }
-  }
-  const ids = new Set;
-  for (const envelope of value.envelopes) {
-    if (ids.has(envelope.id))
-      refuse("VAULT_UNREADABLE", `Two envelopes share the id ${envelope.id}.`);
-    ids.add(envelope.id);
-  }
-  return value;
-}
-function assertCtap2EnvelopeShape(envelope) {
-  const id = String(envelope.id);
-  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (security key) ${detail}.`);
-  if (envelope.domain !== "hardware-token")
-    bad(`has domain ${JSON.stringify(envelope.domain)}, expected hardware-token`);
-  if (envelope.rpId !== CTAP2_RP_ID)
-    bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`);
-  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "")
-    bad("has no credentialId");
-  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "")
-    bad("has no prfSalt");
-  if (envelope.userVerification !== "required")
-    bad("does not record userVerification: required");
-  if (typeof envelope.backupEligible !== "boolean")
-    bad("has no backupEligible flag");
-  if (typeof envelope.backupState !== "boolean")
-    bad("has no backupState flag");
-  if (envelope.saltDerivation !== "webauthn-prf")
-    bad("does not record saltDerivation: webauthn-prf");
-  if (typeof envelope.aaguid !== "string")
-    bad("has no aaguid");
-  if (typeof envelope.product !== "string")
-    bad("has no product");
-}
-function assertPlatformPasskeyEnvelopeShape(envelope) {
-  const id = String(envelope.id);
-  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (synced passkey) ${detail}.`);
-  if (envelope.domain !== "apple-account")
-    bad(`has domain ${JSON.stringify(envelope.domain)}, expected apple-account`);
-  if (envelope.rpId !== CTAP2_RP_ID)
-    bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`);
-  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "")
-    bad("has no credentialId");
-  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "")
-    bad("has no prfSalt");
-  if (envelope.userVerification !== "required")
-    bad("does not record userVerification: required");
-  if (envelope.backupEligible !== true)
-    bad("does not record backupEligible: true");
-  if (typeof envelope.backupState !== "boolean")
-    bad("has no backupState flag");
-  if (envelope.saltDerivation !== "platform")
-    bad("does not record saltDerivation: platform");
-  const helper = envelope.helper;
-  if (!isRecord(helper)) {
-    bad("has no helper record");
-    return;
-  }
-  if (!isHelperTeamId(helper.teamId))
-    bad("has an invalid helper.teamId");
-  if (!isHelperBundleId(helper.bundleId))
-    bad("has an invalid helper.bundleId");
-  if (typeof helper.minVersion !== "string" || helper.minVersion === "")
-    bad("has no helper.minVersion");
-}
-function assertSecureEnclaveEnvelopeShape(envelope) {
-  const id = String(envelope.id);
-  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (Secure Enclave) ${detail}.`);
-  if (envelope.domain !== "this-device")
-    bad(`has domain ${JSON.stringify(envelope.domain)}, expected this-device`);
-  const helper = envelope.helper;
-  if (!isRecord(helper)) {
-    bad("has no helper record");
-    return;
-  }
-  if (!isHelperTeamId(helper.teamId))
-    bad("has an invalid helper.teamId");
-  if (!isHelperBundleId(helper.bundleId))
-    bad("has an invalid helper.bundleId");
-  if (typeof helper.minVersion !== "string" || helper.minVersion === "")
-    bad("has no helper.minVersion");
-  if (typeof envelope.publicKey !== "string" || envelope.publicKey === "")
-    bad("has no publicKey");
-  if (typeof envelope.keyTag !== "string" || envelope.keyTag === "")
-    bad("has no keyTag");
-  if (envelope.accessControl !== "biometryCurrentSet")
-    bad("does not record accessControl: biometryCurrentSet");
-  const kek = envelope.kek;
-  if (!isRecord(kek)) {
-    bad("has no kek record");
-    return;
-  }
-  if (kek.alg !== SECURE_ENCLAVE_KEK_ALG)
-    bad(`has kek.alg ${JSON.stringify(kek.alg)}, expected ${SECURE_ENCLAVE_KEK_ALG}`);
-  if (typeof kek.ciphertext !== "string" || kek.ciphertext === "")
-    bad("has no kek.ciphertext");
-}
-function assertKeyIdsAgree(file) {
-  const declared = new Set(file.keyIds);
-  const present = new Set(file.keys.map((blob) => blob.id));
-  const missing = [...declared].filter((id) => !present.has(id));
-  const extra = [...present].filter((id) => !declared.has(id));
-  if (missing.length === 0 && extra.length === 0)
-    return;
-  throw new VaultError("VAULT_INDEX_INVALID", `The vault's keyIds and key blobs disagree: ${missing.length} declared blob(s) absent, ${extra.length} undeclared blob(s) present.`);
-}
-function parseIndexPlaintext(bytes, version = LEGACY_VAULT_VERSION) {
-  let value;
-  try {
-    value = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    refuse("VAULT_INDEX_INVALID", "The vault index is not valid JSON.");
-  }
-  if (!isRecord(value))
-    refuse("VAULT_INDEX_INVALID", "The vault index is not a JSON object.");
-  for (const field of Object.keys(value)) {
-    if (field === "evmRecordKey" && version === EVM_TEE_VAULT_VERSION)
-      continue;
-    if (field !== "hd" && field !== "entries")
-      refuse("VAULT_INDEX_INVALID", `The index carries an unknown field: ${field}.`);
-  }
-  if (version === EVM_TEE_VAULT_VERSION && !isBlob(value.evmRecordKey)) {
-    refuse("VAULT_INDEX_INVALID", "A version 4 index must carry the sealed EVM record's key (evmRecordKey).");
-  }
-  const hd = parseHd(value.hd, version);
-  if (!Array.isArray(value.entries))
-    refuse("VAULT_INDEX_INVALID", "The index has no entries array.");
-  const entries = value.entries.map((entry) => parseEntry(entry, version));
-  const seen = new Set;
-  for (const entry of entries) {
-    if (seen.has(entry.id))
-      refuse("VAULT_INDEX_INVALID", `Two index entries share the id ${entry.id}.`);
-    seen.add(entry.id);
-  }
-  for (const entry of entries) {
-    if (entry.derivation === undefined)
-      continue;
-    const located = branchOfPath(entry.derivation.path);
-    if (located === undefined)
-      continue;
-    if (nextIndexOf(hd, located.branch) <= located.index) {
-      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${located.branch} is ${nextIndexOf(hd, located.branch)}, at or below the index ${located.index} that entry ${entry.id} already derives.`);
-    }
-  }
-  return { hd, entries, ...version === EVM_TEE_VAULT_VERSION ? { evmRecordKey: value.evmRecordKey } : {} };
-}
-function indexRequiresVersion4(index) {
-  if (index.evmRecordKey !== undefined)
-    return true;
-  if (index.entries.some((entry) => entry.chain === "evm" && entry.role === "tee-wallet"))
-    return true;
-  if (nextIndexOf(index.hd, "evmTee") > 0)
-    return true;
-  return exposedIndexesOf(index.hd, "evmTee").length > 0;
-}
-function indexRequiresVersion3(index) {
-  if (index.entries.some((entry) => entry.role === "external"))
-    return true;
-  if (index.hd.nextIndex.solanaExternal > 0)
-    return true;
-  if (index.hd.exposedIndexes.solanaExternal.length > 0)
-    return true;
-  const discovery = index.hd.discovery;
-  if (discovery === undefined)
-    return false;
-  return discovery.requestedCounts.solanaExternal !== 0 || discovery.highestMatched.solanaExternal !== -1;
-}
-function serializeIndexPlaintext(index, version) {
-  if (version === EVM_TEE_VAULT_VERSION) {
-    if (index.evmRecordKey === undefined) {
-      throw new VaultError("VAULT_INDEX_INVALID", "A version 4 index must carry the sealed EVM record's key.");
-    }
-    return {
-      ...index,
-      hd: {
-        ...index.hd,
-        nextIndex: { ...index.hd.nextIndex, evmTee: nextIndexOf(index.hd, "evmTee") },
-        exposedIndexes: { ...index.hd.exposedIndexes, evmTee: exposedIndexesOf(index.hd, "evmTee") }
-      }
-    };
-  }
-  if (indexRequiresVersion4(index)) {
-    throw new VaultError("VAULT_INDEX_INVALID", `This index carries an EVM TEE wallet and cannot be written as a version ${version} vault.`);
-  }
-  const { evmTee: _nextEvmTee, ...nextIndexV3 } = index.hd.nextIndex;
-  const { evmTee: _exposedEvmTee, ...exposedV3 } = index.hd.exposedIndexes;
-  if (version === VAULT_VERSION) {
-    if (index.hd.nextIndex.evmTee === undefined && index.hd.exposedIndexes.evmTee === undefined)
-      return index;
-    return { hd: { ...index.hd, nextIndex: nextIndexV3, exposedIndexes: exposedV3 }, entries: index.entries };
-  }
-  if (indexRequiresVersion3(index)) {
-    throw new VaultError("VAULT_INDEX_INVALID", "This index carries the external branch and cannot be written as a version 2 vault.");
-  }
-  const { solanaExternal: _nextExternal, ...nextIndex } = nextIndexV3;
-  const { solanaExternal: _exposedExternal, ...exposedIndexes } = exposedV3;
-  const hd = { ...index.hd, nextIndex, exposedIndexes };
-  if (index.hd.discovery !== undefined) {
-    const { solanaExternal: _requested, ...requestedCounts } = index.hd.discovery.requestedCounts;
-    const { solanaExternal: _matched, ...highestMatched } = index.hd.discovery.highestMatched;
-    hd.discovery = { ...index.hd.discovery, requestedCounts, highestMatched };
-  }
-  return { hd, entries: index.entries };
-}
-function parseHd(value, version) {
-  if (!isRecord(value))
-    refuse("VAULT_INDEX_INVALID", "The index has no hd record.");
-  for (const field of Object.keys(value)) {
-    const allowed = [
-      "scheme",
-      "nextIndex",
-      "rootExported",
-      "rootExportedAt",
-      "exposureReconciledAt",
-      "exposedIndexes",
-      "discovery"
-    ];
-    if (!allowed.includes(field))
-      refuse("VAULT_INDEX_INVALID", `hd carries an unknown field: ${field}.`);
-  }
-  if (value.scheme !== "bip39-24/slip10")
-    refuse("VAULT_INDEX_INVALID", `hd.scheme is ${JSON.stringify(value.scheme)}.`);
-  if (typeof value.rootExported !== "boolean")
-    refuse("VAULT_INDEX_INVALID", "hd.rootExported is not a boolean.");
-  const counters = value.nextIndex;
-  if (!isRecord(counters))
-    refuse("VAULT_INDEX_INVALID", "hd.nextIndex is missing.");
-  const exposed = value.exposedIndexes;
-  if (!isRecord(exposed))
-    refuse("VAULT_INDEX_INVALID", "hd.exposedIndexes is missing.");
-  const nextIndex = {};
-  const exposedIndexes = {};
-  const onDisk = branchesForVersion(version);
-  for (const field of Object.keys(counters)) {
-    if (!onDisk.includes(field)) {
-      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${field} is not a branch a version ${version} vault carries.`);
-    }
-  }
-  for (const field of Object.keys(exposed)) {
-    if (!onDisk.includes(field)) {
-      refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${field} is not a branch a version ${version} vault carries.`);
-    }
-  }
-  for (const branch of ALL_BRANCHES) {
-    if (!onDisk.includes(branch)) {
-      if (branch === "evmTee")
-        continue;
-      nextIndex[branch] = 0;
-      exposedIndexes[branch] = [];
-      continue;
-    }
-    const counter = counters[branch];
-    if (!Number.isInteger(counter) || counter < 0) {
-      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${branch} is missing or is not a whole number.`);
-    }
-    nextIndex[branch] = counter;
-    const list = exposed[branch];
-    if (!Array.isArray(list) || list.some((n) => !Number.isInteger(n) || n < 0)) {
-      refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${branch} is missing or is not a list of whole numbers.`);
-    }
-    exposedIndexes[branch] = [...list].sort((a, b) => a - b);
-  }
-  let discovery;
-  if (value.discovery !== undefined) {
-    const record = value.discovery;
-    if (!isRecord(record))
-      refuse("VAULT_INDEX_INVALID", "hd.discovery is not an object.");
-    if (record.complete !== false) {
-      refuse("VAULT_INDEX_INVALID", "hd.discovery.complete is not false; no command ever writes it true.");
-    }
-    if (typeof record.restoredAt !== "string" || typeof record.account !== "string") {
-      refuse("VAULT_INDEX_INVALID", "hd.discovery is missing restoredAt or account.");
-    }
-    const parsedCounts = {};
-    for (const field of ["requestedCounts", "highestMatched"]) {
-      const counts = record[field];
-      if (!isRecord(counts) || !Number.isInteger(counts.solanaVault) || !Number.isInteger(counts.solanaTee)) {
-        refuse("VAULT_INDEX_INVALID", `hd.discovery.${field} is missing or malformed.`);
-      }
-      if (onDisk.includes("solanaExternal")) {
-        if (!Number.isInteger(counts.solanaExternal)) {
-          refuse("VAULT_INDEX_INVALID", `hd.discovery.${field}.solanaExternal is missing or malformed.`);
-        }
-      } else if (counts.solanaExternal !== undefined) {
-        refuse("VAULT_INDEX_INVALID", `hd.discovery.${field}.solanaExternal is not a field a version 2 vault carries.`);
-      }
-      parsedCounts[field] = {
-        solanaVault: counts.solanaVault,
-        solanaTee: counts.solanaTee,
-        solanaExternal: onDisk.includes("solanaExternal") ? counts.solanaExternal : field === "requestedCounts" ? 0 : -1
-      };
-    }
-    discovery = {
-      ...record,
-      requestedCounts: parsedCounts.requestedCounts,
-      highestMatched: parsedCounts.highestMatched
-    };
-  }
-  return {
-    scheme: "bip39-24/slip10",
-    nextIndex,
-    rootExported: value.rootExported,
-    ...typeof value.rootExportedAt === "string" ? { rootExportedAt: value.rootExportedAt } : {},
-    ...typeof value.exposureReconciledAt === "string" ? { exposureReconciledAt: value.exposureReconciledAt } : {},
-    exposedIndexes,
-    ...discovery ? { discovery } : {}
-  };
-}
-function parseEntry(value, version) {
-  if (!isRecord(value))
-    refuse("VAULT_INDEX_INVALID", "An index entry is not a JSON object.");
-  for (const field of Object.keys(value)) {
-    if (!KEY_ENTRY_FIELDS.includes(field)) {
-      refuse("VAULT_INDEX_INVALID", `An index entry carries a field this format does not define: ${field}.`);
-    }
-  }
-  for (const field of ["id", "address", "label", "createdAt"]) {
-    if (typeof value[field] !== "string")
-      refuse("VAULT_INDEX_INVALID", `An index entry is missing its ${field}.`);
-  }
-  if (value.chain !== "solana" && value.chain !== "evm") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized chain.`);
-  }
-  if (value.curve !== "ed25519" && value.curve !== "secp256k1") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized curve.`);
-  }
-  if (value.role !== "vault" && value.role !== "tee-wallet" && value.role !== "external") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized role.`);
-  }
-  if (value.role === "external" && version === LEGACY_VAULT_VERSION) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is role:external, which a version 2 vault cannot carry.`);
-  }
-  if (value.chain === "evm" && value.role === "tee-wallet" && version !== EVM_TEE_VAULT_VERSION) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is an EVM TEE wallet, which only a version 4 vault carries.`);
-  }
-  if (value.origin !== "derived" && value.origin !== "migrated-tee") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized origin.`);
-  }
-  if (value.origin === "derived" && value.derivation === undefined) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is derived but records no derivation.`);
-  }
-  if (value.origin === "migrated-tee" && value.derivation !== undefined) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is migrated-tee and must not record a derivation.`);
-  }
-  if (value.derivation !== undefined) {
-    const derivation = value.derivation;
-    if (!isRecord(derivation) || derivation.scheme !== "slip10-ed25519" && derivation.scheme !== "bip32-secp256k1" || typeof derivation.path !== "string") {
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed derivation.`);
-    }
-    for (const field of Object.keys(derivation)) {
-      if (field !== "scheme" && field !== "path") {
-        refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s derivation carries an unknown field: ${field}.`);
-      }
-    }
-  }
-  const exposure = value.exposure;
-  if (!isRecord(exposure) || typeof exposure.everRemoteExposed !== "boolean" || typeof exposure.everExported !== "boolean") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed exposure record.`);
-  }
-  for (const field of Object.keys(exposure)) {
-    if (!["everRemoteExposed", "everExported", "exposureUnknown"].includes(field)) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s exposure carries an unknown field: ${field}.`);
-    }
-  }
-  if (exposure.exposureUnknown !== undefined && typeof exposure.exposureUnknown !== "boolean") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s exposureUnknown is not a boolean.`);
-  }
-  if (value.linkedWalletId !== undefined && typeof value.linkedWalletId !== "string") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed linkedWalletId.`);
-  }
-  if (value.role === "vault" || value.role === "external") {
-    const what = value.role === "vault" ? "a vault key" : "an external key";
-    if (value.tee !== undefined)
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is ${what} carrying tee metadata.`);
-    if (value.linkedWalletId !== undefined) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is ${what} carrying a linkedWalletId.`);
-    }
-    if (value.role === "external" && value.origin !== "derived") {
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is an external key that is not derived.`);
-    }
-  } else {
-    if (value.tee === undefined)
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is a TEE wallet with no tee metadata.`);
-    parseTee(value.tee, value);
-  }
-  return value;
-}
-function parseTee(value, entry) {
-  const id = entry.id;
-  if (!isRecord(value))
-    refuse("VAULT_INDEX_INVALID", `Entry ${id} has malformed tee metadata.`);
-  for (const field of Object.keys(value)) {
-    if (!TEE_FIELDS.includes(field))
-      refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee metadata carries an unknown field: ${field}.`);
-  }
-  if (value.lifecycle === undefined)
-    refuse("VAULT_INDEX_INVALID", `Entry ${id} has no tee.lifecycle.`);
-  if (value.network !== undefined) {
-    const expected = entry.chain === "evm" ? "hood-mainnet" : "solana-mainnet";
-    if (value.network !== expected) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${id} is a ${entry.chain} key with tee.network ${JSON.stringify(value.network)}.`);
-    }
-  }
-  if (TEE_REMOTE_STATES.includes(value.lifecycle) && !TEE_LIFECYCLES.includes(value.lifecycle)) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.lifecycle is ${JSON.stringify(value.lifecycle)}, which is a remoteState observation and never a lifecycle value.`);
-  }
-  if (!TEE_LIFECYCLES.includes(value.lifecycle)) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.lifecycle is ${JSON.stringify(value.lifecycle)}, which is not one of the five values.`);
-  }
-  if (value.remoteState !== undefined && !TEE_REMOTE_STATES.includes(value.remoteState)) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.remoteState is not one of SC-03's words.`);
-  }
-  if (value.grantIdentity !== undefined) {
-    const grant = value.grantIdentity;
-    if (!isRecord(grant) || typeof grant.account !== "string" || typeof grant.apiBaseUrl !== "string" || grant.source !== "operator-asserted" && grant.source !== "recorded-at-operation") {
-      refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.grantIdentity is malformed.`);
-    }
-  }
-  const rule = LIFECYCLE_TABLE[value.lifecycle];
-  for (const field of rule.tee) {
-    if (value[field] === undefined) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must record tee.${field}.`);
-    }
-  }
-  for (const field of rule.entry) {
-    if (entry[field] === undefined) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must record ${field}.`);
-    }
-  }
-  for (const field of rule.forbiddenEntry) {
-    if (entry[field] !== undefined) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must not carry ${field}.`);
-    }
-  }
-}
-function branchOfPath(path) {
-  let match = /^m\/44'\/501'\/(\d+)'\/0'$/.exec(path);
-  if (match?.[1] !== undefined)
-    return { branch: "solanaVault", index: Number(match[1]) };
-  match = /^m\/44'\/501'\/(\d+)'\/1'$/.exec(path);
-  if (match?.[1] !== undefined)
-    return { branch: "solanaTee", index: Number(match[1]) };
-  match = /^m\/44'\/501'\/(\d+)'\/2'$/.exec(path);
-  if (match?.[1] !== undefined)
-    return { branch: "solanaExternal", index: Number(match[1]) };
-  match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path);
-  if (match?.[1] !== undefined)
-    return { branch: "evm", index: Number(match[1]) };
-  match = /^m\/44'\/60'\/(\d+)'\/1'\/0'$/.exec(path);
-  if (match?.[1] !== undefined)
-    return { branch: "evmTee", index: Number(match[1]) };
-  return;
-}
-var VAULT_FORMAT = "candle-vault", VAULT_VERSION = 3, LEGACY_VAULT_VERSION = 2, EVM_TEE_VAULT_VERSION = 4, SUPPORTED_VAULT_VERSIONS, BLOB_AAD_VERSION = 2, VAULT_CIPHER = "AES-256-GCM", CTAP2_RP_ID = "cli.candle.tv", SECURE_ENCLAVE_KEK_ALG = "ECIES-P256-SHA256-AESGCM", NON_HEADER_FIELDS, HEADER_FIELDS, TOP_LEVEL_FIELDS, ALL_BRANCHES, BRANCHES, LEGACY_BRANCHES, TEE_LIFECYCLES, TEE_REMOTE_STATES, KEY_ENTRY_FIELDS, LIFECYCLE_TABLE, isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value), isBlob = (value) => isRecord(value) && typeof value.iv === "string" && typeof value.ciphertext === "string", TEE_FIELDS;
-var init_format = __esm(() => {
-  init_crypto();
-  init_errors2();
-  SUPPORTED_VAULT_VERSIONS = [
-    LEGACY_VAULT_VERSION,
-    VAULT_VERSION,
-    EVM_TEE_VAULT_VERSION
-  ];
-  NON_HEADER_FIELDS = ["index", "root", "keys"];
-  HEADER_FIELDS = [
-    "format",
-    "version",
-    "vaultId",
-    "generation",
-    "createdAt",
-    "updatedAt",
-    "cipher",
-    "envelopes",
-    "keyIds",
-    "evmRecordPublicKey"
-  ];
-  TOP_LEVEL_FIELDS = [...HEADER_FIELDS, ...NON_HEADER_FIELDS];
-  ALL_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal", "evm", "evmTee"];
-  BRANCHES = ["solanaVault", "solanaTee", "solanaExternal", "evm"];
-  LEGACY_BRANCHES = ["solanaVault", "solanaTee", "evm"];
-  TEE_LIFECYCLES = ["local-candidate", "import-pending", "enabled", "stranded", "retired"];
-  TEE_REMOTE_STATES = [
-    "local-only",
-    "enabling",
-    "enabled",
-    "disable-pending",
-    "quarantined",
-    "swept"
-  ];
-  KEY_ENTRY_FIELDS = [
-    "id",
-    "chain",
-    "curve",
-    "address",
-    "label",
-    "createdAt",
-    "role",
-    "origin",
-    "derivation",
-    "exposure",
-    "linkedWalletId",
-    "tee"
-  ];
-  LIFECYCLE_TABLE = {
-    "local-candidate": { tee: ["network"], entry: [], forbiddenEntry: ["linkedWalletId"] },
-    "import-pending": { tee: ["network"], entry: [], forbiddenEntry: ["linkedWalletId"] },
-    enabled: { tee: ["network", "grantIdentity", "vaultDestination"], entry: ["linkedWalletId"], forbiddenEntry: [] },
-    stranded: { tee: ["network", "grantIdentity"], entry: [], forbiddenEntry: ["linkedWalletId"] },
-    retired: { tee: ["network", "vaultDestination"], entry: [], forbiddenEntry: [] }
-  };
-  TEE_FIELDS = [
-    "network",
-    "vaultDestination",
-    "boundKeyPrefix",
-    "remoteAuthority",
-    "enabledAt",
-    "stopRequestedAt",
-    "sweepReceipts",
-    "sweepPending",
-    "sweptAt",
-    "lifecycle",
-    "grantIdentity",
-    "promotedInPlaceAt",
-    "fundingReceipts",
-    "destinationExposureAccepted",
-    "remoteState"
-  ];
-});
-
 // src/vault/signer-roles.ts
 function tokenMintFilters(key) {
   return [{ dataSize: 82 }, memcmp(4, key)];
 }
 function tokenFreezeFilters(key) {
-  return [{ dataSize: 82 }, memcmp(46, concat3(COPTION_SOME_U32, key))];
+  return [{ dataSize: 82 }, memcmp(46, concat4(COPTION_SOME_U32, key))];
 }
 function token2022MintFilters(key) {
   const authority = memcmp(4, key);
@@ -16358,7 +17386,7 @@ function token2022MintFilters(key) {
   ];
 }
 function token2022FreezeFilters(key) {
-  const authority = memcmp(46, concat3(COPTION_SOME_U32, key));
+  const authority = memcmp(46, concat4(COPTION_SOME_U32, key));
   return [
     [{ dataSize: 82 }, authority],
     [memcmp(165, TOKEN_2022_MINT_ACCOUNT_TYPE), authority]
@@ -16368,7 +17396,7 @@ function keepSetAuthority(hits) {
   return hits.filter((hit) => hit.data.length === COPTION_SOME_U32.length && hit.data.every((byte, i) => byte === COPTION_SOME_U32[i])).map((hit) => hit.pubkey);
 }
 function programUpgradeFilters(key) {
-  return [memcmp(0, LOADER_PROGRAM_DATA_TAG), memcmp(12, concat3(COPTION_SOME_U8, key))];
+  return [memcmp(0, LOADER_PROGRAM_DATA_TAG), memcmp(12, concat4(COPTION_SOME_U8, key))];
 }
 function programIdFilters(programData) {
   return [memcmp(0, LOADER_PROGRAM_TAG), memcmp(4, programData)];
@@ -16718,7 +17746,7 @@ function authoritiesJson(result) {
     found: result.found.map(({ address, role, target, program }) => ({ address, role, target, program }))
   };
 }
-var BPF_UPGRADEABLE_LOADER_ID = "BPFLoaderUpgradeab1e11111111111111111111111", STAKE_PROGRAM_ID = "Stake11111111111111111111111111111111111111", ROLE_GROUP_IDS, PAGINATED_TOKEN_GROUPS, RPC_PAGINATION_REQUIRED = -32600, MAX_V2_PAGES = 10, RPC_METHOD_NOT_FOUND = -32601, REQUESTS_PER_KEY = 9, b64 = (bytes) => base64.encode(bytes), concat3 = (...parts) => {
+var BPF_UPGRADEABLE_LOADER_ID = "BPFLoaderUpgradeab1e11111111111111111111111", STAKE_PROGRAM_ID = "Stake11111111111111111111111111111111111111", ROLE_GROUP_IDS, PAGINATED_TOKEN_GROUPS, RPC_PAGINATION_REQUIRED = -32600, MAX_V2_PAGES = 10, RPC_METHOD_NOT_FOUND = -32601, REQUESTS_PER_KEY = 9, b642 = (bytes) => base64.encode(bytes), concat4 = (...parts) => {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let at = 0;
   for (const part of parts) {
@@ -16727,7 +17755,7 @@ var BPF_UPGRADEABLE_LOADER_ID = "BPFLoaderUpgradeab1e11111111111111111111111", S
   }
   return out;
 }, COPTION_SOME_U32, COPTION_SOME_U8, LOADER_PROGRAM_DATA_TAG, LOADER_PROGRAM_TAG, TOKEN_2022_MINT_ACCOUNT_TYPE, memcmp = (offset, bytes) => ({
-  memcmp: { offset, bytes: b64(bytes), encoding: "base64" }
+  memcmp: { offset, bytes: b642(bytes), encoding: "base64" }
 }), MINT_AUTHORITY_TAG_SLICE, ROLE_GROUPS, PROGRAM_LABELS, NOT_CHECKED_LINE = "Not checked: multisig membership, Token-2022 extension authorities, metadata update authority.", thousands = (n) => n.toLocaleString("en-US");
 var init_signer_roles = __esm(() => {
   init_esm();
@@ -17921,909 +18949,6 @@ var init_token_2022 = __esm(() => {
   };
 });
 
-// src/wallet-keystore.ts
-import { chmod as chmod2, mkdir as mkdir3, readFile as readFile3, rename as rename3, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
-import { dirname as dirname2, join as join4 } from "node:path";
-function defaultTeeKeystorePath(env, home) {
-  return join4(candleConfigDir(env, home), "tee-wallets.enc");
-}
-function legacyTeeKeystorePath(env, home) {
-  return join4(candleConfigDir(env, home), "hot-wallets.enc");
-}
-async function deriveKeystoreKey(passphrase, salt, iterations) {
-  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
-    "deriveKey"
-  ]);
-  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-async function createKeystore(passphrase) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
-}
-async function serializeKeystore(entries, key, salt, iterations, purpose) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
-  const file = {
-    version: KEYSTORE_VERSION,
-    createdAt: new Date().toISOString(),
-    kdf: "PBKDF2-HMAC-SHA256",
-    iterations,
-    salt: b642(salt),
-    cipher: "AES-256-GCM",
-    iv: b642(iv),
-    ciphertext: b642(new Uint8Array(sealed)),
-    ...purpose !== undefined && purpose !== "wallets" ? { purpose } : {}
-  };
-  return `${JSON.stringify(file, null, 2)}
-`;
-}
-async function readKeystore(raw, passphrase, opts = {}) {
-  let file;
-  try {
-    file = JSON.parse(raw);
-  } catch {
-    throw new Error("The keystore file is not valid JSON.");
-  }
-  if (file.version !== KEYSTORE_VERSION) {
-    throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
-  }
-  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
-  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
-    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
-  }
-  if (purpose === TEE_KEYSTORE_PURPOSE) {
-    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
-      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
-    }
-    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
-      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
-    }
-  }
-  const salt = unb64(file.salt);
-  const key = await deriveKeystoreKey(passphrase, salt, file.iterations);
-  let plain;
-  try {
-    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(file.iv) }, key, unb64(file.ciphertext));
-  } catch {
-    throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
-  }
-  const decoded = JSON.parse(new TextDecoder().decode(plain));
-  return {
-    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
-    key,
-    salt,
-    iterations: file.iterations
-  };
-}
-async function writeKeystoreFile(path, contents) {
-  const dir = dirname2(path);
-  const created = await mkdir3(dir, { recursive: true });
-  if (created !== undefined)
-    await chmod2(dir, 448).catch(() => {});
-  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
-  await writeFile3(tmpPath, contents, { encoding: "utf8", mode: 384 });
-  await chmod2(tmpPath, 384);
-  await rename3(tmpPath, path);
-}
-function keystoreLockPath(path) {
-  return `${path}.lock`;
-}
-async function withKeystoreLock(path, clock, fn, opts = {}) {
-  const lockPath = keystoreLockPath(path);
-  const waitMs = opts.waitMs ?? 1e4;
-  const pollMs = opts.pollMs ?? 100;
-  await mkdir3(dirname2(path), { recursive: true });
-  const started = clock.now();
-  for (;; ) {
-    try {
-      await mkdir3(lockPath);
-      break;
-    } catch (error) {
-      if (error?.code !== "EEXIST")
-        throw error;
-      if (clock.now() - started >= waitMs) {
-        let owner = null;
-        try {
-          owner = (await readFile3(join4(lockPath, "owner"), "utf8")).trim() || null;
-        } catch {
-          owner = null;
-        }
-        throw new KeystoreLockedError(lockPath, owner);
-      }
-      await clock.sleep(pollMs);
-    }
-  }
-  try {
-    await writeFile3(join4(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
-`, { encoding: "utf8", mode: 384 }).catch(() => {});
-    return await fn();
-  } finally {
-    await rm2(lockPath, { recursive: true, force: true });
-  }
-}
-var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, KEYSTORE_ITERATIONS = 210000, b642 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
-var init_wallet_keystore = __esm(() => {
-  init_store();
-  KeystoreLockedError = class KeystoreLockedError extends Error {
-    lockPath;
-    owner;
-    constructor(lockPath, owner) {
-      super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
-      this.lockPath = lockPath;
-      this.owner = owner;
-      this.name = "KeystoreLockedError";
-    }
-  };
-});
-
-// ../../node_modules/@noble/hashes/esm/hkdf.js
-function extract(hash, ikm, salt) {
-  ahash(hash);
-  if (salt === undefined)
-    salt = new Uint8Array(hash.outputLen);
-  return hmac(hash, toBytes(salt), toBytes(ikm));
-}
-function expand(hash, prk, info, length = 32) {
-  ahash(hash);
-  anumber(length);
-  const olen = hash.outputLen;
-  if (length > 255 * olen)
-    throw new Error("Length should be <= 255*HashLen");
-  const blocks = Math.ceil(length / olen);
-  if (info === undefined)
-    info = EMPTY_BUFFER;
-  const okm = new Uint8Array(blocks * olen);
-  const HMAC2 = hmac.create(hash, prk);
-  const HMACTmp = HMAC2._cloneInto();
-  const T = new Uint8Array(HMAC2.outputLen);
-  for (let counter = 0;counter < blocks; counter++) {
-    HKDF_COUNTER[0] = counter + 1;
-    HMACTmp.update(counter === 0 ? EMPTY_BUFFER : T).update(info).update(HKDF_COUNTER).digestInto(T);
-    okm.set(T, olen * counter);
-    HMAC2._cloneInto(HMACTmp);
-  }
-  HMAC2.destroy();
-  HMACTmp.destroy();
-  clean(T, HKDF_COUNTER);
-  return okm.slice(0, length);
-}
-var HKDF_COUNTER, EMPTY_BUFFER, hkdf = (hash, ikm, salt, info, length) => expand(hash, extract(hash, ikm, salt), info, length);
-var init_hkdf = __esm(() => {
-  init_hmac();
-  init_utils();
-  HKDF_COUNTER = /* @__PURE__ */ Uint8Array.from([0]);
-  EMPTY_BUFFER = /* @__PURE__ */ Uint8Array.of();
-});
-
-// src/vault/evm-record-key.ts
-async function createEvmRecordKey(payloadKey, vaultId) {
-  const secret = x25519.utils.randomPrivateKey();
-  try {
-    const publicKey = x25519.getPublicKey(secret);
-    const blob = await seal(payloadKey, secret, evmRecordKeyAad(vaultId));
-    return { publicKey: b64u(publicKey), blob };
-  } finally {
-    wipe(secret);
-  }
-}
-async function openEvmRecordKey(payloadKey, vaultId, blob, headerPublicKey) {
-  const secret = await open3(payloadKey, blob, evmRecordKeyAad(vaultId), {
-    code: "VAULT_BLOB_TAMPERED",
-    message: "The sealed EVM record's key failed its authentication tag.",
-    suggestion: "Nothing was written. Restore the file from a verified backup."
-  });
-  if (secret.length !== EVM_RECORD_KEY_BYTES) {
-    wipe(secret);
-    throw new VaultError("VAULT_INDEX_INVALID", "The sealed EVM record's key is the wrong length.");
-  }
-  const derived = x25519.getPublicKey(secret);
-  if (!bytesEqual(derived, unb64u(headerPublicKey, "evmRecordPublicKey"))) {
-    wipe(secret);
-    throw new VaultError("VAULT_INDEX_INVALID", "The sealed EVM record's key does not derive the header's evmRecordPublicKey; the pair was altered.", { suggestion: "Nothing was written. Restore the file from a verified backup." });
-  }
-  return secret;
-}
-function entryJson(entry) {
-  return entry.kind === "token" ? JSON.stringify({ kind: "token", wallet: entry.wallet, token: entry.token }) : JSON.stringify({ kind: "scanStart", wallet: entry.wallet, block: entry.block });
-}
-function paddedEntry(entry) {
-  const json = new TextEncoder().encode(entryJson(entry));
-  if (json.length > EVM_RECORD_PLAINTEXT_BYTES)
-    return;
-  const out = new Uint8Array(EVM_RECORD_PLAINTEXT_BYTES).fill(32);
-  out.set(json, 0);
-  return out;
-}
-function concat4(a, b) {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-async function lineKey(shared, epk, rpk) {
-  const okm = hkdf(sha2562, shared, concat4(epk, rpk), new TextEncoder().encode(EVM_RECORD_HKDF_INFO), 32);
-  try {
-    return await crypto.subtle.importKey("raw", okm, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-  } finally {
-    wipe(okm);
-  }
-}
-async function sealEvmRecordLine(entry, recordPublicKey, vaultId) {
-  const plaintext = paddedEntry(entry);
-  if (plaintext === undefined) {
-    throw new VaultError("EVM_RECORD_ENTRY_TOO_LONG", `A sealed EVM record entry is at most ${EVM_RECORD_PLAINTEXT_BYTES} bytes; this one is longer and was not written.`);
-  }
-  const rpk = unb64u(recordPublicKey, "evmRecordPublicKey");
-  const esk = x25519.utils.randomPrivateKey();
-  try {
-    const epk = x25519.getPublicKey(esk);
-    const shared = x25519.getSharedSecret(esk, rpk);
-    try {
-      const key = await lineKey(shared, epk, rpk);
-      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: ZERO_NONCE, additionalData: new TextEncoder().encode(vaultId) }, key, plaintext));
-      return `${JSON.stringify({ v: EVM_RECORD_LINE_VERSION, epk: b64u(epk), ct: b64u(ct) })}
-`;
-    } finally {
-      wipe(shared);
-    }
-  } finally {
-    wipe(esk);
-  }
-}
-function isAddress(value) {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
-}
-async function openEvmRecordLine(line, recordSecret, recordPublicKey, vaultId) {
-  try {
-    const parsed = JSON.parse(line);
-    if (parsed.v !== EVM_RECORD_LINE_VERSION || typeof parsed.epk !== "string" || typeof parsed.ct !== "string") {
-      return;
-    }
-    const epk = unb64u(parsed.epk, "epk");
-    const rpk = unb64u(recordPublicKey, "evmRecordPublicKey");
-    const shared = x25519.getSharedSecret(recordSecret, epk);
-    let plaintext;
-    try {
-      const key = await lineKey(shared, epk, rpk);
-      plaintext = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: ZERO_NONCE, additionalData: new TextEncoder().encode(vaultId) }, key, unb64u(parsed.ct, "ct")));
-    } finally {
-      wipe(shared);
-    }
-    if (plaintext.length !== EVM_RECORD_PLAINTEXT_BYTES)
-      return;
-    const value = JSON.parse(new TextDecoder().decode(plaintext).trimEnd());
-    if (value.kind === "token" && isAddress(value.wallet) && isAddress(value.token)) {
-      return { kind: "token", wallet: value.wallet, token: value.token };
-    }
-    if (value.kind === "scanStart" && isAddress(value.wallet) && Number.isSafeInteger(value.block) && value.block >= 0) {
-      return { kind: "scanStart", wallet: value.wallet, block: value.block };
-    }
-    return;
-  } catch {
-    return;
-  }
-}
-var EVM_RECORD_KEY_BYTES = 32, EVM_RECORD_PLAINTEXT_BYTES = 160, EVM_RECORD_HKDF_INFO = "candle-vault/v4/evm-record", EVM_RECORD_LINE_VERSION = 1, ZERO_NONCE;
-var init_evm_record_key = __esm(() => {
-  init_ed25519();
-  init_hkdf();
-  init_sha256();
-  init_crypto();
-  init_errors2();
-  init_format();
-  ZERO_NONCE = new Uint8Array(12);
-});
-
-// src/vault/evm-record.ts
-import { appendFile, readFile as readFile4, rename as rename4, stat as stat2, truncate } from "node:fs/promises";
-function evmRecordPath(vaultPath) {
-  return `${vaultPath.replace(/\.enc$/, "")}.evm-record.sealed`;
-}
-function utcStamp(ms) {
-  return new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-}
-async function readIfPresent(path) {
-  try {
-    return await readFile4(path);
-  } catch (error) {
-    if (error?.code === "ENOENT")
-      return null;
-    throw error;
-  }
-}
-function splitRecord(bytes) {
-  const text = new TextDecoder().decode(bytes);
-  if (text.length === 0)
-    return { lines: [], partialTail: false };
-  const pieces = text.split(`
-`);
-  const last = pieces.pop();
-  return { lines: pieces.filter((line) => line.length > 0), partialTail: last.length > 0 };
-}
-async function appendEvmRecordEntry(input) {
-  const path = evmRecordPath(input.vaultPath);
-  let raw;
-  try {
-    const bytes = await readIfPresent(input.vaultPath);
-    raw = bytes === null ? null : bytes.toString("utf8");
-  } catch (error) {
-    return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
-  }
-  if (raw === null)
-    return { written: false, reason: "no-vault", detail: `no vault at ${input.vaultPath}`, path };
-  let publicKey;
-  let vaultId;
-  try {
-    const header = parseVaultFile(raw);
-    vaultId = header.vaultId;
-    publicKey = header.version === EVM_TEE_VAULT_VERSION ? header.evmRecordPublicKey : undefined;
-  } catch (error) {
-    return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
-  }
-  if (publicKey === undefined) {
-    return {
-      written: false,
-      reason: "no-record-key",
-      detail: "the vault is not version 4, so it has no sealed EVM record key",
-      path
-    };
-  }
-  let line;
-  try {
-    line = await sealEvmRecordLine(input.entry, publicKey, vaultId);
-  } catch (error) {
-    const tooLong = error instanceof VaultError && error.code === "EVM_RECORD_ENTRY_TOO_LONG";
-    return { written: false, reason: tooLong ? "too-long" : "write-failed", detail: messageOf(error), path };
-  }
-  try {
-    const repairedPartial = await withKeystoreLock(path, input.clock, async () => {
-      const repaired = await repairTail(path);
-      await appendFile(path, line, { encoding: "utf8", mode: 384 });
-      return repaired;
-    }, input.lockWaitMs !== undefined ? { waitMs: input.lockWaitMs } : {});
-    return { written: true, repairedPartial, path };
-  } catch (error) {
-    if (error instanceof KeystoreLockedError) {
-      return { written: false, reason: "locked", detail: error.message, path };
-    }
-    return { written: false, reason: "write-failed", detail: messageOf(error), path };
-  }
-}
-async function repairTail(path) {
-  const bytes = await readIfPresent(path);
-  if (bytes === null || bytes.length === 0 || bytes[bytes.length - 1] === 10)
-    return false;
-  const lastNewline = bytes.lastIndexOf(10);
-  await truncate(path, lastNewline + 1);
-  return true;
-}
-function appendNotice(outcome, what) {
-  if (outcome.written) {
-    return outcome.repairedPartial ? `The sealed EVM record at ${outcome.path} ended in a partial line (a torn earlier append); it was dropped before ${what} was added.` : undefined;
-  }
-  return `${what} was not added to the sealed EVM record (${outcome.detail}). A sweep can still find it with --token or --from-block.`;
-}
-async function openVaultRecordKey(vault) {
-  const blob = vault.index.evmRecordKey;
-  const publicKey = vault.file.evmRecordPublicKey;
-  if (blob === undefined || publicKey === undefined)
-    return;
-  return openEvmRecordKey(vault.payloadKey, vault.file.vaultId, blob, publicKey);
-}
-async function readEvmRecord(vault, path = evmRecordPath(vault.path)) {
-  const bytes = await readIfPresent(path);
-  const base = { path, entries: [], unreadableLines: 0, partialTail: false };
-  const secret = await openVaultRecordKey(vault);
-  if (secret === undefined)
-    return { ...base, absent: bytes === null || bytes.length === 0, noKey: true };
-  try {
-    if (bytes === null || bytes.length === 0)
-      return { ...base, absent: true, noKey: false };
-    const { lines, partialTail } = splitRecord(bytes);
-    const seen = new Set;
-    const entries = [];
-    let unreadable = 0;
-    for (const line of lines) {
-      const entry = await openEvmRecordLine(line, secret, vault.file.evmRecordPublicKey, vault.file.vaultId);
-      if (entry === undefined) {
-        unreadable += 1;
-        continue;
-      }
-      const key = JSON.stringify(entry).toLowerCase();
-      if (seen.has(key))
-        continue;
-      seen.add(key);
-      entries.push(entry);
-    }
-    return { path, absent: false, noKey: false, entries, unreadableLines: unreadable, partialTail };
-  } finally {
-    wipe(secret);
-  }
-}
-async function copyEvmRecordForBackup(live, copyPath, clock) {
-  const livePath = evmRecordPath(live.path);
-  try {
-    return await withKeystoreLock(livePath, clock, async () => {
-      const bytes = await readIfPresent(livePath);
-      if (bytes === null)
-        return { present: false, copied: 0, dropped: 0, copyPath };
-      const secret = await openVaultRecordKey(live);
-      const kept = [];
-      let dropped = 0;
-      const { lines, partialTail } = splitRecord(bytes);
-      if (partialTail)
-        dropped += 1;
-      try {
-        for (const line of lines) {
-          const entry = secret === undefined ? undefined : await openEvmRecordLine(line, secret, live.file.evmRecordPublicKey, live.file.vaultId);
-          if (entry === undefined)
-            dropped += 1;
-          else
-            kept.push(`${line}
-`);
-        }
-      } finally {
-        if (secret !== undefined)
-          wipe(secret);
-      }
-      await writeKeystoreFile(copyPath, kept.join(""));
-      return { present: true, copied: kept.length, dropped, copyPath };
-    });
-  } catch (error) {
-    if (error instanceof KeystoreLockedError) {
-      throw new VaultError("EVM_RECORD_UNAVAILABLE", `Could not take the sealed EVM record's lock at ${livePath}.lock, so the backup was not completed and no verified backup was recorded.`, { suggestion: "Wait for the trade or sweep holding it to finish, then run the backup again." });
-    }
-    if (error instanceof VaultError)
-      throw error;
-    throw new VaultError("VAULT_WRITE_FAILED", `Could not copy the sealed EVM record to ${copyPath}: ${messageOf(error)}`);
-  }
-}
-async function verifyEvmRecordCopy(copy, path = evmRecordPath(copy.path)) {
-  if (copy.file.version !== EVM_TEE_VAULT_VERSION)
-    return { notApplicable: true, absent: true, lines: 0, path };
-  const bytes = await readIfPresent(path);
-  if (bytes === null)
-    return { notApplicable: false, absent: true, lines: 0, path };
-  const { lines, partialTail } = splitRecord(bytes);
-  if (partialTail) {
-    throw verifyFailed(`the sealed EVM record at ${path} ends in a partial line`);
-  }
-  const secret = await openVaultRecordKey(copy);
-  if (secret === undefined)
-    throw verifyFailed("the copy has no sealed EVM record key");
-  try {
-    for (const [index, line] of lines.entries()) {
-      const entry = await openEvmRecordLine(line, secret, copy.file.evmRecordPublicKey, copy.file.vaultId);
-      if (entry === undefined) {
-        throw verifyFailed(`line ${index + 1} of the sealed EVM record at ${path} does not decrypt under this copy's key`);
-      }
-    }
-  } finally {
-    wipe(secret);
-  }
-  return { notApplicable: false, absent: false, lines: lines.length, path };
-}
-function verifyFailed(message) {
-  return new VaultError("VAULT_VERIFY_FAILED", `Verification failed at step 9: ${message}.`, {
-    suggestion: "The copy's record changed after it was written. Run `candle vault backup` again; a fresh backup of the same vault copies only the lines that decrypt.",
-    details: { step: "9" }
-  });
-}
-async function moveAsideOrphanRecord(vaultPath, clock) {
-  const path = evmRecordPath(vaultPath);
-  if (!await exists(path))
-    return;
-  return withKeystoreLock(path, clock, async () => {
-    if (!await exists(path))
-      return;
-    let target = `${path}.orphaned-${utcStamp(clock.now())}`;
-    for (let n = 2;await exists(target); n++)
-      target = `${path}.orphaned-${utcStamp(clock.now())}-${n}`;
-    await rename4(path, target);
-    return target;
-  });
-}
-async function exists(path) {
-  try {
-    await stat2(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function messageOf(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-var init_evm_record = __esm(() => {
-  init_wallet_keystore();
-  init_errors2();
-  init_evm_record_key();
-  init_format();
-});
-
-// src/vault/sidecar.ts
-import { chmod as chmod3, mkdir as mkdir4, readFile as readFile5, writeFile as writeFile4 } from "node:fs/promises";
-import { dirname as dirname3 } from "node:path";
-function sidecarPath(vaultPath) {
-  return vaultPath.replace(/\.enc$/, "") + ".state.json";
-}
-function sourceDigest(vaultId, bytes) {
-  const id = new TextEncoder().encode(vaultId);
-  const joined = new Uint8Array(id.length + bytes.length);
-  joined.set(id, 0);
-  joined.set(bytes, id.length);
-  return b64u(sha2562(joined));
-}
-async function readSidecar(path) {
-  let raw;
-  try {
-    raw = await readFile5(path, "utf8");
-  } catch {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed?.vaultId !== "string" || !Number.isInteger(parsed?.lastGeneration))
-      return null;
-    return {
-      ...parsed,
-      envelopeIds: Array.isArray(parsed.envelopeIds) ? parsed.envelopeIds : [],
-      removedEnvelopeIds: Array.isArray(parsed.removedEnvelopeIds) ? parsed.removedEnvelopeIds : []
-    };
-  } catch {
-    return null;
-  }
-}
-async function writeSidecar(path, state) {
-  const dir = dirname3(path);
-  await mkdir4(dir, { recursive: true });
-  await chmod3(dir, 448).catch(() => {});
-  await writeFile4(path, `${JSON.stringify(state, null, 2)}
-`, { encoding: "utf8", mode: 384 });
-  await chmod3(path, 384).catch(() => {});
-}
-function nextSidecar(previous, file, patch = {}) {
-  const carried = previous !== null && previous.vaultId === file.vaultId ? previous : null;
-  const currentIds = file.envelopes.map((envelope) => envelope.id);
-  const known = carried?.envelopeIds ?? [];
-  const removed = new Set(carried?.removedEnvelopeIds ?? []);
-  for (const id of known)
-    if (!currentIds.includes(id))
-      removed.add(id);
-  const next = {
-    ...carried ?? {},
-    vaultId: file.vaultId,
-    lastGeneration: file.generation,
-    envelopeIds: currentIds,
-    removedEnvelopeIds: [...removed].sort(),
-    ...patch
-  };
-  next.lastGeneration = Math.max(next.lastGeneration, file.generation, carried?.lastGeneration ?? 0);
-  return next;
-}
-var init_sidecar = __esm(() => {
-  init_sha256();
-  init_crypto();
-});
-
-// src/vault/store.ts
-var exports_store = {};
-__export(exports_store, {
-  writeNewVault: () => writeNewVault,
-  wrapDekForPrf: () => wrapDekForPrf,
-  wrapDekForPassphrase: () => wrapDekForPassphrase,
-  wrapDekForKek: () => wrapDekForKek,
-  withVaultLock: () => withVaultLock,
-  unlockWithPassphrase: () => unlockWithPassphrase,
-  unlockVault: () => unlockVault,
-  serializeVault: () => serializeVault,
-  sealKeyBlob: () => sealKeyBlob,
-  sealIndex: () => sealIndex,
-  readVaultRaw: () => readVaultRaw,
-  ownSecret: () => ownSecret,
-  legacyWalletsPath: () => legacyWalletsPath,
-  freshVaultId: () => freshVaultId,
-  freshKeyId: () => freshKeyId,
-  freshEnvelopeId: () => freshEnvelopeId,
-  freshDek: () => freshDek,
-  fileExists: () => fileExists,
-  entriesOf: () => entriesOf,
-  defaultVaultPath: () => defaultVaultPath,
-  decryptRoot: () => decryptRoot,
-  decryptKey: () => decryptKey,
-  commitVault: () => commitVault,
-  closeVault: () => closeVault,
-  candleConfigDir: () => candleConfigDir,
-  CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
-});
-import { chmod as chmod4, mkdir as mkdir5, readFile as readFile6, stat as stat3 } from "node:fs/promises";
-import { join as join5 } from "node:path";
-function candleConfigDir(env, home) {
-  const configured = env.CANDLE_CONFIG_DIR?.trim();
-  if (configured) {
-    const refusal = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured);
-    if (refusal !== undefined)
-      throw new UsageError(refusal);
-    return configured;
-  }
-  return join5(home, ".config", "candle");
-}
-function defaultVaultPath(env, home) {
-  return join5(candleConfigDir(env, home), "vault.enc");
-}
-function legacyWalletsPath(env, home) {
-  return join5(candleConfigDir(env, home), "wallets.enc");
-}
-async function readVaultRaw(path) {
-  try {
-    return await readFile6(path, "utf8");
-  } catch (error) {
-    if (error?.code === "ENOENT")
-      return null;
-    throw new VaultError("VAULT_UNREADABLE", `Could not read the vault at ${path}.`);
-  }
-}
-async function fileExists(path) {
-  try {
-    await stat3(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function closeVault(vault) {
-  wipe(vault.dek);
-}
-async function unlockVault(path, raw, request2, opts = {}) {
-  const file = parseVaultFile(raw);
-  const envelope = pickEnvelope(file, request2);
-  const dek = await unwrapDek(file, envelope, request2, opts.notice);
-  if (dek.length !== DEK_BYTES) {
-    wipe(dek);
-    throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
-  }
-  try {
-    const payloadKey = await derivePayloadKey(dek, unb64u(file.vaultId, "vaultId"));
-    const indexBytes = await open3(payloadKey, file.index, canonicalHeader(file), {
-      code: "VAULT_BLOB_TAMPERED",
-      message: "The vault header was altered, an envelope was added or removed outside this CLI, or this index is from a different write of the vault.",
-      suggestion: "Nothing was written. Restore the file from a verified backup."
-    });
-    let index;
-    try {
-      index = parseIndexPlaintext(indexBytes, file.version);
-    } finally {
-      wipe(indexBytes);
-    }
-    assertKeyIdsAgree(file);
-    if (file.version === EVM_TEE_VAULT_VERSION && index.evmRecordKey !== undefined) {
-      const secret = await openEvmRecordKey(payloadKey, file.vaultId, index.evmRecordKey, file.evmRecordPublicKey);
-      wipe(secret);
-    }
-    return { path, raw, file, index, payloadKey, dek, envelope };
-  } catch (error) {
-    wipe(dek);
-    throw error;
-  }
-}
-async function unwrapDek(file, envelope, request2, notice) {
-  if (request2.factor === "passphrase") {
-    const kek = await derivePassphraseKek(request2.passphrase, passphraseKdf(envelope), notice);
-    return withSecret(kek, async (kekBytes) => {
-      const kekKey2 = await importAesKey(kekBytes);
-      return open3(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
-        code: "VAULT_UNLOCK_FAILED",
-        message: "Could not open the vault: wrong passphrase, or the file is corrupt."
-      });
-    });
-  }
-  if (request2.factor === "secure-enclave") {
-    if (!isSecureEnclaveEnvelope(envelope)) {
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a Secure Enclave one.`);
-    }
-    const kekKey2 = await importAesKey(request2.kek);
-    return open3(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
-      code: "VAULT_UNLOCK_FAILED",
-      message: "Could not open the vault with the Secure Enclave: what it unwrapped is not this envelope's key, or the file is corrupt.",
-      suggestion: "Nothing was derived from it and no other factor was tried."
-    });
-  }
-  if (!isPrfEnvelope(envelope)) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passkey one.`);
-  }
-  const kekKey = await derivePrfKek(request2.prfOutput, unb64u(file.vaultId, "vaultId"));
-  const what = envelope.transport === "platform-macos" ? "this synced passkey" : "this security key";
-  return open3(kekKey, envelope.wrap, envelopeAad(file, envelope), {
-    code: "VAULT_UNLOCK_FAILED",
-    message: `Could not open the vault with ${what}: the assertion did not yield this envelope's key, or the file is corrupt.`,
-    suggestion: "Nothing was derived from it and no other factor was tried."
-  });
-}
-function pickEnvelope(file, request2) {
-  const candidates = file.envelopes.filter((envelope) => envelope.factor === request2.factor);
-  if (request2.envelopeId !== undefined) {
-    const named = candidates.find((envelope) => envelope.id === request2.envelopeId);
-    if (!named)
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request2.factor} envelope with id ${request2.envelopeId}.`);
-    return named;
-  }
-  const first = candidates[0];
-  if (!first) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request2.factor} envelope.`, {
-      suggestion: "Run `candle vault status` to see which factors can open it."
-    });
-  }
-  return first;
-}
-async function unlockWithPassphrase(path, raw, passphrase, opts = {}) {
-  const file = parseVaultFile(raw);
-  const envelopes = file.envelopes.filter((envelope) => envelope.factor === "passphrase");
-  if (envelopes.length === 0) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
-  }
-  let last;
-  for (const envelope of envelopes) {
-    try {
-      return await unlockVault(path, raw, { factor: "passphrase", passphrase, envelopeId: envelope.id }, opts);
-    } catch (error) {
-      if (error instanceof VaultError && error.code !== "VAULT_UNLOCK_FAILED")
-        throw error;
-      last = error;
-    }
-  }
-  throw last;
-}
-async function decryptRoot(vault) {
-  return open3(vault.payloadKey, vault.file.root, rootAad(vault.file.vaultId), {
-    code: "VAULT_BLOB_TAMPERED",
-    message: "The vault's root blob failed its authentication tag.",
-    suggestion: "Nothing was written. Restore the file from a verified backup; `vault verify-backup` checks a copy in full."
-  });
-}
-async function decryptKey(vault, keyId) {
-  const blob = vault.file.keys.find((candidate) => candidate.id === keyId);
-  if (!blob)
-    throw new VaultError("VAULT_INDEX_INVALID", `The vault declares key ${keyId} but holds no blob for it.`);
-  return open3(vault.payloadKey, blob, keyAad(vault.file.vaultId, keyId), {
-    code: "VAULT_BLOB_TAMPERED",
-    message: `Key blob ${keyId} failed its authentication tag.`,
-    suggestion: "Nothing was written."
-  });
-}
-function freshId(bytes) {
-  for (;; ) {
-    const id = b64u(crypto.getRandomValues(new Uint8Array(bytes)));
-    if (!id.startsWith("-") && !id.startsWith("_"))
-      return id;
-  }
-}
-function freshEnvelopeId() {
-  return freshId(8);
-}
-function freshKeyId() {
-  return freshId(8);
-}
-function freshVaultId() {
-  return freshId(16);
-}
-function freshDek() {
-  return randomBytes2(DEK_BYTES);
-}
-async function wrapDekForPassphrase(dek, passphrase, envelope, header, notice) {
-  const kek = await derivePassphraseKek(passphrase, passphraseKdf(envelope), notice);
-  return withSecret(kek, async (kekBytes) => {
-    const kekKey = await importAesKey(kekBytes);
-    const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
-    return { alg: VAULT_CIPHER, ...blob };
-  });
-}
-async function wrapDekForPrf(dek, prfOutput, envelope, header) {
-  const kekKey = await derivePrfKek(prfOutput, unb64u(header.vaultId, "vaultId"));
-  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
-  return { alg: VAULT_CIPHER, ...blob };
-}
-async function wrapDekForKek(dek, kek, envelope, header) {
-  const kekKey = await importAesKey(kek);
-  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
-  return { alg: VAULT_CIPHER, ...blob };
-}
-function serializeVault(file) {
-  return `${JSON.stringify(file, null, 2)}
-`;
-}
-async function sealIndex(header, index, payloadKey) {
-  const withoutIndex = { ...header };
-  const blob = await sealJson(payloadKey, serializeIndexPlaintext(index, header.version), canonicalHeader(withoutIndex));
-  return { ...withoutIndex, index: blob };
-}
-async function commitVault(vault, plan, clock) {
-  let index = plan.index.evmRecordKey === undefined && vault.index.evmRecordKey !== undefined ? { ...plan.index, evmRecordKey: vault.index.evmRecordKey } : plan.index;
-  let orphaned;
-  const written = await withVaultLock(vault.path, clock, async () => {
-    const current = await readVaultRaw(vault.path);
-    if (current !== vault.raw) {
-      throw new VaultError("VAULT_CHANGED", "The vault changed on disk while this command was running; nothing was written.", {
-        suggestion: "Another candle command wrote to it. Run this one again."
-      });
-    }
-    const envelopes = plan.envelopes ?? vault.file.envelopes;
-    const keys = [...vault.file.keys, ...plan.addKeys ?? []];
-    let evmRecordPublicKey = vault.file.evmRecordPublicKey;
-    if (indexRequiresVersion4(index) && evmRecordPublicKey === undefined) {
-      orphaned = await moveAsideOrphanRecord(vault.path, clock);
-      const created = await createEvmRecordKey(vault.payloadKey, vault.file.vaultId);
-      evmRecordPublicKey = created.publicKey;
-      index = { ...index, evmRecordKey: created.blob };
-    }
-    const version = indexRequiresVersion4(index) ? EVM_TEE_VAULT_VERSION : indexRequiresVersion3(index) ? VAULT_VERSION : vault.file.version;
-    const header = {
-      format: VAULT_FORMAT,
-      version,
-      vaultId: vault.file.vaultId,
-      generation: vault.file.generation + 1,
-      createdAt: vault.file.createdAt,
-      updatedAt: new Date(clock.now()).toISOString(),
-      cipher: VAULT_CIPHER,
-      envelopes,
-      keyIds: keys.map((blob) => blob.id),
-      ...evmRecordPublicKey !== undefined ? { evmRecordPublicKey } : {},
-      root: vault.file.root,
-      keys
-    };
-    const next = await sealIndex(header, index, vault.payloadKey);
-    const contents = serializeVault(next);
-    try {
-      await writeKeystoreFile(vault.path, contents);
-    } catch {
-      throw new VaultError("VAULT_WRITE_FAILED", `Could not write the vault at ${vault.path}.`);
-    }
-    return { next, contents };
-  });
-  const path = sidecarPath(vault.path);
-  await writeSidecar(path, nextSidecar(await readSidecar(path), written.next, plan.sidecar)).catch(() => {});
-  if (orphaned !== undefined) {
-    clock.stderr?.write(`A sealed EVM record from an earlier vault was at ${evmRecordPath(vault.path)}; it was moved to ${orphaned} (never deleted), and this vault starts a fresh record.
-`);
-  }
-  return { ...vault, raw: written.contents, file: written.next, index };
-}
-async function withVaultLock(path, clock, fn) {
-  try {
-    return await withKeystoreLock(path, clock, fn);
-  } catch (error) {
-    if (error instanceof KeystoreLockedError) {
-      throw new VaultError("VAULT_LOCKED", error.message);
-    }
-    throw error;
-  }
-}
-async function sealKeyBlob(vault, keyId, secret) {
-  const blob = await seal(vault.payloadKey, secret, keyAad(vault.file.vaultId, keyId));
-  return { id: keyId, ...blob };
-}
-async function writeNewVault(path, contents) {
-  await mkdir5(candleConfigDirOf(path), { recursive: true });
-  await chmod4(candleConfigDirOf(path), 448).catch(() => {});
-  await writeKeystoreFile(path, contents);
-}
-function candleConfigDirOf(path) {
-  return join5(path, "..");
-}
-function entriesOf(vault) {
-  return vault.index.entries;
-}
-var CONFIG_DIR_ENV = "CANDLE_CONFIG_DIR";
-var init_store = __esm(() => {
-  init_args();
-  init_wallet_keystore();
-  init_crypto();
-  init_errors2();
-  init_evm_record();
-  init_evm_record_key();
-  init_format();
-  init_sidecar();
-});
-
 // src/enclave-helper/protocol.ts
 var ENCLAVE_PROTOCOL = 1, ENCLAVE_BUNDLE_NAME = "candle-enclave.app", ENCLAVE_EXECUTABLE_RELATIVE = "Contents/MacOS/candle-enclave", PASSKEY_RP_ID = "cli.candle.tv", PASSKEY_ASSOCIATED_DOMAIN, PASSKEY_MIN_OS_MAJOR = 15, ENCLAVE_ACCESS_CONTROL = "biometryCurrentSet";
 var init_protocol = __esm(() => {
@@ -19106,7 +19231,7 @@ var init_ecies = __esm(() => {
 
 // src/vault/enclave.ts
 import { access, constants } from "node:fs/promises";
-import { dirname as dirname4, join as join6 } from "node:path";
+import { dirname as dirname4, join as join7 } from "node:path";
 function parseReleasePolicy(value) {
   const bad = (detail) => {
     throw new Error(`release-policy.json is malformed: ${detail}`);
@@ -19141,7 +19266,7 @@ async function isExecutable(path) {
 }
 async function asBundle(candidate) {
   const appPath = candidate.endsWith(`/${ENCLAVE_EXECUTABLE_RELATIVE}`) ? candidate.slice(0, -(ENCLAVE_EXECUTABLE_RELATIVE.length + 1)) : candidate;
-  const path = join6(appPath, ENCLAVE_EXECUTABLE_RELATIVE);
+  const path = join7(appPath, ENCLAVE_EXECUTABLE_RELATIVE);
   return await isExecutable(path) ? { appPath, path } : null;
 }
 async function locateEnclaveHelper(deps) {
@@ -19162,10 +19287,10 @@ async function locateEnclaveHelper(deps) {
       reason: `this CLI is running from the npm package (or a source checkout), which ships no ${ENCLAVE_BUNDLE_NAME}`
     };
   }
-  const beside = await asBundle(join6(dirname4(realExec), ENCLAVE_BUNDLE_NAME));
+  const beside = await asBundle(join7(dirname4(realExec), ENCLAVE_BUNDLE_NAME));
   if (beside)
     return { state: "ready", ...beside, source: "beside-binary" };
-  const libexec = await asBundle(join6(dirname4(dirname4(realExec)), "libexec", ENCLAVE_BUNDLE_NAME));
+  const libexec = await asBundle(join7(dirname4(dirname4(realExec)), "libexec", ENCLAVE_BUNDLE_NAME));
   if (libexec)
     return { state: "ready", ...libexec, source: "libexec" };
   return { state: "absent", reason: `no ${ENCLAVE_BUNDLE_NAME} beside ${realExec} or in its libexec` };
@@ -19691,7 +19816,7 @@ var init_platform = __esm(() => {
 
 // src/vault/fido2.ts
 import { access as access2, constants as constants2 } from "node:fs/promises";
-import { dirname as dirname5, join as join7 } from "node:path";
+import { dirname as dirname5, join as join8 } from "node:path";
 async function isExecutable2(path) {
   try {
     await access2(path, constants2.X_OK);
@@ -19719,7 +19844,7 @@ async function locateFido2Helper(deps) {
       installable: false
     };
   }
-  const beside = join7(dirname5(realExec), HELPER_NAME);
+  const beside = join8(dirname5(realExec), HELPER_NAME);
   if (await isExecutable2(beside))
     return { state: "ready", path: beside, source: "beside-binary" };
   return { state: "absent", reason: `no ${HELPER_NAME} executable beside ${realExec}`, installable: true };
@@ -62206,7 +62331,7 @@ var init_update_notice = __esm(() => {
 
 // ../mcp/src/image.ts
 import { constants as constants5 } from "node:fs";
-import { lstat as lstat2, open as open5, realpath } from "node:fs/promises";
+import { lstat as lstat2, open as open7, realpath } from "node:fs/promises";
 import { dirname as dirname11, isAbsolute as isAbsolute2, relative, sep as sep2 } from "node:path";
 function configuredImageDir(env) {
   return env.CANDLE_IMAGE_DIR?.trim() || undefined;
@@ -62408,7 +62533,7 @@ var init_image = __esm(() => {
       this.code = code;
     }
   };
-  nodeFs = { realpath, lstat: lstat2, open: open5 };
+  nodeFs = { realpath, lstat: lstat2, open: open7 };
 });
 
 // ../mcp/src/orchestrate.ts
@@ -63542,7 +63667,7 @@ async function infoRead2(fetcher, network, body) {
 }
 async function hyperliquidWalletSnapshot2(fetcher, network, address, now = Date.now) {
   const user = address.toLowerCase();
-  const [metaAndCtxs, state, open6] = await Promise.all([
+  const [metaAndCtxs, state, open8] = await Promise.all([
     infoRead2(fetcher, network, { type: "metaAndAssetCtxs" }),
     infoRead2(fetcher, network, { type: "clearinghouseState", user }),
     infoRead2(fetcher, network, { type: "frontendOpenOrders", user })
@@ -63593,10 +63718,10 @@ async function hyperliquidWalletSnapshot2(fetcher, network, address, now = Date.
       continue;
     positions.push({ coin, asset, szi, leverage: { type: lev.type, value: lev.value } });
   }
-  if (!Array.isArray(open6))
+  if (!Array.isArray(open8))
     throw new Error("Hyperliquid returned an unreadable order list");
   const orders = [];
-  for (const raw of open6) {
+  for (const raw of open8) {
     const o = raw;
     const coin = o?.coin;
     if (typeof coin !== "string") {
@@ -65722,7 +65847,7 @@ var init_perps_risk = __esm(() => {
 
 // ../mcp/src/perps.ts
 import { createPrivateKey as createPrivateKey2, randomBytes as randomBytes6, sign as sign5 } from "node:crypto";
-import { readFile as readFile9 } from "node:fs/promises";
+import { readFile as readFile12 } from "node:fs/promises";
 function fail3(code, message, extra = {}) {
   return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true };
 }
@@ -65869,7 +65994,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       if (!pemFile)
         return fail3("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
       try {
-        signerPem = await readFile9(pemFile, "utf8");
+        signerPem = await readFile12(pemFile, "utf8");
         createPrivateKey2(signerPem);
       } catch {
         return fail3("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
@@ -66113,7 +66238,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
     if (!pemFile)
       return fail3("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
     try {
-      signerPem = await readFile9(pemFile, "utf8");
+      signerPem = await readFile12(pemFile, "utf8");
       createPrivateKey2(signerPem);
     } catch {
       return fail3("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
@@ -67664,7 +67789,7 @@ Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv â
 init_client();
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod8, readFile as readFile10, realpath as realpath2, rename as rename6, unlink, writeFile as writeFile7 } from "node:fs/promises";
+import { chmod as chmod10, readFile as readFile13, realpath as realpath2, rename as rename8, unlink, writeFile as writeFile7 } from "node:fs/promises";
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -67829,7 +67954,7 @@ ${USAGE2}` : USAGE2, ctx.json);
 
 // src/commands/auth.ts
 import { homedir as homedir3 } from "node:os";
-import { join as join8 } from "node:path";
+import { join as join9 } from "node:path";
 
 // src/account.ts
 init_client();
@@ -67869,6 +67994,7 @@ async function runLiveCheck(params) {
 
 // src/commands/auth.ts
 init_client();
+init_ownership();
 init_deps();
 init_profiles();
 init_render();
@@ -68170,8 +68296,8 @@ async function authLogout(args, ctx) {
   return 0;
 }
 function configFilePathForDisplay(env) {
-  const dir = env.CANDLE_CONFIG_DIR?.trim() || join8(homedir3(), ".config", "candle");
-  return join8(dir, "config.json");
+  const dir = env.CANDLE_CONFIG_DIR?.trim() || join9(homedir3(), ".config", "candle");
+  return join9(dir, "config.json");
 }
 async function authStatus(args, ctx) {
   const { deps, apiUrl, json } = ctx;
@@ -68185,10 +68311,22 @@ async function authStatus(args, ctx) {
     return 2;
   }
   const config = await deps.readConfig();
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  let coreOwned = false;
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile).catch((error) => {
+    if (!(error instanceof ProfileCoreOwnedError))
+      throw error;
+    coreOwned = true;
+    return;
+  });
   const apiKey = await resolveApiKey(deps, ctx.profile);
   const rows = [];
-  if (!deviceToken) {
+  if (coreOwned) {
+    rows.push({
+      check: "Device token",
+      state: "SKIP",
+      detail: "held by the Candle core (trading is on in the Candle TUI)"
+    });
+  } else if (!deviceToken) {
     rows.push({ check: "Device token", state: "SKIP", detail: "not set. Run: candle auth login" });
   } else {
     rows.push(await runLiveCheck({
@@ -69324,6 +69462,15 @@ var HELP = {
     examples: ["candle mcp", "candle mcp --print-config", "candle mcp --read-only"],
     env: ENV_API
   },
+  core: {
+    group: "Maintain",
+    summary: "Run the local Candle core the Candle TUI attaches to (preview)",
+    description: "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Preview: this build keeps the state directory, the single-instance lock and the journal; the attach interface is not in it yet.",
+    usage: ["candle core serve [--profile <name>]"],
+    rows: [{ invocation: "serve", description: "Start the core for the profile in play; one per profile" }],
+    examples: ["candle core serve", "candle core serve --profile staging"],
+    env: ["CANDLE_CONFIG_DIR", "CANDLE_PROFILE"]
+  },
   update: {
     group: "Maintain",
     summary: "Update the CLI and its security key helper to the latest signed release",
@@ -69659,10 +69806,476 @@ async function completion(args, ctx) {
   return 2;
 }
 
+// src/commands/core.ts
+init_args();
+
+// src/core/instance-lock.ts
+import { link, open as open4, readFile as readFile7, rename as rename5, rm as rm3 } from "node:fs/promises";
+
+class CoreAlreadyRunningError extends Error {
+  pid;
+  socketPath;
+  code = "CORE_ALREADY_RUNNING";
+  constructor(pid, socketPath) {
+    super(`A Candle core is already running for this profile${pid !== undefined ? ` (pid ${pid})` : ""}. Attach to it at ${socketPath}.`);
+    this.pid = pid;
+    this.socketPath = socketPath;
+    this.name = "CoreAlreadyRunningError";
+  }
+}
+function pidIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+async function lockOwner(path) {
+  try {
+    const parsed = JSON.parse(await readFile7(path, "utf8"));
+    return typeof parsed.pid === "number" ? parsed.pid : undefined;
+  } catch {
+    return;
+  }
+}
+async function acquireInstanceLock(input) {
+  const pid = input.pid ?? process.pid;
+  const isAlive = input.isAlive ?? pidIsAlive;
+  const now = input.now ?? Date.now;
+  for (let attempt = 0;attempt < 2; attempt++) {
+    try {
+      const handle = await open4(input.lockPath, "wx", 384);
+      try {
+        await handle.write(`${JSON.stringify({ pid, startedAt: new Date(now()).toISOString() })}
+`);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      let released = false;
+      return {
+        async release() {
+          if (released)
+            return;
+          released = true;
+          if (await lockOwner(input.lockPath) === pid)
+            await rm3(input.lockPath, { force: true });
+        }
+      };
+    } catch (error) {
+      if (error.code !== "EEXIST")
+        throw error;
+      const owner = await lockOwner(input.lockPath);
+      if (owner === undefined || isAlive(owner))
+        throw new CoreAlreadyRunningError(owner, input.socketPath);
+      const aside = `${input.lockPath}.stale-${owner}-${pid}-${now()}`;
+      try {
+        await rename5(input.lockPath, aside);
+      } catch (renameError) {
+        if (renameError.code !== "ENOENT")
+          throw renameError;
+        continue;
+      }
+      const moved = await lockOwner(aside);
+      if (moved !== owner) {
+        await link(aside, input.lockPath).catch(() => {});
+        await rm3(aside, { force: true });
+        throw new CoreAlreadyRunningError(moved, input.socketPath);
+      }
+      await rm3(aside, { force: true });
+    }
+  }
+  throw new CoreAlreadyRunningError(await lockOwner(input.lockPath), input.socketPath);
+}
+
+// src/core/journal.ts
+import { chmod as chmod6, open as open5, readFile as readFile8 } from "node:fs/promises";
+var RESERVED = new Set(["seq", "at", "environment", "profile"]);
+
+class Journal {
+  handle;
+  redactor;
+  identity;
+  now;
+  history;
+  chain = Promise.resolve();
+  seq;
+  closed = false;
+  constructor(handle, redactor, identity, now, history) {
+    this.handle = handle;
+    this.redactor = redactor;
+    this.identity = identity;
+    this.now = now;
+    this.history = history;
+    this.seq = history.rows.reduce((max, row) => Math.max(max, row.seq), 0);
+  }
+  static async open(input) {
+    const history = await readJournal(input.path);
+    const foreign = history.rows.find((row) => row.environment !== input.environment || row.profile !== input.profile);
+    if (foreign !== undefined) {
+      throw new JournalIdentityError(`This journal holds rows for profile "${foreign.profile}" on ${foreign.environment}; this core is profile "${input.profile}" on ${input.environment}.`);
+    }
+    const handle = await open5(input.path, "a", 384);
+    await chmod6(input.path, 384);
+    const journal = new Journal(handle, input.redactor, { environment: input.environment, profile: input.profile }, input.now, history);
+    if (history.tornTail) {
+      await journal.raw(`
+`);
+      await journal.append({ type: "journal.torn_tail", skipped: history.skipped });
+    }
+    return journal;
+  }
+  append(input) {
+    const next = this.chain.then(async () => {
+      if (this.closed)
+        throw new Error("The journal is closed.");
+      for (const field of Object.keys(input)) {
+        if (RESERVED.has(field))
+          throw new Error(`A journal row may not set "${field}"; the journal does.`);
+      }
+      const mode = input.mode ?? "live";
+      if (mode !== "paper" && mode !== "live")
+        throw new Error(`A journal row's mode must be paper or live, not ${mode}.`);
+      if (typeof input.type !== "string" || input.type.length === 0)
+        throw new Error("A journal row needs a type.");
+      const row = this.redactor.value({
+        ...input,
+        seq: this.seq + 1,
+        at: new Date(this.now()).toISOString(),
+        environment: this.identity.environment,
+        profile: this.identity.profile,
+        mode
+      });
+      await this.raw(`${JSON.stringify(row)}
+`);
+      this.seq = row.seq;
+      this.history.rows.push(row);
+      return row;
+    });
+    this.chain = next.catch(() => {});
+    return next;
+  }
+  rows() {
+    return this.history.rows;
+  }
+  async close() {
+    await this.chain;
+    this.closed = true;
+    await this.handle.close();
+  }
+  async raw(text) {
+    await this.handle.write(text);
+    await this.handle.sync();
+  }
+}
+
+class JournalIdentityError extends Error {
+  code = "JOURNAL_IDENTITY_MISMATCH";
+  constructor(message) {
+    super(message);
+    this.name = "JournalIdentityError";
+  }
+}
+async function readJournal(path) {
+  let text;
+  try {
+    text = await readFile8(path, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return { rows: [], skipped: 0, tornTail: false };
+    throw error;
+  }
+  const tornTail = text.length > 0 && !text.endsWith(`
+`);
+  const rows = [];
+  let skipped = 0;
+  for (const line of text.split(`
+`)) {
+    if (line.trim() === "")
+      continue;
+    const row = parseRow(line);
+    if (row === undefined)
+      skipped++;
+    else
+      rows.push(row);
+  }
+  return { rows, skipped, tornTail };
+}
+function parseRow(line) {
+  let value;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (value === null || typeof value !== "object")
+    return;
+  const row = value;
+  if (typeof row.seq !== "number" || typeof row.type !== "string")
+    return;
+  if (row.environment !== "staging" && row.environment !== "production")
+    return;
+  if (typeof row.profile !== "string" || row.mode !== "paper" && row.mode !== "live")
+    return;
+  return row;
+}
+
+// src/commands/core.ts
+init_paths();
+
+// src/core/redact.ts
+var REDACTED = "[redacted]";
+var API_KEY_SHAPE = /cndl_(?:live|test)_[A-Za-z0-9_-]+/g;
+var KEY_PARAM = /([?&;](?:api[-_]?key|key|token|access_token)=)[^&\s"'#]+/gi;
+var BEARER = /(\bBearer\s+)[A-Za-z0-9._~+/=-]+/gi;
+var MIN_SECRET_LENGTH = 8;
+var FORBIDDEN_FIELDS = new Set([
+  "passphrase",
+  "password",
+  "apikey",
+  "api_key",
+  "devicetoken",
+  "device_token",
+  "secret"
+]);
+
+class Redactor {
+  secrets = new Set;
+  add(value) {
+    if (typeof value !== "string")
+      return;
+    const trimmed = value.trim();
+    if (trimmed.length >= MIN_SECRET_LENGTH)
+      this.secrets.add(trimmed);
+  }
+  remove(value) {
+    this.secrets.delete(value.trim());
+  }
+  text(input) {
+    let out = input;
+    for (const secret of [...this.secrets].sort((a, b) => b.length - a.length)) {
+      if (out.includes(secret))
+        out = out.split(secret).join(REDACTED);
+    }
+    return out.replace(API_KEY_SHAPE, REDACTED).replace(KEY_PARAM, `$1${REDACTED}`).replace(BEARER, `$1${REDACTED}`);
+  }
+  value(value) {
+    return this.walk(value, 0);
+  }
+  walk(value, depth) {
+    if (depth > 32)
+      return REDACTED;
+    if (typeof value === "string")
+      return this.text(value);
+    if (Array.isArray(value))
+      return value.map((item) => this.walk(item, depth + 1));
+    if (value !== null && typeof value === "object") {
+      const out = {};
+      for (const [key, inner] of Object.entries(value)) {
+        const lower = key.toLowerCase();
+        if (FORBIDDEN_FIELDS.has(lower))
+          out[key] = REDACTED;
+        else if (lower === "factor")
+          out[key] = this.walk(withoutFactorValue(inner), depth + 1);
+        else
+          out[key] = this.walk(inner, depth + 1);
+      }
+      return out;
+    }
+    return value;
+  }
+}
+function withoutFactorValue(factor) {
+  if (factor === null || typeof factor !== "object")
+    return factor;
+  const { value: _dropped, ...rest } = factor;
+  return rest;
+}
+
+// src/core/slot.ts
+init_key_signers();
+init_profiles();
+init_secret_store();
+init_canonical_json();
+init_crypto();
+init_ownership();
+import { open as openFile, readFile as readFile9, rename as rename6, rm as rm4 } from "node:fs/promises";
+var CORE_SLOT_FORMAT = "candle-core-slot";
+var CORE_SLOT_VERSION = 1;
+class CoreSlotError extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "CoreSlotError";
+  }
+}
+function parseCoreSlotFile(raw) {
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new CoreSlotError("CORE_SLOT_INVALID", "The core slot file is not valid JSON.");
+  }
+  const file = value;
+  if (file === null || typeof file !== "object" || file.format !== CORE_SLOT_FORMAT || file.version !== CORE_SLOT_VERSION || typeof file.profile !== "string" || file.environment !== "staging" && file.environment !== "production" || typeof file.vaultId !== "string" || typeof file.writeKeyPrefix !== "string" || typeof file.blob?.iv !== "string" || typeof file.blob?.ciphertext !== "string") {
+    throw new CoreSlotError("CORE_SLOT_INVALID", "The core slot file is not a version 1 Candle core slot.");
+  }
+  return file;
+}
+async function readCoreSlotHeader(paths) {
+  let raw;
+  try {
+    raw = await readFile9(paths.slot, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return;
+    throw error;
+  }
+  return parseCoreSlotFile(raw);
+}
+async function removeLegacyCopies(deps, deviceToken, writeKeyPrefix, writeKey) {
+  const removed = [];
+  const legacyToken = await deps.store.get(SECRET_REFS.deviceToken);
+  if (deviceToken !== null && legacyToken === deviceToken) {
+    await deps.store.delete(SECRET_REFS.deviceToken);
+    removed.push(SECRET_REFS.deviceToken);
+  }
+  const legacyKey = await deps.store.get(SECRET_REFS.apiKey);
+  if (legacyKey !== null && (writeKey !== undefined ? legacyKey === writeKey : writeKeyPrefix !== "" && apiKeyPrefix(legacyKey) === writeKeyPrefix)) {
+    await deps.store.delete(SECRET_REFS.apiKey);
+    removed.push(SECRET_REFS.apiKey);
+  }
+  return removed;
+}
+async function plainWriteRefs(deps, profile, writeKeyPrefix) {
+  const config = await deps.readConfig();
+  const signerRefs = (config.keySigners?.entries ?? []).filter((entry) => entry.keyPrefix === writeKeyPrefix).map((entry) => keySignerRef(entry.keyPrefix, entry.spkiSha256));
+  return [profileSecretRef(profile, "deviceToken"), ...signerRefs];
+}
+async function finishCoreMove(input) {
+  const file = await readCoreSlotHeader(input.paths);
+  if (file === undefined)
+    return [];
+  const removed = await removeLegacyCopies(input.deps, await input.deps.store.get(profileSecretRef(input.profile, "deviceToken")), file.writeKeyPrefix);
+  for (const ref of await plainWriteRefs(input.deps, input.profile, file.writeKeyPrefix)) {
+    if (await input.deps.store.get(ref) !== null) {
+      await input.deps.store.delete(ref);
+      removed.push(ref);
+    }
+  }
+  const apiKeyRef = profileSecretRef(input.profile, "apiKey");
+  const plainKey = await input.deps.store.get(apiKeyRef);
+  if (plainKey !== null && file.writeKeyPrefix !== "" && apiKeyPrefix(plainKey) === file.writeKeyPrefix) {
+    await input.deps.store.delete(apiKeyRef);
+    removed.push(apiKeyRef);
+  }
+  return removed;
+}
+
+// src/commands/core.ts
+init_profiles();
+init_render();
+var USAGE4 = "Usage: candle core serve";
+async function coreServe(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}
+${USAGE4}`, json);
+    return 2;
+  }
+  const profile = ctx.profile;
+  if (profile === undefined) {
+    writeLocalFailure(deps, {
+      code: "CORE_PROFILE_REQUIRED",
+      message: "The Candle core runs for one profile, and none is in play.",
+      suggestion: "Sign in with candle auth login, or name one with --profile."
+    }, json);
+    return 1;
+  }
+  const environment = candleEnvironment(ctx.apiUrl);
+  if (environment === undefined) {
+    writeLocalFailure(deps, {
+      code: "CORE_ENVIRONMENT_UNKNOWN",
+      message: `The Candle core runs against staging or production, and ${ctx.apiUrl} is neither.`,
+      suggestion: "Use a profile whose API URL is https://staging.api.candle.tv or https://api.candle.tv."
+    }, json);
+    return 1;
+  }
+  const paths = corePaths(deps.env, deps.homedir(), profile);
+  await ensureCoreDir(paths);
+  let lock;
+  try {
+    lock = await acquireInstanceLock({ lockPath: paths.lock, socketPath: paths.socket, now: deps.now });
+  } catch (error) {
+    if (!(error instanceof CoreAlreadyRunningError))
+      throw error;
+    writeLocalFailure(deps, {
+      code: error.code,
+      message: error.message,
+      details: { socketPath: error.socketPath, ...error.pid !== undefined ? { pid: error.pid } : {} }
+    }, json);
+    return 1;
+  }
+  let journal;
+  try {
+    const redactor = new Redactor;
+    redactor.add(await deps.store.get(profileSecretRef(profile, "apiKey")));
+    try {
+      journal = await Journal.open({ path: paths.journal, redactor, environment, profile, now: deps.now });
+    } catch (error) {
+      if (!(error instanceof JournalIdentityError))
+        throw error;
+      writeLocalFailure(deps, { code: error.code, message: error.message }, json);
+      return 1;
+    }
+    const removed = await finishCoreMove({ deps, paths, profile });
+    if (removed.length > 0)
+      await journal.append({ type: "slot.move_finished", refs: removed });
+    const started = await journal.append({ type: "core.started", coreVersion: CLI_VERSION, pid: process.pid });
+    if (json) {
+      deps.stdout.write(`${JSON.stringify({ ok: true, profile, environment, stateDir: paths.dir, socket: paths.socket, journalSeq: started.seq })}
+`);
+    } else {
+      deps.stdout.write(`Candle core (preview) for profile ${profile} on ${environment === "production" ? "PRODUCTION: real funds" : "staging"}
+State: ${paths.dir}
+The attach interface is not in this build yet; the core accepts no connections.
+`);
+    }
+    await new Promise((resolve) => {
+      if (!deps.onTerminate)
+        return resolve();
+      let unsubscribe;
+      let done = false;
+      unsubscribe = deps.onTerminate(() => {
+        done = true;
+        unsubscribe?.();
+        resolve();
+      });
+      if (done)
+        unsubscribe();
+    });
+    await journal.append({ type: "core.stopped" });
+    return 0;
+  } finally {
+    await journal?.close();
+    await lock.release();
+  }
+}
+
 // src/commands/doctor.ts
 init_agent_key_access();
 init_args();
 init_client();
+init_ownership();
 init_deps();
 
 // src/keychain.ts
@@ -71216,13 +71829,19 @@ async function doctor(args, ctx) {
       return;
     }
   };
-  const deviceToken = await readCredential(() => resolveDeviceToken(deps, ctx.profile));
+  let coreOwned = false;
+  const deviceToken = await readCredential(() => resolveDeviceToken(deps, ctx.profile).catch((error) => {
+    if (!(error instanceof ProfileCoreOwnedError))
+      throw error;
+    coreOwned = true;
+    return;
+  }));
   const apiKey = await readCredential(() => resolveApiKey(deps, ctx.profile));
   const role = requestedRole === "auto" ? apiKey && !deviceToken ? "bot" : "owner" : requestedRole;
   rows.push(deviceToken || apiKey ? {
     check: "Credentials present",
     state: "PASS",
-    detail: `${deviceToken && apiKey ? "device token and API key" : apiKey ? "API key only" : "device token only (no API key yet)"}; role: ${role}`
+    detail: `${deviceToken && apiKey ? "device token and API key" : apiKey ? coreOwned ? "Read key; the device token and Write key are held by the Candle core" : "API key only" : "device token only (no API key yet)"}; role: ${role}`
   } : {
     check: "Credentials present",
     state: "FAIL",
@@ -71498,15 +72117,15 @@ init_solana_endpoint();
 // src/vault/domains.ts
 init_errors2();
 import { homedir as homedir4 } from "node:os";
-import { basename, dirname as dirname7, isAbsolute, join as join9, resolve, sep } from "node:path";
+import { basename, dirname as dirname7, isAbsolute, join as join10, resolve, sep } from "node:path";
 var ICLOUD_DRIVE_SEGMENTS = ["Library", "Mobile Documents", "com~apple~CloudDocs"];
 var ICLOUD_SHORTHAND = "icloud";
 var ICLOUD_BACKUP_FOLDER = "Candle";
 function icloudDriveDir(home) {
-  return join9(home, ...ICLOUD_DRIVE_SEGMENTS);
+  return join10(home, ...ICLOUD_DRIVE_SEGMENTS);
 }
 function icloudBackupPath(home, at) {
-  return join9(icloudDriveDir(home), ICLOUD_BACKUP_FOLDER, `vault-${backupStamp(at)}.enc`);
+  return join10(icloudDriveDir(home), ICLOUD_BACKUP_FOLDER, `vault-${backupStamp(at)}.enc`);
 }
 function backupStamp(at) {
   return new Date(at).toISOString().replace(/[-:]/gu, "").replace(/\.\d+Z$/u, "Z");
@@ -71561,7 +72180,7 @@ async function classifyDestination(path, opts) {
   } catch {
     return "unknown";
   }
-  return placeResolvedPath(join9(parent, basename(absolute)), home);
+  return placeResolvedPath(join10(parent, basename(absolute)), home);
 }
 function sealsByDefault(destination) {
   return destination === "icloud-drive" || destination === "other-cloud" || destination === "unknown";
@@ -74881,7 +75500,7 @@ init_deps();
 init_render();
 init_trading();
 init_swap();
-import { open as open4 } from "node:fs/promises";
+import { open as open6 } from "node:fs/promises";
 var UPLOAD_USAGE = "Usage: candle image upload <path> [--json]";
 var MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 var IMAGE_TYPES = "PNG, JPEG, GIF or WebP";
@@ -74907,12 +75526,12 @@ async function readLocalImage(path) {
   const tooLarge = () => new TradingError("IMAGE_TOO_LARGE", `${safeText(path)} is over 10MB, the largest image Candle hosts. ${NOTHING_UPLOADED}`);
   let bytes;
   try {
-    const file = await open4(path, "r");
+    const file = await open6(path, "r");
     try {
-      const stat4 = await file.stat();
-      if (!stat4.isFile())
+      const stat5 = await file.stat();
+      if (!stat5.isFile())
         throw Object.assign(new Error("not a regular file"), { code: "EISDIR" });
-      if (stat4.size > MAX_IMAGE_BYTES)
+      if (stat5.size > MAX_IMAGE_BYTES)
         throw tooLarge();
       const buffer = new Uint8Array(MAX_IMAGE_BYTES + 1);
       let total = 0;
@@ -75514,7 +76133,7 @@ init_solana_lite();
 init_trading();
 import { randomUUID as randomUUID2 } from "node:crypto";
 init_swap();
-var USAGE4 = "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
+var USAGE5 = "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
 var QUOTE_CHAIN = {
   sol: "solana",
   usdc: "solana",
@@ -75594,7 +76213,7 @@ async function launch(args, ctx) {
   const flags = parsed.values;
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID2()}`;
   if (flags["--image"] !== undefined && flags["--image-url"] !== undefined) {
-    writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE4}`, ctx.json);
+    writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE5}`, ctx.json);
     return 2;
   }
   if (flags["--image-url"] !== undefined && !flags["--image-url"].startsWith("https://")) {
@@ -75602,7 +76221,7 @@ async function launch(args, ctx) {
     return 2;
   }
   if (parsed.positionals.length || !flags["--name"] || !flags["--symbol"] || flags["--image"] === undefined && flags["--image-url"] === undefined || !flags["--wallet"] || !validClientId(id) || flags["--dex-version"] !== undefined && flags["--dex-version"] !== "v3" && flags["--dex-version"] !== "v4") {
-    writeUsageFailure(ctx.deps, USAGE4, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE5, ctx.json);
     return 2;
   }
   try {
@@ -75610,7 +76229,7 @@ async function launch(args, ctx) {
       rawAmount(flags["--buy"], 18);
     const hinted = flagChain(flags);
     if (hinted === "hood" && flags["--dex-version"] === undefined) {
-      writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE4}`, ctx.json);
+      writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE5}`, ctx.json);
       return 2;
     }
     let image;
@@ -77187,7 +77806,7 @@ async function infoRead(fetcher, network, body) {
 }
 async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.now) {
   const user = address.toLowerCase();
-  const [metaAndCtxs, state, open5] = await Promise.all([
+  const [metaAndCtxs, state, open7] = await Promise.all([
     infoRead(fetcher, network, { type: "metaAndAssetCtxs" }),
     infoRead(fetcher, network, { type: "clearinghouseState", user }),
     infoRead(fetcher, network, { type: "frontendOpenOrders", user })
@@ -77238,10 +77857,10 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
       continue;
     positions.push({ coin, asset, szi, leverage: { type: lev.type, value: lev.value } });
   }
-  if (!Array.isArray(open5))
+  if (!Array.isArray(open7))
     throw new Error("Hyperliquid returned an unreadable order list");
   const orders = [];
-  for (const raw of open5) {
+  for (const raw of open7) {
     const o = raw;
     const coin = o?.coin;
     if (typeof coin !== "string") {
@@ -79966,10 +80585,10 @@ async function perpsPositions(args, ctx) {
     out.write(`${safeText(result.address)} (${safeText(result.network)}, ${safeText(result.mode)} mode)
 `);
     writePositionsText(ctx, additions);
-    const open5 = Array.isArray(result.openWithdrawals) ? result.openWithdrawals : null;
-    out.write(`Withdrawable now: ${safeText(result.withdrawable)} USDC${open5 === null ? "" : open5.length === 0 ? "; no withdrawal in flight" : ""}.
+    const open7 = Array.isArray(result.openWithdrawals) ? result.openWithdrawals : null;
+    out.write(`Withdrawable now: ${safeText(result.withdrawable)} USDC${open7 === null ? "" : open7.length === 0 ? "; no withdrawal in flight" : ""}.
 `);
-    for (const w of open5 ?? []) {
+    for (const w of open7 ?? []) {
       out.write(`  Withdrawal ${safeText(w.id)}: ${safeText(w.status)}, ${formatUsdcMicros(w.amountUsdcMicros)} USDC to ${safeText(w.to)} (candle perps withdraw status ${safeText(w.id)})
 `);
     }
@@ -79995,10 +80614,10 @@ async function perpsOrders(args, ctx) {
     if (ctx.json)
       return printTradingResult(ctx, result);
     const out = ctx.deps.stdout;
-    const open5 = result.open ?? [];
-    out.write(`Open on Hyperliquid (${open5.length}):
+    const open7 = result.open ?? [];
+    out.write(`Open on Hyperliquid (${open7.length}):
 `);
-    for (const o of open5) {
+    for (const o of open7) {
       out.write(`  ${safeText(o.coin)} ${o.side === "B" ? "buy" : "sell"} ${safeText(o.sz)} at ${safeText(o.limitPx)}${o.reduceOnly ? " reduce-only" : ""}${o.isTrigger ? ` trigger ${safeText(o.triggerPx)}` : ""}, cloid ${safeText(o.cloid ?? "none")}
 `);
     }
@@ -81383,7 +82002,7 @@ init_swap();
 init_vault_support();
 var WITHDRAW_SCOPE = "perps:withdraw";
 var ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
-var USAGE5 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
+var USAGE6 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
 var WITHDRAW_POLL_MS = 10 * 60 * 1000;
 var WITHDRAW_POLL_INTERVAL_MS = 5000;
 var TERMINAL = new Set(["settled", "refunded", "failed"]);
@@ -81426,7 +82045,7 @@ async function withdrawStatus(ctx, id) {
 async function perpsWithdraw(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !ID_RE.test(args[1]))
-      return usage8(ctx, USAGE5);
+      return usage8(ctx, USAGE6);
     try {
       return await withdrawStatus(ctx, args[1]);
     } catch (error) {
@@ -81445,7 +82064,7 @@ async function perpsWithdraw(args, ctx) {
   const [amount] = parsed.positionals;
   const to = parsed.values["--to"];
   if (parsed.positionals.length !== 1 || !amount || to !== "solana" && to !== "hood")
-    return usage8(ctx, USAGE5);
+    return usage8(ctx, USAGE6);
   const amountMicros = parseWithdrawAmount(amount);
   if (amountMicros === null)
     return usage8(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
@@ -81650,12 +82269,12 @@ function planPromotionLine(table) {
 
 // src/commands/plans.ts
 init_render();
-var USAGE6 = "Usage: candle plans";
+var USAGE7 = "Usage: candle plans";
 async function plans(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed || parsed.positionals.length > 0) {
     writeUsageFailure(ctx.deps, "error" in parsed ? `${parsed.error}
-${USAGE6}` : USAGE6, ctx.json);
+${USAGE7}` : USAGE7, ctx.json);
     return 2;
   }
   const result = await apiRequest("/api/v1/agent/plans", {
@@ -81707,7 +82326,7 @@ init_args();
 // src/plugins.ts
 import { spawn as spawn2 } from "node:child_process";
 import { accessSync, constants as constants3, readdirSync, statSync } from "node:fs";
-import { delimiter, join as join10 } from "node:path";
+import { delimiter, join as join11 } from "node:path";
 var PLUGIN_PREFIX = "candle-";
 var RESERVED_HELPER_NAMES = ["fido2", "enclave"];
 function isPluginName(name2) {
@@ -81729,7 +82348,7 @@ function findPlugin(name2, pathEnv) {
   for (const dir of (pathEnv ?? "").split(delimiter)) {
     if (dir === "")
       continue;
-    const candidate = join10(dir, `${PLUGIN_PREFIX}${name2}`);
+    const candidate = join11(dir, `${PLUGIN_PREFIX}${name2}`);
     if (executableAt(candidate))
       return candidate;
   }
@@ -81752,7 +82371,7 @@ function listPlugins(pathEnv) {
       const name2 = file.slice(PLUGIN_PREFIX.length);
       if (!isPluginName(name2) || found.has(name2))
         continue;
-      const path = join10(dir, file);
+      const path = join11(dir, file);
       if (executableAt(path))
         found.set(name2, path);
     }
@@ -82445,13 +83064,13 @@ function writeWalletEvents(ctx, books) {
 function writeAgents(ctx, agents, all) {
   if (!agents || agents.length === 0)
     return;
-  const open5 = (count2, unmarked) => `${count2}${unmarked > 0 ? ` (${unmarked} unpriced)` : ""}`;
+  const open7 = (count2, unmarked) => `${count2}${unmarked > 0 ? ` (${unmarked} unpriced)` : ""}`;
   const rows = agents.map((a) => [
     a.keyPrefix === null ? "Manual (web app)" : a.label && a.label !== a.keyPrefix ? `${a.label} (${a.keyPrefix})` : a.keyPrefix,
     formatUsd(a.realizedNetUsd),
     formatUsd(a.unrealizedUsd),
     formatUsd(totalOf(a)),
-    open5(a.openPositions, a.unmarked),
+    open7(a.openPositions, a.unmarked),
     String(a.closedRounds)
   ]);
   rows.push([
@@ -82459,7 +83078,7 @@ function writeAgents(ctx, agents, all) {
     formatUsd(all.realizedNetUsd),
     formatUsd(all.unrealizedUsd),
     formatUsd(totalOf(all)),
-    open5(all.openPositions, all.unmarked),
+    open7(all.openPositions, all.unmarked),
     all.closedRounds !== undefined ? String(all.closedRounds) : "-"
   ]);
   ctx.deps.stdout.write(`
@@ -85011,7 +85630,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE7 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE8 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -85097,7 +85716,7 @@ async function transfer(args, ctx) {
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok) {
-    writeUsageFailure(ctx.deps, USAGE7, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE8, ctx.json);
     return 2;
   }
   const to = flags2["--to"];
@@ -85906,7 +86525,7 @@ async function discard(deps, path) {
 
 // src/commands/vault-backup.ts
 init_args();
-import { chmod as chmod5, copyFile, mkdir as mkdir6, stat as stat4 } from "node:fs/promises";
+import { chmod as chmod7, copyFile, mkdir as mkdir7, stat as stat5 } from "node:fs/promises";
 import nodePath, { dirname as dirname8, resolve as resolve3 } from "node:path";
 init_crypto();
 init_errors2();
@@ -86093,9 +86712,9 @@ async function vaultBackup(args, ctx) {
     if (target.requires !== undefined) {
       const folder = dirname8(destination);
       try {
-        const created = await mkdir6(folder, { recursive: true });
+        const created = await mkdir7(folder, { recursive: true });
         if (created !== undefined)
-          await chmod5(folder, 448).catch(() => {});
+          await chmod7(folder, 448).catch(() => {});
       } catch (error) {
         throw copyWriteFailed(destination, error, "copy");
       }
@@ -86138,7 +86757,7 @@ async function vaultBackup(args, ctx) {
       }
     }
     const recordCopy = live.file.version === EVM_TEE_VAULT_VERSION ? await copyEvmRecordForBackup(live, copyRecordPath, deps) : undefined;
-    const written = await stat4(destination);
+    const written = await stat5(destination);
     const { report, copyHeader, record } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
     assertFloorCarried(copyHeader, live.file);
     const verifiedAt = new Date(deps.now()).toISOString();
@@ -86457,7 +87076,7 @@ function assertOutsideConfigDir(destination, env, home, api = nodePath) {
 }
 async function exists2(path) {
   try {
-    await stat4(path);
+    await stat5(path);
     return true;
   } catch {
     return false;
@@ -86706,7 +87325,7 @@ init_errors2();
 init_promote_support();
 init_store();
 init_vault_support();
-import { access as access3, chmod as chmod6, constants as constants4, lstat, writeFile as writeFile5 } from "node:fs/promises";
+import { access as access3, chmod as chmod8, constants as constants4, lstat, writeFile as writeFile5 } from "node:fs/promises";
 import { dirname as dirname9, resolve as resolve4 } from "node:path";
 async function vaultExportKey(args, ctx) {
   const parsed = parseArgs(args, {
@@ -86851,7 +87470,7 @@ async function assertExportTargetWritable(destination) {
 async function writeExportFile(destination, body) {
   try {
     await writeFile5(destination, body, { encoding: "utf8", flag: "wx", mode: 384 });
-    await chmod6(destination, 384);
+    await chmod8(destination, 384);
   } catch (error) {
     const code = error.code;
     if (code === "EEXIST") {
@@ -88784,7 +89403,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
 
 // src/commands/vault-import-legacy.ts
 init_args();
-import { readFile as readFile7 } from "node:fs/promises";
+import { readFile as readFile10 } from "node:fs/promises";
 init_ed255192();
 init_errors2();
 
@@ -88960,7 +89579,7 @@ async function vaultImportLegacy(args, ctx) {
     const vaultRaw = await requireVaultRaw(ctx, resolvedVault);
     let legacyRaw;
     try {
-      legacyRaw = await readFile7(fromPath, "utf8");
+      legacyRaw = await readFile10(fromPath, "utf8");
     } catch (error) {
       const code = error?.code;
       if (code === "ENOENT") {
@@ -89051,7 +89670,7 @@ async function vaultImportLegacy(args, ctx) {
 async function resolveDefaultTeePath(env, home) {
   const current = defaultTeeKeystorePath(env, home);
   try {
-    await readFile7(current);
+    await readFile10(current);
     return current;
   } catch {}
   return legacyTeeKeystorePath(env, home);
@@ -91709,7 +92328,7 @@ init_deps();
 init_evm_lite();
 init_solana_endpoint();
 init_solana_lite();
-import { rm as rm3 } from "node:fs/promises";
+import { rm as rm5 } from "node:fs/promises";
 init_crypto();
 init_errors2();
 init_evm_record();
@@ -91851,9 +92470,9 @@ function restoreSeedHd(counts, restoredAt) {
 }
 async function discardIncompleteRestore(ctx, path, sidecarExisted) {
   try {
-    await rm3(path, { force: true });
+    await rm5(path, { force: true });
     if (!sidecarExisted)
-      await rm3(sidecarPath(path), { force: true });
+      await rm5(sidecarPath(path), { force: true });
     ctx.deps.stderr.write(`The vault this run had written at ${path} was removed because the restore did not complete, so a retry starts clean.
 `);
   } catch {
@@ -92370,7 +92989,7 @@ async function collectOwn2(ctx) {
 init_args();
 init_errors2();
 init_sidecar();
-import { rename as rename5, stat as stat5 } from "node:fs/promises";
+import { rename as rename7, stat as stat6 } from "node:fs/promises";
 init_wallet_keystore();
 init_vault_support();
 async function vaultRetireLegacy(args, ctx) {
@@ -92448,7 +93067,7 @@ async function vaultRetireLegacy(args, ctx) {
     const date = new Date(deps.now()).toISOString().slice(0, 10);
     const retiredPath = `${fromPath}.migrated-${date}`;
     try {
-      await rename5(fromPath, retiredPath);
+      await rename7(fromPath, retiredPath);
     } catch (error) {
       throw new VaultError("VAULT_WRITE_FAILED", `Could not rename ${fromPath} to ${retiredPath}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -92474,7 +93093,7 @@ async function vaultRetireLegacy(args, ctx) {
 async function resolveLegacyPath(env, home) {
   const current = defaultTeeKeystorePath(env, home);
   try {
-    await stat5(current);
+    await stat6(current);
     return current;
   } catch {
     return legacyTeeKeystorePath(env, home);
@@ -93001,15 +93620,15 @@ async function vaultTransfer(args, ctx) {
 // src/commands/verify.ts
 init_args();
 init_release();
-import { dirname as dirname10, join as join11 } from "node:path";
+import { dirname as dirname10, join as join12 } from "node:path";
 init_render();
-var USAGE8 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE9 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join11(dirname10(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join12(dirname10(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -93035,19 +93654,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}
-${USAGE8}`, json);
+${USAGE9}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeUsageFailure(deps, `verify takes exactly one file.
-${USAGE8}`, json);
+${USAGE9}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeUsageFailure(deps, `--bundle is required.
-${USAGE8}`, json);
+${USAGE9}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -93061,7 +93680,7 @@ ${USAGE8}`, json);
   }
   if (resolved.kind === "absent") {
     writeUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE8}`, json);
+${USAGE9}`, json);
     return 2;
   }
   const identity2 = resolved.uri;
@@ -93282,7 +93901,7 @@ init_render();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID7 } from "node:crypto";
-var USAGE9 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE10 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 function splitKeep(args) {
@@ -93357,7 +93976,7 @@ async function embeddedSolana(ctx, key, wallet) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE9}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE10}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -93368,7 +93987,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID7()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE9, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE10, ctx.json);
     return 2;
   }
   const keep = lifted.keep;
@@ -93597,18 +94216,18 @@ function walletsUntrust(args, ctx) {
 }
 
 // src/config.ts
-import { chmod as chmod7, mkdir as mkdir7, readFile as readFile8, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
+import { chmod as chmod9, mkdir as mkdir8, readFile as readFile11, rm as rm6, writeFile as writeFile6 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 function configDir2() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join12(homedir5(), ".config", "candle");
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join13(homedir5(), ".config", "candle");
 }
 function configFilePath() {
-  return join12(configDir2(), "config.json");
+  return join13(configDir2(), "config.json");
 }
 async function readConfig() {
   try {
-    const raw = await readFile8(configFilePath(), "utf8");
+    const raw = await readFile11(configFilePath(), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (err.code === "ENOENT")
@@ -93620,8 +94239,8 @@ async function writeConfig(patch) {
   const current = await readConfig();
   const next = { ...current, ...patch };
   const dir = configDir2();
-  await mkdir7(dir, { recursive: true });
-  await chmod7(dir, 448);
+  await mkdir8(dir, { recursive: true });
+  await chmod9(dir, 448);
   await writeFile6(configFilePath(), JSON.stringify(next, null, 2), "utf8");
 }
 async function updateProfile(name2, patch) {
@@ -93632,12 +94251,15 @@ async function updateProfile(name2, patch) {
 }
 async function clearConfig() {
   try {
-    await rm4(configFilePath());
+    await rm6(configFilePath());
   } catch (err) {
     if (err.code !== "ENOENT")
       throw err;
   }
 }
+
+// src/index.ts
+init_ownership();
 
 // src/guard.ts
 init_profiles();
@@ -93891,6 +94513,7 @@ var COMMANDS = {
   plugins: { bare: plugins },
   doctor: { bare: doctor },
   mcp: { bare: mcp },
+  core: { subcommands: { serve: coreServe } },
   setup: { bare: setup },
   verify: { bare: verify },
   update: { bare: update },
@@ -93942,6 +94565,11 @@ async function run2(argv, deps) {
   try {
     code = await runCommand(argv, deps);
   } catch (error2) {
+    if (error2 instanceof ProfileCoreOwnedError) {
+      const parsed2 = extractGlobalFlags(argv);
+      writeLocalFailure(deps, { code: PROFILE_CORE_OWNED, message: error2.message, suggestion: CORE_OWNED_SUGGESTION }, !("error" in parsed2) && parsed2.flags.json);
+      return 1;
+    }
     if (!(error2 instanceof SecretStoreLockedError) && !(error2 instanceof SecretStoreReadError))
       throw error2;
     const parsed = extractGlobalFlags(argv);
@@ -94042,6 +94670,22 @@ async function runCommand(argv, deps) {
     vaultFactor: flags2.vaultFactor,
     vaultDevice: flags2.vaultDevice
   };
+  {
+    const word4 = cmd ?? "";
+    const touched = profile !== undefined ? [profile] : isProfileCommand ? profileNamesTouched(sub, cmdArgs) : [];
+    for (const name2 of touched) {
+      if (!ROUTED_COMMANDS.has(word4) || !routesToCommand(cmd, sub))
+        break;
+      if (!await isCoreOwned(deps, config2, name2))
+        continue;
+      const isSubcommand = subHandlerFor(routeFor(cmd), sub) !== undefined;
+      const allowed = profile !== undefined ? coreOwnedAllows({ cmd: word4, sub, isSubcommand, args: isSubcommand ? cmdArgs : tokens.slice(1) }) : false;
+      if (!allowed) {
+        writeLocalFailure(deps, { code: PROFILE_CORE_OWNED, message: coreOwnedMessage(name2), suggestion: CORE_OWNED_SUGGESTION }, flags2.json);
+        return 1;
+      }
+    }
+  }
   const word3 = cmd ?? "";
   const publicPerpsRead = word3 === "perps" && ["markets", "market", "book", "candles"].includes(sub ?? "");
   const actsAsIdentity = !publicPerpsRead && (word3 !== "mcp" || mcpActsAsIdentity(tokens.slice(1)));
@@ -94195,8 +94839,8 @@ async function buildRealDeps() {
       const { runStdioServer: runStdioServer2 } = await Promise.resolve().then(() => (init_server2(), exports_server));
       await runStdioServer2(env);
     },
-    readFile: (path) => readFile10(path, "utf8"),
-    readBytes: (path) => readFile10(path),
+    readFile: (path) => readFile13(path, "utf8"),
+    readBytes: (path) => readFile13(path),
     readStdin: () => new Promise((resolve6, reject) => {
       const chunks = [];
       process.stdin.on("data", (chunk) => chunks.push(chunk));
@@ -94223,9 +94867,9 @@ async function buildRealDeps() {
     releasePolicy: RELEASE_POLICY,
     writeBytes: async (path, bytes) => {
       await writeFile7(path, bytes, { flag: "wx", mode: 493 });
-      await chmod8(path, 493);
+      await chmod10(path, 493);
     },
-    rename: (from, to) => rename6(from, to),
+    rename: (from, to) => rename8(from, to),
     unlink: (path) => unlink(path),
     runHook: realRunHook,
     onTerminate: (handler) => {

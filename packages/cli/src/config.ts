@@ -67,6 +67,13 @@ export interface ProfileConfig {
   secretNames?: string[]
   /** The user's own Solana RPC for this profile, passed to a plug-in as `CANDLE_PLUGIN_RPC_URL` (R6). */
   rpcUrl?: string
+  /**
+   * BE-1665 (spec K-11): set when trading was turned on in the Candle TUI and this profile's Write
+   * key, device token and signer halves moved to the core-only slot. Informational only: the slot
+   * file's existence is what makes a profile core-owned (`core/ownership.ts`), so deleting or
+   * editing this field restores no credential to the plain CLI.
+   */
+  coreOwned?: boolean
 }
 
 /** Plain, non-secret CLI state. See this file's header comment: no credential fields belong here. */

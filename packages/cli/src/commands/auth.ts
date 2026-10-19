@@ -34,6 +34,7 @@ import { scopesForPreset } from "../agent-key-access"
 import { parseArgs, parseScopesList } from "../args"
 import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
+import { ProfileCoreOwnedError } from "../core/ownership"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
 import {
@@ -485,14 +486,27 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   }
 
   const config = await deps.readConfig()
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile)
+  // BE-1665 (K-11): on a core-owned profile the device token is in the core-only slot, which this
+  // command cannot read. That is a fact to report, not a failure of the status command.
+  let coreOwned = false
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile).catch((error: unknown) => {
+    if (!(error instanceof ProfileCoreOwnedError)) throw error
+    coreOwned = true
+    return undefined
+  })
   const apiKey = await resolveApiKey(deps, ctx.profile)
 
   const rows: CheckRow[] = []
 
   // Sequential, not concurrent (task-3-brief.md's design decisions): the two live checks run one
   // after the other.
-  if (!deviceToken) {
+  if (coreOwned) {
+    rows.push({
+      check: "Device token",
+      state: "SKIP",
+      detail: "held by the Candle core (trading is on in the Candle TUI)",
+    })
+  } else if (!deviceToken) {
     rows.push({ check: "Device token", state: "SKIP", detail: "not set. Run: candle auth login" })
   } else {
     rows.push(

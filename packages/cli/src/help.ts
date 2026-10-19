@@ -1276,6 +1276,16 @@ export const HELP: Record<string, Topic> = {
     examples: ["candle mcp", "candle mcp --print-config", "candle mcp --read-only"],
     env: ENV_API,
   },
+  core: {
+    group: "Maintain",
+    summary: "Run the local Candle core the Candle TUI attaches to (preview)",
+    description:
+      "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Preview: this build keeps the state directory, the single-instance lock and the journal; the attach interface is not in it yet.",
+    usage: ["candle core serve [--profile <name>]"],
+    rows: [{ invocation: "serve", description: "Start the core for the profile in play; one per profile" }],
+    examples: ["candle core serve", "candle core serve --profile staging"],
+    env: ["CANDLE_CONFIG_DIR", "CANDLE_PROFILE"],
+  },
   update: {
     group: "Maintain",
     summary: "Update the CLI and its security key helper to the latest signed release",

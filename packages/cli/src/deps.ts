@@ -16,6 +16,7 @@
  */
 
 import type { CliConfig, ProfileConfig } from "./config"
+import { isCoreOwned, ProfileCoreOwnedError } from "./core/ownership"
 import { profileSecretRef } from "./profiles"
 import type { VerifyResult } from "./release-verify"
 import type { SecretStore } from "./secret-store"
@@ -260,16 +261,25 @@ export interface CommandContext {
 
 /** Resolves the device token: `CANDLE_DEVICE_TOKEN` env override first, then the named profile's
  * ref, or the legacy ref when no profile is in play. Defined exactly once; every command goes
- * through here. A profile with nothing stored resolves to undefined, never to another identity. */
+ * through here. A profile with nothing stored resolves to undefined, never to another identity.
+ * A core-owned profile (BE-1665, K-11) throws `ProfileCoreOwnedError` instead. */
 export async function resolveDeviceToken(deps: Deps, profile?: string): Promise<string | undefined> {
   const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim()
   if (fromEnv) return fromEnv
+  // BE-1665 (K-11): a core-owned profile's device token is in the core-only slot, and no plain
+  // path reads it. Dispatch refuses such invocations first; this is the second guard, for any
+  // path that reaches the resolver anyway.
+  if (profile !== undefined && (await isCoreOwned(deps, await deps.readConfig(), profile))) {
+    throw new ProfileCoreOwnedError(profile)
+  }
   const ref = profile ? profileSecretRef(profile, "deviceToken") : SECRET_REFS.deviceToken
   const stored = await deps.store.get(ref)
   return stored ?? undefined
 }
 
-/** Resolves the API key: `CANDLE_API_KEY` env override first, then the profile's ref, else legacy. */
+/** Resolves the API key: `CANDLE_API_KEY` env override first, then the profile's ref, else legacy.
+ * For a core-owned profile (BE-1665, K-11) the profile's ref holds only its Read key: the Write
+ * key is in the core-only slot. */
 export async function resolveApiKey(deps: Deps, profile?: string): Promise<string | undefined> {
   const fromEnv = deps.env.CANDLE_API_KEY?.trim()
   if (fromEnv) return fromEnv

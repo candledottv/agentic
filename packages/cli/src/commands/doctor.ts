@@ -3,6 +3,7 @@ import { sortAgentKeyScopes } from "../agent-key-access"
 import { isUsageError, parseArgs } from "../args"
 import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
+import { ProfileCoreOwnedError } from "../core/ownership"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
 import { SecretStoreLockedError } from "../keychain"
@@ -176,7 +177,16 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
       return undefined
     }
   }
-  const deviceToken = await readCredential(() => resolveDeviceToken(deps, ctx.profile))
+  // BE-1665 (K-11): a core-owned profile's device token is in the core-only slot. Not a store
+  // failure, and not readable here: the token is reported absent and the row below says why.
+  let coreOwned = false
+  const deviceToken = await readCredential(() =>
+    resolveDeviceToken(deps, ctx.profile).catch((error: unknown) => {
+      if (!(error instanceof ProfileCoreOwnedError)) throw error
+      coreOwned = true
+      return undefined
+    }),
+  )
   const apiKey = await readCredential(() => resolveApiKey(deps, ctx.profile))
   const role = requestedRole === "auto" ? (apiKey && !deviceToken ? "bot" : "owner") : requestedRole
   rows.push(
@@ -184,7 +194,7 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
       ? {
           check: "Credentials present",
           state: "PASS",
-          detail: `${deviceToken && apiKey ? "device token and API key" : apiKey ? "API key only" : "device token only (no API key yet)"}; role: ${role}`,
+          detail: `${deviceToken && apiKey ? "device token and API key" : apiKey ? (coreOwned ? "Read key; the device token and Write key are held by the Candle core" : "API key only") : "device token only (no API key yet)"}; role: ${role}`,
         }
       : {
           check: "Credentials present",

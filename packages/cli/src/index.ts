@@ -28,6 +28,7 @@ import { agentPost } from "./commands/agent-post"
 import { agentProfile } from "./commands/agent-profile"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { completion, completionBash, completionFish, completionZsh } from "./commands/completion"
+import { coreServe } from "./commands/core"
 import { doctor } from "./commands/doctor"
 import { externalList, externalNew, externalSweep } from "./commands/external"
 import { feesClaim, feesList } from "./commands/fees"
@@ -104,6 +105,15 @@ import { walletsCloseEmpty } from "./commands/wallets-close-empty"
 import { walletsTrust, walletsUntrust } from "./commands/wallets-trust"
 import type { CliConfig } from "./config"
 import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
+import {
+  CORE_OWNED_SUGGESTION,
+  coreOwnedAllows,
+  coreOwnedMessage,
+  isCoreOwned,
+  PROFILE_CORE_OWNED,
+  ProfileCoreOwnedError,
+  profileNamesTouched,
+} from "./core/ownership"
 import type { CommandContext, Deps } from "./deps"
 import { verifyProfileAccount } from "./guard"
 import { renderTopic, renderTopLevel } from "./help"
@@ -351,6 +361,9 @@ const COMMANDS: Record<string, CommandRoute> = {
   plugins: { bare: plugins },
   doctor: { bare: doctor },
   mcp: { bare: mcp },
+  // BE-1665 (spec S1, C-1): the local core the Candle TUI attaches to. Preview: the attach
+  // interface, cards and reconciliation land in the PRs stacked on this one.
+  core: { subcommands: { serve: coreServe } },
   setup: { bare: setup },
   verify: { bare: verify },
   update: { bare: update },
@@ -475,6 +488,17 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
   try {
     code = await runCommand(argv, deps)
   } catch (error) {
+    if (error instanceof ProfileCoreOwnedError) {
+      // The resolver's second guard (deps.ts) fired: dispatch's own gate should have refused
+      // first, so this is a path the gate does not know. Same answer either way.
+      const parsed = extractGlobalFlags(argv)
+      writeLocalFailure(
+        deps,
+        { code: PROFILE_CORE_OWNED, message: error.message, suggestion: CORE_OWNED_SUGGESTION },
+        !("error" in parsed) && parsed.flags.json,
+      )
+      return 1
+    }
     if (!(error instanceof SecretStoreLockedError) && !(error instanceof SecretStoreReadError)) throw error
     const parsed = extractGlobalFlags(argv)
     writeLocalFailure(
@@ -648,6 +672,33 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
     verifyAccount: !flags.noVerifyAccount,
     vaultFactor: flags.vaultFactor,
     vaultDevice: flags.vaultDevice,
+  }
+
+  // BE-1665 (spec K-11): a core-owned profile's Write key, device token and signer halves are in
+  // the core-only slot, which no plain path reads. Only the invocations `core/ownership.ts` lists
+  // run as one; anything else, including a command added later and not yet classified, is refused
+  // here before it reads a credential or sends a request. `profile rename|remove` resolve no
+  // identity, so the profiles they NAME are checked instead.
+  {
+    const word = cmd ?? ""
+    const touched = profile !== undefined ? [profile] : isProfileCommand ? profileNamesTouched(sub, cmdArgs) : []
+    for (const name of touched) {
+      if (!ROUTED_COMMANDS.has(word) || !routesToCommand(cmd, sub)) break
+      if (!(await isCoreOwned(deps, config, name))) continue
+      const isSubcommand = subHandlerFor(routeFor(cmd), sub) !== undefined
+      const allowed =
+        profile !== undefined
+          ? coreOwnedAllows({ cmd: word, sub, isSubcommand, args: isSubcommand ? cmdArgs : tokens.slice(1) })
+          : false
+      if (!allowed) {
+        writeLocalFailure(
+          deps,
+          { code: PROFILE_CORE_OWNED, message: coreOwnedMessage(name), suggestion: CORE_OWNED_SUGGESTION },
+          flags.json,
+        )
+        return 1
+      }
+    }
   }
 
   // The strict account guard (guard.ts), run once here rather than inside each command: a command
