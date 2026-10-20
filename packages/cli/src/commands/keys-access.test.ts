@@ -311,7 +311,7 @@ describe("T-B4: the typed prefix", () => {
     expect(stderr.text).toContain("Removes         nothing")
     expect(stderr.text).toContain("TEE wallets on this key: 3  (tr-01, tr-02, tr-03)")
     expect(stderr.text).toContain("It can move these wallets' funds to their vaults as soon as you confirm.")
-    expect(stderr.text).toContain("it also needs a USDC and a CNDL spend cap; SOL is ready.")
+    expect(stderr.text).toContain("No cap for USDC, CNDL (unlimited).")
   })
 
   test("a stale commit is refused with the server's code and a rerun suggestion", async () => {
@@ -550,10 +550,15 @@ describe("T-B11: --history", () => {
 })
 
 describe("the linked-transfer line", () => {
-  test("names what is missing and what is ready, and is absent when nothing is missing", () => {
+  test("reports optional limits without claiming linked transfers need caps", () => {
     expect(linkedTransferLine({ txLimit: false, assets: { sol: true, usdc: true, cndl: true } })).toContain(
-      "it also needs a USD transaction limit; SOL, USDC and CNDL are ready.",
+      "no USD limit (unlimited)",
     )
-    expect(linkedTransferLine({ txLimit: true, assets: { sol: true, usdc: true, cndl: true } })).toBeNull()
+    expect(linkedTransferLine({ txLimit: true, assets: { sol: true, usdc: true, cndl: true } })).toContain(
+      "USD limit set",
+    )
+    expect(linkedTransferLine({ txLimit: false, assets: { sol: false, usdc: false, cndl: false } })).toContain(
+      "No cap for SOL, USDC, CNDL (unlimited)",
+    )
   })
 })

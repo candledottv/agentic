@@ -118,33 +118,16 @@ function keyName(keyPrefix: string, label: string | null | undefined): string {
   return cleaned ? `${keyPrefix} (${cleaned})` : keyPrefix
 }
 
-/** `SOL`, `SOL and USDC`, `SOL, USDC and CNDL`. */
-function listWords(words: string[]): string {
-  return words.length <= 1 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`
-}
-
-/**
- * The linked-transfer readiness line (spec section 9's screen): what a widened key still needs
- * before it can send to a linked wallet. A vault transfer needs none of it.
- */
-export function linkedTransferLine(
-  ready: NonNullable<AccessResponse["effects"]["linkedTransferReady"]>,
-): string | null {
-  const assets = Object.entries(ready.assets)
-  const missing = assets.filter(([, ok]) => !ok).map(([asset]) => asset.toUpperCase())
-  const readyAssets = assets.filter(([, ok]) => ok).map(([asset]) => asset.toUpperCase())
-  const needs: string[] = []
-  if (!ready.txLimit) needs.push("a USD transaction limit")
-  if (missing.length > 0) {
-    needs.push(`${missing.map((asset) => `a ${asset}`).join(" and ")} spend cap`)
-  }
-  if (needs.length === 0) return null
-  const readyPart =
-    readyAssets.length > 0 ? `; ${listWords(readyAssets)} ${readyAssets.length === 1 ? "is" : "are"} ready` : ""
+/** Reports configured limits; absent caps do not prevent linked transfers. */
+export function linkedTransferLine(ready: NonNullable<AccessResponse["effects"]["linkedTransferReady"]>): string {
+  const unset = Object.entries(ready.assets)
+    .filter(([, set]) => !set)
+    .map(([asset]) => asset.toUpperCase())
   return [
-    `Warning: to send to linked wallets it also needs ${needs.join(" and ")}${readyPart}.`,
-    "         Set them in the web key manager: Agents, Keys, this key, Spend limits.",
-  ].join("\n")
+    ready.txLimit ? "Linked transfers: USD limit set." : "Linked transfers: no USD limit (unlimited).",
+    unset.length ? `No cap for ${unset.join(", ")} (unlimited).` : "Per-asset caps set.",
+    "Only configured limits apply, including zero caps.",
+  ].join(" ")
 }
 
 /** Warnings this command renders itself, from `effects`, rather than as the server's sentence. */

@@ -1860,7 +1860,7 @@ export interface EvmSignTransactionParams {
  *
  * A TEE payer (Ember Phase 4c) may also start from USDC, and needs `clientTradeId`: the server
  * then resolves the destination to this key's own TEE wallet on Hood (`toWalletId` names one when
- * the key has several), requires a raw cap on the origin asset, and charges no fee. That bridge is
+ * the key has several), honours any cap on the origin asset (none is required), and charges no fee. That bridge is
  * gated by the server's `TEE_BRIDGE_ENABLED`; with it off the build answers `PAIR_UNSUPPORTED`.
  * A Hood-origin bridge signs one leg at a time and is not this call; `candle swap` runs it.
  */
@@ -2286,7 +2286,7 @@ export interface PerpsOrders {
  * Perps C (BE-647, HL-ED-8): `perpsDeposit()`. Relay moves funds from the key's Hood or Solana TEE
  * wallet onto Hyperliquid perps USDC at the key's EVM TEE wallet's own address. The asset decides
  * the paying chain: SOL or USDC from the Solana TEE wallet, ETH or USDG from the Hood one. Needs
- * `swap:write` and a raw cap on the asset. There is no withdrawal yet.
+ * `swap:write`; any cap on the asset still applies. There is no withdrawal yet.
  */
 export interface PerpsDepositParams {
   /** Idempotency id, 1 to 128 of `A-Za-z0-9._:-`. Rebuilding under the same id answers its job. */

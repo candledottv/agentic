@@ -379,7 +379,7 @@ describe("TEE limits row", () => {
     const tee = row(f, "tee_limits")
     expect(tee?.state).toBe("PASS")
     expect(tee?.detail).toBe(
-      "no USD limit (unlimited); per-transaction caps set for SOL; no cap for USDC, CNDL (trades and swaps unlimited; transfers, LP deposits and launches need one)",
+      "no USD limit (unlimited); per-transaction caps set for SOL; no cap for USDC, CNDL (unlimited)",
     )
     // USDG is a Hood asset, and this key's only wallet is on Solana.
     expect(tee?.detail).not.toContain("USDG")

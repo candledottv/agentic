@@ -2175,8 +2175,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "MOVES REAL FUNDS unless submit is false. Deposit onto the key's Hyperliquid account through Relay: SOL or " +
         "USDC from its Solana TEE wallet, or ETH or USDG from its Hood TEE wallet, credited as Hyperliquid perps " +
         "USDC at the key's EVM TEE wallet's own address (Candle resolves it; no recipient is taken). Refused below a " +
-        "floor that covers Hyperliquid's 1 USDC first-deposit charge. No Candle fee. Needs swap:write and a raw cap " +
-        "on the asset, and CANDLE_KEY_SIGNER_PEM_FILE to sign. There is no withdrawal from Hyperliquid yet.",
+        "floor that covers Hyperliquid's 1 USDC first-deposit charge. No Candle fee. Needs swap:write (any cap on " +
+        "the asset still applies), and CANDLE_KEY_SIGNER_PEM_FILE to sign. There is no withdrawal from Hyperliquid yet.",
       inputSchema: perpsDepositShape,
     },
     async (args) => {

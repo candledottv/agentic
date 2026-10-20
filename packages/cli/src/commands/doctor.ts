@@ -73,16 +73,14 @@ async function teeLimitsRow(ctx: CommandContext, apiKey: string, wallets: { chai
   const set = assets.filter((asset) => readiness.rawCaps[asset])
   const unset = assets.filter((asset) => !readiness.rawCaps[asset])
   // Information, never a warning: only limits the owner set apply, so an unset one is unlimited
-  // and never the reason a trade or swap is refused.
+  // and never the reason a TEE operation is refused.
   return {
     check: "TEE limits",
     state: "PASS",
     detail: [
       readiness.txLimit ? "USD limit set" : "no USD limit (unlimited)",
       set.length > 0 ? `per-transaction caps set for ${set.join(", ")}` : "",
-      unset.length > 0
-        ? `no cap for ${unset.join(", ")} (trades and swaps unlimited; transfers, LP deposits and launches need one)`
-        : "",
+      unset.length > 0 ? `no cap for ${unset.join(", ")} (unlimited)` : "",
     ]
       .filter(Boolean)
       .join("; "),

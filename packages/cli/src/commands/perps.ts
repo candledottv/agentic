@@ -883,7 +883,7 @@ async function perpsDepositStatus(ctx: CommandContext, id: string): Promise<numb
  * `candle perps deposit`: move USDC onto the key's Hyperliquid account through Relay, from its Hood
  * or Solana TEE wallet. The asset decides the paying chain. From Hood the account is the paying
  * wallet's own address; from Solana it is the key's EVM TEE wallet (`--to` names it when the key has
- * more than one). Needs `swap:write` and a raw cap on the asset. `candle perps withdraw` brings it
+ * more than one). Needs `swap:write`; any cap on the asset still applies. `candle perps withdraw` brings it
  * back to the key's own Solana or Hood TEE wallet (`perps:withdraw`); `tee disable` and `tee sweep`
  * do not reach it, so withdraw before disabling.
  */

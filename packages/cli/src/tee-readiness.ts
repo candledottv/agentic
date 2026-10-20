@@ -1,8 +1,7 @@
 /**
  * `GET /keys/self/limits` reports which of the key's optional limits are set as `teeReadiness`: the
  * USD transaction limit and each asset's per-transaction cap. Only limits the owner set apply, so
- * neither is required for a TEE trade or swap; transfers, LP deposits and launches still need a
- * per-asset cap, which the server enforces. `doctor` reports these as information. An older API
+ * neither is required for any TEE operation. Configured limits, including zero raw caps, bind. `doctor` reports these as information. An older API
  * omits the field, and then readiness is unknown. The server stays authoritative either way.
  */
 
