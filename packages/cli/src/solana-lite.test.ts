@@ -522,12 +522,18 @@ describe("BE-658: RPC context floor and definite send rejection", () => {
   const preflightFailed = (data: unknown = SIM_DATA): Reply => ({ error: { code: -32002, message: SIM_MESSAGE, data } })
   const thrown = async (p: Promise<unknown>) => (await p.then(() => undefined).catch((e) => e)) as SolanaRpcError
 
-  test("L1: a -32002 with data keeps rpcCode, adds the sanitized simulation, and its message is unchanged", async () => {
+  test("L1: a -32002 send exposes the simulation error and trailing logs to every failure renderer", async () => {
     const s = scripted([preflightFailed()])
     const error = await thrown(s.rpc.sendTransaction("dHg="))
     expect(error).toBeInstanceOf(SolanaRpcError)
-    // The message is the string every caller quoted before BE-658, byte for byte.
-    expect(error.message).toBe(`RPC sendTransaction failed: -32002 ${SIM_MESSAGE}`)
+    expect(error.message).toBe(
+      [
+        `RPC sendTransaction failed: -32002 ${SIM_MESSAGE}`,
+        'Simulation err: {"InstructionError":[0,{"Custom":1}]}',
+        "Simulation logs:",
+        ...SIM_LOGS,
+      ].join("\n"),
+    )
     expect(error.rpcCode).toBe(-32002)
     expect(error.rateLimited).toBe(false)
     expect(error.responseIdMatched).toBe(true)
@@ -540,6 +546,19 @@ describe("BE-658: RPC context floor and definite send rejection", () => {
     })
     // `data` itself is never held by the error.
     expect(Object.keys(error)).not.toContain("data")
+  })
+
+  test("a BlockhashNotFound send exposes err even without logs; read and HTTP errors retain their messages", async () => {
+    const send = scripted([preflightFailed({ err: "BlockhashNotFound", logs: null })])
+    expect((await thrown(send.rpc.sendTransaction("dHg="))).message).toBe(
+      `RPC sendTransaction failed: -32002 ${SIM_MESSAGE}\nSimulation err: "BlockhashNotFound"`,
+    )
+    expect(send.seen).toHaveLength(1)
+    expect(send.sleeps).toEqual([])
+    const read = scripted([preflightFailed()])
+    expect((await thrown(read.rpc.getBalance("addr"))).message).toBe(`RPC getBalance failed: -32002 ${SIM_MESSAGE}`)
+    const http = scripted([{ status: 500 }])
+    expect((await thrown(http.rpc.sendTransaction("dHg="))).message).toBe("RPC sendTransaction failed: HTTP 500")
   })
 
   test("L2: logs are bounded to the last 20 and sanitized; secrets, URLs, controls and other keys are gone", async () => {
@@ -585,7 +604,12 @@ describe("BE-658: RPC context floor and definite send rejection", () => {
     const serialized = JSON.stringify(sim)
     for (const leak of ["SECRET", "KEY", "synthetic.invalid", "https://", "LEAK", "\u0007", "\u001b", "\u0085"]) {
       expect(`${leak}: ${serialized.includes(leak)}`).toBe(`${leak}: false`)
+      expect(error.message).not.toContain(leak)
     }
+    expect(error.message).toContain("Simulation logs (25 earlier lines omitted):")
+    expect(error.message).toContain("Program log: line 25")
+    expect(error.message).toContain("Program log: line 44")
+    expect(error.message).not.toContain("Program log: line 24")
     // err is capped at 512 chars, and a value JSON cannot encode is named, never thrown.
     const long = sanitizeSimulation("m", { err: "e".repeat(2000) })
     expect(long.err?.length).toBe(512)

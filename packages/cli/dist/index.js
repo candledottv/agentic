@@ -13835,7 +13835,13 @@ var init_solana_lite = __esm(() => {
     contextBehind;
     contextUnverified;
     constructor(message, facts = {}) {
-      super(message);
+      super(facts.method === "sendTransaction" && facts.simulation ? [
+        `RPC sendTransaction failed: ${facts.rpcCode ?? ""} ${facts.simulation.message}`.trim(),
+        `Simulation err: ${facts.simulation.err ?? "null"}`,
+        ...facts.simulation.logsOmitted > 0 ? [`Simulation logs (${facts.simulation.logsOmitted} earlier lines omitted):`] : facts.simulation.logs.length > 0 ? ["Simulation logs:"] : [],
+        ...facts.simulation.logs
+      ].join(`
+`) : message);
       this.name = "SolanaRpcError";
       this.status = facts.status;
       this.retryAfterMs = facts.retryAfterMs;

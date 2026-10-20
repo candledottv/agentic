@@ -46,6 +46,7 @@ interface Options {
   teeWallets?: number
   /** BE-355 (T11, T12): RPC methods that always answer HTTP 429. */
   rpcRateLimit?: string[]
+  rpcSendFailure?: { code: number; message: string; data?: unknown }
 }
 
 async function fixture(opts: Options = {}) {
@@ -145,6 +146,8 @@ async function fixture(opts: Options = {}) {
     if (path.endsWith("/sign")) return ok({ signedTransaction: signed, encoding: "base64" })
     if (path === "/rpc") {
       if (opts.rpcRateLimit?.includes(body.method)) return new Response("rate limited", { status: 429 })
+      if (body.method === "sendTransaction" && opts.rpcSendFailure)
+        return ok({ jsonrpc: "2.0", id: body.id, error: opts.rpcSendFailure })
       const result =
         body.method === "getTokenSupply"
           ? { value: { decimals: 6 } }
@@ -189,6 +192,35 @@ const addArgs = [
 ]
 const removeArgs = ["lp", "remove", POSITION, "--percent", "100", "--client-trade-id", "lp-2", "--yes", "--json"]
 const claimArgs = ["lp", "claim", POSITION, "--wallet", "tee", "--client-trade-id", "lp-3", "--yes", "--json"]
+
+test.each([
+  true,
+  false,
+])("LP send failure prints simulation diagnostics (json=%s) and never confirms or retries", async (json) => {
+  const f = await fixture({
+    rpcSendFailure: {
+      code: -32002,
+      message: "Transaction simulation failed",
+      data: {
+        err: { InstructionError: [2, { Custom: 6001 }] },
+        logs: ["Program log: slippage limit exceeded", "Program failed: custom program error: 0x1771"],
+      },
+    },
+  })
+  expect(await run(json ? addArgs : addArgs.filter((arg) => arg !== "--json"), f.deps)).toBe(1)
+  const message = json ? JSON.parse(f.stdout.text.trim()).message : f.stderr.text
+  expect(message).toContain("RPC sendTransaction failed: -32002 Transaction simulation failed")
+  expect(message).toContain('Simulation err: {"InstructionError":[2,{"Custom":6001}]}')
+  expect(message).toContain("Program log: slippage limit exceeded")
+  expect(message).toContain("Program failed: custom program error: 0x1771")
+  const sends = f.calls.filter((c) => c.path === "/rpc" && c.body?.method === "sendTransaction")
+  expect(sends).toHaveLength(1)
+  expect((sends[0]?.body?.params as unknown[])[1]).toMatchObject({
+    preflightCommitment: "finalized",
+    skipPreflight: false,
+  })
+  expect(f.calls.some((c) => c.path.endsWith("/confirm"))).toBe(false)
+})
 
 describe("candle lp: the reads", () => {
   test("pools <token> reads the pools route with the bound key and prints one JSON document", async () => {

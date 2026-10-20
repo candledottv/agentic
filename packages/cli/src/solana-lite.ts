@@ -533,8 +533,8 @@ export type ProgramAccountFilter =
  * `status` for an HTTP failure (429 is retried, anything else stops the group), `retryAfterMs`
  * from a 429's `Retry-After` header when the server sent one, and `rpcCode` for a JSON-RPC
  * `error` member (`-32602 INVALID_PARAMS` is what the public endpoint answers a token scan with).
- * The message is byte-identical to what every existing method threw before this class existed,
- * so no caller that matched on the text changes.
+ * Send simulation failures include the bounded, sanitized diagnostics in the message so every
+ * command's failure renderer retains the program error and trailing logs.
  */
 export class SolanaRpcError extends Error {
   readonly status?: number
@@ -562,7 +562,20 @@ export class SolanaRpcError extends Error {
   /** BE-658 (S1.4): a floored read was answered without a numeric `context.slot`. */
   readonly contextUnverified?: true
   constructor(message: string, facts: SolanaRpcErrorFacts = {}) {
-    super(message)
+    super(
+      facts.method === "sendTransaction" && facts.simulation
+        ? [
+            `RPC sendTransaction failed: ${facts.rpcCode ?? ""} ${facts.simulation.message}`.trim(),
+            `Simulation err: ${facts.simulation.err ?? "null"}`,
+            ...(facts.simulation.logsOmitted > 0
+              ? [`Simulation logs (${facts.simulation.logsOmitted} earlier lines omitted):`]
+              : facts.simulation.logs.length > 0
+                ? ["Simulation logs:"]
+                : []),
+            ...facts.simulation.logs,
+          ].join("\n")
+        : message,
+    )
     this.name = "SolanaRpcError"
     this.status = facts.status
     this.retryAfterMs = facts.retryAfterMs
@@ -789,8 +802,9 @@ function rawAccountView(value: RawAccount | null, address: string): AccountView 
 
 /**
  * The narrowest JSON-RPC client the sweep needs, over the injected `fetch`. Every call is a POST
- * of one request; a non-2xx or an `error` member throws with the RPC's code/message only (never
- * the request body, which for sendTransaction is a signed transaction).
+ * of one request; a non-2xx or an `error` member throws with the RPC's code/message and sanitized
+ * send simulation diagnostics (never the request body, which for sendTransaction is a signed
+ * transaction).
  *
  * BE-355 (D3): a rate-limited answer to a read is retried exactly once, after `rpcRetryDelayMs`
  * through `sleep`; a second rate-limited answer throws the `SolanaRpcError` with `rateLimited`.
