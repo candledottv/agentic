@@ -4216,6 +4216,176 @@ describe("swapFromLinked", () => {
   })
 })
 
+describe("close empty token accounts on a TEE wallet (BE-1687)", () => {
+  const BASE = "https://api.test/api/v1/agent/wallets/tee-sol/close-empty"
+
+  async function teeClient(answers: Record<string, () => Response>) {
+    const calls: Array<{ url: string; method: string; body: Record<string, unknown> }> = []
+    const store = new InMemorySecretStore()
+    await store.set("tee-sol", (await generateSignerKeypair()).privateKeyPem)
+    const client = new CandleClient({
+      apiUrl: "https://api.test",
+      apiKey: "ck_live_x",
+      privyAppId: "app1",
+      secretStore: store,
+      fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url)
+        calls.push({ url: u, method: init?.method ?? "GET", body: JSON.parse(String(init?.body ?? "{}")) })
+        for (const [suffix, answer] of Object.entries(answers)) if (u.endsWith(suffix)) return answer()
+        if (u.endsWith("/agent/wallets/tee-sol/sign")) {
+          const sent = JSON.parse(String(init?.body)) as { body: { params: { transaction: string } } }
+          return json(200, {
+            success: true,
+            signedTransaction: `signed:${sent.body.params.transaction}`,
+            encoding: "base64",
+          })
+        }
+        throw new Error(`unexpected fetch ${u}`)
+      }) as typeof fetch,
+    })
+    return { client, calls }
+  }
+
+  const BUILT = {
+    success: true,
+    status: "built",
+    clientTradeId: "close-1",
+    wallet: "TeeWallet1",
+    linkedWalletId: "tee-sol",
+    expiresAtBlockHeight: 1000,
+    transactions: [
+      { index: 0, unsignedTransaction: "dW5zaWduZWQtMA==", accounts: ["A1", "A2"], lamports: "4113360" },
+      { index: 1, unsignedTransaction: "dW5zaWduZWQtMQ==", accounts: ["A3"], lamports: "2039280" },
+    ],
+  }
+
+  test("previewCloseEmptyAccounts({ wallet }) posts the keep list to the TEE wallet's preview route", async () => {
+    const { client, calls } = await teeClient({ "/close-empty/preview": () => json(200, { success: true }) })
+    await client.previewCloseEmptyAccounts({ wallet: "tee-sol", keep: ["K"] })
+    expect(calls[0]?.url).toBe(`${BASE}/preview`)
+    expect(calls[0]?.body).toEqual({ keep: ["K"] })
+  })
+
+  test("closeEmptyAccounts({ wallet }): build, relay-sign each transaction, then submit the whole batch", async () => {
+    const report = { success: true, status: "completed", clientTradeId: "close-1", signatures: ["S0", "S1"] }
+    const { client, calls } = await teeClient({
+      "/close-empty/build": () => json(200, BUILT),
+      "/close-empty/submit": () => json(200, report),
+    })
+    const result = await client.closeEmptyAccounts({
+      wallet: "tee-sol",
+      privyWalletId: "pw-t",
+      clientTradeId: "close-1",
+      keep: ["K"],
+      accounts: ["A1", "A2", "A3"],
+    })
+    expect(calls.map((c) => c.url.replace("https://api.test/api/v1/agent/wallets/tee-sol", ""))).toEqual([
+      "/close-empty/build",
+      "/sign",
+      "/sign",
+      "/close-empty/submit",
+    ])
+    // Neither the wallet id nor the Privy id rides in the build body: the path names the wallet.
+    expect(calls[0]?.body).toEqual({ clientTradeId: "close-1", keep: ["K"], accounts: ["A1", "A2", "A3"] })
+    const signs = calls.filter((c) => c.url.endsWith("/sign"))
+    expect(signs.map((c) => (c.body.body as { params: { transaction: string } }).params.transaction)).toEqual([
+      "dW5zaWduZWQtMA==",
+      "dW5zaWduZWQtMQ==",
+    ])
+    expect(calls[3]?.body).toEqual({
+      clientTradeId: "close-1",
+      signed: [
+        { index: 0, signedTransaction: "signed:dW5zaWduZWQtMA==" },
+        { index: 1, signedTransaction: "signed:dW5zaWduZWQtMQ==" },
+      ],
+    })
+    expect(result).toEqual(report as never)
+  })
+
+  test("a recovering submit (202) is returned as the result, not thrown", async () => {
+    const recovering = {
+      success: true,
+      status: "recovering",
+      clientTradeId: "close-1",
+      unresolved: [{ index: 1, accounts: ["A3"], signature: "S1", reason: "no confirmed outcome yet" }],
+    }
+    const { client } = await teeClient({
+      "/close-empty/build": () => json(200, BUILT),
+      "/close-empty/submit": () => json(202, recovering),
+    })
+    const result = await client.closeEmptyAccounts({
+      wallet: "tee-sol",
+      privyWalletId: "pw-t",
+      clientTradeId: "close-1",
+    })
+    expect(result.status).toBe("recovering")
+    expect(result.unresolved?.[0]?.signature).toBe("S1")
+    expect(result.netLamports).toBeUndefined()
+  })
+
+  test("nothing to close returns without signing or submitting", async () => {
+    const { client, calls } = await teeClient({
+      "/close-empty/build": () =>
+        json(200, { success: true, status: "nothing_to_close", clientTradeId: "close-2", transactions: [] }),
+    })
+    const result = await client.closeEmptyAccounts({
+      wallet: "tee-sol",
+      privyWalletId: "pw-t",
+      clientTradeId: "close-2",
+    })
+    expect(result.status).toBe("nothing_to_close")
+    expect(result.lamportsRecovered).toBe("0")
+    expect(calls).toHaveLength(1)
+  })
+
+  test("a build refusal throws its code and signs nothing", async () => {
+    const { client, calls } = await teeClient({
+      "/close-empty/build": () => envelope(503, "LAUNCH_DISABLED"),
+    })
+    const error = await client
+      .closeEmptyAccounts({ wallet: "tee-sol", privyWalletId: "pw-t", clientTradeId: "close-3" })
+      .catch((e) => e)
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect(error.code).toBe("LAUNCH_DISABLED")
+    expect(calls).toHaveLength(1)
+  })
+
+  test("a build that already began submitting answers from the job and signs nothing again", async () => {
+    const report = { success: true, status: "completed", clientTradeId: "close-1", signatures: ["S0", "S1"] }
+    const { client, calls } = await teeClient({
+      "/close-empty/build": () => json(200, { ...BUILT, submitState: "done", replayed: true }),
+      "/close-empty/jobs/close-1": () =>
+        json(200, {
+          success: true,
+          job: { clientTradeId: "close-1", status: "completed", httpStatus: 200, result: report },
+        }),
+    })
+    const result = await client.closeEmptyAccounts({
+      wallet: "tee-sol",
+      privyWalletId: "pw-t",
+      clientTradeId: "close-1",
+    })
+    expect(result).toEqual(report as never)
+    expect(calls.some((c) => c.url.endsWith("/sign") || c.url.endsWith("/submit"))).toBe(false)
+  })
+
+  test("a TEE wallet without privyWalletId is refused before any request", async () => {
+    const { client, calls } = await teeClient({})
+    await expect(client.closeEmptyAccounts({ wallet: "tee-sol", clientTradeId: "close-4" })).rejects.toThrow(
+      "requires privyWalletId",
+    )
+    expect(calls).toHaveLength(0)
+  })
+
+  test("getCloseEmptyAccountsJob(id, { wallet }) reads the TEE wallet's job route", async () => {
+    const job = { clientTradeId: "a/b", kind: "close-empty", walletKind: "tee", status: "built", createdAt: 1 }
+    const { client, calls } = await teeClient({ "/close-empty/jobs/a%2Fb": () => json(200, { success: true, job }) })
+    expect(await client.getCloseEmptyAccountsJob("a/b", { wallet: "tee-sol" })).toEqual(job as never)
+    expect(calls[0]?.url).toBe(`${BASE}/jobs/a%2Fb`)
+    expect(calls[0]?.method).toBe("GET")
+  })
+})
+
 describe("swapFromLinked: a TEE payer's bridge (Ember 4c)", () => {
   test("clientTradeId rides on the build and the submit, and a USDC origin is sent as is", async () => {
     const calls: Array<{ url: string; body: Record<string, unknown> }> = []

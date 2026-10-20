@@ -279,6 +279,7 @@ const COMMANDS: Record<string, CommandRoute> = {
   wallets: {
     // BE-329: the owner's trust mark, over the device token (never an API key).
     // BE-418: `close-empty` closes the embedded wallet's empty token accounts, rent back to it.
+    // BE-1687: or a bound TEE wallet's, built by Candle and approved by the key signer.
     subcommands: {
       import: walletsImport,
       revoke: walletsRevoke,

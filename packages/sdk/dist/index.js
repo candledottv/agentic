@@ -4167,15 +4167,59 @@ class CandleClient {
   }
   async previewCloseEmptyAccounts(req = {}) {
     this.requireKey("previewCloseEmptyAccounts()");
-    return this.requestJson("POST", "/api/v1/agent/wallets/embedded/close-empty/preview", req);
+    const { wallet, ...body } = req;
+    return this.requestJson("POST", wallet === undefined ? "/api/v1/agent/wallets/embedded/close-empty/preview" : `/api/v1/agent/wallets/${encodeURIComponent(wallet)}/close-empty/preview`, body);
   }
   async closeEmptyAccounts(req) {
     this.requireKey("closeEmptyAccounts()");
-    return this.requestJson("POST", "/api/v1/agent/wallets/embedded/close-empty", req);
+    const { wallet, privyWalletId, ...body } = req;
+    if (wallet === undefined)
+      return this.requestJson("POST", "/api/v1/agent/wallets/embedded/close-empty", body);
+    if (!privyWalletId)
+      throw new Error("closeEmptyAccounts() with a TEE wallet requires privyWalletId: the same wallet's Privy wallet id, which signLinkedTransaction() signs for");
+    const base = `/api/v1/agent/wallets/${encodeURIComponent(wallet)}/close-empty`;
+    const build = await this.requestJson("POST", `${base}/build`, body);
+    if (build.status === "nothing_to_close")
+      return {
+        closed: [],
+        signatures: [],
+        lamportsRecovered: "0",
+        solRecovered: "0",
+        feeLamports: "0",
+        netLamports: "0",
+        netSol: "0",
+        failed: [],
+        unattempted: [],
+        notClosed: [],
+        skipped: [],
+        remaining: 0,
+        ...build
+      };
+    if (build.submitState !== undefined) {
+      const job = await this.getCloseEmptyAccountsJob(req.clientTradeId, { wallet });
+      const status = job.httpStatus ?? 200;
+      if (status >= 400)
+        throw candleApiErrorFromResponse(status, JSON.stringify(job.result ?? {}));
+      return job.result;
+    }
+    const signed = [];
+    for (const transaction of build.transactions) {
+      const result = await this.signLinkedTransaction({
+        chain: "solana",
+        linkedWalletId: wallet,
+        privyWalletId,
+        unsignedTransactionBase64: transaction.unsignedTransaction
+      });
+      signed.push({ index: transaction.index, signedTransaction: result.signedTransaction });
+    }
+    return this.requestJson("POST", `${base}/submit`, {
+      clientTradeId: req.clientTradeId,
+      signed
+    });
   }
-  async getCloseEmptyAccountsJob(clientTradeId) {
+  async getCloseEmptyAccountsJob(clientTradeId, opts = {}) {
     this.requireKey("getCloseEmptyAccountsJob()");
-    const body = await this.requestJson("GET", `/api/v1/agent/wallets/embedded/close-empty/jobs/${encodeURIComponent(clientTradeId)}`);
+    const body = await this.requestJson("GET", opts.wallet === undefined ? `/api/v1/agent/wallets/embedded/close-empty/jobs/${encodeURIComponent(clientTradeId)}` : `/api/v1/agent/wallets/${encodeURIComponent(opts.wallet)}/close-empty/jobs/${encodeURIComponent(clientTradeId)}`);
     return body.job;
   }
   async importWallet(params) {

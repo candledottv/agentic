@@ -71394,8 +71394,8 @@ var HELP = {
         description: "Stop TEE wallets paying for a launch; trading is unchanged (owner only)"
       },
       {
-        invocation: "close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes]",
-        description: "Close the embedded wallet's empty token accounts and return their rent to it, after a preview (transfer:write)"
+        invocation: "close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes]",
+        description: "Close a wallet's empty token accounts and return their rent to it, after a preview: the embedded wallet (transfer:write), or a TEE wallet bound to this key, signed by its key signer (swap:write)"
       }
     ],
     examples: [
@@ -71404,7 +71404,8 @@ var HELP = {
       "candle wallet revoke wal_123",
       "candle wallet trust 'tr-*' 'dest-*'",
       "candle wallet allow-launch launcher-1",
-      "candle wallet close-empty --keep EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+      "candle wallet close-empty --keep EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "candle wallet close-empty --wallet agent-one"
     ],
     env: ENV_API
   },
@@ -100672,12 +100673,15 @@ function walletsDisallowLaunch(args, ctx) {
 // src/commands/wallets-close-empty.ts
 init_args();
 init_render();
+init_solana_alt();
+init_solana_lite();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID10 } from "node:crypto";
-var USAGE11 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE11 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
+var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
 function splitKeep(args) {
   const rest = [];
   const keep = [];
@@ -100706,9 +100710,9 @@ function solOf(lamports) {
   const digits = lamports.padStart(10, "0");
   return `${digits.slice(0, -9)}.${digits.slice(-9)}`.replace(/\.?0+$/, "");
 }
-function previewLines2(preview) {
+function previewLines2(preview, walletName) {
   const lines = [
-    `Close ${preview.accountCount} empty token account${preview.accountCount === 1 ? "" : "s"} on the embedded wallet ${safeText(preview.wallet)}`,
+    `Close ${preview.accountCount} empty token account${preview.accountCount === 1 ? "" : "s"} on the ${walletName}`,
     `Rent returned to that same wallet: ${safeText(preview.totalSol)} SOL in ${preview.transactions} transaction${preview.transactions === 1 ? "" : "s"}, network fee about ${solOf(preview.estimatedFeeLamports)} SOL, net ${safeText(preview.netSol)} SOL`
   ];
   for (const row of preview.accounts.slice(0, LISTED_ROWS))
@@ -100737,15 +100741,202 @@ async function confirmClose(ctx, lines, yes) {
     throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes to close without a prompt.");
   return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
 }
-async function embeddedSolana(ctx, key, wallet3) {
+async function previewAndConfirm(ctx, preview, walletName, yes) {
+  if (preview.accounts.length === 0) {
+    const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+    output.write(`No empty token accounts to close on the ${walletName}.
+`);
+    for (const line of previewLines2(preview, walletName).slice(2))
+      output.write(`${line}
+`);
+    return printTradingResult(ctx, {
+      success: true,
+      status: "nothing_to_close",
+      wallet: preview.wallet,
+      preview
+    });
+  }
+  if (!await confirmClose(ctx, previewLines2(preview, walletName), yes))
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      wallet: preview.wallet,
+      preview
+    });
+  return preview.accounts.map((row) => row.account);
+}
+async function embeddedAddress2(ctx, key) {
   const body = await request(ctx, key, "/api/v1/agent/wallets/embedded");
   const wallets2 = body.wallets;
-  const address = typeof wallets2?.solana?.address === "string" ? wallets2.solana.address : undefined;
-  if (!address)
+  return typeof wallets2?.solana?.address === "string" ? wallets2.solana.address : undefined;
+}
+async function closeEmbedded(ctx, key, run2) {
+  const { id, keep } = run2;
+  if (run2.named) {
+    try {
+      const prior = await request(ctx, key, `/api/v1/agent/wallets/embedded/close-empty/jobs/${encodeURIComponent(id)}`);
+      return printTradingResult(ctx, { ...prior, clientTradeId: id });
+    } catch (error) {
+      if (!(error instanceof TradingError && error.code === "JOB_NOT_FOUND"))
+        throw error;
+    }
+  }
+  const wallet3 = await embeddedAddress2(ctx, key);
+  if (!wallet3)
     throw new TradingError("AGENT_WALLET_MISSING", "This account has no embedded Solana wallet. Create one in the app, then run this again.");
-  if (wallet3 !== undefined && wallet3 !== "embedded" && wallet3 !== address)
-    throw new TradingError("PAYER_UNSUPPORTED", `This command closes accounts on the embedded wallet (${address}) only. A TEE wallet's empty accounts close with: candle tee sweep <address>`);
-  return address;
+  const preview = await request(ctx, key, "/api/v1/agent/wallets/embedded/close-empty/preview", {
+    keep
+  });
+  if (!Array.isArray(preview.accounts) || preview.wallet !== wallet3)
+    throw new TradingError("INVALID_RESPONSE", "Candle's preview does not name the embedded wallet; nothing was closed.");
+  const accounts = await previewAndConfirm(ctx, preview, `embedded wallet ${safeText(wallet3)}`, run2.yes);
+  if (typeof accounts === "number")
+    return accounts;
+  ctx.deps.stderr.write(`Operation: ${id}
+`);
+  const result = await request(ctx, key, "/api/v1/agent/wallets/embedded/close-empty", {
+    clientTradeId: id,
+    keep,
+    accounts
+  });
+  return printTradingResult(ctx, { ...result, clientTradeId: id });
+}
+function closeProblem(transaction, wallet3, accounts) {
+  let message;
+  try {
+    message = decodeTransaction(decodeStrictBase64(transaction)).message;
+  } catch (error) {
+    if (error instanceof TransactionDecodeError)
+      return `does not decode: ${error.message}`;
+    throw error;
+  }
+  if (message.staticKeys[0] !== wallet3)
+    return `is paid by ${message.staticKeys[0]}, not this wallet`;
+  if (message.numRequiredSignatures !== 1)
+    return `needs ${message.numRequiredSignatures} signatures, not this wallet's alone`;
+  if (message.lookups.length > 0)
+    return "loads accounts from a lookup table";
+  if (message.instructions.length === 0)
+    return "closes nothing";
+  const closed = new Set;
+  for (const [i, ix] of message.instructions.entries()) {
+    const program = message.staticKeys[ix.programIdIndex];
+    const account = (at3) => message.staticKeys[ix.accountIndexes[at3] ?? -1];
+    if (program !== TOKEN_PROGRAM_ID && program !== TOKEN_2022_PROGRAM_ID)
+      return `instruction ${i} calls ${program ?? "an unknown program"}, not a token program`;
+    if (ix.data.length !== 1 || ix.data[0] !== TOKEN_IX_CLOSE_ACCOUNT3)
+      return `instruction ${i} is not CloseAccount`;
+    if (ix.accountIndexes.length !== 3)
+      return `instruction ${i} names ${ix.accountIndexes.length} accounts, not 3`;
+    if (account(1) !== wallet3)
+      return `instruction ${i} sends the rent to ${account(1) ?? "?"}, not this wallet`;
+    if (account(2) !== wallet3)
+      return `instruction ${i} names ${account(2) ?? "?"} as the owner, not this wallet`;
+    const target = account(0);
+    if (target === undefined || !accounts.has(target))
+      return `instruction ${i} closes ${target ?? "?"}, which the build does not list for it`;
+    if (closed.has(target))
+      return `instruction ${i} closes ${target} a second time`;
+    closed.add(target);
+  }
+  if (closed.size !== accounts.size)
+    return "lists accounts it does not close";
+  return null;
+}
+function checkedBuild(build, wallet3, previewed) {
+  const refuse3 = (why) => new TradingError("INVALID_RESPONSE", `The close Candle built ${why}; nothing was signed.`);
+  if (build.status !== "built" || build.wallet !== wallet3)
+    throw refuse3(`does not name the TEE wallet ${wallet3}`);
+  const list = build.transactions;
+  if (!Array.isArray(list) || list.length === 0)
+    throw refuse3("has no transactions");
+  const indexes2 = new Set;
+  const closing2 = new Set;
+  const out = [];
+  for (const entry of list) {
+    const { index, unsignedTransaction, accounts } = entry ?? {};
+    if (typeof index !== "number" || !Number.isInteger(index) || indexes2.has(index) || typeof unsignedTransaction !== "string" || !Array.isArray(accounts) || !accounts.every((a) => typeof a === "string"))
+      throw refuse3("is not a list of indexed transactions");
+    indexes2.add(index);
+    for (const account of accounts) {
+      if (!previewed.has(account))
+        throw refuse3(`closes ${safeText(account)}, which the preview did not list`);
+      if (closing2.has(account))
+        throw refuse3(`closes ${safeText(account)} twice`);
+      closing2.add(account);
+    }
+    const problem = closeProblem(unsignedTransaction, wallet3, new Set(accounts));
+    if (problem)
+      throw refuse3(`transaction ${index} ${safeText(problem)}`);
+    out.push({ index, unsignedTransaction, accounts });
+  }
+  return out.sort((a, b) => a.index - b.index);
+}
+function sameMessage(unsigned, signed) {
+  try {
+    const a = decodeTransaction(decodeStrictBase64(unsigned)).message.bytes;
+    const b = decodeTransaction(decodeStrictBase64(signed)).message.bytes;
+    return Buffer.from(a).equals(Buffer.from(b));
+  } catch (error) {
+    if (error instanceof TransactionDecodeError)
+      return false;
+    throw error;
+  }
+}
+function printRecovering(ctx, result, id, wallet3) {
+  ctx.deps.stderr.write(`Not every close is settled on chain yet; nothing will be sent again. Read it again with: candle wallet close-empty --wallet ${safeText(wallet3)} --client-trade-id ${id}
+`);
+  printTradingResult(ctx, { ...result, clientTradeId: id });
+  return 3;
+}
+function printTeeJob(ctx, prior, id, wallet3) {
+  const job = prior.job ?? {};
+  const result = job.result ?? {};
+  if (result.status === "recovering")
+    return printRecovering(ctx, prior, id, wallet3);
+  if (result.status === "built")
+    ctx.deps.stderr.write(`Operation ${id} was built and never submitted to Candle, so Candle sent nothing; its transactions expire at block height ${safeText(result.expiresAtBlockHeight)}. Run again without --client-trade-id to close under a new id.
+`);
+  return printTradingResult(ctx, { ...prior, clientTradeId: id });
+}
+async function closeTee(ctx, key, wallet3, name2, run2) {
+  const { id, keep } = run2;
+  const base2 = `/api/v1/agent/wallets/${encodeURIComponent(wallet3.id)}/close-empty`;
+  const jobPath2 = `${base2}/jobs/${encodeURIComponent(id)}`;
+  if (run2.named) {
+    try {
+      return printTeeJob(ctx, await request(ctx, key, jobPath2), id, wallet3.address);
+    } catch (error) {
+      if (!(error instanceof TradingError && error.code === "JOB_NOT_FOUND"))
+        throw error;
+    }
+  }
+  const preview = await request(ctx, key, `${base2}/preview`, { keep });
+  if (!Array.isArray(preview.accounts) || preview.wallet !== wallet3.address || preview.linkedWalletId !== undefined && preview.linkedWalletId !== wallet3.id)
+    throw new TradingError("INVALID_RESPONSE", "Candle's preview does not name the TEE wallet; nothing was closed.");
+  const label = safeText(name2 === wallet3.address ? wallet3.address : `${name2} (${wallet3.address})`);
+  const accounts = await previewAndConfirm(ctx, preview, `TEE wallet ${label}`, run2.yes);
+  if (typeof accounts === "number")
+    return accounts;
+  ctx.deps.stderr.write(`Operation: ${id}
+`);
+  const build = await request(ctx, key, `${base2}/build`, { clientTradeId: id, keep, accounts });
+  if (build.status === "nothing_to_close")
+    return printTradingResult(ctx, { ...build, clientTradeId: id });
+  if (build.submitState !== undefined)
+    return printTeeJob(ctx, await request(ctx, key, jobPath2), id, wallet3.address);
+  const transactions = checkedBuild(build, wallet3.address, new Set(accounts));
+  const signed = [];
+  for (const transaction of transactions) {
+    const signedTransaction = await relaySign(ctx, key, wallet3, transaction.unsignedTransaction);
+    if (!sameMessage(transaction.unsignedTransaction, signedTransaction))
+      throw new TradingError("INVALID_RESPONSE", `The relay returned a different transaction for close ${transaction.index} than the one checked; nothing was submitted.`);
+    signed.push({ index: transaction.index, signedTransaction });
+  }
+  const result = await request(ctx, key, `${base2}/submit`, { clientTradeId: id, signed });
+  if (result.status === "recovering")
+    return printRecovering(ctx, result, id, wallet3.address);
+  return printTradingResult(ctx, { ...result, clientTradeId: id });
 }
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
@@ -100764,54 +100955,18 @@ async function walletsCloseEmpty(args, ctx) {
     writeUsageFailure(ctx.deps, USAGE11, ctx.json);
     return 2;
   }
-  const keep = lifted.keep;
+  const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
+  const walletName = parsed.values["--wallet"];
   try {
     const key = await tradingKey(ctx);
-    if (named !== undefined) {
-      try {
-        const prior = await request(ctx, key, `/api/v1/agent/wallets/embedded/close-empty/jobs/${encodeURIComponent(id)}`);
-        return printTradingResult(ctx, { ...prior, clientTradeId: id });
-      } catch (error) {
-        if (!(error instanceof TradingError && error.code === "JOB_NOT_FOUND"))
-          throw error;
-      }
-    }
-    const wallet3 = await embeddedSolana(ctx, key, parsed.values["--wallet"]);
-    const preview = await request(ctx, key, "/api/v1/agent/wallets/embedded/close-empty/preview", {
-      keep
-    });
-    if (!Array.isArray(preview.accounts) || preview.wallet !== wallet3)
-      throw new TradingError("INVALID_RESPONSE", "Candle's preview does not name the embedded wallet; nothing was closed.");
-    if (preview.accounts.length === 0) {
-      const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
-      output.write(`No empty token accounts to close on the embedded wallet ${safeText(wallet3)}.
-`);
-      for (const line of previewLines2(preview).slice(2))
-        output.write(`${line}
-`);
-      return printTradingResult(ctx, {
-        success: true,
-        status: "nothing_to_close",
-        wallet: wallet3,
-        preview
-      });
-    }
-    const confirmed = await confirmClose(ctx, previewLines2(preview), parsed.booleans.has("--yes"));
-    if (!confirmed)
-      return printTradingResult(ctx, {
-        success: true,
-        status: "cancelled",
-        wallet: wallet3,
-        preview
-      });
-    ctx.deps.stderr.write(`Operation: ${id}
-`);
-    const result = await request(ctx, key, "/api/v1/agent/wallets/embedded/close-empty", {
-      clientTradeId: id,
-      keep,
-      accounts: preview.accounts.map((row) => row.account)
-    });
-    return printTradingResult(ctx, { ...result, clientTradeId: id });
+    if (walletName === undefined || walletName === "embedded")
+      return await closeEmbedded(ctx, key, run2);
+    if (walletName === await embeddedAddress2(ctx, key))
+      return await closeEmbedded(ctx, key, run2);
+    const payer = await tradingPayer(ctx, key, walletName, "swap:write", "solana");
+    if (payer.kind === "embedded")
+      return await closeEmbedded(ctx, key, run2);
+    return await closeTee(ctx, key, payer.wallet, walletName, run2);
   } catch (error) {
     return tradingFailure(ctx, error);
   }

@@ -898,9 +898,10 @@ export const HELP: Record<string, Topic> = {
         description: "Stop TEE wallets paying for a launch; trading is unchanged (owner only)",
       },
       {
-        invocation: "close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes]",
+        invocation:
+          "close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes]",
         description:
-          "Close the embedded wallet's empty token accounts and return their rent to it, after a preview (transfer:write)",
+          "Close a wallet's empty token accounts and return their rent to it, after a preview: the embedded wallet (transfer:write), or a TEE wallet bound to this key, signed by its key signer (swap:write)",
       },
     ],
     examples: [
@@ -910,6 +911,7 @@ export const HELP: Record<string, Topic> = {
       "candle wallet trust 'tr-*' 'dest-*'",
       "candle wallet allow-launch launcher-1",
       "candle wallet close-empty --keep EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "candle wallet close-empty --wallet agent-one",
     ],
     env: ENV_API,
   },

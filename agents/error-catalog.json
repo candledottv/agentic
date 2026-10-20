@@ -71,6 +71,7 @@
       "action": "The request is malformed. Fix the named field. For TRANSACTION_TOO_LARGE the error carries the exact name-byte budget; for CURVE_OUT_OF_RANGE with reason price_ceiling, maxThresholdRaw is the largest threshold that fits.",
       "codes": [
         "VALIDATION_FAILED",
+        "CLOSE_REFUSED",
         "INVALID_NAME_BYTES",
         "INVALID_SYMBOL",
         "TRANSACTION_TOO_LARGE",

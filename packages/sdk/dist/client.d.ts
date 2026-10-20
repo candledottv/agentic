@@ -2469,11 +2469,18 @@ export interface SkippedEmptyTokenAccount extends EmptyTokenAccount {
 export interface PreviewCloseEmptyAccountsRequest {
     /** Mints whose empty accounts stay open, e.g. the pair token a held holder-reward coin pays in. */
     keep?: string[];
+    /**
+     * A Solana TEE wallet's linked-wallet id, to preview that wallet instead of the embedded one
+     * (BE-1687). Any key bound to the wallet may preview it.
+     */
+    wallet?: string;
 }
 /** previewCloseEmptyAccounts()'s result. Nothing was built, signed or written to produce it. */
 export interface CloseEmptyAccountsPreview {
     success: true;
     wallet: string;
+    /** The TEE wallet's linked-wallet id, on a TEE wallet's preview. */
+    linkedWalletId?: string;
     keep: string[];
     accounts: EmptyTokenAccount[];
     accountCount: number;
@@ -2497,9 +2504,18 @@ export interface CloseEmptyAccountsRequest {
     keep?: string[];
     /** The preview's `accounts[].account`, to close only what was shown. Omit to close every qualifying account. */
     accounts?: string[];
+    /**
+     * A Solana TEE wallet's linked-wallet id, to close that wallet's accounts instead of the embedded
+     * wallet's (BE-1687). Needs `swap:write`, `privyWalletId`, and the wallet's signer in `secretStore`.
+     */
+    wallet?: string;
+    /** The TEE wallet's Privy wallet id, which signLinkedTransaction() signs for. Required with `wallet`. */
+    privyWalletId?: string;
 }
 /** A close transaction that landed. */
 export interface CloseEmptyAccountsBatch {
+    /** The transaction's place in a TEE wallet's built batch. */
+    index?: number;
     signature: string;
     accounts: string[];
     lamports: string;
@@ -2510,18 +2526,37 @@ export interface CloseEmptyAccountsBatch {
  * re-preview before re-running.
  */
 export interface CloseEmptyAccountsFailure {
+    /** The transaction's place in a TEE wallet's built batch. */
+    index?: number;
     accounts: string[];
     code: string;
     message: string;
     signature?: string;
 }
+/**
+ * A TEE wallet's close transaction the chain has not settled yet (BE-1687). Its rent is not counted,
+ * and the operation stays `recovering` until every one is settled.
+ */
+export interface CloseEmptyAccountsUnresolved {
+    index: number;
+    accounts: string[];
+    /** Known once the transaction was signed and recorded. */
+    signature?: string;
+    reason: string;
+}
 /** closeEmptyAccounts()'s result. A run in which nothing landed throws a CandleApiError instead. */
 export interface CloseEmptyAccountsResult {
     success: true;
-    /** `partial`: some batch failed, or more accounts remain than one call closes. */
-    status: "completed" | "partial" | "nothing_to_close";
+    /**
+     * `partial`: some batch failed, or more accounts remain than one call closes. `recovering`, a TEE
+     * wallet's close only: a transaction may still land. Nothing is sent again; read
+     * getCloseEmptyAccountsJob(clientTradeId, { wallet }) until it settles.
+     */
+    status: "completed" | "partial" | "nothing_to_close" | "recovering";
     clientTradeId: string;
     wallet: string;
+    /** The TEE wallet's linked-wallet id, on a TEE wallet's close. */
+    linkedWalletId?: string;
     keep: string[];
     closed: EmptyTokenAccount[];
     transactions: CloseEmptyAccountsBatch[];
@@ -2530,8 +2565,11 @@ export interface CloseEmptyAccountsResult {
     solRecovered: string;
     /** The base network fee of the transactions that landed, reverted ones included, 5,000 lamports each. */
     feeLamports: string;
-    netLamports: string;
-    netSol: string;
+    /** Absent while `status` is `recovering`: no net is final until every transaction settles. */
+    netLamports?: string;
+    netSol?: string;
+    /** A TEE close that landed before its fee could be read: `feeLamports` does not count it yet. */
+    feeUnresolved?: true;
     failed: CloseEmptyAccountsFailure[];
     /** Accounts in batches never sent, after a failure that stops the run. */
     unattempted: string[];
@@ -2544,15 +2582,35 @@ export interface CloseEmptyAccountsResult {
     remaining: number;
     /** Present when this is the stored report of an earlier call under the same id. */
     replayed?: true;
+    /** `recovering` only: what the server says to do next. */
+    message?: string;
+    /** `recovering` only: the TEE close transactions not settled yet. */
+    unresolved?: CloseEmptyAccountsUnresolved[];
+}
+/** Which wallet getCloseEmptyAccountsJob() reads: the embedded wallet's runs, or a TEE wallet's. */
+export interface CloseEmptyAccountsJobOptions {
+    /** A Solana TEE wallet's linked-wallet id (BE-1687). Omit for the embedded wallet. */
+    wallet?: string;
 }
 export interface CloseEmptyAccountsJob {
     clientTradeId: string;
     kind: "close-empty";
-    status: "running" | "completed" | "failed";
+    /** `built`, a TEE wallet's only: the transactions await their signatures, or are being sent or recovered. */
+    status: "running" | "built" | "completed" | "failed";
+    /** On a TEE wallet's job. */
+    walletKind?: "tee";
+    linkedWalletId?: string;
+    /** A TEE wallet's send state: `idle` before submit, then `submitting`, `recovering` or `done`. */
+    submitState?: "idle" | "submitting" | "recovering" | "done";
+    /** On a TEE wallet's job: whether this read reconciled the row against the chain. */
+    reconciled?: boolean;
     createdAt: number;
     finishedAt?: number;
     httpStatus?: number;
-    /** The report the close call returned, once it finished. */
+    /**
+     * The report the close call returned, once it finished. On a TEE wallet's job, the build while
+     * its signatures are awaited, the report (`recovering` until the chain settles), or the stored error.
+     */
     result?: CloseEmptyAccountsResult | Record<string, unknown>;
 }
 /** trade()'s one-call request: mirrors BuildTradeRequest minus clientTradeId/payer, plus who signs. */
@@ -3011,6 +3069,10 @@ export declare class CandleClient {
      * Lists the embedded Solana wallet's empty token accounts that a close would reclaim, on both
      * token programs, and the SOL their rent returns (BE-418). Read-only: nothing is built, signed or
      * written, and any key scope may call it.
+     *
+     * With `wallet` (a Solana TEE wallet's linked-wallet id, BE-1687), the same preview for that TEE
+     * wallet, by any key bound to it. Off on a deployment until it is enabled
+     * (`AGENT_TEE_CLOSE_EMPTY_ENABLED`): until then it throws LAUNCH_DISABLED.
      */
     previewCloseEmptyAccounts(req?: PreviewCloseEmptyAccountsRequest): Promise<CloseEmptyAccountsPreview>;
     /**
@@ -3023,10 +3085,27 @@ export declare class CandleClient {
      * returns its stored report (`replayed: true`), a repeat while it runs throws CLOSE_IN_PROGRESS,
      * and the same id with a different request throws IDEMPOTENCY_CONFLICT. So a retry under the
      * same id is safe, and this method still never retries on its own.
+     *
+     * With `wallet` (a Solana TEE wallet's linked-wallet id bound to this key, BE-1687), the TEE
+     * wallet's close instead. Needs `swap:write`, `privyWalletId`, and that wallet's signer in
+     * `secretStore`. Three steps: `POST /agent/wallets/:id/close-empty/build` (the server builds
+     * the close transactions, every one CloseAccount with the TEE wallet as fee payer, rent
+     * destination and owner, and stamps them for the relay), `signLinkedTransaction()` per
+     * transaction, then `POST .../close-empty/submit` with the whole signed batch, which the server
+     * checks against the build before it sends anything. A build with nothing to close returns
+     * `nothing_to_close` without signing. A `recovering` result means a transaction may still land:
+     * nothing is sent again, and getCloseEmptyAccountsJob(clientTradeId, { wallet }) reads it until
+     * it settles. A TEE wallet's build is signable once: after a lost answer, read the job rather
+     * than calling this again. Off on a deployment until it is enabled
+     * (`AGENT_TEE_CLOSE_EMPTY_ENABLED`): until then it throws LAUNCH_DISABLED.
      */
     closeEmptyAccounts(req: CloseEmptyAccountsRequest): Promise<CloseEmptyAccountsResult>;
-    /** Reads a closeEmptyAccounts() run by its clientTradeId, without sending anything (BE-418). */
-    getCloseEmptyAccountsJob(clientTradeId: string): Promise<CloseEmptyAccountsJob>;
+    /**
+     * Reads a closeEmptyAccounts() run by its clientTradeId, without sending anything (BE-418). With
+     * `wallet`, a TEE wallet's run (BE-1687, `swap:write`): that read also reconciles the run against
+     * the chain, so a `recovering` close settles by reading it again. It never signs or sends.
+     */
+    getCloseEmptyAccountsJob(clientTradeId: string, opts?: CloseEmptyAccountsJobOptions): Promise<CloseEmptyAccountsJob>;
     /**
      * Imports an existing wallet via Candle's ciphertext-only flow (PR3): calls
      * `/agent/wallets/import/init` for Privy's HPKE receiver public key, encrypts `privateKey`
