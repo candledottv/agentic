@@ -10738,6 +10738,7 @@ var init_ownership = __esm(() => {
     "help *",
     "completion *",
     "plugins",
+    "tui",
     "profile *",
     "mcp"
   ];
@@ -40884,8 +40885,8 @@ var init_perps_risk = __esm(() => {
 });
 
 // ../mcp/src/perps.ts
-import { createPrivateKey as createPrivateKey2, randomBytes as randomBytes4, sign as sign3 } from "node:crypto";
-import { readFile as readFile7 } from "node:fs/promises";
+import { createPrivateKey as createPrivateKey2, randomBytes as randomBytes5, sign as sign3 } from "node:crypto";
+import { readFile as readFile8 } from "node:fs/promises";
 function fail2(code, message, extra = {}) {
   return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true };
 }
@@ -41032,7 +41033,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       if (!pemFile)
         return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
       try {
-        signerPem = await readFile7(pemFile, "utf8");
+        signerPem = await readFile8(pemFile, "utf8");
         createPrivateKey2(signerPem);
       } catch {
         return fail2("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
@@ -41074,7 +41075,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         read: (p) => call(cfg, fetch2, "GET", p),
         sign: relaySign2,
         mode: willSubmit ? "submit" : "no-submit",
-        cloid: () => `0x${randomBytes4(16).toString("hex")}`
+        cloid: () => `0x${randomBytes5(16).toString("hex")}`
       };
       try {
         const result = tool === "candle_perps_tpsl" ? await runPerpsTpsl(io, fields) : await runPerpsFlatten(io);
@@ -41276,7 +41277,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
     if (!pemFile)
       return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
     try {
-      signerPem = await readFile7(pemFile, "utf8");
+      signerPem = await readFile8(pemFile, "utf8");
       createPrivateKey2(signerPem);
     } catch {
       return fail2("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
@@ -71730,6 +71731,15 @@ var HELP = {
     examples: ["candle mcp", "candle mcp --print-config", "candle mcp --read-only"],
     env: ENV_API
   },
+  tui: {
+    group: "Start here",
+    summary: "The Candle TUI: holdings, the feed, your agents and approval cards, in the terminal (preview)",
+    description: "Starts the Candle TUI (candle-tui), which starts the local core for the profile when it is not running. Every live money action an agent proposes becomes an approval card you approve there with your vault factor. Preview: the TUI is not released yet.",
+    usage: ["candle tui [--profile <name>]"],
+    rows: [],
+    examples: ["candle tui", "candle tui --profile staging"],
+    env: ["CANDLE_CONFIG_DIR", "CANDLE_PROFILE"]
+  },
   core: {
     group: "Maintain",
     summary: "Run the local Candle core the Candle TUI attaches to (preview)",
@@ -72095,7 +72105,7 @@ import { join as join10 } from "node:path";
 // src/core/cards.ts
 init_render();
 init_canonical_json();
-import { createHash as createHash3, randomBytes as randomBytes3, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash3, randomBytes as randomBytes4, randomUUID as randomUUID2 } from "node:crypto";
 
 // src/core/classify.ts
 var READ = { class: "read" };
@@ -72334,6 +72344,259 @@ function encodeLine(message) {
   return line;
 }
 
+// src/core/trading.ts
+import { randomBytes as randomBytes3 } from "node:crypto";
+import { readFile as readFile7, rename as rename5, writeFile as writeFile5 } from "node:fs/promises";
+function formatKeyLimit(limit) {
+  if (limit === undefined)
+    return;
+  const usd = (micros) => `$${(Math.max(0, micros) / 1e6).toFixed(2)}`;
+  return `${usd(limit.usdMicros)} ${limit.reset === "never" ? "in total" : limit.reset}, ${usd(limit.usdMicros - limit.usedUsdMicros)} left`;
+}
+
+class FactorRejectedError extends Error {
+  constructor() {
+    super("The factor did not open the vault.");
+    this.name = "FactorRejectedError";
+  }
+}
+var MAX_WINDOW_MS = 15 * 60000;
+var FAILURE_WINDOW_MS = 10 * 60000;
+var FAILURE_LIMIT = 5;
+var LOCKOUT_MS = 5 * 60000;
+
+class TradingState {
+  deps;
+  on = false;
+  window;
+  paperWindow;
+  failures = [];
+  lockedUntil = 0;
+  listeners = [];
+  keyLimit;
+  constructor(deps) {
+    this.deps = deps;
+  }
+  static async open(deps) {
+    const state = new TradingState(deps);
+    try {
+      const parsed = JSON.parse(await readFile7(deps.settingsPath, "utf8"));
+      state.on = parsed.tradingOn === true && await deps.slotExists();
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    return state;
+  }
+  onChange(listener) {
+    this.listeners.push(listener);
+  }
+  tradingOn() {
+    return this.on;
+  }
+  snapshot() {
+    const window = this.activeWindow();
+    const paper = this.activePaperWindow();
+    return {
+      tradingOn: this.on,
+      approvalPolicy: "ask",
+      timedWindow: window ? { open: true, viewClientId: window.viewClientId, closesAt: new Date(window.closesAt).toISOString() } : { open: false },
+      paperWindow: paper ? { open: true, viewClientId: paper.viewClientId, closesAt: new Date(paper.closesAt).toISOString() } : { open: false },
+      approvalsLockedUntil: this.lockedUntil > this.deps.now() ? new Date(this.lockedUntil).toISOString() : null
+    };
+  }
+  async turnOn(factor) {
+    const vault = await this.verify(factor);
+    try {
+      if (!await this.deps.slotExists()) {
+        const readKey2 = await this.deps.mintReadKey();
+        await this.deps.moveToSlot(vault, readKey2);
+      }
+      const credentials = await this.deps.openSlot(vault);
+      this.deps.remember(credentials);
+      await this.refreshKeyLimit(credentials);
+    } finally {
+      vault.close();
+    }
+    this.on = true;
+    await this.persist();
+    this.changed();
+  }
+  async turnOff() {
+    this.on = false;
+    this.closeWindow();
+    this.closePaperWindow();
+    await this.persist();
+    this.changed();
+  }
+  async openWindow(viewClientId, minutes, factor) {
+    if (!this.on)
+      throw refused("TRADING_OFF", "Turn trading on before opening a window.");
+    if (!Number.isFinite(minutes) || minutes <= 0)
+      throw refused("INVALID_WINDOW", "A window lasts more than zero minutes.");
+    const lengthMs = Math.min(minutes * 60000, MAX_WINDOW_MS);
+    const vault = await this.verify(factor);
+    let credentials;
+    try {
+      credentials = await this.deps.openSlot(vault);
+    } finally {
+      vault.close();
+    }
+    this.deps.remember(credentials);
+    this.closeWindow();
+    const openedAt = this.deps.now();
+    const timer = setTimeout(() => this.closeWindow(), lengthMs);
+    timer.unref?.();
+    this.window = { viewClientId, openedAt, closesAt: openedAt + lengthMs, credentials, timer };
+    this.changed();
+  }
+  async refreshKeyLimit(credentials) {
+    if (!this.deps.readKeyLimit)
+      return this.keyLimit;
+    try {
+      this.keyLimit = await this.deps.readKeyLimit(credentials);
+    } catch {
+      this.keyLimit = undefined;
+    }
+    return this.keyLimit;
+  }
+  lastKeyLimit() {
+    return this.keyLimit;
+  }
+  closeWindow() {
+    if (this.window === undefined)
+      return;
+    clearTimeout(this.window.timer);
+    this.window = undefined;
+    this.changed();
+  }
+  viewsAttached(viewClientIds) {
+    if (this.window !== undefined && !viewClientIds.has(this.window.viewClientId))
+      this.closeWindow();
+    if (this.paperWindow !== undefined && !viewClientIds.has(this.paperWindow.viewClientId))
+      this.closePaperWindow();
+  }
+  async openPaperWindow(viewClientId, minutes, factor) {
+    if (!this.on)
+      throw refused("TRADING_OFF", "Turn trading on before opening a paper window.");
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      throw refused("INVALID_WINDOW", "A window lasts more than zero minutes.");
+    }
+    const lengthMs = Math.min(minutes * 60000, MAX_WINDOW_MS);
+    const vault = await this.verify(factor);
+    let credentials;
+    try {
+      credentials = await this.deps.openSlot(vault);
+    } finally {
+      vault.close();
+    }
+    this.deps.remember(credentials);
+    this.closePaperWindow();
+    const openedAt = this.deps.now();
+    const timer = setTimeout(() => this.closePaperWindow(), lengthMs);
+    timer.unref?.();
+    this.paperWindow = { viewClientId, openedAt, closesAt: openedAt + lengthMs, credentials, timer };
+    this.changed();
+  }
+  closePaperWindow() {
+    if (this.paperWindow === undefined)
+      return;
+    clearTimeout(this.paperWindow.timer);
+    this.paperWindow = undefined;
+    this.changed();
+  }
+  async withPaperCredentials(use) {
+    if (!this.on)
+      throw refused("TRADING_OFF", "Paper needs trading on: the build route takes the Write key.");
+    const window = this.activePaperWindow() ?? this.activeWindow();
+    if (window === undefined) {
+      throw refused("PAPER_WINDOW_REQUIRED", "Open a paper window in the Candle TUI (Settings > Trading); it asks for your factor once.");
+    }
+    return use(window.credentials);
+  }
+  async withCredentials(input, use) {
+    if (input.factor === undefined) {
+      const window = this.activeWindow();
+      if (FRESH_FACTOR_KINDS.has(input.kind)) {
+        throw refused("FACTOR_REQUIRED", `A ${input.kind} card always needs a fresh factor, window or not.`);
+      }
+      if (window === undefined || window.viewClientId !== input.viewClientId) {
+        throw refused("FACTOR_REQUIRED", "Approve with your vault factor, or open a timed window first.");
+      }
+      return use(window.credentials);
+    }
+    const vault = await this.verify(input.factor);
+    let credentials;
+    try {
+      credentials = await this.deps.openSlot(vault);
+    } finally {
+      vault.close();
+    }
+    this.deps.remember(credentials);
+    return use(credentials);
+  }
+  activePaperWindow() {
+    if (this.paperWindow !== undefined && this.paperWindow.closesAt <= this.deps.now())
+      this.closePaperWindow();
+    return this.paperWindow;
+  }
+  activeWindow() {
+    if (this.window !== undefined && this.window.closesAt <= this.deps.now())
+      this.closeWindow();
+    return this.window;
+  }
+  async verify(factor) {
+    const now = this.deps.now();
+    if (this.lockedUntil > now) {
+      throw refused("APPROVALS_LOCKED", "Too many rejected factors. Approvals are locked for a few minutes.", {
+        lockedUntil: new Date(this.lockedUntil).toISOString()
+      });
+    }
+    if (factor === undefined)
+      throw refused("FACTOR_REQUIRED", "This needs your vault factor.");
+    if (factor.type !== "passphrase") {
+      throw refused("FACTOR_NOT_IN_THIS_BUILD", `${factor.type} approval from the core is not in this build; use the passphrase.`);
+    }
+    if (typeof factor.value !== "string" || factor.value.length === 0)
+      throw refused("FACTOR_REQUIRED", "The passphrase is empty.");
+    try {
+      return await this.deps.unlockVault(factor);
+    } catch (error) {
+      if (!(error instanceof FactorRejectedError))
+        throw error;
+      this.failures = [...this.failures.filter((at) => at > now - FAILURE_WINDOW_MS), now];
+      if (this.failures.length >= FAILURE_LIMIT) {
+        this.lockedUntil = now + LOCKOUT_MS;
+        this.failures = [];
+        this.changed();
+      }
+      throw refused("FACTOR_REJECTED", "That factor did not open the vault. The card is still open.");
+    }
+  }
+  async persist() {
+    const temp = `${this.deps.settingsPath}.tmp-${randomBytes3(6).toString("base64url")}`;
+    await writeFile5(temp, `${JSON.stringify({ tradingOn: this.on }, null, 2)}
+`, { mode: 384, flag: "wx" });
+    await rename5(temp, this.deps.settingsPath);
+  }
+  changed() {
+    for (const listener of this.listeners)
+      listener();
+  }
+}
+function parseFactor(value) {
+  if (value === undefined || value === null)
+    return;
+  if (typeof value !== "object")
+    throw refused("INVALID_FACTOR", "factor must be an object.");
+  const { type, value: secret } = value;
+  if (type === "passphrase" && typeof secret === "string")
+    return { type, value: secret };
+  if (type === "touch-id" || type === "security-key")
+    return { type };
+  throw refused("INVALID_FACTOR", "factor.type must be passphrase, touch-id or security-key.");
+}
+
 // src/core/cards.ts
 var OPEN_CARD_CAP = 5;
 var MAX_REASON = 500;
@@ -72436,7 +72699,7 @@ class CardBook {
     const now = this.deps.now();
     const reason = typeof input.reason === "string" ? terminalText(input.reason).slice(0, MAX_REASON) : undefined;
     const card2 = {
-      cardId: `card_${randomBytes3(12).toString("base64url")}`,
+      cardId: `card_${randomBytes4(12).toString("base64url")}`,
       opId,
       idKey,
       kind,
@@ -72452,7 +72715,7 @@ class CardBook {
       }),
       origin: { ...origin, clientName: terminalText(origin.clientName) },
       ...reason ? { reason } : {},
-      display: displayFor(kind, tool, sent, this.deps.environment),
+      display: displayFor(kind, tool, sent, this.deps.environment, formatKeyLimit(this.deps.trading.lastKeyLimit())),
       policy: "ask",
       needsFactor: FACTOR_KINDS2.has(kind),
       createdAt: new Date(now).toISOString(),
@@ -72521,6 +72784,13 @@ class CardBook {
         if (card2.state !== "awaiting_approval" || Date.parse(card2.expiresAt) <= this.deps.now()) {
           await this.expireDue();
           throw refused("CARD_NOT_AWAITING", `This card is ${card2.state}.`, { state: card2.state });
+        }
+        const limit = await this.deps.trading.refreshKeyLimit(credentials);
+        const usd = cardUsdMicros(card2);
+        if (limit !== undefined && usd !== undefined && usd > limit.usdMicros - limit.usedUsdMicros) {
+          throw refused("OVER_KEY_LIMIT", `This is over the Write key's limit (${formatKeyLimit(limit)}). Nothing was sent.`, {
+            keyLimitUsd: formatKeyLimit(limit)
+          });
         }
         await this.deps.journal.append({
           type: "card.approved",
@@ -72844,14 +73114,14 @@ class CardBook {
       return given;
     }
     if (idKey === "coreOpId")
-      return `op_${randomBytes3(12).toString("base64url")}`;
+      return `op_${randomBytes4(12).toString("base64url")}`;
     if (typeof given === "string" && given.length > 0 && given.length <= 128) {
       if (idKey === "clientId" && !PERPS_CLIENT_ID.test(given))
         throw invalidParams("clientId is 0x and 32 hex characters.");
       return given;
     }
     if (idKey === "clientId")
-      return `0x${randomBytes3(16).toString("hex")}`;
+      return `0x${randomBytes4(16).toString("hex")}`;
     if (idKey === "clientDepositId")
       return `deposit-${randomUUID2()}`;
     return randomUUID2();
@@ -72892,7 +73162,7 @@ function hashCard(input) {
   return createHash3("sha256").update(canonicalJson(input), "utf8").digest("hex");
 }
 var text = (value) => typeof value === "string" || typeof value === "number" ? terminalText(String(value)) : "";
-function displayFor(kind, tool, params, environment) {
+function displayFor(kind, tool, params, environment, keyLimitUsd) {
   const contract = text(params.mint ?? params.outputMint ?? params.tokenMint ?? params.token ?? params.address ?? "");
   const chain2 = text(params.chain) || (contract.startsWith("0x") ? "hood" : contract ? "solana" : "");
   const side = text(params.side ?? params.direction);
@@ -72902,7 +73172,20 @@ function displayFor(kind, tool, params, environment) {
     kind === "trade" ? (side || "trade").toUpperCase() : kind.toUpperCase(),
     symbol ? `$${symbol}` : tool
   ].join(" ");
-  return { title, contract, chain: chain2, amount, environment };
+  return { title, contract, chain: chain2, amount, environment, ...keyLimitUsd ? { keyLimitUsd } : {} };
+}
+function cardUsdMicros(card2) {
+  const params = card2.params;
+  const decimal = (value) => {
+    const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : Number.NaN;
+    return Number.isFinite(n) && n >= 0 ? Math.round(n * 1e6) : undefined;
+  };
+  if (params.amountUsd !== undefined)
+    return decimal(params.amountUsd);
+  const quote = typeof params.quoteAsset === "string" ? params.quoteAsset.toLowerCase() : "";
+  if ((quote === "usdc" || quote === "usdg") && params.side !== "sell")
+    return decimal(params.amount);
+  return;
 }
 
 // src/core/executor.ts
@@ -73041,7 +73324,7 @@ function record(value) {
 }
 
 // src/core/instance-lock.ts
-import { link, open as open5, readFile as readFile8, rename as rename5, rm as rm3 } from "node:fs/promises";
+import { link, open as open5, readFile as readFile9, rename as rename6, rm as rm3 } from "node:fs/promises";
 
 class CoreAlreadyRunningError extends Error {
   pid;
@@ -73066,7 +73349,7 @@ function pidIsAlive(pid) {
 }
 async function lockOwner(path) {
   try {
-    const parsed = JSON.parse(await readFile8(path, "utf8"));
+    const parsed = JSON.parse(await readFile9(path, "utf8"));
     return typeof parsed.pid === "number" ? parsed.pid : undefined;
   } catch {
     return;
@@ -73104,7 +73387,7 @@ async function acquireInstanceLock(input) {
         throw new CoreAlreadyRunningError(owner, input.socketPath);
       const aside = `${input.lockPath}.stale-${owner}-${pid}-${now()}`;
       try {
-        await rename5(input.lockPath, aside);
+        await rename6(input.lockPath, aside);
       } catch (renameError) {
         if (renameError.code !== "ENOENT")
           throw renameError;
@@ -73123,7 +73406,7 @@ async function acquireInstanceLock(input) {
 }
 
 // src/core/journal.ts
-import { chmod as chmod6, open as open6, readFile as readFile9 } from "node:fs/promises";
+import { chmod as chmod6, open as open6, readFile as readFile10 } from "node:fs/promises";
 var RESERVED = new Set(["seq", "at", "environment", "profile"]);
 
 class Journal {
@@ -73213,7 +73496,7 @@ class JournalIdentityError extends Error {
 async function readJournal(path) {
   let text2;
   try {
-    text2 = await readFile9(path, "utf8");
+    text2 = await readFile10(path, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return { rows: [], skipped: 0, tornTail: false };
@@ -73328,8 +73611,8 @@ function withoutFactorValue(factor) {
 
 // src/core/server.ts
 init_render();
-import { randomBytes as randomBytes6 } from "node:crypto";
-import { chmod as chmod8, readFile as readFile11, rename as rename7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
+import { randomBytes as randomBytes7 } from "node:crypto";
+import { chmod as chmod8, readFile as readFile12, rename as rename8, rm as rm4, writeFile as writeFile7 } from "node:fs/promises";
 import { createServer } from "node:net";
 
 // src/core/events.ts
@@ -73426,8 +73709,8 @@ class EventHub {
 
 // src/core/tokens.ts
 init_render();
-import { createHash as createHash4, randomBytes as randomBytes5, timingSafeEqual } from "node:crypto";
-import { chmod as chmod7, readFile as readFile10, rename as rename6, writeFile as writeFile5 } from "node:fs/promises";
+import { createHash as createHash4, randomBytes as randomBytes6, timingSafeEqual } from "node:crypto";
+import { chmod as chmod7, readFile as readFile11, rename as rename7, writeFile as writeFile6 } from "node:fs/promises";
 var HARNESS_PREFIX = "cht_";
 var TOKEN_ID = /^[A-Za-z0-9]{12}$/;
 function b64u2(bytes) {
@@ -73443,7 +73726,7 @@ function sameHex(a, b) {
 }
 function freshTokenId() {
   for (;; ) {
-    const id = b64u2(randomBytes5(16)).replace(/[-_]/g, "").slice(0, 12);
+    const id = b64u2(randomBytes6(16)).replace(/[-_]/g, "").slice(0, 12);
     if (TOKEN_ID.test(id))
       return id;
   }
@@ -73464,12 +73747,12 @@ class TokenBook {
     this.path = path;
     this.records = records;
     this.now = now;
-    this.viewToken = `chv_${b64u2(randomBytes5(32))}`;
+    this.viewToken = `chv_${b64u2(randomBytes6(32))}`;
   }
   static async open(path, now) {
     let records = [];
     try {
-      const parsed = JSON.parse(await readFile10(path, "utf8"));
+      const parsed = JSON.parse(await readFile11(path, "utf8"));
       if (Array.isArray(parsed.harness)) {
         records = parsed.harness.filter((r) => r !== null && typeof r === "object" && typeof r.tokenId === "string" && typeof r.hash === "string" && typeof r.name === "string");
       }
@@ -73496,7 +73779,7 @@ class TokenBook {
   }
   async mintHarness(name) {
     const tokenId = freshTokenId();
-    const token = `${HARNESS_PREFIX}${tokenId}_${b64u2(randomBytes5(32))}`;
+    const token = `${HARNESS_PREFIX}${tokenId}_${b64u2(randomBytes6(32))}`;
     const record2 = {
       tokenId,
       name,
@@ -73519,11 +73802,11 @@ class TokenBook {
     return this.records.map(infoOf);
   }
   async persist(records) {
-    const temp = `${this.path}.tmp-${b64u2(randomBytes5(6))}`;
-    await writeFile5(temp, `${JSON.stringify({ version: 1, harness: records }, null, 2)}
+    const temp = `${this.path}.tmp-${b64u2(randomBytes6(6))}`;
+    await writeFile6(temp, `${JSON.stringify({ version: 1, harness: records }, null, 2)}
 `, { mode: 384, flag: "wx" });
     await chmod7(temp, 384);
-    await rename6(temp, this.path);
+    await rename7(temp, this.path);
     this.records = records;
   }
 }
@@ -73648,7 +73931,7 @@ class CoreServer {
     return client;
   }
   accept(socket) {
-    const connectionId = `c_${randomBytes6(9).toString("base64url")}`;
+    const connectionId = `c_${randomBytes7(9).toString("base64url")}`;
     const connection = { socket };
     this.connections.set(connectionId, connection);
     const decoder = new LineDecoder;
@@ -73881,10 +74164,10 @@ class CoreServer {
       const text2 = JSON.stringify(layout);
       if (Buffer.byteLength(text2, "utf8") > MAX_LAYOUT_BYTES)
         throw invalidParams("layout is over 64 KiB.");
-      const temp = `${this.options.layoutPath}.tmp-${randomBytes6(6).toString("base64url")}`;
-      await writeFile6(temp, `${JSON.stringify({ layout }, null, 2)}
+      const temp = `${this.options.layoutPath}.tmp-${randomBytes7(6).toString("base64url")}`;
+      await writeFile7(temp, `${JSON.stringify({ layout }, null, 2)}
 `, { mode: 384, flag: "wx" });
-      await rename7(temp, this.options.layoutPath);
+      await rename8(temp, this.options.layoutPath);
       return { layout };
     });
     this.handle("subscribe", async (params, call2) => {
@@ -73930,7 +74213,7 @@ class CoreServer {
   }
   async readLayout() {
     try {
-      const parsed = JSON.parse(await readFile11(this.options.layoutPath, "utf8"));
+      const parsed = JSON.parse(await readFile12(this.options.layoutPath, "utf8"));
       if (parsed.layout && typeof parsed.layout === "object")
         return parsed.layout;
     } catch (error) {
@@ -73970,7 +74253,7 @@ init_secret_store();
 init_canonical_json();
 init_crypto();
 init_ownership();
-import { open as openFile, readFile as readFile12, rename as rename8, rm as rm5 } from "node:fs/promises";
+import { open as openFile, readFile as readFile13, rename as rename9, rm as rm5 } from "node:fs/promises";
 var CORE_SLOT_FORMAT = "candle-core-slot";
 var CORE_SLOT_VERSION = 1;
 var HKDF_INFO = "candle-core/v1/slot";
@@ -74028,7 +74311,7 @@ function parseCoreSlotFile(raw) {
 async function readCoreSlotHeader(paths) {
   let raw;
   try {
-    raw = await readFile12(paths.slot, "utf8");
+    raw = await readFile13(paths.slot, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return;
@@ -74122,7 +74405,7 @@ async function moveProfileToCore(input) {
     await handle.close();
   }
   try {
-    await rename8(temp, input.paths.slot);
+    await rename9(temp, input.paths.slot);
   } catch (error) {
     await rm5(temp, { force: true });
     throw error;
@@ -74356,236 +74639,6 @@ async function getOperation2(args, deps) {
   return refusal("OPERATION_NOT_HELD", `The core issued no ${kind} operation under this id. A swap the core did not issue is read by replaying it with its clientSwapId.`);
 }
 
-// src/core/trading.ts
-import { randomBytes as randomBytes7 } from "node:crypto";
-import { readFile as readFile13, rename as rename9, writeFile as writeFile7 } from "node:fs/promises";
-class FactorRejectedError extends Error {
-  constructor() {
-    super("The factor did not open the vault.");
-    this.name = "FactorRejectedError";
-  }
-}
-var MAX_WINDOW_MS = 15 * 60000;
-var FAILURE_WINDOW_MS = 10 * 60000;
-var FAILURE_LIMIT = 5;
-var LOCKOUT_MS = 5 * 60000;
-
-class TradingState {
-  deps;
-  on = false;
-  window;
-  paperWindow;
-  failures = [];
-  lockedUntil = 0;
-  listeners = [];
-  constructor(deps) {
-    this.deps = deps;
-  }
-  static async open(deps) {
-    const state = new TradingState(deps);
-    try {
-      const parsed = JSON.parse(await readFile13(deps.settingsPath, "utf8"));
-      state.on = parsed.tradingOn === true && await deps.slotExists();
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    return state;
-  }
-  onChange(listener) {
-    this.listeners.push(listener);
-  }
-  tradingOn() {
-    return this.on;
-  }
-  snapshot() {
-    const window = this.activeWindow();
-    const paper = this.activePaperWindow();
-    return {
-      tradingOn: this.on,
-      approvalPolicy: "ask",
-      timedWindow: window ? { open: true, viewClientId: window.viewClientId, closesAt: new Date(window.closesAt).toISOString() } : { open: false },
-      paperWindow: paper ? { open: true, viewClientId: paper.viewClientId, closesAt: new Date(paper.closesAt).toISOString() } : { open: false },
-      approvalsLockedUntil: this.lockedUntil > this.deps.now() ? new Date(this.lockedUntil).toISOString() : null
-    };
-  }
-  async turnOn(factor) {
-    const vault = await this.verify(factor);
-    try {
-      if (!await this.deps.slotExists()) {
-        const readKey2 = await this.deps.mintReadKey();
-        await this.deps.moveToSlot(vault, readKey2);
-      }
-      this.deps.remember(await this.deps.openSlot(vault));
-    } finally {
-      vault.close();
-    }
-    this.on = true;
-    await this.persist();
-    this.changed();
-  }
-  async turnOff() {
-    this.on = false;
-    this.closeWindow();
-    this.closePaperWindow();
-    await this.persist();
-    this.changed();
-  }
-  async openWindow(viewClientId, minutes, factor) {
-    if (!this.on)
-      throw refused("TRADING_OFF", "Turn trading on before opening a window.");
-    if (!Number.isFinite(minutes) || minutes <= 0)
-      throw refused("INVALID_WINDOW", "A window lasts more than zero minutes.");
-    const lengthMs = Math.min(minutes * 60000, MAX_WINDOW_MS);
-    const vault = await this.verify(factor);
-    let credentials;
-    try {
-      credentials = await this.deps.openSlot(vault);
-    } finally {
-      vault.close();
-    }
-    this.deps.remember(credentials);
-    this.closeWindow();
-    const openedAt = this.deps.now();
-    const timer = setTimeout(() => this.closeWindow(), lengthMs);
-    timer.unref?.();
-    this.window = { viewClientId, openedAt, closesAt: openedAt + lengthMs, credentials, timer };
-    this.changed();
-  }
-  closeWindow() {
-    if (this.window === undefined)
-      return;
-    clearTimeout(this.window.timer);
-    this.window = undefined;
-    this.changed();
-  }
-  viewsAttached(viewClientIds) {
-    if (this.window !== undefined && !viewClientIds.has(this.window.viewClientId))
-      this.closeWindow();
-    if (this.paperWindow !== undefined && !viewClientIds.has(this.paperWindow.viewClientId))
-      this.closePaperWindow();
-  }
-  async openPaperWindow(viewClientId, minutes, factor) {
-    if (!this.on)
-      throw refused("TRADING_OFF", "Turn trading on before opening a paper window.");
-    if (!Number.isFinite(minutes) || minutes <= 0) {
-      throw refused("INVALID_WINDOW", "A window lasts more than zero minutes.");
-    }
-    const lengthMs = Math.min(minutes * 60000, MAX_WINDOW_MS);
-    const vault = await this.verify(factor);
-    let credentials;
-    try {
-      credentials = await this.deps.openSlot(vault);
-    } finally {
-      vault.close();
-    }
-    this.deps.remember(credentials);
-    this.closePaperWindow();
-    const openedAt = this.deps.now();
-    const timer = setTimeout(() => this.closePaperWindow(), lengthMs);
-    timer.unref?.();
-    this.paperWindow = { viewClientId, openedAt, closesAt: openedAt + lengthMs, credentials, timer };
-    this.changed();
-  }
-  closePaperWindow() {
-    if (this.paperWindow === undefined)
-      return;
-    clearTimeout(this.paperWindow.timer);
-    this.paperWindow = undefined;
-    this.changed();
-  }
-  async withPaperCredentials(use) {
-    if (!this.on)
-      throw refused("TRADING_OFF", "Paper needs trading on: the build route takes the Write key.");
-    const window = this.activePaperWindow() ?? this.activeWindow();
-    if (window === undefined) {
-      throw refused("PAPER_WINDOW_REQUIRED", "Open a paper window in the Candle TUI (Settings > Trading); it asks for your factor once.");
-    }
-    return use(window.credentials);
-  }
-  async withCredentials(input, use) {
-    if (input.factor === undefined) {
-      const window = this.activeWindow();
-      if (FRESH_FACTOR_KINDS.has(input.kind)) {
-        throw refused("FACTOR_REQUIRED", `A ${input.kind} card always needs a fresh factor, window or not.`);
-      }
-      if (window === undefined || window.viewClientId !== input.viewClientId) {
-        throw refused("FACTOR_REQUIRED", "Approve with your vault factor, or open a timed window first.");
-      }
-      return use(window.credentials);
-    }
-    const vault = await this.verify(input.factor);
-    let credentials;
-    try {
-      credentials = await this.deps.openSlot(vault);
-    } finally {
-      vault.close();
-    }
-    this.deps.remember(credentials);
-    return use(credentials);
-  }
-  activePaperWindow() {
-    if (this.paperWindow !== undefined && this.paperWindow.closesAt <= this.deps.now())
-      this.closePaperWindow();
-    return this.paperWindow;
-  }
-  activeWindow() {
-    if (this.window !== undefined && this.window.closesAt <= this.deps.now())
-      this.closeWindow();
-    return this.window;
-  }
-  async verify(factor) {
-    const now = this.deps.now();
-    if (this.lockedUntil > now) {
-      throw refused("APPROVALS_LOCKED", "Too many rejected factors. Approvals are locked for a few minutes.", {
-        lockedUntil: new Date(this.lockedUntil).toISOString()
-      });
-    }
-    if (factor === undefined)
-      throw refused("FACTOR_REQUIRED", "This needs your vault factor.");
-    if (factor.type !== "passphrase") {
-      throw refused("FACTOR_NOT_IN_THIS_BUILD", `${factor.type} approval from the core is not in this build; use the passphrase.`);
-    }
-    if (typeof factor.value !== "string" || factor.value.length === 0)
-      throw refused("FACTOR_REQUIRED", "The passphrase is empty.");
-    try {
-      return await this.deps.unlockVault(factor);
-    } catch (error) {
-      if (!(error instanceof FactorRejectedError))
-        throw error;
-      this.failures = [...this.failures.filter((at2) => at2 > now - FAILURE_WINDOW_MS), now];
-      if (this.failures.length >= FAILURE_LIMIT) {
-        this.lockedUntil = now + LOCKOUT_MS;
-        this.failures = [];
-        this.changed();
-      }
-      throw refused("FACTOR_REJECTED", "That factor did not open the vault. The card is still open.");
-    }
-  }
-  async persist() {
-    const temp = `${this.deps.settingsPath}.tmp-${randomBytes7(6).toString("base64url")}`;
-    await writeFile7(temp, `${JSON.stringify({ tradingOn: this.on }, null, 2)}
-`, { mode: 384, flag: "wx" });
-    await rename9(temp, this.deps.settingsPath);
-  }
-  changed() {
-    for (const listener of this.listeners)
-      listener();
-  }
-}
-function parseFactor(value) {
-  if (value === undefined || value === null)
-    return;
-  if (typeof value !== "object")
-    throw refused("INVALID_FACTOR", "factor must be an object.");
-  const { type, value: secret } = value;
-  if (type === "passphrase" && typeof secret === "string")
-    return { type, value: secret };
-  if (type === "touch-id" || type === "security-key")
-    return { type };
-  throw refused("INVALID_FACTOR", "factor.type must be passphrase, touch-id or security-key.");
-}
-
 // src/commands/core.ts
 init_profiles();
 init_render();
@@ -74650,7 +74703,8 @@ ${USAGE4}`, json);
   let stopReason = "start_failed";
   try {
     const redactor = new Redactor;
-    let readKey2 = await deps.store.get(profileSecretRef(profile, "apiKey")) ?? undefined;
+    const readPlainKey = () => deps.store.get(profileSecretRef(profile, "apiKey")).catch(() => null);
+    let readKey2 = await readPlainKey() ?? undefined;
     redactor.add(readKey2);
     try {
       journal = await Journal.open({ path: paths.journal, redactor, environment, profile, now: deps.now });
@@ -74660,7 +74714,7 @@ ${USAGE4}`, json);
       writeLocalFailure(deps, { code: error.code, message: error.message }, json);
       return 1;
     }
-    const removed = await finishCoreMove({ deps, paths, profile });
+    const removed = await finishCoreMove({ deps, paths, profile }).catch(() => []);
     if (removed.length > 0)
       await journal.append({ type: "slot.move_finished", refs: removed });
     const tokens = await TokenBook.open(paths.tokens, deps.now);
@@ -74718,6 +74772,19 @@ ${USAGE4}`, json);
       remember: (credentials) => {
         redactor.add(credentials.writeKey);
         redactor.add(credentials.deviceToken);
+      },
+      readKeyLimit: async (credentials) => {
+        const result = await apiRequest("/api/v1/agent/keys", {
+          method: "GET",
+          auth: "device",
+          credentials: { deviceToken: credentials.deviceToken },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env
+        });
+        if (!result.ok)
+          return;
+        return keyLimitOf(result.body.keys, apiKeyPrefix(credentials.writeKey), deps.now());
       }
     });
     server = new CoreServer({
@@ -74748,7 +74815,7 @@ ${USAGE4}`, json);
     registerCardHandlers(server, cards, trading);
     registerToolFace(server, { cards, trading, executor, journal, readKey: () => readKey2 });
     trading.onChange(() => {
-      deps.store.get(profileSecretRef(profile, "apiKey")).then((key) => {
+      readPlainKey().then((key) => {
         readKey2 = key ?? undefined;
         redactor.add(readKey2);
       });
@@ -74782,6 +74849,7 @@ ${USAGE4}`, json);
     }
     const started = await journal.append({
       type: "core.started",
+      readKey: readKey2 !== undefined,
       coreVersion: CLI_VERSION,
       pid: process.pid,
       viewTokenHandedOff: viewTokenFd !== undefined,
@@ -74892,6 +74960,23 @@ function registerCardHandlers(server, cards, trading) {
     }
     return trading.snapshot();
   });
+}
+function keyLimitOf(keys, prefix, now) {
+  if (!Array.isArray(keys) || prefix === undefined)
+    return;
+  const row = keys.find((key) => key?.keyPrefix === prefix);
+  const limit = row?.txLimit;
+  if (!limit || typeof limit.usdMicros !== "number")
+    return;
+  const reset = limit.reset === "weekly" || limit.reset === "monthly" || limit.reset === "never" ? limit.reset : "daily";
+  const field = {
+    daily: "todayUsdMicros",
+    weekly: "weekUsdMicros",
+    monthly: "monthUsdMicros",
+    never: "lifetimeUsdMicros"
+  }[reset];
+  const used = row?.usage?.[field];
+  return { usdMicros: limit.usdMicros, reset, usedUsdMicros: typeof used === "number" ? used : 0, readAt: now };
 }
 
 // src/commands/core-mcp.ts
@@ -90716,6 +90801,53 @@ async function hoodTransfer(ctx, args) {
   return printTradingResult(ctx, receipt);
 }
 
+// src/commands/tui.ts
+init_args();
+init_render();
+var PASSED = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "TERM",
+  "COLORTERM",
+  "TZ",
+  "LANG",
+  "LC_ALL",
+  "CANDLE_CONFIG_DIR",
+  "CANDLE_KEYRING_PASSPHRASE",
+  "NO_COLOR"
+];
+async function tui(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}
+Usage: candle tui [--profile <name>]`, json);
+    return 2;
+  }
+  const path = findPlugin("tui", deps.env.PATH);
+  if (path === undefined) {
+    writeLocalFailure(deps, {
+      code: "TUI_NOT_INSTALLED",
+      message: "The Candle TUI (candle-tui) is not on PATH.",
+      suggestion: "It is a preview and not released yet; from a checkout, run bun packages/tui/src/bin.tsx --candle <this candle>."
+    }, json);
+    return 1;
+  }
+  const env = {};
+  for (const name2 of PASSED) {
+    const value = deps.env[name2];
+    if (value !== undefined)
+      env[name2] = value;
+  }
+  const candle = deps.execPath.endsWith("/node") || deps.execPath.endsWith("/bun") ? "candle" : deps.execPath;
+  return deps.runPlugin(path, [...ctx.profile ? ["--profile", ctx.profile] : [], "--candle", candle], env);
+}
+
 // src/commands/update.ts
 init_args();
 import { randomBytes as randomBytes9 } from "node:crypto";
@@ -99338,6 +99470,7 @@ var COMMANDS = {
   doctor: { bare: doctor },
   mcp: { bare: mcp },
   core: { subcommands: { serve: coreServe, mcp: coreMcp } },
+  tui: { bare: tui },
   setup: { bare: setup },
   verify: { bare: verify },
   update: { bare: update },
@@ -99382,7 +99515,8 @@ var NEVER_GUARDED = new Set([
   "external",
   "sign",
   "secrets",
-  "plugins"
+  "plugins",
+  "tui"
 ]);
 async function run2(argv, deps) {
   let code;

@@ -25,7 +25,7 @@ import type { EventHub } from "./events"
 import type { CoreEnvironment, Journal, JournalRow } from "./journal"
 import { claimableFor, nextPollMs, readOnce, readsById, reconcileMessage } from "./reconcile"
 import { invalidParams, refused } from "./rpc"
-import type { Factor, TradingState } from "./trading"
+import { type Factor, formatKeyLimit, type TradingState } from "./trading"
 
 export type CardState = "proposed" | "awaiting_approval" | "approved" | "rejected" | "withdrawn" | "expired"
 export type OperationState =
@@ -273,7 +273,7 @@ export class CardBook {
       }),
       origin: { ...origin, clientName: terminalText(origin.clientName) },
       ...(reason ? { reason } : {}),
-      display: displayFor(kind, tool, sent, this.deps.environment),
+      display: displayFor(kind, tool, sent, this.deps.environment, formatKeyLimit(this.deps.trading.lastKeyLimit())),
       policy: "ask",
       needsFactor: FACTOR_KINDS.has(kind),
       createdAt: new Date(now).toISOString(),
@@ -363,6 +363,19 @@ export class CardBook {
           if (card.state !== "awaiting_approval" || Date.parse(card.expiresAt) <= this.deps.now()) {
             await this.expireDue()
             throw refused("CARD_NOT_AWAITING", `This card is ${card.state}.`, { state: card.state })
+          }
+          // K-5: within the key limit as read now, with the credentials just unlocked. A card
+          // whose USD amount the core cannot tell is left to the server's own limit.
+          const limit = await this.deps.trading.refreshKeyLimit(credentials)
+          const usd = cardUsdMicros(card)
+          if (limit !== undefined && usd !== undefined && usd > limit.usdMicros - limit.usedUsdMicros) {
+            throw refused(
+              "OVER_KEY_LIMIT",
+              `This is over the Write key's limit (${formatKeyLimit(limit)}). Nothing was sent.`,
+              {
+                keyLimitUsd: formatKeyLimit(limit),
+              },
+            )
           }
           await this.deps.journal.append({
             type: "card.approved",
@@ -798,6 +811,7 @@ function displayFor(
   tool: string,
   params: Record<string, unknown>,
   environment: CoreEnvironment,
+  keyLimitUsd?: string,
 ): Card["display"] {
   const contract = text(params.mint ?? params.outputMint ?? params.tokenMint ?? params.token ?? params.address ?? "")
   const chain = text(params.chain) || (contract.startsWith("0x") ? "hood" : contract ? "solana" : "")
@@ -813,5 +827,19 @@ function displayFor(
     kind === "trade" ? (side || "trade").toUpperCase() : kind.toUpperCase(),
     symbol ? `$${symbol}` : tool,
   ].join(" ")
-  return { title, contract, chain, amount, environment }
+  return { title, contract, chain, amount, environment, ...(keyLimitUsd ? { keyLimitUsd } : {}) }
+}
+
+/** The card's amount in USD micros, when its params say it: an explicit USD amount, or a stablecoin quote. */
+export function cardUsdMicros(card: Pick<Card, "params">): number | undefined {
+  const params = card.params
+  const decimal = (value: unknown) => {
+    const n =
+      typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : Number.NaN
+    return Number.isFinite(n) && n >= 0 ? Math.round(n * 1_000_000) : undefined
+  }
+  if (params.amountUsd !== undefined) return decimal(params.amountUsd)
+  const quote = typeof params.quoteAsset === "string" ? params.quoteAsset.toLowerCase() : ""
+  if ((quote === "usdc" || quote === "usdg") && params.side !== "sell") return decimal(params.amount)
+  return undefined
 }

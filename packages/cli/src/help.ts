@@ -1280,6 +1280,16 @@ export const HELP: Record<string, Topic> = {
     examples: ["candle mcp", "candle mcp --print-config", "candle mcp --read-only"],
     env: ENV_API,
   },
+  tui: {
+    group: "Start here",
+    summary: "The Candle TUI: holdings, the feed, your agents and approval cards, in the terminal (preview)",
+    description:
+      "Starts the Candle TUI (candle-tui), which starts the local core for the profile when it is not running. Every live money action an agent proposes becomes an approval card you approve there with your vault factor. Preview: the TUI is not released yet.",
+    usage: ["candle tui [--profile <name>]"],
+    rows: [],
+    examples: ["candle tui", "candle tui --profile staging"],
+    env: ["CANDLE_CONFIG_DIR", "CANDLE_PROFILE"],
+  },
   core: {
     group: "Maintain",
     summary: "Run the local Candle core the Candle TUI attaches to (preview)",

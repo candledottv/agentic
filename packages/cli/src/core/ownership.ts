@@ -106,6 +106,8 @@ export const CORE_OWNED_INVOCATIONS: readonly string[] = [
   "help *",
   "completion *",
   "plugins",
+  // Starts the TUI, whose core is the owner (BE-1665).
+  "tui",
   // Managing the map. `rename` and `remove` are checked against the profile they name, below.
   "profile *",
   // Only `--read-only`, which starts the server with no key: see `coreOwnedRefusal`.

@@ -42,9 +42,9 @@ import { CoreServer, CoreSocketError } from "../core/server"
 import { finishCoreMove, moveProfileToCore, openCoreSlot } from "../core/slot"
 import { TokenBook } from "../core/tokens"
 import { registerToolFace } from "../core/tools-face"
-import { FactorRejectedError, type OpenVault, parseFactor, TradingState } from "../core/trading"
+import { FactorRejectedError, type KeyLimit, type OpenVault, parseFactor, TradingState } from "../core/trading"
 import type { CommandContext } from "../deps"
-import { candleEnvironment, profileSecretRef } from "../profiles"
+import { apiKeyPrefix, candleEnvironment, profileSecretRef } from "../profiles"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { VaultError } from "../vault/errors"
 import { closeVault, defaultVaultPath, readVaultRaw, unlockWithPassphrase } from "../vault/store"
@@ -125,7 +125,10 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
     const redactor = new Redactor()
     // C-4: the Read key is loaded at start and used for every read. Registered with the redactor
     // first, so no row this core writes can carry it.
-    let readKey = (await deps.store.get(profileSecretRef(profile, "apiKey"))) ?? undefined
+    // A store that cannot be opened here (no keychain, no CANDLE_KEYRING_PASSPHRASE) leaves the
+    // core without a Read key, not without a start: keyless reads and the first-run screen still work.
+    const readPlainKey = () => deps.store.get(profileSecretRef(profile, "apiKey")).catch(() => null)
+    let readKey = (await readPlainKey()) ?? undefined
     redactor.add(readKey)
     try {
       journal = await Journal.open({ path: paths.journal, redactor, environment, profile, now: deps.now })
@@ -134,7 +137,7 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
       writeLocalFailure(deps, { code: error.code, message: error.message }, json)
       return 1
     }
-    const removed = await finishCoreMove({ deps, paths, profile })
+    const removed = await finishCoreMove({ deps, paths, profile }).catch(() => [] as string[])
     if (removed.length > 0) await journal.append({ type: "slot.move_finished", refs: removed })
     const tokens = await TokenBook.open(paths.tokens, deps.now)
     redactor.add(tokens.viewToken)
@@ -192,6 +195,19 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
         redactor.add(credentials.writeKey)
         redactor.add(credentials.deviceToken)
       },
+      // K-5: the Write key's limit and this window's use, from the owner's key list.
+      readKeyLimit: async (credentials) => {
+        const result = await apiRequest("/api/v1/agent/keys", {
+          method: "GET",
+          auth: "device",
+          credentials: { deviceToken: credentials.deviceToken },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env,
+        })
+        if (!result.ok) return undefined
+        return keyLimitOf((result.body as { keys?: unknown }).keys, apiKeyPrefix(credentials.writeKey), deps.now())
+      },
     })
     server = new CoreServer({
       socketPath: paths.socket,
@@ -222,7 +238,7 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
     registerToolFace(server, { cards, trading, executor, journal, readKey: () => readKey })
     // Turning trading on replaces the plain key with the minted Read key (K-11).
     trading.onChange(() => {
-      void deps.store.get(profileSecretRef(profile, "apiKey")).then((key) => {
+      void readPlainKey().then((key) => {
         readKey = key ?? undefined
         redactor.add(readKey)
       })
@@ -266,6 +282,7 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
     }
     const started = await journal.append({
       type: "core.started",
+      readKey: readKey !== undefined,
       coreVersion: CLI_VERSION,
       pid: process.pid,
       viewTokenHandedOff: viewTokenFd !== undefined,
@@ -388,4 +405,23 @@ function registerCardHandlers(server: CoreServer, cards: CardBook, trading: Trad
     }
     return trading.snapshot()
   })
+}
+
+/** The limit and window use of the key whose prefix is given, from `GET /agent/keys`'s rows. */
+export function keyLimitOf(keys: unknown, prefix: string | undefined, now: number): KeyLimit | undefined {
+  if (!Array.isArray(keys) || prefix === undefined) return undefined
+  const row = keys.find((key) => (key as { keyPrefix?: unknown })?.keyPrefix === prefix) as
+    | { txLimit?: { usdMicros?: unknown; reset?: unknown } | null; usage?: Record<string, unknown> }
+    | undefined
+  const limit = row?.txLimit
+  if (!limit || typeof limit.usdMicros !== "number") return undefined
+  const reset = limit.reset === "weekly" || limit.reset === "monthly" || limit.reset === "never" ? limit.reset : "daily"
+  const field = {
+    daily: "todayUsdMicros",
+    weekly: "weekUsdMicros",
+    monthly: "monthUsdMicros",
+    never: "lifetimeUsdMicros",
+  }[reset]
+  const used = row?.usage?.[field]
+  return { usdMicros: limit.usdMicros, reset, usedUsdMicros: typeof used === "number" ? used : 0, readAt: now }
 }

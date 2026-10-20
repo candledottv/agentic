@@ -33,7 +33,11 @@ afterEach(async () => {
 })
 
 async function setup(
-  opts: { tradingOn?: boolean; outcome?: (calls: number) => ExecutionOutcome | Promise<ExecutionOutcome> } = {},
+  opts: {
+    tradingOn?: boolean
+    outcome?: (calls: number) => ExecutionOutcome | Promise<ExecutionOutcome>
+    keyLimit?: { usdMicros: number; usedUsdMicros: number }
+  } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "candle-cards-"))
   dirs.push(dir)
@@ -62,6 +66,15 @@ async function setup(
     moveToSlot: async () => {},
     mintReadKey: async () => "unused",
     remember: () => {},
+    ...(opts.keyLimit
+      ? {
+          readKeyLimit: async () => ({
+            ...(opts.keyLimit as { usdMicros: number; usedUsdMicros: number }),
+            reset: "daily" as const,
+            readAt: 0,
+          }),
+        }
+      : {}),
   })
   if (opts.tradingOn !== false) await trading.turnOn(RIGHT)
   unlocks.length = 0
@@ -395,6 +408,35 @@ describe("approving (K-5, K-7)", () => {
     ).rejects.toMatchObject({
       code: "TRADING_OFF",
     })
+  })
+})
+
+describe("K-5: the key limit, read fresh at approval", () => {
+  test("over what is left is OVER_KEY_LIMIT, nothing is sent and the card stays open; within it runs", async () => {
+    const s = await setup({ keyLimit: { usdMicros: 50_000_000, usedUsdMicros: 20_000_000 } })
+    const big = await s.trade({ quoteAsset: "USDC", amount: "40" })
+    expect(big.display.keyLimitUsd).toBe("$50.00 daily, $30.00 left")
+    await expect(
+      s.book.approve({ cardId: big.cardId, cardHash: big.cardHash, factor: RIGHT }, VIEW.clientId),
+    ).rejects.toMatchObject({
+      code: "OVER_KEY_LIMIT",
+    })
+    expect(s.calls).toEqual([])
+    expect(s.book.get(big.cardId, VIEW.clientId, false).state).toBe("awaiting_approval")
+    const small = await s.trade({ quoteAsset: "USDC", amount: "10" })
+    expect(
+      (await s.book.approve({ cardId: small.cardId, cardHash: small.cardHash, factor: RIGHT }, VIEW.clientId)).operation
+        .state,
+    ).toBe("succeeded")
+  })
+
+  test("a card whose USD amount the core cannot tell is left to the server's limit", async () => {
+    const s = await setup({ keyLimit: { usdMicros: 1, usedUsdMicros: 0 } })
+    const sol = await s.trade({ amount: "100" })
+    expect(
+      (await s.book.approve({ cardId: sol.cardId, cardHash: sol.cardHash, factor: RIGHT }, VIEW.clientId)).operation
+        .state,
+    ).toBe("succeeded")
   })
 })
 

@@ -24,7 +24,7 @@ import { profileSecretRef } from "../profiles"
 import { createCapture, createFakeConfigStore, createTestDeps } from "../test-support"
 import { closeVault } from "../vault/store"
 import { makeVault, useCheapKdf } from "../vault/test-vault"
-import { coreServe } from "./core"
+import { coreServe, keyLimitOf } from "./core"
 
 const dirs: string[] = []
 afterEach(async () => {
@@ -302,5 +302,26 @@ describe("candle core serve, end to end with cards (spec K)", () => {
     view.close()
     expect(await running).toBe(0)
     expect(terminate).toBeDefined()
+  })
+})
+
+describe("keyLimitOf (K-5)", () => {
+  test("reads the Write key's row, with the usage that matches its reset", () => {
+    const keys = [
+      { keyPrefix: "other000", txLimit: { usdMicros: 1, reset: "daily" } },
+      {
+        keyPrefix: "wwwwwwww",
+        txLimit: { usdMicros: 50_000_000, reset: "weekly" },
+        usage: { todayUsdMicros: 1, weekUsdMicros: 7_000_000 },
+      },
+    ]
+    expect(keyLimitOf(keys, "wwwwwwww", 5)).toEqual({
+      usdMicros: 50_000_000,
+      reset: "weekly",
+      usedUsdMicros: 7_000_000,
+      readAt: 5,
+    })
+    expect(keyLimitOf([{ keyPrefix: "wwwwwwww", txLimit: null }], "wwwwwwww", 0)).toBeUndefined()
+    expect(keyLimitOf("nope", "wwwwwwww", 0)).toBeUndefined()
   })
 })

@@ -50,6 +50,23 @@ export interface TradingDeps {
   now: () => number
   /** Registered by the core so every value the window holds is redacted (K-10). */
   remember(credentials: TradingCredentials): void
+  /** K-5: reads the Write key's USD limit and this window's use, with the credentials in hand. */
+  readKeyLimit?: (credentials: TradingCredentials) => Promise<KeyLimit | undefined>
+}
+
+/** The Write key's limit as last read (`--tx-limit`, `--reset`), and what the window has used. */
+export interface KeyLimit {
+  usdMicros: number
+  reset: "daily" | "weekly" | "monthly" | "never"
+  usedUsdMicros: number
+  readAt: number
+}
+
+/** `$50.00 daily, $38.00 left`, for the card's `display.keyLimitUsd`. */
+export function formatKeyLimit(limit: KeyLimit | undefined): string | undefined {
+  if (limit === undefined) return undefined
+  const usd = (micros: number) => `$${(Math.max(0, micros) / 1_000_000).toFixed(2)}`
+  return `${usd(limit.usdMicros)} ${limit.reset === "never" ? "in total" : limit.reset}, ${usd(limit.usdMicros - limit.usedUsdMicros)} left`
 }
 
 export class FactorRejectedError extends Error {
@@ -89,6 +106,7 @@ export class TradingState {
   private failures: number[] = []
   private lockedUntil = 0
   private readonly listeners: (() => void)[] = []
+  private keyLimit: KeyLimit | undefined
 
   private constructor(private readonly deps: TradingDeps) {}
 
@@ -138,7 +156,9 @@ export class TradingState {
         await this.deps.moveToSlot(vault, readKey)
       }
       // Proves the slot opens with this vault before the switch reads "on".
-      this.deps.remember(await this.deps.openSlot(vault))
+      const credentials = await this.deps.openSlot(vault)
+      this.deps.remember(credentials)
+      await this.refreshKeyLimit(credentials)
     } finally {
       vault.close()
     }
@@ -175,6 +195,26 @@ export class TradingState {
     timer.unref?.()
     this.window = { viewClientId, openedAt, closesAt: openedAt + lengthMs, credentials, timer }
     this.changed()
+  }
+
+  /**
+   * K-5: a fresh read of the key limit. A read that fails leaves the limit unknown rather than
+   * stale, so an approval is never checked against an old figure; the server's limit
+   * (`KEY_LIMIT_REACHED`) is the backstop either way.
+   */
+  async refreshKeyLimit(credentials: TradingCredentials): Promise<KeyLimit | undefined> {
+    if (!this.deps.readKeyLimit) return this.keyLimit
+    try {
+      this.keyLimit = await this.deps.readKeyLimit(credentials)
+    } catch {
+      this.keyLimit = undefined
+    }
+    return this.keyLimit
+  }
+
+  /** The limit as last read, for the card display. */
+  lastKeyLimit(): KeyLimit | undefined {
+    return this.keyLimit
   }
 
   closeWindow(): void {

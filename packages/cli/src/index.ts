@@ -80,6 +80,7 @@ import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./c
 import { teeRebind, teeRebinds } from "./commands/tee-rebind"
 import { teeRename } from "./commands/tee-rename"
 import { transfer } from "./commands/transfer"
+import { tui } from "./commands/tui"
 import { update } from "./commands/update"
 import { vaultBackup, vaultVerifyBackup } from "./commands/vault-backup"
 import { vaultDemote } from "./commands/vault-demote"
@@ -365,6 +366,8 @@ const COMMANDS: Record<string, CommandRoute> = {
   // BE-1665 (spec S1, C-1): the local core the Candle TUI attaches to. Preview: the attach
   // interface, cards and reconciliation land in the PRs stacked on this one.
   core: { subcommands: { serve: coreServe, mcp: coreMcp } },
+  // BE-1665 (spec C-1): starts the Candle TUI, which starts the core. Preview.
+  tui: { bare: tui },
   setup: { bare: setup },
   verify: { bare: verify },
   update: { bare: update },
@@ -482,6 +485,8 @@ export const NEVER_GUARDED = new Set([
   "sign",
   "secrets",
   "plugins",
+  // BE-1665: `tui` acts as no identity; the core it starts guards itself.
+  "tui",
 ])
 
 export async function run(argv: string[], deps: Deps): Promise<number> {
