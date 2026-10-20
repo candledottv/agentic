@@ -228,6 +228,9 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
       )
       if (count === 0) void cards.expireAllOpen("last_view_detached")
     })
+    // R-2: reconciliation runs before the socket accepts anyone. Copied first, because rebuilding
+    // appends rows of its own.
+    const rebuilt = await cards.rebuild([...journal.rows()])
     cards.start()
     try {
       await server.listen()
@@ -254,6 +257,7 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
       coreVersion: CLI_VERSION,
       pid: process.pid,
       viewTokenHandedOff: viewTokenFd !== undefined,
+      rebuilt,
     })
 
     if (json) {
@@ -338,6 +342,10 @@ function registerCardHandlers(server: CoreServer, cards: CardBook, trading: Trad
   }))
   server.handle("operations.get", async (params, { client, access }) =>
     cards.operation(params.opId, client.clientId, own(access)),
+  )
+  // R-3: the user resolves an operation the core could not confirm. A view only (the role table).
+  server.handle("operations.resolve", async (params, { client }) =>
+    cards.resolve({ opId: params.opId, action: params.action, factor: parseFactor(params.factor) }, client.clientId),
   )
   server.handle("settings.get", async () => trading.snapshot())
   // S-9 and K-6. The approval policy is "Ask me" and not settable in S1 (K-9).

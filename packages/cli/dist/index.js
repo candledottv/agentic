@@ -69943,6 +69943,65 @@ function classifyCall(tool, args) {
   return known;
 }
 
+// src/core/reconcile.ts
+function readsById(target) {
+  return target.kind === "trade" || target.kind === "launch";
+}
+var TRADE_STATES = {
+  built: "pending",
+  confirmed: "succeeded",
+  failed: "failed"
+};
+var LAUNCH_STATES = {
+  submitted: "pending",
+  confirming: "pending",
+  confirmed: "succeeded",
+  failed: "failed"
+};
+async function readOnce(executor, target, writeKey) {
+  if (!readsById(target))
+    return { readable: false };
+  const kind = target.kind === "launch" ? "launch" : "trade";
+  const outcome = await executor.execute("candle_get_operation", { clientId: target.opId, kind }, writeKey);
+  if (outcome.state === "succeeded" || outcome.state === "pending") {
+    const job = outcome.result?.job ?? outcome.result;
+    const status = typeof job?.status === "string" ? job.status : "";
+    const state = (kind === "launch" ? LAUNCH_STATES : TRADE_STATES)[status] ?? "pending";
+    return { readable: true, found: true, state, record: job };
+  }
+  return { readable: true, found: false, detail: "error" in outcome ? outcome.error.code : undefined };
+}
+async function claimableFor(executor, mint, writeKey) {
+  if (typeof mint !== "string" || mint.length === 0)
+    return;
+  let cursor;
+  for (let page = 0;page < 5; page++) {
+    const outcome = await executor.execute("candle_get_fees", { limit: 50, ...cursor ? { cursor } : {} }, writeKey);
+    if (outcome.state !== "succeeded")
+      return;
+    const body = outcome.result;
+    const rows = Array.isArray(body.tokens) ? body.tokens : [];
+    const row = rows.find((candidate) => candidate.mint === mint);
+    if (row)
+      return { claimableAmounts: row.claimableAmounts ?? null, claimable: row.claimable ?? null };
+    if (typeof body.continueCursor !== "string" || body.continueCursor === "")
+      return;
+    cursor = body.continueCursor;
+  }
+  return;
+}
+function nextPollMs(startedAt, now) {
+  const elapsed = now - startedAt;
+  if (elapsed >= 10 * 60000)
+    return;
+  return elapsed < 2 * 60000 ? 5000 : 30000;
+}
+function reconcileMessage(kind, readable) {
+  const what = kind === "launch" ? "launch" : kind === "trade" || kind === "swap" ? "trade" : "action";
+  const check = readable ? " Check it again with your factor," : "";
+  return `Candle could not confirm this ${what}.${check} Re-send the same request (it can never run twice), or stop tracking it.`;
+}
+
 // src/core/rpc.ts
 var PROTOCOL_VERSION = "1.0";
 var MAX_MESSAGE_BYTES = 1024 * 1024;
@@ -70045,6 +70104,14 @@ class CardBook {
   constructor(deps) {
     this.deps = deps;
   }
+  watches = new Map;
+  schedule(run, ms) {
+    if (this.deps.schedule)
+      return this.deps.schedule(run, ms);
+    const timer = setTimeout(run, ms);
+    timer.unref?.();
+    return () => clearTimeout(timer);
+  }
   start() {
     this.sweep = setInterval(() => void this.expireDue(), 1000);
     this.sweep.unref?.();
@@ -70052,6 +70119,9 @@ class CardBook {
   stop() {
     if (this.sweep)
       clearInterval(this.sweep);
+    for (const cancel of this.watches.values())
+      cancel();
+    this.watches.clear();
   }
   async propose(input, origin) {
     const tool = input.tool;
@@ -70101,7 +70171,7 @@ class CardBook {
             opId: givenId
           });
         }
-        return this.view(held.card);
+        return this.viewWithOperation(held.card);
       }
     }
     await this.expireDue();
@@ -70146,7 +70216,7 @@ class CardBook {
       ...proposalKey !== undefined ? { proposalKey } : {}
     };
     this.cards.set(card2.cardId, { card: card2, proposedKey });
-    await this.deps.journal.append({ type: "card.created", card: card2 });
+    await this.deps.journal.append({ type: "card.created", card: card2, proposedKey });
     this.publish(card2);
     return this.view(card2);
   }
@@ -70161,13 +70231,13 @@ class CardBook {
     return this.view(entry.card);
   }
   operationsFor(clientId, ownOnly) {
-    return [...this.operations.values()].filter((op) => !ownOnly || op.ownerClientId === clientId).map((op) => ({ ...op }));
+    return [...this.operations.values()].filter((op) => !ownOnly || op.ownerClientId === clientId).map((op) => this.opView(op));
   }
   operation(opId, clientId, ownOnly) {
     const op = typeof opId === "string" ? this.operations.get(opId) : undefined;
     if (op === undefined || ownOnly && op.ownerClientId !== clientId)
       throw refused("OPERATION_NOT_HELD", "The core holds no operation with that id.");
-    return { ...op };
+    return this.opView(op);
   }
   async approve(input, viewClientId) {
     await this.expireDue();
@@ -70253,7 +70323,8 @@ class CardBook {
   }
   async execute(card2, writeKey) {
     const at = new Date(this.deps.now()).toISOString();
-    const op = {
+    const existing = this.operations.get(card2.opId);
+    const op = existing ?? {
       opId: card2.opId,
       cardId: card2.cardId,
       kind: card2.kind,
@@ -70264,14 +70335,25 @@ class CardBook {
       createdAt: at,
       updatedAt: at
     };
+    op.state = "submitting";
+    op.updatedAt = at;
     this.operations.set(op.opId, op);
+    if (card2.tool === "candle_claim_fees" && existing === undefined) {
+      const before = await claimableFor(this.deps.executor, card2.params.mint, writeKey).catch(() => {
+        return;
+      });
+      op.evidence = { before };
+    }
     await this.deps.journal.append({
       type: "operation.submitting",
       opId: op.opId,
       cardId: card2.cardId,
       tool: card2.tool,
+      kind: card2.kind,
       idKey: card2.idKey,
-      params: card2.params
+      ownerClientId: op.ownerClientId,
+      params: card2.params,
+      ...op.evidence ? { evidence: op.evidence } : {}
     });
     this.publishOperation(op);
     let outcome;
@@ -70283,21 +70365,201 @@ class CardBook {
         error: { code: "EXECUTOR_FAILED", message: error instanceof Error ? error.message : String(error) }
       };
     }
-    op.state = outcome.state;
-    op.updatedAt = new Date(this.deps.now()).toISOString();
-    if ("result" in outcome && outcome.result !== undefined)
-      op.result = outcome.result;
-    if ("error" in outcome)
-      op.error = outcome.error;
-    await this.deps.journal.append({
-      type: `operation.${op.state}`,
-      opId: op.opId,
-      cardId: card2.cardId,
-      result: op.result,
-      error: op.error
+    await this.settle(op, outcome.state, {
+      ..."result" in outcome && outcome.result !== undefined ? { result: outcome.result } : {},
+      ..."error" in outcome ? { error: outcome.error } : {}
     });
+    const settled = op.state;
+    if (settled === "unknown" || settled === "pending")
+      this.watch(op, writeKey);
+    return this.opView(op);
+  }
+  async resolve(input, viewClientId) {
+    const op = typeof input.opId === "string" ? this.operations.get(input.opId) : undefined;
+    if (op === undefined)
+      throw refused("OPERATION_NOT_HELD", "The core holds no operation with that id.");
+    const card2 = this.cards.get(op.cardId)?.card;
+    if (card2 === undefined)
+      throw refused("OPERATION_NOT_HELD", "The card behind this operation is not held.");
+    const action = input.action;
+    if (action !== "check" && action !== "resend" && action !== "abandon") {
+      throw invalidParams("action is check, resend or abandon.");
+    }
+    const open4 = op.state === "unknown" || action === "check" && op.state === "pending";
+    if (!open4) {
+      throw refused("OPERATION_NOT_UNKNOWN", `This operation is ${op.state}; there is nothing to resolve.`, {
+        state: op.state
+      });
+    }
+    if (action === "check" && !readsById(card2) && card2.tool !== "candle_claim_fees") {
+      throw refused("CHECK_NOT_AVAILABLE", "This kind cannot be read by its id; only a re-send of the same request can tell.");
+    }
+    if (action === "resend" && input.factor === undefined) {
+      throw refused("FACTOR_REQUIRED", "A re-send always needs a fresh factor.");
+    }
+    if (action === "abandon" && input.factor === undefined) {
+      await this.abandon(op, undefined, viewClientId);
+      return this.opView(op);
+    }
+    return this.deps.trading.withCredentials({ kind: card2.kind, viewClientId, factor: input.factor }, async (credentials) => {
+      if (action === "check") {
+        await this.deps.journal.append({ type: "operation.check", opId: op.opId, viewClientId });
+        await this.readBack(op, card2, credentials.writeKey);
+        return this.opView(op);
+      }
+      if (action === "abandon") {
+        await this.abandon(op, credentials.writeKey, viewClientId);
+        return this.opView(op);
+      }
+      await this.deps.journal.append({ type: "operation.resend", opId: op.opId, cardId: card2.cardId, viewClientId });
+      op.resolution = "resent";
+      this.cancelWatch(op.opId);
+      return this.execute(card2, credentials.writeKey);
+    });
+  }
+  async rebuild(rows) {
+    for (const row of rows) {
+      if (row.type === "card.created" && row.card && typeof row.card === "object") {
+        const card2 = row.card;
+        this.cards.set(card2.cardId, { card: card2, proposedKey: typeof row.proposedKey === "string" ? row.proposedKey : "" });
+        continue;
+      }
+      const cardState = /^card\.(approved|rejected|withdrawn|expired)$/.exec(row.type)?.[1];
+      if (cardState && typeof row.cardId === "string") {
+        const entry = this.cards.get(row.cardId);
+        if (entry)
+          entry.card.state = cardState;
+        continue;
+      }
+      if (row.type === "operation.submitting" && typeof row.opId === "string" && typeof row.cardId === "string") {
+        const card2 = this.cards.get(row.cardId)?.card;
+        const previous = this.operations.get(row.opId);
+        this.operations.set(row.opId, {
+          ...previous ?? {},
+          opId: row.opId,
+          cardId: row.cardId,
+          kind: card2?.kind ?? row.kind,
+          tool: String(row.tool ?? card2?.tool ?? ""),
+          idKey: card2?.idKey ?? row.idKey,
+          ownerClientId: String(row.ownerClientId ?? card2?.origin.clientId ?? ""),
+          state: "submitting",
+          createdAt: previous?.createdAt ?? row.at,
+          updatedAt: row.at,
+          ...row.evidence ? { evidence: row.evidence } : {}
+        });
+        continue;
+      }
+      const op = typeof row.opId === "string" ? this.operations.get(row.opId) : undefined;
+      if (op === undefined)
+        continue;
+      if (row.type === "operation.resend")
+        op.resolution = "resent";
+      if (row.type === "operation.late_record")
+        op.lateRecord = row.record;
+      if (row.type === "operation.evidence" && row.evidence)
+        op.evidence = row.evidence;
+      const opState = /^operation\.(pending|succeeded|failed|refused|unknown|resolved_abandoned)$/.exec(row.type)?.[1];
+      if (opState) {
+        op.state = opState;
+        op.updatedAt = row.at;
+        if (opState === "resolved_abandoned")
+          op.resolution = "abandoned";
+        if (row.result !== undefined)
+          op.result = row.result;
+        if (row.error && typeof row.error === "object")
+          op.error = row.error;
+      }
+    }
+    let expired = 0;
+    for (const { card: card2 } of this.cards.values()) {
+      if (card2.state === "awaiting_approval" || card2.state === "proposed") {
+        card2.state = "expired";
+        await this.deps.journal.append({ type: "card.expired", cardId: card2.cardId, reason: "core_restarted" });
+        expired++;
+      }
+    }
+    let unknown = 0;
+    for (const op of this.operations.values()) {
+      if (op.state === "submitting" || op.state === "pending") {
+        await this.settle(op, "unknown", { reason: "core_restarted" });
+        unknown++;
+      }
+      if (op.state === "unknown")
+        op.readNeedsFactor = readsById(op) || op.tool === "candle_claim_fees";
+    }
+    return { expired, unknown };
+  }
+  async abandon(op, writeKey, viewClientId) {
+    op.resolution = "abandoned";
+    const watching = this.watches.has(op.opId);
+    await this.settle(op, "resolved_abandoned", {
+      viewClientId,
+      watching: watching || writeKey !== undefined && readsById(op)
+    });
+    if (!watching && writeKey !== undefined)
+      this.watch(op, writeKey);
+  }
+  async readBack(op, card2, writeKey) {
+    if (card2.tool === "candle_claim_fees") {
+      const after = await claimableFor(this.deps.executor, card2.params.mint, writeKey).catch(() => {
+        return;
+      });
+      op.evidence = { ...op.evidence ?? {}, after };
+      await this.deps.journal.append({ type: "operation.evidence", opId: op.opId, evidence: op.evidence });
+      this.publishOperation(op);
+      return true;
+    }
+    const verdict = await readOnce(this.deps.executor, card2, writeKey).catch(() => ({ readable: true, found: false }));
+    if (!verdict.readable)
+      return true;
+    if (!verdict.found)
+      return false;
+    if (op.state === "resolved_abandoned") {
+      op.lateRecord = verdict.record;
+      await this.deps.journal.append({ type: "operation.late_record", opId: op.opId, record: verdict.record });
+      this.publishOperation(op);
+      return true;
+    }
+    if (verdict.state !== op.state)
+      await this.settle(op, verdict.state, { result: verdict.record, source: "read" });
+    else
+      op.result = verdict.record;
+    return verdict.state !== "pending";
+  }
+  watch(op, writeKey) {
+    const card2 = this.cards.get(op.cardId)?.card;
+    if (card2 === undefined || !readsById(card2))
+      return;
+    this.cancelWatch(op.opId);
+    const startedAt = this.deps.now();
+    const tick = async () => {
+      this.watches.delete(op.opId);
+      if (await this.readBack(op, card2, writeKey))
+        return;
+      const delay = nextPollMs(startedAt, this.deps.now());
+      if (delay === undefined) {
+        if (op.state === "pending" || op.state === "submitting")
+          await this.settle(op, "unknown", { reason: "watch_expired" });
+        op.readNeedsFactor = true;
+        return;
+      }
+      this.watches.set(op.opId, this.schedule(() => void tick(), delay));
+    };
+    this.watches.set(op.opId, this.schedule(() => void tick(), op.state === "pending" ? 5000 : 0));
+  }
+  cancelWatch(opId) {
+    this.watches.get(opId)?.();
+    this.watches.delete(opId);
+  }
+  async settle(op, state, detail) {
+    op.state = state;
+    op.updatedAt = new Date(this.deps.now()).toISOString();
+    if (detail.result !== undefined)
+      op.result = detail.result;
+    if (detail.error && typeof detail.error === "object")
+      op.error = detail.error;
+    await this.deps.journal.append({ type: `operation.${state}`, opId: op.opId, cardId: op.cardId, ...detail });
     this.publishOperation(op);
-    return { ...op };
   }
   async close(cardId, state, detail) {
     const entry = typeof cardId === "string" ? this.cards.get(cardId) : undefined;
@@ -70341,11 +70603,26 @@ class CardBook {
   view(card2) {
     return JSON.parse(JSON.stringify(card2));
   }
+  viewWithOperation(card2) {
+    const op = this.operations.get(card2.opId);
+    return op ? { ...this.view(card2), operation: this.opView(op) } : this.view(card2);
+  }
+  opView(op) {
+    const view = JSON.parse(JSON.stringify(op));
+    if (op.state === "unknown") {
+      const readable = readsById(op) || op.tool === "candle_claim_fees";
+      view.reconcile = {
+        actions: readable ? ["check", "resend", "abandon"] : ["resend", "abandon"],
+        message: reconcileMessage(op.kind, readable)
+      };
+    }
+    return view;
+  }
   publish(card2) {
     this.deps.events.publish("cards", { card: this.view(card2) }, card2.origin.clientId);
   }
   publishOperation(op) {
-    this.deps.events.publish("operations", { operation: { ...op } }, op.ownerClientId);
+    this.deps.events.publish("operations", { operation: this.opView(op) }, op.ownerClientId);
   }
   async refusal(origin, tool, code) {
     await this.deps.journal.append({ type: "card.refused", clientId: origin.clientId, role: origin.role, tool, code });
@@ -71949,6 +72226,7 @@ ${USAGE4}`, json);
       if (count2 === 0)
         cards.expireAllOpen("last_view_detached");
     });
+    const rebuilt = await cards.rebuild([...journal.rows()]);
     cards.start();
     try {
       await server.listen();
@@ -71972,7 +72250,8 @@ ${USAGE4}`, json);
       type: "core.started",
       coreVersion: CLI_VERSION,
       pid: process.pid,
-      viewTokenHandedOff: viewTokenFd !== undefined
+      viewTokenHandedOff: viewTokenFd !== undefined,
+      rebuilt
     });
     if (json) {
       deps.stdout.write(`${JSON.stringify({ ok: true, profile, environment, stateDir: paths.dir, socket: paths.socket, journalSeq: started.seq })}
@@ -72043,6 +72322,7 @@ function registerCardHandlers(server, cards, trading) {
     operations: cards.operationsFor(client.clientId, own(access3))
   }));
   server.handle("operations.get", async (params, { client, access: access3 }) => cards.operation(params.opId, client.clientId, own(access3)));
+  server.handle("operations.resolve", async (params, { client }) => cards.resolve({ opId: params.opId, action: params.action, factor: parseFactor(params.factor) }, client.clientId));
   server.handle("settings.get", async () => trading.snapshot());
   server.handle("settings.set", async (params, { client }) => {
     const factor = parseFactor(params.factor);

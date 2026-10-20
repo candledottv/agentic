@@ -342,7 +342,12 @@ describe("approving (K-5, K-7)", () => {
   test("two approvals of one card: the first wins, the second is CARD_NOT_AWAITING, and it runs once", async () => {
     let release: () => void = () => {}
     const gate = new Promise<void>((resolve) => (release = resolve))
-    const s = await setup({ outcome: async () => (await gate, { state: "succeeded", result: {} }) })
+    const s = await setup({
+      outcome: async () => {
+        await gate
+        return { state: "succeeded", result: {} }
+      },
+    })
     const card = await s.trade()
     const first = s.book.approve({ cardId: card.cardId, cardHash: card.cardHash, factor: RIGHT }, VIEW.clientId)
     await new Promise((resolve) => setTimeout(resolve, 5))

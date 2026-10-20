@@ -8,16 +8,22 @@
  * a second write. Execution is write-ahead (K-7): the operation's `submitting` row is on disk before
  * the request leaves, which is what lets reconciliation (R) find an interrupted call.
  *
- * Not in this slice: re-reading quotes onto a card (`display.estimate`), the key-limit check against
- * a fresh read (`OVER_KEY_LIMIT`), rebuilding open cards from the journal at start, and the
- * reconciliation of `unknown` operations. Those arrive with R and the screens.
+ * Reconciliation (R) lives here too: a lost answer is read back by its id at once and polled while
+ * pending; an operation the core cannot confirm raises a reconcile card the user resolves (check,
+ * re-send under the same id, or stop tracking; D2 default A, never an automatic re-send); and the
+ * book is rebuilt from the journal at start, where every operation still in flight becomes
+ * `unknown` before any client can attach. See `reconcile.ts` for what each kind can be read by.
+ *
+ * Not in this slice: re-reading quotes onto a card (`display.estimate`) and the key-limit check
+ * against a fresh read (`OVER_KEY_LIMIT`). Those arrive with the screens.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { terminalText } from "../render"
 import { canonicalJson } from "../vault/canonical-json"
 import { type CardKind, cardLifetimeMs, classifyCall, FACTOR_KINDS, type IdKey } from "./classify"
 import type { EventHub } from "./events"
-import type { CoreEnvironment, Journal } from "./journal"
+import type { CoreEnvironment, Journal, JournalRow } from "./journal"
+import { claimableFor, nextPollMs, readOnce, readsById, reconcileMessage } from "./reconcile"
 import { invalidParams, refused } from "./rpc"
 import type { Factor, TradingState } from "./trading"
 
@@ -80,6 +86,16 @@ export interface Operation {
   updatedAt: string
   result?: unknown
   error?: { code: string; message: string }
+  /** How the user resolved an `unknown` (R-3). The state then follows what happened next. */
+  resolution?: "resent" | "abandoned"
+  /** Set when reading this operation back needs the vault factor (the Write key is sealed). */
+  readNeedsFactor?: boolean
+  /** V-5: what `candle_get_fees` showed before the claim and at the last check. */
+  evidence?: { before?: unknown; after?: unknown }
+  /** A record that appeared after the user stopped tracking (R-3). */
+  lateRecord?: unknown
+  /** Present while the operation is `unknown`: what the reconcile card offers. */
+  reconcile?: { actions: ("check" | "resend" | "abandon")[]; message: string }
 }
 
 export type ExecutionOutcome =
@@ -118,8 +134,19 @@ export class CardBook {
       environment: CoreEnvironment
       profile: string
       now: () => number
+      /** Timer seam for the R-2 polls; tests drive it by hand. */
+      schedule?: (run: () => void, ms: number) => () => void
     },
   ) {}
+
+  private readonly watches = new Map<string, () => void>()
+
+  private schedule(run: () => void, ms: number): () => void {
+    if (this.deps.schedule) return this.deps.schedule(run, ms)
+    const timer = setTimeout(run, ms)
+    timer.unref?.()
+    return () => clearTimeout(timer)
+  }
 
   /** Expires cards on a one-second sweep; `stop` ends it. */
   start(): void {
@@ -129,6 +156,8 @@ export class CardBook {
 
   stop(): void {
     if (this.sweep) clearInterval(this.sweep)
+    for (const cancel of this.watches.values()) cancel()
+    this.watches.clear()
   }
 
   async propose(input: Record<string, unknown>, origin: CardOrigin): Promise<Card> {
@@ -197,7 +226,8 @@ export class CardBook {
             },
           )
         }
-        return this.view(held.card)
+        // Never a 404 for an id the core issued: the card, and its operation once there is one.
+        return this.viewWithOperation(held.card)
       }
     }
     await this.expireDue()
@@ -250,7 +280,7 @@ export class CardBook {
       ...(proposalKey !== undefined ? { proposalKey } : {}),
     }
     this.cards.set(card.cardId, { card, proposedKey })
-    await this.deps.journal.append({ type: "card.created", card })
+    await this.deps.journal.append({ type: "card.created", card, proposedKey })
     this.publish(card)
     return this.view(card)
   }
@@ -274,14 +304,14 @@ export class CardBook {
   operationsFor(clientId: string, ownOnly: boolean): Operation[] {
     return [...this.operations.values()]
       .filter((op) => !ownOnly || op.ownerClientId === clientId)
-      .map((op) => ({ ...op }))
+      .map((op) => this.opView(op))
   }
 
   operation(opId: unknown, clientId: string, ownOnly: boolean): Operation {
     const op = typeof opId === "string" ? this.operations.get(opId) : undefined
     if (op === undefined || (ownOnly && op.ownerClientId !== clientId))
       throw refused("OPERATION_NOT_HELD", "The core holds no operation with that id.")
-    return { ...op }
+    return this.opView(op)
   }
 
   /** K-5. Only a view reaches this (the role table refuses a harness). */
@@ -391,7 +421,8 @@ export class CardBook {
   /** K-7: write-ahead `submitting`, then the request, then the outcome. The id never changes. */
   private async execute(card: Card, writeKey: string): Promise<Operation> {
     const at = new Date(this.deps.now()).toISOString()
-    const op: Operation = {
+    const existing = this.operations.get(card.opId)
+    const op: Operation = existing ?? {
       opId: card.opId,
       cardId: card.cardId,
       kind: card.kind,
@@ -402,14 +433,24 @@ export class CardBook {
       createdAt: at,
       updatedAt: at,
     }
+    op.state = "submitting"
+    op.updatedAt = at
     this.operations.set(op.opId, op)
+    // V-5: a fee claim has no id and no record, so the amounts before it are the only evidence.
+    if (card.tool === "candle_claim_fees" && existing === undefined) {
+      const before = await claimableFor(this.deps.executor, card.params.mint, writeKey).catch(() => undefined)
+      op.evidence = { before }
+    }
     await this.deps.journal.append({
       type: "operation.submitting",
       opId: op.opId,
       cardId: card.cardId,
       tool: card.tool,
+      kind: card.kind,
       idKey: card.idKey,
+      ownerClientId: op.ownerClientId,
       params: card.params,
+      ...(op.evidence ? { evidence: op.evidence } : {}),
     })
     this.publishOperation(op)
     let outcome: ExecutionOutcome
@@ -421,19 +462,227 @@ export class CardBook {
         error: { code: "EXECUTOR_FAILED", message: error instanceof Error ? error.message : String(error) },
       }
     }
-    op.state = outcome.state
-    op.updatedAt = new Date(this.deps.now()).toISOString()
-    if ("result" in outcome && outcome.result !== undefined) op.result = outcome.result
-    if ("error" in outcome) op.error = outcome.error
-    await this.deps.journal.append({
-      type: `operation.${op.state}`,
-      opId: op.opId,
-      cardId: card.cardId,
-      result: op.result,
-      error: op.error,
+    await this.settle(op, outcome.state, {
+      ...("result" in outcome && outcome.result !== undefined ? { result: outcome.result } : {}),
+      ...("error" in outcome ? { error: outcome.error } : {}),
     })
+    // R-2 on a lost answer: read it back by its id now, and keep reading while it runs.
+    const settled = op.state as OperationState
+    if (settled === "unknown" || settled === "pending") this.watch(op, writeKey)
+    return this.opView(op)
+  }
+
+  /**
+   * R-3. `check` reads the operation again (the Write key is sealed, so it takes the factor);
+   * `resend` sends the SAME request under the SAME id and always takes a fresh factor, because the
+   * market has moved since the first approval; `abandon` stops tracking but keeps reading for ten
+   * minutes when it can, recording anything that lands late. Only a view reaches this.
+   */
+  async resolve(
+    input: { opId: unknown; action: unknown; factor: Factor | undefined },
+    viewClientId: string,
+  ): Promise<Operation> {
+    const op = typeof input.opId === "string" ? this.operations.get(input.opId) : undefined
+    if (op === undefined) throw refused("OPERATION_NOT_HELD", "The core holds no operation with that id.")
+    const card = this.cards.get(op.cardId)?.card
+    if (card === undefined) throw refused("OPERATION_NOT_HELD", "The card behind this operation is not held.")
+    const action = input.action
+    if (action !== "check" && action !== "resend" && action !== "abandon") {
+      throw invalidParams("action is check, resend or abandon.")
+    }
+    const open = op.state === "unknown" || (action === "check" && op.state === "pending")
+    if (!open) {
+      throw refused("OPERATION_NOT_UNKNOWN", `This operation is ${op.state}; there is nothing to resolve.`, {
+        state: op.state,
+      })
+    }
+    if (action === "check" && !readsById(card) && card.tool !== "candle_claim_fees") {
+      throw refused(
+        "CHECK_NOT_AVAILABLE",
+        "This kind cannot be read by its id; only a re-send of the same request can tell.",
+      )
+    }
+    if (action === "resend" && input.factor === undefined) {
+      throw refused("FACTOR_REQUIRED", "A re-send always needs a fresh factor.")
+    }
+    if (action === "abandon" && input.factor === undefined) {
+      await this.abandon(op, undefined, viewClientId)
+      return this.opView(op)
+    }
+    return this.deps.trading.withCredentials(
+      { kind: card.kind, viewClientId, factor: input.factor },
+      async (credentials) => {
+        if (action === "check") {
+          await this.deps.journal.append({ type: "operation.check", opId: op.opId, viewClientId })
+          await this.readBack(op, card, credentials.writeKey)
+          return this.opView(op)
+        }
+        if (action === "abandon") {
+          await this.abandon(op, credentials.writeKey, viewClientId)
+          return this.opView(op)
+        }
+        await this.deps.journal.append({ type: "operation.resend", opId: op.opId, cardId: card.cardId, viewClientId })
+        op.resolution = "resent"
+        this.cancelWatch(op.opId)
+        return this.execute(card, credentials.writeKey)
+      },
+    )
+  }
+
+  /**
+   * Rebuilds the book from the journal at core start, before any client attaches (C-3, R-2). An
+   * open card from the last run expires, because nobody approved it in a view that still exists.
+   * An operation still `submitting` or `pending` becomes `unknown`: its answer was lost with the
+   * process, and reading it back needs the factor.
+   */
+  async rebuild(rows: readonly JournalRow[]): Promise<{ expired: number; unknown: number }> {
+    for (const row of rows) {
+      if (row.type === "card.created" && row.card && typeof row.card === "object") {
+        const card = row.card as Card
+        this.cards.set(card.cardId, { card, proposedKey: typeof row.proposedKey === "string" ? row.proposedKey : "" })
+        continue
+      }
+      const cardState = /^card\.(approved|rejected|withdrawn|expired)$/.exec(row.type)?.[1] as CardState | undefined
+      if (cardState && typeof row.cardId === "string") {
+        const entry = this.cards.get(row.cardId)
+        if (entry) entry.card.state = cardState
+        continue
+      }
+      if (row.type === "operation.submitting" && typeof row.opId === "string" && typeof row.cardId === "string") {
+        const card = this.cards.get(row.cardId)?.card
+        const previous = this.operations.get(row.opId)
+        this.operations.set(row.opId, {
+          ...(previous ?? {}),
+          opId: row.opId,
+          cardId: row.cardId,
+          kind: (card?.kind ?? row.kind) as CardKind,
+          tool: String(row.tool ?? card?.tool ?? ""),
+          idKey: (card?.idKey ?? row.idKey) as IdKey,
+          ownerClientId: String(row.ownerClientId ?? card?.origin.clientId ?? ""),
+          state: "submitting",
+          createdAt: previous?.createdAt ?? row.at,
+          updatedAt: row.at,
+          ...(row.evidence ? { evidence: row.evidence as Operation["evidence"] } : {}),
+        })
+        continue
+      }
+      const op = typeof row.opId === "string" ? this.operations.get(row.opId) : undefined
+      if (op === undefined) continue
+      if (row.type === "operation.resend") op.resolution = "resent"
+      if (row.type === "operation.late_record") op.lateRecord = row.record
+      if (row.type === "operation.evidence" && row.evidence) op.evidence = row.evidence as Operation["evidence"]
+      const opState = /^operation\.(pending|succeeded|failed|refused|unknown|resolved_abandoned)$/.exec(
+        row.type,
+      )?.[1] as OperationState | undefined
+      if (opState) {
+        op.state = opState
+        op.updatedAt = row.at
+        if (opState === "resolved_abandoned") op.resolution = "abandoned"
+        if (row.result !== undefined) op.result = row.result
+        if (row.error && typeof row.error === "object") op.error = row.error as Operation["error"]
+      }
+    }
+    let expired = 0
+    for (const { card } of this.cards.values()) {
+      if (card.state === "awaiting_approval" || card.state === "proposed") {
+        card.state = "expired"
+        await this.deps.journal.append({ type: "card.expired", cardId: card.cardId, reason: "core_restarted" })
+        expired++
+      }
+    }
+    let unknown = 0
+    for (const op of this.operations.values()) {
+      if (op.state === "submitting" || op.state === "pending") {
+        await this.settle(op, "unknown", { reason: "core_restarted" })
+        unknown++
+      }
+      if (op.state === "unknown") op.readNeedsFactor = readsById(op) || op.tool === "candle_claim_fees"
+    }
+    return { expired, unknown }
+  }
+
+  private async abandon(op: Operation, writeKey: string | undefined, viewClientId: string): Promise<void> {
+    op.resolution = "abandoned"
+    const watching = this.watches.has(op.opId)
+    await this.settle(op, "resolved_abandoned", {
+      viewClientId,
+      watching: watching || (writeKey !== undefined && readsById(op)),
+    })
+    if (!watching && writeKey !== undefined) this.watch(op, writeKey)
+  }
+
+  /** One read of `op`, applied. Returns true when there is nothing more to wait for. */
+  private async readBack(op: Operation, card: Card, writeKey: string): Promise<boolean> {
+    if (card.tool === "candle_claim_fees") {
+      const after = await claimableFor(this.deps.executor, card.params.mint, writeKey).catch(() => undefined)
+      op.evidence = { ...(op.evidence ?? {}), after }
+      await this.deps.journal.append({ type: "operation.evidence", opId: op.opId, evidence: op.evidence })
+      this.publishOperation(op)
+      return true
+    }
+    const verdict = await readOnce(this.deps.executor, card, writeKey).catch(
+      () => ({ readable: true, found: false }) as const,
+    )
+    if (!verdict.readable) return true
+    if (!verdict.found) return false
+    // A record for an operation the user stopped tracking is recorded beside it, not adopted.
+    if (op.state === "resolved_abandoned") {
+      op.lateRecord = verdict.record
+      await this.deps.journal.append({ type: "operation.late_record", opId: op.opId, record: verdict.record })
+      this.publishOperation(op)
+      return true
+    }
+    if (verdict.state !== op.state) await this.settle(op, verdict.state, { result: verdict.record, source: "read" })
+    else op.result = verdict.record
+    return verdict.state !== "pending"
+  }
+
+  /**
+   * Polls `op` by its id with the Write key of the approval that sent it, held in this closure
+   * only, for ten minutes at most (R-2's cadence). Ends at a terminal record. Kinds with no read
+   * by id are not watched: they wait for the user.
+   */
+  private watch(op: Operation, writeKey: string): void {
+    const card = this.cards.get(op.cardId)?.card
+    if (card === undefined || !readsById(card)) return
+    this.cancelWatch(op.opId)
+    const startedAt = this.deps.now()
+    const tick = async (): Promise<void> => {
+      this.watches.delete(op.opId)
+      if (await this.readBack(op, card, writeKey)) return
+      const delay = nextPollMs(startedAt, this.deps.now())
+      if (delay === undefined) {
+        // Ten minutes and nothing terminal: the user reads it again with the factor.
+        if (op.state === "pending" || op.state === "submitting")
+          await this.settle(op, "unknown", { reason: "watch_expired" })
+        op.readNeedsFactor = true
+        return
+      }
+      this.watches.set(
+        op.opId,
+        this.schedule(() => void tick(), delay),
+      )
+    }
+    // A lost answer is read at once; a running one, one interval out.
+    this.watches.set(
+      op.opId,
+      this.schedule(() => void tick(), op.state === "pending" ? 5_000 : 0),
+    )
+  }
+
+  private cancelWatch(opId: string): void {
+    this.watches.get(opId)?.()
+    this.watches.delete(opId)
+  }
+
+  /** Moves `op` to `state`, journals it, and publishes it. */
+  private async settle(op: Operation, state: OperationState, detail: Record<string, unknown>): Promise<void> {
+    op.state = state
+    op.updatedAt = new Date(this.deps.now()).toISOString()
+    if (detail.result !== undefined) op.result = detail.result
+    if (detail.error && typeof detail.error === "object") op.error = detail.error as Operation["error"]
+    await this.deps.journal.append({ type: `operation.${state}`, opId: op.opId, cardId: op.cardId, ...detail })
     this.publishOperation(op)
-    return { ...op }
   }
 
   private async close(
@@ -479,12 +728,29 @@ export class CardBook {
     return JSON.parse(JSON.stringify(card)) as Card
   }
 
+  private viewWithOperation(card: Card): Card & { operation?: Operation } {
+    const op = this.operations.get(card.opId)
+    return op ? { ...this.view(card), operation: this.opView(op) } : this.view(card)
+  }
+
+  private opView(op: Operation): Operation {
+    const view = JSON.parse(JSON.stringify(op)) as Operation
+    if (op.state === "unknown") {
+      const readable = readsById(op) || op.tool === "candle_claim_fees"
+      view.reconcile = {
+        actions: readable ? ["check", "resend", "abandon"] : ["resend", "abandon"],
+        message: reconcileMessage(op.kind, readable),
+      }
+    }
+    return view
+  }
+
   private publish(card: Card): void {
     this.deps.events.publish("cards", { card: this.view(card) }, card.origin.clientId)
   }
 
   private publishOperation(op: Operation): void {
-    this.deps.events.publish("operations", { operation: { ...op } }, op.ownerClientId)
+    this.deps.events.publish("operations", { operation: this.opView(op) }, op.ownerClientId)
   }
 
   private async refusal(origin: CardOrigin, tool: string, code: string): Promise<void> {
