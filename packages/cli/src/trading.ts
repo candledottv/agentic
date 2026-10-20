@@ -199,6 +199,8 @@ export interface QuoteDisplay {
   candleFee?: string
   relayFees?: string
   estimatedTime?: string
+  /** BE-1721: an atomic TEE launch's ceiling on what the wallet spends across every leg, SOL plus the quote asset. */
+  maxLoss?: string
 }
 export const BASES: Record<string, { mint: string; decimals: number }> = {
   SOL: { mint: "So11111111111111111111111111111111111111112", decimals: 9 },
@@ -379,6 +381,8 @@ export interface TradingWallet {
   signer: string
   /** The server's row chain. An `evm` wallet signs only sequenced Hood legs (Phase 4b, D4). */
   chain: "solana" | "evm"
+  /** The scopes of the key that listed the wallet, when `tradingWallet` resolved it (BE-1721). */
+  scopes?: string[]
 }
 type WalletRow = z.infer<typeof walletSchema>
 
@@ -523,7 +527,7 @@ export async function tradingWallet(
   scope: string,
   chain: TradeChain | "any" = "solana",
 ): Promise<TradingWallet> {
-  const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, scope)
+  const { rows, appId, keyPrefix, scopes } = await listTradingWallets(ctx, key, scope)
   const matches = rows.filter((row) => matchesName(row, name))
   if (matches.length !== 1) {
     throw new TradingError(
@@ -536,10 +540,15 @@ export async function tradingWallet(
     )
   }
   const row = matches[0] as WalletRow
-  return await completeTradingWallet(ctx, row, appId, scope, chain === "any" ? (rowChain(row) ?? "solana") : chain, {
-    apiKey: key,
-    keyPrefix,
-  })
+  const wallet = await completeTradingWallet(
+    ctx,
+    row,
+    appId,
+    scope,
+    chain === "any" ? (rowChain(row) ?? "solana") : chain,
+    { apiKey: key, keyPrefix },
+  )
+  return { ...wallet, scopes }
 }
 
 /**
@@ -1155,6 +1164,16 @@ export async function savedOperation(
   bridge?: Json
   stakingRequest?: { action: string; body: Json }
   signedTransaction?: string
+  /** BE-1721: an atomic TEE launch's bundle, saved with every leg's signature before `/submit`. */
+  bundleId?: string
+  bundleSignatures?: string[]
+  /**
+   * `unsigned` until the legs are signed; then absent until `/submit` answers `landed`, `failed` or
+   * `timeout`, or `refused` for a 4xx that sent nothing.
+   */
+  bundleOutcome?: string
+  /** The image the bundle was built with, so a same-id retry builds the same request without uploading again. */
+  imageUrl?: string
 } | null> {
   try {
     return JSON.parse(await readFile(operationPath(ctx, key, id), "utf8"))
@@ -1202,6 +1221,7 @@ export async function confirmQuote(ctx: CommandContext, quote: QuoteDisplay, yes
   if (quote.relayFees) output.write(`Relay fees: ${safeText(quote.relayFees)}\n`)
   if (quote.estimatedTime) output.write(`Estimated time: ${safeText(quote.estimatedTime)}\n`)
   if (quote.maxDebitLamports) output.write(`Maximum launch debit: ${safeText(quote.maxDebitLamports)} lamports\n`)
+  if (quote.maxLoss) output.write(`Most this wallet can lose: ${safeText(quote.maxLoss)}\n`)
   if (quote.legs) output.write(`Legs, signed one at a time: ${quote.legs.map(safeText).join(", ")}\n`)
   if (quote.gas) output.write(`Gas: ${safeText(quote.gas)}\n`)
   if (quote.reserve) output.write(`Gas reserve: ${safeText(quote.reserve)}\n`)
@@ -1288,6 +1308,42 @@ export async function saveOperationSignature(
   transaction: string,
   keepSigned = false,
 ): Promise<string> {
+  const signature = payerSignature(transaction)
+  await writeOperation(operationPath(ctx, key, id), {
+    id,
+    kind,
+    signature,
+    ...(keepSigned ? { signedTransaction: transaction } : {}),
+    ...(await keptBridge(ctx, key, id)),
+  })
+  return signature
+}
+
+/**
+ * BE-1721 (spec 2026-10-20, R3): an atomic TEE launch's bundle, saved once it is built
+ * (`outcome: "unsigned"`) and again with every leg's signature before `/submit`, so a re-run with
+ * the same id reads the launch instead of signing or sending again. `outcome` is added once
+ * `/submit` answers. No signed bytes are kept: `bundleId` is consumed by its first submit and is
+ * never resubmitted.
+ */
+export async function saveOperationBundle(
+  ctx: CommandContext,
+  key: string,
+  id: string,
+  bundle: { bundleId: string; signatures: string[]; imageUrl: string; outcome?: string },
+): Promise<void> {
+  await writeOperation(operationPath(ctx, key, id), {
+    id,
+    kind: "launch",
+    bundleId: bundle.bundleId,
+    bundleSignatures: bundle.signatures,
+    imageUrl: bundle.imageUrl,
+    ...(bundle.outcome !== undefined ? { bundleOutcome: bundle.outcome } : {}),
+  })
+}
+
+/** The fee payer's signature on a signed Solana transaction, base58. Refuses a missing one. */
+export function payerSignature(transaction: string): string {
   const bytes = Buffer.from(transaction, "base64")
   let offset = 0
   let count = 0
@@ -1299,13 +1355,5 @@ export async function saveOperationSignature(
   }
   if (!count || bytes.length < offset + count * 64 || bytes.subarray(offset, offset + 64).every((byte) => byte === 0))
     throw new TradingError("INVALID_RESPONSE", "Missing payer signature.")
-  const signature = base58.encode(bytes.subarray(offset, offset + 64))
-  await writeOperation(operationPath(ctx, key, id), {
-    id,
-    kind,
-    signature,
-    ...(keepSigned ? { signedTransaction: transaction } : {}),
-    ...(await keptBridge(ctx, key, id)),
-  })
-  return signature
+  return base58.encode(bytes.subarray(offset, offset + 64))
 }

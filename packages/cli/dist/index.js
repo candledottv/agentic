@@ -14240,16 +14240,14 @@ async function signerUnavailableMessage(ctx, row, key) {
   return `Wallet ${name} is owned by a signer this machine does not hold: its per-wallet signer is on the machine that promoted it${active !== null ? `. Run candle keys signer move ${prefix} there to move it onto key ${prefix}'s signer (${active.fingerprint})` : ""}.`;
 }
 async function tradingWallet(ctx, key, name, scope, chain2 = "solana") {
-  const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, scope);
+  const { rows, appId, keyPrefix, scopes } = await listTradingWallets(ctx, key, scope);
   const matches = rows.filter((row2) => matchesName(row2, name));
   if (matches.length !== 1) {
     throw new TradingError("TEE_WALLET_REQUIRED", matches.length > 1 ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.` : rows.length === 0 ? "This key has no TEE wallets bound to it. Enrol one, or select the profile whose key holds it." : `No TEE wallet on this key is called "${name}". Bound to this key: ${teeWalletList(rows)}.`);
   }
   const row = matches[0];
-  return await completeTradingWallet(ctx, row, appId, scope, chain2 === "any" ? rowChain(row) ?? "solana" : chain2, {
-    apiKey: key,
-    keyPrefix
-  });
+  const wallet = await completeTradingWallet(ctx, row, appId, scope, chain2 === "any" ? rowChain(row) ?? "solana" : chain2, { apiKey: key, keyPrefix });
+  return { ...wallet, scopes };
 }
 async function tradingPayer(ctx, key, name, scope = "swap:write", chain2 = "solana") {
   const { rows, appId, scopes, keyPrefix } = await listTradingWallets(ctx, key, scope);
@@ -14577,6 +14575,9 @@ ${quote.fee ? `Tier fee: ${safeText(quote.fee.bps)} bps (${safeText(quote.fee.fe
   if (quote.maxDebitLamports)
     output.write(`Maximum launch debit: ${safeText(quote.maxDebitLamports)} lamports
 `);
+  if (quote.maxLoss)
+    output.write(`Most this wallet can lose: ${safeText(quote.maxLoss)}
+`);
   if (quote.legs)
     output.write(`Legs, signed one at a time: ${quote.legs.map(safeText).join(", ")}
 `);
@@ -14631,6 +14632,27 @@ async function saveOperationHash(ctx, key, id, kind, hash, operationId) {
   });
 }
 async function saveOperationSignature(ctx, key, id, kind, transaction, keepSigned = false) {
+  const signature = payerSignature(transaction);
+  await writeOperation(operationPath(ctx, key, id), {
+    id,
+    kind,
+    signature,
+    ...keepSigned ? { signedTransaction: transaction } : {},
+    ...await keptBridge(ctx, key, id)
+  });
+  return signature;
+}
+async function saveOperationBundle(ctx, key, id, bundle) {
+  await writeOperation(operationPath(ctx, key, id), {
+    id,
+    kind: "launch",
+    bundleId: bundle.bundleId,
+    bundleSignatures: bundle.signatures,
+    imageUrl: bundle.imageUrl,
+    ...bundle.outcome !== undefined ? { bundleOutcome: bundle.outcome } : {}
+  });
+}
+function payerSignature(transaction) {
   const bytes = Buffer.from(transaction, "base64");
   let offset = 0;
   let count = 0;
@@ -14644,15 +14666,7 @@ async function saveOperationSignature(ctx, key, id, kind, transaction, keepSigne
   }
   if (!count || bytes.length < offset + count * 64 || bytes.subarray(offset, offset + 64).every((byte) => byte === 0))
     throw new TradingError("INVALID_RESPONSE", "Missing payer signature.");
-  const signature = base58.encode(bytes.subarray(offset, offset + 64));
-  await writeOperation(operationPath(ctx, key, id), {
-    id,
-    kind,
-    signature,
-    ...keepSigned ? { signedTransaction: transaction } : {},
-    ...await keptBridge(ctx, key, id)
-  });
-  return signature;
+  return base58.encode(bytes.subarray(offset, offset + 64));
 }
 var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES, HOOD_BASES, SWAP_SUBMIT_EVIDENCE, TRADE_BROADCAST_PATHS, TRADE_BROADCAST_EVIDENCE, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage;
 var init_trading = __esm(() => {
@@ -71164,7 +71178,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it rides in the launch transaction, and on Hood it is a last leg after the curve and the fee. Only configured raw caps and USD limits apply; unset means unlimited and zero still binds. When a USD limit is set, Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path. The image is one of two flags, never both: --image-url <https-url> for one already hosted, or --image <path> for a PNG, JPEG, GIF or WebP file on this machine, at most 10MB. With --image the file is uploaded to Candle first and the launch is made with the URL that comes back, which --json reports as imageUrl. The upload happens before the confirm prompt and cannot be undone: the file becomes public and permanent even if you then decline or the launch fails. Re-running with the same --client-trade-id resumes the launch without uploading again. --image-url takes only an https:// URL.",
+    description: "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it is its own transaction, sent with the launch as one Jito bundle (an atomic launch), so the launch and the first buy land together or not at all and the bundle pays a Jito tip; on Hood it is a last leg after the curve and the fee. On Solana it also needs the swap:write scope and a Candle deployment with a Jito block engine. Only configured raw caps and USD limits apply; unset means unlimited and zero still binds. When a USD limit is set, Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path. The image is one of two flags, never both: --image-url <https-url> for one already hosted, or --image <path> for a PNG, JPEG, GIF or WebP file on this machine, at most 10MB. With --image the file is uploaded to Candle first and the launch is made with the URL that comes back, which --json reports as imageUrl. The upload happens before the confirm prompt and cannot be undone: the file becomes public and permanent even if you then decline or the launch fails. Re-running with the same --client-trade-id resumes the launch without uploading again. --image-url takes only an https:// URL.",
     usage: [
       "candle launch --name <name> --symbol <symbol> --image <path>|--image-url <url> --wallet <tee> [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4]"
     ],
@@ -83175,14 +83189,143 @@ async function keysWallets(args, ctx) {
 }
 
 // src/commands/launch.ts
+init_zod();
 init_args();
+init_client();
 init_evm_lite();
 init_hood_legs();
+import { randomUUID as randomUUID5 } from "node:crypto";
+
+// src/launch-bundle.ts
+init_solana_alt();
+init_solana_lite();
+var NATIVE_MINT2 = "So11111111111111111111111111111111111111112";
+var LAMPORTS_PER_SIGNATURE = 5000n;
+var TOKEN_ACCOUNT_RENT_LAMPORTS = 2039280n;
+var DEFAULT_UNITS_PER_INSTRUCTION = 200000n;
+var MAX_COMPUTE_UNITS = 1400000n;
+
+class BundleReadError extends Error {
+}
+function u323(data, at2) {
+  if (data.length < at2 + 4)
+    throw new BundleReadError("an instruction's data ends early");
+  return BigInt(new DataView(data.buffer, data.byteOffset + at2, 4).getUint32(0, true));
+}
+function u64(data, at2) {
+  if (data.length < at2 + 8)
+    throw new BundleReadError("an instruction's data ends early");
+  return new DataView(data.buffer, data.byteOffset + at2, 8).getBigUint64(0, true);
+}
+function decodeLeg(base642, index) {
+  try {
+    return decodeTransaction(decodeStrictBase64(base642));
+  } catch (error) {
+    if (error instanceof TransactionDecodeError)
+      throw new BundleReadError(`leg ${index} does not decode: ${error.message}`);
+    throw error;
+  }
+}
+function readLeg(tx, index, wallet3) {
+  const keys = tx.message.staticKeys;
+  if (keys[0] !== wallet3)
+    throw new BundleReadError(`leg ${index} is not paid by this wallet`);
+  const key = (i) => i === undefined ? undefined : keys[i];
+  let lamports = BigInt(tx.message.numRequiredSignatures) * LAMPORTS_PER_SIGNATURE;
+  let tokenOut = 0n;
+  let unitPrice = 0n;
+  let unitLimit;
+  let computed = 0n;
+  const systemTransfers = [];
+  const others = [];
+  for (const ix of tx.message.instructions) {
+    const program = key(ix.programIdIndex);
+    const accounts = ix.accountIndexes;
+    const fromWallet = (position) => accounts[position] === 0;
+    if (program === COMPUTE_BUDGET_PROGRAM_ID) {
+      if (ix.data[0] === 2)
+        unitLimit = u323(ix.data, 1);
+      else if (ix.data[0] === 3)
+        unitPrice = u64(ix.data, 1);
+      continue;
+    }
+    computed++;
+    if (program === SYSTEM_PROGRAM_ID) {
+      if (!accounts.includes(0))
+        continue;
+      const kind = u323(ix.data, 0);
+      if (kind === 2n || kind === 0n) {
+        if (!fromWallet(0))
+          continue;
+        const amount = u64(ix.data, 4);
+        lamports += amount;
+        if (kind === 2n)
+          systemTransfers.push({ to: key(accounts[1]), lamports: amount });
+        continue;
+      }
+      throw new BundleReadError(`leg ${index} has a System instruction (${kind}) on this wallet that is not a transfer`);
+    }
+    if (program === ASSOCIATED_TOKEN_PROGRAM_ID) {
+      if (fromWallet(0))
+        lamports += TOKEN_ACCOUNT_RENT_LAMPORTS;
+      continue;
+    }
+    if (program === TOKEN_PROGRAM_ID || program === TOKEN_2022_PROGRAM_ID) {
+      const op = ix.data[0];
+      if (op === 3 && fromWallet(2))
+        tokenOut += u64(ix.data, 1);
+      else if (op === 12 && fromWallet(3))
+        tokenOut += u64(ix.data, 1);
+      else if ((op === 4 || op === 6 || op === 13) && accounts.includes(0))
+        throw new BundleReadError(`leg ${index} hands a token account's control to someone else`);
+      else if (op === 9 && fromWallet(2) && !fromWallet(1))
+        throw new BundleReadError(`leg ${index} closes a token account to someone other than this wallet`);
+      continue;
+    }
+    if (program === MEMO_PROGRAM_ID)
+      continue;
+    if (program !== undefined)
+      others.push({ program, data: ix.data });
+  }
+  if (unitPrice > 0n) {
+    const units = unitLimit ?? (computed * DEFAULT_UNITS_PER_INSTRUCTION > MAX_COMPUTE_UNITS ? MAX_COMPUTE_UNITS : computed * DEFAULT_UNITS_PER_INSTRUCTION);
+    lamports += (unitPrice * units + 999999n) / 1000000n;
+  }
+  return { lamports, tokenOut, systemTransfers, others };
+}
+function readLaunchBundle(args) {
+  const launch = readLeg(decodeLeg(args.legs[0], 0), 0, args.wallet);
+  const buy = readLeg(decodeLeg(args.legs[1], 1), 1, args.wallet);
+  if (buy.others.length !== 1)
+    throw new BundleReadError("leg 1 is not one curve swap");
+  const swap3 = buy.others[0];
+  if (u64(swap3.data, 8) !== args.buyRaw)
+    throw new BundleReadError("leg 1 does not swap the confirmed --buy");
+  if (args.minOutRaw !== undefined && u64(swap3.data, 16) !== args.minOutRaw)
+    throw new BundleReadError("leg 1's floor is not the one the build quoted");
+  let feeRaw;
+  let quoteRaw;
+  if (args.quote === "SOL") {
+    const wrapAccount = encodePubkey(associatedTokenAddress(decodePubkey(args.wallet), decodePubkey(NATIVE_MINT2)));
+    const wrapped = buy.systemTransfers.filter((t) => t.to === wrapAccount).reduce((sum, t) => sum + t.lamports, 0n);
+    if (wrapped !== args.buyRaw)
+      throw new BundleReadError("leg 1 does not wrap the confirmed --buy");
+    feeRaw = buy.systemTransfers.filter((t) => t.to !== wrapAccount).reduce((sum, t) => sum + t.lamports, 0n);
+    quoteRaw = 0n;
+  } else {
+    if (buy.systemTransfers.length)
+      throw new BundleReadError("leg 1 moves SOL on a token-quoted buy");
+    feeRaw = buy.tokenOut;
+    quoteRaw = args.buyRaw + buy.tokenOut + launch.tokenOut;
+  }
+  return { lamports: launch.lamports + buy.lamports, quoteRaw, feeRaw };
+}
+
+// src/commands/launch.ts
 init_render();
 init_solana_endpoint();
 init_solana_lite();
 init_trading();
-import { randomUUID as randomUUID5 } from "node:crypto";
 init_swap();
 var USAGE6 = "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
 var QUOTE_CHAIN = {
@@ -83205,8 +83348,12 @@ function launchBuy(flags, chain2) {
   const raw = rawAmount(amount, decimals);
   return { raw, display: `${decimalAmount(raw, decimals)} ${quote}` };
 }
+var ATOMIC_TEE_REFUSAL = "This is a TEE wallet: agents may only trade it through the trade rail";
 function buyRefusal(error) {
-  if (!(error instanceof TradingError) || error.code !== "VALIDATION_FAILED" || error.details?.field !== "buyAmount")
+  if (!(error instanceof TradingError) || error.code !== "VALIDATION_FAILED")
+    return error;
+  const field = error.details?.field;
+  if (field !== "buyAmount" && !(field === "linkedWalletId" && error.message.includes(ATOMIC_TEE_REFUSAL)))
     return error;
   return new TradingError("VALIDATION_FAILED", `Candle refused the first buy on this TEE launch: ${safeText(error.message)}. A TEE wallet's launch takes --buy only where the server has TEE_LAUNCH_BUYS_ENABLED on, and it is off on this deployment. Nothing was built or signed.`, {
     suggestion: "Launch without --buy under a new --client-trade-id, then make the first buy with candle swap once the token lands.",
@@ -83218,7 +83365,7 @@ function buyNotice(buy, chain2) {
     return `Launch creates the token only. Make the first buy with a separate candle swap. Price impact does not apply to creation.
 `;
   return chain2 === "hood" ? `Launch creates the token, then spends ${buy.display} on a first buy on the new curve, as the last leg. Candle reserves the buy against this key's spend window before any leg is signed. If the buy leg never lands, the token exists with no first buy. Price impact does not apply to creation.
-` : `Launch creates the token and spends ${buy.display} on a first buy in the same transaction. Candle reserves the whole debit against this key's spend window before anything is signed. Price impact does not apply to creation.
+` : `Launch creates the token, then spends ${buy.display} on a first buy from the same wallet as its own transaction. Both go to Candle as one Jito bundle: the launch and the first buy land together or not at all. The bundle pays a Jito tip from this wallet, inside the launch transaction. Candle reserves both against this key's spend window before anything is signed. Price impact does not apply to creation.
 `;
 }
 function flagChain(flags) {
@@ -83292,28 +83439,42 @@ async function launch(args, ctx) {
     }
     const key = await tradingKey(ctx);
     const prior = await lookupOperation(ctx, key, id, "launch");
+    let retry;
     if (prior) {
       const local = await savedOperation(ctx, key, id);
       const settled = prior.job?.status === "confirmed" || prior.job?.status === "failed";
-      if (local?.operationId && !settled)
-        return await resumeHoodLaunch(ctx, key, id, local.operationId, prior);
-      if (local?.signature && !settled) {
-        const result2 = await request(ctx, key, "/api/v1/launch/self/confirm", {
-          clientLaunchId: id,
-          signature: local.signature
-        });
-        return printTradingResult(ctx, { ...result2, clientTradeId: id, kind: "launch" });
+      if (local?.bundleId) {
+        if (!atomicRetryable(prior, local))
+          return resumeAtomicLaunch(ctx, id, local, prior);
+        retry = local.imageUrl !== undefined ? { imageUrl: local.imageUrl } : {};
+        ctx.deps.stderr.write(`Bundle ${safeText(local.bundleId)} was never sent or did not land; building launch ${id} again under the same id.
+`);
+      } else {
+        if (local?.operationId && !settled)
+          return await resumeHoodLaunch(ctx, key, id, local.operationId, prior);
+        if (local?.signature && !settled) {
+          const result2 = await request(ctx, key, "/api/v1/launch/self/confirm", {
+            clientLaunchId: id,
+            signature: local.signature
+          });
+          return printTradingResult(ctx, { ...result2, clientTradeId: id, kind: "launch" });
+        }
+        return printTradingResult(ctx, prior);
       }
-      return printTradingResult(ctx, prior);
     }
     const wallet3 = await tradingWallet(ctx, key, flags["--wallet"], "launch:write", hinted ?? "any");
     const chain2 = wallet3.chain === "evm" ? "hood" : "solana";
     if (chain2 === "hood" && flags["--dex-version"] === undefined)
       throw new TradingUsage(`${wallet3.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`);
     const buy = launchBuy(flags, chain2);
-    const solana = chain2 === "solana" ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined;
+    const atomic = chain2 === "solana" && buy !== undefined;
+    if (atomic)
+      atomicPreflight(ctx, flags, wallet3, buy);
+    const solana = chain2 === "solana" && !atomic ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined;
     let imageUrl = flags["--image-url"] ?? "";
-    if (image) {
+    if (image && retry?.imageUrl)
+      imageUrl = retry.imageUrl;
+    else if (image) {
       ctx.deps.stderr.write(uploadNotice(image));
       try {
         imageUrl = await uploadImage(ctx, key, image);
@@ -83326,6 +83487,17 @@ async function launch(args, ctx) {
 `);
     }
     const used = image ? { imageUrl: safeText(imageUrl) } : {};
+    if (atomic)
+      return await atomicLaunch(ctx, key, {
+        flags,
+        id,
+        wallet: wallet3,
+        buy,
+        imageUrl,
+        used,
+        yes: parsed.booleans.has("--yes"),
+        retry: retry !== undefined
+      });
     if (!solana)
       return await hoodLaunch(ctx, key, { flags, id, wallet: wallet3, buy, imageUrl, used, yes: parsed.booleans.has("--yes") });
     if (!await claimOperation(ctx, key, id, "launch"))
@@ -83389,6 +83561,187 @@ async function launch(args, ctx) {
   } catch (error) {
     return tradingFailure(ctx, error, id);
   }
+}
+var DEV_BUY_CEILINGS = {
+  sol: { env: "DEV_BUY_MAX_LAMPORTS", fallback: 500000000n, unit: "lamports" },
+  usdc: { env: "DEV_BUY_MAX_USDC_RAW", fallback: 500000000n, unit: "USDC raw units" },
+  cndl: { env: "DEV_BUY_MAX_CNDL_RAW", fallback: 2000000000000n, unit: "CNDL raw units" }
+};
+function devBuyCeiling(env, quoteAsset) {
+  const bounds = DEV_BUY_CEILINGS[quoteAsset];
+  if (!bounds)
+    throw new TradingError("DEV_BUY_UNSUPPORTED_FOR_PAIR", `An initial buy is not supported for ${safeText(quoteAsset)}-quoted solana launches`);
+  const raw = env[bounds.env];
+  const value = raw && /^\d+$/.test(raw) ? BigInt(raw) : 0n;
+  return { ceiling: value > 0n ? value : bounds.fallback, unit: bounds.unit };
+}
+function atomicPreflight(ctx, flags, wallet3, buy) {
+  const quoteAsset = (flags["--quote-asset"] ?? "sol").toLowerCase();
+  const { ceiling, unit } = devBuyCeiling(ctx.deps.env, quoteAsset);
+  if (BigInt(buy.raw) > ceiling)
+    throw new TradingError("DEV_BUY_TOO_HIGH", `buyAmount exceeds the per-launch dev-buy ceiling of ${ceiling} ${unit} for ${quoteAsset} on solana`, { details: { field: "buyAmount" } });
+  if (wallet3.scopes !== undefined && !wallet3.scopes.includes("swap:write"))
+    throw swapScopeRefusal();
+}
+function swapScopeRefusal() {
+  return new TradingError("SCOPE_MISSING", "This key needs swap:write for a first buy on a TEE launch: the buy is its own leg in an atomic launch. Nothing was built or signed.", {
+    suggestion: "Add swap:write to the key, or launch without --buy and make the first buy with candle swap once the token lands."
+  });
+}
+function atomicRefusal(error) {
+  if (!(error instanceof TradingError))
+    return error;
+  if (error.code === "SCOPE_MISSING")
+    return swapScopeRefusal();
+  if (error.code === "VALIDATION_FAILED" && error.message.includes("configured Jito block engine"))
+    return new TradingError("VALIDATION_FAILED", "A TEE launch with --buy goes to Candle as one Jito bundle, and this Candle deployment has no Jito block engine configured. Nothing was built or signed.", {
+      suggestion: "Launch without --buy under a new --client-trade-id, then make the first buy with candle swap once the token lands."
+    });
+  return buyRefusal(error);
+}
+var atomicLegSchema = exports_external.object({
+  index: exports_external.number().int(),
+  role: exports_external.enum(["launch", "buy"]),
+  signer: exports_external.enum(["server", "client"]),
+  unsignedTxBase64: exports_external.string().min(1).optional(),
+  expectedFill: exports_external.object({ amountOutRaw: exports_external.string().regex(/^\d+$/), minAmountOutRaw: exports_external.string().regex(/^\d+$/).optional() }).passthrough().optional()
+});
+var atomicBuildSchema = exports_external.object({
+  bundleId: exports_external.string().min(1),
+  legs: exports_external.array(atomicLegSchema),
+  expiresAt: exports_external.number().finite()
+});
+var atomicOutcomeSchema = exports_external.discriminatedUnion("status", [
+  exports_external.object({ status: exports_external.literal("landed"), bundleId: exports_external.string(), mint: exports_external.string(), signatures: exports_external.array(exports_external.string()) }).passthrough(),
+  exports_external.object({ status: exports_external.literal("failed"), bundleId: exports_external.string(), retryable: exports_external.boolean() }).passthrough(),
+  exports_external.object({ status: exports_external.literal("timeout"), bundleId: exports_external.string(), retryable: exports_external.boolean() }).passthrough()
+]);
+async function atomicLaunch(ctx, key, args) {
+  const { flags, id, wallet: wallet3, buy } = args;
+  if (!args.retry && !await claimOperation(ctx, key, id, "launch"))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
+  ctx.deps.stderr.write(`Operation: ${id}
+`);
+  const payer = { type: "linked", linkedWalletId: wallet3.id };
+  const built = atomicBuildSchema.parse(await request(ctx, key, "/api/v1/launch/atomic/build", {
+    clientLaunchId: id,
+    chain: "solana",
+    name: flags["--name"],
+    symbol: flags["--symbol"],
+    imageUrl: args.imageUrl,
+    ...flags["--description"] ? { description: flags["--description"] } : {},
+    ...flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {},
+    ...flags["--mode"] ? { mode: flags["--mode"] } : {},
+    payer,
+    firstBuys: [{ payer, amountRaw: buy.raw }]
+  }).catch((error) => {
+    throw atomicRefusal(error);
+  }));
+  const [launchLeg, buyLeg] = built.legs;
+  if (built.legs.length !== 2 || launchLeg?.role !== "launch" || buyLeg?.role !== "buy" || built.legs.some((leg, index) => leg.index !== index || leg.signer !== "client" || !leg.unsignedTxBase64))
+    throw new TradingError("INVALID_RESPONSE", "Candle did not return this wallet's launch leg and first-buy leg to sign; nothing was signed.");
+  const quoteAsset = (flags["--quote-asset"] ?? "sol").toUpperCase();
+  const decimals = BASES[quoteAsset]?.decimals ?? 9;
+  const minOut = buyLeg.expectedFill?.minAmountOutRaw;
+  let reading;
+  try {
+    reading = readLaunchBundle({
+      legs: [launchLeg.unsignedTxBase64, buyLeg.unsignedTxBase64],
+      wallet: wallet3.address,
+      quote: quoteAsset,
+      buyRaw: BigInt(buy.raw),
+      ...minOut !== undefined ? { minOutRaw: BigInt(minOut) } : {}
+    });
+  } catch (error) {
+    if (!(error instanceof BundleReadError))
+      throw error;
+    throw new TradingError("INVALID_RESPONSE", `The bundle Candle built does not read as this launch and its first buy: ${safeText(error.message)}. Nothing was signed.`);
+  }
+  const sol = `${decimalAmount(reading.lamports.toString(), 9)} SOL`;
+  const quote = {
+    intent: `Launch ${flags["--name"]} (${flags["--symbol"]}) with a first buy of ${buy.display}, as one Jito bundle`,
+    wallet: wallet3.address,
+    venue: "curve launch (atomic bundle)",
+    priceImpactPct: null,
+    candleFee: reading.feeRaw > 0n ? `${decimalAmount(reading.feeRaw.toString(), decimals)} ${quoteAsset} (the tier fee on the first buy, in its leg)` : "none on this first buy",
+    minimumReceived: minOut !== undefined ? `${minOut} raw units of the new token (the first buy's floor)` : "not quoted",
+    maxLoss: quoteAsset === "SOL" ? sol : `${sol} and ${decimalAmount(reading.quoteRaw.toString(), decimals)} ${quoteAsset}`,
+    tokenRisks: [],
+    bundleId: built.bundleId
+  };
+  await saveOperationBundle(ctx, key, id, {
+    bundleId: built.bundleId,
+    signatures: [],
+    imageUrl: args.imageUrl,
+    outcome: "unsigned"
+  });
+  ctx.deps.stderr.write(buyNotice(buy, "solana"));
+  if (!await confirmQuote(ctx, quote, args.yes)) {
+    ctx.deps.stderr.write(`Nothing was signed. Candle holds bundle ${safeText(built.bundleId)}'s spend reservation until the build expires at ${new Date(built.expiresAt).toISOString()}.
+`);
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind: "launch",
+      quote,
+      ...args.used
+    });
+  }
+  if (!Number.isFinite(built.expiresAt) || built.expiresAt <= ctx.deps.now())
+    throw new TradingError("QUOTE_EXPIRED", "The launch build expired before signing.");
+  const signed = [];
+  for (const leg of built.legs)
+    signed.push(await relaySign(ctx, key, wallet3, leg.unsignedTxBase64));
+  const signatures = signed.map(payerSignature);
+  const bundle = { bundleId: built.bundleId, signatures, imageUrl: args.imageUrl };
+  await saveOperationBundle(ctx, key, id, bundle);
+  ctx.deps.stderr.write(`Bundle: ${safeText(built.bundleId)} (launch ${signatures[0]}, first buy ${signatures[1]})
+`);
+  const submitted = await apiRequest("/api/v1/launch/atomic/submit", {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    method: "POST",
+    body: { bundleId: built.bundleId, signedTxsBase64: signed },
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  const outcome = atomicOutcomeSchema.safeParse(submitted.ok ? submitted.body : submitted.raw);
+  const details = { bundleId: built.bundleId, signatures };
+  if (!outcome.success || outcome.data.bundleId !== built.bundleId) {
+    const refused2 = !submitted.ok && submitted.status >= 400 && submitted.status < 500 && submitted.status !== 409;
+    if (refused2)
+      await saveOperationBundle(ctx, key, id, { ...bundle, outcome: "refused" });
+    throw new TradingError(submitted.ok ? "INVALID_RESPONSE" : submitted.code ?? "REQUEST_FAILED", refused2 ? `Candle refused bundle ${safeText(built.bundleId)} and sent nothing: ${safeText(submitted.ok ? "" : submitted.message)}. Re-run with the same --client-trade-id ${id} to build it again.` : `Bundle ${safeText(built.bundleId)} may have been sent, and its outcome is unknown${submitted.ok ? "" : `: ${safeText(submitted.message)}`}. Re-run with the same --client-trade-id ${id} to read it; nothing is re-signed or re-sent. Never relaunch under a new id: that would be a second token.`, { ...refused2 ? {} : { exitCode: 3 }, details });
+  }
+  await saveOperationBundle(ctx, key, id, { ...bundle, outcome: outcome.data.status });
+  if (outcome.data.status === "failed")
+    throw new TradingError("BUNDLE_FAILED", `Bundle ${safeText(built.bundleId)} did not land: neither the launch nor its first buy is on chain. Retry with the same --client-trade-id ${id}; Candle starts a clean attempt under it.`, { details });
+  if (outcome.data.status === "timeout")
+    throw new TradingError("BUNDLE_UNRESOLVED", `Bundle ${safeText(built.bundleId)} is unresolved and may still land. Re-run with the same --client-trade-id ${id} to read its outcome; nothing is re-signed or re-sent. Never relaunch under a new id: that would be a second token.`, { exitCode: 3, details });
+  const [launchSignature, buySignature] = outcome.data.signatures;
+  ctx.deps.stderr.write(`Launched ${safeText(outcome.data.mint)}. Launch signature: ${safeText(launchSignature)}. First buy signature: ${safeText(buySignature)}.
+`);
+  return printTradingResult(ctx, {
+    ...outcome.data,
+    success: true,
+    clientTradeId: id,
+    kind: "launch",
+    quote,
+    ...args.used
+  });
+}
+function atomicRetryable(prior, local) {
+  if (prior.job.status === "confirmed")
+    return false;
+  return prior.job.status === "failed" || ["unsigned", "refused", "failed"].includes(local.bundleOutcome ?? "");
+}
+function resumeAtomicLaunch(ctx, id, local, prior) {
+  const saved = { bundleId: local.bundleId, signatures: local.bundleSignatures ?? [] };
+  if (prior.job.status === "confirmed")
+    return printTradingResult(ctx, { ...prior, ...saved });
+  throw new TradingError("OPERATION_IN_FLIGHT", `Launch ${id}'s bundle ${safeText(local.bundleId)} is unresolved (the launch job is ${safeText(prior.job.status)}) and may still land. Nothing was re-signed or re-sent. Re-run with the same --client-trade-id to read it again; never relaunch under a new id, which would be a second token.`, { exitCode: 3, details: { ...saved, job: prior.job } });
 }
 async function hoodLaunch(ctx, key, args) {
   const { flags, id, wallet: wallet3, buy } = args;

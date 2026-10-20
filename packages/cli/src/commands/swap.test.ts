@@ -475,29 +475,8 @@ describe("TEE CLI trading", () => {
     expect(f.calls.find((call) => call.path.endsWith("self/confirm"))?.body.signature).toBe(signature)
     expect(f.stderr.text).toContain("Maximum launch debit: 30000000")
   })
-  test("BE-869: launch --buy sends the buy in lamports, says it rides in the launch transaction, and signs as before", async () => {
-    const f = await fixture({ scopes: ["launch:write"] })
-    expect(await run([...launchArgs, "--buy", "0.1"], f.deps)).toBe(0)
-    expect(f.calls.find((call) => call.path.endsWith("self/build"))?.body).toMatchObject({
-      clientLaunchId: "launch-1",
-      buyAmount: "100000000",
-      chain: "solana",
-      linkedWalletId: "wallet",
-    })
-    expect(f.stderr.text).toContain("Launch Token (TOK) with a first buy of 0.100000000 SOL")
-    expect(f.stderr.text).toContain("spends 0.100000000 SOL on a first buy in the same transaction")
-    expect(f.stderr.text).toContain("Minimum received: not quoted (the first buy on the new curve)")
-    expect(f.stderr.text).not.toContain("separate candle swap")
-    expect(f.calls.find((call) => call.path.endsWith("self/confirm"))?.body.signature).toBe(signature)
-  })
-  test("BE-869: launch --buy is in the quote asset's whole units: 2.5 USDC is 2500000", async () => {
-    const f = await fixture({ scopes: ["launch:write"] })
-    expect(await run([...launchArgs, "--quote-asset", "usdc", "--buy", "2.5"], f.deps)).toBe(0)
-    expect(f.calls.find((call) => call.path.endsWith("self/build"))?.body).toMatchObject({
-      buyAmount: "2500000",
-      quoteAsset: "usdc",
-    })
-  })
+  // BE-1721: a Solana launch --buy is an atomic launch now, its buy its own leg; its tests,
+  // the whole-unit amounts included, are in launch-atomic.test.ts.
   for (const amount of ["0", "abc", "1e3", "0.0000000001"])
     test(`BE-869: launch --buy ${amount} is INVALID_AMOUNT before any build`, async () => {
       const f = await fixture()
