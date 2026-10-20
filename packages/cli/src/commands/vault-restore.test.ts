@@ -32,6 +32,7 @@ import {
 } from "../test-support"
 import { deriveSolanaKey, solanaExternalPath, solanaTeePath, solanaVaultPath } from "../vault/hd"
 import { FIXTURE_ENTROPY, FIXTURE_PHRASE, generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
+import { groupAddress } from "./vault-support"
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -113,7 +114,7 @@ async function restore(h: Awaited<ReturnType<typeof harness>>, args: string[] = 
     }
     return generatedPassphraseFrom(h.stdout.text)
   }
-  h.deps.promptLine = async (text: string) => (text.includes("last six characters") ? ACCOUNT.slice(-6) : "no")
+  h.deps.promptLine = async (text: string) => (text.startsWith("Type confirm") ? "confirm" : "no")
   return run(["vault", "restore", "--phrase", ...args, "--keystore", h.vaultPath], h.deps)
 }
 
@@ -420,13 +421,22 @@ describe("T55: completeness of the read, which is the defect this covers", () =>
       }
       return generatedPassphraseFrom(h.stdout.text)
     }
-    h.deps.promptLine = async (text: string) => (text.includes("last six characters") ? "wrongs" : "no")
+    // BE-1710: the account in fours, then `confirm`; its old last six is just another wrong word.
+    const confirmPrompts: string[] = []
+    h.deps.promptLine = async (text: string) => {
+      if (!text.startsWith("Type confirm")) return "no"
+      confirmPrompts.push(text)
+      return ACCOUNT.slice(-6)
+    }
     expect(
       await run(
         ["vault", "restore", "--phrase", "--count", "1", "--tee-count", "1", "--keystore", h.vaultPath],
         h.deps,
       ),
     ).toBe(3)
+    expect(confirmPrompts).toEqual([`Type confirm to record exposure against account ${ACCOUNT}: `])
+    expect(h.stdout.text).toContain(`account ${groupAddress(ACCOUNT)}\n`)
+    expect(h.stdout.text).toContain("the account this profile acts as was not confirmed")
     expect(h.stdout.text).toContain("EXPOSURE_ACCOUNT_MISMATCH")
     expect(h.stdout.text).toContain("No exposure was recorded")
     expect(h.stdout.text).toContain("candle vault reconcile-exposure")
@@ -801,7 +811,7 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
     }
     h.deps.promptLine = async (text: string) => {
       asked.push(text)
-      if (text.includes("last six characters")) return ACCOUNT.slice(-6)
+      if (text.startsWith("Type confirm")) return "confirm"
       // D8's prompt: empty is Enter.
       if (text.startsWith("Passphrase for the new vault.")) return ""
       return "no"
@@ -829,7 +839,7 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
       return "a-long-enough-chosen-passphrase"
     }
     h.deps.promptLine = async (text: string) => {
-      if (text.includes("last six characters")) return ACCOUNT.slice(-6)
+      if (text.startsWith("Type confirm")) return "confirm"
       if (text.startsWith("Passphrase for the new vault.")) return "own"
       return "no"
     }
@@ -851,7 +861,7 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
       return generatedPassphraseFrom(h.stdout.text)
     }
     h.deps.promptLine = async (text: string) => {
-      if (text.includes("last six characters")) return ACCOUNT.slice(-6)
+      if (text.startsWith("Type confirm")) return "confirm"
       if (text.startsWith("Passphrase for the new vault.")) {
         choices.push(text)
         return "yes please"
@@ -876,7 +886,7 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
     }
     h.deps.promptLine = async (text: string) => {
       if (text.startsWith("Passphrase for the new vault.")) choiceAsked = true
-      return text.includes("last six characters") ? ACCOUNT.slice(-6) : "no"
+      return text.startsWith("Type confirm") ? "confirm" : "no"
     }
     expect(await run(["vault", "restore", "--phrase", "--own-passphrase", "--keystore", h.vaultPath], h.deps)).toBe(0)
     expect(choiceAsked).toBe(false)
@@ -901,11 +911,7 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
       return generatedPassphraseFrom(viaEnv.stdout.text)
     }
     viaEnv.deps.promptLine = async (text: string) =>
-      text.includes("last six characters")
-        ? ACCOUNT.slice(-6)
-        : text.startsWith("Passphrase for the new vault.")
-          ? ""
-          : "no"
+      text.startsWith("Type confirm") ? "confirm" : text.startsWith("Passphrase for the new vault.") ? "" : "no"
     expect(await run(["vault", "restore", "--phrase"], viaEnv.deps)).toBe(0)
     expect(viaEnv.stdout.text).not.toContain("not the default location")
   })

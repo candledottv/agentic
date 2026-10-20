@@ -1194,8 +1194,8 @@ describe("TEE paths honour --factor and --device (the vault-backed TEE lifecycle
     // at its default path under CANDLE_CONFIG_DIR.
     // Prompts, in order: the key's PIN for the destination lookup, the key's PIN again for the
     // vault-ownership check of the TEE address, the legacy TEE store passphrase, the typed
-    // confirmation of the destination's last six characters. No vault passphrase anywhere.
-    const enable = await teeHarness(v.dir, { secrets: [PIN, PIN, TEE_PASS, cold.slice(-6)], fetch: routes.fetch })
+    // `confirm` typed under the destination (BE-1710). No vault passphrase anywhere.
+    const enable = await teeHarness(v.dir, { secrets: [PIN, PIN, TEE_PASS], lines: ["confirm"], fetch: routes.fetch })
     const code = await run(
       ["tee", "enable", FRESH, "--vault-key", "cold", "--factor", v.keyId, "--no-verify-account"],
       enable.deps,

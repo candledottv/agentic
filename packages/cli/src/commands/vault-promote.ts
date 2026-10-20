@@ -82,7 +82,7 @@ import { type ImportFlowParams, type ImportSubmitResponse, runImportFlow, TEE_PR
 import { nextAllocatableIndex } from "./vault-new-key"
 import { promoteEvmFresh, promoteEvmInPlace } from "./vault-promote-evm"
 import {
-  confirmLastSix,
+  confirmAddress,
   type OpenedVault,
   type ResolvedVaultPath,
   refuseEnvPassphrase,
@@ -356,7 +356,7 @@ async function promoteFresh(
       ),
     )
 
-    await confirmLastSix(ctx, destination.address, "the sweep vault destination")
+    await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`)
     if (toKey !== undefined) {
       // BE-322: the fresh mode has no controlled-by block; the target is named here, with its cap
       // lines, before the import.
@@ -506,10 +506,10 @@ async function promoteInPlace(
       const resumeChain: PromoteChain = existing.chain === "evm" ? "evm" : "solana"
       if (toKey !== undefined) await confirmResumeRebind(ctx, toKey, resumeChain)
       const resumed = await resumePromote(ctx, vault, existing, opened.reopen, path, hold, {
-        confirmAccount: (account) => confirmLastSix(ctx, account, "that account"),
+        confirmAccount: (account) => confirmAddress(ctx, "account", account, `act as account ${account}`),
         confirmDestination: async (destination) => {
           try {
-            await confirmLastSix(ctx, destination, "the server-reported vault destination")
+            await confirmAddress(ctx, "vault", destination, `accept ${destination} as the sweep vault`)
             return true
           } catch {
             return false
@@ -606,13 +606,14 @@ async function promoteInPlace(
     const roles = await runRoleCheck(ctx, rpc, [first.subject.address])
     ctx.deps.stdout.write(`${authoritiesBlock(host, roles)}\n`)
 
-    // The sentence BEFORE both typed confirmations (step 5 then 6): the last six of the address
-    // being promoted, then the controlled-by block directly above `confirm` (D3, D4).
+    // The sentence BEFORE both typed confirmations (step 5 then 6): `confirm` to promote the address
+    // (BE-1710; it was the address's last six), then the controlled-by block directly above the
+    // second `confirm` (D3, D4).
     printPromoteSentence(
       ctx,
       promoteSentence({ n: 1, form: sentenceForm(roles), k: keysWithFindings(roles), where: "above" }),
     )
-    await confirmLastSix(ctx, first.subject.address, "the address being promoted")
+    await confirmAddress(ctx, "address", first.subject.address, `promote ${first.subject.address}`)
     ctx.deps.stderr.write(`${renderControlledBy(controlledBy, 1)}\n`)
     await confirmPromotion(ctx, 1)
 
@@ -770,7 +771,7 @@ export interface ResumeOutcome {
 }
 
 export interface ResumeConfirmations {
-  /** Asserts the account a grant-less entry acts as; throws to refuse. `vault promote` types the last six. */
+  /** Asserts the account a grant-less entry acts as; throws to refuse. `vault promote` types `confirm`. */
   confirmAccount: (account: string) => Promise<void>
   /** Confirms a server-reported destination (`adoptGrantedRow`'s callback); `false` declines. */
   confirmDestination: (destination: string) => Promise<boolean>

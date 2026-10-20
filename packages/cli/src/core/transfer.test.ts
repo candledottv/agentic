@@ -1,7 +1,7 @@
 /**
  * BE-1680 (spec S4 T-1 to T-9): transfers out of a user wallet on the core. T4-8 (only the user
- * starts one), T4-9 (the history is display only), T4-10 (the confirm, the last six on every
- * transfer, then the factor), T-W-1 (a fresh factor, never a window), T4-13 (each source executes
+ * starts one), T4-9 (the history is display only), T4-10 (the confirm on every transfer, then
+ * the factor; BE-1710 removed the last six), T-W-1 (a fresh factor, never a window), T4-13 (each source executes
  * its own way), T4-14 (unknown outcomes), T4-15 (what is recorded). Fixtures only: a fake API, a
  * fake RPC, a fake secret store, a fixture vault and fake factor helpers.
  */
@@ -56,7 +56,7 @@ const approve = (view: TestClient, card: Card, extra: Record<string, unknown> = 
   view.request("cards.approve", {
     cardId: card.cardId,
     cardHash: card.cardHash,
-    confirm: { typed: "confirm", lastSix: card.display.transfer?.to.slice(-6) },
+    confirm: { typed: "confirm" },
     factor: RIGHT,
     ...extra,
   })
@@ -100,7 +100,7 @@ describe("T4-8: only the user starts a transfer (T-1, K-3, invariant 11)", () =>
 })
 
 describe("T4-9: the history is a display hint and nothing more (T-3)", () => {
-  test("only A in this environment shows sent-before; A, B, and a forged hint all still need the last six", async () => {
+  test("only A in this environment shows sent-before; A, B, and a forged hint all still need confirm", async () => {
     const k = await kit()
     const view = await k.view()
     const first = await prepare(view, vaultSend(DEST_A))
@@ -119,10 +119,10 @@ describe("T4-9: the history is a display hint and nothing more (T-3)", () => {
       const missing = await view.request("cards.approve", {
         cardId: card.cardId,
         cardHash: card.cardHash,
-        confirm: { typed: "confirm" },
+        confirm: {},
         factor: RIGHT,
       })
-      expect(missing.error?.data).toMatchObject({ code: "DESTINATION_NOT_CONFIRMED", step: "lastSix" })
+      expect(missing.error?.data).toMatchObject({ code: "DESTINATION_NOT_CONFIRMED", step: "confirm" })
     }
     expect(k.helper).toEqual([{ type: "passphrase", reason: `send 1.5 SOL to ${DEST_A}` }])
   })
@@ -172,50 +172,56 @@ describe("T4-9: the history is a display hint and nothing more (T-3)", () => {
     const view = await k.view()
     const card = await prepare(view, vaultSend(DEST_B))
     expect(card.display.transfer?.newDestination).toBe(false)
-    const response = await approve(view, card, { confirm: { typed: "confirm", lastSix: "AAAAAA" } })
-    expect(response.error?.data).toMatchObject({ code: "DESTINATION_NOT_CONFIRMED", step: "lastSix" })
+    const response = await approve(view, card, { confirm: { typed: "AAAAAA" } })
+    expect(response.error?.data).toMatchObject({ code: "DESTINATION_NOT_CONFIRMED", step: "confirm" })
     expect(k.helper).toEqual([])
     expect(k.chain.signed).toEqual([])
   })
 })
 
-describe("T4-10: the confirm, the last six on every transfer, then the factor (T-5, invariant 12)", () => {
+describe("T4-10: the confirm on every transfer, then the factor (T-5, invariant 12)", () => {
   test("a wrong typed word refuses with the factor helper never invoked", async () => {
     const k = await kit()
     const view = await k.view()
     const card = await prepare(view, vaultSend(DEST_A))
-    const response = await approve(view, card, { confirm: { typed: "yes", lastSix: DEST_A.slice(-6) } })
+    const response = await approve(view, card, { confirm: { typed: "yes" } })
     expect(response.error?.data).toMatchObject({ code: "DESTINATION_NOT_CONFIRMED", step: "confirm" })
     expect(k.helper).toEqual([])
     expect(k.cards.get(card.cardId, "", false).state).toBe("awaiting_approval")
   })
 
-  test("a missing or wrong last six refuses, points at the character, and the third wrong one withdraws the card", async () => {
+  test("BE-1710: the old last six, typed as the word, refuses every time and never withdraws the card", async () => {
     const k = await kit()
     const view = await k.view()
     const card = await prepare(view, vaultSend(DEST_A))
-    const wrongSix = `${DEST_A.slice(-6, -1)}${DEST_A.endsWith("z") ? "y" : "z"}`
-    const first = await approve(view, card, { confirm: { typed: "confirm" } })
-    expect(first.error?.data).toMatchObject({ code: "DESTINATION_NOT_CONFIRMED", step: "lastSix", triesLeft: 2 })
-    const second = await approve(view, card, { confirm: { typed: "confirm", lastSix: wrongSix } })
-    expect(second.error?.data).toMatchObject({ step: "lastSix", differsAt: 5, triesLeft: 1 })
-    const third = await approve(view, card, { confirm: { typed: "confirm", lastSix: wrongSix } })
-    expect(third.error?.data).toMatchObject({ code: "DESTINATION_NOT_CONFIRMED", withdrawn: true })
-    expect(k.cards.get(card.cardId, "", false).state).toBe("withdrawn")
+    for (let i = 0; i < 4; i++) {
+      const response = await approve(view, card, { confirm: { typed: DEST_A.slice(-6) } })
+      expect(response.error?.data).toMatchObject({ code: "DESTINATION_NOT_CONFIRMED", step: "confirm" })
+    }
+    expect(k.cards.get(card.cardId, "", false).state).toBe("awaiting_approval")
     expect(k.helper).toEqual([])
-    expect((await k.rows()).find((row) => row.type === "card.withdrawn")).toMatchObject({ by: "last_six" })
+    expect(k.chain.signed).toEqual([])
+    // The word, after all that, still sends: there is no last-six step left to fail.
+    ok(await approve(view, card))
   })
 
-  test("both right: the factor helper is invoked once, with the send as its reason, and the last six is the CLI's rule", async () => {
+  test("the word right: the factor helper is invoked once, with the send as its reason", async () => {
     const k = await kit()
     const view = await k.view()
     const card = await prepare(view, vaultSend(DEST_A))
-    // Trimmed, as the CLI compares it.
-    ok(await approve(view, card, { confirm: { typed: "  CONFIRM ", lastSix: ` ${DEST_A.slice(-6)} ` } }))
+    // Trimmed and without case, as the CLI compares it.
+    ok(await approve(view, card, { confirm: { typed: "  CONFIRM " } }))
     expect(k.helper).toEqual([{ type: "passphrase", reason: `send 1.5 SOL to ${DEST_A}` }])
   })
 
-  test("an EVM address's last six compares without case", async () => {
+  test("a view still sending a lastSix field is not refused for it: the field is ignored", async () => {
+    const k = await kit()
+    const view = await k.view()
+    const card = await prepare(view, vaultSend(DEST_A))
+    ok(await approve(view, card, { confirm: { typed: "confirm", lastSix: "nonsense" } }))
+  })
+
+  test("an EVM destination needs only the word", async () => {
     const k = await kit()
     const view = await k.view()
     const card = await prepare(view, {
@@ -228,7 +234,7 @@ describe("T4-10: the confirm, the last six on every transfer, then the factor (T
       },
     })
     expect(card.display.transfer?.to).toBe(DEST_EVM)
-    ok(await approve(view, card, { confirm: { typed: "confirm", lastSix: DEST_EVM.slice(-6).toUpperCase() } }))
+    ok(await approve(view, card, { confirm: { typed: "Confirm" } }))
   })
 
   test("two views: the first valid approval wins and the second gets CARD_NOT_AWAITING", async () => {
@@ -486,8 +492,8 @@ describe("T4-15: what is recorded (T-9)", () => {
       (row) => row.type === "card.approved" && (row.cardId === vault.cardId || row.cardId === embedded.cardId),
     )
     expect(approvals.map((row) => [row.factorType, row.confirm])).toEqual([
-      ["passphrase", { typed: true, lastSix: true }],
-      ["security-key", { typed: true, lastSix: true }],
+      ["passphrase", { typed: true }],
+      ["security-key", { typed: true }],
     ])
     expect(rows.filter((row) => row.type === "transfer.prepared")).toHaveLength(2)
     expect(rows.find((row) => row.type === "operation.succeeded" && row.opId === vault.opId)).toBeDefined()

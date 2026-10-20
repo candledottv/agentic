@@ -1,11 +1,11 @@
 /**
  * A transfer out of a user wallet, as the core holds it (BE-1680, spec S4 T-2 to T-5). Pure: the
  * parameters a `transfer` card is bound to, how an address is normalized before any card exists,
- * and the two typed confirmations the core checks inside `cards.approve` (T-5): the word `confirm`
- * and the last six characters of the destination, asked on every transfer.
+ * and the typed confirmation the core checks inside `cards.approve` (T-5): the word `confirm`, asked
+ * on every transfer. BE-1710 removed the destination's last six that followed it.
  *
  * The wording and the comparison rules are the CLI's (`commands/vault-support.ts`: `confirmSend`,
- * `confirmLastSix`, `describeSend`, `groupAddress`), so a send reads the same in the terminal and
+ * `describeSend`, `groupAddress`), so a send reads the same in the terminal and
  * the TUI.
  */
 import { checkEvmAddress } from "../evm-lite"
@@ -99,23 +99,6 @@ export function groupAddress(address: string): string {
 /** T-5 step 2: the word, trimmed and compared without case (`confirmSend`). */
 export function confirmTyped(typed: unknown): boolean {
   return typeof typed === "string" && typed.trim().toLowerCase() === "confirm"
-}
-
-/**
- * T-5 step 3, on every transfer: the last six characters, trimmed, EVM compared without case
- * (`confirmLastSix`). Returns undefined on a match, else the zero-based index of the first
- * character that differs, which the view points at.
- */
-export function lastSixMismatch(address: string, typed: unknown): number | undefined {
-  const expected = address.slice(-6)
-  const given = typeof typed === "string" ? typed.trim() : ""
-  const fold = (value: string) => (address.startsWith("0x") ? value.toLowerCase() : value)
-  if (fold(given) === fold(expected)) return undefined
-  return (
-    Array.from({ length: Math.max(expected.length, given.length) }, (_, i) => i).find(
-      (i) => fold(given)[i] !== fold(expected)[i],
-    ) ?? 0
-  )
 }
 
 /** A raw amount as a decimal of `decimals` places, trailing zeros trimmed. */

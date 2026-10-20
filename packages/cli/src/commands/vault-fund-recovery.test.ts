@@ -110,15 +110,11 @@ async function fixture() {
     store: createFakeStore({ api_key: "ck_live_test" }),
     env: { CANDLE_CONFIG_DIR: made.dir },
     readFile: (path) => readFile(path, "utf8"),
-    promptSecret: async (prompt) => {
-      if (prompt.startsWith("Type the LAST 6")) return from.slice(-6)
-      return made.passphrase
-    },
+    promptSecret: async () => made.passphrase,
     // The typed confirmation is the last prompt before a send signs (2026-10-09 amendment): a
     // blocked path never reaches it.
     promptLine: async (prompt) => {
-      if (!prompt.startsWith("Type confirm to send")) return teeAddress.slice(-6)
-      signingPrompts++
+      if (prompt.startsWith("Type confirm to send")) signingPrompts++
       return "confirm"
     },
   })

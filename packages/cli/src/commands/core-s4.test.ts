@@ -176,7 +176,7 @@ describe("candle core serve: the Withdraw key, end to end (S4 W-2, W-3)", () => 
     const approved = await view.request("cards.approve", {
       cardId: card.cardId,
       cardHash: card.cardHash,
-      confirm: { typed: "confirm", lastSix: LINKED.slice(-6) },
+      confirm: { typed: "confirm" },
       factor,
     })
     expect(approved.result).toMatchObject({ operation: { state: "succeeded" } })

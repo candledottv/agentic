@@ -81,6 +81,7 @@ import {
   requireTty,
   requireVaultRaw,
   runVaultCommand,
+  typedConfirm,
   unlockInteractively,
   usage,
   vaultAlreadyExists,
@@ -550,15 +551,12 @@ async function matchAgainstAccount(ctx: CommandContext, apiKey: string, derived:
     }
   }
 
-  // The account is displayed and its last six typed BEFORE any re-flagging: re-flagging one vault
-  // against a different account's history would be both wrong and silent.
+  // The account is displayed and `confirm` typed BEFORE any re-flagging: re-flagging one vault
+  // against a different account's history would be both wrong and silent. BE-1710: the BE-1144
+  // shape, where this was the account's last six characters.
   ctx.deps.stdout.write(`\nThis profile acts as account ${read.account}.\n`)
-  const typed = (
-    await ctx.deps.promptLine(
-      `Type the last six characters of that account to confirm before any exposure is recorded: `,
-    )
-  ).trim()
-  if (typed !== read.account.slice(-6)) {
+  const confirmed = await typedConfirm(ctx, "account", read.account, `record exposure against account ${read.account}`)
+  if (!confirmed) {
     // Refused, as a stop to the exposure step and not to the restore: the vault is still
     // committed below with every derived entry, its discovery record and no exposure at all, the
     // same shape an incomplete read leaves, so nothing half-built is on disk and the named exit
@@ -569,7 +567,7 @@ async function matchAgainstAccount(ctx: CommandContext, apiKey: string, derived:
       unmatched: [],
       account: undefined,
       complete: false,
-      reason: "that is not the last six characters of the account this profile acts as, so it was not confirmed",
+      reason: "the account this profile acts as was not confirmed",
       refused: "EXPOSURE_ACCOUNT_MISMATCH",
     }
   }

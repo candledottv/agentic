@@ -350,8 +350,8 @@ function realPromptStreams(): PromptStreams {
 
 /**
  * TTY-guarded VISIBLE prompt for `Deps.promptLine` (Ember Phase 2, BE-136). The vault's
- * confirmations ask the operator to type back something already on their screen -- a destination's
- * last six characters, an acknowledgement word, three words of a rendered phrase -- and hiding
+ * confirmations ask the operator to type back something already on their screen -- the word
+ * `confirm`, an acknowledgement word, three words of a rendered phrase -- and hiding
  * that input would turn a deliberate check into a guess. Refuses without a TTY for the same reason
  * `promptHiddenSecret` does: a piped invocation should get an actionable error, never a hang.
  */

@@ -118,6 +118,7 @@ import { tradingFailure } from "./swap"
 import { namesEvmWallet, teeDisableEvm, teeSweepEvm } from "./tee-evm"
 import { teeStatusEvm } from "./tee-status-evm"
 import { serverTeeWallet, UNVERIFIED_KEY_LINE } from "./tee-status-wallet"
+import { typedConfirm } from "./vault-support"
 import { readDisableOutcome } from "./wallets"
 
 const MIN_PASSPHRASE_LENGTH = 12
@@ -560,15 +561,11 @@ function isSolanaAddress(value: string): boolean {
 }
 
 /**
- * HW-03: the destination is confirmed by typing its last six characters. `promptSecret` is the
- * CLI's only interactive input; hidden echo is fine for six characters the operator can see on
- * the line above.
+ * HW-03: the destination is shown grouped in fours and confirmed by a typed `confirm` naming the
+ * action (BE-1710, the BE-1144 shape; it was the vault address's last six characters).
  */
-async function confirmVault(deps: Deps, vault: string): Promise<boolean> {
-  const typed = (
-    await deps.promptSecret(`Type the LAST 6 characters of the vault address (${vault}) to confirm: `)
-  ).trim()
-  return typed === vault.slice(-6)
+function confirmVault(deps: Deps, json: boolean, vault: string, action: string): Promise<boolean> {
+  return typedConfirm({ deps, json }, "vault", vault, action)
 }
 
 // ── tee new ─────────────────────────────────────────────────────────────────────────────────
@@ -809,10 +806,10 @@ export async function teeEnable(args: string[], ctx: CommandContext): Promise<nu
       `compromised agent within those limits. Once enabled a copy of this key stays in the TEE for good.\n`,
     )
   }
-  if (!(await confirmVault(deps, vault))) {
+  if (!(await confirmVault(deps, json, vault, `enable this TEE wallet with sweeps to ${vault}`))) {
     writeLocalFailure(
       deps,
-      { code: "VAULT_NOT_CONFIRMED", message: "The vault confirmation did not match. Nothing was enabled." },
+      { code: "VAULT_NOT_CONFIRMED", message: "The vault was not confirmed. Nothing was enabled." },
       json,
     )
     return 1
@@ -1645,10 +1642,10 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
     if (!json) {
       deps.stdout.write(`Sweep ${address} -> vault ${vault} (solana-mainnet)\n`)
     }
-    if (!(await confirmVault(deps, vault))) {
+    if (!(await confirmVault(deps, json, vault, `sweep everything to ${vault}`))) {
       writeLocalFailure(
         deps,
-        { code: "VAULT_NOT_CONFIRMED", message: "The vault confirmation did not match. Nothing was signed." },
+        { code: "VAULT_NOT_CONFIRMED", message: "The vault was not confirmed. Nothing was signed." },
         json,
       )
       return 1

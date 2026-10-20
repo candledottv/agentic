@@ -60,7 +60,7 @@ async function harness(pages?: RouteHandler[]) {
       }
       return generatedPassphraseFrom(stdout.text)
     },
-    promptLine: async (text: string) => (text.includes("last six characters") ? ACCOUNT.slice(-6) : "no"),
+    promptLine: async (text: string) => (text.startsWith("Type confirm") ? "confirm" : "no"),
   })
   const vaultPath = join(dir, "vault.enc")
   return {

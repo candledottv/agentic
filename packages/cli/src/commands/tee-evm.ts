@@ -72,7 +72,7 @@ import { wipe } from "../vault/hygiene"
 import { assertColdVaultDestination, sameAddress } from "../vault/promote-support"
 import { commitVault, decryptKey, type UnlockedVault } from "../vault/store"
 import {
-  confirmLastSix,
+  confirmAddress,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
@@ -568,7 +568,7 @@ async function sweepEvmWallet(input: SweepInput): Promise<number> {
   let stopped: string | undefined
   const somethingToMove = planned.length > 0 || ethBalance > 0n
   if (somethingToMove) {
-    await confirmLastSix(ctx, destination, "the vault destination")
+    await confirmAddress(ctx, "vault", destination, `sweep everything to ${destination}`)
     // The stop intent, before the first signature (SC-06): `vault fund` refuses this address from here.
     const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date(deps.now()).toISOString()
     vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, stopRequestedAt })))

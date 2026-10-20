@@ -1042,7 +1042,7 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation: "export-key <label> --to <new-file>",
-        description: "Export one key as plaintext (interactive ceremony)",
+        description: "Export one key as plaintext (interactive ceremony: unlock, then type confirm under the address)",
       },
     ],
     flags: [

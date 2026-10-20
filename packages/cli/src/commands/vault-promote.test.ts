@@ -34,6 +34,7 @@ import { NOT_CHECKED_LINE, REQUESTS_PER_KEY } from "../vault/signer-roles"
 import { closeVault, commitVault, decryptKey, unlockWithPassphrase } from "../vault/store"
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
 import { setSealPlaintextObserver } from "../wallet-import"
+import { groupAddress } from "./vault-support"
 
 setDefaultTimeout(90_000)
 useCheapKdf()
@@ -289,7 +290,7 @@ describe("T40: vault promote --from and vault fund", () => {
     const out = createCapture()
     const err = createCapture()
     const secrets = [passphrase, passphrase]
-    const lines = [cold.slice(-6)]
+    const lines = ["confirm"]
     const deps = createTestDeps({
       fetch,
       store: createFakeStore({ "profile:prc:api_key": API_KEY }),
@@ -380,7 +381,7 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
       const out = createCapture()
       const err = createCapture()
       const secrets = [passphrase, passphrase]
-      const lines = [subject.slice(-6), "confirm"]
+      const lines = ["confirm", "confirm"]
       const deps = createTestDeps({
         fetch,
         store: createFakeStore({ "profile:prc:api_key": API_KEY }),
@@ -501,7 +502,7 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
       stderr: err,
       env: { CANDLE_CONFIG_DIR: dir },
       promptSecret: async () => passphrase,
-      promptLine: async () => a.slice(-6),
+      promptLine: async () => "confirm",
     })
     const code = await run(
       ["vault", "promote", "--in-place", "A", "--sweep-to", "cold", "--rpc-url", RPC, "--json"],
@@ -718,7 +719,7 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
         stderr: err,
         env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_URL: API },
         promptSecret: async () => passphrase,
-        promptLine: async () => ACCOUNT.slice(-6),
+        promptLine: async () => "confirm",
         readFile: (path) => readFile(path, "utf8"),
         writeFile: (path, content) => writeFile(path, content, "utf8"),
       })
@@ -812,6 +813,173 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
   })
 })
 
+describe("BE-1710: vault promote --from asks confirm under the sweep vault", () => {
+  test("anything but the word, the vault's old last six included, imports nothing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "candle-be1710-from-"))
+    const { passphrase } = await initVault(dir)
+    const cold = await newKey(dir, passphrase, "cold")
+    const importCalls = { n: 0 }
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/import/init": () =>
+        jsonResponse(200, { success: true, encryptionPublicKey: ENCRYPTION_PUBLIC_KEY }),
+      "/api/v1/agent/wallets/import/submit": () => {
+        importCalls.n += 1
+        return jsonResponse(500, {})
+      },
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: ACCOUNT }),
+      "/api/v1/agent/wallets": () => jsonResponse(200, { page: [], isDone: true }),
+      "/api/v1/agent/wallets/import-failures": () =>
+        jsonResponse(200, { success: true, account: ACCOUNT, failures: [], complete: true }),
+      "/rpc": rpcHandler(),
+    })
+    const out = createCapture()
+    const err = createCapture()
+    const asked: string[] = []
+    const deps = createTestDeps({
+      fetch,
+      store: createFakeStore({ "profile:prc:api_key": API_KEY }),
+      stdout: out,
+      stderr: err,
+      env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_URL: API },
+      promptSecret: async () => passphrase,
+      promptLine: async (text: string) => {
+        asked.push(text)
+        return cold.slice(-6)
+      },
+      readFile: (path) => readFile(path, "utf8"),
+      writeFile: (path, content) => writeFile(path, content, "utf8"),
+    })
+    await deps.writeConfig({
+      activeProfile: "prc",
+      profiles: { prc: { account: ACCOUNT, apiUrl: API, accountCachedAt: Date.now() } },
+    })
+    expect(await run(["vault", "promote", "--from", "cold", "--json"], deps)).toBe(1)
+    expect(asked).toEqual([`Type confirm to sweep this wallet home to ${cold}: `])
+    expect(err.text).toContain(`vault ${groupAddress(cold)}\n`)
+    expect(JSON.parse(out.text.trim().split("\n").at(-1) as string)).toMatchObject({
+      ok: false,
+      code: "DESTINATION_NOT_CONFIRMED",
+    })
+    expect(importCalls.n).toBe(0)
+  })
+})
+
+describe("BE-1710: a resumed promote asks confirm for the account and the server's destination", () => {
+  // `pinned`: an import-pending entry with its destination recorded; otherwise a migrated
+  // local-candidate with none, whose server destination is shown and confirmed on adoption.
+  async function importPending(pinned: boolean) {
+    const dir = await mkdtemp(join(tmpdir(), "candle-be1710-resume-"))
+    const { passphrase } = await initVault(dir)
+    const subject = await newKey(dir, passphrase, "subject")
+    const cold = await newKey(dir, passphrase, "cold")
+    const vaultPath = join(dir, "vault.enc")
+    const opened = await unlockWithPassphrase(vaultPath, await readFile(vaultPath, "utf8"), passphrase)
+    try {
+      const entries = opened.index.entries.map((e) =>
+        e.address === subject
+          ? {
+              ...e,
+              role: "tee-wallet" as const,
+              exposure: { everRemoteExposed: true, everExported: false },
+              tee: pinned
+                ? { network: "solana-mainnet" as const, lifecycle: "import-pending" as const, vaultDestination: cold }
+                : { network: "solana-mainnet" as const, lifecycle: "local-candidate" as const },
+            }
+          : e,
+      )
+      await commitVault(opened, { index: { hd: opened.index.hd, entries } }, {
+        now: () => Date.now(),
+        sleep: async () => {},
+      } as never)
+    } finally {
+      closeVault(opened)
+    }
+    return { dir, passphrase, subject, vaultPath }
+  }
+
+  async function resume(answers: string[], serverDestination: string, pinned = true) {
+    const f = await importPending(pinned)
+    const importCalls = { n: 0 }
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: ACCOUNT }),
+      "/api/v1/agent/wallets": () =>
+        jsonResponse(200, {
+          page: [
+            {
+              _id: "lw_resume",
+              address: f.subject,
+              vaultDestination: serverDestination,
+              boundKeyPrefix: "ck_r",
+              remoteAuthority: "verified-active",
+            },
+          ],
+          isDone: true,
+        }),
+      "/api/v1/agent/wallets/import-failures": () =>
+        jsonResponse(200, { success: true, account: ACCOUNT, failures: [], complete: true }),
+      "/api/v1/agent/wallets/import/submit": () => {
+        importCalls.n += 1
+        return jsonResponse(500, {})
+      },
+      "/rpc": rpcHandler(),
+    })
+    const out = createCapture()
+    const err = createCapture()
+    const asked: string[] = []
+    const deps = createTestDeps({
+      fetch,
+      store: createFakeStore({ "profile:prc:api_key": API_KEY }),
+      stdout: out,
+      stderr: err,
+      env: { CANDLE_CONFIG_DIR: f.dir, CANDLE_API_URL: API },
+      promptSecret: async () => f.passphrase,
+      promptLine: async (text: string) => {
+        asked.push(text)
+        return answers.shift() ?? ""
+      },
+      readFile: (path) => readFile(path, "utf8"),
+      writeFile: (path, content) => writeFile(path, content, "utf8"),
+    })
+    await deps.writeConfig({
+      activeProfile: "prc",
+      profiles: { prc: { account: ACCOUNT, apiUrl: API, accountCachedAt: Date.now() } },
+    })
+    const before = await readFile(f.vaultPath, "utf8")
+    const code = await run(["vault", "promote", "--in-place", "subject", "--rpc-url", RPC], deps)
+    return {
+      code,
+      asked,
+      out: out.text,
+      err: err.text,
+      importCalls,
+      unchanged: (await readFile(f.vaultPath, "utf8")) === before,
+    }
+  }
+
+  test("the account's old last six refuses DESTINATION_NOT_CONFIRMED before any read, with nothing written", async () => {
+    const r = await resume([ACCOUNT.slice(-6)], Keypair.generate().publicKey.toBase58())
+    expect(r.code).toBe(1)
+    expect(r.asked).toEqual([`Type confirm to act as account ${ACCOUNT}: `])
+    expect(r.out).toContain(`account ${groupAddress(ACCOUNT)}\n`)
+    expect(r.err).toContain("That was not confirmed; nothing was done.")
+    expect(r.importCalls.n).toBe(0)
+    expect(r.unchanged).toBe(true)
+  })
+
+  test("a different server destination is shown in fours; anything but confirm declines the adoption, nothing written", async () => {
+    const other = Keypair.generate().publicKey.toBase58()
+    const r = await resume(["confirm", other.slice(-6)], other, false)
+    expect(r.asked).toEqual([
+      `Type confirm to act as account ${ACCOUNT}: `,
+      `Type confirm to accept ${other} as the sweep vault: `,
+    ])
+    expect(r.out).toContain(`vault ${groupAddress(other)}\n`)
+    expect(r.code).not.toBe(0)
+    expect(r.importCalls.n).toBe(0)
+    expect(r.unchanged).toBe(true)
+  })
+})
+
 describe("T41: vault demote adapter basics", () => {
   async function seedImportPending(dir: string, passphrase: string, cold: string): Promise<{ address: string }> {
     // Flip an ordinary vault key into import-pending (same shape as the pre-import write), so
@@ -853,11 +1021,8 @@ describe("T41: vault demote adapter basics", () => {
       stdout: out,
       stderr: err,
       env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_URL: API },
-      promptSecret: async (text: string) => {
-        if (/LAST 6/i.test(text)) return cold.slice(-6)
-        return passphrase
-      },
-      promptLine: async () => ACCOUNT.slice(-6),
+      promptSecret: async () => passphrase,
+      promptLine: async () => "confirm",
       readFile: (path) => readFile(path, "utf8"),
       writeFile: (path, content) => writeFile(path, content, "utf8"),
     })
@@ -1034,6 +1199,7 @@ describe("BE-981: vault demote unlocks once", () => {
     const out = createCapture()
     const err = createCapture()
     const prompts: string[] = []
+    const confirmations: string[] = []
     const deps = createTestDeps({
       fetch,
       store: createFakeStore({ "profile:prc:api_key": API_KEY }),
@@ -1042,8 +1208,11 @@ describe("BE-981: vault demote unlocks once", () => {
       env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_URL: API },
       promptSecret: async (text: string) => {
         prompts.push(text)
-        if (/LAST 6/i.test(text)) return cold.slice(-6)
         return passphrase
+      },
+      promptLine: async (text: string) => {
+        confirmations.push(text)
+        return "confirm"
       },
       readFile: (path) => readFile(path, "utf8"),
       writeFile: (path, content) => writeFile(path, content, "utf8"),
@@ -1053,8 +1222,7 @@ describe("BE-981: vault demote unlocks once", () => {
       profiles: { prc: { account: ACCOUNT, apiUrl: API, accountCachedAt: Date.now() } },
     })
     const code = await run(["vault", "demote", address, "--rpc-url", RPC], deps)
-    const unlocks = prompts.filter((text) => !/LAST 6/i.test(text))
-    const confirmations = prompts.filter((text) => /LAST 6/i.test(text))
+    const unlocks = prompts
     return { code, out, err, unlocks, confirmations, calls, dir, passphrase, address, cold }
   }
 
@@ -1065,8 +1233,8 @@ describe("BE-981: vault demote unlocks once", () => {
     expect(r.out.text).not.toContain("Recover the funds:")
     expect(r.out.text).toContain(`Sweeping remaining funds to ${r.cold}...`)
     expect(r.out.text).toContain("Swept.")
-    // The sweep still asks for the destination's last six before it signs.
-    expect(r.confirmations).toHaveLength(1)
+    // The sweep still asks for `confirm` (BE-1710; it was the destination's last six) before it signs.
+    expect(r.confirmations).toEqual([`Type confirm to sweep everything to ${r.cold}: `])
     expect(r.code).toBe(0)
     // The disable ran before the sweep signed anything.
     const order = r.calls.map((c) => `${c.init.method ?? "GET"} ${new URL(c.url).pathname}`)
@@ -1174,7 +1342,8 @@ describe("BE-981: vault demote unlocks once", () => {
       stdout: out,
       stderr: createCapture(),
       env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_URL: API },
-      promptSecret: async (text: string) => (/LAST 6/i.test(text) ? cold.slice(-6) : passphrase),
+      promptSecret: async () => passphrase,
+      promptLine: async () => "confirm",
       readFile: (path) => readFile(path, "utf8"),
       writeFile: (path, content) => writeFile(path, content, "utf8"),
     })
@@ -1243,7 +1412,7 @@ describe("BE-288 C8 to C13: vault promote reads the room, and restores on a defi
   ) {
     const out = createCapture()
     const err = createCapture()
-    const lines = [...(opts.lines ?? [f.subject.slice(-6), "confirm"])]
+    const lines = [...(opts.lines ?? ["confirm", "confirm"])]
     const asked: string[] = []
     let rpcCalls = 0
     const base = rpcHandler({ balance: 42 })
@@ -1467,7 +1636,7 @@ describe("BE-288 C8 to C13: vault promote reads the room, and restores on a defi
 
 /**
  * BE-296 (spec `2026-09-23-cli-vault-promote-confirm-design.md`, §6), single promote: `confirm`
- * (T3), the last six kept before it (T4), the block and the live account read (T5, T6), the nine
+ * (T3), the `confirm` to promote the address before it (T4; BE-1710, it was the last six), the block and the live account read (T5, T6), the nine
  * role requests with no flag (T10), a found withdrawer (T12c), and the --json keys (T15).
  */
 describe("BE-296: vault promote --in-place: one sentence, live block, always-on role check, confirm", () => {
@@ -1501,7 +1670,7 @@ describe("BE-296: vault promote --in-place: one sentence, live block, always-on 
     const out = createCapture()
     const err = createCapture()
     const importCalls = opts.importCalls ?? { n: 0 }
-    const lines = [...(opts.lines ?? [f.subject.slice(-6), "confirm"])]
+    const lines = [...(opts.lines ?? ["confirm", "confirm"])]
     const asked: string[] = []
     const stderrAtPrompt: string[] = []
     let programCalls = 0
@@ -1548,14 +1717,14 @@ describe("BE-296: vault promote --in-place: one sentence, live block, always-on 
   test("T3: confirm, Confirm and padded CONFIRM proceed; EXPOSE, yes and empty refuse with PROMOTE_NOT_ACKNOWLEDGED, exit 1, zero writes, one attempt", async () => {
     for (const accepted of ["confirm", "Confirm", "  CONFIRM  "]) {
       const f = await setup("t3-ok")
-      const r = await runSingle(f, { lines: [f.subject.slice(-6), accepted] })
+      const r = await runSingle(f, { lines: ["confirm", accepted] })
       expect([accepted, r.code]).toEqual([accepted, 0])
       expect(r.importCalls.n).toBe(1)
     }
     for (const refused of ["EXPOSE", "yes", ""]) {
       const f = await setup("t3-no")
       const before = await readFile(f.vaultPath, "utf8")
-      const r = await runSingle(f, { lines: [f.subject.slice(-6), refused, "not asked"] })
+      const r = await runSingle(f, { lines: ["confirm", refused, "not asked"] })
       expect([refused, r.code]).toEqual([refused, 1])
       expect(r.err).toContain("The acknowledgement is the word confirm; nothing was promoted, and nothing was written.")
       expect(r.err).toContain("Run the command again and type confirm at the prompt.")
@@ -1566,28 +1735,25 @@ describe("BE-296: vault promote --in-place: one sentence, live block, always-on 
     }
   })
 
-  test("T4: the subject's last six is still asked first; a wrong answer is DESTINATION_NOT_CONFIRMED with zero writes and confirm is never asked", async () => {
+  test("T4 (BE-1710): `confirm` to promote the address is asked first; anything else, its old last six included, is DESTINATION_NOT_CONFIRMED with zero writes, and the second confirm is never asked", async () => {
     const f = await setup("t4")
     const before = await readFile(f.vaultPath, "utf8")
-    const r = await runSingle(f, { lines: ["zzzzzz", "zzzzzz", "zzzzzz", "confirm"], json: true })
+    const r = await runSingle(f, { lines: [f.subject.slice(-6), "confirm", "confirm"], json: true })
     expect(r.code).toBe(1)
     const doc = JSON.parse(r.out.split("\n").filter((line) => line.startsWith("{"))[0] as string)
     expect(doc).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
-    expect(r.asked).toHaveLength(3)
-    expect(r.asked[0]).toContain("Type the last six characters of the address being promoted")
+    expect(r.asked).toEqual([`Type confirm to promote ${f.subject}: `])
+    expect(r.err).toContain(`address ${groupAddress(f.subject)}\n`)
     expect(r.importCalls.n).toBe(0)
     expect(await readFile(f.vaultPath, "utf8")).toBe(before)
   })
 
-  test("T5: the block is the last stderr output before the confirm prompt, after the last-six prompt; the secret appears nowhere", async () => {
+  test("T5: the block is the last stderr output before the second confirm prompt, after the first; the secret appears nowhere", async () => {
     const f = await setup("t5")
     const r = await runSingle(f)
     expect(r.code).toBe(0)
-    expect(r.asked).toEqual([
-      `Type the last six characters of the address being promoted (${f.subject}) to confirm: `,
-      confirmPrompt(1),
-    ])
-    // Not yet printed when the last six is asked; the last thing on stderr when confirm is asked.
+    expect(r.asked).toEqual([`Type confirm to promote ${f.subject}: `, confirmPrompt(1)])
+    // Not yet printed when the first confirm is asked; the last thing on stderr when confirm is asked.
     expect(r.stderrAtPrompt[0]).not.toContain("will be controlled by")
     expect(r.stderrAtPrompt[1]?.endsWith(`${block()}\n`)).toBe(true)
     expect(r.out + r.err).not.toContain(API_KEY)

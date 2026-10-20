@@ -49,6 +49,7 @@ import {
   serializeKeystore,
   writeKeystoreFile,
 } from "../wallet-keystore"
+import { groupAddress } from "./vault-support"
 
 const PASSPHRASE = "a strong tee-store passphrase"
 const RPC = "https://rpc.test/rpc"
@@ -128,6 +129,10 @@ function enabledEntry(overrides: Partial<KeystoreEntry> = {}): KeystoreEntry {
 function depsFor(dir: string, fetch: typeof globalThis.fetch, answers: string[], extra: Record<string, unknown> = {}) {
   const stdout = createCapture()
   const stderr = createCapture()
+  // One script for both prompts, in the order asked: the passphrase is hidden, and the typed
+  // `confirm` (BE-1710) is a visible line, recorded so a test can read its wording.
+  const next = prompts(answers)
+  const linePrompts: string[] = []
   const deps = createTestDeps({
     fetch,
     store: createFakeStore({ api_key: "ck_live_x" }),
@@ -135,10 +140,14 @@ function depsFor(dir: string, fetch: typeof globalThis.fetch, answers: string[],
     stderr,
     env: { CANDLE_CONFIG_DIR: dir },
     readFile: async (p: string) => realReadFile(p, "utf8"),
-    promptSecret: prompts(answers),
+    promptSecret: next,
+    promptLine: async (text: string) => {
+      linePrompts.push(text)
+      return next()
+    },
     ...extra,
   })
-  return { deps, stdout, stderr }
+  return { deps, stdout, stderr, linePrompts }
 }
 
 interface RpcState {
@@ -563,9 +572,12 @@ describe("tee enable (T19/T20, HW-02/HW-03)", () => {
     const dir = await tempDir()
     await seedTeeStore(dir, [teeEntry()])
     const api = apiRoutes()
-    const { deps, stdout } = depsFor(dir, api.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout, linePrompts } = depsFor(dir, api.fetch, [PASSPHRASE, "confirm"])
     const code = await run(["tee", "enable", TEE, "--vault", VAULT], deps)
     expect(code).toBe(0)
+    // BE-1710: the vault in fours on its own line, then `confirm` naming the action; no last six.
+    expect(stdout.text).toContain(`vault ${groupAddress(VAULT)}\n`)
+    expect(linePrompts).toEqual([`Type confirm to enable this TEE wallet with sweeps to ${VAULT}: `])
     expect(api.submits).toHaveLength(1)
     expect(api.submits[0]).toMatchObject({
       chain: "solana",
@@ -594,9 +606,10 @@ describe("tee enable (T19/T20, HW-02/HW-03)", () => {
     const dir = await tempDir()
     await seedTeeStore(dir, [teeEntry()])
     const api = apiRoutes()
-    const { deps, stderr } = depsFor(dir, api.fetch, [PASSPHRASE, "nope00"])
+    // The vault's last six, the old answer, is now just another wrong word.
+    const { deps, stderr } = depsFor(dir, api.fetch, [PASSPHRASE, VAULT.slice(-6)])
     expect(await run(["tee", "enable", TEE, "--vault", VAULT], deps)).toBe(1)
-    expect(stderr.text).toContain("confirmation did not match")
+    expect(stderr.text).toContain("vault was not confirmed")
     expect(api.calls).toHaveLength(0)
   })
 
@@ -614,7 +627,7 @@ describe("tee enable (T19/T20, HW-02/HW-03)", () => {
     const dir = await tempDir()
     await seedTeeStore(dir, [teeEntry()])
     const api = apiRoutes({ remoteAuthority: "unknown", reasonCode: "READ_BACK_UNAVAILABLE" })
-    const { deps, stdout } = depsFor(dir, api.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, api.fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "enable", TEE, "--vault", VAULT], deps)).toBe(3)
     expect(stdout.text).toContain("Do not fund it")
     expect(stdout.text).toContain("READ_BACK_UNAVAILABLE")
@@ -839,7 +852,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       },
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     const code = await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)
     expect(code).toBe(0)
     expect(rpc.sent).toHaveLength(2)
@@ -910,7 +923,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       },
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     const tx = decodeSent(rpc.sent[0] as string)
     expect(tx.instructions).toHaveLength(3)
@@ -958,7 +971,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       "/api/v1/agent/wallets/lw_tee1/swept": () => jsonResponse(200, { success: true, state: "swept", sweptAt: 1 }),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     expect(rpc.sent).toHaveLength(3)
     // Classic first (the order the inventory reads the two programs), then Token-2022, then SOL.
@@ -991,7 +1004,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       "/api/v1/agent/wallets/lw_tee1/swept": () => jsonResponse(200, { success: true, state: "swept", sweptAt: 1 }),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(0)
     // The instruction carries the full raw amount; the mint withholds its own cut on the way.
     const transfer = decodeSent(rpc.sent[0] as string).instructions[1]
@@ -1031,7 +1044,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       "/api/v1/agent/wallets/lw_tee1/swept": () => jsonResponse(200, { success: true, state: "swept", sweptAt: 1 }),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     const transfer = decodeSent(rpc.sent[0] as string).instructions[1]
     expect(transfer?.keys.slice(4).map((k) => k.pubkey.toBase58())).toEqual([
@@ -1093,7 +1106,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
           return rpcHandler(rpc)(req)
         },
       })
-      const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+      const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
       expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
       const parsed = JSON.parse(stdout.text.trim())
       const named = parsed.residuals.find((r: { kind: string }) => r.kind === name)
@@ -1119,7 +1132,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const parsed = JSON.parse(stdout.text.trim())
     // The classic account keeps Phase 1's kind; the Token-2022 one earns R5's name.
@@ -1149,7 +1162,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       },
       "/rpc": rpcHandler(rpc),
     })
-    const { deps } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency", "--json"], deps)).toBe(3)
     // The NFT moved to the pinned vault under Token-2022, signed by the local key alone.
     const tx = decodeSent(rpc.sent[0] as string)
@@ -1173,7 +1186,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const parsed = JSON.parse(stdout.text.trim())
     expect(rpc.sent).toHaveLength(0)
@@ -1202,7 +1215,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     expect(refused.stderr.text).toContain("--emergency")
     expect(rpc.sent).toHaveLength(0)
 
-    const emergency = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const emergency = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency"], emergency.deps)).toBe(3)
     expect(emergency.stdout.text).toContain("EMERGENCY SWEEP")
     expect(emergency.stdout.text).toContain("race")
@@ -1244,7 +1257,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
         jsonResponse(200, LIFECYCLE("quarantined", { bridges: [OPEN_BRIDGE] })),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(1)
     const parsed = JSON.parse(stdout.text.trim().split("\n").at(-1) ?? "")
     expect(parsed.code).toBe("BRIDGE_IN_FLIGHT")
@@ -1270,7 +1283,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     expect(stdout.text).toContain("bridge swap-b0 out of")
     expect(stdout.text).toContain("sweep this wallet again")
     expect(stderr.text).not.toContain("BRIDGE_IN_FLIGHT")
-    expect(stderr.text).toContain("vault confirmation did not match")
+    expect(stderr.text).toContain("vault was not confirmed")
   })
 
   test("Ember 4c: an unread bridge state warns and does not refuse", async () => {
@@ -1284,7 +1297,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE, "wrong!"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(1)
     expect(stdout.text).toContain("could not say whether a bridge")
-    expect(stderr.text).toContain("vault confirmation did not match")
+    expect(stderr.text).toContain("vault was not confirmed")
   })
 
   test("Ember 4c: --emergency is never blocked by an open bridge, and says a later fill needs a second sweep", async () => {
@@ -1300,7 +1313,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency"], deps)).toBe(1)
     expect(stdout.text).toContain("cannot see an open bridge")
     expect(stdout.text).toContain("Warning: A bridge into")
-    expect(stderr.text).toContain("vault confirmation did not match")
+    expect(stderr.text).toContain("vault was not confirmed")
   })
 
   test("a wrong vault confirmation signs nothing", async () => {
@@ -1311,8 +1324,9 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps } = depsFor(dir, fetch, [PASSPHRASE, "wrong!"])
+    const { deps, linePrompts } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(1)
+    expect(linePrompts).toEqual([`Type confirm to sweep everything to ${VAULT}: `])
     expect(rpc.sent).toHaveLength(0)
   })
 
@@ -1326,7 +1340,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const parsed = JSON.parse(stdout.text.trim())
     expect(parsed.residuals[0].kind).toBe("finality-uncertain")
@@ -1388,7 +1402,7 @@ describe("BE-355: rate limits (T10, T11)", () => {
       "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": limitedRpc(seen),
     })
-    const { deps } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     expect(seen.length).toBeGreaterThan(0)
     expect(seen).not.toContain("sendTransaction")
@@ -1410,7 +1424,7 @@ describe("BE-355: rate limits (T10, T11)", () => {
         return base(req)
       },
     })
-    const { deps, stderr } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)], extra)
+    const { deps, stderr } = depsFor(dir, fetch, [PASSPHRASE, "confirm"], extra)
     const code = await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)
     const pending = (await openStore(dir)).entries[0]?.tee?.sweepPending ?? []
     return { code, seen, stderr, pending }
@@ -1649,7 +1663,7 @@ describe("HW-08 / T25: recovery does not depend on the operational credential", 
     await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const { fetch, calls } = createRoutedFetch({ "/rpc": rpcHandler(rpc) })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)], { store: createFakeStore({}) })
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"], { store: createFakeStore({}) })
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency"], deps)).toBe(3)
     expect(rpc.sent).toHaveLength(1)
     const tx = Transaction.from(Buffer.from(rpc.sent[0] as string, "base64"))
@@ -1689,7 +1703,7 @@ describe("HW-08 / T25: recovery does not depend on the operational credential", 
         jsonResponse(401, { error: { code: "UNAUTHORIZED", message: "API key revoked" } }),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency", "--json"], deps)).toBe(3)
     expect(rpc.sent).toHaveLength(1)
     expect(calls.some((c) => c.url.includes("/swept"))).toBe(false)
@@ -1722,7 +1736,7 @@ describe("SC-06: completion needs a post-finality inventory", () => {
         return base(req)
       },
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     expect(balanceReadsAfterSend).toBeGreaterThan(0)
     const body = JSON.parse(stdout.text)
@@ -1756,7 +1770,7 @@ describe("SC-06: completion needs a post-finality inventory", () => {
         return base(req)
       },
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const body = JSON.parse(stdout.text)
     expect(body.state).not.toBe("swept")
@@ -1776,7 +1790,7 @@ describe("SC-06: completion needs a post-finality inventory", () => {
         return base(req)
       },
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const body = JSON.parse(stdout.text)
     expect(body.state).toBe("quarantined")
@@ -1802,7 +1816,7 @@ describe("SC-06: completion needs a post-finality inventory", () => {
         }),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const body = JSON.parse(stdout.text)
     expect(body.state).toBe("disable-pending")
@@ -1814,7 +1828,7 @@ describe("SC-06: completion needs a post-finality inventory", () => {
     expect(stored?.tee?.sweepReceipts?.map((r) => r.signature)).toEqual(rpc.sent.map(sigOf))
 
     // Text output says the same thing: the address is pending, not quarantined.
-    const text = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const text = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], text.deps)).toBe(3)
     expect(text.stdout.text).toContain("stays disable-pending")
     expect(text.stdout.text).toContain("not verified denied")
@@ -1846,7 +1860,7 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     await seedTeeStore(dir, [enabledEntry()])
     let available = false
     const server = recordingServer({ available: () => available, lifecycle: () => "quarantined" })
-    const first = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const first = depsFor(dir, server.fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
     const one = JSON.parse(first.stdout.text)
     expect(one.receipts).toHaveLength(1)
@@ -1858,7 +1872,7 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     )
 
     available = true
-    const second = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const second = depsFor(dir, server.fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
     const two = JSON.parse(second.stdout.text)
     expect(two.state).toBe("swept")
@@ -1876,14 +1890,14 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     await seedTeeStore(dir, [enabledEntry()])
     let lifecycle = "disable-pending"
     const server = recordingServer({ available: () => true, lifecycle: () => lifecycle })
-    const emergency = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const emergency = depsFor(dir, server.fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency", "--json"], emergency.deps)).toBe(3)
     expect(JSON.parse(emergency.stdout.text).state).toBe("disable-pending")
     expect(server.recordCalls()).toBe(0)
     expect(server.rpc.sent).toHaveLength(1)
 
     lifecycle = "quarantined" // a later `tee disable` read back the denial
-    const reconcile = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const reconcile = depsFor(dir, server.fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], reconcile.deps)).toBe(0)
     const body = JSON.parse(reconcile.stdout.text)
     expect(body.state).toBe("swept")
@@ -1898,11 +1912,11 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     const dir = await tempDir()
     await seedTeeStore(dir, [enabledEntry()])
     const server = recordingServer({ available: () => true, lifecycle: () => "quarantined" })
-    const first = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const first = depsFor(dir, server.fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(0)
     expect(server.recordCalls()).toBe(1)
 
-    const again = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const again = depsFor(dir, server.fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], again.deps)).toBe(0)
     const body = JSON.parse(again.stdout.text)
     expect(body.state).toBe("swept")
@@ -1914,7 +1928,7 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     // A deposit after the sweep: the address is residual-present again (SC-06), and the next run
     // moves it and reports the new receipt alongside the retained one.
     server.rpc.lamports = 50_000
-    const late = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const late = depsFor(dir, server.fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], late.deps)).toBe(0)
     const moved = JSON.parse(late.stdout.text)
     expect(moved.newReceipts).toBe(1)
@@ -1946,7 +1960,7 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
       },
       "/rpc": rpcHandler(rpc),
     })
-    const first = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const first = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
     const one = JSON.parse(first.stdout.text)
     expect(one.receipts.map((r: { kind: string }) => r.kind)).toEqual(["token"])
@@ -1960,7 +1974,7 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     rpc.lamports = 990_000
     rpc.statuses = [null, null]
     rpc.blockhashValid = false
-    const second = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const second = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
     const two = JSON.parse(second.stdout.text)
     expect(two.retainedReceipts).toBe(1)
@@ -2000,7 +2014,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
         return base(req)
       },
     })
-    const first = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const first = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
     const one = JSON.parse(first.stdout.text)
     expect(rpc.sent).toHaveLength(1)
@@ -2015,7 +2029,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     finalized = true
     rpc.statuses = []
     const before = statusReads
-    const second = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const second = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
     const two = JSON.parse(second.stdout.text)
     expect(statusReads - before).toBeGreaterThan(0)
@@ -2050,7 +2064,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
         return base(req)
       },
     })
-    const first = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const first = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
     const one = JSON.parse(first.stdout.text)
     expect(one.pending).toHaveLength(1)
@@ -2059,7 +2073,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     expect(rpc.sent).toHaveLength(1)
 
     sendThrows = false
-    const second = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const second = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
     expect(rpc.sent).toHaveLength(1)
     expect(JSON.parse(second.stdout.text).receipts).toHaveLength(1)
@@ -2075,7 +2089,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
       "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": rpcHandler(rpc),
     })
-    const first = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const first = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
     expect(rpc.sent).toHaveLength(1)
 
@@ -2083,7 +2097,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     rpc.lamports = 1_000_000
     rpc.statuses = [null]
     rpc.blockhashValid = true
-    const second = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const second = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], second.deps)).toBe(3)
     expect(rpc.sent).toHaveLength(1)
     expect(second.stdout.text).toContain("still in flight")
@@ -2102,7 +2116,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     })
     rpc.statuses = [null, null]
     rpc.blockhashValid = false
-    const third = depsFor(dir, fetch3, [PASSPHRASE, VAULT.slice(-6)])
+    const third = depsFor(dir, fetch3, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], third.deps)).toBe(0)
     expect(rpc.sent).toHaveLength(2)
     const body = JSON.parse(third.stdout.text)
@@ -2146,7 +2160,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
       "/api/v1/agent/wallets/lw_tee1/swept": () => jsonResponse(200, { success: true, state: "swept" }),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     const body = JSON.parse(stdout.text)
     expect(rpc.sent).toHaveLength(1)
@@ -2193,7 +2207,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
       blockhashValid: false,
     })
     const { fetch } = quarantined(rpc)
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const body = JSON.parse(stdout.text)
     expect(body.pending.map((p: { signature: string }) => p.signature)).toEqual(["original-signature"])
@@ -2211,7 +2225,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
       statuses: [{ confirmationStatus: "processed", err: { InstructionError: [0, "Custom"] } }],
     })
     const { fetch } = quarantined(rpc)
-    const { deps } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     expect(rpc.sent).toHaveLength(0)
     expect((await openStore(dir)).entries[0]?.tee?.sweepPending?.map((p) => p.signature)).toEqual([
@@ -2231,7 +2245,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
         return base(req)
       },
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     expect(JSON.parse(stdout.text).residuals[0].detail).toContain("validity is unknown")
     expect(rpc.sent).toHaveLength(0)
@@ -2260,7 +2274,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
         return base(req)
       },
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     expect(statusReads).toBe(2)
     expect(rpc.sent).toHaveLength(0)
@@ -2275,7 +2289,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
     await seedTeeStore(dir, [withPending()])
     const rpc = defaultRpcState({ lamports: 995_000, statuses: [null, null], blockhashValid: false })
     const { fetch } = quarantined(rpc)
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     const body = JSON.parse(stdout.text)
     expect(rpc.sent).toHaveLength(1)
@@ -2300,7 +2314,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
         return base(req)
       },
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const actual = sigOf(rpc.sent[0] as string)
     const body = JSON.parse(stdout.text)
@@ -2319,7 +2333,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
       })),
     })
     const { fetch } = quarantined(rpc)
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     expect(JSON.parse(stdout.text).pending).toHaveLength(1)
     expect((await openStore(dir)).entries[0]?.tee?.sweepPending).toHaveLength(1)
@@ -2330,7 +2344,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
       statuses: [{ confirmationStatus: "finalized", err: { InstructionError: [0, "Custom"] } }],
     })
     const { fetch: fetch2 } = quarantined(rpc2)
-    const second = depsFor(dir2, fetch2, [PASSPHRASE, VAULT.slice(-6)])
+    const second = depsFor(dir2, fetch2, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], second.deps)).toBe(3)
     const body = JSON.parse(second.stdout.text)
     expect(body.pending).toEqual([])
@@ -2478,7 +2492,7 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
       "/api/v1/agent/wallets/lw_tee1/swept": sweptRoute(rpc),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     const parsed = JSON.parse(stdout.text.trim())
 
@@ -2534,7 +2548,7 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
       "/api/v1/agent/wallets/lw_tee1/swept": sweptRoute(rpc),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     expect(unmatched).toEqual([])
     const tx = Transaction.from(Buffer.from(rpc.sent[0] as string, "base64"))
@@ -2557,7 +2571,7 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
         jsonResponse(404, { success: false, error: { code: "LP_POSITION_NOT_FOUND", message: "Not a position NFT" } }),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const parsed = JSON.parse(stdout.text.trim())
     const leftover = parsed.residuals.find((r: { kind: string }) => r.kind === "DAMM_POSITION_CLOSE_UNAVAILABLE")
@@ -2618,7 +2632,7 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
         [`/api/v1/agent/lp/positions/${NFT_MINT.toBase58()}/close-build`]: () => jsonResponse(200, artifact()),
         "/rpc": rpcHandler(rpc),
       })
-      const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+      const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
       expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
       const parsed = JSON.parse(stdout.text.trim())
       const kind =
@@ -2667,7 +2681,7 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
         ),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const parsed = JSON.parse(stdout.text.trim())
     expect(parsed.receipts.map((r: { kind: string }) => r.kind)).toEqual(["lp-close", "token", "sol"])
@@ -2695,7 +2709,7 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
       "/api/v1/agent/wallets/lw_tee1/swept": sweptRoute(rpc),
       "/rpc": rpcHandler(rpc),
     })
-    const human = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const human = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], human.deps)).toBe(0)
     const text = human.stdout.text
     const shown = text.indexOf(`Close for position ${NFT_MINT.toBase58()} (verified, unsigned; about to sign):`)
@@ -2716,7 +2730,7 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
       "/api/v1/agent/wallets/lw_tee1/swept": sweptRoute(rpc2),
       "/rpc": rpcHandler(rpc2),
     })
-    const json = depsFor(dir2, routed.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const json = depsFor(dir2, routed.fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], json.deps)).toBe(0)
     const parsed = JSON.parse(json.stdout.text.trim())
     expect(parsed.lpCloses).toHaveLength(1)
@@ -2739,7 +2753,7 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
       [`/api/v1/agent/lp/positions/${NFT_MINT.toBase58()}/close-build`]: () => jsonResponse(200, closeArtifact()),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const parsed = JSON.parse(stdout.text.trim())
     const leftover = parsed.residuals.find((r: { kind: string }) => r.kind === "DAMM_POSITION_CLOSE_UNAVAILABLE")
@@ -2766,7 +2780,7 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
       "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("disable-pending")),
       "/rpc": rpcHandler(rpc),
     })
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency"], deps)).toBe(3)
     expect(calls.map((c) => new URL(c.url).pathname).filter((p) => p.startsWith("/api/"))).toEqual([
       "/api/v1/agent/wallets/lw_tee1/lifecycle",
@@ -2874,7 +2888,7 @@ describe("BE-667: context floor and guarded preflight rejection (S-T1–S-T16)",
       },
     })
     const execute = async (json = true, emergency = false, extra: Record<string, unknown> = {}) => {
-      const io = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)], extra)
+      const io = depsFor(dir, fetch, [PASSPHRASE, "confirm"], extra)
       const code = await run(
         [
           "tee",

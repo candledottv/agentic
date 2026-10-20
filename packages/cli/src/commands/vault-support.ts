@@ -1067,30 +1067,6 @@ export async function assertNotOlderCopy(
   )
 }
 
-/** CC-08's confirmation. The last six characters, typed, visible, before anything is signed or pinned. */
-export async function confirmLastSix(ctx: CommandContext, address: string, what: string): Promise<void> {
-  const expected = address.slice(-6)
-  const normalize = (value: string) => (address.startsWith("0x") ? value.toLowerCase() : value)
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const typed = (
-      await ctx.deps.promptLine(`Type the last six characters of ${what} (${address}) to confirm: `)
-    ).trim()
-    if (normalize(typed) === normalize(expected)) return
-    const difference =
-      Array.from({ length: Math.max(expected.length, typed.length) }, (_, i) => i).find(
-        (i) => normalize(typed)[i] !== normalize(expected)[i],
-      ) ?? 0
-    ctx.deps.stderr.write(
-      `Expected  ${expected}\nYou typed ${typed}\n${" ".repeat(10 + difference)}^ character ${difference + 1} differs\n`,
-    )
-  }
-  throw new VaultError(
-    "DESTINATION_NOT_CONFIRMED",
-    "That is not the last six characters of that address; nothing was done.",
-    { suggestion: "Nothing was signed. Run it again and type the last six characters exactly as shown." },
-  )
-}
-
 /**
  * An address in groups of four, for the eye to check against the destination it expects. `0x` is
  * its own first group, so an EVM address's forty hex characters group from the start. Removing
@@ -1129,13 +1105,45 @@ export function describeSend(amount: string, asset: string | undefined, to: stri
  * stderr, never into the document.
  */
 export async function confirmSend(ctx: CommandContext, send: SendConfirmation): Promise<void> {
-  const display = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
-  display.write(`to   ${groupAddress(send.address)}\n`)
-  const typed = await ctx.deps.promptLine(`Type confirm to ${describeSend(send.amount, send.asset, send.address)}: `)
-  if (typed.trim().toLowerCase() === "confirm") return
+  if (await typedConfirm(ctx, "to", send.address, describeSend(send.amount, send.asset, send.address))) return
   throw new VaultError("DESTINATION_NOT_CONFIRMED", "The send was not confirmed; nothing was done.", {
     suggestion: "Nothing was signed. Run it again and type confirm at the prompt.",
   })
+}
+
+/**
+ * BE-1710: every other prompt that once asked for an address's last six characters, in
+ * `confirmSend`'s shape. `label` heads the grouped line (`vault`, `account`, `address`, `key`);
+ * `action` completes `Type confirm to <action>: ` and names the address ungrouped. Anything but the
+ * word refuses `DESTINATION_NOT_CONFIRMED` with nothing done, and no retry.
+ */
+export async function confirmAddress(
+  ctx: CommandContext,
+  label: string,
+  address: string,
+  action: string,
+): Promise<void> {
+  if (await typedConfirm(ctx, label, address, action)) return
+  throw new VaultError("DESTINATION_NOT_CONFIRMED", "That was not confirmed; nothing was done.", {
+    suggestion: "Nothing was signed or written. Run it again and type confirm at the prompt.",
+  })
+}
+
+/**
+ * The shared shape: `<label> <address in fours>` on its own line (stderr under `--json`), then
+ * `Type confirm to <action>: `, trimmed and compared without case. True when the word was typed.
+ * Takes `deps` and `json` alone so the commands that hold no `CommandContext` (`tee`) share it.
+ */
+export async function typedConfirm(
+  io: { deps: Pick<Deps, "stdout" | "stderr" | "promptLine">; json: boolean },
+  label: string,
+  address: string,
+  action: string,
+): Promise<boolean> {
+  const display = io.json ? io.deps.stderr : io.deps.stdout
+  display.write(`${label.padEnd(4)} ${groupAddress(address)}\n`)
+  const typed = await io.deps.promptLine(`Type confirm to ${action}: `)
+  return typed.trim().toLowerCase() === "confirm"
 }
 
 /** Writes a vault failure in whichever mode this invocation is in, and answers its exit code. */

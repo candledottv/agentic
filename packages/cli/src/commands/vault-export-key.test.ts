@@ -16,6 +16,7 @@ import { closeVault, unlockWithPassphrase } from "../vault/store"
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
 import { parseSolanaSecret } from "../wallet-import"
 import { nativeKeyFileContents } from "./vault-export-key"
+import { groupAddress } from "./vault-support"
 
 setDefaultTimeout(30_000)
 useCheapKdf()
@@ -32,6 +33,7 @@ async function harness(
   const stderr = createCapture()
   const secrets = [...(opts.secrets ?? [])]
   const lines = [...(opts.lines ?? [])]
+  const asked: string[] = []
   const deps: Deps = createTestDeps({
     fetch: unreachableFetch,
     stdout,
@@ -43,13 +45,14 @@ async function harness(
       if (next === undefined) throw new Error("promptSecret asked for more than the test scripted")
       return next
     },
-    promptLine: async () => {
+    promptLine: async (text) => {
+      asked.push(text)
       const next = lines.shift()
       if (next !== undefined) return next
       return "no"
     },
   })
-  return { deps, stdout, stderr, dir, vaultPath: join(dir, "vault.enc") }
+  return { deps, stdout, stderr, asked, dir, vaultPath: join(dir, "vault.enc") }
 }
 
 async function vaultWithLabeledKey(label = "cold") {
@@ -83,7 +86,7 @@ describe("T46: vault export-key ceremony", () => {
     const e = await harness({
       env: { CANDLE_CONFIG_DIR: h.dir },
       secrets: [h.passphrase],
-      lines: [h.address.slice(-6)],
+      lines: ["confirm"],
     })
     expect(
       await run(["vault", "export-key", "export-me", "--to", destination, "--keystore", h.vaultPath], e.deps),
@@ -123,7 +126,7 @@ describe("T46: vault export-key ceremony", () => {
     const e = await harness({
       env: { CANDLE_CONFIG_DIR: h.dir },
       secrets: [h.passphrase],
-      lines: [h.address.slice(-6)],
+      lines: ["confirm"],
     })
     expect(
       await run(["vault", "export-key", "json-key", "--to", destination, "--json", "--keystore", h.vaultPath], e.deps),
@@ -161,9 +164,9 @@ describe("T46: vault export-key ceremony", () => {
     // After the typed confirmation, flip the parent to read-only so the vault write can land and
     // the file write cannot: that is the crash window the ordering rule exists for.
     e.deps.promptLine = async (text: string) => {
-      if (text.includes("last six characters")) {
+      if (text.startsWith("Type confirm")) {
         await chmod(outDir, 0o500)
-        return h.address.slice(-6)
+        return "confirm"
       }
       return "no"
     }
@@ -281,7 +284,7 @@ describe("T46: vault export-key ceremony", () => {
     }
   })
 
-  test("a wrong last-six confirmation writes nothing and leaves everExported false", async () => {
+  test("BE-1710: anything but confirm, the old last six included, writes nothing and leaves everExported false", async () => {
     const h = await vaultWithLabeledKey("typo")
     const outDir = join(h.dir, "out")
     await mkdir(outDir, { mode: 0o700 })
@@ -290,11 +293,12 @@ describe("T46: vault export-key ceremony", () => {
     const e = await harness({
       env: { CANDLE_CONFIG_DIR: h.dir },
       secrets: [h.passphrase],
-      lines: ["xxxxxx"],
+      lines: [h.address.slice(-6)],
     })
     expect(await run(["vault", "export-key", "typo", "--to", destination, "--keystore", h.vaultPath], e.deps)).toBe(1)
-    expect(e.stderr.text).toContain("last six characters")
-    expect(e.stderr.text).toContain("nothing was done")
+    expect(e.asked).toEqual([`Type confirm to export the key for ${h.address}: `])
+    expect(e.stdout.text).toContain(`key  ${groupAddress(h.address)}\n`)
+    expect(e.stderr.text).toContain("That was not confirmed; nothing was done.")
 
     let sawFile = false
     try {

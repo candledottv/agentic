@@ -1,7 +1,7 @@
 /**
  * BE-1680 (spec S4 T-3 to T-5): the pure rules of a transfer. Addresses are normalized before any
- * card (spaces removed, EVM to its checksum spelling); the confirm word and the last six follow the
- * CLI's `confirmSend` and `confirmLastSix`; the form's decimal becomes raw units exactly.
+ * card (spaces removed, EVM to its checksum spelling); the confirm word follows the CLI's
+ * `confirmSend` (BE-1710 removed the last six); the form's decimal becomes raw units exactly.
  */
 import { describe, expect, test } from "bun:test"
 import { toChecksumAddress } from "../evm-lite"
@@ -10,7 +10,6 @@ import {
   confirmTyped,
   describeSend,
   groupAddress,
-  lastSixMismatch,
   normalizeAddress,
   parseTransferInput,
   rawToDecimal,
@@ -45,14 +44,9 @@ describe("the confirmations (T-5)", () => {
     for (const typed of ["yes", "", undefined, "confirmed"]) expect(confirmTyped(typed)).toBe(false)
   })
 
-  test("the last six: exact on Solana, any case on EVM, and the first differing character is named", () => {
-    expect(lastSixMismatch(SOL, SOL.slice(-6))).toBeUndefined()
-    expect(
-      lastSixMismatch(SOL, SOL.slice(-6).toLowerCase() === SOL.slice(-6) ? "zzzzzz" : SOL.slice(-6).toLowerCase()),
-    ).toBeDefined()
-    expect(lastSixMismatch(EVM, EVM.slice(-6).toLowerCase())).toBeUndefined()
-    expect(lastSixMismatch(SOL, `${SOL.slice(-6, -2)}??`)).toBe(4)
-    expect(lastSixMismatch(SOL, undefined)).toBe(0)
+  test("BE-1710: the destination's last six, the old answer, is not the word", () => {
+    expect(confirmTyped(SOL.slice(-6))).toBe(false)
+    expect(confirmTyped(EVM.slice(-6))).toBe(false)
   })
 
   test("the send is described the CLI's way", () => {

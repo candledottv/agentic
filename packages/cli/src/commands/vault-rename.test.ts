@@ -447,7 +447,7 @@ describe("T10: a restored vault renames, because rename is not an allocation", (
         }
         return generatedPassphraseFrom(stdout.text)
       },
-      promptLine: async (text: string) => (text.includes("last six characters") ? "abcdef" : "no"),
+      promptLine: async (text: string) => (text.startsWith("Type confirm") ? "confirm" : "no"),
     })
     expect(await run(["vault", "restore", "--phrase", "--count", "1", "--keystore", path], deps)).toBe(0)
     const fx: Fixture = { dir, path, passphrase: generatedPassphraseFrom(stdout.text) }

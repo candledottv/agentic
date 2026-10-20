@@ -799,7 +799,7 @@ describe("vault promote --to-key", () => {
     const rebind = rebindRoute()
     const r = await runSingle(f, {
       args: inPlace(f),
-      lines: [(f.addresses.subject as string).slice(-6), "confirm"],
+      lines: ["confirm", "confirm"],
       json: true,
       rebind: rebind.handler,
     })
@@ -838,7 +838,7 @@ describe("vault promote --to-key", () => {
     const rebind = rebindRoute({ failCommit: refusal(409, "REBIND_FORWARD_OPEN", { walletIds: ["x"] }) })
     const r = await runSingle(f, {
       args: inPlace(f),
-      lines: [(f.addresses.subject as string).slice(-6), "confirm"],
+      lines: ["confirm", "confirm"],
       json: true,
       rebind: rebind.handler,
     })
@@ -895,7 +895,7 @@ describe("vault promote --to-key", () => {
     const rebind = rebindRoute()
     const r = await runSingle(f, {
       args: ["--from", "cold", "--to-key", TO],
-      lines: [(f.addresses.cold as string).slice(-6)],
+      lines: ["confirm"],
       json: true,
       rebind: rebind.handler,
     })
@@ -919,7 +919,7 @@ describe("vault promote --to-key", () => {
     const f = await fixture(["subject", "cold"])
     const r = await runSingle(f, {
       args: ["--in-place", "subject", "--sweep-to", "cold", "--rpc-url", RPC],
-      lines: [(f.addresses.subject as string).slice(-6), "confirm"],
+      lines: ["confirm", "confirm"],
       json: true,
     })
     expect(r.code).toBe(0)
@@ -1108,7 +1108,7 @@ describe("vault promote --to-key and key signers", () => {
     const rebind = rebindRoute()
     const r = await runSingle(f, {
       args: inPlace,
-      lines: [(f.addresses.subject as string).slice(-6), "confirm"],
+      lines: ["confirm", "confirm"],
       rebind: rebind.handler,
     })
     expect(r.code).toBe(0)
@@ -1130,7 +1130,7 @@ describe("vault promote --to-key and key signers", () => {
     const rebind = rebindRoute()
     const r = await runSingle(f, {
       args: inPlace,
-      lines: [(f.addresses.subject as string).slice(-6), "confirm"],
+      lines: ["confirm", "confirm"],
       json: true,
       rebind: rebind.handler,
       signer: activeSigner,
@@ -1205,7 +1205,7 @@ describe("vault promote --to-key and key signers", () => {
     const g = await fixture(["subject", "cold"])
     const same = await runSingle(g, {
       args: inPlace,
-      lines: [(g.addresses.subject as string).slice(-6), "confirm"],
+      lines: ["confirm", "confirm"],
       json: true,
       signer: activeSigner,
       pin: { spkiSha256: signerSha, fingerprint: signerFp },
@@ -1221,7 +1221,7 @@ describe("vault promote --to-key and key signers", () => {
     const wrong = rebindRoute({ signer: { fingerprint: signerFp, spkiSha256: signerSha } })
     const refused = await runSingle(f, {
       args: inPlace,
-      lines: [(f.addresses.subject as string).slice(-6), "confirm"],
+      lines: ["confirm", "confirm"],
       json: true,
       rebind: wrong.handler,
       fingerprint: "CNDL-0000-0000-0000",
@@ -1240,7 +1240,7 @@ describe("vault promote --to-key and key signers", () => {
     const right = rebindRoute({ signer: { fingerprint: signerFp, spkiSha256: signerSha } })
     const confirmed = await runSingle(g, {
       args: inPlace,
-      lines: [(g.addresses.subject as string).slice(-6), "confirm"],
+      lines: ["confirm", "confirm"],
       json: true,
       rebind: right.handler,
       fingerprint: signerFp,

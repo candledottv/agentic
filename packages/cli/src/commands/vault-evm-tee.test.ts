@@ -312,6 +312,8 @@ async function fixture(opts: { dir?: string; passphrase?: string; vaultPath?: st
   const stdout = createCapture()
   const stderr = createCapture()
   const prompts: string[] = []
+  // A test may answer one prompt with something other than the word, matched on its text.
+  let wordFor: (prompt: string) => string | undefined = () => undefined
   const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
     const body = init?.body !== undefined ? JSON.parse(String(init.body)) : {}
@@ -341,9 +343,7 @@ async function fixture(opts: { dir?: string; passphrase?: string; vaultPath?: st
     },
     promptLine: async (prompt) => {
       prompts.push(prompt)
-      if (prompt.startsWith("Type confirm")) return "confirm"
-      const match = /\(([^)]+)\) to confirm/.exec(prompt)
-      return (match?.[1] ?? "").slice(-6)
+      return prompt.startsWith("Type confirm") ? (wordFor(prompt) ?? "confirm") : ""
     },
   })
   const vaultPath = opts.vaultPath ?? join(dir, "vault.enc")
@@ -352,7 +352,10 @@ async function fixture(opts: { dir?: string; passphrase?: string; vaultPath?: st
     stderr.text = ""
     return run(args, deps)
   }
-  return { dir, passphrase, vaultPath, node, api, stdout, stderr, prompts, deps, cli }
+  const answer = (fn: (prompt: string) => string | undefined) => {
+    wordFor = fn
+  }
+  return { dir, passphrase, vaultPath, node, api, stdout, stderr, prompts, deps, cli, answer }
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>
@@ -458,7 +461,7 @@ describe("H3: vault promote on EVM", () => {
     expect(WALLET_APP_EVM_SCAN_PATTERNS.map(({ pattern }) => pattern.test("m/44'/60'/0'/4"))).toContain(true)
   })
 
-  test("--in-place: holdings, the sentence, last six and confirm, then version 4 and the promote height only", async () => {
+  test("--in-place: holdings, the sentence, confirm to promote and confirm, then version 4 and the promote height only", async () => {
     const fx = await fixture()
     expect(await fx.cli(["vault", "new-key", "--chain", "evm", "--label", "hood-cold"])).toBe(0)
     expect(await fx.cli(["vault", "new-key", "--chain", "evm", "--label", "hood-hot"])).toBe(0)
@@ -474,8 +477,11 @@ describe("H3: vault promote on EVM", () => {
     expect(fx.stdout.text).toContain("USDG  12.5")
     expect(fx.stdout.text).toContain("You are about to accept a permanent copy of this key in Privy's TEE")
     expect(fx.stdout.text).toContain(`Promoted ${FIXTURE_EVM_1} in place on Hood`)
-    expect(fx.prompts.some((prompt) => prompt.includes(`the address being promoted (${FIXTURE_EVM_1})`))).toBe(true)
-    expect(fx.prompts.some((prompt) => prompt.startsWith("Type confirm"))).toBe(true)
+    expect(fx.prompts.filter((prompt) => prompt.startsWith("Type confirm"))).toEqual([
+      `Type confirm to promote ${FIXTURE_EVM_1}: `,
+      "Type confirm to accept this for this key: ",
+    ])
+    expect(fx.stdout.text).toContain(`address ${groupAddress(FIXTURE_EVM_1)}\n`)
 
     const vault = await reopen(fx.vaultPath, fx.passphrase)
     try {
@@ -492,6 +498,29 @@ describe("H3: vault promote on EVM", () => {
     } finally {
       closeVault(vault)
     }
+  })
+
+  test("BE-1710: --in-place and --from refuse anything but the word, the old last six included, with nothing imported", async () => {
+    const fx = await fixture()
+    expect(await fx.cli(["vault", "new-key", "--chain", "evm", "--label", "hood-cold"])).toBe(0)
+    expect(await fx.cli(["vault", "new-key", "--chain", "evm", "--label", "hood-hot"])).toBe(0)
+    fx.answer((prompt) => (prompt.startsWith("Type confirm to promote") ? FIXTURE_EVM_1.slice(-6) : undefined))
+    expect(await fx.cli(["vault", "promote", "--in-place", "hood-hot", "--sweep-to", "hood-cold", "--json"])).toBe(1)
+    expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
+    expect(fx.prompts.filter((prompt) => prompt.startsWith("Type confirm"))).toEqual([
+      `Type confirm to promote ${FIXTURE_EVM_1}: `,
+    ])
+
+    fx.prompts.length = 0
+    fx.answer((prompt) => (prompt.startsWith("Type confirm to sweep this wallet home") ? "yes" : undefined))
+    expect(await fx.cli(["vault", "promote", "--from", "hood-cold", "--json"])).toBe(1)
+    expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
+    expect(fx.prompts.filter((prompt) => prompt.startsWith("Type confirm"))).toEqual([
+      `Type confirm to sweep this wallet home to ${FIXTURE_EVM_0}: `,
+    ])
+    expect(fx.stderr.text).toContain(`vault ${groupAddress(FIXTURE_EVM_0)}\n`)
+    // `--from` records the derived key's exposure before this prompt, as ever; nothing is imported.
+    expect(fx.api.state.calls.some((call) => call.path === "/api/v1/agent/wallets/import/submit")).toBe(false)
   })
 
   test("a promote whose scan start cannot be written still succeeds and prints the height and --from-block", async () => {
@@ -782,6 +811,22 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     }
   })
 
+  test("BE-1710: tee sweep asks confirm under the vault in fours; anything else, the old last six included, signs nothing", async () => {
+    const fx = await promoted()
+    fx.api.state.lifecycle = "quarantined"
+    fx.node.setEth(fx.wallet, ETH)
+    fx.prompts.length = 0
+    fx.answer(() => FIXTURE_EVM_0.slice(-6))
+    expect(await fx.cli(["tee", "sweep", fx.wallet, "--json"])).toBe(1)
+    expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
+    expect(fx.prompts.filter((prompt) => prompt.startsWith("Type confirm"))).toEqual([
+      `Type confirm to sweep everything to ${FIXTURE_EVM_0}: `,
+    ])
+    expect(fx.stderr.text).toContain(`vault ${groupAddress(FIXTURE_EVM_0)}\n`)
+    expect(fx.node.state.sent).toHaveLength(0)
+    expect(fx.node.ethOf(fx.wallet)).toBe(ETH)
+  })
+
   test("a sweep with token balances and no ETH refuses with EVM_SWEEP_NEEDS_GAS and the fund command, signing nothing", async () => {
     const fx = await promoted()
     fx.api.state.lifecycle = "quarantined"
@@ -1033,7 +1078,7 @@ describe("H9: restore --evm-tee-count, no record, and log discovery", () => {
         }
         return generatedPassphraseFrom(stdout.text)
       },
-      promptLine: async (text: string) => (text.includes("last six characters") ? ACCOUNT.slice(-6) : "no"),
+      promptLine: async (text: string) => (text.startsWith("Type confirm") ? "confirm" : "no"),
     })
     const args = ["vault", "restore", "--phrase", "--count", "1", "--evm-count", "1"]
     if (k >= 0) args.push("--evm-tee-count", String(k))

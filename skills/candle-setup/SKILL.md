@@ -60,7 +60,7 @@ any of this: they work with no key at all.
    (`candle vault new-key --chain evm`) promotes the same way into a Hood TEE wallet, with
    `--sweep-to` naming a cold EVM vault key. Each
    promote shows what is being handed over. `--in-place` and `promote-batch` ask the user to type
-   `confirm`; `--from` asks for the last six characters of the vault key it sweeps home to. `--to-key
+   `confirm`; `--from` shows the vault key it sweeps home to in groups of four and asks for `confirm`. `--to-key
    <prefix|label>` binds the wallet to another of the user's keys. The pinned vault key is where
    `candle tee sweep` and `candle vault demote` send funds home. Trade the wallet from the machine
    that promoted it, because its relay signer stays there. Every Solana command uses `--rpc-url`,

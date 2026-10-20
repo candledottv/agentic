@@ -221,7 +221,7 @@ async function vaultHarness(opts: { config?: CliConfig; env?: Record<string, str
     stderr,
     env: { CANDLE_CONFIG_DIR: made.dir, HOME: made.dir, ...(opts.env ?? {}) },
     promptSecret: async () => made.passphrase,
-    promptLine: async () => DESTINATION.slice(-6),
+    promptLine: async () => "confirm",
     sleep: async (ms) => {
       sleeps.push(ms)
     },

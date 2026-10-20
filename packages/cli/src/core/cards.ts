@@ -26,9 +26,9 @@
  *     run is `DRY_RUN_REQUIRED`. A dry run is never reused across cards.
  *   - Transfers (T-1 to T-9). A `transfer` card is created only by `transfer.prepare` from a view
  *     ({@link CardBook.createTransferCard}); `cards.propose` refuses the kind for every role. Its
- *     approval checks, in one call and in this order, the typed `confirm`, the last six characters
- *     of the destination (every transfer; three wrong ones withdraw the card) and then a factor
- *     verified in that call, so no factor helper runs before both confirmations. A `vault` send is
+ *     approval checks, in one call and in this order, the typed `confirm` (every transfer; BE-1710
+ *     removed the destination's last six that followed it) and then a factor verified in that
+ *     call, so no factor helper runs before the confirmation. A `vault` send is
  *     signed with the vault open, its signature journaled and its bytes kept 0600 before the
  *     broadcast; an `embedded` send goes through `candle_transfer` with the Withdraw key and
  *     `clientTransferId = opId`. An unknown outcome is re-sent only as the same signed bytes, and
@@ -43,13 +43,7 @@ import type { CoreEnvironment, Journal, JournalRow } from "./journal"
 import { claimableFor, nextPollMs, readOnce, readsById, reconcileMessage, transferReconcileMessage } from "./reconcile"
 import { invalidParams, RpcError, refused } from "./rpc"
 import { type Factor, formatKeyLimit, type OpenVault, type TradingState } from "./trading"
-import {
-  confirmTyped,
-  lastSixMismatch,
-  type TransferChain,
-  type TransferParams,
-  type TransferSourceKind,
-} from "./transfer-params"
+import { confirmTyped, type TransferChain, type TransferParams, type TransferSourceKind } from "./transfer-params"
 
 export type CardState = "proposed" | "awaiting_approval" | "approved" | "rejected" | "withdrawn" | "expired"
 /** `attested_*` (S4 T-8): an `embedded` transfer the core cannot read back, resolved by the user's own statement. */
@@ -125,8 +119,6 @@ export interface Card {
   expiresAt: string
   state: CardState
   proposalKey?: string
-  /** T-5: wrong last-six answers so far; the third withdraws the card. */
-  lastSixFailures?: number
 }
 
 /** What the core records about a transfer operation (T-7, T-9): never the signed bytes or a key. */
@@ -233,8 +225,6 @@ export const TRANSFER_TOOLS: Record<TransferSourceKind, string> = {
   vault: "core_vault_transfer",
   embedded: "candle_transfer",
 }
-
-const LAST_SIX_TRIES = 3
 
 const OPEN_CARD_CAP = 5
 const MAX_REASON = 500
@@ -764,8 +754,8 @@ export class CardBook {
 
   /**
    * T-5 and invariant 12: in one call, in this order, the card is open and unexpired, the hash
-   * matches, `typed` is `confirm`, `lastSix` matches (on every transfer), and only then a factor
-   * verified in this call. A wrong answer refuses before any factor helper runs.
+   * matches, `typed` is `confirm` (on every transfer), and only then a factor verified in this
+   * call. A wrong answer refuses before any factor helper runs, and the card stays open.
    */
   private async approveTransfer(
     card: Card,
@@ -815,34 +805,6 @@ export class CardBook {
         },
       )
     }
-    const differsAt = lastSixMismatch(params.to, confirm?.lastSix)
-    if (differsAt !== undefined) {
-      card.lastSixFailures = (card.lastSixFailures ?? 0) + 1
-      const left = LAST_SIX_TRIES - card.lastSixFailures
-      if (left <= 0) {
-        await this.deps.journal.append({
-          type: "approval.refused",
-          cardId: card.cardId,
-          viewClientId,
-          code: "DESTINATION_NOT_CONFIRMED",
-          step: "lastSix",
-          withdrawn: true,
-        })
-        // `close` refuses a card being approved; this approval is the one withdrawing it.
-        this.approving.delete(card.cardId)
-        await this.close(card.cardId, "withdrawn", { by: "last_six" })
-        throw refused(
-          "DESTINATION_NOT_CONFIRMED",
-          "That is not the last six characters of the address, three times. The card is withdrawn; nothing was sent.",
-          { step: "lastSix", withdrawn: true },
-        )
-      }
-      throw await refuse(
-        "DESTINATION_NOT_CONFIRMED",
-        `That is not the last six characters of the address. Character ${differsAt + 1} differs. Nothing was sent.`,
-        { step: "lastSix", differsAt, triesLeft: left },
-      )
-    }
     const engine = this.deps.transfers
     if (engine === undefined) throw refused("NOT_IN_THIS_BUILD", "Transfers are not in this build of the core.")
     const reason = card.display.transfer?.describeSend ?? `send to ${params.to}`
@@ -861,8 +823,8 @@ export class CardBook {
           cardHash: card.cardHash,
           opId: card.opId,
           factorType,
-          // T-9: that both were typed, never what was typed.
-          confirm: { typed: true, lastSix: true },
+          // T-9: that it was typed, never what was typed.
+          confirm: { typed: true },
           viewClientId,
         })
         this.publish(card)
@@ -1238,7 +1200,7 @@ export class CardBook {
    *     `abandon` stops tracking.
    *   - `embedded`: the core cannot read it back by id, so the user says what they found:
    *     `attest_sent` or `attest_not_sent`, both journaled as the user's statement. It is never
-   *     sent again; a new transfer is a new card with both confirmations and a fresh factor.
+   *     sent again; a new transfer is a new card with the typed `confirm` and a fresh factor.
    */
   private async resolveTransfer(
     op: Operation,

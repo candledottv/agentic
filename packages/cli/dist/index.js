@@ -28392,6 +28392,7 @@ __export(exports_vault_support, {
   vaultAlreadyExists: () => vaultAlreadyExists,
   usage: () => usage,
   unlockInteractively: () => unlockInteractively,
+  typedConfirm: () => typedConfirm,
   takeRepeatedFlag: () => takeRepeatedFlag,
   runVaultCommand: () => runVaultCommand,
   requireVaultRaw: () => requireVaultRaw,
@@ -28413,7 +28414,7 @@ __export(exports_vault_support, {
   describeEntry: () => describeEntry,
   derivationNotice: () => derivationNotice,
   confirmSend: () => confirmSend,
-  confirmLastSix: () => confirmLastSix,
+  confirmAddress: () => confirmAddress,
   assertVaultHelperIdentities: () => assertVaultHelperIdentities,
   assertNotOlderCopy: () => assertNotOlderCopy,
   askForOwnPassphrase: () => askForOwnPassphrase,
@@ -28947,21 +28948,6 @@ async function assertNotOlderCopy(ctx, path, raw, accept) {
   ctx.deps.stderr.write(`Opening an older copy: generation ${String(generation)} against the ${sidecar.lastGeneration} this machine last saw.${detail}
 `);
 }
-async function confirmLastSix(ctx, address, what) {
-  const expected = address.slice(-6);
-  const normalize3 = (value) => address.startsWith("0x") ? value.toLowerCase() : value;
-  for (let attempt = 0;attempt < 3; attempt++) {
-    const typed = (await ctx.deps.promptLine(`Type the last six characters of ${what} (${address}) to confirm: `)).trim();
-    if (normalize3(typed) === normalize3(expected))
-      return;
-    const difference = Array.from({ length: Math.max(expected.length, typed.length) }, (_, i) => i).find((i) => normalize3(typed)[i] !== normalize3(expected)[i]) ?? 0;
-    ctx.deps.stderr.write(`Expected  ${expected}
-You typed ${typed}
-${" ".repeat(10 + difference)}^ character ${difference + 1} differs
-`);
-  }
-  throw new VaultError("DESTINATION_NOT_CONFIRMED", "That is not the last six characters of that address; nothing was done.", { suggestion: "Nothing was signed. Run it again and type the last six characters exactly as shown." });
-}
 function groupAddress(address) {
   const prefix = address.startsWith("0x") ? "0x" : "";
   const body = address.slice(prefix.length);
@@ -28972,15 +28958,25 @@ function describeSend(amount, asset, to) {
   return `send ${amount}${asset !== undefined ? ` ${asset}` : ""} to ${to}`;
 }
 async function confirmSend(ctx, send) {
-  const display = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
-  display.write(`to   ${groupAddress(send.address)}
-`);
-  const typed = await ctx.deps.promptLine(`Type confirm to ${describeSend(send.amount, send.asset, send.address)}: `);
-  if (typed.trim().toLowerCase() === "confirm")
+  if (await typedConfirm(ctx, "to", send.address, describeSend(send.amount, send.asset, send.address)))
     return;
   throw new VaultError("DESTINATION_NOT_CONFIRMED", "The send was not confirmed; nothing was done.", {
     suggestion: "Nothing was signed. Run it again and type confirm at the prompt."
   });
+}
+async function confirmAddress(ctx, label, address, action) {
+  if (await typedConfirm(ctx, label, address, action))
+    return;
+  throw new VaultError("DESTINATION_NOT_CONFIRMED", "That was not confirmed; nothing was done.", {
+    suggestion: "Nothing was signed or written. Run it again and type confirm at the prompt."
+  });
+}
+async function typedConfirm(io, label, address, action) {
+  const display = io.json ? io.deps.stderr : io.deps.stdout;
+  display.write(`${label.padEnd(4)} ${groupAddress(address)}
+`);
+  const typed = await io.deps.promptLine(`Type confirm to ${action}: `);
+  return typed.trim().toLowerCase() === "confirm";
 }
 function writeVaultFailure(ctx, error) {
   if (isUsageError(error))
@@ -29561,7 +29557,7 @@ async function maybeReconcileVaultTee(ctx, resolved, caller = "default") {
     ctx.deps.stdout.write(`This profile acts as account ${cached}.
 `);
     try {
-      await confirmLastSix(ctx, cached, "that account");
+      await confirmAddress(ctx, "account", cached, `act as account ${cached}`);
       assertedAccount = cached;
     } catch (error) {
       if (isVaultError(error)) {
@@ -29622,7 +29618,7 @@ async function maybeReconcileVaultTee(ctx, resolved, caller = "default") {
   const adoption = await adoptGrantedRow(ctx, resolved.entry, verdict.row, verdict.account, {
     confirmDestination: async (destination) => {
       try {
-        await confirmLastSix(ctx, destination, "the server-reported vault destination");
+        await confirmAddress(ctx, "vault", destination, `accept ${destination} as the sweep vault`);
         return true;
       } catch {
         return false;
@@ -33841,7 +33837,7 @@ async function sweepEvmWallet(input) {
   let stopped;
   const somethingToMove = planned.length > 0 || ethBalance > 0n;
   if (somethingToMove) {
-    await confirmLastSix(ctx, destination, "the vault destination");
+    await confirmAddress(ctx, "vault", destination, `sweep everything to ${destination}`);
     const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date(deps.now()).toISOString();
     vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, stopRequestedAt })));
     if (!emergency)
@@ -34859,9 +34855,8 @@ function isSolanaAddress(value) {
     return false;
   }
 }
-async function confirmVault(deps, vault) {
-  const typed = (await deps.promptSecret(`Type the LAST 6 characters of the vault address (${vault}) to confirm: `)).trim();
-  return typed === vault.slice(-6);
+function confirmVault(deps, json, vault, action) {
+  return typedConfirm({ deps, json }, "vault", vault, action);
 }
 async function teeNew(args, ctx) {
   const { deps, json } = ctx;
@@ -35058,8 +35053,8 @@ async function teeEnable(args, ctx) {
     deps.stdout.write(`compromised agent within those limits. Once enabled a copy of this key stays in the TEE for good.
 `);
   }
-  if (!await confirmVault(deps, vault)) {
-    writeLocalFailure(deps, { code: "VAULT_NOT_CONFIRMED", message: "The vault confirmation did not match. Nothing was enabled." }, json);
+  if (!await confirmVault(deps, json, vault, `enable this TEE wallet with sweeps to ${vault}`)) {
+    writeLocalFailure(deps, { code: "VAULT_NOT_CONFIRMED", message: "The vault was not confirmed. Nothing was enabled." }, json);
     return 1;
   }
   const flow = await runImportFlow({
@@ -35719,8 +35714,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       deps.stdout.write(`Sweep ${address} -> vault ${vault} (solana-mainnet)
 `);
     }
-    if (!await confirmVault(deps, vault)) {
-      writeLocalFailure(deps, { code: "VAULT_NOT_CONFIRMED", message: "The vault confirmation did not match. Nothing was signed." }, json);
+    if (!await confirmVault(deps, json, vault, `sweep everything to ${vault}`)) {
+      writeLocalFailure(deps, { code: "VAULT_NOT_CONFIRMED", message: "The vault was not confirmed. Nothing was signed." }, json);
       return 1;
     }
     const secret = base58.decode(entry.privateKey);
@@ -36436,6 +36431,7 @@ var init_tee = __esm(() => {
   init_tee_evm();
   init_tee_status_evm();
   init_tee_status_wallet();
+  init_vault_support();
   init_wallets();
   StoreChangedError = class StoreChangedError extends Error {
   };
@@ -70287,7 +70283,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.34";
+var CLI_VERSION = "0.11.35";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -71536,7 +71532,7 @@ var HELP = {
       },
       {
         invocation: "export-key <label> --to <new-file>",
-        description: "Export one key as plaintext (interactive ceremony)"
+        description: "Export one key as plaintext (interactive ceremony: unlock, then type confirm under the address)"
       }
     ],
     flags: [
@@ -72872,14 +72868,6 @@ function groupAddress2(address) {
 function confirmTyped(typed) {
   return typeof typed === "string" && typed.trim().toLowerCase() === "confirm";
 }
-function lastSixMismatch(address, typed) {
-  const expected = address.slice(-6);
-  const given = typeof typed === "string" ? typed.trim() : "";
-  const fold = (value) => address.startsWith("0x") ? value.toLowerCase() : value;
-  if (fold(given) === fold(expected))
-    return;
-  return Array.from({ length: Math.max(expected.length, given.length) }, (_, i) => i).find((i) => fold(given)[i] !== fold(expected)[i]) ?? 0;
-}
 function rawToDecimal(raw, decimals) {
   const text = raw.toString().padStart(decimals + 1, "0");
   const whole = text.slice(0, text.length - decimals);
@@ -72963,7 +72951,6 @@ var TRANSFER_TOOLS = {
   vault: "core_vault_transfer",
   embedded: "candle_transfer"
 };
-var LAST_SIX_TRIES = 3;
 var OPEN_CARD_CAP = 5;
 var MAX_REASON = 500;
 var MAX_PARAMS_BYTES = 64 * 1024;
@@ -73399,25 +73386,6 @@ class CardBook {
         step: "confirm"
       });
     }
-    const differsAt = lastSixMismatch(params.to, confirm?.lastSix);
-    if (differsAt !== undefined) {
-      card2.lastSixFailures = (card2.lastSixFailures ?? 0) + 1;
-      const left = LAST_SIX_TRIES - card2.lastSixFailures;
-      if (left <= 0) {
-        await this.deps.journal.append({
-          type: "approval.refused",
-          cardId: card2.cardId,
-          viewClientId,
-          code: "DESTINATION_NOT_CONFIRMED",
-          step: "lastSix",
-          withdrawn: true
-        });
-        this.approving.delete(card2.cardId);
-        await this.close(card2.cardId, "withdrawn", { by: "last_six" });
-        throw refused("DESTINATION_NOT_CONFIRMED", "That is not the last six characters of the address, three times. The card is withdrawn; nothing was sent.", { step: "lastSix", withdrawn: true });
-      }
-      throw await refuse3("DESTINATION_NOT_CONFIRMED", `That is not the last six characters of the address. Character ${differsAt + 1} differs. Nothing was sent.`, { step: "lastSix", differsAt, triesLeft: left });
-    }
     const engine = this.deps.transfers;
     if (engine === undefined)
       throw refused("NOT_IN_THIS_BUILD", "Transfers are not in this build of the core.");
@@ -73436,7 +73404,7 @@ class CardBook {
           cardHash: card2.cardHash,
           opId: card2.opId,
           factorType: factorType2,
-          confirm: { typed: true, lastSix: true },
+          confirm: { typed: true },
           viewClientId
         });
         this.publish(card2);
@@ -94512,7 +94480,7 @@ async function vaultExportKey(args, ctx) {
       ctx.deps.stdout.write(`
 ${warning}
 `);
-    await confirmLastSix(ctx, entry.address, "the key being exported");
+    await confirmAddress(ctx, "key", entry.address, `export the key for ${entry.address}`);
     vault = hold(await markEverExported(vault, entry, ctx));
     const secret = await decryptKey(vault, entry.id);
     try {
@@ -97123,7 +97091,7 @@ async function promoteEvmFresh(input, fromLabel) {
       addKeys: [blob]
     }, ctx.deps));
     scanStart = await appendScanStart(ctx, vault.path, address, height);
-    await confirmLastSix(ctx, destination.address, "the sweep vault destination");
+    await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`);
     if (toKey !== undefined) {
       ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "evm")].join(`
 `)}
@@ -97219,7 +97187,7 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
   ctx.deps.stdout.write(`Authorities: the signer-role read (mint, freeze, upgrade and stake authorities) is Solana's; nothing is read on Hood, so any contract this key controls is not checked.
 `);
   printPromoteSentence(ctx, promoteSentence({ n: 1, form: "U", where: "above" }));
-  await confirmLastSix(ctx, first.subject.address, "the address being promoted");
+  await confirmAddress(ctx, "address", first.subject.address, `promote ${first.subject.address}`);
   ctx.deps.stderr.write(`${renderControlledBy(controlledBy, 1)}
 `);
   await confirmPromotion(ctx, 1);
@@ -97495,7 +97463,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
       },
       addKeys: [blob]
     }, ctx.deps));
-    await confirmLastSix(ctx, destination.address, "the sweep vault destination");
+    await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`);
     if (toKey !== undefined) {
       ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "solana")].join(`
 `)}
@@ -97604,10 +97572,10 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
       if (toKey !== undefined)
         await confirmResumeRebind(ctx, toKey, resumeChain);
       const resumed = await resumePromote(ctx, vault, existing, opened.reopen, path, hold, {
-        confirmAccount: (account) => confirmLastSix(ctx, account, "that account"),
+        confirmAccount: (account) => confirmAddress(ctx, "account", account, `act as account ${account}`),
         confirmDestination: async (destination2) => {
           try {
-            await confirmLastSix(ctx, destination2, "the server-reported vault destination");
+            await confirmAddress(ctx, "vault", destination2, `accept ${destination2} as the sweep vault`);
             return true;
           } catch {
             return false;
@@ -97673,7 +97641,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     ctx.deps.stdout.write(`${authoritiesBlock(host, roles)}
 `);
     printPromoteSentence(ctx, promoteSentence({ n: 1, form: sentenceForm(roles), k: keysWithFindings(roles), where: "above" }));
-    await confirmLastSix(ctx, first.subject.address, "the address being promoted");
+    await confirmAddress(ctx, "address", first.subject.address, `promote ${first.subject.address}`);
     ctx.deps.stderr.write(`${renderControlledBy(controlledBy, 1)}
 `);
     await confirmPromotion(ctx, 1);
@@ -99495,14 +99463,14 @@ async function matchAgainstAccount(ctx, apiKey, derived) {
   ctx.deps.stdout.write(`
 This profile acts as account ${read2.account}.
 `);
-  const typed = (await ctx.deps.promptLine(`Type the last six characters of that account to confirm before any exposure is recorded: `)).trim();
-  if (typed !== read2.account.slice(-6)) {
+  const confirmed = await typedConfirm(ctx, "account", read2.account, `record exposure against account ${read2.account}`);
+  if (!confirmed) {
     return {
       matched: [],
       unmatched: [],
       account: undefined,
       complete: false,
-      reason: "that is not the last six characters of the account this profile acts as, so it was not confirmed",
+      reason: "the account this profile acts as was not confirmed",
       refused: "EXPOSURE_ACCOUNT_MISMATCH"
     };
   }

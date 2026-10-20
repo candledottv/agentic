@@ -6,7 +6,7 @@
  *
  * - `--in-place <evm vault key> --sweep-to <cold evm vault key>` imports the key at its own address.
  *   The holdings are shown (ETH, USDG, WETH over the Hood RPC), then the controlling account, key and
- *   API read live, the last six, and `confirm`, exactly as a Solana in-place promote. The signer-role
+ *   API read live, `confirm` to promote the address, and `confirm`, exactly as a Solana in-place promote. The signer-role
  *   read is Solana's (mint, freeze, upgrade and stake authorities); on Hood there is none to read, so
  *   the sentence takes its "not checked" form.
  * - `--from <cold evm vault key>` derives a fresh key on the EVM TEE branch `m/44'/60'/n'/1'/0'`.
@@ -64,7 +64,7 @@ import {
   runTeeImport,
   type ToKeyContext,
 } from "./vault-promote"
-import { confirmLastSix, type OpenedVault, type ResolvedVaultPath, usage, writeJson } from "./vault-support"
+import { confirmAddress, type OpenedVault, type ResolvedVaultPath, usage, writeJson } from "./vault-support"
 
 type Parsed = Exclude<ReturnType<typeof parseArgs>, { error: string }>
 
@@ -199,7 +199,7 @@ export async function promoteEvmFresh(input: EvmPromoteContext, fromLabel: strin
     // D1: after the write that created the record key. A fresh key's only height is this one.
     scanStart = await appendScanStart(ctx, vault.path, address, height)
 
-    await confirmLastSix(ctx, destination.address, "the sweep vault destination")
+    await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`)
     if (toKey !== undefined) {
       ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "evm")].join("\n")}\n`)
     }
@@ -313,7 +313,7 @@ export async function promoteEvmInPlace(
     "Authorities: the signer-role read (mint, freeze, upgrade and stake authorities) is Solana's; nothing is read on Hood, so any contract this key controls is not checked.\n",
   )
   printPromoteSentence(ctx, promoteSentence({ n: 1, form: "U", where: "above" }))
-  await confirmLastSix(ctx, first.subject.address, "the address being promoted")
+  await confirmAddress(ctx, "address", first.subject.address, `promote ${first.subject.address}`)
   ctx.deps.stderr.write(`${renderControlledBy(controlledBy, 1)}\n`)
   await confirmPromotion(ctx, 1)
 

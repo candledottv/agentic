@@ -34,7 +34,7 @@
  *    that and nothing else. `--broadcast` sends over the user's RPC (`SIGN_BROADCAST_FAILED`).
  *
  * What bounds the damage of `--yes` is the wallet's balance, which `vault fund` sets: vault-signed,
- * decoded, last-six-confirmed and with no `--yes` of its own.
+ * decoded, confirmed by a typed `confirm` and with no `--yes` of its own.
  *
  * `sign message` signs an off-chain message (a sign-in, say) from the same byte stream contract:
  * `--file` or stdin, the bytes exactly as read. The display is never lossy: always the byte length

@@ -572,7 +572,7 @@ export function registerCardHandlers(
         cardId: params.cardId,
         cardHash: params.cardHash,
         factor: parseFactor(params.factor),
-        // S4 T-5: a transfer's typed `confirm` and last six, checked before the factor.
+        // S4 T-5: a transfer's typed `confirm`, checked before the factor.
         confirm: params.confirm,
       },
       client.clientId,

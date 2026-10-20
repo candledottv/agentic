@@ -313,7 +313,7 @@ describe("T37: CC-05 TEE store migration", () => {
       const stdout = createCapture()
       const stderr = createCapture()
       const secrets = [passphrase]
-      const lines = [ACCOUNT.slice(-6), serverDest.slice(-6)]
+      const lines = ["confirm", "confirm"]
       const { fetch } = createRoutedFetch({
         "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: ACCOUNT }),
         "/api/v1/agent/wallets": () =>
@@ -429,7 +429,9 @@ describe("T37: CC-05 TEE store migration", () => {
       const dest = Keypair.generate().publicKey.toBase58()
       const statusOut = createCapture()
       const statusSecrets = [passphrase]
-      const statusLines = [ACCOUNT.slice(-6), "nope!!"]
+      // BE-1710: the account confirmed, then the server's destination refused with its old last six.
+      const statusLines = ["confirm", dest.slice(-6)]
+      const statusAsked: string[] = []
       const { fetch } = createRoutedFetch({
         "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: ACCOUNT }),
         "/api/v1/agent/wallets": () =>
@@ -456,7 +458,10 @@ describe("T37: CC-05 TEE store migration", () => {
         stderr: createCapture(),
         env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_URL: API },
         promptSecret: async () => statusSecrets.shift() ?? "",
-        promptLine: async () => statusLines.shift() ?? "",
+        promptLine: async (text) => {
+          statusAsked.push(text)
+          return statusLines.shift() ?? ""
+        },
         readFile: (path) => readFile(path, "utf8"),
         writeFile: (path, content) => writeFile(path, content, "utf8"),
       })
@@ -466,6 +471,10 @@ describe("T37: CC-05 TEE store migration", () => {
       })
       const code = await run(["tee", "status", "--verify", candidate.address], statusDeps)
       expect(code).toBe(1)
+      expect(statusAsked).toEqual([
+        `Type confirm to act as account ${ACCOUNT}: `,
+        `Type confirm to accept ${dest} as the sweep vault: `,
+      ])
       expect(statusOut.text + (await readFile(vaultPath, "utf8"))).toBeTruthy()
       expect(await readFile(vaultPath, "utf8")).toBe(before)
     }
@@ -494,7 +503,7 @@ describe("T37: CC-05 TEE store migration", () => {
         stderr,
         env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_URL: "https://other.api" },
         promptSecret: async () => secrets.shift() ?? "",
-        promptLine: async () => ACCOUNT.slice(-6),
+        promptLine: async () => "confirm",
         readFile: (path) => readFile(path, "utf8"),
         writeFile: (path, content) => writeFile(path, content, "utf8"),
       })

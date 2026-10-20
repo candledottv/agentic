@@ -291,7 +291,7 @@ describe("E4: the native and ERC-20 shapes, displayed, confirmed, re-read, broad
     expect(fx.stdout.text).toContain("depth 1, not finality")
   })
 
-  test("ERC-20: the display shows the contract as `to` and the decoded recipient, the last six is the recipient's, and the calldata is transfer(address,uint256)", async () => {
+  test("ERC-20: the display shows the contract as `to` and the decoded recipient, the confirm names the recipient, and the calldata is transfer(address,uint256)", async () => {
     const fx = await fixture({ decimals: 6, tokenBalance: 5_000_000n, estimate: 50_000n })
     expect(await fx.transfer([DEAD, "--amount", "1.5", "--asset", "USDG", "--from", "hood-cold", "--json"])).toBe(0)
     const shown = fx.displayAtConfirm

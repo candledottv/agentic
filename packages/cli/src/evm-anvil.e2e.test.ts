@@ -54,10 +54,7 @@ async function fixture() {
     env: { CANDLE_CONFIG_DIR: made.dir, HOME: made.dir, CANDLE_EVM_RPC_URL: RPC as string },
     isTTY: { stdin: true, stdout: true, stderr: true },
     promptSecret: async () => made.passphrase,
-    promptLine: async (prompt) => {
-      const match = /\(([^)]+)\) to confirm/.exec(prompt)
-      return (match?.[1] ?? "").slice(-6)
-    },
+    promptLine: async (prompt) => (prompt.startsWith("Type confirm") ? "confirm" : ""),
   })
   expect(await run(["vault", "new-key", "--chain", "evm", "--label", "hood-cold"], deps)).toBe(0)
   stdout.text = ""

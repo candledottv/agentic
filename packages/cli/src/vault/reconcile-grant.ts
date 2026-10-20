@@ -37,7 +37,7 @@ export interface AdoptionResult {
 /**
  * CC-10's four-verdict read. Identity is established first: a recorded `recorded-at-operation`
  * identity must match the configured profile (`GRANT_IDENTITY_MISMATCH`); an absent identity is
- * asserted by the operator typing the account's last six characters.
+ * asserted by the operator typing `confirm` under the account, grouped in fours.
  */
 export async function reconcileGrant(
   ctx: CommandContext,

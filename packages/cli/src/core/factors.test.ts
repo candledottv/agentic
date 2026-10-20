@@ -118,7 +118,7 @@ describe("a security key approves a transfer; an unavailable factor counts nothi
       view.request("cards.approve", {
         cardId: card.cardId,
         cardHash: card.cardHash,
-        confirm: { typed: "confirm", lastSix: DEST_A.slice(-6) },
+        confirm: { typed: "confirm" },
         factor,
       })
     expect((await approve({ type: "touch-id" })).error?.data?.code).toBe("VAULT_FACTOR_UNAVAILABLE")
@@ -141,7 +141,7 @@ describe("a security key approves a transfer; an unavailable factor counts nothi
       view.request("cards.approve", {
         cardId: card.cardId,
         cardHash: card.cardHash,
-        confirm: { typed: "confirm", lastSix: DEST_A.slice(-6) },
+        confirm: { typed: "confirm" },
         factor,
       })
     for (let i = 0; i < 6; i++)

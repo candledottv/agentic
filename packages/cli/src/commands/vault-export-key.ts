@@ -7,7 +7,8 @@
  *   Both stdin and stdout are TTYs, or nothing is written at all.
  *   Target path checks run before the passphrase is asked: existing file, symlink, missing parent,
  *     or an unwritable directory are refused without unlocking.
- *   A fresh factor prompt, then the operator types the address's last six characters.
+ *   A fresh factor prompt, then the address grouped in fours and a typed `confirm` (BE-1710; it
+ *     was the address's last six characters).
  *   `exposure.everExported: true` is committed to the vault FIRST, so the record precedes the
  *     file and a crash between the write and the file leaves the vault saying the key may be out.
  *   Only then the key's native form is written 0600 (Solana: the JSON array of 64 bytes
@@ -25,7 +26,7 @@ import { wipe } from "../vault/hygiene"
 import { findEntryByLabelOrAddress } from "../vault/promote-support"
 import { commitVault, decryptKey } from "../vault/store"
 import {
-  confirmLastSix,
+  confirmAddress,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
@@ -81,7 +82,7 @@ export async function vaultExportKey(args: string[], ctx: CommandContext): Promi
     // the single result value and puts the same warning on stderr.
     if (ctx.json) ctx.deps.stderr.write(`${warning}\n`)
     else ctx.deps.stdout.write(`\n${warning}\n`)
-    await confirmLastSix(ctx, entry.address, "the key being exported")
+    await confirmAddress(ctx, "key", entry.address, `export the key for ${entry.address}`)
 
     // The record precedes the exposure: a vault write, generation increments, and the flag never
     // resets. A crash between here and the file write leaves a vault that says the key may be out,

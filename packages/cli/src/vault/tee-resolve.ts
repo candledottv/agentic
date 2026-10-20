@@ -5,7 +5,7 @@
  */
 import { base58 } from "@scure/base"
 import { isUsageError, type ParsedArgs } from "../args"
-import { confirmLastSix, type OpenedVault } from "../commands/vault-support"
+import { confirmAddress, type OpenedVault } from "../commands/vault-support"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { writeLocalFailure, writeUsageFailure } from "../render"
@@ -280,7 +280,7 @@ export async function maybeReconcileVaultTee(
     }
     ctx.deps.stdout.write(`This profile acts as account ${cached}.\n`)
     try {
-      await confirmLastSix(ctx, cached, "that account")
+      await confirmAddress(ctx, "account", cached, `act as account ${cached}`)
       assertedAccount = cached
     } catch (error) {
       if (isVaultError(error)) {
@@ -357,7 +357,7 @@ export async function maybeReconcileVaultTee(
   const adoption = await adoptGrantedRow(ctx, resolved.entry, verdict.row, verdict.account, {
     confirmDestination: async (destination) => {
       try {
-        await confirmLastSix(ctx, destination, "the server-reported vault destination")
+        await confirmAddress(ctx, "vault", destination, `accept ${destination} as the sweep vault`)
         return true
       } catch {
         return false

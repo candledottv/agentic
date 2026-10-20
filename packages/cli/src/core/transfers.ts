@@ -11,7 +11,7 @@
  * The history (T-3). A `(environment, chain, address)` with a `succeeded` transfer from this
  * profile shows "sent here before". It is rebuilt from the journal at start into
  * `destinations.json` (0600). Both files are plain files a same-user process can write, so the
- * hint is never trusted: it gates nothing, and every transfer asks for the last six characters.
+ * hint is never trusted: it gates nothing, and every transfer asks for the typed `confirm`.
  */
 import { randomBytes } from "node:crypto"
 import { rename, writeFile } from "node:fs/promises"

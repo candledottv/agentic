@@ -597,7 +597,7 @@ export function formatSol(lamports: bigint): string {
   return `${whole}.${fraction.toString().padStart(9, "0").slice(0, 6)}`
 }
 
-/** `p-2 (…kL3f9a)`: a destination named by its label and its last six, the token the operator types. */
+/** `p-2 (…kL3f9a)`: a destination named by its label and its last six. A display label; nothing is typed. */
 export function destinationCell(label: string, address: string): string {
   return `${label} (…${address.slice(-6)})`
 }
