@@ -360,12 +360,13 @@ function presetForScopes(scopes) {
 }
 function agentKeyCapabilities(scopes) {
   return {
-    read: scopes.includes("account:read"),
-    launch: scopes.includes("launch:write"),
-    trade: scopes.includes("swap:write"),
-    transfer: scopes.includes("transfer:write"),
-    linkedTransfer: scopes.includes("transfer:bound"),
-    report: scopes.includes("activity:write")
+    read: scopes.includes(CAPABILITY_SCOPES.read),
+    launch: scopes.includes(CAPABILITY_SCOPES.launch),
+    trade: scopes.includes(CAPABILITY_SCOPES.trade),
+    lp: scopes.includes(CAPABILITY_SCOPES.lp),
+    transfer: scopes.includes(CAPABILITY_SCOPES.transfer),
+    linkedTransfer: scopes.includes(CAPABILITY_SCOPES.linkedTransfer),
+    report: scopes.includes(CAPABILITY_SCOPES.report)
   };
 }
 function agentKeyAccess(scopes) {
@@ -373,12 +374,20 @@ function agentKeyAccess(scopes) {
   if (preset)
     return { kind: "preset", preset, label: AGENT_KEY_PRESET_LABELS[preset] };
   const caps = agentKeyCapabilities(scopes);
-  return { kind: "custom", can: AGENT_KEY_CAPABILITY_CHIPS.filter(([, cap]) => caps[cap]).map(([word]) => word) };
+  const named = Object.values(CAPABILITY_SCOPES);
+  return {
+    kind: "custom",
+    can: AGENT_KEY_CAPABILITY_CHIPS.filter(([, cap]) => caps[cap]).map(([word]) => word),
+    unnamed: sortAgentKeyScopes(scopes.filter((scope) => !named.includes(scope)))
+  };
+}
+function agentKeyAccessWords(access) {
+  return [...access.can, ...access.unnamed];
 }
 function sortAgentKeyScopes(scopes) {
   return [...scopes].sort();
 }
-var READ_SCOPES, READWRITE_SCOPES, READWRITETRANSFER_SCOPES, TRADEPERPS_SCOPES, AGENT_KEY_PRESET_LABELS, AGENT_KEY_CAPABILITY_CHIPS;
+var READ_SCOPES, READWRITE_SCOPES, READWRITETRANSFER_SCOPES, TRADEPERPS_SCOPES, AGENT_KEY_PRESET_LABELS, CAPABILITY_SCOPES, AGENT_KEY_CAPABILITY_CHIPS;
 var init_agent_key_access = __esm(() => {
   READ_SCOPES = ["account:read"];
   READWRITE_SCOPES = [
@@ -404,9 +413,20 @@ var init_agent_key_access = __esm(() => {
     readwritetransfer: "Withdraw",
     tradeperps: "Trade perps"
   };
+  CAPABILITY_SCOPES = {
+    read: "account:read",
+    launch: "launch:write",
+    trade: "swap:write",
+    lp: "lp:write",
+    transfer: "transfer:write",
+    linkedTransfer: "transfer:bound",
+    report: "activity:write"
+  };
   AGENT_KEY_CAPABILITY_CHIPS = [
+    ["Read", "read"],
     ["Launch", "launch"],
     ["Trade", "trade"],
+    ["LP", "lp"],
     ["Transfer", "transfer"],
     ["Withdraw", "linkedTransfer"],
     ["Report", "report"]
@@ -17071,7 +17091,8 @@ function accessCell(scopes) {
   const access = agentKeyAccess(scopes);
   if (access.kind === "preset")
     return access.label;
-  return access.can.length > 0 ? access.can.join(", ") : "–";
+  const words = agentKeyAccessWords(access);
+  return words.length > 0 ? words.join(", ") : "–";
 }
 async function keysList(args, ctx) {
   const { deps, apiUrl, json } = ctx;

@@ -218,7 +218,7 @@ describe("keys list: Name and Access", () => {
     expect(embedded("legacy01")).toBe("allowed")
   })
 
-  test("a key matching neither preset reads as the web's chip words, or – when it holds none", async () => {
+  test("a key matching neither preset reads as the web's chip words, then any scope no chip names", async () => {
     const rows = tableRows(
       (
         await list([
@@ -231,11 +231,11 @@ describe("keys list: Name and Access", () => {
     )
     const access = (prefix: string) => rows.find((row) => row[0] === prefix)?.[1]
     // No label on these rows, so the blank Name cell collapses and Access is the second cell.
-    expect(access("legacyful")).toBe("Launch, Trade, Transfer, Report")
+    expect(access("legacyful")).toBe("Launch, Trade, Transfer, Report, launch:read")
     // A Write key minted before 2026-10-08 still holds transfer:write: custom, and the Transfer word
     // is the flag (D3).
-    expect(access("oldwrite1")).toBe("Launch, Trade, Transfer, Report")
-    expect(access("readonly1")).toBe("–")
+    expect(access("oldwrite1")).toBe("Read, Launch, Trade, Transfer, Report, launch:read")
+    expect(access("readonly1")).toBe("launch:read")
     expect(access("readkey01")).toBe("Read")
   })
 

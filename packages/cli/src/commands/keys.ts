@@ -4,7 +4,13 @@
  * the latter). Credential resolution is env-first, then the store, via `resolveDeviceToken`.
  */
 
-import { type AgentKeyPreset, agentKeyAccess, scopesForPreset, sortAgentKeyScopes } from "../agent-key-access"
+import {
+  type AgentKeyPreset,
+  agentKeyAccess,
+  agentKeyAccessWords,
+  scopesForPreset,
+  sortAgentKeyScopes,
+} from "../agent-key-access"
 import {
   parseArgs,
   parseExpiresInDays,
@@ -120,14 +126,16 @@ export function labelCell(label: string | undefined): string {
 
 /**
  * What a key IS, in one cell: `Read`, `Write` or `Withdraw` when its stored scopes are exactly one of the
- * web's three presets, otherwise the web key manager's chip words for what it holds, or `–` (the
- * web's own "cannot" glyph) when it holds none. The same shared classification the web reads, so
- * the two surfaces describe a key the same way (keys list Access and Name spec, 2026-09-23, D3).
+ * web's three presets, otherwise the web key manager's chip words for what it holds followed by any
+ * scope no chip names, or `–` (the web's own "cannot" glyph) when it holds nothing. The same shared
+ * classification the web reads, so the two surfaces describe a key the same way (keys list Access
+ * and Name spec, 2026-09-23, D3).
  */
 export function accessCell(scopes: readonly string[]): string {
   const access = agentKeyAccess(scopes)
   if (access.kind === "preset") return access.label
-  return access.can.length > 0 ? access.can.join(", ") : "–"
+  const words = agentKeyAccessWords(access)
+  return words.length > 0 ? words.join(", ") : "–"
 }
 
 export async function keysList(args: string[], ctx: CommandContext): Promise<number> {

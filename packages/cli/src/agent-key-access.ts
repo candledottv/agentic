@@ -165,17 +165,30 @@ export interface AgentKeyCapabilities {
   read: boolean
   launch: boolean
   trade: boolean
+  /** `lp:write`: open, add to, remove and claim Meteora DAMM v2 positions from a TEE wallet. */
+  lp: boolean
   transfer: boolean
   /** `transfer:bound`: move funds out of the wallet this key runs, to the account's own wallets. */
   linkedTransfer: boolean
   report: boolean
 }
 
+/** The one scope behind each capability. A scope in no entry here has no capability word. */
+const CAPABILITY_SCOPES = {
+  read: "account:read",
+  launch: "launch:write",
+  trade: "swap:write",
+  lp: "lp:write",
+  transfer: "transfer:write",
+  linkedTransfer: "transfer:bound",
+  report: "activity:write",
+} as const satisfies Record<keyof AgentKeyCapabilities, string>
+
 /**
  * Maps a key's raw scopes to the capabilities the portal shows in plain English: `account:read`
  * grants account-wide reading, `launch:write` grants launching, `swap:write` grants trading,
- * `transfer:write` grants transfers, `transfer:bound` grants transfers out of the bound wallet,
- * `activity:write` grants activity reporting.
+ * `lp:write` grants liquidity, `transfer:write` grants transfers, `transfer:bound` grants
+ * transfers out of the bound wallet, `activity:write` grants activity reporting.
  *
  * Derived from the STORED scopes, never from a preset name: a key issued before the Read /
  * Write presets existed keeps its scopes until revoked, matches neither preset, and must be
@@ -183,23 +196,27 @@ export interface AgentKeyCapabilities {
  */
 export function agentKeyCapabilities(scopes: readonly string[]): AgentKeyCapabilities {
   return {
-    read: scopes.includes("account:read"),
-    launch: scopes.includes("launch:write"),
-    trade: scopes.includes("swap:write"),
-    transfer: scopes.includes("transfer:write"),
-    linkedTransfer: scopes.includes("transfer:bound"),
-    report: scopes.includes("activity:write"),
+    read: scopes.includes(CAPABILITY_SCOPES.read),
+    launch: scopes.includes(CAPABILITY_SCOPES.launch),
+    trade: scopes.includes(CAPABILITY_SCOPES.trade),
+    lp: scopes.includes(CAPABILITY_SCOPES.lp),
+    transfer: scopes.includes(CAPABILITY_SCOPES.transfer),
+    linkedTransfer: scopes.includes(CAPABILITY_SCOPES.linkedTransfer),
+    report: scopes.includes(CAPABILITY_SCOPES.report),
   }
 }
 
 /**
  * The chips the web key manager row renders, in its order, each struck through when the key lacks
  * it. The CLI's Access column reads the same list for a key matching neither preset, so the two
- * surfaces cannot word or order them differently. There is no `Read` chip on either surface yet.
+ * surfaces cannot word or order them differently. Every capability has a chip: a key holding
+ * `account:read` or `lp:write` once read as if it could not read or provide liquidity (BE-1538).
  */
 export const AGENT_KEY_CAPABILITY_CHIPS = [
+  ["Read", "read"],
   ["Launch", "launch"],
   ["Trade", "trade"],
+  ["LP", "lp"],
   ["Transfer", "transfer"],
   ["Withdraw", "linkedTransfer"],
   ["Report", "report"],
@@ -208,14 +225,27 @@ export const AGENT_KEY_CAPABILITY_CHIPS = [
 /** What a key IS, for a one-cell summary: the preset word, else the chip words it holds. */
 export type AgentKeyAccess =
   | { kind: "preset"; preset: AgentKeyPreset; label: (typeof AGENT_KEY_PRESET_LABELS)[AgentKeyPreset] }
-  /** Held chip words, in chip order; empty when the key holds none of them. */
-  | { kind: "custom"; can: string[] }
+  /**
+   * `can`: held chip words, in chip order. `unnamed`: the held scopes no chip names
+   * (`launch:read`, `perps:write`, ...), sorted, so a summary never drops what a key holds.
+   */
+  | { kind: "custom"; can: string[]; unnamed: string[] }
 
 export function agentKeyAccess(scopes: readonly string[]): AgentKeyAccess {
   const preset = presetForScopes(scopes)
   if (preset) return { kind: "preset", preset, label: AGENT_KEY_PRESET_LABELS[preset] }
   const caps = agentKeyCapabilities(scopes)
-  return { kind: "custom", can: AGENT_KEY_CAPABILITY_CHIPS.filter(([, cap]) => caps[cap]).map(([word]) => word) }
+  const named: readonly string[] = Object.values(CAPABILITY_SCOPES)
+  return {
+    kind: "custom",
+    can: AGENT_KEY_CAPABILITY_CHIPS.filter(([, cap]) => caps[cap]).map(([word]) => word),
+    unnamed: sortAgentKeyScopes(scopes.filter((scope) => !named.includes(scope))),
+  }
+}
+
+/** A custom key's summary words: its chip words, then any scope no chip names. */
+export function agentKeyAccessWords(access: Extract<AgentKeyAccess, { kind: "custom" }>): string[] {
+  return [...access.can, ...access.unnamed]
 }
 
 /**
