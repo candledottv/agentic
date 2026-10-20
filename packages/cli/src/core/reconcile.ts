@@ -97,5 +97,19 @@ export function nextPollMs(startedAt: number, now: number): number | undefined {
 export function reconcileMessage(kind: CardKind, readable: boolean): string {
   const what = kind === "launch" ? "launch" : kind === "trade" || kind === "swap" ? "trade" : "action"
   const check = readable ? " Check it again with your factor," : ""
-  return `Candle could not confirm this ${what}.${check} Re-send the same request (it can never run twice), or stop tracking it.`
+  // S4 L-7: a launch re-send replays the same id and body; its dry run is not run again.
+  const launch = kind === "launch" ? " The dry run is not run again." : ""
+  return `Candle could not confirm this ${what}.${check} Re-send the same request (it can never run twice), or stop tracking it.${launch}`
+}
+
+/**
+ * S4 T-8: what a transfer's reconcile card says. S1 R-3's "re-send the same request" is true for a
+ * transfer only when the re-send is the same signed transaction, and an `embedded` one is never
+ * re-sent at all.
+ */
+export function transferReconcileMessage(source: "vault" | "embedded", id: string | undefined): string {
+  if (source === "embedded") {
+    return "Candle could not confirm this transfer, and cannot read it back by an id. Check the source wallet in an explorer, then say what you found. It is never sent again; a new transfer is a new card."
+  }
+  return `Candle could not confirm this transfer${id ? ` (${id})` : ""}. Check it by its signature, send the same signed transaction again while it can still land (never a new one), or stop tracking it.`
 }

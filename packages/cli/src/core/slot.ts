@@ -19,6 +19,13 @@
  * Key: HKDF-SHA256 over the vault DEK, salt the vault id, info `candle-core/v1/slot`; AES-256-GCM
  * with the canonical header (format, version, profile, environment, vault id, write-key prefix)
  * as associated data, so a slot copied to another profile or environment fails its tag.
+ *
+ * The Withdraw key (BE-1680, spec S4 W-1 to W-3). When the user turns transfers from the embedded
+ * wallet on, the slot also holds an optional `withdrawKey`, re-sealed in place by
+ * {@link resealCoreSlot}. Opening the slot decrypts all of it, so {@link openCoreSlot} takes a
+ * `purpose`: `"trading"` (every open but a transfer's) drops the field before it returns, after the
+ * plaintext buffer is wiped, so no window, paper run or dry run ever holds a reference to it;
+ * only `"transfer"` returns it.
  */
 import { open as openFile, readFile, rename, rm } from "node:fs/promises"
 import type { Deps } from "../deps"
@@ -68,7 +75,12 @@ export interface CoreSlotContents {
   writeKey: string
   deviceToken: string
   signers: CoreSlotSigner[]
+  /** S4 W-1: present once transfers from the embedded wallet are on. Returned for `purpose: "transfer"` only. */
+  withdrawKey?: string
 }
+
+/** Why the slot is opened (W-3): only a transfer receives the Withdraw key. */
+export type CoreSlotPurpose = "trading" | "transfer"
 
 export class CoreSlotError extends Error {
   constructor(
@@ -176,6 +188,8 @@ export async function openCoreSlot(input: {
   vault: SlotVault
   profile: string
   environment: CoreEnvironment
+  /** W-3: `"trading"` (the default) drops the Withdraw key; only `"transfer"` returns it. */
+  purpose?: CoreSlotPurpose
 }): Promise<CoreSlotContents> {
   const file = await readCoreSlotHeader(input.paths)
   if (file === undefined) throw new CoreSlotError("CORE_SLOT_MISSING", "This profile has no core slot.")
@@ -199,13 +213,61 @@ export async function openCoreSlot(input: {
     if (
       typeof parsed.writeKey !== "string" ||
       typeof parsed.deviceToken !== "string" ||
-      !Array.isArray(parsed.signers)
+      !Array.isArray(parsed.signers) ||
+      (parsed.withdrawKey !== undefined && typeof parsed.withdrawKey !== "string")
     ) {
       throw new CoreSlotError("CORE_SLOT_INVALID", "The core slot's contents are not in the expected shape.")
     }
-    return { writeKey: parsed.writeKey, deviceToken: parsed.deviceToken, signers: parsed.signers }
+    const contents: CoreSlotContents = {
+      writeKey: parsed.writeKey,
+      deviceToken: parsed.deviceToken,
+      signers: parsed.signers,
+    }
+    if (input.purpose === "transfer" && parsed.withdrawKey !== undefined) contents.withdrawKey = parsed.withdrawKey
+    // W-3: the parsed object is the only other reference to the Withdraw key; drop it before return.
+    delete parsed.withdrawKey
+    return contents
   } finally {
     wipe(plain)
+  }
+}
+
+/**
+ * W-2: re-seals the slot with `withdrawKey`, or without it when undefined, under the same vault and
+ * header. Written like the first seal: a temporary file, fsync, then an atomic rename, so a crash
+ * leaves either the old slot or the new one.
+ */
+export async function resealCoreSlot(input: {
+  paths: CorePaths
+  vault: SlotVault
+  profile: string
+  environment: CoreEnvironment
+  withdrawKey: string | undefined
+  now: () => number
+}): Promise<void> {
+  const file = await readCoreSlotHeader(input.paths)
+  if (file === undefined) throw new CoreSlotError("CORE_SLOT_MISSING", "This profile has no core slot.")
+  const contents = await openCoreSlot({ ...input, purpose: "transfer" })
+  if (input.withdrawKey === undefined) delete contents.withdrawKey
+  else contents.withdrawKey = input.withdrawKey
+  const sealed = await sealCoreSlot(input.vault, headerOf(file), contents, new Date(input.now()).toISOString())
+  await writeSlotFile(input.paths, sealed)
+}
+
+async function writeSlotFile(paths: CorePaths, file: CoreSlotFile): Promise<void> {
+  const temp = `${paths.slot}.tmp-${b64u(crypto.getRandomValues(new Uint8Array(6)))}`
+  const handle = await openFile(temp, "wx", 0o600)
+  try {
+    await handle.write(`${JSON.stringify(file)}\n`)
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+  try {
+    await rename(temp, paths.slot)
+  } catch (error) {
+    await rm(temp, { force: true })
+    throw error
   }
 }
 
@@ -310,20 +372,7 @@ export async function moveProfileToCore(input: {
     { writeKey, deviceToken, signers },
     new Date(input.now()).toISOString(),
   )
-  const temp = `${input.paths.slot}.tmp-${b64u(crypto.getRandomValues(new Uint8Array(6)))}`
-  const handle = await openFile(temp, "wx", 0o600)
-  try {
-    await handle.write(`${JSON.stringify(file)}\n`)
-    await handle.sync()
-  } finally {
-    await handle.close()
-  }
-  try {
-    await rename(temp, input.paths.slot)
-  } catch (error) {
-    await rm(temp, { force: true })
-    throw error
-  }
+  await writeSlotFile(input.paths, file)
 
   await deps.updateProfile(profile, { coreOwned: true })
   await removeLegacyCopies(deps, deviceToken, writeKeyPrefix, writeKey)

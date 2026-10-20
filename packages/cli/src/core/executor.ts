@@ -29,6 +29,32 @@ const PENDING = new Set([
 const REFUSAL =
   /^(MCP_VALIDATION|KEY_LIMIT_REACHED|SCOPE_MISSING|AGENT_TRADING_DISABLED|TRADING_DISABLED|PROFILE_PAUSED|UNAUTHORIZED|FORBIDDEN|INVALID_[A-Z_]+|IDEMPOTENCY_CONFLICT)$/
 
+/**
+ * S4 L-7 (BE-1680): the headless launch route's own refusals, each confirmed by V-S4-3 to come back
+ * in the POST's own response before any chain step, so nothing of the user's ran on chain. Read
+ * against `apps/api/src/routes/launch-headless.ts` at staging `cc372a5a`:
+ *
+ *   - `VALIDATION_FAILED`, `QUOTE_PAIR_UNKNOWN`: the body validator, before `begin`.
+ *   - `DEV_BUY_TOO_HIGH`: the platform ceiling before `begin`, or the key's spend limit after it.
+ *   - `DAILY_CAP_REACHED`, `EXCLUSIVE_NOT_ELIGIBLE`, `AGENT_WALLET_NOT_EMBEDDED`: gates after `begin`.
+ *   - `TRANSACTION_TOO_LARGE`: a Solana build-time error, before signing or broadcast.
+ *   - `INSUFFICIENT_OWNER_BALANCE`: every path refuses before the owner's transaction is sent; a
+ *     launch that was already broadcast answers `LAUNCH_FAILED` instead. On Hood a platform-paid
+ *     splitter deploy may already be on chain, which is Candle's spend, not the user's.
+ *
+ * Left out because V-S4-3 found the real route never returns them: `TIER_REQUIRED` (self and
+ * atomic routes only) and every `IMAGE_*` code (the real route reports a bad image as
+ * `LAUNCH_FAILED`, a 500). Those stay `unknown`, as any unlisted code does.
+ */
+const LAUNCH_REFUSAL =
+  /^(VALIDATION_FAILED|DEV_BUY_TOO_HIGH|DAILY_CAP_REACHED|AGENT_WALLET_NOT_EMBEDDED|QUOTE_PAIR_UNKNOWN|EXCLUSIVE_NOT_ELIGIBLE|TRANSACTION_TOO_LARGE|INSUFFICIENT_OWNER_BALANCE)$/
+const LAUNCH_TOOLS = new Set(["candle_launch_token", "candle_launch_and_seed"])
+
+/** Whether `code` from `tool` is a refusal at admission: nothing was executed. */
+export function isRefusal(code: string, tool?: string): boolean {
+  return REFUSAL.test(code) || (tool !== undefined && LAUNCH_TOOLS.has(tool) && LAUNCH_REFUSAL.test(code))
+}
+
 /** A tool result exactly as `candle mcp` would hand it to an MCP client. */
 export interface ToolResult {
   isError?: boolean
@@ -161,7 +187,7 @@ export function mcpExecutor(options: { apiUrl: string; fetch?: typeof fetch }): 
       if (answer.kind === "refused") return { state: "refused", error: { code: answer.code, message: answer.message } }
       // The request may have left: a throw here is not proof that nothing moved.
       if (answer.kind === "thrown")
-        return { state: "unknown", error: { code: "EXECUTOR_TRANSPORT", message: answer.message } }
+        return { state: "unknown", error: { code: "EXECUTOR_TRANSPORT", message: answer.message }, transient: true }
       return outcomeOf(answer.result, serverErrorStatus, tool)
     },
   }
@@ -192,6 +218,7 @@ export function outcomeOf(
       return {
         state: "unknown",
         error: { code: "UNREADABLE_RESULT", message: "The tool answered with something that is not JSON." },
+        transient: true,
       }
     const job = record(payload.job)
     const status = String(payload.status ?? job?.status ?? "").toLowerCase()
@@ -215,15 +242,15 @@ export function outcomeOf(
     typeof error.code === "string" ? error.code : typeof payload?.code === "string" ? payload.code : undefined
   const message = typeof error.message === "string" ? error.message : text.slice(0, 500)
   if (serverErrorStatus !== undefined && serverErrorStatus >= 500) {
-    return { state: "unknown", error: { code: code ?? "EXECUTOR_SERVER_ERROR", message } }
+    return { state: "unknown", error: { code: code ?? "EXECUTOR_SERVER_ERROR", message }, transient: true }
   }
   if (body === undefined || code === undefined || code === "MCP_TRANSPORT") {
-    return { state: "unknown", error: { code: code ?? "UNREADABLE_RESULT", message } }
+    return { state: "unknown", error: { code: code ?? "UNREADABLE_RESULT", message }, transient: true }
   }
   // Unrecognised errors do not prove the request never executed.
-  return REFUSAL.test(code)
+  return isRefusal(code, tool)
     ? { state: "refused", error: { code, message }, result: body }
-    : { state: "unknown", error: { code, message } }
+    : { state: "unknown", error: { code, message }, result: body }
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

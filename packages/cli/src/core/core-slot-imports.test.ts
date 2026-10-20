@@ -50,7 +50,14 @@ describe("the core slot loader has one importer", () => {
   test("commands/core.ts re-exports nothing from the slot module", () => {
     const source = withoutComments(readFileSync(ALLOWED_IMPORTER, "utf8"))
     expect(source).not.toMatch(/^\s*export\s+(?:\*|\{[^}]*\})\s*from/m)
-    for (const name of ["openCoreSlot", "sealCoreSlot", "moveProfileToCore", "finishCoreMove", "readCoreSlotHeader"]) {
+    for (const name of [
+      "openCoreSlot",
+      "sealCoreSlot",
+      "resealCoreSlot",
+      "moveProfileToCore",
+      "finishCoreMove",
+      "readCoreSlotHeader",
+    ]) {
       expect(source).not.toMatch(new RegExp(`export[^\\n]*\\b${name}\\b`))
     }
   })

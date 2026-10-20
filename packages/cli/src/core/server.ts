@@ -73,6 +73,14 @@ export const METHOD_ROLES: Readonly<Record<string, { view: Access; harness: Acce
   "layout.set": { view: "yes", harness: "no" },
   subscribe: { view: "yes", harness: "own" },
   unsubscribe: { view: "yes", harness: "own" },
+  // S4 (BE-1680), the Architecture delta: view only, every one. A harness cannot upload an image
+  // (invariant 16), run a launch's dry run for the user, or read the user's transfer sources and
+  // destinations, let alone prepare a transfer (K-3, invariant 11).
+  "launch.uploadImage": { view: "yes", harness: "no" },
+  "launch.dryRun": { view: "yes", harness: "no" },
+  "transfer.sources": { view: "yes", harness: "no" },
+  "transfer.destinations": { view: "yes", harness: "no" },
+  "transfer.prepare": { view: "yes", harness: "no" },
 }
 
 /** Longest socket path every supported platform accepts (macOS `sun_path` is 104 bytes with the NUL). */

@@ -26,6 +26,13 @@ const HARNESS: CardOrigin = {
 }
 const OTHER: CardOrigin = { clientId: "c_other", role: "harness", clientName: "Codex" }
 const MINT = "So11111111111111111111111111111111111111112"
+const DRY_RUN_PASS = {
+  success: true,
+  dryRun: true,
+  launchWallet: "Launch1111111111111111111111111111111111111",
+  resolved: { chain: "solana", quoteAsset: "sol", mode: "open", stakerAllocationBps: 50 },
+  checks: { image: "ok" },
+}
 
 const dirs: string[] = []
 afterEach(async () => {
@@ -82,6 +89,8 @@ async function setup(
   const executor = {
     async execute(tool: string, params: Record<string, unknown>, writeKey: string) {
       calls.push({ tool, params, writeKey, journalAtCall: await readFile(journalPath, "utf8") })
+      // S4 L-4: a launch's dry run passes unless the test says otherwise.
+      if (params.dryRun === true && !opts.outcome) return { state: "succeeded", result: DRY_RUN_PASS } as const
       return opts.outcome ? opts.outcome(calls.length) : ({ state: "succeeded", result: { success: true } } as const)
     },
   }
@@ -157,7 +166,7 @@ describe("proposing (K-1, K-2, K-3)", () => {
     expect(hashCard({ ...base, params: { a: 1, b: 2 } })).toBe(hashCard({ ...base, params: { b: 2, a: 1 } }))
   })
 
-  test("T-6: a harness cannot propose a transfer; a view cannot either in this build", async () => {
+  test("T-6: a harness cannot propose a transfer; a view's transfer comes only from the transfer form (S4 T-1)", async () => {
     const s = await setup()
     await expect(
       s.book.propose({ tool: "candle_transfer", kind: "transfer", params: { to: "x" } }, HARNESS),
@@ -165,7 +174,7 @@ describe("proposing (K-1, K-2, K-3)", () => {
       code: "TRANSFER_USER_ONLY",
     })
     await expect(s.book.propose({ tool: "candle_sweep", params: {} }, VIEW)).rejects.toMatchObject({
-      code: "TRANSFER_NOT_IN_THIS_BUILD",
+      code: "TRANSFER_FORM_ONLY",
     })
   })
 
@@ -314,7 +323,8 @@ describe("approving (K-5, K-7)", () => {
     ).rejects.toMatchObject({
       code: "FACTOR_REQUIRED",
     })
-    expect(s.calls).toEqual([])
+    // Only the launch's dry run ran (inside the window, S4 L-4); nothing live was sent.
+    expect(s.calls.map((call) => call.params.dryRun)).toEqual([true])
     // With the factor, the launch runs.
     expect(
       (await s.book.approve({ cardId: launch.cardId, cardHash: launch.cardHash, factor: RIGHT }, VIEW.clientId))

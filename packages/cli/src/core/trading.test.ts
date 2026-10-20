@@ -61,7 +61,8 @@ describe("TradingState", () => {
     await expect(s.state.turnOn({ type: "passphrase", value: "nope-example" })).rejects.toMatchObject({
       code: "FACTOR_REJECTED",
     })
-    await expect(s.state.turnOn({ type: "touch-id" })).rejects.toMatchObject({ code: "FACTOR_NOT_IN_THIS_BUILD" })
+    // S4 F-2: a factor this machine cannot use is unavailable, never a rejection, and counts nothing.
+    await expect(s.state.turnOn({ type: "touch-id" })).rejects.toMatchObject({ code: "VAULT_FACTOR_UNAVAILABLE" })
     expect(s.log).toEqual([])
     expect(s.state.tradingOn()).toBe(false)
   })
@@ -131,6 +132,8 @@ describe("TradingState", () => {
     expect(parseFactor(undefined)).toBeUndefined()
     expect(parseFactor({ type: "passphrase", value: "x" })).toEqual({ type: "passphrase", value: "x" })
     expect(parseFactor({ type: "touch-id", value: "ignored" })).toEqual({ type: "touch-id" })
+    expect(parseFactor({ type: "security-key", pin: "1234" })).toEqual({ type: "security-key", pin: "1234" })
+    expect(parseFactor({ type: "security-key" })).toEqual({ type: "security-key" })
     expect(() => parseFactor({ type: "stored-yes" })).toThrow()
     expect(() => parseFactor("passphrase")).toThrow()
   })

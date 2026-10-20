@@ -37285,7 +37285,7 @@ var init_client2 = __esm(() => {
 function defaultQuoteId(chain2) {
   return chain2 === "hood" ? "eth" : "sol";
 }
-function decimalToRaw2(amount, decimals) {
+function decimalToRaw3(amount, decimals) {
   if (!Number.isInteger(decimals) || decimals < 0) {
     throw new Error(`decimals must be a non-negative integer, got ${decimals}`);
   }
@@ -37638,7 +37638,7 @@ function quoteIdDecimals(quoteAsset, chain2, extra) {
 }
 function rawOrError(amount, decimals, extra) {
   try {
-    return { raw: decimalToRaw2(amount, decimals) };
+    return { raw: decimalToRaw3(amount, decimals) };
   } catch (err) {
     return { err: errText(err instanceof Error ? err.message : String(err), extra) };
   }
@@ -38174,8 +38174,8 @@ function canonical(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(canonical).join(",")}]`;
-  const record = value;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+  const record2 = value;
+  return `{${Object.keys(record2).sort().map((key) => `${JSON.stringify(key)}:${canonical(record2[key])}`).join(",")}}`;
 }
 function sameValue(a, b) {
   return canonical(a) === canonical(b);
@@ -39421,7 +39421,7 @@ var init_hyperliquid_manage = __esm(() => {
 });
 
 // ../mcp/src/hyperliquid-markets.ts
-function unavailable() {
+function unavailable2() {
   throw new PerpsMarketError("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
 }
 function usage3(message) {
@@ -39453,7 +39453,7 @@ function fixed(value, places) {
 function at(values, index) {
   const value = values[index];
   if (value === undefined)
-    return unavailable();
+    return unavailable2();
   return value;
 }
 function integer(value) {
@@ -39461,40 +39461,40 @@ function integer(value) {
 }
 function parseMarkets(value) {
   if (!Array.isArray(value) || value.length !== 2)
-    return unavailable();
+    return unavailable2();
   const [meta, ctxs] = value;
   if (!object(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
-    return unavailable();
+    return unavailable2();
   for (const row of meta.universe) {
     if (!object(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
-      return unavailable();
+      return unavailable2();
     for (const key of ["isDelisted", "onlyIsolated"])
       if (row[key] !== undefined && typeof row[key] !== "boolean")
-        return unavailable();
+        return unavailable2();
     if (row.marginTableId !== undefined && !integer(row.marginTableId))
-      return unavailable();
+      return unavailable2();
   }
   for (const ctx of ctxs) {
     if (!object(ctx))
-      return unavailable();
+      return unavailable2();
     for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
       if (ctx[key] !== undefined && ctx[key] !== null && !decimal2(ctx[key]))
-        return unavailable();
+        return unavailable2();
     }
     if (ctx.impactPxs != null && (!Array.isArray(ctx.impactPxs) || ctx.impactPxs.length !== 2 || !ctx.impactPxs.every(decimal2)))
-      return unavailable();
+      return unavailable2();
   }
   const marginTables = new Map;
   if (meta.marginTables !== undefined) {
     if (!Array.isArray(meta.marginTables))
-      return unavailable();
+      return unavailable2();
     for (const entry of meta.marginTables) {
       if (!Array.isArray(entry) || !integer(entry[0]) || !object(entry[1]) || !Array.isArray(entry[1].marginTiers))
-        return unavailable();
+        return unavailable2();
       const tiers = [];
       for (const tier of entry[1].marginTiers) {
         if (!object(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
-          return unavailable();
+          return unavailable2();
         tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
       }
       marginTables.set(entry[0], tiers);
@@ -39512,10 +39512,10 @@ async function info(fetcher, network, body) {
       redirect: "error"
     });
     if (!response.ok)
-      return unavailable();
+      return unavailable2();
     return JSON.parse(await response.text());
   } catch {
-    return unavailable();
+    return unavailable2();
   }
 }
 async function readHyperliquidMarkets(fetcher, network) {
@@ -39532,7 +39532,7 @@ function perpsMarketGate(meta, ctx, minOpenInterestUsd) {
   const divisor = 10n ** 30n;
   const micros = (oi * mark + divisor - 1n) / divisor;
   if (micros > BigInt(Number.MAX_SAFE_INTEGER))
-    return unavailable();
+    return unavailable2();
   if (minOpenInterestUsd > 0 && micros < BigInt(minOpenInterestUsd) * 1000000n)
     return { tradeable: false, reason: "minOpenInterest" };
   return { tradeable: true, reason: null };
@@ -39628,17 +39628,17 @@ class PerpsMarketReader {
       const [predicted, cap] = await Promise.all([
         info(this.opts.fetcher, this.opts.network, { type: "predictedFundings" }).then((value2) => {
           if (!Array.isArray(value2))
-            return unavailable();
+            return unavailable2();
           const map = new Map;
           for (const entry of value2) {
             if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1]))
-              return unavailable();
+              return unavailable2();
             for (const venue of entry[1]) {
               if (!Array.isArray(venue) || typeof venue[0] !== "string")
-                return unavailable();
+                return unavailable2();
               if (venue[0] === "HlPerp" && venue[1] !== null) {
                 if (!object(venue[1]) || !decimal2(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
-                  return unavailable();
+                  return unavailable2();
                 map.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
               }
             }
@@ -39650,7 +39650,7 @@ class PerpsMarketReader {
         }),
         info(this.opts.fetcher, this.opts.network, { type: "perpsAtOpenInterestCap" }).then((value2) => {
           if (!Array.isArray(value2) || !value2.every((v) => typeof v === "string"))
-            return unavailable();
+            return unavailable2();
           return new Set(value2);
         }).catch(() => {
           warnings.push("Open-interest caps unavailable.");
@@ -39779,15 +39779,15 @@ class PerpsMarketReader {
       ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
     });
     if (!object(value) || value.coin !== canonical2 || !integer(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
-      return unavailable();
+      return unavailable2();
     const sides = [];
     for (const side of value.levels) {
       if (!Array.isArray(side))
-        return unavailable();
+        return unavailable2();
       const levels = [];
       for (const level of side) {
         if (!object(level) || nonnegative(level.px) === null || nonnegative(level.sz) === null || !integer(level.n))
-          return unavailable();
+          return unavailable2();
         levels.push({ px: level.px, sz: level.sz, n: level.n });
       }
       sides.push(levels);
@@ -39819,11 +39819,11 @@ class PerpsMarketReader {
       req: { coin: canonical2, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
     });
     if (!Array.isArray(value))
-      return unavailable();
+      return unavailable2();
     const candles = [];
     for (const c of value) {
       if (!object(c) || !integer(c.t) || !integer(c.T) || !integer(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative(v) !== null) || c.s !== canonical2 || c.i !== window.interval)
-        return unavailable();
+        return unavailable2();
       if (c.t <= window.endTime && c.T >= window.startTime)
         candles.push({
           t: c.t,
@@ -39904,7 +39904,7 @@ function isTime(value) {
 function invalid(field, message) {
   return new PerpsHistoryError("VALIDATION_FAILED", message, { field });
 }
-function unavailable2(message, retryAfterMs2) {
+function unavailable3(message, retryAfterMs2) {
   return new PerpsHistoryError("PERPS_UNAVAILABLE", message, {
     retryable: true,
     ...retryAfterMs2 !== undefined ? { retryAfterMs: retryAfterMs2 } : {}
@@ -39949,8 +39949,8 @@ function canonical2(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(canonical2).join(",")}]`;
-  const record = value;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical2(record[key])}`).join(",")}}`;
+  const record2 = value;
+  return `{${Object.keys(record2).sort().map((key) => `${JSON.stringify(key)}:${canonical2(record2[key])}`).join(",")}}`;
 }
 function isDecimalString(value) {
   return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
@@ -39958,14 +39958,14 @@ function isDecimalString(value) {
 function asFill(raw) {
   const row = raw;
   if (!row || typeof row !== "object" || typeof row.coin !== "string" || !isTime(row.time) || !Number.isSafeInteger(row.tid) || !Number.isSafeInteger(row.oid) || !isDecimalString(row.px) || !isDecimalString(row.sz) || typeof row.side !== "string" || !isDecimalString(row.closedPnl) || !isDecimalString(row.fee) || row.builderFee !== undefined && !isDecimalString(row.builderFee))
-    throw unavailable2("Hyperliquid returned a fill this client cannot read");
+    throw unavailable3("Hyperliquid returned a fill this client cannot read");
   return row;
 }
 function asFunding(raw) {
   const row = raw;
   const delta = row?.delta;
   if (!row || typeof row !== "object" || !isTime(row.time) || typeof row.hash !== "string" || !delta || typeof delta !== "object" || typeof delta.coin !== "string" || !isDecimalString(delta.usdc) || !isDecimalString(delta.fundingRate) || !isDecimalString(delta.szi))
-    throw unavailable2("Hyperliquid returned a funding payment this client cannot read");
+    throw unavailable3("Hyperliquid returned a funding payment this client cannot read");
   return row;
 }
 function identity(kind, row) {
@@ -39992,7 +39992,7 @@ async function postInfo(req, body, what) {
     });
   } catch (err) {
     const aborted = err instanceof Error && err.name === "AbortError";
-    throw unavailable2(aborted ? `Hyperliquid did not answer the ${what} read in time; retry shortly` : `Hyperliquid could not be reached for the ${what} read; retry shortly`);
+    throw unavailable3(aborted ? `Hyperliquid did not answer the ${what} read in time; retry shortly` : `Hyperliquid could not be reached for the ${what} read; retry shortly`);
   } finally {
     if (timer)
       clearTimeout(timer);
@@ -40001,14 +40001,14 @@ async function postInfo(req, body, what) {
     if (res.status === 429) {
       const header = res.headers?.get("retry-after") ?? null;
       const seconds = header !== null && /^[0-9]{1,6}$/.test(header.trim()) ? Number(header.trim()) : undefined;
-      throw unavailable2(`Hyperliquid rate-limited the ${what} read${seconds !== undefined ? `; retry after ${seconds}s` : "; retry shortly"}`, seconds !== undefined ? seconds * 1000 : undefined);
+      throw unavailable3(`Hyperliquid rate-limited the ${what} read${seconds !== undefined ? `; retry after ${seconds}s` : "; retry shortly"}`, seconds !== undefined ? seconds * 1000 : undefined);
     }
-    throw unavailable2(`Hyperliquid answered the ${what} read with HTTP ${res.status}; retry shortly`);
+    throw unavailable3(`Hyperliquid answered the ${what} read with HTTP ${res.status}; retry shortly`);
   }
   try {
     return JSON.parse(await res.text());
   } catch {
-    throw unavailable2(`Hyperliquid returned an unreadable ${what} response`);
+    throw unavailable3(`Hyperliquid returned an unreadable ${what} response`);
   }
 }
 async function mainPerpCoins(req) {
@@ -40016,10 +40016,10 @@ async function mainPerpCoins(req) {
   try {
     universe = (await readHyperliquidMarkets(req.fetch, req.network)).universe;
   } catch {
-    throw unavailable2("Hyperliquid's market list could not be read; history is not reported without it");
+    throw unavailable3("Hyperliquid's market list could not be read; history is not reported without it");
   }
   if (universe.length === 0)
-    throw unavailable2("Hyperliquid's market list could not be read; history is not reported without it");
+    throw unavailable3("Hyperliquid's market list could not be read; history is not reported without it");
   return new Set(universe.map((market) => market.name));
 }
 function resolveWindow(req) {
@@ -40102,7 +40102,7 @@ async function readPerpsHistoryPage(req) {
       const raw = await postInfo(req, body, kind === "fills" ? "fills" : "funding");
       requests++;
       if (!Array.isArray(raw))
-        throw unavailable2(`Hyperliquid returned an unreadable ${kind} response`);
+        throw unavailable3(`Hyperliquid returned an unreadable ${kind} response`);
       const rows = raw.map((r) => kind === "fills" ? asFill(r) : asFunding(r));
       const keyed = rows.map((row) => ({ row, id: identity(kind, row) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const full = rows.length >= max;
@@ -40207,12 +40207,12 @@ function perpsRiskProblem(t) {
   return null;
 }
 function perpsRiskFromLimits(body) {
-  const record = isRecord2(body) ? body : {};
-  const reported = "perpsRisk" in record || "perpsRiskEffective" in record;
-  const stored = isRecord2(record.perpsRisk) ? pickSettings(record.perpsRisk) : null;
+  const record2 = isRecord2(body) ? body : {};
+  const reported = "perpsRisk" in record2 || "perpsRiskEffective" in record2;
+  const stored = isRecord2(record2.perpsRisk) ? pickSettings(record2.perpsRisk) : null;
   if (!reported)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" }, stored };
-  const effective = isRecord2(record.perpsRiskEffective) ? effectivePerpsRisk(pickSettings(record.perpsRiskEffective)) : effectivePerpsRisk(stored);
+  const effective = isRecord2(record2.perpsRiskEffective) ? effectivePerpsRisk(pickSettings(record2.perpsRiskEffective)) : effectivePerpsRisk(stored);
   if (perpsRiskProblem(effective) !== null)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" }, stored };
   const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
@@ -41758,7 +41758,7 @@ function swapBody(args) {
   if (decimals === undefined) {
     throw new Error(`Unknown decimals for base asset "${from}". Pass amountRaw instead.`);
   }
-  return { ...rest, amountRaw: decimalToRaw2(amount, decimals) };
+  return { ...rest, amountRaw: decimalToRaw3(amount, decimals) };
 }
 function buildRequest(name, args, cfg) {
   const base2 = cfg.apiUrl.replace(/\/$/, "");
@@ -66254,7 +66254,7 @@ function intersection2(left, right) {
     right
   });
 }
-function record3(keyType, valueType, params) {
+function record4(keyType, valueType, params) {
   return new ZodRecord3({
     type: "record",
     keyType,
@@ -67000,7 +67000,7 @@ var init_types4 = __esm(() => {
   });
   FormElicitationCapabilitySchema = intersection2(object5({
     applyDefaults: boolean3().optional()
-  }), record3(string3(), unknown2()));
+  }), record4(string3(), unknown2()));
   ElicitationCapabilitySchema = preprocess((value) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       if (Object.keys(value).length === 0) {
@@ -67011,7 +67011,7 @@ var init_types4 = __esm(() => {
   }, intersection2(object5({
     form: FormElicitationCapabilitySchema.optional(),
     url: AssertObjectSchema2.optional()
-  }), record3(string3(), unknown2()).optional()));
+  }), record4(string3(), unknown2()).optional()));
   ClientTasksCapabilitySchema = looseObject({
     list: AssertObjectSchema2.optional(),
     cancel: AssertObjectSchema2.optional(),
@@ -67034,7 +67034,7 @@ var init_types4 = __esm(() => {
     }).optional()
   });
   ClientCapabilitiesSchema2 = object5({
-    experimental: record3(string3(), AssertObjectSchema2).optional(),
+    experimental: record4(string3(), AssertObjectSchema2).optional(),
     sampling: object5({
       context: AssertObjectSchema2.optional(),
       tools: AssertObjectSchema2.optional()
@@ -67055,7 +67055,7 @@ var init_types4 = __esm(() => {
     params: InitializeRequestParamsSchema2
   });
   ServerCapabilitiesSchema2 = object5({
-    experimental: record3(string3(), AssertObjectSchema2).optional(),
+    experimental: record4(string3(), AssertObjectSchema2).optional(),
     logging: AssertObjectSchema2.optional(),
     completions: AssertObjectSchema2.optional(),
     prompts: object5({
@@ -67155,7 +67155,7 @@ var init_types4 = __esm(() => {
   ResourceContentsSchema2 = object5({
     uri: string3(),
     mimeType: optional2(string3()),
-    _meta: record3(string3(), unknown2()).optional()
+    _meta: record4(string3(), unknown2()).optional()
   });
   TextResourceContentsSchema2 = ResourceContentsSchema2.extend({
     text: string3()
@@ -67259,7 +67259,7 @@ var init_types4 = __esm(() => {
   });
   GetPromptRequestParamsSchema2 = BaseRequestParamsSchema2.extend({
     name: string3(),
-    arguments: record3(string3(), string3()).optional()
+    arguments: record4(string3(), string3()).optional()
   });
   GetPromptRequestSchema2 = RequestSchema2.extend({
     method: literal2("prompts/get"),
@@ -67269,34 +67269,34 @@ var init_types4 = __esm(() => {
     type: literal2("text"),
     text: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record3(string3(), unknown2()).optional()
+    _meta: record4(string3(), unknown2()).optional()
   });
   ImageContentSchema2 = object5({
     type: literal2("image"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record3(string3(), unknown2()).optional()
+    _meta: record4(string3(), unknown2()).optional()
   });
   AudioContentSchema2 = object5({
     type: literal2("audio"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record3(string3(), unknown2()).optional()
+    _meta: record4(string3(), unknown2()).optional()
   });
   ToolUseContentSchema = object5({
     type: literal2("tool_use"),
     name: string3(),
     id: string3(),
-    input: record3(string3(), unknown2()),
-    _meta: record3(string3(), unknown2()).optional()
+    input: record4(string3(), unknown2()),
+    _meta: record4(string3(), unknown2()).optional()
   });
   EmbeddedResourceSchema2 = object5({
     type: literal2("resource"),
     resource: union2([TextResourceContentsSchema2, BlobResourceContentsSchema2]),
     annotations: AnnotationsSchema.optional(),
-    _meta: record3(string3(), unknown2()).optional()
+    _meta: record4(string3(), unknown2()).optional()
   });
   ResourceLinkSchema2 = ResourceSchema2.extend({
     type: literal2("resource_link")
@@ -67336,17 +67336,17 @@ var init_types4 = __esm(() => {
     description: string3().optional(),
     inputSchema: object5({
       type: literal2("object"),
-      properties: record3(string3(), AssertObjectSchema2).optional(),
+      properties: record4(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
     }).catchall(unknown2()),
     outputSchema: object5({
       type: literal2("object"),
-      properties: record3(string3(), AssertObjectSchema2).optional(),
+      properties: record4(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
     }).catchall(unknown2()).optional(),
     annotations: ToolAnnotationsSchema2.optional(),
     execution: ToolExecutionSchema.optional(),
-    _meta: record3(string3(), unknown2()).optional()
+    _meta: record4(string3(), unknown2()).optional()
   });
   ListToolsRequestSchema2 = PaginatedRequestSchema2.extend({
     method: literal2("tools/list")
@@ -67356,7 +67356,7 @@ var init_types4 = __esm(() => {
   });
   CallToolResultSchema2 = ResultSchema2.extend({
     content: array2(ContentBlockSchema2).default([]),
-    structuredContent: record3(string3(), unknown2()).optional(),
+    structuredContent: record4(string3(), unknown2()).optional(),
     isError: boolean3().optional()
   });
   CompatibilityCallToolResultSchema2 = CallToolResultSchema2.or(ResultSchema2.extend({
@@ -67364,7 +67364,7 @@ var init_types4 = __esm(() => {
   }));
   CallToolRequestParamsSchema2 = TaskAugmentedRequestParamsSchema.extend({
     name: string3(),
-    arguments: record3(string3(), unknown2()).optional()
+    arguments: record4(string3(), unknown2()).optional()
   });
   CallToolRequestSchema2 = RequestSchema2.extend({
     method: literal2("tools/call"),
@@ -67413,7 +67413,7 @@ var init_types4 = __esm(() => {
     content: array2(ContentBlockSchema2).default([]),
     structuredContent: object5({}).loose().optional(),
     isError: boolean3().optional(),
-    _meta: record3(string3(), unknown2()).optional()
+    _meta: record4(string3(), unknown2()).optional()
   });
   SamplingContentSchema = discriminatedUnion("type", [TextContentSchema2, ImageContentSchema2, AudioContentSchema2]);
   SamplingMessageContentBlockSchema = discriminatedUnion("type", [
@@ -67426,7 +67426,7 @@ var init_types4 = __esm(() => {
   SamplingMessageSchema2 = object5({
     role: RoleSchema,
     content: union2([SamplingMessageContentBlockSchema, array2(SamplingMessageContentBlockSchema)]),
-    _meta: record3(string3(), unknown2()).optional()
+    _meta: record4(string3(), unknown2()).optional()
   });
   CreateMessageRequestParamsSchema2 = TaskAugmentedRequestParamsSchema.extend({
     messages: array2(SamplingMessageSchema2),
@@ -67539,7 +67539,7 @@ var init_types4 = __esm(() => {
     message: string3(),
     requestedSchema: object5({
       type: literal2("object"),
-      properties: record3(string3(), PrimitiveSchemaDefinitionSchema2),
+      properties: record4(string3(), PrimitiveSchemaDefinitionSchema2),
       required: array2(string3()).optional()
     })
   });
@@ -67563,7 +67563,7 @@ var init_types4 = __esm(() => {
   });
   ElicitResultSchema2 = ResultSchema2.extend({
     action: _enum(["accept", "decline", "cancel"]),
-    content: preprocess((val) => val === null ? undefined : val, record3(string3(), union2([string3(), number3(), boolean3(), array2(string3())])).optional())
+    content: preprocess((val) => val === null ? undefined : val, record4(string3(), union2([string3(), number3(), boolean3(), array2(string3())])).optional())
   });
   ResourceTemplateReferenceSchema2 = object5({
     type: literal2("ref/resource"),
@@ -67580,7 +67580,7 @@ var init_types4 = __esm(() => {
       value: string3()
     }),
     context: object5({
-      arguments: record3(string3(), string3()).optional()
+      arguments: record4(string3(), string3()).optional()
     }).optional()
   });
   CompleteRequestSchema2 = RequestSchema2.extend({
@@ -67597,7 +67597,7 @@ var init_types4 = __esm(() => {
   RootSchema2 = object5({
     uri: string3().startsWith("file://"),
     name: string3().optional(),
-    _meta: record3(string3(), unknown2()).optional()
+    _meta: record4(string3(), unknown2()).optional()
   });
   ListRootsRequestSchema2 = RequestSchema2.extend({
     method: literal2("roots/list"),
@@ -70054,7 +70054,7 @@ Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv �
 init_client();
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod12, readFile as readFile16, realpath as realpath2, rename as rename11, unlink, writeFile as writeFile10 } from "node:fs/promises";
+import { chmod as chmod13, readFile as readFile17, realpath as realpath2, rename as rename13, unlink, writeFile as writeFile12 } from "node:fs/promises";
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -72097,10 +72097,11 @@ async function completion(args, ctx) {
 }
 
 // src/commands/core.ts
+init_agent_key_access();
 init_args();
 init_client();
 import { closeSync, writeSync } from "node:fs";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 
 // src/core/cards.ts
 init_render();
@@ -72254,7 +72255,14 @@ function nextPollMs(startedAt, now) {
 function reconcileMessage(kind, readable) {
   const what = kind === "launch" ? "launch" : kind === "trade" || kind === "swap" ? "trade" : "action";
   const check = readable ? " Check it again with your factor," : "";
-  return `Candle could not confirm this ${what}.${check} Re-send the same request (it can never run twice), or stop tracking it.`;
+  const launch = kind === "launch" ? " The dry run is not run again." : "";
+  return `Candle could not confirm this ${what}.${check} Re-send the same request (it can never run twice), or stop tracking it.${launch}`;
+}
+function transferReconcileMessage(source, id) {
+  if (source === "embedded") {
+    return "Candle could not confirm this transfer, and cannot read it back by an id. Check the source wallet in an explorer, then say what you found. It is never sent again; a new transfer is a new card.";
+  }
+  return `Candle could not confirm this transfer${id ? ` (${id})` : ""}. Check it by its signature, send the same signed transaction again while it can still land (never a new one), or stop tracking it.`;
 }
 
 // src/core/rpc.ts
@@ -72347,6 +72355,7 @@ function encodeLine(message) {
 // src/core/trading.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
 import { readFile as readFile7, rename as rename5, writeFile as writeFile5 } from "node:fs/promises";
+var WITHDRAW_KEY_DAYS = 30;
 function formatKeyLimit(limit) {
   if (limit === undefined)
     return;
@@ -72360,6 +72369,21 @@ class FactorRejectedError extends Error {
     this.name = "FactorRejectedError";
   }
 }
+
+class FactorUnavailableError extends Error {
+  reason;
+  constructor(reason) {
+    super(reason);
+    this.reason = reason;
+    this.name = "FactorUnavailableError";
+  }
+}
+var FACTOR_WORDS = {
+  passphrase: "Passphrase",
+  "security-key": "Security key",
+  "touch-id": "Touch ID",
+  passkey: "Passkey"
+};
 var MAX_WINDOW_MS = 15 * 60000;
 var FAILURE_WINDOW_MS = 10 * 60000;
 var FAILURE_LIMIT = 5;
@@ -72374,6 +72398,8 @@ class TradingState {
   lockedUntil = 0;
   listeners = [];
   keyLimit;
+  withdraw = { status: "off" };
+  wallets;
   constructor(deps) {
     this.deps = deps;
   }
@@ -72381,7 +72407,9 @@ class TradingState {
     const state = new TradingState(deps);
     try {
       const parsed = JSON.parse(await readFile7(deps.settingsPath, "utf8"));
-      state.on = parsed.tradingOn === true && await deps.slotExists();
+      const slot = await deps.slotExists();
+      state.on = parsed.tradingOn === true && slot;
+      state.withdraw = slot ? parseWithdraw(parsed.withdraw) : { status: "off" };
     } catch (error) {
       if (error.code !== "ENOENT")
         throw error;
@@ -72402,8 +72430,36 @@ class TradingState {
       approvalPolicy: "ask",
       timedWindow: window ? { open: true, viewClientId: window.viewClientId, closesAt: new Date(window.closesAt).toISOString() } : { open: false },
       paperWindow: paper ? { open: true, viewClientId: paper.viewClientId, closesAt: new Date(paper.closesAt).toISOString() } : { open: false },
-      approvalsLockedUntil: this.lockedUntil > this.deps.now() ? new Date(this.lockedUntil).toISOString() : null
+      approvalsLockedUntil: this.lockedUntil > this.deps.now() ? new Date(this.lockedUntil).toISOString() : null,
+      withdraw: this.withdrawState()
     };
+  }
+  withdrawState() {
+    const withdraw = this.withdraw;
+    if (withdraw.status === "on" && withdraw.expiresAt !== null && Date.parse(withdraw.expiresAt) <= this.deps.now()) {
+      return {
+        status: "off",
+        prefix: withdraw.prefix,
+        reason: "The Withdraw key expired. Turn transfers from the embedded wallet on again."
+      };
+    }
+    return withdraw;
+  }
+  async factors() {
+    const listed = this.deps.listFactors ? await this.deps.listFactors().catch(() => []) : [{ type: "passphrase", usable: true }];
+    const seen = new Set;
+    const unique = listed.filter((option) => !seen.has(option.type) && seen.add(option.type));
+    if (!seen.has("passphrase"))
+      unique.unshift({ type: "passphrase", usable: true });
+    return [...unique.filter((o) => o.usable), ...unique.filter((o) => !o.usable)];
+  }
+  vaultWallets() {
+    return this.wallets?.map((wallet) => ({ ...wallet }));
+  }
+  async readVaultWallets(factor) {
+    const vault = await this.verify(factor, "list your vault wallets");
+    vault.close();
+    return this.vaultWallets() ?? [];
   }
   async turnOn(factor) {
     const vault = await this.verify(factor);
@@ -72535,6 +72591,115 @@ class TradingState {
     this.deps.remember(credentials);
     return use(credentials);
   }
+  async withTransferCredentials(input, use) {
+    if (input.factor === undefined)
+      throw refused("FACTOR_REQUIRED", "A transfer always needs a fresh factor.");
+    const withdraw = this.withdrawState();
+    if (withdraw.status !== "on" || this.deps.openTransferSlot === undefined) {
+      throw refused("EMBEDDED_TRANSFERS_OFF", withdraw.status === "off" && withdraw.reason ? withdraw.reason : "Transfers from the embedded wallet are off. Turn them on in Settings > Transfers.");
+    }
+    const vault = await this.verify(input.factor, input.reason);
+    let credentials;
+    try {
+      const opened = await this.deps.openTransferSlot(vault);
+      if (typeof opened.withdrawKey !== "string" || opened.withdrawKey.length === 0) {
+        throw refused("WITHDRAW_KEY_MISSING", "The vault holds no Withdraw key. Turn transfers from the embedded wallet on again.");
+      }
+      credentials = { withdrawKey: opened.withdrawKey };
+    } finally {
+      vault.close();
+    }
+    this.deps.remember(credentials);
+    try {
+      return await use(credentials);
+    } finally {
+      credentials.withdrawKey = "";
+      credentials = undefined;
+    }
+  }
+  async withVaultSigner(input, use) {
+    if (input.factor === undefined)
+      throw refused("FACTOR_REQUIRED", "A transfer always needs a fresh factor.");
+    const vault = await this.verify(input.factor, input.reason);
+    try {
+      return await use(vault);
+    } finally {
+      vault.close();
+    }
+  }
+  async turnOnEmbeddedTransfers(request2, factor) {
+    const { mintWithdrawKey, sealWithdrawKey, revokeWithdrawKey } = this.deps;
+    if (!mintWithdrawKey || !sealWithdrawKey) {
+      throw refused("NOT_IN_THIS_BUILD", "Transfers from the embedded wallet are not in this build.");
+    }
+    if (!Number.isInteger(request2.limitUsdMicros) || request2.limitUsdMicros <= 0) {
+      throw refused("INVALID_SETTING", "A USD limit per window is required, and it is more than zero.");
+    }
+    if (!await this.deps.slotExists()) {
+      throw refused("TRADING_OFF", "Turn trading on first: the Withdraw key is kept in the same sealed slot.");
+    }
+    const vault = await this.verify(factor, "turn on transfers from the embedded wallet");
+    try {
+      const credentials = await this.deps.openSlot(vault);
+      this.deps.remember(credentials);
+      const previous = this.withdraw.prefix;
+      let minted = await mintWithdrawKey(credentials.deviceToken, {
+        ...request2,
+        expiresInDays: WITHDRAW_KEY_DAYS
+      });
+      this.deps.remember({ withdrawKey: minted.key });
+      try {
+        await sealWithdrawKey(vault, minted.key);
+      } catch (error) {
+        if (revokeWithdrawKey)
+          await revokeWithdrawKey(credentials.deviceToken, minted.info.prefix).catch(() => {});
+        throw error;
+      }
+      const info = minted.info;
+      minted = undefined;
+      if (previous && previous !== info.prefix && revokeWithdrawKey) {
+        await revokeWithdrawKey(credentials.deviceToken, previous).catch(() => {});
+      }
+      this.withdraw = { status: "on", ...info };
+    } finally {
+      vault.close();
+    }
+    await this.persist();
+    this.changed();
+    return { ...this.withdraw };
+  }
+  async turnOffEmbeddedTransfers(factor) {
+    const { sealWithdrawKey, revokeWithdrawKey } = this.deps;
+    if (!sealWithdrawKey || !revokeWithdrawKey) {
+      throw refused("NOT_IN_THIS_BUILD", "Transfers from the embedded wallet are not in this build.");
+    }
+    const vault = await this.verify(factor, "turn off transfers from the embedded wallet");
+    const revokedPrefix = this.withdraw.prefix;
+    try {
+      const credentials = await this.deps.openSlot(vault);
+      this.deps.remember(credentials);
+      if (revokedPrefix)
+        await revokeWithdrawKey(credentials.deviceToken, revokedPrefix);
+      await sealWithdrawKey(vault, undefined);
+      this.withdraw = { status: "off" };
+    } finally {
+      vault.close();
+    }
+    await this.persist();
+    this.changed();
+    return revokedPrefix ? { revokedPrefix } : {};
+  }
+  async withdrawKeyRefused(code) {
+    if (this.withdraw.status !== "on")
+      return;
+    this.withdraw = {
+      status: "off",
+      prefix: this.withdraw.prefix,
+      reason: code === "KEY_EXPIRED" ? "The Withdraw key expired on Candle's server. Turn transfers from the embedded wallet on again." : "Candle's server no longer accepts the Withdraw key (revoked or replaced). Turn transfers from the embedded wallet on again."
+    };
+    await this.persist();
+    this.changed();
+  }
   activePaperWindow() {
     if (this.paperWindow !== undefined && this.paperWindow.closesAt <= this.deps.now())
       this.closePaperWindow();
@@ -72545,7 +72710,7 @@ class TradingState {
       this.closeWindow();
     return this.window;
   }
-  async verify(factor) {
+  async verify(factor, reason) {
     const now = this.deps.now();
     if (this.lockedUntil > now) {
       throw refused("APPROVALS_LOCKED", "Too many rejected factors. Approvals are locked for a few minutes.", {
@@ -72554,14 +72719,24 @@ class TradingState {
     }
     if (factor === undefined)
       throw refused("FACTOR_REQUIRED", "This needs your vault factor.");
-    if (factor.type !== "passphrase") {
-      throw refused("FACTOR_NOT_IN_THIS_BUILD", `${factor.type} approval from the core is not in this build; use the passphrase.`);
+    if (factor.type === "passphrase") {
+      if (typeof factor.value !== "string" || factor.value.length === 0)
+        throw refused("FACTOR_REQUIRED", "The passphrase is empty.");
+    } else {
+      const option = (await this.factors()).find((candidate) => candidate.type === factor.type);
+      if (option === undefined || !option.usable) {
+        throw unavailable(`${FACTOR_WORDS[factor.type]}: ${option?.reason ?? "not usable on this machine"}. Choose another factor; the card is still open.`);
+      }
     }
-    if (typeof factor.value !== "string" || factor.value.length === 0)
-      throw refused("FACTOR_REQUIRED", "The passphrase is empty.");
     try {
-      return await this.deps.unlockVault(factor);
+      const vault = await this.deps.unlockVault(factor, reason);
+      if (vault.wallets !== undefined)
+        this.wallets = vault.wallets.map((wallet) => ({ ...wallet }));
+      return vault;
     } catch (error) {
+      if (error instanceof FactorUnavailableError) {
+        throw unavailable(`${FACTOR_WORDS[factor.type]}: ${error.reason} Choose another factor; the card is still open.`);
+      }
       if (!(error instanceof FactorRejectedError))
         throw error;
       this.failures = [...this.failures.filter((at) => at > now - FAILURE_WINDOW_MS), now];
@@ -72575,7 +72750,9 @@ class TradingState {
   }
   async persist() {
     const temp = `${this.deps.settingsPath}.tmp-${randomBytes3(6).toString("base64url")}`;
-    await writeFile5(temp, `${JSON.stringify({ tradingOn: this.on }, null, 2)}
+    const quiet = this.withdraw.status === "off" && !this.withdraw.reason && !this.withdraw.prefix;
+    const body = { tradingOn: this.on, ...quiet ? {} : { withdraw: this.withdraw } };
+    await writeFile5(temp, `${JSON.stringify(body, null, 2)}
 `, { mode: 384, flag: "wx" });
     await rename5(temp, this.deps.settingsPath);
   }
@@ -72589,15 +72766,182 @@ function parseFactor(value) {
     return;
   if (typeof value !== "object")
     throw refused("INVALID_FACTOR", "factor must be an object.");
-  const { type, value: secret } = value;
+  const { type, value: secret, pin } = value;
   if (type === "passphrase" && typeof secret === "string")
     return { type, value: secret };
-  if (type === "touch-id" || type === "security-key")
+  if (type === "security-key")
+    return typeof pin === "string" && pin.length > 0 ? { type, pin } : { type };
+  if (type === "touch-id" || type === "passkey")
     return { type };
-  throw refused("INVALID_FACTOR", "factor.type must be passphrase, touch-id or security-key.");
+  throw refused("INVALID_FACTOR", "factor.type must be passphrase, security-key, touch-id or passkey.");
+}
+function unavailable(message) {
+  return refused("VAULT_FACTOR_UNAVAILABLE", message);
+}
+function parseWithdraw(value) {
+  const v = value;
+  if (v === null || typeof v !== "object")
+    return { status: "off" };
+  if (v.status === "on" && typeof v.prefix === "string" && typeof v.limitUsdMicros === "number" && (v.reset === "daily" || v.reset === "weekly" || v.reset === "monthly" || v.reset === "never") && (typeof v.expiresAt === "string" || v.expiresAt === null)) {
+    return { status: "on", prefix: v.prefix, limitUsdMicros: v.limitUsdMicros, reset: v.reset, expiresAt: v.expiresAt };
+  }
+  return {
+    status: "off",
+    ...typeof v.reason === "string" ? { reason: v.reason } : {},
+    ...typeof v.prefix === "string" ? { prefix: v.prefix } : {}
+  };
+}
+
+// src/core/transfer-params.ts
+init_evm_lite();
+init_solana_lite();
+var BASE_SYMBOLS = ["SOL", "USDC", "CNDL", "ETH", "USDG"];
+var BASE_ASSETS = {
+  SOL: { chain: "solana", decimals: 9 },
+  USDC: { chain: "solana", decimals: 6 },
+  CNDL: { chain: "solana", decimals: 6 },
+  ETH: { chain: "hood", decimals: 18 },
+  USDG: { chain: "hood", decimals: 6 }
+};
+var BASE_CONTRACTS = {
+  SOL: "So11111111111111111111111111111111111111112",
+  USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  CNDL: "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL",
+  ETH: "(native ETH)",
+  USDG: "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
+};
+function normalizeAddress(chain2, input) {
+  if (typeof input !== "string")
+    throw refused("INVALID_DESTINATION", "The destination must be an address.");
+  const compact = input.replace(/\s+/g, "");
+  if (chain2 === "hood") {
+    const checked = checkEvmAddress(compact);
+    if (!checked.ok)
+      throw refused("INVALID_DESTINATION", `Not a Hood address: ${checked.reason}.`);
+    return checked.address;
+  }
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(compact)) {
+    throw refused("INVALID_DESTINATION", "Not a Solana address: a base58 public key of 32 to 44 characters.");
+  }
+  try {
+    decodePubkey(compact);
+  } catch {
+    throw refused("INVALID_DESTINATION", "Not a Solana address: it does not decode to 32 bytes.");
+  }
+  return compact;
+}
+function sameAddress3(chain2, a, b) {
+  return chain2 === "hood" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+function assetLabel(asset) {
+  return "symbol" in asset ? asset.symbol : ("mint" in asset) ? asset.mint : asset.token;
+}
+function assetContract(asset) {
+  return "symbol" in asset ? BASE_CONTRACTS[asset.symbol] : ("mint" in asset) ? asset.mint : asset.token;
+}
+function describeSend2(amount, asset, to) {
+  return `send ${amount} ${asset} to ${to}`;
+}
+function groupAddress2(address) {
+  const prefix = address.startsWith("0x") ? "0x" : "";
+  const groups = address.slice(prefix.length).match(/.{1,4}/g) ?? [];
+  return [...prefix ? [prefix] : [], ...groups].join(" ");
+}
+function confirmTyped(typed) {
+  return typeof typed === "string" && typed.trim().toLowerCase() === "confirm";
+}
+function lastSixMismatch(address, typed) {
+  const expected = address.slice(-6);
+  const given = typeof typed === "string" ? typed.trim() : "";
+  const fold = (value) => address.startsWith("0x") ? value.toLowerCase() : value;
+  if (fold(given) === fold(expected))
+    return;
+  return Array.from({ length: Math.max(expected.length, given.length) }, (_, i) => i).find((i) => fold(given)[i] !== fold(expected)[i]) ?? 0;
+}
+function rawToDecimal(raw, decimals) {
+  const text = raw.toString().padStart(decimals + 1, "0");
+  const whole = text.slice(0, text.length - decimals);
+  const fraction = text.slice(text.length - decimals).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+function decimalToRaw2(value, decimals) {
+  const text = value.trim();
+  if (!/^\d+(\.\d+)?$/.test(text))
+    return;
+  const [whole = "0", fraction = ""] = text.split(".");
+  if (fraction.length > decimals)
+    return;
+  const raw = BigInt(whole + fraction.padEnd(decimals, "0"));
+  return raw > 0n ? raw : undefined;
+}
+async function parseTransferInput(input, decimalsFor2) {
+  const source = input.source;
+  if (source === null || typeof source !== "object")
+    throw refused("INVALID_SOURCE", "Choose a wallet to send from.");
+  if (source.kind !== "vault" && source.kind !== "embedded") {
+    throw refused("INVALID_SOURCE", "A transfer sends from a vault wallet or the embedded wallet.");
+  }
+  const chain2 = input.chain;
+  if (chain2 !== "solana" && chain2 !== "hood")
+    throw refused("INVALID_CHAIN", "chain is solana or hood.");
+  if (typeof source.address !== "string" || source.address.length === 0)
+    throw refused("INVALID_SOURCE", "The source wallet's address is missing.");
+  const sourceAddress = normalizeAddress(chain2, source.address);
+  const rawAsset = input.asset;
+  let asset;
+  if (rawAsset !== null && typeof rawAsset === "object" && typeof rawAsset.symbol === "string") {
+    const symbol = rawAsset.symbol.toUpperCase();
+    if (!BASE_SYMBOLS.includes(symbol) || BASE_ASSETS[symbol].chain !== chain2) {
+      throw refused("INVALID_ASSET", `${chain2 === "hood" ? "Hood" : "Solana"} sends ${BASE_SYMBOLS.filter((s) => BASE_ASSETS[s].chain === chain2).join(", ")} or a token address.`);
+    }
+    asset = { symbol };
+  } else if (chain2 === "solana" && rawAsset && typeof rawAsset.mint === "string") {
+    asset = { mint: normalizeAddress("solana", rawAsset.mint) };
+  } else if (chain2 === "hood" && rawAsset && typeof rawAsset.token === "string") {
+    asset = { token: normalizeAddress("hood", rawAsset.token) };
+  } else {
+    throw refused("INVALID_ASSET", "Choose an asset: a base symbol, a Solana mint or a Hood token address.");
+  }
+  const rawAmount2 = input.amount;
+  let amount;
+  if (rawAmount2 && typeof rawAmount2 === "object" && rawAmount2.max === true)
+    amount = { max: true };
+  else if (rawAmount2 && typeof rawAmount2 === "object" && typeof rawAmount2.raw === "string" && /^[1-9]\d*$/.test(rawAmount2.raw)) {
+    amount = { raw: rawAmount2.raw };
+  } else if (rawAmount2 && typeof rawAmount2 === "object" && typeof rawAmount2.decimal === "string") {
+    const decimals = "symbol" in asset ? BASE_ASSETS[asset.symbol].decimals : await decimalsFor2(chain2, asset);
+    if (decimals === undefined)
+      throw refused("ASSET_UNREADABLE", "The asset's decimals could not be read; nothing was prepared.");
+    const raw = decimalToRaw2(rawAmount2.decimal, decimals);
+    if (raw === undefined) {
+      throw refused("INVALID_AMOUNT", `The amount is a positive decimal with at most ${decimals} places, or max.`);
+    }
+    amount = { raw: raw.toString() };
+  } else {
+    throw refused("INVALID_AMOUNT", "The amount is a positive decimal, or max.");
+  }
+  const to = normalizeAddress(chain2, input.to);
+  if (sameAddress3(chain2, to, sourceAddress))
+    throw refused("INVALID_DESTINATION", "The destination is the source itself.");
+  return {
+    source: {
+      kind: source.kind,
+      ...typeof source.walletId === "string" && source.walletId.length > 0 ? { walletId: source.walletId } : {},
+      address: sourceAddress
+    },
+    chain: chain2,
+    asset,
+    amount,
+    to
+  };
 }
 
 // src/core/cards.ts
+var TRANSFER_TOOLS = {
+  vault: "core_vault_transfer",
+  embedded: "candle_transfer"
+};
+var LAST_SIX_TRIES = 3;
 var OPEN_CARD_CAP = 5;
 var MAX_REASON = 500;
 var MAX_PARAMS_BYTES = 64 * 1024;
@@ -72608,6 +72952,7 @@ class CardBook {
   cards = new Map;
   operations = new Map;
   approving = new Set;
+  dryRunning = new Set;
   sweep;
   constructor(deps) {
     this.deps = deps;
@@ -72669,10 +73014,10 @@ class CardBook {
       }
     }
     if (kind === "transfer") {
-      await this.refusal(origin, tool, origin.role === "harness" ? "TRANSFER_USER_ONLY" : "TRANSFER_NOT_IN_THIS_BUILD");
+      await this.refusal(origin, tool, origin.role === "harness" ? "TRANSFER_USER_ONLY" : "TRANSFER_FORM_ONLY");
       if (origin.role === "harness")
         throw refused("TRANSFER_USER_ONLY", "Only you can start a transfer, from the Candle TUI.");
-      throw refused("TRANSFER_NOT_IN_THIS_BUILD", "Transfers from the TUI arrive with the transfer screens.");
+      throw refused("TRANSFER_FORM_ONLY", "A transfer starts from the transfer form (Holdings t, or Transfer out in ctrl-k).");
     }
     if (kind === "perps") {
       await this.refusal(origin, tool, "KIND_RESERVED");
@@ -72684,18 +73029,14 @@ class CardBook {
     }
     await this.expireDue();
     for (const entry of this.cards.values()) {
-      const open4 = entry.card.state === "awaiting_approval";
-      if (open4 && entry.card.origin.clientId === origin.clientId && entry.proposedKey === proposedKey && entry.card.proposalKey === proposalKey) {
+      if (isOpen(entry.card) && entry.card.origin.clientId === origin.clientId && entry.proposedKey === proposedKey && entry.card.proposalKey === proposalKey) {
         return this.view(entry.card);
       }
     }
-    const openByClient = [...this.cards.values()].filter((e) => e.card.state === "awaiting_approval" && e.card.origin.clientId === origin.clientId).length;
-    if (openByClient >= OPEN_CARD_CAP) {
-      await this.refusal(origin, tool, "TOO_MANY_OPEN_CARDS");
-      throw refused("TOO_MANY_OPEN_CARDS", `A client may hold ${OPEN_CARD_CAP} open cards at once.`);
-    }
+    await this.assertUnderCap(origin, tool);
     const opId = this.opIdFor(idKey, proposed);
-    const sent = idKey === "coreOpId" || idKey === "rewardId" ? proposed : { ...proposed, [idKey]: opId };
+    const filled = idKey === "coreOpId" || idKey === "rewardId" ? proposed : { ...proposed, [idKey]: opId };
+    const sent = kind === "launch" ? withoutKey(filled, "dryRun") : filled;
     const now = this.deps.now();
     const reason = typeof input.reason === "string" ? terminalText(input.reason).slice(0, MAX_REASON) : undefined;
     const card2 = {
@@ -72720,13 +73061,194 @@ class CardBook {
       needsFactor: FACTOR_KINDS2.has(kind),
       createdAt: new Date(now).toISOString(),
       expiresAt: new Date(now + cardLifetimeMs(kind)).toISOString(),
-      state: "awaiting_approval",
+      state: kind === "launch" ? "proposed" : "awaiting_approval",
       ...proposalKey !== undefined ? { proposalKey } : {}
     };
+    if (kind === "launch")
+      card2.display.checks = { dryRun: "needed" };
     this.cards.set(card2.cardId, { card: card2, proposedKey });
+    await this.deps.journal.append({ type: "card.created", card: card2, proposedKey });
+    if (kind === "launch")
+      await this.tryDryRun(card2);
+    this.publish(card2);
+    return this.view(card2);
+  }
+  async dryRun(input, viewClientId) {
+    await this.expireDue();
+    const entry = typeof input.cardId === "string" ? this.cards.get(input.cardId) : undefined;
+    if (entry === undefined)
+      throw refused("CARD_NOT_FOUND", "No card with that id.");
+    const card2 = entry.card;
+    if (card2.kind !== "launch")
+      throw refused("NOT_A_LAUNCH", "Only a launch card has a dry run.");
+    if (card2.state !== "proposed") {
+      throw refused("CARD_NOT_AWAITING", `This card is ${card2.state}; its dry run has already decided it.`, {
+        state: card2.state
+      });
+    }
+    if (this.dryRunning.has(card2.cardId)) {
+      throw refused("DRY_RUN_IN_FLIGHT", "A dry run of this card is already running.");
+    }
+    if (input.factor !== undefined && !this.deps.trading.snapshot().paperWindow.open) {
+      await this.deps.trading.openPaperWindow(viewClientId, 15, input.factor);
+    }
+    await this.runDryRun(card2);
+    this.publish(card2);
+    return this.view(card2);
+  }
+  async createTransferCard(input) {
+    const { params, origin } = input;
+    const tool = TRANSFER_TOOLS[params.source.kind];
+    if (origin.role !== "view") {
+      await this.refusal(origin, tool, "TRANSFER_USER_ONLY");
+      throw refused("TRANSFER_USER_ONLY", "Only you can start a transfer, from the Candle TUI.");
+    }
+    await this.expireDue();
+    await this.assertUnderCap(origin, tool);
+    const opId = this.opIdFor("coreOpId", {});
+    const now = this.deps.now();
+    const { amountUsd, keyLimitUsd, ...transfer } = input.display;
+    const sent = JSON.parse(JSON.stringify(params));
+    const card2 = {
+      cardId: `card_${randomBytes4(12).toString("base64url")}`,
+      opId,
+      idKey: "coreOpId",
+      kind: "transfer",
+      tool,
+      params: sent,
+      cardHash: hashCard({
+        kind: "transfer",
+        tool,
+        params: sent,
+        opId,
+        environment: this.deps.environment,
+        profile: this.deps.profile
+      }),
+      origin: { ...origin, clientName: terminalText(origin.clientName) },
+      display: {
+        title: `SEND ${terminalText(transfer.amount.decimal)} ${terminalText(transfer.asset.label)}`,
+        contract: terminalText(transfer.asset.contract),
+        chain: params.chain,
+        amount: terminalText(transfer.amount.decimal),
+        ...amountUsd ? { amountUsd } : {},
+        ...keyLimitUsd ? { keyLimitUsd } : {},
+        environment: this.deps.environment,
+        transfer: {
+          ...transfer,
+          ...transfer.sourceLabel ? { sourceLabel: terminalText(transfer.sourceLabel) } : {},
+          ...transfer.toLabel ? { toLabel: terminalText(transfer.toLabel) } : {}
+        }
+      },
+      policy: "ask",
+      needsFactor: true,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + cardLifetimeMs("transfer")).toISOString(),
+      state: "awaiting_approval"
+    };
+    const proposedKey = canonicalJson({ tool, params: sent });
+    this.cards.set(card2.cardId, { card: card2, proposedKey });
+    const { balanceAtPreview: _balance, ...amountShown } = transfer.amount;
+    await this.deps.journal.append({
+      type: "transfer.prepared",
+      cardId: card2.cardId,
+      opId,
+      clientId: origin.clientId,
+      params: sent,
+      display: { ...transfer, amount: amountShown },
+      newDestination: transfer.newDestination,
+      serverClass: transfer.serverClass ?? null
+    });
     await this.deps.journal.append({ type: "card.created", card: card2, proposedKey });
     this.publish(card2);
     return this.view(card2);
+  }
+  async assertUnderCap(origin, tool) {
+    const openByClient = [...this.cards.values()].filter((e) => isOpen(e.card) && e.card.origin.clientId === origin.clientId).length;
+    if (openByClient >= OPEN_CARD_CAP) {
+      await this.refusal(origin, tool, "TOO_MANY_OPEN_CARDS");
+      throw refused("TOO_MANY_OPEN_CARDS", `A client may hold ${OPEN_CARD_CAP} open cards at once.`);
+    }
+  }
+  async tryDryRun(card2) {
+    try {
+      await this.runDryRun(card2);
+    } catch (error) {
+      if (!(error instanceof RpcError))
+        throw error;
+      card2.display.checks = { dryRun: "needed", reason: error.code };
+    }
+  }
+  async runDryRun(card2) {
+    if (this.dryRunning.has(card2.cardId))
+      return;
+    this.dryRunning.add(card2.cardId);
+    try {
+      await this.runDryRunOnce(card2);
+    } finally {
+      this.dryRunning.delete(card2.cardId);
+    }
+  }
+  async runDryRunOnce(card2) {
+    const params = { ...card2.params, dryRun: true };
+    const outcome = await this.deps.trading.withPaperCredentials((credentials) => this.deps.executor.execute(card2.tool, params, credentials.writeKey));
+    if (card2.state !== "proposed")
+      return;
+    const at = new Date(this.deps.now()).toISOString();
+    const body = outcome.state === "succeeded" ? record(outcome.result) : undefined;
+    const answer = body && record(body.api) ? record(body.api) : body;
+    if (answer?.success === true && answer.dryRun === true) {
+      const digest = createHash3("sha256").update(sortedJson(answer), "utf8").digest("hex");
+      card2.display.checks = {
+        dryRun: "passed",
+        at,
+        resolved: answer.resolved ?? null,
+        checks: answer.checks ?? null,
+        launchWallet: answer.launchWallet ?? null,
+        ...answer.feeWallet !== undefined ? { feeWallet: answer.feeWallet } : {},
+        ...answer.size !== undefined ? { size: answer.size } : {},
+        ...answer.curveTerms !== undefined ? { curveTerms: answer.curveTerms } : {}
+      };
+      card2.state = "awaiting_approval";
+      await this.deps.journal.append({
+        type: "launch.dry_run",
+        cardId: card2.cardId,
+        opId: card2.opId,
+        outcome: "passed",
+        digest
+      });
+      return;
+    }
+    const error = "error" in outcome ? outcome.error : { code: "DRY_RUN_UNREADABLE", message: "The dry run answered without a pass. Nothing was launched." };
+    const transient = outcome.state === "unknown" && outcome.transient === true || error.code === "DRY_RUN_UNREADABLE";
+    if (transient) {
+      card2.display.checks = { dryRun: "error", at, error: { code: error.code, message: terminalText(error.message) } };
+      await this.deps.journal.append({
+        type: "launch.dry_run",
+        cardId: card2.cardId,
+        opId: card2.opId,
+        outcome: "error",
+        code: error.code
+      });
+      return;
+    }
+    const failedBody = record("result" in outcome ? outcome.result : undefined);
+    const failedAnswer = failedBody && record(failedBody.api) ? record(failedBody.api) : failedBody;
+    const apiError = record(failedAnswer?.error);
+    const field = typeof apiError?.field === "string" ? terminalText(apiError.field) : undefined;
+    card2.display.checks = {
+      dryRun: "failed",
+      at,
+      error: { code: error.code, message: terminalText(error.message), ...field ? { field } : {} }
+    };
+    await this.deps.journal.append({
+      type: "launch.dry_run",
+      cardId: card2.cardId,
+      opId: card2.opId,
+      outcome: "failed",
+      code: error.code
+    });
+    card2.state = "withdrawn";
+    await this.deps.journal.append({ type: "card.withdrawn", cardId: card2.cardId, by: "dry_run", code: error.code });
   }
   holdsRequest(input) {
     const tool = input.tool;
@@ -72764,6 +73286,17 @@ class CardBook {
     if (entry === undefined)
       throw refused("CARD_NOT_FOUND", "No card with that id.");
     const card2 = entry.card;
+    if (card2.kind === "launch" && card2.state === "proposed" && !this.approving.has(card2.cardId)) {
+      await this.deps.journal.append({
+        type: "approval.refused",
+        cardId: card2.cardId,
+        viewClientId,
+        code: "DRY_RUN_REQUIRED"
+      });
+      throw refused("DRY_RUN_REQUIRED", "This launch needs its dry run first. Press d to run it.");
+    }
+    if (card2.kind === "transfer")
+      return this.approveTransfer(card2, input, viewClientId);
     if (card2.state !== "awaiting_approval" || this.approving.has(card2.cardId)) {
       throw refused("CARD_NOT_AWAITING", `This card is ${this.approving.has(card2.cardId) ? "being approved" : card2.state}.`, { state: card2.state });
     }
@@ -72775,6 +73308,9 @@ class CardBook {
         code: "CARD_HASH_MISMATCH"
       });
       throw refused("CARD_HASH_MISMATCH", "The card changed after it was drawn. Nothing was approved; review it again.");
+    }
+    if (card2.kind === "launch" && record(card2.display.checks)?.dryRun !== "passed") {
+      throw refused("DRY_RUN_REQUIRED", "This launch has no passing dry run of its own.");
     }
     if (!this.deps.trading.tradingOn())
       throw refused("TRADING_OFF", "Trading is off. Turn it on in Settings > Trading.");
@@ -72815,6 +73351,240 @@ class CardBook {
       this.approving.delete(card2.cardId);
     }
   }
+  async approveTransfer(card2, input, viewClientId) {
+    if (card2.state !== "awaiting_approval" || this.approving.has(card2.cardId)) {
+      throw refused("CARD_NOT_AWAITING", `This card is ${this.approving.has(card2.cardId) ? "being approved" : card2.state}.`, { state: card2.state });
+    }
+    this.approving.add(card2.cardId);
+    try {
+      return await this.approveTransferHeld(card2, input, viewClientId);
+    } finally {
+      this.approving.delete(card2.cardId);
+    }
+  }
+  async approveTransferHeld(card2, input, viewClientId) {
+    const refuse3 = async (code, message, details = {}) => {
+      await this.deps.journal.append({ type: "approval.refused", cardId: card2.cardId, viewClientId, code, ...details });
+      return refused(code, message, details);
+    };
+    if (input.cardHash !== card2.cardHash) {
+      throw await refuse3("CARD_HASH_MISMATCH", "The card changed after it was drawn. Nothing was approved; review it again.");
+    }
+    const params = card2.params;
+    const confirm = record(input.confirm);
+    if (!confirmTyped(confirm?.typed)) {
+      throw await refuse3("DESTINATION_NOT_CONFIRMED", "Type confirm to send. Nothing was sent; the card is still open.", {
+        step: "confirm"
+      });
+    }
+    const differsAt = lastSixMismatch(params.to, confirm?.lastSix);
+    if (differsAt !== undefined) {
+      card2.lastSixFailures = (card2.lastSixFailures ?? 0) + 1;
+      const left = LAST_SIX_TRIES - card2.lastSixFailures;
+      if (left <= 0) {
+        await this.deps.journal.append({
+          type: "approval.refused",
+          cardId: card2.cardId,
+          viewClientId,
+          code: "DESTINATION_NOT_CONFIRMED",
+          step: "lastSix",
+          withdrawn: true
+        });
+        this.approving.delete(card2.cardId);
+        await this.close(card2.cardId, "withdrawn", { by: "last_six" });
+        throw refused("DESTINATION_NOT_CONFIRMED", "That is not the last six characters of the address, three times. The card is withdrawn; nothing was sent.", { step: "lastSix", withdrawn: true });
+      }
+      throw await refuse3("DESTINATION_NOT_CONFIRMED", `That is not the last six characters of the address. Character ${differsAt + 1} differs. Nothing was sent.`, { step: "lastSix", differsAt, triesLeft: left });
+    }
+    const engine = this.deps.transfers;
+    if (engine === undefined)
+      throw refused("NOT_IN_THIS_BUILD", "Transfers are not in this build of the core.");
+    const reason = card2.display.transfer?.describeSend ?? `send to ${params.to}`;
+    try {
+      const approved = async (factorType2) => {
+        if (card2.state !== "awaiting_approval" || Date.parse(card2.expiresAt) <= this.deps.now()) {
+          this.approving.delete(card2.cardId);
+          await this.expireDue();
+          throw refused("CARD_NOT_AWAITING", `This card is ${card2.state}.`, { state: card2.state });
+        }
+        card2.state = "approved";
+        await this.deps.journal.append({
+          type: "card.approved",
+          cardId: card2.cardId,
+          cardHash: card2.cardHash,
+          opId: card2.opId,
+          factorType: factorType2,
+          confirm: { typed: true, lastSix: true },
+          viewClientId
+        });
+        this.publish(card2);
+      };
+      const factorType = input.factor?.type ?? "none";
+      let operation;
+      if (params.source.kind === "vault") {
+        const signed = await this.deps.trading.withVaultSigner({ viewClientId, factor: input.factor, reason }, async (vault) => {
+          await approved(factorType);
+          try {
+            return { ok: true, signed: await engine.signVault(params, vault) };
+          } catch (error) {
+            return { ok: false, error };
+          }
+        });
+        operation = await this.executeVaultTransfer(card2, params, signed);
+      } else {
+        operation = await this.deps.trading.withTransferCredentials({ cardId: card2.cardId, viewClientId, factor: input.factor, reason }, async (credentials) => {
+          await approved(factorType);
+          return this.executeEmbeddedTransfer(card2, params, credentials.withdrawKey);
+        });
+      }
+      return { card: this.view(card2), operation };
+    } catch (error) {
+      if (card2.state === "awaiting_approval") {
+        const code = error.code ?? "APPROVAL_FAILED";
+        await this.deps.journal.append({ type: "approval.refused", cardId: card2.cardId, viewClientId, code });
+      }
+      throw error;
+    }
+  }
+  startTransferOperation(card2, params) {
+    const at = new Date(this.deps.now()).toISOString();
+    const op = {
+      opId: card2.opId,
+      cardId: card2.cardId,
+      kind: card2.kind,
+      tool: card2.tool,
+      idKey: card2.idKey,
+      ownerClientId: card2.origin.clientId,
+      state: "submitting",
+      createdAt: at,
+      updatedAt: at,
+      transfer: { source: params.source.kind, chain: params.chain, from: params.source.address, to: params.to }
+    };
+    this.operations.set(op.opId, op);
+    return op;
+  }
+  async journalSubmitting(op, card2) {
+    await this.deps.journal.append({
+      type: "operation.submitting",
+      opId: op.opId,
+      cardId: card2.cardId,
+      tool: card2.tool,
+      kind: card2.kind,
+      idKey: card2.idKey,
+      ownerClientId: op.ownerClientId,
+      params: card2.params,
+      ...op.transfer ? { transfer: op.transfer } : {}
+    });
+    this.publishOperation(op);
+  }
+  async executeVaultTransfer(card2, params, signing) {
+    const engine = this.deps.transfers;
+    const op = this.startTransferOperation(card2, params);
+    if (!signing.ok) {
+      await this.journalSubmitting(op, card2);
+      const error = signing.error;
+      await this.settle(op, "refused", {
+        error: {
+          code: typeof error?.code === "string" ? error.code : "TRANSFER_NOT_SIGNED",
+          message: terminalText(typeof error?.message === "string" ? error.message : String(signing.error))
+        }
+      });
+      return this.opView(op);
+    }
+    const signed = signing.signed;
+    op.transfer = {
+      ...op.transfer,
+      id: signed.id,
+      ...signed.blockhash ? { blockhash: signed.blockhash } : {},
+      ...signed.nonce ? { nonce: signed.nonce } : {}
+    };
+    await engine.keepPending(op.opId, signed);
+    await this.journalSubmitting(op, card2);
+    const sent = await engine.broadcast(signed).catch((error) => ({ ok: false, definite: false, code: "BROADCAST_FAILED", message: String(error) }));
+    if (!sent.ok && sent.definite) {
+      await engine.dropPending(op.opId);
+      await this.settle(op, "failed", { error: { code: sent.code, message: terminalText(sent.message) } });
+      return this.opView(op);
+    }
+    await this.settle(op, "pending", { result: { id: signed.id, finalized: false } });
+    this.watchTransfer(op, params);
+    return this.opView(op);
+  }
+  async executeEmbeddedTransfer(card2, params, withdrawKey) {
+    const engine = this.deps.transfers;
+    const op = this.startTransferOperation(card2, params);
+    await this.journalSubmitting(op, card2);
+    let outcome;
+    try {
+      outcome = await engine.sendEmbedded(params, op.opId, withdrawKey);
+    } catch (error) {
+      outcome = {
+        state: "unknown",
+        error: { code: "EXECUTOR_FAILED", message: error instanceof Error ? error.message : String(error) }
+      };
+    }
+    if ((outcome.state === "refused" || outcome.state === "unknown") && /^(UNAUTHORIZED|KEY_EXPIRED)$/.test(outcome.error.code)) {
+      await this.deps.trading.withdrawKeyRefused(outcome.error.code);
+      outcome = { state: "refused", error: outcome.error };
+    }
+    const state = outcome.state === "pending" ? "unknown" : outcome.state;
+    await this.settle(op, state, {
+      ..."result" in outcome && outcome.result !== undefined ? { result: outcome.result } : {},
+      ..."error" in outcome ? { error: outcome.error } : {}
+    });
+    if (state === "succeeded")
+      await engine.recordDestination(params).catch(() => {});
+    return this.opView(op);
+  }
+  watchTransfer(op, params) {
+    this.cancelWatch(op.opId);
+    const startedAt = this.deps.now();
+    const tick = async () => {
+      this.watches.delete(op.opId);
+      if (await this.readTransfer(op, params))
+        return;
+      const delay = nextPollMs(startedAt, this.deps.now());
+      if (delay === undefined) {
+        if (op.state === "pending" || op.state === "submitting")
+          await this.settle(op, "unknown", { reason: "watch_expired" });
+        return;
+      }
+      this.watches.set(op.opId, this.schedule(() => void tick(), delay));
+    };
+    this.watches.set(op.opId, this.schedule(() => void tick(), 2000));
+  }
+  async readTransfer(op, params) {
+    const engine = this.deps.transfers;
+    const ref = op.transfer;
+    if (engine === undefined || ref?.id === undefined)
+      return true;
+    let status;
+    try {
+      status = await engine.status(ref);
+    } catch {
+      return false;
+    }
+    if (status.state === "finalized") {
+      await engine.dropPending(op.opId);
+      await this.settle(op, "succeeded", { result: { id: ref.id, finalized: true } });
+      await engine.recordDestination(params).catch(() => {});
+      const wallet = this.deps.trading.vaultWallets()?.find((w) => w.id === params.source.walletId);
+      if (wallet?.role === "tee-wallet")
+        await engine.reportActivity?.(params, ref).catch(() => {});
+      return true;
+    }
+    if (status.state === "failed" || status.state === "not_found" && status.expired) {
+      await engine.dropPending(op.opId);
+      await this.settle(op, "failed", {
+        error: {
+          code: status.state === "failed" ? "TRANSFER_FAILED" : "TRANSFER_EXPIRED",
+          message: status.state === "failed" ? terminalText(status.reason) : "It was never seen on chain and can no longer land. Nothing moved."
+        }
+      });
+      return true;
+    }
+    return false;
+  }
   async reject(cardId, viewClientId) {
     return this.close(cardId, "rejected", { by: viewClientId });
   }
@@ -72826,20 +73596,20 @@ class CardBook {
   }
   async withdrawAllFor(clientId) {
     for (const { card: card2 } of this.cards.values()) {
-      if (card2.state === "awaiting_approval" && card2.origin.clientId === clientId)
+      if (isOpen(card2) && card2.origin.clientId === clientId)
         await this.close(card2.cardId, "withdrawn", { by: "clients.kill" });
     }
   }
   async expireAllOpen(reason) {
     for (const { card: card2 } of this.cards.values()) {
-      if (card2.state === "awaiting_approval" && !this.approving.has(card2.cardId))
+      if (isOpen(card2) && !this.approving.has(card2.cardId))
         await this.close(card2.cardId, "expired", { reason });
     }
   }
   async expireDue() {
     const now = this.deps.now();
     for (const { card: card2 } of this.cards.values()) {
-      if (card2.state === "awaiting_approval" && !this.approving.has(card2.cardId) && Date.parse(card2.expiresAt) <= now) {
+      if (isOpen(card2) && !this.approving.has(card2.cardId) && Date.parse(card2.expiresAt) <= now) {
         await this.close(card2.cardId, "expired", { reason: "expiresAt" });
       }
     }
@@ -72908,6 +73678,8 @@ class CardBook {
     if (card2 === undefined)
       throw refused("OPERATION_NOT_HELD", "The card behind this operation is not held.");
     const action = input.action;
+    if (card2.kind === "transfer")
+      return this.resolveTransfer(op, card2, action, input.factor, viewClientId);
     if (action !== "check" && action !== "resend" && action !== "abandon") {
       throw invalidParams("action is check, resend or abandon.");
     }
@@ -72943,6 +73715,60 @@ class CardBook {
       return this.execute(card2, credentials.writeKey);
     });
   }
+  async resolveTransfer(op, card2, action, factor, viewClientId) {
+    if (op.state !== "unknown" && !(action === "check" && op.state === "pending")) {
+      throw refused("OPERATION_NOT_UNKNOWN", `This operation is ${op.state}; there is nothing to resolve.`, {
+        state: op.state
+      });
+    }
+    const params = card2.params;
+    const source = op.transfer?.source ?? params.source.kind;
+    if (source === "embedded") {
+      if (action !== "attest_sent" && action !== "attest_not_sent") {
+        throw refused("TRANSFER_NEVER_RESENT", "An embedded-wallet transfer is never sent again. Check the source wallet in an explorer, then say whether it was sent.");
+      }
+      await this.settle(op, action === "attest_sent" ? "attested_sent" : "attested_not_sent", {
+        viewClientId,
+        statement: "user"
+      });
+      return this.opView(op);
+    }
+    const engine = this.deps.transfers;
+    if (engine === undefined)
+      throw refused("NOT_IN_THIS_BUILD", "Transfers are not in this build of the core.");
+    if (action === "check") {
+      await this.deps.journal.append({ type: "operation.check", opId: op.opId, viewClientId });
+      if (!await this.readTransfer(op, params))
+        this.publishOperation(op);
+      return this.opView(op);
+    }
+    if (action === "abandon") {
+      this.cancelWatch(op.opId);
+      await engine.dropPending(op.opId);
+      op.resolution = "abandoned";
+      await this.settle(op, "resolved_abandoned", { viewClientId, watching: false });
+      return this.opView(op);
+    }
+    if (action !== "rebroadcast") {
+      throw refused("TRANSFER_NEVER_RESENT", "A transfer is never signed again under the same operation. Send the same signed bytes (rebroadcast), or start a new transfer.");
+    }
+    await this.deps.trading.withVaultSigner({ viewClientId, factor, reason: card2.display.transfer?.describeSend ?? "send a transfer again" }, async () => {
+      return;
+    });
+    const signed = await engine.readPending(op.opId);
+    if (signed === undefined || op.transfer?.id === undefined || signed.id !== op.transfer.id) {
+      throw refused("REBROADCAST_NOT_AVAILABLE", "The signed bytes for this transfer are not held any more. Check it instead.");
+    }
+    if (await this.readTransfer(op, params))
+      return this.opView(op);
+    await this.deps.journal.append({ type: "operation.rebroadcast", opId: op.opId, viewClientId, id: signed.id });
+    await engine.broadcast(signed).catch(() => {
+      return;
+    });
+    await this.settle(op, "pending", { result: { id: signed.id, finalized: false }, source: "rebroadcast" });
+    this.watchTransfer(op, params);
+    return this.opView(op);
+  }
   async rebuild(rows) {
     for (const row of rows) {
       if (row.type === "card.created" && row.card && typeof row.card === "object") {
@@ -72971,7 +73797,8 @@ class CardBook {
           state: "submitting",
           createdAt: previous?.createdAt ?? row.at,
           updatedAt: row.at,
-          ...row.evidence ? { evidence: row.evidence } : {}
+          ...row.evidence ? { evidence: row.evidence } : {},
+          ...row.transfer && typeof row.transfer === "object" ? { transfer: row.transfer } : {}
         });
         continue;
       }
@@ -72984,7 +73811,7 @@ class CardBook {
         op.lateRecord = row.record;
       if (row.type === "operation.evidence" && row.evidence)
         op.evidence = row.evidence;
-      const opState = /^operation\.(pending|succeeded|failed|refused|unknown|resolved_abandoned)$/.exec(row.type)?.[1];
+      const opState = /^operation\.(pending|succeeded|failed|refused|unknown|resolved_abandoned|attested_sent|attested_not_sent)$/.exec(row.type)?.[1];
       if (opState) {
         op.state = opState;
         op.updatedAt = row.at;
@@ -73011,7 +73838,7 @@ class CardBook {
         unknown++;
       }
       if (op.state === "unknown")
-        op.readNeedsFactor = readsById(op) || op.tool === "candle_claim_fees";
+        op.readNeedsFactor = op.kind !== "transfer" && (readsById(op) || op.tool === "candle_claim_fees");
     }
     return { expired, unknown };
   }
@@ -73092,7 +73919,7 @@ class CardBook {
     if (entry === undefined)
       throw refused("CARD_NOT_FOUND", "No card with that id.");
     const card2 = entry.card;
-    if (card2.state !== "awaiting_approval" || this.approving.has(card2.cardId)) {
+    if (!isOpen(card2) || this.approving.has(card2.cardId)) {
       throw refused("CARD_NOT_AWAITING", `This card is ${card2.state}.`, { state: card2.state });
     }
     card2.state = state;
@@ -73139,6 +73966,14 @@ class CardBook {
   }
   opView(op) {
     const view = JSON.parse(JSON.stringify(op));
+    if (op.state === "unknown" && op.kind === "transfer") {
+      const embedded = op.transfer?.source === "embedded";
+      view.reconcile = {
+        actions: embedded ? ["attest_sent", "attest_not_sent"] : ["check", "rebroadcast", "abandon"],
+        message: transferReconcileMessage(embedded ? "embedded" : "vault", op.transfer?.id)
+      };
+      return view;
+    }
     if (op.state === "unknown") {
       const readable = readsById(op) || op.tool === "candle_claim_fees";
       view.reconcile = {
@@ -73187,6 +74022,25 @@ function cardUsdMicros(card2) {
     return decimal(params.amount);
   return;
 }
+function isOpen(card2) {
+  return card2.state === "awaiting_approval" || card2.state === "proposed";
+}
+function withoutKey(params, key) {
+  const { [key]: _dropped, ...rest } = params;
+  return rest;
+}
+function record(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
+function sortedJson(value) {
+  if (Array.isArray(value))
+    return `[${value.map(sortedJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value).filter(([, inner]) => inner !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    return `{${entries.map(([key, inner]) => `${JSON.stringify(key)}:${sortedJson(inner)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
 
 // src/core/executor.ts
 init_zod();
@@ -73202,6 +74056,11 @@ var PENDING = new Set([
   "broadcasting"
 ]);
 var REFUSAL = /^(MCP_VALIDATION|KEY_LIMIT_REACHED|SCOPE_MISSING|AGENT_TRADING_DISABLED|TRADING_DISABLED|PROFILE_PAUSED|UNAUTHORIZED|FORBIDDEN|INVALID_[A-Z_]+|IDEMPOTENCY_CONFLICT)$/;
+var LAUNCH_REFUSAL = /^(VALIDATION_FAILED|DEV_BUY_TOO_HIGH|DAILY_CAP_REACHED|AGENT_WALLET_NOT_EMBEDDED|QUOTE_PAIR_UNKNOWN|EXCLUSIVE_NOT_ELIGIBLE|TRANSACTION_TOO_LARGE|INSUFFICIENT_OWNER_BALANCE)$/;
+var LAUNCH_TOOLS = new Set(["candle_launch_token", "candle_launch_and_seed"]);
+function isRefusal(code, tool) {
+  return REFUSAL.test(code) || tool !== undefined && LAUNCH_TOOLS.has(tool) && LAUNCH_REFUSAL.test(code);
+}
 async function capture(tools, options) {
   const { registerToolSubset: registerToolSubset2 } = await Promise.resolve().then(() => (init_tools(), exports_tools));
   const captured = new Map;
@@ -73274,7 +74133,7 @@ function mcpExecutor(options) {
       if (answer.kind === "refused")
         return { state: "refused", error: { code: answer.code, message: answer.message } };
       if (answer.kind === "thrown")
-        return { state: "unknown", error: { code: "EXECUTOR_TRANSPORT", message: answer.message } };
+        return { state: "unknown", error: { code: "EXECUTOR_TRANSPORT", message: answer.message }, transient: true };
       return outcomeOf(answer.result, serverErrorStatus, tool);
     }
   };
@@ -73284,19 +74143,20 @@ function outcomeOf(result, serverErrorStatus, tool) {
   let body;
   try {
     const parsed = JSON.parse(text2);
-    body = record(parsed);
+    body = record2(parsed);
   } catch {}
-  const payload = body && Object.hasOwn(body, "api") ? record(body.api) : body && Object.hasOwn(body, "launch") ? record(body.launch) : body;
+  const payload = body && Object.hasOwn(body, "api") ? record2(body.api) : body && Object.hasOwn(body, "launch") ? record2(body.launch) : body;
   if (result.isError !== true) {
     if (payload === undefined)
       return {
         state: "unknown",
-        error: { code: "UNREADABLE_RESULT", message: "The tool answered with something that is not JSON." }
+        error: { code: "UNREADABLE_RESULT", message: "The tool answered with something that is not JSON." },
+        transient: true
       };
-    const job = record(payload.job);
+    const job = record2(payload.job);
     const status = String(payload.status ?? job?.status ?? "").toLowerCase();
     if (status === "failed" && tool !== "candle_get_operation") {
-      const error2 = record(payload.error) ?? record(job?.error);
+      const error2 = record2(payload.error) ?? record2(job?.error);
       return {
         state: "failed",
         error: {
@@ -73312,15 +74172,63 @@ function outcomeOf(result, serverErrorStatus, tool) {
   const code = typeof error.code === "string" ? error.code : typeof payload?.code === "string" ? payload.code : undefined;
   const message = typeof error.message === "string" ? error.message : text2.slice(0, 500);
   if (serverErrorStatus !== undefined && serverErrorStatus >= 500) {
-    return { state: "unknown", error: { code: code ?? "EXECUTOR_SERVER_ERROR", message } };
+    return { state: "unknown", error: { code: code ?? "EXECUTOR_SERVER_ERROR", message }, transient: true };
   }
   if (body === undefined || code === undefined || code === "MCP_TRANSPORT") {
-    return { state: "unknown", error: { code: code ?? "UNREADABLE_RESULT", message } };
+    return { state: "unknown", error: { code: code ?? "UNREADABLE_RESULT", message }, transient: true };
   }
-  return REFUSAL.test(code) ? { state: "refused", error: { code, message }, result: body } : { state: "unknown", error: { code, message } };
+  return isRefusal(code, tool) ? { state: "refused", error: { code, message }, result: body } : { state: "unknown", error: { code, message }, result: body };
 }
-function record(value) {
+function record2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
+
+// src/core/factors.ts
+init_format();
+init_platform();
+var CORE_HELPER_REASON = "not driven from the Candle core in this build (it waits on the core helper check, V-2)";
+function factorOptions(envelopes, facts) {
+  const options = new Map;
+  const offer = (option) => {
+    const held = options.get(option.type);
+    if (held === undefined || !held.usable && option.usable)
+      options.set(option.type, option);
+  };
+  for (const envelope of envelopes) {
+    if (isPassphraseEnvelope(envelope)) {
+      offer({ type: "passphrase", usable: true });
+      continue;
+    }
+    const availability = envelopeAvailability(envelope, facts);
+    const reason = availability.state === "available" ? undefined : availability.reason;
+    if (isCtap2Envelope(envelope)) {
+      offer(reason === undefined ? { type: "security-key", usable: true } : { type: "security-key", usable: false, reason });
+    } else if (isSecureEnclaveEnvelope(envelope)) {
+      offer({ type: "touch-id", usable: false, reason: reason ?? CORE_HELPER_REASON });
+    } else if (isPlatformPasskeyEnvelope(envelope)) {
+      offer({ type: "passkey", usable: false, reason: reason ?? CORE_HELPER_REASON });
+    }
+  }
+  if (!options.has("passphrase"))
+    offer({ type: "passphrase", usable: true });
+  if (!options.has("touch-id")) {
+    const availability = factorAvailability("secure-enclave", facts);
+    offer({
+      type: "touch-id",
+      usable: false,
+      reason: availability.state === "available" ? "not enrolled in this vault" : availability.reason
+    });
+  }
+  const all = [...options.values()];
+  return [...all.filter((option) => option.usable), ...all.filter((option) => !option.usable)];
+}
+function factorFailureKind(code) {
+  if (code === "VAULT_UNLOCK_FAILED" || code === "VAULT_PIN_INVALID")
+    return "rejected";
+  if (code === "VAULT_FACTOR_UNAVAILABLE" || code === "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM" || code === "VAULT_HELPER_MISSING" || code === "VAULT_HELPER_UNTRUSTED" || code === "VAULT_PIN_REQUIRED" || code === "VAULT_CREDENTIAL_NOT_PRESENT" || code === "VAULT_PRF_UNSUPPORTED" || code === "VAULT_UV_UNSUPPORTED" || code.startsWith("VAULT_AUTHENTICATOR_")) {
+    return "unavailable";
+  }
+  return;
 }
 
 // src/core/instance-lock.ts
@@ -73535,6 +74443,52 @@ function parseRow(line) {
   if (typeof row.profile !== "string" || row.mode !== "paper" && row.mode !== "live")
     return;
   return row;
+}
+
+// src/core/launch.ts
+import { basename } from "node:path";
+function registerLaunchHandlers(server, deps) {
+  server.handle("launch.uploadImage", async (params, { client }) => {
+    if (params.confirmPublic !== true) {
+      throw refused("UPLOAD_NOT_CONFIRMED", "The image becomes public and permanent, even if you never launch. Confirm the upload first; nothing was sent.");
+    }
+    const path = params.path;
+    if (typeof path !== "string" || path.length === 0 || path.length > 4096) {
+      throw refused("INVALID_PARAMS", "path names the image file.");
+    }
+    const factor = parseFactor(params.factor);
+    let image;
+    try {
+      image = await deps.readImage(path);
+    } catch (error) {
+      throw coded(error, "IMAGE_UNREADABLE");
+    }
+    if (factor !== undefined && !deps.trading.snapshot().paperWindow.open && !deps.trading.snapshot().timedWindow.open) {
+      await deps.trading.openPaperWindow(client.clientId, 15, factor);
+    }
+    let imageUrl;
+    try {
+      imageUrl = await deps.trading.withPaperCredentials((credentials) => deps.uploadImage(credentials.writeKey, image));
+    } catch (error) {
+      throw coded(error, "UPLOAD_FAILED");
+    }
+    await deps.journal.append({
+      type: "image.upload",
+      clientId: client.clientId,
+      fileName: basename(image.path),
+      size: image.bytes.length,
+      contentType: image.contentType,
+      imageUrl
+    });
+    return { imageUrl, contentType: image.contentType, size: image.bytes.length };
+  });
+  server.handle("launch.dryRun", async (params, { client }) => deps.cards.dryRun({ cardId: params.cardId, factor: parseFactor(params.factor) }, client.clientId));
+}
+function coded(error, fallback) {
+  const failure = error;
+  if (failure !== null && typeof failure === "object" && "rpcCode" in failure)
+    return error;
+  return refused(typeof failure?.code === "string" ? failure.code : fallback, typeof failure?.message === "string" ? failure.message : String(error));
 }
 
 // src/commands/core.ts
@@ -73772,22 +74726,22 @@ class TokenBook {
     if (!token.startsWith(HARNESS_PREFIX))
       return;
     const tokenId = token.slice(HARNESS_PREFIX.length, HARNESS_PREFIX.length + 12);
-    const record2 = this.records.find((r) => r.tokenId === tokenId && r.revokedAt === undefined);
-    if (record2 === undefined || !sameHex(sha256Hex(token), record2.hash))
+    const record3 = this.records.find((r) => r.tokenId === tokenId && r.revokedAt === undefined);
+    if (record3 === undefined || !sameHex(sha256Hex(token), record3.hash))
       return;
-    return { role: "harness", tokenId: record2.tokenId, name: record2.name };
+    return { role: "harness", tokenId: record3.tokenId, name: record3.name };
   }
   async mintHarness(name) {
     const tokenId = freshTokenId();
     const token = `${HARNESS_PREFIX}${tokenId}_${b64u2(randomBytes6(32))}`;
-    const record2 = {
+    const record3 = {
       tokenId,
       name,
       hash: sha256Hex(token),
       createdAt: new Date(this.now()).toISOString()
     };
-    await this.persist([...this.records, record2]);
-    return { token, info: infoOf(record2) };
+    await this.persist([...this.records, record3]);
+    return { token, info: infoOf(record3) };
   }
   async revoke(tokenId) {
     const index = this.records.findIndex((r) => r.tokenId === tokenId && r.revokedAt === undefined);
@@ -73810,8 +74764,8 @@ class TokenBook {
     this.records = records;
   }
 }
-function infoOf(record2) {
-  const { hash: _hash, ...info2 } = record2;
+function infoOf(record3) {
+  const { hash: _hash, ...info2 } = record3;
   return info2;
 }
 
@@ -73839,7 +74793,12 @@ var METHOD_ROLES = {
   "layout.get": { view: "yes", harness: "no" },
   "layout.set": { view: "yes", harness: "no" },
   subscribe: { view: "yes", harness: "own" },
-  unsubscribe: { view: "yes", harness: "own" }
+  unsubscribe: { view: "yes", harness: "own" },
+  "launch.uploadImage": { view: "yes", harness: "no" },
+  "launch.dryRun": { view: "yes", harness: "no" },
+  "transfer.sources": { view: "yes", harness: "no" },
+  "transfer.destinations": { view: "yes", harness: "no" },
+  "transfer.prepare": { view: "yes", harness: "no" }
 };
 var MAX_SOCKET_PATH_BYTES = 103;
 var HELLO_TIMEOUT_MS = 1e4;
@@ -74337,12 +75296,49 @@ async function openCoreSlot(input) {
   });
   try {
     const parsed = JSON.parse(new TextDecoder().decode(plain));
-    if (typeof parsed.writeKey !== "string" || typeof parsed.deviceToken !== "string" || !Array.isArray(parsed.signers)) {
+    if (typeof parsed.writeKey !== "string" || typeof parsed.deviceToken !== "string" || !Array.isArray(parsed.signers) || parsed.withdrawKey !== undefined && typeof parsed.withdrawKey !== "string") {
       throw new CoreSlotError("CORE_SLOT_INVALID", "The core slot's contents are not in the expected shape.");
     }
-    return { writeKey: parsed.writeKey, deviceToken: parsed.deviceToken, signers: parsed.signers };
+    const contents = {
+      writeKey: parsed.writeKey,
+      deviceToken: parsed.deviceToken,
+      signers: parsed.signers
+    };
+    if (input.purpose === "transfer" && parsed.withdrawKey !== undefined)
+      contents.withdrawKey = parsed.withdrawKey;
+    delete parsed.withdrawKey;
+    return contents;
   } finally {
     wipe(plain);
+  }
+}
+async function resealCoreSlot(input) {
+  const file = await readCoreSlotHeader(input.paths);
+  if (file === undefined)
+    throw new CoreSlotError("CORE_SLOT_MISSING", "This profile has no core slot.");
+  const contents = await openCoreSlot({ ...input, purpose: "transfer" });
+  if (input.withdrawKey === undefined)
+    delete contents.withdrawKey;
+  else
+    contents.withdrawKey = input.withdrawKey;
+  const sealed = await sealCoreSlot(input.vault, headerOf(file), contents, new Date(input.now()).toISOString());
+  await writeSlotFile(input.paths, sealed);
+}
+async function writeSlotFile(paths, file) {
+  const temp = `${paths.slot}.tmp-${b64u(crypto.getRandomValues(new Uint8Array(6)))}`;
+  const handle = await openFile(temp, "wx", 384);
+  try {
+    await handle.write(`${JSON.stringify(file)}
+`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await rename9(temp, paths.slot);
+  } catch (error) {
+    await rm5(temp, { force: true });
+    throw error;
   }
 }
 async function removeLegacyCopies(deps, deviceToken, writeKeyPrefix, writeKey) {
@@ -74395,21 +75391,7 @@ async function moveProfileToCore(input) {
     writeKeyPrefix
   };
   const file = await sealCoreSlot(input.vault, header, { writeKey, deviceToken, signers }, new Date(input.now()).toISOString());
-  const temp = `${input.paths.slot}.tmp-${b64u(crypto.getRandomValues(new Uint8Array(6)))}`;
-  const handle = await openFile(temp, "wx", 384);
-  try {
-    await handle.write(`${JSON.stringify(file)}
-`);
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
-    await rename9(temp, input.paths.slot);
-  } catch (error) {
-    await rm5(temp, { force: true });
-    throw error;
-  }
+  await writeSlotFile(input.paths, file);
   await deps.updateProfile(profile, { coreOwned: true });
   await removeLegacyCopies(deps, deviceToken, writeKeyPrefix, writeKey);
   for (const ref of refs)
@@ -74470,6 +75452,17 @@ function cardAnswer(card2) {
         state: "awaiting_approval",
         expiresAt: card2.expiresAt,
         next: NEXT_PENDING(card2.kind, card2.idKey)
+      });
+    }
+    const checks = card2.display.checks;
+    if (card2.state === "withdrawn" && checks?.dryRun === "failed") {
+      return text2({
+        success: false,
+        error: { code: "DRY_RUN_FAILED", message: "The launch's dry run failed, so the card was withdrawn." },
+        api: { error: checks.error ?? null },
+        ...ids,
+        state: card2.state,
+        next: "Fix what the dry run names, then propose the launch again under a new clientLaunchId."
       });
     }
     return text2({
@@ -74639,11 +75632,1033 @@ async function getOperation2(args, deps) {
   return refusal("OPERATION_NOT_HELD", `The core issued no ${kind} operation under this id. A swap the core did not issue is read by replaying it with its clientSwapId.`);
 }
 
+// src/core/transfer-chain.ts
+init_esm();
+init_evm_lite();
+init_solana_lite();
+init_token_2022();
+init_evm_transfer();
+import { chmod as chmod9, mkdir as mkdir7, readFile as readFile14, rename as rename10, rm as rm6, writeFile as writeFile8 } from "node:fs/promises";
+import { join as join10 } from "node:path";
+
+// src/vault/vault-transfer-sign.ts
+init_esm();
+init_solana_endpoint();
+init_solana_lite();
+init_token_2022();
+init_errors2();
+var USDC_MINT2 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+function decimalToRaw4(decimal4, decimals) {
+  if (!/^\d+(\.\d+)?$/.test(decimal4))
+    return null;
+  const [whole, frac = ""] = decimal4.split(".");
+  if (frac.length > decimals)
+    return null;
+  return BigInt((whole ?? "0") + frac.padEnd(decimals, "0"));
+}
+function assertVaultSigner(entry) {
+  if (entry.role !== "vault") {
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is not a vault key, and vault fund signs from vault keys only (ED-10).`, {
+      suggestion: `To move funds out of a promoted wallet, use: candle vault transfer <to> --from ${entry.label ?? entry.address}`
+    });
+  }
+}
+function assertTransferSigner(entry) {
+  if (entry.role === "vault" || entry.role === "tee-wallet")
+    return;
+  throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is an external wallet and cannot sign vault transfer shapes (ED-10).`, {
+    suggestion: `Move funds out of an external wallet with: candle external sweep ${entry.label} --to <vault>`
+  });
+}
+function namedSendFailure(plan) {
+  if (!plan.token)
+    return;
+  return classifyTokenSendFailure({
+    profile: plan.token.profile,
+    frozen: plan.token.frozen,
+    extraAccountsMissing: plan.token.extraAccountsMissing
+  });
+}
+var TOKEN_ACCOUNT_STATE_OFFSET2 = 108;
+var TOKEN_ACCOUNT_STATE_FROZEN2 = 2;
+async function tokenAccountFrozen(rpc, address) {
+  const account = await rpc.getAccountInfo(address);
+  if (account === null)
+    return { exists: false, frozen: false };
+  return { exists: true, frozen: account.data[TOKEN_ACCOUNT_STATE_OFFSET2] === TOKEN_ACCOUNT_STATE_FROZEN2 };
+}
+async function planTransfer(input) {
+  const asset = input.asset.toUpperCase();
+  const fromKey = decodePubkey(input.from);
+  const toKey = decodePubkey(input.to);
+  if (asset === "SOL") {
+    const raw2 = decimalToRaw4(input.amount, 9);
+    if (raw2 === null || raw2 === 0n) {
+      throw new VaultError("VAULT_INDEX_INVALID", "--amount must be a positive SOL decimal with at most 9 places.");
+    }
+    return {
+      asset: "SOL",
+      amount: input.amount,
+      amountRaw: raw2,
+      decimals: 9,
+      from: input.from,
+      to: input.to,
+      instructions: [systemTransfer(fromKey, toKey, raw2)],
+      displayLines: [
+        `fee payer   ${input.from}`,
+        `destination ${input.to}`,
+        `amount      ${input.amount} SOL = ${raw2} lamports`,
+        `mint        (native SOL)`
+      ]
+    };
+  }
+  const mintAddress = asset === "USDC" ? USDC_MINT2 : input.asset;
+  const rpc = input.rpc;
+  let profile;
+  try {
+    profile = await readMintProfile(rpc, mintAddress);
+  } catch (error) {
+    if (error instanceof MintReadError)
+      throw new VaultError("VAULT_UNREADABLE", error.message);
+    if (isRateLimited(error))
+      throw error;
+    throw new VaultError("VAULT_UNREADABLE", `Could not read mint ${mintAddress}: ${asMessage(error)}`);
+  }
+  const decimals = profile.decimals;
+  const raw = decimalToRaw4(input.amount, decimals);
+  if (raw === null || raw === 0n) {
+    throw new VaultError("VAULT_INDEX_INVALID", `--amount must be a positive decimal with at most ${decimals} decimal places.`);
+  }
+  const mint = decodePubkey(mintAddress);
+  const tokenProgram = decodePubkey(profile.tokenProgram);
+  const source = ataFor(profile, fromKey);
+  const destination = ataFor(profile, toKey);
+  const instructions = [];
+  const accountCreationLines = [];
+  let accountRent;
+  const destinationState = await tokenAccountFrozen(rpc, encodePubkey(destination));
+  if (!destinationState.exists) {
+    const rent = await rpc.getMinimumBalanceForRentExemption(profile.associatedTokenAccountSize);
+    accountRent = rent;
+    instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint, tokenProgram }));
+    accountCreationLines.push(`create associated token account ${encodePubkey(destination)} (idempotent)`, `account owner ${input.to}`, `account rent ${rent} lamports, paid by ${input.from} if created`);
+  }
+  const sourceState = await tokenAccountFrozen(rpc, encodePubkey(source));
+  const riskLines = profile.risks.map((risk) => `warning     ${risk.message}`);
+  const hook = await resolveTransferHookAccounts(rpc, { profile, source, destination, owner: fromKey, amount: raw });
+  const hookLines = [];
+  if (profile.transferHookProgram) {
+    hookLines.push(hook.ok ? `hook        ${profile.transferHookProgram}: ${hook.accounts.length} extra account(s) resolved` : `hook        ${profile.transferHookProgram}: extra accounts could NOT be resolved (${hook.reason}); the send is expected to fail as TOKEN_2022_EXTRA_ACCOUNTS_MISSING`);
+  }
+  const feeLines = [];
+  if (profile.newerTransferFee || profile.olderTransferFee) {
+    const epoch = await rpc.getEpoch();
+    const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, raw, epoch);
+    feeLines.push(`post-fee    ${postFeeAmountRaw} raw arrives (${feeRaw} raw withheld by the mint at epoch ${epoch})`);
+  }
+  instructions.push(tokenTransferChecked({
+    source,
+    mint,
+    destination,
+    owner: fromKey,
+    amount: raw,
+    decimals,
+    tokenProgram,
+    extraAccounts: hook.ok ? hook.accounts : []
+  }));
+  return {
+    asset: asset === "USDC" ? "USDC" : mintAddress,
+    amount: input.amount,
+    amountRaw: raw,
+    decimals,
+    mint: mintAddress,
+    from: input.from,
+    to: input.to,
+    instructions,
+    sourceTokenAccount: encodePubkey(source),
+    ...accountRent !== undefined ? { accountRent } : {},
+    token: {
+      profile,
+      extraAccountsMissing: !hook.ok,
+      frozen: sourceState.frozen || destinationState.frozen || !destinationState.exists && profile.defaultFrozen
+    },
+    displayLines: [
+      `fee payer   ${input.from}`,
+      `destination ${input.to}`,
+      `amount      ${input.amount} (${raw} raw, ${decimals} dp)`,
+      `mint        ${mintAddress}`,
+      `program     ${profile.tokenProgram}${profile.token2022 ? " (Token-2022)" : ""}`,
+      ...accountCreationLines,
+      ...riskLines,
+      ...hookLines,
+      ...feeLines
+    ]
+  };
+}
+function asMessage(error) {
+  return describeRpcFailure(error);
+}
+async function quoteTransferFee(rpc, from, instructions) {
+  const blockhash = await rpc.getLatestBlockhash();
+  const message = compileLegacyMessage({
+    feePayer: decodePubkey(from),
+    recentBlockhash: blockhash,
+    instructions
+  });
+  return rpc.getFeeForMessage(toBase642(message));
+}
+var FALLBACK_FEE_LAMPORTS = 5000n;
+var TOKEN_ACCOUNT_AMOUNT_OFFSET = 64;
+function tokenAccountAmount(data) {
+  if (data.length < TOKEN_ACCOUNT_AMOUNT_OFFSET + 8)
+    return 0n;
+  return new DataView(data.buffer, data.byteOffset + TOKEN_ACCOUNT_AMOUNT_OFFSET, 8).getBigUint64(0, true);
+}
+async function assertTransferAffordable(solana, plan, feeQuote) {
+  const fee = feeQuote ?? FALLBACK_FEE_LAMPORTS;
+  const rent = plan.accountRent ?? 0n;
+  const lamportsNeeded = (plan.asset === "SOL" ? plan.amountRaw : 0n) + fee + rent;
+  const lamports = await solana.read(() => solana.rpc.getBalance(plan.from));
+  if (plan.sourceTokenAccount !== undefined) {
+    const account = await solana.read(() => solana.rpc.getAccountInfo(plan.sourceTokenAccount));
+    const held = account === null ? 0n : tokenAccountAmount(account.data);
+    if (held < plan.amountRaw) {
+      throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${plan.from} holds ${held} raw of ${plan.asset} and this transfer moves ${plan.amountRaw} raw (${plan.amount}). Nothing was signed or sent.`, {
+        suggestion: "Fund the key with this token first, or send a smaller --amount.",
+        details: {
+          from: plan.from,
+          asset: plan.asset,
+          heldRaw: held.toString(),
+          neededRaw: plan.amountRaw.toString()
+        }
+      });
+    }
+  }
+  if (lamports < lamportsNeeded) {
+    const parts = [
+      ...plan.asset === "SOL" ? [`${plan.amountRaw} to send`] : [],
+      `${fee} fee${feeQuote === null ? " (estimated)" : ""}`,
+      ...rent > 0n ? [`${rent} token account rent`] : []
+    ];
+    throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${plan.from} holds ${lamports} lamports and this transfer needs ${lamportsNeeded} (${parts.join(" + ")}). Nothing was signed or sent.`, {
+      suggestion: "Fund the key with SOL first, or send a smaller --amount. candle vault list --balances shows each key's SOL.",
+      details: { from: plan.from, heldLamports: lamports.toString(), neededLamports: lamportsNeeded.toString() }
+    });
+  }
+}
+function displayTransferPlan(ctx, plan, feeQuote) {
+  ctx.deps.stdout.write(`Decoded transfer (local signing only):
+`);
+  for (const line of plan.displayLines)
+    ctx.deps.stdout.write(`  ${line}
+`);
+  if (feeQuote !== null)
+    ctx.deps.stdout.write(`  fee quote  ${feeQuote} lamports
+`);
+  else
+    ctx.deps.stdout.write(`  fee quote  (unavailable)
+`);
+}
+async function signAndBroadcastTransfer(input) {
+  const rpc = input.solana.rpc;
+  const feePayer = pubkeyFromSecret(input.secret64);
+  if (encodePubkey(feePayer) !== input.plan.from) {
+    throw new VaultError("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned fee payer.");
+  }
+  const blockhash = await input.solana.read(() => rpc.getLatestBlockhash());
+  const message = compileLegacyMessage({
+    feePayer,
+    recentBlockhash: blockhash,
+    instructions: input.plan.instructions
+  });
+  const signature = signMessage(message, input.secret64);
+  const wire = serializeSignedTransaction(message, signature);
+  const sigB58 = base58.encode(signature);
+  await input.beforeBroadcast?.({ signature: sigB58, blockhash });
+  try {
+    await rpc.sendTransaction(toBase642(wire));
+  } catch (error) {
+    if (isRateLimited(error))
+      notePostSignatureRateLimit(input.ctx, sigB58);
+    return { signature: sigB58, finalized: false, seen: true };
+  }
+  let seen = false;
+  for (let i = 0;i < 30; i++) {
+    await input.ctx.deps.sleep(500);
+    let status;
+    try {
+      status = await rpc.getSignatureStatus(sigB58);
+    } catch (error) {
+      if (isRateLimited(error))
+        notePostSignatureRateLimit(input.ctx, sigB58);
+      return { signature: sigB58, finalized: false, seen: true };
+    }
+    if (status)
+      seen = true;
+    if (status?.confirmationStatus === "finalized") {
+      if (status.err) {
+        const named = namedSendFailure(input.plan);
+        throw new VaultError("VAULT_WRITE_FAILED", `Transfer failed on chain${named ? ` (${named})` : ""}. Any pending funding receipt will be reconciled on a rerun.`);
+      }
+      return { signature: sigB58, finalized: true, seen: true };
+    }
+  }
+  return { signature: sigB58, finalized: false, seen };
+}
+function unfinalizedSendLine(result, suffix = "") {
+  return result.seen ? `Submitted ${result.signature}; finality is not yet confirmed.${suffix}
+` : `Sent ${result.signature}, but no status read found it on the network: it was most likely dropped and nothing moved. Check the signature in an explorer before sending again.${suffix}
+`;
+}
+
+// src/core/transfer-chain.ts
+var SOLANA_MINTS = { USDC: USDC_MINT2, CNDL: BASE_CONTRACTS.CNDL };
+var FALLBACK_FEE_LAMPORTS2 = 5000n;
+var TOKEN_ACCOUNT_AMOUNT_OFFSET2 = 64;
+function solanaAsset2(asset) {
+  if ("symbol" in asset)
+    return asset.symbol === "SOL" || asset.symbol === "USDC" ? asset.symbol : SOLANA_MINTS[asset.symbol];
+  if ("mint" in asset)
+    return asset.mint;
+  throw refused("INVALID_ASSET", "A Solana transfer names SOL, USDC, CNDL or a mint.");
+}
+function evmAsset(asset) {
+  if ("symbol" in asset)
+    return asset.symbol;
+  if ("token" in asset)
+    return asset.token;
+  throw refused("INVALID_ASSET", "A Hood transfer names ETH, USDG or a token address.");
+}
+function tokenAccountAmount2(data) {
+  if (data.length < TOKEN_ACCOUNT_AMOUNT_OFFSET2 + 8)
+    return 0n;
+  return new DataView(data.buffer, data.byteOffset + TOKEN_ACCOUNT_AMOUNT_OFFSET2, 8).getBigUint64(0, true);
+}
+function keyEntryOf(wallet3, entry) {
+  return entry ?? {
+    id: wallet3.id,
+    chain: wallet3.chain,
+    curve: wallet3.chain === "evm" ? "secp256k1" : "ed25519",
+    address: wallet3.address,
+    label: wallet3.label,
+    role: wallet3.role
+  };
+}
+function createTransferChain(chainDeps) {
+  let client;
+  const solana = () => {
+    client ??= chainDeps.solana();
+    return client;
+  };
+  const deps = {
+    ...chainDeps,
+    get solana() {
+      return solana();
+    }
+  };
+  const solanaRpc = new Proxy({}, {
+    get: (_target, name) => {
+      const value = solana().rpc[name];
+      return typeof value === "function" ? value.bind(solana().rpc) : value;
+    }
+  });
+  async function solanaMax(params) {
+    const asset = solanaAsset2(params.asset);
+    if (asset === "SOL") {
+      const balance = await deps.solana.read(() => solanaRpc.getBalance(params.source.address));
+      const draft = await deps.solana.read(() => planTransfer({
+        from: params.source.address,
+        to: params.to,
+        amount: rawToDecimal(balance > 0n ? balance : 1n, 9),
+        asset,
+        rpc: solanaRpc
+      }));
+      const fee = await deps.solana.read(() => quoteTransferFee(solanaRpc, draft.from, draft.instructions)) ?? FALLBACK_FEE_LAMPORTS2;
+      const raw2 = balance - fee;
+      if (raw2 <= 0n)
+        throw refused("TRANSFER_INSUFFICIENT_FUNDS", `${params.source.address} holds no SOL above the fee; max leaves nothing to send.`);
+      return { raw: raw2, decimals: 9 };
+    }
+    const profile = await deps.solana.read(() => readMintProfile(solanaRpc, asset === "USDC" ? USDC_MINT2 : asset));
+    const source = encodePubkey(ataFor(profile, decodePubkey(params.source.address)));
+    const account = await deps.solana.read(() => solanaRpc.getAccountInfo(source));
+    const raw = account === null ? 0n : tokenAccountAmount2(account.data);
+    if (raw === 0n)
+      throw refused("TRANSFER_INSUFFICIENT_FUNDS", `${params.source.address} holds none of this token; there is nothing to send.`);
+    return { raw, decimals: profile.decimals };
+  }
+  async function solanaDecimals(asset) {
+    const name = solanaAsset2(asset);
+    if (name === "SOL")
+      return 9;
+    return (await deps.solana.read(() => readMintProfile(solanaRpc, name === "USDC" ? USDC_MINT2 : name))).decimals;
+  }
+  async function solanaPlan(params) {
+    const { raw, decimals } = "max" in params.amount ? await solanaMax(params) : { raw: BigInt(params.amount.raw), decimals: await solanaDecimals(params.asset) };
+    return deps.solana.read(() => planTransfer({
+      from: params.source.address,
+      to: params.to,
+      amount: rawToDecimal(raw, decimals),
+      asset: solanaAsset2(params.asset),
+      rpc: solanaRpc
+    }));
+  }
+  async function evmPlan(params, wallet3, entry) {
+    const { rpc, builtIn } = deps.hood;
+    const planned = await planEvmTransfer(rpc, {
+      from: keyEntryOf(wallet3, entry),
+      to: params.to,
+      asset: evmAsset(params.asset),
+      amount: "max" in params.amount ? "max" : rawToDecimal(BigInt(params.amount.raw), await evmDecimals(params.asset)),
+      builtIn
+    });
+    if ("usage" in planned)
+      throw refused("INVALID_AMOUNT", planned.usage);
+    if (wallet3.role === "tee-wallet" && planned.chainId !== BigInt(HOOD_CHAIN_ID)) {
+      throw refused("EVM_CHAIN_MISMATCH", `A promoted wallet signs on Hood only (chain id ${HOOD_CHAIN_ID}).`);
+    }
+    return planned;
+  }
+  async function evmDecimals(asset) {
+    if ("symbol" in asset)
+      return asset.symbol === "ETH" ? 18 : 6;
+    if ("token" in asset)
+      return deps.hood.rpc.erc20Decimals(asset.token);
+    throw refused("INVALID_ASSET", "A Hood transfer names ETH, USDG or a token address.");
+  }
+  async function readStatus(ref) {
+    if (ref.id === undefined)
+      return { state: "not_found", expired: false };
+    if (ref.chain === "solana") {
+      const solanaStatus = async () => {
+        const status = await solanaRpc.getSignatureStatus(ref.id);
+        if (status?.confirmationStatus === "finalized") {
+          return status.err ? { state: "failed", reason: "The transfer failed on chain. Nothing moved." } : { state: "finalized" };
+        }
+        return status ? { state: "pending" } : null;
+      };
+      const first2 = await solanaStatus();
+      if (first2)
+        return first2;
+      const valid = ref.blockhash ? await solanaRpc.isBlockhashValid(ref.blockhash) : true;
+      if (valid)
+        return { state: "not_found", expired: false };
+      return await solanaStatus() ?? { state: "not_found", expired: true };
+    }
+    const hoodStatus = async () => {
+      const receipt = await deps.hood.rpc.getTransactionReceipt(ref.id);
+      if (receipt === null)
+        return null;
+      if (receipt.status === 0)
+        return { state: "failed", reason: "The transfer reverted on chain." };
+      const head = await deps.hood.rpc.blockNumber();
+      return head - receipt.blockNumber + 1n >= BigInt(requiredDepth(BigInt(HOOD_CHAIN_ID))) ? { state: "finalized" } : { state: "pending" };
+    };
+    const first = await hoodStatus();
+    if (first)
+      return first;
+    if (ref.nonce !== undefined) {
+      const latest = await deps.hood.rpc.getTransactionCount(ref.from, "latest");
+      if (latest > BigInt(ref.nonce))
+        return await hoodStatus() ?? { state: "not_found", expired: true };
+    }
+    return { state: "not_found", expired: false };
+  }
+  const pendingPath = (opId) => {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(opId))
+      throw new Error(`Not an operation id: ${opId}`);
+    return join10(deps.pendingDir, `${opId}.tx`);
+  };
+  const engine = {
+    async preview(params, wallet3) {
+      if (params.chain === "solana") {
+        const plan2 = await solanaPlan(params);
+        const fee = await deps.solana.read(() => quoteTransferFee(solanaRpc, plan2.from, plan2.instructions));
+        await assertTransferAffordable(deps.solana, plan2, fee);
+        return {
+          lines: plan2.displayLines,
+          ...fee !== null ? { feeEstimate: `${fee} lamports` } : {},
+          ..."max" in params.amount ? { maxRaw: plan2.amountRaw.toString() } : {}
+        };
+      }
+      const plan = await evmPlan(params, wallet3);
+      return {
+        lines: plan.displayLines,
+        feeEstimate: `${formatUnits(plan.feeCap, 18)} ETH at most`,
+        ..."max" in params.amount ? { maxRaw: plan.amountRaw.toString() } : {}
+      };
+    },
+    async balances(chain2, address) {
+      if (chain2 === "solana") {
+        const lamports = await deps.solana.read(() => solanaRpc.getBalance(address));
+        return [{ asset: "SOL", contract: BASE_CONTRACTS.SOL, raw: lamports.toString(), decimals: 9 }];
+      }
+      const wei = await deps.hood.rpc.getBalance(address);
+      return [{ asset: "ETH", contract: BASE_CONTRACTS.ETH, raw: wei.toString(), decimals: 18 }];
+    },
+    async decimals(chain2, asset) {
+      return chain2 === "solana" ? solanaDecimals(asset) : evmDecimals(asset);
+    },
+    async signVault(params, vault) {
+      const wallet3 = vault.wallets?.find((candidate) => candidate.id === params.source.walletId && candidate.address === params.source.address);
+      if (wallet3 === undefined || vault.signingKey === undefined) {
+        throw refused("INVALID_SOURCE", "That wallet is not in the vault that opened. Nothing was signed.");
+      }
+      const entry = vault.entry?.(wallet3.id);
+      if (wallet3.role === "tee-wallet" && entry !== undefined)
+        await deps.teeChecks?.(entry);
+      if (params.chain === "solana") {
+        const plan2 = await solanaPlan(params);
+        const fee = await deps.solana.read(() => quoteTransferFee(solanaRpc, plan2.from, plan2.instructions));
+        await assertTransferAffordable(deps.solana, plan2, fee);
+        const secret2 = await vault.signingKey(wallet3.id);
+        try {
+          const feePayer = pubkeyFromSecret(secret2);
+          if (encodePubkey(feePayer) !== plan2.from) {
+            throw refused("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned fee payer. Nothing was signed.");
+          }
+          const blockhash = await deps.solana.read(() => solanaRpc.getLatestBlockhash());
+          const message = compileLegacyMessage({
+            feePayer,
+            recentBlockhash: blockhash,
+            instructions: plan2.instructions
+          });
+          const signature = signMessage(message, secret2);
+          return {
+            chain: "solana",
+            id: base58.encode(signature),
+            wire: toBase642(serializeSignedTransaction(message, signature)),
+            from: plan2.from,
+            blockhash,
+            amountRaw: plan2.amountRaw.toString()
+          };
+        } finally {
+          wipe(secret2);
+        }
+      }
+      const plan = await evmPlan(params, wallet3, entry);
+      const secret = await vault.signingKey(wallet3.id);
+      try {
+        if (!sameEvmAddress(evmAddressFromSecret(secret), wallet3.address)) {
+          throw refused("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned sender. Nothing was signed.");
+        }
+        const signed = signTransaction(plan.tx, secret);
+        return {
+          chain: "hood",
+          id: signed.hash,
+          wire: base64.encode(signed.raw),
+          from: wallet3.address,
+          nonce: plan.tx.nonce.toString(),
+          amountRaw: plan.amountRaw.toString()
+        };
+      } finally {
+        wipe(secret);
+      }
+    },
+    async keepPending(opId, signed) {
+      await mkdir7(deps.pendingDir, { recursive: true, mode: 448 });
+      await chmod9(deps.pendingDir, 448);
+      const path = pendingPath(opId);
+      const temp = `${path}.tmp`;
+      await writeFile8(temp, `${JSON.stringify(signed)}
+`, { mode: 384 });
+      await rename10(temp, path);
+    },
+    async readPending(opId) {
+      try {
+        const parsed = JSON.parse(await readFile14(pendingPath(opId), "utf8"));
+        return typeof parsed?.id === "string" && typeof parsed.wire === "string" ? parsed : undefined;
+      } catch {
+        return;
+      }
+    },
+    async dropPending(opId) {
+      await rm6(pendingPath(opId), { force: true });
+    },
+    async broadcast(signed) {
+      if (signed.chain === "solana") {
+        try {
+          await solanaRpc.sendTransaction(signed.wire);
+          return { ok: true };
+        } catch (error) {
+          const definite = definiteSendRejection(error);
+          return {
+            ok: false,
+            definite: definite !== null,
+            code: definite ? "TRANSFER_REJECTED" : "BROADCAST_UNCERTAIN",
+            message: error instanceof Error ? error.message : String(error)
+          };
+        }
+      }
+      try {
+        await deps.hood.rpc.sendRawTransaction(base64.decode(signed.wire));
+        return { ok: true };
+      } catch (error) {
+        const message = error instanceof EvmRpcError || error instanceof Error ? error.message : String(error);
+        if (message.toLowerCase().includes("already known"))
+          return { ok: true };
+        return { ok: false, definite: false, code: "BROADCAST_UNCERTAIN", message };
+      }
+    },
+    status(ref) {
+      return readStatus(ref);
+    },
+    async sendEmbedded(params, clientTransferId, withdrawKey) {
+      const asset = params.asset;
+      return deps.executor.execute("candle_transfer", {
+        chain: params.chain,
+        ..."symbol" in asset ? { asset: asset.symbol } : { mint: "mint" in asset ? asset.mint : asset.token },
+        amountRaw: "max" in params.amount ? "max" : params.amount.raw,
+        to: params.to,
+        clientTransferId
+      }, withdrawKey);
+    },
+    async reportActivity(params, ref) {
+      if (ref.id !== undefined)
+        await deps.reportActivity?.(params.chain, ref.id);
+    },
+    async recordDestination(params) {
+      await deps.recordDestination(params.chain, params.to);
+    }
+  };
+  return engine;
+}
+
+// src/core/transfers.ts
+init_render();
+import { randomBytes as randomBytes8 } from "node:crypto";
+import { rename as rename11, writeFile as writeFile9 } from "node:fs/promises";
+function walletChain(wallet3) {
+  return wallet3.chain === "evm" ? "hood" : "solana";
+}
+
+class DestinationHistory {
+  options;
+  seen = new Set;
+  constructor(options) {
+    this.options = options;
+  }
+  key(environment, chain2, address) {
+    return `${environment}:${chain2}:${chain2 === "hood" ? address.toLowerCase() : address}`;
+  }
+  async rebuild(rows) {
+    this.seen.clear();
+    const transfers = new Map;
+    for (const row of rows) {
+      const transfer = row.transfer;
+      if (row.type === "operation.submitting" && typeof row.opId === "string" && transfer) {
+        if ((transfer.chain === "solana" || transfer.chain === "hood") && typeof transfer.to === "string") {
+          transfers.set(row.opId, { chain: transfer.chain, to: transfer.to });
+        }
+      } else if (row.type === "operation.succeeded" && typeof row.opId === "string") {
+        const sent = transfers.get(row.opId);
+        if (sent)
+          this.seen.add(this.key(row.environment, sent.chain, sent.to));
+      }
+    }
+    await this.write();
+  }
+  has(chain2, address) {
+    return this.seen.has(this.key(this.options.environment, chain2, address));
+  }
+  async add(chain2, address) {
+    this.seen.add(this.key(this.options.environment, chain2, address));
+    await this.write();
+  }
+  async write() {
+    const temp = `${this.options.path}.tmp-${randomBytes8(6).toString("base64url")}`;
+    const body = { note: "Display hint only; rebuilt from the journal at start.", destinations: [...this.seen].sort() };
+    await writeFile9(temp, `${JSON.stringify(body, null, 2)}
+`, { mode: 384, flag: "wx" });
+    await rename11(temp, this.options.path);
+  }
+}
+function registerTransferHandlers(server, deps) {
+  server.handle("transfer.sources", async (params, call2) => sources(params, call2, deps));
+  server.handle("transfer.destinations", async (params, call2) => destinations(params, call2, deps));
+  server.handle("transfer.prepare", async (params, call2) => {
+    try {
+      return await prepare(params, call2, deps);
+    } catch (error) {
+      if (error instanceof RpcError) {
+        await deps.journal.append({
+          type: "transfer.refused",
+          clientId: call2.client.clientId,
+          code: error.code,
+          ...typeof error.details.serverRule === "string" ? { serverRule: error.details.serverRule } : {}
+        });
+      }
+      throw error;
+    }
+  });
+}
+async function embeddedAddress(deps, chain2) {
+  const wallets2 = await deps.reads.embeddedWallets().catch(() => {
+    return;
+  });
+  return chain2 === "hood" ? wallets2?.evm : wallets2?.solana;
+}
+async function sources(params, call2, deps) {
+  const factor = parseFactor(params.factor);
+  let wallets2 = deps.trading.vaultWallets();
+  if (wallets2 === undefined && factor !== undefined)
+    wallets2 = await deps.trading.readVaultWallets(factor);
+  const withdraw = deps.trading.withdrawState();
+  const out = [];
+  for (const wallet3 of wallets2 ?? []) {
+    const chain2 = walletChain(wallet3);
+    out.push({
+      kind: "vault",
+      walletId: wallet3.id,
+      label: terminalText(wallet3.label),
+      role: wallet3.role,
+      chain: chain2,
+      address: wallet3.address,
+      on: true,
+      balances: await deps.reads.balances(chain2, wallet3.address).catch(() => {
+        return;
+      }) ?? null
+    });
+  }
+  const embedded = await deps.reads.embeddedWallets().catch(() => {
+    return;
+  });
+  for (const chain2 of ["solana", "hood"]) {
+    const address = chain2 === "hood" ? embedded?.evm : embedded?.solana;
+    if (!address)
+      continue;
+    out.push({
+      kind: "embedded",
+      label: "Embedded wallet",
+      chain: chain2,
+      address,
+      on: withdraw.status === "on",
+      ...withdraw.status === "off" ? { reason: withdraw.reason ?? "Turn on transfers from the embedded wallet in Settings > Transfers." } : {},
+      balances: await deps.reads.balances(chain2, address).catch(() => {
+        return;
+      }) ?? null
+    });
+  }
+  await deps.journal.append({ type: "transfer.sources", clientId: call2.client.clientId, count: out.length });
+  return { sources: out, vaultListed: wallets2 !== undefined, withdraw };
+}
+async function destinations(params, _call, deps) {
+  const kind = params.source?.kind;
+  const chain2 = params.chain;
+  if (kind !== "vault" && kind !== "embedded")
+    throw refused("INVALID_SOURCE", "source.kind is vault or embedded.");
+  if (chain2 !== "solana" && chain2 !== "hood")
+    throw refused("INVALID_CHAIN", "chain is solana or hood.");
+  const out = [];
+  const push = (address, extra) => {
+    if (out.some((row) => sameAddress3(chain2, row.address, address)))
+      return;
+    out.push({ address, ...extra, sentBefore: deps.history.has(chain2, address) });
+  };
+  if (kind === "embedded") {
+    for (const row of await deps.reads.serverDestinations(chain2)) {
+      push(row.address, { serverClass: row.serverClass, ...row.label ? { label: terminalText(row.label) } : {} });
+    }
+  } else {
+    for (const wallet3 of deps.trading.vaultWallets() ?? []) {
+      if (walletChain(wallet3) === chain2)
+        push(wallet3.address, { label: terminalText(wallet3.label), own: true });
+    }
+    const embedded = await embeddedAddress(deps, chain2);
+    if (embedded)
+      push(embedded, { label: "Embedded wallet", own: true });
+  }
+  return { destinations: out };
+}
+async function prepare(params, call2, deps) {
+  const input = params.params ?? params;
+  if (input === null || typeof input !== "object")
+    throw refused("INVALID_PARAMS", "params must be an object.");
+  const parsed = await parseTransferInput(input, (chain2, asset) => deps.reads.decimals(chain2, asset));
+  const decimals = "symbol" in parsed.asset ? BASE_ASSETS[parsed.asset.symbol].decimals : await deps.reads.decimals(parsed.chain, parsed.asset);
+  if (decimals === undefined)
+    throw refused("ASSET_UNREADABLE", "The asset's decimals could not be read; nothing was prepared.");
+  let sourceLabel2;
+  let serverClass;
+  let toLabel;
+  let preview;
+  let keyLimitUsd;
+  if (parsed.source.kind === "vault") {
+    const wallets2 = deps.trading.vaultWallets();
+    if (wallets2 === undefined) {
+      throw refused("VAULT_WALLETS_NOT_LISTED", "List your vault wallets first (it asks for your factor once).");
+    }
+    const wallet3 = wallets2.find((candidate) => walletChain(candidate) === parsed.chain && sameAddress3(parsed.chain, candidate.address, parsed.source.address) && (parsed.source.walletId === undefined || candidate.id === parsed.source.walletId));
+    if (wallet3 === undefined)
+      throw refused("INVALID_SOURCE", "That address is not a vault wallet on this machine.");
+    parsed.source = { kind: "vault", walletId: wallet3.id, address: wallet3.address };
+    sourceLabel2 = wallet3.label;
+    try {
+      preview = await deps.reads.previewVault(parsed, wallet3);
+    } catch (error) {
+      const failure = error;
+      throw refused(typeof failure.code === "string" ? failure.code : "TRANSFER_PREVIEW_FAILED", `${terminalText(typeof failure.message === "string" ? failure.message : String(error))} Nothing was prepared.`);
+    }
+  } else {
+    const withdraw = deps.trading.withdrawState();
+    if (withdraw.status !== "on") {
+      throw refused("EMBEDDED_TRANSFERS_OFF", withdraw.reason ?? "Transfers from the embedded wallet are off. Turn them on in Settings > Transfers.");
+    }
+    const own = await embeddedAddress(deps, parsed.chain);
+    if (own === undefined || !sameAddress3(parsed.chain, own, parsed.source.address)) {
+      throw refused("INVALID_SOURCE", "That address is not this account's embedded wallet.");
+    }
+    sourceLabel2 = "Embedded wallet";
+    keyLimitUsd = formatKeyLimit({
+      usdMicros: withdraw.limitUsdMicros,
+      reset: withdraw.reset,
+      usedUsdMicros: 0,
+      readAt: 0
+    })?.replace(/, \$[\d.]+ left$/, "");
+    const allowed = (await deps.reads.serverDestinations(parsed.chain)).find((row) => sameAddress3(parsed.chain, row.address, parsed.to));
+    if (allowed !== undefined) {
+      serverClass = allowed.serverClass;
+      toLabel = allowed.label;
+      if (allowed.serverClass === "approved" && !("symbol" in parsed.asset)) {
+        throw refused("TRANSFER_DESTINATION_NOT_APPROVED", "A withdrawal to an allowlisted address sends a base asset only (SOL, USDC, CNDL, ETH or USDG). Nothing was prepared.", { serverRule: "approved_base_asset_only" });
+      }
+    } else if (parsed.chain === "hood") {
+      serverClass = "unlisted";
+    } else {
+      throw refused("TRANSFER_DESTINATION_NOT_APPROVED", "Candle sends from the embedded wallet only to your own wallets, trusted or session-linked wallets, or your withdrawal allowlist. Add this address in the Candle web app; the TUI does not change those lists. Nothing was prepared.", { serverRule: "own_linked_or_allowlist" });
+    }
+  }
+  const label = assetLabel(parsed.asset);
+  const max = "max" in parsed.amount;
+  const raw = max ? preview?.maxRaw ?? "" : parsed.amount.raw;
+  const decimal4 = max ? "max" : rawToDecimal(BigInt(raw), decimals);
+  const display = {
+    sourceKind: parsed.source.kind,
+    source: parsed.source.address,
+    ...sourceLabel2 ? { sourceLabel: sourceLabel2 } : {},
+    to: parsed.to,
+    toGrouped: groupAddress2(parsed.to),
+    ...toLabel ? { toLabel } : {},
+    ...serverClass ? { serverClass } : {},
+    newDestination: !deps.history.has(parsed.chain, parsed.to),
+    asset: { label, contract: assetContract(parsed.asset) },
+    amount: {
+      decimal: decimal4,
+      raw: max ? "max" : raw,
+      ...max ? { max: true } : {},
+      ...max && preview?.maxRaw ? { balanceAtPreview: rawToDecimal(BigInt(preview.maxRaw), decimals) } : {}
+    },
+    ...preview?.feeEstimate ? { feeEstimate: preview.feeEstimate } : {},
+    ...preview?.lines ? { previewLines: preview.lines.map((line) => terminalText(line)) } : {},
+    describeSend: describeSend2(decimal4 === "max" ? "all" : decimal4, label, parsed.to)
+  };
+  return deps.cards.createTransferCard({
+    params: parsed,
+    display: { ...display, ...keyLimitUsd ? { keyLimitUsd } : {} },
+    origin: {
+      clientId: call2.client.clientId,
+      role: call2.client.role,
+      clientName: call2.client.clientName
+    }
+  });
+}
+
 // src/commands/core.ts
+init_evm_lite();
 init_profiles();
 init_render();
+init_solana_endpoint();
 init_errors2();
+init_evm_tee();
+init_fido2();
+init_format();
 init_store();
+
+// src/vault/tee-transfer.ts
+init_client();
+init_errors2();
+function assertNoPendingSweep(entry) {
+  const pending = entry.tee?.sweepPending?.length ?? 0;
+  if (pending === 0)
+    return;
+  throw new VaultError("TRANSFER_SWEEP_PENDING", `${entry.label} (${entry.address}) has ${pending} pending sweep transaction(s); a transfer would interleave with that sweep.`, { suggestion: `Finish the sweep first: candle tee sweep ${entry.address}` });
+}
+async function readTeeServerState(ctx, entry, apiKey) {
+  if (entry.linkedWalletId === undefined) {
+    return { read: false, reason: "this wallet has no linked wallet id recorded" };
+  }
+  if (apiKey === undefined)
+    return { read: false, reason: "no API key for this profile" };
+  try {
+    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/lifecycle`, {
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl: ctx.apiUrl,
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+    if (!result.ok)
+      return { read: false, reason: result.message };
+    const state = result.body.state;
+    if (typeof state !== "string")
+      return { read: false, reason: "the lifecycle response carried no state" };
+    return { read: true, state };
+  } catch (error) {
+    return { read: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+function serverStateNotice(state) {
+  if (!state.read) {
+    return `Could not read this wallet's Candle state (${state.reason}); proceeding. An agent may be trading it.`;
+  }
+  if (state.state === "enabled") {
+    return "Warning: this wallet is enabled, so an agent may be trading it now; a trade may fail if this transfer leaves too little.";
+  }
+  return;
+}
+async function reportTransferActivity(ctx, apiKey, signature, chain2 = "solana") {
+  const unseen = "Candle's history will not show this transfer.";
+  if (apiKey === undefined)
+    return { outcome: "no-api-key", line: `No API key for this profile, so ${unseen}` };
+  try {
+    const result = await apiRequest("/api/v1/activity/report", {
+      method: "POST",
+      body: { chain: chain2, signature },
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl: ctx.apiUrl,
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+    if (result.ok)
+      return { outcome: "reported", line: "Reported to Candle's history." };
+    if (result.code === "SCOPE_MISSING") {
+      return { outcome: "scope-missing", line: `This profile's API key lacks activity:write, so ${unseen}` };
+    }
+    return { outcome: "failed", line: `Could not report this transfer (${result.message}); ${unseen}` };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { outcome: "failed", line: `Could not report this transfer (${reason}); ${unseen}` };
+  }
+}
+
+// src/commands/image.ts
+init_args();
+init_client();
+init_deps();
+init_render();
+init_trading();
+init_swap();
+import { open as open7 } from "node:fs/promises";
+var UPLOAD_USAGE = "Usage: candle image upload <path> [--json]";
+var MAX_IMAGE_BYTES2 = 10 * 1024 * 1024;
+var IMAGE_TYPES = "PNG, JPEG, GIF or WebP";
+var NOTHING_UPLOADED2 = "Nothing was uploaded.";
+function sniffImageType2(bytes) {
+  const at2 = (offset, signature) => signature.every((byte, i) => bytes[offset + i] === byte);
+  if (at2(0, [137, 80, 78, 71, 13, 10, 26, 10]))
+    return "image/png";
+  if (at2(0, [255, 216, 255]))
+    return "image/jpeg";
+  if (at2(0, [71, 73, 70, 56]) && (bytes[4] === 55 || bytes[4] === 57) && bytes[5] === 97)
+    return "image/gif";
+  if (at2(0, [82, 73, 70, 70]) && at2(8, [87, 69, 66, 80]))
+    return "image/webp";
+  return;
+}
+function unreadable(path, error) {
+  const code = error.code;
+  const why = code === "ENOENT" || code === "ENOTDIR" ? "there is no file at that path" : code === "EACCES" || code === "EPERM" ? "this user may not read it" : code === "EISDIR" ? "it is not a file" : `the read failed${code ? ` (${code})` : ""}`;
+  return new TradingError("IMAGE_UNREADABLE", `Could not read ${safeText(path)}: ${why}. ${NOTHING_UPLOADED2}`);
+}
+async function readLocalImage(path) {
+  const tooLarge = () => new TradingError("IMAGE_TOO_LARGE", `${safeText(path)} is over 10MB, the largest image Candle hosts. ${NOTHING_UPLOADED2}`);
+  let bytes;
+  try {
+    const file = await open7(path, "r");
+    try {
+      const stat5 = await file.stat();
+      if (!stat5.isFile())
+        throw Object.assign(new Error("not a regular file"), { code: "EISDIR" });
+      if (stat5.size > MAX_IMAGE_BYTES2)
+        throw tooLarge();
+      const buffer = new Uint8Array(MAX_IMAGE_BYTES2 + 1);
+      let total = 0;
+      while (total < buffer.length) {
+        const { bytesRead } = await file.read(buffer, total, buffer.length - total, null);
+        if (bytesRead === 0)
+          break;
+        total += bytesRead;
+      }
+      bytes = buffer.slice(0, total);
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    throw error instanceof TradingError ? error : unreadable(path, error);
+  }
+  if (bytes.length > MAX_IMAGE_BYTES2)
+    throw tooLarge();
+  const contentType = sniffImageType2(bytes);
+  if (!contentType)
+    throw new TradingError("IMAGE_TYPE_UNSUPPORTED", `${safeText(path)} is not a ${IMAGE_TYPES} image. The type is read from the file's first bytes, not its name. ${NOTHING_UPLOADED2}`);
+  return { path, bytes, contentType };
+}
+function uploadNotice(image) {
+  return `Uploading ${safeText(image.path)} (${image.contentType}, ${image.bytes.length} bytes). The file becomes public and permanent: Candle pins it, and the URL cannot be withdrawn.
+`;
+}
+async function uploadImage(ctx, key, image) {
+  const result = await apiRequest("/api/v1/uploads/agent-image", {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    method: "POST",
+    raw: { bytes: image.bytes, contentType: image.contentType },
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok)
+    throw new TradingError(result.code ?? "REQUEST_FAILED", result.message);
+  const imageUrl = result.body?.imageUrl;
+  if (typeof imageUrl !== "string" || !imageUrl.startsWith("https://"))
+    throw new TradingError("INVALID_RESPONSE", "Candle did not return an https URL for the uploaded image.");
+  return imageUrl;
+}
+async function imageUpload(args, ctx) {
+  const parsed = parseArgs(args, { pathPositionals: ["<path>"] });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const [path, ...rest] = parsed.positionals;
+  if (path === undefined || rest.length !== 0) {
+    writeUsageFailure(ctx.deps, UPLOAD_USAGE, ctx.json);
+    return 2;
+  }
+  try {
+    const image = await readLocalImage(path);
+    const key = await resolveApiKey(ctx.deps, ctx.profile);
+    if (!key) {
+      writeLocalFailure(ctx.deps, {
+        code: "NO_API_KEY",
+        message: `No API key available. ${NOTHING_UPLOADED2}`,
+        suggestion: "Run: candle auth login, or set CANDLE_API_KEY. The key needs the launch:write scope."
+      }, ctx.json);
+      return 1;
+    }
+    ctx.deps.stderr.write(uploadNotice(image));
+    const imageUrl = safeText(await uploadImage(ctx, key, image));
+    ctx.deps.stdout.write(ctx.json ? `${JSON.stringify({ success: true, imageUrl, contentType: image.contentType, bytes: image.bytes.length })}
+` : `${imageUrl}
+`);
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+
+// src/commands/core.ts
 var USAGE4 = "Usage: candle core serve [--view-token-fd <n>]";
 async function coreServe(args, ctx) {
   const { deps, json } = ctx;
@@ -74719,31 +76734,142 @@ ${USAGE4}`, json);
       await journal.append({ type: "slot.move_finished", refs: removed });
     const tokens = await TokenBook.open(paths.tokens, deps.now);
     redactor.add(tokens.viewToken);
+    const vaultPath = defaultVaultPath(deps.env, deps.homedir());
+    const requireVault = async () => {
+      const raw = await readVaultRaw(vaultPath);
+      if (raw === null)
+        throw refused("VAULT_REQUIRED", "Trading from the TUI needs a vault on this machine. Run candle vault init.");
+      return raw;
+    };
+    const unlockWithSecurityKey = async (raw, pin, reason) => {
+      const file = parseVaultFile(raw);
+      const envelope = file.envelopes.find(isCtap2Envelope);
+      if (envelope === undefined)
+        throw new FactorUnavailableError("no security key is enrolled in this vault.");
+      const sessionDeps = { ...deps, promptSecret: async () => pin ?? "" };
+      try {
+        const session = await openSecurityKeySession(sessionDeps, {
+          vaultId: file.vaultId,
+          envelopeId: envelope.id,
+          requireFeatures: false
+        });
+        const prfOutput = await assertPrf(sessionDeps, session, envelope, file.vaultId, reason);
+        try {
+          return await unlockVault(vaultPath, raw, { factor: "passkey-prf", envelopeId: envelope.id, prfOutput });
+        } finally {
+          wipe(prfOutput);
+        }
+      } catch (error) {
+        if (error instanceof VaultError) {
+          const kind = factorFailureKind(error.code);
+          if (kind === "rejected")
+            throw new FactorRejectedError;
+          if (kind === "unavailable")
+            throw new FactorUnavailableError(error.message);
+        }
+        throw error;
+      }
+    };
+    const openVaultOf = (vault) => ({
+      dek: vault.dek,
+      file: vault.file,
+      close: () => closeVault(vault),
+      wallets: vault.index.entries.filter((entry) => entry.role === "vault" || entry.role === "tee-wallet").map((entry) => ({
+        id: entry.id,
+        chain: entry.chain,
+        address: entry.address,
+        label: entry.label,
+        role: entry.role
+      })),
+      signingKey: (walletId) => decryptKey(vault, walletId),
+      entry: (walletId) => vault.index.entries.find((entry) => entry.id === walletId)
+    });
+    const withdrawScopes = scopesForPreset("readwritetransfer");
     const trading = await TradingState.open({
-      settingsPath: join10(paths.dir, "settings.json"),
+      settingsPath: join11(paths.dir, "settings.json"),
       now: deps.now,
       slotExists: async () => (await Promise.resolve().then(() => (init_ownership(), exports_ownership))).slotExists(paths),
-      async unlockVault(factor) {
+      async unlockVault(factor, reason) {
+        const raw = await requireVault();
+        if (factor.type === "security-key") {
+          return openVaultOf(await unlockWithSecurityKey(raw, factor.pin, reason ?? "unlock the vault"));
+        }
         if (factor.type !== "passphrase")
-          throw refused("FACTOR_NOT_IN_THIS_BUILD", "Use the passphrase.");
-        const path = defaultVaultPath(deps.env, deps.homedir());
-        const raw = await readVaultRaw(path);
-        if (raw === null)
-          throw refused("VAULT_REQUIRED", "Trading from the TUI needs a vault on this machine. Run candle vault init.");
+          throw new FactorUnavailableError(CORE_HELPER_REASON);
         try {
-          const vault = await unlockWithPassphrase(path, raw, factor.value);
-          return { dek: vault.dek, file: vault.file, close: () => closeVault(vault) };
+          return openVaultOf(await unlockWithPassphrase(vaultPath, raw, factor.value));
         } catch (error) {
           if (error instanceof VaultError && error.code === "VAULT_UNLOCK_FAILED")
             throw new FactorRejectedError;
           throw error;
         }
       },
+      async listFactors() {
+        const raw = await readVaultRaw(vaultPath);
+        if (raw === null)
+          return [{ type: "passphrase", usable: true }];
+        return factorOptions(parseVaultFile(raw).envelopes, await currentPlatformFacts(deps));
+      },
       openSlot: async (vault) => {
-        const contents = await openCoreSlot({ paths, vault, profile, environment });
+        const contents = await openCoreSlot({ paths, vault, profile, environment, purpose: "trading" });
         for (const signer of contents.signers)
           redactor.add(signer.value);
         return { writeKey: contents.writeKey, deviceToken: contents.deviceToken };
+      },
+      openTransferSlot: async (vault) => {
+        const contents = await openCoreSlot({ paths, vault, profile, environment, purpose: "transfer" });
+        for (const signer of contents.signers)
+          redactor.add(signer.value);
+        redactor.add(contents.deviceToken);
+        redactor.add(contents.writeKey);
+        redactor.add(contents.withdrawKey);
+        return contents.withdrawKey !== undefined ? { withdrawKey: contents.withdrawKey } : {};
+      },
+      sealWithdrawKey: async (vault, withdrawKey) => {
+        await resealCoreSlot({ paths, vault, profile, environment, withdrawKey, now: deps.now });
+      },
+      mintWithdrawKey: async (deviceToken, request2) => {
+        redactor.add(deviceToken);
+        const result = await apiRequest("/api/v1/agent/keys", {
+          method: "POST",
+          auth: "device",
+          credentials: { deviceToken },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env,
+          body: {
+            scopes: withdrawScopes,
+            label: "Candle TUI (withdraw)",
+            expiresInDays: request2.expiresInDays,
+            txLimit: { usdMicros: request2.limitUsdMicros, reset: request2.reset },
+            embeddedWallet: "allowed"
+          }
+        });
+        const body = result.ok ? result.body : {};
+        if (typeof body.key !== "string") {
+          throw refused("WITHDRAW_KEY_NOT_MINTED", `The Withdraw key could not be created${result.ok ? "" : `: ${result.message}`}. Nothing changed.`);
+        }
+        redactor.add(body.key);
+        const info2 = {
+          prefix: typeof body.keyPrefix === "string" ? body.keyPrefix : apiKeyPrefix(body.key) ?? "",
+          limitUsdMicros: request2.limitUsdMicros,
+          reset: request2.reset,
+          expiresAt: typeof body.expiresAt === "number" ? new Date(body.expiresAt).toISOString() : null
+        };
+        return { key: body.key, info: info2 };
+      },
+      revokeWithdrawKey: async (deviceToken, prefix) => {
+        const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}`, {
+          method: "DELETE",
+          auth: "device",
+          credentials: { deviceToken },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env
+        });
+        if (!result.ok && result.code !== "VALIDATION_FAILED") {
+          throw refused("WITHDRAW_KEY_NOT_REVOKED", `The Withdraw key could not be revoked: ${result.message}`);
+        }
       },
       moveToSlot: async (vault, readKey3) => {
         await moveProfileToCore({ deps, paths, profile, environment, vault, readKey: readKey3, now: deps.now });
@@ -74770,8 +76896,12 @@ ${USAGE4}`, json);
         return key;
       },
       remember: (credentials) => {
-        redactor.add(credentials.writeKey);
-        redactor.add(credentials.deviceToken);
+        if ("withdrawKey" in credentials)
+          redactor.add(credentials.withdrawKey);
+        else {
+          redactor.add(credentials.writeKey);
+          redactor.add(credentials.deviceToken);
+        }
       },
       readKeyLimit: async (credentials) => {
         const result = await apiRequest("/api/v1/agent/keys", {
@@ -74789,7 +76919,7 @@ ${USAGE4}`, json);
     });
     server = new CoreServer({
       socketPath: paths.socket,
-      layoutPath: join10(paths.dir, "config.json"),
+      layoutPath: join11(paths.dir, "config.json"),
       profile,
       environment,
       coreVersion: CLI_VERSION,
@@ -74802,6 +76932,9 @@ ${USAGE4}`, json);
     });
     const attached = server;
     const executor = mcpExecutor({ apiUrl: ctx.apiUrl, fetch: deps.fetch });
+    const history2 = new DestinationHistory({ path: join11(paths.dir, "destinations.json"), environment });
+    await history2.rebuild(journal.rows());
+    const chain2 = await transferChainFor(ctx, paths.dir, executor, history2, () => readKey2);
     const cards = new CardBook({
       journal,
       events: server.events,
@@ -74809,11 +76942,53 @@ ${USAGE4}`, json);
       executor,
       environment,
       profile,
-      now: deps.now
+      now: deps.now,
+      transfers: chain2
     });
     cardBook = cards;
-    registerCardHandlers(server, cards, trading);
+    registerCardHandlers(server, cards, trading, journal);
     registerToolFace(server, { cards, trading, executor, journal, readKey: () => readKey2 });
+    registerLaunchHandlers(server, {
+      cards,
+      trading,
+      journal,
+      readImage: (path) => readLocalImage(path),
+      uploadImage: (writeKey, image) => uploadImage(ctx, writeKey, image)
+    });
+    const read = async (path) => {
+      const key = readKey2;
+      if (key === undefined)
+        return;
+      const result = await apiRequest(path, {
+        method: "GET",
+        auth: "key",
+        credentials: { apiKey: key },
+        apiUrl: ctx.apiUrl,
+        fetch: deps.fetch,
+        env: deps.env
+      });
+      return result.ok ? result.body : undefined;
+    };
+    registerTransferHandlers(server, {
+      cards,
+      trading,
+      journal,
+      history: history2,
+      reads: {
+        embeddedWallets: async () => {
+          const body = await read("/api/v1/agent/wallets/embedded");
+          const wallets2 = body?.wallets;
+          const address = (wallet3) => typeof wallet3?.address === "string" ? wallet3.address : undefined;
+          const solana = address(wallets2?.solana);
+          const evm = address(wallets2?.evm);
+          return body ? { ...solana ? { solana } : {}, ...evm ? { evm } : {} } : undefined;
+        },
+        serverDestinations: (on) => serverDestinations(on, read),
+        balances: (on, address) => chain2.balances(on, address),
+        decimals: (on, asset) => chain2.decimals(on, asset),
+        previewVault: (params, wallet3) => chain2.preview(params, wallet3)
+      }
+    });
     trading.onChange(() => {
       readPlainKey().then((key) => {
         readKey2 = key ?? undefined;
@@ -74905,7 +77080,7 @@ Socket: ${paths.socket}
     await lock.release();
   }
 }
-function registerCardHandlers(server, cards, trading) {
+function registerCardHandlers(server, cards, trading, journal) {
   const own = (access3) => access3 === "own";
   server.handle("cards.propose", async (params, { client }) => cards.propose(params, {
     clientId: client.clientId,
@@ -74917,7 +77092,12 @@ function registerCardHandlers(server, cards, trading) {
     cards: cards.list(client.clientId, own(access3))
   }));
   server.handle("cards.get", async (params, { client, access: access3 }) => cards.get(params.cardId, client.clientId, own(access3)));
-  server.handle("cards.approve", async (params, { client }) => cards.approve({ cardId: params.cardId, cardHash: params.cardHash, factor: parseFactor(params.factor) }, client.clientId));
+  server.handle("cards.approve", async (params, { client }) => cards.approve({
+    cardId: params.cardId,
+    cardHash: params.cardHash,
+    factor: parseFactor(params.factor),
+    confirm: params.confirm
+  }, client.clientId));
   server.handle("cards.reject", async (params, { client }) => cards.reject(params.cardId, client.clientId));
   server.handle("cards.withdraw", async (params, { client }) => cards.withdraw(params.cardId, client.clientId));
   server.handle("operations.list", async (_params, { client, access: access3 }) => ({
@@ -74925,7 +77105,7 @@ function registerCardHandlers(server, cards, trading) {
   }));
   server.handle("operations.get", async (params, { client, access: access3 }) => cards.operation(params.opId, client.clientId, own(access3)));
   server.handle("operations.resolve", async (params, { client }) => cards.resolve({ opId: params.opId, action: params.action, factor: parseFactor(params.factor) }, client.clientId));
-  server.handle("settings.get", async () => trading.snapshot());
+  server.handle("settings.get", async () => ({ ...trading.snapshot(), factors: await trading.factors() }));
   server.handle("settings.set", async (params, { client }) => {
     const factor = parseFactor(params.factor);
     if (params.path === "trading") {
@@ -74953,12 +77133,108 @@ function registerCardHandlers(server, cards, trading) {
           throw refused("INVALID_SETTING", "paperWindow takes {minutes} or false.");
         await trading.openPaperWindow(client.clientId, minutes, factor);
       }
+    } else if (params.path === "withdraw") {
+      if (params.value === false) {
+        const off = await trading.turnOffEmbeddedTransfers(factor);
+        await journal.append({
+          type: "withdraw_key.revoked",
+          clientId: client.clientId,
+          prefix: off.revokedPrefix ?? null
+        });
+      } else {
+        const value = params.value;
+        const usd = typeof value?.limitUsd === "number" ? value.limitUsd : Number.NaN;
+        const reset = value?.reset ?? "daily";
+        if (!Number.isFinite(usd) || usd <= 0)
+          throw refused("INVALID_SETTING", "withdraw takes {limitUsd} above zero, or false.");
+        if (reset !== "daily" && reset !== "weekly" && reset !== "monthly" && reset !== "never")
+          throw refused("INVALID_SETTING", "reset is daily, weekly, monthly or never.");
+        const info2 = await trading.turnOnEmbeddedTransfers({ limitUsdMicros: Math.round(usd * 1e6), reset }, factor);
+        await journal.append({
+          type: "withdraw_key.minted",
+          clientId: client.clientId,
+          prefix: info2.prefix,
+          limitUsdMicros: info2.limitUsdMicros,
+          reset: info2.reset,
+          expiresAt: info2.expiresAt
+        });
+      }
     } else if (params.path === "approvalPolicy") {
       throw refused("POLICY_FIXED", "The approval policy is Ask me (every live action) in this version.");
     } else {
-      throw refused("INVALID_SETTING", "Settable paths: trading, window, paperWindow.");
+      throw refused("INVALID_SETTING", "Settable paths: trading, window, paperWindow, withdraw.");
     }
-    return trading.snapshot();
+    return { ...trading.snapshot(), factors: await trading.factors() };
+  });
+}
+async function serverDestinations(chain2, read) {
+  const out = [];
+  const own = (await read("/api/v1/agent/wallets/embedded"))?.wallets;
+  const ownAddress = own?.[chain2 === "hood" ? "evm" : "solana"]?.address;
+  if (typeof ownAddress === "string")
+    out.push({ chain: chain2, address: ownAddress, label: "Embedded wallet", serverClass: "own" });
+  let cursor;
+  for (let page = 0;page < 10; page++) {
+    const body = await read(`/api/v1/agent/wallets?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    const rows = Array.isArray(body?.page) ? body.page : [];
+    for (const row of rows) {
+      if (row.revokedAt || typeof row.address !== "string")
+        continue;
+      if ((row.chain === "evm" ? "hood" : row.chain) !== chain2)
+        continue;
+      const trusted = row.addedVia === "session" || typeof row.trustedAt === "number";
+      if (!trusted)
+        continue;
+      out.push({
+        chain: chain2,
+        address: row.address,
+        ...typeof row.label === "string" ? { label: row.label } : {},
+        serverClass: "linked"
+      });
+    }
+    if (body?.isDone !== false || typeof body.continueCursor !== "string")
+      break;
+    cursor = body.continueCursor;
+  }
+  const allow = (await read("/api/v1/agent/withdrawal-addresses"))?.addresses;
+  for (const row of Array.isArray(allow) ? allow : []) {
+    if (row.revokedAt || row.chain !== chain2 || typeof row.address !== "string")
+      continue;
+    out.push({
+      chain: chain2,
+      address: row.address,
+      ...typeof row.label === "string" ? { label: row.label } : {},
+      serverClass: "approved"
+    });
+  }
+  return out;
+}
+async function transferChainFor(ctx, stateDir, executor, history2, readKey2) {
+  const config = await ctx.deps.readConfig();
+  const evm = resolveEvmRpcUrl(undefined, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
+  const evmUrl = "error" in evm ? DEFAULT_HOOD_RPC_URL : evm.url;
+  const hood = { rpc: createEvmRpc(evmUrl, ctx.deps.fetch), builtIn: "error" in evm ? true : evm.builtIn };
+  return createTransferChain({
+    solana: () => {
+      const endpoint = resolveSolanaEndpoint(ctx, undefined, config);
+      if ("error" in endpoint)
+        throw refused("RPC_URL_INVALID", endpoint.error);
+      return solanaClientFor(ctx, endpoint);
+    },
+    hood,
+    executor,
+    pendingDir: join11(stateDir, "pending"),
+    teeChecks: async (entry) => {
+      assertNoPendingSweep(entry);
+      if (entry.chain === "evm") {
+        await assertHoodChain({ rpc: hood.rpc, url: evmUrl, host: new URL(evmUrl).host, builtIn: hood.builtIn });
+        assertWalletLockFree(entry, (await readHoodTeeServer(ctx, entry)).lock, ctx.deps.now());
+      }
+    },
+    reportActivity: async (on, id) => {
+      await reportTransferActivity(ctx, readKey2(), id, on);
+    },
+    recordDestination: (on, address) => history2.add(on, address)
   });
 }
 function keyLimitOf(keys, prefix, now) {
@@ -77026,15 +79302,15 @@ init_solana_endpoint();
 // src/vault/domains.ts
 init_errors2();
 import { homedir as homedir4 } from "node:os";
-import { basename, dirname as dirname8, isAbsolute as isAbsolute2, join as join11, resolve as resolve2, sep as sep2 } from "node:path";
+import { basename as basename2, dirname as dirname8, isAbsolute as isAbsolute2, join as join12, resolve as resolve2, sep as sep2 } from "node:path";
 var ICLOUD_DRIVE_SEGMENTS = ["Library", "Mobile Documents", "com~apple~CloudDocs"];
 var ICLOUD_SHORTHAND = "icloud";
 var ICLOUD_BACKUP_FOLDER = "Candle";
 function icloudDriveDir(home) {
-  return join11(home, ...ICLOUD_DRIVE_SEGMENTS);
+  return join12(home, ...ICLOUD_DRIVE_SEGMENTS);
 }
 function icloudBackupPath(home, at2) {
-  return join11(icloudDriveDir(home), ICLOUD_BACKUP_FOLDER, `vault-${backupStamp(at2)}.enc`);
+  return join12(icloudDriveDir(home), ICLOUD_BACKUP_FOLDER, `vault-${backupStamp(at2)}.enc`);
 }
 function backupStamp(at2) {
   return new Date(at2).toISOString().replace(/[-:]/gu, "").replace(/\.\d+Z$/u, "Z");
@@ -77089,7 +79365,7 @@ async function classifyDestination(path, opts) {
   } catch {
     return "unknown";
   }
-  return placeResolvedPath(join11(parent, basename(absolute)), home);
+  return placeResolvedPath(join12(parent, basename2(absolute)), home);
 }
 function sealsByDefault(destination) {
   return destination === "icloud-drive" || destination === "other-cloud" || destination === "unknown";
@@ -79507,8 +81783,8 @@ init_esm();
 init_solana_endpoint();
 init_solana_lite();
 init_token_2022();
-var TOKEN_ACCOUNT_STATE_OFFSET2 = 108;
-var TOKEN_ACCOUNT_STATE_FROZEN2 = 2;
+var TOKEN_ACCOUNT_STATE_OFFSET3 = 108;
+var TOKEN_ACCOUNT_STATE_FROZEN3 = 2;
 var CONFIRM_POLL_MS2 = 2000;
 var CONFIRM_MAX_POLLS2 = 45;
 async function broadcastAndFinalize2(rpc, ctx, secret64, feePayer, instructions) {
@@ -79626,7 +81902,7 @@ async function sweepEverythingTo(input) {
           instructions.push(createAssociatedTokenAccountIdempotent({ payer: ownerKey, owner: destinationKey, mint, tokenProgram }));
           destinationFrozen = profile?.defaultFrozen ?? false;
         } else {
-          destinationFrozen = existing.data[TOKEN_ACCOUNT_STATE_OFFSET2] === TOKEN_ACCOUNT_STATE_FROZEN2;
+          destinationFrozen = existing.data[TOKEN_ACCOUNT_STATE_OFFSET3] === TOKEN_ACCOUNT_STATE_FROZEN3;
         }
         instructions.push(tokenTransferChecked({
           source,
@@ -79938,7 +82214,7 @@ function defaultLabel(branch, index) {
 function addressOfSecret(chain2, secret) {
   return chain2 === "evm" ? evmAddressFromSecret(secret) : addressFromSecret64(secret);
 }
-function sameAddress3(chain2, a, b) {
+function sameAddress4(chain2, a, b) {
   return chain2 === "evm" ? sameEvmAddress(a, b) : a === b;
 }
 function labelClash(index, planned) {
@@ -79965,7 +82241,7 @@ async function verifyWrittenFromDisk(vault, address, keyId, chain2 = "solana") {
   const onDisk = { ...vault, raw, file: parseVaultFile(raw) };
   const secret = await decryptKey(onDisk, keyId);
   try {
-    if (!sameAddress3(chain2, addressOfSecret(chain2, secret), address)) {
+    if (!sameAddress4(chain2, addressOfSecret(chain2, secret), address)) {
       throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
     }
   } finally {
@@ -79980,7 +82256,7 @@ async function verifyWritten(path, address, keyId, reopen, _ctx, chain2 = "solan
   try {
     const secret = await decryptKey(reopened, keyId);
     try {
-      if (!sameAddress3(chain2, addressOfSecret(chain2, secret), address)) {
+      if (!sameAddress4(chain2, addressOfSecret(chain2, secret), address)) {
         throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
       }
     } finally {
@@ -80400,122 +82676,6 @@ async function help(args, ctx) {
   }
   ctx.deps.stdout.write(topic);
   return 0;
-}
-
-// src/commands/image.ts
-init_args();
-init_client();
-init_deps();
-init_render();
-init_trading();
-init_swap();
-import { open as open7 } from "node:fs/promises";
-var UPLOAD_USAGE = "Usage: candle image upload <path> [--json]";
-var MAX_IMAGE_BYTES2 = 10 * 1024 * 1024;
-var IMAGE_TYPES = "PNG, JPEG, GIF or WebP";
-var NOTHING_UPLOADED2 = "Nothing was uploaded.";
-function sniffImageType2(bytes) {
-  const at2 = (offset, signature) => signature.every((byte, i) => bytes[offset + i] === byte);
-  if (at2(0, [137, 80, 78, 71, 13, 10, 26, 10]))
-    return "image/png";
-  if (at2(0, [255, 216, 255]))
-    return "image/jpeg";
-  if (at2(0, [71, 73, 70, 56]) && (bytes[4] === 55 || bytes[4] === 57) && bytes[5] === 97)
-    return "image/gif";
-  if (at2(0, [82, 73, 70, 70]) && at2(8, [87, 69, 66, 80]))
-    return "image/webp";
-  return;
-}
-function unreadable(path, error) {
-  const code = error.code;
-  const why = code === "ENOENT" || code === "ENOTDIR" ? "there is no file at that path" : code === "EACCES" || code === "EPERM" ? "this user may not read it" : code === "EISDIR" ? "it is not a file" : `the read failed${code ? ` (${code})` : ""}`;
-  return new TradingError("IMAGE_UNREADABLE", `Could not read ${safeText(path)}: ${why}. ${NOTHING_UPLOADED2}`);
-}
-async function readLocalImage(path) {
-  const tooLarge = () => new TradingError("IMAGE_TOO_LARGE", `${safeText(path)} is over 10MB, the largest image Candle hosts. ${NOTHING_UPLOADED2}`);
-  let bytes;
-  try {
-    const file = await open7(path, "r");
-    try {
-      const stat5 = await file.stat();
-      if (!stat5.isFile())
-        throw Object.assign(new Error("not a regular file"), { code: "EISDIR" });
-      if (stat5.size > MAX_IMAGE_BYTES2)
-        throw tooLarge();
-      const buffer = new Uint8Array(MAX_IMAGE_BYTES2 + 1);
-      let total = 0;
-      while (total < buffer.length) {
-        const { bytesRead } = await file.read(buffer, total, buffer.length - total, null);
-        if (bytesRead === 0)
-          break;
-        total += bytesRead;
-      }
-      bytes = buffer.slice(0, total);
-    } finally {
-      await file.close();
-    }
-  } catch (error) {
-    throw error instanceof TradingError ? error : unreadable(path, error);
-  }
-  if (bytes.length > MAX_IMAGE_BYTES2)
-    throw tooLarge();
-  const contentType = sniffImageType2(bytes);
-  if (!contentType)
-    throw new TradingError("IMAGE_TYPE_UNSUPPORTED", `${safeText(path)} is not a ${IMAGE_TYPES} image. The type is read from the file's first bytes, not its name. ${NOTHING_UPLOADED2}`);
-  return { path, bytes, contentType };
-}
-function uploadNotice(image) {
-  return `Uploading ${safeText(image.path)} (${image.contentType}, ${image.bytes.length} bytes). The file becomes public and permanent: Candle pins it, and the URL cannot be withdrawn.
-`;
-}
-async function uploadImage(ctx, key, image) {
-  const result = await apiRequest("/api/v1/uploads/agent-image", {
-    apiUrl: ctx.apiUrl,
-    credentials: { apiKey: key },
-    auth: "key",
-    method: "POST",
-    raw: { bytes: image.bytes, contentType: image.contentType },
-    fetch: ctx.deps.fetch,
-    env: ctx.deps.env
-  });
-  if (!result.ok)
-    throw new TradingError(result.code ?? "REQUEST_FAILED", result.message);
-  const imageUrl = result.body?.imageUrl;
-  if (typeof imageUrl !== "string" || !imageUrl.startsWith("https://"))
-    throw new TradingError("INVALID_RESPONSE", "Candle did not return an https URL for the uploaded image.");
-  return imageUrl;
-}
-async function imageUpload(args, ctx) {
-  const parsed = parseArgs(args, { pathPositionals: ["<path>"] });
-  if ("error" in parsed) {
-    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
-    return 2;
-  }
-  const [path, ...rest] = parsed.positionals;
-  if (path === undefined || rest.length !== 0) {
-    writeUsageFailure(ctx.deps, UPLOAD_USAGE, ctx.json);
-    return 2;
-  }
-  try {
-    const image = await readLocalImage(path);
-    const key = await resolveApiKey(ctx.deps, ctx.profile);
-    if (!key) {
-      writeLocalFailure(ctx.deps, {
-        code: "NO_API_KEY",
-        message: `No API key available. ${NOTHING_UPLOADED2}`,
-        suggestion: "Run: candle auth login, or set CANDLE_API_KEY. The key needs the launch:write scope."
-      }, ctx.json);
-      return 1;
-    }
-    ctx.deps.stderr.write(uploadNotice(image));
-    const imageUrl = safeText(await uploadImage(ctx, key, image));
-    ctx.deps.stdout.write(ctx.json ? `${JSON.stringify({ success: true, imageUrl, contentType: image.contentType, bytes: image.bytes.length })}
-` : `${imageUrl}
-`);
-    return 0;
-  } catch (error) {
-    return tradingFailure(ctx, error);
-  }
 }
 
 // src/index.ts
@@ -82167,8 +84327,8 @@ function canonical3(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(canonical3).join(",")}]`;
-  const record3 = value;
-  return `{${Object.keys(record3).sort().map((key) => `${JSON.stringify(key)}:${canonical3(record3[key])}`).join(",")}}`;
+  const record4 = value;
+  return `{${Object.keys(record4).sort().map((key) => `${JSON.stringify(key)}:${canonical3(record4[key])}`).join(",")}}`;
 }
 function sameValue2(a, b) {
   return canonical3(a) === canonical3(b);
@@ -82961,7 +85121,7 @@ class PerpsMarketError2 extends Error {
     this.retryable = code === "PERPS_UNAVAILABLE";
   }
 }
-function unavailable3() {
+function unavailable4() {
   throw new PerpsMarketError2("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
 }
 function usage5(message) {
@@ -82993,7 +85153,7 @@ function fixed2(value, places) {
 function at2(values, index) {
   const value = values[index];
   if (value === undefined)
-    return unavailable3();
+    return unavailable4();
   return value;
 }
 function integer2(value) {
@@ -83001,40 +85161,40 @@ function integer2(value) {
 }
 function parseMarkets2(value) {
   if (!Array.isArray(value) || value.length !== 2)
-    return unavailable3();
+    return unavailable4();
   const [meta, ctxs] = value;
   if (!object3(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
-    return unavailable3();
+    return unavailable4();
   for (const row of meta.universe) {
     if (!object3(row) || typeof row.name !== "string" || !integer2(row.szDecimals) || row.szDecimals > 6 || !integer2(row.maxLeverage))
-      return unavailable3();
+      return unavailable4();
     for (const key of ["isDelisted", "onlyIsolated"])
       if (row[key] !== undefined && typeof row[key] !== "boolean")
-        return unavailable3();
+        return unavailable4();
     if (row.marginTableId !== undefined && !integer2(row.marginTableId))
-      return unavailable3();
+      return unavailable4();
   }
   for (const ctx of ctxs) {
     if (!object3(ctx))
-      return unavailable3();
+      return unavailable4();
     for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
       if (ctx[key] !== undefined && ctx[key] !== null && !decimal5(ctx[key]))
-        return unavailable3();
+        return unavailable4();
     }
     if (ctx.impactPxs != null && (!Array.isArray(ctx.impactPxs) || ctx.impactPxs.length !== 2 || !ctx.impactPxs.every(decimal5)))
-      return unavailable3();
+      return unavailable4();
   }
   const marginTables = new Map;
   if (meta.marginTables !== undefined) {
     if (!Array.isArray(meta.marginTables))
-      return unavailable3();
+      return unavailable4();
     for (const entry of meta.marginTables) {
       if (!Array.isArray(entry) || !integer2(entry[0]) || !object3(entry[1]) || !Array.isArray(entry[1].marginTiers))
-        return unavailable3();
+        return unavailable4();
       const tiers = [];
       for (const tier of entry[1].marginTiers) {
         if (!object3(tier) || nonnegative2(tier.lowerBound) === null || !integer2(tier.maxLeverage))
-          return unavailable3();
+          return unavailable4();
         tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
       }
       marginTables.set(entry[0], tiers);
@@ -83052,10 +85212,10 @@ async function info2(fetcher, network2, body) {
       redirect: "error"
     });
     if (!response.ok)
-      return unavailable3();
+      return unavailable4();
     return JSON.parse(await response.text());
   } catch {
-    return unavailable3();
+    return unavailable4();
   }
 }
 async function readHyperliquidMarkets2(fetcher, network2) {
@@ -83072,7 +85232,7 @@ function perpsMarketGate2(meta, ctx, minOpenInterestUsd) {
   const divisor = 10n ** 30n;
   const micros = (oi * mark + divisor - 1n) / divisor;
   if (micros > BigInt(Number.MAX_SAFE_INTEGER))
-    return unavailable3();
+    return unavailable4();
   if (minOpenInterestUsd > 0 && micros < BigInt(minOpenInterestUsd) * 1000000n)
     return { tradeable: false, reason: "minOpenInterest" };
   return { tradeable: true, reason: null };
@@ -83200,17 +85360,17 @@ class PerpsMarketReader2 {
       const [predicted, cap] = await Promise.all([
         info2(this.opts.fetcher, this.opts.network, { type: "predictedFundings" }).then((value2) => {
           if (!Array.isArray(value2))
-            return unavailable3();
+            return unavailable4();
           const map2 = new Map;
           for (const entry of value2) {
             if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1]))
-              return unavailable3();
+              return unavailable4();
             for (const venue of entry[1]) {
               if (!Array.isArray(venue) || typeof venue[0] !== "string")
-                return unavailable3();
+                return unavailable4();
               if (venue[0] === "HlPerp" && venue[1] !== null) {
                 if (!object3(venue[1]) || !decimal5(venue[1].fundingRate) || !integer2(venue[1].nextFundingTime))
-                  return unavailable3();
+                  return unavailable4();
                 map2.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
               }
             }
@@ -83222,7 +85382,7 @@ class PerpsMarketReader2 {
         }),
         info2(this.opts.fetcher, this.opts.network, { type: "perpsAtOpenInterestCap" }).then((value2) => {
           if (!Array.isArray(value2) || !value2.every((v) => typeof v === "string"))
-            return unavailable3();
+            return unavailable4();
           return new Set(value2);
         }).catch(() => {
           warnings.push("Open-interest caps unavailable.");
@@ -83351,15 +85511,15 @@ class PerpsMarketReader2 {
       ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
     });
     if (!object3(value) || value.coin !== canonical4 || !integer2(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
-      return unavailable3();
+      return unavailable4();
     const sides = [];
     for (const side of value.levels) {
       if (!Array.isArray(side))
-        return unavailable3();
+        return unavailable4();
       const levels = [];
       for (const level of side) {
         if (!object3(level) || nonnegative2(level.px) === null || nonnegative2(level.sz) === null || !integer2(level.n))
-          return unavailable3();
+          return unavailable4();
         levels.push({ px: level.px, sz: level.sz, n: level.n });
       }
       sides.push(levels);
@@ -83391,11 +85551,11 @@ class PerpsMarketReader2 {
       req: { coin: canonical4, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
     });
     if (!Array.isArray(value))
-      return unavailable3();
+      return unavailable4();
     const candles = [];
     for (const c of value) {
       if (!object3(c) || !integer2(c.t) || !integer2(c.T) || !integer2(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative2(v) !== null) || c.s !== canonical4 || c.i !== window.interval)
-        return unavailable3();
+        return unavailable4();
       if (c.t <= window.endTime && c.T >= window.startTime)
         candles.push({
           t: c.t,
@@ -83449,7 +85609,7 @@ function isTime2(value) {
 function invalid2(field, message) {
   return new PerpsHistoryError2("VALIDATION_FAILED", message, { field });
 }
-function unavailable4(message, retryAfterMs2) {
+function unavailable5(message, retryAfterMs2) {
   return new PerpsHistoryError2("PERPS_UNAVAILABLE", message, {
     retryable: true,
     ...retryAfterMs2 !== undefined ? { retryAfterMs: retryAfterMs2 } : {}
@@ -83494,8 +85654,8 @@ function canonical4(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(canonical4).join(",")}]`;
-  const record3 = value;
-  return `{${Object.keys(record3).sort().map((key) => `${JSON.stringify(key)}:${canonical4(record3[key])}`).join(",")}}`;
+  const record4 = value;
+  return `{${Object.keys(record4).sort().map((key) => `${JSON.stringify(key)}:${canonical4(record4[key])}`).join(",")}}`;
 }
 function isDecimalString2(value) {
   return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
@@ -83503,14 +85663,14 @@ function isDecimalString2(value) {
 function asFill2(raw) {
   const row = raw;
   if (!row || typeof row !== "object" || typeof row.coin !== "string" || !isTime2(row.time) || !Number.isSafeInteger(row.tid) || !Number.isSafeInteger(row.oid) || !isDecimalString2(row.px) || !isDecimalString2(row.sz) || typeof row.side !== "string" || !isDecimalString2(row.closedPnl) || !isDecimalString2(row.fee) || row.builderFee !== undefined && !isDecimalString2(row.builderFee))
-    throw unavailable4("Hyperliquid returned a fill this client cannot read");
+    throw unavailable5("Hyperliquid returned a fill this client cannot read");
   return row;
 }
 function asFunding2(raw) {
   const row = raw;
   const delta = row?.delta;
   if (!row || typeof row !== "object" || !isTime2(row.time) || typeof row.hash !== "string" || !delta || typeof delta !== "object" || typeof delta.coin !== "string" || !isDecimalString2(delta.usdc) || !isDecimalString2(delta.fundingRate) || !isDecimalString2(delta.szi))
-    throw unavailable4("Hyperliquid returned a funding payment this client cannot read");
+    throw unavailable5("Hyperliquid returned a funding payment this client cannot read");
   return row;
 }
 function identity2(kind, row) {
@@ -83537,7 +85697,7 @@ async function postInfo2(req, body, what) {
     });
   } catch (err) {
     const aborted = err instanceof Error && err.name === "AbortError";
-    throw unavailable4(aborted ? `Hyperliquid did not answer the ${what} read in time; retry shortly` : `Hyperliquid could not be reached for the ${what} read; retry shortly`);
+    throw unavailable5(aborted ? `Hyperliquid did not answer the ${what} read in time; retry shortly` : `Hyperliquid could not be reached for the ${what} read; retry shortly`);
   } finally {
     if (timer)
       clearTimeout(timer);
@@ -83546,14 +85706,14 @@ async function postInfo2(req, body, what) {
     if (res.status === 429) {
       const header = res.headers?.get("retry-after") ?? null;
       const seconds = header !== null && /^[0-9]{1,6}$/.test(header.trim()) ? Number(header.trim()) : undefined;
-      throw unavailable4(`Hyperliquid rate-limited the ${what} read${seconds !== undefined ? `; retry after ${seconds}s` : "; retry shortly"}`, seconds !== undefined ? seconds * 1000 : undefined);
+      throw unavailable5(`Hyperliquid rate-limited the ${what} read${seconds !== undefined ? `; retry after ${seconds}s` : "; retry shortly"}`, seconds !== undefined ? seconds * 1000 : undefined);
     }
-    throw unavailable4(`Hyperliquid answered the ${what} read with HTTP ${res.status}; retry shortly`);
+    throw unavailable5(`Hyperliquid answered the ${what} read with HTTP ${res.status}; retry shortly`);
   }
   try {
     return JSON.parse(await res.text());
   } catch {
-    throw unavailable4(`Hyperliquid returned an unreadable ${what} response`);
+    throw unavailable5(`Hyperliquid returned an unreadable ${what} response`);
   }
 }
 async function mainPerpCoins2(req) {
@@ -83561,10 +85721,10 @@ async function mainPerpCoins2(req) {
   try {
     universe = (await readHyperliquidMarkets2(req.fetch, req.network)).universe;
   } catch {
-    throw unavailable4("Hyperliquid's market list could not be read; history is not reported without it");
+    throw unavailable5("Hyperliquid's market list could not be read; history is not reported without it");
   }
   if (universe.length === 0)
-    throw unavailable4("Hyperliquid's market list could not be read; history is not reported without it");
+    throw unavailable5("Hyperliquid's market list could not be read; history is not reported without it");
   return new Set(universe.map((market) => market.name));
 }
 function resolveWindow2(req) {
@@ -83647,7 +85807,7 @@ async function readPerpsHistoryPage2(req) {
       const raw = await postInfo2(req, body, kind === "fills" ? "fills" : "funding");
       requests++;
       if (!Array.isArray(raw))
-        throw unavailable4(`Hyperliquid returned an unreadable ${kind} response`);
+        throw unavailable5(`Hyperliquid returned an unreadable ${kind} response`);
       const rows = raw.map((r) => kind === "fills" ? asFill2(r) : asFunding2(r));
       const keyed = rows.map((row) => ({ row, id: identity2(kind, row) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const full = rows.length >= max;
@@ -83800,12 +85960,12 @@ function perpsRiskProblem2(t) {
   return null;
 }
 function perpsRiskFromLimits2(body) {
-  const record3 = isRecord3(body) ? body : {};
-  const reported = "perpsRisk" in record3 || "perpsRiskEffective" in record3;
-  const stored = isRecord3(record3.perpsRisk) ? pickSettings2(record3.perpsRisk) : null;
+  const record4 = isRecord3(body) ? body : {};
+  const reported = "perpsRisk" in record4 || "perpsRiskEffective" in record4;
+  const stored = isRecord3(record4.perpsRisk) ? pickSettings2(record4.perpsRisk) : null;
   if (!reported)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
-  const effective = isRecord3(record3.perpsRiskEffective) ? effectivePerpsRisk2(pickSettings2(record3.perpsRiskEffective)) : effectivePerpsRisk2(stored);
+  const effective = isRecord3(record4.perpsRiskEffective) ? effectivePerpsRisk2(pickSettings2(record4.perpsRiskEffective)) : effectivePerpsRisk2(stored);
   if (perpsRiskProblem2(effective) !== null)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
   const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
@@ -85809,7 +87969,7 @@ async function perpsDeposit(args, ctx) {
 init_args();
 init_client();
 init_deps();
-import { randomBytes as randomBytes8 } from "node:crypto";
+import { randomBytes as randomBytes9 } from "node:crypto";
 
 // src/hyperliquid-manage.ts
 var PERPS_FLATTEN_MAX_STEPS2 = 100;
@@ -86419,7 +88579,7 @@ async function workflowIo(ctx, opts) {
         throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.");
       return (await ctx.deps.promptLine("Sign and submit this plan? [y/N] ")).trim().toLowerCase() === "y";
     },
-    cloid: () => `0x${randomBytes8(16).toString("hex")}`
+    cloid: () => `0x${randomBytes9(16).toString("hex")}`
   };
 }
 function stepLine(step) {
@@ -87235,7 +89395,7 @@ init_args();
 // src/plugins.ts
 import { spawn as spawn2 } from "node:child_process";
 import { accessSync, constants as constants4, readdirSync, statSync } from "node:fs";
-import { delimiter, join as join12 } from "node:path";
+import { delimiter, join as join13 } from "node:path";
 var PLUGIN_PREFIX = "candle-";
 var RESERVED_HELPER_NAMES = ["fido2", "enclave"];
 function isPluginName(name2) {
@@ -87257,7 +89417,7 @@ function findPlugin(name2, pathEnv) {
   for (const dir of (pathEnv ?? "").split(delimiter)) {
     if (dir === "")
       continue;
-    const candidate = join12(dir, `${PLUGIN_PREFIX}${name2}`);
+    const candidate = join13(dir, `${PLUGIN_PREFIX}${name2}`);
     if (executableAt(candidate))
       return candidate;
   }
@@ -87280,7 +89440,7 @@ function listPlugins(pathEnv) {
       const name2 = file.slice(PLUGIN_PREFIX.length);
       if (!isPluginName(name2) || found.has(name2))
         continue;
-      const path = join12(dir, file);
+      const path = join13(dir, file);
       if (executableAt(path))
         found.set(name2, path);
     }
@@ -88371,10 +90531,10 @@ async function portfolio(args, ctx) {
       solana: showSolana ? [...vaultRead?.unavailable ?? [], ...fromCandle.unavailable ?? []] : [],
       hood: [...evmBalances?.unavailable ?? [], ...candleHood?.unavailable ?? []]
     };
-    const unavailable5 = chains.flatMap((chain2) => unavailableByChain[chain2]);
+    const unavailable6 = chains.flatMap((chain2) => unavailableByChain[chain2]);
     const lpUnread = (lpSection?.unreadable ?? []).length;
     const listStatus = walletListStatus(answered);
-    const shownUnread = unavailable5.length > 0 || lpUnread > 0;
+    const shownUnread = unavailable6.length > 0 || lpUnread > 0;
     const listNote = listStatus === "cut-off" ? "cut-off" : listStatus === "unknown" && !shownUnread ? "unknown" : null;
     const complete = listNote === null && !shownUnread && !perpsPartial;
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0);
@@ -88425,7 +90585,7 @@ async function portfolio(args, ctx) {
         totalUsd,
         unpriced,
         complete,
-        unavailable: unavailable5,
+        unavailable: unavailable6,
         unavailableByChain: Object.fromEntries(chains.map((chain2) => [chain2, unavailableByChain[chain2]])),
         rpcHost: rpcHost ?? null,
         ...evmHost !== undefined ? { evmRpcHost: evmHost } : {},
@@ -88555,11 +90715,11 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
           byAddress.set(address, { wei, usdg });
         }
       }));
-      const unavailable5 = unique.filter((address) => {
+      const unavailable6 = unique.filter((address) => {
         const read2 = byAddress.get(address);
         return read2 === undefined || read2.wei === null || read2.usdg === null;
       });
-      return { byAddress, unavailable: unavailable5, ...failure === undefined ? {} : { failure } };
+      return { byAddress, unavailable: unavailable6, ...failure === undefined ? {} : { failure } };
     }
   };
 }
@@ -88628,15 +90788,15 @@ async function readOwnRpc(addresses, solana, ctx) {
     }
   }));
   const byAddress = new Map;
-  const unavailable5 = [];
+  const unavailable6 = [];
   for (const address of unique) {
     const sol = lamports.get(address) ?? null;
     const held = failed.has(address) ? null : [...tokens.get(address)?.values() ?? []];
     byAddress.set(address, { lamports: sol, tokens: held });
     if (sol === null || held === null)
-      unavailable5.push(address);
+      unavailable6.push(address);
   }
-  return { byAddress, unavailable: unavailable5, ...failure === undefined ? {} : { failure } };
+  return { byAddress, unavailable: unavailable6, ...failure === undefined ? {} : { failure } };
 }
 function solanaHoldings(read2, prices) {
   if (read2 === undefined || read2.lamports === null && read2.tokens === null)
@@ -88816,9 +90976,9 @@ ${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEE
 `);
   }
   const unreadByChain = totals.chains.map((chain2) => [chain2, totals.unavailableByChain[chain2].length]).filter(([, n]) => n > 0);
-  const unavailable5 = unreadByChain.reduce((sum, [, n]) => sum + n, 0);
-  if (unavailable5 > 0) {
-    deps.stdout.write(`${unavailable5} ${unavailable5 === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain2, n]) => `${n} on ${CHAIN_NAMES[chain2]}`).join(", ")}). What was not read is marked "not read" and is not in the total.
+  const unavailable6 = unreadByChain.reduce((sum, [, n]) => sum + n, 0);
+  if (unavailable6 > 0) {
+    deps.stdout.write(`${unavailable6} ${unavailable6 === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain2, n]) => `${n} on ${CHAIN_NAMES[chain2]}`).join(", ")}). What was not read is marked "not read" and is not in the total.
 `);
   }
   writeListNote(deps.stdout, totals.listNote);
@@ -90850,7 +93010,7 @@ Usage: candle tui [--profile <name>]`, json);
 
 // src/commands/update.ts
 init_args();
-import { randomBytes as randomBytes9 } from "node:crypto";
+import { randomBytes as randomBytes10 } from "node:crypto";
 
 // src/progress.ts
 var FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -91434,7 +93594,7 @@ async function stage(deps, steps, opts) {
     return { ok: false, failure: { code: "UPDATE_UNREACHABLE", message: download.message } };
   }
   steps.done(`downloaded ${name2} (${formatBytes(download.bytes.length)})`);
-  const tmpPath = `${opts.dir}/.candle-update-${opts.version}-${randomBytes9(6).toString("hex")}`;
+  const tmpPath = `${opts.dir}/.candle-update-${opts.version}-${randomBytes10(6).toString("hex")}`;
   try {
     await deps.writeBytes(tmpPath, download.bytes);
   } catch (error) {
@@ -91481,7 +93641,7 @@ async function discard(deps, path) {
 
 // src/commands/vault-backup.ts
 init_args();
-import { chmod as chmod9, copyFile, mkdir as mkdir7, stat as stat5 } from "node:fs/promises";
+import { chmod as chmod10, copyFile, mkdir as mkdir8, stat as stat5 } from "node:fs/promises";
 import nodePath, { dirname as dirname9, resolve as resolve4 } from "node:path";
 init_crypto();
 init_errors2();
@@ -91668,9 +93828,9 @@ async function vaultBackup(args, ctx) {
     if (target.requires !== undefined) {
       const folder = dirname9(destination);
       try {
-        const created = await mkdir7(folder, { recursive: true });
+        const created = await mkdir8(folder, { recursive: true });
         if (created !== undefined)
-          await chmod9(folder, 448).catch(() => {});
+          await chmod10(folder, 448).catch(() => {});
       } catch (error) {
         throw copyWriteFailed(destination, error, "copy");
       }
@@ -91714,7 +93874,7 @@ async function vaultBackup(args, ctx) {
     }
     const recordCopy = live.file.version === EVM_TEE_VAULT_VERSION ? await copyEvmRecordForBackup(live, copyRecordPath, deps) : undefined;
     const written = await stat5(destination);
-    const { report, copyHeader, record: record3 } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
+    const { report, copyHeader, record: record4 } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
     assertFloorCarried(copyHeader, live.file);
     const verifiedAt = new Date(deps.now()).toISOString();
     const copyEnvelopeIds = copyHeader.envelopes.map((envelope) => envelope.id);
@@ -91744,7 +93904,7 @@ async function vaultBackup(args, ctx) {
         sharedDomainAccepted: verdict.sharedDomainAccepted,
         sharedDomain: verdict.sharedDomain,
         verified: true,
-        ...reportJson(report, live, record3),
+        ...reportJson(report, live, record4),
         ...recordCopy !== undefined ? {
           evmRecordCopy: {
             path: recordCopy.copyPath,
@@ -91767,7 +93927,7 @@ async function vaultBackup(args, ctx) {
       deps.stdout.write(`${recordCopyLine(recordCopy)}
 `);
     writeVerifiedReport(ctx, destination, verdict, report, live, {
-      record: record3,
+      record: record4,
       copyEnvelopes,
       leftOut,
       verifiedWith: verifiedWithLine(wordFor(live.envelope), live.envelope.id, "the copy was re-opened with it", carriedClause(live.file.envelopes.filter(isPassphraseEnvelope).map((envelope) => envelope.id)))
@@ -91927,12 +94087,12 @@ async function vaultVerifyBackup(args, ctx) {
     const live = hold(opened.vault);
     const openedInCopy = carried.some((envelope) => envelope.id === opened.factor.envelopeId);
     let report;
-    let record3;
+    let record4;
     let copyOpened;
     if (openedInCopy) {
       const verified = await verifyCopy(ctx, target, opened.reopen, live, "opening the copy");
       report = verified.report;
-      record3 = verified.record;
+      record4 = verified.record;
       copyOpened = {
         word: wordFor(live.envelope),
         envelopeId: opened.factor.envelopeId,
@@ -91949,7 +94109,7 @@ async function vaultVerifyBackup(args, ctx) {
         passphraseOnlyEvenIfSole: true
       })).vault);
       report = await verifyVaultIntegrity(copy, { live });
-      record3 = await verifyEvmRecordCopy(copy, evmRecordPath(target));
+      record4 = await verifyEvmRecordCopy(copy, evmRecordPath(target));
       copyOpened = {
         word: "passphrase",
         envelopeId: copy.envelope.id,
@@ -91974,7 +94134,7 @@ async function vaultVerifyBackup(args, ctx) {
         ok: true,
         verified: target,
         sealed,
-        ...reportJson(report, live, record3),
+        ...reportJson(report, live, record4),
         openedWith: { factor: copyOpened.factor, envelopeId: copyOpened.envelopeId },
         envelopesInCopy: copyHeader.envelopes.map((envelope) => envelope.id),
         passphraseExercised,
@@ -91983,7 +94143,7 @@ async function vaultVerifyBackup(args, ctx) {
       return 0;
     }
     writeVerifiedReport(ctx, target, sealed ? { sealed: true } : undefined, report, live, {
-      record: record3,
+      record: record4,
       copyEnvelopes: copyHeader.envelopes,
       leftOut: [],
       verifiedWith: verifiedWithLine(copyOpened.word, copyOpened.envelopeId, copyOpened.how, floorClause)
@@ -92008,8 +94168,8 @@ async function verifyCopy(_ctx, copyPath, reopen, live, purpose) {
   const copy = await reopen(copyPath, raw, purpose);
   try {
     const report = await verifyVaultIntegrity(copy, { live });
-    const record3 = await verifyEvmRecordCopy(copy, evmRecordPath(copyPath));
-    return { report, copyHeader: copy.file, record: record3 };
+    const record4 = await verifyEvmRecordCopy(copy, evmRecordPath(copyPath));
+    return { report, copyHeader: copy.file, record: record4 };
   } finally {
     closeVault(copy);
   }
@@ -92038,11 +94198,11 @@ async function exists2(path) {
     return false;
   }
 }
-function reportJson(report, live, record3) {
-  const ninth = record3 !== undefined && !record3.notApplicable;
+function reportJson(report, live, record4) {
+  const ninth = record4 !== undefined && !record4.notApplicable;
   return {
     steps: ninth ? 9 : 8,
-    ...ninth ? { evmRecord: { path: record3.path, absent: record3.absent, lines: record3.lines } } : {},
+    ...ninth ? { evmRecord: { path: record4.path, absent: record4.absent, lines: record4.lines } } : {},
     addressChecked: report.addressChecked.length,
     rederived: report.rederived.length,
     notRederived: report.notRederived.length,
@@ -92281,7 +94441,7 @@ init_errors2();
 init_promote_support();
 init_store();
 init_vault_support();
-import { access as access3, chmod as chmod10, constants as constants5, lstat as lstat2, writeFile as writeFile8 } from "node:fs/promises";
+import { access as access3, chmod as chmod11, constants as constants5, lstat as lstat2, writeFile as writeFile10 } from "node:fs/promises";
 import { dirname as dirname10, resolve as resolve5 } from "node:path";
 async function vaultExportKey(args, ctx) {
   const parsed = parseArgs(args, {
@@ -92425,8 +94585,8 @@ async function assertExportTargetWritable(destination) {
 }
 async function writeExportFile(destination, body) {
   try {
-    await writeFile8(destination, body, { encoding: "utf8", flag: "wx", mode: 384 });
-    await chmod10(destination, 384);
+    await writeFile10(destination, body, { encoding: "utf8", flag: "wx", mode: 384 });
+    await chmod11(destination, 384);
   } catch (error) {
     const code = error.code;
     if (code === "EEXIST") {
@@ -92626,7 +94786,7 @@ init_fido2();
 init_format();
 
 // src/vault/install-helper.ts
-import { randomBytes as randomBytes10 } from "node:crypto";
+import { randomBytes as randomBytes11 } from "node:crypto";
 init_release();
 init_fido2();
 async function installHelperForThisRelease(ctx) {
@@ -92693,7 +94853,7 @@ async function installHelperForThisRelease(ctx) {
   steps.done("checksum and signature verified (Sigstore, keyless; signer pinned to the release workflow)");
   const dir = realExec.slice(0, realExec.lastIndexOf("/")) || ".";
   const target = `${dir}/${HELPER_NAME}`;
-  const tmpPath = `${dir}/.candle-fido2-${CLI_VERSION}-${randomBytes10(6).toString("hex")}`;
+  const tmpPath = `${dir}/.candle-fido2-${CLI_VERSION}-${randomBytes11(6).toString("hex")}`;
   steps.start(`installing ${HELPER_NAME}`);
   try {
     await deps.writeBytes(tmpPath, download.bytes);
@@ -93812,278 +95972,6 @@ async function reconcileFundingReceipts(vault, addresses, rpc, ctx) {
 // src/commands/vault-fund.ts
 init_promote_support();
 init_store();
-
-// src/vault/vault-transfer-sign.ts
-init_esm();
-init_solana_endpoint();
-init_solana_lite();
-init_token_2022();
-init_errors2();
-var USDC_MINT2 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-function decimalToRaw3(decimal6, decimals) {
-  if (!/^\d+(\.\d+)?$/.test(decimal6))
-    return null;
-  const [whole, frac = ""] = decimal6.split(".");
-  if (frac.length > decimals)
-    return null;
-  return BigInt((whole ?? "0") + frac.padEnd(decimals, "0"));
-}
-function assertVaultSigner(entry) {
-  if (entry.role !== "vault") {
-    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is not a vault key, and vault fund signs from vault keys only (ED-10).`, {
-      suggestion: `To move funds out of a promoted wallet, use: candle vault transfer <to> --from ${entry.label ?? entry.address}`
-    });
-  }
-}
-function assertTransferSigner(entry) {
-  if (entry.role === "vault" || entry.role === "tee-wallet")
-    return;
-  throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is an external wallet and cannot sign vault transfer shapes (ED-10).`, {
-    suggestion: `Move funds out of an external wallet with: candle external sweep ${entry.label} --to <vault>`
-  });
-}
-function namedSendFailure(plan) {
-  if (!plan.token)
-    return;
-  return classifyTokenSendFailure({
-    profile: plan.token.profile,
-    frozen: plan.token.frozen,
-    extraAccountsMissing: plan.token.extraAccountsMissing
-  });
-}
-var TOKEN_ACCOUNT_STATE_OFFSET3 = 108;
-var TOKEN_ACCOUNT_STATE_FROZEN3 = 2;
-async function tokenAccountFrozen(rpc, address) {
-  const account = await rpc.getAccountInfo(address);
-  if (account === null)
-    return { exists: false, frozen: false };
-  return { exists: true, frozen: account.data[TOKEN_ACCOUNT_STATE_OFFSET3] === TOKEN_ACCOUNT_STATE_FROZEN3 };
-}
-async function planTransfer(input) {
-  const asset = input.asset.toUpperCase();
-  const fromKey = decodePubkey(input.from);
-  const toKey = decodePubkey(input.to);
-  if (asset === "SOL") {
-    const raw2 = decimalToRaw3(input.amount, 9);
-    if (raw2 === null || raw2 === 0n) {
-      throw new VaultError("VAULT_INDEX_INVALID", "--amount must be a positive SOL decimal with at most 9 places.");
-    }
-    return {
-      asset: "SOL",
-      amount: input.amount,
-      amountRaw: raw2,
-      decimals: 9,
-      from: input.from,
-      to: input.to,
-      instructions: [systemTransfer(fromKey, toKey, raw2)],
-      displayLines: [
-        `fee payer   ${input.from}`,
-        `destination ${input.to}`,
-        `amount      ${input.amount} SOL = ${raw2} lamports`,
-        `mint        (native SOL)`
-      ]
-    };
-  }
-  const mintAddress = asset === "USDC" ? USDC_MINT2 : input.asset;
-  const rpc = input.rpc;
-  let profile;
-  try {
-    profile = await readMintProfile(rpc, mintAddress);
-  } catch (error) {
-    if (error instanceof MintReadError)
-      throw new VaultError("VAULT_UNREADABLE", error.message);
-    if (isRateLimited(error))
-      throw error;
-    throw new VaultError("VAULT_UNREADABLE", `Could not read mint ${mintAddress}: ${asMessage(error)}`);
-  }
-  const decimals = profile.decimals;
-  const raw = decimalToRaw3(input.amount, decimals);
-  if (raw === null || raw === 0n) {
-    throw new VaultError("VAULT_INDEX_INVALID", `--amount must be a positive decimal with at most ${decimals} decimal places.`);
-  }
-  const mint = decodePubkey(mintAddress);
-  const tokenProgram = decodePubkey(profile.tokenProgram);
-  const source = ataFor(profile, fromKey);
-  const destination = ataFor(profile, toKey);
-  const instructions = [];
-  const accountCreationLines = [];
-  let accountRent;
-  const destinationState = await tokenAccountFrozen(rpc, encodePubkey(destination));
-  if (!destinationState.exists) {
-    const rent = await rpc.getMinimumBalanceForRentExemption(profile.associatedTokenAccountSize);
-    accountRent = rent;
-    instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint, tokenProgram }));
-    accountCreationLines.push(`create associated token account ${encodePubkey(destination)} (idempotent)`, `account owner ${input.to}`, `account rent ${rent} lamports, paid by ${input.from} if created`);
-  }
-  const sourceState = await tokenAccountFrozen(rpc, encodePubkey(source));
-  const riskLines = profile.risks.map((risk) => `warning     ${risk.message}`);
-  const hook = await resolveTransferHookAccounts(rpc, { profile, source, destination, owner: fromKey, amount: raw });
-  const hookLines = [];
-  if (profile.transferHookProgram) {
-    hookLines.push(hook.ok ? `hook        ${profile.transferHookProgram}: ${hook.accounts.length} extra account(s) resolved` : `hook        ${profile.transferHookProgram}: extra accounts could NOT be resolved (${hook.reason}); the send is expected to fail as TOKEN_2022_EXTRA_ACCOUNTS_MISSING`);
-  }
-  const feeLines = [];
-  if (profile.newerTransferFee || profile.olderTransferFee) {
-    const epoch = await rpc.getEpoch();
-    const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, raw, epoch);
-    feeLines.push(`post-fee    ${postFeeAmountRaw} raw arrives (${feeRaw} raw withheld by the mint at epoch ${epoch})`);
-  }
-  instructions.push(tokenTransferChecked({
-    source,
-    mint,
-    destination,
-    owner: fromKey,
-    amount: raw,
-    decimals,
-    tokenProgram,
-    extraAccounts: hook.ok ? hook.accounts : []
-  }));
-  return {
-    asset: asset === "USDC" ? "USDC" : mintAddress,
-    amount: input.amount,
-    amountRaw: raw,
-    decimals,
-    mint: mintAddress,
-    from: input.from,
-    to: input.to,
-    instructions,
-    sourceTokenAccount: encodePubkey(source),
-    ...accountRent !== undefined ? { accountRent } : {},
-    token: {
-      profile,
-      extraAccountsMissing: !hook.ok,
-      frozen: sourceState.frozen || destinationState.frozen || !destinationState.exists && profile.defaultFrozen
-    },
-    displayLines: [
-      `fee payer   ${input.from}`,
-      `destination ${input.to}`,
-      `amount      ${input.amount} (${raw} raw, ${decimals} dp)`,
-      `mint        ${mintAddress}`,
-      `program     ${profile.tokenProgram}${profile.token2022 ? " (Token-2022)" : ""}`,
-      ...accountCreationLines,
-      ...riskLines,
-      ...hookLines,
-      ...feeLines
-    ]
-  };
-}
-function asMessage(error) {
-  return describeRpcFailure(error);
-}
-async function quoteTransferFee(rpc, from, instructions) {
-  const blockhash = await rpc.getLatestBlockhash();
-  const message = compileLegacyMessage({
-    feePayer: decodePubkey(from),
-    recentBlockhash: blockhash,
-    instructions
-  });
-  return rpc.getFeeForMessage(toBase642(message));
-}
-var FALLBACK_FEE_LAMPORTS = 5000n;
-var TOKEN_ACCOUNT_AMOUNT_OFFSET = 64;
-function tokenAccountAmount(data) {
-  if (data.length < TOKEN_ACCOUNT_AMOUNT_OFFSET + 8)
-    return 0n;
-  return new DataView(data.buffer, data.byteOffset + TOKEN_ACCOUNT_AMOUNT_OFFSET, 8).getBigUint64(0, true);
-}
-async function assertTransferAffordable(solana, plan, feeQuote) {
-  const fee = feeQuote ?? FALLBACK_FEE_LAMPORTS;
-  const rent = plan.accountRent ?? 0n;
-  const lamportsNeeded = (plan.asset === "SOL" ? plan.amountRaw : 0n) + fee + rent;
-  const lamports = await solana.read(() => solana.rpc.getBalance(plan.from));
-  if (plan.sourceTokenAccount !== undefined) {
-    const account = await solana.read(() => solana.rpc.getAccountInfo(plan.sourceTokenAccount));
-    const held = account === null ? 0n : tokenAccountAmount(account.data);
-    if (held < plan.amountRaw) {
-      throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${plan.from} holds ${held} raw of ${plan.asset} and this transfer moves ${plan.amountRaw} raw (${plan.amount}). Nothing was signed or sent.`, {
-        suggestion: "Fund the key with this token first, or send a smaller --amount.",
-        details: {
-          from: plan.from,
-          asset: plan.asset,
-          heldRaw: held.toString(),
-          neededRaw: plan.amountRaw.toString()
-        }
-      });
-    }
-  }
-  if (lamports < lamportsNeeded) {
-    const parts = [
-      ...plan.asset === "SOL" ? [`${plan.amountRaw} to send`] : [],
-      `${fee} fee${feeQuote === null ? " (estimated)" : ""}`,
-      ...rent > 0n ? [`${rent} token account rent`] : []
-    ];
-    throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${plan.from} holds ${lamports} lamports and this transfer needs ${lamportsNeeded} (${parts.join(" + ")}). Nothing was signed or sent.`, {
-      suggestion: "Fund the key with SOL first, or send a smaller --amount. candle vault list --balances shows each key's SOL.",
-      details: { from: plan.from, heldLamports: lamports.toString(), neededLamports: lamportsNeeded.toString() }
-    });
-  }
-}
-function displayTransferPlan(ctx, plan, feeQuote) {
-  ctx.deps.stdout.write(`Decoded transfer (local signing only):
-`);
-  for (const line of plan.displayLines)
-    ctx.deps.stdout.write(`  ${line}
-`);
-  if (feeQuote !== null)
-    ctx.deps.stdout.write(`  fee quote  ${feeQuote} lamports
-`);
-  else
-    ctx.deps.stdout.write(`  fee quote  (unavailable)
-`);
-}
-async function signAndBroadcastTransfer(input) {
-  const rpc = input.solana.rpc;
-  const feePayer = pubkeyFromSecret(input.secret64);
-  if (encodePubkey(feePayer) !== input.plan.from) {
-    throw new VaultError("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned fee payer.");
-  }
-  const blockhash = await input.solana.read(() => rpc.getLatestBlockhash());
-  const message = compileLegacyMessage({
-    feePayer,
-    recentBlockhash: blockhash,
-    instructions: input.plan.instructions
-  });
-  const signature = signMessage(message, input.secret64);
-  const wire = serializeSignedTransaction(message, signature);
-  const sigB58 = base58.encode(signature);
-  await input.beforeBroadcast?.({ signature: sigB58, blockhash });
-  try {
-    await rpc.sendTransaction(toBase642(wire));
-  } catch (error) {
-    if (isRateLimited(error))
-      notePostSignatureRateLimit(input.ctx, sigB58);
-    return { signature: sigB58, finalized: false, seen: true };
-  }
-  let seen = false;
-  for (let i = 0;i < 30; i++) {
-    await input.ctx.deps.sleep(500);
-    let status;
-    try {
-      status = await rpc.getSignatureStatus(sigB58);
-    } catch (error) {
-      if (isRateLimited(error))
-        notePostSignatureRateLimit(input.ctx, sigB58);
-      return { signature: sigB58, finalized: false, seen: true };
-    }
-    if (status)
-      seen = true;
-    if (status?.confirmationStatus === "finalized") {
-      if (status.err) {
-        const named = namedSendFailure(input.plan);
-        throw new VaultError("VAULT_WRITE_FAILED", `Transfer failed on chain${named ? ` (${named})` : ""}. Any pending funding receipt will be reconciled on a rerun.`);
-      }
-      return { signature: sigB58, finalized: true, seen: true };
-    }
-  }
-  return { signature: sigB58, finalized: false, seen };
-}
-function unfinalizedSendLine(result, suffix = "") {
-  return result.seen ? `Submitted ${result.signature}; finality is not yet confirmed.${suffix}
-` : `Sent ${result.signature}, but no status read found it on the network: it was most likely dropped and nothing moved. Check the signature in an explorer before sending again.${suffix}
-`;
-}
-
-// src/commands/vault-fund.ts
 init_vault_support();
 async function fundExternal(ctx, vault, external3, input) {
   const vaultKeys = vault.index.entries.filter((entry) => entry.role === "vault" && entry.chain === "solana");
@@ -94359,7 +96247,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
 
 // src/commands/vault-import-legacy.ts
 init_args();
-import { readFile as readFile14 } from "node:fs/promises";
+import { readFile as readFile15 } from "node:fs/promises";
 init_ed255192();
 init_errors2();
 
@@ -94535,7 +96423,7 @@ async function vaultImportLegacy(args, ctx) {
     const vaultRaw = await requireVaultRaw(ctx, resolvedVault);
     let legacyRaw;
     try {
-      legacyRaw = await readFile14(fromPath, "utf8");
+      legacyRaw = await readFile15(fromPath, "utf8");
     } catch (error) {
       const code = error?.code;
       if (code === "ENOENT") {
@@ -94626,7 +96514,7 @@ async function vaultImportLegacy(args, ctx) {
 async function resolveDefaultTeePath(env, home) {
   const current = defaultTeeKeystorePath(env, home);
   try {
-    await readFile14(current);
+    await readFile15(current);
     return current;
   } catch {}
   return legacyTeeKeystorePath(env, home);
@@ -94735,13 +96623,13 @@ function formatSol3(lamports) {
 async function readLamports(addresses, solana, ctx) {
   const { rpc } = solana;
   const lamports = new Map;
-  const unavailable5 = [];
+  const unavailable6 = [];
   let failure;
   let rateLimited = false;
   for (let at3 = 0;at3 < addresses.length; at3 += CHUNK2) {
     const chunk = addresses.slice(at3, at3 + CHUNK2);
     if (rateLimited) {
-      unavailable5.push(...chunk);
+      unavailable6.push(...chunk);
       continue;
     }
     try {
@@ -94749,7 +96637,7 @@ async function readLamports(addresses, solana, ctx) {
       for (const [i, address] of chunk.entries())
         lamports.set(address, accounts[i]?.lamports ?? 0n);
     } catch (error) {
-      unavailable5.push(...chunk);
+      unavailable6.push(...chunk);
       if (isRateLimited(error)) {
         rateLimited = true;
         failure ??= rateLimitedReadFailure(ctx, error);
@@ -94757,7 +96645,7 @@ async function readLamports(addresses, solana, ctx) {
         failure ??= describeRpcFailure(error);
     }
   }
-  return { lamports, unavailable: unavailable5, ...failure === undefined ? {} : { failure } };
+  return { lamports, unavailable: unavailable6, ...failure === undefined ? {} : { failure } };
 }
 async function readEvmBalances(addresses, rpcUrl, fetchFn) {
   const rpc = createEvmRpc(rpcUrl, fetchFn);
@@ -94852,18 +96740,18 @@ async function vaultList(args, ctx) {
 `);
     }
     let lamports = new Map;
-    let unavailable5 = [];
+    let unavailable6 = [];
     let failure;
     if (balances && solana.length > 0 && solanaClient !== undefined) {
       const outcome = await readLamports(solana.map((entry) => entry.address), solanaClient, ctx);
       lamports = outcome.lamports;
-      unavailable5 = outcome.unavailable;
+      unavailable6 = outcome.unavailable;
       failure = outcome.failure;
     }
-    const solanaComplete = unavailable5.length === 0;
+    const solanaComplete = unavailable6.length === 0;
     const totalLamports = [...lamports.values()].reduce((sum, value) => sum + value, 0n);
     if (!solanaComplete) {
-      deps.stderr.write(`${unavailable5.length} ${unavailable5.length === 1 ? "address" : "addresses"} could not be read: ${failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
+      deps.stderr.write(`${unavailable6.length} ${unavailable6.length === 1 ? "address" : "addresses"} could not be read: ${failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
 `);
     }
     const evm = balances ? matched.filter((entry) => entry.chain === "evm") : [];
@@ -94904,7 +96792,7 @@ async function vaultList(args, ctx) {
             requests,
             complete: solanaComplete,
             totalLamports: totalLamports.toString(),
-            unavailable: unavailable5
+            unavailable: unavailable6
           }
         } : {},
         ...evmRead2 !== undefined ? {
@@ -94959,7 +96847,7 @@ ${renderTable(headers2, rows)}
       deps.stdout.write(solanaComplete ? `
 total  ${formatSol3(totalLamports)} SOL across ${solana.length} keys
 ` : `
-total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable5.length} of ${solana.length} keys read
+total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable6.length} of ${solana.length} keys read
 `);
     }
     if (evmRead2 !== undefined) {
@@ -96619,8 +98507,8 @@ async function vaultPromoteBatch(args, ctx) {
     }
     const planned = preflight.planned;
     const acting = planned.filter((item) => item.kind !== "skip");
-    const destinations = actingDestinations(planned);
-    deps.stderr.write(`✓ preflight: ${rows.length} rows, ${destinations.length} destinations, no conflicts
+    const destinations2 = actingDestinations(planned);
+    deps.stderr.write(`✓ preflight: ${rows.length} rows, ${destinations2.length} destinations, no conflicts
 `);
     const promotes = planned.filter((item) => item.kind === "promote").length;
     const roomRead = await readAccountRoom(ctx);
@@ -96721,7 +98609,7 @@ async function vaultPromoteBatch(args, ctx) {
       file: pairsFile,
       planned,
       acting,
-      destinations,
+      destinations: destinations2,
       observedAt,
       host,
       readError,
@@ -96767,7 +98655,7 @@ Nothing to do: every row already landed.
           file: pairsFile,
           rows: rows.length,
           keys: skipped,
-          destinations,
+          destinations: destinations2,
           exit: 0,
           controlledBy,
           roles: roles2,
@@ -96793,7 +98681,7 @@ ${renderControlledBy(controlledBy, n)}
         file: pairsFile,
         rows: rows.length,
         keys: skipped,
-        destinations,
+        destinations: destinations2,
         exit: 0,
         controlledBy,
         roles: roles2,
@@ -96984,7 +98872,7 @@ ${renderControlledBy(controlledBy, acting.length)}
           promoted: results.filter((r) => r.state === "promoted").length,
           resumed: results.filter((r) => r.state === "resumed").length,
           skipped: results.filter((r) => r.state === "skipped").length,
-          destinations: destinations.map(({ label, address, keys }) => ({ label, address, keys })),
+          destinations: destinations2.map(({ label, address, keys }) => ({ label, address, keys })),
           keys: rebindPhase === undefined ? results : keysWithRebind(results, rebindPhase, undefined),
           failedLine: stopped.line,
           code: stopped.code,
@@ -97007,7 +98895,7 @@ ${renderControlledBy(controlledBy, acting.length)}
       file: pairsFile,
       rows: rows.length,
       keys: results,
-      destinations,
+      destinations: destinations2,
       exit: worst,
       chain: chain2,
       controlledBy,
@@ -97284,7 +99172,7 @@ init_deps();
 init_evm_lite();
 init_solana_endpoint();
 init_solana_lite();
-import { rm as rm6 } from "node:fs/promises";
+import { rm as rm7 } from "node:fs/promises";
 init_crypto();
 init_errors2();
 init_evm_record();
@@ -97426,9 +99314,9 @@ function restoreSeedHd(counts, restoredAt) {
 }
 async function discardIncompleteRestore(ctx, path, sidecarExisted) {
   try {
-    await rm6(path, { force: true });
+    await rm7(path, { force: true });
     if (!sidecarExisted)
-      await rm6(sidecarPath(path), { force: true });
+      await rm7(sidecarPath(path), { force: true });
     ctx.deps.stderr.write(`The vault this run had written at ${path} was removed because the restore did not complete, so a retry starts clean.
 `);
   } catch {
@@ -97945,7 +99833,7 @@ async function collectOwn2(ctx) {
 init_args();
 init_errors2();
 init_sidecar();
-import { rename as rename10, stat as stat6 } from "node:fs/promises";
+import { rename as rename12, stat as stat6 } from "node:fs/promises";
 init_wallet_keystore();
 init_vault_support();
 async function vaultRetireLegacy(args, ctx) {
@@ -98023,7 +99911,7 @@ async function vaultRetireLegacy(args, ctx) {
     const date2 = new Date(deps.now()).toISOString().slice(0, 10);
     const retiredPath = `${fromPath}.migrated-${date2}`;
     try {
-      await rename10(fromPath, retiredPath);
+      await rename12(fromPath, retiredPath);
     } catch (error) {
       throw new VaultError("VAULT_WRITE_FAILED", `Could not rename ${fromPath} to ${retiredPath}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -98337,76 +100225,6 @@ init_evm_tee();
 init_evm_transfer();
 init_promote_support();
 init_store();
-
-// src/vault/tee-transfer.ts
-init_client();
-init_errors2();
-function assertNoPendingSweep(entry) {
-  const pending = entry.tee?.sweepPending?.length ?? 0;
-  if (pending === 0)
-    return;
-  throw new VaultError("TRANSFER_SWEEP_PENDING", `${entry.label} (${entry.address}) has ${pending} pending sweep transaction(s); a transfer would interleave with that sweep.`, { suggestion: `Finish the sweep first: candle tee sweep ${entry.address}` });
-}
-async function readTeeServerState(ctx, entry, apiKey) {
-  if (entry.linkedWalletId === undefined) {
-    return { read: false, reason: "this wallet has no linked wallet id recorded" };
-  }
-  if (apiKey === undefined)
-    return { read: false, reason: "no API key for this profile" };
-  try {
-    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/lifecycle`, {
-      auth: "key",
-      credentials: { apiKey },
-      apiUrl: ctx.apiUrl,
-      fetch: ctx.deps.fetch,
-      env: ctx.deps.env
-    });
-    if (!result.ok)
-      return { read: false, reason: result.message };
-    const state = result.body.state;
-    if (typeof state !== "string")
-      return { read: false, reason: "the lifecycle response carried no state" };
-    return { read: true, state };
-  } catch (error) {
-    return { read: false, reason: error instanceof Error ? error.message : String(error) };
-  }
-}
-function serverStateNotice(state) {
-  if (!state.read) {
-    return `Could not read this wallet's Candle state (${state.reason}); proceeding. An agent may be trading it.`;
-  }
-  if (state.state === "enabled") {
-    return "Warning: this wallet is enabled, so an agent may be trading it now; a trade may fail if this transfer leaves too little.";
-  }
-  return;
-}
-async function reportTransferActivity(ctx, apiKey, signature, chain2 = "solana") {
-  const unseen = "Candle's history will not show this transfer.";
-  if (apiKey === undefined)
-    return { outcome: "no-api-key", line: `No API key for this profile, so ${unseen}` };
-  try {
-    const result = await apiRequest("/api/v1/activity/report", {
-      method: "POST",
-      body: { chain: chain2, signature },
-      auth: "key",
-      credentials: { apiKey },
-      apiUrl: ctx.apiUrl,
-      fetch: ctx.deps.fetch,
-      env: ctx.deps.env
-    });
-    if (result.ok)
-      return { outcome: "reported", line: "Reported to Candle's history." };
-    if (result.code === "SCOPE_MISSING") {
-      return { outcome: "scope-missing", line: `This profile's API key lacks activity:write, so ${unseen}` };
-    }
-    return { outcome: "failed", line: `Could not report this transfer (${result.message}); ${unseen}` };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    return { outcome: "failed", line: `Could not report this transfer (${reason}); ${unseen}` };
-  }
-}
-
-// src/commands/vault-transfer.ts
 init_vault_support();
 async function vaultTransfer(args, ctx) {
   const parsed = parseArgs(args, {
@@ -98576,7 +100394,7 @@ async function vaultTransfer(args, ctx) {
 // src/commands/verify.ts
 init_args();
 init_release();
-import { dirname as dirname11, join as join13 } from "node:path";
+import { dirname as dirname11, join as join14 } from "node:path";
 init_render();
 var USAGE10 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
@@ -98584,7 +100402,7 @@ async function resolveIdentity(deps, bundlePath, flag) {
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join13(dirname11(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join14(dirname11(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -99172,18 +100990,18 @@ function walletsUntrust(args, ctx) {
 }
 
 // src/config.ts
-import { chmod as chmod11, mkdir as mkdir8, readFile as readFile15, rm as rm7, writeFile as writeFile9 } from "node:fs/promises";
+import { chmod as chmod12, mkdir as mkdir9, readFile as readFile16, rm as rm8, writeFile as writeFile11 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
-import { join as join14 } from "node:path";
+import { join as join15 } from "node:path";
 function configDir2() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join14(homedir5(), ".config", "candle");
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join15(homedir5(), ".config", "candle");
 }
 function configFilePath() {
-  return join14(configDir2(), "config.json");
+  return join15(configDir2(), "config.json");
 }
 async function readConfig() {
   try {
-    const raw = await readFile15(configFilePath(), "utf8");
+    const raw = await readFile16(configFilePath(), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (err.code === "ENOENT")
@@ -99195,9 +101013,9 @@ async function writeConfig(patch) {
   const current = await readConfig();
   const next = { ...current, ...patch };
   const dir = configDir2();
-  await mkdir8(dir, { recursive: true });
-  await chmod11(dir, 448);
-  await writeFile9(configFilePath(), JSON.stringify(next, null, 2), "utf8");
+  await mkdir9(dir, { recursive: true });
+  await chmod12(dir, 448);
+  await writeFile11(configFilePath(), JSON.stringify(next, null, 2), "utf8");
 }
 async function updateProfile(name2, patch) {
   const current = await readConfig();
@@ -99207,7 +101025,7 @@ async function updateProfile(name2, patch) {
 }
 async function clearConfig() {
   try {
-    await rm7(configFilePath());
+    await rm8(configFilePath());
   } catch (err) {
     if (err.code !== "ENOENT")
       throw err;
@@ -99798,8 +101616,8 @@ async function buildRealDeps() {
       const { runStdioServer: runStdioServer2 } = await Promise.resolve().then(() => (init_server3(), exports_server));
       await runStdioServer2(env);
     },
-    readFile: (path) => readFile16(path, "utf8"),
-    readBytes: (path) => readFile16(path),
+    readFile: (path) => readFile17(path, "utf8"),
+    readBytes: (path) => readFile17(path),
     readStdin: () => new Promise((resolve6, reject) => {
       const chunks = [];
       process.stdin.on("data", (chunk) => chunks.push(chunk));
@@ -99808,7 +101626,7 @@ async function buildRealDeps() {
       process.stdin.resume();
     }),
     runPlugin: realRunPlugin,
-    writeFile: (path, content) => writeFile10(path, content, { mode: 384 }),
+    writeFile: (path, content) => writeFile12(path, content, { mode: 384 }),
     promptSecret: promptHiddenSecret,
     promptLine: promptVisibleLine,
     isTTY: {
@@ -99825,10 +101643,10 @@ async function buildRealDeps() {
     spawnHelper: realSpawnHelper,
     releasePolicy: RELEASE_POLICY,
     writeBytes: async (path, bytes) => {
-      await writeFile10(path, bytes, { flag: "wx", mode: 493 });
-      await chmod12(path, 493);
+      await writeFile12(path, bytes, { flag: "wx", mode: 493 });
+      await chmod13(path, 493);
     },
-    rename: (from, to) => rename11(from, to),
+    rename: (from, to) => rename13(from, to),
     unlink: (path) => unlink(path),
     runHook: realRunHook,
     onTerminate: (handler) => {

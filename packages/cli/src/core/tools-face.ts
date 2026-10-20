@@ -69,6 +69,18 @@ export function cardAnswer(card: Card & { operation?: Operation }): ToolResult {
         next: NEXT_PENDING(card.kind, card.idKey),
       })
     }
+    // S4 L-4: a launch whose dry run failed is withdrawn by the core, with the API's answer.
+    const checks = card.display.checks as { dryRun?: unknown; error?: unknown } | undefined
+    if (card.state === "withdrawn" && checks?.dryRun === "failed") {
+      return text({
+        success: false,
+        error: { code: "DRY_RUN_FAILED", message: "The launch's dry run failed, so the card was withdrawn." },
+        api: { error: checks.error ?? null },
+        ...ids,
+        state: card.state,
+        next: "Fix what the dry run names, then propose the launch again under a new clientLaunchId.",
+      })
+    }
     return text({
       success: false,
       error: { code: `CARD_${card.state.toUpperCase()}`, message: `The card was ${card.state}.` },

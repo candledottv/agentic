@@ -26,29 +26,67 @@
  *
  * This is the ONE file allowed to import `core/slot.ts`, the core-only credential loader (K-11).
  * It must not re-export anything from it; `core-slot-imports.test.ts` checks both.
+ *
+ * S4 (BE-1680) wires the launch flow (`launch.*`), transfers out (`transfer.*`, the transfer card
+ * path in `cards.approve`, the chain engine), every vault factor this machine can use (the
+ * passphrase, and a security key through `candle-fido2` with the PIN from the view), and the
+ * Withdraw key: minted with the slot's device token, sealed in the slot, and returned only on the
+ * transfer path (`openTransferSlot`); every other slot open drops it (`purpose: "trading"`).
  */
 import { closeSync, writeSync } from "node:fs"
 import { join } from "node:path"
+import { scopesForPreset } from "../agent-key-access"
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import { type Card, CardBook } from "../core/cards"
 import { mcpExecutor } from "../core/executor"
+import { CORE_HELPER_REASON, factorFailureKind, factorOptions } from "../core/factors"
 import { acquireInstanceLock, CoreAlreadyRunningError } from "../core/instance-lock"
 import { Journal, JournalIdentityError } from "../core/journal"
+import { registerLaunchHandlers } from "../core/launch"
 import { corePaths, ensureCoreDir } from "../core/paths"
 import { Redactor } from "../core/redact"
 import { refused } from "../core/rpc"
 import { CoreServer, CoreSocketError } from "../core/server"
-import { finishCoreMove, moveProfileToCore, openCoreSlot } from "../core/slot"
+import { finishCoreMove, moveProfileToCore, openCoreSlot, resealCoreSlot } from "../core/slot"
 import { TokenBook } from "../core/tokens"
 import { registerToolFace } from "../core/tools-face"
-import { FactorRejectedError, type KeyLimit, type OpenVault, parseFactor, TradingState } from "../core/trading"
+import {
+  type Factor,
+  FactorRejectedError,
+  FactorUnavailableError,
+  type KeyLimit,
+  type OpenVault,
+  parseFactor,
+  TradingState,
+  type VaultWallet,
+  type WithdrawKeyInfo,
+} from "../core/trading"
+import { createTransferChain } from "../core/transfer-chain"
+import type { TransferChain } from "../core/transfer-params"
+import { DestinationHistory, registerTransferHandlers, type ServerDestination } from "../core/transfers"
 import type { CommandContext } from "../deps"
+import { createEvmRpc, DEFAULT_HOOD_RPC_URL, EVM_RPC_URL_ENV, resolveEvmRpcUrl } from "../evm-lite"
 import { apiKeyPrefix, candleEnvironment, profileSecretRef } from "../profiles"
 import { writeLocalFailure, writeUsageFailure } from "../render"
+import { resolveSolanaEndpoint, solanaClientFor } from "../solana-endpoint"
 import { VaultError } from "../vault/errors"
-import { closeVault, defaultVaultPath, readVaultRaw, unlockWithPassphrase } from "../vault/store"
+import { assertHoodChain, assertWalletLockFree, readHoodTeeServer } from "../vault/evm-tee"
+import { assertPrf, currentPlatformFacts, openSecurityKeySession } from "../vault/fido2"
+import { isCtap2Envelope, type KeyEntry, parseVaultFile } from "../vault/format"
+import { wipe } from "../vault/hygiene"
+import {
+  closeVault,
+  decryptKey,
+  defaultVaultPath,
+  readVaultRaw,
+  type UnlockedVault,
+  unlockVault,
+  unlockWithPassphrase,
+} from "../vault/store"
+import { assertNoPendingSweep, reportTransferActivity } from "../vault/tee-transfer"
 import { CLI_VERSION } from "../version"
+import { readLocalImage, uploadImage } from "./image"
 
 const USAGE = "Usage: candle core serve [--view-token-fd <n>]"
 
@@ -141,28 +179,147 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
     if (removed.length > 0) await journal.append({ type: "slot.move_finished", refs: removed })
     const tokens = await TokenBook.open(paths.tokens, deps.now)
     redactor.add(tokens.viewToken)
+    const vaultPath = defaultVaultPath(deps.env, deps.homedir())
+    const requireVault = async () => {
+      const raw = await readVaultRaw(vaultPath)
+      if (raw === null)
+        throw refused("VAULT_REQUIRED", "Trading from the TUI needs a vault on this machine. Run candle vault init.")
+      return raw
+    }
+    /** S4 F-1: a security key through `candle-fido2`, the PIN from the view; the touch is on the key. */
+    const unlockWithSecurityKey = async (raw: string, pin: string | undefined, reason: string) => {
+      const file = parseVaultFile(raw)
+      const envelope = file.envelopes.find(isCtap2Envelope)
+      if (envelope === undefined) throw new FactorUnavailableError("no security key is enrolled in this vault.")
+      const sessionDeps = { ...deps, promptSecret: async () => pin ?? "" }
+      try {
+        const session = await openSecurityKeySession(sessionDeps, {
+          vaultId: file.vaultId,
+          envelopeId: envelope.id,
+          requireFeatures: false,
+        })
+        const prfOutput = await assertPrf(sessionDeps, session, envelope, file.vaultId, reason)
+        try {
+          return await unlockVault(vaultPath, raw, { factor: "passkey-prf", envelopeId: envelope.id, prfOutput })
+        } finally {
+          wipe(prfOutput)
+        }
+      } catch (error) {
+        if (error instanceof VaultError) {
+          const kind = factorFailureKind(error.code)
+          if (kind === "rejected") throw new FactorRejectedError()
+          if (kind === "unavailable") throw new FactorUnavailableError(error.message)
+        }
+        throw error
+      }
+    }
+    /** What the trading state may see of an unlocked vault: the DEK, the wallets' public facts, and a decrypter. */
+    const openVaultOf = (vault: UnlockedVault): OpenVault & { entry(id: string): KeyEntry | undefined } => ({
+      dek: vault.dek,
+      file: vault.file,
+      close: () => closeVault(vault),
+      wallets: vault.index.entries
+        .filter((entry) => entry.role === "vault" || entry.role === "tee-wallet")
+        .map(
+          (entry): VaultWallet => ({
+            id: entry.id,
+            chain: entry.chain,
+            address: entry.address,
+            label: entry.label,
+            role: entry.role as VaultWallet["role"],
+          }),
+        ),
+      signingKey: (walletId) => decryptKey(vault, walletId),
+      entry: (walletId) => vault.index.entries.find((entry) => entry.id === walletId),
+    })
+    const withdrawScopes = scopesForPreset("readwritetransfer")
     const trading = await TradingState.open({
       settingsPath: join(paths.dir, "settings.json"),
       now: deps.now,
       slotExists: async () => (await import("../core/ownership")).slotExists(paths),
-      async unlockVault(factor) {
-        if (factor.type !== "passphrase") throw refused("FACTOR_NOT_IN_THIS_BUILD", "Use the passphrase.")
-        const path = defaultVaultPath(deps.env, deps.homedir())
-        const raw = await readVaultRaw(path)
-        if (raw === null)
-          throw refused("VAULT_REQUIRED", "Trading from the TUI needs a vault on this machine. Run candle vault init.")
+      async unlockVault(factor: Factor, reason?: string) {
+        const raw = await requireVault()
+        if (factor.type === "security-key") {
+          return openVaultOf(await unlockWithSecurityKey(raw, factor.pin, reason ?? "unlock the vault"))
+        }
+        // F-3 and D-E default A: Touch ID and the synced passkey wait on S1's V-2.
+        if (factor.type !== "passphrase") throw new FactorUnavailableError(CORE_HELPER_REASON)
         try {
-          const vault = await unlockWithPassphrase(path, raw, factor.value)
-          return { dek: vault.dek, file: vault.file, close: () => closeVault(vault) } satisfies OpenVault
+          return openVaultOf(await unlockWithPassphrase(vaultPath, raw, factor.value))
         } catch (error) {
           if (error instanceof VaultError && error.code === "VAULT_UNLOCK_FAILED") throw new FactorRejectedError()
           throw error
         }
       },
+      async listFactors() {
+        const raw = await readVaultRaw(vaultPath)
+        if (raw === null) return [{ type: "passphrase" as const, usable: true }]
+        return factorOptions(parseVaultFile(raw).envelopes, await currentPlatformFacts(deps))
+      },
+      // W-3: every non-transfer open drops the Withdraw key inside the loader.
       openSlot: async (vault) => {
-        const contents = await openCoreSlot({ paths, vault, profile, environment })
+        const contents = await openCoreSlot({ paths, vault, profile, environment, purpose: "trading" })
         for (const signer of contents.signers) redactor.add(signer.value)
         return { writeKey: contents.writeKey, deviceToken: contents.deviceToken }
+      },
+      openTransferSlot: async (vault) => {
+        const contents = await openCoreSlot({ paths, vault, profile, environment, purpose: "transfer" })
+        for (const signer of contents.signers) redactor.add(signer.value)
+        redactor.add(contents.deviceToken)
+        redactor.add(contents.writeKey)
+        redactor.add(contents.withdrawKey)
+        return contents.withdrawKey !== undefined ? { withdrawKey: contents.withdrawKey } : {}
+      },
+      sealWithdrawKey: async (vault, withdrawKey) => {
+        await resealCoreSlot({ paths, vault, profile, environment, withdrawKey, now: deps.now })
+      },
+      // W-2 with V-S4-5's body: the Withdraw preset, the limit, an expiry in days, the embedded wallet allowed.
+      mintWithdrawKey: async (deviceToken, request) => {
+        redactor.add(deviceToken)
+        const result = await apiRequest("/api/v1/agent/keys", {
+          method: "POST",
+          auth: "device",
+          credentials: { deviceToken },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env,
+          body: {
+            scopes: withdrawScopes,
+            label: "Candle TUI (withdraw)",
+            expiresInDays: request.expiresInDays,
+            txLimit: { usdMicros: request.limitUsdMicros, reset: request.reset },
+            embeddedWallet: "allowed",
+          },
+        })
+        const body = (result.ok ? result.body : {}) as { key?: unknown; keyPrefix?: unknown; expiresAt?: unknown }
+        if (typeof body.key !== "string") {
+          throw refused(
+            "WITHDRAW_KEY_NOT_MINTED",
+            `The Withdraw key could not be created${result.ok ? "" : `: ${result.message}`}. Nothing changed.`,
+          )
+        }
+        redactor.add(body.key)
+        const info: WithdrawKeyInfo = {
+          prefix: typeof body.keyPrefix === "string" ? body.keyPrefix : (apiKeyPrefix(body.key) ?? ""),
+          limitUsdMicros: request.limitUsdMicros,
+          reset: request.reset,
+          expiresAt: typeof body.expiresAt === "number" ? new Date(body.expiresAt).toISOString() : null,
+        }
+        return { key: body.key, info }
+      },
+      revokeWithdrawKey: async (deviceToken, prefix) => {
+        const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}`, {
+          method: "DELETE",
+          auth: "device",
+          credentials: { deviceToken },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env,
+        })
+        // A key the server no longer knows is already gone; anything else keeps the slot as it is.
+        if (!result.ok && result.code !== "VALIDATION_FAILED") {
+          throw refused("WITHDRAW_KEY_NOT_REVOKED", `The Withdraw key could not be revoked: ${result.message}`)
+        }
       },
       moveToSlot: async (vault, readKey) => {
         await moveProfileToCore({ deps, paths, profile, environment, vault, readKey, now: deps.now })
@@ -192,8 +349,11 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
         return key
       },
       remember: (credentials) => {
-        redactor.add(credentials.writeKey)
-        redactor.add(credentials.deviceToken)
+        if ("withdrawKey" in credentials) redactor.add(credentials.withdrawKey)
+        else {
+          redactor.add(credentials.writeKey)
+          redactor.add(credentials.deviceToken)
+        }
       },
       // K-5: the Write key's limit and this window's use, from the owner's key list.
       readKeyLimit: async (credentials) => {
@@ -224,6 +384,10 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
     })
     const attached = server
     const executor = mcpExecutor({ apiUrl: ctx.apiUrl, fetch: deps.fetch })
+    // S4 T-3: the display-only history, rebuilt from the journal before anyone attaches.
+    const history = new DestinationHistory({ path: join(paths.dir, "destinations.json"), environment })
+    await history.rebuild(journal.rows())
+    const chain = await transferChainFor(ctx, paths.dir, executor, history, () => readKey)
     const cards = new CardBook({
       journal,
       events: server.events,
@@ -232,10 +396,52 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
       environment,
       profile,
       now: deps.now,
+      transfers: chain,
     })
     cardBook = cards
-    registerCardHandlers(server, cards, trading)
+    registerCardHandlers(server, cards, trading, journal)
     registerToolFace(server, { cards, trading, executor, journal, readKey: () => readKey })
+    registerLaunchHandlers(server, {
+      cards,
+      trading,
+      journal,
+      readImage: (path) => readLocalImage(path),
+      uploadImage: (writeKey, image) => uploadImage(ctx, writeKey, image),
+    })
+    const read = async (path: string) => {
+      const key = readKey
+      if (key === undefined) return undefined
+      const result = await apiRequest(path, {
+        method: "GET",
+        auth: "key",
+        credentials: { apiKey: key },
+        apiUrl: ctx.apiUrl,
+        fetch: deps.fetch,
+        env: deps.env,
+      })
+      return result.ok ? (result.body as Record<string, unknown>) : undefined
+    }
+    registerTransferHandlers(server, {
+      cards,
+      trading,
+      journal,
+      history,
+      reads: {
+        embeddedWallets: async () => {
+          const body = await read("/api/v1/agent/wallets/embedded")
+          const wallets = body?.wallets as { solana?: { address?: unknown } | null; evm?: { address?: unknown } | null }
+          const address = (wallet: { address?: unknown } | null | undefined) =>
+            typeof wallet?.address === "string" ? wallet.address : undefined
+          const solana = address(wallets?.solana)
+          const evm = address(wallets?.evm)
+          return body ? { ...(solana ? { solana } : {}), ...(evm ? { evm } : {}) } : undefined
+        },
+        serverDestinations: (on) => serverDestinations(on, read),
+        balances: (on, address) => chain.balances(on, address),
+        decimals: (on, asset) => chain.decimals(on, asset),
+        previewVault: (params, wallet) => chain.preview(params, wallet),
+      },
+    })
     // Turning trading on replaces the plain key with the minted Read key (K-11).
     trading.onChange(() => {
       void readPlainKey().then((key) => {
@@ -339,7 +545,12 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
 }
 
 /** Registers spec K's methods on the attach interface. The role table has already run. */
-function registerCardHandlers(server: CoreServer, cards: CardBook, trading: TradingState): void {
+export function registerCardHandlers(
+  server: CoreServer,
+  cards: CardBook,
+  trading: TradingState,
+  journal: Journal,
+): void {
   const own = (access: string) => access === "own"
   server.handle("cards.propose", async (params, { client }) =>
     cards.propose(params, {
@@ -357,7 +568,13 @@ function registerCardHandlers(server: CoreServer, cards: CardBook, trading: Trad
   )
   server.handle("cards.approve", async (params, { client }) =>
     cards.approve(
-      { cardId: params.cardId, cardHash: params.cardHash, factor: parseFactor(params.factor) },
+      {
+        cardId: params.cardId,
+        cardHash: params.cardHash,
+        factor: parseFactor(params.factor),
+        // S4 T-5: a transfer's typed `confirm` and last six, checked before the factor.
+        confirm: params.confirm,
+      },
       client.clientId,
     ),
   )
@@ -376,7 +593,8 @@ function registerCardHandlers(server: CoreServer, cards: CardBook, trading: Trad
   server.handle("operations.resolve", async (params, { client }) =>
     cards.resolve({ opId: params.opId, action: params.action, factor: parseFactor(params.factor) }, client.clientId),
   )
-  server.handle("settings.get", async () => trading.snapshot())
+  // S4 F-1: the factor picker's list rides with the settings, usable first.
+  server.handle("settings.get", async () => ({ ...trading.snapshot(), factors: await trading.factors() }))
   // S-9 and K-6. The approval policy is "Ask me" and not settable in S1 (K-9).
   server.handle("settings.set", async (params, { client }) => {
     const factor = parseFactor(params.factor)
@@ -398,12 +616,128 @@ function registerCardHandlers(server: CoreServer, cards: CardBook, trading: Trad
         if (typeof minutes !== "number") throw refused("INVALID_SETTING", "paperWindow takes {minutes} or false.")
         await trading.openPaperWindow(client.clientId, minutes, factor)
       }
+    } else if (params.path === "withdraw") {
+      // S4 W-2: transfers from the embedded wallet. Both directions take a fresh factor.
+      if (params.value === false) {
+        const off = await trading.turnOffEmbeddedTransfers(factor)
+        await journal.append({
+          type: "withdraw_key.revoked",
+          clientId: client.clientId,
+          prefix: off.revokedPrefix ?? null,
+        })
+      } else {
+        const value = params.value as { limitUsd?: unknown; reset?: unknown } | null
+        const usd = typeof value?.limitUsd === "number" ? value.limitUsd : Number.NaN
+        const reset = value?.reset ?? "daily"
+        if (!Number.isFinite(usd) || usd <= 0)
+          throw refused("INVALID_SETTING", "withdraw takes {limitUsd} above zero, or false.")
+        if (reset !== "daily" && reset !== "weekly" && reset !== "monthly" && reset !== "never")
+          throw refused("INVALID_SETTING", "reset is daily, weekly, monthly or never.")
+        const info = await trading.turnOnEmbeddedTransfers(
+          { limitUsdMicros: Math.round(usd * 1_000_000), reset },
+          factor,
+        )
+        await journal.append({
+          type: "withdraw_key.minted",
+          clientId: client.clientId,
+          prefix: info.prefix,
+          limitUsdMicros: info.limitUsdMicros,
+          reset: info.reset,
+          expiresAt: info.expiresAt,
+        })
+      }
     } else if (params.path === "approvalPolicy") {
       throw refused("POLICY_FIXED", "The approval policy is Ask me (every live action) in this version.")
     } else {
-      throw refused("INVALID_SETTING", "Settable paths: trading, window, paperWindow.")
+      throw refused("INVALID_SETTING", "Settable paths: trading, window, paperWindow, withdraw.")
     }
-    return trading.snapshot()
+    return { ...trading.snapshot(), factors: await trading.factors() }
+  })
+}
+
+/**
+ * S4 T-3: what the server accepts from the embedded wallet on `chain`, from the three lists a key
+ * can read (V-S4-5): the account's own embedded wallets, its linked wallets that were added in a
+ * session or marked trusted, and the withdrawal allowlist. Privy-verified EVM addresses also count
+ * as own on the server but are in none of these, which is why an unlisted Hood address is shown as
+ * `unlisted` rather than refused.
+ */
+async function serverDestinations(
+  chain: TransferChain,
+  read: (path: string) => Promise<Record<string, unknown> | undefined>,
+): Promise<ServerDestination[]> {
+  const out: ServerDestination[] = []
+  const own = (await read("/api/v1/agent/wallets/embedded"))?.wallets as Record<string, { address?: unknown } | null>
+  const ownAddress = own?.[chain === "hood" ? "evm" : "solana"]?.address
+  if (typeof ownAddress === "string")
+    out.push({ chain, address: ownAddress, label: "Embedded wallet", serverClass: "own" })
+  let cursor: string | undefined
+  for (let page = 0; page < 10; page++) {
+    const body = await read(`/api/v1/agent/wallets?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`)
+    const rows = Array.isArray(body?.page) ? (body.page as Record<string, unknown>[]) : []
+    for (const row of rows) {
+      if (row.revokedAt || typeof row.address !== "string") continue
+      if ((row.chain === "evm" ? "hood" : row.chain) !== chain) continue
+      const trusted = row.addedVia === "session" || typeof row.trustedAt === "number"
+      if (!trusted) continue
+      out.push({
+        chain,
+        address: row.address,
+        ...(typeof row.label === "string" ? { label: row.label } : {}),
+        serverClass: "linked",
+      })
+    }
+    if (body?.isDone !== false || typeof body.continueCursor !== "string") break
+    cursor = body.continueCursor
+  }
+  const allow = (await read("/api/v1/agent/withdrawal-addresses"))?.addresses
+  for (const row of Array.isArray(allow) ? (allow as Record<string, unknown>[]) : []) {
+    if (row.revokedAt || row.chain !== chain || typeof row.address !== "string") continue
+    out.push({
+      chain,
+      address: row.address,
+      ...(typeof row.label === "string" ? { label: row.label } : {}),
+      serverClass: "approved",
+    })
+  }
+  return out
+}
+
+/** S4 T-7: the chain engine over this profile's Solana endpoint and the Hood RPC, as `vault transfer` resolves them. */
+async function transferChainFor(
+  ctx: CommandContext,
+  stateDir: string,
+  executor: ReturnType<typeof mcpExecutor>,
+  history: DestinationHistory,
+  readKey: () => string | undefined,
+) {
+  const config = await ctx.deps.readConfig()
+  const evm = resolveEvmRpcUrl(undefined, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url")
+  const evmUrl = "error" in evm ? DEFAULT_HOOD_RPC_URL : evm.url
+  const hood = { rpc: createEvmRpc(evmUrl, ctx.deps.fetch), builtIn: "error" in evm ? true : evm.builtIn }
+  return createTransferChain({
+    solana: () => {
+      const endpoint = resolveSolanaEndpoint(ctx, undefined, config)
+      if ("error" in endpoint) throw refused("RPC_URL_INVALID", endpoint.error)
+      return solanaClientFor(ctx, endpoint)
+    },
+    hood,
+    executor,
+    pendingDir: join(stateDir, "pending"),
+    // A promoted wallet's checks, as `vault transfer` runs them before signing.
+    teeChecks: async (entry) => {
+      assertNoPendingSweep(entry)
+      if (entry.chain === "evm") {
+        await assertHoodChain({ rpc: hood.rpc, url: evmUrl, host: new URL(evmUrl).host, builtIn: hood.builtIn })
+        assertWalletLockFree(entry, (await readHoodTeeServer(ctx, entry)).lock, ctx.deps.now())
+      }
+    },
+    // As the CLI does, with this profile's plain key, best effort; on a core-owned profile that is
+    // the Read key, which the server may refuse for want of `activity:write`.
+    reportActivity: async (on, id) => {
+      await reportTransferActivity(ctx, readKey(), id, on)
+    },
+    recordDestination: (on, address) => history.add(on, address),
   })
 }
 
