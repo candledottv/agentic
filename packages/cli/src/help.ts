@@ -1280,7 +1280,7 @@ export const HELP: Record<string, Topic> = {
     group: "Maintain",
     summary: "Run the local Candle core the Candle TUI attaches to (preview)",
     description:
-      "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Views and harnesses attach to it on a local socket. Preview: approval cards are not in this build yet.",
+      "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Views and harnesses attach to it on a local socket; every live money action becomes an approval card you approve in the TUI with your vault factor. Preview.",
     usage: ["candle core serve [--profile <name>] [--view-token-fd <n>]"],
     rows: [{ invocation: "serve", description: "Start the core for the profile in play; one per profile" }],
     flags: [

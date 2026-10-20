@@ -1,7 +1,7 @@
 /**
  * BE-1665 (spec C-1 to C-4, T-14): `candle core serve`.
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeAll, describe, expect, test } from "bun:test"
 import { openSync } from "node:fs"
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -16,11 +16,14 @@ import {
   inspectableStore,
   profileConfig,
   READ_KEY,
+  WRITE_KEY,
   WRITE_PREFIX,
 } from "../core/test-fixtures"
 import type { CommandContext, Deps } from "../deps"
 import { profileSecretRef } from "../profiles"
 import { createCapture, createFakeConfigStore, createTestDeps } from "../test-support"
+import { closeVault } from "../vault/store"
+import { makeVault, useCheapKdf } from "../vault/test-vault"
 import { coreServe } from "./core"
 
 const dirs: string[] = []
@@ -177,5 +180,127 @@ describe("candle core serve", () => {
   test("refuses a descriptor below 3", async () => {
     const s = await setup()
     expect(await coreServe(["--view-token-fd", "1"], s.ctx)).toBe(2)
+  })
+})
+
+describe("candle core serve, end to end with cards (spec K)", () => {
+  beforeAll(() => useCheapKdf())
+
+  test("trading on moves the credentials; a harness proposes, only the view approves, the Write key reaches only the API", async () => {
+    const m = await makeVault()
+    dirs.push(m.dir)
+    closeVault(m.vault)
+    const env = { CANDLE_CONFIG_DIR: m.dir }
+    const store = inspectableStore({
+      [profileSecretRef("staging", "apiKey")]: WRITE_KEY,
+      [profileSecretRef("staging", "deviceToken")]: DEVICE_TOKEN,
+    })
+    const api: { url: string; key: string | null; device: string | null }[] = []
+    let terminate: (() => void) | undefined
+    const deps: Deps = createTestDeps({
+      fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input)
+        const headers = new Headers(init?.headers)
+        api.push({ url, key: headers.get("x-api-key"), device: headers.get("authorization") })
+        if (url.endsWith("/api/v1/agent/keys"))
+          return Response.json({ key: READ_KEY, keyPrefix: "rrrrrrrr", scopes: ["account:read"] })
+        if (url.endsWith("/api/v1/agent/staking/rewards/rw_9/claim"))
+          return Response.json({ success: true, signature: "sig9" })
+        return new Response("{}", { status: 404 })
+      }) as unknown as typeof fetch,
+      store,
+      ...createFakeConfigStore(profileConfig("staging")),
+      env,
+      homedir: () => m.dir,
+      stdout: createCapture(),
+      stderr: createCapture(),
+      onTerminate: (handler) => {
+        terminate = handler
+        return () => {}
+      },
+    })
+    const paths = corePaths(env, m.dir, "staging")
+    const ctx: CommandContext = {
+      deps,
+      json: true,
+      apiUrl: "https://staging.api.candle.tv",
+      profile: "staging",
+      verifyAccount: true,
+    }
+    const handoff = join(m.dir, "handoff")
+    const running = coreServe(["--view-token-fd", String(openSync(handoff, "w"))], ctx)
+    let token = ""
+    for (let i = 0; i < 200 && token === ""; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      token = (await readFile(handoff, "utf8").catch(() => "")).trim()
+    }
+    const view = await connectTestClient(paths.socket)
+    await view.request("core.hello", { protocol: PROTOCOL_VERSION, token, clientName: "tui" })
+
+    // S-9: trading on, with the passphrase. The Read key is minted over the device token.
+    const on = await view.request("settings.set", {
+      path: "trading",
+      value: true,
+      factor: { type: "passphrase", value: m.passphrase },
+    })
+    expect(on.result).toMatchObject({ tradingOn: true, approvalPolicy: "ask" })
+    expect(store.entries()).toEqual([[profileSecretRef("staging", "apiKey"), READ_KEY]])
+    expect(await stat(paths.slot).then(() => true)).toBe(true)
+
+    const minted = (await view.request("harness.register", { name: "Claude Code" })).result as { token: string }
+    const harness = await connectTestClient(paths.socket)
+    await harness.request("core.hello", { protocol: PROTOCOL_VERSION, token: minted.token, clientName: "claude" })
+    await harness.request("subscribe", { topics: ["cards", "operations"] })
+
+    const proposed = await harness.request("cards.propose", {
+      tool: "candle_claim_staking_reward",
+      params: { rewardId: "rw_9" },
+    })
+    const card = proposed.result as { cardId: string; cardHash: string; opId: string }
+    expect(card.opId).toBe("rw_9")
+    expect(
+      (await harness.request("cards.approve", { cardId: card.cardId, cardHash: card.cardHash })).error?.data?.code,
+    ).toBe("FORBIDDEN_FOR_ROLE")
+    expect((await harness.request("cards.propose", { tool: "candle_transfer", params: {} })).error?.data?.code).toBe(
+      "TRANSFER_USER_ONLY",
+    )
+    expect(api.filter((call) => call.url.includes("/staking/"))).toEqual([])
+
+    const approved = await view.request("cards.approve", {
+      cardId: card.cardId,
+      cardHash: card.cardHash,
+      factor: { type: "passphrase", value: m.passphrase },
+    })
+    expect(approved.result).toMatchObject({
+      card: { state: "approved" },
+      operation: { opId: "rw_9", state: "succeeded" },
+    })
+    const claim = api.find((call) => call.url.endsWith("/staking/rewards/rw_9/claim"))
+    expect(claim?.key).toBe(WRITE_KEY)
+    // The harness heard about its card and its operation, and never saw a secret.
+    for (
+      let i = 0;
+      i < 100 &&
+      !harness.events.some(
+        (e) => e.topic === "operations" && !e.snapshot && JSON.stringify(e.data).includes("succeeded"),
+      );
+      i++
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    expect(harness.events.some((e) => e.topic === "operations" && JSON.stringify(e.data).includes("succeeded"))).toBe(
+      true,
+    )
+    const frames = [...view.frames, ...harness.frames].join("\n")
+    for (const secret of [WRITE_KEY, DEVICE_TOKEN, READ_KEY, m.passphrase, token])
+      expect(frames.includes(secret)).toBe(false)
+    const journal = await readFile(paths.journal, "utf8")
+    for (const secret of [WRITE_KEY, DEVICE_TOKEN, READ_KEY, m.passphrase, token])
+      expect(journal.includes(secret)).toBe(false)
+
+    harness.close()
+    view.close()
+    expect(await running).toBe(0)
+    expect(terminate).toBeDefined()
   })
 })

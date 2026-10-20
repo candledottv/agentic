@@ -17,7 +17,12 @@
  * without the TUI therefore holds only by convention. That process can register harnesses and
  * disrupt view state, but approval and opening a timed window still require the vault factor.
  *
- * Lifetime (C-3): the core exits on SIGINT or SIGTERM, and when the last attached view detaches.
+ * Cards (spec K) are wired here: `cards.*`, `operations.*` and `settings.set` (trading on and off,
+ * the timed window) are registered on the server, with the slot functions passed in from this
+ * file, the only one allowed to import `core/slot.ts`.
+ *
+ * Lifetime (C-3): the core exits on SIGINT or SIGTERM, and when the last attached view detaches:
+ * open cards expire at once, and the exit waits for in-flight operations, at most ten minutes.
  *
  * This is the ONE file allowed to import `core/slot.ts`, the core-only credential loader (K-11).
  * It must not re-export anything from it; `core-slot-imports.test.ts` checks both.
@@ -25,16 +30,23 @@
 import { closeSync, writeSync } from "node:fs"
 import { join } from "node:path"
 import { parseArgs } from "../args"
+import { apiRequest } from "../client"
+import { type Card, CardBook } from "../core/cards"
+import { mcpExecutor } from "../core/executor"
 import { acquireInstanceLock, CoreAlreadyRunningError } from "../core/instance-lock"
 import { Journal, JournalIdentityError } from "../core/journal"
 import { corePaths, ensureCoreDir } from "../core/paths"
 import { Redactor } from "../core/redact"
+import { refused } from "../core/rpc"
 import { CoreServer, CoreSocketError } from "../core/server"
-import { finishCoreMove } from "../core/slot"
+import { finishCoreMove, moveProfileToCore, openCoreSlot } from "../core/slot"
 import { TokenBook } from "../core/tokens"
+import { FactorRejectedError, type OpenVault, parseFactor, TradingState } from "../core/trading"
 import type { CommandContext } from "../deps"
 import { candleEnvironment, profileSecretRef } from "../profiles"
 import { writeLocalFailure, writeUsageFailure } from "../render"
+import { VaultError } from "../vault/errors"
+import { closeVault, defaultVaultPath, readVaultRaw, unlockWithPassphrase } from "../vault/store"
 import { CLI_VERSION } from "../version"
 
 const USAGE = "Usage: candle core serve [--view-token-fd <n>]"
@@ -106,6 +118,7 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
 
   let journal: Journal | undefined
   let server: CoreServer | undefined
+  let cardBook: CardBook | undefined
   let stopReason = "start_failed"
   try {
     const redactor = new Redactor()
@@ -123,6 +136,61 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
     if (removed.length > 0) await journal.append({ type: "slot.move_finished", refs: removed })
     const tokens = await TokenBook.open(paths.tokens, deps.now)
     redactor.add(tokens.viewToken)
+    const trading = await TradingState.open({
+      settingsPath: join(paths.dir, "settings.json"),
+      now: deps.now,
+      slotExists: async () => (await import("../core/ownership")).slotExists(paths),
+      async unlockVault(factor) {
+        if (factor.type !== "passphrase") throw refused("FACTOR_NOT_IN_THIS_BUILD", "Use the passphrase.")
+        const path = defaultVaultPath(deps.env, deps.homedir())
+        const raw = await readVaultRaw(path)
+        if (raw === null)
+          throw refused("VAULT_REQUIRED", "Trading from the TUI needs a vault on this machine. Run candle vault init.")
+        try {
+          const vault = await unlockWithPassphrase(path, raw, factor.value)
+          return { dek: vault.dek, file: vault.file, close: () => closeVault(vault) } satisfies OpenVault
+        } catch (error) {
+          if (error instanceof VaultError && error.code === "VAULT_UNLOCK_FAILED") throw new FactorRejectedError()
+          throw error
+        }
+      },
+      openSlot: async (vault) => {
+        const contents = await openCoreSlot({ paths, vault, profile, environment })
+        for (const signer of contents.signers) redactor.add(signer.value)
+        return { writeKey: contents.writeKey, deviceToken: contents.deviceToken }
+      },
+      moveToSlot: async (vault, readKey) => {
+        await moveProfileToCore({ deps, paths, profile, environment, vault, readKey, now: deps.now })
+      },
+      mintReadKey: async () => {
+        const deviceToken = await deps.store.get(profileSecretRef(profile, "deviceToken"))
+        if (!deviceToken)
+          throw refused("NO_DEVICE_TOKEN", "This profile has no device token. Sign in with candle auth login.")
+        redactor.add(deviceToken)
+        const result = await apiRequest("/api/v1/agent/keys", {
+          method: "POST",
+          auth: "device",
+          credentials: { deviceToken },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env,
+          body: { scopes: ["account:read"], label: "Candle TUI (read)", embeddedWallet: "denied" },
+        })
+        const key = result.ok ? (result.body as { key?: unknown }).key : undefined
+        if (typeof key !== "string") {
+          throw refused(
+            "READ_KEY_NOT_MINTED",
+            `The Read key for the TUI could not be created${result.ok ? "" : `: ${result.message}`}. Nothing moved.`,
+          )
+        }
+        redactor.add(key)
+        return key
+      },
+      remember: (credentials) => {
+        redactor.add(credentials.writeKey)
+        redactor.add(credentials.deviceToken)
+      },
+    })
     server = new CoreServer({
       socketPath: paths.socket,
       layoutPath: join(paths.dir, "config.json"),
@@ -133,7 +201,34 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
       redactor,
       tokens,
       now: deps.now,
+      tradingOn: () => trading.tradingOn(),
     })
+    const attached = server
+    const cards = new CardBook({
+      journal,
+      events: server.events,
+      trading,
+      executor: mcpExecutor({ apiUrl: ctx.apiUrl, fetch: deps.fetch }),
+      environment,
+      profile,
+      now: deps.now,
+    })
+    cardBook = cards
+    registerCardHandlers(server, cards, trading)
+    trading.onChange(() => attached.events.publish("status", { ...attached.status(), ...trading.snapshot() }))
+    server.onClientKilled((client) => void cards.withdrawAllFor(client.clientId))
+    server.onViewCount((count) => {
+      trading.viewsAttached(
+        new Set(
+          attached
+            .clients()
+            .filter((c) => c.role === "view")
+            .map((c) => c.clientId),
+        ),
+      )
+      if (count === 0) void cards.expireAllOpen("last_view_detached")
+    })
+    cards.start()
     try {
       await server.listen()
     } catch (error) {
@@ -185,13 +280,22 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
         resolve()
       }
       running.onViewCount((count) => {
-        if (count === 0 && running.hadView()) finish("last_view_detached")
+        if (count !== 0 || !running.hadView()) return
+        // C-3: wait for operations still in flight, bounded at ten minutes, then exit.
+        const deadline = deps.now() + 10 * 60_000
+        const poll = () => {
+          if (running.viewCount() > 0) return
+          if (!cards.inFlight() || deps.now() >= deadline) finish("last_view_detached")
+          else setTimeout(poll, 1000).unref?.()
+        }
+        poll()
       })
       unsubscribe = deps.onTerminate?.(() => finish("terminated"))
       if (done) unsubscribe?.()
     })
     return 0
   } finally {
+    cardBook?.stop()
     await server?.close()
     if (journal) {
       await journal.append({ type: "core.stopped", reason: stopReason }).catch(() => {})
@@ -199,4 +303,62 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
     }
     await lock.release()
   }
+}
+
+/** Registers spec K's methods on the attach interface. The role table has already run. */
+function registerCardHandlers(server: CoreServer, cards: CardBook, trading: TradingState): void {
+  const own = (access: string) => access === "own"
+  server.handle("cards.propose", async (params, { client }) =>
+    cards.propose(params, {
+      clientId: client.clientId,
+      role: client.role,
+      clientName: client.clientName,
+      ...(client.harnessKind !== undefined ? { harnessKind: client.harnessKind } : {}),
+    }),
+  )
+  server.handle("cards.list", async (_params, { client, access }) => ({
+    cards: cards.list(client.clientId, own(access)),
+  }))
+  server.handle("cards.get", async (params, { client, access }) =>
+    cards.get(params.cardId, client.clientId, own(access)),
+  )
+  server.handle("cards.approve", async (params, { client }) =>
+    cards.approve(
+      { cardId: params.cardId, cardHash: params.cardHash, factor: parseFactor(params.factor) },
+      client.clientId,
+    ),
+  )
+  server.handle(
+    "cards.reject",
+    async (params, { client }): Promise<Card> => cards.reject(params.cardId, client.clientId),
+  )
+  server.handle("cards.withdraw", async (params, { client }) => cards.withdraw(params.cardId, client.clientId))
+  server.handle("operations.list", async (_params, { client, access }) => ({
+    operations: cards.operationsFor(client.clientId, own(access)),
+  }))
+  server.handle("operations.get", async (params, { client, access }) =>
+    cards.operation(params.opId, client.clientId, own(access)),
+  )
+  server.handle("settings.get", async () => trading.snapshot())
+  // S-9 and K-6. The approval policy is "Ask me" and not settable in S1 (K-9).
+  server.handle("settings.set", async (params, { client }) => {
+    const factor = parseFactor(params.factor)
+    if (params.path === "trading") {
+      if (params.value === true) await trading.turnOn(factor)
+      else if (params.value === false) await trading.turnOff()
+      else throw refused("INVALID_SETTING", "trading takes true or false.")
+    } else if (params.path === "window") {
+      if (params.value === false) trading.closeWindow()
+      else {
+        const minutes = (params.value as { minutes?: unknown } | null)?.minutes
+        if (typeof minutes !== "number") throw refused("INVALID_SETTING", "window takes {minutes} or false.")
+        await trading.openWindow(client.clientId, minutes, factor)
+      }
+    } else if (params.path === "approvalPolicy") {
+      throw refused("POLICY_FIXED", "The approval policy is Ask me (every live action) in this version.")
+    } else {
+      throw refused("INVALID_SETTING", "Settable paths: trading, window.")
+    }
+    return trading.snapshot()
+  })
 }

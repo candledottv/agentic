@@ -29,6 +29,10 @@ import { canonicalBytes } from "../vault/canonical-json"
 import { type Blob, b64u, open as openBlob, seal, unb64u } from "../vault/crypto"
 import { wipe } from "../vault/hygiene"
 import type { UnlockedVault } from "../vault/store"
+
+/** The slice of an unlocked vault the slot uses: its DEK and its id. */
+export type SlotVault = Pick<UnlockedVault, "dek"> & { file: Pick<UnlockedVault["file"], "vaultId"> }
+
 import type { CoreEnvironment } from "./journal"
 import { slotExists } from "./ownership"
 import type { CorePaths } from "./paths"
@@ -93,7 +97,7 @@ function headerOf(file: CoreSlotHeader): CoreSlotHeader {
   }
 }
 
-async function deriveSlotKey(vault: Pick<UnlockedVault, "dek" | "file">): Promise<CryptoKey> {
+async function deriveSlotKey(vault: SlotVault): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey("raw", vault.dek as BufferSource, "HKDF", false, ["deriveKey"])
   return crypto.subtle.deriveKey(
     {
@@ -111,7 +115,7 @@ async function deriveSlotKey(vault: Pick<UnlockedVault, "dek" | "file">): Promis
 
 /** Seals `contents` for `header` under `vault`. Exported for the tests; `moveProfileToCore` is the caller. */
 export async function sealCoreSlot(
-  vault: Pick<UnlockedVault, "dek" | "file">,
+  vault: SlotVault,
   header: CoreSlotHeader,
   contents: CoreSlotContents,
   createdAt: string,
@@ -169,7 +173,7 @@ export async function readCoreSlotHeader(paths: CorePaths): Promise<CoreSlotFile
  */
 export async function openCoreSlot(input: {
   paths: CorePaths
-  vault: Pick<UnlockedVault, "dek" | "file">
+  vault: SlotVault
   profile: string
   environment: CoreEnvironment
 }): Promise<CoreSlotContents> {
@@ -261,7 +265,7 @@ export async function moveProfileToCore(input: {
   paths: CorePaths
   profile: string
   environment: CoreEnvironment
-  vault: Pick<UnlockedVault, "dek" | "file">
+  vault: SlotVault
   readKey?: string
   now: () => number
 }): Promise<CoreSlotHeader> {
