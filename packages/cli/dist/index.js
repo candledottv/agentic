@@ -74162,7 +74162,7 @@ async function finishCoreMove(input) {
 init_canonical_json();
 var CORE_OPERATION_KINDS = ["trade", "launch", "swap", "stake", "claim", "perps", "profile"];
 function offeredTools() {
-  return Object.entries(TOOL_CLASSES).filter(([, cls]) => !(cls.class === "card" && cls.kind === "transfer")).map(([name, cls]) => cls.class === "card" ? { name, class: "card", kind: cls.kind } : { name, class: "read" });
+  return Object.entries(TOOL_CLASSES).filter(([, cls]) => !(cls.class === "card" && cls.kind === "transfer")).map(([name, cls]) => cls.class === "card" ? { name, class: "card", kind: cls.kind, idKey: cls.idKey } : { name, class: "read" });
 }
 var text2 = (body, isError = false) => ({
   content: [{ type: "text", text: JSON.stringify(body) }],

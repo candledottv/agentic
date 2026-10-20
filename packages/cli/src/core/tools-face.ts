@@ -28,11 +28,13 @@ import type { TradingState } from "./trading"
 export const CORE_OPERATION_KINDS = ["trade", "launch", "swap", "stake", "claim", "perps", "profile"] as const
 
 /** What the face offers: every classified tool but the transfers (K-3). */
-export function offeredTools(): { name: string; class: "read" | "card"; kind?: string }[] {
+export function offeredTools(): { name: string; class: "read" | "card"; kind?: string; idKey?: string }[] {
   return Object.entries(TOOL_CLASSES)
     .filter(([, cls]) => !(cls.class === "card" && cls.kind === "transfer"))
     .map(([name, cls]) =>
-      cls.class === "card" ? { name, class: "card" as const, kind: cls.kind } : { name, class: "read" as const },
+      cls.class === "card"
+        ? { name, class: "card" as const, kind: cls.kind, idKey: cls.idKey }
+        : { name, class: "read" as const },
     )
 }
 
