@@ -1280,9 +1280,15 @@ export const HELP: Record<string, Topic> = {
     group: "Maintain",
     summary: "Run the local Candle core the Candle TUI attaches to (preview)",
     description:
-      "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Preview: this build keeps the state directory, the single-instance lock and the journal; the attach interface is not in it yet.",
-    usage: ["candle core serve [--profile <name>]"],
+      "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Views and harnesses attach to it on a local socket. Preview: approval cards are not in this build yet.",
+    usage: ["candle core serve [--profile <name>] [--view-token-fd <n>]"],
     rows: [{ invocation: "serve", description: "Start the core for the profile in play; one per profile" }],
+    flags: [
+      {
+        invocation: "--view-token-fd <n>",
+        description: "Write this start's view token to an inherited descriptor (the TUI launcher's)",
+      },
+    ],
     examples: ["candle core serve", "candle core serve --profile staging"],
     env: ["CANDLE_CONFIG_DIR", "CANDLE_PROFILE"],
   },

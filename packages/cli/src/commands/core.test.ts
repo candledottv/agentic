@@ -2,13 +2,22 @@
  * BE-1665 (spec C-1 to C-4, T-14): `candle core serve`.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
+import { openSync } from "node:fs"
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { acquireInstanceLock } from "../core/instance-lock"
 import { readJournal } from "../core/journal"
 import { corePaths, ensureCoreDir } from "../core/paths"
-import { DEVICE_TOKEN, inspectableStore, profileConfig, READ_KEY, WRITE_PREFIX } from "../core/test-fixtures"
+import { PROTOCOL_VERSION } from "../core/rpc"
+import {
+  connectTestClient,
+  DEVICE_TOKEN,
+  inspectableStore,
+  profileConfig,
+  READ_KEY,
+  WRITE_PREFIX,
+} from "../core/test-fixtures"
 import type { CommandContext, Deps } from "../deps"
 import { profileSecretRef } from "../profiles"
 import { createCapture, createFakeConfigStore, createTestDeps } from "../test-support"
@@ -70,6 +79,7 @@ describe("candle core serve", () => {
     expect((await stat(s.paths.dir)).mode & 0o777).toBe(0o700)
     const journal = await readJournal(s.paths.journal)
     expect(journal.rows.map((row) => row.type)).toEqual(["core.started", "core.stopped"])
+    expect(journal.rows[1]?.reason).toBe("terminated")
     expect(
       journal.rows.every((row) => row.environment === "staging" && row.profile === "staging" && row.mode === "live"),
     ).toBe(true)
@@ -136,5 +146,36 @@ describe("candle core serve", () => {
     expect(await s.store.get(profileSecretRef("staging", "apiKey"))).toBe(READ_KEY)
     const rows = (await readJournal(s.paths.journal)).rows
     expect(rows[0]).toMatchObject({ type: "slot.move_finished", refs: [profileSecretRef("staging", "deviceToken")] })
+  })
+
+  test("hands this start's view token to the launcher's descriptor, and exits when the last view detaches (C-3)", async () => {
+    const s = await setup()
+    const handoff = join(s.dir, "handoff")
+    const fd = openSync(handoff, "w")
+    const running = coreServe(["--view-token-fd", String(fd)], s.ctx)
+    let token = ""
+    for (let i = 0; i < 100 && token === ""; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      token = (await readFile(handoff, "utf8").catch(() => "")).trim()
+    }
+    expect(token).toMatch(/^chv_/)
+    // The token is on the descriptor the launcher owns, and nowhere in the state directory.
+    for (const name of ["journal.jsonl", "tokens.json", "core.lock"]) {
+      expect(await readFile(join(s.paths.dir, name), "utf8").catch(() => "")).not.toContain(token)
+    }
+    const view = await connectTestClient(s.paths.socket)
+    expect(
+      (await view.request("core.hello", { protocol: PROTOCOL_VERSION, token, clientName: "tui" })).error,
+    ).toBeUndefined()
+    view.close()
+    expect(await running).toBe(0)
+    const rows = (await readJournal(s.paths.journal)).rows
+    expect(rows.at(-1)).toMatchObject({ type: "core.stopped", reason: "last_view_detached" })
+    expect(rows.find((row) => row.type === "core.started")?.viewTokenHandedOff).toBe(true)
+  })
+
+  test("refuses a descriptor below 3", async () => {
+    const s = await setup()
+    expect(await coreServe(["--view-token-fd", "1"], s.ctx)).toBe(2)
   })
 })

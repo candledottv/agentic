@@ -62518,8 +62518,8 @@ async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
     };
   return { args: { ...rest, imageUrl: uploaded }, uploaded };
 }
-function imageRefusalBody(refused, extra) {
-  return JSON.stringify({ ...extra, success: false, error: { code: refused.code, message: refused.message } });
+function imageRefusalBody(refused2, extra) {
+  return JSON.stringify({ ...extra, success: false, error: { code: refused2.code, message: refused2.message } });
 }
 var MAX_IMAGE_BYTES2, OUTSIDE_IMAGE_DIR = "Image files must be inside the configured CANDLE_IMAGE_DIR.", NOTHING_UPLOADED2 = "Nothing was uploaded.", READ_CHUNK_BYTES, ImageRefusal, nodeFs, UPLOADED_IMAGE_NOTE = "imagePath was uploaded to imageUrl, which is public and permanent. To retry, or to launch after a dry run, pass this imageUrl instead of imagePath, so the file is not uploaded again.";
 var init_image = __esm(() => {
@@ -65846,8 +65846,8 @@ var init_perps_risk = __esm(() => {
 });
 
 // ../mcp/src/perps.ts
-import { createPrivateKey as createPrivateKey2, randomBytes as randomBytes6, sign as sign5 } from "node:crypto";
-import { readFile as readFile12 } from "node:fs/promises";
+import { createPrivateKey as createPrivateKey2, randomBytes as randomBytes8, sign as sign5 } from "node:crypto";
+import { readFile as readFile14 } from "node:fs/promises";
 function fail3(code, message, extra = {}) {
   return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true };
 }
@@ -65994,7 +65994,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       if (!pemFile)
         return fail3("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
       try {
-        signerPem = await readFile12(pemFile, "utf8");
+        signerPem = await readFile14(pemFile, "utf8");
         createPrivateKey2(signerPem);
       } catch {
         return fail3("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
@@ -66036,7 +66036,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         read: (p) => call(cfg, fetch2, "GET", p),
         sign: relaySign2,
         mode: willSubmit ? "submit" : "no-submit",
-        cloid: () => `0x${randomBytes6(16).toString("hex")}`
+        cloid: () => `0x${randomBytes8(16).toString("hex")}`
       };
       try {
         const result = tool === "candle_perps_tpsl" ? await runPerpsTpsl2(io, fields) : await runPerpsFlatten2(io);
@@ -66238,7 +66238,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
     if (!pemFile)
       return fail3("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
     try {
-      signerPem = await readFile12(pemFile, "utf8");
+      signerPem = await readFile14(pemFile, "utf8");
       createPrivateKey2(signerPem);
     } catch {
       return fail3("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
@@ -67789,7 +67789,7 @@ Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv �
 init_client();
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod10, readFile as readFile13, realpath as realpath2, rename as rename8, unlink, writeFile as writeFile7 } from "node:fs/promises";
+import { chmod as chmod12, readFile as readFile15, realpath as realpath2, rename as rename10, unlink, writeFile as writeFile9 } from "node:fs/promises";
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -69465,9 +69465,15 @@ var HELP = {
   core: {
     group: "Maintain",
     summary: "Run the local Candle core the Candle TUI attaches to (preview)",
-    description: "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Preview: this build keeps the state directory, the single-instance lock and the journal; the attach interface is not in it yet.",
-    usage: ["candle core serve [--profile <name>]"],
+    description: "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Views and harnesses attach to it on a local socket. Preview: approval cards are not in this build yet.",
+    usage: ["candle core serve [--profile <name>] [--view-token-fd <n>]"],
     rows: [{ invocation: "serve", description: "Start the core for the profile in play; one per profile" }],
+    flags: [
+      {
+        invocation: "--view-token-fd <n>",
+        description: "Write this start's view token to an inherited descriptor (the TUI launcher's)"
+      }
+    ],
     examples: ["candle core serve", "candle core serve --profile staging"],
     env: ["CANDLE_CONFIG_DIR", "CANDLE_PROFILE"]
   },
@@ -69808,6 +69814,8 @@ async function completion(args, ctx) {
 
 // src/commands/core.ts
 init_args();
+import { closeSync, writeSync } from "node:fs";
+import { join as join10 } from "node:path";
 
 // src/core/instance-lock.ts
 import { link, open as open4, readFile as readFile7, rename as rename5, rm as rm3 } from "node:fs/promises";
@@ -70095,6 +70103,730 @@ function withoutFactorValue(factor) {
   return rest;
 }
 
+// src/core/server.ts
+init_render();
+import { randomBytes as randomBytes4 } from "node:crypto";
+import { chmod as chmod8, readFile as readFile10, rename as rename7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
+import { createServer } from "node:net";
+
+// src/core/events.ts
+var REPLAY_BUFFER = 1000;
+var OWNED_TOPICS = new Set(["cards", "operations"]);
+function topicAllowed(topic, role) {
+  if (topic === "cards" || topic === "operations")
+    return { known: true, allowed: true };
+  if (topic === "clients")
+    return { known: true, allowed: role === "view" };
+  if (topic === "status" || topic === "portfolio")
+    return { known: true, allowed: true };
+  if (/^feed:[a-z]{1,32}$/.test(topic))
+    return { known: true, allowed: true };
+  if (/^token:[a-z0-9]{1,16}:[A-Za-z0-9]{20,64}$/.test(topic))
+    return { known: true, allowed: true };
+  return { known: false, allowed: false };
+}
+
+class EventHub {
+  seqs = new Map;
+  buffers = new Map;
+  subscriptions = new Map;
+  snapshots = new Map;
+  provideSnapshot(topicOrPrefix, provider) {
+    this.snapshots.set(topicOrPrefix, provider);
+  }
+  publish(topic, data, ownerClientId) {
+    const seq = (this.seqs.get(topic) ?? 0) + 1;
+    this.seqs.set(topic, seq);
+    const event = { topic, seq, data, ...ownerClientId !== undefined ? { ownerClientId } : {} };
+    if (OWNED_TOPICS.has(topic)) {
+      const buffer = this.buffers.get(topic) ?? [];
+      buffer.push(event);
+      if (buffer.length > REPLAY_BUFFER)
+        buffer.shift();
+      this.buffers.set(topic, buffer);
+    }
+    for (const { subscriber, topics } of this.subscriptions.values()) {
+      if (topics.has(topic) && this.visibleTo(event, subscriber))
+        this.deliver(subscriber, event);
+    }
+    return event;
+  }
+  subscribe(subscriber, topics, sinceSeq = {}) {
+    const entry = this.subscriptions.get(subscriber.clientId) ?? { subscriber, topics: new Set };
+    this.subscriptions.set(subscriber.clientId, entry);
+    for (const topic of topics) {
+      entry.topics.add(topic);
+      const since = sinceSeq[topic];
+      const buffer = this.buffers.get(topic);
+      const oldest = buffer?.[0]?.seq;
+      if (since !== undefined && OWNED_TOPICS.has(topic) && (oldest === undefined || oldest <= since + 1)) {
+        for (const event of buffer ?? []) {
+          if (event.seq > since && this.visibleTo(event, subscriber))
+            this.deliver(subscriber, event);
+        }
+        continue;
+      }
+      const provider = this.snapshots.get(topic) ?? this.snapshots.get(`${topic.split(":")[0]}:`);
+      subscriber.send({
+        jsonrpc: "2.0",
+        method: "event",
+        params: { topic, seq: this.seqs.get(topic) ?? 0, snapshot: true, data: provider ? provider(subscriber) : null }
+      });
+    }
+  }
+  unsubscribe(clientId, topics) {
+    const entry = this.subscriptions.get(clientId);
+    if (entry === undefined)
+      return;
+    if (topics === undefined)
+      this.subscriptions.delete(clientId);
+    else
+      for (const topic of topics)
+        entry.topics.delete(topic);
+  }
+  topicsOf(clientId) {
+    return [...this.subscriptions.get(clientId)?.topics ?? []];
+  }
+  visibleTo(event, subscriber) {
+    if (!OWNED_TOPICS.has(event.topic) || subscriber.role === "view")
+      return true;
+    return event.ownerClientId === subscriber.clientId;
+  }
+  deliver(subscriber, event) {
+    subscriber.send({
+      jsonrpc: "2.0",
+      method: "event",
+      params: { topic: event.topic, seq: event.seq, data: event.data }
+    });
+  }
+}
+
+// src/core/rpc.ts
+var PROTOCOL_VERSION = "1.0";
+var MAX_MESSAGE_BYTES = 1024 * 1024;
+var RPC_PARSE_ERROR = -32700;
+var RPC_INVALID_REQUEST = -32600;
+var RPC_METHOD_NOT_FOUND2 = -32601;
+var RPC_INVALID_PARAMS = -32602;
+var RPC_INTERNAL_ERROR = -32603;
+var RPC_REFUSED = -32000;
+var RPC_FORBIDDEN_FOR_ROLE = -32001;
+
+class RpcError extends Error {
+  rpcCode;
+  code;
+  details;
+  closes = false;
+  constructor(rpcCode, code, message, details = {}) {
+    super(message);
+    this.rpcCode = rpcCode;
+    this.code = code;
+    this.details = details;
+    this.name = "RpcError";
+  }
+  body() {
+    return { code: this.rpcCode, message: this.message, data: { code: this.code, ...this.details } };
+  }
+}
+function refused(code, message, details = {}) {
+  return new RpcError(RPC_REFUSED, code, message, details);
+}
+function invalidParams(message) {
+  return new RpcError(RPC_INVALID_PARAMS, "INVALID_PARAMS", message);
+}
+function protocolMajor(version) {
+  if (typeof version !== "string")
+    return;
+  const match = /^(\d+)\.(\d+)$/.exec(version);
+  return match ? Number(match[1]) : undefined;
+}
+
+class LineDecoder {
+  maxBytes;
+  buffer = Buffer.alloc(0);
+  discarding = false;
+  constructor(maxBytes = MAX_MESSAGE_BYTES) {
+    this.maxBytes = maxBytes;
+  }
+  push(chunk) {
+    this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
+    const lines = [];
+    let oversized = 0;
+    for (;; ) {
+      const newline = this.buffer.indexOf(10);
+      if (newline === -1) {
+        if (this.buffer.length > this.maxBytes) {
+          if (!this.discarding)
+            oversized++;
+          this.discarding = true;
+          this.buffer = Buffer.alloc(0);
+        }
+        break;
+      }
+      const line = this.buffer.subarray(0, newline);
+      this.buffer = this.buffer.subarray(newline + 1);
+      if (this.discarding) {
+        this.discarding = false;
+        continue;
+      }
+      if (line.length > this.maxBytes) {
+        oversized++;
+        continue;
+      }
+      const text = line.toString("utf8").trim();
+      if (text.length > 0)
+        lines.push(text);
+    }
+    return { lines, oversized };
+  }
+}
+function encodeLine(message) {
+  const line = `${JSON.stringify(message)}
+`;
+  if (Buffer.byteLength(line, "utf8") > MAX_MESSAGE_BYTES)
+    throw new Error("An attach-interface message exceeds 1 MiB.");
+  return line;
+}
+
+// src/core/tokens.ts
+init_render();
+import { createHash as createHash3, randomBytes as randomBytes3, timingSafeEqual } from "node:crypto";
+import { chmod as chmod7, readFile as readFile9, rename as rename6, writeFile as writeFile5 } from "node:fs/promises";
+var HARNESS_PREFIX = "cht_";
+var TOKEN_ID = /^[A-Za-z0-9]{12}$/;
+function b64u2(bytes) {
+  return bytes.toString("base64url");
+}
+function sha256Hex(value) {
+  return createHash3("sha256").update(value, "utf8").digest("hex");
+}
+function sameHex(a, b) {
+  const left = Buffer.from(a, "hex");
+  const right = Buffer.from(b, "hex");
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+function freshTokenId() {
+  for (;; ) {
+    const id = b64u2(randomBytes3(16)).replace(/[-_]/g, "").slice(0, 12);
+    if (TOKEN_ID.test(id))
+      return id;
+  }
+}
+function cleanHarnessName(name) {
+  if (typeof name !== "string")
+    return;
+  const clean3 = terminalText(name).trim();
+  return clean3.length >= 1 && clean3.length <= 64 ? clean3 : undefined;
+}
+
+class TokenBook {
+  path;
+  records;
+  now;
+  viewToken;
+  constructor(path, records, now) {
+    this.path = path;
+    this.records = records;
+    this.now = now;
+    this.viewToken = `chv_${b64u2(randomBytes3(32))}`;
+  }
+  static async open(path, now) {
+    let records = [];
+    try {
+      const parsed = JSON.parse(await readFile9(path, "utf8"));
+      if (Array.isArray(parsed.harness)) {
+        records = parsed.harness.filter((r) => r !== null && typeof r === "object" && typeof r.tokenId === "string" && typeof r.hash === "string" && typeof r.name === "string");
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    return new TokenBook(path, records, now);
+  }
+  authenticate(token) {
+    if (typeof token !== "string" || token.length === 0 || token.length > 256)
+      return;
+    if (token.startsWith("chv_")) {
+      const presented = sha256Hex(token);
+      return sameHex(presented, sha256Hex(this.viewToken)) ? { role: "view" } : undefined;
+    }
+    if (!token.startsWith(HARNESS_PREFIX))
+      return;
+    const tokenId = token.slice(HARNESS_PREFIX.length, HARNESS_PREFIX.length + 12);
+    const record = this.records.find((r) => r.tokenId === tokenId && r.revokedAt === undefined);
+    if (record === undefined || !sameHex(sha256Hex(token), record.hash))
+      return;
+    return { role: "harness", tokenId: record.tokenId, name: record.name };
+  }
+  async mintHarness(name) {
+    const tokenId = freshTokenId();
+    const token = `${HARNESS_PREFIX}${tokenId}_${b64u2(randomBytes3(32))}`;
+    const record = {
+      tokenId,
+      name,
+      hash: sha256Hex(token),
+      createdAt: new Date(this.now()).toISOString()
+    };
+    await this.persist([...this.records, record]);
+    return { token, info: infoOf(record) };
+  }
+  async revoke(tokenId) {
+    const index = this.records.findIndex((r) => r.tokenId === tokenId && r.revokedAt === undefined);
+    if (index === -1)
+      return false;
+    const next = [...this.records];
+    next[index] = { ...next[index], revokedAt: new Date(this.now()).toISOString() };
+    await this.persist(next);
+    return true;
+  }
+  list() {
+    return this.records.map(infoOf);
+  }
+  async persist(records) {
+    const temp = `${this.path}.tmp-${b64u2(randomBytes3(6))}`;
+    await writeFile5(temp, `${JSON.stringify({ version: 1, harness: records }, null, 2)}
+`, { mode: 384, flag: "wx" });
+    await chmod7(temp, 384);
+    await rename6(temp, this.path);
+    this.records = records;
+  }
+}
+function infoOf(record) {
+  const { hash: _hash, ...info } = record;
+  return info;
+}
+
+// src/core/server.ts
+var METHOD_ROLES = {
+  "core.hello": { view: "yes", harness: "yes" },
+  "core.status": { view: "yes", harness: "yes" },
+  "tools.list": { view: "yes", harness: "yes" },
+  "tools.call": { view: "yes", harness: "yes" },
+  "cards.propose": { view: "yes", harness: "yes" },
+  "cards.list": { view: "yes", harness: "own" },
+  "cards.get": { view: "yes", harness: "own" },
+  "cards.approve": { view: "yes", harness: "no" },
+  "cards.reject": { view: "yes", harness: "no" },
+  "cards.withdraw": { view: "own", harness: "own" },
+  "operations.list": { view: "yes", harness: "own" },
+  "operations.get": { view: "yes", harness: "own" },
+  "operations.resolve": { view: "yes", harness: "no" },
+  "clients.list": { view: "yes", harness: "no" },
+  "clients.kill": { view: "yes", harness: "no" },
+  "harness.register": { view: "yes", harness: "no" },
+  "harness.revoke": { view: "yes", harness: "no" },
+  "settings.get": { view: "yes", harness: "no" },
+  "settings.set": { view: "yes", harness: "no" },
+  "layout.get": { view: "yes", harness: "no" },
+  "layout.set": { view: "yes", harness: "no" },
+  subscribe: { view: "yes", harness: "own" },
+  unsubscribe: { view: "yes", harness: "own" }
+};
+var MAX_SOCKET_PATH_BYTES = 103;
+var HELLO_TIMEOUT_MS = 1e4;
+var MAX_LAYOUT_BYTES = 64 * 1024;
+
+class CoreServer {
+  options;
+  events = new EventHub;
+  handlers = new Map;
+  connections = new Map;
+  server;
+  viewHighWater = 0;
+  viewListeners = [];
+  killListeners = [];
+  constructor(options) {
+    this.options = options;
+    this.registerBuiltins();
+    this.events.provideSnapshot("status", () => this.status());
+    this.events.provideSnapshot("clients", () => this.clients());
+  }
+  handle(method, handler) {
+    if (!Object.hasOwn(METHOD_ROLES, method) || method === "core.hello") {
+      throw new Error(`Not an attach-interface method: ${method}`);
+    }
+    this.handlers.set(method, handler);
+  }
+  onViewCount(listener) {
+    this.viewListeners.push(listener);
+  }
+  onClientKilled(listener) {
+    this.killListeners.push(listener);
+  }
+  viewCount() {
+    return this.clients().filter((client) => client.role === "view").length;
+  }
+  hadView() {
+    return this.viewHighWater > 0;
+  }
+  clients() {
+    return [...this.connections.values()].flatMap((connection) => connection.client ? [{ ...connection.client }] : []);
+  }
+  status() {
+    const clients = this.clients();
+    return {
+      profile: this.options.profile,
+      environment: this.options.environment,
+      tradingOn: this.options.tradingOn?.() ?? false,
+      approvalPolicy: "ask",
+      viewCount: clients.filter((client) => client.role === "view").length,
+      clientCount: clients.length
+    };
+  }
+  async listen() {
+    const path = this.options.socketPath;
+    if (Buffer.byteLength(path, "utf8") > MAX_SOCKET_PATH_BYTES) {
+      throw new CoreSocketError("CORE_SOCKET_PATH_TOO_LONG", `The core socket path is ${Buffer.byteLength(path, "utf8")} bytes; the limit is ${MAX_SOCKET_PATH_BYTES}. Use a shorter CANDLE_CONFIG_DIR.`);
+    }
+    await rm4(path, { force: true });
+    const server = createServer((socket) => this.accept(socket));
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(path, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    await chmod8(path, 384);
+    this.server = server;
+  }
+  async close() {
+    for (const connection of this.connections.values())
+      connection.socket.destroy();
+    this.connections.clear();
+    const server = this.server;
+    this.server = undefined;
+    if (server)
+      await new Promise((resolve) => server.close(() => resolve()));
+    await rm4(this.options.socketPath, { force: true });
+  }
+  async disconnect(clientId, reason) {
+    const connection = this.connections.get(clientId);
+    const client = connection?.client;
+    if (connection === undefined || client === undefined)
+      return;
+    connection.socket.destroy();
+    await this.detach(clientId, reason);
+    for (const listener of this.killListeners)
+      listener(client);
+    return client;
+  }
+  accept(socket) {
+    const connectionId = `c_${randomBytes4(9).toString("base64url")}`;
+    const connection = { socket };
+    this.connections.set(connectionId, connection);
+    const decoder = new LineDecoder;
+    connection.helloTimer = setTimeout(() => {
+      if (connection.client === undefined)
+        socket.destroy();
+    }, HELLO_TIMEOUT_MS);
+    connection.helloTimer.unref?.();
+    let queue = Promise.resolve();
+    socket.on("data", (chunk) => {
+      const { lines, oversized } = decoder.push(chunk);
+      for (let i = 0;i < oversized; i++) {
+        this.send(socket, {
+          jsonrpc: "2.0",
+          id: null,
+          error: errorBody(RPC_INVALID_REQUEST, "MESSAGE_TOO_LARGE", "A message exceeded 1 MiB.")
+        });
+      }
+      for (const line of lines)
+        queue = queue.then(() => this.onLine(connectionId, connection, line));
+    });
+    socket.on("error", () => {});
+    socket.on("close", () => {
+      if (connection.helloTimer)
+        clearTimeout(connection.helloTimer);
+      queue.then(() => this.detach(connectionId, "detached"));
+    });
+  }
+  async onLine(connectionId, connection, line) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      this.send(connection.socket, {
+        jsonrpc: "2.0",
+        id: null,
+        error: errorBody(RPC_PARSE_ERROR, "PARSE_ERROR", "Not valid JSON.")
+      });
+      return;
+    }
+    const request2 = message;
+    const id = typeof request2?.id === "string" || typeof request2?.id === "number" ? request2.id : null;
+    if (request2 === null || typeof request2 !== "object" || request2.jsonrpc !== "2.0" || typeof request2.method !== "string") {
+      this.send(connection.socket, {
+        jsonrpc: "2.0",
+        id,
+        error: errorBody(RPC_INVALID_REQUEST, "INVALID_REQUEST", "Not a JSON-RPC 2.0 request.")
+      });
+      return;
+    }
+    if (request2.id === undefined)
+      return;
+    const params = request2.params === undefined ? {} : request2.params;
+    if (params === null || typeof params !== "object" || Array.isArray(params)) {
+      this.send(connection.socket, { jsonrpc: "2.0", id, error: invalidParams("params must be an object.").body() });
+      return;
+    }
+    try {
+      const result = connection.client === undefined ? await this.hello(connectionId, connection, request2.method, params) : await this.call(connection.client, request2.method, params);
+      this.send(connection.socket, { jsonrpc: "2.0", id, result });
+    } catch (error) {
+      const body = error instanceof RpcError ? error.body() : errorBody(RPC_INTERNAL_ERROR, "INTERNAL", `The core failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.send(connection.socket, { jsonrpc: "2.0", id, error: body });
+      if (error instanceof RpcError && error.closes)
+        connection.socket.end();
+    }
+  }
+  async hello(connectionId, connection, method, params) {
+    if (method !== "core.hello")
+      throw closing(refused("UNAUTHENTICATED", "Send core.hello first."));
+    const major = protocolMajor(params.protocol);
+    if (major !== protocolMajor(PROTOCOL_VERSION)) {
+      throw closing(refused("PROTOCOL_MISMATCH", `This core speaks protocol ${PROTOCOL_VERSION}.`, {
+        core: PROTOCOL_VERSION,
+        client: typeof params.protocol === "string" ? params.protocol : null
+      }));
+    }
+    const who = this.options.tokens.authenticate(params.token);
+    if (who === undefined) {
+      await this.options.journal.append({ type: "client.refused", reason: "UNAUTHENTICATED" });
+      throw closing(refused("UNAUTHENTICATED", "The token is not one this core issued, or it was revoked."));
+    }
+    const clientName = cleanHarnessName(params.clientName) ?? (who.role === "view" ? "view" : who.name);
+    const harnessKind = who.role === "harness" ? cleanHarnessName(params.harnessKind) : undefined;
+    const client = {
+      clientId: connectionId,
+      role: who.role,
+      clientName,
+      ...harnessKind !== undefined ? { harnessKind } : {},
+      ...who.role === "harness" ? { tokenId: who.tokenId } : {},
+      connectedAt: new Date(this.options.now()).toISOString()
+    };
+    if (connection.helloTimer)
+      clearTimeout(connection.helloTimer);
+    connection.client = client;
+    await this.options.journal.append({ type: "client.attached", client });
+    this.events.publish("clients", { change: "attached", client });
+    if (client.role === "view")
+      this.viewsChanged();
+    return {
+      protocol: PROTOCOL_VERSION,
+      coreVersion: this.options.coreVersion,
+      profile: this.options.profile,
+      environment: this.options.environment,
+      tradingOn: this.options.tradingOn?.() ?? false,
+      approvalPolicy: "ask",
+      clientId: client.clientId,
+      role: client.role
+    };
+  }
+  async call(client, method, params) {
+    if (method === "core.hello")
+      throw refused("ALREADY_AUTHENTICATED", "This connection already said hello.");
+    const roles = Object.hasOwn(METHOD_ROLES, method) ? METHOD_ROLES[method] : undefined;
+    if (roles === undefined)
+      throw new RpcError(RPC_METHOD_NOT_FOUND2, "METHOD_NOT_FOUND", `No method ${terminalText(method).slice(0, 64)}.`);
+    const access3 = roles[client.role];
+    client.lastCall = method;
+    client.lastCallAt = new Date(this.options.now()).toISOString();
+    if (access3 === "no") {
+      await this.options.journal.append({
+        type: "call.forbidden",
+        clientId: client.clientId,
+        role: client.role,
+        method
+      });
+      throw new RpcError(RPC_FORBIDDEN_FOR_ROLE, "FORBIDDEN_FOR_ROLE", `A ${client.role} may not call ${method}.`);
+    }
+    if (method === "cards.propose" && this.viewCount() === 0) {
+      await this.options.journal.append({
+        type: "call.refused",
+        clientId: client.clientId,
+        method,
+        code: "NO_VIEW_ATTACHED"
+      });
+      throw refused("NO_VIEW_ATTACHED", "No Candle TUI view is attached, so no card can be shown. Nothing was queued.");
+    }
+    const handler = this.handlers.get(method);
+    if (handler === undefined)
+      throw refused("METHOD_NOT_AVAILABLE", `${method} is not in this build of the core yet.`);
+    return handler(params, { client, access: access3, server: this });
+  }
+  async detach(clientId, reason) {
+    const connection = this.connections.get(clientId);
+    if (connection === undefined)
+      return;
+    this.connections.delete(clientId);
+    const client = connection.client;
+    if (client === undefined)
+      return;
+    this.events.unsubscribe(clientId);
+    await this.options.journal.append({ type: `client.${reason}`, clientId, role: client.role });
+    this.events.publish("clients", { change: reason, clientId });
+    if (client.role === "view")
+      this.viewsChanged();
+  }
+  viewsChanged() {
+    const count = this.viewCount();
+    this.viewHighWater = Math.max(this.viewHighWater, count);
+    this.events.publish("status", this.status());
+    for (const listener of this.viewListeners)
+      listener(count);
+  }
+  send(socket, message) {
+    if (socket.destroyed)
+      return;
+    socket.write(encodeLine(this.options.redactor.value(message)));
+  }
+  subscriberFor(client) {
+    const connection = this.connections.get(client.clientId);
+    return {
+      clientId: client.clientId,
+      role: client.role,
+      send: (notification) => {
+        if (connection)
+          this.send(connection.socket, notification);
+      }
+    };
+  }
+  registerBuiltins() {
+    this.handle("core.status", async () => this.status());
+    this.handle("clients.list", async () => ({ clients: this.clients(), harnessTokens: this.options.tokens.list() }));
+    this.handle("clients.kill", async (params, call) => {
+      const target = requireString(params, "clientId");
+      if (target === call.client.clientId)
+        throw invalidParams("A client cannot kill itself; detach instead.");
+      const connection = this.connections.get(target);
+      if (connection?.client === undefined)
+        throw refused("CLIENT_NOT_FOUND", "No attached client has that id.");
+      const tokenId = connection.client.tokenId;
+      if (tokenId !== undefined)
+        await this.options.tokens.revoke(tokenId);
+      await this.options.journal.append({ type: "client.kill", by: call.client.clientId, clientId: target, tokenId });
+      await this.disconnect(target, "killed");
+      return { killed: target, revokedTokenId: tokenId ?? null };
+    });
+    this.handle("harness.register", async (params, call) => {
+      const name = cleanHarnessName(params.name);
+      if (name === undefined)
+        throw invalidParams("name must be 1 to 64 printable characters.");
+      const { token, info } = await this.options.tokens.mintHarness(name);
+      await this.options.journal.append({
+        type: "harness.registered",
+        by: call.client.clientId,
+        tokenId: info.tokenId,
+        name
+      });
+      return { ...info, token };
+    });
+    this.handle("harness.revoke", async (params, call) => {
+      const tokenId = requireString(params, "tokenId");
+      if (!await this.options.tokens.revoke(tokenId))
+        throw refused("TOKEN_NOT_FOUND", "No live harness token has that id.");
+      await this.options.journal.append({ type: "harness.revoked", by: call.client.clientId, tokenId });
+      const attached = this.clients().filter((client) => client.tokenId === tokenId);
+      for (const client of attached)
+        await this.disconnect(client.clientId, "revoked");
+      return { revoked: tokenId, disconnected: attached.map((client) => client.clientId) };
+    });
+    this.handle("settings.get", async () => ({
+      tradingOn: this.options.tradingOn?.() ?? false,
+      approvalPolicy: "ask",
+      timedWindow: { open: false }
+    }));
+    this.handle("layout.get", async () => ({ layout: await this.readLayout() }));
+    this.handle("layout.set", async (params) => {
+      const layout = params.layout;
+      if (layout === null || typeof layout !== "object" || Array.isArray(layout))
+        throw invalidParams("layout must be an object.");
+      const text = JSON.stringify(layout);
+      if (Buffer.byteLength(text, "utf8") > MAX_LAYOUT_BYTES)
+        throw invalidParams("layout is over 64 KiB.");
+      const temp = `${this.options.layoutPath}.tmp-${randomBytes4(6).toString("base64url")}`;
+      await writeFile6(temp, `${JSON.stringify({ layout }, null, 2)}
+`, { mode: 384, flag: "wx" });
+      await rename7(temp, this.options.layoutPath);
+      return { layout };
+    });
+    this.handle("subscribe", async (params, call) => {
+      const topics = params.topics;
+      if (!Array.isArray(topics) || topics.length === 0 || !topics.every((topic) => typeof topic === "string")) {
+        throw invalidParams("topics must be a non-empty array of strings.");
+      }
+      for (const topic of topics) {
+        const verdict = topicAllowed(topic, call.client.role);
+        if (!verdict.known)
+          throw invalidParams(`Unknown topic: ${terminalText(topic).slice(0, 80)}`);
+        if (!verdict.allowed) {
+          await this.options.journal.append({
+            type: "call.forbidden",
+            clientId: call.client.clientId,
+            role: call.client.role,
+            method: "subscribe",
+            topic
+          });
+          throw new RpcError(RPC_FORBIDDEN_FOR_ROLE, "FORBIDDEN_FOR_ROLE", `A ${call.client.role} may not subscribe to ${topic}.`);
+        }
+      }
+      const sinceSeq = params.sinceSeq;
+      const since = {};
+      if (sinceSeq !== undefined) {
+        if (sinceSeq === null || typeof sinceSeq !== "object" || Array.isArray(sinceSeq))
+          throw invalidParams("sinceSeq must be an object of topic to seq.");
+        for (const [topic, seq] of Object.entries(sinceSeq))
+          if (typeof seq === "number" && Number.isInteger(seq) && seq >= 0)
+            since[topic] = seq;
+      }
+      queueMicrotask(() => this.events.subscribe(this.subscriberFor(call.client), topics, since));
+      return { topics: [...new Set([...this.events.topicsOf(call.client.clientId), ...topics])] };
+    });
+    this.handle("unsubscribe", async (params, call) => {
+      const topics = params.topics;
+      if (topics !== undefined && (!Array.isArray(topics) || !topics.every((topic) => typeof topic === "string"))) {
+        throw invalidParams("topics must be an array of strings.");
+      }
+      this.events.unsubscribe(call.client.clientId, topics);
+      return { topics: this.events.topicsOf(call.client.clientId) };
+    });
+  }
+  async readLayout() {
+    try {
+      const parsed = JSON.parse(await readFile10(this.options.layoutPath, "utf8"));
+      if (parsed.layout && typeof parsed.layout === "object")
+        return parsed.layout;
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    return { preset: "C" };
+  }
+}
+
+class CoreSocketError extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "CoreSocketError";
+  }
+}
+function closing(error) {
+  error.closes = true;
+  return error;
+}
+function errorBody(rpcCode, code, message) {
+  return { code: rpcCode, message, data: { code } };
+}
+function requireString(params, field) {
+  const value = params[field];
+  if (typeof value !== "string" || value.length === 0 || value.length > 128)
+    throw invalidParams(`${field} must be a string.`);
+  return value;
+}
+
 // src/core/slot.ts
 init_key_signers();
 init_profiles();
@@ -70102,7 +70834,7 @@ init_secret_store();
 init_canonical_json();
 init_crypto();
 init_ownership();
-import { open as openFile, readFile as readFile9, rename as rename6, rm as rm4 } from "node:fs/promises";
+import { open as openFile, readFile as readFile11, rename as rename8, rm as rm5 } from "node:fs/promises";
 var CORE_SLOT_FORMAT = "candle-core-slot";
 var CORE_SLOT_VERSION = 1;
 class CoreSlotError extends Error {
@@ -70129,7 +70861,7 @@ function parseCoreSlotFile(raw) {
 async function readCoreSlotHeader(paths) {
   let raw;
   try {
-    raw = await readFile9(paths.slot, "utf8");
+    raw = await readFile11(paths.slot, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return;
@@ -70179,16 +70911,23 @@ async function finishCoreMove(input) {
 // src/commands/core.ts
 init_profiles();
 init_render();
-var USAGE4 = "Usage: candle core serve";
+var USAGE4 = "Usage: candle core serve [--view-token-fd <n>]";
 async function coreServe(args, ctx) {
   const { deps, json } = ctx;
-  const parsed = parseArgs(args, {});
+  const parsed = parseArgs(args, { valueFlags: ["--view-token-fd"] });
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
     writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}
+${USAGE4}`, json);
+    return 2;
+  }
+  const fdFlag = parsed.values["--view-token-fd"];
+  const viewTokenFd = fdFlag === undefined ? undefined : Number(fdFlag);
+  if (viewTokenFd !== undefined && (!Number.isInteger(viewTokenFd) || viewTokenFd < 3)) {
+    writeUsageFailure(deps, `--view-token-fd takes a descriptor number of 3 or more, not ${fdFlag}
 ${USAGE4}`, json);
     return 2;
   }
@@ -70226,6 +70965,8 @@ ${USAGE4}`, json);
     return 1;
   }
   let journal;
+  let server;
+  let stopReason = "start_failed";
   try {
     const redactor = new Redactor;
     redactor.add(await deps.store.get(profileSecretRef(profile, "apiKey")));
@@ -70240,33 +70981,79 @@ ${USAGE4}`, json);
     const removed = await finishCoreMove({ deps, paths, profile });
     if (removed.length > 0)
       await journal.append({ type: "slot.move_finished", refs: removed });
-    const started = await journal.append({ type: "core.started", coreVersion: CLI_VERSION, pid: process.pid });
+    const tokens = await TokenBook.open(paths.tokens, deps.now);
+    redactor.add(tokens.viewToken);
+    server = new CoreServer({
+      socketPath: paths.socket,
+      layoutPath: join10(paths.dir, "config.json"),
+      profile,
+      environment,
+      coreVersion: CLI_VERSION,
+      journal,
+      redactor,
+      tokens,
+      now: deps.now
+    });
+    try {
+      await server.listen();
+    } catch (error) {
+      if (!(error instanceof CoreSocketError))
+        throw error;
+      writeLocalFailure(deps, { code: error.code, message: error.message }, json);
+      return 1;
+    }
+    if (viewTokenFd !== undefined) {
+      try {
+        writeSync(viewTokenFd, `${tokens.viewToken}
+`);
+        closeSync(viewTokenFd);
+      } catch {
+        writeLocalFailure(deps, { code: "CORE_VIEW_TOKEN_FD", message: `Could not write the view token to descriptor ${viewTokenFd}.` }, json);
+        return 1;
+      }
+    }
+    const started = await journal.append({
+      type: "core.started",
+      coreVersion: CLI_VERSION,
+      pid: process.pid,
+      viewTokenHandedOff: viewTokenFd !== undefined
+    });
     if (json) {
       deps.stdout.write(`${JSON.stringify({ ok: true, profile, environment, stateDir: paths.dir, socket: paths.socket, journalSeq: started.seq })}
 `);
     } else {
       deps.stdout.write(`Candle core (preview) for profile ${profile} on ${environment === "production" ? "PRODUCTION: real funds" : "staging"}
 State: ${paths.dir}
-The attach interface is not in this build yet; the core accepts no connections.
+Socket: ${paths.socket}
 `);
     }
+    const running = server;
     await new Promise((resolve) => {
-      if (!deps.onTerminate)
-        return resolve();
       let unsubscribe;
       let done = false;
-      unsubscribe = deps.onTerminate(() => {
+      const finish = (reason) => {
+        if (done)
+          return;
         done = true;
+        stopReason = reason;
         unsubscribe?.();
         resolve();
+      };
+      running.onViewCount((count) => {
+        if (count === 0 && running.hadView())
+          finish("last_view_detached");
       });
+      unsubscribe = deps.onTerminate?.(() => finish("terminated"));
       if (done)
-        unsubscribe();
+        unsubscribe?.();
     });
-    await journal.append({ type: "core.stopped" });
     return 0;
   } finally {
-    await journal?.close();
+    await server?.close();
+    if (journal) {
+      await journal.append({ type: "core.stopped", reason: stopReason }).catch(() => {});
+      await journal.close();
+    }
     await lock.release();
   }
 }
@@ -72117,15 +72904,15 @@ init_solana_endpoint();
 // src/vault/domains.ts
 init_errors2();
 import { homedir as homedir4 } from "node:os";
-import { basename, dirname as dirname7, isAbsolute, join as join10, resolve, sep } from "node:path";
+import { basename, dirname as dirname7, isAbsolute, join as join11, resolve, sep } from "node:path";
 var ICLOUD_DRIVE_SEGMENTS = ["Library", "Mobile Documents", "com~apple~CloudDocs"];
 var ICLOUD_SHORTHAND = "icloud";
 var ICLOUD_BACKUP_FOLDER = "Candle";
 function icloudDriveDir(home) {
-  return join10(home, ...ICLOUD_DRIVE_SEGMENTS);
+  return join11(home, ...ICLOUD_DRIVE_SEGMENTS);
 }
 function icloudBackupPath(home, at) {
-  return join10(icloudDriveDir(home), ICLOUD_BACKUP_FOLDER, `vault-${backupStamp(at)}.enc`);
+  return join11(icloudDriveDir(home), ICLOUD_BACKUP_FOLDER, `vault-${backupStamp(at)}.enc`);
 }
 function backupStamp(at) {
   return new Date(at).toISOString().replace(/[-:]/gu, "").replace(/\.\d+Z$/u, "Z");
@@ -72180,7 +72967,7 @@ async function classifyDestination(path, opts) {
   } catch {
     return "unknown";
   }
-  return placeResolvedPath(join10(parent, basename(absolute)), home);
+  return placeResolvedPath(join11(parent, basename(absolute)), home);
 }
 function sealsByDefault(destination) {
   return destination === "icloud-drive" || destination === "other-cloud" || destination === "unknown";
@@ -80790,7 +81577,7 @@ async function perpsDeposit(args, ctx) {
     });
     if (build.job)
       return printTradingResult(ctx, build);
-    const refused = (problem2) => new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem2}. Nothing was signed.`);
+    const refused2 = (problem2) => new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem2}. Nothing was signed.`);
     const problem = depositBuildProblem(build, {
       walletId: wallet.id,
       asset,
@@ -80798,41 +81585,41 @@ async function perpsDeposit(args, ctx) {
       destination: destination.address
     });
     if (problem)
-      throw refused(problem);
+      throw refused2(problem);
     let sequenced;
     let transaction;
     const hoodOrigin = asset === "ETH" || asset === "USDG" ? asset : undefined;
     if (hoodOrigin) {
       const parsedLeg = sequencedSchema.safeParse(build);
       if (!parsedLeg.success)
-        throw refused("Candle did not answer with a sequenced Hood leg");
+        throw refused2("Candle did not answer with a sequenced Hood leg");
       sequenced = parsedLeg.data;
       const plan = plannedLegKinds(sequenced.legKind, sequenced.plannedLegCount, false, "bridgeDeposit");
       if (!bridgePlanAdmitted(hoodOrigin, plan))
-        throw refused(`the plan is ${sequenced.plannedLegCount} leg(s) starting with ${sequenced.legKind}`);
+        throw refused2(`the plan is ${sequenced.plannedLegCount} leg(s) starting with ${sequenced.legKind}`);
       const legProblem = relayHoodLegProblem(sequenced.legKind, sequenced.nextLeg, {
         origin: hoodOrigin,
         payer: wallet.address,
         amountRaw
       });
       if (legProblem)
-        throw refused(legProblem);
+        throw refused2(legProblem);
     } else {
       const txs = Array.isArray(build.transactionsBase64) ? build.transactionsBase64 : [];
       if (txs.length !== 1 || typeof txs[0] !== "string")
-        throw refused(`Candle returned ${txs.length} transactions, not one deposit`);
+        throw refused2(`Candle returned ${txs.length} transactions, not one deposit`);
       transaction = txs[0];
       const reader = await lazySolanaClient(ctx, values["--rpc-url"])();
       const solanaProblem = await tradingRead(ctx, reader, () => relaySolanaDepositProblem(transaction, wallet.address, reader.rpc));
       if (solanaProblem)
-        throw refused(solanaProblem);
+        throw refused2(solanaProblem);
       const spent = await tradingRead(ctx, reader, () => solanaSpendProblem(transaction, wallet.address, reader.rpc, {
         kind: "swap",
         spend: asset === "SOL" ? "SOL" : BASES[asset]?.mint ?? asset,
         maxSpendRaw: BigInt(amountRaw)
       }));
       if (spent)
-        throw refused(spent);
+        throw refused2(spent);
     }
     const decimals = Number(build.outDecimals);
     const minimum = decimalAmount(String(build.minimumOutRaw), decimals);
@@ -80900,7 +81687,7 @@ async function perpsDeposit(args, ctx) {
 init_args();
 init_client();
 init_deps();
-import { randomBytes as randomBytes3 } from "node:crypto";
+import { randomBytes as randomBytes5 } from "node:crypto";
 
 // src/hyperliquid-manage.ts
 var PERPS_FLATTEN_MAX_STEPS = 100;
@@ -81510,7 +82297,7 @@ async function workflowIo(ctx, opts) {
         throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.");
       return (await ctx.deps.promptLine("Sign and submit this plan? [y/N] ")).trim().toLowerCase() === "y";
     },
-    cloid: () => `0x${randomBytes3(16).toString("hex")}`
+    cloid: () => `0x${randomBytes5(16).toString("hex")}`
   };
 }
 function stepLine(step) {
@@ -82101,7 +82888,7 @@ async function perpsWithdraw(args, ctx) {
     });
     if (build.status !== "quoted")
       return printTradingResult(ctx, build);
-    const refused = (problem) => new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this withdrawal: ${problem}. Nothing was signed.`);
+    const refused2 = (problem) => new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this withdrawal: ${problem}. Nothing was signed.`);
     const mapping = verifyWithdrawMapping(build, {
       id,
       account: wallet.address,
@@ -82111,10 +82898,10 @@ async function perpsWithdraw(args, ctx) {
       pins
     });
     if (!mapping.ok)
-      throw refused(mapping.reason);
+      throw refused2(mapping.reason);
     const recipient = await relayRecipientProblem(ctx.deps.fetch, build.relayRequestId, build.to.address);
     if (recipient)
-      throw refused(recipient);
+      throw refused2(recipient);
     const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
     output.write(`Withdraw ${formatWithdrawAmount(amountMicros)} USDC from Hyperliquid account ${safeText(wallet.address)} through Relay.
 `);
@@ -82326,7 +83113,7 @@ init_args();
 // src/plugins.ts
 import { spawn as spawn2 } from "node:child_process";
 import { accessSync, constants as constants3, readdirSync, statSync } from "node:fs";
-import { delimiter, join as join11 } from "node:path";
+import { delimiter, join as join12 } from "node:path";
 var PLUGIN_PREFIX = "candle-";
 var RESERVED_HELPER_NAMES = ["fido2", "enclave"];
 function isPluginName(name2) {
@@ -82348,7 +83135,7 @@ function findPlugin(name2, pathEnv) {
   for (const dir of (pathEnv ?? "").split(delimiter)) {
     if (dir === "")
       continue;
-    const candidate = join11(dir, `${PLUGIN_PREFIX}${name2}`);
+    const candidate = join12(dir, `${PLUGIN_PREFIX}${name2}`);
     if (executableAt(candidate))
       return candidate;
   }
@@ -82371,7 +83158,7 @@ function listPlugins(pathEnv) {
       const name2 = file.slice(PLUGIN_PREFIX.length);
       if (!isPluginName(name2) || found.has(name2))
         continue;
-      const path = join11(dir, file);
+      const path = join12(dir, file);
       if (executableAt(path))
         found.set(name2, path);
     }
@@ -85894,7 +86681,7 @@ async function hoodTransfer(ctx, args) {
 
 // src/commands/update.ts
 init_args();
-import { randomBytes as randomBytes4 } from "node:crypto";
+import { randomBytes as randomBytes6 } from "node:crypto";
 
 // src/progress.ts
 var FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -85953,7 +86740,7 @@ init_release();
 
 // src/release-assets.ts
 init_release();
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 
 // src/bun-crypto-shim.ts
 import crypto3, { KeyObject } from "node:crypto";
@@ -85993,7 +86780,7 @@ installBunCryptoShim();
 var import_bundle = __toESM(require_dist2(), 1);
 var import_protobuf_specs = __toESM(require_dist(), 1);
 var import_verify = __toESM(require_dist4(), 1);
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 // src/sigstore-trusted-root.json
 var sigstore_trusted_root_default = {
   mediaType: "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
@@ -86153,7 +86940,7 @@ function verifyReleaseAsset(bytes, bundleJson, identityUri, issuer) {
     return { ok: false, reason: LEGACY_BUNDLE_REASON };
   try {
     const bundle = import_bundle.bundleFromJSON(bundleJson);
-    const digest = createHash3("sha256").update(bytes).digest();
+    const digest = createHash4("sha256").update(bytes).digest();
     const content = bundle.content;
     if (content.$case === "messageSignature") {
       const claimed = content.messageSignature.messageDigest?.digest;
@@ -86216,7 +87003,7 @@ async function downloadSums(deps, base, tag) {
   }
 }
 function checkReleaseAsset(deps, opts) {
-  const actual = createHash4("sha256").update(opts.bytes).digest("hex");
+  const actual = createHash5("sha256").update(opts.bytes).digest("hex");
   const fromSums = opts.sums.split(`
 `).map((line) => line.trim().split(/\s+/)).find((parts) => parts[1] === opts.name)?.[0];
   if (actual !== opts.expectedSha256 || actual !== fromSums) {
@@ -86478,7 +87265,7 @@ async function stage(deps, steps, opts) {
     return { ok: false, failure: { code: "UPDATE_UNREACHABLE", message: download.message } };
   }
   steps.done(`downloaded ${name2} (${formatBytes(download.bytes.length)})`);
-  const tmpPath = `${opts.dir}/.candle-update-${opts.version}-${randomBytes4(6).toString("hex")}`;
+  const tmpPath = `${opts.dir}/.candle-update-${opts.version}-${randomBytes6(6).toString("hex")}`;
   try {
     await deps.writeBytes(tmpPath, download.bytes);
   } catch (error) {
@@ -86525,7 +87312,7 @@ async function discard(deps, path) {
 
 // src/commands/vault-backup.ts
 init_args();
-import { chmod as chmod7, copyFile, mkdir as mkdir7, stat as stat5 } from "node:fs/promises";
+import { chmod as chmod9, copyFile, mkdir as mkdir7, stat as stat5 } from "node:fs/promises";
 import nodePath, { dirname as dirname8, resolve as resolve3 } from "node:path";
 init_crypto();
 init_errors2();
@@ -86714,7 +87501,7 @@ async function vaultBackup(args, ctx) {
       try {
         const created = await mkdir7(folder, { recursive: true });
         if (created !== undefined)
-          await chmod7(folder, 448).catch(() => {});
+          await chmod9(folder, 448).catch(() => {});
       } catch (error) {
         throw copyWriteFailed(destination, error, "copy");
       }
@@ -87325,7 +88112,7 @@ init_errors2();
 init_promote_support();
 init_store();
 init_vault_support();
-import { access as access3, chmod as chmod8, constants as constants4, lstat, writeFile as writeFile5 } from "node:fs/promises";
+import { access as access3, chmod as chmod10, constants as constants4, lstat, writeFile as writeFile7 } from "node:fs/promises";
 import { dirname as dirname9, resolve as resolve4 } from "node:path";
 async function vaultExportKey(args, ctx) {
   const parsed = parseArgs(args, {
@@ -87469,8 +88256,8 @@ async function assertExportTargetWritable(destination) {
 }
 async function writeExportFile(destination, body) {
   try {
-    await writeFile5(destination, body, { encoding: "utf8", flag: "wx", mode: 384 });
-    await chmod8(destination, 384);
+    await writeFile7(destination, body, { encoding: "utf8", flag: "wx", mode: 384 });
+    await chmod10(destination, 384);
   } catch (error) {
     const code = error.code;
     if (code === "EEXIST") {
@@ -87670,7 +88457,7 @@ init_fido2();
 init_format();
 
 // src/vault/install-helper.ts
-import { randomBytes as randomBytes5 } from "node:crypto";
+import { randomBytes as randomBytes7 } from "node:crypto";
 init_release();
 init_fido2();
 async function installHelperForThisRelease(ctx) {
@@ -87737,7 +88524,7 @@ async function installHelperForThisRelease(ctx) {
   steps.done("checksum and signature verified (Sigstore, keyless; signer pinned to the release workflow)");
   const dir = realExec.slice(0, realExec.lastIndexOf("/")) || ".";
   const target = `${dir}/${HELPER_NAME}`;
-  const tmpPath = `${dir}/.candle-fido2-${CLI_VERSION}-${randomBytes5(6).toString("hex")}`;
+  const tmpPath = `${dir}/.candle-fido2-${CLI_VERSION}-${randomBytes7(6).toString("hex")}`;
   steps.start(`installing ${HELPER_NAME}`);
   try {
     await deps.writeBytes(tmpPath, download.bytes);
@@ -89403,7 +90190,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
 
 // src/commands/vault-import-legacy.ts
 init_args();
-import { readFile as readFile10 } from "node:fs/promises";
+import { readFile as readFile12 } from "node:fs/promises";
 init_ed255192();
 init_errors2();
 
@@ -89579,7 +90366,7 @@ async function vaultImportLegacy(args, ctx) {
     const vaultRaw = await requireVaultRaw(ctx, resolvedVault);
     let legacyRaw;
     try {
-      legacyRaw = await readFile10(fromPath, "utf8");
+      legacyRaw = await readFile12(fromPath, "utf8");
     } catch (error) {
       const code = error?.code;
       if (code === "ENOENT") {
@@ -89670,7 +90457,7 @@ async function vaultImportLegacy(args, ctx) {
 async function resolveDefaultTeePath(env, home) {
   const current = defaultTeeKeystorePath(env, home);
   try {
-    await readFile10(current);
+    await readFile12(current);
     return current;
   } catch {}
   return legacyTeeKeystorePath(env, home);
@@ -92328,7 +93115,7 @@ init_deps();
 init_evm_lite();
 init_solana_endpoint();
 init_solana_lite();
-import { rm as rm5 } from "node:fs/promises";
+import { rm as rm6 } from "node:fs/promises";
 init_crypto();
 init_errors2();
 init_evm_record();
@@ -92470,9 +93257,9 @@ function restoreSeedHd(counts, restoredAt) {
 }
 async function discardIncompleteRestore(ctx, path, sidecarExisted) {
   try {
-    await rm5(path, { force: true });
+    await rm6(path, { force: true });
     if (!sidecarExisted)
-      await rm5(sidecarPath(path), { force: true });
+      await rm6(sidecarPath(path), { force: true });
     ctx.deps.stderr.write(`The vault this run had written at ${path} was removed because the restore did not complete, so a retry starts clean.
 `);
   } catch {
@@ -92989,7 +93776,7 @@ async function collectOwn2(ctx) {
 init_args();
 init_errors2();
 init_sidecar();
-import { rename as rename7, stat as stat6 } from "node:fs/promises";
+import { rename as rename9, stat as stat6 } from "node:fs/promises";
 init_wallet_keystore();
 init_vault_support();
 async function vaultRetireLegacy(args, ctx) {
@@ -93067,7 +93854,7 @@ async function vaultRetireLegacy(args, ctx) {
     const date = new Date(deps.now()).toISOString().slice(0, 10);
     const retiredPath = `${fromPath}.migrated-${date}`;
     try {
-      await rename7(fromPath, retiredPath);
+      await rename9(fromPath, retiredPath);
     } catch (error) {
       throw new VaultError("VAULT_WRITE_FAILED", `Could not rename ${fromPath} to ${retiredPath}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -93620,7 +94407,7 @@ async function vaultTransfer(args, ctx) {
 // src/commands/verify.ts
 init_args();
 init_release();
-import { dirname as dirname10, join as join12 } from "node:path";
+import { dirname as dirname10, join as join13 } from "node:path";
 init_render();
 var USAGE9 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
@@ -93628,7 +94415,7 @@ async function resolveIdentity(deps, bundlePath, flag) {
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join12(dirname10(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join13(dirname10(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -94216,18 +95003,18 @@ function walletsUntrust(args, ctx) {
 }
 
 // src/config.ts
-import { chmod as chmod9, mkdir as mkdir8, readFile as readFile11, rm as rm6, writeFile as writeFile6 } from "node:fs/promises";
+import { chmod as chmod11, mkdir as mkdir8, readFile as readFile13, rm as rm7, writeFile as writeFile8 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
-import { join as join13 } from "node:path";
+import { join as join14 } from "node:path";
 function configDir2() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join13(homedir5(), ".config", "candle");
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join14(homedir5(), ".config", "candle");
 }
 function configFilePath() {
-  return join13(configDir2(), "config.json");
+  return join14(configDir2(), "config.json");
 }
 async function readConfig() {
   try {
-    const raw = await readFile11(configFilePath(), "utf8");
+    const raw = await readFile13(configFilePath(), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (err.code === "ENOENT")
@@ -94240,8 +95027,8 @@ async function writeConfig(patch) {
   const next = { ...current, ...patch };
   const dir = configDir2();
   await mkdir8(dir, { recursive: true });
-  await chmod9(dir, 448);
-  await writeFile6(configFilePath(), JSON.stringify(next, null, 2), "utf8");
+  await chmod11(dir, 448);
+  await writeFile8(configFilePath(), JSON.stringify(next, null, 2), "utf8");
 }
 async function updateProfile(name2, patch) {
   const current = await readConfig();
@@ -94251,7 +95038,7 @@ async function updateProfile(name2, patch) {
 }
 async function clearConfig() {
   try {
-    await rm6(configFilePath());
+    await rm7(configFilePath());
   } catch (err) {
     if (err.code !== "ENOENT")
       throw err;
@@ -94839,8 +95626,8 @@ async function buildRealDeps() {
       const { runStdioServer: runStdioServer2 } = await Promise.resolve().then(() => (init_server2(), exports_server));
       await runStdioServer2(env);
     },
-    readFile: (path) => readFile13(path, "utf8"),
-    readBytes: (path) => readFile13(path),
+    readFile: (path) => readFile15(path, "utf8"),
+    readBytes: (path) => readFile15(path),
     readStdin: () => new Promise((resolve6, reject) => {
       const chunks = [];
       process.stdin.on("data", (chunk) => chunks.push(chunk));
@@ -94849,7 +95636,7 @@ async function buildRealDeps() {
       process.stdin.resume();
     }),
     runPlugin: realRunPlugin,
-    writeFile: (path, content) => writeFile7(path, content, { mode: 384 }),
+    writeFile: (path, content) => writeFile9(path, content, { mode: 384 }),
     promptSecret: promptHiddenSecret,
     promptLine: promptVisibleLine,
     isTTY: {
@@ -94866,10 +95653,10 @@ async function buildRealDeps() {
     spawnHelper: realSpawnHelper,
     releasePolicy: RELEASE_POLICY,
     writeBytes: async (path, bytes) => {
-      await writeFile7(path, bytes, { flag: "wx", mode: 493 });
-      await chmod10(path, 493);
+      await writeFile9(path, bytes, { flag: "wx", mode: 493 });
+      await chmod12(path, 493);
     },
-    rename: (from, to) => rename8(from, to),
+    rename: (from, to) => rename10(from, to),
     unlink: (path) => unlink(path),
     runHook: realRunHook,
     onTerminate: (handler) => {
