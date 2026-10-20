@@ -49,8 +49,13 @@ const ADDRESS_THIS = "0x0000000000000000000000000000000000000002"
 /** The spenders a DEX approval may name: a router that pulls the input, or Permit2 for a v4 sell. */
 const DEX_SPENDERS = [HOOD_UNIV3_ROUTER, HOOD_KYBER_ROUTER, HOOD_PERMIT2]
 
-/** `createCurve((...InitParams), uint8, uint16, bytes32)`. */
-export const CREATE_CURVE_SELECTOR = "0xe5ab9610"
+/**
+ * `createCurve((...InitParams), uint8, uint16, bytes32)` on the launch stack v2 factory, whose
+ * `InitParams` carries `tokenDeployer` third (seven addresses before the uint16). The pre-v2 six-address
+ * shape was `0xe5ab9610`, which this factory does not have. `scripts/check-cli-hood-pins.test.ts`
+ * holds this to the factory ABI the API encodes with.
+ */
+export const CREATE_CURVE_SELECTOR = "0x7cf8ad31"
 /** ERC-20 `approve(address,uint256)`. */
 export const ERC20_APPROVE_SELECTOR = "0x095ea7b3"
 /** Permit2 `approve(address token, address spender, uint160 amount, uint48 expiration)`. */

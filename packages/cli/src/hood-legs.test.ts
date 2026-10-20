@@ -74,7 +74,7 @@ describe("pinned selectors", () => {
   test("each selector is the keccak of its signature", () => {
     expect(CREATE_CURVE_SELECTOR).toBe(
       selector(
-        "createCurve((address,address,address,address,address,address,uint16,bool,uint256,string,string,string,string,string,uint8,uint256,(uint16,uint256,uint256,uint256,uint256,uint256,uint256)),uint8,uint16,bytes32)",
+        "createCurve((address,address,address,address,address,address,address,uint16,bool,uint256,string,string,string,string,string,uint8,uint256,(uint16,uint256,uint256,uint256,uint256,uint256,uint256)),uint8,uint16,bytes32)",
       ),
     )
     expect(ERC20_APPROVE_SELECTOR).toBe(selector("approve(address,uint256)"))
