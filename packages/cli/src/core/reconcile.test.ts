@@ -85,17 +85,24 @@ async function setup(handlers: Record<string, Handler>, existingDir?: string) {
       }
     },
   })
-  /** Runs every due timer once, advancing the clock by its delay, then lets its reads settle. */
-  const flush = async () => {
+  /** Runs every due timer once, then waits for the caller's observable result, including real journal I/O. */
+  const flush = async (settled: () => boolean) => {
     const due = timers.splice(0)
     for (const timer of due) {
       clock.advance(timer.ms)
       timer.run()
     }
-    for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+    await waitUntil(settled)
+    expect(settled()).toBe(true)
   }
   const approve = async (cardId: string, cardHash: string) => book.approve({ cardId, cardHash, factor: RIGHT }, VIEW)
   return { dir, journal, journalPath, trading, book, calls, timers, flush, clock, approve }
+}
+
+/** Polls a real-I/O condition up to a deadline (the vault KDF can be slow on a loaded runner); the assertion follows it. */
+const waitUntil = async (done: () => boolean, timeoutMs = 5000) => {
+  const deadline = Date.now() + timeoutMs
+  while (!done() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5))
 }
 
 const tradeCard = (book: CardBook, extra: Record<string, unknown> = {}) =>
@@ -107,7 +114,7 @@ describe("T-7: write-ahead and the same id across a restart", () => {
     const first = await setup({ candle_trade: () => new Promise<ExecutionOutcome>(() => {}) })
     const card = await tradeCard(first.book)
     void first.approve(card.cardId, card.cardHash)
-    for (let i = 0; i < 50 && first.calls.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2))
+    await waitUntil(() => first.calls.length > 0)
     expect(first.calls.map((c) => c.tool)).toEqual(["candle_trade"])
     const onDisk = (await readJournal(first.journalPath)).rows.map((row) => row.type)
     expect(onDisk).toContain("operation.submitting")
@@ -128,13 +135,14 @@ describe("T-7: write-ahead and the same id across a restart", () => {
     const checked = await second.book.resolve({ opId: card.opId, action: "check", factor: RIGHT }, VIEW)
     expect(checked.state).toBe("unknown")
     expect(second.calls).toEqual([{ tool: "candle_get_operation", params: { clientId: card.opId, kind: "trade" } }])
-  })
+  }, 10_000)
 
   test("after a restart, a check that finds the record settles it", async () => {
     const first = await setup({ candle_trade: () => new Promise<ExecutionOutcome>(() => {}) })
     const card = await tradeCard(first.book)
     void first.approve(card.cardId, card.cardHash)
-    for (let i = 0; i < 50 && first.calls.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2))
+    await waitUntil(() => first.calls.length > 0)
+    expect(first.calls.map((c) => c.tool)).toEqual(["candle_trade"])
     const second = await setup(
       {
         candle_get_operation: () => ({
@@ -148,7 +156,7 @@ describe("T-7: write-ahead and the same id across a restart", () => {
     expect((await second.book.resolve({ opId: card.opId, action: "check", factor: RIGHT }, VIEW)).state).toBe(
       "succeeded",
     )
-  })
+  }, 10_000)
 
   test("an open card from the last run expires on restart; settled operations are left alone", async () => {
     const first = await setup({
@@ -179,12 +187,13 @@ describe("R-2 on a lost answer", () => {
     const card = await tradeCard(s.book)
     expect((await s.approve(card.cardId, card.cardHash)).operation.state).toBe("unknown")
     expect(s.timers.map((t) => t.ms)).toEqual([0])
-    await s.flush()
+    await s.flush(() => s.timers.length > 0)
     expect(s.book.operation(card.opId, VIEW, false).state).toBe("unknown")
     expect(s.timers.map((t) => t.ms)).toEqual([5_000])
-    await s.flush()
+    await s.flush(() => s.timers.length > 0)
     expect(s.book.operation(card.opId, VIEW, false).state).toBe("pending")
-    await s.flush()
+    // State changes before append resolves; the journal row proves the terminal write has settled.
+    await s.flush(() => s.journal.rows().some((row) => row.opId === card.opId && row.type === "operation.succeeded"))
     expect(s.book.operation(card.opId, VIEW, false).state).toBe("succeeded")
     expect(s.timers).toEqual([])
     // Every read used the same id; the trade itself was sent once.
@@ -192,7 +201,7 @@ describe("R-2 on a lost answer", () => {
     expect(new Set(s.calls.filter((c) => c.tool === "candle_get_operation").map((c) => c.params.clientId))).toEqual(
       new Set([card.opId]),
     )
-  })
+  }, 10_000)
 
   test("polling stops after ten minutes and hands the operation to the user", async () => {
     const s = await setup({
@@ -201,10 +210,12 @@ describe("R-2 on a lost answer", () => {
     })
     const card = await tradeCard(s.book)
     await s.approve(card.cardId, card.cardHash)
-    for (let i = 0; i < 60 && s.timers.length > 0; i++) await s.flush()
+    for (let i = 0; i < 60 && s.timers.length > 0; i++) {
+      await s.flush(() => s.timers.length > 0 || s.book.operation(card.opId, VIEW, false).readNeedsFactor === true)
+    }
     expect(s.timers).toEqual([])
     expect(s.book.operation(card.opId, VIEW, false)).toMatchObject({ state: "unknown", readNeedsFactor: true })
-  })
+  }, 10_000)
 
   test("a kind with no read by id is unknown at once and not polled; check is not offered", async () => {
     const s = await setup({
@@ -245,7 +256,7 @@ describe("T-9: what the user can do with an unknown (R-3, D2 default A)", () => 
     })
     const card = await tradeCard(s.book)
     await s.approve(card.cardId, card.cardHash)
-    await s.flush()
+    await s.flush(() => s.timers.length > 0)
     return { s, card }
   }
 
@@ -266,7 +277,7 @@ describe("T-9: what the user can do with an unknown (R-3, D2 default A)", () => 
     expect(trades[1]?.params.clientTradeId).toBe(card.opId)
     const types = (await readJournal(s.journalPath)).rows.map((row) => row.type)
     expect(types).toContain("operation.resend")
-  })
+  }, 10_000)
 
   test("stop tracking keeps reading for ten minutes and records a late row", async () => {
     let reads = 0
@@ -276,12 +287,18 @@ describe("T-9: what the user can do with an unknown (R-3, D2 default A)", () => 
     })
     const abandoned = await s.book.resolve({ opId: card.opId, action: "abandon", factor: RIGHT }, VIEW)
     expect(abandoned).toMatchObject({ state: "resolved_abandoned", resolution: "abandoned" })
-    for (let i = 0; i < 10 && s.timers.length > 0; i++) await s.flush()
+    for (let i = 0; i < 10 && s.timers.length > 0; i++) {
+      await s.flush(
+        () =>
+          s.timers.length > 0 ||
+          s.journal.rows().some((row) => row.opId === card.opId && row.type === "operation.late_record"),
+      )
+    }
     const op = s.book.operation(card.opId, VIEW, false)
     expect(op.state).toBe("resolved_abandoned")
     expect(op.lateRecord).toEqual({ status: "confirmed" })
     expect((await readJournal(s.journalPath)).rows.some((row) => row.type === "operation.late_record")).toBe(true)
-  })
+  }, 10_000)
 
   test("stop tracking without a factor stops without reading; resolving a settled operation is refused", async () => {
     const { s, card } = await unknownTrade()
@@ -294,7 +311,7 @@ describe("T-9: what the user can do with an unknown (R-3, D2 default A)", () => 
     await expect(s.book.resolve({ opId: card.opId, action: "resend", factor: RIGHT }, VIEW)).rejects.toMatchObject({
       code: "OPERATION_NOT_UNKNOWN",
     })
-  })
+  }, 10_000)
 })
 
 describe("T-19: a re-send of a held id is a read (A-5), in every state", () => {
