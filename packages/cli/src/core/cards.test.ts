@@ -202,6 +202,16 @@ describe("proposing (K-1, K-2, K-3)", () => {
     await expect(s.trade({ clientTradeId: "held-1", amount: "9" })).rejects.toMatchObject({ code: "OP_ID_CONFLICT" })
   })
 
+  test("a held id is answered before the trading-off gate (A-5, R-4)", async () => {
+    const s = await setup()
+    const card = await s.trade({ clientTradeId: "held-off" })
+    await s.trading.turnOff()
+    expect((await s.trade({ clientTradeId: "held-off" })).cardId).toBe(card.cardId)
+    expect(s.book.holdsRequest({ tool: "candle_trade", params: { clientTradeId: "held-off" } })).toBe(true)
+    expect(s.book.holdsRequest({ tool: "candle_trade", params: { clientTradeId: "other" } })).toBe(false)
+    await expect(s.trade({ clientTradeId: "new-one" })).rejects.toMatchObject({ code: "TRADING_OFF" })
+  })
+
   test("a client may hold five open cards", async () => {
     const s = await setup()
     for (let i = 0; i < 5; i++) await s.trade({ amount: String(i + 1) })

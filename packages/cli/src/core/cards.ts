@@ -189,26 +189,12 @@ export class CardBook {
     if (input.kind !== undefined && input.kind !== kind) {
       throw invalidParams(`${tool} is a ${kind} card, not ${String(input.kind)}.`)
     }
-    // K-3: no harness, and no agent text, can start a transfer.
-    if (kind === "transfer") {
-      await this.refusal(origin, tool, origin.role === "harness" ? "TRANSFER_USER_ONLY" : "TRANSFER_NOT_IN_THIS_BUILD")
-      if (origin.role === "harness")
-        throw refused("TRANSFER_USER_ONLY", "Only you can start a transfer, from the Candle TUI.")
-      throw refused("TRANSFER_NOT_IN_THIS_BUILD", "Transfers from the TUI arrive with the transfer screens.")
-    }
-    // S1 reserves the perps kinds; perps writes arrive with the Hyperliquid view (S6).
-    if (kind === "perps") {
-      await this.refusal(origin, tool, "KIND_RESERVED")
-      throw refused("KIND_RESERVED", "Perps writes from the core arrive with the Hyperliquid view.")
-    }
-    if (!this.deps.trading.tradingOn()) {
-      await this.refusal(origin, tool, "TRADING_OFF")
-      throw refused("TRADING_OFF", "Trading is off. Turn it on in Settings > Trading.")
-    }
     const proposalKey = typeof input.proposalKey === "string" ? input.proposalKey.slice(0, 128) : undefined
     const proposedKey = canonicalJson({ tool, params: proposed })
 
-    // A-5: an id the core already holds is a read when the request is the same, a conflict when not.
+    // A-5, R-4: an id the core already holds is a read when the request is the same, a conflict when
+    // not. Answered before every gate that refuses a NEW card (trading off here, no view in the
+    // server), so a resumed harness always learns the state of what it sent.
     const givenId = typeof proposed[idKey] === "string" ? (proposed[idKey] as string) : undefined
     if (givenId !== undefined) {
       const held = this.byOpId(givenId)
@@ -229,6 +215,22 @@ export class CardBook {
         // Never a 404 for an id the core issued: the card, and its operation once there is one.
         return this.viewWithOperation(held.card)
       }
+    }
+    // K-3: no harness, and no agent text, can start a transfer.
+    if (kind === "transfer") {
+      await this.refusal(origin, tool, origin.role === "harness" ? "TRANSFER_USER_ONLY" : "TRANSFER_NOT_IN_THIS_BUILD")
+      if (origin.role === "harness")
+        throw refused("TRANSFER_USER_ONLY", "Only you can start a transfer, from the Candle TUI.")
+      throw refused("TRANSFER_NOT_IN_THIS_BUILD", "Transfers from the TUI arrive with the transfer screens.")
+    }
+    // S1 reserves the perps kinds; perps writes arrive with the Hyperliquid view (S6).
+    if (kind === "perps") {
+      await this.refusal(origin, tool, "KIND_RESERVED")
+      throw refused("KIND_RESERVED", "Perps writes from the core arrive with the Hyperliquid view.")
+    }
+    if (!this.deps.trading.tradingOn()) {
+      await this.refusal(origin, tool, "TRADING_OFF")
+      throw refused("TRADING_OFF", "Trading is off. Turn it on in Settings > Trading.")
     }
     await this.expireDue()
     for (const entry of this.cards.values()) {
@@ -283,6 +285,17 @@ export class CardBook {
     await this.deps.journal.append({ type: "card.created", card, proposedKey })
     this.publish(card)
     return this.view(card)
+  }
+
+  /** Whether `cards.propose` with these params names an operation id the core already holds. */
+  holdsRequest(input: Record<string, unknown>): boolean {
+    const tool = input.tool
+    const params = input.params
+    if (typeof tool !== "string" || params === null || typeof params !== "object" || Array.isArray(params)) return false
+    const verdict = classifyCall(tool, params as Record<string, unknown>)
+    if (verdict.class !== "card") return false
+    const id = (params as Record<string, unknown>)[verdict.idKey]
+    return typeof id === "string" && this.byOpId(id) !== undefined
   }
 
   list(clientId: string, ownOnly: boolean): Card[] {
@@ -726,6 +739,12 @@ export class CardBook {
 
   private view(card: Card): Card {
     return JSON.parse(JSON.stringify(card)) as Card
+  }
+
+  /** The card an operation id belongs to, with its operation, or undefined for an id the core never issued. */
+  held(opId: string): (Card & { operation?: Operation }) | undefined {
+    const entry = this.byOpId(opId)
+    return entry ? this.viewWithOperation(entry.card) : undefined
   }
 
   private viewWithOperation(card: Card): Card & { operation?: Operation } {

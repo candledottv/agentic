@@ -106,6 +106,27 @@ describe("TradingState", () => {
     expect(s.state.snapshot()).toMatchObject({ tradingOn: false, timedWindow: { open: false } })
   })
 
+  test("A-5: the paper window has the K-6 rules, holds the key for paper only, and never survives a restart", async () => {
+    const s = await setup()
+    await expect(s.state.withPaperCredentials(async () => 1)).rejects.toMatchObject({ code: "TRADING_OFF" })
+    await s.state.turnOn(RIGHT)
+    await expect(s.state.withPaperCredentials(async () => 1)).rejects.toMatchObject({ code: "PAPER_WINDOW_REQUIRED" })
+    await expect(s.state.openPaperWindow("c_view", 5, undefined)).rejects.toMatchObject({ code: "FACTOR_REQUIRED" })
+    await s.state.openPaperWindow("c_view", 60, RIGHT)
+    const paper = s.state.snapshot().paperWindow
+    expect(paper.open && Date.parse(paper.closesAt) - 1_000_000).toBe(MAX_WINDOW_MS)
+    expect(await s.state.withPaperCredentials(async (c) => c.writeKey)).toBe(WRITE_KEY)
+    // A paper window approves no live card.
+    await expect(
+      s.state.withCredentials({ kind: "trade", viewClientId: "c_view", factor: undefined }, async () => 1),
+    ).rejects.toMatchObject({
+      code: "FACTOR_REQUIRED",
+    })
+    expect((await TradingState.open(s.deps)).snapshot().paperWindow).toEqual({ open: false })
+    s.state.viewsAttached(new Set())
+    expect(s.state.snapshot().paperWindow).toEqual({ open: false })
+  })
+
   test("parseFactor keeps only the known shapes", () => {
     expect(parseFactor(undefined)).toBeUndefined()
     expect(parseFactor({ type: "passphrase", value: "x" })).toEqual({ type: "passphrase", value: "x" })

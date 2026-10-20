@@ -7,9 +7,9 @@
  * (the operation id already in its id field). No key outlives the call here, and no harness ever
  * sees one: the harness proposed the card, the core runs it.
  *
- * Outcomes. A transport failure, or a result that cannot be read, is `unknown`, never `failed`: a
- * request that may have reached the API is not proof that nothing moved (`OPERATION_NOT_FOUND_RULE`).
- * Reconciliation (R) reads `unknown` operations by their id.
+ * Outcomes. A transport failure, a 5xx, an unrecognised error, or a result that cannot be read is
+ * `unknown`, never `failed`: a request that may have reached the API is not proof that nothing
+ * moved (`OPERATION_NOT_FOUND_RULE`). Reconciliation (R) reads `unknown` operations by their id.
  */
 import { z } from "zod"
 import type { ExecutionOutcome, Executor } from "./cards"
@@ -29,80 +29,140 @@ const PENDING = new Set([
 const REFUSAL =
   /^(MCP_VALIDATION|KEY_LIMIT_REACHED|SCOPE_MISSING|AGENT_TRADING_DISABLED|TRADING_DISABLED|PROFILE_PAUSED|UNAUTHORIZED|FORBIDDEN|INVALID_[A-Z_]+|IDEMPOTENCY_CONFLICT)$/
 
-export function mcpExecutor(options: { apiUrl: string; fetch?: typeof fetch }): Executor {
-  return {
-    async execute(tool, params, writeKey) {
-      // MCP bodies do not retain HTTP status. Remember 5xx responses within this call so an
-      // ambiguous server failure cannot become a terminal refusal or failure. A failed
-      // best-effort market read after a confirmed launch does not make that launch unknown.
-      let serverErrorStatus: number | undefined
-      const doFetch = options.fetch ?? globalThis.fetch
-      const { registerToolSubset } = await import("../../../mcp/src/tools")
-      // A one-tool registry: `registerToolSubset` hands this the definition and handler it would
-      // give an MCP server, and the core calls the handler itself. Same code as `candle mcp`, with
-      // no protocol hop and no second copy of the MCP SDK in play.
-      let captured: { inputSchema: unknown; handler: (args: unknown, extra: unknown) => Promise<unknown> } | undefined
-      const registry = {
-        registerTool(
-          name: string,
-          definition: { inputSchema: unknown },
-          handler: (args: unknown, extra: unknown) => Promise<unknown>,
-        ) {
-          if (name === tool) captured = { inputSchema: definition.inputSchema, handler }
-          return { enable() {}, disable() {}, remove() {}, update() {} }
-        },
-      }
-      try {
-        registerToolSubset(registry as never, {
-          tools: [tool as never],
-          getConfig: () => ({ apiUrl: options.apiUrl, apiKey: writeKey }),
+/** A tool result exactly as `candle mcp` would hand it to an MCP client. */
+export interface ToolResult {
+  isError?: boolean
+  content?: { type: string; text?: string }[]
+}
+
+/** A tool's definition as `candle mcp` registers it, for the `candle core mcp` face (A-5). */
+export interface ToolDefinition {
+  name: string
+  title?: string
+  description?: string
+  inputSchema: unknown
+  annotations?: unknown
+}
+
+type Captured = ToolDefinition & { handler: (args: unknown, extra: unknown) => Promise<unknown> }
+
+/**
+ * Registers `tools` through `packages/mcp`'s own `registerToolSubset` into a capturing registry:
+ * the definitions and handlers it would give an MCP server, configured with `apiKey`. Every
+ * response the tools receive passes `onResponse` first.
+ */
+async function capture(
+  tools: readonly string[],
+  options: { apiUrl: string; apiKey: string; fetch?: typeof fetch; onResponse?: (response: Response) => void },
+): Promise<Map<string, Captured>> {
+  const { registerToolSubset } = await import("../../../mcp/src/tools")
+  const captured = new Map<string, Captured>()
+  const registry = {
+    registerTool(
+      name: string,
+      definition: { title?: string; description?: string; inputSchema: unknown; annotations?: unknown },
+      handler: (args: unknown, extra: unknown) => Promise<unknown>,
+    ) {
+      captured.set(name, { name, ...definition, handler })
+      return { enable() {}, disable() {}, remove() {}, update() {} }
+    },
+  }
+  const doFetch = options.fetch
+  const observe = options.onResponse
+  registerToolSubset(registry as never, {
+    tools: tools as never,
+    getConfig: () => ({ apiUrl: options.apiUrl, apiKey: options.apiKey }),
+    ...(doFetch || observe
+      ? {
           fetch: async (url: string, init?: RequestInit) => {
-            const response = await doFetch(url, init)
-            if (response.status >= 500) serverErrorStatus = response.status
+            const response = await (doFetch ?? globalThis.fetch)(url, init)
+            observe?.(response)
             return response
           },
-          env: {},
-        })
-      } catch (error) {
-        return {
-          state: "refused",
-          error: { code: "TOOL_UNAVAILABLE", message: error instanceof Error ? error.message : String(error) },
         }
+      : {}),
+    env: {},
+  })
+  return captured
+}
+
+/** The definitions of `tools` as `candle mcp` registers them. No key is involved. */
+export async function toolDefinitions(tools: readonly string[]): Promise<ToolDefinition[]> {
+  const captured = await capture(tools, { apiUrl: "https://api.candle.tv", apiKey: "" })
+  return [...captured.values()].map(({ handler: _handler, ...definition }) => definition)
+}
+
+/** The object schema a definition's input becomes, as the MCP SDK builds it. */
+export function inputObject(inputSchema: unknown): z.ZodTypeAny {
+  return inputSchema instanceof z.ZodType ? inputSchema : z.object(inputSchema as z.ZodRawShape)
+}
+
+export type CallAnswer =
+  | { kind: "result"; result: ToolResult }
+  | { kind: "refused"; code: string; message: string }
+  | { kind: "thrown"; message: string }
+
+export interface McpExecutor extends Executor {
+  /** One call, its result unmapped: what a read through the A-5 face relays. */
+  call(
+    tool: string,
+    params: Record<string, unknown>,
+    key: string,
+    onResponse?: (response: Response) => void,
+  ): Promise<CallAnswer>
+}
+
+export function mcpExecutor(options: { apiUrl: string; fetch?: typeof fetch }): McpExecutor {
+  const call = async (
+    tool: string,
+    params: Record<string, unknown>,
+    key: string,
+    onResponse?: (response: Response) => void,
+  ): Promise<CallAnswer> => {
+    let captured: Captured | undefined
+    try {
+      captured = (await capture([tool], { apiUrl: options.apiUrl, apiKey: key, fetch: options.fetch, onResponse })).get(
+        tool,
+      )
+    } catch (error) {
+      return {
+        kind: "refused",
+        code: "TOOL_UNAVAILABLE",
+        message: error instanceof Error ? error.message : String(error),
       }
-      if (captured === undefined)
-        return {
-          state: "refused",
-          error: { code: "TOOL_UNAVAILABLE", message: `${tool} is not registered by the MCP tools.` },
-        }
-      // The SDK's own step: a raw shape becomes an object schema, and invalid input is refused
-      // before the handler runs, so nothing is sent.
-      const schema =
-        captured.inputSchema instanceof z.ZodType
-          ? captured.inputSchema
-          : z.object(captured.inputSchema as z.ZodRawShape)
-      const parsed = schema.safeParse(params)
-      if (!parsed.success) {
-        return {
-          state: "refused",
-          error: {
-            code: "MCP_VALIDATION",
-            message: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
-          },
-        }
+    }
+    if (captured === undefined) {
+      return { kind: "refused", code: "TOOL_UNAVAILABLE", message: `${tool} is not registered by the MCP tools.` }
+    }
+    // The SDK's own step: invalid input is refused before the handler runs, so nothing is sent.
+    const parsed = inputObject(captured.inputSchema).safeParse(params)
+    if (!parsed.success) {
+      return {
+        kind: "refused",
+        code: "MCP_VALIDATION",
+        message: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
       }
-      try {
-        const result = (await captured.handler(parsed.data, {})) as {
-          isError?: boolean
-          content?: { type: string; text?: string }[]
-        }
-        return outcomeOf(result, serverErrorStatus, tool)
-      } catch (error) {
-        // The request may have left: a throw here is not proof that nothing moved.
-        return {
-          state: "unknown",
-          error: { code: "EXECUTOR_TRANSPORT", message: error instanceof Error ? error.message : String(error) },
-        }
-      }
+    }
+    try {
+      return { kind: "result", result: (await captured.handler(parsed.data, {})) as ToolResult }
+    } catch (error) {
+      return { kind: "thrown", message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+  return {
+    call,
+    async execute(tool, params, writeKey) {
+      // MCP bodies do not retain HTTP status. Remember 5xx responses within this call so an
+      // ambiguous server failure cannot become a terminal refusal or failure.
+      let serverErrorStatus: number | undefined
+      const answer = await call(tool, params, writeKey, (response) => {
+        if (response.status >= 500) serverErrorStatus = response.status
+      })
+      if (answer.kind === "refused") return { state: "refused", error: { code: answer.code, message: answer.message } }
+      // The request may have left: a throw here is not proof that nothing moved.
+      if (answer.kind === "thrown")
+        return { state: "unknown", error: { code: "EXECUTOR_TRANSPORT", message: answer.message } }
+      return outcomeOf(answer.result, serverErrorStatus, tool)
     },
   }
 }

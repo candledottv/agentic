@@ -117,6 +117,10 @@ export const ENVIRONMENT: EnvVar[] = [
     name: "CANDLE_KEYSTORE_PASSPHRASE",
     description: "Refused: no command reads it; vault and tee commands stop while it is set",
   },
+  {
+    name: "CANDLE_CORE_TOKEN",
+    description: "A harness token for candle core mcp, when --token is not given; minted in the Candle TUI",
+  },
 ]
 
 /**
@@ -1281,16 +1285,22 @@ export const HELP: Record<string, Topic> = {
     summary: "Run the local Candle core the Candle TUI attaches to (preview)",
     description:
       "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Views and harnesses attach to it on a local socket; every live money action becomes an approval card you approve in the TUI with your vault factor. Preview.",
-    usage: ["candle core serve [--profile <name>] [--view-token-fd <n>]"],
-    rows: [{ invocation: "serve", description: "Start the core for the profile in play; one per profile" }],
+    usage: ["candle core serve [--profile <name>] [--view-token-fd <n>]", "candle core mcp [--token <harness token>]"],
+    rows: [
+      { invocation: "serve", description: "Start the core for the profile in play; one per profile" },
+      {
+        invocation: "mcp [--token <t>] [--harness <kind>]",
+        description: "A stdio MCP server for any harness, attached to the running core: money writes become cards",
+      },
+    ],
     flags: [
       {
         invocation: "--view-token-fd <n>",
         description: "Write this start's view token to an inherited descriptor (the TUI launcher's)",
       },
     ],
-    examples: ["candle core serve", "candle core serve --profile staging"],
-    env: ["CANDLE_CONFIG_DIR", "CANDLE_PROFILE"],
+    examples: ["candle core serve", "candle core serve --profile staging", "CANDLE_CORE_TOKEN=cht_... candle core mcp"],
+    env: ["CANDLE_CONFIG_DIR", "CANDLE_PROFILE", "CANDLE_CORE_TOKEN"],
   },
   update: {
     group: "Maintain",

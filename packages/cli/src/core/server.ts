@@ -136,6 +136,8 @@ export class CoreServer {
       tokens: TokenBook
       now: () => number
       tradingOn?: () => boolean
+      /** A `cards.propose` naming an id the core holds is a read and needs no view (A-5, R-4). */
+      proposalIsHeld?: (params: Record<string, unknown>) => boolean
     },
   ) {
     this.registerBuiltins()
@@ -376,7 +378,7 @@ export class CoreServer {
       throw new RpcError(RPC_FORBIDDEN_FOR_ROLE, "FORBIDDEN_FOR_ROLE", `A ${client.role} may not call ${method}.`)
     }
     // C-3: with no view attached, nobody could see a card, so none may be created.
-    if (method === "cards.propose" && this.viewCount() === 0) {
+    if (method === "cards.propose" && this.viewCount() === 0 && !this.options.proposalIsHeld?.(params)) {
       await this.options.journal.append({
         type: "call.refused",
         clientId: client.clientId,

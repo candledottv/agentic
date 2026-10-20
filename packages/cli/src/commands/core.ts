@@ -41,6 +41,7 @@ import { refused } from "../core/rpc"
 import { CoreServer, CoreSocketError } from "../core/server"
 import { finishCoreMove, moveProfileToCore, openCoreSlot } from "../core/slot"
 import { TokenBook } from "../core/tokens"
+import { registerToolFace } from "../core/tools-face"
 import { FactorRejectedError, type OpenVault, parseFactor, TradingState } from "../core/trading"
 import type { CommandContext } from "../deps"
 import { candleEnvironment, profileSecretRef } from "../profiles"
@@ -124,7 +125,8 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
     const redactor = new Redactor()
     // C-4: the Read key is loaded at start and used for every read. Registered with the redactor
     // first, so no row this core writes can carry it.
-    redactor.add(await deps.store.get(profileSecretRef(profile, "apiKey")))
+    let readKey = (await deps.store.get(profileSecretRef(profile, "apiKey"))) ?? undefined
+    redactor.add(readKey)
     try {
       journal = await Journal.open({ path: paths.journal, redactor, environment, profile, now: deps.now })
     } catch (error) {
@@ -202,19 +204,29 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
       tokens,
       now: deps.now,
       tradingOn: () => trading.tradingOn(),
+      proposalIsHeld: (params) => cardBook?.holdsRequest(params) ?? false,
     })
     const attached = server
+    const executor = mcpExecutor({ apiUrl: ctx.apiUrl, fetch: deps.fetch })
     const cards = new CardBook({
       journal,
       events: server.events,
       trading,
-      executor: mcpExecutor({ apiUrl: ctx.apiUrl, fetch: deps.fetch }),
+      executor,
       environment,
       profile,
       now: deps.now,
     })
     cardBook = cards
     registerCardHandlers(server, cards, trading)
+    registerToolFace(server, { cards, trading, executor, journal, readKey: () => readKey })
+    // Turning trading on replaces the plain key with the minted Read key (K-11).
+    trading.onChange(() => {
+      void deps.store.get(profileSecretRef(profile, "apiKey")).then((key) => {
+        readKey = key ?? undefined
+        redactor.add(readKey)
+      })
+    })
     trading.onChange(() => attached.events.publish("status", { ...attached.status(), ...trading.snapshot() }))
     server.onClientKilled((client) => void cards.withdrawAllFor(client.clientId))
     server.onViewCount((count) => {
@@ -362,10 +374,17 @@ function registerCardHandlers(server: CoreServer, cards: CardBook, trading: Trad
         if (typeof minutes !== "number") throw refused("INVALID_SETTING", "window takes {minutes} or false.")
         await trading.openWindow(client.clientId, minutes, factor)
       }
+    } else if (params.path === "paperWindow") {
+      if (params.value === false) trading.closePaperWindow()
+      else {
+        const minutes = (params.value as { minutes?: unknown } | null)?.minutes
+        if (typeof minutes !== "number") throw refused("INVALID_SETTING", "paperWindow takes {minutes} or false.")
+        await trading.openPaperWindow(client.clientId, minutes, factor)
+      }
     } else if (params.path === "approvalPolicy") {
       throw refused("POLICY_FIXED", "The approval policy is Ask me (every live action) in this version.")
     } else {
-      throw refused("INVALID_SETTING", "Settable paths: trading, window.")
+      throw refused("INVALID_SETTING", "Settable paths: trading, window, paperWindow.")
     }
     return trading.snapshot()
   })

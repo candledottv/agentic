@@ -77,12 +77,15 @@ export interface TradingSnapshot {
   tradingOn: boolean
   approvalPolicy: "ask"
   timedWindow: { open: false } | { open: true; viewClientId: string; closesAt: string }
+  paperWindow: { open: false } | { open: true; viewClientId: string; closesAt: string }
   approvalsLockedUntil: string | null
 }
 
 export class TradingState {
   private on = false
   private window: Window | undefined
+  /** A-5: the paper window. Same cap and rules as K-6; it never approves a live card. */
+  private paperWindow: Window | undefined
   private failures: number[] = []
   private lockedUntil = 0
   private readonly listeners: (() => void)[] = []
@@ -112,11 +115,15 @@ export class TradingState {
 
   snapshot(): TradingSnapshot {
     const window = this.activeWindow()
+    const paper = this.activePaperWindow()
     return {
       tradingOn: this.on,
       approvalPolicy: "ask",
       timedWindow: window
         ? { open: true, viewClientId: window.viewClientId, closesAt: new Date(window.closesAt).toISOString() }
+        : { open: false },
+      paperWindow: paper
+        ? { open: true, viewClientId: paper.viewClientId, closesAt: new Date(paper.closesAt).toISOString() }
         : { open: false },
       approvalsLockedUntil: this.lockedUntil > this.deps.now() ? new Date(this.lockedUntil).toISOString() : null,
     }
@@ -143,6 +150,7 @@ export class TradingState {
   async turnOff(): Promise<void> {
     this.on = false
     this.closeWindow()
+    this.closePaperWindow()
     await this.persist()
     this.changed()
   }
@@ -179,6 +187,54 @@ export class TradingState {
   /** The view that opened the window detached: the window goes with it (K-6). */
   viewsAttached(viewClientIds: ReadonlySet<string>): void {
     if (this.window !== undefined && !viewClientIds.has(this.window.viewClientId)) this.closeWindow()
+    if (this.paperWindow !== undefined && !viewClientIds.has(this.paperWindow.viewClientId)) this.closePaperWindow()
+  }
+
+  /**
+   * A-5 on a backend whose Write key sits in the vault: paper needs the Write key, so the user opens
+   * a paper window with the factor, once, and paper trades from any client run inside it. Same cap
+   * and rules as K-6. It holds the key for paper only; no live card is ever approved through it.
+   */
+  async openPaperWindow(viewClientId: string, minutes: number, factor: Factor | undefined): Promise<void> {
+    if (!this.on) throw refused("TRADING_OFF", "Turn trading on before opening a paper window.")
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      throw refused("INVALID_WINDOW", "A window lasts more than zero minutes.")
+    }
+    const lengthMs = Math.min(minutes * 60_000, MAX_WINDOW_MS)
+    const vault = await this.verify(factor)
+    let credentials: TradingCredentials
+    try {
+      credentials = await this.deps.openSlot(vault)
+    } finally {
+      vault.close()
+    }
+    this.deps.remember(credentials)
+    this.closePaperWindow()
+    const openedAt = this.deps.now()
+    const timer = setTimeout(() => this.closePaperWindow(), lengthMs)
+    timer.unref?.()
+    this.paperWindow = { viewClientId, openedAt, closesAt: openedAt + lengthMs, credentials, timer }
+    this.changed()
+  }
+
+  closePaperWindow(): void {
+    if (this.paperWindow === undefined) return
+    clearTimeout(this.paperWindow.timer)
+    this.paperWindow = undefined
+    this.changed()
+  }
+
+  /** Runs `use` with the Write key for a paper trade or a dry run: a paper window, or a live one. */
+  async withPaperCredentials<T>(use: (credentials: TradingCredentials) => Promise<T>): Promise<T> {
+    if (!this.on) throw refused("TRADING_OFF", "Paper needs trading on: the build route takes the Write key.")
+    const window = this.activePaperWindow() ?? this.activeWindow()
+    if (window === undefined) {
+      throw refused(
+        "PAPER_WINDOW_REQUIRED",
+        "Open a paper window in the Candle TUI (Settings > Trading); it asks for your factor once.",
+      )
+    }
+    return use(window.credentials)
   }
 
   /**
@@ -209,6 +265,11 @@ export class TradingState {
     }
     this.deps.remember(credentials)
     return use(credentials)
+  }
+
+  private activePaperWindow(): Window | undefined {
+    if (this.paperWindow !== undefined && this.paperWindow.closesAt <= this.deps.now()) this.closePaperWindow()
+    return this.paperWindow
   }
 
   private activeWindow(): Window | undefined {

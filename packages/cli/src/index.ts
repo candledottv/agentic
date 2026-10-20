@@ -29,6 +29,7 @@ import { agentProfile } from "./commands/agent-profile"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { completion, completionBash, completionFish, completionZsh } from "./commands/completion"
 import { coreServe } from "./commands/core"
+import { coreMcp } from "./commands/core-mcp"
 import { doctor } from "./commands/doctor"
 import { externalList, externalNew, externalSweep } from "./commands/external"
 import { feesClaim, feesList } from "./commands/fees"
@@ -363,7 +364,7 @@ const COMMANDS: Record<string, CommandRoute> = {
   mcp: { bare: mcp },
   // BE-1665 (spec S1, C-1): the local core the Candle TUI attaches to. Preview: the attach
   // interface, cards and reconciliation land in the PRs stacked on this one.
-  core: { subcommands: { serve: coreServe } },
+  core: { subcommands: { serve: coreServe, mcp: coreMcp } },
   setup: { bare: setup },
   verify: { bare: verify },
   update: { bare: update },
@@ -721,7 +722,9 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   // Spec B: these key-required reads expose no account data and act as no profile. The config
   // read is their only Candle request; an account lookup would violate that public-read contract.
   const publicPerpsRead = word === "perps" && ["markets", "market", "book", "candles"].includes(sub ?? "")
-  const actsAsIdentity = !publicPerpsRead && (word !== "mcp" || mcpActsAsIdentity(tokens.slice(1)))
+  // BE-1665 (A-5): `core mcp` talks to the local core with a harness token and makes no Candle request.
+  const coreFace = word === "core" && sub === "mcp"
+  const actsAsIdentity = !publicPerpsRead && !coreFace && (word !== "mcp" || mcpActsAsIdentity(tokens.slice(1)))
   if (ROUTED_COMMANDS.has(word) && !NEVER_GUARDED.has(word) && routesToCommand(cmd, sub) && actsAsIdentity) {
     const verdict = await verifyProfileAccount(ctx, config)
     if (!verdict.ok) {
