@@ -3,7 +3,8 @@
  * attaches to the running Candle core as role `harness` and relays every tool call to it.
  *
  * Same tool names, titles, descriptions and schemas as `candle mcp`, taken from the same
- * `packages/mcp` registrations, with one documented superset: `candle_get_operation`'s `kind` also
+ * `packages/mcp` registrations, plus the core's own reads (`candle_get_signals`, S5 G-2), and with
+ * one documented superset: `candle_get_operation`'s `kind` also
  * accepts the core's own kinds (swap, stake, claim, perps, profile). The core decides everything
  * else: a money write answers `APPROVAL_REQUIRED` with its card and operation id instead of
  * executing, paper passes through, transfers are not offered.
@@ -14,7 +15,9 @@
  */
 import { z } from "zod"
 import { parseArgs } from "../args"
+import { isCoreLocalTool } from "../core/classify"
 import { CoreClientError, type CoreConnection, connectCore } from "../core/client"
+import { coreLocalDefinitions } from "../core/core-local-tools"
 import { inputObject, type ToolDefinition, type ToolResult, toolDefinitions } from "../core/executor"
 import { corePaths } from "../core/paths"
 import { CORE_OPERATION_KINDS } from "../core/tools-face"
@@ -51,7 +54,11 @@ export interface CoreMcpServer {
 export async function buildCoreMcpServer(connection: CoreConnection): Promise<CoreMcpServer> {
   const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js")
   const offered = (await connection.request<{ tools: { name: string }[] }>("tools.list")).tools.map((tool) => tool.name)
-  const definitions = await toolDefinitions(offered)
+  // S5 G-2: the core's own reads (candle_get_signals) carry the core's definitions, not packages/mcp's.
+  const definitions = [
+    ...(await toolDefinitions(offered.filter((name) => !isCoreLocalTool(name)))),
+    ...coreLocalDefinitions().filter((definition) => offered.includes(definition.name)),
+  ]
   const server = new McpServer({ name: "candle-core", version: CLI_VERSION }, { instructions: CORE_MCP_INSTRUCTIONS })
   for (const definition of definitions) {
     const inputSchema = definition.name === "candle_get_operation" ? operationShape(definition) : definition.inputSchema

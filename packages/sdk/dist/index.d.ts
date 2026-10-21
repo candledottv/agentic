@@ -11,6 +11,7 @@ export { CANDLE_PERPS_WITHDRAW_PINS, type PerpsWithdrawAuthorization, type Perps
 export { KeychainSecretStore } from "./keychain-secret-store";
 export { PERPS_HISTORY_DEFAULT_LIMIT, PERPS_HISTORY_MAX_LIMIT, type PerpsFillRow, type PerpsFillsPage, type PerpsFundingPage, type PerpsFundingRow, PerpsHistoryError, type PerpsHistoryOptions, type PerpsHistoryWarning, readPerpsHistoryPage, } from "./perps-history";
 export { type AgentPlansResult, formatPlanBps, PLAN_CAPABILITY_LABELS, PLAN_CAPABILITY_NOTE, type PlanCapabilities, type PlanLimits, type PlanName, type PlanPrice, type PlanTable, type PlanTableEntry, planLabel, planPromotionLine, planTableMarkdown, planTableRows, } from "./plans";
+export { createQuantKeyClient, newClientTurnId, QUANT_AGENT_PATH, QUANT_CALL_TIMEOUT_MS, QUANT_DEFAULT_MAX_TEXT_CHARS, QUANT_POLL_TIMEOUT_MS, type QuantAnswer, type QuantEventsPage, type QuantHistoryItem, type QuantHistoryPage, type QuantKeyClient, type QuantKeyClientOptions, type QuantKeyStatus, type QuantRefusal, type QuantTurnEvent, type QuantTurnStarted, quantCodePoints, quantRefusalCode, } from "./quant";
 export type { SecretStore } from "./secret-store";
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store";
 export type * from "./staking";

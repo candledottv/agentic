@@ -84,6 +84,28 @@ export interface TransferDisplay {
   describeSend: string
 }
 
+/** Who suggested what the user is acting on (S5 K-2). Quant is the only agent that can. */
+export interface SuggestedBy {
+  agent: "quant"
+  turnId: string
+}
+
+/** A view's `suggestedBy`, checked. A harness never sets it: it proposes as itself. */
+export function parseSuggestedBy(value: unknown, origin: Pick<CardOrigin, "role">): SuggestedBy | undefined {
+  if (value === undefined || value === null) return undefined
+  if (origin.role !== "view") throw invalidParams("suggestedBy is set by a view only.")
+  const given = value as { agent?: unknown; turnId?: unknown }
+  if (
+    typeof given !== "object" ||
+    given.agent !== "quant" ||
+    typeof given.turnId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,64}$/.test(given.turnId) ||
+    Object.keys(given).some((key) => key !== "agent" && key !== "turnId")
+  )
+    throw invalidParams('suggestedBy is {agent: "quant", turnId}.')
+  return { agent: "quant", turnId: given.turnId }
+}
+
 export interface CardOrigin {
   clientId: string
   role: "view" | "harness"
@@ -112,6 +134,11 @@ export interface Card {
     checks?: Record<string, unknown>
     environment: CoreEnvironment
     transfer?: TransferDisplay
+    /**
+     * S5 K-2 (BE-1737): the user reached this token from a Quant answer. Display only: never in
+     * `params`, never in `cardHash`, and only a view may set it.
+     */
+    suggestedBy?: SuggestedBy
   }
   policy: "ask"
   needsFactor: boolean
@@ -312,6 +339,7 @@ export class CardBook {
       throw invalidParams(`${tool} is a ${kind} card, not ${String(input.kind)}.`)
     }
     const proposalKey = typeof input.proposalKey === "string" ? input.proposalKey.slice(0, 128) : undefined
+    const suggestedBy = parseSuggestedBy(input.suggestedBy, origin)
     const proposedKey = canonicalJson({ tool, params: proposed })
 
     // A-5, R-4: an id the core already holds is a read when the request is the same, a conflict when
@@ -394,7 +422,11 @@ export class CardBook {
       }),
       origin: { ...origin, clientName: terminalText(origin.clientName) },
       ...(reason ? { reason } : {}),
-      display: displayFor(kind, tool, sent, this.deps.environment, formatKeyLimit(this.deps.trading.lastKeyLimit())),
+      display: {
+        ...displayFor(kind, tool, sent, this.deps.environment, formatKeyLimit(this.deps.trading.lastKeyLimit())),
+        // K-2: display only. `cardHash` above is computed without it, so the hash is the same card's.
+        ...(suggestedBy ? { suggestedBy } : {}),
+      },
       policy: "ask",
       needsFactor: FACTOR_KINDS.has(kind),
       createdAt: new Date(now).toISOString(),

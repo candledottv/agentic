@@ -5694,6 +5694,188 @@ function planTableMarkdown(table) {
   return [line(headers), line(headers.map(() => "---")), ...rows.map(line)].join(`
 `);
 }
+// src/quant.ts
+var QUANT_AGENT_PATH = "/api/v1/agent/quant";
+var QUANT_CALL_TIMEOUT_MS = 5000;
+var QUANT_POLL_TIMEOUT_MS = 35000;
+var QUANT_DEFAULT_MAX_TEXT_CHARS = 4000;
+function quantCodePoints(text) {
+  let n = 0;
+  for (const _ of text)
+    n++;
+  return n;
+}
+function newClientTurnId() {
+  return crypto.randomUUID();
+}
+function quantRefusalCode(body) {
+  const record = asRecord(body);
+  if (typeof record?.code === "string")
+    return record.code;
+  const inner = asRecord(record?.error);
+  return typeof inner?.code === "string" ? inner.code : undefined;
+}
+function asRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
+function refusalOf(status, body) {
+  const record = asRecord(body) ?? {};
+  const relayCode = typeof record.code === "string" ? record.code : undefined;
+  const code = quantRefusalCode(body) ?? `HTTP_${status}`;
+  const refusal = { code, status, shape: relayCode !== undefined ? "relay" : "envelope" };
+  if (typeof record.retryable === "boolean")
+    refusal.retryable = record.retryable;
+  if (typeof record.resetsAt === "string" || typeof record.resetsAt === "number")
+    refusal.resetsAt = record.resetsAt;
+  if (typeof record.turnId === "string")
+    refusal.turnId = record.turnId;
+  if (typeof record.limit === "number")
+    refusal.limit = record.limit;
+  return refusal;
+}
+function parseStatus(body) {
+  const b = asRecord(body);
+  if (typeof b?.enabled !== "boolean")
+    return;
+  const status = { enabled: b.enabled };
+  if (typeof b.allowed === "boolean")
+    status.allowed = b.allowed;
+  if (typeof b.tier === "string" || b.tier === null)
+    status.tier = b.tier;
+  if (typeof b.marketAccess === "boolean")
+    status.marketAccess = b.marketAccess;
+  if (typeof b.linked === "boolean")
+    status.linked = b.linked;
+  if (typeof b.remaining === "number" || b.remaining === null)
+    status.remaining = b.remaining;
+  if (typeof b.maxTextChars === "number" || b.maxTextChars === null)
+    status.maxTextChars = b.maxTextChars;
+  if (typeof b.activeTurnId === "string" || b.activeTurnId === null)
+    status.activeTurnId = b.activeTurnId;
+  return status;
+}
+function parseTurn(body) {
+  const b = asRecord(body);
+  if (typeof b?.turnId !== "string" || b.turnId.length === 0)
+    return;
+  return { turnId: b.turnId, ...typeof b.cursor === "number" ? { cursor: b.cursor } : {} };
+}
+function parseEvents(body) {
+  const b = asRecord(body);
+  if (!b || !Array.isArray(b.events) || typeof b.next !== "number" || typeof b.status !== "string")
+    return;
+  const events = [];
+  for (const raw of b.events) {
+    const e = asRecord(raw);
+    if (typeof e?.seq !== "number" || typeof e.kind !== "string")
+      continue;
+    events.push({
+      seq: e.seq,
+      kind: e.kind,
+      data: asRecord(e.data) ?? {},
+      ...typeof e.createdAt === "string" ? { createdAt: e.createdAt } : {}
+    });
+  }
+  return { events, next: b.next, status: b.status };
+}
+function parseHistory(body) {
+  const b = asRecord(body);
+  if (!b || !Array.isArray(b.items))
+    return;
+  const items = [];
+  for (const raw of b.items) {
+    const item = asRecord(raw);
+    if (typeof item?.id !== "string" || typeof item.text !== "string")
+      continue;
+    if (item.role !== "user" && item.role !== "assistant")
+      continue;
+    items.push({
+      id: item.id,
+      role: item.role,
+      text: item.text,
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : ""
+    });
+  }
+  return { items, next: typeof b.next === "string" ? b.next : null };
+}
+function createQuantKeyClient(options) {
+  const base = new URL(options.apiUrl);
+  const local = base.hostname === "localhost" || base.hostname === "127.0.0.1" || base.hostname === "[::1]";
+  if (base.protocol !== "https:" && !(base.protocol === "http:" && local)) {
+    throw new Error("Quant needs an https API URL: the key would otherwise travel in clear.");
+  }
+  const root = base.toString().replace(/\/+$/, "");
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const callMs = options.callTimeoutMs ?? QUANT_CALL_TIMEOUT_MS;
+  const pollMs = options.pollTimeoutMs ?? QUANT_POLL_TIMEOUT_MS;
+  async function call(method, path, parse, opts) {
+    const controller = new AbortController;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, opts.timeoutMs);
+    const onAbort = () => controller.abort();
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const response = await doFetch(`${root}${QUANT_AGENT_PATH}${path}`, {
+        method,
+        redirect: "error",
+        signal: controller.signal,
+        headers: {
+          "x-api-key": options.apiKey,
+          accept: "application/json",
+          ...opts.body !== undefined ? { "content-type": "application/json" } : {}
+        },
+        ...opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}
+      });
+      let body;
+      try {
+        body = await response.json();
+      } catch {
+        body = undefined;
+      }
+      if (!response.ok)
+        return { ok: false, refusal: refusalOf(response.status, body) };
+      const parsed = parse(body);
+      if (parsed === undefined) {
+        return { ok: false, refusal: { code: "BAD_RESPONSE", status: response.status, shape: "transport" } };
+      }
+      return { ok: true, status: response.status, body: parsed };
+    } catch {
+      return {
+        ok: false,
+        refusal: { code: timedOut ? "TIMEOUT" : "NETWORK_ERROR", status: 0, shape: "transport", retryable: true }
+      };
+    } finally {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+    }
+  }
+  const turnPath = (turnId) => `/turns/${encodeURIComponent(turnId)}`;
+  return {
+    status: () => call("GET", "/status", parseStatus, { timeoutMs: callMs }),
+    sendTurn: (input) => call("POST", "/turns", parseTurn, {
+      body: { text: input.text, clientTurnId: input.clientTurnId },
+      timeoutMs: callMs
+    }),
+    events: (turnId, after, opts) => call("GET", `${turnPath(turnId)}/events?after=${Math.max(0, Math.floor(after))}`, parseEvents, {
+      timeoutMs: pollMs,
+      ...opts?.signal ? { signal: opts.signal } : {}
+    }),
+    cancel: (turnId) => call("POST", `${turnPath(turnId)}/cancel`, (body) => asRecord(body) ?? {}, { timeoutMs: callMs }),
+    history: (input = {}) => {
+      const query = new URLSearchParams;
+      if (input.before !== undefined)
+        query.set("before", input.before);
+      if (input.limit !== undefined)
+        query.set("limit", String(input.limit));
+      const encoded = query.toString();
+      const suffix = encoded ? `?${encoded}` : "";
+      return call("GET", `/history${suffix}`, parseHistory, { timeoutMs: callMs });
+    }
+  };
+}
 // src/file-lock.ts
 var STALE_MS = 30000;
 var RETRY_MS = 25;
@@ -5863,6 +6045,8 @@ export {
   readPerpsRisk,
   readPerpsHistoryPage,
   readHyperliquidMarkets,
+  quantRefusalCode,
+  quantCodePoints,
   planTableRows,
   planTableMarkdown,
   planPromotionLine,
@@ -5877,6 +6061,7 @@ export {
   parseWithdrawAmount,
   parseSendAssetAmount,
   operationIds,
+  newClientTurnId,
   isSolanaRpcErrorData,
   hyperliquidWalletSnapshot,
   hyperliquidRiskReport,
@@ -5888,10 +6073,15 @@ export {
   formatPlanBps,
   encryptWalletKeyForImport,
   effectivePerpsRisk,
+  createQuantKeyClient,
   TradeLegOutcomeError,
   TradeLandedUnconfirmedError,
   TradeLandedFeeLegError,
   SelfLaunchOutcomeError,
+  QUANT_POLL_TIMEOUT_MS,
+  QUANT_DEFAULT_MAX_TEXT_CHARS,
+  QUANT_CALL_TIMEOUT_MS,
+  QUANT_AGENT_PATH,
   PerpsWorkflowError,
   PerpsMarketReader,
   PerpsMarketError,

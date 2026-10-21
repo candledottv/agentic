@@ -17,6 +17,7 @@
 
 import type { CliConfig, ProfileConfig } from "./config"
 import { isCoreOwned, ProfileCoreOwnedError } from "./core/ownership"
+import type { OpenTape } from "./core/signals"
 import { profileSecretRef } from "./profiles"
 import type { VerifyResult } from "./release-verify"
 import type { SecretStore } from "./secret-store"
@@ -220,6 +221,11 @@ export interface Deps {
    * absent, watch runs until `--once-level-change` or the process is killed.
    */
   onTerminate?: (handler: () => void) => () => void
+  /**
+   * BE-1737 (spec S5 G-1): opens the Candle core's one socket to the public signal tape. Optional:
+   * absent, the core uses the runtime's WebSocket; a test passes a fake so no socket is opened.
+   */
+  openTape?: OpenTape
 }
 
 /** A `token` line of the sealed EVM record (D1): a token a landed leg on `wallet` traded. */

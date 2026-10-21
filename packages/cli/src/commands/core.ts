@@ -32,22 +32,30 @@
  * passphrase, and a security key through `candle-fido2` with the PIN from the view), and the
  * Withdraw key: minted with the slot's device token, sealed in the slot, and returned only on the
  * transfer path (`openTransferSlot`); every other slot open drops it (`purpose: "trading"`).
+ *
+ * S5 (BE-1737) wires Quant (`quant.*`, view only, over the Read key alone), the one socket to the
+ * public signal tape with its `signals` topic and the core-local `candle_get_signals`, and the
+ * `quant` agent profile with its Off switch (`settings.set {path: "quant"}`).
  */
 import { closeSync, writeSync } from "node:fs"
 import { join } from "node:path"
 import { scopesForPreset } from "../agent-key-access"
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
+import { AgentProfiles } from "../core/agent-profiles"
 import { type Card, CardBook } from "../core/cards"
+import { coreLocalTools } from "../core/core-local-tools"
 import { mcpExecutor } from "../core/executor"
 import { CORE_HELPER_REASON, factorFailureKind, factorOptions } from "../core/factors"
 import { acquireInstanceLock, CoreAlreadyRunningError } from "../core/instance-lock"
 import { Journal, JournalIdentityError } from "../core/journal"
 import { registerLaunchHandlers } from "../core/launch"
 import { corePaths, ensureCoreDir } from "../core/paths"
+import { QuantService, registerQuantHandlers } from "../core/quant"
 import { Redactor } from "../core/redact"
 import { refused } from "../core/rpc"
 import { CoreServer, CoreSocketError } from "../core/server"
+import { SignalService, tapeUrl, watchlistFrom, webSocketOpener } from "../core/signals"
 import { finishCoreMove, moveProfileToCore, openCoreSlot, resealCoreSlot } from "../core/slot"
 import { TokenBook } from "../core/tokens"
 import { registerToolFace } from "../core/tools-face"
@@ -68,6 +76,7 @@ import { DestinationHistory, registerTransferHandlers, type ServerDestination } 
 import type { CommandContext } from "../deps"
 import { createEvmRpc, DEFAULT_HOOD_RPC_URL, EVM_RPC_URL_ENV, resolveEvmRpcUrl } from "../evm-lite"
 import { apiKeyPrefix, candleEnvironment, profileSecretRef } from "../profiles"
+import { createQuantKeyClient } from "../quant"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { resolveSolanaEndpoint, solanaClientFor } from "../solana-endpoint"
 import { VaultError } from "../vault/errors"
@@ -158,6 +167,8 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
   let journal: Journal | undefined
   let server: CoreServer | undefined
   let cardBook: CardBook | undefined
+  let quant: QuantService | undefined
+  let signals: SignalService | undefined
   let stopReason = "start_failed"
   try {
     const redactor = new Redactor()
@@ -399,15 +410,10 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
       transfers: chain,
     })
     cardBook = cards
-    registerCardHandlers(server, cards, trading, journal)
-    registerToolFace(server, { cards, trading, executor, journal, readKey: () => readKey })
-    registerLaunchHandlers(server, {
-      cards,
-      trading,
-      journal,
-      readImage: (path) => readLocalImage(path),
-      uploadImage: (writeKey, image) => uploadImage(ctx, writeKey, image),
-    })
+    const agentProfiles = await AgentProfiles.open(join(paths.dir, "agents.json"))
+    if (agentProfiles.refusedWith !== undefined)
+      await journal.append({ type: "agents.refused", code: agentProfiles.refusedWith })
+    registerCardHandlers(server, cards, trading, journal, agentProfiles)
     const read = async (path: string) => {
       const key = readKey
       if (key === undefined) return undefined
@@ -421,6 +427,47 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
       })
       return result.ok ? (result.body as Record<string, unknown>) : undefined
     }
+    // S5 G-1: one socket to the public tape, opened on demand; the watchlist through the Read key.
+    const tape = new SignalService({
+      open: deps.openTape ?? webSocketOpener(),
+      url: tapeUrl(ctx.apiUrl),
+      events: server.events,
+      readWatchlist: async () => watchlistFrom(await read("/api/v1/agent/tracked-wallets")),
+    })
+    signals = tape
+    server.events.provideSnapshot("signals", () => tape.snapshotAll())
+    server.events.provideSnapshot("signals:mine", () => tape.snapshotMine())
+    const events = server.events
+    events.onSubscriptionsChanged(() =>
+      tape.setSubscribers(events.subscriberCount("signals"), events.subscriberCount("signals:mine")),
+    )
+    // S5 Q-1: Quant over the Read key alone. No path here reaches the Write key, the slot or the vault.
+    quant = new QuantService({
+      client: () =>
+        readKey === undefined
+          ? undefined
+          : createQuantKeyClient({ apiUrl: ctx.apiUrl, apiKey: readKey, fetch: deps.fetch }),
+      redact: (text) => redactor.text(text),
+      events: server.events,
+      now: deps.now,
+      quantOn: () => agentProfiles.quantOn(),
+    })
+    registerQuantHandlers(server, quant)
+    registerToolFace(server, {
+      cards,
+      trading,
+      executor,
+      journal,
+      readKey: () => readKey,
+      coreLocal: coreLocalTools(tape),
+    })
+    registerLaunchHandlers(server, {
+      cards,
+      trading,
+      journal,
+      readImage: (path) => readLocalImage(path),
+      uploadImage: (writeKey, image) => uploadImage(ctx, writeKey, image),
+    })
     registerTransferHandlers(server, {
       cards,
       trading,
@@ -486,6 +533,8 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
         return 1
       }
     }
+    // Q-4 and T-20: a turn already active (a web tab's, or one from before a restart) is followed.
+    void quant.start()
     const started = await journal.append({
       type: "core.started",
       readKey: readKey !== undefined,
@@ -534,6 +583,8 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
     })
     return 0
   } finally {
+    quant?.stop()
+    signals?.stop()
     cardBook?.stop()
     await server?.close()
     if (journal) {
@@ -550,6 +601,7 @@ export function registerCardHandlers(
   cards: CardBook,
   trading: TradingState,
   journal: Journal,
+  agents?: AgentProfiles,
 ): void {
   const own = (access: string) => access === "own"
   server.handle("cards.propose", async (params, { client }) =>
@@ -594,7 +646,14 @@ export function registerCardHandlers(
     cards.resolve({ opId: params.opId, action: params.action, factor: parseFactor(params.factor) }, client.clientId),
   )
   // S4 F-1: the factor picker's list rides with the settings, usable first.
-  server.handle("settings.get", async () => ({ ...trading.snapshot(), factors: await trading.factors() }))
+  // S5 P-2: the agent profiles (Quant's Off switch) ride with the settings too.
+  const agentSettings = () =>
+    agents ? { agents: agents.list(), ...(agents.refusedWith ? { agentsRefused: agents.refusedWith } : {}) } : {}
+  server.handle("settings.get", async () => ({
+    ...trading.snapshot(),
+    factors: await trading.factors(),
+    ...agentSettings(),
+  }))
   // S-9 and K-6. The approval policy is "Ask me" and not settable in S1 (K-9).
   server.handle("settings.set", async (params, { client }) => {
     const factor = parseFactor(params.factor)
@@ -646,12 +705,18 @@ export function registerCardHandlers(
           expiresAt: info.expiresAt,
         })
       }
+    } else if (params.path === "quant") {
+      // S5 P-2: the Agents tab's Off switch. Needs no factor: it only hides Quant.
+      if (typeof params.value !== "boolean" || agents === undefined)
+        throw refused("INVALID_SETTING", "quant takes true or false.")
+      await agents.setQuantOn(params.value)
+      await journal.append({ type: "agents.quant", clientId: client.clientId, on: params.value })
     } else if (params.path === "approvalPolicy") {
       throw refused("POLICY_FIXED", "The approval policy is Ask me (every live action) in this version.")
     } else {
-      throw refused("INVALID_SETTING", "Settable paths: trading, window, paperWindow, withdraw.")
+      throw refused("INVALID_SETTING", "Settable paths: trading, window, paperWindow, withdraw, quant.")
     }
-    return { ...trading.snapshot(), factors: await trading.factors() }
+    return { ...trading.snapshot(), factors: await trading.factors(), ...agentSettings() }
   })
 }
 

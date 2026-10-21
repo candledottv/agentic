@@ -495,3 +495,36 @@ describe("card states (K-8)", () => {
     expect(seen.other?.length).toBe(1) // snapshot only
   })
 })
+
+describe("S5 K-2 (BE-1737): a card reached from a Quant answer", () => {
+  test("T-10: suggestedBy is shown and never hashed; the hash equals the same card made without Quant", async () => {
+    const s = await setup()
+    const params = { clientTradeId: "trade-from-quant", amount: "0.25" }
+    const suggested = await s.trade(params, VIEW, { suggestedBy: { agent: "quant", turnId: "turn_1" } })
+    expect(suggested.display.suggestedBy).toEqual({ agent: "quant", turnId: "turn_1" })
+    expect(suggested.params).not.toHaveProperty("suggestedBy")
+    const plain = hashCard({
+      kind: "trade",
+      tool: "candle_trade",
+      params: suggested.params,
+      opId: suggested.opId,
+      environment: "staging",
+      profile: "staging",
+    })
+    expect(suggested.cardHash).toBe(plain)
+    // The same request from a second view, without Quant, binds the same hash.
+    const t = await setup()
+    const without = await t.trade(params, VIEW)
+    expect(without.cardHash).toBe(suggested.cardHash)
+    expect(without.display.suggestedBy).toBeUndefined()
+  })
+
+  test("a harness cannot set suggestedBy, and a view can name only Quant and a turn id", async () => {
+    const s = await setup()
+    await expect(s.trade({}, HARNESS, { suggestedBy: { agent: "quant", turnId: "t" } })).rejects.toMatchObject({
+      code: "INVALID_PARAMS",
+    })
+    for (const bad of [{ agent: "pi", turnId: "t" }, { agent: "quant" }, { agent: "quant", turnId: "t", amount: "2" }])
+      await expect(s.trade({}, VIEW, { suggestedBy: bad })).rejects.toMatchObject({ code: "INVALID_PARAMS" })
+  })
+})

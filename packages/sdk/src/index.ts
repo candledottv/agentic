@@ -302,6 +302,27 @@ export {
   planTableMarkdown,
   planTableRows,
 } from "./plans"
+// BE-1737 (S5 Q-2): Quant over an agent key.
+export {
+  createQuantKeyClient,
+  newClientTurnId,
+  QUANT_AGENT_PATH,
+  QUANT_CALL_TIMEOUT_MS,
+  QUANT_DEFAULT_MAX_TEXT_CHARS,
+  QUANT_POLL_TIMEOUT_MS,
+  type QuantAnswer,
+  type QuantEventsPage,
+  type QuantHistoryItem,
+  type QuantHistoryPage,
+  type QuantKeyClient,
+  type QuantKeyClientOptions,
+  type QuantKeyStatus,
+  type QuantRefusal,
+  type QuantTurnEvent,
+  type QuantTurnStarted,
+  quantCodePoints,
+  quantRefusalCode,
+} from "./quant"
 export type { SecretStore } from "./secret-store"
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store"
 export type * from "./staking"

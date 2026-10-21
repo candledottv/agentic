@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { TOOL_NAMES } from "../../../mcp/src/tools"
 import { connectCore } from "../core/client"
+import { coreLocalDefinitions } from "../core/core-local-tools"
 import { toolDefinitions } from "../core/executor"
 import { readJournal } from "../core/journal"
 import { corePaths } from "../core/paths"
@@ -195,10 +196,25 @@ describe("the core MCP face (A-5)", () => {
     const h = await harnessClient(core)
     const listed = (await h.client.listTools()).tools
     const names = listed.map((tool) => tool.name).sort()
-    expect(names).toEqual(TOOL_NAMES.filter((name) => name !== "candle_transfer" && name !== "candle_sweep").sort())
-    const expected = new Map((await toolDefinitions(names)).map((d) => [d.name, d]))
+    // S5 G-2: plus the core's own read, candle_get_signals.
+    expect(names).toEqual(
+      [
+        ...TOOL_NAMES.filter((name) => name !== "candle_transfer" && name !== "candle_sweep"),
+        "candle_get_signals",
+      ].sort(),
+    )
+    const expected = new Map(
+      [
+        ...(await toolDefinitions(names.filter((name) => name !== "candle_get_signals"))),
+        ...coreLocalDefinitions(),
+      ].map((d) => [d.name, d]),
+    )
     for (const tool of listed)
       expect(`${tool.name}: ${tool.description}`).toBe(`${tool.name}: ${expected.get(tool.name)?.description}`)
+    // S5 Q-I10, T-2: the signals tool has no `mine` (and no `kind`) in its schema.
+    const signals = listed.find((tool) => tool.name === "candle_get_signals")
+    const properties = Object.keys((signals?.inputSchema as { properties?: Record<string, unknown> }).properties ?? {})
+    expect(properties.sort()).toEqual(["chain", "limit", "mint", "pattern"])
     const getOperation = listed.find((tool) => tool.name === "candle_get_operation")
     expect(
       (getOperation?.inputSchema as unknown as { properties: { kind: { enum: string[] } } }).properties.kind.enum,

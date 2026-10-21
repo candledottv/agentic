@@ -5,7 +5,8 @@
  */
 import { describe, expect, test } from "bun:test"
 import { TOOL_NAMES } from "../../../mcp/src/tools"
-import { classifyCall, TOOL_CLASSES } from "./classify"
+import { CORE_LOCAL_TOOLS, classificationDrift, classifyCall, TOOL_CLASSES } from "./classify"
+import { offeredTools } from "./tools-face"
 
 describe("T-1: the card table matches TOOL_NAMES", () => {
   test("both directions", () => {
@@ -13,6 +14,28 @@ describe("T-1: the card table matches TOOL_NAMES", () => {
     expect([...TOOL_NAMES].filter((name) => !Object.hasOwn(TOOL_CLASSES, name))).toEqual([])
     expect(classified.filter((name) => !(TOOL_NAMES as readonly string[]).includes(name))).toEqual([])
     expect(classified).toEqual([...TOOL_NAMES].sort())
+  })
+
+  test("S5 T-17: every offered name is in exactly one table, and no core-local name collides", () => {
+    expect(classificationDrift(TOOL_NAMES)).toEqual([])
+    const offered = offeredTools().map((tool) => tool.name)
+    for (const name of offered) {
+      const tables = [Object.hasOwn(TOOL_CLASSES, name), Object.hasOwn(CORE_LOCAL_TOOLS, name)].filter(Boolean)
+      expect(`${name}: ${tables.length}`).toBe(`${name}: 1`)
+    }
+    expect(offered).toContain("candle_get_signals")
+    expect(classifyCall("candle_get_signals", {})).toEqual({ class: "read" })
+  })
+
+  test("S5 T-17: the drift rule fails on an unclassified, an invented or a colliding name", () => {
+    const names = [...TOOL_NAMES, "candle_new_tool"]
+    expect(classificationDrift(names)).toEqual(["unclassified: candle_new_tool"])
+    expect(classificationDrift(TOOL_NAMES, { ...TOOL_CLASSES, candle_made_up: { class: "read" } })).toEqual([
+      "not an MCP tool: candle_made_up",
+    ])
+    expect(
+      classificationDrift(TOOL_NAMES, TOOL_CLASSES, { ...CORE_LOCAL_TOOLS, candle_get_market: { class: "read" } }),
+    ).toEqual(["core-local name collides with an MCP tool: candle_get_market", "in both tables: candle_get_market"])
   })
 
   test("an unknown tool is unclassified, never a read; prototype names are unknown too", () => {

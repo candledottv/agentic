@@ -17,7 +17,7 @@
 
 import { canonicalJson } from "../vault/canonical-json"
 import type { Card, CardBook, CardOrigin, Operation } from "./cards"
-import { classifyCall, TOOL_CLASSES } from "./classify"
+import { CORE_LOCAL_TOOLS, classifyCall, isCoreLocalTool, TOOL_CLASSES } from "./classify"
 import type { CallAnswer, McpExecutor, ToolResult } from "./executor"
 import type { Journal } from "./journal"
 import { invalidParams, RpcError } from "./rpc"
@@ -27,9 +27,9 @@ import type { TradingState } from "./trading"
 /** The kinds `candle_get_operation` accepts on this face: `candle mcp`'s two, plus every core kind. */
 export const CORE_OPERATION_KINDS = ["trade", "launch", "swap", "stake", "claim", "perps", "profile"] as const
 
-/** What the face offers: every classified tool but the transfers (K-3). */
+/** What the face offers: every classified tool but the transfers (K-3), and the core's own reads (S5 G-2). */
 export function offeredTools(): { name: string; class: "read" | "card"; kind?: string; idKey?: string }[] {
-  return Object.entries(TOOL_CLASSES)
+  return [...Object.entries(TOOL_CLASSES), ...Object.entries(CORE_LOCAL_TOOLS)]
     .filter(([, cls]) => !(cls.class === "card" && cls.kind === "transfer"))
     .map(([name, cls]) =>
       cls.class === "card"
@@ -132,6 +132,8 @@ export function registerToolFace(
     executor: McpExecutor
     journal: Journal
     readKey: () => string | undefined
+    /** S5 G-2: the tools the core answers itself (`CORE_LOCAL_TOOLS`), never the executor. */
+    coreLocal?: (name: string, args: Record<string, unknown>) => Promise<ToolResult>
   },
 ): void {
   server.handle("tools.list", async () => ({ tools: offeredTools() }))
@@ -165,6 +167,12 @@ export function registerToolFace(
         code: "TRANSFER_USER_ONLY",
       })
       return refusal("TRANSFER_USER_ONLY", "Only you can start a transfer, from the Candle TUI.")
+    }
+    // S5 G-2: a core-local read is answered here, before the executor, and needs no key.
+    if (isCoreLocalTool(name)) {
+      if (deps.coreLocal === undefined)
+        return refusal("METHOD_NOT_AVAILABLE", `${name} is not in this build of the core.`)
+      return deps.coreLocal(name, callArgs)
     }
     if (name === "candle_get_operation") return getOperation(callArgs, deps)
     if (verdict.class === "read") {

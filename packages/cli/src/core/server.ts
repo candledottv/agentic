@@ -81,6 +81,12 @@ export const METHOD_ROLES: Readonly<Record<string, { view: Access; harness: Acce
   "transfer.sources": { view: "yes", harness: "no" },
   "transfer.destinations": { view: "yes", harness: "no" },
   "transfer.prepare": { view: "yes", harness: "no" },
+  // S5 (BE-1737), Q-3 and Q-I2: Quant is a view-only agent. A harness reaches no `quant.*` method
+  // (D-1 default A), so it cannot spend the user's Quant messages or feed Quant's text to a model.
+  "quant.status": { view: "yes", harness: "no" },
+  "quant.send": { view: "yes", harness: "no" },
+  "quant.cancel": { view: "yes", harness: "no" },
+  "quant.history": { view: "yes", harness: "no" },
 }
 
 /** Longest socket path every supported platform accepts (macOS `sun_path` is 104 bytes with the NUL). */
@@ -489,11 +495,28 @@ export class CoreServer {
       return { layout }
     })
     this.handle("subscribe", async (params, call) => {
-      const topics = params.topics
-      if (!Array.isArray(topics) || topics.length === 0 || !topics.every((topic) => typeof topic === "string")) {
+      const asked = params.topics
+      if (!Array.isArray(asked) || asked.length === 0 || !asked.every((topic) => typeof topic === "string")) {
         throw invalidParams("topics must be a non-empty array of strings.")
       }
-      for (const topic of topics as string[]) {
+      // S5 G-2, Q-I10: `scope: "mine"` narrows `signals` to the watchlist, for a view only. A harness
+      // asking for it is refused as invalid input, like a `mine` argument to candle_get_signals.
+      const scope = params.scope
+      if (scope !== undefined && scope !== "all" && scope !== "mine")
+        throw refused("VALIDATION_FAILED", 'scope is "all" or "mine".')
+      if (scope === "mine" && call.client.role !== "view") {
+        await this.options.journal.append({
+          type: "call.refused",
+          clientId: call.client.clientId,
+          method: "subscribe",
+          code: "VALIDATION_FAILED",
+        })
+        throw refused("VALIDATION_FAILED", 'A harness reads the "All" signals only; scope "mine" is for a view.')
+      }
+      const topics = (asked as string[]).map((topic) =>
+        topic === "signals" && scope === "mine" ? "signals:mine" : topic,
+      )
+      for (const topic of topics) {
         const verdict = topicAllowed(topic, call.client.role)
         if (!verdict.known) throw invalidParams(`Unknown topic: ${terminalText(topic).slice(0, 80)}`)
         if (!verdict.allowed) {
@@ -520,8 +543,8 @@ export class CoreServer {
           if (typeof seq === "number" && Number.isInteger(seq) && seq >= 0) since[topic] = seq
       }
       // The response goes out before the replay or snapshot it triggers.
-      queueMicrotask(() => this.events.subscribe(this.subscriberFor(call.client), topics as string[], since))
-      return { topics: [...new Set([...this.events.topicsOf(call.client.clientId), ...(topics as string[])])] }
+      queueMicrotask(() => this.events.subscribe(this.subscriberFor(call.client), topics, since))
+      return { topics: [...new Set([...this.events.topicsOf(call.client.clientId), ...topics])] }
     })
     this.handle("unsubscribe", async (params, call) => {
       const topics = params.topics

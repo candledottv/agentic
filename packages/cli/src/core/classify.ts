@@ -97,6 +97,44 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_sweep: card("transfer"),
 }
 
+/**
+ * Tools the core answers itself, which are not MCP tools in `packages/mcp` (BE-1737, spec S5 G-2).
+ * Each is classified here, beside {@link TOOL_CLASSES}; `classify.drift.test.ts` keeps every
+ * offered name in exactly one of the two tables, and no name here may collide with a `TOOL_NAMES`
+ * entry. `tools.call` routes these to the core before the MCP executor, so a call never reaches
+ * the API through it or the executor at all.
+ */
+export const CORE_LOCAL_TOOLS: Readonly<Record<string, ToolClass>> = {
+  // The core's signal cache (the public tape): "All" rows only, no `mine` (Q-I10).
+  candle_get_signals: READ,
+}
+
+/** Whether `tool` is one the core answers itself. */
+export function isCoreLocalTool(tool: string): boolean {
+  return Object.hasOwn(CORE_LOCAL_TOOLS, tool)
+}
+
+/**
+ * The drift rule (T-1, extended by S5 T-17): what is wrong with the two tables against
+ * `toolNames`. Empty when every MCP tool is classified, nothing classified is invented, and no
+ * core-local name collides with an MCP one.
+ */
+export function classificationDrift(
+  toolNames: readonly string[],
+  toolClasses: Readonly<Record<string, ToolClass>> = TOOL_CLASSES,
+  coreLocal: Readonly<Record<string, ToolClass>> = CORE_LOCAL_TOOLS,
+): string[] {
+  const names = new Set(toolNames)
+  const problems: string[] = []
+  for (const name of toolNames) if (!Object.hasOwn(toolClasses, name)) problems.push(`unclassified: ${name}`)
+  for (const name of Object.keys(toolClasses)) if (!names.has(name)) problems.push(`not an MCP tool: ${name}`)
+  for (const name of Object.keys(coreLocal)) {
+    if (names.has(name)) problems.push(`core-local name collides with an MCP tool: ${name}`)
+    if (Object.hasOwn(toolClasses, name)) problems.push(`in both tables: ${name}`)
+  }
+  return problems
+}
+
 /** Kinds whose approval needs the vault factor (K-1's Factor column). */
 export const FACTOR_KINDS: ReadonlySet<CardKind> = new Set([
   "trade",
@@ -126,7 +164,11 @@ export type CallClass =
 
 /** How one call of `tool` with `args` is treated. */
 export function classifyCall(tool: string, args: Record<string, unknown>): CallClass {
-  const known = Object.hasOwn(TOOL_CLASSES, tool) ? TOOL_CLASSES[tool] : undefined
+  const known = Object.hasOwn(TOOL_CLASSES, tool)
+    ? TOOL_CLASSES[tool]
+    : Object.hasOwn(CORE_LOCAL_TOOLS, tool)
+      ? CORE_LOCAL_TOOLS[tool]
+      : undefined
   if (known === undefined) return { class: "unclassified" }
   if (known.class === "read") return { class: "read" }
   if (tool === "candle_trade" && args.paper === true) return { class: "paper" }

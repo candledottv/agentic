@@ -8,6 +8,9 @@
  * | `status`, `portfolio`      | both                                            |
  * | `feed:<bucket>`            | both                                            |
  * | `token:<chain>:<address>`  | both                                            |
+ * | `quant`                    | view (S5 Q-3)                                   |
+ * | `signals`                  | both: the "All" rows (S5 G-2)                   |
+ * | `signals:mine`             | view: a `scope: "mine"` subscribe (S5 Q-I10)    |
  *
  * On reconnect a client subscribes again with `sinceSeq` per topic. Card and operation events
  * still held are replayed; otherwise, and for every market topic, the topic's snapshot is sent.
@@ -40,6 +43,9 @@ export function topicAllowed(topic: string, role: Role): { known: boolean; allow
   if (topic === "status" || topic === "portfolio") return { known: true, allowed: true }
   if (/^feed:[a-z]{1,32}$/.test(topic)) return { known: true, allowed: true }
   if (/^token:[a-z0-9]{1,16}:[A-Za-z0-9]{20,64}$/.test(topic)) return { known: true, allowed: true }
+  // S5 (BE-1737): Quant is view only (Q-I2); a harness reads the "All" tape, never the watchlist (Q-I10).
+  if (topic === "quant" || topic === "signals:mine") return { known: true, allowed: role === "view" }
+  if (topic === "signals") return { known: true, allowed: true }
   return { known: false, allowed: false }
 }
 
@@ -48,6 +54,23 @@ export class EventHub {
   private readonly buffers = new Map<string, CoreEvent[]>()
   private readonly subscriptions = new Map<string, { subscriber: Subscriber; topics: Set<string> }>()
   private readonly snapshots = new Map<string, SnapshotProvider>()
+  private readonly changeListeners: (() => void)[] = []
+
+  /** Called after any subscription is added or removed, for a source that opens on demand (S5 G-1). */
+  onSubscriptionsChanged(listener: () => void): void {
+    this.changeListeners.push(listener)
+  }
+
+  /** How many clients are subscribed to `topic` now. */
+  subscriberCount(topic: string): number {
+    let n = 0
+    for (const { topics } of this.subscriptions.values()) if (topics.has(topic)) n++
+    return n
+  }
+
+  private changed(): void {
+    for (const listener of this.changeListeners) listener()
+  }
 
   /** Registers the snapshot for a topic, or for every topic with a prefix (`feed:`). */
   provideSnapshot(topicOrPrefix: string, provider: SnapshotProvider): void {
@@ -95,6 +118,7 @@ export class EventHub {
         params: { topic, seq: this.seqs.get(topic) ?? 0, snapshot: true, data: provider ? provider(subscriber) : null },
       })
     }
+    this.changed()
   }
 
   unsubscribe(clientId: string, topics?: string[]): void {
@@ -102,6 +126,7 @@ export class EventHub {
     if (entry === undefined) return
     if (topics === undefined) this.subscriptions.delete(clientId)
     else for (const topic of topics) entry.topics.delete(topic)
+    this.changed()
   }
 
   topicsOf(clientId: string): string[] {
