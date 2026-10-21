@@ -229,6 +229,7 @@ describe("candle pnl", () => {
     const h = harness({ withProfiles: true, env: { CANDLE_PROFILE: "scalper" } })
     expect(await run(["pnl"], h.deps)).toBe(0)
     expect(h.calls).toEqual([{ path: "/api/v1/agent/books", key: KEY_B }])
+    expect(h.stdout.text).not.toContain("Hyperliquid")
   })
 
   test("a key without the Read scope is told both ways forward", async () => {
@@ -555,6 +556,24 @@ describe("Hyperliquid profile PnL", () => {
     truncated: true,
     byWallet: [{ address: "0x1111111111111111111111111111111111111111", startTime: 100 }],
   }
+  test("perps and pnl help direct readers to the profile section and live unrealized views", async () => {
+    for (const topic of ["perps", "pnl"]) {
+      const h = harness()
+      expect(await run([topic, "--help"], h.deps)).toBe(0)
+      // Help wraps paragraphs to terminal width; compare words across those line breaks.
+      const help = h.stdout.text.replace(/\s+/g, " ")
+      expect(help).toContain("--profile <name>")
+      expect(help).toContain("Hyperliquid")
+      expect(help).toContain("funding")
+      expect(help).toContain("fees")
+      expect(help).toContain("Account-wide candle pnl and its By agent table cover ledger trades only")
+      expect(help).toContain("a key with only perps activity has no row there")
+      expect(help).toContain("candle perps positions")
+      expect(help).toContain("candle portfolio")
+      expect(help).not.toContain("The account's P&L (candle pnl) carries a Hyperliquid section")
+      expect(h.calls).toEqual([])
+    }
+  })
   test("separate heading, signed funding and history caveat; spot totals unchanged", async () => {
     const h = harness({ withProfiles: true, profile: Response.json({ ...PROFILE_PNL, hyperliquid: section }) })
     expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
@@ -564,6 +583,7 @@ describe("Hyperliquid profile PnL", () => {
     expect(h.stdout.text).toContain("includes builder fees")
     expect(h.stdout.text).toContain("previous bindings excluded")
     expect(h.stdout.text).toContain("This is a partial figure")
+    expect(h.stdout.text).toContain("Unrealized perps are excluded")
     expect(h.stdout.text).toMatch(/Total\s+\$9.00/)
   })
   test("unavailable section exposes no false zero", async () => {
