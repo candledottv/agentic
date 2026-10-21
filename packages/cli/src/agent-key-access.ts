@@ -184,6 +184,8 @@ const CAPABILITY_SCOPES = {
   report: "activity:write",
 } as const satisfies Record<keyof AgentKeyCapabilities, string>
 
+const NAMED_CAPABILITY_SCOPES: ReadonlySet<string> = new Set(Object.values(CAPABILITY_SCOPES))
+
 /**
  * Maps a key's raw scopes to the capabilities the portal shows in plain English: `account:read`
  * grants account-wide reading, `launch:write` grants launching, `swap:write` grants trading,
@@ -222,6 +224,12 @@ export const AGENT_KEY_CAPABILITY_CHIPS = [
   ["Report", "report"],
 ] as const satisfies ReadonlyArray<readonly [string, keyof AgentKeyCapabilities]>
 
+/** The chip words a list of scopes grants, in chip order, regardless of preset membership. */
+export function agentKeyCapabilityWords(scopes: readonly string[]): string[] {
+  const caps = agentKeyCapabilities(scopes)
+  return AGENT_KEY_CAPABILITY_CHIPS.filter(([, cap]) => caps[cap]).map(([word]) => word)
+}
+
 /** What a key IS, for a one-cell summary: the preset word, else the chip words it holds. */
 export type AgentKeyAccess =
   | { kind: "preset"; preset: AgentKeyPreset; label: (typeof AGENT_KEY_PRESET_LABELS)[AgentKeyPreset] }
@@ -234,12 +242,10 @@ export type AgentKeyAccess =
 export function agentKeyAccess(scopes: readonly string[]): AgentKeyAccess {
   const preset = presetForScopes(scopes)
   if (preset) return { kind: "preset", preset, label: AGENT_KEY_PRESET_LABELS[preset] }
-  const caps = agentKeyCapabilities(scopes)
-  const named: readonly string[] = Object.values(CAPABILITY_SCOPES)
   return {
     kind: "custom",
-    can: AGENT_KEY_CAPABILITY_CHIPS.filter(([, cap]) => caps[cap]).map(([word]) => word),
-    unnamed: sortAgentKeyScopes(scopes.filter((scope) => !named.includes(scope))),
+    can: agentKeyCapabilityWords(scopes),
+    unnamed: sortAgentKeyScopes(scopes.filter((scope) => !NAMED_CAPABILITY_SCOPES.has(scope))),
   }
 }
 

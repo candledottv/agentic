@@ -369,16 +369,18 @@ function agentKeyCapabilities(scopes) {
     report: scopes.includes(CAPABILITY_SCOPES.report)
   };
 }
+function agentKeyCapabilityWords(scopes) {
+  const caps = agentKeyCapabilities(scopes);
+  return AGENT_KEY_CAPABILITY_CHIPS.filter(([, cap]) => caps[cap]).map(([word]) => word);
+}
 function agentKeyAccess(scopes) {
   const preset = presetForScopes(scopes);
   if (preset)
     return { kind: "preset", preset, label: AGENT_KEY_PRESET_LABELS[preset] };
-  const caps = agentKeyCapabilities(scopes);
-  const named = Object.values(CAPABILITY_SCOPES);
   return {
     kind: "custom",
-    can: AGENT_KEY_CAPABILITY_CHIPS.filter(([, cap]) => caps[cap]).map(([word]) => word),
-    unnamed: sortAgentKeyScopes(scopes.filter((scope) => !named.includes(scope)))
+    can: agentKeyCapabilityWords(scopes),
+    unnamed: sortAgentKeyScopes(scopes.filter((scope) => !NAMED_CAPABILITY_SCOPES.has(scope)))
   };
 }
 function agentKeyAccessWords(access) {
@@ -387,7 +389,7 @@ function agentKeyAccessWords(access) {
 function sortAgentKeyScopes(scopes) {
   return [...scopes].sort();
 }
-var READ_SCOPES, READWRITE_SCOPES, READWRITETRANSFER_SCOPES, TRADEPERPS_SCOPES, AGENT_KEY_PRESET_LABELS, CAPABILITY_SCOPES, AGENT_KEY_CAPABILITY_CHIPS;
+var READ_SCOPES, READWRITE_SCOPES, READWRITETRANSFER_SCOPES, TRADEPERPS_SCOPES, AGENT_KEY_PRESET_LABELS, CAPABILITY_SCOPES, NAMED_CAPABILITY_SCOPES, AGENT_KEY_CAPABILITY_CHIPS;
 var init_agent_key_access = __esm(() => {
   READ_SCOPES = ["account:read"];
   READWRITE_SCOPES = [
@@ -422,6 +424,7 @@ var init_agent_key_access = __esm(() => {
     linkedTransfer: "transfer:bound",
     report: "activity:write"
   };
+  NAMED_CAPABILITY_SCOPES = new Set(Object.values(CAPABILITY_SCOPES));
   AGENT_KEY_CAPABILITY_CHIPS = [
     ["Read", "read"],
     ["Launch", "launch"],
