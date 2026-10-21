@@ -357,7 +357,7 @@ export const HELP: Record<string, Topic> = {
   perps: {
     group: "Trade",
     summary:
-      "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, modify, margin, tpsl, schedule-cancel, flatten, reduce-only, orders, positions, fills, funding, leverage, account, risk, watch, thresholds",
+      "Hyperliquid perpetuals: markets, market, book, candles; deposit, setup, withdraw, open, close, cancel, modify, margin, tpsl, schedule-cancel, flatten, reduce-only, orders, positions, fills, funding, leverage, account, risk, watch, thresholds",
     description:
       "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). A key gets an EVM TEE wallet by promoting one from the vault: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>, and candle tee signer new --key <prefix> on the machine that trades it; candle tee new is Solana only. Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). candle pnl --profile <name> shows the profile key's Hyperliquid realized P&L, funding and fees, separately from spot and LP totals. Unrealized perps P&L is shown by candle perps positions and candle portfolio. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch. modify, margin, tpsl, schedule-cancel, flatten and close --pct are built, checked against this machine's own read of Hyperliquid, signed and submitted like every other write; tpsl and flatten are plans of several such steps, confirmed once (or --yes), and a plan that does not finish says so and exits 1 (3 when a signed step's submit did not answer). A key that is reduce-only (reduce-only on) can close, cancel, protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure; only the owner's device token turns it off, and it cancels no resting order and revokes no signed action.",
     usage: ["candle perps <subcommand> [flags]"],
@@ -376,14 +376,14 @@ export const HELP: Record<string, Topic> = {
         description: "OHLCV candles (default 1h, 100); oldest first, directly from Hyperliquid",
       },
       {
-        invocation: "setup [--wallet <tee>]",
-        description:
-          "Approve Candle's builder fee once; shows the account's mode and balance. Refused, with nothing signed, unless Hyperliquid shows the account in standard mode",
-      },
-      {
         invocation: "deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee>] [--to <evm tee>] | deposit status <id>",
         description:
           "Move funds onto the Hyperliquid account through Relay, from the key's Solana or Hood TEE wallet (swap:write); only configured raw caps and USD limits apply (unset means unlimited, zero still binds); --no-submit is a dry run that holds no wallet and uses no limit; status reads one",
+      },
+      {
+        invocation: "setup [--wallet <tee>]",
+        description:
+          "After the first deposit has landed, approve Candle's builder fee once; shows the account's mode and balance. Refused, with nothing signed, while the account has never received a deposit or unless Hyperliquid shows it in standard mode",
       },
       {
         invocation: "open <coin> <long|short> <size> [--price <px>]",
@@ -558,8 +558,8 @@ export const HELP: Record<string, Topic> = {
       },
     ],
     examples: [
-      "candle perps setup",
       "candle perps deposit 25 USDC",
+      "candle perps setup",
       "candle perps open BTC long 0.01",
       "candle perps open ETH short 0.5 --price 3200 --tp 2900 --sl 3400",
       "candle perps close BTC",
