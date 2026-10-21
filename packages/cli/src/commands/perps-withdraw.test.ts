@@ -28,7 +28,8 @@ const pem = generateKeyPairSync("ec", { namedCurve: "P-256" })
 const ACCOUNT = "0x14791697260e4c9a71f18484c9f997b308e59325"
 const SOLANA = "7ZL9FvkpCMgdvzfoMSYZSuCXLCYN25dfgtDXej1BBJaB"
 const DEPOSITORY = "0x865eb9baa5492cef598adf7afb1038654fcb7081"
-const REQUEST_ID = `0x${"02e9".repeat(16)}`
+const REQUEST_ID = "0x17925562135cd8ba1400a0cdebae8f67615b296b0c7a5cdda91d6286f21bc02c"
+const ORDER_ID = "0x507c00b2168f0742b5203c302704d4f37196a22906284a5944ed4dd381a3c52a"
 const NONCE = 1_770_329_064_777
 const SIGNATURE = `0x${"a".repeat(64)}${"b".repeat(64)}1b`
 const ZERO = "0x0000000000000000000000000000000000000000"
@@ -51,6 +52,7 @@ function build(message: Record<string, unknown> = {}, extra: Record<string, unkn
     netUsdc: "4.9",
     minimumOutUsdc: "4.89",
     relayRequestId: REQUEST_ID,
+    relayOrderId: ORDER_ID,
     nonce: NONCE,
     expiresAt: Date.now() + 10 * 60_000,
     typedData: {
@@ -61,7 +63,7 @@ function build(message: Record<string, unknown> = {}, extra: Record<string, unkn
         chainId: "hyperliquid",
         wallet: ACCOUNT,
         depositor: ACCOUNT,
-        id: REQUEST_ID,
+        id: ORDER_ID,
         nonce: NONCE,
         ...message,
       },
@@ -109,14 +111,14 @@ interface Options {
 async function fixture(opts: Options = {}) {
   const made = await makeVault()
   closeVault(made.vault)
-  const calls: { host: string; path: string; body: Record<string, unknown> | undefined }[] = []
+  const calls: { host: string; path: string; search: string; body: Record<string, unknown> | undefined }[] = []
   const events: string[] = []
   const stdout = createCapture()
   const stderr = createCapture()
   const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
-    calls.push({ host: url.host, path: url.pathname, body })
+    calls.push({ host: url.host, path: url.pathname, search: url.search, body })
     const ok = (value: unknown) => Response.json(value)
     if (url.host === "api.relay.link")
       return ok({ requests: [{ id: REQUEST_ID, recipient: opts.recipient ?? SOLANA }] })
@@ -199,6 +201,11 @@ async function fixture(opts: Options = {}) {
   return { deps, calls, events, stdout, stderr }
 }
 
+function withoutOrderId() {
+  const { relayOrderId: _omit, ...quoted } = build({ id: REQUEST_ID })
+  return quoted
+}
+
 const WITHDRAW = ["perps", "withdraw", "5", "--to", "solana", "--id", "w-1"]
 const relayCalls = (calls: { path: string }[]) => calls.filter((c) => c.path.endsWith("/sign"))
 
@@ -279,6 +286,9 @@ describe("the flow", () => {
       nonce: NONCE,
     })
     expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ status: "settled", signature: SIGNATURE })
+    const relay = f.calls.find((c) => c.host === "api.relay.link")
+    expect(relay?.search).toBe(`?id=${REQUEST_ID}`)
+    expect(ORDER_ID).not.toBe(REQUEST_ID)
   })
 
   test("open positions are warned about before the unlock", async () => {
@@ -311,6 +321,21 @@ describe("R13: a tampered build is refused locally, with no relay call", () => {
     const f = await fixture({ recipient: "Attacker1111111111111111111111111111111111" })
     expect(await run([...WITHDRAW, "--json"], f.deps)).toBe(1)
     expect(relayCalls(f.calls)).toEqual([])
+  })
+
+  test.each([
+    ["the request id", build({ id: REQUEST_ID })],
+    ["a missing order id", withoutOrderId()],
+    ["a malformed order id", build({ id: REQUEST_ID }, { relayOrderId: "0xabc" })],
+  ])("a NonceMapping naming %s is refused with no relay call", async (_label, tampered) => {
+    const f = await fixture({ build: tampered })
+    expect(await run([...WITHDRAW, "--json"], f.deps)).toBe(1)
+    expect(f.calls.some((c) => c.host === "api.relay.link")).toBe(false)
+    expect(relayCalls(f.calls)).toEqual([])
+    expect(JSON.parse(f.stdout.text.trim().split("\n").at(-1) ?? "")).toMatchObject({
+      ok: false,
+      code: "PERPS_BUILD_REFUSED",
+    })
   })
 
   test.each([

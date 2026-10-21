@@ -2133,6 +2133,8 @@ export interface PerpsWithdrawStatus {
   netUsdc: string
   minimumOutUsdc: string
   relayRequestId: string
+  /** Relay `protocol.v2.orderId`, when the quote stored one. Status reads still use `relayRequestId`. */
+  relayOrderId?: string
   nonce: number
   failureReason: string | null
   relay?: { status: string | null; txHashes: string[] } | null
@@ -5874,8 +5876,9 @@ export class CandleClient {
    * through Relay (spec 2026-10-17, route A). MOVES REAL FUNDS. Needs `perps:withdraw`.
    *
    * Every signature is checked first, and a mismatch throws with nothing signed: the NonceMapping
-   * names this key's account and Relay's request, the build lands on one of `ownDestinations`, and
-   * Relay's own record of the request names that same recipient; then the SendAsset carries the
+   * names this key's account and the build's Relay order id (`relayOrderId`, never the step
+   * `relayRequestId`), the build lands on one of `ownDestinations`, and Relay's own record of the
+   * request (the tracking id) names that same recipient; then the SendAsset carries the
    * mapping's nonce, the exact amount asked for, and the pinned token, dex and depository. The
    * client posts the SendAsset to Hyperliquid itself and reports the answer. There is no
    * confirmation gate here: the CLI has one (`candle perps withdraw`).

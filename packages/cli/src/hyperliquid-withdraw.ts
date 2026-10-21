@@ -7,10 +7,11 @@
  * sign, and refuses with no relay call when anything differs from what it asked for:
  *
  *   - Before the NonceMapping: the domain and type list are Relay's, `wallet` and `depositor` are
- *     this key's own EVM TEE address, `id` is the build's Relay request, and the destination the
- *     build names is one of this key's own wallets on the chain asked for. Then Relay's own record
- *     of the request (`GET /requests/v3?id=`) must name that same recipient: the recipient is in
- *     neither signed message, so this is the only place the client can see it (threat model).
+ *     this key's own EVM TEE address, `id` is the build's Relay order id (not the step request
+ *     id), and the destination the build names is one of this key's own wallets on the chain asked
+ *     for. Then Relay's own record of the request (`GET /requests/v3?id=` the step request id)
+ *     must name that same recipient: the recipient is in neither signed message, so this is the
+ *     only place the client can see it (threat model).
  *   - Before the SendAsset: the nonce is the mapping's, the amount parses exactly to the micros
  *     asked for (no float, no string compare), `fromSubAccount` and `sourceDex` are empty, `token`
  *     and `destinationDex` are the pinned values, `destination` is on the pinned depository
@@ -162,7 +163,13 @@ export interface PerpsWithdrawBuild {
   feesUsdc: string
   netUsdc: string
   minimumOutUsdc: string
+  /** Step tracking id. Status reads and `GET /requests/v3` use this. It is not the NonceMapping id. */
   relayRequestId: string
+  /**
+   * Relay `protocol.v2.orderId`. The NonceMapping `id` must equal this bytes32. Absent on a build
+   * the server could not check; signing refuses, with no fallback to `relayRequestId`.
+   */
+  relayOrderId?: string
   nonce: number
   expiresAt: number
   typedData?: { domain: unknown; types: unknown; primary_type: string; message: Record<string, unknown> }
@@ -215,8 +222,10 @@ export function verifyWithdrawMapping(
   if (message.chainId !== "hyperliquid") return refuse("the NonceMapping names another chain")
   if (!sameEvm(message.wallet, expect.account)) return refuse("the NonceMapping wallet is not this key's account")
   if (!sameEvm(message.depositor, expect.account)) return refuse("the NonceMapping depositor is not this key's account")
-  if (typeof message.id !== "string" || !BYTES32_RE.test(message.id) || message.id !== build.relayRequestId)
-    return refuse("the NonceMapping names another Relay request")
+  if (typeof build.relayOrderId !== "string" || !BYTES32_RE.test(build.relayOrderId))
+    return refuse("the build has no Relay order id")
+  if (typeof message.id !== "string" || !BYTES32_RE.test(message.id) || message.id !== build.relayOrderId)
+    return refuse("the NonceMapping names another Relay order")
   if (message.nonce !== build.nonce || !Number.isSafeInteger(build.nonce) || build.nonce <= 0)
     return refuse("the NonceMapping nonce is not the build's")
   return { ok: true }

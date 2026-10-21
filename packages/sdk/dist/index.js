@@ -3184,8 +3184,10 @@ function verifyWithdrawMapping(build, expect) {
     return refuse("the NonceMapping wallet is not this key's account");
   if (!sameEvm(message.depositor, expect.account))
     return refuse("the NonceMapping depositor is not this key's account");
-  if (typeof message.id !== "string" || !BYTES32_RE.test(message.id) || message.id !== build.relayRequestId)
-    return refuse("the NonceMapping names another Relay request");
+  if (typeof build.relayOrderId !== "string" || !BYTES32_RE.test(build.relayOrderId))
+    return refuse("the build has no Relay order id");
+  if (typeof message.id !== "string" || !BYTES32_RE.test(message.id) || message.id !== build.relayOrderId)
+    return refuse("the NonceMapping names another Relay order");
   if (message.nonce !== build.nonce || !Number.isSafeInteger(build.nonce) || build.nonce <= 0)
     return refuse("the NonceMapping nonce is not the build's");
   return { ok: true };

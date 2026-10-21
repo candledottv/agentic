@@ -25,7 +25,9 @@ import { generateSignerKeypair } from "./wallet-import"
 const ACCOUNT = "0x3333333333333333333333333333333333333333"
 const SOLANA = "8pM1nYvQ6HqS8VqLFPzWx5W2sTQeXKZbLqBTdrBGTsGb"
 const DEPOSITORY = "0x865eb9baa5492cef598adf7afb1038654fcb7081"
-const REQUEST_ID = `0x${"02e9".repeat(16)}`
+/** Recorded live `/quote/v2` pair, 2026-10-21: the step request id and `protocol.v2.orderId`. */
+const REQUEST_ID = "0x17925562135cd8ba1400a0cdebae8f67615b296b0c7a5cdda91d6286f21bc02c"
+const ORDER_ID = "0x507c00b2168f0742b5203c302704d4f37196a22906284a5944ed4dd381a3c52a"
 const NONCE = 1_770_329_064_777
 const ZERO = "0x0000000000000000000000000000000000000000"
 const PINS: PerpsWithdrawPins = {
@@ -46,6 +48,7 @@ function build(overrides: Partial<PerpsWithdrawBuild> = {}, message: Record<stri
     netUsdc: "4.9",
     minimumOutUsdc: "4.89",
     relayRequestId: REQUEST_ID,
+    relayOrderId: ORDER_ID,
     nonce: NONCE,
     expiresAt: Date.now() + 60_000,
     typedData: {
@@ -56,7 +59,7 @@ function build(overrides: Partial<PerpsWithdrawBuild> = {}, message: Record<stri
         chainId: "hyperliquid",
         wallet: ACCOUNT,
         depositor: ACCOUNT,
-        id: REQUEST_ID,
+        id: ORDER_ID,
         nonce: NONCE,
         ...message,
       },
@@ -106,8 +109,30 @@ const sendExpect = { mappingNonce: NONCE, amountMicros: 5_000_000n, pins: PINS }
 const reasonOf = (check: { ok: boolean; reason?: string }) => (check.ok ? "ok" : check.reason)
 
 describe("R13: the NonceMapping check", () => {
-  test("an honest build passes", () => {
-    expect(reasonOf(verifyWithdrawMapping(build(), mappingExpect))).toBe("ok")
+  test("an honest build passes when the order id differs from the request id", () => {
+    const honest = build()
+    expect(honest.relayOrderId).not.toBe(honest.relayRequestId)
+    expect(honest.typedData?.message.id).toBe(ORDER_ID)
+    expect(reasonOf(verifyWithdrawMapping(honest, mappingExpect))).toBe("ok")
+  })
+
+  test("a NonceMapping that names the request id is refused", () => {
+    expect(reasonOf(verifyWithdrawMapping(build({}, { id: REQUEST_ID }), mappingExpect))).toContain("Relay order")
+  })
+
+  test("a missing or malformed order id is refused even when the message names the request id", () => {
+    const missing = build({}, { id: REQUEST_ID })
+    delete missing.relayOrderId
+    expect(reasonOf(verifyWithdrawMapping(missing, mappingExpect))).toBe("the build has no Relay order id")
+    expect(reasonOf(verifyWithdrawMapping(build({ relayOrderId: "0xabc" }, { id: REQUEST_ID }), mappingExpect))).toBe(
+      "the build has no Relay order id",
+    )
+    expect(
+      reasonOf(verifyWithdrawMapping(build({ relayOrderId: `${ORDER_ID}ff` }, { id: REQUEST_ID }), mappingExpect)),
+    ).toBe("the build has no Relay order id")
+    const malformedMessage = build()
+    if (malformedMessage.typedData) malformedMessage.typedData.message.id = "not-bytes32"
+    expect(reasonOf(verifyWithdrawMapping(malformedMessage, mappingExpect))).toContain("Relay order")
   })
 
   test.each([
