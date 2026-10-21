@@ -136,6 +136,8 @@ interface Options {
   evmRows?: number
   /** SOL the simulated Solana deposit moves out of the wallet (SEC-003). */
   spentLamports?: number
+  /** An API that predates previews: `preview: true` is ignored and the deposit is built for real. */
+  legacyApi?: boolean
 }
 
 async function fixture(opts: Options = {}) {
@@ -247,7 +249,28 @@ async function fixture(opts: Options = {}) {
         fee: { bps: 0, feeRaw: "0" },
         statusChecks: ["/intents/status?requestId=0xr1"],
         requestId: "0xr1",
-        ...(hood ? sequenced(0) : { expiresAt: 10_000, transactionsBase64: [opts.transaction ?? solanaDeposit()] }),
+        ...(body.preview === true && !opts.legacyApi
+          ? {
+              status: "preview",
+              preview: true,
+              signed: false,
+              submitted: false,
+              reserved: false,
+              depositId: undefined,
+              ...(hood
+                ? {
+                    plannedLegs: planned.map((p) => ({
+                      kind: p.kind,
+                      to: p.leg.to,
+                      data: p.leg.data,
+                      value: p.leg.value,
+                    })),
+                  }
+                : { transactionsBase64: [opts.transaction ?? solanaDeposit()] }),
+            }
+          : hood
+            ? sequenced(0)
+            : { expiresAt: 10_000, transactionsBase64: [opts.transaction ?? solanaDeposit()] }),
         ...opts.build,
       })
     }
@@ -368,11 +391,53 @@ describe("candle perps deposit from Hood", () => {
     expect(paths(f.calls).some((p) => p.endsWith("/sign"))).toBe(false)
   })
 
-  test("--no-submit builds and checks only", async () => {
+  // BE-1747 (finding 4): a dry run used to build for real, holding the wallet and the USD window.
+  test("--no-submit asks for a preview, checks every planned leg, and signs nothing", async () => {
     const f = await fixture()
     expect(await run(["perps", "deposit", "25", "USDG", "--no-submit", "--json"], f.deps)).toBe(0)
-    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ signed: false, submitted: false })
+    expect(f.calls.find((c) => c.path === "/api/v1/agent/perps/deposit")?.body).toMatchObject({ preview: true })
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({
+      status: "preview",
+      preview: true,
+      signed: false,
+      submitted: false,
+    })
+    expect(f.stderr.text).toContain("Dry run: nothing was signed, no wallet is held")
+    expect(f.stderr.text).toContain("Legs, signed one at a time: approval, bridgeDeposit")
+    expect(paths(f.calls).some((p) => p.endsWith("/sign") || p.endsWith("/deposit/submit"))).toBe(false)
+  })
+
+  test("a real build sends no preview flag", async () => {
+    const f = await fixture()
+    expect(await run(["perps", "deposit", "25", "USDG", "--yes", "--json"], f.deps)).toBe(0)
+    expect(f.calls.find((c) => c.path === "/api/v1/agent/perps/deposit")?.body?.preview).toBeUndefined()
+  })
+
+  test("a preview leg to another contract is refused", async () => {
+    const f = await fixture({
+      legs: [
+        { kind: "bridgeDeposit", leg: { ...depositLeg("25000000"), to: "0x000000000000000000000000000000000000dEaD" } },
+      ],
+    })
+    expect(await run(["perps", "deposit", "25", "USDG", "--no-submit", "--json"], f.deps)).toBe(1)
+    expect(f.stderr.text + f.stdout.text).toContain("PERPS_BUILD_REFUSED")
+  })
+
+  test("an API that predates previews built for real: --no-submit says what it holds", async () => {
+    const f = await fixture({ legacyApi: true })
+    expect(await run(["perps", "deposit", "25", "USDG", "--no-submit", "--json"], f.deps)).toBe(0)
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ status: "built", signed: false, submitted: false })
+    expect(f.stderr.text).toContain("predates dry-run deposits")
+    expect(f.stderr.text).toContain("operation op-d holds this wallet until")
     expect(paths(f.calls).some((p) => p.endsWith("/sign"))).toBe(false)
+  })
+
+  test("from Solana, --no-submit checks the previewed transaction and signs nothing", async () => {
+    const f = await fixture()
+    const args = ["perps", "deposit", "20", "USDC", "--rpc-url", SOLANA_RPC, "--no-submit", "--json"]
+    expect(await run(args, f.deps)).toBe(0)
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ status: "preview", signed: false })
+    expect(paths(f.calls).some((p) => p.endsWith("/sign") || p.endsWith("/deposit/submit"))).toBe(false)
   })
 })
 

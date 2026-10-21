@@ -265,6 +265,17 @@ export function toKeyPlanLine(toKey: { target: ToKeyTarget; keySigner?: ToKeySig
     : `${subject} will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`
 }
 
+/**
+ * BE-1749 item 2: what a `--to-key` screen says about the signer when the rebind, not a key-signer
+ * import, moves the wallet. A rebind moves only which key the wallet answers to — its signer stays
+ * exactly where it is, on the machine that promoted it — and nothing else on the screen said so.
+ * Empty when the import goes onto the target's signer, which does place the wallet's owner there.
+ */
+export function signerStaysLines(toKey: { keySigner?: ToKeySigner }): string[] {
+  if (toKey.keySigner !== undefined) return []
+  return ["The rebind does not move the wallet's signer: it keeps signing from the machine that promoted it."]
+}
+
 /** What `runImportFlow` needs for a keySigner import onto the target (5.2), or undefined for today's path. */
 export function keySignerImport(
   toKey: { target: ToKeyTarget; deviceToken: string; keySigner?: ToKeySigner } | undefined,

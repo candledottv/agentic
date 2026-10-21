@@ -10,10 +10,10 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Deps } from "../deps"
-import { HYPERLIQUID_RISK_DEFAULTS, readPerpsRisk } from "../hyperliquid-risk"
+import { HYPERLIQUID_RISK_DEFAULTS, type PerpsPositionRow, readPerpsRisk } from "../hyperliquid-risk"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
-import { parseSince, thresholdBps } from "./perps-risk"
+import { parseSince, positionsTable, thresholdBps } from "./perps-risk"
 
 const ADDRESS = "0x14791697260e4c9a71f18484c9f997b308e59325"
 const folders: string[] = []
@@ -272,6 +272,48 @@ describe("candle perps risk (A-8, AC7, AC8)", () => {
 })
 
 describe("candle perps positions (A-3, AC2)", () => {
+  test("a computed level prints as itself; no liquidation price is ok; no mark is n/a (BE-1749 item 12)", () => {
+    // A 1x position Hyperliquid gives no liquidation price is not "none": nothing can liquidate
+    // it, so the row says ok. A coin with no mark is unmeasurable (the account line carries the
+    // warn it raised), so it says n/a. JSON keeps the engine's `level: "none"` either way.
+    const row = (over: Partial<PerpsPositionRow>): PerpsPositionRow => ({
+      coin: "BTC",
+      side: "long",
+      size: "0.5",
+      entryPx: "95.0",
+      markPx: "100.0",
+      unrealizedPnlUsd: "2.5",
+      returnOnEquity: "0.25",
+      leverage: { value: 1, type: "cross" },
+      liquidationPx: "50.0",
+      liquidationDistance: 0.5,
+      fundingSinceOpenUsd: "0",
+      marginUsedUsd: "5.0",
+      positionValueUsd: "50.0",
+      level: "ok",
+      ...over,
+    })
+    const table = positionsTable([
+      row({ coin: "ETH", level: "ok" }),
+      row({ coin: "SOL", level: "warn" }),
+      row({ coin: "HYPE", level: "none", liquidationPx: null, liquidationDistance: null }),
+      row({ coin: "DOGE", level: "none", markPx: null, liquidationDistance: null }),
+      row({ coin: "PEPE", level: "none", markPx: null, liquidationPx: null, liquidationDistance: null }),
+    ])
+    // LEVEL is the last column, so the row line ends with its cell.
+    const levelOf = (coin: string) => {
+      const line = table.split("\n").find((row) => row.startsWith(coin))
+      expect(line).toBeDefined()
+      return (line as string).trimEnd().split(/\s+/).at(-1)
+    }
+    expect(levelOf("ETH")).toBe("ok")
+    expect(levelOf("SOL")).toBe("warn")
+    expect(levelOf("HYPE")).toBe("ok")
+    expect(levelOf("DOGE")).toBe("n/a")
+    // Neither mark nor liquidation price: the missing mark wins, the position is unmeasurable.
+    expect(levelOf("PEPE")).toBe("n/a")
+  })
+
   test("every field today's --json prints, key by key, plus rows, accountLine and risk", async () => {
     const f = await fixture({ liq: ["90.0"] })
     expect(await run(["perps", "positions", "--json"], f.deps)).toBe(0)

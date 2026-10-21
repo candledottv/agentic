@@ -52,7 +52,7 @@ import {
   renderControlledBy,
   withToKey,
 } from "../vault/promote-support"
-import { keySignerImport, targetWarnings, toKeyPlanLine } from "../vault/promote-to-key"
+import { keySignerImport, signerStaysLines, targetWarnings, toKeyPlanLine } from "../vault/promote-to-key"
 import { commitVault, decryptKey, decryptRoot, freshKeyId, sealKeyBlob, type UnlockedVault } from "../vault/store"
 import { nextAllocatableIndex } from "./vault-new-key"
 import {
@@ -201,7 +201,9 @@ export async function promoteEvmFresh(input: EvmPromoteContext, fromLabel: strin
 
     await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`)
     if (toKey !== undefined) {
-      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "evm")].join("\n")}\n`)
+      ctx.deps.stderr.write(
+        `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")].join("\n")}\n`,
+      )
     }
 
     if (secret === undefined) throw new Error("EVM TEE key was not derived")
@@ -300,7 +302,7 @@ export async function promoteEvmInPlace(
       : withToKey(live, {
           keyPrefix: toKey.target.keyPrefix,
           label: toKey.target.label,
-          warnings: targetWarnings(toKey.target, "evm"),
+          warnings: [...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")],
           ...(toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}),
         })
 

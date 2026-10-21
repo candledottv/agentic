@@ -5011,7 +5011,8 @@ class CandleClient {
       asset: params.asset,
       amountRaw: params.amountRaw,
       ...params.perpsWalletId !== undefined ? { perpsWalletId: params.perpsWalletId } : {},
-      ...params.maxSlippageBps !== undefined ? { maxSlippageBps: params.maxSlippageBps } : {}
+      ...params.maxSlippageBps !== undefined ? { maxSlippageBps: params.maxSlippageBps } : {},
+      ...params.submit === false ? { preview: true } : {}
     });
     if (build.job !== undefined)
       throw new Error(`perpsDeposit(): ${params.clientDepositId} already names a deposit; read it with perpsDepositStatus()`);
@@ -5020,6 +5021,8 @@ class CandleClient {
       throw new Error(`perps: refused to sign this deposit: ${problem}`);
     if (params.submit === false)
       return { build, submitted: false, result: null };
+    if (build.preview === true || build.depositId === undefined)
+      throw new Error("perps: refused to sign this deposit: the API answered a preview, not a build");
     const submitPath = "/api/v1/agent/perps/deposit/submit";
     const ids = { clientDepositId: params.clientDepositId, depositId: build.depositId };
     if (build.chain === "solana") {

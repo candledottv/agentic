@@ -23,7 +23,7 @@ import {
   type RouteHandler,
   signerView,
 } from "../test-support"
-import { SELECTED_SCOPE_LIMIT, type ToKeyTarget, tradeReadinessOf } from "../vault/promote-to-key"
+import { SELECTED_SCOPE_LIMIT, signerStaysLines, type ToKeyTarget, tradeReadinessOf } from "../vault/promote-to-key"
 import { useCheapKdf } from "../vault/test-vault"
 import {
   ACCOUNT,
@@ -162,6 +162,7 @@ function targetBlock(n: number): string {
     `  API key         ${TO}…  (${TO_LABEL})  --to-key, bound by a rebind after the import`,
     `  imported under  ${KEY_PREFIX}…  (${KEY_LABEL})  profile pb`,
     `  API             ${API}  (not a Candle host, from CANDLE_API_URL)`,
+    "The rebind does not move the wallet's signer: it keeps signing from the machine that promoted it.",
     `Warning: key ${TO} has a USDC cap of 0; it cannot trade USDC-quoted swaps until the cap is raised.`,
   ].join("\n")
 }
@@ -903,6 +904,8 @@ describe("vault promote --to-key", () => {
     expect(r.submits.n).toBe(1)
     const address = r.submits.addresses[0] as string
     expect(r.err).toContain(`This wallet will be bound to key ${TO}  (${TO_LABEL}) by a rebind after the import.`)
+    // BE-1749 item 2: a rebind moves the binding, never the signer, and the screen says so.
+    expect(r.err).toContain("The rebind does not move the wallet's signer")
     expect(r.err).toContain(`Warning: key ${TO} has a USDC cap of 0`)
     expect(rebind.bodies[0]).toEqual({ dryRun: true, toKeyPrefix: TO, wallets: [linkedId(address)] })
     const body = lastLine(r.out)
@@ -984,6 +987,17 @@ describe("vault promote --to-key", () => {
     )
     expect(stderr.text).not.toContain("SOL")
     expect(stderr.text).not.toContain("USDC")
+  })
+
+  test("signerStaysLines: only a rebind path warns; a key-signer import places the owner (BE-1749 item 2)", () => {
+    expect(signerStaysLines({})).toEqual([
+      "The rebind does not move the wallet's signer: it keeps signing from the machine that promoted it.",
+    ])
+    expect(
+      signerStaysLines({
+        keySigner: { fingerprint: "abcd", spkiSha256: "0xhash", signerQuorumId: "q", crossKey: true },
+      }),
+    ).toEqual([])
   })
 
   test("--in-place resume: names the target and requires confirm before the rebind", async () => {

@@ -2173,15 +2173,25 @@ export interface PerpsDepositParams {
     perpsWalletId?: string;
     /** Relay slippage, 1 to 1000 bps (default 100). */
     maxSlippageBps?: number;
-    /** Sign and submit (default), or stop after the build and its check. */
+    /**
+     * Sign and submit (default), or `false` for a dry run: the API previews the deposit (`preview:
+     * true`), locking no wallet, reserving no USD window and recording no id, and nothing is signed.
+     */
     submit?: boolean;
 }
-/** What `POST /agent/perps/deposit` builds. A Hood build also carries the first sequenced leg. */
+/**
+ * What `POST /agent/perps/deposit` builds. A Hood build also carries the first sequenced leg. A
+ * preview (`status: "preview"`, from `submit: false`) has no `depositId`, `expiresAt` or sequenced
+ * leg; from Hood it carries `plannedLegs` instead.
+ */
 export interface PerpsDepositBuild {
     success: true;
-    status: "built";
+    status: "built" | "preview";
+    /** A dry run: nothing is held, and the same id still builds a new deposit. */
+    preview?: true;
     clientDepositId: string;
-    depositId: string;
+    /** Absent on a preview. */
+    depositId?: string;
     chain: "solana" | "hood";
     venue: "relay";
     network: HyperliquidNetwork;
@@ -2207,9 +2217,17 @@ export interface PerpsDepositBuild {
     };
     statusChecks: string[];
     requestId: string | null;
-    expiresAt: number;
+    /** Absent on a preview. */
+    expiresAt?: number;
     /** Solana: the one unsigned deposit. */
     transactionsBase64?: string[];
+    /** A Hood preview: the legs' calldata, nothing sequenced. */
+    plannedLegs?: Array<{
+        kind: string;
+        to: string;
+        data: string;
+        value: string;
+    }>;
     /** Hood: the sequenced leg protocol's first body. */
     mode?: "sequenced";
     operationId?: string;

@@ -324,4 +324,31 @@ describe("keyLimitOf (K-5)", () => {
     expect(keyLimitOf([{ keyPrefix: "wwwwwwww", txLimit: null }], "wwwwwwww", 0)).toBeUndefined()
     expect(keyLimitOf("nope", "wwwwwwww", 0)).toBeUndefined()
   })
+
+  test("an Ember window beats the usage rollups: it is the figure the cap checks admit against (BE-1749 item 5)", () => {
+    // A perps order reserves the window at build and never writes an apiKeyUsage row, so
+    // todayUsdMicros can read 0 while the window cap check reports most of the cap spent. The
+    // row's emberWindow is the same remaining the gate judges, so it wins when present.
+    const keys = [
+      {
+        keyPrefix: "wwwwwwww",
+        txLimit: { usdMicros: 60_000_000, reset: "daily" },
+        usage: { todayUsdMicros: 0 },
+        emberWindow: {
+          windowKey: "daily:1",
+          capUsdMicros: 60_000_000,
+          reservedUsdMicros: 33_070_000,
+          remainingUsdMicros: 26_930_000,
+          resetsAt: 2,
+          nextWindowCapUsdMicros: 60_000_000,
+        },
+      },
+    ]
+    expect(keyLimitOf(keys, "wwwwwwww", 5)).toEqual({
+      usdMicros: 60_000_000,
+      reset: "daily",
+      usedUsdMicros: 33_070_000,
+      readAt: 5,
+    })
+  })
 })

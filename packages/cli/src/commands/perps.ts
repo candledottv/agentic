@@ -24,6 +24,7 @@
  * original operation without signing anything.
  */
 import { randomUUID, sign } from "node:crypto"
+import { z } from "zod"
 import { parseArgs } from "../args"
 import {
   BRIDGE_ASSETS,
@@ -70,6 +71,7 @@ import {
   decimalAmount,
   describeWallet,
   type Json,
+  type LegKind,
   listTradingWallets,
   matchesName,
   plannedLegKinds,
@@ -151,7 +153,7 @@ export async function perpsWallet(
     throw new TradingError(
       "TEE_WALLET_REQUIRED",
       evm.length === 0
-        ? "This key has no EVM TEE wallet bound to it. Hyperliquid perps sign only from one."
+        ? "This key has no EVM TEE wallet bound to it. Hyperliquid perps sign only from one. Give it one: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix> (candle tee new is Solana only), and candle tee signer new --key <prefix> on the machine that trades."
         : matches.length === 0
           ? `No EVM TEE wallet on this key is called "${name}". Bound to this key: ${evm.map(describeWallet).join("; ")}.`
           : `Name one EVM TEE wallet with --wallet: ${matches.map(describeWallet).join("; ")}.`,
@@ -840,6 +842,19 @@ const DEPOSIT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/
 const DEPOSIT_USAGE =
   "Usage: candle perps deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee>] [--to <evm tee>] [--id <clientDepositId>] [--slippage-bps <n>] [--rpc-url <url>] [--yes] [--no-submit] | candle perps deposit status <clientDepositId>"
 
+/** A preview's planned Hood legs (BE-1747): kind and calldata, nothing sequenced. */
+const plannedDepositLegsSchema = z
+  .array(
+    z.object({
+      kind: z.enum(["approval", "bridgeDeposit"]),
+      to: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+      data: z.string().regex(/^0x([0-9a-fA-F]{2})*$/),
+      value: z.string().regex(/^(0|[1-9][0-9]*)$/),
+    }),
+  )
+  .min(1)
+  .max(2)
+
 function isDepositAsset(value: string | undefined): value is BridgeAsset {
   return value !== undefined && Object.hasOwn(BRIDGE_ASSETS, value)
 }
@@ -933,6 +948,9 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
       destination = (await perpsWallet(ctx, key, values["--to"])).row
     }
     const amountRaw = rawAmount(amount, BRIDGE_ASSETS[asset].decimals)
+    // BE-1747: --no-submit asks for a preview, which locks no wallet, reserves no USD window and
+    // records no id; an API that predates previews builds for real, and that is reported below.
+    const noSubmit = parsed.booleans.has("--no-submit")
     ctx.deps.stderr.write(`Deposit: ${id}\n`)
     const build = await perpsRequest(ctx, key, "/api/v1/agent/perps/deposit", {
       clientDepositId: id,
@@ -941,7 +959,9 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
       amountRaw,
       maxSlippageBps: slippageBps,
       ...(origin === "solana" ? { perpsWalletId: destination.id } : {}),
+      ...(noSubmit ? { preview: true } : {}),
     })
+    const preview = build.preview === true
     // The id already names a deposit this key built: report it, and send nothing again.
     if (build.job) return printTradingResult(ctx, build)
     const refused = (problem: string) =>
@@ -955,9 +975,20 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
     if (problem) throw refused(problem)
 
     let sequenced: SequencedBody | undefined
+    let previewLegs: LegKind[] | undefined
     let transaction: string | undefined
     const hoodOrigin = asset === "ETH" || asset === "USDG" ? asset : undefined
-    if (hoodOrigin) {
+    if (hoodOrigin && preview) {
+      // A preview's Hood legs are calldata only (nothing sequenced): every one gets the leg check.
+      const planned = plannedDepositLegsSchema.safeParse(build.plannedLegs)
+      if (!planned.success) throw refused("Candle did not answer with the planned Hood legs")
+      previewLegs = planned.data.map((leg) => leg.kind)
+      if (!bridgePlanAdmitted(hoodOrigin, previewLegs)) throw refused(`the plan is ${previewLegs.join(", ")}`)
+      for (const leg of planned.data) {
+        const legProblem = relayHoodLegProblem(leg.kind, leg, { origin: hoodOrigin, payer: wallet.address, amountRaw })
+        if (legProblem) throw refused(legProblem)
+      }
+    } else if (hoodOrigin) {
       const parsedLeg = sequencedSchema.safeParse(build)
       if (!parsedLeg.success) throw refused("Candle did not answer with a sequenced Hood leg")
       sequenced = parsedLeg.data
@@ -1009,8 +1040,18 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
       output.write(
         `Legs, signed one at a time: ${sequenced.plannedLegCount === 2 ? "approval, bridgeDeposit" : "bridgeDeposit"}\n`,
       )
-    if (parsed.booleans.has("--no-submit"))
+    if (previewLegs) output.write(`Legs, signed one at a time: ${previewLegs.join(", ")}\n`)
+    if (noSubmit) {
+      if (preview)
+        ctx.deps.stderr.write(
+          "Dry run: nothing was signed, no wallet is held and no limit was used; the same --id still builds a new deposit.\n",
+        )
+      else
+        ctx.deps.stderr.write(
+          `This server predates dry-run deposits and built this one for real. Nothing was signed, but ${sequenced ? `operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}, and ` : ""}the build counts against the key's limits until it expires.\n`,
+        )
       return printTradingResult(ctx, { ...build, signed: false, submitted: false })
+    }
     if (!parsed.booleans.has("--yes")) {
       if (!ctx.deps.isTTY.stdin)
         throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.")

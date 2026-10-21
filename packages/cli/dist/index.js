@@ -41340,7 +41340,8 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
       asset,
       amountRaw,
       ...typeof args.maxSlippageBps === "number" ? { maxSlippageBps: args.maxSlippageBps } : {},
-      ...hood ? {} : { perpsWalletId: account.id }
+      ...hood ? {} : { perpsWalletId: account.id },
+      ...willSubmit ? {} : { preview: true }
     });
     if (build.job !== undefined)
       return { text: JSON.stringify(build) };
@@ -41349,6 +41350,8 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
       return fail2("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem}. Nothing was signed.`);
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
+    if (build.preview === true || typeof build.depositId !== "string")
+      return fail2("PERPS_BUILD_REFUSED", "Refused to sign this deposit: Candle answered a preview. Nothing was signed.");
     if (!appId || !source.privyWalletId)
       return fail2("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.");
     const pem = signerPem;
@@ -70946,7 +70949,7 @@ var HELP = {
   perps: {
     group: "Trade",
     summary: "Hyperliquid perpetuals: markets, market, book, candles; setup, deposit, withdraw, open, close, cancel, modify, margin, tpsl, schedule-cancel, flatten, reduce-only, orders, positions, fills, funding, leverage, account, risk, watch, thresholds",
-    description: "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch. modify, margin, tpsl, schedule-cancel, flatten and close --pct are built, checked against this machine's own read of Hyperliquid, signed and submitted like every other write; tpsl and flatten are plans of several such steps, confirmed once (or --yes), and a plan that does not finish says so and exits 1 (3 when a signed step's submit did not answer). A key that is reduce-only (reduce-only on) can close, cancel, protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure; only the owner's device token turns it off, and it cancels no resting order and revokes no signed action.",
+    description: "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). A key gets an EVM TEE wallet by promoting one from the vault: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>, and candle tee signer new --key <prefix> on the machine that trades it; candle tee new is Solana only. Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). The account's P&L (candle pnl) carries a Hyperliquid section. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch. modify, margin, tpsl, schedule-cancel, flatten and close --pct are built, checked against this machine's own read of Hyperliquid, signed and submitted like every other write; tpsl and flatten are plans of several such steps, confirmed once (or --yes), and a plan that does not finish says so and exits 1 (3 when a signed step's submit did not answer). A key that is reduce-only (reduce-only on) can close, cancel, protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure; only the owner's device token turns it off, and it cancels no resting order and revokes no signed action.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
@@ -70968,7 +70971,7 @@ var HELP = {
       },
       {
         invocation: "deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee>] [--to <evm tee>] | deposit status <id>",
-        description: "Move funds onto the Hyperliquid account through Relay, from the key's Solana or Hood TEE wallet (swap:write); only configured raw caps and USD limits apply (unset means unlimited, zero still binds); status reads one"
+        description: "Move funds onto the Hyperliquid account through Relay, from the key's Solana or Hood TEE wallet (swap:write); only configured raw caps and USD limits apply (unset means unlimited, zero still binds); --no-submit is a dry run that holds no wallet and uses no limit; status reads one"
       },
       {
         invocation: "open <coin> <long|short> <size> [--price <px>]",
@@ -71352,7 +71355,7 @@ var HELP = {
       },
       {
         invocation: "create [--access read|write|withdraw|trade-perps | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
-        description: "Create an API key; --access mints one of the levels (write trades and launches; only withdraw can move funds; trade-perps is exactly account:read and perps:write, for Hyperliquid perps setup and orders, and it cannot fund its own Hyperliquid account: a Relay deposit needs swap:write and a withdrawal needs perps:withdraw, each a separate grant through --scopes). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal"
+        description: "Create an API key; --access mints one of the levels (write trades and launches; only withdraw can move funds; trade-perps is exactly account:read and perps:write, for Hyperliquid perps setup and orders, and it cannot fund its own Hyperliquid account: a Relay deposit needs swap:write and a withdrawal needs perps:withdraw, each a separate grant through --scopes). A trade-perps key trades from an EVM TEE wallet promoted onto it (candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>; candle tee new is Solana only) and a signer on the trading machine (candle tee signer new --key <prefix>). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal"
       },
       {
         invocation: "access <prefix|label|self> (--access read|write|withdraw [--yes] | --history)",
@@ -78345,6 +78348,9 @@ function keyLimitOf(keys, prefix, now) {
   if (!limit || typeof limit.usdMicros !== "number")
     return;
   const reset = limit.reset === "weekly" || limit.reset === "monthly" || limit.reset === "never" ? limit.reset : "daily";
+  const reserved = row?.emberWindow?.reservedUsdMicros;
+  if (typeof reserved === "number")
+    return { usdMicros: limit.usdMicros, reset, usedUsdMicros: reserved, readAt: now };
   const field = {
     daily: "todayUsdMicros",
     weekly: "weekUsdMicros",
@@ -78876,6 +78882,11 @@ function toKeyPlanLine(toKey, n = 1) {
   const name = toKey.target.label !== null ? `  (${toKey.target.label})` : "";
   const subject = n === 1 ? "This wallet" : `These ${n} wallets`;
   return toKey.keySigner !== undefined ? `${subject} will be imported onto key ${toKey.target.keyPrefix}${name}'s signer ${toKey.keySigner.fingerprint} and bound to it in the same call.` : `${subject} will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`;
+}
+function signerStaysLines(toKey) {
+  if (toKey.keySigner !== undefined)
+    return [];
+  return ["The rebind does not move the wallet's signer: it keeps signing from the machine that promoted it."];
 }
 function keySignerImport(toKey) {
   if (toKey?.keySigner === undefined)
@@ -85560,6 +85571,7 @@ async function mcp(args, ctx) {
 }
 
 // src/commands/perps.ts
+init_zod();
 init_args();
 init_bridge();
 init_client();
@@ -88158,6 +88170,13 @@ function riskLine(report) {
   const more = report.drivers.length > 1 ? `; ${report.drivers.length - 1} more` : "";
   return `Risk: ${report.level.toUpperCase()}${lead ? ` (${report.level === "ok" ? "closest: " : ""}${describeDriver(lead)}${more})` : ""}`;
 }
+function levelCell(row) {
+  if (row.level !== "none")
+    return row.level;
+  if (row.markPx === null)
+    return "n/a";
+  return row.liquidationPx === null ? "ok" : "n/a";
+}
 function accountText(line) {
   return `Account value ${usd(line.accountValueUsd)} USD (cross ${usd(line.crossAccountValueUsd)}), margin used ${usd(line.marginUsedUsd)}, free margin ${usd(line.freeMarginUsd)}, withdrawable ${usd(line.withdrawableUsd)}, margin ratio ${line.marginRatio === null ? "none (no cross equity)" : line.marginRatio.toFixed(4)}, unrealized ${usd(line.unrealizedPnlUsd)}, ${line.positionCount} ${line.positionCount === 1 ? "position" : "positions"}, ${safeText(line.mode)} mode`;
 }
@@ -88193,7 +88212,7 @@ function positionsTable(rows) {
     usd(r.fundingSinceOpenUsd),
     usd(r.marginUsedUsd),
     usd(r.positionValueUsd),
-    r.level
+    levelCell(r)
   ].map((cell) => safeText(cell))));
 }
 function thresholdsText(t) {
@@ -88635,7 +88654,7 @@ async function perpsWallet(ctx, key, name2, scope) {
   const evm = rows.filter((row2) => row2.chain === "evm");
   const matches = name2 === undefined ? evm : evm.filter((row2) => matchesName(row2, name2));
   if (matches.length !== 1) {
-    throw new TradingError("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it. Hyperliquid perps sign only from one." : matches.length === 0 ? `No EVM TEE wallet on this key is called "${name2}". Bound to this key: ${evm.map(describeWallet).join("; ")}.` : `Name one EVM TEE wallet with --wallet: ${matches.map(describeWallet).join("; ")}.`);
+    throw new TradingError("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it. Hyperliquid perps sign only from one. Give it one: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix> (candle tee new is Solana only), and candle tee signer new --key <prefix> on the machine that trades." : matches.length === 0 ? `No EVM TEE wallet on this key is called "${name2}". Bound to this key: ${evm.map(describeWallet).join("; ")}.` : `Name one EVM TEE wallet with --wallet: ${matches.map(describeWallet).join("; ")}.`);
   }
   const row = matches[0];
   if (scope === undefined)
@@ -89201,6 +89220,12 @@ var HYPERLIQUID_RELAY_CHAIN_ID2 = 1337;
 var HYPERLIQUID_RELAY_USDC2 = "0x00000000000000000000000000000000";
 var DEPOSIT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 var DEPOSIT_USAGE = "Usage: candle perps deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee>] [--to <evm tee>] [--id <clientDepositId>] [--slippage-bps <n>] [--rpc-url <url>] [--yes] [--no-submit] | candle perps deposit status <clientDepositId>";
+var plannedDepositLegsSchema = exports_external.array(exports_external.object({
+  kind: exports_external.enum(["approval", "bridgeDeposit"]),
+  to: exports_external.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  data: exports_external.string().regex(/^0x([0-9a-fA-F]{2})*$/),
+  value: exports_external.string().regex(/^(0|[1-9][0-9]*)$/)
+})).min(1).max(2);
 function isDepositAsset(value) {
   return value !== undefined && Object.hasOwn(BRIDGE_ASSETS, value);
 }
@@ -89275,6 +89300,7 @@ async function perpsDeposit(args, ctx) {
       destination = (await perpsWallet(ctx, key, values["--to"])).row;
     }
     const amountRaw = rawAmount(amount, BRIDGE_ASSETS[asset].decimals);
+    const noSubmit = parsed.booleans.has("--no-submit");
     ctx.deps.stderr.write(`Deposit: ${id}
 `);
     const build = await perpsRequest(ctx, key, "/api/v1/agent/perps/deposit", {
@@ -89283,8 +89309,10 @@ async function perpsDeposit(args, ctx) {
       asset,
       amountRaw,
       maxSlippageBps: slippageBps,
-      ...origin === "solana" ? { perpsWalletId: destination.id } : {}
+      ...origin === "solana" ? { perpsWalletId: destination.id } : {},
+      ...noSubmit ? { preview: true } : {}
     });
+    const preview = build.preview === true;
     if (build.job)
       return printTradingResult(ctx, build);
     const refused2 = (problem2) => new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem2}. Nothing was signed.`);
@@ -89297,9 +89325,22 @@ async function perpsDeposit(args, ctx) {
     if (problem)
       throw refused2(problem);
     let sequenced;
+    let previewLegs;
     let transaction;
     const hoodOrigin = asset === "ETH" || asset === "USDG" ? asset : undefined;
-    if (hoodOrigin) {
+    if (hoodOrigin && preview) {
+      const planned = plannedDepositLegsSchema.safeParse(build.plannedLegs);
+      if (!planned.success)
+        throw refused2("Candle did not answer with the planned Hood legs");
+      previewLegs = planned.data.map((leg) => leg.kind);
+      if (!bridgePlanAdmitted(hoodOrigin, previewLegs))
+        throw refused2(`the plan is ${previewLegs.join(", ")}`);
+      for (const leg of planned.data) {
+        const legProblem = relayHoodLegProblem(leg.kind, leg, { origin: hoodOrigin, payer: wallet3.address, amountRaw });
+        if (legProblem)
+          throw refused2(legProblem);
+      }
+    } else if (hoodOrigin) {
       const parsedLeg = sequencedSchema.safeParse(build);
       if (!parsedLeg.success)
         throw refused2("Candle did not answer with a sequenced Hood leg");
@@ -89343,8 +89384,18 @@ async function perpsDeposit(args, ctx) {
     if (sequenced)
       output.write(`Legs, signed one at a time: ${sequenced.plannedLegCount === 2 ? "approval, bridgeDeposit" : "bridgeDeposit"}
 `);
-    if (parsed.booleans.has("--no-submit"))
+    if (previewLegs)
+      output.write(`Legs, signed one at a time: ${previewLegs.join(", ")}
+`);
+    if (noSubmit) {
+      if (preview)
+        ctx.deps.stderr.write(`Dry run: nothing was signed, no wallet is held and no limit was used; the same --id still builds a new deposit.
+`);
+      else
+        ctx.deps.stderr.write(`This server predates dry-run deposits and built this one for real. Nothing was signed, but ${sequenced ? `operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}, and ` : ""}the build counts against the key's limits until it expires.
+`);
       return printTradingResult(ctx, { ...build, signed: false, submitted: false });
+    }
     if (!parsed.booleans.has("--yes")) {
       if (!ctx.deps.isTTY.stdin)
         throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.");
@@ -98533,7 +98584,7 @@ async function promoteEvmFresh(input, fromLabel) {
     scanStart = await appendScanStart(ctx, vault.path, address, height);
     await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`);
     if (toKey !== undefined) {
-      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "evm")].join(`
+      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")].join(`
 `)}
 `);
     }
@@ -98615,7 +98666,7 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
   const controlledBy = toKey === undefined ? live : withToKey(live, {
     keyPrefix: toKey.target.keyPrefix,
     label: toKey.target.label,
-    warnings: targetWarnings(toKey.target, "evm"),
+    warnings: [...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")],
     ...toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}
   });
   const height = await promoteHeight(ctx, client);
@@ -98810,7 +98861,7 @@ async function rebindAfterImport(ctx, toKey, wallet3, callingKeyPrefix, chain2) 
   };
 }
 async function confirmResumeRebind(ctx, toKey, chain2) {
-  ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, chain2)].join(`
+  ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, chain2)].join(`
 `)}
 `);
   const typed = await ctx.deps.promptLine(`Type ${CONFIRM_WORD} to move this wallet to ${toKey.target.keyPrefix}: `);
@@ -98905,7 +98956,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
     }, ctx.deps));
     await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`);
     if (toKey !== undefined) {
-      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "solana")].join(`
+      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "solana")].join(`
 `)}
 `);
     }
@@ -99071,7 +99122,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     const controlledBy = toKey === undefined ? live : withToKey(live, {
       keyPrefix: toKey.target.keyPrefix,
       label: toKey.target.label,
-      warnings: targetWarnings(toKey.target, "solana"),
+      warnings: [...signerStaysLines(toKey), ...targetWarnings(toKey.target, "solana")],
       ...toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}
     });
     const rpc = solana.rpc;
@@ -99952,7 +100003,7 @@ async function vaultPromoteBatch(args, ctx) {
     const controlledBy = toKey === undefined ? live : withToKey(live, {
       keyPrefix: toKey.target.keyPrefix,
       label: toKey.target.label,
-      warnings: targetWarnings(toKey.target, chain2 === "evm" ? "evm" : "solana"),
+      warnings: [...signerStaysLines(toKey), ...targetWarnings(toKey.target, chain2 === "evm" ? "evm" : "solana")],
       ...toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}
     });
     const rebindPhase = toKey === undefined ? undefined : { toKey, callingKeyPrefix: live.keyPrefix, importedTo: new Map };

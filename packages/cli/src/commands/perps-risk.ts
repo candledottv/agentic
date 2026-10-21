@@ -120,6 +120,18 @@ export function riskLine(report: Pick<PerpsRiskReport, "level" | "reason" | "dri
   return `Risk: ${report.level.toUpperCase()}${lead ? ` (${report.level === "ok" ? "closest: " : ""}${describeDriver(lead)}${more})` : ""}`
 }
 
+/**
+ * The LEVEL cell. A row whose level the engine could not compute (`none`, BE-1749 item 12) still
+ * owes the reader a word: a position Hyperliquid gives no liquidation price (1x, nothing to
+ * liquidate) is `ok`, while one with no mark is unmeasurable, so `n/a` — the account line and the
+ * warn driver it raised say the rest. JSON keeps `level: "none"` as the engine reported it.
+ */
+function levelCell(row: Pick<PerpsPositionRow, "level" | "markPx" | "liquidationPx">): string {
+  if (row.level !== "none") return row.level
+  if (row.markPx === null) return "n/a"
+  return row.liquidationPx === null ? "ok" : "n/a"
+}
+
 function accountText(line: PerpsAccountLine): string {
   return `Account value ${usd(line.accountValueUsd)} USD (cross ${usd(line.crossAccountValueUsd)}), margin used ${usd(line.marginUsedUsd)}, free margin ${usd(line.freeMarginUsd)}, withdrawable ${usd(line.withdrawableUsd)}, margin ratio ${line.marginRatio === null ? "none (no cross equity)" : line.marginRatio.toFixed(4)}, unrealized ${usd(line.unrealizedPnlUsd)}, ${line.positionCount} ${line.positionCount === 1 ? "position" : "positions"}, ${safeText(line.mode)} mode`
 }
@@ -159,7 +171,7 @@ export function positionsTable(rows: PerpsPositionRow[]): string {
         usd(r.fundingSinceOpenUsd),
         usd(r.marginUsedUsd),
         usd(r.positionValueUsd),
-        r.level,
+        levelCell(r),
       ].map((cell) => safeText(cell)),
     ),
   )

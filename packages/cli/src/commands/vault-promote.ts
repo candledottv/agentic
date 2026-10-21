@@ -60,6 +60,7 @@ import {
   rebindJson,
   rebindPromoted,
   renderRebindReport,
+  signerStaysLines,
   type ToKeySigner,
   type ToKeyTarget,
   targetWarnings,
@@ -234,7 +235,9 @@ export async function confirmResumeRebind(
   toKey: ToKeyContext,
   chain: PromoteChain,
 ): Promise<void> {
-  ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, chain)].join("\n")}\n`)
+  ctx.deps.stderr.write(
+    `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, chain)].join("\n")}\n`,
+  )
   const typed = await ctx.deps.promptLine(`Type ${CONFIRM_WORD} to move this wallet to ${toKey.target.keyPrefix}: `)
   if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
     throw new VaultError(
@@ -360,7 +363,9 @@ async function promoteFresh(
     if (toKey !== undefined) {
       // BE-322: the fresh mode has no controlled-by block; the target is named here, with its cap
       // lines, before the import.
-      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "solana")].join("\n")}\n`)
+      ctx.deps.stderr.write(
+        `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "solana")].join("\n")}\n`,
+      )
     }
 
     const privateKey = base58.encode(secret64)
@@ -592,7 +597,7 @@ async function promoteInPlace(
         : withToKey(live, {
             keyPrefix: toKey.target.keyPrefix,
             label: toKey.target.label,
-            warnings: targetWarnings(toKey.target, "solana"),
+            warnings: [...signerStaysLines(toKey), ...targetWarnings(toKey.target, "solana")],
             ...(toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}),
           })
 

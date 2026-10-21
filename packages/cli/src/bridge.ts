@@ -104,7 +104,7 @@ function wordUint(data: string, index: number): bigint | null {
  */
 export function relayHoodLegProblem(
   kind: LegKind,
-  leg: SequencedLeg,
+  leg: Pick<SequencedLeg, "to" | "data" | "value">,
   expect: { origin: "ETH" | "USDG"; payer: string; amountRaw: string },
 ): string | null {
   const data = leg.data.toLowerCase()

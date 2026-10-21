@@ -195,9 +195,28 @@ describe("perpsDeposit", () => {
     expect(calls[2]?.body).toEqual({ clientDepositId: "dep-1", depositId: "d-1", signedTransactionsBase64: ["BAUG"] })
   })
 
-  test("submit: false returns the checked build and signs nothing", async () => {
-    const { client: c, calls } = await client([json(hoodBuild())])
+  // BE-1747 (finding 4): a dry run asks for a preview, which holds no wallet lock or USD window.
+  test("submit: false asks for a preview, checks it and signs nothing", async () => {
+    const preview = hoodBuild({
+      status: "preview",
+      preview: true,
+      depositId: undefined,
+      expiresAt: undefined,
+      mode: undefined,
+      operationId: undefined,
+      nextLeg: undefined,
+      plannedLegs: [{ kind: "bridgeDeposit", to: leg(0).to, data: "0x1234", value: "0" }],
+    })
+    const { client: c, calls } = await client([json(preview)])
     expect(await c.perpsDeposit({ ...params, submit: false })).toMatchObject({ submitted: false, result: null })
     expect(calls).toHaveLength(1)
+    expect(calls[0]?.body).toMatchObject({ clientDepositId: "dep-1", preview: true })
+  })
+
+  test("a real deposit sends no preview flag, and a preview answer is never signed", async () => {
+    const { client: c, calls } = await client([json(hoodBuild({ status: "preview", preview: true }))])
+    await expect(c.perpsDeposit(params)).rejects.toThrow("preview")
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.body?.preview).toBeUndefined()
   })
 })

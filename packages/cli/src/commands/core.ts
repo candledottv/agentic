@@ -806,15 +806,29 @@ async function transferChainFor(
   })
 }
 
-/** The limit and window use of the key whose prefix is given, from `GET /agent/keys`'s rows. */
+/**
+ * The limit and window use of the key whose prefix is given, from `GET /agent/keys`'s rows.
+ *
+ * `used` is the row's Ember window reservation when it has one (BE-1749 item 5): that is the same
+ * figure every cap check admits against, while `usage.todayUsdMicros` and siblings count only
+ * booked swap, launch and transfer volume — a perps order reserves the window and never writes a
+ * usage row, so the two can disagree, and only the window is the cap. The `usage` fields stay the
+ * fallback for an API whose rows carry no `emberWindow` (BE-422) or a key with no window open.
+ */
 export function keyLimitOf(keys: unknown, prefix: string | undefined, now: number): KeyLimit | undefined {
   if (!Array.isArray(keys) || prefix === undefined) return undefined
   const row = keys.find((key) => (key as { keyPrefix?: unknown })?.keyPrefix === prefix) as
-    | { txLimit?: { usdMicros?: unknown; reset?: unknown } | null; usage?: Record<string, unknown> }
+    | {
+        txLimit?: { usdMicros?: unknown; reset?: unknown } | null
+        usage?: Record<string, unknown>
+        emberWindow?: { reservedUsdMicros?: unknown } | null
+      }
     | undefined
   const limit = row?.txLimit
   if (!limit || typeof limit.usdMicros !== "number") return undefined
   const reset = limit.reset === "weekly" || limit.reset === "monthly" || limit.reset === "never" ? limit.reset : "daily"
+  const reserved = row?.emberWindow?.reservedUsdMicros
+  if (typeof reserved === "number") return { usdMicros: limit.usdMicros, reset, usedUsdMicros: reserved, readAt: now }
   const field = {
     daily: "todayUsdMicros",
     weekly: "weekUsdMicros",

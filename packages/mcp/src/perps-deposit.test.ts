@@ -192,4 +192,26 @@ describe("candle_perps_deposit", () => {
     )
     for (const f of [noScope, noPem]) expect(f.calls.some((c) => c.url.endsWith("/perps/deposit"))).toBe(false)
   })
+
+  // BE-1747 (finding 4): a dry run asks for a preview, which holds no wallet lock or USD window.
+  test("submit false asks for a preview and signs nothing; a real deposit sends no preview flag", async () => {
+    const dry = fake({ build: { status: "preview", preview: true, depositId: undefined, mode: undefined } })
+    const out = JSON.parse(
+      (await executePerpsDeposit({ asset: "USDG", amount: "25", submit: false }, cfg, {}, dry.fetch)).text,
+    )
+    expect(out).toMatchObject({ status: "preview", signed: false, submitted: false })
+    expect(dry.calls.find((c) => c.url.endsWith("/perps/deposit"))?.body).toMatchObject({ preview: true })
+    expect(dry.calls.some((c) => c.url.endsWith("/sign"))).toBe(false)
+
+    const real = fake()
+    await executePerpsDeposit({ asset: "USDG", amount: "25" }, cfg, env(), real.fetch)
+    expect(real.calls.find((c) => c.url.endsWith("/perps/deposit"))?.body?.preview).toBeUndefined()
+  })
+
+  test("a preview answer to a real deposit is never signed", async () => {
+    const f = fake({ build: { status: "preview", preview: true } })
+    const out = await executePerpsDeposit({ asset: "USDG", amount: "25" }, cfg, env(), f.fetch)
+    expect(out.text).toContain("PERPS_BUILD_REFUSED")
+    expect(f.calls.some((c) => c.url.endsWith("/sign"))).toBe(false)
+  })
 })

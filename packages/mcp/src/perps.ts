@@ -821,12 +821,16 @@ export async function executePerpsDeposit(
       amountRaw,
       ...(typeof args.maxSlippageBps === "number" ? { maxSlippageBps: args.maxSlippageBps } : {}),
       ...(hood ? {} : { perpsWalletId: account.id }),
+      // BE-1747: submit false is a preview, which locks no wallet and reserves no USD window.
+      ...(willSubmit ? {} : { preview: true }),
     })
     if (build.job !== undefined) return { text: JSON.stringify(build) }
     const problem = depositProblem(build, { walletId: source.id, asset, amountRaw, account: account.address, hood })
     if (problem) return fail("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem}. Nothing was signed.`)
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) }
+    if (build.preview === true || typeof build.depositId !== "string")
+      return fail("PERPS_BUILD_REFUSED", "Refused to sign this deposit: Candle answered a preview. Nothing was signed.")
     if (!appId || !source.privyWalletId)
       return fail("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.")
     const pem = signerPem
