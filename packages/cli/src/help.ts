@@ -619,9 +619,9 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
     description:
-      "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it is its own transaction, sent with the launch as one Jito bundle (an atomic launch), so the launch and the first buy land together or not at all and the bundle pays a Jito tip; on Hood it is a last leg after the curve and the fee. On Solana it also needs the swap:write scope and a Candle deployment with a Jito block engine. Only configured raw caps and USD limits apply; unset means unlimited and zero still binds. When a USD limit is set, Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path. The image is one of two flags, never both: --image-url <https-url> for one already hosted, or --image <path> for a PNG, JPEG, GIF or WebP file on this machine, at most 10MB. With --image the file is uploaded to Candle first and the launch is made with the URL that comes back, which --json reports as imageUrl. The upload happens before the confirm prompt and cannot be undone: the file becomes public and permanent even if you then decline or the launch fails. Re-running with the same --client-trade-id resumes the launch without uploading again. --image-url takes only an https:// URL.",
+      "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it is its own transaction, sent with the launch as one Jito bundle (an atomic launch), so the launch and the first buy land together or not at all and the bundle pays a Jito tip; on Hood it is a last leg after the curve and the fee. On Solana it also needs the swap:write scope and a Candle deployment with a Jito block engine. Only configured raw caps and USD limits apply; unset means unlimited and zero still binds. When a USD limit is set, Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path. The image is one of two flags, never both: --image-url <https-url> for one already hosted, or --image <path> for a PNG, JPEG, GIF or WebP file on this machine, at most 10MB. With --image the file is uploaded to Candle first and the launch is made with the URL that comes back, which --json reports as imageUrl. The upload happens before the confirm prompt and cannot be undone: the file becomes public and permanent even if you then decline or the launch fails. Re-running with the same --client-trade-id resumes the launch without uploading again. --image-url takes only an https:// URL. --banner <file|URL> adds a wide banner: an https URL is passed through; a local file uses the same publication notice and 10MB limit, uploaded with kind=banner so it is never cropped. Banners must be wider than 1.5:1. The result reports bannerUrl, and an atomic retry reuses the saved URL.",
     usage: [
-      "candle launch --name <name> --symbol <symbol> --image <path>|--image-url <url> --wallet <tee> [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4]",
+      "candle launch --name <name> --symbol <symbol> --image <path>|--image-url <url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4]",
     ],
     rows: [],
     flags: [
@@ -633,6 +633,11 @@ export const HELP: Record<string, Topic> = {
           "The token image as a file on this machine (PNG, JPEG, GIF or WebP, at most 10MB). Uploaded before the confirm prompt; it becomes public and permanent",
       },
       { invocation: "--image-url <url>", description: "The token image, already hosted at an https:// URL" },
+      {
+        invocation: "--banner <file|URL>",
+        description:
+          "A wide banner from a local file or https URL; files become public and permanent, without cropping",
+      },
       { invocation: "--wallet <tee>", description: "The TEE wallet that creates it" },
       {
         invocation: "--buy <amount>",
@@ -658,15 +663,20 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Host an image file from this machine and print its https URL",
     description:
-      "Uploads a PNG, JPEG, GIF or WebP file, at most 10MB, to Candle and prints the https URL it is hosted at, ready to be a launch's image. The type is read from the file's first bytes, not its name, and a file that is none of the four or is too large is refused before any request. The upload is a publication: Candle pins the file to public storage, the URL cannot be withdrawn, and whatever the file carries (metadata included) goes with it, so upload only an image meant to be public. It spends no funds and does not count against the daily launch cap; the key's uploads-per-minute limit applies. Needs an API key with the launch:write scope. candle launch --image <path> does this upload itself; use this command for the link alone, or to launch through the hosted connector, which cannot read a file on your machine. Candle crops the image to a square, so this hosts a token image and not a banner.",
-    usage: ["candle image upload <path> [--json]"],
+      "Uploads a PNG, JPEG, GIF or WebP file, at most 10MB, to Candle and prints the https URL it is hosted at, ready to be a launch's image. The type is read from the file's first bytes, not its name, and a file that is none of the four or is too large is refused before any request. The upload is a publication: Candle pins the file to public storage, the URL cannot be withdrawn, and whatever the file carries (metadata included) goes with it, so upload only an image meant to be public. It spends no funds and does not count against the daily launch cap; the key's uploads-per-minute limit applies. Needs an API key with the launch:write scope. candle launch --image <path> does this upload itself; use this command for the link alone, or to launch through the hosted connector, which cannot read a file on your machine. Without --banner Candle crops the image to a square, so it hosts a token image and not a banner: a banner sent that way comes back cropped. With --banner nothing is cropped: the image must be wider than 1.5:1 (for example 2171x724 or 1200x630) or the upload is refused with BANNER_WRONG_SHAPE, and the URL is for a launch's bannerUrl.",
+    usage: ["candle image upload <path> [--banner] [--json]"],
     rows: [
       {
         invocation: "upload <path>",
-        description: "Upload the file and print its URL; --json adds the content type and the size in bytes",
+        description:
+          "Upload the file and print its URL; --json adds the content type and the size in bytes; --banner hosts a wide banner uncropped",
       },
     ],
-    examples: ["candle image upload ./logo.png", "candle image upload /Users/me/art/logo.webp --json"],
+    examples: [
+      "candle image upload ./logo.png",
+      "candle image upload /Users/me/art/logo.webp --json",
+      "candle image upload ./banner.png --banner",
+    ],
     env: ENV_API,
   },
 

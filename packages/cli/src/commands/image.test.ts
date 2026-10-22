@@ -28,6 +28,7 @@ afterEach(async () => {
 
 interface Sent {
   path: string
+  search: string
   method: string | undefined
   headers: Headers
   bytes: Uint8Array
@@ -40,6 +41,7 @@ async function fixture(opts: { answer?: () => Response; key?: string | null } = 
   const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
     sent.push({
       path: new URL(String(input)).pathname,
+      search: new URL(String(input)).search,
       method: init?.method,
       headers: new Headers(init?.headers),
       bytes: init?.body as Uint8Array,
@@ -114,6 +116,32 @@ describe("candle image upload", () => {
       expect(f.stderr.text).toContain("The file becomes public and permanent")
     })
   }
+
+  test("without --banner no kind is sent: the token image is the square crop", async () => {
+    const f = await fixture()
+    const path = await f.file("logo.png", PNG)
+    expect(await run(["image", "upload", path], f.deps)).toBe(0)
+    expect(f.sent[0]?.search).toBe("")
+  })
+
+  test("--banner uploads with kind=banner and prints the URL", async () => {
+    const f = await fixture()
+    const path = await f.file("banner.png", PNG)
+    expect(await run(["image", "upload", path, "--banner"], f.deps)).toBe(0)
+    expect(f.sent).toHaveLength(1)
+    expect(f.sent[0]?.path).toBe("/api/v1/uploads/agent-image")
+    expect(f.sent[0]?.search).toBe("?kind=banner")
+    expect([...(f.sent[0]?.bytes ?? [])]).toEqual(PNG)
+    expect(f.stdout.text).toBe(`${HOSTED}\n`)
+  })
+
+  test("--banner passes the server's BANNER_WRONG_SHAPE refusal through for a square image", async () => {
+    const message = "Banner is 800x800: send the original as the banner"
+    const f = await fixture({ answer: refusal("BANNER_WRONG_SHAPE", message, 400) })
+    const path = await f.file("square.png", PNG)
+    expect(await run(["image", "upload", path, "--banner", "--json"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text)).toMatchObject({ ok: false, code: "BANNER_WRONG_SHAPE", message })
+  })
 
   test("--json is one value: the URL, the content type and the size", async () => {
     const f = await fixture()

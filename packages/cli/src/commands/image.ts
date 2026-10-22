@@ -22,7 +22,7 @@ import { writeLocalFailure, writeUsageFailure } from "../render"
 import { safeText, TradingError } from "../trading"
 import { tradingFailure } from "./swap"
 
-const UPLOAD_USAGE = "Usage: candle image upload <path> [--json]"
+const UPLOAD_USAGE = "Usage: candle image upload <path> [--banner] [--json]"
 
 /** The upload route's ceiling (`MAX_IMAGE_SIZE` in apps/api): a file of exactly this size is accepted. */
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -113,8 +113,13 @@ export function uploadNotice(image: LocalImage): string {
  * Posts the bytes under the key and returns the hosted URL. A refusal is the server's own code and
  * message (`RATE_LIMITED`, `UPLOAD_INVALID`, a missing `launch:write`), passed through as sent.
  */
-export async function uploadImage(ctx: CommandContext, key: string, image: LocalImage): Promise<string> {
-  const result = await apiRequest("/api/v1/uploads/agent-image", {
+export async function uploadImage(
+  ctx: CommandContext,
+  key: string,
+  image: LocalImage,
+  kind: "image" | "banner" = "image",
+): Promise<string> {
+  const result = await apiRequest(`/api/v1/uploads/agent-image${kind === "banner" ? "?kind=banner" : ""}`, {
     apiUrl: ctx.apiUrl,
     credentials: { apiKey: key },
     auth: "key",
@@ -131,7 +136,7 @@ export async function uploadImage(ctx: CommandContext, key: string, image: Local
 }
 
 export async function imageUpload(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { pathPositionals: ["<path>"] })
+  const parsed = parseArgs(args, { pathPositionals: ["<path>"], booleanFlags: ["--banner"] })
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
     return 2
@@ -157,7 +162,8 @@ export async function imageUpload(args: string[], ctx: CommandContext): Promise<
       return 1
     }
     ctx.deps.stderr.write(uploadNotice(image))
-    const imageUrl = safeText(await uploadImage(ctx, key, image))
+    const banner = parsed.booleans.has("--banner")
+    const imageUrl = safeText(await uploadImage(ctx, key, image, banner ? "banner" : "image"))
     ctx.deps.stdout.write(
       ctx.json
         ? `${JSON.stringify({ success: true, imageUrl, contentType: image.contentType, bytes: image.bytes.length })}\n`

@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { generateKeyPairSync } from "node:crypto"
 import { readdirSync, readFileSync } from "node:fs"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
@@ -66,6 +66,7 @@ async function fixture(
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined
     calls.push({ path, body, operations: operations() })
     const ok = (value: unknown, status = 200) => Response.json(value, { status })
+    if (path === "/api/v1/uploads/agent-image") return ok({ success: true, imageUrl: "https://hosted.test/banner.png" })
     if (path === "/api/v1/agent/wallets/trading")
       return ok({
         scopes: opts.scopes ?? ["launch:write", "swap:write", "launch:read"],
@@ -184,6 +185,23 @@ const writes = (paths: string[]) =>
   paths.filter((path) => path.endsWith("/build") || path.endsWith("/sign") || path.endsWith("/submit"))
 
 describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch", () => {
+  test("a failed atomic bundle retries with the saved banner URL, without publishing again", async () => {
+    const f = await fixture({ submit: "failed", jobStatus: "failed" })
+    const path = join(f.deps.env.CANDLE_CONFIG_DIR as string, "banner.png")
+    await writeFile(path, Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    const args = [...buyArgs, "--banner", path]
+    expect(await run(args, f.deps)).toBe(1)
+    expect(await run(args, f.deps)).toBe(1)
+    expect(f.calls.filter((c) => c.path === "/api/v1/uploads/agent-image")).toHaveLength(1)
+    const builds = f.calls.filter((c) => c.path === "/api/v1/launch/atomic/build")
+    expect(builds).toHaveLength(2)
+    expect(builds.map((c) => c.body?.bannerUrl)).toEqual([
+      "https://hosted.test/banner.png",
+      "https://hosted.test/banner.png",
+    ])
+    expect(f.operations()[0]).toMatchObject({ bannerUrl: "https://hosted.test/banner.png" })
+  })
+
   test("R1: one /launch/atomic/build, the wallet as creator and only first buyer, no buyAmount", async () => {
     const f = await fixture()
     expect(await run(buyArgs, f.deps)).toBe(0)

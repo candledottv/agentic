@@ -728,3 +728,150 @@ describe("candle_launch_and_seed with imagePath", () => {
     expect(calls).toEqual([UPLOAD, LAUNCH])
   })
 })
+
+describe("bannerPath on the launch tools", () => {
+  const env = () => ({ CANDLE_IMAGE_DIR: dir })
+  const BANNER_UPLOAD = `${UPLOAD}?kind=banner`
+  const BANNER_HOSTED = "https://ipfs.example/ipfs/QmBanner"
+  const routes = {
+    ...ROUTES,
+    [BANNER_UPLOAD]: { body: { success: true, imageUrl: BANNER_HOSTED } },
+  }
+
+  test("both tools offer bannerPath beside bannerUrl, and the text separates it from the cropped token image", () => {
+    const { token, seed } = launchTools(env(), recordingFetch(routes))
+    for (const tool of [token, seed]) {
+      expect(Object.keys(tool.config.inputSchema)).toEqual(expect.arrayContaining(["bannerPath", "bannerUrl"]))
+      expect(tool.config.description).toContain("bannerPath")
+    }
+    const fieldText = String((token.config.inputSchema.bannerPath as { description?: string }).description)
+    expect(fieldText).toContain("BANNER_WRONG_SHAPE")
+    expect(fieldText).toContain("not a cropped copy")
+    expect(String((token.config.inputSchema.imagePath as { description?: string }).description)).toContain(
+      "Candle crops it to a square",
+    )
+  })
+
+  test("without a directory there is no bannerPath, and one that reaches the handler is refused unread", async () => {
+    const fetch = recordingFetch(routes)
+    const { token } = launchTools(undefined, fetch)
+    expect(Object.keys(token.config.inputSchema)).not.toContain("bannerPath")
+    const result = await token.handler({ ...TOKEN, imageUrl: "https://x/y.png", bannerPath: join(dir, "logo.png") })
+    expect(result.isError).toBe(true)
+    expect(result.content[0]?.text).toContain("bannerPath is not available")
+    expect(fetch.calls).toEqual([])
+  })
+
+  test("a banner file is uploaded with kind=banner and the launch carries the bannerUrl that came back", async () => {
+    const fetch = recordingFetch(routes)
+    const result = await launchTools(env(), fetch).token.handler({
+      ...TOKEN,
+      imageUrl: "https://x/y.png",
+      bannerPath: join(dir, "logo.png"),
+    })
+    expect(result.isError).toBeUndefined()
+    expect(fetch.calls.map((call) => call.url)).toEqual([BANNER_UPLOAD, LAUNCH])
+    expect(fetch.calls[0]?.init?.body as unknown as Uint8Array).toEqual(PNG)
+    const launchBody = JSON.parse(String(fetch.calls[1]?.init?.body))
+    expect(launchBody).toEqual({ ...TOKEN, imageUrl: "https://x/y.png", bannerUrl: BANNER_HOSTED })
+    expect(launchBody).not.toHaveProperty("bannerPath")
+    const note = JSON.parse(result.content[1]?.text ?? "{}")
+    expect(note.bannerUrl).toBe(BANNER_HOSTED)
+    expect(note.bannerNote).toContain("public and permanent")
+  })
+
+  test("imagePath and bannerPath together upload the image as a token image and the banner as a banner", async () => {
+    const fetch = recordingFetch(routes)
+    const result = await launchTools(env(), fetch).token.handler({
+      ...TOKEN,
+      imagePath: join(dir, "photo.jpg"),
+      bannerPath: join(dir, "logo.png"),
+    })
+    expect(result.isError).toBeUndefined()
+    expect(fetch.calls.map((call) => call.url)).toEqual([UPLOAD, BANNER_UPLOAD, LAUNCH])
+    expect(JSON.parse(String(fetch.calls[2]?.init?.body))).toEqual({
+      ...TOKEN,
+      imageUrl: HOSTED,
+      bannerUrl: BANNER_HOSTED,
+    })
+  })
+
+  test("bannerPath and bannerUrl together are refused before any read or request", async () => {
+    const fetch = recordingFetch(routes)
+    const result = await launchTools(env(), fetch).token.handler({
+      ...TOKEN,
+      imageUrl: "https://x/y.png",
+      bannerUrl: "https://x/b.png",
+      bannerPath: join(dir, "logo.png"),
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0]?.text).toContain("at most one of bannerUrl or bannerPath")
+    expect(fetch.calls).toEqual([])
+  })
+
+  test("a bad banner file is refused before the image is uploaded: no publication is spent", async () => {
+    for (const bannerPath of [join(dir, "notes.png"), join(outsideDir, "seed-phrase.png"), "relative.png"]) {
+      const fetch = recordingFetch(routes)
+      const result = await launchTools(env(), fetch).token.handler({
+        ...TOKEN,
+        imagePath: join(dir, "logo.png"),
+        bannerPath,
+      })
+      expect(result.isError).toBe(true)
+      expect(fetch.calls).toEqual([])
+    }
+    const result = await launchTools(env(), recordingFetch(routes)).token.handler({
+      ...TOKEN,
+      imageUrl: "https://x/y.png",
+      bannerPath: join(dir, "notes.png"),
+    })
+    expect(result.content[0]?.text).toContain("bannerPath")
+  })
+
+  test("a square banner is refused by the upload route; its body is relayed and nothing launches", async () => {
+    const body = { success: false, error: { code: "BANNER_WRONG_SHAPE", message: "Banner is 800x800" } }
+    const fetch = recordingFetch({ ...routes, [BANNER_UPLOAD]: { status: 400, body } })
+    const result = await launchTools(env(), fetch).token.handler({
+      ...TOKEN,
+      imageUrl: "https://x/y.png",
+      bannerPath: join(dir, "logo.png"),
+    })
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.content[0]?.text ?? "{}")).toEqual(body)
+    expect(fetch.calls.map((call) => call.url)).toEqual([BANNER_UPLOAD])
+  })
+
+  test("a banner upload that fails after the image uploaded names the image URL for the retry", async () => {
+    const fetch = recordingFetch({ ...routes, [BANNER_UPLOAD]: { status: 400, body: { error: { code: "X" } } } })
+    const result = await launchTools(env(), fetch).token.handler({
+      ...TOKEN,
+      imagePath: join(dir, "logo.png"),
+      bannerPath: join(dir, "logo.png"),
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0]?.text).toContain(HOSTED)
+    expect(fetch.calls.map((call) => call.url)).toEqual([UPLOAD, BANNER_UPLOAD])
+  })
+
+  test("candle_launch_and_seed uploads the banner and reports it under bannerUrl", async () => {
+    const fetch = recordingFetch(routes)
+    const result = await launchTools(env(), fetch).seed.handler({
+      ...TOKEN,
+      imageUrl: "https://x/y.png",
+      bannerPath: join(dir, "logo.png"),
+      devBuy: "0.25",
+    })
+    expect(result.isError).toBeUndefined()
+    expect(fetch.calls.map((call) => call.url).slice(0, 2)).toEqual([BANNER_UPLOAD, LAUNCH])
+    const launchBody = JSON.parse(String(fetch.calls[1]?.init?.body))
+    expect(launchBody).toEqual({
+      ...TOKEN,
+      imageUrl: "https://x/y.png",
+      bannerUrl: BANNER_HOSTED,
+      buyAmount: "250000000",
+    })
+    const parsed = JSON.parse(result.content[0]?.text ?? "{}")
+    expect(parsed.bannerUrl).toBe(BANNER_HOSTED)
+    expect(parsed.bannerNote).toContain("public and permanent")
+  })
+})

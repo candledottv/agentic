@@ -76,7 +76,14 @@ async function fixture(
   const dir = await mkdtemp(join(tmpdir(), "candle-trade-"))
   folders.push(dir)
   /** `claims` is how many operation ids this machine had claimed when the request was made. */
-  const calls: { path: string; body: Record<string, unknown>; headers: Headers; claims: number }[] = []
+  const calls: {
+    path: string
+    body: Record<string, unknown>
+    headers: Headers
+    claims: number
+    search: string
+    bytes?: Uint8Array
+  }[] = []
   const claims = () => {
     try {
       return readdirSync(join(dir, "operations")).length
@@ -89,7 +96,14 @@ async function fixture(
     const path = new URL(String(input)).pathname
     // An image upload's body is the file's bytes, not JSON.
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined
-    calls.push({ path, body, headers: new Headers(init?.headers), claims: claims() })
+    calls.push({
+      path,
+      body,
+      search: new URL(String(input)).search,
+      bytes: init?.body instanceof Uint8Array ? init.body : undefined,
+      headers: new Headers(init?.headers),
+      claims: claims(),
+    })
     const ok = (value: unknown) => Response.json(value)
     if (opts.failure === path) throw new Error("lost response")
     if (path === "/api/v1/uploads/agent-image")
@@ -534,6 +548,43 @@ describe("TEE CLI trading", () => {
     const uploads = <T extends { path: string }>(calls: T[]) =>
       calls.filter((call) => call.path.endsWith("/uploads/agent-image"))
     const lastJson = (text: string) => JSON.parse(text.trimEnd().split("\n").at(-1) ?? "")
+
+    test("--banner file uploads as a banner and the Solana self build receives its URL", async () => {
+      const f = await fixture({ scopes: ["launch:write"] })
+      const path = await f.file("banner.png", pngBytes)
+      expect(await run([...launchArgs, "--banner", path], f.deps)).toBe(0)
+      expect(uploads(f.calls)[0]?.search).toBe("?kind=banner")
+      expect(uploads(f.calls)[0]?.bytes).toEqual(pngBytes)
+      expect(f.calls.find((call) => call.path.endsWith("self/build"))?.body?.bannerUrl).toBe(hostedImage)
+      expect(lastJson(f.stdout.text).bannerUrl).toBe(hostedImage)
+      expect(f.stderr.text).toContain("public and permanent")
+    })
+
+    test("--banner https URL passes through without any upload", async () => {
+      const f = await fixture()
+      const bannerUrl = "https://example.test/banner.png"
+      expect(await run([...launchArgs, "--banner", bannerUrl], f.deps)).toBe(0)
+      expect(uploads(f.calls)).toEqual([])
+      expect(f.calls.find((call) => call.path.endsWith("self/build"))?.body?.bannerUrl).toBe(bannerUrl)
+    })
+
+    test("a bad local banner refuses before publishing the token image or making requests", async () => {
+      const f = await fixture()
+      const image = await f.file("logo.png", pngBytes)
+      const banner = await f.file("bad.png", new TextEncoder().encode("text"))
+      expect(await run([...withImage(image), "--banner", banner], f.deps)).toBe(1)
+      expect(f.calls).toEqual([])
+    })
+
+    test("banner upload refusal leaves the id unclaimed and retryable", async () => {
+      const f = await fixture({ uploadError: { code: "BANNER_WRONG_SHAPE", message: "send the wide original" } })
+      const path = await f.file("banner.png", pngBytes)
+      expect(await run([...launchArgs, "--banner", path], f.deps)).toBe(1)
+      expect(lastJson(f.stdout.text).code).toBe("BANNER_WRONG_SHAPE")
+      expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
+      f.opts.uploadError = null
+      expect(await run([...launchArgs, "--banner", path], f.deps)).toBe(0)
+    })
 
     test("one upload under the key, before the build and before the id is claimed; the build carries imageUrl and never a path", async () => {
       const f = await fixture({ scopes: ["launch:write"] })

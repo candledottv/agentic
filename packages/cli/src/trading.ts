@@ -1174,6 +1174,7 @@ export async function savedOperation(
   bundleOutcome?: string
   /** The image the bundle was built with, so a same-id retry builds the same request without uploading again. */
   imageUrl?: string
+  bannerUrl?: string
 } | null> {
   try {
     return JSON.parse(await readFile(operationPath(ctx, key, id), "utf8"))
@@ -1330,7 +1331,7 @@ export async function saveOperationBundle(
   ctx: CommandContext,
   key: string,
   id: string,
-  bundle: { bundleId: string; signatures: string[]; imageUrl: string; outcome?: string },
+  bundle: { bundleId: string; signatures: string[]; imageUrl: string; bannerUrl?: string; outcome?: string },
 ): Promise<void> {
   await writeOperation(operationPath(ctx, key, id), {
     id,
@@ -1338,6 +1339,7 @@ export async function saveOperationBundle(
     bundleId: bundle.bundleId,
     bundleSignatures: bundle.signatures,
     imageUrl: bundle.imageUrl,
+    ...(bundle.bannerUrl ? { bannerUrl: bundle.bannerUrl } : {}),
     ...(bundle.outcome !== undefined ? { bundleOutcome: bundle.outcome } : {}),
   })
 }

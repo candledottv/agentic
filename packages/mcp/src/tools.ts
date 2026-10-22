@@ -48,7 +48,13 @@ import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/
 import { z } from "zod"
 import { keyedRedirectGuard, type RequestConfig, resolveConfig } from "./client"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
-import { configuredImageDir, imageRefusalBody, resolveLaunchImage, UPLOADED_IMAGE_NOTE } from "./image"
+import {
+  configuredImageDir,
+  imageRefusalBody,
+  resolveLaunchImage,
+  UPLOADED_BANNER_NOTE,
+  UPLOADED_IMAGE_NOTE,
+} from "./image"
 import { EXTERNAL_MARKET_DISCLOSURE } from "./market-disclosure"
 import {
   executeLaunchAndSeed,
@@ -731,7 +737,8 @@ const launchTokenShape = {
     .describe(
       "Optional https URL to WIDE artwork for the token page's banner strip (wider than 1.5:1, " +
         "e.g. 1200x630). This is where a share card or OG image belongs. A square image here is " +
-        "rejected with BANNER_WRONG_SHAPE. Omit it and the strip falls back to imageUrl",
+        "rejected with BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Omit it and the strip " +
+        "falls back to imageUrl",
     ),
   chain: z.string().optional().describe('"solana" or "hood"; defaults to solana'),
   quoteAsset: z.string().optional().describe("Quote asset symbol; defaults per chain"),
@@ -1079,7 +1086,21 @@ const localImageShape = {
         "including on a dry run. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " +
         "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " +
         "Pass this or imageUrl, never both. The result carries the imageUrl used: pass that on a retry, or " +
-        "after a dry run, instead of uploading the file again. bannerUrl takes no file",
+        "after a dry run, instead of uploading the file again. This is the square token image: Candle crops " +
+        "it to a square, so a wide banner belongs in bannerPath, not here",
+    ),
+  bannerUrl: launchTokenShape.bannerUrl.describe(
+    `${launchTokenShape.bannerUrl.description}. Pass this or bannerPath, never both`,
+  ),
+  bannerPath: z
+    .string()
+    .optional()
+    .describe(
+      "An absolute path, inside CANDLE_IMAGE_DIR, to WIDE banner artwork for the token page strip (wider than " +
+        "1.5:1, e.g. 2171x724 or 1200x630). The file is uploaded uncropped and becomes public and permanent, " +
+        "including on a dry run; PNG, JPEG, GIF or WebP, at most 10MB. A square image is refused with " +
+        "BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Pass this or bannerUrl, never both. " +
+        "The result carries the bannerUrl used: pass that on a retry instead of uploading the file again",
     ),
 }
 const localLaunchTokenShape = { ...launchTokenShape, ...localImageShape }
@@ -1087,8 +1108,9 @@ const localLaunchAndSeedShape = { ...seedableLaunchShape, ...localImageShape, ..
 
 /** Added to both launch tools' descriptions where imagePath is offered: an upload is a publication. */
 const IMAGE_PATH_DISCLOSURE =
-  " With imagePath, the image file is uploaded first and becomes public and permanent, on a dry run too; " +
-  "nothing about a dry run keeps that file private."
+  " With imagePath or bannerPath, the file is uploaded first and becomes public and permanent, on a dry run too; " +
+  "nothing about a dry run keeps that file private. imagePath is the square token image (Candle crops it); " +
+  "a wide banner goes in bannerPath, which is not cropped."
 
 const transferShape = {
   chain: z.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
@@ -1219,9 +1241,14 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       }
       if ("uploadFailed" in image) return { content: [{ type: "text", text: image.uploadFailed }], isError: true }
       const relayed = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch)
-      if (image.uploaded === undefined) return relayed
+      if (image.uploaded === undefined && image.uploadedBanner === undefined) return relayed
       // The API's body stays verbatim in the first block; what this server did rides in a second.
-      const uploaded = JSON.stringify({ imageUrl: image.uploaded, note: UPLOADED_IMAGE_NOTE })
+      const uploaded = JSON.stringify({
+        ...(image.uploaded !== undefined ? { imageUrl: image.uploaded, note: UPLOADED_IMAGE_NOTE } : {}),
+        ...(image.uploadedBanner !== undefined
+          ? { bannerUrl: image.uploadedBanner, bannerNote: UPLOADED_BANNER_NOTE }
+          : {}),
+      })
       return { ...relayed, content: [...relayed.content, { type: "text" as const, text: uploaded }] }
     },
   )

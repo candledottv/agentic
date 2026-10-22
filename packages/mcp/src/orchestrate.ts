@@ -25,7 +25,7 @@
 import { randomUUID } from "node:crypto"
 import type { RequestConfig } from "./client"
 import { decimalToRaw, defaultQuoteId, percentOfBalance, QUOTE_DECIMALS } from "./convert"
-import { type ImageFs, imageRefusalBody, resolveLaunchImage, UPLOADED_IMAGE_NOTE } from "./image"
+import { type ImageFs, imageRefusalBody, resolveLaunchImage, uploadedFields } from "./image"
 import { noteVersionHeaders, updateAvailable } from "./update-notice"
 
 export type FetchLike = (
@@ -464,6 +464,10 @@ export interface LaunchAndSeedArgs {
   imageUrl?: string
   /** Never forwarded: uploaded first, and the launch is made with the URL that comes back. */
   imagePath?: string
+  /** Optional https URL to wide banner artwork. Not combined with `bannerPath`. */
+  bannerUrl?: string
+  /** Never forwarded: uploaded first (`kind=banner`), and the launch is made with the `bannerUrl` that comes back. */
+  bannerPath?: string
   chain?: string
   quoteAsset?: string
   mode?: string
@@ -521,7 +525,7 @@ export async function executeLaunchAndSeed(
     return { text: JSON.stringify({ clientLaunchId, api }), isError: true }
   }
   // Once a file was uploaded, every result says where, the failures included: it is public either way.
-  const uploaded = image.uploaded === undefined ? {} : { imageUrl: image.uploaded, imageNote: UPLOADED_IMAGE_NOTE }
+  const uploaded = uploadedFields(image)
 
   const path = dryRun ? "/api/v1/launch/headless/dry-run" : "/api/v1/launch/headless"
   const posted = await postJson(
@@ -536,7 +540,7 @@ export async function executeLaunchAndSeed(
   )
   if ("thrown" in posted) {
     const failed = transportError("clientLaunchId", clientLaunchId, posted.thrown)
-    return image.uploaded === undefined
+    return Object.keys(uploaded).length === 0
       ? failed
       : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) }
   }

@@ -997,6 +997,18 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     const uploads = <T extends { path: string }>(calls: T[]) =>
       calls.filter((call) => call.path === "/api/v1/uploads/agent-image")
 
+    test("--banner file is uploaded uncropped and passed to the Hood self build", async () => {
+      const f = await fixture()
+      const path = await f.file("banner.png", pngBytes)
+      expect(await run([...hoodLaunch(), "--banner", path], f.deps)).toBe(0)
+      const upload = uploads(f.calls)
+      expect(upload).toHaveLength(1)
+      expect(upload[0]?.url).toContain("?kind=banner")
+      expect(builds(f.calls)[0]?.body?.bannerUrl).toBe(hostedImage)
+      expect(lastJson(f.stdout.text).bannerUrl).toBe(hostedImage)
+      expect(f.stderr.text).toContain("public and permanent")
+    })
+
     test("one upload before the build and before the id is claimed; the Hood build carries imageUrl and never a path", async () => {
       const f = await fixture()
       const path = await f.file("logo.png", pngBytes)

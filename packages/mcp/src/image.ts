@@ -161,20 +161,25 @@ export interface LocalImage {
  * refused. This is as far as path-based calls go: Node has no way to open relative to a directory
  * handle, so a writer who can swap the path several times between these calls is not excluded.
  */
-export async function readImageInDir(imageDir: string, imagePath: string, fs: ImageFs = nodeFs): Promise<LocalImage> {
+export async function readImageInDir(
+  imageDir: string,
+  imagePath: string,
+  fs: ImageFs = nodeFs,
+  field: "imagePath" | "bannerPath" = "imagePath",
+): Promise<LocalImage> {
   if (!isAbsolute(imagePath))
     throw new ImageRefusal(
       "MCP_VALIDATION",
-      `imagePath must be an absolute path inside CANDLE_IMAGE_DIR; this server's working directory is not something a caller can know. ${NOTHING_UPLOADED}`,
+      `${field} must be an absolute path inside CANDLE_IMAGE_DIR; this server's working directory is not something a caller can know. ${NOTHING_UPLOADED}`,
     )
   const dirReal = await realImageDir(imageDir, fs)
   const outside = () => new ImageRefusal("IMAGE_OUTSIDE_DIR", OUTSIDE_IMAGE_DIR)
   const unreadable = (why: string) =>
-    new ImageRefusal("IMAGE_UNREADABLE", `Could not read the image at imagePath: ${why}. ${NOTHING_UPLOADED}`)
+    new ImageRefusal("IMAGE_UNREADABLE", `Could not read the image at ${field}: ${why}. ${NOTHING_UPLOADED}`)
   const tooLarge = () =>
     new ImageRefusal(
       "IMAGE_TOO_LARGE",
-      `The file at imagePath is over 10MB, the largest image Candle hosts. ${NOTHING_UPLOADED}`,
+      `The file at ${field} is over 10MB, the largest image Candle hosts. ${NOTHING_UPLOADED}`,
     )
 
   let fileReal: string
@@ -239,82 +244,49 @@ export async function readImageInDir(imageDir: string, imagePath: string, fs: Im
   if (!contentType)
     throw new ImageRefusal(
       "IMAGE_TYPE_UNSUPPORTED",
-      `The file at imagePath is not a PNG, JPEG, GIF or WebP image. The type is read from the file's first bytes, not its name. ${NOTHING_UPLOADED}`,
+      `The file at ${field} is not a PNG, JPEG, GIF or WebP image. The type is read from the file's first bytes, not its name. ${NOTHING_UPLOADED}`,
     )
   return { bytes, contentType }
 }
 
 /** What a launch tool does about its image, decided before the launch request is built. */
 export type LaunchImage =
-  /** The launch arguments to send: `imageUrl` set, `imagePath` gone. `uploaded` is the URL an upload returned. */
-  | { args: Record<string, unknown>; uploaded?: string }
+  /**
+   * The launch arguments to send: `imageUrl` (and `bannerUrl`) set, `imagePath` and `bannerPath` gone.
+   * `uploaded` and `uploadedBanner` are the URLs an upload returned.
+   */
+  | { args: Record<string, unknown>; uploaded?: string; uploadedBanner?: string }
   /** Refused on this machine. No launch was attempted. */
   | { refused: { code: string; message: string } }
   /** The upload route refused. Its body, as sent. No launch was attempted. */
   | { uploadFailed: string }
 
-/**
- * Turns a launch call's image input into the `imageUrl` the launch routes take.
- *
- * With no directory configured this is today's behaviour: the arguments pass through, and
- * `imageUrl` is the API's to validate. `imagePath` is not in that schema, so the MCP SDK drops it
- * before a handler runs; a caller that reaches the handler another way is refused here rather
- * than served, and no file is read.
- *
- * With one configured, exactly one of `imageUrl` and `imagePath` is required, and both or neither
- * is refused before any file is read or any request made.
- */
-export async function resolveLaunchImage(
-  args: Record<string, unknown>,
-  imageDir: string | undefined,
+type UploadKind = "image" | "banner"
+
+/** POSTs one file to `/uploads/agent-image` (`?kind=banner` for a banner) and returns the https URL. */
+async function uploadLocalImage(
+  image: LocalImage,
+  kind: UploadKind,
   cfg: RequestConfig,
+  apiKey: string,
   doFetch: FetchLike,
-  fs: ImageFs = nodeFs,
-): Promise<LaunchImage> {
-  const { imagePath, ...rest } = args
-  const hasPath = typeof imagePath === "string" && imagePath.length > 0
-  const hasUrl = typeof rest.imageUrl === "string" && rest.imageUrl.length > 0
-  const invalid = (message: string): LaunchImage => ({ refused: { code: "MCP_VALIDATION", message } })
-
-  if (imageDir === undefined) {
-    if (imagePath !== undefined)
-      return invalid(
-        `imagePath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass imageUrl, an https URL. ${NOTHING_UPLOADED}`,
-      )
-    return { args: rest }
-  }
-  if (hasPath && hasUrl) return invalid(`Pass exactly one of imageUrl or imagePath, not both. ${NOTHING_UPLOADED}`)
-  if (!hasPath && !hasUrl)
-    return invalid(
-      "Pass imageUrl (an https URL) or imagePath (an absolute path to an image file inside CANDLE_IMAGE_DIR).",
-    )
-  if (!hasPath) return { args: rest }
-  if (!cfg.apiKey)
-    return invalid(
-      `CANDLE_AGENT_API_KEY is required to upload an image; the key needs the launch:write scope. ${NOTHING_UPLOADED}`,
-    )
-
-  let image: LocalImage
-  try {
-    image = await readImageInDir(imageDir, imagePath, fs)
-  } catch (error) {
-    if (error instanceof ImageRefusal) return { refused: { code: error.code, message: error.message } }
-    throw error
-  }
-
+): Promise<{ url: string } | { refused: { code: string; message: string } } | { uploadFailed: string }> {
   let res: Awaited<ReturnType<FetchLike>>
   try {
-    res = await doFetch(`${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image`, {
-      method: "POST",
-      headers: { "Content-Type": image.contentType, "x-api-key": cfg.apiKey },
-      body: image.bytes as BodyInit,
-    })
+    res = await doFetch(
+      `${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image${kind === "banner" ? "?kind=banner" : ""}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": image.contentType, "x-api-key": apiKey },
+        body: image.bytes as BodyInit,
+      },
+    )
   } catch (error) {
     return {
       refused: {
         code: "MCP_TRANSPORT",
         message:
-          `The image upload failed in transit (${error instanceof Error ? error.message : String(error)}). ` +
+          `The ${kind} upload failed in transit (${error instanceof Error ? error.message : String(error)}). ` +
           "No launch was attempted. The upload may or may not have reached Candle; if it did, the file is public.",
       },
     }
@@ -332,10 +304,108 @@ export async function resolveLaunchImage(
     return {
       refused: {
         code: "MCP_TRANSPORT",
-        message: "Candle did not return an https URL for the uploaded image. No launch was attempted.",
+        message: `Candle did not return an https URL for the uploaded ${kind}. No launch was attempted.`,
       },
     }
-  return { args: { ...rest, imageUrl: uploaded }, uploaded }
+  return { url: uploaded }
+}
+
+/**
+ * Turns a launch call's image inputs into the `imageUrl` and `bannerUrl` the launch routes take.
+ *
+ * With no directory configured this is today's behaviour: the arguments pass through, and the URLs
+ * are the API's to validate. `imagePath` and `bannerPath` are not in that schema, so the MCP SDK
+ * drops them before a handler runs; a caller that reaches the handler another way is refused here
+ * rather than served, and no file is read.
+ *
+ * With one configured, exactly one of `imageUrl` and `imagePath` is required, and both or neither
+ * is refused before any file is read or any request made. `bannerPath` is optional and never
+ * combined with `bannerUrl`. Every file is read and checked before the first upload, so a bad
+ * banner file cannot cost a public image upload. The banner goes to the upload route with
+ * `kind=banner`, which hosts it uncropped and checks it is wide.
+ */
+export async function resolveLaunchImage(
+  args: Record<string, unknown>,
+  imageDir: string | undefined,
+  cfg: RequestConfig,
+  doFetch: FetchLike,
+  fs: ImageFs = nodeFs,
+): Promise<LaunchImage> {
+  const { imagePath, bannerPath, ...rest } = args
+  const hasPath = typeof imagePath === "string" && imagePath.length > 0
+  const hasUrl = typeof rest.imageUrl === "string" && rest.imageUrl.length > 0
+  const hasBannerPath = typeof bannerPath === "string" && bannerPath.length > 0
+  const hasBannerUrl = typeof rest.bannerUrl === "string" && rest.bannerUrl.length > 0
+  const invalid = (message: string): LaunchImage => ({ refused: { code: "MCP_VALIDATION", message } })
+
+  if (imageDir === undefined) {
+    if (imagePath !== undefined)
+      return invalid(
+        `imagePath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass imageUrl, an https URL. ${NOTHING_UPLOADED}`,
+      )
+    if (bannerPath !== undefined)
+      return invalid(
+        `bannerPath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass bannerUrl, an https URL. ${NOTHING_UPLOADED}`,
+      )
+    return { args: rest }
+  }
+  if (hasPath && hasUrl) return invalid(`Pass exactly one of imageUrl or imagePath, not both. ${NOTHING_UPLOADED}`)
+  if (hasBannerPath && hasBannerUrl)
+    return invalid(`Pass at most one of bannerUrl or bannerPath, not both. ${NOTHING_UPLOADED}`)
+  if (!hasPath && !hasUrl)
+    return invalid(
+      "Pass imageUrl (an https URL) or imagePath (an absolute path to an image file inside CANDLE_IMAGE_DIR).",
+    )
+  if (!hasPath && !hasBannerPath) return { args: rest }
+  if (!cfg.apiKey)
+    return invalid(
+      `CANDLE_AGENT_API_KEY is required to upload an image; the key needs the launch:write scope. ${NOTHING_UPLOADED}`,
+    )
+
+  const read = async (path: string, field: "imagePath" | "bannerPath") => {
+    try {
+      return await readImageInDir(imageDir, path, fs, field)
+    } catch (error) {
+      if (error instanceof ImageRefusal) return { refused: { code: error.code, message: error.message } }
+      throw error
+    }
+  }
+  let image: LocalImage | undefined
+  let banner: LocalImage | undefined
+  if (hasPath) {
+    const result = await read(imagePath, "imagePath")
+    if ("refused" in result) return result
+    image = result
+  }
+  if (hasBannerPath) {
+    const result = await read(bannerPath, "bannerPath")
+    if ("refused" in result) return result
+    banner = result
+  }
+
+  const launchArgs: Record<string, unknown> = { ...rest }
+  let uploaded: string | undefined
+  let uploadedBanner: string | undefined
+  if (image) {
+    const result = await uploadLocalImage(image, "image", cfg, cfg.apiKey, doFetch)
+    if (!("url" in result)) return result
+    uploaded = result.url
+    launchArgs.imageUrl = uploaded
+  }
+  if (banner) {
+    const result = await uploadLocalImage(banner, "banner", cfg, cfg.apiKey, doFetch)
+    if (!("url" in result)) {
+      if (uploaded === undefined) return result
+      // The image is already public: say where, so the retry passes imageUrl instead of the file.
+      const why = "refused" in result ? result.refused.message : result.uploadFailed
+      return invalid(
+        `The banner upload failed: ${why} The image was already uploaded to ${uploaded}; pass that as imageUrl on the retry. No launch was attempted.`,
+      )
+    }
+    uploadedBanner = result.url
+    launchArgs.bannerUrl = uploadedBanner
+  }
+  return { args: launchArgs, ...(uploaded ? { uploaded } : {}), ...(uploadedBanner ? { uploadedBanner } : {}) }
 }
 
 /** The envelope the launch routes use for a refusal, so an agent branches on `error.code` either way. */
@@ -346,3 +416,17 @@ export function imageRefusalBody(refused: { code: string; message: string }, ext
 /** What a result says about an upload it made, whether or not the launch that followed succeeded. */
 export const UPLOADED_IMAGE_NOTE =
   "imagePath was uploaded to imageUrl, which is public and permanent. To retry, or to launch after a dry run, pass this imageUrl instead of imagePath, so the file is not uploaded again."
+
+/** The same note for a `bannerPath` upload; `bannerUrl` is the field to pass on a retry. */
+export const UPLOADED_BANNER_NOTE =
+  "bannerPath was uploaded to bannerUrl, which is public and permanent. To retry, or to launch after a dry run, pass this bannerUrl instead of bannerPath, so the file is not uploaded again."
+
+/** The URLs and notes a result reports for the files this server uploaded, whether or not the launch succeeded. */
+export function uploadedFields(image: { uploaded?: string; uploadedBanner?: string }): Record<string, string> {
+  return {
+    ...(image.uploaded !== undefined ? { imageUrl: image.uploaded, imageNote: UPLOADED_IMAGE_NOTE } : {}),
+    ...(image.uploadedBanner !== undefined
+      ? { bannerUrl: image.uploadedBanner, bannerNote: UPLOADED_BANNER_NOTE }
+      : {}),
+  }
+}

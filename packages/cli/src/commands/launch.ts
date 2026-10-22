@@ -66,7 +66,7 @@ import {
 } from "./swap"
 
 const USAGE =
-  "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
+  "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
 
 /** The launch quote assets by chain, as the server's launch matrix lists them. */
 const QUOTE_CHAIN: Record<string, TradeChain> = {
@@ -178,6 +178,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       "--symbol",
       "--image",
       "--image-url",
+      "--banner",
       "--description",
       "--wallet",
       "--client-trade-id",
@@ -188,7 +189,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       "--buy",
     ],
     booleanFlags: ["--yes"],
-    pathFlags: ["--image"],
+    pathFlags: ["--image", "--banner"],
   })
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
@@ -215,6 +216,14 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     return 2
   }
   if (
+    flags["--banner"] &&
+    /^[a-z][a-z0-9+.-]*:\/\//i.test(flags["--banner"]) &&
+    !flags["--banner"].startsWith("https://")
+  ) {
+    writeUsageFailure(ctx.deps, "--banner takes a local file or an https:// URL.", ctx.json)
+    return 2
+  }
+  if (
     parsed.positionals.length ||
     !flags["--name"] ||
     !flags["--symbol"] ||
@@ -237,15 +246,18 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     // BE-1283: a file that is unreadable, over 10MB or not one of the four image types is refused
     // here, before any request. No launch id is involved yet, so the failure names none.
     let image: LocalImage | undefined
+    let banner: LocalImage | undefined
     try {
       if (flags["--image"] !== undefined) image = await readLocalImage(flags["--image"])
+      if (flags["--banner"] && !flags["--banner"].startsWith("https://"))
+        banner = await readLocalImage(flags["--banner"])
     } catch (error) {
       return tradingFailure(ctx, error)
     }
     const key = await tradingKey(ctx)
     const prior = await lookupOperation(ctx, key, id, "launch")
     /** BE-1721 (R4): a same-id re-run of an atomic launch whose bundle did not land, and the image it was built with. */
-    let retry: { imageUrl?: string } | undefined
+    let retry: { imageUrl?: string; bannerUrl?: string } | undefined
     if (prior) {
       const local = await savedOperation(ctx, key, id)
       const settled = prior.job?.status === "confirmed" || prior.job?.status === "failed"
@@ -253,7 +265,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         // BE-1721 (R5): an atomic TEE launch saved its bundle before /submit. Only a bundle that
         // did not land is built again, under the same id, where the server starts a clean attempt.
         if (!atomicRetryable(prior, local)) return resumeAtomicLaunch(ctx, id, local, prior)
-        retry = local.imageUrl !== undefined ? { imageUrl: local.imageUrl } : {}
+        retry = { imageUrl: local.imageUrl, bannerUrl: local.bannerUrl }
         ctx.deps.stderr.write(
           `Bundle ${safeText(local.bundleId)} was never sent or did not land; building launch ${id} again under the same id.\n`,
         )
@@ -299,8 +311,23 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       }
       ctx.deps.stderr.write(`Image: ${safeText(imageUrl)}\n`)
     }
+    // A retry keeps the original banner, including its absence, so the id's request stays stable.
+    let bannerUrl = retry ? retry.bannerUrl : flags["--banner"]?.startsWith("https://") ? flags["--banner"] : undefined
+    if (banner && !retry) {
+      ctx.deps.stderr.write(uploadNotice(banner))
+      try {
+        bannerUrl = await uploadImage(ctx, key, banner, "banner")
+      } catch (error) {
+        ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.\n`)
+        return tradingFailure(ctx, error)
+      }
+      ctx.deps.stderr.write(`Banner: ${safeText(bannerUrl)}\n`)
+    }
     // With --image the result carries the URL the launch was made with.
-    const used: Json = image ? { imageUrl: safeText(imageUrl) } : {}
+    const used: Json = {
+      ...(image ? { imageUrl: safeText(imageUrl) } : {}),
+      ...(bannerUrl ? { bannerUrl: safeText(bannerUrl) } : {}),
+    }
     if (atomic)
       return await atomicLaunch(ctx, key, {
         flags,
@@ -308,12 +335,22 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         wallet,
         buy,
         imageUrl,
+        bannerUrl,
         used,
         yes: parsed.booleans.has("--yes"),
         retry: retry !== undefined,
       })
     if (!solana)
-      return await hoodLaunch(ctx, key, { flags, id, wallet, buy, imageUrl, used, yes: parsed.booleans.has("--yes") })
+      return await hoodLaunch(ctx, key, {
+        flags,
+        id,
+        wallet,
+        buy,
+        imageUrl,
+        bannerUrl,
+        used,
+        yes: parsed.booleans.has("--yes"),
+      })
     if (!(await claimOperation(ctx, key, id, "launch")))
       throw new TradingError(
         "OPERATION_ALREADY_STARTED",
@@ -328,6 +365,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         name: flags["--name"],
         symbol: flags["--symbol"],
         imageUrl,
+        ...(bannerUrl ? { bannerUrl } : {}),
         linkedWalletId: wallet.id,
         ...(flags["--description"] ? { description: flags["--description"] } : {}),
         ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {}),
@@ -504,6 +542,7 @@ async function atomicLaunch(
     wallet: TradingWallet
     buy: LaunchBuy
     imageUrl: string
+    bannerUrl?: string
     used: Json
     yes: boolean
     /** A same-id retry after a bundle that did not land: the id is already this machine's. */
@@ -525,6 +564,7 @@ async function atomicLaunch(
       name: flags["--name"],
       symbol: flags["--symbol"],
       imageUrl: args.imageUrl,
+      ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
       ...(flags["--description"] ? { description: flags["--description"] } : {}),
       ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {}),
       ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
@@ -587,6 +627,7 @@ async function atomicLaunch(
     bundleId: built.bundleId,
     signatures: [],
     imageUrl: args.imageUrl,
+    ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
     outcome: "unsigned",
   })
   ctx.deps.stderr.write(buyNotice(buy, "solana"))
@@ -610,7 +651,12 @@ async function atomicLaunch(
   const signed: string[] = []
   for (const leg of built.legs) signed.push(await relaySign(ctx, key, wallet, leg.unsignedTxBase64 as string))
   const signatures = signed.map(payerSignature)
-  const bundle = { bundleId: built.bundleId, signatures, imageUrl: args.imageUrl }
+  const bundle = {
+    bundleId: built.bundleId,
+    signatures,
+    imageUrl: args.imageUrl,
+    ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
+  }
   await saveOperationBundle(ctx, key, id, bundle)
   ctx.deps.stderr.write(`Bundle: ${safeText(built.bundleId)} (launch ${signatures[0]}, first buy ${signatures[1]})\n`)
   const submitted = await apiRequest("/api/v1/launch/atomic/submit", {
@@ -716,6 +762,7 @@ async function hoodLaunch(
     buy?: LaunchBuy
     /** The image the build is made with: `--image-url`, or the URL `--image`'s upload returned. */
     imageUrl: string
+    bannerUrl?: string
     /** What the result carries beside the launch: the uploaded image's URL, with `--image`. */
     used: Json
     yes: boolean
@@ -736,6 +783,7 @@ async function hoodLaunch(
     name: flags["--name"],
     symbol: flags["--symbol"],
     imageUrl: args.imageUrl,
+    ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
     linkedWalletId: wallet.id,
     dexVersion: flags["--dex-version"],
     ...(flags["--description"] ? { description: flags["--description"] } : {}),

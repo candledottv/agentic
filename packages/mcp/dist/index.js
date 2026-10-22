@@ -257,13 +257,13 @@ async function missingInside(dirReal, path, fs) {
     }
   }
 }
-async function readImageInDir(imageDir, imagePath, fs = nodeFs) {
+async function readImageInDir(imageDir, imagePath, fs = nodeFs, field = "imagePath") {
   if (!isAbsolute(imagePath))
-    throw new ImageRefusal("MCP_VALIDATION", `imagePath must be an absolute path inside CANDLE_IMAGE_DIR; this server's working directory is not something a caller can know. ${NOTHING_UPLOADED}`);
+    throw new ImageRefusal("MCP_VALIDATION", `${field} must be an absolute path inside CANDLE_IMAGE_DIR; this server's working directory is not something a caller can know. ${NOTHING_UPLOADED}`);
   const dirReal = await realImageDir(imageDir, fs);
   const outside = () => new ImageRefusal("IMAGE_OUTSIDE_DIR", OUTSIDE_IMAGE_DIR);
-  const unreadable = (why) => new ImageRefusal("IMAGE_UNREADABLE", `Could not read the image at imagePath: ${why}. ${NOTHING_UPLOADED}`);
-  const tooLarge = () => new ImageRefusal("IMAGE_TOO_LARGE", `The file at imagePath is over 10MB, the largest image Candle hosts. ${NOTHING_UPLOADED}`);
+  const unreadable = (why) => new ImageRefusal("IMAGE_UNREADABLE", `Could not read the image at ${field}: ${why}. ${NOTHING_UPLOADED}`);
+  const tooLarge = () => new ImageRefusal("IMAGE_TOO_LARGE", `The file at ${field} is over 10MB, the largest image Candle hosts. ${NOTHING_UPLOADED}`);
   let fileReal;
   try {
     fileReal = await fs.realpath(imagePath);
@@ -321,47 +321,22 @@ async function readImageInDir(imageDir, imagePath, fs = nodeFs) {
   }
   const contentType = sniffImageType(bytes);
   if (!contentType)
-    throw new ImageRefusal("IMAGE_TYPE_UNSUPPORTED", `The file at imagePath is not a PNG, JPEG, GIF or WebP image. The type is read from the file's first bytes, not its name. ${NOTHING_UPLOADED}`);
+    throw new ImageRefusal("IMAGE_TYPE_UNSUPPORTED", `The file at ${field} is not a PNG, JPEG, GIF or WebP image. The type is read from the file's first bytes, not its name. ${NOTHING_UPLOADED}`);
   return { bytes, contentType };
 }
-async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
-  const { imagePath, ...rest } = args;
-  const hasPath = typeof imagePath === "string" && imagePath.length > 0;
-  const hasUrl = typeof rest.imageUrl === "string" && rest.imageUrl.length > 0;
-  const invalid = (message) => ({ refused: { code: "MCP_VALIDATION", message } });
-  if (imageDir === undefined) {
-    if (imagePath !== undefined)
-      return invalid(`imagePath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass imageUrl, an https URL. ${NOTHING_UPLOADED}`);
-    return { args: rest };
-  }
-  if (hasPath && hasUrl)
-    return invalid(`Pass exactly one of imageUrl or imagePath, not both. ${NOTHING_UPLOADED}`);
-  if (!hasPath && !hasUrl)
-    return invalid("Pass imageUrl (an https URL) or imagePath (an absolute path to an image file inside CANDLE_IMAGE_DIR).");
-  if (!hasPath)
-    return { args: rest };
-  if (!cfg.apiKey)
-    return invalid(`CANDLE_AGENT_API_KEY is required to upload an image; the key needs the launch:write scope. ${NOTHING_UPLOADED}`);
-  let image;
-  try {
-    image = await readImageInDir(imageDir, imagePath, fs);
-  } catch (error) {
-    if (error instanceof ImageRefusal)
-      return { refused: { code: error.code, message: error.message } };
-    throw error;
-  }
+async function uploadLocalImage(image, kind, cfg, apiKey, doFetch) {
   let res;
   try {
-    res = await doFetch(`${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image`, {
+    res = await doFetch(`${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image${kind === "banner" ? "?kind=banner" : ""}`, {
       method: "POST",
-      headers: { "Content-Type": image.contentType, "x-api-key": cfg.apiKey },
+      headers: { "Content-Type": image.contentType, "x-api-key": apiKey },
       body: image.bytes
     });
   } catch (error) {
     return {
       refused: {
         code: "MCP_TRANSPORT",
-        message: `The image upload failed in transit (${error instanceof Error ? error.message : String(error)}). ` + "No launch was attempted. The upload may or may not have reached Candle; if it did, the file is public."
+        message: `The ${kind} upload failed in transit (${error instanceof Error ? error.message : String(error)}). ` + "No launch was attempted. The upload may or may not have reached Candle; if it did, the file is public."
       }
     };
   }
@@ -379,15 +354,92 @@ async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
     return {
       refused: {
         code: "MCP_TRANSPORT",
-        message: "Candle did not return an https URL for the uploaded image. No launch was attempted."
+        message: `Candle did not return an https URL for the uploaded ${kind}. No launch was attempted.`
       }
     };
-  return { args: { ...rest, imageUrl: uploaded }, uploaded };
+  return { url: uploaded };
+}
+async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
+  const { imagePath, bannerPath, ...rest } = args;
+  const hasPath = typeof imagePath === "string" && imagePath.length > 0;
+  const hasUrl = typeof rest.imageUrl === "string" && rest.imageUrl.length > 0;
+  const hasBannerPath = typeof bannerPath === "string" && bannerPath.length > 0;
+  const hasBannerUrl = typeof rest.bannerUrl === "string" && rest.bannerUrl.length > 0;
+  const invalid = (message) => ({ refused: { code: "MCP_VALIDATION", message } });
+  if (imageDir === undefined) {
+    if (imagePath !== undefined)
+      return invalid(`imagePath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass imageUrl, an https URL. ${NOTHING_UPLOADED}`);
+    if (bannerPath !== undefined)
+      return invalid(`bannerPath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass bannerUrl, an https URL. ${NOTHING_UPLOADED}`);
+    return { args: rest };
+  }
+  if (hasPath && hasUrl)
+    return invalid(`Pass exactly one of imageUrl or imagePath, not both. ${NOTHING_UPLOADED}`);
+  if (hasBannerPath && hasBannerUrl)
+    return invalid(`Pass at most one of bannerUrl or bannerPath, not both. ${NOTHING_UPLOADED}`);
+  if (!hasPath && !hasUrl)
+    return invalid("Pass imageUrl (an https URL) or imagePath (an absolute path to an image file inside CANDLE_IMAGE_DIR).");
+  if (!hasPath && !hasBannerPath)
+    return { args: rest };
+  if (!cfg.apiKey)
+    return invalid(`CANDLE_AGENT_API_KEY is required to upload an image; the key needs the launch:write scope. ${NOTHING_UPLOADED}`);
+  const read = async (path, field) => {
+    try {
+      return await readImageInDir(imageDir, path, fs, field);
+    } catch (error) {
+      if (error instanceof ImageRefusal)
+        return { refused: { code: error.code, message: error.message } };
+      throw error;
+    }
+  };
+  let image;
+  let banner;
+  if (hasPath) {
+    const result = await read(imagePath, "imagePath");
+    if ("refused" in result)
+      return result;
+    image = result;
+  }
+  if (hasBannerPath) {
+    const result = await read(bannerPath, "bannerPath");
+    if ("refused" in result)
+      return result;
+    banner = result;
+  }
+  const launchArgs = { ...rest };
+  let uploaded;
+  let uploadedBanner;
+  if (image) {
+    const result = await uploadLocalImage(image, "image", cfg, cfg.apiKey, doFetch);
+    if (!("url" in result))
+      return result;
+    uploaded = result.url;
+    launchArgs.imageUrl = uploaded;
+  }
+  if (banner) {
+    const result = await uploadLocalImage(banner, "banner", cfg, cfg.apiKey, doFetch);
+    if (!("url" in result)) {
+      if (uploaded === undefined)
+        return result;
+      const why = "refused" in result ? result.refused.message : result.uploadFailed;
+      return invalid(`The banner upload failed: ${why} The image was already uploaded to ${uploaded}; pass that as imageUrl on the retry. No launch was attempted.`);
+    }
+    uploadedBanner = result.url;
+    launchArgs.bannerUrl = uploadedBanner;
+  }
+  return { args: launchArgs, ...uploaded ? { uploaded } : {}, ...uploadedBanner ? { uploadedBanner } : {} };
 }
 function imageRefusalBody(refused, extra) {
   return JSON.stringify({ ...extra, success: false, error: { code: refused.code, message: refused.message } });
 }
 var UPLOADED_IMAGE_NOTE = "imagePath was uploaded to imageUrl, which is public and permanent. To retry, or to launch after a dry run, pass this imageUrl instead of imagePath, so the file is not uploaded again.";
+var UPLOADED_BANNER_NOTE = "bannerPath was uploaded to bannerUrl, which is public and permanent. To retry, or to launch after a dry run, pass this bannerUrl instead of bannerPath, so the file is not uploaded again.";
+function uploadedFields(image) {
+  return {
+    ...image.uploaded !== undefined ? { imageUrl: image.uploaded, imageNote: UPLOADED_IMAGE_NOTE } : {},
+    ...image.uploadedBanner !== undefined ? { bannerUrl: image.uploadedBanner, bannerNote: UPLOADED_BANNER_NOTE } : {}
+  };
+}
 
 // src/orchestrate.ts
 import { randomUUID } from "node:crypto";
@@ -665,7 +717,7 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs) {
     }
     return { text: JSON.stringify({ clientLaunchId, api }), isError: true };
   }
-  const uploaded = image.uploaded === undefined ? {} : { imageUrl: image.uploaded, imageNote: UPLOADED_IMAGE_NOTE };
+  const uploaded = uploadedFields(image);
   const path = dryRun ? "/api/v1/launch/headless/dry-run" : "/api/v1/launch/headless";
   const posted = await postJson(`${base(cfg)}${path}`, apiKey, {
     ...image.args,
@@ -674,7 +726,7 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs) {
   }, doFetch);
   if ("thrown" in posted) {
     const failed = transportError("clientLaunchId", clientLaunchId, posted.thrown);
-    return image.uploaded === undefined ? failed : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) };
+    return Object.keys(uploaded).length === 0 ? failed : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) };
   }
   if (!posted.ok) {
     return { text: JSON.stringify({ clientLaunchId, ...uploaded, api: posted.body }), isError: true };
@@ -4948,7 +5000,7 @@ var launchTokenShape = {
   name: z4.string().describe("Token name"),
   symbol: z4.string().describe("Token symbol"),
   imageUrl: z4.string().describe("https URL to the token image. Must be roughly SQUARE (aspect ratio at most 1.5:1): it " + "renders as a small circle/square avatar everywhere. Share cards, OG images and banners " + "are rejected with IMAGE_WRONG_SHAPE -- pass those as bannerUrl instead"),
-  bannerUrl: z4.string().optional().describe("Optional https URL to WIDE artwork for the token page's banner strip (wider than 1.5:1, " + "e.g. 1200x630). This is where a share card or OG image belongs. A square image here is " + "rejected with BANNER_WRONG_SHAPE. Omit it and the strip falls back to imageUrl"),
+  bannerUrl: z4.string().optional().describe("Optional https URL to WIDE artwork for the token page's banner strip (wider than 1.5:1, " + "e.g. 1200x630). This is where a share card or OG image belongs. A square image here is " + "rejected with BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Omit it and the strip " + "falls back to imageUrl"),
   chain: z4.string().optional().describe('"solana" or "hood"; defaults to solana'),
   quoteAsset: z4.string().optional().describe("Quote asset symbol; defaults per chain"),
   mode: z4.string().optional().describe('"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' + "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on. " + '"exp-custom" launches a Solana curve with your own V and G, given in curve, where the API has it ' + "switched on"),
@@ -5078,11 +5130,13 @@ var seedShape = {
 var launchAndSeedShape = { ...seedableLaunchShape, ...seedShape };
 var localImageShape = {
   imageUrl: launchTokenShape.imageUrl.optional().describe(`${launchTokenShape.imageUrl.description}. Pass this or imagePath, never both`),
-  imagePath: z4.string().optional().describe("An absolute image path inside CANDLE_IMAGE_DIR. The file is uploaded and becomes public and permanent, " + "including on a dry run. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " + "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " + "Pass this or imageUrl, never both. The result carries the imageUrl used: pass that on a retry, or " + "after a dry run, instead of uploading the file again. bannerUrl takes no file")
+  imagePath: z4.string().optional().describe("An absolute image path inside CANDLE_IMAGE_DIR. The file is uploaded and becomes public and permanent, " + "including on a dry run. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " + "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " + "Pass this or imageUrl, never both. The result carries the imageUrl used: pass that on a retry, or " + "after a dry run, instead of uploading the file again. This is the square token image: Candle crops " + "it to a square, so a wide banner belongs in bannerPath, not here"),
+  bannerUrl: launchTokenShape.bannerUrl.describe(`${launchTokenShape.bannerUrl.description}. Pass this or bannerPath, never both`),
+  bannerPath: z4.string().optional().describe("An absolute path, inside CANDLE_IMAGE_DIR, to WIDE banner artwork for the token page strip (wider than " + "1.5:1, e.g. 2171x724 or 1200x630). The file is uploaded uncropped and becomes public and permanent, " + "including on a dry run; PNG, JPEG, GIF or WebP, at most 10MB. A square image is refused with " + "BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Pass this or bannerUrl, never both. " + "The result carries the bannerUrl used: pass that on a retry instead of uploading the file again")
 };
 var localLaunchTokenShape = { ...launchTokenShape, ...localImageShape };
 var localLaunchAndSeedShape = { ...seedableLaunchShape, ...localImageShape, ...seedShape };
-var IMAGE_PATH_DISCLOSURE = " With imagePath, the image file is uploaded first and becomes public and permanent, on a dry run too; " + "nothing about a dry run keeps that file private.";
+var IMAGE_PATH_DISCLOSURE = " With imagePath or bannerPath, the file is uploaded first and becomes public and permanent, on a dry run too; " + "nothing about a dry run keeps that file private. imagePath is the square token image (Candle crops it); " + "a wide banner goes in bannerPath, which is not cropped.";
 var transferShape = {
   chain: z4.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
   asset: z4.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).optional().describe("A base asset key. Pass exactly one of asset or mint."),
@@ -5137,9 +5191,12 @@ function registerToolSubset(server, options) {
     if ("uploadFailed" in image)
       return { content: [{ type: "text", text: image.uploadFailed }], isError: true };
     const relayed = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch);
-    if (image.uploaded === undefined)
+    if (image.uploaded === undefined && image.uploadedBanner === undefined)
       return relayed;
-    const uploaded = JSON.stringify({ imageUrl: image.uploaded, note: UPLOADED_IMAGE_NOTE });
+    const uploaded = JSON.stringify({
+      ...image.uploaded !== undefined ? { imageUrl: image.uploaded, note: UPLOADED_IMAGE_NOTE } : {},
+      ...image.uploadedBanner !== undefined ? { bannerUrl: image.uploadedBanner, bannerNote: UPLOADED_BANNER_NOTE } : {}
+    });
     return { ...relayed, content: [...relayed.content, { type: "text", text: uploaded }] };
   });
   register("candle_get_market", {
