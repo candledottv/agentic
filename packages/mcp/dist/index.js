@@ -2474,17 +2474,54 @@ function perpsCandleWindow(opts, now) {
     return usage(`interval must be one of ${PERPS_CANDLE_INTERVALS.join(" ")}.`);
   const count = bounded(opts.count, 100, 1, 5000, "count");
   const raw = opts.end;
-  const endTime = raw === undefined ? now : typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+  const endTime = raw === undefined ? now : epoch(raw);
   const startTime = endTime - count * at(INTERVAL_MS, index);
   if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
     return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
   return { interval, count, startTime, endTime };
+}
+function epoch(raw) {
+  return typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+}
+var PERPS_FUNDING_HISTORY_MAX_MS = 30 * 86400000;
+var PERPS_FUNDING_HISTORY_MAX_ROWS = 500;
+function perpsFundingWindow(opts, now) {
+  const endTime = opts.end === undefined ? now : epoch(opts.end);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
+    return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  const startTime = opts.start === undefined ? endTime - 86400000 : epoch(opts.start);
+  if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
+    return usage("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
+  if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS)
+    return usage("start must be at most 30 days before end.");
+  return { startTime, endTime };
 }
 function bounded(value, fallback, min, max, name) {
   const n = value ?? fallback;
   if (!Number.isInteger(n) || n < min || n > max)
     return usage(`${name} must be an integer from ${min} to ${max}.`);
   return n;
+}
+function parsePerpsFundingHistory(value, coin, window) {
+  if (!Array.isArray(value))
+    return unavailable();
+  const funding = [];
+  for (const row of value) {
+    if (!object(row) || row.coin !== coin || !integer(row.time) || !decimal2(row.fundingRate) || !decimal2(row.premium))
+      return unavailable();
+    if (row.time >= window.startTime && row.time <= window.endTime)
+      funding.push({
+        time: row.time,
+        fundingRate: row.fundingRate,
+        fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
+        premium: row.premium
+      });
+  }
+  funding.sort((a, b) => a.time - b.time);
+  return {
+    funding: funding.slice(0, PERPS_FUNDING_HISTORY_MAX_ROWS),
+    truncated: funding.length > PERPS_FUNDING_HISTORY_MAX_ROWS
+  };
 }
 
 class PerpsMarketReader {
@@ -2762,6 +2799,44 @@ class PerpsMarketReader {
       interval: window.interval,
       candles: candles.slice(-window.count)
     };
+  }
+  async fundingHistory(coin, opts = {}) {
+    this.key();
+    const window = perpsFundingWindow(opts, this.now());
+    const [config, core] = await Promise.all([this.config(), this.core()]);
+    const canonical2 = at(core.universe, resolve(core, coin)).name;
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "fundingHistory",
+      coin: canonical2,
+      startTime: window.startTime,
+      endTime: window.endTime
+    });
+    return {
+      ...this.envelope(config),
+      coin: canonical2,
+      startTime: window.startTime,
+      endTime: window.endTime,
+      ...parsePerpsFundingHistory(value, canonical2, window)
+    };
+  }
+  async predictedFunding() {
+    this.key();
+    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
+    if (extras.predicted === null)
+      return unavailable();
+    const predicted = [];
+    for (const meta of core.universe) {
+      const row = extras.predicted.get(meta.name);
+      if (row)
+        predicted.push({
+          coin: meta.name,
+          fundingRate: row.fundingRate,
+          fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
+          nextFundingTime: row.nextFundingTime
+        });
+    }
+    predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
+    return { ...this.envelope(config, extras.warnings, this.extrasCache?.at ?? this.now()), predicted };
   }
 }
 

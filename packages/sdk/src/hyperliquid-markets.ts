@@ -204,6 +204,12 @@ export interface PerpsBookOptions {
   depth?: number
   sigFigs?: number
 }
+export interface PerpsFundingHistoryOptions {
+  /** ISO 8601 time or epoch milliseconds; default 24 hours before `end`. */
+  start?: string | number
+  /** ISO 8601 time or epoch milliseconds; default now. */
+  end?: string | number
+}
 export interface PerpsCandlesOptions {
   interval?: string
   count?: number
@@ -235,18 +241,31 @@ export function perpsCandleWindow(opts: PerpsCandlesOptions, now: number) {
   if (index < 0) return usage(`interval must be one of ${PERPS_CANDLE_INTERVALS.join(" ")}.`)
   const count = bounded(opts.count, 100, 1, 5_000, "count")
   const raw = opts.end
-  const endTime =
-    raw === undefined
-      ? now
-      : typeof raw === "number" || /^\d+$/.test(raw)
-        ? Number(raw)
-        : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw)
-          ? Date.parse(raw)
-          : NaN
+  const endTime = raw === undefined ? now : epoch(raw)
   const startTime = endTime - count * at(INTERVAL_MS, index)
   if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
     return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.")
   return { interval, count, startTime, endTime }
+}
+function epoch(raw: string | number): number {
+  return typeof raw === "number" || /^\d+$/.test(raw)
+    ? Number(raw)
+    : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw)
+      ? Date.parse(raw)
+      : NaN
+}
+export const PERPS_FUNDING_HISTORY_MAX_MS = 30 * 86_400_000
+export const PERPS_FUNDING_HISTORY_MAX_ROWS = 500
+/** Phase 3 (BE-1817): a funding-history window, at most 30 days, ending no later than now. */
+export function perpsFundingWindow(opts: PerpsFundingHistoryOptions, now: number) {
+  const endTime = opts.end === undefined ? now : epoch(opts.end)
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
+    return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.")
+  const startTime = opts.start === undefined ? endTime - 86_400_000 : epoch(opts.start)
+  if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
+    return usage("start must be an ISO 8601 time or epoch milliseconds, no later than end.")
+  if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS) return usage("start must be at most 30 days before end.")
+  return { startTime, endTime }
 }
 function bounded(value: number | undefined, fallback: number, min: number, max: number, name: string): number {
   const n = value ?? fallback
@@ -324,6 +343,54 @@ export interface PerpsCandlesResult extends PerpsMarketEnvelope {
   coin: string
   interval: string
   candles: PerpsCandle[]
+}
+export interface PerpsFundingPoint {
+  time: number
+  fundingRate: string
+  fundingAprPct: string
+  premium: string
+}
+export interface PerpsFundingHistoryResult extends PerpsMarketEnvelope {
+  coin: string
+  startTime: number
+  endTime: number
+  funding: PerpsFundingPoint[]
+  /** True when the window held more than 500 rows; the earliest 500 are returned. */
+  truncated: boolean
+}
+export interface PerpsPredictedFundingRow {
+  coin: string
+  fundingRate: string
+  fundingAprPct: string
+  nextFundingTime: number
+}
+export interface PerpsPredictedFundingResult extends PerpsMarketEnvelope {
+  predicted: PerpsPredictedFundingRow[]
+}
+/** Hyperliquid `fundingHistory` rows for `coin`, oldest first, within the window. */
+export function parsePerpsFundingHistory(
+  value: unknown,
+  coin: string,
+  window: { startTime: number; endTime: number },
+): { funding: PerpsFundingPoint[]; truncated: boolean } {
+  if (!Array.isArray(value)) return unavailable()
+  const funding: PerpsFundingPoint[] = []
+  for (const row of value) {
+    if (!object(row) || row.coin !== coin || !integer(row.time) || !decimal(row.fundingRate) || !decimal(row.premium))
+      return unavailable()
+    if (row.time >= window.startTime && row.time <= window.endTime)
+      funding.push({
+        time: row.time,
+        fundingRate: row.fundingRate,
+        fundingAprPct: fixed(scaled(row.fundingRate) * 876_000n, 2),
+        premium: row.premium,
+      })
+  }
+  funding.sort((a, b) => a.time - b.time)
+  return {
+    funding: funding.slice(0, PERPS_FUNDING_HISTORY_MAX_ROWS),
+    truncated: funding.length > PERPS_FUNDING_HISTORY_MAX_ROWS,
+  }
 }
 interface GateConfig {
   minOpenInterestUsd: number
@@ -647,5 +714,44 @@ export class PerpsMarketReader {
       interval: window.interval,
       candles: candles.slice(-window.count),
     }
+  }
+  /** Phase 3 (BE-1817): hourly funding for one coin over a window of at most 30 days. */
+  async fundingHistory(coin: string, opts: PerpsFundingHistoryOptions = {}): Promise<PerpsFundingHistoryResult> {
+    this.key()
+    const window = perpsFundingWindow(opts, this.now())
+    const [config, core] = await Promise.all([this.config(), this.core()])
+    const canonical = at(core.universe, resolve(core, coin)).name
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "fundingHistory",
+      coin: canonical,
+      startTime: window.startTime,
+      endTime: window.endTime,
+    })
+    return {
+      ...this.envelope(config),
+      coin: canonical,
+      startTime: window.startTime,
+      endTime: window.endTime,
+      ...parsePerpsFundingHistory(value, canonical, window),
+    }
+  }
+  /** Phase 3 (BE-1817): Hyperliquid's predicted next funding for every main-universe coin. */
+  async predictedFunding(): Promise<PerpsPredictedFundingResult> {
+    this.key()
+    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()])
+    if (extras.predicted === null) return unavailable()
+    const predicted: PerpsPredictedFundingRow[] = []
+    for (const meta of core.universe) {
+      const row = extras.predicted.get(meta.name)
+      if (row)
+        predicted.push({
+          coin: meta.name,
+          fundingRate: row.fundingRate,
+          fundingAprPct: fixed(scaled(row.fundingRate) * 876_000n, 2),
+          nextFundingTime: row.nextFundingTime,
+        })
+    }
+    predicted.sort((a, b) => (a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0))
+    return { ...this.envelope(config, extras.warnings, this.extrasCache?.at ?? this.now()), predicted }
   }
 }

@@ -390,3 +390,58 @@ describe("Spec B public market reads", () => {
     await expect(keyless.perpsMarkets()).rejects.toMatchObject({ code: "PERPS_KEY_REQUIRED" })
   })
 })
+describe("Phase 3 funding reads (BE-1817)", () => {
+  const funding = (time: number, fundingRate = "0.0000125") => ({ coin: "BTC", fundingRate, premium: "0.0001", time })
+  test("funding history: canonical coin, window body, oldest first, filtered to the window", async () => {
+    const start = NOW - 3 * 3_600_000
+    const f = fake({
+      fundingHistory: [funding(NOW - 3_600_000, "-0.00002"), funding(NOW - 2 * 3_600_000), funding(start - 1)],
+    })
+    const result = await f.reader.fundingHistory("btc", { start, end: NOW })
+    expect(f.calls.find((c) => c.body?.type === "fundingHistory")?.body).toEqual({
+      type: "fundingHistory",
+      coin: "BTC",
+      startTime: start,
+      endTime: NOW,
+    })
+    expect(result).toMatchObject({ coin: "BTC", startTime: start, endTime: NOW, truncated: false })
+    expect(result.funding).toEqual([
+      { time: NOW - 2 * 3_600_000, fundingRate: "0.0000125", fundingAprPct: "10.95", premium: "0.0001" },
+      { time: NOW - 3_600_000, fundingRate: "-0.00002", fundingAprPct: "-17.52", premium: "0.0001" },
+    ])
+  })
+  test("funding history: defaults to the last 24 h; caps 30 days and 500 rows; refuses a bad window", async () => {
+    const rows = Array.from({ length: 501 }, (_, i) => funding(NOW - 600 * 3_600_000 + i * 3_600_000))
+    const f = fake({ fundingHistory: rows })
+    const day = await f.reader.fundingHistory("BTC")
+    expect([day.startTime, day.endTime]).toEqual([NOW - 86_400_000, NOW])
+    const long = await f.reader.fundingHistory("BTC", { start: NOW - 30 * 86_400_000 })
+    expect(long.funding).toHaveLength(500)
+    expect(long.truncated).toBe(true)
+    await expect(f.reader.fundingHistory("BTC", { start: NOW - 30 * 86_400_000 - 1 })).rejects.toMatchObject({
+      code: "PERPS_USAGE",
+    })
+    await expect(f.reader.fundingHistory("BTC", { end: NOW + 1 })).rejects.toMatchObject({ code: "PERPS_USAGE" })
+    await expect(f.reader.fundingHistory("BTC", { start: "yesterday" })).rejects.toMatchObject({ code: "PERPS_USAGE" })
+    await expect(f.reader.fundingHistory("NOPE")).rejects.toMatchObject({ code: "PERPS_MARKET_NOT_FOUND" })
+  })
+  test("funding history: a malformed row is unavailable, never a guess", async () => {
+    const f = fake({ fundingHistory: [{ ...funding(NOW - 1), fundingRate: "x" }] })
+    await expect(f.reader.fundingHistory("BTC")).rejects.toMatchObject({ code: "PERPS_UNAVAILABLE" })
+  })
+  test("predicted funding: Hyperliquid's own venue, main-universe coins only", async () => {
+    const f = fake({
+      predictedFundings: [
+        ["BTC", [["HlPerp", { fundingRate: "0.0000125", nextFundingTime: NOW + 3_600_000 }]]],
+        ["kPEPE", [["BinPerp", { fundingRate: "1", nextFundingTime: NOW }]]],
+        ["OTHER", [["HlPerp", { fundingRate: "0.1", nextFundingTime: NOW }]]],
+      ],
+    })
+    const result = await f.reader.predictedFunding()
+    expect(result.predicted).toEqual([
+      { coin: "BTC", fundingRate: "0.0000125", fundingAprPct: "10.95", nextFundingTime: NOW + 3_600_000 },
+    ])
+    const down = fake({ predictedFundings: new Error("down") })
+    await expect(down.reader.predictedFunding()).rejects.toMatchObject({ code: "PERPS_UNAVAILABLE" })
+  })
+})

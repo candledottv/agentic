@@ -56,6 +56,12 @@ export interface PerpsBookOptions {
     depth?: number;
     sigFigs?: number;
 }
+export interface PerpsFundingHistoryOptions {
+    /** ISO 8601 time or epoch milliseconds; default 24 hours before `end`. */
+    start?: string | number;
+    /** ISO 8601 time or epoch milliseconds; default now. */
+    end?: string | number;
+}
 export interface PerpsCandlesOptions {
     interval?: string;
     count?: number;
@@ -65,6 +71,13 @@ export declare const PERPS_CANDLE_INTERVALS: readonly ["1m", "3m", "5m", "15m", 
 export declare function perpsCandleWindow(opts: PerpsCandlesOptions, now: number): {
     interval: string;
     count: number;
+    startTime: number;
+    endTime: number;
+};
+export declare const PERPS_FUNDING_HISTORY_MAX_MS: number;
+export declare const PERPS_FUNDING_HISTORY_MAX_ROWS = 500;
+/** Phase 3 (BE-1817): a funding-history window, at most 30 days, ending no later than now. */
+export declare function perpsFundingWindow(opts: PerpsFundingHistoryOptions, now: number): {
     startTime: number;
     endTime: number;
 };
@@ -146,6 +159,37 @@ export interface PerpsCandlesResult extends PerpsMarketEnvelope {
     interval: string;
     candles: PerpsCandle[];
 }
+export interface PerpsFundingPoint {
+    time: number;
+    fundingRate: string;
+    fundingAprPct: string;
+    premium: string;
+}
+export interface PerpsFundingHistoryResult extends PerpsMarketEnvelope {
+    coin: string;
+    startTime: number;
+    endTime: number;
+    funding: PerpsFundingPoint[];
+    /** True when the window held more than 500 rows; the earliest 500 are returned. */
+    truncated: boolean;
+}
+export interface PerpsPredictedFundingRow {
+    coin: string;
+    fundingRate: string;
+    fundingAprPct: string;
+    nextFundingTime: number;
+}
+export interface PerpsPredictedFundingResult extends PerpsMarketEnvelope {
+    predicted: PerpsPredictedFundingRow[];
+}
+/** Hyperliquid `fundingHistory` rows for `coin`, oldest first, within the window. */
+export declare function parsePerpsFundingHistory(value: unknown, coin: string, window: {
+    startTime: number;
+    endTime: number;
+}): {
+    funding: PerpsFundingPoint[];
+    truncated: boolean;
+};
 export interface PerpsMarketReaderOptions {
     apiKey?: string;
     network: PerpsMarketNetwork;
@@ -175,5 +219,9 @@ export declare class PerpsMarketReader {
     market(coin: string): Promise<PerpsMarketResult>;
     book(coin: string, opts?: PerpsBookOptions): Promise<PerpsBookResult>;
     candles(coin: string, opts?: PerpsCandlesOptions): Promise<PerpsCandlesResult>;
+    /** Phase 3 (BE-1817): hourly funding for one coin over a window of at most 30 days. */
+    fundingHistory(coin: string, opts?: PerpsFundingHistoryOptions): Promise<PerpsFundingHistoryResult>;
+    /** Phase 3 (BE-1817): Hyperliquid's predicted next funding for every main-universe coin. */
+    predictedFunding(): Promise<PerpsPredictedFundingResult>;
 }
 //# sourceMappingURL=hyperliquid-markets.d.ts.map

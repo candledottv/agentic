@@ -39684,17 +39684,52 @@ function perpsCandleWindow(opts, now) {
     return usage3(`interval must be one of ${PERPS_CANDLE_INTERVALS.join(" ")}.`);
   const count = bounded(opts.count, 100, 1, 5000, "count");
   const raw = opts.end;
-  const endTime = raw === undefined ? now : typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+  const endTime = raw === undefined ? now : epoch(raw);
   const startTime = endTime - count * at(INTERVAL_MS, index);
   if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
     return usage3("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
   return { interval, count, startTime, endTime };
+}
+function epoch(raw) {
+  return typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+}
+function perpsFundingWindow(opts, now) {
+  const endTime = opts.end === undefined ? now : epoch(opts.end);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
+    return usage3("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  const startTime = opts.start === undefined ? endTime - 86400000 : epoch(opts.start);
+  if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
+    return usage3("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
+  if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS)
+    return usage3("start must be at most 30 days before end.");
+  return { startTime, endTime };
 }
 function bounded(value, fallback, min, max, name) {
   const n = value ?? fallback;
   if (!Number.isInteger(n) || n < min || n > max)
     return usage3(`${name} must be an integer from ${min} to ${max}.`);
   return n;
+}
+function parsePerpsFundingHistory(value, coin, window) {
+  if (!Array.isArray(value))
+    return unavailable2();
+  const funding = [];
+  for (const row of value) {
+    if (!object(row) || row.coin !== coin || !integer(row.time) || !decimal2(row.fundingRate) || !decimal2(row.premium))
+      return unavailable2();
+    if (row.time >= window.startTime && row.time <= window.endTime)
+      funding.push({
+        time: row.time,
+        fundingRate: row.fundingRate,
+        fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
+        premium: row.premium
+      });
+  }
+  funding.sort((a, b) => a.time - b.time);
+  return {
+    funding: funding.slice(0, PERPS_FUNDING_HISTORY_MAX_ROWS),
+    truncated: funding.length > PERPS_FUNDING_HISTORY_MAX_ROWS
+  };
 }
 
 class PerpsMarketReader {
@@ -39973,8 +40008,46 @@ class PerpsMarketReader {
       candles: candles.slice(-window.count)
     };
   }
+  async fundingHistory(coin, opts = {}) {
+    this.key();
+    const window = perpsFundingWindow(opts, this.now());
+    const [config, core] = await Promise.all([this.config(), this.core()]);
+    const canonical2 = at(core.universe, resolve(core, coin)).name;
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "fundingHistory",
+      coin: canonical2,
+      startTime: window.startTime,
+      endTime: window.endTime
+    });
+    return {
+      ...this.envelope(config),
+      coin: canonical2,
+      startTime: window.startTime,
+      endTime: window.endTime,
+      ...parsePerpsFundingHistory(value, canonical2, window)
+    };
+  }
+  async predictedFunding() {
+    this.key();
+    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
+    if (extras.predicted === null)
+      return unavailable2();
+    const predicted = [];
+    for (const meta of core.universe) {
+      const row = extras.predicted.get(meta.name);
+      if (row)
+        predicted.push({
+          coin: meta.name,
+          fundingRate: row.fundingRate,
+          fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
+          nextFundingTime: row.nextFundingTime
+        });
+    }
+    predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
+    return { ...this.envelope(config, extras.warnings, this.extrasCache?.at ?? this.now()), predicted };
+  }
 }
-var INFO_URLS, ONE, DECIMAL, PerpsMarketError, PERPS_CANDLE_INTERVALS, INTERVAL_MS;
+var INFO_URLS, ONE, DECIMAL, PerpsMarketError, PERPS_CANDLE_INTERVALS, INTERVAL_MS, PERPS_FUNDING_HISTORY_MAX_MS, PERPS_FUNDING_HISTORY_MAX_ROWS = 500;
 var init_hyperliquid_markets = __esm(() => {
   INFO_URLS = {
     mainnet: "https://api.hyperliquid.xyz/info",
@@ -40024,6 +40097,7 @@ var init_hyperliquid_markets = __esm(() => {
     604800000,
     2678400000
   ];
+  PERPS_FUNDING_HISTORY_MAX_MS = 30 * 86400000;
 });
 
 // ../mcp/src/perps-history.ts
@@ -77020,9 +77094,9 @@ async function planTransfer(input) {
   }
   const feeLines = [];
   if (profile.newerTransferFee || profile.olderTransferFee) {
-    const epoch = await rpc.getEpoch();
-    const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, raw, epoch);
-    feeLines.push(`post-fee    ${postFeeAmountRaw} raw arrives (${feeRaw} raw withheld by the mint at epoch ${epoch})`);
+    const epoch2 = await rpc.getEpoch();
+    const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, raw, epoch2);
+    feeLines.push(`post-fee    ${postFeeAmountRaw} raw arrives (${feeRaw} raw withheld by the mint at epoch ${epoch2})`);
   }
   instructions.push(tokenTransferChecked({
     source,
@@ -83173,7 +83247,7 @@ async function sweepEverythingTo(input) {
       });
     }
   }
-  let epoch;
+  let epoch2;
   for (const acct of tokenAccounts) {
     const token2022 = acct.programId === TOKEN_2022_PROGRAM_ID;
     if (acct.state !== "initialized") {
@@ -83216,9 +83290,9 @@ async function sweepEverythingTo(input) {
           for (const risk of profile.risks)
             say(`  ${acct.mint}: ${risk.message}`);
           if (profile.newerTransferFee || profile.olderTransferFee) {
-            epoch ??= await rpc.getEpoch();
-            const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, amount, epoch);
-            say(`  ${acct.mint}: ${postFeeAmountRaw} raw will arrive; ${feeRaw} raw is withheld by the mint at epoch ${epoch}`);
+            epoch2 ??= await rpc.getEpoch();
+            const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, amount, epoch2);
+            say(`  ${acct.mint}: ${postFeeAmountRaw} raw will arrive; ${feeRaw} raw is withheld by the mint at epoch ${epoch2}`);
           }
         }
         const existing = await rpc.getAccountInfo(encodePubkey(destinationAta));
@@ -86980,17 +87054,54 @@ function perpsCandleWindow2(opts, now) {
     return usage5(`interval must be one of ${PERPS_CANDLE_INTERVALS2.join(" ")}.`);
   const count2 = bounded2(opts.count, 100, 1, 5000, "count");
   const raw = opts.end;
-  const endTime = raw === undefined ? now : typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+  const endTime = raw === undefined ? now : epoch2(raw);
   const startTime = endTime - count2 * at2(INTERVAL_MS2, index);
   if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
     return usage5("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
   return { interval, count: count2, startTime, endTime };
+}
+function epoch2(raw) {
+  return typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+}
+var PERPS_FUNDING_HISTORY_MAX_MS2 = 30 * 86400000;
+var PERPS_FUNDING_HISTORY_MAX_ROWS2 = 500;
+function perpsFundingWindow2(opts, now) {
+  const endTime = opts.end === undefined ? now : epoch2(opts.end);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
+    return usage5("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  const startTime = opts.start === undefined ? endTime - 86400000 : epoch2(opts.start);
+  if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
+    return usage5("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
+  if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS2)
+    return usage5("start must be at most 30 days before end.");
+  return { startTime, endTime };
 }
 function bounded2(value, fallback, min, max, name2) {
   const n = value ?? fallback;
   if (!Number.isInteger(n) || n < min || n > max)
     return usage5(`${name2} must be an integer from ${min} to ${max}.`);
   return n;
+}
+function parsePerpsFundingHistory2(value, coin, window) {
+  if (!Array.isArray(value))
+    return unavailable4();
+  const funding = [];
+  for (const row of value) {
+    if (!object3(row) || row.coin !== coin || !integer2(row.time) || !decimal5(row.fundingRate) || !decimal5(row.premium))
+      return unavailable4();
+    if (row.time >= window.startTime && row.time <= window.endTime)
+      funding.push({
+        time: row.time,
+        fundingRate: row.fundingRate,
+        fundingAprPct: fixed2(scaled2(row.fundingRate) * 876000n, 2),
+        premium: row.premium
+      });
+  }
+  funding.sort((a, b) => a.time - b.time);
+  return {
+    funding: funding.slice(0, PERPS_FUNDING_HISTORY_MAX_ROWS2),
+    truncated: funding.length > PERPS_FUNDING_HISTORY_MAX_ROWS2
+  };
 }
 
 class PerpsMarketReader2 {
@@ -87268,6 +87379,44 @@ class PerpsMarketReader2 {
       interval: window.interval,
       candles: candles.slice(-window.count)
     };
+  }
+  async fundingHistory(coin, opts = {}) {
+    this.key();
+    const window = perpsFundingWindow2(opts, this.now());
+    const [config, core] = await Promise.all([this.config(), this.core()]);
+    const canonical4 = at2(core.universe, resolve3(core, coin)).name;
+    const value = await info2(this.opts.fetcher, this.opts.network, {
+      type: "fundingHistory",
+      coin: canonical4,
+      startTime: window.startTime,
+      endTime: window.endTime
+    });
+    return {
+      ...this.envelope(config),
+      coin: canonical4,
+      startTime: window.startTime,
+      endTime: window.endTime,
+      ...parsePerpsFundingHistory2(value, canonical4, window)
+    };
+  }
+  async predictedFunding() {
+    this.key();
+    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
+    if (extras.predicted === null)
+      return unavailable4();
+    const predicted = [];
+    for (const meta of core.universe) {
+      const row = extras.predicted.get(meta.name);
+      if (row)
+        predicted.push({
+          coin: meta.name,
+          fundingRate: row.fundingRate,
+          fundingAprPct: fixed2(scaled2(row.fundingRate) * 876000n, 2),
+          nextFundingTime: row.nextFundingTime
+        });
+    }
+    predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
+    return { ...this.envelope(config, extras.warnings, this.extrasCache?.at ?? this.now()), predicted };
   }
 }
 
