@@ -94,10 +94,11 @@
     },
     "market": {
       "retryable": false,
-      "action": "Read error.routing.reason and error.discovery. Explicit error.retryable overrides this default (graduation/no_candidates can retry). For a refusal from a Candle-only endpoint, request POST /api/v1/trade/agent/quote; that guidance does not promise liquidity, access or external limit orders.",
+      "action": "Read error.routing.reason and error.discovery. Explicit error.retryable overrides this default (graduation/no_candidates can retry). For a refusal from a Candle-only endpoint, request POST /api/v1/trade/agent/quote; that guidance does not promise liquidity, access or external limit orders. POOL_AT_FLOOR: a graduated Solana token's own pool has no buyers below its launch price for this sell; sell less or wait for buyers, since the same sell reproduces it.",
       "codes": [
         "MARKET_NOT_FOUND",
         "MARKET_NOT_TRADABLE",
+        "POOL_AT_FLOOR",
         "PAIR_UNSUPPORTED",
         "QUOTE_PAIR_UNKNOWN",
         "DEV_BUY_UNSUPPORTED_FOR_PAIR"
