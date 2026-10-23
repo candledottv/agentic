@@ -21,6 +21,7 @@ import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
+import { accent, brandHeader, terminalStyle } from "../presentation"
 import { effectiveProfileFields, identityLine, printIdentity, resolveProfileName } from "../profiles"
 import { portalDeviceUrl, writeUsageFailure } from "../render"
 import { authLogin } from "./auth"
@@ -43,7 +44,7 @@ interface EmbeddedWalletsResponse {
 }
 
 function section(deps: CommandContext["deps"], title: string): void {
-  deps.stdout.write(`\n== ${title} ==\n`)
+  deps.stdout.write(`\n${accent(`== ${title} ==`, terminalStyle(deps, "stdout"))}\n`)
 }
 
 export async function setup(args: string[], ctx: CommandContext): Promise<number> {
@@ -66,6 +67,8 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
     return 2
   }
 
+  const style = terminalStyle(deps, "stdout")
+  if (deps.isTTY.stdin) deps.stdout.write(brandHeader(style).join("\n"))
   await printIdentity(ctx)
 
   deps.stdout.write(`candle setup: this wizard authorizes the device, shows funding, and verifies everything.\n`)

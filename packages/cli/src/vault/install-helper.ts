@@ -15,7 +15,7 @@
  */
 import { randomBytes } from "node:crypto"
 import type { CommandContext, Deps } from "../deps"
-import { formatBytes, stepReporter } from "../progress"
+import { commandSteps, formatBytes } from "../progress"
 import { detectInstall, fetchPinned, helperAssetName, releaseBaseUrl, releaseIdentityUri } from "../release"
 import { checkReleaseAsset, downloadReleaseAsset, downloadSums, messageOf } from "../release-assets"
 import { CLI_VERSION } from "../version"
@@ -35,7 +35,7 @@ export type HelperInstall =
  * reason and leaves nothing behind.
  */
 export async function installHelperForThisRelease(ctx: CommandContext): Promise<HelperInstall> {
-  const { deps, json } = ctx
+  const { deps } = ctx
   const location = await locateFido2Helper(deps)
   if (location.state === "ready") return { ok: true, path: location.path, installed: false }
   if (!location.installable) return { ok: false, message: location.reason }
@@ -51,9 +51,7 @@ export async function installHelperForThisRelease(ctx: CommandContext): Promise<
   const base = releaseBaseUrl(deps.env)
   const tag = `cli-v${CLI_VERSION}`
   const name = helperAssetName(deps.platformKey)
-  const steps = json
-    ? stepReporter(() => {}, false)
-    : stepReporter((text) => deps.stderr.write(text), process.stderr.isTTY === true)
+  using steps = commandSteps(ctx)
 
   steps.start(`reading the ${tag} release manifest`)
   const fetched = await fetchPinned(deps, base, tag)

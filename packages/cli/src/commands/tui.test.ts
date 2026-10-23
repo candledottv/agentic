@@ -67,4 +67,23 @@ describe("candle tui", () => {
     expect((s.deps.stderr as unknown as { text: string }).text).toContain("candle-tui")
     expect(await tui(["extra"], s.ctx)).toBe(2)
   })
+  test("non-TTY, plain and JSON invocations refuse before starting a screen", async () => {
+    for (const mode of ["pipe", "plain", "json", "dumb"]) {
+      const s = await setup(true)
+      if (mode === "pipe") s.deps.isTTY.stdout = false
+      if (mode === "plain") s.deps.presentation = { plain: true }
+      if (mode === "json") s.ctx.json = true
+      if (mode === "dumb") s.deps.env.TERM = "dumb"
+      expect(await tui([], s.ctx)).toBe(1)
+      expect(s.runs).toHaveLength(0)
+      const output = (s.deps.stderr as ReturnType<typeof createCapture>).text
+      if (mode !== "json") expect(output).toContain("candle portfolio")
+    }
+  })
+  test("--no-color reaches the TUI as NO_COLOR", async () => {
+    const s = await setup(true)
+    s.deps.presentation = { noColor: true }
+    expect(await tui([], s.ctx)).toBe(0)
+    expect(s.runs[0]?.env.NO_COLOR).toBe("1")
+  })
 })

@@ -17,6 +17,9 @@
  * No dependency taken: ora and friends are fine libraries, but this is 40 lines and the CLI's
  * dependency budget is deliberately tight (see release-verify's provenance story).
  */
+import type { CommandContext } from "./deps"
+import { terminalStyle } from "./presentation"
+
 export interface StepReporter {
   /** Begin a stage: spinner on a TTY, a plain `label...` line otherwise. */
   start(label: string): void
@@ -31,12 +34,14 @@ export interface StepReporter {
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const INTERVAL_MS = 80
 
-export function stepReporter(write: (text: string) => void, tty: boolean): StepReporter {
+export function stepReporter(write: (text: string) => void, tty: boolean, ascii = false): StepReporter {
+  let detach = () => {}
   let timer: ReturnType<typeof setInterval> | null = null
   let frame = 0
   let current: string | null = null
 
   const clearSpinner = () => {
+    detach()
     if (timer !== null) clearInterval(timer)
     timer = null
     if (tty && current !== null) write("\r\x1b[2K")
@@ -53,6 +58,20 @@ export function stepReporter(write: (text: string) => void, tty: boolean): StepR
       }
       write(`${FRAMES[0]} ${label}`)
       frame = 1
+      // Remove our handler before forwarding the signal: cleanup must not turn Ctrl+C into
+      // "keep downloading". If another owner handles the signal, leave its cancellation intact.
+      const interrupt = (signal: NodeJS.Signals) => {
+        clearSpinner()
+        if (process.listenerCount(signal) === 0) process.kill(process.pid, signal)
+      }
+      const sigint = () => interrupt("SIGINT")
+      const sigterm = () => interrupt("SIGTERM")
+      process.once("SIGINT", sigint)
+      process.once("SIGTERM", sigterm)
+      detach = () => {
+        process.off("SIGINT", sigint)
+        process.off("SIGTERM", sigterm)
+      }
       timer = setInterval(() => {
         write(`\r\x1b[2K${FRAMES[frame % FRAMES.length]} ${current}`)
         frame++
@@ -62,14 +81,27 @@ export function stepReporter(write: (text: string) => void, tty: boolean): StepR
     },
     done(label) {
       clearSpinner()
-      write(`✓ ${label}\n`)
+      write(`${ascii ? "OK" : "✓"} ${label}\n`)
     },
     fail(label) {
       clearSpinner()
-      write(`✗ ${label}\n`)
+      write(`${ascii ? "FAIL" : "✗"} ${label}\n`)
     },
     stop: clearSpinner,
   }
+}
+
+/** Scope-bound cleanup covers every return and thrown failure in the two progress commands. */
+export function commandSteps(ctx: CommandContext): StepReporter & Disposable {
+  const style = terminalStyle(ctx.deps, "stderr", ctx.json)
+  const reporter = stepReporter(
+    ctx.json ? () => {} : (text) => ctx.deps.stderr.write(text),
+    style.motion,
+    !style.styled,
+  )
+  // Match Bun's `using` transform on older Node 18 releases without Symbol.dispose.
+  return { ...reporter, [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: () => reporter.stop() } as StepReporter &
+    Disposable
 }
 
 /** "12.4 MB" from a byte count; whole kilobytes below a megabyte. */

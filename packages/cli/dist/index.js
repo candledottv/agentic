@@ -46,6 +46,43 @@ var __export = (target, all) => {
 };
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
+var __dispose = Symbol.dispose || /* @__PURE__ */ Symbol.for("Symbol.dispose");
+var __asyncDispose = Symbol.asyncDispose || /* @__PURE__ */ Symbol.for("Symbol.asyncDispose");
+var __using = (stack, value, async) => {
+  if (value != null) {
+    if (typeof value !== "object" && typeof value !== "function")
+      throw TypeError('Object expected to be assigned to "using" declaration');
+    var dispose;
+    if (async)
+      dispose = value[__asyncDispose];
+    if (dispose === undefined)
+      dispose = value[__dispose];
+    if (typeof dispose !== "function")
+      throw TypeError("Object not disposable");
+    stack.push([async, dispose, value]);
+  } else if (async) {
+    stack.push([async]);
+  }
+  return value;
+};
+var __callDispose = (stack, error, hasError) => {
+  var E = typeof SuppressedError === "function" ? SuppressedError : function(e, s, m, _) {
+    return _ = Error(m), _.name = "SuppressedError", _.error = e, _.suppressed = s, _;
+  }, fail = (e) => error = hasError ? new E(e, error, "An error was suppressed during disposal") : (hasError = true, e), next = (it) => {
+    while (it = stack.pop()) {
+      try {
+        var result = it[1] && it[1].call(it[2]);
+        if (it[0])
+          return Promise.resolve(result).then(next, (e) => (fail(e), next()));
+      } catch (e) {
+        fail(e);
+      }
+    }
+    if (hasError)
+      throw error;
+  };
+  return next();
+};
 
 // src/client.ts
 function trimTrailingSlashes(url) {
@@ -70766,6 +70803,86 @@ async function authStatus(args, ctx) {
   return exitCode;
 }
 
+// src/terminal-theme.ts
+var TERMINAL_TOKENS = {
+  web: {
+    primary: "#32fe9f",
+    positive: "#32d583",
+    negative: "#f2536d",
+    warning: "#f5a524",
+    edge: "#26262b"
+  },
+  dark: {
+    brand: { hex: "#32fe9f", ansi256: 48, ansi16: 92 },
+    positive: { hex: "#32d583", ansi256: 42, ansi16: 92 },
+    negative: { hex: "#f2536d", ansi256: 204, ansi16: 91 },
+    warning: { hex: "#f5a524", ansi256: 214, ansi16: 93 }
+  },
+  light: {
+    brand: { hex: "#006b40", ansi256: 22, ansi16: 32 },
+    positive: { hex: "#087443", ansi256: 22, ansi16: 32 },
+    negative: { hex: "#b4233c", ansi256: 125, ansi16: 31 },
+    warning: { hex: "#875400", ansi256: 94, ansi16: 33 }
+  }
+};
+
+// src/presentation.ts
+function terminalStyle(deps, stream, machine = false) {
+  const { env, presentation } = deps;
+  const styled = !(machine || presentation?.plain || env.CANDLE_PLAIN === "1" || !deps.isTTY[stream] || env.CI || env.TERM === "dumb");
+  const noColor = presentation?.noColor || Boolean(env.NO_COLOR);
+  const color = !styled || noColor ? 0 : /truecolor|24bit/i.test(env.COLORTERM ?? "") ? 24 : /256color/i.test(env.TERM ?? "") ? 256 : env.TERM ? 16 : 0;
+  const background = Number(env.COLORFGBG?.split(";").at(-1));
+  const theme = Number.isFinite(background) && background >= 0 && background <= 6 ? "dark" : "light";
+  const columns = deps.columns?.[stream];
+  return {
+    width: columns && Number.isFinite(columns) ? Math.max(20, Math.floor(columns)) : 118,
+    styled,
+    color,
+    theme,
+    motion: styled && !noColor
+  };
+}
+function accent(text, style, role = "brand") {
+  if (!style.color)
+    return text;
+  const token = TERMINAL_TOKENS[style.theme][role];
+  const code = style.color === 24 ? `38;2;${token.hex.slice(1).match(/../g)?.map((part) => Number.parseInt(part, 16)).join(";")}` : style.color === 256 ? `38;5;${token.ansi256}` : `${token.ansi16}`;
+  return `\x1B[${code}m${text}\x1B[0m`;
+}
+function wrapText(text, width) {
+  const lines = [];
+  let line = "";
+  for (const word3 of text.split(" ")) {
+    if (!line || line.length + word3.length + 1 <= width)
+      line += `${line ? " " : ""}${word3}`;
+    else {
+      lines.push(line);
+      line = word3;
+    }
+  }
+  lines.push(line);
+  return lines;
+}
+var WORDMARK = ["█▀▀ ▄▀█ █▄░█ █▀▄ █░░ █▀▀", "█▄▄ █▀█ █░▀█ █▄▀ █▄▄ ██▄"];
+function brandHeader(style) {
+  if (!style.styled)
+    return [];
+  const lines = [
+    ...style.width >= 80 ? WORDMARK : ["CANDLE"],
+    `CLI ${CLI_VERSION}`,
+    "",
+    ...wrapText("Your wallets and agent tools, one command away.", style.width - 6)
+  ];
+  const width = Math.min(style.width - 2, 68);
+  return [
+    accent(`┌${"─".repeat(width - 2)}┐`, style),
+    ...lines.map((line) => `│ ${accent(line, style)}${" ".repeat(Math.max(0, width - 4 - line.length))} │`),
+    accent(`└${"─".repeat(width - 2)}┘`, style),
+    ""
+  ];
+}
+
 // src/help.ts
 var GROUPS = [
   "Start here",
@@ -70776,6 +70893,7 @@ var GROUPS = [
   "Maintain"
 ];
 var ENVIRONMENT = [
+  { name: "CANDLE_PLAIN", description: "Set to 1 for --plain output" },
   {
     name: "CANDLE_CONFIG_DIR",
     description: "Where vault.enc, tee-wallets.enc, credentials and config live (default ~/.config/candle). Set it once instead of passing --keystore."
@@ -70838,6 +70956,8 @@ var KEYSTORE_FLAG = {
   description: "The vault file for this invocation. For a permanent location set CANDLE_CONFIG_DIR instead."
 };
 var GLOBAL_FLAGS = [
+  { invocation: "--plain", description: "Plain ASCII: no banner, boxes, color or animation" },
+  { invocation: "--no-color", description: "Suppress color and decorative animation; keep terminal layout" },
   { invocation: "--profile <name>", description: "Act as a named profile" },
   { invocation: "--api-url <url>", description: "Override the API base URL" },
   { invocation: "--json", description: "Machine-readable output: exactly one JSON value on stdout" },
@@ -71953,36 +72073,15 @@ function documentedFlags(topic) {
   return [...flags].sort();
 }
 var WIDTH = 118;
-function wrap(text, width) {
-  if (text === "")
-    return [""];
-  if (width < 20)
-    return [text];
-  const lines = [];
-  let line = "";
-  for (const word3 of text.split(" ")) {
-    if (line === "")
-      line = word3;
-    else if (`${line} ${word3}`.length <= width)
-      line = `${line} ${word3}`;
-    else {
-      lines.push(line);
-      line = word3;
-    }
-  }
-  if (line !== "")
-    lines.push(line);
-  return lines;
-}
-function renderRows(rows, maxColumn) {
+function renderRows(rows, maxColumn, width = WIDTH) {
   if (rows.length === 0)
     return [];
   const longest = Math.max(...rows.map((row) => row.invocation.length));
-  const column = Math.min(2 + longest + 2, maxColumn);
+  const column = Math.min(2 + longest + 2, maxColumn, Math.max(4, width - 24));
   const pad = " ".repeat(column);
   const out = [];
   for (const row of rows) {
-    const [first = "", ...rest] = wrap(row.description, WIDTH - column);
+    const [first = "", ...rest] = wrapText(row.description, width - column);
     if (2 + row.invocation.length + 2 <= column)
       out.push(`  ${row.invocation.padEnd(column - 2)}${first}`);
     else
@@ -71992,11 +72091,13 @@ function renderRows(rows, maxColumn) {
   }
   return out;
 }
-function renderEnv(names) {
+function renderEnv(names, width = WIDTH) {
   const vars = names.map((name) => ENVIRONMENT.find((entry) => entry.name === name)).filter((entry) => entry !== undefined);
-  return renderRows(vars.map((entry) => ({ invocation: entry.name, description: entry.description })), 32);
+  return renderRows(vars.map((entry) => ({ invocation: entry.name, description: entry.description })), 32, width);
 }
-function renderTopLevel() {
+function renderTopLevel(style) {
+  if (style)
+    return renderPresentedTopLevel(style);
   const out = [
     "candle: Candle from the terminal: trade, launch, and hold your keys on your own machine",
     "",
@@ -72021,24 +72122,67 @@ function renderTopLevel() {
 `)}
 `;
 }
-function renderTopic(word3) {
+function renderTopic(word3, style) {
   const topic = topicFor(word3);
   if (!topic)
     return;
   const canonical = Object.keys(HELP).find((key) => HELP[key] === topic) ?? word3;
   const display = displayName(canonical);
-  const out = [wrap(`candle ${display}: ${topic.description}`, WIDTH).join(`
+  const width = style?.width ?? WIDTH;
+  const out = [wrapText(`candle ${display}: ${topic.description}`, width).join(`
 `)];
   out.push("", `Usage: ${topic.usage.join(`
        `)}`);
   if (topic.rows.length > 0)
-    out.push("", ...renderRows(topic.rows, 58));
+    out.push("", ...renderRows(topic.rows, 58, width));
   if (topic.flags && topic.flags.length > 0) {
-    out.push("", `Flags every ${display} subcommand takes`, ...renderRows(topic.flags, 28));
+    out.push("", `Flags every ${display} subcommand takes`, ...renderRows(topic.flags, 28, width));
   }
   out.push("", "Examples", ...topic.examples.map((example) => `  ${example}`));
   if (topic.env && topic.env.length > 0)
-    out.push("", "Environment", ...renderEnv(topic.env));
+    out.push("", "Environment", ...renderEnv(topic.env, width));
+  return `${out.join(`
+`)}
+`;
+}
+function renderPresentedTopLevel(style) {
+  const { width } = style;
+  const heading = (text) => accent(text, style);
+  const out = [
+    ...brandHeader(style),
+    ...!style.styled ? [...wrapText("Candle CLI: Your wallets and agent tools, one command away.", width), ""] : [],
+    heading("Start here"),
+    ...renderRows([
+      { invocation: "candle setup", description: "Connect your account" },
+      { invocation: "candle portfolio", description: "Read your holdings after setup" },
+      { invocation: "candle mcp", description: "Connect an MCP client using this install" }
+    ], 24, width),
+    "",
+    ...wrapText("Usage: candle <command> [<subcommand>] [flags]", width),
+    "       candle help <command>"
+  ];
+  const group = (name, available) => [
+    heading(name),
+    ...renderRows(Object.entries(HELP).filter(([, topic]) => topic.group === name).map(([word3, topic]) => ({ invocation: displayName(word3), description: topic.summary })), 18, available)
+  ];
+  for (let i = 0;i < GROUPS.length; i++) {
+    const name = GROUPS[i];
+    if (width >= 100 && (name === "Trade" || name === "Custody, on this machine")) {
+      const column = Math.floor((width - 4) / 2);
+      const left = group(name, column);
+      const right = group(GROUPS[++i], column);
+      out.push("");
+      for (let row = 0;row < Math.max(left.length, right.length); row++) {
+        const first = left[row] ?? "";
+        const visible = first.replace(/\x1b\[[0-9;]*m/g, "").length;
+        out.push(`${first}${" ".repeat(Math.max(4, column - visible + 4))}${right[row] ?? ""}`.trimEnd());
+      }
+    } else
+      out.push("", ...group(name, width));
+  }
+  out.push("", heading("Global flags"), ...renderRows(GLOBAL_FLAGS, 28, width));
+  out.push("", heading("Environment"), ...renderEnv(ENVIRONMENT.map((entry) => entry.name), width));
+  out.push("", heading("Plug-ins"), ...renderRows([PLUGIN_LINE], 26, width));
   return `${out.join(`
 `)}
 `;
@@ -83844,10 +83988,10 @@ async function feesClaim(args, ctx) {
 async function help(args, ctx) {
   const word3 = args[0];
   if (word3 === undefined) {
-    ctx.deps.stdout.write(renderTopLevel());
+    ctx.deps.stdout.write(renderTopLevel(terminalStyle(ctx.deps, "stdout", ctx.json)));
     return 0;
   }
-  const topic = renderTopic(word3);
+  const topic = renderTopic(word3, terminalStyle(ctx.deps, "stdout", ctx.json));
   if (topic === undefined) {
     ctx.deps.stderr.write(`Unknown command: ${word3}
 `);
@@ -92883,7 +93027,7 @@ var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
 var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
 function section(deps, title) {
   deps.stdout.write(`
-== ${title} ==
+${accent(`== ${title} ==`, terminalStyle(deps, "stdout"))}
 `);
 }
 async function setup(args, ctx) {
@@ -92901,6 +93045,10 @@ async function setup(args, ctx) {
     writeUsageFailure(deps, "setup is an interactive wizard; for machine use, compose `auth login --json` and `doctor --json` directly", json);
     return 2;
   }
+  const style = terminalStyle(deps, "stdout");
+  if (deps.isTTY.stdin)
+    deps.stdout.write(brandHeader(style).join(`
+`));
   await printIdentity(ctx);
   deps.stdout.write(`candle setup: this wizard authorizes the device, shows funding, and verifies everything.
 `);
@@ -94557,6 +94705,14 @@ async function tui(args, ctx) {
 Usage: candle tui [--profile <name>]`, json);
     return 2;
   }
+  if (json || !deps.isTTY.stdin || !deps.isTTY.stdout || deps.env.TERM === "dumb" || deps.presentation?.plain || deps.env.CANDLE_PLAIN === "1") {
+    writeLocalFailure(deps, {
+      code: "TUI_REQUIRES_TERMINAL",
+      message: "The Candle TUI needs an interactive terminal.",
+      suggestion: "Use candle portfolio or candle help for command-line output."
+    }, json);
+    return 1;
+  }
   const path = findPlugin("tui", deps.env.PATH);
   if (path === undefined) {
     writeLocalFailure(deps, {
@@ -94572,6 +94728,8 @@ Usage: candle tui [--profile <name>]`, json);
     if (value !== undefined)
       env[name2] = value;
   }
+  if (deps.presentation?.noColor)
+    env.NO_COLOR = "1";
   const candle = deps.execPath.endsWith("/node") || deps.execPath.endsWith("/bun") ? "candle" : deps.execPath;
   return deps.runPlugin(path, [...ctx.profile ? ["--profile", ctx.profile] : [], "--candle", candle], env);
 }
@@ -94583,11 +94741,13 @@ import { randomBytes as randomBytes11 } from "node:crypto";
 // src/progress.ts
 var FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 var INTERVAL_MS3 = 80;
-function stepReporter(write, tty) {
+function stepReporter(write, tty, ascii = false) {
+  let detach = () => {};
   let timer = null;
   let frame = 0;
   let current = null;
   const clearSpinner = () => {
+    detach();
     if (timer !== null)
       clearInterval(timer);
     timer = null;
@@ -94606,6 +94766,19 @@ function stepReporter(write, tty) {
       }
       write(`${FRAMES[0]} ${label}`);
       frame = 1;
+      const interrupt = (signal) => {
+        clearSpinner();
+        if (process.listenerCount(signal) === 0)
+          process.kill(process.pid, signal);
+      };
+      const sigint = () => interrupt("SIGINT");
+      const sigterm = () => interrupt("SIGTERM");
+      process.once("SIGINT", sigint);
+      process.once("SIGTERM", sigterm);
+      detach = () => {
+        process.off("SIGINT", sigint);
+        process.off("SIGTERM", sigterm);
+      };
       timer = setInterval(() => {
         write(`\r\x1B[2K${FRAMES[frame % FRAMES.length]} ${current}`);
         frame++;
@@ -94615,16 +94788,21 @@ function stepReporter(write, tty) {
     },
     done(label) {
       clearSpinner();
-      write(`✓ ${label}
+      write(`${ascii ? "OK" : "✓"} ${label}
 `);
     },
     fail(label) {
       clearSpinner();
-      write(`✗ ${label}
+      write(`${ascii ? "FAIL" : "✗"} ${label}
 `);
     },
     stop: clearSpinner
   };
+}
+function commandSteps(ctx) {
+  const style = terminalStyle(ctx.deps, "stderr", ctx.json);
+  const reporter = stepReporter(ctx.json ? () => {} : (text3) => ctx.deps.stderr.write(text3), style.motion, !style.styled);
+  return { ...reporter, [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: () => reporter.stop() };
 }
 function formatBytes(n) {
   if (n >= 1024 * 1024)
@@ -94932,226 +95110,233 @@ init_fido2();
 var SIGNATURE_VERIFIED = "signature verified (Sigstore, keyless; signer pinned to the release workflow)";
 var INSTALLER_LINE = "curl -fsSL https://candle.tv/install.sh | bash";
 async function update(args, ctx) {
-  const { deps, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--to"], booleanFlags: ["--check"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  const check = parsed.booleans.has("--check");
-  const pinned = parsed.values["--to"];
-  const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath);
-  const method = detectInstall(deps.execPath, realExec);
-  if (method === "homebrew") {
-    if (json) {
-      const payload = { current: CLI_VERSION, latest: null, updated: false, path: realExec, method };
-      deps.stdout.write(`${JSON.stringify(payload)}
-`);
-    } else {
-      deps.stdout.write(`Installed by Homebrew. Run: brew upgrade candle
-`);
-    }
-    return 0;
-  }
-  if (method === "script") {
-    if (json) {
-      const payload = { current: CLI_VERSION, latest: null, updated: false, path: realExec, method };
-      deps.stdout.write(`${JSON.stringify(payload)}
-`);
-    } else {
-      deps.stdout.write(`Installed with npm (or a dev checkout). Run: npm i -g @candledottv/cli@latest
-`);
-    }
-    return 0;
-  }
-  const base2 = releaseBaseUrl(deps.env);
-  const fetched = pinned ? await fetchPinned(deps, base2, pinned) : await fetchLatest(deps, base2);
-  if (!fetched.ok) {
-    const code = fetched.kind === "invalid" ? "MANIFEST_INVALID" : "UPDATE_UNREACHABLE";
-    writeLocalFailure(deps, { code, message: fetched.message }, json);
-    return 1;
-  }
-  const target = fetched.manifest;
-  let identityUri;
+  let __stack = [];
   try {
-    identityUri = releaseIdentityUri(target.version);
-  } catch (error) {
-    writeLocalFailure(deps, {
-      code: "MANIFEST_INVALID",
-      message: `Refusing the release manifest at ${base2}: ${messageOf2(error)}.`,
-      suggestion: "Nothing was downloaded or installed."
-    }, json);
-    return 1;
-  }
-  const order = compareVersions(CLI_VERSION, target.version);
-  if (check) {
-    if (json) {
-      const payload = { current: CLI_VERSION, latest: target.version, updated: false, path: realExec };
-      deps.stdout.write(`${JSON.stringify(payload)}
+    const { deps, json } = ctx;
+    const parsed = parseArgs(args, { valueFlags: ["--to"], booleanFlags: ["--check"] });
+    if ("error" in parsed) {
+      writeUsageFailure(deps, parsed.error, json);
+      return 2;
+    }
+    if (parsed.positionals.length > 0) {
+      writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+      return 2;
+    }
+    const check = parsed.booleans.has("--check");
+    const pinned = parsed.values["--to"];
+    const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath);
+    const method = detectInstall(deps.execPath, realExec);
+    if (method === "homebrew") {
+      if (json) {
+        const payload = { current: CLI_VERSION, latest: null, updated: false, path: realExec, method };
+        deps.stdout.write(`${JSON.stringify(payload)}
 `);
-    } else if (order < 0) {
-      deps.stdout.write(`candle ${CLI_VERSION}; ${target.version} available. Run: candle update
+      } else {
+        deps.stdout.write(`Installed by Homebrew. Run: brew upgrade candle
 `);
-    } else {
-      deps.stdout.write(`candle ${CLI_VERSION} is up to date (latest ${target.version})
+      }
+      return 0;
+    }
+    if (method === "script") {
+      if (json) {
+        const payload = { current: CLI_VERSION, latest: null, updated: false, path: realExec, method };
+        deps.stdout.write(`${JSON.stringify(payload)}
+`);
+      } else {
+        deps.stdout.write(`Installed with npm (or a dev checkout). Run: npm i -g @candledottv/cli@latest
+`);
+      }
+      return 0;
+    }
+    const base2 = releaseBaseUrl(deps.env);
+    const fetched = pinned ? await fetchPinned(deps, base2, pinned) : await fetchLatest(deps, base2);
+    if (!fetched.ok) {
+      const code = fetched.kind === "invalid" ? "MANIFEST_INVALID" : "UPDATE_UNREACHABLE";
+      writeLocalFailure(deps, { code, message: fetched.message }, json);
+      return 1;
+    }
+    const target = fetched.manifest;
+    let identityUri;
+    try {
+      identityUri = releaseIdentityUri(target.version);
+    } catch (error) {
+      writeLocalFailure(deps, {
+        code: "MANIFEST_INVALID",
+        message: `Refusing the release manifest at ${base2}: ${messageOf2(error)}.`,
+        suggestion: "Nothing was downloaded or installed."
+      }, json);
+      return 1;
+    }
+    const order = compareVersions(CLI_VERSION, target.version);
+    if (check) {
+      if (json) {
+        const payload = { current: CLI_VERSION, latest: target.version, updated: false, path: realExec };
+        deps.stdout.write(`${JSON.stringify(payload)}
+`);
+      } else if (order < 0) {
+        deps.stdout.write(`candle ${CLI_VERSION}; ${target.version} available. Run: candle update
+`);
+      } else {
+        deps.stdout.write(`candle ${CLI_VERSION} is up to date (latest ${target.version})
+`);
+      }
+      return 0;
+    }
+    if (order === 0 || order > 0 && !pinned) {
+      if (json) {
+        const payload = { current: CLI_VERSION, latest: target.version, updated: false, path: realExec };
+        deps.stdout.write(`${JSON.stringify(payload)}
+`);
+      } else {
+        deps.stdout.write(`candle ${CLI_VERSION} is up to date
+`);
+      }
+      return 0;
+    }
+    if (order > 0 && pinned)
+      deps.stderr.write(`Warning: ${target.version} is a downgrade from ${CLI_VERSION}
+`);
+    if (!deps.platformKey) {
+      writeLocalFailure(deps, {
+        code: "UPDATE_UNSUPPORTED_PLATFORM",
+        message: "No release binary for this platform.",
+        suggestion: "Run: npm i -g @candledottv/cli@latest"
+      }, json);
+      return 1;
+    }
+    const expectedName = `candle-${deps.platformKey}`;
+    const asset = target.assets[deps.platformKey];
+    if (!asset) {
+      writeLocalFailure(deps, {
+        code: "UPDATE_UNSUPPORTED_PLATFORM",
+        message: `Release ${target.tag} has no asset for ${deps.platformKey}.`
+      }, json);
+      return 1;
+    }
+    if (asset.name !== expectedName) {
+      writeLocalFailure(deps, {
+        code: "MANIFEST_INVALID",
+        message: `Release ${target.tag} names ${asset.name} as the ${deps.platformKey} asset; this platform installs ${expectedName}.`,
+        suggestion: "Nothing was downloaded or installed."
+      }, json);
+      return 1;
+    }
+    const helperName = helperAssetName(deps.platformKey);
+    const helperAsset = target.helpers?.[deps.platformKey];
+    if (helperAsset !== undefined && helperAsset.name !== helperName) {
+      writeLocalFailure(deps, {
+        code: "MANIFEST_INVALID",
+        message: `Release ${target.tag} names ${helperAsset.name} as the ${deps.platformKey} security key helper; this platform installs ${helperName}.`,
+        suggestion: "Nothing was downloaded or installed."
+      }, json);
+      return 1;
+    }
+    const steps = __using(__stack, commandSteps(ctx), 0);
+    if (!json) {
+      const total = asset.size + (helperAsset?.size ?? 0);
+      deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version} (${formatBytes(total)})
 `);
     }
-    return 0;
-  }
-  if (order === 0 || order > 0 && !pinned) {
-    if (json) {
-      const payload = { current: CLI_VERSION, latest: target.version, updated: false, path: realExec };
-      deps.stdout.write(`${JSON.stringify(payload)}
-`);
-    } else {
-      deps.stdout.write(`candle ${CLI_VERSION} is up to date
-`);
+    steps.start("downloading SHA256SUMS");
+    const sums = await downloadSums(deps, base2, target.tag);
+    if (!sums.ok) {
+      steps.fail("downloading SHA256SUMS");
+      writeLocalFailure(deps, { code: "UPDATE_UNREACHABLE", message: sums.message }, json);
+      return 1;
     }
-    return 0;
-  }
-  if (order > 0 && pinned)
-    deps.stderr.write(`Warning: ${target.version} is a downgrade from ${CLI_VERSION}
-`);
-  if (!deps.platformKey) {
-    writeLocalFailure(deps, {
-      code: "UPDATE_UNSUPPORTED_PLATFORM",
-      message: "No release binary for this platform.",
-      suggestion: "Run: npm i -g @candledottv/cli@latest"
-    }, json);
-    return 1;
-  }
-  const expectedName = `candle-${deps.platformKey}`;
-  const asset = target.assets[deps.platformKey];
-  if (!asset) {
-    writeLocalFailure(deps, {
-      code: "UPDATE_UNSUPPORTED_PLATFORM",
-      message: `Release ${target.tag} has no asset for ${deps.platformKey}.`
-    }, json);
-    return 1;
-  }
-  if (asset.name !== expectedName) {
-    writeLocalFailure(deps, {
-      code: "MANIFEST_INVALID",
-      message: `Release ${target.tag} names ${asset.name} as the ${deps.platformKey} asset; this platform installs ${expectedName}.`,
-      suggestion: "Nothing was downloaded or installed."
-    }, json);
-    return 1;
-  }
-  const helperName = helperAssetName(deps.platformKey);
-  const helperAsset = target.helpers?.[deps.platformKey];
-  if (helperAsset !== undefined && helperAsset.name !== helperName) {
-    writeLocalFailure(deps, {
-      code: "MANIFEST_INVALID",
-      message: `Release ${target.tag} names ${helperAsset.name} as the ${deps.platformKey} security key helper; this platform installs ${helperName}.`,
-      suggestion: "Nothing was downloaded or installed."
-    }, json);
-    return 1;
-  }
-  const steps = json ? stepReporter(() => {}, false) : stepReporter((text3) => deps.stderr.write(text3), process.stderr.isTTY === true);
-  if (!json) {
-    const total = asset.size + (helperAsset?.size ?? 0);
-    deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version} (${formatBytes(total)})
-`);
-  }
-  steps.start("downloading SHA256SUMS");
-  const sums = await downloadSums(deps, base2, target.tag);
-  if (!sums.ok) {
-    steps.fail("downloading SHA256SUMS");
-    writeLocalFailure(deps, { code: "UPDATE_UNREACHABLE", message: sums.message }, json);
-    return 1;
-  }
-  steps.done("downloaded SHA256SUMS");
-  const dir = realExec.slice(0, realExec.lastIndexOf("/")) || ".";
-  const staged = [];
-  const discardAll = async () => {
-    for (const path of staged)
-      await discard(deps, path);
-  };
-  const binary = await stage(deps, steps, {
-    base: base2,
-    tag: target.tag,
-    name: expectedName,
-    expectedSha256: asset.sha256,
-    sums: sums.sums,
-    identityUri,
-    dir,
-    version: target.version,
-    staged,
-    label: ""
-  });
-  if (!binary.ok) {
-    await discardAll();
-    writeLocalFailure(deps, binary.failure, json);
-    return 1;
-  }
-  let helper = null;
-  if (helperAsset !== undefined) {
-    const fetched2 = await stage(deps, steps, {
+    steps.done("downloaded SHA256SUMS");
+    const dir = realExec.slice(0, realExec.lastIndexOf("/")) || ".";
+    const staged = [];
+    const discardAll = async () => {
+      for (const path of staged)
+        await discard(deps, path);
+    };
+    const binary = await stage(deps, steps, {
       base: base2,
       tag: target.tag,
-      name: helperName,
-      expectedSha256: helperAsset.sha256,
+      name: expectedName,
+      expectedSha256: asset.sha256,
       sums: sums.sums,
       identityUri,
       dir,
       version: target.version,
       staged,
-      label: `${helperName} `
+      label: ""
     });
-    if (!fetched2.ok) {
+    if (!binary.ok) {
       await discardAll();
-      writeLocalFailure(deps, fetched2.failure, json);
+      writeLocalFailure(deps, binary.failure, json);
       return 1;
     }
-    helper = { tmpPath: fetched2.tmpPath, target: `${dir}/${HELPER_NAME}` };
-  }
-  steps.start("installing");
-  try {
-    await deps.rename(binary.tmpPath, realExec);
-  } catch (error) {
-    steps.fail("installing");
-    await discardAll();
-    writeLocalFailure(deps, notWritable(dir, error), json);
-    return 1;
-  }
-  if (helper !== null) {
+    let helper = null;
+    if (helperAsset !== undefined) {
+      const fetched2 = await stage(deps, steps, {
+        base: base2,
+        tag: target.tag,
+        name: helperName,
+        expectedSha256: helperAsset.sha256,
+        sums: sums.sums,
+        identityUri,
+        dir,
+        version: target.version,
+        staged,
+        label: `${helperName} `
+      });
+      if (!fetched2.ok) {
+        await discardAll();
+        writeLocalFailure(deps, fetched2.failure, json);
+        return 1;
+      }
+      helper = { tmpPath: fetched2.tmpPath, target: `${dir}/${HELPER_NAME}` };
+    }
+    steps.start("installing");
     try {
-      await deps.rename(helper.tmpPath, helper.target);
+      await deps.rename(binary.tmpPath, realExec);
     } catch (error) {
       steps.fail("installing");
-      await discard(deps, helper.tmpPath);
-      const failure = notWritable(dir, error);
-      writeLocalFailure(deps, {
-        ...failure,
-        message: `${failure.message} candle ${target.version} was installed to ${realExec}, but its security key helper could not be renamed to ${helper.target}.`
-      }, json);
+      await discardAll();
+      writeLocalFailure(deps, notWritable(dir, error), json);
       return 1;
     }
+    if (helper !== null) {
+      try {
+        await deps.rename(helper.tmpPath, helper.target);
+      } catch (error) {
+        steps.fail("installing");
+        await discard(deps, helper.tmpPath);
+        const failure = notWritable(dir, error);
+        writeLocalFailure(deps, {
+          ...failure,
+          message: `${failure.message} candle ${target.version} was installed to ${realExec}, but its security key helper could not be renamed to ${helper.target}.`
+        }, json);
+        return 1;
+      }
+    }
+    steps.done(`installed to ${realExec}${helper !== null ? ` and ${helper.target}` : ""}`);
+    const helperReport2 = helper !== null ? { name: HELPER_NAME, updated: true } : null;
+    if (json) {
+      const payload = {
+        current: CLI_VERSION,
+        latest: target.version,
+        updated: true,
+        path: realExec,
+        helper: helperReport2
+      };
+      deps.stdout.write(`${JSON.stringify(payload)}
+`);
+    } else {
+      deps.stdout.write(`Updated candle ${CLI_VERSION} -> ${target.version}
+`);
+      if (helper !== null)
+        deps.stdout.write(`Installed ${HELPER_NAME} ${target.version} to ${helper.target}
+`);
+    }
+    return 0;
+  } catch (_catch) {
+    var _err = _catch, _hasErr = 1;
+  } finally {
+    __callDispose(__stack, _err, _hasErr);
   }
-  steps.done(`installed to ${realExec}${helper !== null ? ` and ${helper.target}` : ""}`);
-  const helperReport2 = helper !== null ? { name: HELPER_NAME, updated: true } : null;
-  if (json) {
-    const payload = {
-      current: CLI_VERSION,
-      latest: target.version,
-      updated: true,
-      path: realExec,
-      helper: helperReport2
-    };
-    deps.stdout.write(`${JSON.stringify(payload)}
-`);
-  } else {
-    deps.stdout.write(`Updated candle ${CLI_VERSION} -> ${target.version}
-`);
-    if (helper !== null)
-      deps.stdout.write(`Installed ${HELPER_NAME} ${target.version} to ${helper.target}
-`);
-  }
-  return 0;
 }
 async function stage(deps, steps, opts) {
   const { name: name2, label } = opts;
@@ -96267,13 +96452,13 @@ async function addPasskeyFactor(ctx, parsed, resolvedVault, hold) {
   let committed;
   try {
     const prfOutput = await assertPlatformPrf(deps, session, envelope, vaultId, "derive this vault's key on it");
-    let wrap2;
+    let wrap;
     try {
-      wrap2 = await wrapDekForPrf(vault.dek, prfOutput, envelope, vault.file);
+      wrap = await wrapDekForPrf(vault.dek, prfOutput, envelope, vault.file);
     } finally {
       wipe(prfOutput);
     }
-    sealed = { ...envelope, wrap: wrap2 };
+    sealed = { ...envelope, wrap };
     committed = hold(await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps));
   } catch (error) {
     deps.stderr.write(`${PASSKEY_LEFTOVER_NOTE}
@@ -96358,86 +96543,93 @@ import { randomBytes as randomBytes12 } from "node:crypto";
 init_release();
 init_fido2();
 async function installHelperForThisRelease(ctx) {
-  const { deps, json } = ctx;
-  const location = await locateFido2Helper(deps);
-  if (location.state === "ready")
-    return { ok: true, path: location.path, installed: false };
-  if (!location.installable)
-    return { ok: false, message: location.reason };
-  const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath);
-  if (detectInstall(deps.execPath, realExec) === "homebrew") {
-    return { ok: false, message: `candle is installed by Homebrew at ${realExec}. Run: brew reinstall candle` };
-  }
-  if (!deps.platformKey)
-    return { ok: false, message: "this CLI ships no security key helper for this platform" };
-  const base2 = releaseBaseUrl(deps.env);
-  const tag = `cli-v${CLI_VERSION}`;
-  const name2 = helperAssetName(deps.platformKey);
-  const steps = json ? stepReporter(() => {}, false) : stepReporter((text3) => deps.stderr.write(text3), process.stderr.isTTY === true);
-  steps.start(`reading the ${tag} release manifest`);
-  const fetched = await fetchPinned(deps, base2, tag);
-  if (!fetched.ok) {
-    steps.fail(`reading the ${tag} release manifest`);
-    return { ok: false, message: fetched.message };
-  }
-  const asset = fetched.manifest.helpers?.[deps.platformKey];
-  if (asset === undefined) {
-    steps.fail(`reading the ${tag} release manifest`);
-    return { ok: false, message: `release ${tag} declares no ${name2}` };
-  }
-  if (asset.name !== name2) {
-    steps.fail(`reading the ${tag} release manifest`);
-    return {
-      ok: false,
-      message: `release ${tag} names ${asset.name} as the ${deps.platformKey} security key helper; this platform installs ${name2}`
-    };
-  }
-  steps.done(`release ${tag} declares ${name2} (${formatBytes(asset.size)})`);
-  steps.start(`downloading ${name2}`);
-  const sums = await downloadSums(deps, base2, tag);
-  if (!sums.ok) {
-    steps.fail(`downloading ${name2}`);
-    return { ok: false, message: sums.message };
-  }
-  const download = await downloadReleaseAsset(deps, base2, tag, name2);
-  if (!download.ok) {
-    steps.fail(`downloading ${name2}`);
-    return { ok: false, message: download.message };
-  }
-  steps.done(`downloaded ${name2} (${formatBytes(download.bytes.length)})`);
-  steps.start("verifying checksum and signature");
-  const checked = checkReleaseAsset(deps, {
-    name: name2,
-    bytes: download.bytes,
-    sums: sums.sums,
-    bundle: download.bundle,
-    expectedSha256: asset.sha256,
-    identityUri: releaseIdentityUri(CLI_VERSION)
-  });
-  if (!checked.ok) {
-    steps.fail("verifying checksum and signature");
-    return { ok: false, message: `${checked.message}${checked.suggestion ? ` ${checked.suggestion}` : ""}` };
-  }
-  steps.done("checksum and signature verified (Sigstore, keyless; signer pinned to the release workflow)");
-  const dir = realExec.slice(0, realExec.lastIndexOf("/")) || ".";
-  const target = `${dir}/${HELPER_NAME}`;
-  const tmpPath = `${dir}/.candle-fido2-${CLI_VERSION}-${randomBytes12(6).toString("hex")}`;
-  steps.start(`installing ${HELPER_NAME}`);
+  let __stack = [];
   try {
-    await deps.writeBytes(tmpPath, download.bytes);
-  } catch (error) {
-    steps.fail(`installing ${HELPER_NAME}`);
-    return { ok: false, message: `cannot write ${dir}: ${messageOf2(error)}` };
+    const { deps } = ctx;
+    const location = await locateFido2Helper(deps);
+    if (location.state === "ready")
+      return { ok: true, path: location.path, installed: false };
+    if (!location.installable)
+      return { ok: false, message: location.reason };
+    const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath);
+    if (detectInstall(deps.execPath, realExec) === "homebrew") {
+      return { ok: false, message: `candle is installed by Homebrew at ${realExec}. Run: brew reinstall candle` };
+    }
+    if (!deps.platformKey)
+      return { ok: false, message: "this CLI ships no security key helper for this platform" };
+    const base2 = releaseBaseUrl(deps.env);
+    const tag = `cli-v${CLI_VERSION}`;
+    const name2 = helperAssetName(deps.platformKey);
+    const steps = __using(__stack, commandSteps(ctx), 0);
+    steps.start(`reading the ${tag} release manifest`);
+    const fetched = await fetchPinned(deps, base2, tag);
+    if (!fetched.ok) {
+      steps.fail(`reading the ${tag} release manifest`);
+      return { ok: false, message: fetched.message };
+    }
+    const asset = fetched.manifest.helpers?.[deps.platformKey];
+    if (asset === undefined) {
+      steps.fail(`reading the ${tag} release manifest`);
+      return { ok: false, message: `release ${tag} declares no ${name2}` };
+    }
+    if (asset.name !== name2) {
+      steps.fail(`reading the ${tag} release manifest`);
+      return {
+        ok: false,
+        message: `release ${tag} names ${asset.name} as the ${deps.platformKey} security key helper; this platform installs ${name2}`
+      };
+    }
+    steps.done(`release ${tag} declares ${name2} (${formatBytes(asset.size)})`);
+    steps.start(`downloading ${name2}`);
+    const sums = await downloadSums(deps, base2, tag);
+    if (!sums.ok) {
+      steps.fail(`downloading ${name2}`);
+      return { ok: false, message: sums.message };
+    }
+    const download = await downloadReleaseAsset(deps, base2, tag, name2);
+    if (!download.ok) {
+      steps.fail(`downloading ${name2}`);
+      return { ok: false, message: download.message };
+    }
+    steps.done(`downloaded ${name2} (${formatBytes(download.bytes.length)})`);
+    steps.start("verifying checksum and signature");
+    const checked = checkReleaseAsset(deps, {
+      name: name2,
+      bytes: download.bytes,
+      sums: sums.sums,
+      bundle: download.bundle,
+      expectedSha256: asset.sha256,
+      identityUri: releaseIdentityUri(CLI_VERSION)
+    });
+    if (!checked.ok) {
+      steps.fail("verifying checksum and signature");
+      return { ok: false, message: `${checked.message}${checked.suggestion ? ` ${checked.suggestion}` : ""}` };
+    }
+    steps.done("checksum and signature verified (Sigstore, keyless; signer pinned to the release workflow)");
+    const dir = realExec.slice(0, realExec.lastIndexOf("/")) || ".";
+    const target = `${dir}/${HELPER_NAME}`;
+    const tmpPath = `${dir}/.candle-fido2-${CLI_VERSION}-${randomBytes12(6).toString("hex")}`;
+    steps.start(`installing ${HELPER_NAME}`);
+    try {
+      await deps.writeBytes(tmpPath, download.bytes);
+    } catch (error) {
+      steps.fail(`installing ${HELPER_NAME}`);
+      return { ok: false, message: `cannot write ${dir}: ${messageOf2(error)}` };
+    }
+    try {
+      await deps.rename(tmpPath, target);
+    } catch (error) {
+      steps.fail(`installing ${HELPER_NAME}`);
+      await discard2(deps, tmpPath);
+      return { ok: false, message: `cannot write ${dir}: ${messageOf2(error)}` };
+    }
+    steps.done(`installed ${HELPER_NAME} ${CLI_VERSION} to ${target}`);
+    return { ok: true, path: target, installed: true };
+  } catch (_catch) {
+    var _err = _catch, _hasErr = 1;
+  } finally {
+    __callDispose(__stack, _err, _hasErr);
   }
-  try {
-    await deps.rename(tmpPath, target);
-  } catch (error) {
-    steps.fail(`installing ${HELPER_NAME}`);
-    await discard2(deps, tmpPath);
-    return { ok: false, message: `cannot write ${dir}: ${messageOf2(error)}` };
-  }
-  steps.done(`installed ${HELPER_NAME} ${CLI_VERSION} to ${target}`);
-  return { ok: true, path: target, installed: true };
 }
 async function discard2(deps, path) {
   try {
@@ -96573,13 +96765,13 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
     wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
   };
   const prfOutput = await assertPrf(deps, session, envelope, vault.file.vaultId, "derive this vault's key on it");
-  let wrap2;
+  let wrap;
   try {
-    wrap2 = await wrapDekForPrf(vault.dek, prfOutput, envelope, vault.file);
+    wrap = await wrapDekForPrf(vault.dek, prfOutput, envelope, vault.file);
   } finally {
     wipe(prfOutput);
   }
-  const sealed = { ...envelope, wrap: wrap2 };
+  const sealed = { ...envelope, wrap };
   await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps);
   const written = await readVaultRaw(path);
   if (written === null)
@@ -96775,13 +96967,13 @@ async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
       kek: { alg: SECURE_ENCLAVE_KEK_ALG, ciphertext },
       wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
     };
-    let wrap2;
+    let wrap;
     try {
-      wrap2 = await wrapDekForKek(vault.dek, kek, envelope, vault.file);
+      wrap = await wrapDekForKek(vault.dek, kek, envelope, vault.file);
     } finally {
       wipe(kek);
     }
-    sealed = { ...envelope, wrap: wrap2 };
+    sealed = { ...envelope, wrap };
     committed = hold(await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps));
   } catch (error) {
     await removeKey();
@@ -96896,8 +97088,8 @@ async function createVault(request2, clock) {
   }
   const dek = freshDek();
   const file = await withSecret(dek, async (dekBytes) => {
-    const wrap2 = await wrapDekForPassphrase(dekBytes, request2.passphrase, envelope, { vaultId }, request2.notice);
-    const sealedEnvelope = { ...envelope, wrap: wrap2 };
+    const wrap = await wrapDekForPassphrase(dekBytes, request2.passphrase, envelope, { vaultId }, request2.notice);
+    const sealedEnvelope = { ...envelope, wrap };
     const payloadKey = await derivePayloadKey(dekBytes, unb64u(vaultId, "vaultId"));
     const root = await seal(payloadKey, request2.rootEntropy, rootAad(vaultId));
     let index = seedIndex;
@@ -97333,8 +97525,8 @@ async function vaultFactorAdd(args, ctx) {
       strength: strengthFor(ownPassphrase),
       wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
     };
-    const wrap2 = await wrapDekForPassphrase(vault.dek, passphrase, envelope, vault.file, (line) => deps.stderr.write(line));
-    const sealed = { ...envelope, wrap: wrap2 };
+    const wrap = await wrapDekForPassphrase(vault.dek, passphrase, envelope, vault.file, (line) => deps.stderr.write(line));
+    const sealed = { ...envelope, wrap };
     await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps);
     const written = await readVaultRaw(path);
     if (written === null)
@@ -102819,7 +103011,7 @@ async function maybeWriteUpdateNotice(deps, opts = {}) {
     if (prior && prior.version === latest && deps.now() - prior.shownAt < DAY_MS)
       return;
     const line = `Update available: candle ${CLI_VERSION} -> ${latest}. Run: candle update`;
-    const tty = process.stderr.isTTY === true;
+    const tty = terminalStyle(deps, "stderr", opts.json).color !== 0;
     deps.stderr.write(tty ? `\x1B[2m${line}\x1B[0m
 ` : `${line}
 `);
@@ -102850,6 +103042,10 @@ function extractGlobalFlags(argv) {
     const arg = argv[i];
     if (arg === "--json")
       flags2.json = true;
+    else if (arg === "--plain")
+      flags2.plain = true;
+    else if (arg === "--no-color")
+      flags2.noColor = true;
     else if (arg === "--help" || arg === "-h")
       flags2.help = true;
     else if (arg === "--version" || arg === "-v")
@@ -103059,6 +103255,16 @@ var NEVER_GUARDED = new Set([
   "tui"
 ]);
 async function run2(argv, deps) {
+  const cosmetic = extractGlobalFlags(argv);
+  if (!("error" in cosmetic)) {
+    deps = {
+      ...deps,
+      presentation: {
+        plain: cosmetic.flags.plain ?? deps.presentation?.plain,
+        noColor: cosmetic.flags.noColor ?? deps.presentation?.noColor
+      }
+    };
+  }
   let code;
   try {
     code = await runCommand(argv, deps);
@@ -103076,7 +103282,8 @@ async function run2(argv, deps) {
   }
   const extractedForNotice = extractGlobalFlags(argv);
   const word3 = "error" in extractedForNotice ? undefined : canonicalCommand(extractedForNotice.rest[0] === "candle" ? extractedForNotice.rest[1] : extractedForNotice.rest[0]);
-  await maybeWriteUpdateNotice(deps, { command: word3 });
+  if (!("error" in extractedForNotice) && !extractedForNotice.flags.help && !extractedForNotice.flags.version && word3 !== undefined && word3 !== "help" && word3 !== "completion" && word3 !== "mcp" && !(word3 === "core" && extractedForNotice.rest.includes("mcp")))
+    await maybeWriteUpdateNotice(deps, { command: word3, json: extractedForNotice.flags.json });
   return code;
 }
 async function runCommand(argv, deps) {
@@ -103124,8 +103331,13 @@ async function runCommand(argv, deps) {
     return 0;
   }
   if (flags2.help) {
-    deps.stdout.write(renderTopic(canonicalCommand(tokens[0]) ?? "") ?? renderTopLevel());
+    const style = terminalStyle(deps, "stdout", flags2.json);
+    deps.stdout.write(renderTopic(canonicalCommand(tokens[0]) ?? "", style) ?? renderTopLevel(style));
     return 0;
+  }
+  if (tokens.length === 0) {
+    deps.stderr.write(renderTopLevel(terminalStyle(deps, "stderr", flags2.json)));
+    return 1;
   }
   const [rawCmd, sub, ...cmdArgs] = tokens;
   const cmd = canonicalCommand(rawCmd);
@@ -103356,6 +103568,7 @@ async function buildRealDeps() {
       stdout: Boolean(process.stdout.isTTY),
       stderr: Boolean(process.stderr.isTTY)
     },
+    columns: { stdout: process.stdout.columns, stderr: process.stderr.columns },
     execPath: process.execPath,
     argv1: process.argv[1] ?? "",
     platformKey: platformKey(process.platform, process.arch),

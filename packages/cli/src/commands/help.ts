@@ -12,14 +12,15 @@
  */
 import type { CommandContext } from "../deps"
 import { renderTopic, renderTopLevel } from "../help"
+import { terminalStyle } from "../presentation"
 
 export async function help(args: string[], ctx: CommandContext): Promise<number> {
   const word = args[0]
   if (word === undefined) {
-    ctx.deps.stdout.write(renderTopLevel())
+    ctx.deps.stdout.write(renderTopLevel(terminalStyle(ctx.deps, "stdout", ctx.json)))
     return 0
   }
-  const topic = renderTopic(word)
+  const topic = renderTopic(word, terminalStyle(ctx.deps, "stdout", ctx.json))
   if (topic === undefined) {
     ctx.deps.stderr.write(`Unknown command: ${word}\n`)
     ctx.deps.stderr.write(renderTopLevel())

@@ -121,6 +121,7 @@ import { verifyProfileAccount } from "./guard"
 import { renderTopic, renderTopLevel } from "./help"
 import { resolveSecretStore, SECRETS_SERVICE, SecretStoreLockedError, SecretStoreReadError } from "./keychain"
 import { pluginInvocation, realRunPlugin } from "./plugins"
+import { terminalStyle } from "./presentation"
 import { migratedConfig, profileSecretRef, resolveProfileName, resolveProfileNameForLogin } from "./profiles"
 import { platformKey } from "./release"
 import { writeLocalFailure, writeUsageFailure } from "./render"
@@ -141,6 +142,8 @@ interface GlobalFlags {
   help: boolean
   version: boolean
   noVerifyAccount: boolean
+  plain?: boolean
+  noColor?: boolean
 }
 
 function extractGlobalFlags(argv: string[]): { rest: string[]; flags: GlobalFlags } | { error: string } {
@@ -149,6 +152,8 @@ function extractGlobalFlags(argv: string[]): { rest: string[]; flags: GlobalFlag
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === "--json") flags.json = true
+    else if (arg === "--plain") flags.plain = true
+    else if (arg === "--no-color") flags.noColor = true
     else if (arg === "--help" || arg === "-h") flags.help = true
     else if (arg === "--version" || arg === "-v") flags.version = true
     else if (arg === "--no-verify-account") flags.noVerifyAccount = true
@@ -491,6 +496,16 @@ export const NEVER_GUARDED = new Set([
 ])
 
 export async function run(argv: string[], deps: Deps): Promise<number> {
+  const cosmetic = extractGlobalFlags(argv)
+  if (!("error" in cosmetic)) {
+    deps = {
+      ...deps,
+      presentation: {
+        plain: cosmetic.flags.plain ?? deps.presentation?.plain,
+        noColor: cosmetic.flags.noColor ?? deps.presentation?.noColor,
+      },
+    }
+  }
   let code: number
   try {
     code = await runCommand(argv, deps)
@@ -526,7 +541,18 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
       : canonicalCommand(
           extractedForNotice.rest[0] === "candle" ? extractedForNotice.rest[1] : extractedForNotice.rest[0],
         )
-  await maybeWriteUpdateNotice(deps, { command: word })
+  // Help is entirely local; protocol output receives no cosmetic notice.
+  if (
+    !("error" in extractedForNotice) &&
+    !extractedForNotice.flags.help &&
+    !extractedForNotice.flags.version &&
+    word !== undefined &&
+    word !== "help" &&
+    word !== "completion" &&
+    word !== "mcp" &&
+    !(word === "core" && extractedForNotice.rest.includes("mcp"))
+  )
+    await maybeWriteUpdateNotice(deps, { command: word, json: extractedForNotice.flags.json })
   return code
 }
 
@@ -594,8 +620,14 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   // screen: the command word that survived flag stripping selects its topic, and a word that is
   // not a command falls back to the top level, as a bare `candle --help` does.
   if (flags.help) {
-    deps.stdout.write(renderTopic(canonicalCommand(tokens[0]) ?? "") ?? renderTopLevel())
+    const style = terminalStyle(deps, "stdout", flags.json)
+    deps.stdout.write(renderTopic(canonicalCommand(tokens[0]) ?? "", style) ?? renderTopLevel(style))
     return 0
+  }
+
+  if (tokens.length === 0) {
+    deps.stderr.write(renderTopLevel(terminalStyle(deps, "stderr", flags.json)))
+    return 1
   }
 
   // An alias is resolved to its canonical word here, once, before anything reads `cmd`: routing,
@@ -1001,6 +1033,7 @@ export async function buildRealDeps(): Promise<Deps> {
       stdout: Boolean(process.stdout.isTTY),
       stderr: Boolean(process.stderr.isTTY),
     },
+    columns: { stdout: process.stdout.columns, stderr: process.stderr.columns },
     execPath: process.execPath,
     argv1: process.argv[1] ?? "",
     platformKey: platformKey(process.platform, process.arch),

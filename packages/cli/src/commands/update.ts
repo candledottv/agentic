@@ -15,7 +15,7 @@
 import { randomBytes } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
-import { formatBytes, type StepReporter, stepReporter } from "../progress"
+import { commandSteps, formatBytes, type StepReporter } from "../progress"
 import {
   compareVersions,
   detectInstall,
@@ -202,9 +202,7 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   // multi-megabyte download and both verifications -- long enough to look dead and invite a
   // Ctrl+C mid-install. Silent under --json (progress is human commentary; stdout stays owned
   // by the payload), plain lines when stderr is not a terminal.
-  const steps = json
-    ? stepReporter(() => {}, false)
-    : stepReporter((text) => deps.stderr.write(text), process.stderr.isTTY === true)
+  using steps = commandSteps(ctx)
   // D9 (BE-241): the size comes free from the manifest (`latest.json` carries `size` per asset), and
   // it makes a slow link legible from the first second rather than after the download finishes.
   // Both assets: the helper roughly doubles the bytes on the wire, and a line that names half of

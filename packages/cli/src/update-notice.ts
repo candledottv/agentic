@@ -15,6 +15,7 @@
  */
 import { __resetLatestCliVersionForTest, latestCliVersionFromApi } from "./client"
 import type { Deps } from "./deps"
+import { terminalStyle } from "./presentation"
 import { compareVersions, isPlainVersion } from "./release"
 import { CLI_VERSION } from "./version"
 
@@ -29,7 +30,10 @@ const DAY_MS = 24 * 60 * 60 * 1000
  * has not been shown in the last day. Every failure path is silent: the notice is a courtesy,
  * and a courtesy that can break a command is worse than none.
  */
-export async function maybeWriteUpdateNotice(deps: Deps, opts: { command?: string } = {}): Promise<void> {
+export async function maybeWriteUpdateNotice(
+  deps: Deps,
+  opts: { command?: string; json?: boolean } = {},
+): Promise<void> {
   try {
     if (deps.env.CANDLE_NO_UPDATE_NOTIFIER) return
     if (opts.command === "update" || opts.command === "doctor") return
@@ -42,7 +46,7 @@ export async function maybeWriteUpdateNotice(deps: Deps, opts: { command?: strin
 
     // Dim on a TTY, plain everywhere else; one line, the exact command, nothing to dismiss.
     const line = `Update available: candle ${CLI_VERSION} -> ${latest}. Run: candle update`
-    const tty = process.stderr.isTTY === true
+    const tty = terminalStyle(deps, "stderr", opts.json).color !== 0
     deps.stderr.write(tty ? `\x1b[2m${line}\x1b[0m\n` : `${line}\n`)
     await deps.writeConfig({ updateNotice: { version: latest, shownAt: deps.now() } })
   } catch {

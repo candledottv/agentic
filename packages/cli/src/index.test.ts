@@ -860,12 +860,15 @@ describe("the account guard at dispatch", () => {
    */
   test("T4: the top level lists every command word exactly once, under the six groups, with ENVIRONMENT", async () => {
     const stdout = createCapture()
-    expect(await run(["--help"], createTestDeps({ fetch: unusedFetch, stdout }))).toBe(0)
+    expect(await run(["--help"], createTestDeps({ fetch: unusedFetch, stdout, columns: { stdout: 80 } }))).toBe(0)
     const text = stdout.text
 
     // The rows live between the first group heading and the global flags block. Bounding the scan
     // matters: `  --profile <name>` below it starts a row too, and is not a command word.
-    const region = text.slice(text.indexOf(`\n${GROUPS[0]}\n`), text.indexOf("\nGlobal flags\n"))
+    const region = text.slice(
+      text.indexOf(`\n${GROUPS[0]}\n`, text.indexOf("Usage:")),
+      text.indexOf("\nGlobal flags\n"),
+    )
     const rowWords = region
       .split("\n")
       .map((line) => line.match(/^ {2}(\S+)/)?.[1])

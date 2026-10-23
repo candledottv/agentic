@@ -18,6 +18,7 @@
 import type { CliConfig, ProfileConfig } from "./config"
 import { isCoreOwned, ProfileCoreOwnedError } from "./core/ownership"
 import type { OpenTape } from "./core/signals"
+import type { PresentationFlags } from "./presentation"
 import { profileSecretRef } from "./profiles"
 import type { VerifyResult } from "./release-verify"
 import type { SecretStore } from "./secret-store"
@@ -129,6 +130,9 @@ export interface Deps {
    * uses, so a listing whose whole output is a document can be redirected to a file.
    */
   isTTY: { stdin: boolean; stdout: boolean; stderr: boolean }
+  columns?: { stdout?: number; stderr?: number }
+  /** Cosmetic invocation flags, kept out of command arguments and protocol environments. */
+  presentation?: PresentationFlags
   /** This process's executable. A compiled binary reports itself; node or bun report the runtime.
    * Injected so update's install-method detection is testable without running a real binary. */
   execPath: string

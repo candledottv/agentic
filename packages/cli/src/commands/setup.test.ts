@@ -69,6 +69,33 @@ describe("setup", () => {
     expect(order.every((idx, i) => idx >= 0 && (i === 0 || idx > (order[i - 1] as number)))).toBe(true)
   })
 
+  test("only interactive setup gets a header; no-color keeps it and plain/CI/pipes suppress it", async () => {
+    let expectedCode: number | undefined
+    for (const mode of ["tty", "no-color", "plain", "pipe", "CI", "no-input"]) {
+      const { fetch } = armRoutes()
+      const stdout = createCapture()
+      const args = ["setup", ...(mode === "no-color" ? ["--no-color"] : mode === "plain" ? ["--plain"] : [])]
+      const code = await run(
+        args,
+        createTestDeps({
+          fetch,
+          store: authorizedStore(),
+          stdout,
+          env: { TERM: "xterm-256color", ...(mode === "CI" ? { CI: "1" } : {}) },
+          isTTY: { stdin: mode !== "no-input", stdout: mode !== "pipe", stderr: true },
+          columns: { stdout: 40 },
+        }),
+      )
+      expectedCode ??= code
+      expect(code).toBe(expectedCode)
+      expect(stdout.text.includes("┌")).toBe(mode === "tty" || mode === "no-color")
+      if (mode !== "tty" && mode !== "no-input") expect(stdout.text).not.toContain("\x1b")
+      expect(stdout.text).toContain(SOL)
+      expect(stdout.text).toContain(EVM)
+      expect(stdout.text).toContain("Skipping login")
+    }
+  })
+
   test("setup's exit code is doctor's: a failing check fails setup", async () => {
     // No routes at all: doctor's API-reachability checks fail, so its exit is nonzero -- and
     // setup must surface that rather than reporting a green wizard over a red rail.

@@ -20,6 +20,8 @@
  * continuation line must never look like the start of a row.
  */
 
+import { accent, brandHeader, type TerminalStyle, wrapText } from "./presentation"
+
 /** One documented invocation: a subcommand row, a flag row, or a global flag. */
 export interface Row {
   /** A single line, never pre-wrapped. For a subcommand row it starts with the subcommand word. */
@@ -70,6 +72,7 @@ export const GROUPS = [
  * nowhere fails CI.
  */
 export const ENVIRONMENT: EnvVar[] = [
+  { name: "CANDLE_PLAIN", description: "Set to 1 for --plain output" },
   {
     name: "CANDLE_CONFIG_DIR",
     description:
@@ -172,6 +175,8 @@ const KEYSTORE_FLAG: Row = {
 }
 
 export const GLOBAL_FLAGS: Row[] = [
+  { invocation: "--plain", description: "Plain ASCII: no banner, boxes, color or animation" },
+  { invocation: "--no-color", description: "Suppress color and decorative animation; keep terminal layout" },
   { invocation: "--profile <name>", description: "Act as a named profile" },
   { invocation: "--api-url <url>", description: "Override the API base URL" },
   { invocation: "--json", description: "Machine-readable output: exactly one JSON value on stdout" },
@@ -1429,24 +1434,6 @@ export function documentedFlags(topic: Topic): string[] {
 
 const WIDTH = 118
 
-/** Wraps `text` to `width`, never breaking a word. One line in, one or more lines out. */
-function wrap(text: string, width: number): string[] {
-  if (text === "") return [""]
-  if (width < 20) return [text]
-  const lines: string[] = []
-  let line = ""
-  for (const word of text.split(" ")) {
-    if (line === "") line = word
-    else if (`${line} ${word}`.length <= width) line = `${line} ${word}`
-    else {
-      lines.push(line)
-      line = word
-    }
-  }
-  if (line !== "") lines.push(line)
-  return lines
-}
-
 /**
  * Renders a block of rows at a shared description column.
  *
@@ -1455,14 +1442,14 @@ function wrap(text: string, width: number): string[] {
  * line where a row start belongs, and every drift test reads a row start as `/^ {2}(\S+)/`. A
  * continuation line here begins with the column's spaces, so it can never be mistaken for one.
  */
-function renderRows(rows: Row[], maxColumn: number): string[] {
+function renderRows(rows: Row[], maxColumn: number, width = WIDTH): string[] {
   if (rows.length === 0) return []
   const longest = Math.max(...rows.map((row) => row.invocation.length))
-  const column = Math.min(2 + longest + 2, maxColumn)
+  const column = Math.min(2 + longest + 2, maxColumn, Math.max(4, width - 24))
   const pad = " ".repeat(column)
   const out: string[] = []
   for (const row of rows) {
-    const [first = "", ...rest] = wrap(row.description, WIDTH - column)
+    const [first = "", ...rest] = wrapText(row.description, width - column)
     if (2 + row.invocation.length + 2 <= column) out.push(`  ${row.invocation.padEnd(column - 2)}${first}`)
     else out.push(`  ${row.invocation}`, `${pad}${first}`)
     for (const line of rest) out.push(`${pad}${line}`)
@@ -1473,13 +1460,14 @@ function renderRows(rows: Row[], maxColumn: number): string[] {
 /** The environment block, rendered from names looked up in `ENVIRONMENT` so a description is
  * written once (D2). An unknown name is skipped rather than printed empty; T8 is what stops one
  * from being introduced. */
-function renderEnv(names: readonly string[]): string[] {
+function renderEnv(names: readonly string[], width = WIDTH): string[] {
   const vars = names
     .map((name) => ENVIRONMENT.find((entry) => entry.name === name))
     .filter((entry): entry is EnvVar => entry !== undefined)
   return renderRows(
     vars.map((entry) => ({ invocation: entry.name, description: entry.description })),
     32,
+    width,
   )
 }
 
@@ -1488,7 +1476,8 @@ function renderEnv(names: readonly string[]): string[] {
  * groups, then the global flags, the environment and the plug-in line. Subcommand rows and flags
  * live on the topic screens (`candle help <command>`).
  */
-export function renderTopLevel(): string {
+export function renderTopLevel(style?: TerminalStyle): string {
+  if (style) return renderPresentedTopLevel(style)
   const out: string[] = [
     "candle: Candle from the terminal: trade, launch, and hold your keys on your own machine",
     "",
@@ -1517,18 +1506,80 @@ export function renderTopLevel(): string {
  * `undefined` for a word that is not a command, which is what lets the caller fall back to the top
  * level and print `Unknown command: <word>` first.
  */
-export function renderTopic(word: string): string | undefined {
+export function renderTopic(word: string, style?: TerminalStyle): string | undefined {
   const topic = topicFor(word)
   if (!topic) return undefined
   const canonical = Object.keys(HELP).find((key) => HELP[key] === topic) ?? word
   const display = displayName(canonical)
-  const out: string[] = [wrap(`candle ${display}: ${topic.description}`, WIDTH).join("\n")]
+  const width = style?.width ?? WIDTH
+  const out: string[] = [wrapText(`candle ${display}: ${topic.description}`, width).join("\n")]
   out.push("", `Usage: ${topic.usage.join("\n       ")}`)
-  if (topic.rows.length > 0) out.push("", ...renderRows(topic.rows, 58))
+  if (topic.rows.length > 0) out.push("", ...renderRows(topic.rows, 58, width))
   if (topic.flags && topic.flags.length > 0) {
-    out.push("", `Flags every ${display} subcommand takes`, ...renderRows(topic.flags, 28))
+    out.push("", `Flags every ${display} subcommand takes`, ...renderRows(topic.flags, 28, width))
   }
   out.push("", "Examples", ...topic.examples.map((example) => `  ${example}`))
-  if (topic.env && topic.env.length > 0) out.push("", "Environment", ...renderEnv(topic.env))
+  if (topic.env && topic.env.length > 0) out.push("", "Environment", ...renderEnv(topic.env, width))
+  return `${out.join("\n")}\n`
+}
+
+/** Human help only. Errors keep the legacy renderer above so diagnostic bytes do not acquire
+ * a banner or terminal escapes. Command data, flags and completion vocabulary stay shared. */
+function renderPresentedTopLevel(style: TerminalStyle): string {
+  const { width } = style
+  const heading = (text: string) => accent(text, style)
+  const out = [
+    ...brandHeader(style),
+    ...(!style.styled ? [...wrapText("Candle CLI: Your wallets and agent tools, one command away.", width), ""] : []),
+    heading("Start here"),
+    ...renderRows(
+      [
+        { invocation: "candle setup", description: "Connect your account" },
+        { invocation: "candle portfolio", description: "Read your holdings after setup" },
+        { invocation: "candle mcp", description: "Connect an MCP client using this install" },
+      ],
+      24,
+      width,
+    ),
+    "",
+    ...wrapText("Usage: candle <command> [<subcommand>] [flags]", width),
+    "       candle help <command>",
+  ]
+  const group = (name: string, available: number): string[] => [
+    heading(name),
+    ...renderRows(
+      Object.entries(HELP)
+        .filter(([, topic]) => topic.group === name)
+        .map(([word, topic]) => ({ invocation: displayName(word), description: topic.summary })),
+      18,
+      available,
+    ),
+  ]
+  for (let i = 0; i < GROUPS.length; i++) {
+    const name = GROUPS[i] as string
+    // Two columns only where both have room for a command and readable wrapped description.
+    if (width >= 100 && (name === "Trade" || name === "Custody, on this machine")) {
+      const column = Math.floor((width - 4) / 2)
+      const left = group(name, column)
+      const right = group(GROUPS[++i] as string, column)
+      out.push("")
+      for (let row = 0; row < Math.max(left.length, right.length); row++) {
+        const first = left[row] ?? ""
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: measure SGR-free terminal cells
+        const visible = first.replace(/\x1b\[[0-9;]*m/g, "").length
+        out.push(`${first}${" ".repeat(Math.max(4, column - visible + 4))}${right[row] ?? ""}`.trimEnd())
+      }
+    } else out.push("", ...group(name, width))
+  }
+  out.push("", heading("Global flags"), ...renderRows(GLOBAL_FLAGS, 28, width))
+  out.push(
+    "",
+    heading("Environment"),
+    ...renderEnv(
+      ENVIRONMENT.map((entry) => entry.name),
+      width,
+    ),
+  )
+  out.push("", heading("Plug-ins"), ...renderRows([PLUGIN_LINE], 26, width))
   return `${out.join("\n")}\n`
 }
