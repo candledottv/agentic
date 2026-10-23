@@ -9,9 +9,9 @@
  *   - Before the NonceMapping: the domain and type list are Relay's, `wallet` and `depositor` are
  *     this key's own EVM TEE address, `id` is the build's Relay order id (not the step request
  *     id), and the destination the build names is one of this key's own wallets on the chain asked
- *     for. Then Relay's own record of the request (`GET /requests/v3?id=` the step request id)
- *     must name that same recipient: the recipient is in neither signed message, so this is the
- *     only place the client can see it (threat model).
+ *     for. That `to` is the recipient check: it comes from Candle's quote record, which the server
+ *     checked against Relay's quote echo of the recipient. Relay's own record of the request is not
+ *     read: it needs a Relay key, and none ships in this client (BE-1777).
  *   - Before the SendAsset: the nonce is the mapping's, the amount parses exactly to the micros
  *     asked for (no float, no string compare), `fromSubAccount` and `sourceDex` are empty, `token`
  *     and `destinationDex` are the pinned values, `destination` is on the pinned depository
@@ -38,7 +38,6 @@ export interface PerpsWithdrawPins {
  * Relay's guide example depository (0x865eb9ba...7081) is not on it.
  */
 export declare const CANDLE_PERPS_WITHDRAW_PINS: PerpsWithdrawPins | null;
-export declare const RELAY_API_URL = "https://api.relay.link";
 export declare const RELAY_NONCE_MAPPING_TYPES: {
     readonly NonceMapping: readonly [{
         readonly name: "chainId";
@@ -114,7 +113,7 @@ export interface PerpsWithdrawBuild {
     feesUsdc: string;
     netUsdc: string;
     minimumOutUsdc: string;
-    /** Step tracking id. Status reads and `GET /requests/v3` use this. It is not the NonceMapping id. */
+    /** Relay's step tracking id, for status reads. It is not the NonceMapping id. */
     relayRequestId: string;
     /**
      * Relay `protocol.v2.orderId`. The NonceMapping `id` must equal this bytes32. Absent on a build
@@ -162,18 +161,4 @@ export declare function verifyWithdrawSendAsset(authorization: PerpsWithdrawAuth
     amountMicros: bigint;
     pins: PerpsWithdrawPins | null;
 }): WithdrawCheck;
-/**
- * The threat model's recipient lookup: Relay's own record of the request must name `recipient`.
- * Read from `GET /requests/v3?id=<requestId>` (`requests[].recipient`). A request Relay does not
- * list, another recipient, or a read that fails is a refusal: the client cannot see the recipient
- * any other way.
- */
-export declare function relayRecipientProblem(fetchImpl: (input: string, init?: {
-    method?: string;
-    headers?: Record<string, string>;
-}) => Promise<{
-    ok: boolean;
-    status: number;
-    json(): Promise<unknown>;
-}>, requestId: string, recipient: string, relayUrl?: string): Promise<string | null>;
 //# sourceMappingURL=hyperliquid-withdraw.d.ts.map

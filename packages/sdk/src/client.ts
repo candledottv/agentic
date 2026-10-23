@@ -126,7 +126,6 @@ import {
   type PerpsWithdrawBuild,
   type PerpsWithdrawPins,
   parseWithdrawAmount,
-  relayRecipientProblem,
   verifyWithdrawMapping,
   verifyWithdrawSendAsset,
 } from "./hyperliquid-withdraw"
@@ -5894,11 +5893,11 @@ export class CandleClient {
    *
    * Every signature is checked first, and a mismatch throws with nothing signed: the NonceMapping
    * names this key's account and the build's Relay order id (`relayOrderId`, never the step
-   * `relayRequestId`), the build lands on one of `ownDestinations`, and Relay's own record of the
-   * request (the tracking id) names that same recipient; then the SendAsset carries the
-   * mapping's nonce, the exact amount asked for, and the pinned token, dex and depository. The
-   * client posts the SendAsset to Hyperliquid itself and reports the answer. There is no
-   * confirmation gate here: the CLI has one (`candle perps withdraw`).
+   * `relayRequestId`), and the build lands on one of `ownDestinations` (the recipient check: Relay's
+   * own record of the request is not read, BE-1777); then the SendAsset carries the mapping's nonce,
+   * the exact amount asked for, and the pinned token, dex and depository. The client posts the
+   * SendAsset to Hyperliquid itself and reports the answer. There is no confirmation gate here: the
+   * CLI has one (`candle perps withdraw`).
    */
   async perpsWithdraw(params: PerpsWithdrawParams): Promise<PerpsWithdrawResult> {
     this.requireKey("perpsWithdraw()")
@@ -5927,8 +5926,6 @@ export class CandleClient {
       pins: this.perpsWithdrawPins,
     })
     if (!mapping.ok) throw new Error(`perpsWithdraw: refused to sign this withdrawal: ${mapping.reason}`)
-    const recipient = await relayRecipientProblem(this.fetchImpl as never, build.relayRequestId, build.to.address)
-    if (recipient) throw new Error(`perpsWithdraw: refused to sign this withdrawal: ${recipient}`)
     const mappingSignature = await this.signLinkedTypedData({
       linkedWalletId: params.walletId,
       privyWalletId: params.privyWalletId,
@@ -6300,7 +6297,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.3"
+export const SDK_VERSION = "0.6.4"
 
 let sdkUpdateWarned = false
 

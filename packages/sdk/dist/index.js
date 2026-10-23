@@ -3087,7 +3087,6 @@ var CANDLE_PERPS_WITHDRAW_PINS = {
   depositories: ["0x66cf0aace1b4e562593bec10ec7868fba9932224"],
   amountForm: "fixed6"
 };
-var RELAY_API_URL = "https://api.relay.link";
 var ZERO = "0x0000000000000000000000000000000000000000";
 var EVM_ADDRESS_RE2 = /^0x[0-9a-fA-F]{40}$/;
 var BYTES32_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -3233,24 +3232,6 @@ function verifyWithdrawSendAsset(authorization, expect) {
       return refuse(`the action's ${key} differs from what is signed`);
   }
   return { ok: true };
-}
-async function relayRecipientProblem(fetchImpl, requestId, recipient, relayUrl = RELAY_API_URL) {
-  let body;
-  try {
-    const res = await fetchImpl(`${relayUrl}/requests/v3?id=${encodeURIComponent(requestId)}`, { method: "GET" });
-    if (!res.ok)
-      return `Relay's record of the request could not be read (HTTP ${res.status})`;
-    body = await res.json();
-  } catch (error) {
-    return `Relay's record of the request could not be read (${error instanceof Error ? error.message : "unknown"})`;
-  }
-  const requests = isObject(body) && Array.isArray(body.requests) ? body.requests : [];
-  const match = requests.find((r) => isObject(r) && r.id === requestId);
-  if (!isObject(match))
-    return "Relay does not list this request";
-  const named = match.recipient;
-  const same = recipient.startsWith("0x") ? sameEvm(named, recipient) : named === recipient;
-  return same ? null : `Relay's request pays ${String(named)}, not this key's wallet ${recipient}`;
 }
 
 // src/internal/rpc-endpoint.ts
@@ -5241,9 +5222,6 @@ class CandleClient {
     });
     if (!mapping.ok)
       throw new Error(`perpsWithdraw: refused to sign this withdrawal: ${mapping.reason}`);
-    const recipient = await relayRecipientProblem(this.fetchImpl, build.relayRequestId, build.to.address);
-    if (recipient)
-      throw new Error(`perpsWithdraw: refused to sign this withdrawal: ${recipient}`);
     const mappingSignature = await this.signLinkedTypedData({
       linkedWalletId: params.walletId,
       privyWalletId: params.privyWalletId,
@@ -5501,7 +5479,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.3";
+var SDK_VERSION = "0.6.4";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
@@ -6046,7 +6024,6 @@ export {
   verifyWebhookSignature,
   verifyPerpsBuildAgainstVenue,
   verifyPerpsBuild,
-  relayRecipientProblem,
   readPerpsRisk,
   readPerpsHistoryPage,
   readHyperliquidMarkets,

@@ -9,9 +9,9 @@
  *   - Before the NonceMapping: the domain and type list are Relay's, `wallet` and `depositor` are
  *     this key's own EVM TEE address, `id` is the build's Relay order id (not the step request
  *     id), and the destination the build names is one of this key's own wallets on the chain asked
- *     for. Then Relay's own record of the request (`GET /requests/v3?id=` the step request id)
- *     must name that same recipient: the recipient is in neither signed message, so this is the
- *     only place the client can see it (threat model).
+ *     for. That `to` is the recipient check: it comes from Candle's quote record, which the server
+ *     checked against Relay's quote echo of the recipient. Relay's own record of the request is not
+ *     read: it needs a Relay key, and none ships in this client (BE-1777).
  *   - Before the SendAsset: the nonce is the mapping's, the amount parses exactly to the micros
  *     asked for (no float, no string compare), `fromSubAccount` and `sourceDex` are empty, `token`
  *     and `destinationDex` are the pinned values, `destination` is on the pinned depository
@@ -46,8 +46,6 @@ export const CANDLE_PERPS_WITHDRAW_PINS: PerpsWithdrawPins | null = {
   depositories: ["0x66cf0aace1b4e562593bec10ec7868fba9932224"],
   amountForm: "fixed6",
 }
-
-export const RELAY_API_URL = "https://api.relay.link"
 
 const ZERO = "0x0000000000000000000000000000000000000000"
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
@@ -163,7 +161,7 @@ export interface PerpsWithdrawBuild {
   feesUsdc: string
   netUsdc: string
   minimumOutUsdc: string
-  /** Step tracking id. Status reads and `GET /requests/v3` use this. It is not the NonceMapping id. */
+  /** Relay's step tracking id, for status reads. It is not the NonceMapping id. */
   relayRequestId: string
   /**
    * Relay `protocol.v2.orderId`. The NonceMapping `id` must equal this bytes32. Absent on a build
@@ -268,39 +266,4 @@ export function verifyWithdrawSendAsset(
     if (action[key] !== m[key]) return refuse(`the action's ${key} differs from what is signed`)
   }
   return { ok: true }
-}
-
-/**
- * The threat model's recipient lookup: Relay's own record of the request must name `recipient`.
- * Read from `GET /requests/v3?id=<requestId>` (`requests[].recipient`). A request Relay does not
- * list, another recipient, or a read that fails is a refusal: the client cannot see the recipient
- * any other way.
- */
-export async function relayRecipientProblem(
-  fetchImpl: (
-    input: string,
-    init?: { method?: string; headers?: Record<string, string> },
-  ) => Promise<{
-    ok: boolean
-    status: number
-    json(): Promise<unknown>
-  }>,
-  requestId: string,
-  recipient: string,
-  relayUrl: string = RELAY_API_URL,
-): Promise<string | null> {
-  let body: unknown
-  try {
-    const res = await fetchImpl(`${relayUrl}/requests/v3?id=${encodeURIComponent(requestId)}`, { method: "GET" })
-    if (!res.ok) return `Relay's record of the request could not be read (HTTP ${res.status})`
-    body = await res.json()
-  } catch (error) {
-    return `Relay's record of the request could not be read (${error instanceof Error ? error.message : "unknown"})`
-  }
-  const requests = isObject(body) && Array.isArray(body.requests) ? body.requests : []
-  const match = requests.find((r) => isObject(r) && r.id === requestId)
-  if (!isObject(match)) return "Relay does not list this request"
-  const named = match.recipient
-  const same = recipient.startsWith("0x") ? sameEvm(named, recipient) : named === recipient
-  return same ? null : `Relay's request pays ${String(named)}, not this key's wallet ${recipient}`
 }

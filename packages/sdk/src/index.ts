@@ -268,7 +268,6 @@ export {
   type PerpsWithdrawPins,
   parseSendAssetAmount,
   parseWithdrawAmount,
-  relayRecipientProblem,
   verifyWithdrawMapping,
   verifyWithdrawSendAsset,
   type WithdrawCheck,

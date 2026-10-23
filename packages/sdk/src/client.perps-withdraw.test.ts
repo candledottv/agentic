@@ -15,7 +15,6 @@ import {
   parseSendAssetAmount,
   parseWithdrawAmount,
   RELAY_NONCE_MAPPING_TYPES,
-  relayRecipientProblem,
   verifyWithdrawMapping,
   verifyWithdrawSendAsset,
 } from "./hyperliquid-withdraw"
@@ -216,33 +215,6 @@ describe("R13: the SendAsset check", () => {
   })
 })
 
-describe("the Relay recipient lookup", () => {
-  const relay =
-    (body: unknown, ok = true) =>
-    async () => ({ ok, status: ok ? 200 : 500, json: async () => body })
-  test("Relay's record must name this key's recipient", async () => {
-    expect(
-      await relayRecipientProblem(relay({ requests: [{ id: REQUEST_ID, recipient: SOLANA }] }), REQUEST_ID, SOLANA),
-    ).toBeNull()
-    expect(
-      await relayRecipientProblem(
-        relay({ requests: [{ id: REQUEST_ID, recipient: "Attacker1111111111111111111111111111111111" }] }),
-        REQUEST_ID,
-        SOLANA,
-      ),
-    ).toContain("pays")
-    expect(await relayRecipientProblem(relay({ requests: [] }), REQUEST_ID, SOLANA)).toContain("does not list")
-    expect(await relayRecipientProblem(relay({}, false), REQUEST_ID, SOLANA)).toContain("could not be read")
-    expect(
-      await relayRecipientProblem(
-        relay({ requests: [{ id: REQUEST_ID, recipient: ACCOUNT.toUpperCase().replace("0X", "0x") }] }),
-        REQUEST_ID,
-        ACCOUNT,
-      ),
-    ).toBeNull()
-  })
-})
-
 // ── The flow: refusals make no relay call ────────────────────────────────────────────────────
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
@@ -297,19 +269,18 @@ describe("perpsWithdraw()", () => {
     expect(relayCalls(calls)).toEqual([])
   })
 
-  test("Relay's record naming another recipient is refused with no relay call", async () => {
-    const { client: c, calls } = await client([
-      json(build()),
-      json({ requests: [{ id: REQUEST_ID, recipient: "Attacker1111111111111111111111111111111111" }] }),
-    ])
-    await expect(c.perpsWithdraw(params)).rejects.toThrow("pays")
+  test("a build paying a wallet that is not this key's own is refused before any signature or authorize", async () => {
+    const foreign = build({ to: { chain: "solana", walletId: "sol-tee", address: "A".repeat(43) } })
+    const { client: c, calls } = await client([json(foreign)])
+    await expect(c.perpsWithdraw(params)).rejects.toThrow("not this key's own")
     expect(relayCalls(calls)).toEqual([])
+    expect(calls.some((call) => call.url.endsWith("/authorize"))).toBe(false)
+    expect(calls.map((call) => call.url)).toEqual(["https://api.test/api/v1/agent/perps/withdraw"])
   })
 
   test("a tampered SendAsset is refused after the mapping, with no second relay call", async () => {
     const { client: c, calls } = await client([
       json(build()),
-      json({ requests: [{ id: REQUEST_ID, recipient: SOLANA }] }),
       json({ success: true, signature: SIGNATURE }),
       json(authorization({ destination: `0x${"7".repeat(40)}` })),
     ])
@@ -320,7 +291,6 @@ describe("perpsWithdraw()", () => {
   test("the honest flow signs twice, posts the SendAsset to Hyperliquid itself, and reports it", async () => {
     const { client: c, calls } = await client([
       json(build()),
-      json({ requests: [{ id: REQUEST_ID, recipient: SOLANA }] }),
       json({ success: true, signature: SIGNATURE }),
       json(authorization()),
       json({ success: true, signature: SIGNATURE }),
@@ -331,7 +301,6 @@ describe("perpsWithdraw()", () => {
     expect(result.submitted).toBe(true)
     expect(calls.map((call) => call.url)).toEqual([
       "https://api.test/api/v1/agent/perps/withdraw",
-      `https://api.relay.link/requests/v3?id=${REQUEST_ID}`,
       "https://api.test/api/v1/agent/wallets/evm-tee/sign",
       "https://api.test/api/v1/agent/perps/withdraw/authorize",
       "https://api.test/api/v1/agent/wallets/evm-tee/sign",
@@ -339,8 +308,10 @@ describe("perpsWithdraw()", () => {
       "https://api.test/api/v1/agent/perps/withdraw/submitted",
     ])
     expect(calls[0]?.body).toEqual({ clientWithdrawalId: "w-1", amountUsdc: "5", to: "solana", wallet: "evm-tee" })
-    expect(calls[3]?.body).toEqual({ clientWithdrawalId: "w-1", signature: SIGNATURE })
-    expect((calls[5]?.body?.action as Record<string, unknown>).type).toBe("sendAsset")
-    expect(calls[5]?.body?.nonce).toBe(NONCE)
+    expect(calls[2]?.body).toEqual({ clientWithdrawalId: "w-1", signature: SIGNATURE })
+    expect((calls[4]?.body?.action as Record<string, unknown>).type).toBe("sendAsset")
+    expect(calls[4]?.body?.nonce).toBe(NONCE)
+    // N2 (BE-1777): the client never calls Relay's API.
+    expect(calls.some((call) => call.url.startsWith("https://api.relay.link"))).toBe(false)
   })
 })

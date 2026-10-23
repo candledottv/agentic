@@ -3774,11 +3774,11 @@ export declare class CandleClient {
      *
      * Every signature is checked first, and a mismatch throws with nothing signed: the NonceMapping
      * names this key's account and the build's Relay order id (`relayOrderId`, never the step
-     * `relayRequestId`), the build lands on one of `ownDestinations`, and Relay's own record of the
-     * request (the tracking id) names that same recipient; then the SendAsset carries the
-     * mapping's nonce, the exact amount asked for, and the pinned token, dex and depository. The
-     * client posts the SendAsset to Hyperliquid itself and reports the answer. There is no
-     * confirmation gate here: the CLI has one (`candle perps withdraw`).
+     * `relayRequestId`), and the build lands on one of `ownDestinations` (the recipient check: Relay's
+     * own record of the request is not read, BE-1777); then the SendAsset carries the mapping's nonce,
+     * the exact amount asked for, and the pinned token, dex and depository. The client posts the
+     * SendAsset to Hyperliquid itself and reports the answer. There is no confirmation gate here: the
+     * CLI has one (`candle perps withdraw`).
      */
     perpsWithdraw(params: PerpsWithdrawParams): Promise<PerpsWithdrawResult>;
     /**
@@ -3829,7 +3829,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.3";
+export declare const SDK_VERSION = "0.6.4";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

@@ -102,7 +102,6 @@ function authorization(message: Record<string, unknown> = {}) {
 interface Options {
   build?: Record<string, unknown>
   authorization?: Record<string, unknown>
-  recipient?: string
   confirm?: string
   tty?: boolean
   positions?: unknown[]
@@ -120,8 +119,12 @@ async function fixture(opts: Options = {}) {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
     calls.push({ host: url.host, path: url.pathname, search: url.search, body })
     const ok = (value: unknown) => Response.json(value)
+    // What Relay answers a keyless read of its request record since 2026-10 (BE-1777). The client must not ask.
     if (url.host === "api.relay.link")
-      return ok({ requests: [{ id: REQUEST_ID, recipient: opts.recipient ?? SOLANA }] })
+      return Response.json(
+        { code: "FST_ERR_VALIDATION", message: "headers must have required property 'x-api-key'" },
+        { status: 400 },
+      )
     if (url.host === "api.hyperliquid.xyz") return ok({ status: "ok", response: { type: "default" } })
     if (url.pathname === "/api/v1/agent/wallets/trading")
       return ok({
@@ -270,7 +273,6 @@ describe("the flow", () => {
       expect.stringContaining("/api/v1/agent/wallets/trading"),
       expect.stringContaining("/api/v1/agent/wallets/trading"),
       expect.stringContaining("/api/v1/agent/perps/withdraw"),
-      "api.relay.link:/requests/v3",
       expect.stringContaining("/api/v1/agent/wallets/wallet/sign"),
       expect.stringContaining("/api/v1/agent/perps/withdraw/authorize"),
       expect.stringContaining("/api/v1/agent/wallets/wallet/sign"),
@@ -286,8 +288,9 @@ describe("the flow", () => {
       nonce: NONCE,
     })
     expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ status: "settled", signature: SIGNATURE })
-    const relay = f.calls.find((c) => c.host === "api.relay.link")
-    expect(relay?.search).toBe(`?id=${REQUEST_ID}`)
+    // N2 (BE-1777): no call to Relay's API, and the relay signs twice.
+    expect(f.calls.some((c) => c.host === "api.relay.link")).toBe(false)
+    expect(relayCalls(f.calls)).toHaveLength(2)
     expect(ORDER_ID).not.toBe(REQUEST_ID)
   })
 
@@ -317,10 +320,17 @@ describe("R13: a tampered build is refused locally, with no relay call", () => {
     expect(relayCalls(f.calls)).toEqual([])
   })
 
-  test("Relay's record naming another recipient", async () => {
-    const f = await fixture({ recipient: "Attacker1111111111111111111111111111111111" })
+  test("a build paying a wallet that is not this key's own is refused before any signature or authorize", async () => {
+    const f = await fixture({
+      build: build({}, { to: { chain: "solana", walletId: "sol-wallet", address: "A".repeat(43) } }),
+    })
     expect(await run([...WITHDRAW, "--json"], f.deps)).toBe(1)
+    const refusal = JSON.parse(f.stdout.text.trim().split("\n").at(-1) ?? "")
+    expect(refusal).toMatchObject({ ok: false, code: "PERPS_BUILD_REFUSED" })
+    expect(String(refusal.message)).toContain("not this key's own")
     expect(relayCalls(f.calls)).toEqual([])
+    expect(f.calls.some((c) => c.path.endsWith("/authorize"))).toBe(false)
+    expect(f.calls.some((c) => c.host === "api.relay.link")).toBe(false)
   })
 
   test.each([

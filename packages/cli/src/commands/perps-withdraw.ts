@@ -29,7 +29,6 @@ import {
   type PerpsWithdrawBuild,
   type PerpsWithdrawPins,
   parseWithdrawAmount,
-  relayRecipientProblem,
   verifyWithdrawMapping,
   verifyWithdrawSendAsset,
 } from "../hyperliquid-withdraw"
@@ -180,8 +179,6 @@ export async function perpsWithdraw(args: string[], ctx: CommandContext): Promis
       pins,
     })
     if (!mapping.ok) throw refused(mapping.reason)
-    const recipient = await relayRecipientProblem(ctx.deps.fetch as never, build.relayRequestId, build.to.address)
-    if (recipient) throw refused(recipient)
 
     // The decoded withdrawal, then one unlock that names it, then one typed confirm.
     const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
