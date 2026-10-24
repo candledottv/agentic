@@ -983,6 +983,27 @@ describe("executeLaunchAndSeed", () => {
     expect(JSON.parse(result.text).api.size.fits).toBe(true)
   })
 
+  test("BE-1847: with headlessSeed a Solana dev buy uses the headless bundle adapter and reports its separate buy signature", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/launch/headless": {
+        body: { ...LAUNCHED, bundleId: "creator-bundle", devBuy: { signature: "buy-sig" } },
+      },
+      "https://api.test/api/v1/markets/solana/NewMint111": { body: { success: true, market: {} } },
+    })
+    const result = await executeLaunchAndSeed(
+      { clientLaunchId: "creator-id", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.01" },
+      CFG,
+      fetch,
+      undefined,
+      undefined,
+      { headlessSeed: true },
+    )
+    expect(result.isError).toBeUndefined()
+    expect(JSON.parse(result.text).launch.devBuy.signature).toBe("buy-sig")
+    expect(JSON.parse(String(calls[0]?.init?.body)).buyAmount).toBe("10000000")
+    expect(calls).toHaveLength(2)
+  })
+
   test("BE-1849: a Solana seed's dryRun is the atomic dry run, which writes nothing, and nothing else is called", async () => {
     const preview = { success: true, dryRun: true, launchWallet: "W", fills: [{ index: 1, amountRaw: "100000000" }] }
     const { calls, fetch } = fakeFetch({ "https://api.test/api/v1/launch/atomic/dry-run": { body: preview } })

@@ -53,6 +53,21 @@ test("stage completion and scope disposal leave no animation timer or signal han
   expect(stderr.text).toEndWith("\r\x1b[2K")
 })
 
+test("cancellation handlers are installed before the first visible progress frame", () => {
+  const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]
+  let first: number[] | undefined
+  const steps = stepReporter(() => {
+    first ??= [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]
+  }, true)
+  try {
+    steps.start("first frame")
+    expect(first).toEqual(before.map((count) => count + 1))
+  } finally {
+    steps.stop()
+  }
+  expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before)
+})
+
 test.skipIf(process.platform === "win32")(
   "Ctrl+C clears real PTY progress, preserves terminal settings, and terminates",
   async () => {

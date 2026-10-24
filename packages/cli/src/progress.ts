@@ -56,7 +56,6 @@ export function stepReporter(write: (text: string) => void, tty: boolean, ascii 
         write(`${label}...\n`)
         return
       }
-      write(`${FRAMES[0]} ${label}`)
       frame = 1
       // Remove our handler before forwarding the signal: cleanup must not turn Ctrl+C into
       // "keep downloading". If another owner handles the signal, leave its cancellation intact.
@@ -78,6 +77,9 @@ export function stepReporter(write: (text: string) => void, tty: boolean, ascii 
       }, INTERVAL_MS)
       // A spinner must never hold the process open past the work it decorates.
       if (typeof timer === "object" && "unref" in timer) timer.unref()
+      // Install cancellation and timer cleanup before the first visible frame: a terminal
+      // can deliver Ctrl+C as soon as it sees that frame.
+      write(`${FRAMES[0]} ${label}`)
     },
     done(label) {
       clearSpinner()

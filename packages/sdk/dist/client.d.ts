@@ -302,7 +302,13 @@ export interface BuildSelfLaunchHoodResult {
     fee?: TradeFee;
 }
 /** POST /api/v1/launch/self/build response. */
-export type BuildSelfLaunchResult = BuildSelfLaunchSolanaResult | BuildSelfLaunchHoodResult;
+export interface BuildSelfLaunchAtomicResult extends BuildAtomicLaunchResult {
+    mint: string;
+    pool: string;
+    /** Positive Solana creator buys use the atomic submitter, never individual RPC broadcasts. */
+    transaction?: never;
+}
+export type BuildSelfLaunchResult = BuildSelfLaunchSolanaResult | BuildSelfLaunchHoodResult | BuildSelfLaunchAtomicResult;
 /** POST /api/v1/launch/self/confirm request body. */
 export interface ConfirmSelfLaunchRequest {
     clientLaunchId: string;
@@ -2941,11 +2947,14 @@ export type SubmitAtomicLaunchResult = {
     status: "landed";
     bundleId: string;
     mint: string;
+    pool?: string;
     signatures: string[];
+    launch?: Omit<LaunchResult, "clientLaunchId">;
 } | {
     status: "failed";
     bundleId: string;
     retryable: false;
+    revertedSignature?: string;
 } | {
     status: "timeout";
     bundleId: string;

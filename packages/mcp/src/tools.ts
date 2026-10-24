@@ -1917,9 +1917,13 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       description:
         "Launch a new token from the account's embedded wallet, with an optional dev-buy seed, then " +
         "return the fresh market state and token links in one result. On solana a seed makes this " +
-        "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " +
-        "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " +
-        "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is " +
+        (options.headlessSeed === true
+          ? "the seed is a separate first-buy transaction in the same Jito bundle as the launch, so " +
+            "both land or neither does. That works on every plan, Free included, and needs no " +
+            "swap:write. On hood the seed is "
+          : "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " +
+            "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " +
+            "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is ") +
         "a best-effort follow-up. A launch with no seed works on every plan, Free included. MOVES " +
         "REAL FUNDS unless dryRun; dry-run first, which spends nothing. Seeds above the platform " +
         "dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH): at most 0.5 SOL / 500 USDC / 2,000,000 " +

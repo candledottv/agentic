@@ -33,6 +33,7 @@ export type {
   BaseAssetKey,
   BuildAtomicLaunchRequest,
   BuildAtomicLaunchResult,
+  BuildSelfLaunchAtomicResult,
   BuildSelfLaunchHoodResult,
   BuildSelfLaunchRequest,
   BuildSelfLaunchResult,

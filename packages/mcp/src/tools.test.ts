@@ -464,6 +464,29 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     expect(d).toContain("liquidityDrawdownBps")
   })
 
+  test("the Solana seed copy depends on whether the server seeds headlessly", () => {
+    const describeWith = (options: { headlessSeed?: boolean }): string => {
+      let text = ""
+      const server = {
+        registerTool(toolName: string, config: { description?: string }) {
+          if (toolName === "candle_launch_and_seed") text = config.description ?? ""
+        },
+      }
+      registerToolSubset(server as never, {
+        tools: ["candle_launch_and_seed"],
+        getConfig: () => ({ apiUrl: "https://api.test", apiKey: "cndl_live_k" }),
+        ...options,
+      })
+      return text
+    }
+    const hosted = describeWith({ headlessSeed: true })
+    expect(hosted).toContain("every plan, Free included, and needs no swap:write")
+    expect(hosted).not.toContain("TIER_REQUIRED")
+    const local = describeWith({})
+    expect(local).toContain("Pro or Max (TIER_REQUIRED otherwise) and swap:write")
+    expect(local).not.toContain("needs no swap:write")
+  })
+
   test("vamp candidates says plainly it is for launching copies, in the spec's words (BE-1504)", () => {
     const d = describeOf("candle_vamp_candidates")
     expect(d).toBe(VAMP_CANDIDATES_DESCRIPTION)

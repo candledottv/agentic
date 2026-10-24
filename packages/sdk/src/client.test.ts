@@ -503,6 +503,16 @@ describe("request shapes", () => {
     expect(result).toEqual({ ...LAUNCH_OK, clientLaunchId: "run-1" } as never)
   })
 
+  test("BE-1847: headless launch forwards the creator buy and keeps the bundled result", async () => {
+    const resultBody = { ...LAUNCH_OK, bundleId: "bundle", devBuy: { signature: "buy-sig" } }
+    const { client, calls } = makeClient(KEYED, [json(200, resultBody)])
+    const result = await client.launch({ ...LAUNCH_REQ, buyAmount: "10000000" })
+    expect(result).toMatchObject({ bundleId: "bundle", devBuy: { signature: "buy-sig" } })
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse(String(calls[0]?.body)).buyAmount).toBe("10000000")
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/launch/headless")
+  })
+
   test("launch generates a sdk- prefixed clientLaunchId when the caller omits one", async () => {
     const { client, calls } = makeClient(KEYED, [json(200, LAUNCH_OK)])
     const { clientLaunchId: _omitted, ...withoutId } = LAUNCH_REQ
@@ -3058,6 +3068,103 @@ describe("linked-wallet signing relay + one-shot flows", () => {
       fee: { bps: 100, feeRaw: "7000", treasury: "0xTreasury1" },
       expiresAt: 1692345678000,
     }
+
+    test("BE-1847: a creator bundle signs both legs and submits them together, with no RPC broadcast", async () => {
+      const store = await keyedSecretStore()
+      const built = {
+        bundleId: "creator-bundle",
+        mint: "Mint111",
+        pool: "Pool111",
+        legs: [
+          { index: 0, role: "launch", signer: "client", unsignedTxBase64: "bGF1bmNo" },
+          { index: 1, role: "buy", signer: "client", unsignedTxBase64: "YnV5" },
+        ],
+      }
+      const { client, calls } = makeClient(
+        { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+        [
+          json(200, built),
+          json(200, SIGN_RELAY_OK),
+          json(200, SIGN_RELAY_OK),
+          json(200, {
+            status: "landed",
+            bundleId: built.bundleId,
+            mint: built.mint,
+            signatures: ["launch-sig", "buy-sig"],
+            launch: { ...LAUNCH_OK, devBuy: { signature: "buy-sig" } },
+          }),
+        ],
+      )
+      const result = await client.selfLaunch({
+        ...LAUNCH_REQ,
+        buyAmount: "10000000",
+        linkedWalletId: LINKED_WALLET_ID,
+        privyWalletId: PRIVY_WALLET_ID,
+      })
+      expect(result.devBuy?.signature).toBe("buy-sig")
+      expect(calls.map((c) => String(c.url).replace("https://api.test", ""))).toEqual([
+        "/api/v1/launch/self/build",
+        `/api/v1/agent/wallets/${LINKED_WALLET_ID}/sign`,
+        `/api/v1/agent/wallets/${LINKED_WALLET_ID}/sign`,
+        "/api/v1/launch/atomic/submit",
+      ])
+      expect(JSON.parse(String(calls[3]?.body))).toEqual({
+        bundleId: built.bundleId,
+        signedTxsBase64: [SIGN_RELAY_OK.signedTransaction, SIGN_RELAY_OK.signedTransaction],
+      })
+    })
+
+    test.each([
+      "timeout",
+      "failed",
+    ])("BE-1847: creator bundle %s retains both ids and never enters the RPC rebuild loop", async (status) => {
+      const store = await keyedSecretStore()
+      const built = {
+        bundleId: "creator-bundle",
+        mint: "Mint111",
+        pool: "Pool111",
+        legs: [
+          { index: 0, signer: "client", unsignedTxBase64: "bGF1bmNo" },
+          { index: 1, signer: "client", unsignedTxBase64: "YnV5" },
+        ],
+      }
+      const { client, calls } = makeClient(
+        { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+        [
+          json(200, built),
+          json(200, SIGN_RELAY_OK),
+          json(200, SIGN_RELAY_OK),
+          json(502, { status, bundleId: built.bundleId, retryable: false }),
+        ],
+      )
+      const error = await client
+        .selfLaunch({
+          ...LAUNCH_REQ,
+          buyAmount: "10000000",
+          linkedWalletId: LINKED_WALLET_ID,
+          privyWalletId: PRIVY_WALLET_ID,
+        })
+        .catch((e) => e)
+      expect(error).toBeInstanceOf(CandleApiError)
+      expect(error.stage).toBe(status === "failed" ? "reverted" : "unconfirmed")
+      expect(operationIds(error)).toEqual({ clientLaunchId: LAUNCH_REQ.clientLaunchId, bundleId: built.bundleId })
+      expect(calls).toHaveLength(4)
+      expect(calls.some((c) => c.url === SOLANA_RPC)).toBe(false)
+    })
+
+    test("BE-1847: an older API's combined creator transaction is never signed or broadcast", async () => {
+      const { client, calls } = makeClient(KEYED, [json(200, BUILD_SELF_LAUNCH_SOLANA)])
+      const error = await client
+        .selfLaunch({
+          ...LAUNCH_REQ,
+          buyAmount: "10000000",
+          linkedWalletId: LINKED_WALLET_ID,
+          privyWalletId: PRIVY_WALLET_ID,
+        })
+        .catch((e) => e)
+      expect(String(error)).toContain("bundle support")
+      expect(calls).toHaveLength(1)
+    })
 
     test("Solana: runs build -> sign -> broadcast -> confirm in order and returns the confirmed launch", async () => {
       const store = await keyedSecretStore()

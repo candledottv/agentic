@@ -4306,7 +4306,8 @@ class CandleClient {
   }
   async postSelfLaunchBuild(req, op) {
     this.requireKey("buildSelfLaunch()");
-    return this.requestJson("POST", "/api/v1/launch/self/build", req, op);
+    const built = await this.requestJson("POST", "/api/v1/launch/self/build", req, op);
+    return { ...built, clientLaunchId: built.clientLaunchId ?? req.clientLaunchId };
   }
   async confirmSelfLaunch(req) {
     this.requireKey("confirmSelfLaunch()");
@@ -4524,10 +4525,40 @@ class CandleClient {
     const { privyWalletId, ...launchReq } = req;
     const clientLaunchId = launchReq.clientLaunchId ?? generateClientLaunchId();
     const body = { ...launchReq, clientLaunchId };
-    return this.runOperation({ clientLaunchId }, "caller-broadcast", (op) => this.selfLaunchSteps(body, privyWalletId, op));
+    const creatorBundle = (body.chain ?? "solana") === "solana" && Number(body.buyAmount ?? 0) > 0;
+    return this.runOperation({ clientLaunchId }, creatorBundle ? "server-executed" : "caller-broadcast", (op) => this.selfLaunchSteps(body, privyWalletId, op));
   }
   async selfLaunchSteps(body, privyWalletId, op) {
     const built = await this.postSelfLaunchBuild(body, op);
+    if ("bundleId" in built) {
+      op.ids.bundleId = built.bundleId;
+      const signedTxsBase64 = [];
+      for (const leg of built.legs) {
+        if (leg.signer !== "client" || !leg.unsignedTxBase64)
+          throw new Error("selfLaunch(): invalid creator bundle leg");
+        const signed = await this.signLinkedTransaction({
+          linkedWalletId: body.linkedWalletId,
+          privyWalletId,
+          chain: "solana",
+          unsignedTransactionBase64: leg.unsignedTxBase64
+        });
+        signedTxsBase64.push(signed.signedTransaction);
+      }
+      const outcome = await this.submitAtomicLaunch({ bundleId: built.bundleId, signedTxsBase64 });
+      if (outcome.status === "landed" && outcome.launch)
+        return { ...outcome.launch, clientLaunchId: built.clientLaunchId };
+      throw new CandleApiError({
+        status: 502,
+        code: outcome.status === "timeout" ? "JITO_BUNDLE_TIMEOUT" : "JITO_BUNDLE_FAILED",
+        message: "Creator bundle did not report a completed launch; recover this same clientLaunchId before starting another",
+        retryable: false,
+        stage: outcome.status === "failed" ? "reverted" : "unconfirmed",
+        mint: built.mint
+      });
+    }
+    if ((body.chain ?? "solana") === "solana" && Number(body.buyAmount ?? 0) > 0) {
+      throw new Error("selfLaunch(): this API returned a single transaction for a Solana creator buy; bundle support is required before signing");
+    }
     if (typeof built.transaction === "string") {
       let unsignedTransactionBase64 = built.transaction;
       let clientLaunchId2 = built.clientLaunchId;

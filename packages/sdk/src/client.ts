@@ -408,7 +408,16 @@ export interface BuildSelfLaunchHoodResult {
 }
 
 /** POST /api/v1/launch/self/build response. */
-export type BuildSelfLaunchResult = BuildSelfLaunchSolanaResult | BuildSelfLaunchHoodResult
+export interface BuildSelfLaunchAtomicResult extends BuildAtomicLaunchResult {
+  mint: string
+  pool: string
+  /** Positive Solana creator buys use the atomic submitter, never individual RPC broadcasts. */
+  transaction?: never
+}
+export type BuildSelfLaunchResult =
+  | BuildSelfLaunchSolanaResult
+  | BuildSelfLaunchHoodResult
+  | BuildSelfLaunchAtomicResult
 
 /** POST /api/v1/launch/self/confirm request body. */
 export interface ConfirmSelfLaunchRequest {
@@ -3156,8 +3165,15 @@ export interface SubmitAtomicLaunchRequest {
  * docs/headless-launch.md for the full model.
  */
 export type SubmitAtomicLaunchResult =
-  | { status: "landed"; bundleId: string; mint: string; signatures: string[] }
-  | { status: "failed"; bundleId: string; retryable: false }
+  | {
+      status: "landed"
+      bundleId: string
+      mint: string
+      pool?: string
+      signatures: string[]
+      launch?: Omit<LaunchResult, "clientLaunchId">
+    }
+  | { status: "failed"; bundleId: string; retryable: false; revertedSignature?: string }
   | { status: "timeout"; bundleId: string; retryable: boolean }
 
 /**
@@ -4295,7 +4311,8 @@ export class CandleClient {
     op?: OperationContext,
   ): Promise<BuildSelfLaunchResult> {
     this.requireKey("buildSelfLaunch()")
-    return this.requestJson<BuildSelfLaunchResult>("POST", "/api/v1/launch/self/build", req, op)
+    const built = await this.requestJson<BuildSelfLaunchResult>("POST", "/api/v1/launch/self/build", req, op)
+    return { ...built, clientLaunchId: built.clientLaunchId ?? req.clientLaunchId } as BuildSelfLaunchResult
   }
 
   /**
@@ -4865,7 +4882,8 @@ export class CandleClient {
     const { privyWalletId, ...launchReq } = req
     const clientLaunchId = launchReq.clientLaunchId ?? generateClientLaunchId()
     const body: BuildSelfLaunchRequest = { ...launchReq, clientLaunchId }
-    return this.runOperation({ clientLaunchId }, "caller-broadcast", (op) =>
+    const creatorBundle = (body.chain ?? "solana") === "solana" && Number(body.buyAmount ?? 0) > 0
+    return this.runOperation({ clientLaunchId }, creatorBundle ? "server-executed" : "caller-broadcast", (op) =>
       this.selfLaunchSteps(body, privyWalletId, op),
     )
   }
@@ -4877,6 +4895,41 @@ export class CandleClient {
     op: OperationContext,
   ): Promise<ConfirmSelfLaunchResult> {
     const built = await this.postSelfLaunchBuild(body, op)
+
+    if ("bundleId" in built) {
+      op.ids.bundleId = built.bundleId
+      const signedTxsBase64: string[] = []
+      for (const leg of built.legs) {
+        if (leg.signer !== "client" || !leg.unsignedTxBase64)
+          throw new Error("selfLaunch(): invalid creator bundle leg")
+        const signed = await this.signLinkedTransaction({
+          linkedWalletId: body.linkedWalletId,
+          privyWalletId,
+          chain: "solana",
+          unsignedTransactionBase64: leg.unsignedTxBase64,
+        })
+        signedTxsBase64.push(signed.signedTransaction)
+      }
+      const outcome = await this.submitAtomicLaunch({ bundleId: built.bundleId, signedTxsBase64 })
+      if (outcome.status === "landed" && outcome.launch)
+        return { ...outcome.launch, clientLaunchId: built.clientLaunchId }
+      // A timeout is unresolved. Expose both ids and never enter the single-tx rebuild loop.
+      throw new CandleApiError({
+        status: 502,
+        code: outcome.status === "timeout" ? "JITO_BUNDLE_TIMEOUT" : "JITO_BUNDLE_FAILED",
+        message:
+          "Creator bundle did not report a completed launch; recover this same clientLaunchId before starting another",
+        retryable: false,
+        stage: outcome.status === "failed" ? "reverted" : "unconfirmed",
+        mint: built.mint,
+      })
+    }
+
+    if ((body.chain ?? "solana") === "solana" && Number(body.buyAmount ?? 0) > 0) {
+      throw new Error(
+        "selfLaunch(): this API returned a single transaction for a Solana creator buy; bundle support is required before signing",
+      )
+    }
 
     if (typeof built.transaction === "string") {
       // The one client-side rebuild-on-blockhash-expiry loop left in this file. It used to say
