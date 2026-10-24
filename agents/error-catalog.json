@@ -5,7 +5,7 @@
     "is written for humans and will change.",
     "",
     "`retryable` means the SAME request may succeed later, unchanged. Explicit error.retryable",
-    "overrides category defaults for market and transient responses. Read error.routing.reason.",
+    "overrides category defaults. Read error.routing.reason when present.",
     "MARKET_NOT_FOUND keeps its 404 and baseline retryability; finer reasons disambiguate it.",
     "MARKET_NOT_FOUND is deprecated on migrating surfaces; forensics retains its coverage refusal.",
     "",
@@ -68,9 +68,10 @@
     },
     "request_validation": {
       "retryable": false,
-      "action": "The request is malformed. Fix the named field. For TRANSACTION_TOO_LARGE the error carries the exact name-byte budget; for CURVE_OUT_OF_RANGE with reason price_ceiling, maxThresholdRaw is the largest threshold that fits.",
+      "action": "The request is malformed. Fix the named field. For TRANSACTION_TOO_LARGE the error carries the exact name-byte budget; for CURVE_OUT_OF_RANGE with reason price_ceiling, maxThresholdRaw is the largest threshold that fits. For FEE_WALLET_UNSUPPORTED, choose an on-curve wallet or an enabled, verified Squads v4 vault; honor explicit error.retryable when verification is temporarily unavailable.",
       "codes": [
         "VALIDATION_FAILED",
+        "FEE_WALLET_UNSUPPORTED",
         "CLOSE_REFUSED",
         "INVALID_NAME_BYTES",
         "INVALID_SYMBOL",
