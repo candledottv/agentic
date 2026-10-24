@@ -868,8 +868,12 @@ describe("exp-custom on both launch tools", () => {
       return new Response(JSON.stringify({ success: true, dryRun: true }), { status: 200 })
     }
     const { call } = toolsWith(["candle_launch_and_seed"], fetchLike)
-    await call("candle_launch_and_seed", { ...BASE, mode: "exp-custom", curve: CURVE, devBuy: "2", dryRun: true })
-    expect(bodies).toEqual([{ ...BASE, mode: "exp-custom", curve: CURVE, buyAmount: "2000000000" }])
+    await call("candle_launch_and_seed", { ...BASE, mode: "exp-custom", curve: CURVE, devBuy: "0.4", dryRun: true })
+    // BE-1849: a Solana seed is the atomic launch's first buy, on its dry run.
+    const payer = { type: "main" }
+    expect(bodies).toEqual([
+      { ...BASE, mode: "exp-custom", curve: CURVE, payer, firstBuys: [{ payer, amountRaw: "400000000" }] },
+    ])
   })
 })
 
@@ -939,10 +943,21 @@ describe("pool choices on both launch tools", () => {
       ...BASE,
       poolFee: { tier: 100 },
       poolOpen: "curve_price",
-      devBuy: "2",
+      devBuy: "0.4",
       dryRun: true,
     })
-    expect(bodies).toEqual([{ ...BASE, poolFee: { tier: 100 }, poolOpen: "curve_price", buyAmount: "2000000000" }])
+    // BE-1849: a Solana seed is the atomic launch's first buy, and the pool choices ride that body.
+    // 0.4 SOL is under the local ceiling, so the dry run is the request this assertion sees.
+    const payer = { type: "main" }
+    expect(bodies).toEqual([
+      {
+        ...BASE,
+        poolFee: { tier: 100 },
+        poolOpen: "curve_price",
+        payer,
+        firstBuys: [{ payer, amountRaw: "400000000" }],
+      },
+    ])
   })
 })
 
@@ -1003,6 +1018,8 @@ describe("launch parity (BE-1806)", () => {
       return answer(200, JSON.stringify({ success: true, dryRun: true }))
     })
     await call("candle_launch_and_seed", { ...BASE, ...CUSTOM, devBuy: "0.3", dryRun: true })
-    expect(bodies).toEqual([{ ...BASE, ...CUSTOM, buyAmount: "300000000" }])
+    // BE-1849: a Solana seed is the atomic launch's first buy; creatorFeeBps and the curve ride that body.
+    const payer = { type: "main" }
+    expect(bodies).toEqual([{ ...BASE, ...CUSTOM, payer, firstBuys: [{ payer, amountRaw: "300000000" }] }])
   })
 })

@@ -116,7 +116,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_list_agents` | The agent directory: every published agent with its strategy, declared models, all-time P&L and trade and launch counts, sorted `newest`, `active` or `pnl`, filtered by `strategy`, searched by `q` | `GET /api/v1/agent/directory` | none |
 | `candle_get_plans` | Plans: prices, fees, limits and what each can do, as JSON and a Markdown table | `GET /api/v1/agent/plans` | none |
 | `candle_trade` | Buy or sell a token | Reads the market for its decimals (or wallet balance, for a percent sell) then `POST /api/v1/trade/agent/build` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
-| `candle_launch_and_seed` | Launch a token and seed it | `POST /api/v1/launch/headless` (or `/dry-run`), then a follow-up `GET /api/v1/markets/:chain/:mint`; with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
+| `candle_launch_and_seed` | Launch a token and seed it | `POST /api/v1/launch/headless` (or `/dry-run`); a Solana seed is an atomic launch instead, `POST /api/v1/launch/atomic/build` then `/submit` (or `/atomic/dry-run`), one Jito bundle from the embedded wallet (Pro or Max, `swap:write`); then a follow-up `GET /api/v1/markets/:chain/:mint`; with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
 | `candle_swap` | Swap between base assets | `POST /api/v1/agent/swap` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
 | `candle_transfer` | Transfer an asset | `POST /api/v1/agent/transfer` | `CANDLE_AGENT_API_KEY`, Withdraw (`transfer:write`) |
 | `candle_sweep` | Sweep a wallet to one destination | One `POST /api/v1/agent/transfer` per asset, `amountRaw: "max"` | `CANDLE_AGENT_API_KEY`, Withdraw (`transfer:write`) |

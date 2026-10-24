@@ -691,7 +691,7 @@ async function executeTrade(args, cfg, doFetch) {
   const wrapped = JSON.stringify({ clientTradeId, resolved, api: posted.body });
   return posted.ok ? { text: wrapped } : { text: wrapped, isError: true };
 }
-async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs) {
+async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs, opts = {}) {
   const apiKey = requireApiKey(cfg);
   const clientLaunchId = args.clientLaunchId ?? randomUUID();
   const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...imageFields } = args;
@@ -704,6 +704,12 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs) {
     if ("err" in converted)
       return converted.err;
     buyAmount = converted.raw;
+  }
+  const atomic = buyAmount !== undefined && (args.chain ?? "solana") === "solana" && !opts.headlessSeed;
+  if (atomic) {
+    const refused = seedCeilingRefusal(args.quoteAsset ?? "sol", args.mode, buyAmount, clientLaunchId);
+    if (refused)
+      return refused;
   }
   const image = await resolveLaunchImage(imageFields, imageDir, cfg, doFetch, imageFs);
   if ("refused" in image)
@@ -718,16 +724,20 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs) {
     return { text: JSON.stringify({ clientLaunchId, api }), isError: true };
   }
   const uploaded = uploadedFields(image);
+  const transportFailure = (thrown) => {
+    const failed = transportError("clientLaunchId", clientLaunchId, thrown);
+    return Object.keys(uploaded).length === 0 ? failed : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) };
+  };
+  if (atomic)
+    return launchAndSeedAtomic({ ...image.args, clientLaunchId }, buyAmount, { clientLaunchId, uploaded, dryRun: dryRun === true, transportFailure }, cfg, doFetch);
   const path = dryRun ? "/api/v1/launch/headless/dry-run" : "/api/v1/launch/headless";
   const posted = await postJson(`${base(cfg)}${path}`, apiKey, {
     ...image.args,
     clientLaunchId,
     ...buyAmount !== undefined ? { buyAmount } : {}
   }, doFetch);
-  if ("thrown" in posted) {
-    const failed = transportError("clientLaunchId", clientLaunchId, posted.thrown);
-    return Object.keys(uploaded).length === 0 ? failed : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) };
-  }
+  if ("thrown" in posted)
+    return transportFailure(posted.thrown);
   if (!posted.ok) {
     return { text: JSON.stringify({ clientLaunchId, ...uploaded, api: posted.body }), isError: true };
   }
@@ -735,25 +745,115 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs) {
     return { text: JSON.stringify({ clientLaunchId, dryRun: true, ...uploaded, api: posted.body }) };
   }
   const launch = posted.body;
-  let market = null;
-  let note;
+  const { market, note } = await readLaunchedMarket(launch.chain ?? "solana", launch.mint, cfg, doFetch);
+  return {
+    text: JSON.stringify({ clientLaunchId, ...uploaded, launch, market, ...note ? { note } : {} })
+  };
+}
+async function readLaunchedMarket(chain, mint, cfg, doFetch) {
+  const note = "launch confirmed; the follow-up market read failed, read it via candle_get_market";
   try {
-    if (launch.mint === undefined)
+    if (mint === undefined)
       throw new Error("the launch response carried no mint");
-    const marketRes = await doFetch(`${base(cfg)}/api/v1/markets/${encodeURIComponent(launch.chain ?? "solana")}/${encodeURIComponent(launch.mint)}`, {
+    const marketRes = await doFetch(`${base(cfg)}/api/v1/markets/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}`, {
       method: "GET",
       headers: headers()
     });
-    if (marketRes.ok) {
-      market = JSON.parse(await marketRes.text()).market ?? null;
-    } else {
-      note = "launch confirmed; the follow-up market read failed, read it via candle_get_market";
-    }
+    if (!marketRes.ok)
+      return { market: null, note };
+    return { market: JSON.parse(await marketRes.text()).market ?? null };
   } catch {
-    note = "launch confirmed; the follow-up market read failed, read it via candle_get_market";
+    return { market: null, note };
+  }
+}
+var SOLANA_SEED_CEILINGS = {
+  sol: { raw: 500000000n, unit: "lamports", expRaw: 500000000n },
+  usdc: { raw: 500000000n, unit: "USDC raw units" },
+  cndl: { raw: 2000000000000n, unit: "CNDL raw units", expRaw: 33000000000n }
+};
+function seedCeilingRefusal(quoteAsset, mode, buyAmount, clientLaunchId) {
+  const quote = quoteAsset.toLowerCase();
+  const ceiling = SOLANA_SEED_CEILINGS[quote];
+  if (!ceiling)
+    return;
+  const expCap = ceiling.expRaw;
+  const preset = mode === "exp-a" || mode === "exp-b" || mode === "exp-c";
+  const effective = preset && expCap !== undefined && expCap < ceiling.raw ? expCap : ceiling.raw;
+  if (BigInt(buyAmount) <= effective)
+    return;
+  if (preset && expCap !== undefined) {
+    return {
+      text: JSON.stringify({
+        clientLaunchId,
+        success: false,
+        error: {
+          code: "DEV_BUY_TOO_HIGH",
+          message: `buyAmount exceeds this launch's dev-buy ceiling of ${effective} ${ceiling.unit}: at most ${ceiling.raw} ${ceiling.unit}, or 10% of the threshold when that is lower`,
+          field: "devBuy",
+          retryable: false
+        }
+      }),
+      isError: true
+    };
   }
   return {
-    text: JSON.stringify({ clientLaunchId, ...uploaded, launch, market, ...note ? { note } : {} })
+    text: JSON.stringify({
+      clientLaunchId,
+      success: false,
+      error: {
+        code: "DEV_BUY_TOO_HIGH",
+        message: `buyAmount exceeds the per-launch dev-buy ceiling of ${effective} ${ceiling.unit} for ${quote} on solana`,
+        field: "devBuy",
+        retryable: false
+      }
+    }),
+    isError: true
+  };
+}
+var MAIN_PAYER = { type: "main" };
+async function launchAndSeedAtomic(launchBody, buyAmount, ctx, cfg, doFetch) {
+  const apiKey = requireApiKey(cfg);
+  const { clientLaunchId, uploaded } = ctx;
+  const failed = (api, extra = {}) => ({
+    text: JSON.stringify({ clientLaunchId, ...uploaded, ...extra, api }),
+    isError: true
+  });
+  const body = { ...launchBody, payer: MAIN_PAYER, firstBuys: [{ payer: MAIN_PAYER, amountRaw: buyAmount }] };
+  const built = await postJson(`${base(cfg)}/api/v1/launch/atomic/${ctx.dryRun ? "dry-run" : "build"}`, apiKey, body, doFetch);
+  if ("thrown" in built)
+    return ctx.transportFailure(built.thrown);
+  if (!built.ok)
+    return failed(built.body);
+  if (ctx.dryRun)
+    return { text: JSON.stringify({ clientLaunchId, dryRun: true, ...uploaded, api: built.body }) };
+  const bundle = built.body;
+  if (typeof bundle.bundleId !== "string" || !Array.isArray(bundle.legs) || bundle.legs.length !== 2 || bundle.legs.some((leg) => leg?.signer !== "server"))
+    return failed(built.body, {
+      success: false,
+      error: {
+        code: "MCP_INVALID_RESPONSE",
+        message: "Candle did not build this launch and its seed as two legs it signs from the embedded wallet; nothing was sent. Retry with the same clientLaunchId to build it again."
+      }
+    });
+  const bundleId = bundle.bundleId;
+  const submitted = await postJson(`${base(cfg)}/api/v1/launch/atomic/submit`, apiKey, { bundleId, signedTxsBase64: [] }, doFetch);
+  if ("thrown" in submitted)
+    return ctx.transportFailure(submitted.thrown);
+  const outcome = submitted.body;
+  if (!submitted.ok || outcome.status !== "landed") {
+    const next = outcome.status === "failed" ? "Neither the launch nor the seed is on chain. Retry with the same clientLaunchId: Candle starts a clean attempt under it." : outcome.status === "timeout" ? "The bundle is unresolved and may still land. Call candle_get_operation with this clientLaunchId and kind launch; never relaunch under a new id, which would be a second token." : undefined;
+    return failed(submitted.body, { bundleId, ...next ? { next } : {} });
+  }
+  const { market, note } = await readLaunchedMarket("solana", outcome.mint, cfg, doFetch);
+  return {
+    text: JSON.stringify({
+      clientLaunchId,
+      bundleId,
+      ...uploaded,
+      launch: submitted.body,
+      market,
+      ...note ? { note } : {}
+    })
   };
 }
 var SWEEP_BASE_ASSETS = {
@@ -5211,7 +5311,7 @@ var tradeShape = {
 var { buyAmount: _rawBuyAmount, ...seedableLaunchShape } = launchTokenShape;
 var seedShape = {
   clientLaunchId: z4.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result."),
-  devBuy: z4.string().optional().describe('Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' + "ETH on hood), bundled into the launch transaction itself on solana and sent as a follow-up " + "transaction on hood. Paid from the account's embedded wallet. Follows quoteAsset, which " + "defaults to sol on solana and eth on hood. Capped by the platform dev-buy ceiling; for " + "a larger seed, launch then follow with candle_trade.")
+  devBuy: z4.string().optional().describe('Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' + "ETH on hood), paid from the account's embedded wallet; the tool's description says how " + "each chain sends it. Follows quoteAsset, which defaults to sol on solana and eth on hood. " + "Capped by the platform dev-buy ceiling; for a larger seed, launch then follow with candle_trade.")
 };
 var launchAndSeedShape = { ...seedableLaunchShape, ...seedShape };
 var localImageShape = {
@@ -5527,10 +5627,12 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   });
   register("candle_launch_and_seed", {
     title: "Launch a token and seed it",
-    description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed (in the " + "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " + "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " + "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " + "launch, then top up with candle_trade. " + CUSTOM_CURVE_RULE + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
+    description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed, then " + "return the fresh market state and token links in one result. On solana a seed makes this " + "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " + "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " + "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is " + "a best-effort follow-up. A launch with no seed works on every plan, Free included. MOVES " + "REAL FUNDS unless dryRun; dry-run first, which spends nothing. Seeds above the platform " + "dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH): at most 0.5 SOL / 500 USDC / 2,000,000 " + "CNDL, or on an exp- curve 10% of the threshold when that is lower; the server holds the " + "creator's own seed to the effective ceiling, so launch with the largest devBuy it allows " + "and top up with candle_trade. " + CUSTOM_CURVE_RULE + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
     inputSchema: imageDir ? localLaunchAndSeedShape : launchAndSeedShape
   }, async (args) => {
-    const result = await executeLaunchAndSeed(args, getConfig(), doFetch, imageDir);
+    const result = await executeLaunchAndSeed(args, getConfig(), doFetch, imageDir, undefined, {
+      headlessSeed: options.headlessSeed === true
+    });
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
   const marketRead = createPerpsMarketExecutor(getConfig, env, doFetch);

@@ -102,7 +102,7 @@ const walletPageSchema = z.object({
   continueCursor: z.string().nullable().optional(),
 })
 /** `GET /wallets/embedded`: the account's own launch wallets, per chain (`evm` is the Hood one, Phase 4b D6). */
-const embeddedSchema = z
+export const embeddedSchema = z
   .object({
     // BE-501 / BE-503 (R5.10): whether THIS key may spend the embedded wallet. An older API omits
     // it, which means allowed, the rule the server applies to a key row without the field.

@@ -1099,10 +1099,9 @@ const seedShape = {
     .optional()
     .describe(
       'Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' +
-        "ETH on hood), bundled into the launch transaction itself on solana and sent as a follow-up " +
-        "transaction on hood. Paid from the account's embedded wallet. Follows quoteAsset, which " +
-        "defaults to sol on solana and eth on hood. Capped by the platform dev-buy ceiling; for " +
-        "a larger seed, launch then follow with candle_trade.",
+        "ETH on hood), paid from the account's embedded wallet; the tool's description says how " +
+        "each chain sends it. Follows quoteAsset, which defaults to sol on solana and eth on hood. " +
+        "Capped by the platform dev-buy ceiling; for a larger seed, launch then follow with candle_trade.",
     ),
 }
 
@@ -1227,6 +1226,12 @@ export interface ToolSubsetOptions {
    * Candle's server sends nothing to Hyperliquid on a hosted call.
    */
   localHyperliquid?: boolean
+  /**
+   * BE-1849: send `candle_launch_and_seed`'s Solana seed on the headless route, not as an atomic
+   * launch. Set by the hosted server, whose write list (BE-1078) admits the headless launch and
+   * not `/launch/atomic`; admitting it there is its own reviewed change.
+   */
+  headlessSeed?: boolean
 }
 
 /** Reusable registration only; the caller owns transport, request context and result policy. */
@@ -1910,17 +1915,25 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Launch a token and seed it",
       description:
-        "Launch a new token from the account's embedded wallet, with an optional dev-buy seed (in the " +
-        "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " +
-        "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " +
-        "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " +
-        "launch, then top up with candle_trade. " +
+        "Launch a new token from the account's embedded wallet, with an optional dev-buy seed, then " +
+        "return the fresh market state and token links in one result. On solana a seed makes this " +
+        "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " +
+        "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " +
+        "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is " +
+        "a best-effort follow-up. A launch with no seed works on every plan, Free included. MOVES " +
+        "REAL FUNDS unless dryRun; dry-run first, which spends nothing. Seeds above the platform " +
+        "dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH): at most 0.5 SOL / 500 USDC / 2,000,000 " +
+        "CNDL, or on an exp- curve 10% of the threshold when that is lower; the server holds the " +
+        "creator's own seed to the effective ceiling, so launch with the largest devBuy it allows " +
+        "and top up with candle_trade. " +
         CUSTOM_CURVE_RULE +
         (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
       inputSchema: (imageDir ? localLaunchAndSeedShape : launchAndSeedShape) as typeof localLaunchAndSeedShape,
     },
     async (args) => {
-      const result = await executeLaunchAndSeed(args as never, getConfig(), doFetch, imageDir)
+      const result = await executeLaunchAndSeed(args as never, getConfig(), doFetch, imageDir, undefined, {
+        headlessSeed: options.headlessSeed === true,
+      })
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
   )

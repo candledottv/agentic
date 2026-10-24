@@ -101,9 +101,24 @@ const UPLOAD = "https://api.test/api/v1/uploads/agent-image"
 const LAUNCH = "https://api.test/api/v1/launch/headless"
 const DRY_RUN = "https://api.test/api/v1/launch/headless/dry-run"
 const LAUNCHED = { success: true, chain: "solana", mint: "NewMint111", signature: "Sig111" }
+// BE-1849: a Solana seed is an atomic launch, built then submitted, with both legs signed by Candle.
+const ATOMIC_BUILD = "https://api.test/api/v1/launch/atomic/build"
+const ATOMIC_SUBMIT = "https://api.test/api/v1/launch/atomic/submit"
+const BUNDLE_LANDED = { status: "landed", bundleId: "b-1", mint: "NewMint111", signatures: ["S0", "S1"] }
+const SEED = { payer: { type: "main" }, amountRaw: "250000000" }
 const ROUTES = {
   [UPLOAD]: { body: { success: true, imageUrl: HOSTED } },
   [LAUNCH]: { body: LAUNCHED },
+  [ATOMIC_BUILD]: {
+    body: {
+      bundleId: "b-1",
+      legs: [
+        { index: 0, role: "launch", signer: "server" },
+        { index: 1, role: "buy", signer: "server" },
+      ],
+    },
+  },
+  [ATOMIC_SUBMIT]: { body: BUNDLE_LANDED },
   [DRY_RUN]: { body: { success: true, checks: { image: "ok" } } },
   "https://api.test/api/v1/markets/solana/NewMint111": { body: { success: true, market: { mint: "NewMint111" } } },
 }
@@ -646,15 +661,16 @@ describe("candle_launch_and_seed with imagePath", () => {
     expect(result.isError).toBeUndefined()
     expect(fetch.calls.map((call) => call.url)).toEqual([
       UPLOAD,
-      LAUNCH,
+      ATOMIC_BUILD,
+      ATOMIC_SUBMIT,
       "https://api.test/api/v1/markets/solana/NewMint111",
     ])
     expect(new Headers(fetch.calls[0]?.init?.headers).get("content-type")).toBe("image/jpeg")
     const launchBody = JSON.parse(String(fetch.calls[1]?.init?.body))
-    expect(launchBody).toEqual({ ...TOKEN, imageUrl: HOSTED, buyAmount: "250000000" })
+    expect(launchBody).toEqual({ ...TOKEN, imageUrl: HOSTED, payer: SEED.payer, firstBuys: [SEED] })
     expect(launchBody).not.toHaveProperty("imagePath")
     const parsed = JSON.parse(result.content[0]?.text ?? "{}")
-    expect(parsed).toMatchObject({ clientLaunchId: "L-1", imageUrl: HOSTED, launch: LAUNCHED })
+    expect(parsed).toMatchObject({ clientLaunchId: "L-1", imageUrl: HOSTED, launch: BUNDLE_LANDED })
     expect(parsed.imageNote).toContain("public and permanent")
   })
 
@@ -862,13 +878,14 @@ describe("bannerPath on the launch tools", () => {
       devBuy: "0.25",
     })
     expect(result.isError).toBeUndefined()
-    expect(fetch.calls.map((call) => call.url).slice(0, 2)).toEqual([BANNER_UPLOAD, LAUNCH])
+    expect(fetch.calls.map((call) => call.url).slice(0, 3)).toEqual([BANNER_UPLOAD, ATOMIC_BUILD, ATOMIC_SUBMIT])
     const launchBody = JSON.parse(String(fetch.calls[1]?.init?.body))
     expect(launchBody).toEqual({
       ...TOKEN,
       imageUrl: "https://x/y.png",
       bannerUrl: BANNER_HOSTED,
-      buyAmount: "250000000",
+      payer: SEED.payer,
+      firstBuys: [SEED],
     })
     const parsed = JSON.parse(result.content[0]?.text ?? "{}")
     expect(parsed.bannerUrl).toBe(BANNER_HOSTED)

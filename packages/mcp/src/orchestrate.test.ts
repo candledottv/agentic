@@ -684,10 +684,29 @@ const LAUNCHED = {
   devBuy: { fee: { bps: 100, feeRaw: "1000", treasury: "T" } },
 }
 
+/** BE-1849: what /launch/atomic/build answers for an embedded creator and first buyer: two legs Candle signs. */
+const BUNDLE_BUILT = {
+  bundleId: "bundle-1",
+  legs: [
+    { index: 0, role: "launch", signer: "server" },
+    { index: 1, role: "buy", signer: "server", expectedFill: { amountOutRaw: "4040404", minAmountOutRaw: "4000000" } },
+  ],
+  expiresAt: 1,
+}
+const BUNDLE_LANDED = {
+  status: "landed",
+  bundleId: "bundle-1",
+  mint: "NewMint111",
+  signatures: ["LaunchSig", "BuySig"],
+  booking: { state: "booked", missing: [] },
+}
+const MAIN = { type: "main" }
+
 describe("executeLaunchAndSeed", () => {
-  test("launches with the devBuy converted to raw quote units, then reads the market", async () => {
+  test("BE-1849: a Solana devBuy is one atomic bundle from the embedded wallet: build, submit with no client legs, then the market", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/launch/headless": { body: LAUNCHED },
+      "https://api.test/api/v1/launch/atomic/build": { body: BUNDLE_BUILT },
+      "https://api.test/api/v1/launch/atomic/submit": { body: BUNDLE_LANDED },
       "https://api.test/api/v1/markets/solana/NewMint111": {
         body: { success: true, market: { lifecycle: "curve", decimals: 6 } },
       },
@@ -697,15 +716,213 @@ describe("executeLaunchAndSeed", () => {
       CFG,
       fetch,
     )
-    expect(calls.length).toBe(2)
-    const launchBody = JSON.parse(String(calls[0]?.init?.body))
-    expect(launchBody.buyAmount).toBe("250000000")
-    expect(launchBody.devBuy).toBeUndefined()
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.test/api/v1/launch/atomic/build",
+      "https://api.test/api/v1/launch/atomic/submit",
+      "https://api.test/api/v1/markets/solana/NewMint111",
+    ])
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      clientLaunchId: "L-1",
+      name: "T",
+      symbol: "T",
+      imageUrl: "https://x/y.png",
+      payer: MAIN,
+      firstBuys: [{ payer: MAIN, amountRaw: "250000000" }],
+    })
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ bundleId: "bundle-1", signedTxsBase64: [] })
+    // Never the single-transaction route a Solana dev buy cannot fit on (BE-1847).
+    expect(calls.some((call) => call.url.includes("/launch/headless"))).toBe(false)
     const parsed = JSON.parse(result.text)
+    expect(result.isError).toBeUndefined()
     expect(parsed.clientLaunchId).toBe("L-1")
-    expect(parsed.launch.mint).toBe("NewMint111")
-    expect(parsed.launch.links.candle).toBe("https://candle.tv/token/NewMint111")
+    expect(parsed.bundleId).toBe("bundle-1")
+    expect(parsed.launch).toMatchObject({ status: "landed", mint: "NewMint111", signatures: ["LaunchSig", "BuySig"] })
     expect(parsed.market).toMatchObject({ lifecycle: "curve" })
+  })
+
+  test("BE-1849: a failed bundle says nothing landed and to retry with the same id; nothing else is read", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/launch/atomic/build": { body: BUNDLE_BUILT },
+      "https://api.test/api/v1/launch/atomic/submit": {
+        status: 502,
+        body: { status: "failed", bundleId: "bundle-1", retryable: true },
+      },
+    })
+    const result = await executeLaunchAndSeed(
+      { clientLaunchId: "L-f", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.1" },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse(result.text)
+    expect(parsed).toMatchObject({ clientLaunchId: "L-f", bundleId: "bundle-1", api: { status: "failed" } })
+    expect(parsed.next).toContain("Retry with the same clientLaunchId")
+    expect(calls).toHaveLength(2)
+  })
+
+  test("BE-1849: an unresolved bundle points at candle_get_operation and never at a new id", async () => {
+    const { fetch } = fakeFetch({
+      "https://api.test/api/v1/launch/atomic/build": { body: BUNDLE_BUILT },
+      "https://api.test/api/v1/launch/atomic/submit": {
+        status: 502,
+        body: { status: "timeout", bundleId: "bundle-1", retryable: false },
+      },
+    })
+    const result = await executeLaunchAndSeed(
+      { clientLaunchId: "L-t", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.1" },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    const next = JSON.parse(result.text).next
+    expect(next).toContain("candle_get_operation")
+    expect(next).toContain("never relaunch under a new id")
+  })
+
+  test("BE-1849: a build that hands the tool a leg to sign is not this launch, and nothing is submitted", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/launch/atomic/build": {
+        body: { ...BUNDLE_BUILT, legs: [BUNDLE_BUILT.legs[0], { ...BUNDLE_BUILT.legs[1], signer: "client" }] },
+      },
+    })
+    const result = await executeLaunchAndSeed(
+      { clientLaunchId: "L-c", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.1" },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.text).error.code).toBe("MCP_INVALID_RESPONSE")
+    expect(calls).toHaveLength(1)
+  })
+
+  test("BE-1849: a Solana seed over the dev-buy ceiling is refused in the API's words before any request", async () => {
+    const { calls, fetch } = fakeFetch({})
+    const result = await executeLaunchAndSeed(
+      { clientLaunchId: "L-cap", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.6" },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse(result.text)
+    expect(parsed.clientLaunchId).toBe("L-cap")
+    expect(parsed.error.code).toBe("DEV_BUY_TOO_HIGH")
+    expect(parsed.error.message).toBe(
+      "buyAmount exceeds the per-launch dev-buy ceiling of 500000000 lamports for sol on solana",
+    )
+    expect(calls).toHaveLength(0)
+  })
+
+  test("BE-1849: an exp-b CNDL seed over 33,000 is refused with the whole rule, before any request", async () => {
+    const { calls, fetch } = fakeFetch({})
+    const result = await executeLaunchAndSeed(
+      {
+        clientLaunchId: "L-cap-exp",
+        name: "T",
+        symbol: "T",
+        imageUrl: "https://x/y.png",
+        quoteAsset: "cndl",
+        mode: "exp-b",
+        devBuy: "100000",
+      },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse(result.text)
+    expect(parsed.clientLaunchId).toBe("L-cap-exp")
+    expect(parsed.error.code).toBe("DEV_BUY_TOO_HIGH")
+    expect(parsed.error.message).toBe(
+      "buyAmount exceeds this launch's dev-buy ceiling of 33000000000 CNDL raw units: " +
+        "at most 2000000000000 CNDL raw units, or 10% of the threshold when that is lower",
+    )
+    expect(calls).toHaveLength(0)
+  })
+
+  test("BE-1849: an exp-b CNDL seed at exactly 33,000 passes the local ceiling and reaches the atomic route", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/launch/atomic/build": { body: BUNDLE_BUILT },
+      "https://api.test/api/v1/launch/atomic/submit": { body: BUNDLE_LANDED },
+      "https://api.test/api/v1/markets/solana/NewMint111": {
+        body: { success: true, market: { lifecycle: "curve", decimals: 6 } },
+      },
+    })
+    const result = await executeLaunchAndSeed(
+      {
+        clientLaunchId: "L-cap-exp-at",
+        name: "T",
+        symbol: "T",
+        imageUrl: "https://x/y.png",
+        quoteAsset: "cndl",
+        mode: "exp-b",
+        devBuy: "33000",
+      },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBeUndefined()
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.test/api/v1/launch/atomic/build",
+      "https://api.test/api/v1/launch/atomic/submit",
+      "https://api.test/api/v1/markets/solana/NewMint111",
+    ])
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({
+      quoteAsset: "cndl",
+      mode: "exp-b",
+      firstBuys: [{ payer: MAIN, amountRaw: "33000000000" }],
+    })
+  })
+
+  test("BE-1849: a tighter server ceiling than the local one is refused by the dry run or build, relayed verbatim", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/launch/atomic/build": {
+        status: 400,
+        body: {
+          success: false,
+          error: {
+            code: "DEV_BUY_TOO_HIGH",
+            message:
+              "firstBuys[0] exceeds the per-launch dev-buy ceiling of 1000000000 CNDL raw units for cndl on solana",
+            field: "firstBuys[0]",
+            retryable: false,
+          },
+        },
+      },
+    })
+    const result = await executeLaunchAndSeed(
+      {
+        clientLaunchId: "L-cap-env",
+        name: "T",
+        symbol: "T",
+        imageUrl: "https://x/y.png",
+        quoteAsset: "cndl",
+        devBuy: "2000",
+      },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse(result.text)
+    expect(parsed.api.error).toMatchObject({ code: "DEV_BUY_TOO_HIGH", field: "firstBuys[0]" })
+    // The refusal came from the server: nothing was submitted under any id.
+    expect(calls.map((call) => call.url)).toEqual(["https://api.test/api/v1/launch/atomic/build"])
+  })
+
+  test("BE-1849: with headlessSeed (the hosted server) a Solana seed stays on the headless route", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/launch/headless": { body: LAUNCHED },
+      "https://api.test/api/v1/markets/solana/NewMint111": { body: { success: true, market: {} } },
+    })
+    await executeLaunchAndSeed(
+      { clientLaunchId: "L-h", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.25" },
+      CFG,
+      fetch,
+      undefined,
+      undefined,
+      { headlessSeed: true },
+    )
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/launch/headless")
+    expect(JSON.parse(String(calls[0]?.init?.body)).buyAmount).toBe("250000000")
+    expect(calls.some((call) => call.url.includes("/launch/atomic/"))).toBe(false)
   })
 
   test("a launch without devBuy sends no buyAmount", async () => {
@@ -739,7 +956,7 @@ describe("executeLaunchAndSeed", () => {
       "https://api.test/api/v1/markets/solana/NewMint111": { status: 500, body: { error: "boom" } },
     })
     const result = await executeLaunchAndSeed(
-      { clientLaunchId: "L-3", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.1" },
+      { clientLaunchId: "L-3", name: "T", symbol: "T", imageUrl: "https://x/y.png" },
       CFG,
       fetch,
     )
@@ -753,11 +970,11 @@ describe("executeLaunchAndSeed", () => {
   test("dryRun routes to /dry-run, relays the response, and never reads the market", async () => {
     const { calls, fetch } = fakeFetch({
       "https://api.test/api/v1/launch/headless/dry-run": {
-        body: { success: true, valid: true, size: { txBytes: 1200, limit: 1232, fits: true } },
+        body: { success: true, valid: true, size: { txBytes: 975, limit: 1232, fits: true } },
       },
     })
     const result = await executeLaunchAndSeed(
-      { clientLaunchId: "L-4", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.1", dryRun: true },
+      { clientLaunchId: "L-4", name: "T", symbol: "T", imageUrl: "https://x/y.png", dryRun: true },
       CFG,
       fetch,
     )
@@ -766,18 +983,38 @@ describe("executeLaunchAndSeed", () => {
     expect(JSON.parse(result.text).api.size.fits).toBe(true)
   })
 
-  test("a launch error envelope (e.g. DEV_BUY_TOO_HIGH) is relayed verbatim, marked isError, no market read", async () => {
-    const envelope = { success: false, error: { code: "DEV_BUY_TOO_HIGH", message: "over ceiling" } }
+  test("BE-1849: a Solana seed's dryRun is the atomic dry run, which writes nothing, and nothing else is called", async () => {
+    const preview = { success: true, dryRun: true, launchWallet: "W", fills: [{ index: 1, amountRaw: "100000000" }] }
+    const { calls, fetch } = fakeFetch({ "https://api.test/api/v1/launch/atomic/dry-run": { body: preview } })
+    const result = await executeLaunchAndSeed(
+      { clientLaunchId: "L-4a", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.1", dryRun: true },
+      CFG,
+      fetch,
+    )
+    expect(calls.map((call) => call.url)).toEqual(["https://api.test/api/v1/launch/atomic/dry-run"])
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({
+      payer: MAIN,
+      firstBuys: [{ payer: MAIN, amountRaw: "100000000" }],
+    })
+    expect(JSON.parse(String(calls[0]?.init?.body))).not.toHaveProperty("dryRun")
+    expect(JSON.parse(result.text)).toEqual({ clientLaunchId: "L-4a", dryRun: true, api: preview })
+  })
+
+  test("a launch error envelope (e.g. TIER_REQUIRED on a Free plan) is relayed verbatim, marked isError, no market read", async () => {
+    const envelope = {
+      success: false,
+      error: { code: "TIER_REQUIRED", message: "Atomic launches require Pro or Max tier" },
+    }
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/launch/headless": { status: 400, body: envelope },
+      "https://api.test/api/v1/launch/atomic/build": { status: 403, body: envelope },
     })
     const result = await executeLaunchAndSeed(
-      { clientLaunchId: "L-5", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "999" },
+      { clientLaunchId: "L-5", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.1" },
       CFG,
       fetch,
     )
     expect(result.isError).toBe(true)
-    expect(result.text).toContain("DEV_BUY_TOO_HIGH")
+    expect(JSON.parse(result.text)).toEqual({ clientLaunchId: "L-5", api: envelope })
     expect(calls.length).toBe(1)
   })
 
@@ -854,7 +1091,8 @@ describe("executeLaunchAndSeed", () => {
 
   test("a caller-supplied raw buyAmount is stripped; devBuy is the only seed input", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/launch/headless": { body: LAUNCHED },
+      "https://api.test/api/v1/launch/atomic/build": { body: BUNDLE_BUILT },
+      "https://api.test/api/v1/launch/atomic/submit": { body: BUNDLE_LANDED },
       "https://api.test/api/v1/markets/solana/NewMint111": { body: { success: true, market: {} } },
     })
     await executeLaunchAndSeed(
@@ -869,7 +1107,9 @@ describe("executeLaunchAndSeed", () => {
       CFG,
       fetch,
     )
-    expect(JSON.parse(String(calls[0]?.init?.body)).buyAmount).toBe("250000000")
+    const body = JSON.parse(String(calls[0]?.init?.body))
+    expect(body).not.toHaveProperty("buyAmount")
+    expect(body.firstBuys).toEqual([{ payer: MAIN, amountRaw: "250000000" }])
   })
 
   test("a rejected launch POST returns MCP_TRANSPORT carrying the id, never a throw", async () => {

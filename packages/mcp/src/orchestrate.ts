@@ -497,6 +497,8 @@ export async function executeLaunchAndSeed(
   /** The operator's CANDLE_IMAGE_DIR, when this registration has one. Undefined offers no imagePath. */
   imageDir?: string,
   imageFs?: ImageFs,
+  /** `headlessSeed`: the hosted server's (ToolSubsetOptions.headlessSeed), which keeps every seed on the headless route. */
+  opts: { headlessSeed?: boolean } = {},
 ): Promise<ToolText> {
   const apiKey = requireApiKey(cfg)
   const clientLaunchId = args.clientLaunchId ?? randomUUID()
@@ -513,6 +515,14 @@ export async function executeLaunchAndSeed(
     const converted = rawOrError(devBuy, q.decimals, { clientLaunchId })
     if ("err" in converted) return converted.err
     buyAmount = converted.raw
+  }
+  // BE-1849: on Solana a seed is the first buy of an atomic launch (launch plus first buy as one
+  // Jito bundle), because a launch with a dev buy in its own transaction never fits Solana's
+  // packet size (BE-1847). Hood keeps its follow-up dev buy on the headless route.
+  const atomic = buyAmount !== undefined && (args.chain ?? "solana") === "solana" && !opts.headlessSeed
+  if (atomic) {
+    const refused = seedCeilingRefusal(args.quoteAsset ?? "sol", args.mode, buyAmount as string, clientLaunchId)
+    if (refused) return refused
   }
 
   // After every refusal this tool can decide for itself, and before the launch: an upload is a
@@ -531,6 +541,21 @@ export async function executeLaunchAndSeed(
   // Once a file was uploaded, every result says where, the failures included: it is public either way.
   const uploaded = uploadedFields(image)
 
+  const transportFailure = (thrown: unknown): ToolText => {
+    const failed = transportError("clientLaunchId", clientLaunchId, thrown)
+    return Object.keys(uploaded).length === 0
+      ? failed
+      : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) }
+  }
+  if (atomic)
+    return launchAndSeedAtomic(
+      { ...image.args, clientLaunchId },
+      buyAmount as string,
+      { clientLaunchId, uploaded, dryRun: dryRun === true, transportFailure },
+      cfg,
+      doFetch,
+    )
+
   const path = dryRun ? "/api/v1/launch/headless/dry-run" : "/api/v1/launch/headless"
   const posted = await postJson(
     `${base(cfg)}${path}`,
@@ -542,12 +567,7 @@ export async function executeLaunchAndSeed(
     },
     doFetch,
   )
-  if ("thrown" in posted) {
-    const failed = transportError("clientLaunchId", clientLaunchId, posted.thrown)
-    return Object.keys(uploaded).length === 0
-      ? failed
-      : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) }
-  }
+  if ("thrown" in posted) return transportFailure(posted.thrown)
   if (!posted.ok) {
     return { text: JSON.stringify({ clientLaunchId, ...uploaded, api: posted.body }), isError: true }
   }
@@ -556,35 +576,188 @@ export async function executeLaunchAndSeed(
   }
 
   const launch = posted.body as { chain?: string; mint?: string }
+  const { market, note } = await readLaunchedMarket(launch.chain ?? "solana", launch.mint, cfg, doFetch)
+  return {
+    text: JSON.stringify({ clientLaunchId, ...uploaded, launch, market, ...(note ? { note } : {}) }),
+  }
+}
 
-  // The market read is best-effort context. The launch above is REAL and already confirmed; a
-  // transient failure here must never turn a successful launch into a tool error the caller
-  // might retry into a duplicate.
-  let market: unknown = null
-  let note: string | undefined
+/**
+ * The fresh market after a confirmed launch. The read is best-effort context. The launch is REAL
+ * and already confirmed; a transient failure here must never turn a successful launch into a tool
+ * error the caller might retry into a duplicate.
+ */
+async function readLaunchedMarket(
+  chain: string,
+  mint: string | undefined,
+  cfg: RequestConfig,
+  doFetch: FetchLike,
+): Promise<{ market: unknown; note?: string }> {
+  const note = "launch confirmed; the follow-up market read failed, read it via candle_get_market"
   try {
     // No mint means there is no market to read. Interpolating it unchecked used to request
     // `/markets/<chain>/undefined` and rely on that 404ing into the note below; asking for the
     // mint we actually have, or not asking at all, says the same thing without the round trip.
-    if (launch.mint === undefined) throw new Error("the launch response carried no mint")
+    if (mint === undefined) throw new Error("the launch response carried no mint")
     const marketRes = await doFetch(
-      `${base(cfg)}/api/v1/markets/${encodeURIComponent(launch.chain ?? "solana")}/${encodeURIComponent(launch.mint)}`,
+      `${base(cfg)}/api/v1/markets/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}`,
       {
         method: "GET",
         headers: headers(),
       },
     )
-    if (marketRes.ok) {
-      market = (JSON.parse(await marketRes.text()) as { market?: unknown }).market ?? null
-    } else {
-      note = "launch confirmed; the follow-up market read failed, read it via candle_get_market"
-    }
+    if (!marketRes.ok) return { market: null, note }
+    return { market: (JSON.parse(await marketRes.text()) as { market?: unknown }).market ?? null }
   } catch {
-    note = "launch confirmed; the follow-up market read failed, read it via candle_get_market"
+    return { market: null, note }
   }
+}
 
+/**
+ * The API's per-launch dev-buy ceilings on Solana, raw (DEV_BUY_MAX_* in the API's
+ * headless-validation.ts), and the experimental presets' own creator-buy caps
+ * (EXP_CURVE_DEV_BUY_MAX_RAW in @candle/shared): on an exp- preset the effective cap is
+ * min(10% of G, the ordinary ceiling), as the server's `devBuyCeiling()` computes it. The server
+ * holds the creator's own first-buy leg to the effective ceiling on the atomic route (BE-1849
+ * review), env overrides included; this local refusal is the early, no-upload answer in the API's
+ * words, not the authority -- a tighter server ceiling is refused by the dry run and the build,
+ * and nothing is sent. Inlined: this package builds without @candle/shared. An `exp-custom`
+ * curve's own cap is 10% of its G, which only the server can see; the server guard holds that leg.
+ */
+const SOLANA_SEED_CEILINGS: Record<string, { raw: bigint; unit: string; expRaw?: bigint }> = {
+  sol: { raw: 500_000_000n, unit: "lamports", expRaw: 500_000_000n },
+  usdc: { raw: 500_000_000n, unit: "USDC raw units" },
+  cndl: { raw: 2_000_000_000_000n, unit: "CNDL raw units", expRaw: 33_000_000_000n },
+}
+
+/** A Solana seed over the effective dev-buy ceiling, refused in the API's words before any upload or request. */
+function seedCeilingRefusal(
+  quoteAsset: string,
+  mode: string | undefined,
+  buyAmount: string,
+  clientLaunchId: string,
+): ToolText | undefined {
+  const quote = quoteAsset.toLowerCase()
+  const ceiling = SOLANA_SEED_CEILINGS[quote]
+  if (!ceiling) return undefined
+  const expCap = ceiling.expRaw
+  const preset = mode === "exp-a" || mode === "exp-b" || mode === "exp-c"
+  const effective = preset && expCap !== undefined && expCap < ceiling.raw ? expCap : ceiling.raw
+  if (BigInt(buyAmount) <= effective) return undefined
+  if (preset && expCap !== undefined) {
+    return {
+      text: JSON.stringify({
+        clientLaunchId,
+        success: false,
+        error: {
+          code: "DEV_BUY_TOO_HIGH",
+          message: `buyAmount exceeds this launch's dev-buy ceiling of ${effective} ${ceiling.unit}: at most ${ceiling.raw} ${ceiling.unit}, or 10% of the threshold when that is lower`,
+          field: "devBuy",
+          retryable: false,
+        },
+      }),
+      isError: true,
+    }
+  }
   return {
-    text: JSON.stringify({ clientLaunchId, ...uploaded, launch, market, ...(note ? { note } : {}) }),
+    text: JSON.stringify({
+      clientLaunchId,
+      success: false,
+      error: {
+        code: "DEV_BUY_TOO_HIGH",
+        message: `buyAmount exceeds the per-launch dev-buy ceiling of ${effective} ${ceiling.unit} for ${quote} on solana`,
+        field: "devBuy",
+        retryable: false,
+      },
+    }),
+    isError: true,
+  }
+}
+
+/** The embedded wallet pays for both legs of an atomic launch, and Candle signs both at /submit. */
+const MAIN_PAYER = { type: "main" } as const
+
+/**
+ * BE-1849: a Solana launch and its seed as one atomic launch, on the route `candle launch --buy`
+ * takes. The embedded wallet is the creator and the only first buyer. A dry run goes to
+ * `/launch/atomic/dry-run`, which writes nothing. A launch is `/launch/atomic/build`, then one
+ * `/launch/atomic/submit` with no client legs: Candle signs both and relays them to Jito, so the
+ * launch and the seed land together or not at all. Pro or Max only, and the key needs swap:write.
+ */
+async function launchAndSeedAtomic(
+  launchBody: Record<string, unknown>,
+  buyAmount: string,
+  ctx: {
+    clientLaunchId: string
+    uploaded: Record<string, unknown>
+    dryRun: boolean
+    transportFailure: (thrown: unknown) => ToolText
+  },
+  cfg: RequestConfig,
+  doFetch: FetchLike,
+): Promise<ToolText> {
+  const apiKey = requireApiKey(cfg)
+  const { clientLaunchId, uploaded } = ctx
+  const failed = (api: unknown, extra: Record<string, unknown> = {}): ToolText => ({
+    text: JSON.stringify({ clientLaunchId, ...uploaded, ...extra, api }),
+    isError: true,
+  })
+  const body = { ...launchBody, payer: MAIN_PAYER, firstBuys: [{ payer: MAIN_PAYER, amountRaw: buyAmount }] }
+  const built = await postJson(
+    `${base(cfg)}/api/v1/launch/atomic/${ctx.dryRun ? "dry-run" : "build"}`,
+    apiKey,
+    body,
+    doFetch,
+  )
+  if ("thrown" in built) return ctx.transportFailure(built.thrown)
+  if (!built.ok) return failed(built.body)
+  if (ctx.dryRun) return { text: JSON.stringify({ clientLaunchId, dryRun: true, ...uploaded, api: built.body }) }
+
+  const bundle = built.body as { bundleId?: unknown; legs?: Array<{ signer?: unknown }> }
+  // Every leg is the embedded wallet's, so Candle signs every one. A bundle that hands this tool a
+  // leg to sign is not this launch: nothing is sent, and the build expires unsent.
+  if (
+    typeof bundle.bundleId !== "string" ||
+    !Array.isArray(bundle.legs) ||
+    bundle.legs.length !== 2 ||
+    bundle.legs.some((leg) => leg?.signer !== "server")
+  )
+    return failed(built.body, {
+      success: false,
+      error: {
+        code: "MCP_INVALID_RESPONSE",
+        message:
+          "Candle did not build this launch and its seed as two legs it signs from the embedded wallet; nothing was sent. Retry with the same clientLaunchId to build it again.",
+      },
+    })
+  const bundleId = bundle.bundleId
+  const submitted = await postJson(
+    `${base(cfg)}/api/v1/launch/atomic/submit`,
+    apiKey,
+    { bundleId, signedTxsBase64: [] },
+    doFetch,
+  )
+  if ("thrown" in submitted) return ctx.transportFailure(submitted.thrown)
+  const outcome = submitted.body as { status?: string; mint?: string }
+  if (!submitted.ok || outcome.status !== "landed") {
+    const next =
+      outcome.status === "failed"
+        ? "Neither the launch nor the seed is on chain. Retry with the same clientLaunchId: Candle starts a clean attempt under it."
+        : outcome.status === "timeout"
+          ? "The bundle is unresolved and may still land. Call candle_get_operation with this clientLaunchId and kind launch; never relaunch under a new id, which would be a second token."
+          : undefined
+    return failed(submitted.body, { bundleId, ...(next ? { next } : {}) })
+  }
+  const { market, note } = await readLaunchedMarket("solana", outcome.mint, cfg, doFetch)
+  return {
+    text: JSON.stringify({
+      clientLaunchId,
+      bundleId,
+      ...uploaded,
+      launch: submitted.body,
+      market,
+      ...(note ? { note } : {}),
+    }),
   }
 }
 

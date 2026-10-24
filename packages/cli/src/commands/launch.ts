@@ -30,6 +30,7 @@ import {
   claimOperation,
   confirmQuote,
   decimalAmount,
+  embeddedSchema,
   HOOD_BASES,
   type Json,
   launchBuildSchema,
@@ -67,7 +68,17 @@ import {
 } from "./swap"
 
 const USAGE =
-  "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--pool-fee <25|50|100> [--pool-fee-from <bps> --pool-fee-minutes <min>]] [--pool-open legacy|curve_price] [--exp-pool-shape floor|full_range] [--dry-run] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
+  "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee>|embedded [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--pool-fee <25|50|100> [--pool-fee-from <bps> --pool-fee-minutes <min>]] [--pool-open legacy|curve_price] [--exp-pool-shape floor|full_range] [--dry-run] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
+
+/**
+ * BE-1849: the names `--wallet` takes for the account's embedded wallet, as `candle stake` takes
+ * them. Candle holds that wallet's delegation and signs for it, so its launch is the atomic one.
+ */
+const EMBEDDED_WALLET_NAMES = new Set(["embedded", "main"])
+
+/** What an embedded-wallet launch needs that a TEE launch does not, said before any request. */
+const EMBEDDED_USAGE =
+  "--wallet embedded launches on Solana as an atomic launch: it needs --buy <amount>, takes --quote-asset sol, usdc or cndl, and takes no --dex-version. To launch from the embedded wallet with no first buy, use the MCP tool candle_launch_token or POST /api/v1/launch/headless."
 
 /** The launch quote assets by chain, as the server's launch matrix lists them. */
 const QUOTE_CHAIN: Record<string, TradeChain> = {
@@ -239,7 +250,19 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
   }
   const flags = parsed.values
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID()}`
+  const embedded = EMBEDDED_WALLET_NAMES.has(flags["--wallet"] ?? "")
   const dryRun = parsed.booleans.has("--dry-run")
+  if (embedded) {
+    const quote = flags["--quote-asset"]?.toLowerCase()
+    if (
+      flags["--buy"] === undefined ||
+      flags["--dex-version"] !== undefined ||
+      (quote && QUOTE_CHAIN[quote] !== "solana")
+    ) {
+      writeUsageFailure(ctx.deps, `${EMBEDDED_USAGE} ${USAGE}`, ctx.json)
+      return 2
+    }
+  }
   const curveProblem = curveFlagProblem(flags)
   if (curveProblem) {
     writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE}`, ctx.json)
@@ -317,8 +340,9 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       const local = await savedOperation(ctx, key, id)
       const settled = prior.job?.status === "confirmed" || prior.job?.status === "failed"
       if (local?.bundleId) {
-        // BE-1721 (R5): an atomic TEE launch saved its bundle before /submit. Only a bundle that
-        // did not land is built again, under the same id, where the server starts a clean attempt.
+        // BE-1721 (R5): an atomic launch (TEE or embedded) saved its bundle before /submit. Only a
+        // bundle that did not land is built again, under the same id, where the server starts a
+        // clean attempt.
         if (!atomicRetryable(prior, local)) return resumeAtomicLaunch(ctx, id, local, prior)
         retry = { imageUrl: local.imageUrl, bannerUrl: local.bannerUrl }
         ctx.deps.stderr.write(
@@ -338,6 +362,16 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         return printTradingResult(ctx, prior)
       }
     }
+    if (embedded)
+      return await embeddedLaunch(ctx, key, {
+        flags,
+        id,
+        image,
+        banner,
+        retry,
+        yes: parsed.booleans.has("--yes"),
+        dryRun,
+      })
     const wallet = await tradingWallet(ctx, key, flags["--wallet"], "launch:write", hinted ?? "any")
     const chain: TradeChain = wallet.chain === "evm" ? "hood" : "solana"
     if (chain === "hood" && flags["--dex-version"] === undefined)
@@ -351,39 +385,9 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     // before the upload, so an endpoint that fails validation refuses the launch with nothing published.
     const solana =
       chain === "solana" && !atomic && !dryRun ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined
-    // BE-1283: one upload, on a first run only (a resumed operation returned above), after every
-    // refusal this machine can decide and before either chain claims the launch id. A failed upload
-    // therefore leaves the id unused, and both chains build with the URL that came back.
-    let imageUrl = flags["--image-url"] ?? ""
-    // A same-id retry builds with the image the bundle was built with, without uploading again.
-    if (image && retry?.imageUrl) imageUrl = retry.imageUrl
-    else if (image) {
-      ctx.deps.stderr.write(uploadNotice(image))
-      try {
-        imageUrl = await uploadImage(ctx, key, image)
-      } catch (error) {
-        ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.\n`)
-        return tradingFailure(ctx, error)
-      }
-      ctx.deps.stderr.write(`Image: ${safeText(imageUrl)}\n`)
-    }
-    // A retry keeps the original banner, including its absence, so the id's request stays stable.
-    let bannerUrl = retry ? retry.bannerUrl : flags["--banner"]?.startsWith("https://") ? flags["--banner"] : undefined
-    if (banner && !retry) {
-      ctx.deps.stderr.write(uploadNotice(banner))
-      try {
-        bannerUrl = await uploadImage(ctx, key, banner, "banner")
-      } catch (error) {
-        ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.\n`)
-        return tradingFailure(ctx, error)
-      }
-      ctx.deps.stderr.write(`Banner: ${safeText(bannerUrl)}\n`)
-    }
-    // With --image the result carries the URL the launch was made with.
-    const used: Json = {
-      ...(image ? { imageUrl: safeText(imageUrl) } : {}),
-      ...(bannerUrl ? { bannerUrl: safeText(bannerUrl) } : {}),
-    }
+    const uploaded = await uploadLaunchImages(ctx, key, { flags, id, image, banner, retry })
+    if (typeof uploaded === "number") return uploaded
+    const { imageUrl, bannerUrl, used } = uploaded
     // BE-1806: the dry run sends the body the launch would build, to the route's dry run, and stops.
     if (dryRun)
       return await dryRunLaunch(ctx, key, { flags, id, wallet, chain, atomic, buy, imageUrl, bannerUrl, used })
@@ -477,6 +481,64 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     // A dry run started nothing under the id, so its refusal names no operation to check.
     return tradingFailure(ctx, error, dryRun ? undefined : id)
   }
+}
+
+/** The images a launch was made with, and the fields its result reports them in. */
+interface LaunchImages {
+  imageUrl: string
+  bannerUrl?: string
+  used: Json
+}
+
+/**
+ * BE-1283: one upload, on a first run only (a resumed operation returned before this), after every
+ * refusal this machine can decide and before either chain claims the launch id. A failed upload
+ * therefore leaves the id unused, and both chains build with the URL that came back. Returns the
+ * exit code instead when an upload failed.
+ */
+async function uploadLaunchImages(
+  ctx: CommandContext,
+  key: string,
+  args: {
+    flags: Record<string, string>
+    id: string
+    image?: LocalImage
+    banner?: LocalImage
+    retry?: { imageUrl?: string; bannerUrl?: string }
+  },
+): Promise<LaunchImages | number> {
+  const { flags, id, image, banner, retry } = args
+  let imageUrl = flags["--image-url"] ?? ""
+  // A same-id retry builds with the image the bundle was built with, without uploading again.
+  if (image && retry?.imageUrl) imageUrl = retry.imageUrl
+  else if (image) {
+    ctx.deps.stderr.write(uploadNotice(image))
+    try {
+      imageUrl = await uploadImage(ctx, key, image)
+    } catch (error) {
+      ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.\n`)
+      return tradingFailure(ctx, error)
+    }
+    ctx.deps.stderr.write(`Image: ${safeText(imageUrl)}\n`)
+  }
+  // A retry keeps the original banner, including its absence, so the id's request stays stable.
+  let bannerUrl = retry ? retry.bannerUrl : flags["--banner"]?.startsWith("https://") ? flags["--banner"] : undefined
+  if (banner && !retry) {
+    ctx.deps.stderr.write(uploadNotice(banner))
+    try {
+      bannerUrl = await uploadImage(ctx, key, banner, "banner")
+    } catch (error) {
+      ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.\n`)
+      return tradingFailure(ctx, error)
+    }
+    ctx.deps.stderr.write(`Banner: ${safeText(bannerUrl)}\n`)
+  }
+  // With --image the result carries the URL the launch was made with.
+  const used: Json = {
+    ...(image ? { imageUrl: safeText(imageUrl) } : {}),
+    ...(bannerUrl ? { bannerUrl: safeText(bannerUrl) } : {}),
+  }
+  return { imageUrl, ...(bannerUrl ? { bannerUrl } : {}), used }
 }
 
 // ── BE-1806: the three launch bodies, and the dry run that sends them ─────────────────────────
@@ -641,8 +703,10 @@ async function dryRunLaunch(
 
 /**
  * The self-launch dev-buy ceilings (spec 2026-10-20, D2), read as the API's `devBuyCeilings()`
- * reads them: the env value when it is a positive whole number, else the default. An atomic first
- * buy is not held to them server-side, so a TEE `--buy` keeps the ceiling it had on self-launch here.
+ * reads them: the env value when it is a positive whole number, else the default. The server holds
+ * the sum of the creator's own first-buy legs to the effective ceiling on `/launch/atomic` (BE-1849),
+ * so this local read is the early refusal in the API's words, not the authority: a ceiling this
+ * machine does not know is refused by the dry run and the build, and nothing is sent.
  */
 const DEV_BUY_CEILINGS: Record<string, { env: string; fallback: bigint; unit: string }> = {
   sol: { env: "DEV_BUY_MAX_LAMPORTS", fallback: 500_000_000n, unit: "lamports" },
@@ -694,6 +758,18 @@ function atomicPreflight(
   wallet: TradingWallet,
   buy: LaunchBuy,
 ): void {
+  firstBuyCeiling(ctx, flags, buy)
+  if (wallet.scopes !== undefined && !wallet.scopes.includes("swap:write")) throw swapScopeRefusal()
+}
+
+/**
+ * The creator's first buy in an atomic launch, held to the effective dev-buy ceiling in the API's
+ * own words (D2; BE-1849 review P1): the ordinary ceiling, or on an exp- curve
+ * min(10% of the threshold, ordinary) -- "at most 0.5 SOL, or 10% of the threshold when that is
+ * lower", with the threshold taken from the preset or from exp-custom's --curve-g. The dry run
+ * and the build refuse the same leg server-side, env overrides included.
+ */
+function firstBuyCeiling(ctx: CommandContext, flags: Record<string, string>, buy: LaunchBuy): void {
   const quoteAsset = (flags["--quote-asset"] ?? "sol").toLowerCase()
   const { ceiling, unit } = devBuyCeiling(ctx.deps.env, quoteAsset)
   // BE-1806: an exp- curve's own ceiling, as the API's devBuyCeiling: min(10% of G, the ordinary).
@@ -717,7 +793,6 @@ function atomicPreflight(
       `buyAmount exceeds the per-launch dev-buy ceiling of ${ceiling} ${unit} for ${quoteAsset} on solana`,
       { details: { field: "buyAmount" } },
     )
-  if (wallet.scopes !== undefined && !wallet.scopes.includes("swap:write")) throw swapScopeRefusal()
 }
 
 function swapScopeRefusal(): TradingError {
@@ -894,18 +969,40 @@ async function atomicLaunch(
   }
   await saveOperationBundle(ctx, key, id, bundle)
   ctx.deps.stderr.write(`Bundle: ${safeText(built.bundleId)} (launch ${signatures[0]}, first buy ${signatures[1]})\n`)
+  return await submitBundle(ctx, key, { id, bundle, signed, quote, used: args.used })
+}
+
+/**
+ * R3/R4: one `/launch/atomic/submit` for a built bundle, saved beforehand with whatever signatures
+ * this machine has (none for the embedded wallet, whose legs Candle signs), and its outcome. A
+ * failed bundle may be built again under the same id; anything that may have been sent is exit 3.
+ */
+async function submitBundle(
+  ctx: CommandContext,
+  key: string,
+  args: {
+    id: string
+    bundle: { bundleId: string; signatures: string[]; imageUrl: string; bannerUrl?: string }
+    /** The client-signed legs, in leg order: exactly what /submit takes. Empty when Candle signs every leg. */
+    signed: string[]
+    quote: QuoteDisplay & Json
+    used: Json
+  },
+): Promise<number> {
+  const { id, bundle, signed, quote } = args
+  const { bundleId, signatures } = bundle
   const submitted = await apiRequest("/api/v1/launch/atomic/submit", {
     apiUrl: ctx.apiUrl,
     credentials: { apiKey: key },
     auth: "key",
     method: "POST",
-    body: { bundleId: built.bundleId, signedTxsBase64: signed },
+    body: { bundleId, signedTxsBase64: signed },
     fetch: ctx.deps.fetch,
     env: ctx.deps.env,
   })
   const outcome = atomicOutcomeSchema.safeParse(submitted.ok ? submitted.body : submitted.raw)
-  const details = { bundleId: built.bundleId, signatures }
-  if (!outcome.success || outcome.data.bundleId !== built.bundleId) {
+  const details = { bundleId, signatures }
+  if (!outcome.success || outcome.data.bundleId !== bundleId) {
     // A 4xx other than a conflict signed and sent nothing (the API's own contract), so a same-id
     // re-run may build again. Anything else, a lost answer included, may have sent the bundle.
     const refused = !submitted.ok && submitted.status >= 400 && submitted.status < 500 && submitted.status !== 409
@@ -913,8 +1010,8 @@ async function atomicLaunch(
     throw new TradingError(
       submitted.ok ? "INVALID_RESPONSE" : (submitted.code ?? "REQUEST_FAILED"),
       refused
-        ? `Candle refused bundle ${safeText(built.bundleId)} and sent nothing: ${safeText(submitted.ok ? "" : submitted.message)}. Re-run with the same --client-trade-id ${id} to build it again.`
-        : `Bundle ${safeText(built.bundleId)} may have been sent, and its outcome is unknown${submitted.ok ? "" : `: ${safeText(submitted.message)}`}. Re-run with the same --client-trade-id ${id} to read it; nothing is re-signed or re-sent. Never relaunch under a new id: that would be a second token.`,
+        ? `Candle refused bundle ${safeText(bundleId)} and sent nothing: ${safeText(submitted.ok ? "" : submitted.message)}. Re-run with the same --client-trade-id ${id} to build it again.`
+        : `Bundle ${safeText(bundleId)} may have been sent, and its outcome is unknown${submitted.ok ? "" : `: ${safeText(submitted.message)}`}. Re-run with the same --client-trade-id ${id} to read it; nothing is re-signed or re-sent. Never relaunch under a new id: that would be a second token.`,
       { ...(refused ? {} : { exitCode: 3 as const }), details },
     )
   }
@@ -922,13 +1019,13 @@ async function atomicLaunch(
   if (outcome.data.status === "failed")
     throw new TradingError(
       "BUNDLE_FAILED",
-      `Bundle ${safeText(built.bundleId)} did not land: neither the launch nor its first buy is on chain. Retry with the same --client-trade-id ${id}; Candle starts a clean attempt under it.`,
+      `Bundle ${safeText(bundleId)} did not land: neither the launch nor its first buy is on chain. Retry with the same --client-trade-id ${id}; Candle starts a clean attempt under it.`,
       { details },
     )
   if (outcome.data.status === "timeout")
     throw new TradingError(
       "BUNDLE_UNRESOLVED",
-      `Bundle ${safeText(built.bundleId)} is unresolved and may still land. Re-run with the same --client-trade-id ${id} to read its outcome; nothing is re-signed or re-sent. Never relaunch under a new id: that would be a second token.`,
+      `Bundle ${safeText(bundleId)} is unresolved and may still land. Re-run with the same --client-trade-id ${id} to read its outcome; nothing is re-signed or re-sent. Never relaunch under a new id: that would be a second token.`,
       { exitCode: 3, details },
     )
   const [launchSignature, buySignature] = outcome.data.signatures
@@ -973,6 +1070,212 @@ function resumeAtomicLaunch(
     `Launch ${id}'s bundle ${safeText(local.bundleId)} is unresolved (the launch job is ${safeText(prior.job.status)}) and may still land. Nothing was re-signed or re-sent. Re-run with the same --client-trade-id to read it again; never relaunch under a new id, which would be a second token.`,
     { exitCode: 3, details: { ...saved, job: prior.job } },
   )
+}
+
+// ── BE-1849: a launch from the embedded wallet, as an atomic launch ───────────────────────────
+
+/** The embedded wallet pays for both legs, and Candle signs both at `/submit`. */
+const EMBEDDED_PAYER = { type: "main" } as const
+
+/** `/launch/atomic/dry-run`'s fields this command reads: the launch's wallet and its one first buy. */
+const atomicDryRunSchema = z
+  .object({
+    launchWallet: z.string(),
+    launchSigner: z.enum(["server", "client"]),
+    fills: z.array(
+      z
+        .object({
+          index: z.number().int(),
+          signer: z.enum(["server", "client"]),
+          wallet: z.string(),
+          amountRaw: z.string().regex(/^\d+$/),
+          feeRaw: z.string().regex(/^\d+$/),
+          expectedFill: z.object({
+            amountOutRaw: z.string().regex(/^\d+$/),
+            minAmountOutRaw: z.string().regex(/^\d+$/),
+          }),
+          supplyPct: z.number(),
+        })
+        .passthrough(),
+    ),
+    graduatesInBundle: z.boolean().optional(),
+  })
+  .passthrough()
+
+/**
+ * The account's Solana embedded wallet, read as `candle swap` reads it, before the upload: a key
+ * the owner denied the embedded wallet is refused here with the fix, as the server would refuse it.
+ */
+async function embeddedLaunchWallet(ctx: CommandContext, key: string): Promise<string> {
+  const discovered = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded"))
+  const address = discovered.wallets?.solana?.address
+  if (!address)
+    throw new TradingError(
+      "PAYER_REQUIRED",
+      "This account has no Solana embedded wallet. Create one in the app, or launch from a Solana TEE wallet with --wallet <tee>. Nothing was built.",
+    )
+  if (discovered.embeddedWalletPermission === "denied")
+    throw new TradingError(
+      "EMBEDDED_WALLET_NOT_PERMITTED",
+      `This key may not use the account's embedded wallet (${address}). Nothing was built.`,
+      {
+        suggestion:
+          "Have the owner allow it: candle keys update <prefix> --embedded-wallet allow (device token), or in the web key manager. Or launch from a TEE wallet bound to this key with --wallet <tee>.",
+      },
+    )
+  return address
+}
+
+/** The atomic route's refusals that an embedded launch meets, said plainly. Nothing was built or signed. */
+function embeddedRefusal(error: unknown): unknown {
+  if (!(error instanceof TradingError)) return error
+  if (error.code === "SCOPE_MISSING")
+    return new TradingError(
+      "SCOPE_MISSING",
+      "This key needs swap:write as well as launch:write: the first buy is its own leg in the atomic launch. Nothing was built or signed.",
+      { suggestion: "Add swap:write to the key, then run the same command again." },
+    )
+  if (error.code === "VALIDATION_FAILED" && error.message.includes("configured Jito block engine"))
+    return new TradingError(
+      "VALIDATION_FAILED",
+      "An embedded-wallet launch goes to Candle as one Jito bundle, and this Candle deployment has no Jito block engine configured. Nothing was built or signed.",
+    )
+  return error
+}
+
+/**
+ * `candle launch --wallet embedded --buy <amount>` (BE-1849): the account's embedded wallet as the
+ * creator and as the only first buyer, on the same route the TEE `--buy` takes (`/launch/atomic`).
+ * The dry run comes first and writes nothing: no day-cap slot, no mint, no reservation, and the id
+ * stays unused. Its quote is the one confirmed. Only then is the id claimed and the bundle built,
+ * and its first-buy floor must be at least the one shown. Candle signs both legs at `/submit` and
+ * relays them to Jito as one bundle, so the launch and the first buy land together or not at all.
+ * `--dry-run` stops after the preview.
+ */
+async function embeddedLaunch(
+  ctx: CommandContext,
+  key: string,
+  args: {
+    flags: Record<string, string>
+    id: string
+    image?: LocalImage
+    banner?: LocalImage
+    /** A same-id retry after a bundle that did not land: the id is already this machine's. */
+    retry?: { imageUrl?: string; bannerUrl?: string }
+    yes: boolean
+    dryRun: boolean
+  },
+): Promise<number> {
+  const { flags, id } = args
+  const buy = launchBuy(flags, "solana") as LaunchBuy
+  firstBuyCeiling(ctx, flags, buy)
+  const wallet = await embeddedLaunchWallet(ctx, key)
+  const uploaded = await uploadLaunchImages(ctx, key, args)
+  if (typeof uploaded === "number") return uploaded
+  const { imageUrl, bannerUrl, used } = uploaded
+  const body = {
+    clientLaunchId: id,
+    chain: "solana",
+    name: flags["--name"],
+    symbol: flags["--symbol"],
+    imageUrl,
+    ...(bannerUrl ? { bannerUrl } : {}),
+    ...(flags["--description"] ? { description: flags["--description"] } : {}),
+    ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {}),
+    ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
+    ...launchCurveFields(flags),
+    ...poolRequestFields(flags),
+    payer: EMBEDDED_PAYER,
+    firstBuys: [{ payer: EMBEDDED_PAYER, amountRaw: buy.raw }],
+  }
+  const answer = await request(ctx, key, "/api/v1/launch/atomic/dry-run", body).catch((error) => {
+    throw embeddedRefusal(error)
+  })
+  const preview = atomicDryRunSchema.safeParse(answer)
+  const fill = preview.success ? preview.data.fills[0] : undefined
+  if (
+    !preview.success ||
+    !fill ||
+    preview.data.fills.length !== 1 ||
+    preview.data.launchWallet !== wallet ||
+    preview.data.launchSigner !== "server" ||
+    fill.wallet !== wallet ||
+    fill.signer !== "server" ||
+    fill.amountRaw !== buy.raw
+  )
+    throw new TradingError(
+      "INVALID_RESPONSE",
+      "Candle's dry run does not read as this launch and its first buy from the embedded wallet; nothing was built.",
+    )
+  const quoteAsset = (flags["--quote-asset"] ?? "sol").toUpperCase()
+  const decimals = BASES[quoteAsset]?.decimals ?? 9
+  const quote: QuoteDisplay & Json = {
+    intent: `Launch ${flags["--name"]} (${flags["--symbol"]}) with a first buy of ${buy.display} from the embedded wallet, as one Jito bundle`,
+    wallet,
+    venue: "curve launch (atomic bundle, signed by Candle)",
+    priceImpactPct: null,
+    candleFee:
+      fill.feeRaw !== "0"
+        ? `${decimalAmount(fill.feeRaw, decimals)} ${quoteAsset} (the tier fee on the first buy, in its leg)`
+        : "none on this first buy",
+    minimumReceived: `${fill.expectedFill.minAmountOutRaw} raw units of the new token (the first buy's floor; ${fill.supplyPct}% of the supply expected)`,
+    tokenRisks: [],
+  }
+  if (args.dryRun) {
+    ctx.deps.stderr.write(`Dry run: nothing was built, signed or recorded, and launch id ${id} is unused.\n`)
+    return printTradingResult(ctx, { ...answer, clientTradeId: id, kind: "launch", quote, ...used })
+  }
+  ctx.deps.stderr.write(
+    `Launch creates the token, then spends ${buy.display} on a first buy from the embedded wallet as its own transaction. Both go to Candle as one Jito bundle: the launch and the first buy land together or not at all. Candle signs both, and the bundle pays a Jito tip from this wallet inside the launch transaction, beside the launch's rent and network fees. Price impact does not apply to creation.\n`,
+  )
+  if (preview.data.graduatesInBundle)
+    ctx.deps.stderr.write("This first buy alone takes the new curve to graduation inside the bundle.\n")
+  if (!(await confirmQuote(ctx, quote, args.yes)))
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind: "launch",
+      quote,
+      ...used,
+    })
+  if (!args.retry && !(await claimOperation(ctx, key, id, "launch")))
+    throw new TradingError(
+      "OPERATION_ALREADY_STARTED",
+      "This machine already started this launch id; no write was resent.",
+    )
+  ctx.deps.stderr.write(`Operation: ${id}\n`)
+  const built = atomicBuildSchema.parse(
+    await request(ctx, key, "/api/v1/launch/atomic/build", body).catch((error) => {
+      throw embeddedRefusal(error)
+    }),
+  )
+  const bundle = { bundleId: built.bundleId, signatures: [], imageUrl, ...(bannerUrl ? { bannerUrl } : {}) }
+  // Saved before anything can be sent: a re-run after a refusal below builds again under the same id.
+  await saveOperationBundle(ctx, key, id, { ...bundle, outcome: "unsigned" })
+  const [launchLeg, buyLeg] = built.legs
+  if (
+    built.legs.length !== 2 ||
+    launchLeg?.role !== "launch" ||
+    buyLeg?.role !== "buy" ||
+    built.legs.some((leg, index) => leg.index !== index || leg.signer !== "server")
+  )
+    throw new TradingError(
+      "INVALID_RESPONSE",
+      `Candle did not build bundle ${safeText(built.bundleId)} as this launch and its first buy, both from the embedded wallet; nothing was sent. Re-run with the same --client-trade-id ${id} to build it again.`,
+    )
+  const floor = buyLeg.expectedFill?.minAmountOutRaw
+  if (floor === undefined || BigInt(floor) < BigInt(fill.expectedFill.minAmountOutRaw))
+    throw new TradingError(
+      "QUOTE_CHANGED",
+      `Bundle ${safeText(built.bundleId)}'s first-buy floor (${safeText(floor ?? "none")} raw units) is below the ${fill.expectedFill.minAmountOutRaw} you confirmed; nothing was sent. Re-run with the same --client-trade-id ${id} to preview it again.`,
+    )
+  if (!Number.isFinite(built.expiresAt) || built.expiresAt <= ctx.deps.now())
+    throw new TradingError("QUOTE_EXPIRED", "The launch build expired before it was sent.")
+  // From here the bundle may be sent: the saved record carries no outcome until /submit answers.
+  await saveOperationBundle(ctx, key, id, bundle)
+  ctx.deps.stderr.write(`Bundle: ${safeText(built.bundleId)} (Candle signs the launch and the first buy)\n`)
+  return await submitBundle(ctx, key, { id, bundle, signed: [], quote, used })
 }
 
 // ── Phase 4b-2: a launch from a Hood TEE wallet (D9) ──────────────────────────────────────────
