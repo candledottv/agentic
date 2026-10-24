@@ -472,6 +472,10 @@ export interface LaunchAndSeedArgs {
   quoteAsset?: string
   mode?: string
   stakerAllocationBps?: number
+  /** Solana only; forwarded as given. See `launchTokenShape.poolFee`. */
+  poolFee?: { tier: 25 | 50 | 100 } | { startBps: number; endBps: 25 | 50 | 100; minutes: number }
+  poolOpen?: "legacy" | "curve_price"
+  expPoolShape?: "floor" | "full_range"
   dexVersion?: string | null
   description?: string
   socials?: Record<string, string>

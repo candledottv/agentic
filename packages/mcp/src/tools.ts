@@ -777,6 +777,36 @@ const launchTokenShape = {
         "pool's 0.5%, paid to the creator in full. 0 is the same as leaving it out",
     ),
   stakerAllocationBps: z.number().optional().describe("Staker allocation in basis points"),
+  poolFee: z
+    .union([
+      z.object({ tier: z.union([z.literal(25), z.literal(50), z.literal(100)]) }).strict(),
+      z
+        .object({
+          startBps: z.number().int().max(2500),
+          endBps: z.union([z.literal(25), z.literal(50), z.literal(100)]),
+          minutes: z.number().positive().max(30),
+        })
+        .strict(),
+    ])
+    .optional()
+    .describe(
+      "Solana only: the graduated pool's fee. { tier: 25 | 50 | 100 } is a flat fee in bps (default 50), or " +
+        "{ startBps, endBps, minutes } is an anti-snipe fall from startBps (at most 2500, at least endBps) to " +
+        "endBps (25, 50 or 100) over minutes (at most 30). Cannot be combined with creatorFeeBps unless the tier is 50. " +
+        "Omit for the standard 50 bps pool",
+    ),
+  poolOpen: z
+    .enum(["legacy", "curve_price"])
+    .optional()
+    .describe(
+      'Solana preset tiers only. "curve_price" opens the pool at the curve\'s last price (the whole reserve is ' +
+        "seeded and the remaining base burned); stakerAllocationBps plus the team allocation must fit the tier's limit, " +
+        "which the dry run returns as graduation.maxStakerCarveBps. Omit for legacy",
+    ),
+  expPoolShape: z
+    .enum(["floor", "full_range"])
+    .optional()
+    .describe('Solana exp- curves only. "full_range" opens the pool across the whole price range. Omit for floor'),
   dexVersion: z.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
   buyAmount: z
     .union([z.string(), z.number()])

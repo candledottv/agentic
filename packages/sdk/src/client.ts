@@ -293,6 +293,35 @@ export interface PresetsPayload {
 }
 
 /**
+ * Solana pool fee at graduation: a flat tier in bps, or an anti-snipe fall from `startBps` (at most
+ * 2500) to `endBps` over `minutes` (at most 30). Omitted, the pool keeps today's flat 50 bps.
+ */
+export type PoolFee = { tier: 25 | 50 | 100 } | { startBps: number; endBps: 25 | 50 | 100; minutes: number }
+
+/**
+ * The `graduation` block of a dry run, present only when the launch chose a non-default pool fee or
+ * shape. Estimates are at the graduation threshold; the final burn follows the frozen on-chain price.
+ */
+export interface LaunchGraduationPreview {
+  /** The chosen schedule; absent when the launch kept the flat 50 bps pool. */
+  poolFeeSchedule?: PoolFee
+  poolOpen?: "curve_price"
+  expPoolShape?: "full_range"
+  /** Base burned at the threshold, raw. */
+  estimatedBurnRaw?: string
+  /** Base seeded into the pool at the threshold, raw. */
+  estimatedSeedRaw?: string
+  /** curve_price only: the most bps the staker carve plus the team allocation can add up to on this tier. */
+  maxStakerCarveBps?: number
+  /** The fee at pool open (a falling schedule's start). */
+  startBps?: number
+  /** Where a falling schedule settles. */
+  endBps?: number
+  shape?: "curve_price" | "legacy" | "full_range" | "floor"
+  burnsRemainder?: boolean
+}
+
+/**
  * `mode: "exp-custom"` only, and required there: the launcher-chosen curve, in WHOLE units of the
  * quote asset (sol or cndl) as decimal strings, never raw units. `"12"` is 12 SOL.
  */
@@ -318,6 +347,12 @@ export interface LaunchRequest {
    */
   creatorFeeBps?: 0 | 100 | 200
   stakerAllocationBps?: number
+  /** Solana only: the graduated pool's fee. Omitted keeps the flat 50 bps pool. */
+  poolFee?: PoolFee
+  /** Solana preset tiers only: "curve_price" opens the pool at the curve's last price and burns the rest. Omitted is "legacy". */
+  poolOpen?: "legacy" | "curve_price"
+  /** Solana exp- curves only: "full_range" opens the pool across the whole price range. Omitted is "floor". */
+  expPoolShape?: "floor" | "full_range"
   /** Hood only, required there: which Uniswap version the curve graduates through. */
   dexVersion?: "v3" | "v4"
   /** Initial dev buy. Solana: JSON number in the pair's base units. Hood: decimal string in wei. */
@@ -493,6 +528,8 @@ export interface DryRunResult {
    * TRANSACTION_TOO_LARGE instead, so `fits` is always true when present.
    */
   size?: { txBytes: number; limit: number; maxNameBytes: number; fits: boolean }
+  /** Present only when the launch chose a non-default pool fee or shape. */
+  graduation?: LaunchGraduationPreview
 }
 
 /**
@@ -3078,6 +3115,8 @@ export interface AtomicDryRunResult {
   launchSigner: AtomicBundleLegSigner
   resolved: Omit<ResolvedLaunch, "dexVersion" | "buyAmount">
   curveTerms?: LaunchPreviewTerms
+  /** Present only when the launch chose a non-default pool fee or shape. */
+  graduation?: LaunchGraduationPreview
   fills: AtomicDryRunFill[]
   /** Whether the first buys alone take the new curve to its threshold inside the bundle. */
   graduatesInBundle: boolean

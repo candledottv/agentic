@@ -56,6 +56,7 @@ import {
   walletNameChain,
 } from "../trading"
 import { type LocalImage, readLocalImage, uploadImage, uploadNotice } from "./image"
+import { POOL_FLAGS, poolRequestFields } from "./pool-options"
 import {
   lazyEvmRpc,
   lookupOperation,
@@ -66,7 +67,7 @@ import {
 } from "./swap"
 
 const USAGE =
-  "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--dry-run] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
+  "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--pool-fee <25|50|100> [--pool-fee-from <bps> --pool-fee-minutes <min>]] [--pool-open legacy|curve_price] [--exp-pool-shape floor|full_range] [--dry-run] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
 
 /** The launch quote assets by chain, as the server's launch matrix lists them. */
 const QUOTE_CHAIN: Record<string, TradeChain> = {
@@ -224,6 +225,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       "--mode",
       "--dex-version",
       "--buy",
+      ...POOL_FLAGS,
       "--curve-v",
       "--curve-g",
       "--creator-fee-bps",
@@ -279,6 +281,12 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     (flags["--dex-version"] !== undefined && flags["--dex-version"] !== "v3" && flags["--dex-version"] !== "v4")
   ) {
     writeUsageFailure(ctx.deps, USAGE, ctx.json)
+    return 2
+  }
+  try {
+    poolRequestFields(flags)
+  } catch (error) {
+    writeUsageFailure(ctx.deps, `${(error as Error).message}. ${USAGE}`, ctx.json)
     return 2
   }
   try {
@@ -495,6 +503,8 @@ function launchFields(args: LaunchBodyArgs): Json {
     ...(flags["--description"] ? { description: flags["--description"] } : {}),
     ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
     ...launchCurveFields(flags),
+    // Solana graduation choices; a Hood launch refuses these flags before any body is built.
+    ...poolRequestFields(flags),
   }
 }
 
@@ -994,6 +1004,8 @@ async function hoodLaunch(
   },
 ): Promise<number> {
   const { flags, id, wallet, buy } = args
+  if (Object.keys(poolRequestFields(flags)).length)
+    throw new TradingUsage("Pool fee and pool shape choices are Solana only; a Hood launch cannot take them.")
   const allowedLegs = buy ? HOOD_LAUNCH_BUY_LEGS : HOOD_LAUNCH_LEGS
   if (!(await claimOperation(ctx, key, id, "launch")))
     throw new TradingError(

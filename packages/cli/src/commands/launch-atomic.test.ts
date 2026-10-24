@@ -312,6 +312,52 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     })
   })
 
+  test("pool choices ride the atomic build and the self-signed build; default flags add no field", async () => {
+    const choices = [
+      "--pool-fee",
+      "25",
+      "--pool-fee-from",
+      "2500",
+      "--pool-fee-minutes",
+      "30",
+      "--pool-open",
+      "curve_price",
+    ]
+    const f = await fixture()
+    expect(await run([...buyArgs, ...choices], f.deps)).toBe(0)
+    expect(f.calls.find((c) => c.path === "/api/v1/launch/atomic/build")?.body).toMatchObject({
+      poolFee: { startBps: 2500, endBps: 25, minutes: 30 },
+      poolOpen: "curve_price",
+    })
+    const self = await fixture()
+    // The fake answers no self-signed route: the recorded build body is the assertion. An exp-
+    // mode launch, because expPoolShape is only valid on an experimental curve.
+    await run([...launchArgs, "--mode", "exp-b", "--pool-fee", "100", "--exp-pool-shape", "full_range"], self.deps)
+    expect(self.calls.find((c) => c.path === "/api/v1/launch/self/build")?.body).toMatchObject({
+      mode: "exp-b",
+      poolFee: { tier: 100 },
+      expPoolShape: "full_range",
+    })
+    const plain = await fixture()
+    expect(await run(buyArgs, plain.deps)).toBe(0)
+    const body = plain.calls.find((c) => c.path === "/api/v1/launch/atomic/build")?.body ?? {}
+    for (const field of ["poolFee", "poolOpen", "expPoolShape"]) expect(body).not.toHaveProperty(field)
+  })
+
+  test("a bad pool flag is a usage error before any request", async () => {
+    for (const bad of [
+      ["--pool-fee", "30"],
+      ["--pool-fee", "25", "--pool-fee-from", "2500"],
+      ["--pool-fee-from", "2500", "--pool-fee-minutes", "30"],
+      ["--pool-open", "last"],
+      ["--exp-pool-shape", "wide"],
+    ]) {
+      const f = await fixture()
+      expect(await run([...buyArgs, ...bad], f.deps)).toBe(2)
+      expect(writes(f.paths())).toEqual([])
+    }
+  })
+
   test("R7: without --buy the launch is the self-signed one, as before", async () => {
     const f = await fixture()
     // The fake answers no self-signed route: reaching it is the assertion.

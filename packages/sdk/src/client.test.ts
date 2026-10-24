@@ -387,6 +387,59 @@ describe("request shapes", () => {
     expect(result.graduatesInBundle).toBe(false)
   })
 
+  test("dryRunAtomicLaunch types the graduation preview and omits it for defaults", async () => {
+    const graduation = {
+      poolFeeSchedule: { startBps: 2500, endBps: 25 as const, minutes: 30 },
+      poolOpen: "curve_price" as const,
+      estimatedBurnRaw: "34992337456320",
+      estimatedSeedRaw: "1000",
+      maxStakerCarveBps: 600,
+      startBps: 2500,
+      endBps: 25,
+      shape: "curve_price" as const,
+      burnsRemainder: true,
+    }
+    const base = {
+      success: true,
+      dryRun: true,
+      launchWallet: "SoLEmbedded1",
+      launchSigner: "server",
+      resolved: { chain: "solana", quoteAsset: "sol", mode: "open", stakerAllocationBps: 50, visibility: "production" },
+      fills: [],
+      graduatesInBundle: false,
+      checks: {},
+      matrixVersion: 1,
+    }
+    const req: BuildAtomicLaunchRequest = {
+      clientLaunchId: "atomic-dry-2",
+      name: "Trend",
+      symbol: "TREND",
+      imageUrl: "https://example.com/logo.png",
+      poolFee: graduation.poolFeeSchedule,
+      poolOpen: "curve_price",
+      payer: { type: "main" },
+      firstBuys: [{ payer: { type: "main" }, amountRaw: "100000000" }],
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, { ...base, graduation }), json(200, base)])
+    const result = await client.dryRunAtomicLaunch(req)
+    expect(JSON.parse(String(calls[0]?.body))).toMatchObject({
+      poolFee: graduation.poolFeeSchedule,
+      poolOpen: "curve_price",
+    })
+    // Typed reads: these do not compile without graduation on AtomicDryRunResult.
+    const limit: number | undefined = result.graduation?.maxStakerCarveBps
+    const burn: string | undefined = result.graduation?.estimatedBurnRaw
+    const schedule = result.graduation?.poolFeeSchedule
+    expect({ limit, burn, schedule }).toEqual({
+      limit: 600,
+      burn: "34992337456320",
+      schedule: graduation.poolFeeSchedule,
+    })
+    expect(result.graduation).toEqual(graduation)
+    const plain = await client.dryRunAtomicLaunch({ ...req, poolFee: undefined, poolOpen: undefined })
+    expect(plain).not.toHaveProperty("graduation")
+  })
+
   test("BE-1806: dryRunAtomicLaunch needs an API key", async () => {
     const { client } = makeClient({}, [])
     await expect(
@@ -456,6 +509,86 @@ describe("request shapes", () => {
     await client.launch(withoutId)
     const sent = JSON.parse(String(calls[0]?.body)) as { clientLaunchId: string }
     expect(sent.clientLaunchId).toMatch(/^sdk-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  })
+
+  test("pool choices survive launch bodies as valid preset and experimental combinations; defaults add no field", async () => {
+    const preset = {
+      mode: "open" as const,
+      poolFee: { tier: 25 as const },
+      poolOpen: "curve_price" as const,
+    }
+    const experimental = {
+      mode: "exp-b" as const,
+      poolFee: { startBps: 2500, endBps: 25 as const, minutes: 30 },
+      expPoolShape: "full_range" as const,
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, LAUNCH_OK), json(200, LAUNCH_OK), json(200, LAUNCH_OK)])
+    await client.launch({ ...LAUNCH_REQ, ...preset })
+    await client.launch({ ...LAUNCH_REQ, ...experimental })
+    await client.launch(LAUNCH_REQ)
+    const sent = calls.map((c) => JSON.parse(String(c.body)) as Record<string, unknown>)
+    // A preset launch: the fee tier and the price-preserving pool open.
+    expect(sent[0]).toMatchObject(preset)
+    expect(sent[0]).not.toHaveProperty("expPoolShape")
+    // An experimental launch: the falling fee and the full-range shape. No creatorFeeBps, so
+    // D-A5's refusal of a non-default pool fee with a creator fee does not apply.
+    expect(sent[1]).toMatchObject(experimental)
+    expect(sent[1]).not.toHaveProperty("poolOpen")
+    expect(sent[1]).not.toHaveProperty("creatorFeeBps")
+    for (const field of ["poolFee", "poolOpen", "expPoolShape"]) expect(sent[2]).not.toHaveProperty(field)
+  })
+
+  test("an experimental full_range launch is expressible without a cast and its body survives the wire", async () => {
+    const { client, calls } = makeClient(KEYED, [json(200, LAUNCH_OK)])
+    // This assignment only compiles because LaunchRequest.mode covers the exp- modes and
+    // expPoolShape is one of its fields; the transport body below proves what the API receives.
+    const request: LaunchRequest = {
+      ...LAUNCH_REQ,
+      chain: "solana",
+      quoteAsset: "sol",
+      mode: "exp-b",
+      expPoolShape: "full_range",
+    }
+    await client.launch(request)
+    expect(JSON.parse(String(calls[0]?.body))).toMatchObject({ mode: "exp-b", expPoolShape: "full_range" })
+  })
+
+  test("pool choices reach the self-launch build body", async () => {
+    const { client, calls } = makeClient(KEYED, [json(200, { success: true, dryRun: true })])
+    await client.dryRunSelfLaunch({
+      ...LAUNCH_REQ,
+      linkedWalletId: "w",
+      poolFee: { tier: 100 },
+      poolOpen: "legacy",
+    })
+    expect(JSON.parse(String(calls[0]?.body))).toMatchObject({ poolFee: { tier: 100 }, poolOpen: "legacy" })
+  })
+
+  test("dryRunLaunch types the graduation preview and keeps its carve limit, schedule and burn fields", async () => {
+    const graduation = {
+      poolFeeSchedule: { startBps: 2500, endBps: 25 as const, minutes: 30 },
+      poolOpen: "curve_price" as const,
+      estimatedBurnRaw: "34992337456320",
+      estimatedSeedRaw: "1000",
+      maxStakerCarveBps: 600,
+      startBps: 2500,
+      endBps: 25,
+      shape: "curve_price" as const,
+      burnsRemainder: true,
+    }
+    const wire = { success: true, dryRun: true, launchWallet: null, graduation }
+    const { client } = makeClient(KEYED, [json(200, wire)])
+    const result = await client.dryRunLaunch(LAUNCH_REQ)
+    // Typed reads: these do not compile without LaunchGraduationPreview on DryRunResult.
+    const limit: number | undefined = result.graduation?.maxStakerCarveBps
+    const burn: string | undefined = result.graduation?.estimatedBurnRaw
+    const schedule = result.graduation?.poolFeeSchedule
+    expect({ limit, burn, schedule }).toEqual({
+      limit: 600,
+      burn: "34992337456320",
+      schedule: graduation.poolFeeSchedule,
+    })
+    expect(result.graduation).toEqual(graduation)
   })
 
   test("launchAsync: sends async: true and returns the 202 body", async () => {

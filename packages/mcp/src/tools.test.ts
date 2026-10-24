@@ -873,6 +873,79 @@ describe("exp-custom on both launch tools", () => {
   })
 })
 
+describe("pool choices on both launch tools", () => {
+  const tools: Record<string, { inputSchema: z.ZodRawShape }> = {}
+  registerTools(
+    {
+      registerTool(name: string, config: { inputSchema: z.ZodRawShape }) {
+        tools[name] = { inputSchema: config.inputSchema }
+      },
+    } as never,
+    {},
+  )
+  const BASE = { clientLaunchId: "c1", name: "T", symbol: "T", imageUrl: "https://x/y.png" }
+  const FALL = { startBps: 2500, endBps: 25, minutes: 30 }
+
+  test.each(["candle_launch_token", "candle_launch_and_seed"])("%s parses a tier, a fall and each shape", (name) => {
+    const schema = z.object(tools[name]?.inputSchema ?? {})
+    expect(schema.parse({ ...BASE, poolFee: { tier: 25 }, poolOpen: "curve_price" })).toMatchObject({
+      poolFee: { tier: 25 },
+      poolOpen: "curve_price",
+    })
+    expect(schema.parse({ ...BASE, mode: "exp-b", poolFee: FALL, expPoolShape: "full_range" })).toMatchObject({
+      mode: "exp-b",
+      poolFee: FALL,
+      expPoolShape: "full_range",
+    })
+    // Omitted stays omitted: a default launch adds no field.
+    const plain = schema.parse(BASE)
+    for (const field of ["poolFee", "poolOpen", "expPoolShape"]) expect(plain).not.toHaveProperty(field)
+    // A misspelled economic field is refused here, not stripped.
+    expect(() => schema.parse({ ...BASE, poolFee: { tier: 30 } })).toThrow()
+    expect(() => schema.parse({ ...BASE, poolFee: { tier: 25, extra: 1 } })).toThrow()
+    expect(() => schema.parse({ ...BASE, poolOpen: "last_price" })).toThrow()
+  })
+
+  test("candle_launch_token forwards the parsed choices to the dry run and the launch", () => {
+    const preset = { poolFee: FALL, poolOpen: "curve_price" }
+    const experimental = { mode: "exp-b", expPoolShape: "full_range" }
+    const schema = z.object(tools.candle_launch_token?.inputSchema ?? {})
+    const presetArgs = schema.parse({ ...BASE, ...preset })
+    const expArgs = schema.parse({ ...BASE, ...experimental })
+    for (const dryRun of [true, false]) {
+      const presetRequest = buildRequest(
+        "candle_launch_token",
+        { ...presetArgs, dryRun },
+        { apiUrl: "https://api.test", apiKey: "k" },
+      )
+      expect(JSON.parse(String(presetRequest.init.body))).toEqual({ ...BASE, ...preset })
+      const expRequest = buildRequest(
+        "candle_launch_token",
+        { ...expArgs, dryRun },
+        { apiUrl: "https://api.test", apiKey: "k" },
+      )
+      expect(JSON.parse(String(expRequest.init.body))).toEqual({ ...BASE, ...experimental })
+    }
+  })
+
+  test("candle_launch_and_seed forwards the choices with its converted seed", async () => {
+    const bodies: unknown[] = []
+    const fetchLike: FetchLike = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ success: true, dryRun: true }), { status: 200 })
+    }
+    const { call } = toolsWith(["candle_launch_and_seed"], fetchLike)
+    await call("candle_launch_and_seed", {
+      ...BASE,
+      poolFee: { tier: 100 },
+      poolOpen: "curve_price",
+      devBuy: "2",
+      dryRun: true,
+    })
+    expect(bodies).toEqual([{ ...BASE, poolFee: { tier: 100 }, poolOpen: "curve_price", buyAmount: "2000000000" }])
+  })
+})
+
 /*
   BE-1806: the same launch inputs on every surface (spec
   2026-10-23-launch-reliability-and-parity-design.md, section 4). The API is the validator; these

@@ -68,10 +68,11 @@
     },
     "request_validation": {
       "retryable": false,
-      "action": "The request is malformed. Fix the named field. For TRANSACTION_TOO_LARGE the error carries the exact name-byte budget; for CURVE_OUT_OF_RANGE with reason price_ceiling, maxThresholdRaw is the largest threshold that fits. For FEE_WALLET_UNSUPPORTED, choose an on-curve wallet or an enabled, verified Squads v4 vault; honor explicit error.retryable when verification is temporarily unavailable.",
+      "action": "The request is malformed. Fix the named field. For TRANSACTION_TOO_LARGE the error carries the exact name-byte budget; for CURVE_OUT_OF_RANGE with reason price_ceiling, maxThresholdRaw is the largest threshold that fits. For FEE_WALLET_UNSUPPORTED, choose an on-curve wallet or an enabled, verified Squads v4 vault; honor explicit error.retryable when verification is temporarily unavailable. For POOL_FEE_WITH_CREATOR_FEE_UNSUPPORTED, drop poolFee (the launch keeps the standard pool fee) or drop creatorFeeBps.",
       "codes": [
         "VALIDATION_FAILED",
         "FEE_WALLET_UNSUPPORTED",
+        "POOL_FEE_WITH_CREATOR_FEE_UNSUPPORTED",
         "CLOSE_REFUSED",
         "INVALID_NAME_BYTES",
         "INVALID_SYMBOL",

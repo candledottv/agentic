@@ -42825,6 +42825,16 @@ var init_tools = __esm(() => {
     }).strict().optional().describe('mode "exp-custom" only, and required there. Decimal strings in whole units of the quote asset (sol or ' + "cndl), never raw units. Dry-run first: the API checks the limits and returns the curve's terms"),
     creatorFeeBps: exports_external.union([exports_external.literal(0), exports_external.literal(100), exports_external.literal(200)]).optional().describe("An exp- mode only: an extra creator fee of 100 or 200 basis points on top of the curve's 1% and the " + "pool's 0.5%, paid to the creator in full. 0 is the same as leaving it out"),
     stakerAllocationBps: exports_external.number().optional().describe("Staker allocation in basis points"),
+    poolFee: exports_external.union([
+      exports_external.object({ tier: exports_external.union([exports_external.literal(25), exports_external.literal(50), exports_external.literal(100)]) }).strict(),
+      exports_external.object({
+        startBps: exports_external.number().int().max(2500),
+        endBps: exports_external.union([exports_external.literal(25), exports_external.literal(50), exports_external.literal(100)]),
+        minutes: exports_external.number().positive().max(30)
+      }).strict()
+    ]).optional().describe("Solana only: the graduated pool's fee. { tier: 25 | 50 | 100 } is a flat fee in bps (default 50), or " + "{ startBps, endBps, minutes } is an anti-snipe fall from startBps (at most 2500, at least endBps) to " + "endBps (25, 50 or 100) over minutes (at most 30). Cannot be combined with creatorFeeBps unless the tier is 50. " + "Omit for the standard 50 bps pool"),
+    poolOpen: exports_external.enum(["legacy", "curve_price"]).optional().describe(`Solana preset tiers only. "curve_price" opens the pool at the curve's last price (the whole reserve is ` + "seeded and the remaining base burned); stakerAllocationBps plus the team allocation must fit the tier's limit, " + "which the dry run returns as graduation.maxStakerCarveBps. Omit for legacy"),
+    expPoolShape: exports_external.enum(["floor", "full_range"]).optional().describe('Solana exp- curves only. "full_range" opens the pool across the whole price range. Omit for floor'),
     dexVersion: exports_external.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
     buyAmount: exports_external.union([exports_external.string(), exports_external.number()]).optional().describe("Initial buy, in quote base units (string or number)"),
     description: exports_external.string().optional(),
@@ -71438,7 +71448,7 @@ var HELP = {
     summary: "Create a token on Solana or Hood, with an optional first buy",
     description: "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it is its own transaction, sent with the launch as one Jito bundle (an atomic launch), so the launch and the first buy land together or not at all and the bundle pays a Jito tip; on Hood it is a last leg after the curve and the fee. On Solana it also needs the swap:write scope and a Candle deployment with a Jito block engine. Only configured raw caps and USD limits apply; unset means unlimited and zero still binds. When a USD limit is set, Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path. The image is one of two flags, never both: --image-url <https-url> for one already hosted, or --image <path> for a PNG, JPEG, GIF or WebP file on this machine, at most 10MB. With --image the file is uploaded to Candle first and the launch is made with the URL that comes back, which --json reports as imageUrl. The upload happens before the confirm prompt and cannot be undone: the file becomes public and permanent even if you then decline or the launch fails. Re-running with the same --client-trade-id resumes the launch without uploading again. --image-url takes only an https:// URL. --banner <file|URL> adds a wide banner: an https URL is passed through; a local file uses the same publication notice and 10MB limit, uploaded with kind=banner so it is never cropped. Banners must be wider than 1.5:1. The result reports bannerUrl, and an atomic retry reuses the saved URL. --mode picks the curve: open or exclusive (the default tier for the pair), test-open or test-exclusive where the server has ENABLE_TEST_CURVES on, or on Solana with sol or cndl the experimental curves exp-a, exp-b, exp-c and exp-custom. exp-custom takes your own curve: --curve-v <V> (the virtual quote it starts with) and --curve-g <G> (what it raises before graduating), in whole units of the quote asset, within limits Candle checks; it works only where the server has EXP_CUSTOM_CURVES on. --creator-fee-bps 100 or 200 adds an extra creator fee on an exp- mode, paid to the creator in full. On an exp- curve the first buy is at most 0.5 SOL (2,000,000 CNDL), or 10% of the threshold when that is lower. --dry-run sends the launch's body to Candle's dry run and prints the preview (the curve's terms, the first buy's share, the fees, how the pool opens at graduation and the dev-buy ceiling) without building, signing or recording anything; the id stays unused. With --image it still uploads the file, which is public and permanent.",
     usage: [
-      "candle launch --name <name> --symbol <symbol> --image <path>|--image-url <url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--dry-run]"
+      "candle launch --name <name> --symbol <symbol> --image <path>|--image-url <url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--pool-fee <25|50|100>] [--pool-open <shape>] [--exp-pool-shape <shape>] [--dry-run]"
     ],
     rows: [],
     flags: [
@@ -71462,6 +71472,22 @@ var HELP = {
       {
         invocation: "--dex-version v3|v4",
         description: "Hood only, required there: the Uniswap version the curve graduates to"
+      },
+      {
+        invocation: "--pool-fee 25|50|100",
+        description: "Solana only: the graduated pool's fee in bps (default 50), or with --pool-fee-from the rate a falling fee settles at"
+      },
+      {
+        invocation: "--pool-fee-from <bps> --pool-fee-minutes <min>",
+        description: "Solana only, with --pool-fee: an anti-snipe fee that starts at <bps> (at most 2500) and falls to the --pool-fee rate over <min> minutes (at most 30)"
+      },
+      {
+        invocation: "--pool-open legacy|curve_price",
+        description: "Solana preset tiers: curve_price opens the pool at the curve's last price and burns the rest; the staker carve plus team allocation must fit the tier's limit (the dry run returns it)"
+      },
+      {
+        invocation: "--exp-pool-shape floor|full_range",
+        description: "Solana exp- curves: full_range opens the pool across the whole price range"
       },
       {
         invocation: "--mode <mode>",
@@ -84732,8 +84758,51 @@ init_render();
 init_solana_endpoint();
 init_solana_lite();
 init_trading();
+
+// src/commands/pool-options.ts
+var POOL_FLAGS = ["--pool-fee", "--pool-fee-from", "--pool-fee-minutes", "--pool-open", "--exp-pool-shape"];
+var TIERS = ["25", "50", "100"];
+function poolRequestFields(flags) {
+  const out = {};
+  const fee = flags["--pool-fee"];
+  const from = flags["--pool-fee-from"];
+  const minutes = flags["--pool-fee-minutes"];
+  if ((from !== undefined || minutes !== undefined) && fee === undefined)
+    throw new Error("--pool-fee-from and --pool-fee-minutes need --pool-fee <25|50|100>, the rate the fall ends at");
+  if (fee !== undefined) {
+    if (!TIERS.includes(fee))
+      throw new Error("--pool-fee takes 25, 50 or 100 (bps)");
+    if (from === undefined !== (minutes === undefined))
+      throw new Error("A falling pool fee needs both --pool-fee-from <bps> and --pool-fee-minutes <minutes>");
+    if (from === undefined)
+      out.poolFee = { tier: Number(fee) };
+    else {
+      if (!/^\d+$/.test(from))
+        throw new Error("--pool-fee-from takes whole bps");
+      const m = Number(minutes);
+      if (!Number.isFinite(m) || m <= 0)
+        throw new Error("--pool-fee-minutes takes a positive number of minutes");
+      out.poolFee = { startBps: Number(from), endBps: Number(fee), minutes: m };
+    }
+  }
+  const open8 = flags["--pool-open"];
+  if (open8 !== undefined) {
+    if (open8 !== "legacy" && open8 !== "curve_price")
+      throw new Error("--pool-open takes legacy or curve_price");
+    out.poolOpen = open8;
+  }
+  const shape = flags["--exp-pool-shape"];
+  if (shape !== undefined) {
+    if (shape !== "floor" && shape !== "full_range")
+      throw new Error("--exp-pool-shape takes floor or full_range");
+    out.expPoolShape = shape;
+  }
+  return out;
+}
+
+// src/commands/launch.ts
 init_swap();
-var USAGE6 = "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--dry-run] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
+var USAGE6 = "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--pool-fee <25|50|100> [--pool-fee-from <bps> --pool-fee-minutes <min>]] [--pool-open legacy|curve_price] [--exp-pool-shape floor|full_range] [--dry-run] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
 var QUOTE_CHAIN = {
   sol: "solana",
   usdc: "solana",
@@ -84837,6 +84906,7 @@ async function launch(args, ctx) {
       "--mode",
       "--dex-version",
       "--buy",
+      ...POOL_FLAGS,
       "--curve-v",
       "--curve-g",
       "--creator-fee-bps"
@@ -84870,6 +84940,12 @@ async function launch(args, ctx) {
   }
   if (parsed.positionals.length || !flags["--name"] || !flags["--symbol"] || flags["--image"] === undefined && flags["--image-url"] === undefined || !flags["--wallet"] || !validClientId(id) || flags["--dex-version"] !== undefined && flags["--dex-version"] !== "v3" && flags["--dex-version"] !== "v4") {
     writeUsageFailure(ctx.deps, USAGE6, ctx.json);
+    return 2;
+  }
+  try {
+    poolRequestFields(flags);
+  } catch (error) {
+    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE6}`, ctx.json);
     return 2;
   }
   try {
@@ -85042,7 +85118,8 @@ function launchFields(args) {
     ...args.bannerUrl ? { bannerUrl: args.bannerUrl } : {},
     ...flags["--description"] ? { description: flags["--description"] } : {},
     ...flags["--mode"] ? { mode: flags["--mode"] } : {},
-    ...launchCurveFields(flags)
+    ...launchCurveFields(flags),
+    ...poolRequestFields(flags)
   };
 }
 function solanaSelfBody(args) {
@@ -85333,6 +85410,8 @@ function resumeAtomicLaunch(ctx, id, local, prior) {
 }
 async function hoodLaunch(ctx, key, args) {
   const { flags, id, wallet: wallet3, buy } = args;
+  if (Object.keys(poolRequestFields(flags)).length)
+    throw new TradingUsage("Pool fee and pool shape choices are Solana only; a Hood launch cannot take them.");
   const allowedLegs = buy ? HOOD_LAUNCH_BUY_LEGS : HOOD_LAUNCH_LEGS;
   if (!await claimOperation(ctx, key, id, "launch"))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
