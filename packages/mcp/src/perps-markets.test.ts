@@ -27,7 +27,7 @@ test("AC11 four local read-only tools have schemas, metadata and executable hand
       destructiveHint: false,
       idempotentHint: true,
     })
-    expect(tool.definition.description).toContain("hosted connector does not carry")
+    expect(tool.definition.description).toContain("hosted connector offers the same four reads")
     expect(await tool.handler({ coin: "BTC" })).toMatchObject({
       isError: true,
       content: [{ type: "text", text: expect.stringContaining("PERPS_KEY_REQUIRED") }],

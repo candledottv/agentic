@@ -1932,7 +1932,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       {
         title: name.replace("candle_perps_", "Hyperliquid "),
         description:
-          "Read live market data directly from Hyperliquid's public API on this machine. Needs a Candle agent key of any scope, no signer. candle.tradeable is Candle's build gate at read time, not a promise; OI caps may still refuse an order. The hosted connector does not carry these tools.",
+          "Read live market data directly from Hyperliquid's public API on this machine. Needs a Candle agent key of any scope, no signer. candle.tradeable is Candle's build gate at read time, not a promise; OI caps may still refuse an order. The hosted connector offers the same four reads at its Read level, read by Candle's server instead of this machine.",
         inputSchema: perpsMarketShapes[name],
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       },
