@@ -4635,6 +4635,10 @@ class CandleClient {
     const body = { ...req, clientLaunchId };
     return this.runOperation({ clientLaunchId }, "server-executed", (op) => this.postAtomicBuild(body, clientLaunchId, op));
   }
+  async dryRunAtomicLaunch(req) {
+    this.requireKey("dryRunAtomicLaunch()");
+    return this.requestJson("POST", "/api/v1/launch/atomic/dry-run", req);
+  }
   async postAtomicBuild(body, clientLaunchId, op) {
     const built = await this.requestJson("POST", "/api/v1/launch/atomic/build", body, op);
     return { ...built, clientLaunchId };

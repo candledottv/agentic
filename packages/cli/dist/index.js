@@ -42739,7 +42739,7 @@ var init_tools = __esm(() => {
   init_plans();
   init_update_notice();
   VAMP_CANDIDATES_DESCRIPTION = "Lists Solana tokens that are close to graduating or graduated in the last 6 hours whose ticker other tokens " + "are copying, most-copied in the last 24 hours first. Each entry carries a launch draft (name, ticker, image URL) " + "for `candle_launch_token` or `candle_launch_and_seed`; draft notes identify fields you must supply or adjust. " + "Upload your own image through the agent image upload when the image is unavailable. Use `dryRun: true` first. " + "Counts exclude the candidate itself and cover both Solana and Hood launches at the venues returned in " + "`coverage`, not Candle's own. `coverage.since` is the returned Solana coverage date; Hood history may differ.";
-  CUSTOM_CURVE_RULE = 'mode "exp-custom" with curve { virtualQuote, threshold } launches a Solana curve with your own V (the virtual ' + "quote it starts with) and G (the quote it raises before graduating), in whole SOL or CNDL as decimal strings, " + "accepted when V is 1 to 100 SOL and G 1 to 250 SOL (66,000 to 6,600,000 and 66,000 to 16,500,000 CNDL), when " + "every price up to 20 x G stays under the ceiling (V + 20G)^2 < V x X at this stakerAllocationBps, when neither " + "is finer than the quote's decimals, and when the dev buy is at most 10% of G; a curve past a limit is " + "CURVE_OUT_OF_RANGE, and at the ceiling it carries maxThresholdRaw, the largest G that fits. " + "Dry-run it first (dryRun: true): the dry run spends nothing and returns curveTerms, the market cap at start and " + "at graduation and the supply sold by graduation. Only where the API has EXP_CUSTOM_CURVES on; " + "elsewhere exp-custom is refused as an unknown mode.";
+  CUSTOM_CURVE_RULE = 'mode "exp-custom" with curve { virtualQuote, threshold } launches a Solana curve with your own V (the virtual ' + "quote it starts with) and G (the quote it raises before graduating), in whole SOL or CNDL as decimal strings, " + "accepted when V is 1 to 100 SOL and G 1 to 250 SOL (66,000 to 6,600,000 and 66,000 to 16,500,000 CNDL), when " + "every price up to 20 x G stays under the ceiling (V + 20G)^2 < V x X at this stakerAllocationBps, when neither " + "is finer than the quote's decimals, and when the dev buy is at most 0.5 SOL (2,000,000 CNDL), or 10% of G when " + "that is lower (every exp- mode; an operator may set the 0.5 SOL lower); a curve past a limit is " + "CURVE_OUT_OF_RANGE, and at the ceiling it carries maxThresholdRaw, the largest G that fits. " + "Dry-run it first (dryRun: true): the dry run spends nothing and returns curveTerms, the market cap at start and " + "at graduation, the supply sold by graduation, the share your own buyAmount takes, the fees and the migration " + "terms, and devBuyMax, the dev-buy ceiling that applies. Only where the API has EXP_CUSTOM_CURVES on; " + "elsewhere exp-custom is refused as an unknown mode.";
   localProfileTools = new WeakMap;
   stakingWriteShape = {
     payer: exports_external.enum(["main", "linked"]).optional().describe("main is the embedded wallet; linked names a linked or TEE wallet"),
@@ -42818,11 +42818,12 @@ var init_tools = __esm(() => {
     bannerUrl: exports_external.string().optional().describe("Optional https URL to WIDE artwork for the token page's banner strip (wider than 1.5:1, " + "e.g. 1200x630). This is where a share card or OG image belongs. A square image here is " + "rejected with BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Omit it and the strip " + "falls back to imageUrl"),
     chain: exports_external.string().optional().describe('"solana" or "hood"; defaults to solana'),
     quoteAsset: exports_external.string().optional().describe("Quote asset symbol; defaults per chain"),
-    mode: exports_external.string().optional().describe('"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' + "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on. " + '"exp-custom" launches a Solana curve with your own V and G, given in curve, where the API has it ' + "switched on"),
+    mode: exports_external.string().optional().describe('"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' + "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on. " + '"exp-a", "exp-b" and "exp-c" are the experimental fast Solana curves (sol or cndl). ' + '"exp-custom" launches a Solana curve with your own V and G, given in curve, where the API has it ' + "switched on"),
     curve: exports_external.object({
       virtualQuote: exports_external.string().describe('V: the virtual quote the curve starts with, in whole quote units, e.g. "12" SOL'),
       threshold: exports_external.string().describe('G: the quote the curve raises before it graduates, in whole quote units, e.g. "40" SOL')
     }).strict().optional().describe('mode "exp-custom" only, and required there. Decimal strings in whole units of the quote asset (sol or ' + "cndl), never raw units. Dry-run first: the API checks the limits and returns the curve's terms"),
+    creatorFeeBps: exports_external.union([exports_external.literal(0), exports_external.literal(100), exports_external.literal(200)]).optional().describe("An exp- mode only: an extra creator fee of 100 or 200 basis points on top of the curve's 1% and the " + "pool's 0.5%, paid to the creator in full. 0 is the same as leaving it out"),
     stakerAllocationBps: exports_external.number().optional().describe("Staker allocation in basis points"),
     dexVersion: exports_external.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
     buyAmount: exports_external.union([exports_external.string(), exports_external.number()]).optional().describe("Initial buy, in quote base units (string or number)"),
@@ -71435,9 +71436,9 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it is its own transaction, sent with the launch as one Jito bundle (an atomic launch), so the launch and the first buy land together or not at all and the bundle pays a Jito tip; on Hood it is a last leg after the curve and the fee. On Solana it also needs the swap:write scope and a Candle deployment with a Jito block engine. Only configured raw caps and USD limits apply; unset means unlimited and zero still binds. When a USD limit is set, Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path. The image is one of two flags, never both: --image-url <https-url> for one already hosted, or --image <path> for a PNG, JPEG, GIF or WebP file on this machine, at most 10MB. With --image the file is uploaded to Candle first and the launch is made with the URL that comes back, which --json reports as imageUrl. The upload happens before the confirm prompt and cannot be undone: the file becomes public and permanent even if you then decline or the launch fails. Re-running with the same --client-trade-id resumes the launch without uploading again. --image-url takes only an https:// URL. --banner <file|URL> adds a wide banner: an https URL is passed through; a local file uses the same publication notice and 10MB limit, uploaded with kind=banner so it is never cropped. Banners must be wider than 1.5:1. The result reports bannerUrl, and an atomic retry reuses the saved URL.",
+    description: "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it is its own transaction, sent with the launch as one Jito bundle (an atomic launch), so the launch and the first buy land together or not at all and the bundle pays a Jito tip; on Hood it is a last leg after the curve and the fee. On Solana it also needs the swap:write scope and a Candle deployment with a Jito block engine. Only configured raw caps and USD limits apply; unset means unlimited and zero still binds. When a USD limit is set, Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path. The image is one of two flags, never both: --image-url <https-url> for one already hosted, or --image <path> for a PNG, JPEG, GIF or WebP file on this machine, at most 10MB. With --image the file is uploaded to Candle first and the launch is made with the URL that comes back, which --json reports as imageUrl. The upload happens before the confirm prompt and cannot be undone: the file becomes public and permanent even if you then decline or the launch fails. Re-running with the same --client-trade-id resumes the launch without uploading again. --image-url takes only an https:// URL. --banner <file|URL> adds a wide banner: an https URL is passed through; a local file uses the same publication notice and 10MB limit, uploaded with kind=banner so it is never cropped. Banners must be wider than 1.5:1. The result reports bannerUrl, and an atomic retry reuses the saved URL. --mode picks the curve: open or exclusive (the default tier for the pair), test-open or test-exclusive where the server has ENABLE_TEST_CURVES on, or on Solana with sol or cndl the experimental curves exp-a, exp-b, exp-c and exp-custom. exp-custom takes your own curve: --curve-v <V> (the virtual quote it starts with) and --curve-g <G> (what it raises before graduating), in whole units of the quote asset, within limits Candle checks; it works only where the server has EXP_CUSTOM_CURVES on. --creator-fee-bps 100 or 200 adds an extra creator fee on an exp- mode, paid to the creator in full. On an exp- curve the first buy is at most 0.5 SOL (2,000,000 CNDL), or 10% of the threshold when that is lower. --dry-run sends the launch's body to Candle's dry run and prints the preview (the curve's terms, the first buy's share, the fees, how the pool opens at graduation and the dev-buy ceiling) without building, signing or recording anything; the id stays unused. With --image it still uploads the file, which is public and permanent.",
     usage: [
-      "candle launch --name <name> --symbol <symbol> --image <path>|--image-url <url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4]"
+      "candle launch --name <name> --symbol <symbol> --image <path>|--image-url <url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--dry-run]"
     ],
     rows: [],
     flags: [
@@ -71461,13 +71462,30 @@ var HELP = {
       {
         invocation: "--dex-version v3|v4",
         description: "Hood only, required there: the Uniswap version the curve graduates to"
+      },
+      {
+        invocation: "--mode <mode>",
+        description: "open or exclusive; test-open or test-exclusive (ENABLE_TEST_CURVES); exp-a, exp-b, exp-c or exp-custom (Solana, sol or cndl)"
+      },
+      {
+        invocation: "--curve-v <V> --curve-g <G>",
+        description: "exp-custom only, and required there: the curve's virtual quote and threshold, in whole units of the quote asset"
+      },
+      {
+        invocation: "--creator-fee-bps 0|100|200",
+        description: "An exp- mode only: an extra creator fee on the curve and the pool, paid to the creator in full"
+      },
+      {
+        invocation: "--dry-run",
+        description: "Print Candle's preview of this launch, with the dev-buy ceiling (0.5 SOL, or 10% of the threshold when lower, on an exp- curve), and build, sign and record nothing"
       }
     ],
     examples: [
       "candle launch --name Demo --symbol DEMO --image ./logo.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet HoodAgent --dex-version v4",
-      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --buy 0.1"
+      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --buy 0.1",
+      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --mode exp-custom --curve-v 4 --curve-g 20 --creator-fee-bps 100 --dry-run"
     ],
     env: ENV_API
   },
@@ -84715,7 +84733,7 @@ init_solana_endpoint();
 init_solana_lite();
 init_trading();
 init_swap();
-var USAGE6 = "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
+var USAGE6 = "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--dry-run] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
 var QUOTE_CHAIN = {
   sol: "solana",
   usdc: "solana",
@@ -84747,6 +84765,36 @@ function buyRefusal(error) {
     suggestion: "Launch without --buy under a new --client-trade-id, then make the first buy with candle swap once the token lands.",
     details: error.details
   });
+}
+function curveFlagProblem(flags) {
+  const mode = flags["--mode"];
+  const v = flags["--curve-v"];
+  const g = flags["--curve-g"];
+  if (v === undefined !== (g === undefined))
+    return "--curve-v and --curve-g go together: a curve is its V and its G.";
+  if (v !== undefined && mode !== "exp-custom")
+    return "--curve-v and --curve-g take --mode exp-custom.";
+  if (mode === "exp-custom" && v === undefined)
+    return "--mode exp-custom needs --curve-v and --curve-g: the curve's V and G in whole units of the quote asset.";
+  for (const [flag, value] of [
+    ["--curve-v", v],
+    ["--curve-g", g]
+  ]) {
+    if (value !== undefined && !/^\d+(\.\d+)?$/.test(value))
+      return `${flag} takes a whole-unit decimal amount of the quote asset, such as 4 or 0.5.`;
+  }
+  const fee = flags["--creator-fee-bps"];
+  if (fee !== undefined && fee !== "0" && fee !== "100" && fee !== "200")
+    return "--creator-fee-bps takes 0, 100 or 200.";
+  if (fee !== undefined && !mode?.startsWith("exp-"))
+    return "--creator-fee-bps takes an exp- --mode.";
+  return;
+}
+function launchCurveFields(flags) {
+  return {
+    ...flags["--curve-v"] !== undefined && flags["--curve-g"] !== undefined ? { curve: { virtualQuote: flags["--curve-v"], threshold: flags["--curve-g"] } } : {},
+    ...flags["--creator-fee-bps"] !== undefined ? { creatorFeeBps: Number(flags["--creator-fee-bps"]) } : {}
+  };
 }
 function buyNotice(buy, chain2) {
   if (!buy)
@@ -84788,9 +84836,12 @@ async function launch(args, ctx) {
       "--quote-asset",
       "--mode",
       "--dex-version",
-      "--buy"
+      "--buy",
+      "--curve-v",
+      "--curve-g",
+      "--creator-fee-bps"
     ],
-    booleanFlags: ["--yes"],
+    booleanFlags: ["--yes", "--dry-run"],
     pathFlags: ["--image", "--banner"]
   });
   if ("error" in parsed) {
@@ -84799,6 +84850,12 @@ async function launch(args, ctx) {
   }
   const flags = parsed.values;
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID5()}`;
+  const dryRun = parsed.booleans.has("--dry-run");
+  const curveProblem = curveFlagProblem(flags);
+  if (curveProblem) {
+    writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE6}`, ctx.json);
+    return 2;
+  }
   if (flags["--image"] !== undefined && flags["--image-url"] !== undefined) {
     writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE6}`, ctx.json);
     return 2;
@@ -84834,7 +84891,7 @@ async function launch(args, ctx) {
       return tradingFailure(ctx, error);
     }
     const key = await tradingKey(ctx);
-    const prior = await lookupOperation(ctx, key, id, "launch");
+    const prior = dryRun ? null : await lookupOperation(ctx, key, id, "launch");
     let retry;
     if (prior) {
       const local = await savedOperation(ctx, key, id);
@@ -84866,7 +84923,7 @@ async function launch(args, ctx) {
     const atomic = chain2 === "solana" && buy !== undefined;
     if (atomic)
       atomicPreflight(ctx, flags, wallet3, buy);
-    const solana = chain2 === "solana" && !atomic ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined;
+    const solana = chain2 === "solana" && !atomic && !dryRun ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined;
     let imageUrl = flags["--image-url"] ?? "";
     if (image && retry?.imageUrl)
       imageUrl = retry.imageUrl;
@@ -84899,6 +84956,8 @@ async function launch(args, ctx) {
       ...image ? { imageUrl: safeText(imageUrl) } : {},
       ...bannerUrl ? { bannerUrl: safeText(bannerUrl) } : {}
     };
+    if (dryRun)
+      return await dryRunLaunch(ctx, key, { flags, id, wallet: wallet3, chain: chain2, atomic, buy, imageUrl, bannerUrl, used });
     if (atomic)
       return await atomicLaunch(ctx, key, {
         flags,
@@ -84926,19 +84985,7 @@ async function launch(args, ctx) {
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
     ctx.deps.stderr.write(`Operation: ${id}
 `);
-    const built = launchBuildSchema.parse(await request(ctx, key, "/api/v1/launch/self/build", {
-      clientLaunchId: id,
-      chain: "solana",
-      buyAmount: buy ? buy.raw : 0,
-      name: flags["--name"],
-      symbol: flags["--symbol"],
-      imageUrl,
-      ...bannerUrl ? { bannerUrl } : {},
-      linkedWalletId: wallet3.id,
-      ...flags["--description"] ? { description: flags["--description"] } : {},
-      ...flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {},
-      ...flags["--mode"] ? { mode: flags["--mode"] } : {}
-    }).catch((error) => {
+    const built = launchBuildSchema.parse(await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody({ flags, id, wallet: wallet3, buy, imageUrl, bannerUrl })).catch((error) => {
       throw buyRefusal(error);
     }));
     if (!built.transaction || !/^\d+$/.test(built.maxDebitLamports ?? ""))
@@ -84982,8 +85029,107 @@ async function launch(args, ctx) {
     const result = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, signature });
     return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote, ...used });
   } catch (error) {
-    return tradingFailure(ctx, error, id);
+    return tradingFailure(ctx, error, dryRun ? undefined : id);
   }
+}
+function launchFields(args) {
+  const { flags } = args;
+  return {
+    clientLaunchId: args.id,
+    name: flags["--name"],
+    symbol: flags["--symbol"],
+    imageUrl: args.imageUrl,
+    ...args.bannerUrl ? { bannerUrl: args.bannerUrl } : {},
+    ...flags["--description"] ? { description: flags["--description"] } : {},
+    ...flags["--mode"] ? { mode: flags["--mode"] } : {},
+    ...launchCurveFields(flags)
+  };
+}
+function solanaSelfBody(args) {
+  const quoteAsset = args.flags["--quote-asset"];
+  return {
+    ...launchFields(args),
+    chain: "solana",
+    buyAmount: args.buy ? args.buy.raw : 0,
+    linkedWalletId: args.wallet.id,
+    ...quoteAsset ? { quoteAsset } : {}
+  };
+}
+function atomicBody(args) {
+  const payer = { type: "linked", linkedWalletId: args.wallet.id };
+  const quoteAsset = args.flags["--quote-asset"];
+  return {
+    ...launchFields(args),
+    chain: "solana",
+    ...quoteAsset ? { quoteAsset } : {},
+    payer,
+    firstBuys: [{ payer, amountRaw: args.buy.raw }]
+  };
+}
+function hoodBody(args) {
+  const quoteAsset = args.flags["--quote-asset"];
+  return {
+    ...launchFields(args),
+    chain: "hood",
+    buyAmount: args.buy ? args.buy.raw : 0,
+    linkedWalletId: args.wallet.id,
+    dexVersion: args.flags["--dex-version"],
+    ...quoteAsset ? { quoteAsset: quoteAsset.toLowerCase() } : {}
+  };
+}
+var previewSchema = exports_external.object({
+  resolved: exports_external.object({ mode: exports_external.string(), quoteAsset: exports_external.string() }).passthrough().optional(),
+  curveTerms: exports_external.object({
+    symbol: exports_external.string(),
+    raise: exports_external.number(),
+    startFdv: exports_external.number(),
+    bondingFdv: exports_external.number(),
+    supplySoldPct: exports_external.number(),
+    firstBuy: exports_external.object({ basis: exports_external.string(), amountRaw: exports_external.string(), supplyPct: exports_external.number() }).passthrough().optional(),
+    fees: exports_external.object({ curve: exports_external.object({ feeBps: exports_external.number() }), pool: exports_external.object({ feeBps: exports_external.number() }) }).passthrough().optional(),
+    migration: exports_external.object({ venue: exports_external.string(), poolShape: exports_external.string(), openingPriceStepPct: exports_external.number() }).passthrough().optional()
+  }).passthrough().optional(),
+  devBuyMax: exports_external.string().nullable().optional(),
+  fills: exports_external.array(exports_external.object({ index: exports_external.number(), amountRaw: exports_external.string(), supplyPct: exports_external.number() }).passthrough()).optional()
+}).passthrough();
+var percent = (value) => `${Number(value.toFixed(4))}%`;
+function previewLines(answer2, chain2) {
+  const parsed = previewSchema.safeParse(answer2);
+  if (!parsed.success)
+    return "";
+  const { resolved, curveTerms: terms, devBuyMax, fills } = parsed.data;
+  const quote = (resolved?.quoteAsset ?? (chain2 === "hood" ? "eth" : "sol")).toUpperCase();
+  const decimals = (chain2 === "hood" ? HOOD_BASES[quote] : BASES[quote])?.decimals;
+  const whole = (raw) => decimals === undefined ? `${raw} raw` : `${shortAmount(raw, decimals)} ${quote}`;
+  const lines = [];
+  if (terms) {
+    lines.push(`Curve${resolved ? ` (${safeText(resolved.mode)})` : ""}: raises ${terms.raise} ${safeText(terms.symbol)}; market cap ${terms.startFdv} at start and ${terms.bondingFdv} at graduation; ${percent(terms.supplySoldPct)} of the supply sold by graduation.`);
+    if (terms.firstBuy)
+      lines.push(`First buy (${terms.firstBuy.basis === "buyAmount" ? "your --buy" : "a reference buy"}): ${whole(terms.firstBuy.amountRaw)} takes ${percent(terms.firstBuy.supplyPct)} of the supply after the curve fee.`);
+    if (terms.fees)
+      lines.push(`Fees: ${terms.fees.curve.feeBps / 100}% on the curve, ${terms.fees.pool.feeBps / 100}% in the pool after graduation.`);
+    if (terms.migration)
+      lines.push(`Graduation: a ${safeText(terms.migration.poolShape)} pool on ${safeText(terms.migration.venue)}, opening ${percent(terms.migration.openingPriceStepPct)} against the curve's last price, its liquidity locked for good.`);
+  }
+  for (const fill of fills ?? [])
+    lines.push(`First buy ${fill.index}: ${whole(fill.amountRaw)} takes ${percent(fill.supplyPct)} of the supply.`);
+  if (devBuyMax)
+    lines.push(`Dev-buy ceiling: ${whole(devBuyMax)}.`);
+  return lines.length ? `${lines.join(`
+`)}
+` : "";
+}
+async function dryRunLaunch(ctx, key, args) {
+  const { chain: chain2, buy } = args;
+  const atomic = args.atomic && buy !== undefined;
+  const path = atomic ? "/api/v1/launch/atomic/dry-run" : "/api/v1/launch/self/dry-run";
+  const body = atomic ? atomicBody({ ...args, buy }) : chain2 === "hood" ? hoodBody(args) : solanaSelfBody(args);
+  const answer2 = await request(ctx, key, path, body).catch((error) => {
+    throw atomic ? atomicRefusal(error) : buyRefusal(error);
+  });
+  ctx.deps.stderr.write(`Dry run: nothing was built, signed or recorded, and launch id ${args.id} is unused.
+${previewLines(answer2, chain2)}`);
+  return printTradingResult(ctx, { ...answer2, clientTradeId: args.id, kind: "launch", ...args.used });
 }
 var DEV_BUY_CEILINGS = {
   sol: { env: "DEV_BUY_MAX_LAMPORTS", fallback: 500000000n, unit: "lamports" },
@@ -84998,9 +85144,34 @@ function devBuyCeiling(env, quoteAsset) {
   const value = raw && /^\d+$/.test(raw) ? BigInt(raw) : 0n;
   return { ceiling: value > 0n ? value : bounds.fallback, unit: bounds.unit };
 }
+function shortAmount(raw, decimals) {
+  const full = decimalAmount(raw, decimals);
+  return full.includes(".") ? full.replace(/0+$/, "").replace(/\.$/, "") : full;
+}
+var EXP_DEV_BUY_MAX_THRESHOLD_BPS = 1000n;
+var EXP_PRESET_THRESHOLD_RAW = { sol: 5000000000n, cndl: 330000000000n };
+function expThresholdRaw(flags, quoteAsset) {
+  const mode = flags["--mode"];
+  if (mode === "exp-custom") {
+    const g = flags["--curve-g"];
+    const decimals = BASES[quoteAsset.toUpperCase()]?.decimals;
+    return g === undefined || decimals === undefined ? undefined : BigInt(rawAmount(g, decimals));
+  }
+  return mode === "exp-a" || mode === "exp-b" || mode === "exp-c" ? EXP_PRESET_THRESHOLD_RAW[quoteAsset] : undefined;
+}
 function atomicPreflight(ctx, flags, wallet3, buy) {
   const quoteAsset = (flags["--quote-asset"] ?? "sol").toLowerCase();
   const { ceiling, unit } = devBuyCeiling(ctx.deps.env, quoteAsset);
+  const threshold = expThresholdRaw(flags, quoteAsset);
+  if (threshold !== undefined) {
+    const curveCap = threshold * EXP_DEV_BUY_MAX_THRESHOLD_BPS / 10000n;
+    const applies = curveCap < ceiling ? curveCap : ceiling;
+    if (BigInt(buy.raw) > applies) {
+      const symbol = quoteAsset.toUpperCase();
+      const decimals = BASES[symbol]?.decimals ?? 9;
+      throw new TradingError("DEV_BUY_TOO_HIGH", `buyAmount exceeds this launch's dev-buy ceiling of ${shortAmount(applies.toString(), decimals)} ${symbol} (${applies} ${unit}): at most ${shortAmount(ceiling.toString(), decimals)} ${symbol}, or 10% of the threshold when that is lower`, { details: { field: "buyAmount" } });
+    }
+  }
   if (BigInt(buy.raw) > ceiling)
     throw new TradingError("DEV_BUY_TOO_HIGH", `buyAmount exceeds the per-launch dev-buy ceiling of ${ceiling} ${unit} for ${quoteAsset} on solana`, { details: { field: "buyAmount" } });
   if (wallet3.scopes !== undefined && !wallet3.scopes.includes("swap:write"))
@@ -85045,20 +85216,7 @@ async function atomicLaunch(ctx, key, args) {
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
   ctx.deps.stderr.write(`Operation: ${id}
 `);
-  const payer = { type: "linked", linkedWalletId: wallet3.id };
-  const built = atomicBuildSchema.parse(await request(ctx, key, "/api/v1/launch/atomic/build", {
-    clientLaunchId: id,
-    chain: "solana",
-    name: flags["--name"],
-    symbol: flags["--symbol"],
-    imageUrl: args.imageUrl,
-    ...args.bannerUrl ? { bannerUrl: args.bannerUrl } : {},
-    ...flags["--description"] ? { description: flags["--description"] } : {},
-    ...flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {},
-    ...flags["--mode"] ? { mode: flags["--mode"] } : {},
-    payer,
-    firstBuys: [{ payer, amountRaw: buy.raw }]
-  }).catch((error) => {
+  const built = atomicBuildSchema.parse(await request(ctx, key, "/api/v1/launch/atomic/build", atomicBody(args)).catch((error) => {
     throw atomicRefusal(error);
   }));
   const [launchLeg, buyLeg] = built.legs;
@@ -85180,20 +85338,7 @@ async function hoodLaunch(ctx, key, args) {
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
   ctx.deps.stderr.write(`Operation: ${id}
 `);
-  const built = await request(ctx, key, "/api/v1/launch/self/build", {
-    clientLaunchId: id,
-    chain: "hood",
-    buyAmount: buy ? buy.raw : 0,
-    name: flags["--name"],
-    symbol: flags["--symbol"],
-    imageUrl: args.imageUrl,
-    ...args.bannerUrl ? { bannerUrl: args.bannerUrl } : {},
-    linkedWalletId: wallet3.id,
-    dexVersion: flags["--dex-version"],
-    ...flags["--description"] ? { description: flags["--description"] } : {},
-    ...flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"].toLowerCase() } : {},
-    ...flags["--mode"] ? { mode: flags["--mode"] } : {}
-  }).catch((error) => {
+  const built = await request(ctx, key, "/api/v1/launch/self/build", hoodBody(args)).catch((error) => {
     throw buyRefusal(error);
   });
   const parsed = sequencedSchema.safeParse(built);
@@ -85672,8 +85817,8 @@ async function lpRemove(args, ctx) {
     return usage4(ctx, parsed.error);
   const flags = parsed.values;
   const id = flags["--client-trade-id"] ?? `lp-${randomUUID6()}`;
-  const percent = Number(flags["--percent"]);
-  if (parsed.positionals.length !== 1 || !flags["--percent"] || !/^\d+(\.\d{1,2})?$/.test(flags["--percent"]) || !(percent > 0 && percent <= 100) || !validClientId(id))
+  const percent2 = Number(flags["--percent"]);
+  if (parsed.positionals.length !== 1 || !flags["--percent"] || !/^\d+(\.\d{1,2})?$/.test(flags["--percent"]) || !(percent2 > 0 && percent2 <= 100) || !validClientId(id))
     return usage4(ctx, "Usage: candle lp remove <position> --percent <0.01-100> [--wallet <tee>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
   try {
     const position = solanaAddress(parsed.positionals[0], "The position");
@@ -85688,8 +85833,8 @@ async function lpRemove(args, ctx) {
       wallet: wallet3,
       solana,
       yes: parsed.booleans.has("--yes"),
-      intent: percent === 100 ? `Remove all liquidity from position ${position}, claim its fees and close it (rent returns to the wallet)` : `Remove ${percent}% of the liquidity in position ${position}`,
-      body: { position, percent, slippageBps }
+      intent: percent2 === 100 ? `Remove all liquidity from position ${position}, claim its fees and close it (rent returns to the wallet)` : `Remove ${percent2}% of the liquidity in position ${position}`,
+      body: { position, percent: percent2, slippageBps }
     });
   } catch (error) {
     return tradingFailure(ctx, error, id);
@@ -89078,7 +89223,7 @@ function typedDataAuthorization(wallet3, typedData) {
   });
   return { body, authorizationSignature: sign4("sha256", Buffer.from(payload), wallet3.signer).toString("base64") };
 }
-function previewLines(build) {
+function previewLines2(build) {
   const action = build.action;
   const preview = build.preview ?? {};
   const notes = [
@@ -89122,7 +89267,7 @@ async function confirm(ctx, build, address, yes) {
   if (ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER !== undefined)
     output.write(`Builder trust override: ${builderPin2(ctx)} (replaces this release's pin).
 `);
-  for (const line of previewLines(build))
+  for (const line of previewLines2(build))
     output.write(`${line}
 `);
   if (yes)
@@ -102618,7 +102763,7 @@ function solOf(lamports) {
   const digits = lamports.padStart(10, "0");
   return `${digits.slice(0, -9)}.${digits.slice(-9)}`.replace(/\.?0+$/, "");
 }
-function previewLines2(preview, walletName) {
+function previewLines3(preview, walletName) {
   const lines = [
     `Close ${preview.accountCount} empty token account${preview.accountCount === 1 ? "" : "s"} on the ${walletName}`,
     `Rent returned to that same wallet: ${safeText(preview.totalSol)} SOL in ${preview.transactions} transaction${preview.transactions === 1 ? "" : "s"}, network fee about ${solOf(preview.estimatedFeeLamports)} SOL, net ${safeText(preview.netSol)} SOL`
@@ -102654,7 +102799,7 @@ async function previewAndConfirm(ctx, preview, walletName, yes) {
     const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
     output.write(`No empty token accounts to close on the ${walletName}.
 `);
-    for (const line of previewLines2(preview, walletName).slice(2))
+    for (const line of previewLines3(preview, walletName).slice(2))
       output.write(`${line}
 `);
     return printTradingResult(ctx, {
@@ -102664,7 +102809,7 @@ async function previewAndConfirm(ctx, preview, walletName, yes) {
       preview
     });
   }
-  if (!await confirmClose(ctx, previewLines2(preview, walletName), yes))
+  if (!await confirmClose(ctx, previewLines3(preview, walletName), yes))
     return printTradingResult(ctx, {
       success: true,
       status: "cancelled",

@@ -57,8 +57,10 @@ Both take decimal amounts, never raw base units, and resolve the scale themselve
 
 Both launch tools also take `mode: "exp-custom"` with `curve: { virtualQuote, threshold }`: a
 Solana curve with your own V and G, in whole SOL or CNDL as decimal strings, inside limits the
-API enforces and each tool's description states. Dry-run first: the dry run returns the curve's
-terms. It works only where the deployment has switched it on. See
+API enforces and each tool's description states. Any `exp-` mode takes `creatorFeeBps` (0, 100 or
+200). Dry-run first: the dry run returns the launch preview (`curveTerms`: the curve's terms, the
+share your own `buyAmount` takes, the fees and the migration terms) and `devBuyMax`, the dev-buy
+ceiling that applies. `exp-custom` works only where the deployment has switched it on. See
 [Custom curves](https://docs.candle.tv/developers/headless-launch#custom-curves-choose-v-and-g-switched-off).
 
 For a full walkthrough of `candle_launch_and_seed` and `candle_trade`, including the keyless read

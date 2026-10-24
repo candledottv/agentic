@@ -66,7 +66,7 @@ import {
 } from "./swap"
 
 const USAGE =
-  "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
+  "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--dry-run] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
 
 /** The launch quote assets by chain, as the server's launch matrix lists them. */
 const QUOTE_CHAIN: Record<string, TradeChain> = {
@@ -139,6 +139,43 @@ function buyRefusal(error: unknown): unknown {
   )
 }
 
+/**
+ * BE-1806: what is wrong with `--mode`'s companions, before any request, or undefined. `--curve-v`
+ * and `--curve-g` are exp-custom's V and G, in whole units of the quote asset, and go together;
+ * `--creator-fee-bps` is 0, 100 or 200 on an exp- mode. The API checks the curve's limits.
+ */
+function curveFlagProblem(flags: Record<string, string>): string | undefined {
+  const mode = flags["--mode"]
+  const v = flags["--curve-v"]
+  const g = flags["--curve-g"]
+  if ((v === undefined) !== (g === undefined)) return "--curve-v and --curve-g go together: a curve is its V and its G."
+  if (v !== undefined && mode !== "exp-custom") return "--curve-v and --curve-g take --mode exp-custom."
+  if (mode === "exp-custom" && v === undefined)
+    return "--mode exp-custom needs --curve-v and --curve-g: the curve's V and G in whole units of the quote asset."
+  for (const [flag, value] of [
+    ["--curve-v", v],
+    ["--curve-g", g],
+  ] as const) {
+    if (value !== undefined && !/^\d+(\.\d+)?$/.test(value))
+      return `${flag} takes a whole-unit decimal amount of the quote asset, such as 4 or 0.5.`
+  }
+  const fee = flags["--creator-fee-bps"]
+  if (fee !== undefined && fee !== "0" && fee !== "100" && fee !== "200")
+    return "--creator-fee-bps takes 0, 100 or 200."
+  if (fee !== undefined && !mode?.startsWith("exp-")) return "--creator-fee-bps takes an exp- --mode."
+  return undefined
+}
+
+/** The curve fields of every launch body (BE-1806): exp-custom's curve and an exp- mode's extra creator fee. */
+function launchCurveFields(flags: Record<string, string>): Json {
+  return {
+    ...(flags["--curve-v"] !== undefined && flags["--curve-g"] !== undefined
+      ? { curve: { virtualQuote: flags["--curve-v"], threshold: flags["--curve-g"] } }
+      : {}),
+    ...(flags["--creator-fee-bps"] !== undefined ? { creatorFeeBps: Number(flags["--creator-fee-bps"]) } : {}),
+  }
+}
+
 /** The line printed before the confirm: what the launch does about a first buy. */
 function buyNotice(buy: LaunchBuy | undefined, chain: TradeChain): string {
   if (!buy)
@@ -187,8 +224,11 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       "--mode",
       "--dex-version",
       "--buy",
+      "--curve-v",
+      "--curve-g",
+      "--creator-fee-bps",
     ],
-    booleanFlags: ["--yes"],
+    booleanFlags: ["--yes", "--dry-run"],
     pathFlags: ["--image", "--banner"],
   })
   if ("error" in parsed) {
@@ -197,6 +237,12 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
   }
   const flags = parsed.values
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID()}`
+  const dryRun = parsed.booleans.has("--dry-run")
+  const curveProblem = curveFlagProblem(flags)
+  if (curveProblem) {
+    writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE}`, ctx.json)
+    return 2
+  }
   // BE-1283: the image is a file on this machine or a hosted URL, exactly one of the two.
   if (flags["--image"] !== undefined && flags["--image-url"] !== undefined) {
     writeUsageFailure(
@@ -255,7 +301,8 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       return tradingFailure(ctx, error)
     }
     const key = await tradingKey(ctx)
-    const prior = await lookupOperation(ctx, key, id, "launch")
+    // A dry run reads no operation and resumes none: it records nothing under the id.
+    const prior = dryRun ? null : await lookupOperation(ctx, key, id, "launch")
     /** BE-1721 (R4): a same-id re-run of an atomic launch whose bundle did not land, and the image it was built with. */
     let retry: { imageUrl?: string; bannerUrl?: string } | undefined
     if (prior) {
@@ -294,7 +341,8 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     if (atomic) atomicPreflight(ctx, flags, wallet, buy)
     // Only a self-signed Solana launch reads an RPC (the atomic one is sent by Candle). Resolved
     // before the upload, so an endpoint that fails validation refuses the launch with nothing published.
-    const solana = chain === "solana" && !atomic ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined
+    const solana =
+      chain === "solana" && !atomic && !dryRun ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined
     // BE-1283: one upload, on a first run only (a resumed operation returned above), after every
     // refusal this machine can decide and before either chain claims the launch id. A failed upload
     // therefore leaves the id unused, and both chains build with the URL that came back.
@@ -328,6 +376,9 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       ...(image ? { imageUrl: safeText(imageUrl) } : {}),
       ...(bannerUrl ? { bannerUrl: safeText(bannerUrl) } : {}),
     }
+    // BE-1806: the dry run sends the body the launch would build, to the route's dry run, and stops.
+    if (dryRun)
+      return await dryRunLaunch(ctx, key, { flags, id, wallet, chain, atomic, buy, imageUrl, bannerUrl, used })
     if (atomic)
       return await atomicLaunch(ctx, key, {
         flags,
@@ -358,19 +409,12 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       )
     ctx.deps.stderr.write(`Operation: ${id}\n`)
     const built = launchBuildSchema.parse(
-      await request(ctx, key, "/api/v1/launch/self/build", {
-        clientLaunchId: id,
-        chain: "solana",
-        buyAmount: buy ? buy.raw : 0,
-        name: flags["--name"],
-        symbol: flags["--symbol"],
-        imageUrl,
-        ...(bannerUrl ? { bannerUrl } : {}),
-        linkedWalletId: wallet.id,
-        ...(flags["--description"] ? { description: flags["--description"] } : {}),
-        ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {}),
-        ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
-      }).catch((error) => {
+      await request(
+        ctx,
+        key,
+        "/api/v1/launch/self/build",
+        solanaSelfBody({ flags, id, wallet, buy, imageUrl, bannerUrl }),
+      ).catch((error) => {
         throw buyRefusal(error)
       }),
     )
@@ -422,8 +466,165 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     const result = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, signature })
     return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote, ...used })
   } catch (error) {
-    return tradingFailure(ctx, error, id)
+    // A dry run started nothing under the id, so its refusal names no operation to check.
+    return tradingFailure(ctx, error, dryRun ? undefined : id)
   }
+}
+
+// ── BE-1806: the three launch bodies, and the dry run that sends them ─────────────────────────
+
+/** What every launch body is built from. */
+interface LaunchBodyArgs {
+  flags: Record<string, string>
+  id: string
+  wallet: TradingWallet
+  buy?: LaunchBuy
+  imageUrl: string
+  bannerUrl?: string
+}
+
+/** The fields the three bodies share: the token, the image, and the curve it launches on. */
+function launchFields(args: LaunchBodyArgs): Json {
+  const { flags } = args
+  return {
+    clientLaunchId: args.id,
+    name: flags["--name"],
+    symbol: flags["--symbol"],
+    imageUrl: args.imageUrl,
+    ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
+    ...(flags["--description"] ? { description: flags["--description"] } : {}),
+    ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
+    ...launchCurveFields(flags),
+  }
+}
+
+/** `/launch/self/build` (and its dry run) on Solana: the dev buy rides in the launch transaction. */
+function solanaSelfBody(args: LaunchBodyArgs): Json {
+  const quoteAsset = args.flags["--quote-asset"]
+  return {
+    ...launchFields(args),
+    chain: "solana",
+    buyAmount: args.buy ? args.buy.raw : 0,
+    linkedWalletId: args.wallet.id,
+    ...(quoteAsset ? { quoteAsset } : {}),
+  }
+}
+
+/** `/launch/atomic/build` (and its dry run): this wallet as the creator and the only first buyer, no buyAmount. */
+function atomicBody(args: LaunchBodyArgs & { buy: LaunchBuy }): Json {
+  const payer = { type: "linked", linkedWalletId: args.wallet.id }
+  const quoteAsset = args.flags["--quote-asset"]
+  return {
+    ...launchFields(args),
+    chain: "solana",
+    ...(quoteAsset ? { quoteAsset } : {}),
+    payer,
+    firstBuys: [{ payer, amountRaw: args.buy.raw }],
+  }
+}
+
+/** `/launch/self/build` (and its dry run) on Hood. */
+function hoodBody(args: LaunchBodyArgs): Json {
+  const quoteAsset = args.flags["--quote-asset"]
+  return {
+    ...launchFields(args),
+    chain: "hood",
+    buyAmount: args.buy ? args.buy.raw : 0,
+    linkedWalletId: args.wallet.id,
+    dexVersion: args.flags["--dex-version"],
+    ...(quoteAsset ? { quoteAsset: quoteAsset.toLowerCase() } : {}),
+  }
+}
+
+const previewSchema = z
+  .object({
+    resolved: z.object({ mode: z.string(), quoteAsset: z.string() }).passthrough().optional(),
+    curveTerms: z
+      .object({
+        symbol: z.string(),
+        raise: z.number(),
+        startFdv: z.number(),
+        bondingFdv: z.number(),
+        supplySoldPct: z.number(),
+        firstBuy: z
+          .object({ basis: z.string(), amountRaw: z.string(), supplyPct: z.number() })
+          .passthrough()
+          .optional(),
+        fees: z
+          .object({ curve: z.object({ feeBps: z.number() }), pool: z.object({ feeBps: z.number() }) })
+          .passthrough()
+          .optional(),
+        migration: z
+          .object({ venue: z.string(), poolShape: z.string(), openingPriceStepPct: z.number() })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+    devBuyMax: z.string().nullable().optional(),
+    fills: z
+      .array(z.object({ index: z.number(), amountRaw: z.string(), supplyPct: z.number() }).passthrough())
+      .optional(),
+  })
+  .passthrough()
+
+const percent = (value: number) => `${Number(value.toFixed(4))}%`
+
+/** The dry run's preview in a few lines for stderr; --json reads the whole answer on stdout. Absent fields print nothing. */
+function previewLines(answer: Json, chain: TradeChain): string {
+  const parsed = previewSchema.safeParse(answer)
+  if (!parsed.success) return ""
+  const { resolved, curveTerms: terms, devBuyMax, fills } = parsed.data
+  const quote = (resolved?.quoteAsset ?? (chain === "hood" ? "eth" : "sol")).toUpperCase()
+  const decimals = (chain === "hood" ? HOOD_BASES[quote] : BASES[quote])?.decimals
+  const whole = (raw: string) => (decimals === undefined ? `${raw} raw` : `${shortAmount(raw, decimals)} ${quote}`)
+  const lines: string[] = []
+  if (terms) {
+    lines.push(
+      `Curve${resolved ? ` (${safeText(resolved.mode)})` : ""}: raises ${terms.raise} ${safeText(terms.symbol)}; market cap ${terms.startFdv} at start and ${terms.bondingFdv} at graduation; ${percent(terms.supplySoldPct)} of the supply sold by graduation.`,
+    )
+    if (terms.firstBuy)
+      lines.push(
+        `First buy (${terms.firstBuy.basis === "buyAmount" ? "your --buy" : "a reference buy"}): ${whole(terms.firstBuy.amountRaw)} takes ${percent(terms.firstBuy.supplyPct)} of the supply after the curve fee.`,
+      )
+    if (terms.fees)
+      lines.push(
+        `Fees: ${terms.fees.curve.feeBps / 100}% on the curve, ${terms.fees.pool.feeBps / 100}% in the pool after graduation.`,
+      )
+    if (terms.migration)
+      lines.push(
+        `Graduation: a ${safeText(terms.migration.poolShape)} pool on ${safeText(terms.migration.venue)}, opening ${percent(terms.migration.openingPriceStepPct)} against the curve's last price, its liquidity locked for good.`,
+      )
+  }
+  for (const fill of fills ?? [])
+    lines.push(`First buy ${fill.index}: ${whole(fill.amountRaw)} takes ${percent(fill.supplyPct)} of the supply.`)
+  if (devBuyMax) lines.push(`Dev-buy ceiling: ${whole(devBuyMax)}.`)
+  return lines.length ? `${lines.join("\n")}\n` : ""
+}
+
+/**
+ * `candle launch ... --dry-run` (BE-1806): the body the launch would build, sent to the route's dry
+ * run (`/launch/atomic/dry-run` for a Solana launch with --buy, `/launch/self/dry-run` otherwise),
+ * after this machine's own refusals and the image upload. Nothing is claimed, built, signed or
+ * recorded, and the id stays unused. The upload, with --image, still happens: the dry run checks
+ * the image by its URL.
+ */
+async function dryRunLaunch(
+  ctx: CommandContext,
+  key: string,
+  args: LaunchBodyArgs & { chain: TradeChain; atomic: boolean; used: Json },
+): Promise<number> {
+  const { chain, buy } = args
+  const atomic = args.atomic && buy !== undefined
+  const path = atomic ? "/api/v1/launch/atomic/dry-run" : "/api/v1/launch/self/dry-run"
+  const body = atomic ? atomicBody({ ...args, buy }) : chain === "hood" ? hoodBody(args) : solanaSelfBody(args)
+  const answer = await request(ctx, key, path, body).catch((error) => {
+    throw atomic ? atomicRefusal(error) : buyRefusal(error)
+  })
+  ctx.deps.stderr.write(
+    `Dry run: nothing was built, signed or recorded, and launch id ${args.id} is unused.\n${previewLines(answer, chain)}`,
+  )
+  return printTradingResult(ctx, { ...answer, clientTradeId: args.id, kind: "launch", ...args.used })
 }
 
 // ── BE-1721: a Solana TEE launch with a first buy, as an atomic launch ────────────────────────
@@ -451,6 +652,28 @@ function devBuyCeiling(env: Record<string, string | undefined>, quoteAsset: stri
   return { ceiling: value > 0n ? value : bounds.fallback, unit: bounds.unit }
 }
 
+/** `decimalAmount` without trailing zeros: "0.5" rather than "0.500000000", as the API writes amounts. */
+function shortAmount(raw: string, decimals: number): string {
+  const full = decimalAmount(raw, decimals)
+  return full.includes(".") ? full.replace(/0+$/, "").replace(/\.$/, "") : full
+}
+
+/** The creator's own buy on an exp- curve is at most this share of its threshold G, in basis points. */
+const EXP_DEV_BUY_MAX_THRESHOLD_BPS = 1000n
+/** G of the exp-a, exp-b and exp-c presets, raw: 5 SOL, or 330,000 CNDL (the API's EXP_CURVE_CELLS). */
+const EXP_PRESET_THRESHOLD_RAW: Record<string, bigint> = { sol: 5_000_000_000n, cndl: 330_000_000_000n }
+
+/** An exp- launch's G in raw units: the preset's, or exp-custom's `--curve-g`. Undefined for any other mode. */
+function expThresholdRaw(flags: Record<string, string>, quoteAsset: string): bigint | undefined {
+  const mode = flags["--mode"]
+  if (mode === "exp-custom") {
+    const g = flags["--curve-g"]
+    const decimals = BASES[quoteAsset.toUpperCase()]?.decimals
+    return g === undefined || decimals === undefined ? undefined : BigInt(rawAmount(g, decimals))
+  }
+  return mode === "exp-a" || mode === "exp-b" || mode === "exp-c" ? EXP_PRESET_THRESHOLD_RAW[quoteAsset] : undefined
+}
+
 /**
  * Before the upload and the claim: the dev-buy ceiling (D2, in the API's own words) and the
  * `swap:write` scope the atomic route needs (R6), so a refusal here leaves the id unused.
@@ -463,6 +686,21 @@ function atomicPreflight(
 ): void {
   const quoteAsset = (flags["--quote-asset"] ?? "sol").toLowerCase()
   const { ceiling, unit } = devBuyCeiling(ctx.deps.env, quoteAsset)
+  // BE-1806: an exp- curve's own ceiling, as the API's devBuyCeiling: min(10% of G, the ordinary).
+  const threshold = expThresholdRaw(flags, quoteAsset)
+  if (threshold !== undefined) {
+    const curveCap = (threshold * EXP_DEV_BUY_MAX_THRESHOLD_BPS) / 10_000n
+    const applies = curveCap < ceiling ? curveCap : ceiling
+    if (BigInt(buy.raw) > applies) {
+      const symbol = quoteAsset.toUpperCase()
+      const decimals = BASES[symbol]?.decimals ?? 9
+      throw new TradingError(
+        "DEV_BUY_TOO_HIGH",
+        `buyAmount exceeds this launch's dev-buy ceiling of ${shortAmount(applies.toString(), decimals)} ${symbol} (${applies} ${unit}): at most ${shortAmount(ceiling.toString(), decimals)} ${symbol}, or 10% of the threshold when that is lower`,
+        { details: { field: "buyAmount" } },
+      )
+    }
+  }
   if (BigInt(buy.raw) > ceiling)
     throw new TradingError(
       "DEV_BUY_TOO_HIGH",
@@ -556,21 +794,8 @@ async function atomicLaunch(
       "This machine already started this launch id; no write was resent.",
     )
   ctx.deps.stderr.write(`Operation: ${id}\n`)
-  const payer = { type: "linked", linkedWalletId: wallet.id }
   const built = atomicBuildSchema.parse(
-    await request(ctx, key, "/api/v1/launch/atomic/build", {
-      clientLaunchId: id,
-      chain: "solana",
-      name: flags["--name"],
-      symbol: flags["--symbol"],
-      imageUrl: args.imageUrl,
-      ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
-      ...(flags["--description"] ? { description: flags["--description"] } : {}),
-      ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {}),
-      ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
-      payer,
-      firstBuys: [{ payer, amountRaw: buy.raw }],
-    }).catch((error) => {
+    await request(ctx, key, "/api/v1/launch/atomic/build", atomicBody(args)).catch((error) => {
       throw atomicRefusal(error)
     }),
   )
@@ -776,20 +1001,7 @@ async function hoodLaunch(
       "This machine already started this launch id; no write was resent.",
     )
   ctx.deps.stderr.write(`Operation: ${id}\n`)
-  const built = await request(ctx, key, "/api/v1/launch/self/build", {
-    clientLaunchId: id,
-    chain: "hood",
-    buyAmount: buy ? buy.raw : 0,
-    name: flags["--name"],
-    symbol: flags["--symbol"],
-    imageUrl: args.imageUrl,
-    ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
-    linkedWalletId: wallet.id,
-    dexVersion: flags["--dex-version"],
-    ...(flags["--description"] ? { description: flags["--description"] } : {}),
-    ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"].toLowerCase() } : {}),
-    ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
-  }).catch((error) => {
+  const built = await request(ctx, key, "/api/v1/launch/self/build", hoodBody(args)).catch((error) => {
     throw buyRefusal(error)
   })
   // D4: a Hood TEE wallet signs one leg at a time. An answer without the sequenced envelope is a

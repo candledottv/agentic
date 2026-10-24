@@ -259,6 +259,147 @@ describe("request shapes", () => {
     expect({ launchWallet, launchWalletId }).toEqual({ launchWallet: "LinkedPayer1", launchWalletId: "lw_1" })
   })
 
+  test("BE-1806: exp-custom with curve and creatorFeeBps goes out as typed, and the dry run's resolved block and preview come back typed", async () => {
+    const req: LaunchRequest = {
+      ...LAUNCH_REQ,
+      mode: "exp-custom",
+      curve: { virtualQuote: "4", threshold: "20" },
+      creatorFeeBps: 100,
+      buyAmount: 300_000_000,
+    }
+    const resolved = {
+      chain: "solana",
+      quoteAsset: "sol",
+      mode: "exp-custom",
+      stakerAllocationBps: 500,
+      creatorFeeBps: 100,
+      curve: { virtualQuoteRaw: "4000000000", thresholdRaw: "20000000000" },
+      dexVersion: null,
+      visibility: "production",
+      buyAmount: "300000000",
+    }
+    const wire = {
+      success: true,
+      dryRun: true,
+      launchWallet: "SoLEmbedded1",
+      resolved,
+      curveTerms: {
+        symbol: "SOL",
+        thresholdRaw: "20000000000",
+        raise: 20,
+        startFdv: 4.21,
+        bondingFdv: 151.58,
+        supplySoldPct: 79.17,
+        virtualQuoteRaw: "4000000000",
+        firstBuyRaw: "300000000",
+        firstBuySupplyPct: 6.63,
+        firstBuy: {
+          basis: "buyAmount",
+          amountRaw: "300000000",
+          curveFeeRaw: "6000000",
+          tokensOutRaw: "65000000000000",
+          supplyPct: 6.5,
+        },
+        fees: {
+          curve: { feeBps: 200, fee: 0.02, creatorShare: 0.015, platformShare: 0.005 },
+          pool: { feeBps: 150, fee: 0.015, creatorShare: 0.0125, platformShare: 0.0025 },
+        },
+        migration: {
+          venue: "meteora_damm_v2",
+          poolFeeBps: 150,
+          poolShape: "floor",
+          openingPriceStepPct: 0,
+          lpLock: "permanent",
+        },
+      },
+      devBuyMax: "500000000",
+      checks: { image: "ok" },
+      matrixVersion: 1,
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, wire)])
+    const result = await client.dryRunLaunch(req)
+    expect(JSON.parse(String(calls[0]?.body))).toMatchObject({
+      mode: "exp-custom",
+      curve: { virtualQuote: "4", threshold: "20" },
+      creatorFeeBps: 100,
+    })
+    expect(result.resolved).toEqual(resolved as typeof result.resolved)
+    const creatorFee: 100 | 200 | undefined = result.resolved.creatorFeeBps
+    const devBuyMax: string | null | undefined = result.devBuyMax
+    const step: number | undefined = result.curveTerms?.migration.openingPriceStepPct
+    expect({ creatorFee, devBuyMax, step }).toEqual({ creatorFee: 100, devBuyMax: "500000000", step: 0 })
+    expect(result.curveTerms?.firstBuy.basis).toBe("buyAmount")
+  })
+
+  test("BE-1806: dryRunAtomicLaunch POSTs /api/v1/launch/atomic/dry-run as given and types the fills", async () => {
+    const req: BuildAtomicLaunchRequest = {
+      clientLaunchId: "atomic-dry-1",
+      name: "Trend",
+      symbol: "TREND",
+      imageUrl: "https://example.com/logo.png",
+      mode: "exp-custom",
+      curve: { virtualQuote: "4", threshold: "20" },
+      creatorFeeBps: 100,
+      payer: { type: "main" },
+      firstBuys: [{ payer: { type: "main" }, amountRaw: "100000000" }],
+    }
+    const wire = {
+      success: true,
+      dryRun: true,
+      launchWallet: "SoLEmbedded1",
+      launchSigner: "server",
+      resolved: {
+        chain: "solana",
+        quoteAsset: "sol",
+        mode: "exp-custom",
+        stakerAllocationBps: 500,
+        creatorFeeBps: 100,
+        curve: { virtualQuoteRaw: "4000000000", thresholdRaw: "20000000000" },
+        visibility: "production",
+      },
+      fills: [
+        {
+          index: 1,
+          signer: "server",
+          payerType: "main",
+          wallet: "SoLEmbedded1",
+          amountRaw: "100000000",
+          feeRaw: "0",
+          expectedFill: { amountOutRaw: "23000000000000", minAmountOutRaw: "22770000000000" },
+          supplyPct: 2.3,
+        },
+      ],
+      graduatesInBundle: false,
+      checks: {},
+      matrixVersion: 1,
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, wire)])
+    const result = await client.dryRunAtomicLaunch(req)
+    expect(calls[0]).toEqual({
+      url: "https://api.test/api/v1/launch/atomic/dry-run",
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(req),
+    })
+    const minOut: string | undefined = result.fills[0]?.expectedFill.minAmountOutRaw
+    expect(minOut).toBe("22770000000000")
+    expect(result.resolved.creatorFeeBps).toBe(100)
+    expect(result.graduatesInBundle).toBe(false)
+  })
+
+  test("BE-1806: dryRunAtomicLaunch needs an API key", async () => {
+    const { client } = makeClient({}, [])
+    await expect(
+      client.dryRunAtomicLaunch({
+        name: "T",
+        symbol: "T",
+        imageUrl: "https://x/y.png",
+        payer: { type: "main" },
+        firstBuys: [{ payer: { type: "main" }, amountRaw: "1" }],
+      }),
+    ).rejects.toThrow("dryRunAtomicLaunch()")
+  })
+
   test("BE-860: dryRunSelfLaunch needs an API key", async () => {
     const { client } = makeClient({}, [])
     await expect(client.dryRunSelfLaunch({ ...LAUNCH_REQ, linkedWalletId: "lw_1" })).rejects.toThrow(

@@ -624,9 +624,9 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
     description:
-      "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it is its own transaction, sent with the launch as one Jito bundle (an atomic launch), so the launch and the first buy land together or not at all and the bundle pays a Jito tip; on Hood it is a last leg after the curve and the fee. On Solana it also needs the swap:write scope and a Candle deployment with a Jito block engine. Only configured raw caps and USD limits apply; unset means unlimited and zero still binds. When a USD limit is set, Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path. The image is one of two flags, never both: --image-url <https-url> for one already hosted, or --image <path> for a PNG, JPEG, GIF or WebP file on this machine, at most 10MB. With --image the file is uploaded to Candle first and the launch is made with the URL that comes back, which --json reports as imageUrl. The upload happens before the confirm prompt and cannot be undone: the file becomes public and permanent even if you then decline or the launch fails. Re-running with the same --client-trade-id resumes the launch without uploading again. --image-url takes only an https:// URL. --banner <file|URL> adds a wide banner: an https URL is passed through; a local file uses the same publication notice and 10MB limit, uploaded with kind=banner so it is never cropped. Banners must be wider than 1.5:1. The result reports bannerUrl, and an atomic retry reuses the saved URL.",
+      "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it is its own transaction, sent with the launch as one Jito bundle (an atomic launch), so the launch and the first buy land together or not at all and the bundle pays a Jito tip; on Hood it is a last leg after the curve and the fee. On Solana it also needs the swap:write scope and a Candle deployment with a Jito block engine. Only configured raw caps and USD limits apply; unset means unlimited and zero still binds. When a USD limit is set, Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path. The image is one of two flags, never both: --image-url <https-url> for one already hosted, or --image <path> for a PNG, JPEG, GIF or WebP file on this machine, at most 10MB. With --image the file is uploaded to Candle first and the launch is made with the URL that comes back, which --json reports as imageUrl. The upload happens before the confirm prompt and cannot be undone: the file becomes public and permanent even if you then decline or the launch fails. Re-running with the same --client-trade-id resumes the launch without uploading again. --image-url takes only an https:// URL. --banner <file|URL> adds a wide banner: an https URL is passed through; a local file uses the same publication notice and 10MB limit, uploaded with kind=banner so it is never cropped. Banners must be wider than 1.5:1. The result reports bannerUrl, and an atomic retry reuses the saved URL. --mode picks the curve: open or exclusive (the default tier for the pair), test-open or test-exclusive where the server has ENABLE_TEST_CURVES on, or on Solana with sol or cndl the experimental curves exp-a, exp-b, exp-c and exp-custom. exp-custom takes your own curve: --curve-v <V> (the virtual quote it starts with) and --curve-g <G> (what it raises before graduating), in whole units of the quote asset, within limits Candle checks; it works only where the server has EXP_CUSTOM_CURVES on. --creator-fee-bps 100 or 200 adds an extra creator fee on an exp- mode, paid to the creator in full. On an exp- curve the first buy is at most 0.5 SOL (2,000,000 CNDL), or 10% of the threshold when that is lower. --dry-run sends the launch's body to Candle's dry run and prints the preview (the curve's terms, the first buy's share, the fees, how the pool opens at graduation and the dev-buy ceiling) without building, signing or recording anything; the id stays unused. With --image it still uploads the file, which is public and permanent.",
     usage: [
-      "candle launch --name <name> --symbol <symbol> --image <path>|--image-url <url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4]",
+      "candle launch --name <name> --symbol <symbol> --image <path>|--image-url <url> --wallet <tee> [--banner <file|URL>] [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--dry-run]",
     ],
     rows: [],
     flags: [
@@ -654,12 +654,32 @@ export const HELP: Record<string, Topic> = {
         invocation: "--dex-version v3|v4",
         description: "Hood only, required there: the Uniswap version the curve graduates to",
       },
+      {
+        invocation: "--mode <mode>",
+        description:
+          "open or exclusive; test-open or test-exclusive (ENABLE_TEST_CURVES); exp-a, exp-b, exp-c or exp-custom (Solana, sol or cndl)",
+      },
+      {
+        invocation: "--curve-v <V> --curve-g <G>",
+        description:
+          "exp-custom only, and required there: the curve's virtual quote and threshold, in whole units of the quote asset",
+      },
+      {
+        invocation: "--creator-fee-bps 0|100|200",
+        description: "An exp- mode only: an extra creator fee on the curve and the pool, paid to the creator in full",
+      },
+      {
+        invocation: "--dry-run",
+        description:
+          "Print Candle's preview of this launch, with the dev-buy ceiling (0.5 SOL, or 10% of the threshold when lower, on an exp- curve), and build, sign and record nothing",
+      },
     ],
     examples: [
       "candle launch --name Demo --symbol DEMO --image ./logo.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet HoodAgent --dex-version v4",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --buy 0.1",
+      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --mode exp-custom --curve-v 4 --curve-g 20 --creator-fee-bps 100 --dry-run",
     ],
     env: ENV_API,
   },

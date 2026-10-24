@@ -818,7 +818,7 @@ describe("exp-custom on both launch tools", () => {
       "G 1 to 250 SOL",
       "66,000 to 6,600,000 and 66,000 to 16,500,000 CNDL",
       "(V + 20G)^2 < V x X",
-      "at most 10% of G",
+      "at most 0.5 SOL (2,000,000 CNDL), or 10% of G when that is lower",
       "CURVE_OUT_OF_RANGE",
       "maxThresholdRaw",
     ]) {
@@ -829,6 +829,7 @@ describe("exp-custom on both launch tools", () => {
     expect(rule?.split(". ")).toHaveLength(1)
     expect(rest).toContain("dryRun: true")
     expect(rest).toContain("curveTerms")
+    expect(rest).toContain("devBuyMax")
     expect(rest).toContain("EXP_CUSTOM_CURVES")
   })
 
@@ -869,5 +870,66 @@ describe("exp-custom on both launch tools", () => {
     const { call } = toolsWith(["candle_launch_and_seed"], fetchLike)
     await call("candle_launch_and_seed", { ...BASE, mode: "exp-custom", curve: CURVE, devBuy: "2", dryRun: true })
     expect(bodies).toEqual([{ ...BASE, mode: "exp-custom", curve: CURVE, buyAmount: "2000000000" }])
+  })
+})
+
+/*
+  BE-1806: the same launch inputs on every surface (spec
+  2026-10-23-launch-reliability-and-parity-design.md, section 4). The API is the validator; these
+  tools forward what the HTTP body takes, and relay the dry run's answer verbatim.
+*/
+describe("launch parity (BE-1806)", () => {
+  const BASE = { clientLaunchId: "c1", name: "T", symbol: "T", imageUrl: "https://x/y.png" }
+  const CUSTOM = { mode: "exp-custom", curve: { virtualQuote: "4", threshold: "20" }, creatorFeeBps: 100 }
+  const RESOLVED = {
+    chain: "solana",
+    quoteAsset: "sol",
+    mode: "exp-custom",
+    stakerAllocationBps: 500,
+    creatorFeeBps: 100,
+    curve: { virtualQuoteRaw: "4000000000", thresholdRaw: "20000000000" },
+    dexVersion: null,
+    visibility: "production",
+    buyAmount: "300000000",
+  }
+
+  test("candle_launch_token sends exp-custom with curve and creatorFeeBps, and relays the resolved block", async () => {
+    const sent: { url: string; body: unknown }[] = []
+    const { tools, call } = toolsWith(["candle_launch_token"], async (url, init) => {
+      sent.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      return answer(200, JSON.stringify({ success: true, dryRun: true, resolved: RESOLVED, devBuyMax: "500000000" }))
+    })
+    const schema = z.object(tools.get("candle_launch_token")?.inputSchema as z.ZodRawShape)
+    const args = schema.parse({ ...BASE, ...CUSTOM, buyAmount: "300000000", dryRun: true })
+    const { result, text } = await call("candle_launch_token", args)
+    expect(result.isError).toBeUndefined()
+    expect(sent).toEqual([
+      {
+        url: "https://api.test/api/v1/launch/headless/dry-run",
+        body: { ...BASE, ...CUSTOM, buyAmount: "300000000" },
+      },
+    ])
+    expect(JSON.parse(text).resolved).toEqual(RESOLVED)
+  })
+
+  test("creatorFeeBps takes 0, 100 or 200 and nothing else", () => {
+    const shape = z.object(
+      toolsWith(["candle_launch_token"], async () => answer(200, "{}")).tools.get("candle_launch_token")
+        ?.inputSchema as z.ZodRawShape,
+    )
+    for (const creatorFeeBps of [0, 100, 200])
+      expect(shape.parse({ ...BASE, creatorFeeBps }).creatorFeeBps).toBe(creatorFeeBps)
+    expect(() => shape.parse({ ...BASE, creatorFeeBps: 150 })).toThrow()
+    expect(() => shape.parse({ ...BASE, creatorFeeBps: "100" })).toThrow()
+  })
+
+  test("candle_launch_and_seed forwards creatorFeeBps beside its converted seed", async () => {
+    const bodies: unknown[] = []
+    const { call } = toolsWith(["candle_launch_and_seed"], async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return answer(200, JSON.stringify({ success: true, dryRun: true }))
+    })
+    await call("candle_launch_and_seed", { ...BASE, ...CUSTOM, devBuy: "0.3", dryRun: true })
+    expect(bodies).toEqual([{ ...BASE, ...CUSTOM, buyAmount: "300000000" }])
   })
 })

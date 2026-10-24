@@ -45,6 +45,8 @@ async function fixture(
     prompt?: string
     /** The relay refuses the n-th signature it is asked for (1-based), once. */
     signFailAt?: number
+    /** BE-1806: what either dry run answers, echoing the body's curve fields in `resolved`. */
+    dryRunError?: { status: number; error: Record<string, unknown> }
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "candle-atomic-"))
@@ -88,6 +90,10 @@ async function fixture(
       return built
         ? ok({ success: true, job: { status: opts.jobStatus ?? "built", clientLaunchId: "launch-1" } })
         : ok({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, 404)
+    if (path === "/api/v1/launch/atomic/dry-run" || path === "/api/v1/launch/self/dry-run") {
+      if (opts.dryRunError) return ok({ success: false, error: opts.dryRunError.error }, opts.dryRunError.status)
+      return ok(dryRunAnswer(body, path.includes("atomic")))
+    }
     if (path === "/api/v1/launch/atomic/build") {
       if (opts.buildError) return ok({ success: false, error: opts.buildError.error }, opts.buildError.status)
       built++
@@ -159,6 +165,79 @@ function createFakeStoreWithSigner() {
   // Imported lazily so this file reads top to bottom like swap.test.ts's fixture.
   const { createFakeStore } = require("../test-support") as typeof import("../test-support")
   return createFakeStore({ wallet_signer_wallet: pemToStoredSigner(pem) })
+}
+
+/**
+ * What the API's dry runs answer for a body (BE-1806), in their shape: the resolved block the API
+ * would validate (V and G in raw SOL units), the preview, and the atomic route's fills.
+ */
+function dryRunAnswer(body: Record<string, unknown>, atomic: boolean): Record<string, unknown> {
+  const curve = body.curve as { virtualQuote: string; threshold: string } | undefined
+  const raw = (whole: string) => (BigInt(Math.round(Number(whole) * 1e9)) * 1n).toString()
+  const resolved = {
+    chain: "solana",
+    quoteAsset: String(body.quoteAsset ?? "sol"),
+    mode: String(body.mode ?? "open"),
+    stakerAllocationBps: 500,
+    ...(body.creatorFeeBps ? { creatorFeeBps: body.creatorFeeBps } : {}),
+    ...(curve ? { curve: { virtualQuoteRaw: raw(curve.virtualQuote), thresholdRaw: raw(curve.threshold) } } : {}),
+    visibility: "production",
+    ...(atomic ? {} : { dexVersion: null, buyAmount: String(body.buyAmount ?? "0") }),
+  }
+  return {
+    success: true,
+    dryRun: true,
+    launchWallet: WALLET,
+    resolved,
+    curveTerms: {
+      symbol: "SOL",
+      thresholdRaw: "20000000000",
+      raise: 20,
+      startFdv: 4.21,
+      bondingFdv: 151.58,
+      supplySoldPct: 79.17,
+      virtualQuoteRaw: "4000000000",
+      firstBuyRaw: "1000000000",
+      firstBuySupplyPct: 19,
+      firstBuy: {
+        basis: "reference",
+        amountRaw: "1000000000",
+        curveFeeRaw: "20000000",
+        tokensOutRaw: "186947791164658",
+        supplyPct: 18.6948,
+      },
+      fees: {
+        curve: { feeBps: 200, fee: 0.02, creatorShare: 0.015, platformShare: 0.005 },
+        pool: { feeBps: 150, fee: 0.015, creatorShare: 0.0125, platformShare: 0.0025 },
+      },
+      migration: {
+        venue: "meteora_damm_v2",
+        poolFeeBps: 150,
+        poolShape: "floor",
+        openingPriceStepPct: 0,
+        lpLock: "permanent",
+      },
+    },
+    ...(atomic
+      ? {
+          fills: [
+            {
+              index: 1,
+              signer: "client",
+              payerType: "linked",
+              wallet: WALLET,
+              amountRaw: (body.firstBuys as { amountRaw: string }[])[0]?.amountRaw,
+              feeRaw: "0",
+              expectedFill: { amountOutRaw: "4040404", minAmountOutRaw: "4000000" },
+              supplyPct: 2.1,
+            },
+          ],
+          graduatesInBundle: false,
+        }
+      : { devBuyMax: "500000000" }),
+    checks: { image: "ok" },
+    matrixVersion: 1,
+  }
 }
 
 /** The base58 signature `relaySigned` puts on the n-th signed leg. */
@@ -527,5 +606,124 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     const before = f.calls.length
     expect(await run(buyArgs, f.deps)).toBe(0)
     expect(f.calls.slice(before).some((call) => call.path === "/api/v1/launch/atomic/build")).toBe(true)
+  })
+})
+
+/*
+  BE-1806 (spec 2026-10-23-launch-reliability-and-parity-design.md, section 4): the same launch
+  inputs as HTTP (--curve-v, --curve-g, --creator-fee-bps on every body), and --dry-run, which sends
+  the body the launch would build to that route's dry run and records nothing.
+*/
+describe("BE-1806: launch inputs and --dry-run", () => {
+  const custom = ["--mode", "exp-custom", "--curve-v", "4", "--curve-g", "20", "--creator-fee-bps", "100"]
+  const RESOLVED = {
+    chain: "solana",
+    quoteAsset: "sol",
+    mode: "exp-custom",
+    stakerAllocationBps: 500,
+    creatorFeeBps: 100,
+    curve: { virtualQuoteRaw: "4000000000", thresholdRaw: "20000000000" },
+    visibility: "production",
+  }
+
+  test("candle launch --mode exp-custom --curve-v 4 --curve-g 20 --creator-fee-bps 100 --dry-run prints the preview", async () => {
+    const f = await fixture()
+    expect(await run([...launchArgs, ...custom, "--dry-run"], f.deps)).toBe(0)
+    // The self-signed launch's body, to its dry run, and nothing else: no claim, no build, no signature.
+    expect(writes(f.paths())).toEqual([])
+    expect(f.paths()).not.toContain("/api/v1/launch/headless/jobs/launch-1")
+    const sent = f.calls.find((call) => call.path === "/api/v1/launch/self/dry-run")?.body
+    expect(sent).toEqual({
+      clientLaunchId: "launch-1",
+      chain: "solana",
+      buyAmount: 0,
+      name: "N".repeat(32),
+      symbol: "T".repeat(10),
+      imageUrl: "https://example.test/image.png",
+      linkedWalletId: "wallet",
+      mode: "exp-custom",
+      curve: { virtualQuote: "4", threshold: "20" },
+      creatorFeeBps: 100,
+    })
+    expect(f.operations()).toEqual([])
+    const printed = lastJson(f.stdout.text)
+    expect(printed).toMatchObject({ dryRun: true, clientTradeId: "launch-1", kind: "launch", devBuyMax: "500000000" })
+    expect(printed.resolved).toEqual({ ...RESOLVED, dexVersion: null, buyAmount: "0" })
+    expect(printed.curveTerms.migration.poolShape).toBe("floor")
+    const notes = f.stderr.text
+    expect(notes).toContain("Dry run: nothing was built, signed or recorded, and launch id launch-1 is unused.")
+    expect(notes).toContain("Curve (exp-custom): raises 20 SOL")
+    expect(notes).toContain("First buy (a reference buy): 1 SOL takes 18.6948% of the supply after the curve fee.")
+    expect(notes).toContain("Fees: 2% on the curve, 1.5% in the pool after graduation.")
+    expect(notes).toContain("Graduation: a floor pool on meteora_damm_v2, opening 0% against the curve's last price")
+    expect(notes).toContain("Dev-buy ceiling: 0.5 SOL.")
+  })
+
+  test("--dry-run with --buy goes to the atomic dry run with the atomic build's body, and saves no bundle", async () => {
+    const f = await fixture()
+    expect(await run([...buyArgs, ...custom, "--dry-run"], f.deps)).toBe(0)
+    const payer = { type: "linked", linkedWalletId: "wallet" }
+    expect(f.calls.find((call) => call.path === "/api/v1/launch/atomic/dry-run")?.body).toEqual({
+      clientLaunchId: "launch-1",
+      chain: "solana",
+      name: "N".repeat(32),
+      symbol: "T".repeat(10),
+      imageUrl: "https://example.test/image.png",
+      mode: "exp-custom",
+      curve: { virtualQuote: "4", threshold: "20" },
+      creatorFeeBps: 100,
+      payer,
+      firstBuys: [{ payer, amountRaw: "10000000" }],
+    })
+    expect(writes(f.paths())).toEqual([])
+    expect(f.operations()).toEqual([])
+    expect(lastJson(f.stdout.text).resolved).toEqual(RESOLVED)
+    expect(f.stderr.text).toContain("First buy 1: 0.01 SOL takes 2.1% of the supply.")
+  })
+
+  test("the launch itself carries the same curve fields to /launch/atomic/build", async () => {
+    const f = await fixture()
+    expect(await run([...buyArgs, ...custom], f.deps)).toBe(0)
+    expect(f.calls.find((call) => call.path === "/api/v1/launch/atomic/build")?.body).toMatchObject({
+      mode: "exp-custom",
+      curve: { virtualQuote: "4", threshold: "20" },
+      creatorFeeBps: 100,
+    })
+  })
+
+  test("a dry run the API refuses exits 1 with the API's code, and still records nothing", async () => {
+    const f = await fixture({
+      dryRunError: { status: 400, error: { code: "CURVE_OUT_OF_RANGE", message: "curve.threshold is out of range" } },
+    })
+    expect(await run([...launchArgs, ...custom, "--dry-run"], f.deps)).toBe(1)
+    expect(f.stdout.text + f.stderr.text).toContain("CURVE_OUT_OF_RANGE")
+    expect(f.operations()).toEqual([])
+  })
+
+  test.each([
+    [["--curve-v", "4"], "--curve-v and --curve-g go together"],
+    [["--mode", "open", "--curve-v", "4", "--curve-g", "20"], "--curve-v and --curve-g take --mode exp-custom"],
+    [["--mode", "exp-custom"], "--mode exp-custom needs --curve-v and --curve-g"],
+    [["--mode", "exp-custom", "--curve-v", "4e9", "--curve-g", "20"], "--curve-v takes a whole-unit decimal amount"],
+    [["--mode", "exp-a", "--creator-fee-bps", "150"], "--creator-fee-bps takes 0, 100 or 200"],
+    [["--mode", "open", "--creator-fee-bps", "100"], "--creator-fee-bps takes an exp- --mode"],
+  ])("%p is a usage error before any request", async (extra, message) => {
+    const f = await fixture()
+    expect(await run([...launchArgs, ...extra, "--dry-run"], f.deps)).toBe(2)
+    expect(f.stdout.text + f.stderr.text).toContain(message)
+    expect(f.calls).toEqual([])
+  })
+
+  test("an exp- --buy above 10% of G is refused here in the API's words, before the upload or the claim", async () => {
+    const f = await fixture()
+    const args = [...launchArgs, "--mode", "exp-custom", "--curve-v", "4", "--curve-g", "2", "--buy", "0.3"]
+    expect(await run(args, f.deps)).toBe(1)
+    expect(f.stdout.text + f.stderr.text).toContain(
+      "buyAmount exceeds this launch's dev-buy ceiling of 0.2 SOL (200000000 lamports): at most 0.5 SOL, or 10% of the threshold when that is lower",
+    )
+    expect(writes(f.paths())).toEqual([])
+    const preset = await fixture()
+    expect(await run([...launchArgs, "--mode", "exp-a", "--buy", "0.6"], preset.deps)).toBe(1)
+    expect(preset.stdout.text + preset.stderr.text).toContain("dev-buy ceiling of 0.5 SOL (500000000 lamports)")
   })
 })

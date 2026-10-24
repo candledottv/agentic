@@ -56,8 +56,12 @@ export type Chain = "solana" | "hood";
  * NFT gate; see docs/superpowers/specs/2026-08-04-test-curve-configs-design.md). Test tiers are
  * creatable only where the API's ENABLE_TEST_CURVES flag is on; the server refuses them
  * otherwise, so client code needs no gate of its own.
+ *
+ * Then the experimental fast curves (Solana, SOL or CNDL): the presets `exp-a`, `exp-b` and
+ * `exp-c`, and `exp-custom`, which takes the launcher's own V and G in `curve`. `exp-custom` is
+ * creatable only where the API has EXP_CUSTOM_CURVES on; elsewhere it is refused as an unknown mode.
  */
-export type LaunchTier = "open" | "exclusive" | "test-open" | "test-exclusive";
+export type LaunchTier = "open" | "exclusive" | "test-open" | "test-exclusive" | "exp-a" | "exp-b" | "exp-c" | "exp-custom";
 /**
  * `finalstretch`: pump.fun tokens at 50% or more of their bonding curve, most complete first; no delta, read the whole list.
  * It exists only where the API has it switched on; elsewhere it is refused like an unknown bucket.
@@ -176,6 +180,16 @@ export interface PresetsPayload {
     matrixVersion: number;
     presets: LaunchPreset[];
 }
+/**
+ * `mode: "exp-custom"` only, and required there: the launcher-chosen curve, in WHOLE units of the
+ * quote asset (sol or cndl) as decimal strings, never raw units. `"12"` is 12 SOL.
+ */
+export interface LaunchCurve {
+    /** V: the virtual quote the curve starts with. */
+    virtualQuote: string;
+    /** G: the quote the curve raises before it graduates. */
+    threshold: string;
+}
 /** POST /api/v1/launch/headless request body. The server is the authoritative validator. */
 export interface LaunchRequest {
     /** Idempotency key, unique per account. launch() generates "sdk-" + UUID when absent. */
@@ -183,6 +197,13 @@ export interface LaunchRequest {
     chain?: Chain;
     quoteAsset?: string;
     mode?: LaunchTier;
+    /** `mode: "exp-custom"` only, and required there. Dry-run first: the API checks the limits. */
+    curve?: LaunchCurve;
+    /**
+     * An `exp-` mode only: an extra creator fee of 100 or 200 basis points on top of the curve's 1%
+     * and the pool's 0.5%, paid to the creator in full. 0 is the same as leaving it out.
+     */
+    creatorFeeBps?: 0 | 100 | 200;
     stakerAllocationBps?: number;
     /** Hood only, required there: which Uniswap version the curve graduates through. */
     dexVersion?: "v3" | "v4";
@@ -254,21 +275,94 @@ export interface ConfirmSelfLaunchRequest {
 /** POST /api/v1/launch/self/confirm response. Mirrors LaunchResult. */
 export interface ConfirmSelfLaunchResult extends LaunchResult {
 }
+/**
+ * An `exp-` launch's curve terms, on every launch response of those modes. Display figures from the
+ * closed form, before fees.
+ */
+export interface LaunchCurveTerms extends CurveTerms {
+    /** V in the quote's raw units. */
+    virtualQuoteRaw?: string;
+    /** The first buy `firstBuySupplyPct` prices, raw. */
+    firstBuyRaw?: string;
+    /** That buy's share of the whole supply, before fees, as a percentage. */
+    firstBuySupplyPct?: number;
+}
+/** One venue's fee on a trade of one whole quote unit, in whole quote units. */
+export interface LaunchPreviewFeeLine {
+    feeBps: number;
+    fee: number;
+    /** What the token's earning slot receives: half the base fee, and any extra creator fee in full. */
+    creatorShare: number;
+    /** What the platform receives: the other half of the base fee. */
+    platformShare: number;
+}
+/**
+ * The launch preview a dry run returns as `curveTerms`, on every mode, from servers that have it.
+ * `firstBuyRaw` is the request's own `buyAmount` (a reference buy when it is 0) and
+ * `firstBuySupplyPct` that buy's share before fees.
+ */
+export interface LaunchPreviewTerms extends LaunchCurveTerms {
+    firstBuyRaw: string;
+    firstBuySupplyPct: number;
+    /** The same buy as the curve program fills it from an empty curve. */
+    firstBuy: {
+        basis: "buyAmount" | "reference";
+        amountRaw: string;
+        curveFeeRaw: string;
+        /** Tokens received after the curve fee, raw. */
+        tokensOutRaw: string;
+        supplyPct: number;
+    };
+    fees: {
+        curve: LaunchPreviewFeeLine;
+        pool: LaunchPreviewFeeLine;
+    };
+    migration: {
+        venue: "meteora_damm_v2" | "uniswap_v3" | "uniswap_v4";
+        poolFeeBps: number;
+        /** `floor`: the pool's lower bound is the curve's start price (exp- modes). */
+        poolShape: "full_range" | "floor";
+        /** The pool's opening price against the curve's last price, percent; negative opens below it. */
+        openingPriceStepPct: number;
+        lpLock: "permanent";
+    };
+}
+/** The request as a dry run resolved and validated it. */
+export interface ResolvedLaunch {
+    chain: Chain;
+    quoteAsset: string;
+    mode: LaunchTier;
+    stakerAllocationBps: number;
+    /** Present only when the launch has an extra creator fee. */
+    creatorFeeBps?: 100 | 200;
+    /** `exp-custom` only: the curve as validated and hashed, in the quote's raw units. */
+    curve?: {
+        virtualQuoteRaw: string;
+        thresholdRaw: string;
+    };
+    dexVersion: "v3" | "v4" | null;
+    visibility: string;
+    buyAmount: string;
+}
 /** POST /api/v1/launch/headless/dry-run response. */
 export interface DryRunResult {
     success: true;
     dryRun: true;
     /** Wallet the real launch pays from; null when no wallet is available for the resolved chain. */
     launchWallet: string | null;
-    resolved: {
-        chain: Chain;
-        quoteAsset: string;
-        mode: LaunchTier;
-        stakerAllocationBps: number;
-        dexVersion: "v3" | "v4" | null;
-        visibility: string;
-        buyAmount: string;
-    };
+    resolved: ResolvedLaunch;
+    /**
+     * The launch preview: the curve's terms, the first buy priced on this request's own buyAmount,
+     * the fee lines and the migration terms. Every mode, from servers that have it; an older server
+     * sends it on exp- modes only, as `LaunchCurveTerms`.
+     */
+    curveTerms?: LaunchPreviewTerms;
+    /**
+     * The dev-buy ceiling this launch is held to, in buyAmount's base units: on an exp- curve the
+     * lower of 10% of the threshold and the ordinary ceiling. null for a pair with no dev buy; absent
+     * from older servers.
+     */
+    devBuyMax?: string | null;
     checks: {
         image: string;
         /** `"ok"` when a `bannerUrl` was sent and checked; absent otherwise. */
@@ -318,6 +412,10 @@ export interface LaunchResult {
     quoteAsset: string;
     mode: LaunchTier;
     stakerAllocationBps: number;
+    /** Present only when the launch has an extra creator fee. */
+    creatorFeeBps?: 100 | 200;
+    /** An exp- launch's curve terms; absent on every other mode. */
+    curveTerms?: LaunchCurveTerms;
     matrixVersion: number;
     links: {
         candle: string;
@@ -2732,6 +2830,40 @@ export interface BuildAtomicLaunchResult {
     legs: AtomicBundleResponseLeg[];
     expiresAt: number;
 }
+/** One first buy in an atomic dry run, as `/build` would floor it. */
+export interface AtomicDryRunFill {
+    /** The leg's index in the bundle, 1 to 4. */
+    index: number;
+    signer: AtomicBundleLegSigner;
+    payerType: "main" | "linked";
+    wallet: string;
+    amountRaw: string;
+    /** The agent-tier fee `/build` appends to this leg, raw. */
+    feeRaw: string;
+    /** What `/build`'s leg would carry: the ladder fill, and the floor it signs at. */
+    expectedFill: {
+        amountOutRaw: string;
+        minAmountOutRaw: string;
+    };
+    supplyPct: number;
+}
+/** POST /api/v1/launch/atomic/dry-run response. */
+export interface AtomicDryRunResult {
+    success: true;
+    dryRun: true;
+    /** The wallet that pays for the launch leg. Never checked for balance. */
+    launchWallet: string;
+    launchSigner: AtomicBundleLegSigner;
+    resolved: Omit<ResolvedLaunch, "dexVersion" | "buyAmount">;
+    curveTerms?: LaunchPreviewTerms;
+    fills: AtomicDryRunFill[];
+    /** Whether the first buys alone take the new curve to its threshold inside the bundle. */
+    graduatesInBundle: boolean;
+    checks: {
+        exclusiveEligible?: boolean;
+    };
+    matrixVersion: number;
+}
 /**
  * POST /api/v1/launch/atomic/submit request body: EXACTLY the client-signer legs
  * `BuildAtomicLaunchResult.legs` named (`signer: "client"`), in leg order -- omit every "server"
@@ -3460,6 +3592,16 @@ export declare class CandleClient {
      * before the call when you can.
      */
     buildAtomicLaunch(req: BuildAtomicLaunchRequest): Promise<BuildAtomicLaunchResult>;
+    /**
+     * Atomic launch dry run: the same body as `buildAtomicLaunch()`, the same checks (payers, plan,
+     * the Believer check, each leg's fee and spend limits, the key's transaction cap) and the same
+     * refusals, plus the launch preview and one fill per first buy. Records, reserves and draws
+     * nothing: no day-cap slot, no vanity mint, no spend reservation, and the `clientLaunchId` stays
+     * unused. Does not check balances, the day cap, a `clientLaunchId` already used with another body,
+     * a TEE leg's USD spend window or the transaction's size; `buildAtomicLaunch()` can still refuse
+     * for those. Sends the body as given, like `dryRunLaunch()`: name a `clientLaunchId`.
+     */
+    dryRunAtomicLaunch(req: BuildAtomicLaunchRequest): Promise<AtomicDryRunResult>;
     /**
      * The atomic build request itself. Sets `clientLaunchId` on the result from the request, since
      * the server's body omits it. Shared by buildAtomicLaunch() and launchAtomic(), each of which

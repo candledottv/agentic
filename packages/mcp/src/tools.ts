@@ -102,10 +102,12 @@ export const CUSTOM_CURVE_RULE =
   "quote it starts with) and G (the quote it raises before graduating), in whole SOL or CNDL as decimal strings, " +
   "accepted when V is 1 to 100 SOL and G 1 to 250 SOL (66,000 to 6,600,000 and 66,000 to 16,500,000 CNDL), when " +
   "every price up to 20 x G stays under the ceiling (V + 20G)^2 < V x X at this stakerAllocationBps, when neither " +
-  "is finer than the quote's decimals, and when the dev buy is at most 10% of G; a curve past a limit is " +
+  "is finer than the quote's decimals, and when the dev buy is at most 0.5 SOL (2,000,000 CNDL), or 10% of G when " +
+  "that is lower (every exp- mode; an operator may set the 0.5 SOL lower); a curve past a limit is " +
   "CURVE_OUT_OF_RANGE, and at the ceiling it carries maxThresholdRaw, the largest G that fits. " +
   "Dry-run it first (dryRun: true): the dry run spends nothing and returns curveTerms, the market cap at start and " +
-  "at graduation and the supply sold by graduation. Only where the API has EXP_CUSTOM_CURVES on; " +
+  "at graduation, the supply sold by graduation, the share your own buyAmount takes, the fees and the migration " +
+  "terms, and devBuyMax, the dev-buy ceiling that applies. Only where the API has EXP_CUSTOM_CURVES on; " +
   "elsewhere exp-custom is refused as an unknown mode."
 
 const localProfileTools = new WeakMap<McpServer, Map<ToolName, RegisteredTool>>()
@@ -748,6 +750,7 @@ const launchTokenShape = {
     .describe(
       '"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' +
         "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on. " +
+        '"exp-a", "exp-b" and "exp-c" are the experimental fast Solana curves (sol or cndl). ' +
         '"exp-custom" launches a Solana curve with your own V and G, given in curve, where the API has it ' +
         "switched on",
     ),
@@ -765,6 +768,13 @@ const launchTokenShape = {
     .describe(
       'mode "exp-custom" only, and required there. Decimal strings in whole units of the quote asset (sol or ' +
         "cndl), never raw units. Dry-run first: the API checks the limits and returns the curve's terms",
+    ),
+  creatorFeeBps: z
+    .union([z.literal(0), z.literal(100), z.literal(200)])
+    .optional()
+    .describe(
+      "An exp- mode only: an extra creator fee of 100 or 200 basis points on top of the curve's 1% and the " +
+        "pool's 0.5%, paid to the creator in full. 0 is the same as leaving it out",
     ),
   stakerAllocationBps: z.number().optional().describe("Staker allocation in basis points"),
   dexVersion: z.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
