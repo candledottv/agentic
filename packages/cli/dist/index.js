@@ -37405,7 +37405,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.20";
+var SERVER_VERSION = "0.10.21";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -70488,7 +70488,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.37";
+var CLI_VERSION = "0.11.38";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
