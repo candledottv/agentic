@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { renderTopic, renderTopLevel } from "./help"
 import { run } from "./index"
 import { brandHeader, terminalStyle } from "./presentation"
 import { TERMINAL_TOKENS } from "./terminal-theme"
 import { createCapture, createTestDeps } from "./test-support"
 import { CLI_VERSION } from "./version"
+
+const TUI_BIN = new URL("../../tui/src/bin.tsx", import.meta.url).pathname
 
 const unusedFetch = (() => {
   throw new Error("presentation must not fetch")
@@ -192,22 +195,26 @@ describe("terminal presentation", () => {
     expect(text).toMatch(/Trade +Account/)
     expect(text).toMatch(/Custody, on this machine +Your own services/)
   })
-  test("the standalone TUI rejects a pipe before importing its screen or starting a session", async () => {
-    const child = Bun.spawn([process.execPath, new URL("../../tui/src/bin.tsx", import.meta.url).pathname], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { PATH: process.env.PATH },
-    })
-    child.stdin.end()
-    const [code, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ])
-    expect(code).toBe(1)
-    expect(stdout).toBe("")
-    expect(stderr).toContain("Use candle portfolio or candle help")
-    expect(stderr).not.toContain("\x1b")
-  })
+  // The public agentic export carries the CLI without packages/tui, so the TUI entry is absent there.
+  test.skipIf(!existsSync(TUI_BIN))(
+    "the standalone TUI rejects a pipe before importing its screen or starting a session",
+    async () => {
+      const child = Bun.spawn([process.execPath, TUI_BIN], {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { PATH: process.env.PATH },
+      })
+      child.stdin.end()
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ])
+      expect(code).toBe(1)
+      expect(stdout).toBe("")
+      expect(stderr).toContain("Use candle portfolio or candle help")
+      expect(stderr).not.toContain("\x1b")
+    },
+  )
 })
