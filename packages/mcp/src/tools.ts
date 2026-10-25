@@ -801,7 +801,9 @@ const launchTokenShape = {
     .describe(
       'Solana preset tiers only. "curve_price" opens the pool at the curve\'s last price (the whole reserve is ' +
         "seeded and the remaining base burned); stakerAllocationBps plus the team allocation must fit the tier's limit, " +
-        "which the dry run returns as graduation.maxStakerCarveBps. Omit for legacy",
+        "which the dry run returns as graduation.maxStakerCarveBps. Omitted defaults to curve_price when those " +
+        "allocations fit, otherwise falls back to legacy without refusal. Set legacy explicitly to opt out. " +
+        "Explicit curve_price is refused when the allocations exceed the limit",
     ),
   expPoolShape: z
     .enum(["floor", "full_range"])

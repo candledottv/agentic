@@ -151,7 +151,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.21";
+var SERVER_VERSION = "0.10.22";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -5193,7 +5193,7 @@ var launchTokenShape = {
       minutes: z4.number().positive().max(30)
     }).strict()
   ]).optional().describe("Solana only: the graduated pool's fee. { tier: 25 | 50 | 100 } is a flat fee in bps (default 50), or " + "{ startBps, endBps, minutes } is an anti-snipe fall from startBps (at most 2500, at least endBps) to " + "endBps (25, 50 or 100) over minutes (at most 30). Cannot be combined with creatorFeeBps unless the tier is 50. " + "Omit for the standard 50 bps pool"),
-  poolOpen: z4.enum(["legacy", "curve_price"]).optional().describe(`Solana preset tiers only. "curve_price" opens the pool at the curve's last price (the whole reserve is ` + "seeded and the remaining base burned); stakerAllocationBps plus the team allocation must fit the tier's limit, " + "which the dry run returns as graduation.maxStakerCarveBps. Omit for legacy"),
+  poolOpen: z4.enum(["legacy", "curve_price"]).optional().describe(`Solana preset tiers only. "curve_price" opens the pool at the curve's last price (the whole reserve is ` + "seeded and the remaining base burned); stakerAllocationBps plus the team allocation must fit the tier's limit, " + "which the dry run returns as graduation.maxStakerCarveBps. Omitted defaults to curve_price when those " + "allocations fit, otherwise falls back to legacy without refusal. Set legacy explicitly to opt out. " + "Explicit curve_price is refused when the allocations exceed the limit"),
   expPoolShape: z4.enum(["floor", "full_range"]).optional().describe('Solana exp- curves only. "full_range" opens the pool across the whole price range. Omit for floor'),
   dexVersion: z4.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
   buyAmount: z4.union([z4.string(), z4.number()]).optional().describe("Initial buy, in quote base units (string or number)"),

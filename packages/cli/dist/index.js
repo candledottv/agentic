@@ -37405,7 +37405,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.21";
+var SERVER_VERSION = "0.10.22";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -42935,7 +42935,7 @@ var init_tools = __esm(() => {
         minutes: exports_external.number().positive().max(30)
       }).strict()
     ]).optional().describe("Solana only: the graduated pool's fee. { tier: 25 | 50 | 100 } is a flat fee in bps (default 50), or " + "{ startBps, endBps, minutes } is an anti-snipe fall from startBps (at most 2500, at least endBps) to " + "endBps (25, 50 or 100) over minutes (at most 30). Cannot be combined with creatorFeeBps unless the tier is 50. " + "Omit for the standard 50 bps pool"),
-    poolOpen: exports_external.enum(["legacy", "curve_price"]).optional().describe(`Solana preset tiers only. "curve_price" opens the pool at the curve's last price (the whole reserve is ` + "seeded and the remaining base burned); stakerAllocationBps plus the team allocation must fit the tier's limit, " + "which the dry run returns as graduation.maxStakerCarveBps. Omit for legacy"),
+    poolOpen: exports_external.enum(["legacy", "curve_price"]).optional().describe(`Solana preset tiers only. "curve_price" opens the pool at the curve's last price (the whole reserve is ` + "seeded and the remaining base burned); stakerAllocationBps plus the team allocation must fit the tier's limit, " + "which the dry run returns as graduation.maxStakerCarveBps. Omitted defaults to curve_price when those " + "allocations fit, otherwise falls back to legacy without refusal. Set legacy explicitly to opt out. " + "Explicit curve_price is refused when the allocations exceed the limit"),
     expPoolShape: exports_external.enum(["floor", "full_range"]).optional().describe('Solana exp- curves only. "full_range" opens the pool across the whole price range. Omit for floor'),
     dexVersion: exports_external.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
     buyAmount: exports_external.union([exports_external.string(), exports_external.number()]).optional().describe("Initial buy, in quote base units (string or number)"),
@@ -70590,7 +70590,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.39";
+var CLI_VERSION = "0.11.40";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -71589,7 +71589,7 @@ var HELP = {
       },
       {
         invocation: "--pool-open legacy|curve_price",
-        description: "Solana preset tiers: curve_price opens the pool at the curve's last price and burns the rest; the staker carve plus team allocation must fit the tier's limit (the dry run returns it)"
+        description: "Solana preset tiers: curve_price opens the pool at the curve's last price and burns the rest. Omitted defaults to curve_price when stakerAllocationBps plus the team allocation fit the tier's limit (dry-run graduation.maxStakerCarveBps), otherwise falls back to legacy without refusal. Use --pool-open legacy to opt out. Explicit curve_price is refused above the limit"
       },
       {
         invocation: "--exp-pool-shape floor|full_range",

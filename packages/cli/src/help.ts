@@ -672,7 +672,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "--pool-open legacy|curve_price",
         description:
-          "Solana preset tiers: curve_price opens the pool at the curve's last price and burns the rest; the staker carve plus team allocation must fit the tier's limit (the dry run returns it)",
+          "Solana preset tiers: curve_price opens the pool at the curve's last price and burns the rest. Omitted defaults to curve_price when stakerAllocationBps plus the team allocation fit the tier's limit (dry-run graduation.maxStakerCarveBps), otherwise falls back to legacy without refusal. Use --pool-open legacy to opt out. Explicit curve_price is refused above the limit",
       },
       {
         invocation: "--exp-pool-shape floor|full_range",

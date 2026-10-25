@@ -913,6 +913,22 @@ describe("pool choices on both launch tools", () => {
   const BASE = { clientLaunchId: "c1", name: "T", symbol: "T", imageUrl: "https://x/y.png" }
   const FALL = { startBps: 2500, endBps: 25, minutes: 30 }
 
+  test.each([
+    "candle_launch_token",
+    "candle_launch_and_seed",
+  ])("%s describes the conditional pool opening default", (name) => {
+    const description = tools[name]?.inputSchema.poolOpen?.description
+    expect(description).toContain('Solana preset tiers only. "curve_price"')
+    expect(description).toContain("remaining base burned")
+    expect(description).toContain("stakerAllocationBps plus the team allocation")
+    expect(description).toContain("graduation.maxStakerCarveBps")
+    expect(description).toContain("Omitted defaults to curve_price when those allocations fit")
+    expect(description).toContain("otherwise falls back to legacy without refusal")
+    expect(description).toContain("Set legacy explicitly to opt out")
+    expect(description).toContain("Explicit curve_price is refused when the allocations exceed the limit")
+    expect(description).not.toContain("Omit for legacy")
+  })
+
   test.each(["candle_launch_token", "candle_launch_and_seed"])("%s parses a tier, a fall and each shape", (name) => {
     const schema = z.object(tools[name]?.inputSchema ?? {})
     expect(schema.parse({ ...BASE, poolFee: { tier: 25 }, poolOpen: "curve_price" })).toMatchObject({

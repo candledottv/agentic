@@ -247,7 +247,12 @@ export interface LaunchRequest {
     stakerAllocationBps?: number;
     /** Solana only: the graduated pool's fee. Omitted keeps the flat 50 bps pool. */
     poolFee?: PoolFee;
-    /** Solana preset tiers only: "curve_price" opens the pool at the curve's last price and burns the rest. Omitted is "legacy". */
+    /**
+     * Solana preset tiers only: "curve_price" opens the pool at the curve's last price and burns the rest.
+     * Omitted defaults to "curve_price" when stakerAllocationBps plus the team allocation fit the tier's
+     * limit (dry-run graduation.maxStakerCarveBps), otherwise falls back to "legacy" without refusal.
+     * Set "legacy" explicitly to opt out. Explicit "curve_price" is refused above the limit.
+     */
     poolOpen?: "legacy" | "curve_price";
     /** Solana exp- curves only: "full_range" opens the pool across the whole price range. Omitted is "floor". */
     expPoolShape?: "floor" | "full_range";
@@ -4098,7 +4103,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.6";
+export declare const SDK_VERSION = "0.6.7";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map
