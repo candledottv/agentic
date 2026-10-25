@@ -423,6 +423,63 @@ jobs:
           # The host helper answers its one argv: the compiled helper starts, and its version and
           # protocol are the ones this CLI was built with. It reads no terminal and needs no key.
           ./dist-bin/candle-fido2-linux-x64 --version
+      # The verification negative cases (spec section 11, "Compatibility checks required before
+      # switch"), run with REAL signatures from this run rather than fixtures: the same verifier
+      # every candle carries must refuse each of these. Every case is expected to FAIL; a case that
+      # verifies fails the run. Run on every event, so a rehearsal in either home proves them
+      # against that home's real signing identity before any release is cut.
+      - name: Refuse what must not verify
+        working-directory: packages/cli
+        env:
+          OTHER_HOME: ${{ github.repository == 'candledottv/agentic' && 'candledottv/cli' || 'candledottv/agentic' }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bin=./dist-bin/candle-linux-x64
+          result="${RUNNER_TEMP}/candle-verification.json"
+          this_identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yaml@${GITHUB_REF}"
+          accept() {
+            "$bin" verify "$@" --issuer "${ISSUER}" --json > "$result"
+            jq -e --arg identity "$this_identity" '.ok == true and .identity == $identity' "$result" >/dev/null || {
+              cat "$result"; echo "::error::positive verification control failed"; exit 1;
+            }
+          }
+          refuse() {
+            local label="$1" reason="$2" status=0; shift 2
+            "$bin" verify "$@" --issuer "${ISSUER}" --json > "$result" || status=$?
+            if [ "$status" -ne 1 ] || ! jq -e --arg reason "$reason" \
+              '.ok == false and .code == "SIGNATURE_INVALID" and (.message | contains($reason))' "$result" >/dev/null; then
+              cat "$result"
+              echo "::error::expected a specific verification refusal (exit ${status}): ${label}"; exit 1
+            fi
+            echo "refused, as it must be: ${label}"
+          }
+          f=dist-bin/candle-linux-x64
+          # The same binary, bundle and issuer must first verify under their real identity.
+          # A crashing verifier or an unreadable input cannot turn the whole matrix green.
+          accept "$f" --bundle "$f.sigstore.json" --identity "$this_identity"
+          identity_mismatch="certificate identity error - expected "
+          digest_mismatch="the bundle's message digest does not match the file"
+          refuse "the other home's identity (${OTHER_HOME})" "$identity_mismatch" "$f" --bundle "$f.sigstore.json" \
+            --identity "https://github.com/${OTHER_HOME}/.github/workflows/release.yaml@${GITHUB_REF}"
+          refuse "another workflow in this repository" "$identity_mismatch" "$f" --bundle "$f.sigstore.json" \
+            --identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yaml@${GITHUB_REF}"
+          refuse "another tag (cli-v0.0.1)" "$identity_mismatch" "$f" --bundle "$f.sigstore.json" \
+            --identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yaml@refs/tags/cli-v0.0.1"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            # A rehearsal's signature names a branch: it can never pass as this version's release.
+            refuse "a rehearsal signature presented as cli-v${VERSION}" "$identity_mismatch" "$f" --bundle "$f.sigstore.json" \
+              --identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yaml@refs/tags/cli-v${VERSION}"
+          fi
+          refuse "a substituted platform asset (linux-arm64 bytes, linux-x64 bundle)" "$digest_mismatch" dist-bin/candle-linux-arm64 \
+            --bundle "$f.sigstore.json" --identity "$this_identity"
+          refuse "the helper's bytes under the binary's bundle" "$digest_mismatch" dist-bin/candle-fido2-linux-x64 \
+            --bundle "$f.sigstore.json" --identity "$this_identity"
+          tampered="${RUNNER_TEMP}/candle-linux-x64.tampered"
+          cp "$f" "$tampered" && printf '\0' >> "$tampered"
+          refuse "a file whose checksum no longer matches its signature" "$digest_mismatch" "$tampered" \
+            --bundle "$f.sigstore.json" --identity "$this_identity"
+          rm -f "$tampered"
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |
