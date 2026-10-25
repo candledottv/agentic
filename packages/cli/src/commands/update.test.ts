@@ -13,12 +13,14 @@ import { createHash } from "node:crypto"
 import type { Deps } from "../deps"
 import { run } from "../index"
 import { formatBytes } from "../progress"
-import { RELEASE_ISSUER } from "../release"
+import { BRIDGE_VERSION, RELEASE_ISSUER } from "../release"
 import { createCapture, createRoutedFetch, createTestDeps, jsonResponse, type RouteHandler } from "../test-support"
 import { CLI_VERSION } from "../version"
-import { SIGNATURE_VERIFIED } from "./update"
+import { SIGNATURE_VERIFIED, update } from "./update"
 
-const NEWER = "99.0.0"
+/** The newest release a binary below the bridge can reach is the bridge itself: everything later is
+ * released from the other home, which these binaries never read (the bridge tests below). */
+const NEWER = BRIDGE_VERSION
 const BINARY = new TextEncoder().encode("#!/bin/sh\necho new\n")
 const HELPER_BYTES = new TextEncoder().encode("#!/bin/sh\necho candle-fido2 new\n")
 const HELPER_ASSET = "candle-fido2-linux-x64"
@@ -600,5 +602,179 @@ describe("BE-275: update installs the security key helper", () => {
     expect(envelope.message).toContain(`candle ${NEWER} was installed to /home/u/.local/bin/candle`)
     expect(envelope.message).toContain(HELPER_PATH)
     expect(unlinks).toHaveLength(1)
+  })
+})
+
+/**
+ * The bridge (spec 2026-10-23-candle-github, section 9). Versions through BRIDGE_VERSION are
+ * released from agentic, later ones from cli, and which home a binary reads and which identity a
+ * signature must carry follow from the version alone. These run with NO base-URL override, so the
+ * path a request takes names the home it went to.
+ *
+ * `update` is called directly here rather than through `run`, because the version under test is
+ * the point: the same code running as B, as a release after it, and as one before it.
+ */
+describe("the release bridge", () => {
+  const [major, minor] = BRIDGE_VERSION.split(".").map(Number)
+  const AFTER = `${major}.${(minor ?? 0) + 1}.0`
+  const BEFORE = "0.11.10"
+  const AGENTIC = "/candledottv/agentic"
+  const CLI = "/candledottv/cli"
+
+  // `--json` is a global flag that dispatch strips, so these pass it as `ctx.json` (jsonCtx).
+
+  /** One release's routes under one home's path. */
+  function releaseAt(home: string, version: string, manifestOverride: Record<string, unknown> = {}) {
+    const sum = sha256(BINARY)
+    const manifest = {
+      version,
+      tag: `cli-v${version}`,
+      assets: { "linux-x64": { name: "candle-linux-x64", sha256: sum, size: BINARY.length } },
+      ...manifestOverride,
+    }
+    const tag = `cli-v${version}`
+    return {
+      latest: { [`${home}/releases/latest/download/latest.json`]: () => jsonResponse(200, manifest) },
+      pinned: { [`${home}/releases/download/${tag}/latest.json`]: () => jsonResponse(200, manifest) },
+      assets: {
+        [`${home}/releases/download/${tag}/candle-linux-x64`]: () => new Response(BINARY),
+        [`${home}/releases/download/${tag}/SHA256SUMS`]: () => new Response(`${sum}  candle-linux-x64\n`),
+        [`${home}/releases/download/${tag}/candle-linux-x64.sigstore.json`]: () => jsonResponse(200, { fixture: true }),
+      } as Record<string, RouteHandler>,
+    }
+  }
+
+  function bridgeDeps(routes: Record<string, RouteHandler>) {
+    const routed = createRoutedFetch(routes)
+    const identities: string[] = []
+    const made = binaryDeps(routed.fetch, {
+      env: {},
+      verify: (_bytes, _bundle, identityUri) => {
+        identities.push(identityUri)
+        return { ok: true }
+      },
+    })
+    const ctx = { deps: made.deps, json: false, apiUrl: "https://api.example.test", verifyAccount: true }
+    return { ...made, ...routed, identities, ctx, jsonCtx: { ...ctx, json: true } }
+  }
+
+  test("B reads the new home, reaches N, and checks N against cli's identity", async () => {
+    const n = releaseAt(CLI, AFTER)
+    const t = bridgeDeps({ ...n.latest, ...n.assets })
+    expect(await update([], t.ctx, BRIDGE_VERSION)).toBe(0)
+    expect(t.stdout.text).toContain(`Updated candle ${BRIDGE_VERSION} -> ${AFTER}`)
+    expect(t.identities).toEqual([
+      `https://github.com/candledottv/cli/.github/workflows/release.yaml@refs/tags/cli-v${AFTER}`,
+    ])
+    expect(paths(t.calls).every((path) => path.startsWith(`${CLI}/`))).toBe(true)
+    expect(t.renames).toHaveLength(1)
+  })
+
+  test("a binary before B still reads agentic and reaches B under agentic's identity", async () => {
+    const b = releaseAt(AGENTIC, BRIDGE_VERSION)
+    const t = bridgeDeps({ ...b.latest, ...b.assets })
+    expect(await update([], t.ctx, BEFORE)).toBe(0)
+    expect(t.identities).toEqual([
+      `https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${BRIDGE_VERSION}`,
+    ])
+    expect(paths(t.calls).every((path) => path.startsWith(`${AGENTIC}/`))).toBe(true)
+  })
+
+  test("B before N exists says so, leaves itself installed, and never falls back to agentic", async () => {
+    const t = bridgeDeps({ [`${CLI}/releases/latest/download/latest.json`]: () => new Response("", { status: 404 }) })
+    expect(await update([], t.ctx, BRIDGE_VERSION)).toBe(0)
+    expect(t.stdout.text).toContain(`candle ${BRIDGE_VERSION} is the final release from candledottv/agentic`)
+    expect(t.stdout.text).toContain("Nothing was changed")
+    expect(t.writes).toHaveLength(0)
+    expect(t.renames).toHaveLength(0)
+    expect(t.unmatched).toHaveLength(0)
+    expect(paths(t.calls)).toEqual([`${CLI}/releases/latest/download/latest.json`])
+
+    const j = bridgeDeps({ [`${CLI}/releases/latest/download/latest.json`]: () => new Response("", { status: 404 }) })
+    expect(await update(["--check"], j.jsonCtx, BRIDGE_VERSION)).toBe(0)
+    expect(JSON.parse(j.stdout.text)).toEqual({
+      current: BRIDGE_VERSION,
+      latest: null,
+      updated: false,
+      path: "/home/u/.local/bin/candle",
+      pending: "candledottv/cli",
+    })
+  })
+
+  test("only B treats a missing new home as the expected gap; a network failure is still a failure", async () => {
+    const offline = bridgeDeps({})
+    expect(await update([], offline.jsonCtx, BRIDGE_VERSION)).toBe(1)
+    expect(JSON.parse(offline.stdout.text).code).toBe("UPDATE_UNREACHABLE")
+    expect(paths(offline.calls)).toEqual([`${CLI}/releases/latest/download/latest.json`])
+
+    const later = bridgeDeps({
+      [`${CLI}/releases/latest/download/latest.json`]: () => new Response("", { status: 404 }),
+    })
+    expect(await update([], later.jsonCtx, AFTER)).toBe(1)
+    expect(JSON.parse(later.stdout.text).code).toBe("UPDATE_UNREACHABLE")
+  })
+
+  test("a home serving the other home's version is refused before anything downloads", async () => {
+    // cli claiming a legacy version: a manifest cannot move a version to the other signer.
+    const legacyInCli = releaseAt(CLI, BRIDGE_VERSION)
+    const a = bridgeDeps({ ...legacyInCli.latest, ...legacyInCli.assets })
+    expect(await update([], a.jsonCtx, BRIDGE_VERSION)).toBe(1)
+    expect(JSON.parse(a.stdout.text).code).toBe("MANIFEST_INVALID")
+    expect(JSON.parse(a.stdout.text).message).toContain(
+      `${BRIDGE_VERSION} is released from candledottv/agentic, not candledottv/cli`,
+    )
+    expect(a.calls).toHaveLength(1)
+    // ...and agentic claiming a later one, which a pre-B binary would otherwise check against the
+    // cli identity it never meant to trust from there.
+    const laterInAgentic = releaseAt(AGENTIC, AFTER)
+    const b = bridgeDeps({ ...laterInAgentic.latest, ...laterInAgentic.assets })
+    expect(await update([], b.jsonCtx, BEFORE)).toBe(1)
+    expect(JSON.parse(b.stdout.text).code).toBe("MANIFEST_INVALID")
+    expect(b.calls).toHaveLength(1)
+    expect(b.writes).toHaveLength(0)
+  })
+
+  test("a manifest whose tag does not name its version is refused", async () => {
+    const r = releaseAt(CLI, AFTER, { tag: "cli-v9.9.9" })
+    const t = bridgeDeps({ ...r.latest, ...r.assets })
+    expect(await update([], t.jsonCtx, BRIDGE_VERSION)).toBe(1)
+    expect(JSON.parse(t.stdout.text).code).toBe("MANIFEST_INVALID")
+    expect(t.writes).toHaveLength(0)
+  })
+
+  test("--to resolves a historical tag to agentic and a later one to cli, by version", async () => {
+    const old = releaseAt(AGENTIC, BEFORE)
+    const fromN = bridgeDeps({ ...old.pinned, ...old.assets })
+    expect(await update(["--to", `cli-v${BEFORE}`], fromN.ctx, AFTER)).toBe(0)
+    expect(fromN.stderr.text).toContain(`${BEFORE} is a downgrade from ${AFTER}`)
+    expect(fromN.identities).toEqual([
+      `https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${BEFORE}`,
+    ])
+    expect(paths(fromN.calls).every((path) => path.startsWith(`${AGENTIC}/`))).toBe(true)
+
+    const next = releaseAt(CLI, AFTER)
+    const fromOld = bridgeDeps({ ...next.pinned, ...next.assets })
+    expect(await update(["--to", `cli-v${AFTER}`], fromOld.ctx, BEFORE)).toBe(0)
+    expect(fromOld.identities).toEqual([
+      `https://github.com/candledottv/cli/.github/workflows/release.yaml@refs/tags/cli-v${AFTER}`,
+    ])
+    expect(paths(fromOld.calls).every((path) => path.startsWith(`${CLI}/`))).toBe(true)
+  })
+
+  test("--to takes only cli-v<three numbers>, and the manifest must describe the pinned tag", async () => {
+    for (const bad of ["0.11.10", "cli-v0.11", "cli-v0.11.10-rc1", "v0.11.10", "cli-vx|"]) {
+      const t = bridgeDeps({})
+      expect(await update(["--to", bad], t.ctx, BRIDGE_VERSION)).toBe(2)
+      expect(t.calls).toHaveLength(0)
+    }
+    const swapped = releaseAt(AGENTIC, BEFORE)
+    const t = bridgeDeps({
+      [`${AGENTIC}/releases/download/cli-v0.11.11/latest.json`]: () =>
+        jsonResponse(200, { version: BEFORE, tag: `cli-v${BEFORE}`, assets: {} }),
+      ...swapped.assets,
+    })
+    expect(await update(["--to", "cli-v0.11.11"], t.jsonCtx, BRIDGE_VERSION)).toBe(1)
+    expect(JSON.parse(t.stdout.text).code).toBe("MANIFEST_INVALID")
+    expect(t.writes).toHaveLength(0)
   })
 })

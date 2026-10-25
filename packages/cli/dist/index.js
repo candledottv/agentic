@@ -19050,14 +19050,59 @@ var init_protocol = __esm(() => {
   PASSKEY_ASSOCIATED_DOMAIN = `webcredentials:${PASSKEY_RP_ID}`;
 });
 
+// release-homes.json
+var release_homes_default;
+var init_release_homes = __esm(() => {
+  release_homes_default = {
+    note: "Where each CLI version is released from (spec docs/superpowers/specs/2026-10-23-candle-github-spec.md, section 9). Versions up to and including bridgeVersion are released, signed and verified in `legacy`; every later version in `current`. src/release.ts compiles this in, install.sh carries the same three values (a drift test holds them equal), release.yaml refuses a tag pushed in the wrong home, and sync-agentic.yaml never tags a version above bridgeVersion. Change it only together with a release plan.",
+    bridgeVersion: "0.12.0",
+    legacy: "candledottv/agentic",
+    current: "candledottv/cli"
+  };
+});
+
 // src/release.ts
 function isPlainVersion(value) {
   return VERSION.test(value);
 }
-function releaseIdentityUri(version) {
+function parseReleaseHomes(value) {
+  const homes = value;
+  const { bridgeVersion, legacy, current } = homes ?? {};
+  if (typeof bridgeVersion !== "string" || !VERSION.test(bridgeVersion)) {
+    throw new Error("release-homes.json: bridgeVersion must be three dot-separated numbers");
+  }
+  if (typeof legacy !== "string" || !REPOSITORY.test(legacy))
+    throw new Error("release-homes.json: bad legacy");
+  if (typeof current !== "string" || !REPOSITORY.test(current))
+    throw new Error("release-homes.json: bad current");
+  if (legacy === current)
+    throw new Error("release-homes.json: legacy and current must differ");
+  return { bridgeVersion, legacy, current };
+}
+function homeRepository(home) {
+  return home === "legacy" ? LEGACY_RELEASE_REPOSITORY : CURRENT_RELEASE_REPOSITORY;
+}
+function homeUrl(home) {
+  return `https://github.com/${homeRepository(home)}`;
+}
+function identityRegex(home) {
+  return `^https://github.com/${homeRepository(home)}/\\.github/workflows/release\\.yaml@refs/tags/cli-v`;
+}
+function releaseHomeFor(version) {
   if (!VERSION.test(version))
     throw new Error(`invalid release version: ${version}`);
-  return `https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${version}`;
+  return compareVersions(version, BRIDGE_VERSION) <= 0 ? "legacy" : "current";
+}
+function updateHomeFor(current) {
+  return compareVersions(current, BRIDGE_VERSION) < 0 ? "legacy" : "current";
+}
+function releaseIdentityUri(version) {
+  const home = releaseHomeFor(version);
+  return `https://github.com/${homeRepository(home)}/.github/workflows/release.yaml@refs/tags/cli-v${version}`;
+}
+function versionOfTag(tag) {
+  const match = /^cli-v(\d+\.\d+\.\d+)$/.exec(tag);
+  return match ? match[1] ?? null : null;
 }
 function compareVersions(a, b) {
   const pa = a.split(".").map((n) => Number.parseInt(n, 10) || 0);
@@ -19107,8 +19152,14 @@ async function fetchLatest(deps, baseUrl) {
       message: `Could not reach ${latestUrl(baseUrl)}: ${error instanceof Error ? error.message : String(error)}`
     };
   }
-  if (!res.ok)
-    return { ok: false, kind: "unreachable", message: `${latestUrl(baseUrl)} answered ${res.status}` };
+  if (!res.ok) {
+    return {
+      ok: false,
+      kind: "unreachable",
+      message: `${latestUrl(baseUrl)} answered ${res.status}`,
+      status: res.status
+    };
+  }
   let body;
   try {
     body = await res.json();
@@ -19126,7 +19177,7 @@ async function fetchPinned(deps, base, tag) {
   try {
     const res = await deps.fetch(url, { redirect: "follow" });
     if (!res.ok)
-      return { ok: false, kind: "unreachable", message: `${url} answered ${res.status}` };
+      return { ok: false, kind: "unreachable", message: `${url} answered ${res.status}`, status: res.status };
     const manifest = await res.json();
     const missing = [
       typeof manifest.version === "string" ? null : "version",
@@ -19145,13 +19196,39 @@ async function fetchPinned(deps, base, tag) {
     };
   }
 }
-function releaseBaseUrl(env) {
+function releaseBaseUrl(env, home = "legacy") {
   const override = env.CANDLE_RELEASE_BASE_URL?.trim();
-  return override ? override.replace(/\/$/, "") : RELEASE_BASE_URL;
+  return override ? override.replace(/\/$/, "") : homeUrl(home);
 }
-var RELEASE_BASE_URL = "https://github.com/candledottv/agentic", RELEASE_ISSUER = "https://token.actions.githubusercontent.com", VERSION;
+function manifestHomeMismatch(manifest, home, pinnedTag) {
+  let versionHome;
+  try {
+    versionHome = releaseHomeFor(manifest.version);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  if (manifest.tag !== `cli-v${manifest.version}`) {
+    return `the manifest's tag ${manifest.tag} does not name its version ${manifest.version}`;
+  }
+  if (pinnedTag !== undefined && manifest.tag !== pinnedTag) {
+    return `asked for ${pinnedTag}, the manifest describes ${manifest.tag}`;
+  }
+  if (versionHome !== home) {
+    return `${manifest.version} is released from ${homeRepository(versionHome)}, not ${homeRepository(home)}`;
+  }
+  return null;
+}
+var VERSION, REPOSITORY, HOMES, BRIDGE_VERSION, LEGACY_RELEASE_REPOSITORY, CURRENT_RELEASE_REPOSITORY, RELEASE_ISSUER = "https://token.actions.githubusercontent.com", RELEASE_BASE_URL, RELEASE_IDENTITY_REGEX;
 var init_release = __esm(() => {
+  init_release_homes();
   VERSION = /^\d+\.\d+\.\d+$/;
+  REPOSITORY = /^candledottv\/[a-z0-9-]+$/;
+  HOMES = parseReleaseHomes(release_homes_default);
+  BRIDGE_VERSION = HOMES.bridgeVersion;
+  LEGACY_RELEASE_REPOSITORY = HOMES.legacy;
+  CURRENT_RELEASE_REPOSITORY = HOMES.current;
+  RELEASE_BASE_URL = homeUrl("legacy");
+  RELEASE_IDENTITY_REGEX = identityRegex("legacy");
 });
 
 // ../../node_modules/@noble/curves/esm/nist.js
@@ -70590,7 +70667,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.40";
+var CLI_VERSION = "0.11.41";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -80758,7 +80835,7 @@ async function doctor(args, ctx) {
   const method = detectInstall(deps.execPath, realExec);
   const installDetail = method === "binary" ? `binary at ${deps.execPath}` : method === "homebrew" ? `Homebrew (${realExec})` : `script (${deps.execPath}); update with npm`;
   rows.push({ check: "Install", state: "PASS", detail: installDetail });
-  const latest = await fetchLatest(deps, releaseBaseUrl(deps.env));
+  const latest = await fetchLatest(deps, releaseBaseUrl(deps.env, updateHomeFor(CLI_VERSION)));
   const helper = await locateFido2Helper(deps);
   const declaredHelper = latest.ok && deps.platformKey ? latest.manifest.helpers?.[deps.platformKey] : undefined;
   if (helper.state === "ready") {
@@ -95746,7 +95823,7 @@ init_render();
 init_fido2();
 var SIGNATURE_VERIFIED = "signature verified (Sigstore, keyless; signer pinned to the release workflow)";
 var INSTALLER_LINE = "curl -fsSL https://candle.tv/install.sh | bash";
-async function update(args, ctx) {
+async function update(args, ctx, current = CLI_VERSION) {
   let __stack = [];
   try {
     const { deps, json } = ctx;
@@ -95761,11 +95838,16 @@ async function update(args, ctx) {
     }
     const check = parsed.booleans.has("--check");
     const pinned = parsed.values["--to"];
+    const pinnedVersion = pinned === undefined ? undefined : versionOfTag(pinned);
+    if (pinned !== undefined && pinnedVersion === null) {
+      writeUsageFailure(deps, `--to takes a release tag such as cli-v${current}, not ${pinned}`, json);
+      return 2;
+    }
     const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath);
     const method = detectInstall(deps.execPath, realExec);
     if (method === "homebrew") {
       if (json) {
-        const payload = { current: CLI_VERSION, latest: null, updated: false, path: realExec, method };
+        const payload = { current, latest: null, updated: false, path: realExec, method };
         deps.stdout.write(`${JSON.stringify(payload)}
 `);
       } else {
@@ -95776,7 +95858,7 @@ async function update(args, ctx) {
     }
     if (method === "script") {
       if (json) {
-        const payload = { current: CLI_VERSION, latest: null, updated: false, path: realExec, method };
+        const payload = { current, latest: null, updated: false, path: realExec, method };
         deps.stdout.write(`${JSON.stringify(payload)}
 `);
       } else {
@@ -95785,8 +95867,21 @@ async function update(args, ctx) {
       }
       return 0;
     }
-    const base2 = releaseBaseUrl(deps.env);
+    const home = pinned && pinnedVersion ? releaseHomeFor(pinnedVersion) : updateHomeFor(current);
+    const base2 = releaseBaseUrl(deps.env, home);
     const fetched = pinned ? await fetchPinned(deps, base2, pinned) : await fetchLatest(deps, base2);
+    if (!fetched.ok && !pinned && fetched.status === 404 && compareVersions(current, BRIDGE_VERSION) === 0) {
+      const message = `candle ${current} is the final release from ${homeRepository("legacy")}. Later releases come from ${homeRepository("current")}, which has not published one yet. Nothing was changed.`;
+      if (json) {
+        const payload = { current, latest: null, updated: false, path: realExec, pending: homeRepository("current") };
+        deps.stdout.write(`${JSON.stringify(payload)}
+`);
+      } else {
+        deps.stdout.write(`${message}
+`);
+      }
+      return 0;
+    }
     if (!fetched.ok) {
       const code = fetched.kind === "invalid" ? "MANIFEST_INVALID" : "UPDATE_UNREACHABLE";
       writeLocalFailure(deps, { code, message: fetched.message }, json);
@@ -95795,6 +95890,9 @@ async function update(args, ctx) {
     const target = fetched.manifest;
     let identityUri;
     try {
+      const mismatch = manifestHomeMismatch(target, home, pinned);
+      if (mismatch !== null)
+        throw new Error(mismatch);
       identityUri = releaseIdentityUri(target.version);
     } catch (error) {
       writeLocalFailure(deps, {
@@ -95804,34 +95902,34 @@ async function update(args, ctx) {
       }, json);
       return 1;
     }
-    const order = compareVersions(CLI_VERSION, target.version);
+    const order = compareVersions(current, target.version);
     if (check) {
       if (json) {
-        const payload = { current: CLI_VERSION, latest: target.version, updated: false, path: realExec };
+        const payload = { current, latest: target.version, updated: false, path: realExec };
         deps.stdout.write(`${JSON.stringify(payload)}
 `);
       } else if (order < 0) {
-        deps.stdout.write(`candle ${CLI_VERSION}; ${target.version} available. Run: candle update
+        deps.stdout.write(`candle ${current}; ${target.version} available. Run: candle update
 `);
       } else {
-        deps.stdout.write(`candle ${CLI_VERSION} is up to date (latest ${target.version})
+        deps.stdout.write(`candle ${current} is up to date (latest ${target.version})
 `);
       }
       return 0;
     }
     if (order === 0 || order > 0 && !pinned) {
       if (json) {
-        const payload = { current: CLI_VERSION, latest: target.version, updated: false, path: realExec };
+        const payload = { current, latest: target.version, updated: false, path: realExec };
         deps.stdout.write(`${JSON.stringify(payload)}
 `);
       } else {
-        deps.stdout.write(`candle ${CLI_VERSION} is up to date
+        deps.stdout.write(`candle ${current} is up to date
 `);
       }
       return 0;
     }
     if (order > 0 && pinned)
-      deps.stderr.write(`Warning: ${target.version} is a downgrade from ${CLI_VERSION}
+      deps.stderr.write(`Warning: ${target.version} is a downgrade from ${current}
 `);
     if (!deps.platformKey) {
       writeLocalFailure(deps, {
@@ -95871,7 +95969,7 @@ async function update(args, ctx) {
     const steps = __using(__stack, commandSteps(ctx), 0);
     if (!json) {
       const total = asset.size + (helperAsset?.size ?? 0);
-      deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version} (${formatBytes(total)})
+      deps.stderr.write(`Updating candle ${current} -> ${target.version} (${formatBytes(total)})
 `);
     }
     steps.start("downloading SHA256SUMS");
@@ -95953,7 +96051,7 @@ async function update(args, ctx) {
     const helperReport2 = helper !== null ? { name: HELPER_NAME, updated: true } : null;
     if (json) {
       const payload = {
-        current: CLI_VERSION,
+        current,
         latest: target.version,
         updated: true,
         path: realExec,
@@ -95962,7 +96060,7 @@ async function update(args, ctx) {
       deps.stdout.write(`${JSON.stringify(payload)}
 `);
     } else {
-      deps.stdout.write(`Updated candle ${CLI_VERSION} -> ${target.version}
+      deps.stdout.write(`Updated candle ${current} -> ${target.version}
 `);
       if (helper !== null)
         deps.stdout.write(`Installed ${HELPER_NAME} ${target.version} to ${helper.target}
@@ -97194,7 +97292,8 @@ async function installHelperForThisRelease(ctx) {
     }
     if (!deps.platformKey)
       return { ok: false, message: "this CLI ships no security key helper for this platform" };
-    const base2 = releaseBaseUrl(deps.env);
+    const home = releaseHomeFor(CLI_VERSION);
+    const base2 = releaseBaseUrl(deps.env, home);
     const tag = `cli-v${CLI_VERSION}`;
     const name2 = helperAssetName(deps.platformKey);
     const steps = __using(__stack, commandSteps(ctx), 0);
@@ -97203,6 +97302,11 @@ async function installHelperForThisRelease(ctx) {
     if (!fetched.ok) {
       steps.fail(`reading the ${tag} release manifest`);
       return { ok: false, message: fetched.message };
+    }
+    const mismatch = manifestHomeMismatch(fetched.manifest, home, tag);
+    if (mismatch !== null) {
+      steps.fail(`reading the ${tag} release manifest`);
+      return { ok: false, message: `refusing the ${tag} release manifest: ${mismatch}` };
     }
     const asset = fetched.manifest.helpers?.[deps.platformKey];
     if (asset === undefined) {

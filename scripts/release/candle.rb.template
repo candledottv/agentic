@@ -14,22 +14,22 @@ class Candle < Formula
     depends_on macos: :ventura
 
     on_arm do
-      url "https://github.com/candledottv/agentic/releases/download/cli-v__VERSION__/candle-__VERSION__-darwin-arm64.tar.gz"
+      url "https://github.com/__RELEASE_REPOSITORY__/releases/download/cli-v__VERSION__/candle-__VERSION__-darwin-arm64.tar.gz"
       sha256 "__SHA_darwin_arm64__"
     end
     on_intel do
-      url "https://github.com/candledottv/agentic/releases/download/cli-v__VERSION__/candle-__VERSION__-darwin-x64.tar.gz"
+      url "https://github.com/__RELEASE_REPOSITORY__/releases/download/cli-v__VERSION__/candle-__VERSION__-darwin-x64.tar.gz"
       sha256 "__SHA_darwin_x64__"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/candledottv/agentic/releases/download/cli-v__VERSION__/candle-__VERSION__-linux-arm64.tar.gz"
+      url "https://github.com/__RELEASE_REPOSITORY__/releases/download/cli-v__VERSION__/candle-__VERSION__-linux-arm64.tar.gz"
       sha256 "__SHA_linux_arm64__"
     end
     on_intel do
-      url "https://github.com/candledottv/agentic/releases/download/cli-v__VERSION__/candle-__VERSION__-linux-x64.tar.gz"
+      url "https://github.com/__RELEASE_REPOSITORY__/releases/download/cli-v__VERSION__/candle-__VERSION__-linux-x64.tar.gz"
       sha256 "__SHA_linux_x64__"
     end
   end

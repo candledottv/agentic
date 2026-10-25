@@ -22,6 +22,12 @@ name: Release CLI
 # input, APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64; it is checked against the team, the
 # bundle id, the entitlement and its expiry before the build, and a missing or wrong one fails
 # the job like the other six. Under "omit" nothing changes.
+#
+# One file, two homes (spec 2026-10-23-candle-github, section 9). This workflow runs in
+# candledottv/agentic, where every version through the bridge release is cut, and the same file runs
+# in candledottv/cli, where every later version is. packages/cli/release-homes.json names both and
+# the bridge version; the `home` job refuses a tag pushed in the wrong home, so one version is never
+# released from both, and every signature check below pins THIS repository's exact identity.
 on:
   push:
     tags: ["cli-v*"]
@@ -35,10 +41,50 @@ permissions:
   attestations: write
 
 env:
-  IDENTITY_REGEX: '^https://github.com/candledottv/agentic/\.github/workflows/release\.yaml@refs/tags/cli-v'
   ISSUER: https://token.actions.githubusercontent.com
 
 jobs:
+  # Which home this run is in, decided before any signing input is read. A tag push in a repository
+  # that is not this version's home fails here; a workflow_dispatch rehearsal is allowed in either
+  # home (it publishes nothing) and says which home the version would really be released from.
+  home:
+    runs-on: ubuntu-latest
+    outputs:
+      other: ${{ steps.home.outputs.other }}
+      version_home: ${{ steps.home.outputs.version_home }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Check this release's home
+        id: home
+        run: |
+          homes=packages/cli/release-homes.json
+          bridge="$(jq -r '.bridgeVersion' "$homes")"
+          legacy="$(jq -r '.legacy' "$homes")"
+          current="$(jq -r '.current' "$homes")"
+          version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' packages/cli/package.json | head -1)"
+          printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "packages/cli/package.json has no plain version: ${version}"; exit 1; }
+          printf '%s' "$bridge" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "release-homes.json has no plain bridgeVersion: ${bridge}"; exit 1; }
+          case "${GITHUB_REPOSITORY}" in
+            "$legacy") other="$current" ;;
+            "$current") other="$legacy" ;;
+            *) echo "${GITHUB_REPOSITORY} is not a CLI release home (${legacy}, ${current})"; exit 1 ;;
+          esac
+          # Through the bridge, legacy; after it, current. sort -V puts the larger last.
+          if [ "$(printf '%s\n%s\n' "$version" "$bridge" | sort -V | tail -1)" = "$bridge" ]; then
+            version_home="$legacy"
+          else
+            version_home="$current"
+          fi
+          { echo "other=${other}"; echo "version_home=${version_home}"; } >> "$GITHUB_OUTPUT"
+          if [ "$version_home" = "${GITHUB_REPOSITORY}" ]; then
+            echo "cli-v${version} is released from ${GITHUB_REPOSITORY} (bridge ${bridge})"
+          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "::notice::rehearsal of ${version} in ${GITHUB_REPOSITORY}; a real cli-v${version} is released from ${version_home} (bridge ${bridge})"
+          else
+            echo "cli-v${version} is released from ${version_home}, not ${GITHUB_REPOSITORY} (bridge ${bridge}); refusing to release it here"
+            exit 1
+          fi
+
   # The signed macOS Secure Enclave helper (Ember Phase 2 PR F, ED-12, AD-1). One switch decides
   # whether it is built: packages/cli/release-policy.json, checked in and reviewed. Under "omit"
   # this job reads no credential and produces only a state artifact saying so. Under "signed"
@@ -48,6 +94,7 @@ jobs:
   # before anything is packed, so the two cannot disagree silently.
   macos-helper:
     runs-on: macos-latest
+    needs: [home]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Read the release policy
@@ -202,7 +249,7 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
-    needs: [macos-helper]
+    needs: [home, macos-helper]
     # One list for the compile loop, the pack loop, and the expected-asset list. Adding a target
     # means editing this value (and PLATFORMS in scripts/release/write-manifest.mjs); the three
     # loops read it rather than restating the names.
@@ -388,15 +435,13 @@ jobs:
         env:
           HELPER_ASSET: ${{ steps.helper.outputs.asset }}
         run: |
-          # A tag build's certificate identity ends @refs/tags/cli-v<version>, which is what
-          # IDENTITY_REGEX matches. A workflow_dispatch (rehearsal) run signs under the branch
-          # ref instead, so its identity ends @refs/heads/<branch>; build that regex here rather
-          # than reusing the tag-anchored one, which a dry run could never satisfy.
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            id_re="${IDENTITY_REGEX}"
-          else
-            id_re="^https://github\.com/candledottv/agentic/\.github/workflows/release\.yaml@${GITHUB_REF}\$"
-          fi
+          # The exact identity this run signed under: this repository's release.yaml at this ref.
+          # A tag build's ends @refs/tags/cli-v<version>; a workflow_dispatch (rehearsal) run signs
+          # under the branch ref, so its identity ends @refs/heads/<branch>. Anchored at both ends
+          # and escaped, so it matches this one identity and nothing that merely contains it.
+          repo_re="${GITHUB_REPOSITORY//./\\.}"
+          ref_re="${GITHUB_REF//./\\.}"
+          id_re="^https://github\.com/${repo_re}/\.github/workflows/release\.yaml@${ref_re}\$"
           # --new-bundle-format here means "expect a Sigstore protobuf bundle": cosign reads the
           # legacy shape happily without it, so leaving it off is what let 0.6.0's mis-signed
           # bundles pass their own self-verify.
@@ -416,7 +461,7 @@ jobs:
           # rest. GITHUB_REF is refs/tags/cli-v<version> on a tag push, which is exactly the
           # identity releaseIdentityUri() builds; a workflow_dispatch rehearsal signs under
           # refs/heads/<branch> and this same expression follows it.
-          identity="https://github.com/candledottv/agentic/.github/workflows/release.yaml@${GITHUB_REF}"
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yaml@${GITHUB_REF}"
           for f in candle-linux-x64 candle-fido2-linux-x64 install.sh ${HELPER_ASSET}; do
             ./dist-bin/candle-linux-x64 verify "dist-bin/${f}" --bundle "dist-bin/${f}.sigstore.json" --identity "${identity}" --issuer "${ISSUER}"
           done
@@ -431,7 +476,8 @@ jobs:
       - name: Refuse what must not verify
         working-directory: packages/cli
         env:
-          OTHER_HOME: ${{ github.repository == 'candledottv/agentic' && 'candledottv/cli' || 'candledottv/agentic' }}
+          # The other release home, from the home job's read of packages/cli/release-homes.json.
+          OTHER_HOME: ${{ needs.home.outputs.other }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
@@ -515,6 +561,19 @@ jobs:
           A project .env no longer configures the CLI. Compiled binaries ignore .env and bunfig.toml; export CANDLE_* variables or store settings in a profile.
 
           Doctor now detects owner/bot roles. API key valid (launch:write) is renamed API key valid; in bot role, Launch wallet delegated is renamed Embedded wallet. JSON rows have stable ids, and role and provenance fields are additive. A paused profile fails the Trade path check."
+          # The compatibility boundary, in the two releases that carry it (spec section 9).
+          bridge="$(jq -r '.bridgeVersion' ../release-homes.json)"
+          legacy="$(jq -r '.legacy' ../release-homes.json)"
+          current="$(jq -r '.current' ../release-homes.json)"
+          if [ "$VERSION" = "$bridge" ]; then
+            notes="${notes}
+
+          Release home: this is the final CLI release published from ${legacy}. Later releases are published from https://github.com/${current}; run candle update once more to reach them. Releases through ${bridge} stay here, and candle update --to still finds them."
+          elif [ "${GITHUB_REPOSITORY}" = "$current" ]; then
+            notes="${notes}
+
+          Release home: published from ${current}, signed by its release workflow. Releases through ${bridge} remain in https://github.com/${legacy}."
+          fi
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Candle CLI ${VERSION}" --notes "$notes" --generate-notes
           gh release upload "$tag" --clobber candle-* install.sh install.sh.sigstore.json SHA256SUMS SHA256SUMS.sigstore.json latest.json
       - name: Check the Homebrew tap token
@@ -538,4 +597,4 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          bash scripts/release/bump-tap.sh "${VERSION}" packages/cli/dist-bin tap-checkout
+          bash scripts/release/bump-tap.sh "${VERSION}" packages/cli/dist-bin tap-checkout "${GITHUB_REPOSITORY}"

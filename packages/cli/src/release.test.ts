@@ -3,15 +3,24 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   assetUrl,
+  BRIDGE_VERSION,
+  CURRENT_RELEASE_REPOSITORY,
   compareVersions,
   detectInstall,
   fetchLatest,
   fetchPinned,
+  identityRegex,
+  LEGACY_RELEASE_REPOSITORY,
   latestUrl,
+  manifestHomeMismatch,
+  parseReleaseHomes,
   platformKey,
   RELEASE_IDENTITY_REGEX,
   RELEASE_ISSUER,
+  releaseHomeFor,
   releaseIdentityUri,
+  updateHomeFor,
+  versionOfTag,
 } from "./release"
 import { createRoutedFetch, createTestDeps } from "./test-support"
 
@@ -73,9 +82,13 @@ describe("release identity", () => {
     expect(releaseIdentityUri("10.20.30")).toContain("cli-v10.20.30")
   })
 
-  test("install.sh carries the same identity regex and issuer", () => {
+  test("install.sh carries the same homes, identity regexes and issuer", () => {
     const script = readFileSync(join(import.meta.dir, "..", "install.sh"), "utf8")
     expect(script).toContain(`IDENTITY_REGEX='${RELEASE_IDENTITY_REGEX}'`)
+    expect(script).toContain(`CURRENT_IDENTITY_REGEX='${identityRegex("current")}'`)
+    expect(script).toContain(`BRIDGE_VERSION='${BRIDGE_VERSION}'`)
+    expect(script).toContain(`LEGACY_REPOSITORY='${LEGACY_RELEASE_REPOSITORY}'`)
+    expect(script).toContain(`CURRENT_REPOSITORY='${CURRENT_RELEASE_REPOSITORY}'`)
     expect(script).toContain(`ISSUER='${RELEASE_ISSUER}'`)
   })
 
@@ -109,6 +122,77 @@ describe("release identity", () => {
     )
   })
 })
+
+/**
+ * The bridge (spec 2026-10-23-candle-github, section 9): versions through BRIDGE_VERSION resolve to
+ * agentic, later versions to cli, decided by this binary and never by a downloaded manifest.
+ */
+describe("release homes", () => {
+  const [major, minor, patch] = BRIDGE_VERSION.split(".").map(Number) as [number, number, number]
+  const after = `${major}.${minor}.${patch + 1}`
+
+  test("the checked-in homes are the two repositories the spec names", () => {
+    expect(LEGACY_RELEASE_REPOSITORY).toBe("candledottv/agentic")
+    expect(CURRENT_RELEASE_REPOSITORY).toBe("candledottv/cli")
+    expect(isThreeNumbers(BRIDGE_VERSION)).toBe(true)
+  })
+
+  test("a version's home: through the bridge agentic, after it cli", () => {
+    expect(releaseHomeFor("0.6.0")).toBe("legacy")
+    expect(releaseHomeFor(BRIDGE_VERSION)).toBe("legacy")
+    expect(releaseHomeFor(after)).toBe("current")
+    expect(releaseHomeFor(`${major + 1}.0.0`)).toBe("current")
+    expect(releaseIdentityUri(BRIDGE_VERSION)).toBe(
+      `https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${BRIDGE_VERSION}`,
+    )
+    expect(releaseIdentityUri(after)).toBe(
+      `https://github.com/candledottv/cli/.github/workflows/release.yaml@refs/tags/cli-v${after}`,
+    )
+    expect(new RegExp(identityRegex("current")).test(releaseIdentityUri(after))).toBe(true)
+    expect(new RegExp(identityRegex("legacy")).test(releaseIdentityUri(after))).toBe(false)
+    expect(new RegExp(identityRegex("current")).test(releaseIdentityUri(BRIDGE_VERSION))).toBe(false)
+  })
+
+  test("where a binary looks for something newer: below the bridge agentic, from B on cli", () => {
+    expect(updateHomeFor("0.11.39")).toBe("legacy")
+    expect(updateHomeFor(BRIDGE_VERSION)).toBe("current")
+    expect(updateHomeFor(after)).toBe("current")
+  })
+
+  test("only cli-v<three numbers> names a version", () => {
+    expect(versionOfTag("cli-v0.11.39")).toBe("0.11.39")
+    for (const bad of ["0.11.39", "cli-v0.11", "cli-v0.11.39-rc1", "mcp-v0.1.0", "cli-vx|", " cli-v0.1.0"]) {
+      expect(versionOfTag(bad)).toBeNull()
+    }
+  })
+
+  test("a manifest is refused outside its version's home, or when it is not the release pinned", () => {
+    const manifest = (version: string, tag = `cli-v${version}`) => ({ version, tag, assets: {} })
+    expect(manifestHomeMismatch(manifest(BRIDGE_VERSION), "legacy")).toBeNull()
+    expect(manifestHomeMismatch(manifest(after), "current")).toBeNull()
+    expect(manifestHomeMismatch(manifest(after), "legacy")).toContain("is released from candledottv/cli")
+    expect(manifestHomeMismatch(manifest(BRIDGE_VERSION), "current")).toContain("is released from candledottv/agentic")
+    expect(manifestHomeMismatch(manifest("0.6.0", "cli-v0.7.0"), "legacy")).toContain("does not name its version")
+    expect(manifestHomeMismatch(manifest("0.6.0"), "legacy", "cli-v0.7.0")).toContain("asked for cli-v0.7.0")
+    expect(manifestHomeMismatch(manifest("x|"), "legacy")).toContain("invalid release version")
+  })
+
+  test("release-homes.json is parsed strictly", () => {
+    const good = { bridgeVersion: "0.12.0", legacy: "candledottv/agentic", current: "candledottv/cli" }
+    expect(parseReleaseHomes(good)).toEqual(good)
+    for (const bad of [
+      { ...good, bridgeVersion: "0.12" },
+      { ...good, legacy: "someone/agentic" },
+      { ...good, current: "candledottv/agentic" },
+      { ...good, current: undefined },
+      null,
+    ]) {
+      expect(() => parseReleaseHomes(bad)).toThrow("release-homes.json")
+    }
+  })
+})
+
+const isThreeNumbers = (value: string) => /^\d+\.\d+\.\d+$/.test(value)
 
 describe("fetchPinned", () => {
   test("reads the tag's own manifest and passes `helpers` through untouched", async () => {

@@ -10,15 +10,24 @@
 # Never uses sudo. Writes only the bin dir, a temp dir, and (unless --no-modify-path) one rc file.
 set -euo pipefail
 
-RELEASE_BASE="${CANDLE_RELEASE_BASE_URL:-https://github.com/candledottv/agentic}"
 BIN_DIR="${CANDLE_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION_TAG=""
 MODIFY_PATH=1
 FORCE=0
-# Keep these two literals identical to RELEASE_IDENTITY_REGEX and RELEASE_ISSUER in
-# packages/cli/src/release.ts; release.test.ts greps this file for them.
+# Keep these literals identical to packages/cli/release-homes.json and to identityRegex() and
+# RELEASE_ISSUER in packages/cli/src/release.ts; release.test.ts greps this file for them.
+# Versions through BRIDGE_VERSION are released from LEGACY_REPOSITORY, later ones from
+# CURRENT_REPOSITORY, and each is verified against its own home's identity only.
+BRIDGE_VERSION='0.12.0'
+LEGACY_REPOSITORY='candledottv/agentic'
+CURRENT_REPOSITORY='candledottv/cli'
 IDENTITY_REGEX='^https://github.com/candledottv/agentic/\.github/workflows/release\.yaml@refs/tags/cli-v'
+CURRENT_IDENTITY_REGEX='^https://github.com/candledottv/cli/\.github/workflows/release\.yaml@refs/tags/cli-v'
 ISSUER='https://token.actions.githubusercontent.com'
+# Where an unpinned install looks for the latest release. "legacy" until the switch (spec
+# 2026-10-23-candle-github, section 9, step 4), when it becomes "current" in the same change as the
+# tap formula and package metadata.
+DEFAULT_HOME='legacy'
 
 usage() {
   cat <<EOF
@@ -109,7 +118,28 @@ if [ "$FORCE" -eq 0 ] && command -v candle >/dev/null 2>&1; then
   esac
 fi
 
-# 3. Resolve the release.
+# The home a version is released from: through the bridge, legacy; after it, current. $1 must
+# already be three dot-separated numbers.
+home_of() {
+  local a b c x y z
+  IFS=. read -r a b c <<< "$1"
+  IFS=. read -r x y z <<< "$BRIDGE_VERSION"
+  if [ "$a" -ne "$x" ]; then [ "$a" -lt "$x" ] && echo legacy || echo current; return; fi
+  if [ "$b" -ne "$y" ]; then [ "$b" -lt "$y" ] && echo legacy || echo current; return; fi
+  [ "$c" -le "$z" ] && echo legacy || echo current
+}
+repository_of() { if [ "$1" = legacy ]; then echo "$LEGACY_REPOSITORY"; else echo "$CURRENT_REPOSITORY"; fi; }
+
+# 3. Resolve the release. A pinned tag's version decides its home (the documented `--to` lookup
+# rule); otherwise DEFAULT_HOME. CANDLE_RELEASE_BASE_URL moves where bytes come from, never which
+# identity they must carry.
+fetch_home="$DEFAULT_HOME"
+if [ -n "$VERSION_TAG" ]; then
+  printf '%s' "$VERSION_TAG" | grep -Eq '^cli-v[0-9]+\.[0-9]+\.[0-9]+$' \
+    || fail "--to takes a release tag such as cli-v0.11.39, not ${VERSION_TAG}"
+  fetch_home="$(home_of "${VERSION_TAG#cli-v}")"
+fi
+RELEASE_BASE="${CANDLE_RELEASE_BASE_URL:-https://github.com/$(repository_of "$fetch_home")}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 if [ -n "$VERSION_TAG" ]; then
@@ -145,12 +175,20 @@ printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
 if [ -n "$VERSION_TAG" ] && [ "$VERSION_TAG" != "cli-v${version}" ]; then
   fail "requested ${VERSION_TAG} but the manifest at that tag describes cli-v${version}; nothing installed"
 fi
+# The origin check: a manifest read from one home must name a version that home releases. A
+# manifest cannot move a version to the other home's signer.
+version_home="$(home_of "$version")"
+if [ "$version_home" != "$fetch_home" ]; then
+  fail "the release manifest from $(repository_of "$fetch_home") names ${version}, which is released from $(repository_of "$version_home"); nothing installed"
+fi
+release_repository="$(repository_of "$version_home")"
+if [ "$version_home" = legacy ]; then identity_regex="$IDENTITY_REGEX"; else identity_regex="$CURRENT_IDENTITY_REGEX"; fi
 # The ONE pin, consumed by both verifier branches below. The signing certificate's SAN is
 # `<workflow file>@<tag ref>`, a single string that carries the workflow and the tag together, so
 # pinning it exactly pins both with no regex and no escaping step in between. It is the same
 # string releaseIdentityUri() builds for `candle update` and `candle verify`, and the same one the
 # release job self-verifies against, so three verifiers check one value.
-identity_exact="https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${version}"
+identity_exact="https://github.com/${release_repository}/.github/workflows/release.yaml@refs/tags/cli-v${version}"
 
 # 4 and 5. Download and verify: the checksum against SHA256SUMS and the manifest, then the
 # signature where a verifier exists. One function, run for the binary and again for the helper, so
@@ -188,7 +226,7 @@ verify_asset() {
     verified=1
   elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     # --cert-identity, not just --repo: the repo alone accepts an attestation from ANY workflow in
-    # candledottv/agentic that can mint one. The exact identity is the certificate's SAN, which
+    # the release's home repository that can mint one. The exact identity is the certificate's SAN, which
     # names the workflow FILE and the TAG in one string, so this branch checks exactly what the
     # cosign branch above checks: the same $identity_exact, passed to a different verifier.
     #
@@ -200,7 +238,7 @@ verify_asset() {
     # file, a prefix of the SAN, and accepts any tag's attestation. release.test.ts greps this
     # file for that flag, and install-script.test.ts replays this exact argv against the real gh,
     # so the pair cannot come back.
-    if ! verify_output="$(gh attestation verify "$tmp/$name" --repo candledottv/agentic --cert-identity "$identity_exact" 2>&1)"; then
+    if ! verify_output="$(gh attestation verify "$tmp/$name" --repo "$release_repository" --cert-identity "$identity_exact" 2>&1)"; then
       echo "$verify_output" >&2
       fail "signature verification failed for $name (gh attestation verify); nothing installed"
     fi
@@ -214,7 +252,7 @@ verify_asset() {
       fail "no signature verifier found, so the download is not verified and nothing was installed. This binary will hold API keys and wallet signers, so the installer stops here by default. Install one and rerun: on macOS, brew install cosign; on Linux, download cosign from https://github.com/sigstore/cosign/releases (a single binary) or run gh auth login for the GitHub CLI. To install on the checksum alone: CANDLE_INSTALL_ALLOW_UNSIGNED=1 curl -fsSL https://candle.tv/install.sh | bash"
     fi
     echo "Warning: signature not verified for $name (CANDLE_INSTALL_ALLOW_UNSIGNED=1); the checksum matched. To verify later:"
-    echo "  cosign verify-blob --new-bundle-format --bundle ${name}.sigstore.json --certificate-identity-regexp '${IDENTITY_REGEX}' --certificate-oidc-issuer ${ISSUER} ${name}"
+    echo "  cosign verify-blob --new-bundle-format --bundle ${name}.sigstore.json --certificate-identity-regexp '${identity_regex}' --certificate-oidc-issuer ${ISSUER} ${name}"
   fi
 }
 

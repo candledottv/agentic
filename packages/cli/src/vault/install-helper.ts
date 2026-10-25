@@ -16,7 +16,15 @@
 import { randomBytes } from "node:crypto"
 import type { CommandContext, Deps } from "../deps"
 import { commandSteps, formatBytes } from "../progress"
-import { detectInstall, fetchPinned, helperAssetName, releaseBaseUrl, releaseIdentityUri } from "../release"
+import {
+  detectInstall,
+  fetchPinned,
+  helperAssetName,
+  manifestHomeMismatch,
+  releaseBaseUrl,
+  releaseHomeFor,
+  releaseIdentityUri,
+} from "../release"
 import { checkReleaseAsset, downloadReleaseAsset, downloadSums, messageOf } from "../release-assets"
 import { CLI_VERSION } from "../version"
 import { HELPER_NAME, locateFido2Helper } from "./fido2"
@@ -48,7 +56,9 @@ export async function installHelperForThisRelease(ctx: CommandContext): Promise<
   }
   if (!deps.platformKey) return { ok: false, message: "this CLI ships no security key helper for this platform" }
 
-  const base = releaseBaseUrl(deps.env)
+  // This binary's own release, in the home its version is released from.
+  const home = releaseHomeFor(CLI_VERSION)
+  const base = releaseBaseUrl(deps.env, home)
   const tag = `cli-v${CLI_VERSION}`
   const name = helperAssetName(deps.platformKey)
   using steps = commandSteps(ctx)
@@ -58,6 +68,11 @@ export async function installHelperForThisRelease(ctx: CommandContext): Promise<
   if (!fetched.ok) {
     steps.fail(`reading the ${tag} release manifest`)
     return { ok: false, message: fetched.message }
+  }
+  const mismatch = manifestHomeMismatch(fetched.manifest, home, tag)
+  if (mismatch !== null) {
+    steps.fail(`reading the ${tag} release manifest`)
+    return { ok: false, message: `refusing the ${tag} release manifest: ${mismatch}` }
   }
   const asset = fetched.manifest.helpers?.[deps.platformKey]
   if (asset === undefined) {

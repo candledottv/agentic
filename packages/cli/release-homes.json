@@ -1,0 +1,6 @@
+{
+  "note": "Where each CLI version is released from (spec docs/superpowers/specs/2026-10-23-candle-github-spec.md, section 9). Versions up to and including bridgeVersion are released, signed and verified in `legacy`; every later version in `current`. src/release.ts compiles this in, install.sh carries the same three values (a drift test holds them equal), release.yaml refuses a tag pushed in the wrong home, and sync-agentic.yaml never tags a version above bridgeVersion. Change it only together with a release plan.",
+  "bridgeVersion": "0.12.0",
+  "legacy": "candledottv/agentic",
+  "current": "candledottv/cli"
+}

@@ -17,14 +17,20 @@ import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
 import { commandSteps, formatBytes, type StepReporter } from "../progress"
 import {
+  BRIDGE_VERSION,
   compareVersions,
   detectInstall,
   fetchLatest,
   fetchPinned,
   helperAssetName,
+  homeRepository,
+  manifestHomeMismatch,
   type ReleaseAsset,
   releaseBaseUrl,
+  releaseHomeFor,
   releaseIdentityUri,
+  updateHomeFor,
+  versionOfTag,
 } from "../release"
 import { checkReleaseAsset, downloadReleaseAsset, downloadSums, messageOf } from "../release-assets"
 import { writeLocalFailure, writeUsageFailure } from "../render"
@@ -37,7 +43,11 @@ export const SIGNATURE_VERIFIED = "signature verified (Sigstore, keyless; signer
 
 const INSTALLER_LINE = "curl -fsSL https://candle.tv/install.sh | bash"
 
-export async function update(args: string[], ctx: CommandContext): Promise<number> {
+/**
+ * `current` is this binary's version. It is a parameter only so the bridge tests can run the same
+ * code as B and as a later release; dispatch always passes nothing and gets CLI_VERSION.
+ */
+export async function update(args: string[], ctx: CommandContext, current: string = CLI_VERSION): Promise<number> {
   const { deps, json } = ctx
   // `--to`, not `--version`: `--version` is a global flag meaning "print this binary's version",
   // and dispatch strips it before a command ever sees it.
@@ -52,6 +62,15 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   }
   const check = parsed.booleans.has("--check")
   const pinned = parsed.values["--to"]
+  // The documented `--to` lookup rule: the tag's version decides its home, through the bridge
+  // `agentic` and after it `cli`, and that home's identity is the only one its signature may carry.
+  // So a tag has to carry a version this binary can read; anything else is a usage error rather
+  // than a lookup in a guessed home.
+  const pinnedVersion = pinned === undefined ? undefined : versionOfTag(pinned)
+  if (pinned !== undefined && pinnedVersion === null) {
+    writeUsageFailure(deps, `--to takes a release tag such as cli-v${current}, not ${pinned}`, json)
+    return 2
+  }
 
   const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath)
   const method = detectInstall(deps.execPath, realExec)
@@ -59,7 +78,7 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
     // Replacing a Cellar binary by hand would leave brew's own metadata describing a version that
     // is no longer there, and the next `brew upgrade` would overwrite it anyway.
     if (json) {
-      const payload = { current: CLI_VERSION, latest: null, updated: false, path: realExec, method }
+      const payload = { current, latest: null, updated: false, path: realExec, method }
       deps.stdout.write(`${JSON.stringify(payload)}\n`)
     } else {
       deps.stdout.write("Installed by Homebrew. Run: brew upgrade candle\n")
@@ -68,7 +87,7 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   }
   if (method === "script") {
     if (json) {
-      const payload = { current: CLI_VERSION, latest: null, updated: false, path: realExec, method }
+      const payload = { current, latest: null, updated: false, path: realExec, method }
       deps.stdout.write(`${JSON.stringify(payload)}\n`)
     } else {
       deps.stdout.write("Installed with npm (or a dev checkout). Run: npm i -g @candledottv/cli@latest\n")
@@ -76,8 +95,24 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
     return 0
   }
 
-  const base = releaseBaseUrl(deps.env)
+  // Which home to read. A pin goes to its own version's home; otherwise a binary below the bridge
+  // reads agentic, whose latest stable release stays B, and B and everything after it read cli.
+  const home = pinned && pinnedVersion ? releaseHomeFor(pinnedVersion) : updateHomeFor(current)
+  const base = releaseBaseUrl(deps.env, home)
   const fetched = pinned ? await fetchPinned(deps, base, pinned) : await fetchLatest(deps, base)
+  if (!fetched.ok && !pinned && fetched.status === 404 && compareVersions(current, BRIDGE_VERSION) === 0) {
+    // B before N exists: the expected gap between the two releases, not a failure. B reports it
+    // and leaves itself installed. It never falls back to the legacy home, whose newest release is
+    // B itself.
+    const message = `candle ${current} is the final release from ${homeRepository("legacy")}. Later releases come from ${homeRepository("current")}, which has not published one yet. Nothing was changed.`
+    if (json) {
+      const payload = { current, latest: null, updated: false, path: realExec, pending: homeRepository("current") }
+      deps.stdout.write(`${JSON.stringify(payload)}\n`)
+    } else {
+      deps.stdout.write(`${message}\n`)
+    }
+    return 0
+  }
   if (!fetched.ok) {
     // `UPDATE_UNREACHABLE` means the release host did not answer. A host that answered with
     // something that is not a manifest is a different failure with a different fix.
@@ -94,8 +129,14 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   // verification, that throw would escape as an unhandled rejection -- and a version that parses
   // as 0.0.0 would first be answered with "up to date", which is a tampered manifest silently
   // suppressing an upgrade.
+  //
+  // The origin check comes first: a manifest found in one home must name a version that home
+  // releases, and a pinned read must describe the pinned tag. A manifest cannot move a version to
+  // the other home's signer.
   let identityUri: string
   try {
+    const mismatch = manifestHomeMismatch(target, home, pinned)
+    if (mismatch !== null) throw new Error(mismatch)
     identityUri = releaseIdentityUri(target.version)
   } catch (error) {
     writeLocalFailure(
@@ -109,16 +150,16 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
     )
     return 1
   }
-  const order = compareVersions(CLI_VERSION, target.version)
+  const order = compareVersions(current, target.version)
 
   if (check) {
     if (json) {
-      const payload = { current: CLI_VERSION, latest: target.version, updated: false, path: realExec }
+      const payload = { current, latest: target.version, updated: false, path: realExec }
       deps.stdout.write(`${JSON.stringify(payload)}\n`)
     } else if (order < 0) {
-      deps.stdout.write(`candle ${CLI_VERSION}; ${target.version} available. Run: candle update\n`)
+      deps.stdout.write(`candle ${current}; ${target.version} available. Run: candle update\n`)
     } else {
-      deps.stdout.write(`candle ${CLI_VERSION} is up to date (latest ${target.version})\n`)
+      deps.stdout.write(`candle ${current} is up to date (latest ${target.version})\n`)
     }
     return 0
   }
@@ -126,14 +167,14 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   // refused; an unpinned run never walks backwards.
   if (order === 0 || (order > 0 && !pinned)) {
     if (json) {
-      const payload = { current: CLI_VERSION, latest: target.version, updated: false, path: realExec }
+      const payload = { current, latest: target.version, updated: false, path: realExec }
       deps.stdout.write(`${JSON.stringify(payload)}\n`)
     } else {
-      deps.stdout.write(`candle ${CLI_VERSION} is up to date\n`)
+      deps.stdout.write(`candle ${current} is up to date\n`)
     }
     return 0
   }
-  if (order > 0 && pinned) deps.stderr.write(`Warning: ${target.version} is a downgrade from ${CLI_VERSION}\n`)
+  if (order > 0 && pinned) deps.stderr.write(`Warning: ${target.version} is a downgrade from ${current}\n`)
 
   if (!deps.platformKey) {
     writeLocalFailure(
@@ -209,7 +250,7 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   // what then transfers is the kind of thing that looks like a hang (BE-275 D5).
   if (!json) {
     const total = asset.size + (helperAsset?.size ?? 0)
-    deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version} (${formatBytes(total)})\n`)
+    deps.stderr.write(`Updating candle ${current} -> ${target.version} (${formatBytes(total)})\n`)
   }
 
   // SHA256SUMS once, for both assets. Then each asset and its bundle by its platform-derived
@@ -323,7 +364,7 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   const helperReport = helper !== null ? { name: HELPER_NAME, updated: true } : null
   if (json) {
     const payload = {
-      current: CLI_VERSION,
+      current,
       latest: target.version,
       updated: true,
       path: realExec,
@@ -331,7 +372,7 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
     }
     deps.stdout.write(`${JSON.stringify(payload)}\n`)
   } else {
-    deps.stdout.write(`Updated candle ${CLI_VERSION} -> ${target.version}\n`)
+    deps.stdout.write(`Updated candle ${current} -> ${target.version}\n`)
     if (helper !== null) deps.stdout.write(`Installed ${HELPER_NAME} ${target.version} to ${helper.target}\n`)
   }
   return 0

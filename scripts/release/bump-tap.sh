@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Rewrites Formula/candle.rb in a checkout of candledottv/homebrew-tap from the template and a
 # release's SHA256SUMS, commits and pushes. Run by release.yaml after the GitHub Release exists:
-#   scripts/release/bump-tap.sh <version> <dist dir with SHA256SUMS> <tap checkout dir>
+#   scripts/release/bump-tap.sh <version> <dist dir with SHA256SUMS> <tap checkout dir> <release repository>
+# The release repository is the home the release was just published in (candledottv/agentic through
+# the bridge version, candledottv/cli after it); release.yaml's home job has already checked it, and
+# the formula's tarball URLs point there, so formula, archives and checksums name one release.
 set -euo pipefail
-version="$1"; dist="$2"; tap="$3"
+version="$1"; dist="$2"; tap="$3"; repository="${4:-}"
+printf '%s' "$repository" | grep -Eq '^candledottv/[a-z0-9-]+$' \
+  || { echo "bump-tap.sh: the fourth argument must be the release repository (candledottv/<name>), got '${repository}'" >&2; exit 1; }
 template="$(dirname "$0")/candle.rb.template"
 sum_for() { awk -v a="candle-${version}-$1.tar.gz" '$2 == a {print $1}' "$dist/SHA256SUMS"; }
 sha_darwin_arm64="$(sum_for darwin-arm64)"
@@ -18,13 +23,14 @@ for pair in "darwin-arm64:$sha_darwin_arm64" "darwin-x64:$sha_darwin_x64" "linux
 done
 formula="$(sed \
   -e "s/__VERSION__/${version}/g" \
+  -e "s|__RELEASE_REPOSITORY__|${repository}|g" \
   -e "s/__SHA_darwin_arm64__/${sha_darwin_arm64}/" \
   -e "s/__SHA_darwin_x64__/${sha_darwin_x64}/" \
   -e "s/__SHA_linux_arm64__/${sha_linux_arm64}/" \
   -e "s/__SHA_linux_x64__/${sha_linux_x64}/" \
   "$template")"
 # Second guard, kept in case a future placeholder is added without an accompanying variable above.
-if echo "$formula" | grep -q "__SHA_"; then
+if echo "$formula" | grep -q "__SHA_\|__RELEASE_REPOSITORY__"; then
   echo "bump-tap.sh: a tarball checksum is missing from SHA256SUMS" >&2
   exit 1
 fi

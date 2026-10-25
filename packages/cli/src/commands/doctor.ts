@@ -8,7 +8,7 @@ import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
 import { SecretStoreLockedError } from "../keychain"
 import { apiKeyPrefix, credentialEnvOverrides, effectiveProfileFields, printIdentity } from "../profiles"
-import { compareVersions, detectInstall, fetchLatest, helperAssetName, releaseBaseUrl } from "../release"
+import { compareVersions, detectInstall, fetchLatest, helperAssetName, releaseBaseUrl, updateHomeFor } from "../release"
 import { renderError, renderTable, writeUsageFailure } from "../render"
 import { parseTeeReadiness, TEE_CHAIN_ASSETS } from "../tee-readiness"
 import { HELPER_ENV, HELPER_NAME, locateFido2Helper } from "../vault/fido2"
@@ -484,7 +484,8 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
         ? `Homebrew (${realExec})`
         : `script (${deps.execPath}); update with npm`
   rows.push({ check: "Install", state: "PASS", detail: installDetail })
-  const latest = await fetchLatest(deps, releaseBaseUrl(deps.env))
+  // The home `candle update` would read, so the row and the command agree on what is newer.
+  const latest = await fetchLatest(deps, releaseBaseUrl(deps.env, updateHomeFor(CLI_VERSION)))
 
   // Security key helper (BE-275 D9): directly after Install, where the reader is already looking
   // at what this install is. One `locateFido2Helper` call and no new network: the manifest read

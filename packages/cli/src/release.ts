@@ -1,14 +1,17 @@
 /**
  * Where CLI releases live and how this binary tells whether it is one. Everything `candle update`,
  * `doctor`'s Install and Update rows, and the identity drift test agree on lives here.
+ *
+ * Releases have two homes (spec 2026-10-23-candle-github, section 9, "Bridge and switch"). Every
+ * version up to and including the bridge release B is released, signed and verified in
+ * `candledottv/agentic`; every later version in `candledottv/cli`. The boundary is compiled in from
+ * `release-homes.json` rather than read off a downloaded manifest, so a version's home and the
+ * exact identity its signature must carry are decided by this binary alone: a manifest cannot
+ * name its own signer, and a version can never be accepted from both homes.
  */
-import type { Deps } from "./deps"
 
-export const RELEASE_BASE_URL = "https://github.com/candledottv/agentic"
-/** The regex form, for cosign users and install.sh; install.sh carries this literal verbatim. */
-export const RELEASE_IDENTITY_REGEX =
-  "^https://github.com/candledottv/agentic/\\.github/workflows/release\\.yaml@refs/tags/cli-v"
-export const RELEASE_ISSUER = "https://token.actions.githubusercontent.com"
+import homesJson from "../release-homes.json"
+import type { Deps } from "./deps"
 
 /** Three dot-separated numbers and nothing else. Deliberately stricter than `compareVersions`,
  * which is lenient about what it is handed because it only ever ORDERS versions. */
@@ -19,8 +22,75 @@ export function isPlainVersion(value: string): boolean {
   return VERSION.test(value)
 }
 
+const REPOSITORY = /^candledottv\/[a-z0-9-]+$/
+
+/** `release-homes.json`, parsed strictly: a malformed edit fails at import (and so in every test)
+ * rather than selecting a home by accident. */
+export function parseReleaseHomes(value: unknown): { bridgeVersion: string; legacy: string; current: string } {
+  const homes = value as Partial<Record<"bridgeVersion" | "legacy" | "current", unknown>>
+  const { bridgeVersion, legacy, current } = homes ?? {}
+  if (typeof bridgeVersion !== "string" || !VERSION.test(bridgeVersion)) {
+    throw new Error("release-homes.json: bridgeVersion must be three dot-separated numbers")
+  }
+  if (typeof legacy !== "string" || !REPOSITORY.test(legacy)) throw new Error("release-homes.json: bad legacy")
+  if (typeof current !== "string" || !REPOSITORY.test(current)) throw new Error("release-homes.json: bad current")
+  if (legacy === current) throw new Error("release-homes.json: legacy and current must differ")
+  return { bridgeVersion, legacy, current }
+}
+
+const HOMES = parseReleaseHomes(homesJson)
+
+/** The final version released from the legacy home. Versions through it resolve to `agentic`,
+ * later versions to `cli`. */
+export const BRIDGE_VERSION = HOMES.bridgeVersion
+export const LEGACY_RELEASE_REPOSITORY = HOMES.legacy
+export const CURRENT_RELEASE_REPOSITORY = HOMES.current
+
+export type ReleaseHome = "legacy" | "current"
+
+export const RELEASE_ISSUER = "https://token.actions.githubusercontent.com"
+
+export function homeRepository(home: ReleaseHome): string {
+  return home === "legacy" ? LEGACY_RELEASE_REPOSITORY : CURRENT_RELEASE_REPOSITORY
+}
+
+export function homeUrl(home: ReleaseHome): string {
+  return `https://github.com/${homeRepository(home)}`
+}
+
+/** The regex form, per home, for cosign users and install.sh; install.sh carries both literals
+ * verbatim. */
+export function identityRegex(home: ReleaseHome): string {
+  return `^https://github.com/${homeRepository(home)}/\\.github/workflows/release\\.yaml@refs/tags/cli-v`
+}
+
+/** The legacy home's URL and identity regex, under the names every release before the bridge
+ * code used. */
+export const RELEASE_BASE_URL = homeUrl("legacy")
+export const RELEASE_IDENTITY_REGEX = identityRegex("legacy")
+
 /**
- * The exact identity a given version's signature must carry: the workflow at that version's tag.
+ * The home a version is released from: through the bridge, legacy; after it, current. THROWS on
+ * a version that is not three numbers, for the reason `releaseIdentityUri` gives.
+ */
+export function releaseHomeFor(version: string): ReleaseHome {
+  if (!VERSION.test(version)) throw new Error(`invalid release version: ${version}`)
+  return compareVersions(version, BRIDGE_VERSION) <= 0 ? "legacy" : "current"
+}
+
+/**
+ * Where a binary at `current` looks for something newer. Below the bridge, the legacy home, whose
+ * latest stable release stays B; at or above it, the current home. A pre-bridge binary therefore
+ * reaches N in two invocations (old -> B, then B -> N), and nothing a pre-bridge binary does
+ * changes: it never knew about a second home and still reads agentic's latest.json.
+ */
+export function updateHomeFor(current: string): ReleaseHome {
+  return compareVersions(current, BRIDGE_VERSION) < 0 ? "legacy" : "current"
+}
+
+/**
+ * The exact identity a given version's signature must carry: the workflow at that version's tag,
+ * in that version's home.
  *
  * The version is validated rather than trusted, and a bad one THROWS rather than returning
  * something unusable. `release-verify.ts` turns this string into an anchored regular expression,
@@ -31,8 +101,15 @@ export function isPlainVersion(value: string): boolean {
  * other side; both are here because either one alone is a single point of failure.
  */
 export function releaseIdentityUri(version: string): string {
-  if (!VERSION.test(version)) throw new Error(`invalid release version: ${version}`)
-  return `https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${version}`
+  const home = releaseHomeFor(version)
+  return `https://github.com/${homeRepository(home)}/.github/workflows/release.yaml@refs/tags/cli-v${version}`
+}
+
+/** `cli-v<three numbers>` and nothing else: the only tag shape `--to` accepts, because the version
+ * inside it decides which home and which identity the pinned release is checked against. */
+export function versionOfTag(tag: string): string | null {
+  const match = /^cli-v(\d+\.\d+\.\d+)$/.exec(tag)
+  return match ? (match[1] ?? null) : null
 }
 
 export function compareVersions(a: string, b: string): -1 | 0 | 1 {
@@ -102,10 +179,12 @@ export function assetUrl(baseUrl: string, tag: string, name: string): string {
 /** A failure says which KIND it is, because the two are different problems with different fixes:
  * `unreachable` is the release host not answering (network, 404), `invalid` is it answering with
  * something that is not a manifest. `candle update` reports them under different codes, so an
- * operator is not sent to check their network for a malformed release. */
+ * operator is not sent to check their network for a malformed release. `status` is the HTTP status
+ * of an answer that was not 2xx: a 404 from the current home is how the bridge release tells
+ * "nothing published there yet" apart from a network failure. */
 export type FetchLatestResult =
   | { ok: true; manifest: ReleaseManifest }
-  | { ok: false; kind: "unreachable" | "invalid"; message: string }
+  | { ok: false; kind: "unreachable" | "invalid"; message: string; status?: number }
 
 export async function fetchLatest(deps: Deps, baseUrl: string): Promise<FetchLatestResult> {
   let res: Response
@@ -118,7 +197,14 @@ export async function fetchLatest(deps: Deps, baseUrl: string): Promise<FetchLat
       message: `Could not reach ${latestUrl(baseUrl)}: ${error instanceof Error ? error.message : String(error)}`,
     }
   }
-  if (!res.ok) return { ok: false, kind: "unreachable", message: `${latestUrl(baseUrl)} answered ${res.status}` }
+  if (!res.ok) {
+    return {
+      ok: false,
+      kind: "unreachable",
+      message: `${latestUrl(baseUrl)} answered ${res.status}`,
+      status: res.status,
+    }
+  }
   let body: unknown
   try {
     body = await res.json()
@@ -146,7 +232,7 @@ export async function fetchPinned(deps: Deps, base: string, tag: string): Promis
   const url = assetUrl(base, tag, "latest.json")
   try {
     const res = await deps.fetch(url, { redirect: "follow" })
-    if (!res.ok) return { ok: false, kind: "unreachable", message: `${url} answered ${res.status}` }
+    if (!res.ok) return { ok: false, kind: "unreachable", message: `${url} answered ${res.status}`, status: res.status }
     const manifest = (await res.json()) as Partial<ReleaseManifest>
     const missing = [
       typeof manifest.version === "string" ? null : "version",
@@ -166,8 +252,34 @@ export async function fetchPinned(deps: Deps, base: string, tag: string): Promis
   }
 }
 
-/** The base URL, with the test-only override. */
-export function releaseBaseUrl(env: Record<string, string | undefined>): string {
+/** A home's base URL, with the test-only override. The override replaces whichever home is asked
+ * for: it moves where bytes come from, never which identity they must carry, which is decided by
+ * version alone. */
+export function releaseBaseUrl(env: Record<string, string | undefined>, home: ReleaseHome = "legacy"): string {
   const override = env.CANDLE_RELEASE_BASE_URL?.trim()
-  return override ? override.replace(/\/$/, "") : RELEASE_BASE_URL
+  return override ? override.replace(/\/$/, "") : homeUrl(home)
+}
+
+/**
+ * The origin check: a manifest read from `home` must name a version released from `home`, and a
+ * pinned read must return the release that was pinned. Unknown or mismatched pairs fail closed.
+ * Returns the refusal, or null when the manifest belongs where it was found.
+ */
+export function manifestHomeMismatch(manifest: ReleaseManifest, home: ReleaseHome, pinnedTag?: string): string | null {
+  let versionHome: ReleaseHome
+  try {
+    versionHome = releaseHomeFor(manifest.version)
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+  if (manifest.tag !== `cli-v${manifest.version}`) {
+    return `the manifest's tag ${manifest.tag} does not name its version ${manifest.version}`
+  }
+  if (pinnedTag !== undefined && manifest.tag !== pinnedTag) {
+    return `asked for ${pinnedTag}, the manifest describes ${manifest.tag}`
+  }
+  if (versionHome !== home) {
+    return `${manifest.version} is released from ${homeRepository(versionHome)}, not ${homeRepository(home)}`
+  }
+  return null
 }

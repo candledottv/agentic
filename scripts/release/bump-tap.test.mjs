@@ -54,8 +54,10 @@ function makeTap() {
   return tap
 }
 
-function runBump(dist, tap) {
-  return spawnSync("bash", [SCRIPT, VERSION, dist, tap], { encoding: "utf8" })
+function runBump(dist, tap, repository = "candledottv/agentic") {
+  return spawnSync("bash", [SCRIPT, VERSION, dist, tap, ...(repository === null ? [] : [repository])], {
+    encoding: "utf8",
+  })
 }
 
 test("writes the formula with all four checksums substituted and commits it", () => {
@@ -102,5 +104,43 @@ test("a tarball missing from SHA256SUMS exits 1 and writes no formula at all", (
   } finally {
     rmSync(dist, { recursive: true, force: true })
     rmSync(tap, { recursive: true, force: true })
+  }
+})
+
+/**
+ * The bridge (spec 2026-10-23-candle-github, section 9): the formula points at the home the release
+ * was published in, so a release from candledottv/cli is not looked for in candledottv/agentic.
+ */
+test("the formula's tarball URLs name the release's own home", () => {
+  for (const repository of ["candledottv/agentic", "candledottv/cli"]) {
+    const dist = makeDist()
+    const tap = makeTap()
+    try {
+      runBump(dist, tap, repository)
+      const formula = readFileSync(join(tap, "Formula", "candle.rb"), "utf8")
+      expect(formula).not.toContain("__RELEASE_REPOSITORY__")
+      const urls = formula.split("\n").filter((line) => line.trim().startsWith("url "))
+      expect(urls).toHaveLength(4)
+      for (const url of urls)
+        expect(url).toContain(`https://github.com/${repository}/releases/download/cli-v${VERSION}/`)
+    } finally {
+      rmSync(dist, { recursive: true, force: true })
+      rmSync(tap, { recursive: true, force: true })
+    }
+  }
+})
+
+test("a missing or foreign release repository exits 1 and writes no formula", () => {
+  for (const repository of [null, "", "someone/cli", "candledottv/cli|x"]) {
+    const dist = makeDist()
+    const tap = makeTap()
+    try {
+      const res = runBump(dist, tap, repository)
+      expect(res.status).toBe(1)
+      expect(existsSync(join(tap, "Formula", "candle.rb"))).toBe(false)
+    } finally {
+      rmSync(dist, { recursive: true, force: true })
+      rmSync(tap, { recursive: true, force: true })
+    }
   }
 })
