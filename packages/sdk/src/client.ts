@@ -232,6 +232,16 @@ export interface CandleClientOptions {
    * 2026-10-18). Pins of null would refuse every withdrawal with nothing signed.
    */
   perpsWithdrawPins?: PerpsWithdrawPins
+  /**
+   * The header-capable WebSocket constructor {@link CandleClient.perpsStream} opens through.
+   * Default resolution: the global WebSocket (Bun, Node 22+), then undici's WebSocket (this
+   * package's runtime dependency, covering Node 18 and 20, which ship no global one), then a
+   * clear error. Inject one only to route through your own implementation or a pinned undici.
+   */
+  perpsStreamWebSocket?: new (
+    url: string,
+    options: PerpsStreamSocketOptions,
+  ) => PerpsStreamWebSocket
 }
 
 // ---------------------------------------------------------------------------
@@ -2360,6 +2370,75 @@ export interface PerpsConfig {
   limits: Record<string, unknown>
 }
 
+/**
+ * One frame of the private perps stream (Hyperliquid phase 3, P3-7): `{type, seq, at, ...}` with
+ * `seq` per connection. `snapshot` carries the account line, positions, open orders, the risk
+ * report, the monitor block and `ordersSource: "push" | "poll"`; `positions` and `risk` follow
+ * the server monitor's reads (`risk.reason` instead of `risk` when the level went unknown); `order`
+ * and `fill` carry the venue's own rows (a poll-source vanished order has `status: "gone"`);
+ * `heartbeat` repeats the level with the monitor block; `error` carries a `PERPS_*` code.
+ */
+export interface PerpsStreamFrame {
+  type: "snapshot" | "positions" | "risk" | "order" | "fill" | "heartbeat" | "error"
+  seq: number
+  at: string
+  [field: string]: unknown
+}
+
+/**
+ * The header-capable WebSocket surface {@link CandleClient.perpsStream} needs. The global
+ * WebSocket satisfies it on Bun and Node 22+; on Node 18/20 the SDK falls back to undici's
+ * (a runtime dependency), which is also the shape to pass as
+ * {@link CandleClientOptions.perpsStreamWebSocket} when a caller wants to supply its own.
+ */
+export interface PerpsStreamWebSocket {
+  readonly readyState: number
+  send(data: string): void
+  close(code?: number, reason?: string): void
+  onmessage: ((event: { data: unknown }) => void) | null
+  onclose: ((event: { code: number; reason: string }) => void) | null
+  onerror: ((event: unknown) => void) | null
+}
+
+export interface PerpsStreamSocketOptions {
+  headers: Record<string, string>
+}
+
+/**
+ * Resolves the header-capable WebSocket for the private perps stream, in order: an injected
+ * constructor (CandleClientOptions.perpsStreamWebSocket), the global WebSocket — Bun's and
+ * Node 22+'s both read `headers` from an options object in the second argument — and then
+ * undici's WebSocket (a runtime dependency of this package), which covers the supported Node
+ * versions that ship no global one (18 and 20, verified on v20.19.0). A browser's WebSocket can
+ * send no headers at all and is out of this surface (E14). The last resort is an error naming
+ * the injection path, never a silent no-headers connection.
+ */
+async function openPerpsStreamSocket(
+  url: string,
+  options: PerpsStreamSocketOptions,
+  injected?: new (url: string, options: PerpsStreamSocketOptions) => PerpsStreamWebSocket,
+): Promise<PerpsStreamWebSocket> {
+  if (injected) return new injected(url, options)
+  const globalWebSocket = (
+    globalThis as unknown as {
+      WebSocket?: new (url: string, options: PerpsStreamSocketOptions) => PerpsStreamWebSocket
+    }
+  ).WebSocket
+  if (globalWebSocket) return new globalWebSocket(url, options)
+  try {
+    const undici = (await import("undici")) as {
+      WebSocket: new (url: string, options: PerpsStreamSocketOptions) => unknown
+    }
+    return new undici.WebSocket(url, options) as PerpsStreamWebSocket
+  } catch (error) {
+    throw new Error(
+      "perpsStream(): this runtime has no header-capable WebSocket and undici could not be loaded " +
+        `(${error instanceof Error ? error.message : String(error)}). Pass perpsStreamWebSocket in ` +
+        "CandleClientOptions — undici's WebSocket works on Node 18+ (https://undici.nodejs.org/api/WebSocket)",
+    )
+  }
+}
+
 export interface PerpsPositions {
   success: true
   walletId: string
@@ -3533,6 +3612,10 @@ export class CandleClient {
   private perpsMarketReader?: PerpsMarketReader
   private hyperliquidBuilder?: string
   private readonly perpsWithdrawPins: PerpsWithdrawPins | null
+  private readonly perpsStreamWebSocket?: new (
+    url: string,
+    options: PerpsStreamSocketOptions,
+  ) => PerpsStreamWebSocket
 
   /**
    * Hyperliquid withdrawals (spec 2026-10-17-hyperliquid-withdrawals-design.md): the routes, one call
@@ -3649,6 +3732,7 @@ export class CandleClient {
     if (opts.evmRpcUrl !== undefined) this.evmRpcUrl = opts.evmRpcUrl
     this.hyperliquidNetwork = opts.hyperliquidNetwork ?? "mainnet"
     this.perpsWithdrawPins = opts.perpsWithdrawPins ?? CANDLE_PERPS_WITHDRAW_PINS
+    if (opts.perpsStreamWebSocket !== undefined) this.perpsStreamWebSocket = opts.perpsStreamWebSocket
     if (opts.hyperliquidBuilder !== undefined) this.hyperliquidBuilder = opts.hyperliquidBuilder
   }
 
@@ -5824,6 +5908,84 @@ export class CandleClient {
     return perpsPortfolioSection(this.fetchImpl as unknown as HyperliquidInfoFetcher, this.hyperliquidNetwork, wallets)
   }
 
+  /**
+   * The private per-key stream (Hyperliquid phase 3, P3-7): opens Candle's
+   * `GET /api/v1/agent/perps/stream?walletId=` WebSocket with this client's key on the upgrade
+   * headers. Header-capable WebSocket required, so browsers are out of this surface (E14): Bun
+   * and Node 22+ use their global WebSocket, Node 18 and 20 fall back to undici's (this
+   * package's runtime dependency), and CandleClientOptions.perpsStreamWebSocket overrides both.
+   * Requires the server's risk monitor (`HYPERLIQUID_MONITOR` shadow or on): with it off the
+   * upgrade is refused 503 and the socket closes with that refusal.
+   *
+   * `onMessage` receives every frame as parsed JSON: `snapshot` on connect (the account line,
+   * positions, open orders, the risk report, the monitor block and `ordersSource` "push" or
+   * "poll"), `positions`, `risk`, `order`, `fill` and `heartbeat` every 30 s, and `error` when a
+   * source read failed. A revoked, paused or expired key is closed with code 4401; a slow
+   * consumer with 1013. Nothing is replayed on reconnect: a reconnect gets a fresh `snapshot`,
+   * and fills missed while disconnected are read from `perpsFills()` (`GET /perps/fills`).
+   *
+   * Returns the handle; `close()` ends it (a close before the connection opens is applied the
+   * moment it does), and an aborted `signal` closes it too.
+   */
+  perpsStream(params: {
+    walletId: string
+    onMessage: (frame: PerpsStreamFrame) => void
+    /** How the socket ended, once: its close code and reason (4401 key stopped, 1013 slow consumer). */
+    onClose?: (close: { code: number; reason: string }) => void
+    signal?: AbortSignal
+  }): { close(): void } {
+    this.requireKey("perpsStream()")
+    const apiKey = this.apiKey
+    if (!apiKey) throw new Error("perpsStream(): an apiKey is required")
+    const url = `${this.apiUrl.replace(/^http/, "ws")}/api/v1/agent/perps/stream?walletId=${encodeURIComponent(params.walletId)}`
+    // The socket may open a microtask later (the undici fallback on Node 18/20 loads lazily), so
+    // close() before the connection exists is remembered and applied the moment it does.
+    let socket: PerpsStreamWebSocket | null = null
+    let clientClosed = false
+    let finished = false
+    const finish = (code: number, reason: string) => {
+      if (finished) return
+      finished = true
+      params.onClose?.({ code, reason })
+    }
+    void openPerpsStreamSocket(url, { headers: { "x-api-key": apiKey } }, this.perpsStreamWebSocket)
+      .then((opened) => {
+        socket = opened
+        opened.onmessage = (event) => {
+          const data = typeof event.data === "string" ? event.data : ""
+          let frame: unknown
+          try {
+            frame = JSON.parse(data)
+          } catch {
+            return
+          }
+          if (frame && typeof frame === "object") params.onMessage(frame as PerpsStreamFrame)
+        }
+        opened.onclose = (event) =>
+          finish(Number((event as { code?: number }).code) || 1006, String((event as { reason?: string }).reason ?? ""))
+        opened.onerror = () => {
+          // The HTTP refusals (429 caps, 503 monitor/streamCapacity) surface as error-then-close.
+        }
+        if (clientClosed) opened.close(1000, "client closed")
+      })
+      .catch((error) => {
+        if (!clientClosed) finish(1006, error instanceof Error ? error.message : String(error))
+      })
+    const closeWith = (reason: string) => {
+      if (clientClosed && !socket) return
+      clientClosed = true
+      // 0 CONNECTING and 1 OPEN are the states where a close is ours to send; a socket already
+      // gone reports its own close through onclose.
+      if (socket && (socket.readyState === 0 || socket.readyState === 1)) socket.close(1000, reason)
+    }
+    params.signal?.addEventListener("abort", () => closeWith("aborted"), { once: true })
+    return {
+      close() {
+        closeWith("client closed")
+      },
+    }
+  }
+
   private async perpsThresholdsOrDefaults(): Promise<PerpsRiskSettingsResult> {
     try {
       return await this.getPerpsRisk()
@@ -6539,7 +6701,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.5"
+export const SDK_VERSION = "0.6.6"
 
 let sdkUpdateWarned = false
 

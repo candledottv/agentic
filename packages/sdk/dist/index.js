@@ -3684,6 +3684,19 @@ ${lines.join(`
 function historyTime(value) {
   return value instanceof Date ? String(value.getTime()) : String(value);
 }
+async function openPerpsStreamSocket(url, options, injected) {
+  if (injected)
+    return new injected(url, options);
+  const globalWebSocket = globalThis.WebSocket;
+  if (globalWebSocket)
+    return new globalWebSocket(url, options);
+  try {
+    const undici = await import("undici");
+    return new undici.WebSocket(url, options);
+  } catch (error) {
+    throw new Error(`perpsStream(): this runtime has no header-capable WebSocket and undici could not be loaded (${error instanceof Error ? error.message : String(error)}). Pass perpsStreamWebSocket in ` + "CandleClientOptions — undici's WebSocket works on Node 18+ (https://undici.nodejs.org/api/WebSocket)");
+  }
+}
 var HYPERLIQUID_RELAY_CHAIN_ID = 1337;
 var HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000";
 function perpsClientId(clientId) {
@@ -3768,7 +3781,7 @@ function isBlockhashExpiry(error) {
 function withRpcLagHint(error) {
   return new JsonRpcError({
     code: error.code,
-    message: `${error.message} -- this transaction was rebuilt with a fresh blockhash ${MAX_BLOCKHASH_REBUILDS} times ` + "and still failed at broadcast, which usually means the configured Solana RPC is lagging or " + "rate-limited. Point solanaRpcUrl at a fast endpoint (for example Helius).",
+    message: `${error.message} -- this transaction was rebuilt with a fresh blockhash ${MAX_BLOCKHASH_REBUILDS} times and still failed at broadcast, which usually means the configured Solana RPC is lagging or rate-limited. Point solanaRpcUrl at a fast endpoint (for example Helius).`,
     data: error.data
   });
 }
@@ -3849,7 +3862,7 @@ function assertTransportSecurity(apiUrl, allowInsecureHttp) {
     return;
   if (allowInsecureHttp && isPrivateHost(parsed.hostname))
     return;
-  throw new Error(`CandleClient: refusing to send credentials in the clear to ${parsed.origin}. Use https://.` + (isPrivateHost(parsed.hostname) ? " Pass allowInsecureHttp: true if this really is a trusted local endpoint." : " allowInsecureHttp does not apply here: it covers private networks only, and this is a" + " public address."));
+  throw new Error(`CandleClient: refusing to send credentials in the clear to ${parsed.origin}. Use https://.` + (isPrivateHost(parsed.hostname) ? " Pass allowInsecureHttp: true if this really is a trusted local endpoint." : " allowInsecureHttp does not apply here: it covers private networks only, and this is a public address."));
 }
 var REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 var MAX_REDIRECTS = 5;
@@ -3906,6 +3919,7 @@ class CandleClient {
   perpsMarketReader;
   hyperliquidBuilder;
   perpsWithdrawPins;
+  perpsStreamWebSocket;
   perps = {
     withdraw: {
       build: async (request) => {
@@ -4000,6 +4014,8 @@ class CandleClient {
       this.evmRpcUrl = opts.evmRpcUrl;
     this.hyperliquidNetwork = opts.hyperliquidNetwork ?? "mainnet";
     this.perpsWithdrawPins = opts.perpsWithdrawPins ?? CANDLE_PERPS_WITHDRAW_PINS;
+    if (opts.perpsStreamWebSocket !== undefined)
+      this.perpsStreamWebSocket = opts.perpsStreamWebSocket;
     if (opts.hyperliquidBuilder !== undefined)
       this.hyperliquidBuilder = opts.hyperliquidBuilder;
   }
@@ -4337,10 +4353,10 @@ class CandleClient {
   async signLinkedTransaction(params) {
     this.requireKey("signLinkedTransaction()");
     if (!this.privyAppId) {
-      throw new Error("signLinkedTransaction() requires privyAppId: pass one in CandleClientOptions " + "(new CandleClient({ privyAppId })) -- the same Privy app id the sign relay authenticates under");
+      throw new Error("signLinkedTransaction() requires privyAppId: pass one in CandleClientOptions (new CandleClient({ privyAppId })) -- the same Privy app id the sign relay authenticates under");
     }
     if (!this.secretStore) {
-      throw new Error("signLinkedTransaction() requires a secretStore: pass one in CandleClientOptions " + "(new CandleClient({ secretStore }))");
+      throw new Error("signLinkedTransaction() requires a secretStore: pass one in CandleClientOptions (new CandleClient({ secretStore }))");
     }
     if (params.chain === "solana" && !params.unsignedTransactionBase64) {
       throw new Error('signLinkedTransaction() for chain "solana" requires unsignedTransactionBase64');
@@ -4350,7 +4366,7 @@ class CandleClient {
     }
     const privateKeyPem = await this.secretStore.get(params.linkedWalletId);
     if (!privateKeyPem) {
-      throw new Error(`signLinkedTransaction(): no signer key stored for linked wallet "${params.linkedWalletId}" -- ` + "import or set one in the configured secretStore first");
+      throw new Error(`signLinkedTransaction(): no signer key stored for linked wallet "${params.linkedWalletId}" -- import or set one in the configured secretStore first`);
     }
     const body = params.chain === "solana" ? { method: "signTransaction", params: { transaction: params.unsignedTransactionBase64, encoding: "base64" } } : { method: "eth_signTransaction", params: { transaction: params.evmTxParams } };
     const authorizationSignature = await buildPrivyAuthorizationSignature({
@@ -4365,12 +4381,12 @@ class CandleClient {
   async broadcastSignedTransaction(chain, signedTransaction, encoding) {
     if (chain === "solana") {
       if (!this.solanaRpcUrl) {
-        throw new Error('broadcastSignedTransaction() for chain "solana" requires solanaRpcUrl: pass one in ' + "CandleClientOptions (new CandleClient({ solanaRpcUrl }))");
+        throw new Error('broadcastSignedTransaction() for chain "solana" requires solanaRpcUrl: pass one in CandleClientOptions (new CandleClient({ solanaRpcUrl }))');
       }
       return this.jsonRpcCall(this.solanaRpcUrl, "sendTransaction", [signedTransaction, { encoding }]);
     }
     if (!this.evmRpcUrl) {
-      throw new Error('broadcastSignedTransaction() for chain "evm" requires evmRpcUrl: pass one in CandleClientOptions ' + "(new CandleClient({ evmRpcUrl }))");
+      throw new Error('broadcastSignedTransaction() for chain "evm" requires evmRpcUrl: pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))');
     }
     return this.jsonRpcCall(this.evmRpcUrl, "eth_sendRawTransaction", [signedTransaction]);
   }
@@ -4442,7 +4458,7 @@ class CandleClient {
       return this.submit({ clientTradeId: built.clientTradeId, signedTransactions: [signed.signedTransaction] });
     }
     if (!this.evmRpcUrl) {
-      throw new Error('trade({ from: <linked> }) on chain "hood" requires evmRpcUrl, because hood is an EVM chain: ' + "pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))");
+      throw new Error('trade({ from: <linked> }) on chain "hood" requires evmRpcUrl, because hood is an EVM chain: pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))');
     }
     const rpc = this.evmRpc();
     const from = built.walletAddress;
@@ -4605,7 +4621,7 @@ class CandleClient {
     }
     const hoodBuilt = built;
     if (!this.evmRpcUrl) {
-      throw new Error('selfLaunch() on chain "hood" requires evmRpcUrl, because hood is an EVM chain: ' + "pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))");
+      throw new Error('selfLaunch() on chain "hood" requires evmRpcUrl, because hood is an EVM chain: pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))');
     }
     const rpc = this.evmRpc();
     const from = hoodBuilt.walletAddress;
@@ -5046,7 +5062,7 @@ class CandleClient {
   async perpsAccount(params) {
     this.requireKey("perpsAccount()");
     const now = Date.now();
-    const startTime = params.since ?? now - 24 * 60 * 60 * 1000;
+    const startTime = params.since ?? now - 86400000;
     if (!Number.isSafeInteger(startTime) || startTime >= now || now - startTime > PERPS_RECENT_MAX_MS)
       throw new Error("perpsAccount(): since must be an epoch-ms time within the last 30 days");
     const address = params.address ?? await this.perpsWalletAddress(params.walletId);
@@ -5085,6 +5101,56 @@ class CandleClient {
   }
   async perpsPortfolioSection(wallets) {
     return perpsPortfolioSection(this.fetchImpl, this.hyperliquidNetwork, wallets);
+  }
+  perpsStream(params) {
+    this.requireKey("perpsStream()");
+    const apiKey = this.apiKey;
+    if (!apiKey)
+      throw new Error("perpsStream(): an apiKey is required");
+    const url = `${this.apiUrl.replace(/^http/, "ws")}/api/v1/agent/perps/stream?walletId=${encodeURIComponent(params.walletId)}`;
+    let socket = null;
+    let clientClosed = false;
+    let finished = false;
+    const finish = (code, reason) => {
+      if (finished)
+        return;
+      finished = true;
+      params.onClose?.({ code, reason });
+    };
+    openPerpsStreamSocket(url, { headers: { "x-api-key": apiKey } }, this.perpsStreamWebSocket).then((opened) => {
+      socket = opened;
+      opened.onmessage = (event) => {
+        const data = typeof event.data === "string" ? event.data : "";
+        let frame;
+        try {
+          frame = JSON.parse(data);
+        } catch {
+          return;
+        }
+        if (frame && typeof frame === "object")
+          params.onMessage(frame);
+      };
+      opened.onclose = (event) => finish(Number(event.code) || 1006, String(event.reason ?? ""));
+      opened.onerror = () => {};
+      if (clientClosed)
+        opened.close(1000, "client closed");
+    }).catch((error) => {
+      if (!clientClosed)
+        finish(1006, error instanceof Error ? error.message : String(error));
+    });
+    const closeWith = (reason) => {
+      if (clientClosed && !socket)
+        return;
+      clientClosed = true;
+      if (socket && (socket.readyState === 0 || socket.readyState === 1))
+        socket.close(1000, reason);
+    };
+    params.signal?.addEventListener("abort", () => closeWith("aborted"), { once: true });
+    return {
+      close() {
+        closeWith("client closed");
+      }
+    };
   }
   async perpsThresholdsOrDefaults() {
     try {
@@ -5589,7 +5655,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.5";
+var SDK_VERSION = "0.6.6";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

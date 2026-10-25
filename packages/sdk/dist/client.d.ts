@@ -131,6 +131,13 @@ export interface CandleClientOptions {
      * 2026-10-18). Pins of null would refuse every withdrawal with nothing signed.
      */
     perpsWithdrawPins?: PerpsWithdrawPins;
+    /**
+     * The header-capable WebSocket constructor {@link CandleClient.perpsStream} opens through.
+     * Default resolution: the global WebSocket (Bun, Node 22+), then undici's WebSocket (this
+     * package's runtime dependency, covering Node 18 and 20, which ship no global one), then a
+     * clear error. Inject one only to route through your own implementation or a pinned undici.
+     */
+    perpsStreamWebSocket?: new (url: string, options: PerpsStreamSocketOptions) => PerpsStreamWebSocket;
 }
 /** The bonding-curve terms of one (chain, quote asset, tier) cell. */
 export interface CurveTerms {
@@ -2222,6 +2229,42 @@ export interface PerpsConfig {
     allowedActionTypes: string[];
     limits: Record<string, unknown>;
 }
+/**
+ * One frame of the private perps stream (Hyperliquid phase 3, P3-7): `{type, seq, at, ...}` with
+ * `seq` per connection. `snapshot` carries the account line, positions, open orders, the risk
+ * report, the monitor block and `ordersSource: "push" | "poll"`; `positions` and `risk` follow
+ * the server monitor's reads (`risk.reason` instead of `risk` when the level went unknown); `order`
+ * and `fill` carry the venue's own rows (a poll-source vanished order has `status: "gone"`);
+ * `heartbeat` repeats the level with the monitor block; `error` carries a `PERPS_*` code.
+ */
+export interface PerpsStreamFrame {
+    type: "snapshot" | "positions" | "risk" | "order" | "fill" | "heartbeat" | "error";
+    seq: number;
+    at: string;
+    [field: string]: unknown;
+}
+/**
+ * The header-capable WebSocket surface {@link CandleClient.perpsStream} needs. The global
+ * WebSocket satisfies it on Bun and Node 22+; on Node 18/20 the SDK falls back to undici's
+ * (a runtime dependency), which is also the shape to pass as
+ * {@link CandleClientOptions.perpsStreamWebSocket} when a caller wants to supply its own.
+ */
+export interface PerpsStreamWebSocket {
+    readonly readyState: number;
+    send(data: string): void;
+    close(code?: number, reason?: string): void;
+    onmessage: ((event: {
+        data: unknown;
+    }) => void) | null;
+    onclose: ((event: {
+        code: number;
+        reason: string;
+    }) => void) | null;
+    onerror: ((event: unknown) => void) | null;
+}
+export interface PerpsStreamSocketOptions {
+    headers: Record<string, string>;
+}
 export interface PerpsPositions {
     success: true;
     walletId: string;
@@ -3015,6 +3058,7 @@ export declare class CandleClient {
     private perpsMarketReader?;
     private hyperliquidBuilder?;
     private readonly perpsWithdrawPins;
+    private readonly perpsStreamWebSocket?;
     /**
      * Hyperliquid withdrawals (spec 2026-10-17-hyperliquid-withdrawals-design.md): the routes, one call
      * each. Needs `perps:withdraw` on the key. `perpsWithdraw()` is the checked flow.
@@ -3898,6 +3942,37 @@ export declare class CandleClient {
         label?: string;
         walletId?: string;
     }[]): Promise<PerpsPortfolioSection>;
+    /**
+     * The private per-key stream (Hyperliquid phase 3, P3-7): opens Candle's
+     * `GET /api/v1/agent/perps/stream?walletId=` WebSocket with this client's key on the upgrade
+     * headers. Header-capable WebSocket required, so browsers are out of this surface (E14): Bun
+     * and Node 22+ use their global WebSocket, Node 18 and 20 fall back to undici's (this
+     * package's runtime dependency), and CandleClientOptions.perpsStreamWebSocket overrides both.
+     * Requires the server's risk monitor (`HYPERLIQUID_MONITOR` shadow or on): with it off the
+     * upgrade is refused 503 and the socket closes with that refusal.
+     *
+     * `onMessage` receives every frame as parsed JSON: `snapshot` on connect (the account line,
+     * positions, open orders, the risk report, the monitor block and `ordersSource` "push" or
+     * "poll"), `positions`, `risk`, `order`, `fill` and `heartbeat` every 30 s, and `error` when a
+     * source read failed. A revoked, paused or expired key is closed with code 4401; a slow
+     * consumer with 1013. Nothing is replayed on reconnect: a reconnect gets a fresh `snapshot`,
+     * and fills missed while disconnected are read from `perpsFills()` (`GET /perps/fills`).
+     *
+     * Returns the handle; `close()` ends it (a close before the connection opens is applied the
+     * moment it does), and an aborted `signal` closes it too.
+     */
+    perpsStream(params: {
+        walletId: string;
+        onMessage: (frame: PerpsStreamFrame) => void;
+        /** How the socket ended, once: its close code and reason (4401 key stopped, 1013 slow consumer). */
+        onClose?: (close: {
+            code: number;
+            reason: string;
+        }) => void;
+        signal?: AbortSignal;
+    }): {
+        close(): void;
+    };
     private perpsThresholdsOrDefaults;
     /**
      * Deposit onto the key's Hyperliquid account through Relay (Perps C, HL-ED-8): build, check the
@@ -4023,7 +4098,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.5";
+export declare const SDK_VERSION = "0.6.6";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

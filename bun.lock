@@ -7,7 +7,7 @@
     },
     "packages/cli": {
       "name": "@candledottv/cli",
-      "version": "0.11.18",
+      "version": "0.11.39",
       "bin": {
         "candle": "./dist/index.js",
       },
@@ -34,7 +34,7 @@
     },
     "packages/mcp": {
       "name": "@candledottv/mcp",
-      "version": "0.10.8",
+      "version": "0.10.21",
       "bin": {
         "candle-mcp": "./dist/index.js",
       },
@@ -50,13 +50,14 @@
     },
     "packages/sdk": {
       "name": "@candledottv/agent-sdk",
-      "version": "0.4.8",
+      "version": "0.6.6",
       "dependencies": {
         "@hpke/chacha20poly1305": "^1.6.2",
         "@hpke/core": "^1.7.2",
         "@noble/hashes": "1.8.0",
         "@scure/base": "^1.2.6",
         "canonicalize": "^2.1.0",
+        "undici": "^6.29.1",
       },
       "devDependencies": {
         "@privy-io/server-auth": "^1.32.5",
@@ -433,6 +434,8 @@
     "type-is": ["type-is@2.1.0", "", { "dependencies": { "content-type": "^2.0.0", "media-typer": "^1.1.0", "mime-types": "^3.0.0" } }, "sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "undici": ["undici@6.29.1", "", {}, "sha512-EvRlUt/QqAEvXdQeRMYUfwOQsfzpDztykrG2owGEE/rBOBoYv9uF39ZzsNDh4lTFHhTr2XOZjKkYgueD12ZmGA=="],
 
     "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
 

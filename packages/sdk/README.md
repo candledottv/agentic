@@ -8,13 +8,16 @@ uploads), ships the webhook signature verifier, and drives the client-side HPKE 
 linked-wallet import, so an agent integrates against typed methods instead of hand-rolled HTTP.
 The full guide is [TypeScript SDK](https://docs.candle.tv/developers/sdk).
 
-Built on the global `fetch`; runs on Bun and Node 18+. Five runtime dependencies:
+Built on the global `fetch`; runs on Bun and Node 18+. Six runtime dependencies:
 `@hpke/core`, `@hpke/chacha20poly1305` and `@scure/base` power `importWallet()`'s client-side
-HPKE seal and base58 decode (see "Importing a wallet" below), and `canonicalize` and
+HPKE seal and base58 decode (see "Importing a wallet" below), `canonicalize` and
 `@noble/hashes` build the payloads a key signer signs (Privy authorization signatures and
 Hyperliquid actions). The one `node:` builtin used is `node:crypto` (webhook
 verification only), which Bun also provides. Edge runtimes without `node:crypto` would need a
-Web Crypto port of the verifier; that is a deliberate later concern.
+Web Crypto port of the verifier; that is a deliberate later concern. `undici` supplies the
+header-capable WebSocket `client.perpsStream()` opens through on Node 18 and 20, which ship no
+global one (Bun and Node 22+ use their global WebSocket; pass `perpsStreamWebSocket` in
+`CandleClientOptions` to inject your own).
 
 ```bash
 npm i @candledottv/agent-sdk
