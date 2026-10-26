@@ -10,6 +10,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { run } from "../index"
+import { homeRepository, updateHomeFor } from "../release"
 import {
   createCapture,
   createFakeConfigStore,
@@ -55,11 +56,12 @@ describe("doctor", () => {
           account: "FaKwE2xX",
           wallets: { solana: { address: "abc", delegated: false }, evm: null },
         }),
-      // No CANDLE_RELEASE_BASE_URL override in this fixture, so the default RELEASE_BASE_URL
-      // (https://github.com/candledottv/agentic) applies, and its own path segment is part of
-      // the pathname `createRoutedFetch` routes on -- unlike the other fixtures below, which set
+      // No CANDLE_RELEASE_BASE_URL override in this fixture, so the home `candle update` reads
+      // for this version applies (https://github.com/candledottv/agentic below the bridge,
+      // candledottv/cli from it on), and its own path segment is part of the pathname
+      // `createRoutedFetch` routes on -- unlike the other fixtures below, which set
       // CANDLE_RELEASE_BASE_URL to a bare host and register the manifest at the plain path.
-      "/candledottv/agentic/releases/latest/download/latest.json": () =>
+      [`/${homeRepository(updateHomeFor(CLI_VERSION))}/releases/latest/download/latest.json`]: () =>
         jsonResponse(200, { version: CLI_VERSION, tag: `cli-v${CLI_VERSION}`, assets: {} }),
     })
     const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_x" })

@@ -13,14 +13,21 @@ import { createHash } from "node:crypto"
 import type { Deps } from "../deps"
 import { run } from "../index"
 import { formatBytes } from "../progress"
-import { BRIDGE_VERSION, RELEASE_ISSUER } from "../release"
+import { BRIDGE_VERSION, compareVersions, RELEASE_ISSUER, releaseIdentityUri } from "../release"
 import { createCapture, createRoutedFetch, createTestDeps, jsonResponse, type RouteHandler } from "../test-support"
 import { CLI_VERSION } from "../version"
 import { SIGNATURE_VERIFIED, update } from "./update"
 
-/** The newest release a binary below the bridge can reach is the bridge itself: everything later is
- * released from the other home, which these binaries never read (the bridge tests below). */
-const NEWER = BRIDGE_VERSION
+/** A newer release this binary can reach from the home it reads. Below the bridge that is the bridge
+ * itself (everything later is released from the other home, which those binaries never read); from
+ * the bridge on it is a later version, released from cli (the bridge tests below). */
+const NEWER =
+  compareVersions(CLI_VERSION, BRIDGE_VERSION) < 0
+    ? BRIDGE_VERSION
+    : `${CLI_VERSION.split(".")[0]}.${Number(CLI_VERSION.split(".")[1]) + 1}.0`
+/** Whether this binary is B itself: the one version whose own release sits in the OTHER home from
+ * the one it reads for updates, so no manifest in its update home can name it. */
+const IS_BRIDGE = CLI_VERSION === BRIDGE_VERSION
 const BINARY = new TextEncoder().encode("#!/bin/sh\necho new\n")
 const HELPER_BYTES = new TextEncoder().encode("#!/bin/sh\necho candle-fido2 new\n")
 const HELPER_ASSET = "candle-fido2-linux-x64"
@@ -111,9 +118,15 @@ describe("update", () => {
 
   test("up to date says so and stops", async () => {
     const f = fixture(CLI_VERSION)
-    const { deps, stdout, writes } = binaryDeps(f.fetch)
-    expect(await run(["update"], deps)).toBe(0)
-    expect(stdout.text).toContain(`candle ${CLI_VERSION} is up to date`)
+    const { deps, stdout, stderr, writes } = binaryDeps(f.fetch)
+    if (IS_BRIDGE) {
+      // B reads cli, and cli never releases B: a cli manifest naming B is the other home's version.
+      expect(await run(["update"], deps)).toBe(1)
+      expect(stderr.text).toContain(`${CLI_VERSION} is released from candledottv/agentic, not candledottv/cli`)
+    } else {
+      expect(await run(["update"], deps)).toBe(0)
+      expect(stdout.text).toContain(`candle ${CLI_VERSION} is up to date`)
+    }
     expect(writes).toHaveLength(0)
   })
 
@@ -131,9 +144,7 @@ describe("update", () => {
     // What the verifier is asked is the whole point of the command: the exact bytes that were
     // written, against the identity of THAT version's release workflow.
     expect(seen).toHaveLength(1)
-    expect(seen[0]?.identityUri).toBe(
-      `https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${NEWER}`,
-    )
+    expect(seen[0]?.identityUri).toBe(releaseIdentityUri(NEWER))
     expect(seen[0]?.issuer).toBe(RELEASE_ISSUER)
     expect(Array.from(seen[0]?.bytes ?? [])).toEqual(Array.from(BINARY))
     expect(writes).toHaveLength(1)
