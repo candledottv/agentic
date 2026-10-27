@@ -11,7 +11,7 @@ import { apiRequest, browserUrl, DEFAULT_API_URL, insecureApiUrlFault, resolveAp
 
 type CapturedRequest = { url: string; init: RequestInit }
 
-let originalFetch: typeof fetch
+let originalFetch: typeof fetch = globalThis.fetch
 let lastRequest: CapturedRequest | undefined
 
 function stubFetch(respond: (req: CapturedRequest) => Response) {
