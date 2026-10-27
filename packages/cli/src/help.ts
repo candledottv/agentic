@@ -80,6 +80,14 @@ export const ENVIRONMENT: EnvVar[] = [
   },
   { name: "CANDLE_PROFILE", description: "The profile to act as, when --profile is not given" },
   { name: "CANDLE_API_URL", description: "API base URL, when --api-url is not given" },
+  {
+    name: "CANDLE_X402_NETWORK",
+    description: "The network per-use x402 payments are made on: mainnet (default) or devnet, for tests",
+  },
+  {
+    name: "CANDLE_X402_PAY_TO",
+    description: "Devnet tests only: the address devnet x402 payments go to (mainnet pays its pinned address)",
+  },
   { name: "CANDLE_API_KEY", description: "An agent API key; beats the stored one" },
   { name: "CANDLE_DEVICE_TOKEN", description: "A device token, for key-management commands" },
   {
@@ -843,14 +851,76 @@ export const HELP: Record<string, Topic> = {
   },
   token: {
     group: "Account",
-    summary: "Optional third-party token cluster analysis",
+    summary: "Token cluster analysis, forensics and the vamp finder",
     description:
-      "Reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none.",
-    usage: ["candle token clusters <mint> [--chain solana|hood] [--json]"],
-    rows: [{ invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" }],
-    flags: [{ invocation: "--chain <chain>", description: "solana (default) or hood; Hood analysis is unavailable" }],
-    examples: ["candle token clusters <mint>", "candle token clusters <mint> --json"],
-    env: ["CANDLE_API_URL"],
+      "clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
+    usage: [
+      "candle token clusters <mint> [--chain solana|hood] [--json]",
+      "candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes] [--json]",
+      "candle token vamp-candidates [--limit <n>] [--min-copies <n>] [--stage final_stretch|graduated|all] [--wallet <vault key>] [--yes] [--json]",
+    ],
+    rows: [
+      { invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" },
+      { invocation: "forensics <mint>", description: "Token forensics; may cost a per-use payment past the free rate" },
+      {
+        invocation: "vamp-candidates",
+        description: "Tokens near graduation whose ticker others copy; may cost a per-use payment",
+      },
+    ],
+    flags: [
+      { invocation: "--chain <chain>", description: "solana (default) or hood; Hood cluster analysis is unavailable" },
+      { invocation: "--limit <n>", description: "vamp-candidates: how many to list" },
+      { invocation: "--min-copies <n>", description: "vamp-candidates: copies in the last 24h, at least" },
+      { invocation: "--stage <stage>", description: "vamp-candidates: final_stretch, graduated or all (default)" },
+      {
+        invocation: "--wallet <vault key>",
+        description: "The Solana vault key that pays, by label or address (needed when the vault has several)",
+      },
+      { invocation: "--yes", description: "Pay without the typed confirm (the vault unlock still prompts)" },
+    ],
+    examples: [
+      "candle token clusters <mint>",
+      "candle token clusters <mint> --json",
+      "candle token forensics <mint>",
+      "candle token vamp-candidates --stage graduated --json",
+    ],
+    env: ["CANDLE_API_URL", "CANDLE_X402_NETWORK", "CANDLE_X402_PAY_TO"],
+  },
+  spend: {
+    group: "Account",
+    summary: "x402 per-use payments: the local log, the daily limit, the per-call ceiling, pause",
+    description:
+      "Every per-use x402 payment this machine makes is checked first against limits kept on this machine, per profile: payments not paused, the price at most the per-call ceiling (default $1), and today's per-use total (UTC, counting payments not yet confirmed) plus the price at most the daily limit (default $5). The pay-to address must be the one this CLI pins for the network. Each payment is logged before it is sent, in <config dir>/spend/<profile>.jsonl (mode 0600), and its outcome after: settled, failed (nothing moved), unknown (not yet known; counted until resolved) or credited (Candle failed to serve a settled call and credited it). candle spend shows the log, today's total and the Candle credit balance (with an API key); an unknown older than 15 minutes is resolved against the server's payment list when the profile has a key. Plan purchases are not per-use and are outside the daily limit.",
+    usage: [
+      "candle spend [--days <n>] [--json]",
+      "candle spend limit [<usd>]",
+      "candle spend max-per-call [<usd>]",
+      "candle spend pause",
+      "candle spend resume",
+    ],
+    rows: [
+      { invocation: "limit [<usd>]", description: "Show or set the daily per-use limit (default $5)" },
+      { invocation: "max-per-call [<usd>]", description: "Show or set the per-call ceiling (default $1)" },
+      { invocation: "pause", description: "Stop every per-use payment until resumed" },
+      { invocation: "resume", description: "Allow per-use payments again" },
+    ],
+    flags: [{ invocation: "--days <n>", description: "How many days of the log to show (default 7)" }],
+    examples: ["candle spend", "candle spend --days 30 --json", "candle spend limit 2", "candle spend pause"],
+    env: ["CANDLE_CONFIG_DIR", "CANDLE_API_URL"],
+  },
+  quant: {
+    group: "Account",
+    summary: "Quant's terms, which per-use Quant answers need accepted first",
+    description:
+      "terms shows Quant's terms and Privacy Policy and records this account's acceptance through its API key. Quant accepts only its current version; the default is the version this release was built with, and --terms-version sends another. A paid Quant answer past the daily limit is refused until the terms are accepted, before any payment is asked for.",
+    usage: ["candle quant terms [--terms-version <YYYY-MM-DD>] [--yes] [--json]"],
+    rows: [{ invocation: "terms", description: "Show Quant's terms and record acceptance" }],
+    flags: [
+      { invocation: "--terms-version <date>", description: "The terms version to accept, YYYY-MM-DD" },
+      { invocation: "--yes", description: "Accept without the typed confirm" },
+    ],
+    examples: ["candle quant terms", "candle quant terms --yes --json"],
+    env: ENV_API,
   },
   plans: {
     group: "Account",

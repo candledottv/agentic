@@ -159,6 +159,12 @@ function buildHeaders(opts) {
   } else if (opts.auth === "key" && opts.credentials.apiKey) {
     headers["x-api-key"] = opts.credentials.apiKey;
   }
+  for (const [name, value] of Object.entries(opts.headers ?? {})) {
+    const lower = name.toLowerCase();
+    if (lower === "authorization" || lower === "x-api-key")
+      continue;
+    headers[name] = value;
+  }
   return headers;
 }
 async function fetchSameOriginRedirects(doFetch, url, init) {
@@ -225,6 +231,16 @@ function classifyError(status, raw) {
 function latestCliVersionFromApi() {
   return latestCliVersionSeen;
 }
+function headersOf(response) {
+  const headers = response.headers;
+  if (!headers || typeof headers.forEach !== "function")
+    return;
+  const out = {};
+  headers.forEach((value, name) => {
+    out[name.toLowerCase()] = value;
+  });
+  return out;
+}
 async function apiRequest(path, opts) {
   const url = buildUrl(opts.apiUrl, path);
   const insecure = insecureApiUrlFault(opts.apiUrl, opts.env ?? process.env);
@@ -235,7 +251,7 @@ async function apiRequest(path, opts) {
   const body = opts.raw ? opts.raw.bytes : opts.body === undefined ? undefined : JSON.stringify(opts.body);
   const doFetch = opts.fetch ?? fetch;
   const init = { method: opts.method ?? "GET", headers, body };
-  const credentialed = "x-api-key" in headers || "authorization" in headers;
+  const credentialed = Object.keys(headers).some((name) => PROTECTED_REQUEST_HEADERS.has(name.toLowerCase()));
   let response;
   try {
     response = credentialed ? await fetchSameOriginRedirects(doFetch, url, init) : await doFetch(url, init);
@@ -258,13 +274,20 @@ async function apiRequest(path, opts) {
     latestCliVersionSeen = latestHeader;
   const text = await response.text();
   const raw = parseBody(text);
+  const responseHeaders = headersOf(response);
   if (response.ok) {
-    return { ok: true, status: response.status, body: raw };
+    return { ok: true, status: response.status, body: raw, ...responseHeaders ? { headers: responseHeaders } : {} };
   }
   const classified = classifyError(response.status, raw);
-  return { ok: false, status: response.status, raw, ...classified };
+  return {
+    ok: false,
+    status: response.status,
+    raw,
+    ...classified,
+    ...responseHeaders ? { headers: responseHeaders } : {}
+  };
 }
-var DEFAULT_API_URL = "https://api.alpha.candle.tv", ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP", REDIRECT_STATUSES, MAX_REDIRECTS = 5, CrossOriginRedirectError, latestCliVersionSeen = null;
+var DEFAULT_API_URL = "https://api.alpha.candle.tv", ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP", REDIRECT_STATUSES, MAX_REDIRECTS = 5, CrossOriginRedirectError, PROTECTED_REQUEST_HEADERS, latestCliVersionSeen = null;
 var init_client = __esm(() => {
   REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
   CrossOriginRedirectError = class CrossOriginRedirectError extends Error {
@@ -277,6 +300,7 @@ var init_client = __esm(() => {
       this.name = "CrossOriginRedirectError";
     }
   };
+  PROTECTED_REQUEST_HEADERS = new Set(["x-api-key", "authorization", "payment-signature", "sign-in-with-x"]);
 });
 
 // src/args.ts
@@ -62058,7 +62082,7 @@ __export(exports_util, {
   joinValues: () => joinValues,
   issue: () => issue,
   isPlainObject: () => isPlainObject2,
-  isObject: () => isObject2,
+  isObject: () => isObject4,
   hexToUint8Array: () => hexToUint8Array,
   getSizableOrigin: () => getSizableOrigin,
   getParsedType: () => getParsedType3,
@@ -62225,11 +62249,11 @@ function esc(str) {
 function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
-function isObject2(data) {
+function isObject4(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 function isPlainObject2(o) {
-  if (isObject2(o) === false)
+  if (isObject4(o) === false)
     return false;
   const ctor = o.constructor;
   if (ctor === undefined)
@@ -62237,7 +62261,7 @@ function isPlainObject2(o) {
   if (typeof ctor !== "function")
     return true;
   const prot = ctor.prototype;
-  if (isObject2(prot) === false)
+  if (isObject4(prot) === false)
     return false;
   if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) {
     return false;
@@ -64118,13 +64142,13 @@ var init_schemas = __esm(() => {
       }
       return propValues;
     });
-    const isObject3 = isObject2;
+    const isObject5 = isObject4;
     const catchall = def.catchall;
     let value;
     inst._zod.parse = (payload, ctx) => {
       value ?? (value = _normalized.value);
       const input = payload.value;
-      if (!isObject3(input)) {
+      if (!isObject5(input)) {
         payload.issues.push({
           expected: "object",
           code: "invalid_type",
@@ -64222,7 +64246,7 @@ var init_schemas = __esm(() => {
       return (payload, ctx) => fn(shape, payload, ctx);
     };
     let fastpass;
-    const isObject3 = isObject2;
+    const isObject5 = isObject4;
     const jit = !globalConfig.jitless;
     const allowsEval2 = allowsEval;
     const fastEnabled = jit && allowsEval2.value;
@@ -64231,7 +64255,7 @@ var init_schemas = __esm(() => {
     inst._zod.parse = (payload, ctx) => {
       value ?? (value = _normalized.value);
       const input = payload.value;
-      if (!isObject3(input)) {
+      if (!isObject5(input)) {
         payload.issues.push({
           expected: "object",
           code: "invalid_type",
@@ -64335,7 +64359,7 @@ var init_schemas = __esm(() => {
     });
     inst._zod.parse = (payload, ctx) => {
       const input = payload.value;
-      if (!isObject2(input)) {
+      if (!isObject4(input)) {
         payload.issues.push({
           code: "invalid_type",
           expected: "object",
@@ -70458,7 +70482,7 @@ Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv â
 init_client();
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod13, readFile as readFile18, realpath as realpath2, rename as rename14, unlink, writeFile as writeFile13 } from "node:fs/promises";
+import { chmod as chmod14, readFile as readFile19, realpath as realpath2, rename as rename15, unlink, writeFile as writeFile14 } from "node:fs/promises";
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -71167,6 +71191,14 @@ var ENVIRONMENT = [
   },
   { name: "CANDLE_PROFILE", description: "The profile to act as, when --profile is not given" },
   { name: "CANDLE_API_URL", description: "API base URL, when --api-url is not given" },
+  {
+    name: "CANDLE_X402_NETWORK",
+    description: "The network per-use x402 payments are made on: mainnet (default) or devnet, for tests"
+  },
+  {
+    name: "CANDLE_X402_PAY_TO",
+    description: "Devnet tests only: the address devnet x402 payments go to (mainnet pays its pinned address)"
+  },
   { name: "CANDLE_API_KEY", description: "An agent API key; beats the stored one" },
   { name: "CANDLE_DEVICE_TOKEN", description: "A device token, for key-management commands" },
   {
@@ -71826,13 +71858,73 @@ var HELP = {
   },
   token: {
     group: "Account",
-    summary: "Optional third-party token cluster analysis",
-    description: "Reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none.",
-    usage: ["candle token clusters <mint> [--chain solana|hood] [--json]"],
-    rows: [{ invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" }],
-    flags: [{ invocation: "--chain <chain>", description: "solana (default) or hood; Hood analysis is unavailable" }],
-    examples: ["candle token clusters <mint>", "candle token clusters <mint> --json"],
-    env: ["CANDLE_API_URL"]
+    summary: "Token cluster analysis, forensics and the vamp finder",
+    description: "clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
+    usage: [
+      "candle token clusters <mint> [--chain solana|hood] [--json]",
+      "candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes] [--json]",
+      "candle token vamp-candidates [--limit <n>] [--min-copies <n>] [--stage final_stretch|graduated|all] [--wallet <vault key>] [--yes] [--json]"
+    ],
+    rows: [
+      { invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" },
+      { invocation: "forensics <mint>", description: "Token forensics; may cost a per-use payment past the free rate" },
+      {
+        invocation: "vamp-candidates",
+        description: "Tokens near graduation whose ticker others copy; may cost a per-use payment"
+      }
+    ],
+    flags: [
+      { invocation: "--chain <chain>", description: "solana (default) or hood; Hood cluster analysis is unavailable" },
+      { invocation: "--limit <n>", description: "vamp-candidates: how many to list" },
+      { invocation: "--min-copies <n>", description: "vamp-candidates: copies in the last 24h, at least" },
+      { invocation: "--stage <stage>", description: "vamp-candidates: final_stretch, graduated or all (default)" },
+      {
+        invocation: "--wallet <vault key>",
+        description: "The Solana vault key that pays, by label or address (needed when the vault has several)"
+      },
+      { invocation: "--yes", description: "Pay without the typed confirm (the vault unlock still prompts)" }
+    ],
+    examples: [
+      "candle token clusters <mint>",
+      "candle token clusters <mint> --json",
+      "candle token forensics <mint>",
+      "candle token vamp-candidates --stage graduated --json"
+    ],
+    env: ["CANDLE_API_URL", "CANDLE_X402_NETWORK", "CANDLE_X402_PAY_TO"]
+  },
+  spend: {
+    group: "Account",
+    summary: "x402 per-use payments: the local log, the daily limit, the per-call ceiling, pause",
+    description: "Every per-use x402 payment this machine makes is checked first against limits kept on this machine, per profile: payments not paused, the price at most the per-call ceiling (default $1), and today's per-use total (UTC, counting payments not yet confirmed) plus the price at most the daily limit (default $5). The pay-to address must be the one this CLI pins for the network. Each payment is logged before it is sent, in <config dir>/spend/<profile>.jsonl (mode 0600), and its outcome after: settled, failed (nothing moved), unknown (not yet known; counted until resolved) or credited (Candle failed to serve a settled call and credited it). candle spend shows the log, today's total and the Candle credit balance (with an API key); an unknown older than 15 minutes is resolved against the server's payment list when the profile has a key. Plan purchases are not per-use and are outside the daily limit.",
+    usage: [
+      "candle spend [--days <n>] [--json]",
+      "candle spend limit [<usd>]",
+      "candle spend max-per-call [<usd>]",
+      "candle spend pause",
+      "candle spend resume"
+    ],
+    rows: [
+      { invocation: "limit [<usd>]", description: "Show or set the daily per-use limit (default $5)" },
+      { invocation: "max-per-call [<usd>]", description: "Show or set the per-call ceiling (default $1)" },
+      { invocation: "pause", description: "Stop every per-use payment until resumed" },
+      { invocation: "resume", description: "Allow per-use payments again" }
+    ],
+    flags: [{ invocation: "--days <n>", description: "How many days of the log to show (default 7)" }],
+    examples: ["candle spend", "candle spend --days 30 --json", "candle spend limit 2", "candle spend pause"],
+    env: ["CANDLE_CONFIG_DIR", "CANDLE_API_URL"]
+  },
+  quant: {
+    group: "Account",
+    summary: "Quant's terms, which per-use Quant answers need accepted first",
+    description: "terms shows Quant's terms and Privacy Policy and records this account's acceptance through its API key. Quant accepts only its current version; the default is the version this release was built with, and --terms-version sends another. A paid Quant answer past the daily limit is refused until the terms are accepted, before any payment is asked for.",
+    usage: ["candle quant terms [--terms-version <YYYY-MM-DD>] [--yes] [--json]"],
+    rows: [{ invocation: "terms", description: "Show Quant's terms and record acceptance" }],
+    flags: [
+      { invocation: "--terms-version <date>", description: "The terms version to accept, YYYY-MM-DD" },
+      { invocation: "--yes", description: "Accept without the typed confirm" }
+    ],
+    examples: ["candle quant terms", "candle quant terms --yes --json"],
+    env: ENV_API
   },
   plans: {
     group: "Account",
@@ -93783,6 +93875,81 @@ async function profileRemove(args, ctx) {
   return 0;
 }
 
+// src/commands/quant-terms.ts
+init_args();
+init_client();
+init_deps();
+init_render();
+var QUANT_TERMS_VERSION = "2026-10-25";
+var QUANT_TERMS_URL = "https://docs.candle.tv/terms";
+var QUANT_PRIVACY_URL = "https://docs.candle.tv/privacy";
+async function quantTerms(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--terms-version"], booleanFlags: ["--yes"] });
+  const version = "error" in parsed ? "" : parsed.values["--terms-version"] ?? QUANT_TERMS_VERSION;
+  if ("error" in parsed || parsed.positionals.length !== 0 || !/^\d{4}-\d{2}-\d{2}$/.test(version)) {
+    writeUsageFailure(ctx.deps, "Usage: candle quant terms [--terms-version <YYYY-MM-DD>] [--yes] [--json]", ctx.json);
+    return 2;
+  }
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(ctx.deps, {
+      code: "NO_API_KEY",
+      message: "Quant's terms are accepted per account, through an API key, and this profile has none.",
+      suggestion: "Run: candle auth login"
+    }, ctx.json);
+    return 1;
+  }
+  const note = (line) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}
+`);
+  note(`Quant's terms (version ${version}): ${QUANT_TERMS_URL}`);
+  note(`Privacy Policy: ${QUANT_PRIVACY_URL}`);
+  if (!parsed.booleans.has("--yes")) {
+    if (!ctx.deps.isTTY.stdin) {
+      writeUsageFailure(ctx.deps, "Accepting needs a terminal to confirm at, or --yes.", ctx.json);
+      return 2;
+    }
+    const answer2 = await ctx.deps.promptLine(`Type accept to accept Quant's terms ${version}: `);
+    if (answer2.trim().toLowerCase() !== "accept") {
+      writeLocalFailure(ctx.deps, { code: "TERMS_NOT_ACCEPTED", message: "Not accepted; nothing was recorded." }, ctx.json);
+      return 1;
+    }
+  }
+  const result = await apiRequest("/api/v1/agent/quant/terms/accept", {
+    method: "POST",
+    body: { version },
+    apiUrl: ctx.apiUrl,
+    auth: "key",
+    credentials: { apiKey },
+    env: ctx.deps.env,
+    fetch: ctx.deps.fetch
+  });
+  if (result.ok) {
+    if (ctx.json)
+      ctx.deps.stdout.write(`${JSON.stringify({ ok: true, version })}
+`);
+    else
+      ctx.deps.stdout.write(`Accepted Quant's terms ${version}.
+`);
+    return 0;
+  }
+  const relayCode = result.raw?.code;
+  const code = typeof relayCode === "string" ? relayCode : result.code;
+  if (code === "terms_version_mismatch") {
+    writeLocalFailure(ctx.deps, {
+      code: "TERMS_VERSION_MISMATCH",
+      message: `Quant's current terms are not version ${version}; nothing was recorded.`,
+      suggestion: "Read the terms and pass the current version with --terms-version <YYYY-MM-DD>."
+    }, ctx.json);
+    return 1;
+  }
+  if (result.status === 404) {
+    writeLocalFailure(ctx.deps, { code: "QUANT_TERMS_UNAVAILABLE", message: "This API does not take Quant's terms over a key yet." }, ctx.json);
+    return 1;
+  }
+  writeFailure(ctx.deps, { ...result, ...typeof code === "string" ? { code } : {} }, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
+  return 1;
+}
+
 // src/commands/setup.ts
 init_args();
 init_client();
@@ -94333,6 +94500,493 @@ async function signMessage2(args, ctx) {
 `);
     return 0;
   });
+}
+
+// src/commands/spend.ts
+init_args();
+init_client();
+init_deps();
+init_render();
+
+// src/x402/spend-log.ts
+init_file_lock();
+init_store();
+import { appendFile as appendFile2, chmod as chmod10, mkdir as mkdir8, readFile as readFile16, rename as rename13, writeFile as writeFile11 } from "node:fs/promises";
+import { join as join14 } from "node:path";
+var DEFAULT_DAILY_LIMIT_USD_MICROS = 5000000n;
+var DEFAULT_MAX_PER_CALL_USD_MICROS = 1000000n;
+var UNKNOWN_RECONCILE_AFTER_MS = 15 * 60000;
+var STATES = ["pending", "settled", "failed", "unknown", "credited"];
+function spendPaths(env, home, profile) {
+  const dir = join14(candleConfigDir(env, home), "spend");
+  const name2 = profile ?? "default";
+  return { dir, log: join14(dir, `${name2}.jsonl`), limits: join14(dir, `${name2}.limits.json`) };
+}
+async function ensureDir(dir) {
+  await mkdir8(dir, { recursive: true, mode: 448 });
+  await chmod10(dir, 448).catch(() => {});
+}
+async function readIfPresent2(path) {
+  try {
+    return await readFile16(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT")
+      return null;
+    throw error;
+  }
+}
+var micros = (value, fallback) => typeof value === "string" && /^[0-9]{1,15}$/.test(value) ? BigInt(value) : fallback;
+async function readLimits(paths) {
+  const text3 = await readIfPresent2(paths.limits);
+  let raw = {};
+  if (text3 !== null) {
+    try {
+      const parsed = JSON.parse(text3);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
+        raw = parsed;
+    } catch {}
+  }
+  return {
+    dailyLimitUsdMicros: micros(raw.dailyLimitUsdMicros, DEFAULT_DAILY_LIMIT_USD_MICROS),
+    maxPerCallUsdMicros: micros(raw.maxPerCallUsdMicros, DEFAULT_MAX_PER_CALL_USD_MICROS),
+    paused: raw.paused === true
+  };
+}
+async function writeLimits(paths, limits) {
+  await ensureDir(paths.dir);
+  const body = `${JSON.stringify({
+    v: 1,
+    dailyLimitUsdMicros: limits.dailyLimitUsdMicros.toString(),
+    maxPerCallUsdMicros: limits.maxPerCallUsdMicros.toString(),
+    paused: limits.paused
+  })}
+`;
+  const temp = `${paths.limits}.tmp`;
+  await writeFile11(temp, body, { encoding: "utf8", mode: 384 });
+  await rename13(temp, paths.limits);
+}
+function parseLine(text3) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text3);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    return null;
+  const line = parsed;
+  if (line.v !== 1 || typeof line.id !== "string" || typeof line.at !== "string")
+    return null;
+  if (!STATES.includes(line.state))
+    return null;
+  return line;
+}
+async function readSpendLog(paths) {
+  const text3 = await readIfPresent2(paths.log);
+  if (text3 === null)
+    return [];
+  return text3.split(`
+`).map((line) => line.trim() === "" ? null : parseLine(line)).filter((line) => line !== null);
+}
+async function appendSpendLines(paths, lines) {
+  await ensureDir(paths.dir);
+  await appendFile2(paths.log, lines.map((line) => `${JSON.stringify(line)}
+`).join(""), {
+    encoding: "utf8",
+    mode: 384
+  });
+  await chmod10(paths.log, 384).catch(() => {});
+}
+function foldSpendLog(lines) {
+  const entries = new Map;
+  for (const line of lines) {
+    const existing = entries.get(line.id);
+    if (!existing) {
+      if (line.state !== "pending" || line.amountRaw === undefined || !/^[0-9]{1,20}$/.test(line.amountRaw))
+        continue;
+      entries.set(line.id, {
+        id: line.id,
+        startedAt: line.at,
+        updatedAt: line.at,
+        state: "pending",
+        kind: line.kind ?? "",
+        route: line.route ?? "",
+        network: line.network ?? "",
+        amountRaw: BigInt(line.amountRaw),
+        payTo: line.payTo ?? "",
+        payer: line.payer ?? "",
+        quoteMemo: line.quoteMemo ?? "",
+        keyless: line.keyless === true
+      });
+      continue;
+    }
+    existing.state = line.state;
+    existing.updatedAt = line.at;
+    if (line.signature !== undefined)
+      existing.signature = line.signature;
+    if (line.reason !== undefined)
+      existing.reason = line.reason;
+  }
+  return [...entries.values()];
+}
+function utcDay(at3) {
+  return new Date(at3).toISOString().slice(0, 10);
+}
+function spentOn(entries, day) {
+  let total = 0n;
+  for (const entry of entries) {
+    if (entry.state !== "failed" && utcDay(entry.startedAt) === day)
+      total += entry.amountRaw;
+  }
+  return total;
+}
+async function reserveSpend(paths, dailyLimitUsdMicros, pending, lock = withFileLock) {
+  await ensureDir(paths.dir);
+  return lock(paths.log, async () => {
+    const spentToday = spentOn(foldSpendLog(await readSpendLog(paths)), utcDay(pending.at));
+    if (spentToday + BigInt(pending.amountRaw) > dailyLimitUsdMicros)
+      return { ok: false, spentToday };
+    await appendSpendLines(paths, [pending]);
+    return { ok: true };
+  });
+}
+async function recordSpendState(paths, update) {
+  const line = {
+    v: 1,
+    at: update.at,
+    id: update.id,
+    state: update.state,
+    ...update.signature ? { signature: update.signature } : {},
+    ...update.reason ? { reason: update.reason } : {}
+  };
+  await withFileLock(paths.log, () => appendSpendLines(paths, [line]));
+}
+function usdText(usdMicros) {
+  const whole = usdMicros / 1000000n;
+  const fraction = (usdMicros % 1000000n).toString().padStart(6, "0").replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : `${whole}`;
+}
+
+// src/x402/reconcile.ts
+var MATCH_WINDOW_MS = 2 * 60000;
+function stateForServerStatus(status) {
+  switch (status) {
+    case "fulfilled":
+    case "settled":
+      return "settled";
+    case "credited":
+      return "credited";
+    case "rejected":
+    case "settle_failed":
+      return "failed";
+    default:
+      return null;
+  }
+}
+function readServerPayments(body) {
+  if (typeof body !== "object" || body === null)
+    return null;
+  const payments = body.payments;
+  if (!Array.isArray(payments))
+    return null;
+  return payments.filter((p) => typeof p === "object" && p !== null && typeof p.status === "string" && typeof p.payer === "string" && typeof p.amountUsdMicros === "string" && typeof p.kind === "string" && typeof p.createdAt === "string");
+}
+async function reconcileUnknown(paths, now, fetchPayments) {
+  const stale = foldSpendLog(await readSpendLog(paths)).filter((e) => e.state === "unknown" && now - Date.parse(e.startedAt) > UNKNOWN_RECONCILE_AFTER_MS);
+  if (stale.length === 0)
+    return 0;
+  const payments = await fetchPayments();
+  if (!payments)
+    return 0;
+  const used = new Set;
+  let resolved = 0;
+  for (const entry of stale) {
+    const started = Date.parse(entry.startedAt);
+    const candidates = payments.filter((p) => !used.has(p.id) && p.payer === entry.payer && p.kind === entry.kind && p.amountUsdMicros === entry.amountRaw.toString() && Math.abs(Date.parse(p.createdAt) - started) <= MATCH_WINDOW_MS).sort((a, b) => Math.abs(Date.parse(a.createdAt) - started) - Math.abs(Date.parse(b.createdAt) - started));
+    const match = candidates[0];
+    if (!match)
+      continue;
+    used.add(match.id);
+    const state = stateForServerStatus(match.status);
+    if (state === null)
+      continue;
+    await recordSpendState(paths, {
+      id: entry.id,
+      at: new Date(now).toISOString(),
+      state,
+      ...match.signature ? { signature: match.signature } : {},
+      reason: `server:${match.status}${match.reason ? `:${match.reason}` : ""}`
+    });
+    resolved++;
+  }
+  return resolved;
+}
+
+// src/x402/select.ts
+init_solana_lite();
+var NETWORK_ENV = "CANDLE_X402_NETWORK";
+var PAY_TO_ENV = "CANDLE_X402_PAY_TO";
+var SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+var SOLANA_DEVNET = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+var USDC_MINTS = {
+  [SOLANA_MAINNET]: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  [SOLANA_DEVNET]: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+};
+var MAINNET_PAY_TO = null;
+var DEVNET_RPC_URL = "https://api.devnet.solana.com";
+function isAddress2(value) {
+  try {
+    decodePubkey(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function networkConfig(env) {
+  const raw = env[NETWORK_ENV]?.trim() ?? "";
+  let network2;
+  if (raw === "" || raw === "mainnet" || raw === SOLANA_MAINNET)
+    network2 = SOLANA_MAINNET;
+  else if (raw === "devnet" || raw === SOLANA_DEVNET)
+    network2 = SOLANA_DEVNET;
+  else
+    return { ok: false, message: `${NETWORK_ENV} must be mainnet or devnet, not "${raw}".` };
+  const override = env[PAY_TO_ENV]?.trim() ?? "";
+  if (network2 === SOLANA_MAINNET) {
+    if (override !== "") {
+      return { ok: false, message: `${PAY_TO_ENV} is for devnet tests only; mainnet pays its pinned address.` };
+    }
+    return { ok: true, config: { network: network2, asset: USDC_MINTS[network2], payTo: MAINNET_PAY_TO } };
+  }
+  if (override !== "" && !isAddress2(override)) {
+    return { ok: false, message: `${PAY_TO_ENV} is not a Solana address.` };
+  }
+  return { ok: true, config: { network: network2, asset: USDC_MINTS[network2], payTo: override === "" ? null : override } };
+}
+var U64_MAX = 0xffffffffffffffffn;
+function describeOffer(r) {
+  return `${r.scheme} ${r.network} ${r.asset} ${r.amount}`;
+}
+function selectRequirement(required, config) {
+  const candidates = required.accepts.filter((r) => r.scheme === "exact" && r.network === config.network && r.asset === config.asset);
+  if (candidates.length === 0) {
+    const offered = required.accepts.map(describeOffer).join("; ") || "nothing";
+    return {
+      ok: false,
+      reason: `No offer this CLI can pay: it pays exact USDC on ${config.network}, and the server offered ${offered}.`
+    };
+  }
+  const requirement = candidates[0];
+  if (!/^[1-9][0-9]{0,19}$/.test(requirement.amount) || BigInt(requirement.amount) > U64_MAX) {
+    return {
+      ok: false,
+      reason: `The offer's amount is not a positive whole number of base units: ${requirement.amount}`
+    };
+  }
+  const feePayer = requirement.extra?.feePayer;
+  if (typeof feePayer !== "string" || !isAddress2(feePayer)) {
+    return { ok: false, reason: "The offer names no fee payer (extra.feePayer)." };
+  }
+  const memo = requirement.extra?.memo;
+  if (typeof memo !== "string" || !/^cndl:[0-9a-f]{32}$/.test(memo)) {
+    return { ok: false, reason: "The offer carries no Candle quote memo (extra.memo)." };
+  }
+  if (!isAddress2(requirement.payTo))
+    return { ok: false, reason: "The offer's payTo is not a Solana address." };
+  return { ok: true, selected: { requirement, amountRaw: BigInt(requirement.amount), feePayer, memo } };
+}
+function usdcText(amountRaw) {
+  const whole = amountRaw / 1000000n;
+  const fraction = (amountRaw % 1000000n).toString().padStart(6, "0").replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction.length < 2 ? fraction.padEnd(2, "0") : fraction}` : `${whole}`;
+}
+
+// src/commands/spend.ts
+var DAY_MS = 86400000;
+function pathsOf(ctx) {
+  try {
+    return spendPaths(ctx.deps.env, ctx.deps.homedir(), ctx.profile);
+  } catch (error) {
+    writeUsageFailure(ctx.deps, error instanceof Error ? error.message : String(error), ctx.json);
+    return null;
+  }
+}
+function limitsView(limits) {
+  return {
+    dailyLimitUsd: usdText(limits.dailyLimitUsdMicros),
+    maxPerCallUsd: usdText(limits.maxPerCallUsdMicros),
+    paused: limits.paused
+  };
+}
+function parseUsd(raw) {
+  const cleaned = raw.trim().replace(/^\$/, "");
+  const match = /^([0-9]{1,9})(?:\.([0-9]{1,6}))?$/.exec(cleaned);
+  if (!match)
+    return null;
+  return BigInt(match[1]) * 1000000n + BigInt((match[2] ?? "").padEnd(6, "0") || "0");
+}
+async function readCredit(ctx, apiKey) {
+  if (!apiKey)
+    return { unavailable: "no API key on this profile" };
+  const result = await apiRequest("/api/v1/agent/x402/credits", {
+    apiUrl: ctx.apiUrl,
+    auth: "key",
+    credentials: { apiKey },
+    env: ctx.deps.env,
+    fetch: ctx.deps.fetch
+  });
+  if (result.ok) {
+    const balance = result.body?.balanceUsdMicros;
+    if (typeof balance === "string" && /^-?[0-9]+$/.test(balance))
+      return { balanceUsdMicros: balance };
+    return { unavailable: "the API's answer was unreadable" };
+  }
+  if (result.status === 404)
+    return { unavailable: "x402 is off on this API" };
+  return { unavailable: result.message };
+}
+async function spendShow(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--days"] });
+  const daysText = "error" in parsed ? undefined : parsed.values["--days"] ?? "7";
+  if ("error" in parsed || parsed.positionals.length !== 0 || !/^[1-9][0-9]{0,3}$/.test(daysText ?? "")) {
+    writeUsageFailure(ctx.deps, "Usage: candle spend [--days <1-9999>] [--json]", ctx.json);
+    return 2;
+  }
+  const days = Number(daysText);
+  const paths = pathsOf(ctx);
+  if (!paths)
+    return 2;
+  const now = ctx.deps.now();
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (apiKey) {
+    await reconcileUnknown(paths, now, async () => {
+      const result = await apiRequest("/api/v1/agent/x402/payments?limit=100", {
+        apiUrl: ctx.apiUrl,
+        auth: "key",
+        credentials: { apiKey },
+        env: ctx.deps.env,
+        fetch: ctx.deps.fetch
+      });
+      return result.ok ? readServerPayments(result.body) : null;
+    });
+  }
+  const limits = await readLimits(paths);
+  const entries = foldSpendLog(await readSpendLog(paths));
+  const today = utcDay(now);
+  const spentToday = spentOn(entries, today);
+  const since = now - days * DAY_MS;
+  const shown = entries.filter((e) => Date.parse(e.startedAt) >= since).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  const credit = await readCredit(ctx, apiKey);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({
+      ok: true,
+      limits: limitsView(limits),
+      today: { day: today, spentUsd: usdText(spentToday), limitUsd: usdText(limits.dailyLimitUsdMicros) },
+      credit: "balanceUsdMicros" in credit ? { balanceUsd: usdcText(BigInt(credit.balanceUsdMicros)) } : { unavailable: credit.unavailable },
+      payments: shown.map((e) => ({
+        id: e.id,
+        at: e.startedAt,
+        kind: e.kind,
+        route: e.route,
+        network: e.network,
+        amountUsdc: usdcText(e.amountRaw),
+        state: e.state,
+        payer: e.payer,
+        payTo: e.payTo,
+        ...e.signature ? { signature: e.signature } : {},
+        ...e.reason ? { reason: e.reason } : {}
+      }))
+    })}
+`);
+    return 0;
+  }
+  const out = ctx.deps.stdout;
+  out.write(`Today (${today} UTC): $${usdText(spentToday)} of the $${usdText(limits.dailyLimitUsdMicros)} daily per-use limit. Per call at most $${usdText(limits.maxPerCallUsdMicros)}.${limits.paused ? " Payments are PAUSED." : ""}
+`);
+  out.write("balanceUsdMicros" in credit ? `Candle credit: ${usdcText(BigInt(credit.balanceUsdMicros))} USDC
+` : `Candle credit: not shown (${terminalText(credit.unavailable)})
+`);
+  if (shown.length === 0) {
+    out.write(`No x402 payments in the last ${days} day${days === 1 ? "" : "s"}.
+`);
+    return 0;
+  }
+  out.write(`${renderTable(["WHEN (UTC)", "KIND", "USDC", "STATE", "SIGNATURE"], shown.map((e) => [
+    e.startedAt.slice(0, 19).replace("T", " "),
+    terminalText(e.kind),
+    usdcText(e.amountRaw),
+    e.state,
+    e.signature ? terminalText(e.signature) : ""
+  ]))}
+`);
+  return 0;
+}
+async function showOrSet(args, ctx, field, word3) {
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed || parsed.positionals.length > 1) {
+    writeUsageFailure(ctx.deps, `Usage: candle spend ${word3} [<usd>]`, ctx.json);
+    return 2;
+  }
+  const paths = pathsOf(ctx);
+  if (!paths)
+    return 2;
+  const limits = await readLimits(paths);
+  const raw = parsed.positionals[0];
+  if (raw !== undefined) {
+    const value = parseUsd(raw);
+    if (value === null) {
+      writeUsageFailure(ctx.deps, `Not a dollar amount: ${raw}. Use a number such as 5 or 0.25.`, ctx.json);
+      return 2;
+    }
+    limits[field] = value;
+    await writeLimits(paths, limits);
+  }
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, limits: limitsView(limits) })}
+`);
+  else {
+    const label = field === "dailyLimitUsdMicros" ? "Daily per-use limit" : "Per-call ceiling";
+    ctx.deps.stdout.write(`${label}: $${usdText(limits[field])}${raw !== undefined ? " (saved)" : ""}
+`);
+  }
+  return 0;
+}
+function spendLimit(args, ctx) {
+  return showOrSet(args, ctx, "dailyLimitUsdMicros", "limit");
+}
+function spendMaxPerCall(args, ctx) {
+  return showOrSet(args, ctx, "maxPerCallUsdMicros", "max-per-call");
+}
+async function setPaused(args, ctx, paused) {
+  if (args.length !== 0) {
+    writeUsageFailure(ctx.deps, `Usage: candle spend ${paused ? "pause" : "resume"}`, ctx.json);
+    return 2;
+  }
+  const paths = pathsOf(ctx);
+  if (!paths)
+    return 2;
+  try {
+    const limits = await readLimits(paths);
+    limits.paused = paused;
+    await writeLimits(paths, limits);
+    if (ctx.json)
+      ctx.deps.stdout.write(`${JSON.stringify({ ok: true, limits: limitsView(limits) })}
+`);
+    else
+      ctx.deps.stdout.write(paused ? `Per-use payments paused.
+` : `Per-use payments resumed.
+`);
+    return 0;
+  } catch (error) {
+    writeLocalFailure(ctx.deps, { code: "SPEND_WRITE_FAILED", message: error instanceof Error ? error.message : String(error) }, ctx.json);
+    return 1;
+  }
+}
+function spendPause(args, ctx) {
+  return setPaused(args, ctx, true);
+}
+function spendResume(args, ctx) {
+  return setPaused(args, ctx, false);
 }
 
 // src/commands/stake.ts
@@ -95304,6 +95958,690 @@ Cluster supply: ${result.analysis.clusterSupplyPct}%
 `);
   }
   return 0;
+}
+
+// src/commands/token-paid.ts
+init_args();
+init_deps();
+init_render();
+init_solana_endpoint();
+init_solana_lite();
+import { randomUUID as randomUUID10 } from "node:crypto";
+
+// src/x402/pay.ts
+init_client();
+
+// src/x402/codec.ts
+var PAYMENT_REQUIRED_HEADER = "PAYMENT-REQUIRED";
+var PAYMENT_SIGNATURE_HEADER = "PAYMENT-SIGNATURE";
+var PAYMENT_RESPONSE_HEADER = "PAYMENT-RESPONSE";
+var SIGN_IN_WITH_X_HEADER = "SIGN-IN-WITH-X";
+var X402_VERSION = 2;
+
+class X402DecodeError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "X402DecodeError";
+  }
+}
+var BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+var isObject2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isString = (value) => typeof value === "string";
+function encodeHeader(value) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
+}
+function decodeHeader(value) {
+  const text3 = value.trim();
+  if (text3 === "" || text3.length % 4 !== 0 || !BASE64.test(text3))
+    throw new X402DecodeError("not base64");
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.from(text3, "base64").toString("utf8"));
+  } catch {
+    throw new X402DecodeError("not JSON");
+  }
+  if (!isObject2(parsed))
+    throw new X402DecodeError("not a JSON object");
+  return parsed;
+}
+function parseRequirements(value) {
+  if (!isObject2(value))
+    throw new X402DecodeError("requirements are not an object");
+  const { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, extra } = value;
+  if (!isString(scheme) || !isString(network2) || !isString(amount) || !isString(asset) || !isString(payTo)) {
+    throw new X402DecodeError("requirements are missing a field");
+  }
+  if (typeof maxTimeoutSeconds !== "number" || !Number.isInteger(maxTimeoutSeconds)) {
+    throw new X402DecodeError("maxTimeoutSeconds is not an integer");
+  }
+  if (extra !== undefined && !isObject2(extra))
+    throw new X402DecodeError("extra is not an object");
+  return { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, ...extra ? { extra } : {} };
+}
+function decodePaymentRequired(header) {
+  const object4 = decodeHeader(header);
+  if (object4.x402Version !== X402_VERSION)
+    throw new X402DecodeError("x402Version is not 2");
+  const resource = object4.resource;
+  if (!isObject2(resource) || !isString(resource.url))
+    throw new X402DecodeError("resource is missing");
+  if (!Array.isArray(object4.accepts))
+    throw new X402DecodeError("accepts is not an array");
+  if (object4.error !== undefined && !isString(object4.error))
+    throw new X402DecodeError("error is not a string");
+  return {
+    x402Version: X402_VERSION,
+    ...isString(object4.error) ? { error: object4.error } : {},
+    resource: {
+      url: resource.url,
+      ...isString(resource.description) ? { description: resource.description } : {},
+      ...isString(resource.mimeType) ? { mimeType: resource.mimeType } : {}
+    },
+    accepts: object4.accepts.map(parseRequirements),
+    ...isObject2(object4.extensions) ? { extensions: object4.extensions } : {}
+  };
+}
+function paymentRequiredOf(headers2) {
+  const header = headers2?.[PAYMENT_REQUIRED_HEADER.toLowerCase()];
+  if (header === undefined)
+    return null;
+  try {
+    return decodePaymentRequired(header);
+  } catch {
+    return null;
+  }
+}
+function settlementOf(headers2) {
+  const header = headers2?.[PAYMENT_RESPONSE_HEADER.toLowerCase()];
+  if (header === undefined)
+    return null;
+  try {
+    const object4 = decodeHeader(header);
+    const { success, errorReason, payer, transaction, network: network2 } = object4;
+    if (typeof success !== "boolean" || !isString(transaction) || !isString(network2))
+      return null;
+    return {
+      success,
+      ...isString(errorReason) ? { errorReason } : {},
+      ...isString(payer) ? { payer } : {},
+      transaction,
+      network: network2
+    };
+  } catch {
+    return null;
+  }
+}
+function encodePaymentPayload(args) {
+  const payload = {
+    x402Version: X402_VERSION,
+    resource: args.resource,
+    accepted: args.accepted,
+    payload: { transaction: args.transaction }
+  };
+  return encodeHeader(payload);
+}
+
+// src/x402/siwx.ts
+init_esm();
+var SIWX_EXTENSION = "sign-in-with-x";
+var isObject3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+function spendChallengeOf(extensions, apiHost, network2) {
+  const extension = extensions?.[SIWX_EXTENSION];
+  if (!isObject3(extension) || !isObject3(extension.info))
+    return null;
+  const info3 = extension.info;
+  const chains = Array.isArray(extension.supportedChains) ? extension.supportedChains : [];
+  const chain2 = chains.find((c) => isObject3(c) && c.chainId === network2 && c.type === "ed25519");
+  if (!chain2)
+    return null;
+  const { domain, uri, version, nonce, issuedAt, expirationTime } = info3;
+  if (typeof domain !== "string" || domain !== apiHost)
+    return null;
+  if (typeof uri !== "string" || typeof version !== "string" || typeof issuedAt !== "string")
+    return null;
+  if (typeof nonce !== "string" || !/^[0-9a-f]{32}$/.test(nonce))
+    return null;
+  if (expirationTime !== undefined && typeof expirationTime !== "string")
+    return null;
+  try {
+    if (new URL(uri).host !== apiHost)
+      return null;
+  } catch {
+    return null;
+  }
+  return {
+    domain,
+    uri,
+    version,
+    nonce,
+    issuedAt,
+    ...expirationTime !== undefined ? { expirationTime } : {},
+    chainId: network2
+  };
+}
+function spendStatement(address) {
+  return `Candle x402 spend_credit ${address}`;
+}
+function siwsMessage(challenge, address) {
+  const lines = [
+    `${challenge.domain} wants you to sign in with your Solana account:`,
+    address,
+    "",
+    spendStatement(address),
+    "",
+    `URI: ${challenge.uri}`,
+    `Version: ${challenge.version}`,
+    `Chain ID: ${challenge.chainId.split(":")[1] ?? ""}`,
+    `Nonce: ${challenge.nonce}`,
+    `Issued At: ${challenge.issuedAt}`
+  ];
+  if (challenge.expirationTime)
+    lines.push(`Expiration Time: ${challenge.expirationTime}`);
+  return lines.join(`
+`);
+}
+function spendProofHeader(challenge, address, sign6) {
+  const signature = sign6(new TextEncoder().encode(siwsMessage(challenge, address)));
+  return encodeHeader({
+    domain: challenge.domain,
+    address,
+    statement: spendStatement(address),
+    uri: challenge.uri,
+    version: challenge.version,
+    chainId: challenge.chainId,
+    type: "ed25519",
+    nonce: challenge.nonce,
+    issuedAt: challenge.issuedAt,
+    ...challenge.expirationTime ? { expirationTime: challenge.expirationTime } : {},
+    signature: base58.encode(signature)
+  });
+}
+
+// src/x402/solana-exact.ts
+init_solana_lite();
+var COMPUTE_BUDGET_PROGRAM_ID2 = "ComputeBudget111111111111111111111111111111";
+var MEMO_PROGRAM_ID2 = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+var USDC_DECIMALS = 6;
+var COMPUTE_UNIT_LIMIT = 40000;
+var COMPUTE_UNIT_PRICE_MICROLAMPORTS = 1n;
+function le(value, bytes) {
+  const out = new Uint8Array(bytes);
+  let v = value;
+  for (let i = 0;i < bytes; i++) {
+    out[i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+  return out;
+}
+function computeBudget(data) {
+  return { programId: decodePubkey(COMPUTE_BUDGET_PROGRAM_ID2), keys: [], data };
+}
+function memoInstruction(memo) {
+  const keys = [];
+  return { programId: decodePubkey(MEMO_PROGRAM_ID2), keys, data: new TextEncoder().encode(memo) };
+}
+function buildExactTransfer(input) {
+  if (input.feePayer === input.payer)
+    throw new Error("The facilitator's fee payer cannot be the paying wallet.");
+  const payer = decodePubkey(input.payer);
+  const mint = decodePubkey(input.asset);
+  const legacy = compileLegacyMessage({
+    feePayer: decodePubkey(input.feePayer),
+    recentBlockhash: input.recentBlockhash,
+    instructions: [
+      computeBudget(new Uint8Array([2, ...le(BigInt(COMPUTE_UNIT_LIMIT), 4)])),
+      computeBudget(new Uint8Array([3, ...le(COMPUTE_UNIT_PRICE_MICROLAMPORTS, 8)])),
+      tokenTransferChecked({
+        source: associatedTokenAddress(payer, mint),
+        mint,
+        destination: associatedTokenAddress(decodePubkey(input.payTo), mint),
+        owner: payer,
+        amount: input.amountRaw,
+        decimals: USDC_DECIMALS,
+        tokenProgram: decodePubkey(TOKEN_PROGRAM_ID)
+      }),
+      memoInstruction(input.memo)
+    ]
+  });
+  const message = new Uint8Array(legacy.length + 2);
+  message[0] = 128;
+  message.set(legacy, 1);
+  message[message.length - 1] = 0;
+  const signatureCount = legacy[0];
+  const keyCount = legacy[3];
+  let payerIndex = -1;
+  for (let i = 0;i < keyCount; i++) {
+    if (encodePubkey(legacy.slice(4 + i * 32, 4 + (i + 1) * 32)) === input.payer)
+      payerIndex = i;
+  }
+  if (payerIndex < 1 || payerIndex >= signatureCount)
+    throw new Error("unreachable: the payer is not a signer");
+  return { message, signatureCount, payerIndex };
+}
+function serializePartiallySigned(transfer, payerSignature2) {
+  if (payerSignature2.length !== 64)
+    throw new Error("expected a 64-byte signature");
+  if (transfer.signatureCount > 127)
+    throw new Error("unreachable: too many signatures");
+  const out = new Uint8Array(1 + transfer.signatureCount * 64 + transfer.message.length);
+  out[0] = transfer.signatureCount;
+  out.set(payerSignature2, 1 + transfer.payerIndex * 64);
+  out.set(transfer.message, 1 + transfer.signatureCount * 64);
+  return Buffer.from(out).toString("base64");
+}
+
+// src/x402/pay.ts
+async function assess(required, config, paths, now) {
+  const selection = selectRequirement(required, config);
+  if (!selection.ok)
+    return { ok: false, refusal: { code: "X402_NOT_PAYABLE", message: selection.reason } };
+  const { selected: selected2 } = selection;
+  const priceUsdc = usdcText(selected2.amountRaw);
+  const limits = await readLimits(paths);
+  if (limits.paused) {
+    return {
+      ok: false,
+      refusal: {
+        code: "SPEND_PAUSED",
+        message: `This call costs ${priceUsdc} USDC, and per-use payments are paused. Nothing was paid.`,
+        suggestion: "Run: candle spend resume",
+        priceUsdc
+      }
+    };
+  }
+  if (selected2.amountRaw > limits.maxPerCallUsdMicros) {
+    return {
+      ok: false,
+      refusal: {
+        code: "SPEND_MAX_PER_CALL",
+        message: `This call costs ${priceUsdc} USDC, over the per-call ceiling of $${usdText(limits.maxPerCallUsdMicros)}. Nothing was paid.`,
+        suggestion: "Raise it with: candle spend max-per-call <usd>",
+        priceUsdc
+      }
+    };
+  }
+  if (config.payTo === null) {
+    return {
+      ok: false,
+      refusal: {
+        code: "X402_PAY_TO_UNPINNED",
+        message: config.network === SOLANA_MAINNET ? `This call costs ${priceUsdc} USDC, and this CLI release pins no mainnet pay-to address, so it pays nothing on mainnet.` : `This call costs ${priceUsdc} USDC on devnet, and no pay-to address is set for devnet.`,
+        ...config.network === SOLANA_MAINNET ? {} : { suggestion: `Set ${PAY_TO_ENV} to the devnet address the API pays to.` },
+        priceUsdc
+      }
+    };
+  }
+  if (selected2.requirement.payTo !== config.payTo) {
+    return {
+      ok: false,
+      refusal: {
+        code: "X402_PAY_TO_MISMATCH",
+        message: `The server asked for payment to ${selected2.requirement.payTo}, not the address this CLI pays (${config.payTo}). Nothing was paid.`,
+        priceUsdc
+      }
+    };
+  }
+  const spentToday = spentOn(foldSpendLog(await readSpendLog(paths)), utcDay(now));
+  if (spentToday + selected2.amountRaw > limits.dailyLimitUsdMicros) {
+    return { ok: false, refusal: dailyRefusal(priceUsdc, spentToday, limits.dailyLimitUsdMicros) };
+  }
+  return {
+    ok: true,
+    selected: selected2,
+    offer: {
+      amountRaw: selected2.amountRaw,
+      priceText: priceUsdc,
+      description: required.resource.description ?? required.resource.url,
+      payTo: selected2.requirement.payTo,
+      network: config.network
+    }
+  };
+}
+function dailyRefusal(priceUsdc, spentToday, limit) {
+  return {
+    code: "SPEND_DAILY_LIMIT",
+    message: `This call costs ${priceUsdc} USDC; today's per-use payments are already $${usdText(spentToday)} of the $${usdText(limit)} daily limit. Nothing was paid.`,
+    suggestion: "See today's payments with: candle spend, or raise the limit with: candle spend limit <usd>",
+    priceUsdc
+  };
+}
+function mayHoldWalletCredit(entries, address, network2) {
+  return entries.some((e) => e.keyless && e.state === "credited" && e.payer === address && e.network === network2);
+}
+function outcomeOf2(second) {
+  const settlement = settlementOf(second.headers);
+  if (settlement?.success) {
+    return second.ok ? { state: "settled", signature: settlement.transaction } : { state: "credited", signature: settlement.transaction, reason: second.code ?? `HTTP_${second.status}` };
+  }
+  if (second.ok)
+    return { state: "unknown", reason: "served_without_payment_response" };
+  if (second.status === 402) {
+    const reason = settlement?.errorReason ?? paymentRequiredOf(second.headers)?.error ?? second.code ?? "HTTP_402";
+    return { state: "failed", reason };
+  }
+  if (second.status === 0 || second.status >= 500 || second.status === 409) {
+    return { state: "unknown", reason: second.code ?? `HTTP_${second.status}` };
+  }
+  return { state: "failed", reason: second.code ?? `HTTP_${second.status}` };
+}
+async function paidRequest(input) {
+  const plain = (result) => ({
+    result,
+    payment: null,
+    refusal: null,
+    servedFromCredit: false
+  });
+  const first = await apiRequest(input.path, input.request);
+  if (first.ok || first.status !== 402)
+    return plain(first);
+  let required = paymentRequiredOf(first.headers);
+  if (!required)
+    return plain(first);
+  const refused2 = (result, refusal3) => ({
+    result,
+    payment: null,
+    refusal: refusal3,
+    servedFromCredit: false
+  });
+  const network2 = networkConfig(input.env);
+  if (!network2.ok)
+    return refused2(first, { code: "X402_NOT_PAYABLE", message: network2.message });
+  const config = network2.config;
+  const firstAssessment = await assess(required, config, input.paths, input.now());
+  if (!firstAssessment.ok)
+    return refused2(first, firstAssessment.refusal);
+  let { selected: selected2, offer } = firstAssessment;
+  let current = first;
+  await input.payer.confirm(offer);
+  const signer = await input.payer.open(offer);
+  try {
+    const keyless = input.request.auth !== "key" || !input.request.credentials.apiKey;
+    const apiHost = new URL(input.request.apiUrl).host;
+    const challenge = spendChallengeOf(required.extensions, apiHost, config.network);
+    if (keyless && challenge && mayHoldWalletCredit(foldSpendLog(await readSpendLog(input.paths)), signer.address, config.network)) {
+      const viaCredit = await apiRequest(input.path, {
+        ...input.request,
+        headers: { [SIGN_IN_WITH_X_HEADER]: spendProofHeader(challenge, signer.address, (m) => signer.sign(m)) }
+      });
+      if (viaCredit.ok)
+        return { result: viaCredit, payment: null, refusal: null, servedFromCredit: true };
+      const again = viaCredit.status === 402 ? paymentRequiredOf(viaCredit.headers) : null;
+      if (!again)
+        return plain(viaCredit);
+      const second = await assess(again, config, input.paths, input.now());
+      if (!second.ok)
+        return refused2(viaCredit, second.refusal);
+      if (second.offer.amountRaw !== offer.amountRaw || second.offer.payTo !== offer.payTo) {
+        return refused2(viaCredit, {
+          code: "X402_OFFER_CHANGED",
+          message: "The server's second offer differs from the one confirmed. Nothing was paid.",
+          priceUsdc: second.offer.priceText
+        });
+      }
+      required = again;
+      selected2 = second.selected;
+      offer = second.offer;
+      current = viaCredit;
+    }
+    const transfer = buildExactTransfer({
+      payer: signer.address,
+      payTo: selected2.requirement.payTo,
+      asset: selected2.requirement.asset,
+      amountRaw: selected2.amountRaw,
+      feePayer: selected2.feePayer,
+      memo: selected2.memo,
+      recentBlockhash: await input.blockhash(config.network)
+    });
+    const transaction = serializePartiallySigned(transfer, signer.sign(transfer.message));
+    const id = input.newId();
+    const limits = await readLimits(input.paths);
+    const method = (input.request.method ?? "GET").toUpperCase();
+    const reservation = await reserveSpend(input.paths, limits.dailyLimitUsdMicros, {
+      v: 1,
+      at: new Date(input.now()).toISOString(),
+      id,
+      state: "pending",
+      kind: input.kind,
+      route: `${method} ${new URL(required.resource.url, input.request.apiUrl).pathname}`,
+      network: config.network,
+      amountRaw: selected2.amountRaw.toString(),
+      payTo: selected2.requirement.payTo,
+      payer: signer.address,
+      quoteMemo: selected2.memo,
+      keyless
+    });
+    if (!reservation.ok) {
+      return refused2(current, dailyRefusal(offer.priceText, reservation.spentToday, limits.dailyLimitUsdMicros));
+    }
+    const paid = await apiRequest(input.path, {
+      ...input.request,
+      headers: {
+        [PAYMENT_SIGNATURE_HEADER]: encodePaymentPayload({
+          resource: required.resource,
+          accepted: selected2.requirement,
+          transaction
+        })
+      }
+    });
+    const outcome = outcomeOf2(paid);
+    await recordSpendState(input.paths, { id, at: new Date(input.now()).toISOString(), ...outcome });
+    return {
+      result: paid,
+      payment: {
+        id,
+        state: outcome.state,
+        amountUsdc: offer.priceText,
+        payer: signer.address,
+        ...outcome.signature ? { signature: outcome.signature } : {},
+        ...outcome.reason ? { reason: outcome.reason } : {}
+      },
+      refusal: null,
+      servedFromCredit: false
+    };
+  } finally {
+    signer.close();
+  }
+}
+
+// src/x402/vault-payer.ts
+init_vault_support();
+init_render();
+init_solana_lite();
+init_errors2();
+init_store();
+function assertNoEnvPassphrase(ctx) {
+  if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined)
+    return;
+  throw new VaultError("ENV_PASSPHRASE_REFUSED", "CANDLE_KEYSTORE_PASSPHRASE is set. No Candle command reads its value, and the vault never takes a passphrase from the environment.", { suggestion: "Unset it and run again; the payment prompts for the vault passphrase with input hidden." });
+}
+function assertTerminal(ctx) {
+  assertNoEnvPassphrase(ctx);
+  if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "This call needs a payment, and paying needs a terminal: the vault key that signs it is unlocked at a hidden prompt and from nowhere else. Nothing was paid.", { suggestion: "Run it at a terminal, or raise the free limit the call went past." });
+  }
+}
+function vaultPayer(ctx, options) {
+  return {
+    async confirm(offer) {
+      assertTerminal(ctx);
+      if (options.yes)
+        return;
+      await confirmAddress(ctx, "pay to", offer.payTo, `pay ${offer.priceText} USDC for ${terminalText(offer.description)}`);
+    },
+    async open(offer) {
+      assertTerminal(ctx);
+      const resolved = vaultPathFor(ctx, { positionals: [], values: {}, booleans: new Set });
+      if ("error" in resolved)
+        throw new VaultError("VAULT_MISSING", resolved.error);
+      const raw = await requireVaultRaw(ctx, resolved);
+      const opened = await unlockInteractively(ctx, resolved.path, raw, {
+        reason: `pay ${offer.priceText} USDC`,
+        purpose: "x402 payment"
+      });
+      const vault = opened.vault;
+      try {
+        const keys = vault.index.entries.filter((e) => e.role === "vault" && e.chain === "solana");
+        const named = options.wallet;
+        const matches2 = named === undefined ? keys : keys.filter((e) => e.label === named || e.address === named);
+        if (matches2.length === 0) {
+          throw new VaultError("VAULT_LABEL_NOT_FOUND", named === undefined ? "This vault has no Solana vault key to pay with. Nothing was paid." : `No Solana vault key matches --wallet ${named}. Nothing was paid.`, { suggestion: "List the keys with: candle vault list" });
+        }
+        if (matches2.length > 1) {
+          throw new VaultError("VAULT_LABEL_AMBIGUOUS", `This vault has ${matches2.length} Solana vault keys; name the one that pays with --wallet <label>. Nothing was paid.`, { suggestion: `Keys: ${matches2.map((e) => e.label).join(", ")}` });
+        }
+        const entry = matches2[0];
+        const secret = await decryptKey(vault, entry.id);
+        return {
+          address: entry.address,
+          sign: (message) => signMessage(message, secret),
+          close: () => {
+            wipe(secret);
+            closeVault(vault);
+          }
+        };
+      } catch (error) {
+        closeVault(vault);
+        throw error;
+      }
+    }
+  };
+}
+
+// src/commands/token-paid.ts
+init_vault_support();
+var PAY_FLAGS = ["--wallet"];
+var PAY_BOOLEANS = ["--yes"];
+function blockhashFor(ctx) {
+  return async (network2) => {
+    if (network2 === SOLANA_DEVNET) {
+      return createSolanaRpc(DEVNET_RPC_URL, ctx.deps.fetch, ctx.deps.sleep).getLatestBlockhash();
+    }
+    const endpoint = resolveSolanaEndpoint(ctx, undefined, await ctx.deps.readConfig());
+    if ("error" in endpoint)
+      throw new Error(endpoint.error);
+    const solana = solanaClientFor(ctx, endpoint);
+    return solana.read(() => solana.rpc.getLatestBlockhash());
+  };
+}
+function paymentLine(paid) {
+  if (paid.servedFromCredit)
+    return "Served from this wallet's Candle credit; nothing was paid.";
+  const p = paid.payment;
+  if (!p)
+    return null;
+  switch (p.state) {
+    case "settled":
+      return `Paid ${p.amountUsdc} USDC from ${p.payer}${p.signature ? ` (${p.signature})` : ""}.`;
+    case "credited":
+      return `Paid ${p.amountUsdc} USDC, and the call failed: Candle credited it to your balance (candle spend shows it).`;
+    case "failed":
+      return `The payment of ${p.amountUsdc} USDC did not go through (${p.reason ?? "refused"}); nothing moved.`;
+    default:
+      return `Whether the payment of ${p.amountUsdc} USDC settled is not known yet (${p.reason ?? "no answer"}). It counts toward today's limit until candle spend resolves it.`;
+  }
+}
+async function runPaidRead(ctx, input) {
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  return runVaultCommand(ctx, async () => {
+    const paid = await paidRequest({
+      path: input.path,
+      request: {
+        apiUrl: ctx.apiUrl,
+        auth: apiKey ? "key" : "none",
+        credentials: apiKey ? { apiKey } : {},
+        env: ctx.deps.env,
+        fetch: ctx.deps.fetch
+      },
+      kind: input.kind,
+      paths: spendPaths(ctx.deps.env, ctx.deps.homedir(), ctx.profile),
+      payer: vaultPayer(ctx, { ...input.wallet !== undefined ? { wallet: input.wallet } : {}, yes: input.yes }),
+      blockhash: blockhashFor(ctx),
+      env: ctx.deps.env,
+      now: ctx.deps.now,
+      newId: randomUUID10
+    });
+    const line = paymentLine(paid);
+    if (line && !ctx.json)
+      ctx.deps.stderr.write(`${line}
+`);
+    if (paid.refusal) {
+      writeLocalFailure(ctx.deps, {
+        code: paid.refusal.code,
+        message: paid.refusal.message,
+        ...paid.refusal.suggestion ? { suggestion: paid.refusal.suggestion } : {},
+        ...paid.refusal.priceUsdc ? { details: { priceUsdc: paid.refusal.priceUsdc } } : {}
+      }, ctx.json);
+      return 1;
+    }
+    const result = paid.result;
+    if (!result.ok) {
+      if (ctx.json && paid.payment) {
+        ctx.deps.stdout.write(`${JSON.stringify({ ok: false, code: result.code ?? `HTTP_${result.status}`, status: result.status, message: result.message, payment: paid.payment })}
+`);
+      } else {
+        writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: apiKey ? "key" : "none" }, ctx.json);
+      }
+      return 1;
+    }
+    const body = result.body;
+    const data = body && typeof body === "object" && "data" in body ? body.data : body;
+    if (ctx.json) {
+      ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, ...paid.payment ? { payment: paid.payment } : {}, ...paid.servedFromCredit ? { servedFromCredit: true } : {} })}
+`);
+    } else {
+      ctx.deps.stdout.write(`${JSON.stringify(data, null, 2)}
+`);
+    }
+    return 0;
+  });
+}
+async function tokenForensics(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--chain", ...PAY_FLAGS], booleanFlags: PAY_BOOLEANS });
+  const chain2 = "error" in parsed ? undefined : parsed.values["--chain"] ?? "solana";
+  if ("error" in parsed || parsed.positionals.length !== 1 || chain2 !== "solana" && chain2 !== "hood") {
+    writeUsageFailure(ctx.deps, "Usage: candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes]", ctx.json);
+    return 2;
+  }
+  const mint = parsed.positionals[0];
+  return runPaidRead(ctx, {
+    path: `/api/v1/markets/${chain2}/${encodeURIComponent(mint)}/forensics`,
+    kind: "forensics",
+    ...parsed.values["--wallet"] !== undefined ? { wallet: parsed.values["--wallet"] } : {},
+    yes: parsed.booleans.has("--yes")
+  });
+}
+var VAMP_STAGES = ["final_stretch", "graduated", "all"];
+async function tokenVampCandidates(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--limit", "--min-copies", "--stage", ...PAY_FLAGS],
+    booleanFlags: PAY_BOOLEANS
+  });
+  const usageLine = "Usage: candle token vamp-candidates [--limit <n>] [--min-copies <n>] [--stage final_stretch|graduated|all] [--wallet <vault key>] [--yes]";
+  if ("error" in parsed || parsed.positionals.length !== 0) {
+    writeUsageFailure(ctx.deps, "error" in parsed ? parsed.error : usageLine, ctx.json);
+    return 2;
+  }
+  const limit = parsed.values["--limit"];
+  const minCopies = parsed.values["--min-copies"];
+  const stage = parsed.values["--stage"];
+  if (limit !== undefined && !/^[1-9][0-9]*$/.test(limit) || minCopies !== undefined && !/^[0-9]+$/.test(minCopies) || stage !== undefined && !VAMP_STAGES.includes(stage)) {
+    writeUsageFailure(ctx.deps, usageLine, ctx.json);
+    return 2;
+  }
+  const query = new URLSearchParams;
+  if (limit !== undefined)
+    query.set("limit", limit);
+  if (minCopies !== undefined)
+    query.set("minCopies24h", minCopies);
+  if (stage !== undefined)
+    query.set("stage", stage);
+  const search = query.toString();
+  return runPaidRead(ctx, {
+    path: `/api/v1/markets/vamp-candidates${search ? `?${search}` : ""}`,
+    kind: "vamp",
+    ...parsed.values["--wallet"] !== undefined ? { wallet: parsed.values["--wallet"] } : {},
+    yes: parsed.booleans.has("--yes")
+  });
 }
 
 // src/commands/transfer.ts
@@ -96314,7 +97652,7 @@ async function discard(deps, path) {
 
 // src/commands/vault-backup.ts
 init_args();
-import { chmod as chmod10, copyFile, mkdir as mkdir8, stat as stat5 } from "node:fs/promises";
+import { chmod as chmod11, copyFile, mkdir as mkdir9, stat as stat5 } from "node:fs/promises";
 import nodePath, { dirname as dirname9, resolve as resolve4 } from "node:path";
 init_crypto();
 init_errors2();
@@ -96501,9 +97839,9 @@ async function vaultBackup(args, ctx) {
     if (target.requires !== undefined) {
       const folder = dirname9(destination);
       try {
-        const created = await mkdir8(folder, { recursive: true });
+        const created = await mkdir9(folder, { recursive: true });
         if (created !== undefined)
-          await chmod10(folder, 448).catch(() => {});
+          await chmod11(folder, 448).catch(() => {});
       } catch (error) {
         throw copyWriteFailed(destination, error, "copy");
       }
@@ -97114,7 +98452,7 @@ init_errors2();
 init_promote_support();
 init_store();
 init_vault_support();
-import { access as access3, chmod as chmod11, constants as constants5, lstat as lstat2, writeFile as writeFile11 } from "node:fs/promises";
+import { access as access3, chmod as chmod12, constants as constants5, lstat as lstat2, writeFile as writeFile12 } from "node:fs/promises";
 import { dirname as dirname10, resolve as resolve5 } from "node:path";
 async function vaultExportKey(args, ctx) {
   const parsed = parseArgs(args, {
@@ -97258,8 +98596,8 @@ async function assertExportTargetWritable(destination) {
 }
 async function writeExportFile(destination, body) {
   try {
-    await writeFile11(destination, body, { encoding: "utf8", flag: "wx", mode: 384 });
-    await chmod11(destination, 384);
+    await writeFile12(destination, body, { encoding: "utf8", flag: "wx", mode: 384 });
+    await chmod12(destination, 384);
   } catch (error) {
     const code = error.code;
     if (code === "EEXIST") {
@@ -98933,7 +100271,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
 
 // src/commands/vault-import-legacy.ts
 init_args();
-import { readFile as readFile16 } from "node:fs/promises";
+import { readFile as readFile17 } from "node:fs/promises";
 init_ed255192();
 init_errors2();
 
@@ -99109,7 +100447,7 @@ async function vaultImportLegacy(args, ctx) {
     const vaultRaw = await requireVaultRaw(ctx, resolvedVault);
     let legacyRaw;
     try {
-      legacyRaw = await readFile16(fromPath, "utf8");
+      legacyRaw = await readFile17(fromPath, "utf8");
     } catch (error) {
       const code = error?.code;
       if (code === "ENOENT") {
@@ -99200,7 +100538,7 @@ async function vaultImportLegacy(args, ctx) {
 async function resolveDefaultTeePath(env, home) {
   const current = defaultTeeKeystorePath(env, home);
   try {
-    await readFile16(current);
+    await readFile17(current);
     return current;
   } catch {}
   return legacyTeeKeystorePath(env, home);
@@ -102519,7 +103857,7 @@ async function collectOwn2(ctx) {
 init_args();
 init_errors2();
 init_sidecar();
-import { rename as rename13, stat as stat6 } from "node:fs/promises";
+import { rename as rename14, stat as stat6 } from "node:fs/promises";
 init_wallet_keystore();
 init_vault_support();
 async function vaultRetireLegacy(args, ctx) {
@@ -102597,7 +103935,7 @@ async function vaultRetireLegacy(args, ctx) {
     const date2 = new Date(deps.now()).toISOString().slice(0, 10);
     const retiredPath = `${fromPath}.migrated-${date2}`;
     try {
-      await rename13(fromPath, retiredPath);
+      await rename14(fromPath, retiredPath);
     } catch (error) {
       throw new VaultError("VAULT_WRITE_FAILED", `Could not rename ${fromPath} to ${retiredPath}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -103080,7 +104418,7 @@ async function vaultTransfer(args, ctx) {
 // src/commands/verify.ts
 init_args();
 init_release();
-import { dirname as dirname11, join as join14 } from "node:path";
+import { dirname as dirname11, join as join15 } from "node:path";
 init_render();
 var USAGE10 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
@@ -103088,7 +104426,7 @@ async function resolveIdentity(deps, bundlePath, flag) {
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join14(dirname11(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join15(dirname11(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -103362,7 +104700,7 @@ init_solana_alt();
 init_solana_lite();
 init_trading();
 init_swap();
-import { randomUUID as randomUUID10 } from "node:crypto";
+import { randomUUID as randomUUID11 } from "node:crypto";
 var USAGE11 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
@@ -103635,7 +104973,7 @@ async function walletsCloseEmpty(args, ctx) {
     return 2;
   }
   const named = parsed.values["--client-trade-id"];
-  const id = named ?? `close-${randomUUID10()}`;
+  const id = named ?? `close-${randomUUID11()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
     writeUsageFailure(ctx.deps, USAGE11, ctx.json);
     return 2;
@@ -103830,18 +105168,18 @@ function walletsUntrust(args, ctx) {
 }
 
 // src/config.ts
-import { chmod as chmod12, mkdir as mkdir9, readFile as readFile17, rm as rm8, writeFile as writeFile12 } from "node:fs/promises";
+import { chmod as chmod13, mkdir as mkdir10, readFile as readFile18, rm as rm8, writeFile as writeFile13 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
-import { join as join15 } from "node:path";
+import { join as join16 } from "node:path";
 function configDir2() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join15(homedir5(), ".config", "candle");
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join16(homedir5(), ".config", "candle");
 }
 function configFilePath() {
-  return join15(configDir2(), "config.json");
+  return join16(configDir2(), "config.json");
 }
 async function readConfig() {
   try {
-    const raw = await readFile17(configFilePath(), "utf8");
+    const raw = await readFile18(configFilePath(), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (err.code === "ENOENT")
@@ -103853,9 +105191,9 @@ async function writeConfig(patch) {
   const current = await readConfig();
   const next = { ...current, ...patch };
   const dir = configDir2();
-  await mkdir9(dir, { recursive: true });
-  await chmod12(dir, 448);
-  await writeFile12(configFilePath(), JSON.stringify(next, null, 2), "utf8");
+  await mkdir10(dir, { recursive: true });
+  await chmod13(dir, 448);
+  await writeFile13(configFilePath(), JSON.stringify(next, null, 2), "utf8");
 }
 async function updateProfile(name2, patch) {
   const current = await readConfig();
@@ -103922,7 +105260,7 @@ init_secret_store();
 // src/update-notice.ts
 init_client();
 init_release();
-var DAY_MS = 24 * 60 * 60 * 1000;
+var DAY_MS2 = 24 * 60 * 60 * 1000;
 async function maybeWriteUpdateNotice(deps, opts = {}) {
   try {
     if (deps.env.CANDLE_NO_UPDATE_NOTIFIER)
@@ -103934,7 +105272,7 @@ async function maybeWriteUpdateNotice(deps, opts = {}) {
       return;
     const config = await deps.readConfig();
     const prior = config.updateNotice;
-    if (prior && prior.version === latest && deps.now() - prior.shownAt < DAY_MS)
+    if (prior && prior.version === latest && deps.now() - prior.shownAt < DAY_MS2)
       return;
     const line = `Update available: candle ${CLI_VERSION} -> ${latest}. Run: candle update`;
     const tty = terminalStyle(deps, "stderr", opts.json).color !== 0;
@@ -104022,7 +105360,19 @@ var COMMANDS = {
   agent: { subcommands: { profile: agentProfile, post: agentPost } },
   fees: { bare: feesList, subcommands: { claim: feesClaim } },
   plans: { bare: plans },
-  token: { subcommands: { clusters: tokenClusters } },
+  token: {
+    subcommands: { clusters: tokenClusters, forensics: tokenForensics, "vamp-candidates": tokenVampCandidates }
+  },
+  spend: {
+    bare: spendShow,
+    subcommands: {
+      limit: spendLimit,
+      "max-per-call": spendMaxPerCall,
+      pause: spendPause,
+      resume: spendResume
+    }
+  },
+  quant: { subcommands: { terms: quantTerms } },
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
   perps: {
     subcommands: {
@@ -104173,6 +105523,7 @@ var NEVER_GUARDED = new Set([
   "verify",
   "plans",
   "token",
+  "spend",
   "update",
   "help",
   "completion",
@@ -104478,8 +105829,8 @@ async function buildRealDeps() {
       const { runStdioServer: runStdioServer2 } = await Promise.resolve().then(() => (init_server3(), exports_server));
       await runStdioServer2(env);
     },
-    readFile: (path) => readFile18(path, "utf8"),
-    readBytes: (path) => readFile18(path),
+    readFile: (path) => readFile19(path, "utf8"),
+    readBytes: (path) => readFile19(path),
     readStdin: () => new Promise((resolve6, reject) => {
       const chunks = [];
       process.stdin.on("data", (chunk) => chunks.push(chunk));
@@ -104488,7 +105839,7 @@ async function buildRealDeps() {
       process.stdin.resume();
     }),
     runPlugin: realRunPlugin,
-    writeFile: (path, content) => writeFile13(path, content, { mode: 384 }),
+    writeFile: (path, content) => writeFile14(path, content, { mode: 384 }),
     promptSecret: promptHiddenSecret,
     promptLine: promptVisibleLine,
     isTTY: {
@@ -104506,10 +105857,10 @@ async function buildRealDeps() {
     spawnHelper: realSpawnHelper,
     releasePolicy: RELEASE_POLICY,
     writeBytes: async (path, bytes) => {
-      await writeFile13(path, bytes, { flag: "wx", mode: 493 });
-      await chmod13(path, 493);
+      await writeFile14(path, bytes, { flag: "wx", mode: 493 });
+      await chmod14(path, 493);
     },
-    rename: (from, to) => rename14(from, to),
+    rename: (from, to) => rename15(from, to),
     unlink: (path) => unlink(path),
     runHook: realRunHook,
     onTerminate: (handler) => {

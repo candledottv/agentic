@@ -71,15 +71,18 @@ import { plugins, runPlugin } from "./commands/plugins"
 import { pnl } from "./commands/pnl"
 import { portfolio } from "./commands/portfolio"
 import { profileAdd, profileList, profileRemove, profileRename, profileSet, profileUse } from "./commands/profile"
+import { quantTerms } from "./commands/quant-terms"
 import { secretsList, secretsRemove, secretsSet } from "./commands/secrets"
 import { setup } from "./commands/setup"
 import { sign, signMessage } from "./commands/sign"
+import { spendLimit, spendMaxPerCall, spendPause, spendResume, spendShow } from "./commands/spend"
 import { stake, stakeAdd, stakeClaim, stakeFinish, stakeRemove } from "./commands/stake"
 import { swap, swapStatus } from "./commands/swap"
 import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
 import { teeRebind, teeRebinds } from "./commands/tee-rebind"
 import { teeRename } from "./commands/tee-rename"
 import { tokenClusters } from "./commands/token-clusters"
+import { tokenForensics, tokenVampCandidates } from "./commands/token-paid"
 import { transfer } from "./commands/transfer"
 import { tui } from "./commands/tui"
 import { update } from "./commands/update"
@@ -221,7 +224,23 @@ const COMMANDS: Record<string, CommandRoute> = {
   fees: { bare: feesList, subcommands: { claim: feesClaim } },
   // BE-723 (Plans v2 P6): the served plan table. Public, so it reads and sends no credential.
   plans: { bare: plans },
-  token: { subcommands: { clusters: tokenClusters } },
+  // x402 C4 (BE-1875): forensics and the vamp finder may answer a per-use 402, paid from a vault
+  // key inside the local spending rules (src/x402/), or shown and not paid.
+  token: {
+    subcommands: { clusters: tokenClusters, forensics: tokenForensics, "vamp-candidates": tokenVampCandidates },
+  },
+  // x402 C4: the local payment log and the limits every per-use payment is checked against.
+  spend: {
+    bare: spendShow,
+    subcommands: {
+      limit: spendLimit,
+      "max-per-call": spendMaxPerCall,
+      pause: spendPause,
+      resume: spendResume,
+    },
+  },
+  // x402 C4 (spec 7.3): Quant's terms over the key route, which a paid Quant turn needs first.
+  quant: { subcommands: { terms: quantTerms } },
   // Ember Phase 3 PR D (BE-315, R4): Meteora DAMM v2 liquidity from a TEE wallet, on the agent
   // rail under the bound key's opt-in `lp:write`. Server-built, relay-signed, never a vault key.
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
@@ -484,6 +503,9 @@ export const NEVER_GUARDED = new Set([
   // BE-723: `GET /agent/plans` is public; the command acts as no identity.
   "plans",
   "token",
+  // x402 C4: local limits and the local log. `spend pause` must work offline and before any
+  // login, since it is how a person stops payments; the credit read is the key's own account.
+  "spend",
   "update",
   "help",
   "completion",

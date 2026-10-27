@@ -21,10 +21,13 @@
 export const DEFAULT_API_URL = "https://api.alpha.candle.tv"
 
 export type ApiResult =
-  | { ok: true; status: number; body: unknown }
+  | { ok: true; status: number; body: unknown; headers?: Record<string, string> }
   | {
       ok: false
       status: number
+      /** The response's headers, names lowercased (absent on a network failure). The x402 client
+       * reads `payment-required` and `payment-response` here (packages/cli/src/x402/pay.ts). */
+      headers?: Record<string, string>
       code?: string
       message: string
       retryable?: boolean
@@ -67,6 +70,15 @@ export interface ApiRequestOptions {
    * exercise that hint.
    */
   env?: Record<string, string | undefined>
+  /**
+   * Extra request headers, set after the defaults and the credential. The x402 client sends
+   * `PAYMENT-SIGNATURE` and `SIGN-IN-WITH-X` through this; a request carrying either (in any
+   * case) is treated as credentialed, so a paid retry follows the same cleartext refusal and
+   * same-origin redirect rules as a keyed one -- a redirect must not forward a proof that spends
+   * money to another origin. `authorization` and `x-api-key` are ignored here: those come only
+   * from `auth` and `credentials`.
+   */
+  headers?: Record<string, string>
 }
 
 /** Trims trailing slashes so joining with a path never produces (or is missing) a `/`. */
@@ -223,6 +235,11 @@ function buildHeaders(opts: ApiRequestOptions): Record<string, string> {
   // auth: "none" (and auth modes missing their credential) send neither header, deliberately --
   // apiRequest never throws on a missing credential; the server's resulting 401 is what surfaces
   // through the normal ok:false path, one error-handling shape for the caller either way.
+  for (const [name, value] of Object.entries(opts.headers ?? {})) {
+    const lower = name.toLowerCase()
+    if (lower === "authorization" || lower === "x-api-key") continue
+    headers[name] = value
+  }
   return headers
 }
 
@@ -242,13 +259,24 @@ export class CrossOriginRedirectError extends Error {
 }
 
 /**
- * fetch for a request that carries the API key or the device token. fetch's own redirect handling
- * forwards custom headers such as `x-api-key` to wherever a Location points, another host
- * included, so a redirect from the API (or anything between it and this machine) would hand the
- * key to a third party. Here every hop is `redirect: "manual"`: a Location on the request's own
- * origin is re-issued with the same headers (the API's legacy routes redirect that way), and any
- * other origin throws {@link CrossOriginRedirectError} without a request being made to it. 303,
- * and 301/302 after a POST, continue as a body-less GET, as fetch would.
+ * Header names (lowercased) a redirect must never forward to another origin: the two
+ * credentials, and the two x402 proof headers. Those are not login credentials, but they spend
+ * money the same way -- `PAYMENT-SIGNATURE` carries a partly signed transfer, and
+ * `SIGN-IN-WITH-X` a proof whose nonce can spend a wallet credit for minutes after it leaves.
+ * Matched case-insensitively because the credentials are written lowercase while the x402
+ * client sends its headers with their wire casing through `ApiRequestOptions.headers`.
+ */
+const PROTECTED_REQUEST_HEADERS = new Set(["x-api-key", "authorization", "payment-signature", "sign-in-with-x"])
+
+/**
+ * fetch for a request that carries a header a redirect must not forward: the API key, the device
+ * token, or an x402 payment header (`PAYMENT-SIGNATURE`, `SIGN-IN-WITH-X`). fetch's own redirect
+ * handling forwards custom headers such as `x-api-key` to wherever a Location points, another
+ * host included, so a redirect from the API (or anything between it and this machine) would hand
+ * that header to a third party. Here every hop is `redirect: "manual"`: a Location on the
+ * request's own origin is re-issued with the same headers (the API's legacy routes redirect that
+ * way), and any other origin throws {@link CrossOriginRedirectError} without a request being
+ * made to it. 303, and 301/302 after a POST, continue as a body-less GET, as fetch would.
  */
 export async function fetchSameOriginRedirects(
   doFetch: typeof fetch,
@@ -359,6 +387,18 @@ export function __resetLatestCliVersionForTest(): void {
   latestCliVersionSeen = null
 }
 
+/** A response's headers as a plain object with lowercased names, or undefined when the (test)
+ * response carries none. */
+function headersOf(response: Response): Record<string, string> | undefined {
+  const headers = response.headers as Headers | undefined
+  if (!headers || typeof headers.forEach !== "function") return undefined
+  const out: Record<string, string> = {}
+  headers.forEach((value, name) => {
+    out[name.toLowerCase()] = value
+  })
+  return out
+}
+
 export async function apiRequest(path: string, opts: ApiRequestOptions): Promise<ApiResult> {
   const url = buildUrl(opts.apiUrl, path)
   // The backstop, checked here because this is the CLI's single HTTP call site: a URL can arrive
@@ -378,7 +418,7 @@ export async function apiRequest(path: string, opts: ApiRequestOptions): Promise
   const doFetch = opts.fetch ?? fetch
 
   const init: RequestInit = { method: opts.method ?? "GET", headers, body }
-  const credentialed = "x-api-key" in headers || "authorization" in headers
+  const credentialed = Object.keys(headers).some((name) => PROTECTED_REQUEST_HEADERS.has(name.toLowerCase()))
 
   let response: Response
   try {
@@ -409,11 +449,18 @@ export async function apiRequest(path: string, opts: ApiRequestOptions): Promise
 
   const text = await response.text()
   const raw = parseBody(text)
+  const responseHeaders = headersOf(response)
 
   if (response.ok) {
-    return { ok: true, status: response.status, body: raw }
+    return { ok: true, status: response.status, body: raw, ...(responseHeaders ? { headers: responseHeaders } : {}) }
   }
 
   const classified = classifyError(response.status, raw)
-  return { ok: false, status: response.status, raw, ...classified }
+  return {
+    ok: false,
+    status: response.status,
+    raw,
+    ...classified,
+    ...(responseHeaders ? { headers: responseHeaders } : {}),
+  }
 }

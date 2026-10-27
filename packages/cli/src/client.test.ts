@@ -262,6 +262,50 @@ describe("apiRequest: redirects never carry the credential to another origin (SE
     expect(seen).toHaveLength(1)
   })
 
+  test("a keyless request carrying PAYMENT-SIGNATURE is refused the same way", async () => {
+    const seen: CapturedRequest[] = []
+    stubFetch((req) => {
+      seen.push(req)
+      return req.url.startsWith("https://api.candle.tv")
+        ? redirect(302, "https://attacker.example/steal")
+        : jsonResponse(200, { success: true })
+    })
+
+    const result = await apiRequest("/v1/token/forensics", {
+      auth: "none",
+      credentials: {},
+      apiUrl: "https://api.candle.tv",
+      headers: { "PAYMENT-SIGNATURE": "cGF5bWVudA" },
+    })
+
+    expect(result.ok === false && result.code).toBe("CROSS_ORIGIN_REDIRECT")
+    expect(seen.map((r) => r.url)).toEqual(["https://api.candle.tv/v1/token/forensics"])
+    expect(seen[0]?.init.redirect).toBe("manual")
+    expect(JSON.stringify(result)).not.toContain("cGF5bWVudA")
+  })
+
+  test("a keyless request carrying sign-in-with-x, in any case, is refused the same way", async () => {
+    const seen: CapturedRequest[] = []
+    stubFetch((req) => {
+      seen.push(req)
+      return req.url.startsWith("https://api.candle.tv")
+        ? redirect(302, "https://attacker.example/steal")
+        : jsonResponse(200, { success: true })
+    })
+
+    const result = await apiRequest("/v1/token/vamp-candidates", {
+      auth: "none",
+      credentials: {},
+      apiUrl: "https://api.candle.tv",
+      headers: { "sign-in-with-x": "cHJvb2Y" },
+    })
+
+    expect(result.ok === false && result.code).toBe("CROSS_ORIGIN_REDIRECT")
+    expect(seen.map((r) => r.url)).toEqual(["https://api.candle.tv/v1/token/vamp-candidates"])
+    expect(seen[0]?.init.redirect).toBe("manual")
+    expect(JSON.stringify(result)).not.toContain("cHJvb2Y")
+  })
+
   test("a same-origin redirect is followed with the key, and a 301 after a POST continues as a GET", async () => {
     const seen: CapturedRequest[] = []
     stubFetch((req) => {
