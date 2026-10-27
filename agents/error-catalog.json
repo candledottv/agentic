@@ -36,8 +36,8 @@
     },
     "rate_limit": {
       "retryable": true,
-      "action": "Back off exponentially and retry. DAILY_CAP_REACHED resets on the UTC day, so do not retry it inside the same day.",
-      "codes": ["RATE_LIMITED", "DAILY_CAP_REACHED"]
+      "action": "Back off and retry after the named window: honor retry_after_seconds when the body carries it (SWAP_ROUTE_FAILING), back off exponentially otherwise. DAILY_CAP_REACHED resets on the UTC day, so do not retry it inside the same day.",
+      "codes": ["RATE_LIMITED", "DAILY_CAP_REACHED", "SWAP_ROUTE_FAILING"]
     },
     "payment": {
       "retryable": true,
