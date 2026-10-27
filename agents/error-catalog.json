@@ -30,13 +30,19 @@
         "SCOPE_MISSING",
         "TEST_ENVIRONMENT_FORBIDDEN",
         "LOOSEN_REQUIRES_SESSION",
-        "KEY_SIGNER_OWNER_INVALID"
+        "KEY_SIGNER_OWNER_INVALID",
+        "SIWX_INVALID"
       ]
     },
     "rate_limit": {
       "retryable": true,
       "action": "Back off exponentially and retry. DAILY_CAP_REACHED resets on the UTC day, so do not retry it inside the same day.",
       "codes": ["RATE_LIMITED", "DAILY_CAP_REACHED"]
+    },
+    "payment": {
+      "retryable": true,
+      "action": "The call has a price, or a payment for it is still being confirmed. PAYMENT_REQUIRED: the response names the price; pay only within your own spending limits, then send the same request once with the payment. PAYMENT_PENDING and PAYMENT_IN_PROGRESS: send the SAME request with the SAME payment again shortly and never pay a second time. PAYMENT_UNAVAILABLE: nothing was charged; retry later.",
+      "codes": ["PAYMENT_REQUIRED", "PAYMENT_PENDING", "PAYMENT_IN_PROGRESS", "PAYMENT_UNAVAILABLE"]
     },
     "tier": {
       "retryable": false,
@@ -180,7 +186,8 @@
         "CLOSE_FAILED",
         "HOLD_NOT_RELEASABLE",
         "FEE_NOT_CLAIMABLE",
-        "OPERATION_PENDING"
+        "OPERATION_PENDING",
+        "PAYMENT_ALREADY_USED"
       ]
     },
     "quota": {
