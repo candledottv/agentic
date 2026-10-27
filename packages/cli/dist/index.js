@@ -10771,6 +10771,7 @@ var init_ownership = __esm(() => {
     "portfolio",
     "pnl",
     "plans",
+    "token clusters",
     "wallets",
     "swap status",
     "fees",
@@ -71821,6 +71822,16 @@ var HELP = {
     examples: ["candle pnl", "candle pnl --profile scalper --json"],
     env: ENV_API
   },
+  token: {
+    group: "Account",
+    summary: "Optional third-party token cluster analysis",
+    description: "Reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none.",
+    usage: ["candle token clusters <mint> [--chain solana|hood] [--json]"],
+    rows: [{ invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" }],
+    flags: [{ invocation: "--chain <chain>", description: "solana (default) or hood; Hood analysis is unavailable" }],
+    examples: ["candle token clusters <mint>", "candle token clusters <mint> --json"],
+    env: ["CANDLE_API_URL"]
+  },
   plans: {
     group: "Account",
     summary: "The plans this API serves: prices, fees, limits and what each can do",
@@ -95121,6 +95132,139 @@ async function teeRename(args, ctx) {
   });
 }
 
+// src/commands/token-clusters.ts
+init_args();
+init_client();
+init_render();
+
+// src/token-clusters.ts
+var CLUSTER_REASONS = [
+  "disabled",
+  "invalid_config",
+  "unsupported_chain",
+  "invalid_mint",
+  "key_missing",
+  "gate_uncalibrated",
+  "market_data_missing",
+  "market_data_stale",
+  "token_too_new",
+  "gate_not_met",
+  "not_indexed",
+  "empty_analysis",
+  "invalid_response",
+  "timeout",
+  "upstream_unavailable",
+  "upstream_4xx",
+  "upstream_5xx",
+  "rate_limited",
+  "quota_exhausted",
+  "budget_exhausted",
+  "budget_unavailable",
+  "request_in_progress",
+  "transport_error",
+  "internal_unavailable"
+];
+var CLUSTER_MESSAGE = "Cluster analysis not available for this token";
+var CLUSTER_LABEL = "Third-party cluster analysis";
+var CLUSTER_CAVEAT = "Third-party estimates of linked wallets. Exchange, pool and service wallets may be grouped together. These figures do not establish common ownership, insider conduct or wrongdoing.";
+function clusterUnavailable(mint, reason, retryAt) {
+  return {
+    status: "unavailable",
+    mint,
+    reason,
+    message: CLUSTER_MESSAGE,
+    ...retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt: new Date(retryAt).toISOString() } : {}
+  };
+}
+function readClusterResult(value, mint) {
+  if (!value || typeof value !== "object")
+    return null;
+  const v = value;
+  if (v.mint !== mint)
+    return null;
+  if (v.status === "unavailable" && CLUSTER_REASONS.includes(v.reason)) {
+    const retry = v.retryAt === undefined ? undefined : typeof v.retryAt === "string" ? Date.parse(v.retryAt) : NaN;
+    if (retry !== undefined && !Number.isFinite(retry))
+      return null;
+    return clusterUnavailable(mint, v.reason, retry);
+  }
+  if (v.status !== "available" || v.chain !== "solana" || v.source !== "third_party" || !["hit", "miss"].includes(v.cache) || typeof v.fetchedAt !== "string" || typeof v.expiresAt !== "string" || !Number.isFinite(Date.parse(v.fetchedAt)) || !(Date.parse(v.expiresAt) > Date.parse(v.fetchedAt)))
+    return null;
+  const a = v.analysis;
+  const percent2 = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 100;
+  if (!a || !percent2(a.clusterSupplyPct) || !Array.isArray(a.clusters) || !a.clusters.length || a.clusters.length > 100)
+    return null;
+  let addresses = 0;
+  for (const c of a.clusters) {
+    if (!c || !percent2(c.supplyPct) || c.supplyPct > a.clusterSupplyPct + 0.01 || !Array.isArray(c.addresses) || !Array.isArray(c.tags) || c.tags.length > 32 || c.tags.some((t) => typeof t !== "string" || t.length > 100) || c.addresses.some((x) => typeof x !== "string" || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(x)))
+      return null;
+    addresses += c.addresses.length;
+  }
+  if (addresses > 1000 || a.clusterSupplyPct === 0 && a.clusters.every((c) => c.supplyPct === 0))
+    return null;
+  return {
+    status: "available",
+    chain: "solana",
+    mint,
+    source: "third_party",
+    label: CLUSTER_LABEL,
+    caveat: CLUSTER_CAVEAT,
+    fetchedAt: v.fetchedAt,
+    expiresAt: v.expiresAt,
+    cache: v.cache,
+    analysis: {
+      clusterSupplyPct: a.clusterSupplyPct,
+      clusters: a.clusters.map((c) => ({ supplyPct: c.supplyPct, addresses: [...c.addresses], tags: [...c.tags] }))
+    }
+  };
+}
+
+// src/commands/token-clusters.ts
+async function tokenClusters(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--chain"] });
+  if ("error" in parsed || parsed.positionals.length !== 1 || parsed.values["--chain"] !== undefined && !["solana", "hood"].includes(parsed.values["--chain"])) {
+    writeUsageFailure(ctx.deps, "Usage: candle token clusters <mint> [--chain solana|hood]", ctx.json);
+    return 2;
+  }
+  const mint = parsed.positionals[0];
+  const chain2 = parsed.values["--chain"] ?? "solana";
+  let result = clusterUnavailable(mint, "transport_error");
+  try {
+    const response = await apiRequest(`/api/v1/tokens/${encodeURIComponent(mint)}/clusters?chain=${chain2}`, {
+      apiUrl: ctx.apiUrl,
+      auth: "none",
+      credentials: {},
+      env: ctx.deps.env,
+      fetch: (input, init) => ctx.deps.fetch(input, { ...init, signal: AbortSignal.timeout(12000), cache: "no-store" })
+    });
+    if (response.ok) {
+      const body = response.body;
+      if (body?.success === true)
+        result = readClusterResult(body.data, mint) ?? result;
+    }
+  } catch {}
+  const out = ctx.deps.stdout;
+  if (ctx.json)
+    out.write(`${JSON.stringify(result)}
+`);
+  else if (result.status === "unavailable")
+    out.write(`${result.message} (${result.reason})
+`);
+  else {
+    out.write(`${result.label}
+Fetched: ${result.fetchedAt}
+Cluster supply: ${result.analysis.clusterSupplyPct}%
+`);
+    for (const cluster of result.analysis.clusters) {
+      out.write(`${cluster.supplyPct}%: ${cluster.addresses.map(terminalText).join(", ")}${cluster.tags.length ? ` [${cluster.tags.map(terminalText).join(", ")}]` : ""}
+`);
+    }
+    out.write(`${result.caveat}
+`);
+  }
+  return 0;
+}
+
 // src/commands/transfer.ts
 init_args();
 init_evm_lite();
@@ -103837,6 +103981,7 @@ var COMMANDS = {
   agent: { subcommands: { profile: agentProfile, post: agentPost } },
   fees: { bare: feesList, subcommands: { claim: feesClaim } },
   plans: { bare: plans },
+  token: { subcommands: { clusters: tokenClusters } },
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
   perps: {
     subcommands: {
@@ -103986,6 +104131,7 @@ var NEVER_GUARDED = new Set([
   "doctor",
   "verify",
   "plans",
+  "token",
   "update",
   "help",
   "completion",

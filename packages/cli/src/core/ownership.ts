@@ -78,6 +78,7 @@ export const CORE_OWNED_INVOCATIONS: readonly string[] = [
   "portfolio",
   "pnl",
   "plans",
+  "token clusters",
   "wallets",
   "swap status",
   "fees",

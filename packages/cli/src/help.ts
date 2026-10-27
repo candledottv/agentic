@@ -841,6 +841,17 @@ export const HELP: Record<string, Topic> = {
     examples: ["candle pnl", "candle pnl --profile scalper --json"],
     env: ENV_API,
   },
+  token: {
+    group: "Account",
+    summary: "Optional third-party token cluster analysis",
+    description:
+      "Reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none.",
+    usage: ["candle token clusters <mint> [--chain solana|hood] [--json]"],
+    rows: [{ invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" }],
+    flags: [{ invocation: "--chain <chain>", description: "solana (default) or hood; Hood analysis is unavailable" }],
+    examples: ["candle token clusters <mint>", "candle token clusters <mint> --json"],
+    env: ["CANDLE_API_URL"],
+  },
   plans: {
     group: "Account",
     summary: "The plans this API serves: prices, fees, limits and what each can do",
