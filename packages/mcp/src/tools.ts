@@ -1192,6 +1192,21 @@ const sweepShape = {
  * module that constructs a transport-connected server. Config is resolved from the environment
  * once, at registration time (`client.ts`'s `resolveConfig`).
  */
+/**
+ * Agent-page perps §8.2 (R7 amended): what `candle_get_profile_pnl` says about its `hyperliquid`
+ * section. The hosted server's copy (`apps/api/src/mcp/hosted.ts`) uses this same text.
+ */
+export const PROFILE_PNL_HYPERLIQUID =
+  "While Hyperliquid is enabled, `hyperliquid` reports the profile's main perps over every EVM TEE wallet bound " +
+  "to it, per binding period (`coverage: 'profile'`): realized gross, funding (positive received, negative paid), " +
+  "fees (builder fees included), realizedNetUsd = gross + funding - fees, `unrealizedUsd` at each wallet's " +
+  "cutoff, and `netUsd` = realized net + unrealized, with `markedAt` (the oldest wallet cutoff) and open " +
+  "`positions` (each `fundingNetUsd` positive when earned). Facts and unrealized stop at the same cutoff; each " +
+  "`byWallet` period is `live` (reconciled on this read, not yet settled) or `settled` (a stored snapshot). " +
+  "When `read` is true, `pnl.totalUsd` includes `netUsd` and `perpsInTotal` is true. When `read` is false, " +
+  "`pnl.totalUsd` is spot only, `perpsInTotal` is false and `reason` says why; that is never a zero. Check " +
+  "`historyPartial` and `partialReasons`."
+
 export function registerTools(server: McpServer, env: Record<string, string | undefined> = process.env): void {
   // `env`, not the ambient environment: an in-process host (`candle mcp`) passes a deliberately
   // reduced environment, and reading process.env here would restore what that strip removed.
@@ -1686,7 +1701,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before quoting the " +
         "number; they mean the total is partial. The figures come from the account's one P&L read, the " +
         "same as the console's, to the cent: `pnl.totalUsd` (realized net plus unrealized) is the " +
-        "console's P&L. Positions live in wallets: each wallet is its own average-cost pool, the total " +
+        "console's P&L, plus the Hyperliquid net when `perpsInTotal` is true. Positions live in wallets: each wallet is its own average-cost pool, the total " +
         "is the sum of `pnl.byWallet` (one row per wallet, main or linked, with the linked wallet's " +
         "label; `unknown:solana` or `unknown:hood` is the row for fills no record places in a wallet), " +
         "and one token held in two wallets is two positions, each with its `wallet`. A recorded move " +
@@ -1707,10 +1722,9 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " +
         "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " +
         "`chain`). The two chains sum to the total. A " +
-        "server that predates per-chain P&L omits `chain` and `byChain`. While Hyperliquid is enabled, " +
-        "`hyperliquid` separately reports main-perp realized gross, signed funding, fees (inclusive of builder fees), " +
-        "and net = gross + funding - fees, for currently bound EVM TEE wallets since the current TEE binding. " +
-        "Check `read` and `truncated`; historical bindings and unrealized perps are excluded. Reads only.",
+        "server that predates per-chain P&L omits `chain` and `byChain`. " +
+        PROFILE_PNL_HYPERLIQUID +
+        " Reads only.",
       inputSchema: profilePnlShape,
     },
     async (args) => callAndRelay("candle_get_profile_pnl", args, getConfig(), doFetch),

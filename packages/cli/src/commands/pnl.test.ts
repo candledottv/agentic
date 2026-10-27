@@ -541,20 +541,75 @@ describe("Ember 4d: both chains in candle pnl", () => {
 })
 
 describe("Hyperliquid profile PnL", () => {
+  const W = "0x1111111111111111111111111111111111111111"
+  const AT = Date.UTC(2026, 9, 27, 10, 2)
   const section = {
     read: true,
-    network: "testnet",
-    realizedGrossUsd: 10,
-    fundingUsd: -1,
+    network: "mainnet",
+    coverage: "profile",
+    realizedGrossUsd: 100,
+    fundingUsd: 2.5,
     feesUsd: 0.5,
-    realizedNetUsd: 8.5,
+    realizedNetUsd: 102,
+    unrealizedUsd: "-7.250000",
+    netUsd: "94.750000",
+    markedAt: AT,
+    perpsSnapshotId: "ps1_x",
+    completeThroughMs: AT,
+    positions: [
+      {
+        kind: "perp",
+        coin: "ETH",
+        side: "short",
+        size: "1.5",
+        leverage: { value: 10, type: "cross" },
+        entryPx: "2000",
+        markPx: "2005",
+        positionValueUsd: "3007.5",
+        marginUsedUsd: "300.75",
+        unrealizedPnlUsd: "-7.25",
+        returnOnEquity: "-0.024",
+        liquidationPx: "2200",
+        liquidationDistance: 0.097,
+        fundingNetUsd: "1.25",
+        level: "ok",
+      },
+    ],
     fills: 2,
     fundingPayments: 1,
+    byWallet: [
+      {
+        address: W,
+        fromMs: Date.UTC(2026, 9, 1),
+        toMs: Date.UTC(2026, 9, 10),
+        startTime: Date.UTC(2026, 9, 1),
+        observationCutoffMs: AT,
+        completeThroughMs: AT,
+        reconciliation: "settled",
+      },
+      {
+        address: W,
+        fromMs: Date.UTC(2026, 9, 20),
+        toMs: null,
+        startTime: Date.UTC(2026, 9, 20),
+        observationCutoffMs: AT,
+        completeThroughMs: AT,
+        reconciliation: "live",
+      },
+    ],
+    historyPartial: false,
+    partialReasons: [],
+    truncated: false,
     fillsLimit: 2000,
     fundingLimit: 500,
     walletsLimit: 20,
-    truncated: true,
-    byWallet: [{ address: "0x1111111111111111111111111111111111111111", startTime: 100 }],
+  }
+  const SPOT_TOTAL = { ...PROFILE_PNL, pnl: { ...PROFILE_PNL.pnl, totalUsd: 9 } }
+  const withPerps = {
+    ...SPOT_TOTAL,
+    pnl: { ...SPOT_TOTAL.pnl, totalUsd: 103.75 },
+    hyperliquid: section,
+    perpsInTotal: true,
   }
   test("perps and pnl help direct readers to the profile section and live unrealized views", async () => {
     for (const topic of ["perps", "pnl"]) {
@@ -566,39 +621,103 @@ describe("Hyperliquid profile PnL", () => {
       expect(help).toContain("Hyperliquid")
       expect(help).toContain("funding")
       expect(help).toContain("fees")
+      expect(help).toContain("also counted in")
       expect(help).toContain("Account-wide candle pnl and its By agent table cover ledger trades only")
       expect(help).toContain("a key with only perps activity has no row there")
       expect(help).toContain("candle perps positions")
       expect(help).toContain("candle portfolio")
+      expect(help).not.toContain("never added to the spot or LP totals")
       expect(help).not.toContain("The account's P&L (candle pnl) carries a Hyperliquid section")
       expect(h.calls).toEqual([])
     }
   })
-  test("separate heading, signed funding and history caveat; spot totals unchanged", async () => {
-    const h = harness({ withProfiles: true, profile: Response.json({ ...PROFILE_PNL, hyperliquid: section }) })
+  test("R7 amended: a separate heading and net, also counted in the total", async () => {
+    const h = harness({ withProfiles: true, profile: Response.json(withPerps) })
     expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
-    expect(h.stdout.text).toContain("Hyperliquid")
-    expect(h.stdout.text).toMatch(/Realized net\s+\$8.50/)
-    expect(h.stdout.text).toContain("paid negative")
-    expect(h.stdout.text).toContain("includes builder fees")
-    expect(h.stdout.text).toContain("previous bindings excluded")
-    expect(h.stdout.text).toContain("This is a partial figure")
-    expect(h.stdout.text).toContain("Unrealized perps are excluded")
-    expect(h.stdout.text).toMatch(/Total\s+\$9.00/)
+    const text = h.stdout.text
+    const perps = text.split("\nHyperliquid\n")[1] ?? ""
+    expect(text).toMatch(/Total\s+\$103\.75\s+\(includes Hyperliquid; realized net plus unrealized\)/)
+    expect(text).not.toContain("The total excludes Hyperliquid perps")
+    expect(perps).toMatch(/Realized net\s+\$102\.00 \(gross \+ funding - fees\)/)
+    expect(perps).toMatch(/Unrealized\s+-\$7\.25 \(open positions at 2026-10-27T10:02:00\.000Z\)/)
+    expect(perps).toMatch(/Net\s+\$94\.75 \(realized net \+ unrealized; in the total\) \(live, not yet settled\)/)
+    expect(perps).toContain("Coverage: every EVM TEE wallet bound to this profile, per binding period.")
+    expect(perps).toContain(
+      `${W} 2026-10-01T00:00:00.000Z to 2026-10-10T00:00:00.000Z (settled to 2026-10-27T10:02:00.000Z)`,
+    )
+    expect(perps).toContain(`${W} 2026-10-20T00:00:00.000Z to now (live to 2026-10-27T10:02:00.000Z, not yet settled)`)
+    // I8: funding is positive when earned, on the figures and on every position.
+    expect(perps).toContain("$2.50 (received positive, paid negative)")
+    expect(perps).toContain(
+      "ETH 10x Short 1.5: entry 2000, mark 2005, -$7.25 unrealized, earned $1.25 funding, liquidation 2200",
+    )
+    expect(perps).not.toContain("Unrealized perps are excluded")
+    expect(perps).not.toContain("previous bindings excluded")
   })
-  test("unavailable section exposes no false zero", async () => {
+  test("a settled-only section prints no live marker; a partial one names why", async () => {
+    const settled = {
+      ...section,
+      byWallet: [section.byWallet[0]],
+      positions: [],
+      historyPartial: true,
+      partialReasons: ["history_partial"],
+      truncated: true,
+    }
+    const h = harness({ withProfiles: true, profile: Response.json({ ...withPerps, hyperliquid: settled }) })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    expect(h.stdout.text).not.toContain("live, not yet settled")
+    expect(h.stdout.text).not.toContain("Open perps:")
+    expect(h.stdout.text).toContain("These figures are partial (history_partial).")
+  })
+  test("an unread section leaves the spot total and says why, with no false zero", async () => {
+    const reason =
+      "Hyperliquid fills and funding did not reconcile with the live positions at their cutoff; retry shortly. Perps are not in the total."
     const h = harness({
       withProfiles: true,
-      profile: Response.json({ ...PROFILE_PNL, hyperliquid: { read: false, reason: "Retry shortly" } }),
+      profile: Response.json({
+        ...SPOT_TOTAL,
+        hyperliquid: { read: false, code: "cutoff_unreconciled", reason },
+        perpsInTotal: false,
+      }),
     })
     expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
-    expect(h.stdout.text).toContain("Hyperliquid\nUnavailable: Retry shortly")
-    expect(h.stdout.text.split("Hyperliquid")[1]).not.toContain("$0.00")
+    expect(h.stdout.text).toMatch(/Total\s+\$9\.00\s+\(realized net plus unrealized\)\n/)
+    expect(h.stdout.text).not.toContain("includes Hyperliquid")
+    expect(h.stdout.text).toContain(`The total excludes Hyperliquid perps: ${reason}`)
+    expect(h.stdout.text).toContain(`Hyperliquid\nUnavailable: ${reason}`)
+    expect(h.stdout.text.split("Hyperliquid\n")[1]).not.toContain("$0.00")
   })
-  test("JSON passes through the section and coverage without extra requests", async () => {
-    const h = harness({ withProfiles: true, profile: Response.json({ ...PROFILE_PNL, hyperliquid: section }) })
+  test("an older server's realized-only section is not presented as in the total", async () => {
+    const old = {
+      read: true,
+      network: "mainnet",
+      realizedGrossUsd: 10,
+      fundingUsd: -1,
+      feesUsd: 0.5,
+      realizedNetUsd: 8.5,
+      fills: 2,
+      fundingPayments: 1,
+      fillsLimit: 2000,
+      fundingLimit: 500,
+      walletsLimit: 20,
+      truncated: false,
+      byWallet: [{ address: W, startTime: 100 }],
+    }
+    const h = harness({ withProfiles: true, profile: Response.json({ ...SPOT_TOTAL, hyperliquid: old }) })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    expect(h.stdout.text).toMatch(/Total\s+\$9\.00/)
+    expect(h.stdout.text).toContain("The total excludes Hyperliquid perps.")
+    expect(h.stdout.text).toContain(
+      "This server reports realized perps only, for the current binding, outside the total.",
+    )
+  })
+  test("JSON passes through the section and perpsInTotal without extra requests", async () => {
+    const h = harness({ withProfiles: true, profile: Response.json(withPerps) })
     expect(await run(["pnl", "--profile", "scalper", "--json"], h.deps)).toBe(0)
-    expect(JSON.parse(h.stdout.text).hyperliquid).toEqual(section)
+    const body = JSON.parse(h.stdout.text)
+    expect(body.hyperliquid).toEqual(section)
+    expect(body.perpsInTotal).toBe(true)
+    expect(body.pnl.totalUsd).toBe(103.75)
     expect(h.calls).toHaveLength(1)
   })
 })

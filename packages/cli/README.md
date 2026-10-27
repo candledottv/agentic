@@ -489,28 +489,35 @@ read the existing `GET /api/v1/agent/keys/{prefix}/pnl`. The answer adds an opti
 `hyperliquid` section, and the CLI prints it under **Hyperliquid**. The existing read
 authentication applies; on an older API the section is simply absent. No additional signing, deposit or setup is needed for this read.
 
-The section reports main-exchange perp `realizedGrossUsd` (venue `closedPnl`), signed
-`fundingUsd` (received positive, paid negative), `feesUsd` (venue fees including builder fees;
-rebates are negative), and `realizedNetUsd = realizedGrossUsd + fundingUsd - feesUsd`.
-Builder fees are already included in the venue fee and are not subtracted again. These figures
-stay separate from spot and LP totals and exclude unrealized perps, deposits and withdrawals.
+The section reports main-exchange perps for **every EVM TEE wallet bound to the key's profile,
+per binding period** (`coverage: "profile"`; revoked, swept and rebound wallets included for the
+time they were the profile's). `realizedGrossUsd` is the venue `closedPnl`, `fundingUsd` is
+signed (received positive, paid negative), `feesUsd` is venue fees including builder fees
+(rebates are negative), and `realizedNetUsd = realizedGrossUsd + fundingUsd - feesUsd`. Builder
+fees are already included in the venue fee and are not subtracted again. `unrealizedUsd` is the
+open positions' unrealized at each wallet's cutoff, `netUsd = realizedNetUsd + unrealizedUsd`
+(both USD decimal strings), and `positions` lists the open positions, each with
+`fundingNetUsd` positive when earned. Deposits and withdrawals are not P&L.
 
-Coverage is **currently bound EVM TEE wallets since the current TEE binding**,
-shown in `byWallet` with `startTime` in epoch milliseconds. That start is the latest rebind
-onto this key, or the wallet's creation time when it was bound then and never rebound. A
-rebound wallet does not bring its previous key's history. A wallet-set row is not required,
-and an older one cannot move the start earlier than the binding. Revoked and previous
-bindings, spot and HIP-3 fills are excluded. This is a binding-period read, not lifetime or
-order-level attribution.
+Facts and unrealized stop at the same cutoff per wallet. For a wallet still bound to the
+profile, the cutoff is Hyperliquid's position time at this read: the fills and funding since the
+wallet's last stored snapshot are read through that time and must reconcile with the positions
+(each fill continues the previous position, the positions match, and every open hour has its
+funding row). That wallet's `byWallet` entries say `reconciliation: "live"`, and the CLI prints
+"(live, not yet settled)". A wallet whose binding to the profile ended before its last stored
+snapshot is `settled`. `markedAt` is the oldest wallet cutoff, `completeThroughMs` the lowest
+completeness watermark, and `perpsSnapshotId` identifies the cutoff vector. "Reconciled" is not
+"complete": a round opened and closed between two fills Hyperliquid never returned cannot be
+seen.
 
-Reads use the venue client's two-second cache. `userFills` is capped at 2,000 recent rows;
-`userFunding` at 500 rows from `startTime`, and this response covers at most 20 bound
-wallets. `truncated` flags any reached history cap or remaining wallet page; `byWallet` names
-`fillsTruncated` and `fundingTruncated`. Funding and fills can cover different time spans when
-capped: a partial net must not be quoted as a lifetime figure. On upstream, wallet-discovery or
-malformed-data failure the section is `{ read: false, reason }`, without amounts; spot PnL still
-answers. An empty successful read is `{ read: true, ... }` with zero amounts. `--json` preserves
-the section and its coverage fields. Agent boards are outside this slice.
+The net is **also counted in the total**: when `read` is true, `pnl.totalUsd` includes `netUsd`
+and the answer's `perpsInTotal` is `true`; the CLI's `Total` line says it includes Hyperliquid.
+When the section cannot be read or reconciled within the request's Hyperliquid budget, it is
+`{ read: false, code, reason }` without amounts, `pnl.totalUsd` is the spot total,
+`perpsInTotal` is `false`, and the CLI says the total excludes perps and why. Never a zero.
+`historyPartial` (and `partialReasons`) flags history the stored record does not cover;
+`truncated` repeats it for older CLIs. At most 20 wallets are read. `--json` preserves the
+section and its coverage fields. Agent boards are outside this slice.
 
 
 ## CNDL staking

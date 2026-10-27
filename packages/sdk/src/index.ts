@@ -247,7 +247,13 @@ export {
   type PerpsWorkflowStep,
 } from "./hyperliquid-manage"
 export * from "./hyperliquid-markets"
-export type { HyperliquidPnlFigures, HyperliquidPnlSection, HyperliquidWalletPnl } from "./hyperliquid-pnl"
+export type {
+  HyperliquidPerpsPosition,
+  HyperliquidPnlFigures,
+  HyperliquidPnlSection,
+  HyperliquidPnlUnavailableCode,
+  HyperliquidWalletPnl,
+} from "./hyperliquid-pnl"
 // BE-1582: the Hyperliquid risk engine, for bots that run the same rule as the CLI and MCP.
 export {
   effectivePerpsRisk,

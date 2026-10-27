@@ -260,6 +260,8 @@ interface BooksBody {
 
 interface ProfileBody {
   hyperliquid?: HyperliquidPnlSection
+  /** True when `pnl.totalUsd` includes `hyperliquid.netUsd`; absent from older servers. */
+  perpsInTotal?: boolean
   keyPrefix: string
   pnl: EngineFields & {
     realizedNetUsd: number
@@ -355,7 +357,7 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
   }
 
   if (perProfile) {
-    const { pnl: p, lp, hyperliquid } = body as unknown as ProfileBody
+    const { pnl: p, lp, hyperliquid, perpsInTotal } = body as unknown as ProfileBody
     // A2's engine sends `totalUsd` on every key scope; an older API does not, and its figures still
     // mean the old thing (one pool across the key's wallets, its last 500 trades).
     const engine = typeof p.totalUsd === "number"
@@ -382,6 +384,9 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
       lookbackUnit: engine ? "of the account's ledger rows" : "trades",
       oldestMarkAt: p.oldestMarkAt,
       lp,
+      perps: hyperliquid
+        ? { inTotal: perpsInTotal === true, ...(hyperliquid.read ? {} : { reason: hyperliquid.reason }) }
+        : undefined,
     })
     writePositions(ctx, p.openPositions, false)
     writeWallets(ctx, p.byWallet, engine)
@@ -506,9 +511,17 @@ function writeSummary(
     lookbackUnit: string
     oldestMarkAt?: number
     lp?: LpSection
+    /** Agent-page perps §8.2: whether `totalUsd` counts Hyperliquid, and why not when it does not. */
+    perps?: { inTotal: boolean; reason?: string }
   },
 ): void {
   const marked = s.positions - s.unmarked
+  const withPerps = s.perps?.inTotal === true
+  // `writeLines` puts the note in parentheses: "(includes Hyperliquid; realized net plus unrealized)".
+  const totalNote = (tokens: string) =>
+    withPerps
+      ? `includes Hyperliquid; realized net plus unrealized${tokens ? ", tokens and perps" : ""}`
+      : `realized net plus unrealized${tokens}`
   const lines = [
     [
       "Realized net",
@@ -543,7 +556,7 @@ function writeSummary(
           ? `${lp.vsHoldingPositions} of ${lp.valued} valued, against holding the deposited tokens (now ${formatUsd(lp.holdValueUsd)})`
           : "no valued LP position with every deposit priced",
       ],
-      ["Total", formatUsd(total), "realized net plus unrealized, tokens only, as the console shows it"],
+      ["Total", formatUsd(total), totalNote(", tokens only, as the console shows it")],
       [
         "Total with LP",
         formatUsd(total + lp.realizedUsd + lp.unrealizedUsd),
@@ -553,12 +566,17 @@ function writeSummary(
   } else if (lp) {
     lines.push(
       ["LP", "not read", `${terminalText(lp.reason)}; not in the total`],
-      ["Total", formatUsd(total), "realized net plus unrealized, tokens only"],
+      ["Total", formatUsd(total), totalNote(", tokens only")],
     )
   } else {
-    lines.push(["Total", formatUsd(total), "realized net plus unrealized"])
+    lines.push(["Total", formatUsd(total), totalNote("")])
   }
   writeLines(ctx, lines)
+  if (s.perps && !withPerps) {
+    ctx.deps.stdout.write(
+      `The total excludes Hyperliquid perps${s.perps.reason ? `: ${terminalText(s.perps.reason)}` : "."}\n`,
+    )
+  }
   if (s.closed) writeClosed(ctx, s.closed)
   const dust = s.openPositionsExDust !== undefined ? s.positions - s.openPositionsExDust : 0
   if (dust > 0) {

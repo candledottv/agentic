@@ -42097,6 +42097,7 @@ __export(exports_tools, {
   VAMP_CANDIDATES_DESCRIPTION: () => VAMP_CANDIDATES_DESCRIPTION,
   TOOL_NAMES: () => TOOL_NAMES,
   STAKING_DISCLOSURE: () => STAKING_DISCLOSURE,
+  PROFILE_PNL_HYPERLIQUID: () => PROFILE_PNL_HYPERLIQUID,
   PROFILE_EDIT_TOOL_NAMES: () => PROFILE_EDIT_TOOL_NAMES,
   OPERATION_NOT_FOUND_RULE: () => OPERATION_NOT_FOUND_RULE,
   CUSTOM_CURVE_RULE: () => CUSTOM_CURVE_RULE
@@ -42655,7 +42656,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_set_profile_wallets", args, getConfig(), doFetch));
   register("candle_get_profile_pnl", {
     title: "Read an agent profile's P&L",
-    description: "Optional `board` beside `pnl` carries profileId, creatorFeesUsd, feeClaimsUnvalued, feeClaimsPartial and " + "totalPnlUsd (absent before a board entry exists): the all-time public board total, including fee claims " + "at their value when claimed, credited to the agent that launched the token when the claiming account " + "is the launching account. `feesUsd` is fees paid; `creatorFeesUsd` is fees earned. Check feeClaimsPartial " + "and feeClaimsUnvalued. `board` is absent on an older backend or a failed board read; it does not change " + "ledger pnl.totalUsd. Staking rewards are held at zero cost; claim value is informational, never added again. " + "This profile's share of the account's P&L: realized profit on the sales it made, the Candle fees " + "charged against it, and the positions that belong to it (the wallet's bound key, else the key " + "whose buy opened them) with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits and withdrawals are " + "excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before quoting the " + "number; they mean the total is partial. The figures come from the account's one P&L read, the " + "same as the console's, to the cent: `pnl.totalUsd` (realized net plus unrealized) is the " + "console's P&L. Positions live in wallets: each wallet is its own average-cost pool, the total " + "is the sum of `pnl.byWallet` (one row per wallet, main or linked, with the linked wallet's " + "label; `unknown:solana` or `unknown:hood` is the row for fills no record places in a wallet), " + "and one token held in two wallets is two positions, each with its `wallet`. A recorded move " + "between the account's wallets carries its cost and realizes nothing. Moved-in positions and " + "`closedPositions` carry additive `transferredIn`, `basisSource` and `basisComplete`; " + "`basisSource` says whether cost comes from Candle history, on-chain trades or the arrival price; " + "`zero-cost` (with `zeroCostQuantity`) is Solana CNDL with no purchase found, carried at $0. " + "Public `realizedFromTransfersUsd` and `unrealizedFromTransfersUsd` are shares already included in " + "total P&L and rank; do not add them again. Moved-in closes count toward W/L and eligibility. Each position carries " + "`agent` (the key it belongs to) and `dust` when it is worth under one cent; dust stays listed " + "and counted, and `openPositionsExDust` leaves it out. `closed` gives the closed positions as " + "`madeUsd` + `lostUsd` + `partialSellsUsd` = `realizedNetUsd`, with `wins` and `losses`. " + "`lookback` and `truncated` are the account's activity bound, and `tradesConsidered` counts this " + "key's ledger fills. Since 2026-10-02 the total is the sum of wallets rather than one pool across " + "them, so realized figures can differ from earlier reads; a server that predates it omits " + "`totalUsd`, `closed`, `openPositionsExDust`, `wallet`, `agent` and `dust`. " + "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " + "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " + "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " + "`chain`). The two chains sum to the total. A " + "server that predates per-chain P&L omits `chain` and `byChain`. While Hyperliquid is enabled, " + "`hyperliquid` separately reports main-perp realized gross, signed funding, fees (inclusive of builder fees), " + "and net = gross + funding - fees, for currently bound EVM TEE wallets since the current TEE binding. " + "Check `read` and `truncated`; historical bindings and unrealized perps are excluded. Reads only.",
+    description: "Optional `board` beside `pnl` carries profileId, creatorFeesUsd, feeClaimsUnvalued, feeClaimsPartial and " + "totalPnlUsd (absent before a board entry exists): the all-time public board total, including fee claims " + "at their value when claimed, credited to the agent that launched the token when the claiming account " + "is the launching account. `feesUsd` is fees paid; `creatorFeesUsd` is fees earned. Check feeClaimsPartial " + "and feeClaimsUnvalued. `board` is absent on an older backend or a failed board read; it does not change " + "ledger pnl.totalUsd. Staking rewards are held at zero cost; claim value is informational, never added again. " + "This profile's share of the account's P&L: realized profit on the sales it made, the Candle fees " + "charged against it, and the positions that belong to it (the wallet's bound key, else the key " + "whose buy opened them) with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits and withdrawals are " + "excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before quoting the " + "number; they mean the total is partial. The figures come from the account's one P&L read, the " + "same as the console's, to the cent: `pnl.totalUsd` (realized net plus unrealized) is the " + "console's P&L, plus the Hyperliquid net when `perpsInTotal` is true. Positions live in wallets: each wallet is its own average-cost pool, the total " + "is the sum of `pnl.byWallet` (one row per wallet, main or linked, with the linked wallet's " + "label; `unknown:solana` or `unknown:hood` is the row for fills no record places in a wallet), " + "and one token held in two wallets is two positions, each with its `wallet`. A recorded move " + "between the account's wallets carries its cost and realizes nothing. Moved-in positions and " + "`closedPositions` carry additive `transferredIn`, `basisSource` and `basisComplete`; " + "`basisSource` says whether cost comes from Candle history, on-chain trades or the arrival price; " + "`zero-cost` (with `zeroCostQuantity`) is Solana CNDL with no purchase found, carried at $0. " + "Public `realizedFromTransfersUsd` and `unrealizedFromTransfersUsd` are shares already included in " + "total P&L and rank; do not add them again. Moved-in closes count toward W/L and eligibility. Each position carries " + "`agent` (the key it belongs to) and `dust` when it is worth under one cent; dust stays listed " + "and counted, and `openPositionsExDust` leaves it out. `closed` gives the closed positions as " + "`madeUsd` + `lostUsd` + `partialSellsUsd` = `realizedNetUsd`, with `wins` and `losses`. " + "`lookback` and `truncated` are the account's activity bound, and `tradesConsidered` counts this " + "key's ledger fills. Since 2026-10-02 the total is the sum of wallets rather than one pool across " + "them, so realized figures can differ from earlier reads; a server that predates it omits " + "`totalUsd`, `closed`, `openPositionsExDust`, `wallet`, `agent` and `dust`. " + "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " + "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " + "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " + "`chain`). The two chains sum to the total. A " + "server that predates per-chain P&L omits `chain` and `byChain`. " + PROFILE_PNL_HYPERLIQUID + " Reads only.",
     inputSchema: profilePnlShape
   }, async (args) => callAndRelay("candle_get_profile_pnl", args, getConfig(), doFetch));
   register("candle_get_profile_trades", {
@@ -42905,7 +42906,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, CUSTOM_CURVE_RULE, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, vampCandidatesShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape;
+var VAMP_CANDIDATES_DESCRIPTION, CUSTOM_CURVE_RULE, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, vampCandidatesShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
 var init_tools = __esm(() => {
   init_zod();
   init_client2();
@@ -43155,6 +43156,7 @@ var init_tools = __esm(() => {
     to: exports_external.string().describe("Destination address, same rules as candle_transfer's `to`"),
     mints: exports_external.array(exports_external.string()).optional().describe("Extra token mints/contracts to sweep besides the chain's base assets (own-wallet destinations only).")
   };
+  PROFILE_PNL_HYPERLIQUID = "While Hyperliquid is enabled, `hyperliquid` reports the profile's main perps over every EVM TEE wallet bound " + "to it, per binding period (`coverage: 'profile'`): realized gross, funding (positive received, negative paid), " + "fees (builder fees included), realizedNetUsd = gross + funding - fees, `unrealizedUsd` at each wallet's " + "cutoff, and `netUsd` = realized net + unrealized, with `markedAt` (the oldest wallet cutoff) and open " + "`positions` (each `fundingNetUsd` positive when earned). Facts and unrealized stop at the same cutoff; each " + "`byWallet` period is `live` (reconciled on this read, not yet settled) or `settled` (a stored snapshot). " + "When `read` is true, `pnl.totalUsd` includes `netUsd` and `perpsInTotal` is true. When `read` is false, " + "`pnl.totalUsd` is spot only, `perpsInTotal` is false and `reason` says why; that is never a zero. Check " + "`historyPartial` and `partialReasons`.";
 });
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
@@ -71391,7 +71393,7 @@ var HELP = {
   perps: {
     group: "Trade",
     summary: "Hyperliquid perpetuals: markets, market, book, candles; deposit, setup, withdraw, open, close, cancel, modify, margin, tpsl, schedule-cancel, flatten, reduce-only, orders, positions, fills, funding, leverage, account, risk, watch, thresholds",
-    description: "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). A key gets an EVM TEE wallet by promoting one from the vault: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>, and candle tee signer new --key <prefix> on the machine that trades it; candle tee new is Solana only. Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). candle pnl --profile <name> shows the profile key's Hyperliquid realized P&L, funding and fees, separately from spot and LP totals. Unrealized perps P&L is shown by candle perps positions and candle portfolio. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch. Candle's server may also watch this wallet; GET /perps/risk reports whether it does. modify, margin, tpsl, schedule-cancel, flatten and close --pct are built, checked against this machine's own read of Hyperliquid, signed and submitted like every other write; tpsl and flatten are plans of several such steps, confirmed once (or --yes), and a plan that does not finish says so and exits 1 (3 when a signed step's submit did not answer). A key that is reduce-only (reduce-only on) can close, cancel, protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure; only the owner's device token turns it off, and it cancels no resting order and revokes no signed action.",
+    description: "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). A key gets an EVM TEE wallet by promoting one from the vault: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>, and candle tee signer new --key <prefix> on the machine that trades it; candle tee new is Solana only. Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). candle pnl --profile <name> shows the profile's Hyperliquid P&L under its own heading, over every EVM TEE wallet bound to the profile: realized, funding, fees, unrealized and the net, which is also counted in the profile's Total. Live positions and risk are shown by candle perps positions and candle portfolio. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch. Candle's server may also watch this wallet; GET /perps/risk reports whether it does. modify, margin, tpsl, schedule-cancel, flatten and close --pct are built, checked against this machine's own read of Hyperliquid, signed and submitted like every other write; tpsl and flatten are plans of several such steps, confirmed once (or --yes), and a plan that does not finish says so and exits 1 (3 when a signed step's submit did not answer). A key that is reduce-only (reduce-only on) can close, cancel, protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure; only the owner's device token turns it off, and it cancels no resting order and revokes no signed action.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
@@ -71816,7 +71818,7 @@ var HELP = {
   pnl: {
     group: "Account",
     summary: "P&L per chain and combined: realized, fees, unrealized and open positions (--profile for one key's share)",
-    description: "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the console shows, to the cent for the same moment. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its share of the same P&L: realized on the sales it made, and the open positions that belong to it (the wallet's bound key, else the key whose buy opened them), with a row per wallet that sums to the total. Positions live in wallets: each wallet is its own average-cost pool, the account is the sum of its wallets, and a recorded move between two of the account's wallets carries its cost and realizes nothing. Both show a Solana block, a Hood block, then the combined figure, the closed positions as money made, minus money lost, plus partial sells, and a CHAIN column (and WALLET, where the API names it) on positions. The account's books add a By agent table (each key, then Manual for web-app trades, then the account total). Unpriced positions are shown as unpriced and never valued at zero; a position worth under one cent is marked dust and still counted. A bridge between Solana and Hood is not a trade: it opens and closes nothing, and bridge and Relay costs are not netted from P&L. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis), and vs holding (what the deposited tokens would be worth held); Total stays the console's token figure, and Total with LP covers tokens and LP. Only --profile <name> adds a separate Hyperliquid section: realized gross, funding (received positive, paid negative), fees including builder fees, and realized net since the current EVM TEE binding. It excludes unrealized perps P&L, deposits and withdrawals, and is never added to the spot or LP totals. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. For live unrealized perps P&L, use candle perps positions or candle portfolio.",
+    description: "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the console shows, to the cent for the same moment. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its share of the same P&L: realized on the sales it made, and the open positions that belong to it (the wallet's bound key, else the key whose buy opened them), with a row per wallet that sums to the total. Positions live in wallets: each wallet is its own average-cost pool, the account is the sum of its wallets, and a recorded move between two of the account's wallets carries its cost and realizes nothing. Both show a Solana block, a Hood block, then the combined figure, the closed positions as money made, minus money lost, plus partial sells, and a CHAIN column (and WALLET, where the API names it) on positions. The account's books add a By agent table (each key, then Manual for web-app trades, then the account total). Unpriced positions are shown as unpriced and never valued at zero; a position worth under one cent is marked dust and still counted. A bridge between Solana and Hood is not a trade: it opens and closes nothing, and bridge and Relay costs are not netted from P&L. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis), and vs holding (what the deposited tokens would be worth held); Total is the console's token figure, and Total with LP covers tokens and LP. Only --profile <name> adds a Hyperliquid section under its own heading, over every EVM TEE wallet bound to the profile, per binding period: realized gross, funding (received positive, paid negative), fees including builder fees, realized net, unrealized and the net. Facts and unrealized stop at the same cutoff per wallet; a cutoff read now is marked (live, not yet settled). The net is also counted in Total, whose line says it includes Hyperliquid; when the section cannot be read, Total is the token figure and the CLI says it excludes perps and why. Deposits and withdrawals are not P&L. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. For live perps positions and risk, use candle perps positions or candle portfolio.",
     usage: ["candle pnl [--profile <name>] [--json]"],
     rows: [],
     examples: ["candle pnl", "candle pnl --profile scalper --json"],
@@ -92272,18 +92274,50 @@ Hyperliquid
 `);
   out.write(`Realized net    ${formatUsd(section.realizedNetUsd)} (gross + funding - fees)
 `);
-  out.write(`${section.fills} fills; ${section.fundingPayments} funding payments. Unrealized perps are excluded.
+  if (typeof section.netUsd !== "string" || typeof section.unrealizedUsd !== "string") {
+    out.write(`${section.fills} fills; ${section.fundingPayments} funding payments.
 `);
-  out.write(`Coverage: currently bound EVM TEE wallets since the current TEE binding; previous bindings excluded.
+    out.write(`This server reports realized perps only, for the current binding, outside the total.
 `);
-  for (const wallet3 of section.byWallet) {
-    out.write(`${terminalText(wallet3.address)} since ${new Date(wallet3.startTime).toISOString()}
+    return;
+  }
+  const wallets2 = Array.isArray(section.byWallet) ? section.byWallet : [];
+  const live = wallets2.some((w) => w.reconciliation === "live");
+  const markedAt = typeof section.markedAt === "number" ? ` at ${new Date(section.markedAt).toISOString()}` : "";
+  out.write(`Unrealized      ${formatUsd(Number(section.unrealizedUsd))} (open positions${markedAt})
+`);
+  out.write(`Net             ${formatUsd(Number(section.netUsd))} (realized net + unrealized; in the total)${live ? " (live, not yet settled)" : ""}
+`);
+  out.write(`${section.fills} fills; ${section.fundingPayments} funding payments.
+`);
+  out.write(`Coverage: every EVM TEE wallet bound to this profile, per binding period.
+`);
+  for (const wallet3 of wallets2) {
+    const to = wallet3.toMs === null ? "now" : new Date(wallet3.toMs).toISOString();
+    const state = wallet3.reconciliation === "live" ? `live to ${new Date(wallet3.observationCutoffMs).toISOString()}, not yet settled` : `settled to ${new Date(wallet3.observationCutoffMs).toISOString()}`;
+    out.write(`${terminalText(wallet3.address)} ${new Date(wallet3.fromMs).toISOString()} to ${to} (${state})
 `);
   }
-  if (section.truncated) {
-    out.write(`History is truncated: at most ${section.fillsLimit} recent fills and ${section.fundingLimit} funding rows per wallet, ${section.walletsLimit} wallets. This is a partial figure.
+  const positions = Array.isArray(section.positions) ? section.positions : [];
+  if (positions.length) {
+    out.write(`Open perps:
+`);
+    for (const position of positions)
+      out.write(`${positionLine(position)}
 `);
   }
+  if (section.historyPartial) {
+    const reasons = Array.isArray(section.partialReasons) ? section.partialReasons.map(terminalText).join(", ") : "";
+    out.write(`These figures are partial${reasons ? ` (${reasons})` : ""}.
+`);
+  }
+}
+function positionLine(p) {
+  const funding = Number(p.fundingNetUsd);
+  const fundingText = `${funding < 0 ? "paid" : "earned"} ${formatUsd(Math.abs(funding))} funding`;
+  const pnl = p.markPx === null ? "no mark" : `${formatUsd(Number(p.unrealizedPnlUsd))} unrealized`;
+  const liquidation = p.liquidationPx === null ? "no liquidation price" : `liquidation ${terminalText(p.liquidationPx)}`;
+  return `  ${terminalText(p.coin)} ${p.leverage.value}x ${p.side === "long" ? "Long" : "Short"} ${terminalText(p.size)}: entry ${terminalText(p.entryPx)}, mark ${p.markPx === null ? "-" : terminalText(p.markPx)}, ${pnl}, ${fundingText}, ${liquidation}`;
 }
 
 // src/commands/pnl.ts
@@ -92352,7 +92386,7 @@ async function pnl(args, ctx) {
     return 0;
   }
   if (perProfile) {
-    const { pnl: p, lp, hyperliquid } = body;
+    const { pnl: p, lp, hyperliquid, perpsInTotal } = body;
     const engine = typeof p.totalUsd === "number";
     deps.stdout.write(engine ? `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's share of the account's P&L
 
@@ -92376,7 +92410,8 @@ async function pnl(args, ctx) {
       lookback: p.lookback,
       lookbackUnit: engine ? "of the account's ledger rows" : "trades",
       oldestMarkAt: p.oldestMarkAt,
-      lp
+      lp,
+      perps: hyperliquid ? { inTotal: perpsInTotal === true, ...hyperliquid.read ? {} : { reason: hyperliquid.reason } } : undefined
     });
     writePositions(ctx, p.openPositions, false);
     writeWallets(ctx, p.byWallet, engine);
@@ -92475,6 +92510,8 @@ ${renderTable(["WALLET", "CHAIN", "TRADES", "REALIZED NET", "UNREALIZED", "OPEN"
 }
 function writeSummary(ctx, s) {
   const marked = s.positions - s.unmarked;
+  const withPerps = s.perps?.inTotal === true;
+  const totalNote = (tokens) => withPerps ? `includes Hyperliquid; realized net plus unrealized${tokens ? ", tokens and perps" : ""}` : `realized net plus unrealized${tokens}`;
   const lines = [
     [
       "Realized net",
@@ -92503,17 +92540,21 @@ function writeSummary(ctx, s) {
       "LP vs holding",
       lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd) : "-",
       lp.vsHoldingPositions > 0 ? `${lp.vsHoldingPositions} of ${lp.valued} valued, against holding the deposited tokens (now ${formatUsd(lp.holdValueUsd)})` : "no valued LP position with every deposit priced"
-    ], ["Total", formatUsd(total), "realized net plus unrealized, tokens only, as the console shows it"], [
+    ], ["Total", formatUsd(total), totalNote(", tokens only, as the console shows it")], [
       "Total with LP",
       formatUsd(total + lp.realizedUsd + lp.unrealizedUsd),
       "the total plus LP realized and unrealized"
     ]);
   } else if (lp) {
-    lines.push(["LP", "not read", `${terminalText(lp.reason)}; not in the total`], ["Total", formatUsd(total), "realized net plus unrealized, tokens only"]);
+    lines.push(["LP", "not read", `${terminalText(lp.reason)}; not in the total`], ["Total", formatUsd(total), totalNote(", tokens only")]);
   } else {
-    lines.push(["Total", formatUsd(total), "realized net plus unrealized"]);
+    lines.push(["Total", formatUsd(total), totalNote("")]);
   }
   writeLines(ctx, lines);
+  if (s.perps && !withPerps) {
+    ctx.deps.stdout.write(`The total excludes Hyperliquid perps${s.perps.reason ? `: ${terminalText(s.perps.reason)}` : "."}
+`);
+  }
   if (s.closed)
     writeClosed(ctx, s.closed);
   const dust = s.openPositionsExDust !== undefined ? s.positions - s.openPositionsExDust : 0;

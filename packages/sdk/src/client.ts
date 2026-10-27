@@ -1334,8 +1334,18 @@ export interface ProfileChainPnl extends ProfilePnlEngineFields {
 export interface ProfilePnlResult {
   /** Public board figures including fee income; independent of pnl.totalUsd and its coverage. */
   board?: ProfileBoardPnl
-  /** Optional while Hyperliquid is enabled; separate from spot totals. */
+  /**
+   * The key's profile on Hyperliquid, every binding period: its own heading and net, also counted
+   * in `pnl.totalUsd` when `read` is true (see `perpsInTotal`). Unrealized is at each wallet's live
+   * cutoff, and facts stop at that same cutoff. A `read: false` section is never a zero.
+   */
   hyperliquid?: HyperliquidPnlSection
+  /**
+   * True when `pnl.totalUsd` includes `hyperliquid.netUsd`. False when the section was not read,
+   * and then `pnl.totalUsd` is the spot total. Absent from servers that predate it: their
+   * `pnl.totalUsd` never included perps.
+   */
+  perpsInTotal?: boolean
   success: true
   keyPrefix: string
   pnl: ProfilePnlEngineFields & {
@@ -4092,9 +4102,10 @@ export class CandleClient {
    * `oldestMarkAt`: an unpriced position is counted there, never valued at zero.
    *
    * The figures are the key's share of the account's one P&L read, the console's figures to the
-   * cent (`pnl.totalUsd` is the console's P&L). Since 2026-10-02 the total is the sum of the key's
-   * wallets, not one pool across them, and `lookback` is the account's activity bound; see
-   * `ProfilePnlResult` for every meaning that changed.
+   * cent (`pnl.totalUsd` is the console's P&L, plus the Hyperliquid net when `perpsInTotal`).
+   * Since 2026-10-02 the total is the sum of the key's wallets, not one pool across them, and
+   * `lookback` is the account's activity bound; see `ProfilePnlResult` for every meaning that
+   * changed.
    *
    * Check `unvalued` and `truncated` before quoting the number: the first counts fills that had
    * no trusted USD price and were left out rather than counted as zero, the second says the
