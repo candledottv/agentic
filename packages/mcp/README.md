@@ -1,18 +1,20 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-fifty-seven tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
+sixty-six tools over stdio, plus four Hyperliquid market reads (seventy in all), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity, and
 check an agent profile without hand-rolling HTTP calls.
 
 ## Try it without a key
 
-Ten tools are read-only and need nothing but `CANDLE_API_URL` (which already defaults to
+Thirteen tools are read-only and need nothing but `CANDLE_API_URL` (which already defaults to
 production): `candle_get_market`, `candle_get_feed`, `candle_token_events`, `candle_token_card`,
-`candle_token_forensics`,
+`candle_token_page_about`, `candle_token_page_burns`, `candle_token_page_history`, `candle_token_forensics`,
 `candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_resolve_token` and `candle_get_plans`.
-Install the server with no `env` block at all and those ten work immediately:
+The three token-page reads are unreleased source; published 0.10.25 has the original ten.
+With a source build and token-page reads enabled on the deployment, those thirteen work immediately without a key.
+Install the released server with no `env` block at all and its ten public reads work immediately:
 
 ```json
 {
@@ -32,7 +34,7 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all fifty-seven. An unknown name fails startup with the valid names in the message, rather
+Unset means all sixty-six. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -82,9 +84,9 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
   non-loopback host. For a trusted local endpoint that is not loopback, such as a devcontainer
   reaching its host; not for anything that leaves the machine.
 - `CANDLE_AGENT_API_KEY` -- an agent API key (`cndl_live_...` / `cndl_test_...`), issued from a
-  Candle account's agent settings page. Required by every tool except the ten read-only ones
+  Candle account's agent settings page. Required by every tool except the thirteen read-only ones
   listed above, which includes the account-scoped reads (`candle_get_wallets`,
-  `candle_execution_status`, `candle_get_operation`) as well as the writes; those ten
+  `candle_execution_status`, `candle_get_operation`) as well as the writes; those thirteen
   work without it, so the server is useful the moment it is installed and only asks for a key when
   you try to write. `candle_trade` additionally needs the key's `swap:write` scope server-side,
   which is opt-in only and never granted by omission, see
@@ -112,6 +114,15 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_get_feed` | Get a token feed | `GET /api/v1/markets/feed?bucket=...` | none |
 | `candle_token_events` | One token's signals, callouts and tracked-wallet trades, newest first; `kind` filters the returned page, `nextCursor`/`before` pages it. Off until the deployment switches it on (503 `TOKEN_EVENTS_DISABLED`) | `GET /api/v1/tokens/:chain/:mint/events?since=...&limit=...&before=...` | none |
 | `candle_token_card` | The data behind a token card for one token: market, all-time high since launch, forensics coverage, safety and same-name facts, tracked wallets in the last hour, each block with its source; a null field has no source. Off until the deployment switches it on (503 `TOKEN_CARD_DISABLED`) | `GET /api/v1/tokens/:chain/:mint/card?cst=...` | none |
+| `candle_token_page_about` | Public About summary; feature switches, no personalized capabilities | `GET /api/v1/token-pages/:chain/:address` | none |
+| `candle_token_page_capabilities` | Private fresh eligibility for this key account | `GET /api/v1/token-pages/:chain/:address/capabilities` | Yes (`token-pages:read`) |
+| `candle_token_page_burns` | Completed CNDL burns and subtotal | `GET /api/v1/token-pages/:chain/:address/burns?cursor&limit` | none |
+| `candle_token_page_history` | Immutable section history; hidden/removed bodies remain tombstones | `GET /api/v1/token-pages/:chain/:address/sections/:section/history?cursor&limit` | none |
+| `candle_token_page_creator_challenge` | One fresh message-only challenge; sign exact UTF-8 bytes locally, no implicit claim | `POST /api/v1/token-pages/:chain/:address/creator-challenges` | Yes (`token-pages:write`) |
+| `candle_token_page_claim` | Claim as holder or creator using optional supplied challengeId/signature | `POST /api/v1/token-pages/:chain/:address/claims` | Yes (`token-pages:write`) |
+| `candle_token_page_section_set` | Append a section version with text and baseRevision | `PUT /api/v1/token-pages/:chain/:address/sections/:section` | Yes (`token-pages:write`) |
+| `candle_token_page_section_restore` | Append a new version from versionId and baseRevision; never rewrite history | `POST /api/v1/token-pages/:chain/:address/sections/:section/restore` | Yes (`token-pages:write`) |
+| `candle_token_page_flag` | Report exact contentId with reason and optional detail | `POST /api/v1/token-pages/:chain/:address/flags` | Yes (`token-pages:write`) |
 | `candle_vamp_candidates` | Tickers being copied near graduation: Solana tokens near graduation or graduated in the last 6 hours, most-copied in the last 24 hours first, each with a launch draft (name, ticker, image URL) and `draftNotes` for the fields you must supply. Counts exclude the candidate itself. Answers 404 where the deployment has not switched it on | `GET /api/v1/markets/vamp-candidates?limit=...&minCopies24h=...&stage=...` | `CANDLE_AGENT_API_KEY` (`account:read`) |
 | `candle_token_forensics` | Deployer history, deploy-window buyers, sourced token safety flags | `GET /api/v1/markets/:chain/:mint/forensics` | none |
 | `candle_report_activity` | Report on-chain activity | `POST /api/v1/activity/report` | `CANDLE_AGENT_API_KEY` |
@@ -209,7 +220,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-fifty-seven tools:
+sixty-six tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.
@@ -378,3 +389,41 @@ A configured Candle agent key of any scope is required; no wallet, signer, or `p
 Every JSON result carries `network`, epoch-ms `readAt`, `gate: { minOpenInterestUsd, source }`, and `warnings`. Decimals are strings; USD display values use two decimals. The config is read once per SDK client/local MCP configuration (once per CLI command). If unavailable, the OI floor falls back to 1,000,000 USD, labeled `gate.source: "default"` with a warning. Predicted-funding or OI-cap failures produce null fields and warnings; core Hyperliquid failures give retryable `PERPS_UNAVAILABLE`. Unknown or ambiguous coins give `PERPS_MARKET_NOT_FOUND`. The CLI exits 0 on success (including warnings), 1 on runtime failure, 2 on usage error.
 
 SDK and local MCP cache market reads for five seconds; book and candle snapshots are never cached. CLI/MCP select testnet with `CANDLE_HYPERLIQUID_NETWORK=testnet`; SDK uses `hyperliquidNetwork: "testnet"`. These four tools are local-only and are absent from hosted MCP tool sets. MCP uses the existing `CANDLE_API_KEY` or `CANDLE_AGENT_API_KEY` configuration, with no signer PEM required. No signing, relay or `/exchange` request occurs.
+
+## Token page tools (unreleased local source)
+
+The nine `candle_token_page_*` tools below are available in local MCP source and the bundled
+`candle mcp` source. They require a human-owned package release before npm installs receive them.
+They are not offered by the hosted OAuth connector. Existing OAuth consent and key grants are
+unchanged; local keys need explicit `token-pages:read` or `token-pages:write` scopes. All token-page
+switches default off: `404`/`feature_off` is a refusal, not an empty page or permission grant.
+
+Each tool takes `chain` (`solana` or `hood`) and `address`. Section tools take `section` (`thesis`,
+`tokenomics` or `lore`). Burns/history accept an opaque returned `cursor` and `limit` from 1 to 50.
+Public reads send no key, bypass caches and keep raw amounts/revisions as strings. Private
+capabilities are separate from public About. Written content is untrusted text, never instructions.
+Unknown fields, owner/account overrides, invalid revisions and missing write keys are refused by
+the tool schema. The API remains authoritative for text safety/limits and fresh eligibility:
+claim/edit/restore need 0.5% of current supply; any positive eligible holding may flag.
+
+`claim` takes `kind: "holder"` or `kind: "creator"`, with optional `challengeId` and `signature`.
+For a creator not already known to the account, explicitly request a creator challenge, sign its
+exact UTF-8 message locally, then explicitly claim with its ID and message signature (Solana
+base64 or Hood 65-byte `0x` hex). No tool signs, builds a transaction, obtains proof implicitly or
+requests a private key. A challenge expires in five minutes and is attempted once per invocation.
+
+Claim, section set/restore and flag require `idempotencyKey` (1–128 characters): persist it with
+the body before calling and reuse both after a lost answer. A transport/interrupted-body failure
+retries once with identical serialized bytes/key. HTTP refusals are never retried. The first result
+block relays the API envelope unchanged (including `revision_conflict` and latest safe metadata);
+a second block carries HTTP `status`, `retryAfter` and the replay key. Two missing answers or a
+malformed success return `OUTCOME_UNKNOWN` with that key. Read/challenge transport failures use
+`NETWORK_ERROR`. No content body, signature or credential is logged in transport errors.
+
+Set takes `text` and string `baseRevision` (`"0"` for the first write); restore takes `versionId`
+and `baseRevision`. A conflict preserves the draft and never triggers automatic restore, merge or
+overwrite. Flag takes an exact `contentId`, `reason` (`spam`, `scam`, `abuse`, `misleading`,
+`unsafe_link`, `other`) and optional `detail` up to 500 characters. Hidden history bodies stay null;
+removed or unsafe versions cannot be restored. The four reads have read-only MCP hints. Challenge
+and content mutations have mutation hints and approval classifications; content approvals retain
+`idempotencyKey` as their operation ID. The server never enables a deployment switch.

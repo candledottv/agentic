@@ -45,6 +45,16 @@ const INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You 
 START HERE — ten tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
   candle_get_feed         the roster: hot streak, new pairs, graduated, final stretch, blue chip (final stretch is refused where it is not switched on; use another bucket)
+  candle_token_page_about public About summary, switches default off
+  candle_token_page_burns completed CNDL burn history
+  candle_token_page_history immutable section versions; hidden bodies stay tombstones
+  candle_token_page_capabilities private fresh own eligibility (token-pages:read)
+  candle_token_page_creator_challenge MUTATION: exact message for local signing; no implicit claim
+  candle_token_page_claim MUTATION: claim as holder/creator with explicit proof and idempotencyKey
+  candle_token_page_section_set MUTATION: text + baseRevision + durable idempotencyKey
+  candle_token_page_section_restore MUTATION: versionId + baseRevision + durable idempotencyKey; no automatic restore
+  candle_token_page_flag MUTATION: report exact contentId + durable idempotencyKey
+  Token-page mutations need token-pages:write. Never sign transactions or request private keys. Preserve drafts on conflict; replay the same body/key after an unknown outcome. These tools are local-only unreleased source.
   candle_token_events     one token's signals, callouts and tracked-wallet trades, newest first, W or L on sells. kind filters the page on this server; page with nextCursor/before until null. Off until the deployment switches it on (503 TOKEN_EVENTS_DISABLED)
   candle_token_card       one token's card data: market, all-time high since launch, safety and same-name facts, tracked wallets in the last hour, each block with its source; null means no source, not zero. Off until the deployment switches it on (503 TOKEN_CARD_DISABLED)
   candle_resolve_token    a ticker or partial name -> mint address + chain

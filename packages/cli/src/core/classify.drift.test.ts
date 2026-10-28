@@ -60,3 +60,32 @@ describe("T-1: the card table matches TOOL_NAMES", () => {
     expect(classifyCall("candle_claim_staking_reward", {})).toMatchObject({ kind: "claim", idKey: "rewardId" })
   })
 })
+
+// Token-page editor mutations need approval; their durable replay key is the operation id.
+test("token page reads, message challenge and content writes have explicit classifications", () => {
+  expect(classifyCall("candle_token_page_about", {})).toMatchObject({ class: "read" })
+  expect(classifyCall("candle_token_page_capabilities", {})).toMatchObject({ class: "read" })
+  expect(classifyCall("candle_token_page_burns", {})).toMatchObject({ class: "read" })
+  expect(classifyCall("candle_token_page_history", {})).toMatchObject({ class: "read" })
+  expect(classifyCall("candle_token_page_creator_challenge", {})).toMatchObject({ class: "card", kind: "profile" })
+  expect(classifyCall("candle_token_page_claim", {})).toMatchObject({
+    class: "card",
+    kind: "profile",
+    idKey: "idempotencyKey",
+  })
+  expect(classifyCall("candle_token_page_section_set", {})).toMatchObject({
+    class: "card",
+    kind: "profile",
+    idKey: "idempotencyKey",
+  })
+  expect(classifyCall("candle_token_page_section_restore", {})).toMatchObject({
+    class: "card",
+    kind: "profile",
+    idKey: "idempotencyKey",
+  })
+  expect(classifyCall("candle_token_page_flag", {})).toMatchObject({
+    class: "card",
+    kind: "profile",
+    idKey: "idempotencyKey",
+  })
+})

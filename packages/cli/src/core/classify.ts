@@ -23,6 +23,7 @@ export type IdKey =
   | "rewardId"
   | "clientId"
   | "clientDepositId"
+  | "idempotencyKey"
   | "coreOpId"
 
 export type ToolClass = { class: "read" } | { class: "card"; kind: CardKind; idKey: IdKey }
@@ -39,6 +40,11 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_token_events: READ,
   // BE-2119: the public token card read. Keyless; the same body for every caller.
   candle_token_card: READ,
+  candle_token_page_about: READ,
+  candle_token_page_capabilities: READ,
+  candle_token_page_burns: READ,
+  candle_token_page_history: READ,
+
   candle_token_forensics: READ,
   candle_get_agent_profile: READ,
   candle_list_agents: READ,
@@ -95,6 +101,13 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_create_post: card("profile"),
   candle_delete_post: card("profile"),
   candle_report_activity: card("profile"),
+  // Token-page messages and content mutate state; content writes carry a replay key.
+  candle_token_page_creator_challenge: card("profile"),
+  candle_token_page_claim: card("profile", "idempotencyKey"),
+  candle_token_page_section_set: card("profile", "idempotencyKey"),
+  candle_token_page_section_restore: card("profile", "idempotencyKey"),
+  candle_token_page_flag: card("profile", "idempotencyKey"),
+
   // Changes which wallets the key may spend from: a card with a factor, never a timed window.
   candle_set_profile_wallets: card("keyaccess"),
   // User-started only (K-3).
