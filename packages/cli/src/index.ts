@@ -84,6 +84,7 @@ import { teeRebind, teeRebinds } from "./commands/tee-rebind"
 import { teeRename } from "./commands/tee-rename"
 import { tokenClusters } from "./commands/token-clusters"
 import { tokenEvents } from "./commands/token-events"
+import { tokenAbout, tokenClaim, tokenFlag, tokenHistory, tokenSection } from "./commands/token-pages"
 import { tokenForensics, tokenVampCandidates } from "./commands/token-paid"
 import { transfer } from "./commands/transfer"
 import { tui } from "./commands/tui"
@@ -230,12 +231,19 @@ const COMMANDS: Record<string, CommandRoute> = {
   plans: { bare: plans },
   // x402 C4 (BE-1875): forensics and the vamp finder may answer a per-use 402, paid from a vault
   // key inside the local spending rules (src/x402/), or shown and not paid.
+  // Token page About (BE-1959, token pages spec 7): `about` and `history` are public reads;
+  // `claim`, `section set|restore` and `flag` act as the key's account under `token-pages:write`.
   token: {
     subcommands: {
       clusters: tokenClusters,
       events: tokenEvents,
       forensics: tokenForensics,
       "vamp-candidates": tokenVampCandidates,
+      about: tokenAbout,
+      claim: tokenClaim,
+      section: tokenSection,
+      history: tokenHistory,
+      flag: tokenFlag,
     },
   },
   // x402 C4: the local payment log and the limits every per-use payment is checked against.
@@ -801,7 +809,17 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   // BE-1665 (A-5): `core mcp` talks to the local core with a harness token and makes no Candle request.
   const coreFace = word === "core" && sub === "mcp"
   const actsAsIdentity = !publicPerpsRead && !coreFace && (word !== "mcp" || mcpActsAsIdentity(tokens.slice(1)))
-  if (ROUTED_COMMANDS.has(word) && !NEVER_GUARDED.has(word) && routesToCommand(cmd, sub) && actsAsIdentity) {
+  // BE-1959: `token` is unguarded for its reads, but a token page write (and the private
+  // capabilities read) acts as the key's account, so it pays for the same check.
+  const tokenPageActs =
+    word === "token" &&
+    (["claim", "section", "flag"].includes(sub ?? "") || (sub === "about" && tokens.includes("--capabilities")))
+  if (
+    ROUTED_COMMANDS.has(word) &&
+    (!NEVER_GUARDED.has(word) || tokenPageActs) &&
+    routesToCommand(cmd, sub) &&
+    actsAsIdentity
+  ) {
     const verdict = await verifyProfileAccount(ctx, config)
     if (!verdict.ok) {
       writeLocalFailure(

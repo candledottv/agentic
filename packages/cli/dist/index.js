@@ -58780,14 +58780,14 @@ var require_key = __commonJS((exports) => {
         value: ext.subs[ext.subs.length - 1].value
       };
     });
-    const identity3 = {
+    const identity4 = {
       extensions: { issuer },
       subjectAlternativeName: cert.subjectAltName,
       oids
     };
     return {
       key: core_1.crypto.createPublicKey(cert.publicKey),
-      identity: identity3
+      identity: identity4
     };
   }
 });
@@ -59803,15 +59803,15 @@ var require_verifier2 = __commonJS((exports) => {
         });
       }
     }
-    verifyPolicy(policy, identity3) {
+    verifyPolicy(policy, identity4) {
       if (policy.subjectAlternativeName) {
-        (0, policy_1.verifySubjectAlternativeName)(policy.subjectAlternativeName, identity3.subjectAlternativeName);
+        (0, policy_1.verifySubjectAlternativeName)(policy.subjectAlternativeName, identity4.subjectAlternativeName);
       }
       if (policy.extensions) {
-        (0, policy_1.verifyExtensions)(policy.extensions, identity3.extensions);
+        (0, policy_1.verifyExtensions)(policy.extensions, identity4.extensions);
       }
       if (policy.oids) {
-        (0, policy_1.verifyOIDs)(policy.oids, identity3.oids);
+        (0, policy_1.verifyOIDs)(policy.oids, identity4.oids);
       }
     }
   }
@@ -74377,13 +74377,19 @@ var HELP = {
   },
   token: {
     group: "Account",
-    summary: "Token events, cluster analysis, forensics and the vamp finder",
-    description: "events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
+    summary: "Token About pages, events, cluster analysis, forensics and the vamp finder",
+    intro: "Token About pages, events, clusters, forensics, vamp finder",
+    description: "about, claim, section, history and flag are the token's About page: three shared sections (thesis, tokenomics, lore) any eligible holder may edit, with full history. about and history are public and send no key. about --capabilities reads this account's own eligibility (token-pages:read). claim, section set, section restore and flag act as the key's account and need token-pages:write; neither scope is in any preset, so grant them with keys create --scopes token-pages:read,token-pages:write. Candle checks on every write that the account's Candle-known wallets hold at least 0.5% of the token's current supply (any positive balance to flag); the scope is never a holding. A creator proof is a message, never a transaction: claim --creator --challenge prints the exact bytes to sign (and --message-out writes them to a file), you sign them on your own machine, for example with candle sign message, and claim --creator --challenge-id <id> --signature <sig> sends the signature; a creator wallet already among the account's known wallets needs no signature. Section text comes from --file and is checked here first (valid UTF-8, at most 32 KiB, no control characters but newline and tab, thesis 280 characters, tokenomics and lore 5,000); the file is only read. Every write sends an Idempotency-Key and retries once on no answer with the same key. Exit codes: 0 done, 1 refused (the code is in --json), 2 usage or local input refused (nothing sent), 3 no answer so the outcome is unknown (rerun with the printed --idempotency-key), 4 revision conflict (your file is untouched; read history, merge, rerun with the latest --base-revision). Token page switches ship off; a switched-off server answers feature_off or not_found. events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
     usage: [
       "candle token clusters <mint> [--chain solana|hood] [--json]",
       "candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]",
       "candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes] [--json]",
-      "candle token vamp-candidates [--limit <n>] [--min-copies <n>] [--stage final_stretch|graduated|all] [--wallet <vault key>] [--yes] [--json]"
+      "candle token vamp-candidates [--limit <n>] [--min-copies <n>] [--stage final_stretch|graduated|all] [--wallet <vault key>] [--yes] [--json]",
+      "candle token about <address> [--chain solana|hood] [--capabilities] [--json]",
+      "candle token claim <address> [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--json]",
+      "candle token section set|restore <address> <thesis|tokenomics|lore> --file <path>|--version-id <id> --base-revision <n> [--json]",
+      "candle token history <address> <thesis|tokenomics|lore> [--limit <n>] [--cursor <c>] [--json]",
+      "candle token flag <address> --content <id> --reason <reason> [--detail <text>] [--json]"
     ],
     rows: [
       { invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" },
@@ -74395,7 +74401,21 @@ var HELP = {
       {
         invocation: "vamp-candidates",
         description: "Tokens near graduation whose ticker others copy; may cost a per-use payment"
-      }
+      },
+      {
+        invocation: "about <address>",
+        description: "The token's About page: claim, sections and measured supply; --capabilities adds your eligibility"
+      },
+      {
+        invocation: "claim <address>",
+        description: "Join the page's editors as a holder, or as its creator with --creator (a signed message)"
+      },
+      {
+        invocation: "section set|restore <address> <section>",
+        description: "Write a section from --file, or restore an earlier --version-id, at --base-revision"
+      },
+      { invocation: "history <address> <section>", description: "A section's versions, newest first" },
+      { invocation: "flag <address>", description: "Report one exact version to Candle's review queue" }
     ],
     flags: [
       { invocation: "--chain <chain>", description: "solana (default) or hood; Hood cluster analysis is unavailable" },
@@ -74403,7 +74423,10 @@ var HELP = {
         invocation: "--kind <kind>",
         description: "events: trade, signal or callout; filters the page locally (the route has no kind filter)"
       },
-      { invocation: "--limit <n>", description: "events or vamp-candidates: how many to read (events: 1 to 1000)" },
+      {
+        invocation: "--limit <n>",
+        description: "events, history or vamp-candidates: how many to read (events 1 to 1000, history 1 to 50)"
+      },
       { invocation: "--min-copies <n>", description: "vamp-candidates: copies in the last 24h, at least" },
       { invocation: "--since <iso-8601>", description: "events: list only events at or after this time" },
       { invocation: "--before <cursor>", description: "events: continue the page a previous answer's cursor names" },
@@ -74412,9 +74435,24 @@ var HELP = {
         invocation: "--wallet <vault key>",
         description: "The Solana vault key that pays, by label or address (needed when the vault has several)"
       },
-      { invocation: "--yes", description: "Pay without the typed confirm (the vault unlock still prompts)" }
+      { invocation: "--yes", description: "Pay without the typed confirm (the vault unlock still prompts)" },
+      { invocation: "--file <path>", description: "section set: the section text, UTF-8; an empty file needs --clear" },
+      {
+        invocation: "--base-revision <n>",
+        description: "section set|restore: the revision you started from (0 first)"
+      },
+      { invocation: "--version-id <id>", description: "section restore: the earlier version to copy into a new one" },
+      { invocation: "--content <id>", description: "flag: the exact version id being reported" },
+      {
+        invocation: "--reason <reason>",
+        description: "flag: spam, scam, abuse, misleading, unsafe_link or other; --detail adds up to 500 characters"
+      },
+      { invocation: "--idempotency-key <key>", description: "Writes: reuse a key to retry without writing twice" }
     ],
     examples: [
+      "candle token about <mint> --capabilities",
+      "candle token section set <mint> thesis --file ./thesis.txt --base-revision 3",
+      "candle token claim <mint> --creator --challenge --message-out ./proof.txt",
       "candle token clusters <mint>",
       "candle token clusters <mint> --json",
       "candle token events <mint> --kind signal --limit 50",
@@ -99523,13 +99561,657 @@ async function tokenEvents(args, ctx) {
   return 0;
 }
 
+// src/commands/token-pages.ts
+init_esm();
+init_args();
+init_client();
+init_deps();
+init_human_output();
+init_presentation();
+init_render();
+import { createHash as createHash5, randomUUID as randomUUID10 } from "node:crypto";
+var EXIT_OUTCOME_UNKNOWN = 3;
+var EXIT_REVISION_CONFLICT = 4;
+var TOKEN_PAGE_LIMITS = { thesis: 280, tokenomics: 5000, lore: 5000, update: 1000, comment: 500 };
+var TOKEN_PAGE_BODY_CAP_BYTES = 32 * 1024;
+var TOKEN_PAGE_SECTIONS = ["thesis", "tokenomics", "lore"];
+var FLAG_REASONS = ["spam", "scam", "abuse", "misleading", "unsafe_link", "other"];
+var FLAG_DETAIL_LIMIT = 500;
+var USAGE11 = {
+  about: "Usage: candle token about <address> [--chain solana|hood] [--capabilities]",
+  claim: "Usage: candle token claim <address> [--chain solana|hood] [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--idempotency-key <key>]",
+  section: `Usage: candle token section set <address> <thesis|tokenomics|lore> --file <path> --base-revision <n> [--clear] [--chain solana|hood] [--idempotency-key <key>]
+       candle token section restore <address> <thesis|tokenomics|lore> --version-id <id> --base-revision <n> [--chain solana|hood] [--idempotency-key <key>]`,
+  history: "Usage: candle token history <address> <thesis|tokenomics|lore> [--chain solana|hood] [--limit <n>] [--cursor <c>]",
+  flag: "Usage: candle token flag <address> --content <id> --reason <spam|scam|abuse|misleading|unsafe_link|other> [--detail <text>] [--chain solana|hood] [--idempotency-key <key>]"
+};
+var REFUSALS = {
+  feature_off: "This token page action is switched off on this Candle server. Nothing was written.",
+  not_found: "No such token page, item or version here, or token pages are switched off on this Candle server.",
+  insufficient_holding: "This account's Candle-known wallets hold less than 0.5% of the token's current supply (any positive balance is enough to flag). Nothing was written.",
+  eligibility_unavailable: "Candle could not read complete, fresh wallet and supply evidence for this account just now. Nothing was written; try again shortly.",
+  restricted: "This account is restricted from writing on this token page.",
+  revision_conflict: "The section changed since the base revision you gave.",
+  idempotency_conflict: "This idempotency key was already used for a different request. Nothing was written.",
+  idempotency_key_required: "The request carried no usable Idempotency-Key.",
+  challenge_used: "That creator challenge was already used, or the creator evidence changed. Request a new one.",
+  invalid_signature: "The signature does not verify for that challenge, or the challenge expired (5 minutes). Request a new one.",
+  creator_unknown: "Candle has no verified creator for this token, so there is nothing to prove.",
+  creator_proof_unsupported: "The verified creator cannot sign a message (a contract or multisig), so creator proof is not available.",
+  invalid_text: "Candle refused the text: too long, empty, or holding invalid Unicode or control characters.",
+  invalid_body: "Candle refused the request body.",
+  invalid_token: "That is not a valid address on that chain.",
+  invalid_section: "Sections are thesis, tokenomics and lore.",
+  invalid_query: "Candle refused the query (limit is 1-50; the cursor must come from this list).",
+  no_identity_wallet: "This key's account has no wallet Candle can use as its identity.",
+  rate_limited: "Too many token page requests; wait a minute and try again.",
+  unavailable: "Token pages are unavailable on this Candle server just now.",
+  measurements_unavailable: "Measurements are unavailable just now; try again shortly."
+};
+var SECTION_SUGGESTION = "Your file was not changed. Read the newer text with candle token history, merge, then rerun with --base-revision set to the latest revision.";
+function usageFor(ctx, line) {
+  return (message) => {
+    writeUsageFailure(ctx.deps, message ? `${message}
+${line}` : line, ctx.json);
+    return 2;
+  };
+}
+function chainOf(values) {
+  const chain2 = values["--chain"] ?? "solana";
+  return chain2 === "solana" || chain2 === "hood" ? chain2 : undefined;
+}
+function pagePath(chain2, address, rest = "") {
+  return `/api/v1/token-pages/${chain2}/${encodeURIComponent(address)}${rest}`;
+}
+function refusalOf2(result) {
+  if (result.ok)
+    return null;
+  const raw = result.raw;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return null;
+  const { success: success2, error, ...extra } = raw;
+  if (success2 !== false || typeof error !== "string")
+    return null;
+  return { status: result.status, code: error, extra };
+}
+function writeRefusal(ctx, refusal3, suggestion) {
+  const message = REFUSALS[refusal3.code] ?? `Candle refused the request (${refusal3.code}).`;
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: false, code: refusal3.code, status: refusal3.status, message, ...refusal3.extra, ...suggestion ? { suggestion } : {} })}
+`);
+    return;
+  }
+  ctx.deps.stderr.write(`${suggestion ? `${message} ${suggestion}` : message}
+`);
+}
+function writeApiFailure(ctx, result, authType) {
+  const refusal3 = refusalOf2(result);
+  if (refusal3) {
+    writeRefusal(ctx, refusal3);
+    return 1;
+  }
+  writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType }, ctx.json);
+  return 1;
+}
+function dataOf(result) {
+  const body = result.ok ? result.body : null;
+  return body && typeof body === "object" && "data" in body ? body.data : body;
+}
+async function read2(ctx, path, apiKey) {
+  return apiRequest(path, {
+    apiUrl: ctx.apiUrl,
+    ...apiKey ? { auth: "key", credentials: { apiKey } } : { auth: "none", credentials: {} },
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+}
+async function requireKey(ctx) {
+  const key = await resolveApiKey(ctx.deps, ctx.profile);
+  if (key)
+    return key;
+  writeLocalFailure(ctx.deps, {
+    code: "API_KEY_REQUIRED",
+    message: "This needs an API key with the token-pages scopes.",
+    suggestion: "Create one with: candle keys create --scopes token-pages:read,token-pages:write"
+  }, ctx.json);
+  return;
+}
+async function write(ctx, input) {
+  const send = async () => {
+    try {
+      return await apiRequest(input.path, {
+        apiUrl: ctx.apiUrl,
+        method: input.method,
+        body: input.body,
+        auth: "key",
+        credentials: { apiKey: input.apiKey },
+        headers: { "Idempotency-Key": input.idempotencyKey },
+        fetch: ctx.deps.fetch,
+        env: ctx.deps.env
+      });
+    } catch {
+      return { ok: false, status: 0, message: "The response was cut off before it finished.", raw: undefined };
+    }
+  };
+  const first = await send();
+  if (first.ok || first.status !== 0 || first.code)
+    return first;
+  const second = await send();
+  if (second.ok || second.status !== 0 || second.code)
+    return second;
+  return "unknown";
+}
+function writeUnknown(ctx, idempotencyKey) {
+  writeLocalFailure(ctx.deps, {
+    code: "OUTCOME_UNKNOWN",
+    message: "Candle did not answer, twice, so whether this write landed is not known.",
+    suggestion: `Rerun the same command with --idempotency-key ${idempotencyKey}: Candle returns the first result instead of writing twice.`,
+    details: { idempotencyKey }
+  }, ctx.json);
+  return EXIT_OUTCOME_UNKNOWN;
+}
+function idempotencyKeyOf(values, usage11) {
+  const given = values["--idempotency-key"];
+  if (given === undefined)
+    return randomUUID10();
+  if (given.length < 1 || given.length > 128)
+    return usage11("--idempotency-key must be 1 to 128 characters.");
+  return given;
+}
+function sectionOf(value) {
+  return TOKEN_PAGE_SECTIONS.includes(value ?? "") ? value : undefined;
+}
+var REVISION = /^(0|[1-9][0-9]{0,18})$/;
+var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function bpsPercent(bps2) {
+  if (bps2 === null || bps2 === undefined || !/^\d+$/.test(bps2))
+    return;
+  const n = BigInt(bps2);
+  return `${n / 100n}.${(n % 100n).toString().padStart(2, "0")}%`;
+}
+function identity3(who2) {
+  if (!who2)
+    return;
+  if (who2.kind === "candle")
+    return "Candle";
+  if (who2.kind === "agent")
+    return terminalText(who2.name ?? "Agent");
+  return terminalText(who2.name ?? who2.account);
+}
+function sectionText(bytes, section2) {
+  if (bytes.length > TOKEN_PAGE_BODY_CAP_BYTES)
+    return { error: `The file is over ${TOKEN_PAGE_BODY_CAP_BYTES} bytes.` };
+  let decoded;
+  try {
+    decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return { error: "The file is not valid UTF-8." };
+  }
+  const text3 = decoded.replace(/\r\n?/g, `
+`);
+  for (const char of text3) {
+    const c = char.codePointAt(0) ?? 0;
+    if (c < 32 && c !== 10 && c !== 9 || c === 127 || c >= 128 && c < 160 || c >= 55296 && c <= 57343)
+      return { error: `The file holds a control character (U+${c.toString(16).toUpperCase().padStart(4, "0")}).` };
+  }
+  const length = [...text3].length;
+  const limit = TOKEN_PAGE_LIMITS[section2];
+  if (length > limit)
+    return { error: `${section2} is at most ${limit} characters; the file has ${length}.` };
+  return { text: text3 };
+}
+function signatureFor(chain2, given) {
+  const value = given.trim();
+  if (chain2 === "hood")
+    return /^0x[0-9a-fA-F]{130}$/.test(value) ? value : undefined;
+  try {
+    const bytes = value.endsWith("=") || /[+/]/.test(value) ? base64.decode(value) : base58.decode(value);
+    return bytes.length === 64 ? base64.encode(bytes) : undefined;
+  } catch {
+    return;
+  }
+}
+function factValue(fact) {
+  if (fact.raw === undefined)
+    return fact.status;
+  const value = fact.decimals ? rawUnits2(fact.raw, fact.decimals) : fact.raw;
+  return `${value}${fact.unit === "token" ? "" : ` ${fact.unit}`} (${fact.status}, ${fact.coverage}, ${terminalText(fact.source)}${fact.measuredAt ? `, ${fact.measuredAt}` : ""})`;
+}
+function rawUnits2(raw, decimals) {
+  if (!/^\d+$/.test(raw))
+    return raw;
+  const padded = raw.padStart(decimals + 1, "0");
+  const whole = padded.slice(0, padded.length - decimals);
+  const fraction = padded.slice(padded.length - decimals).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+function writeAbout(ctx, about) {
+  const claim = about.claim;
+  writeFields(ctx.deps, "stdout", [
+    ["Token", `${about.token.chain} ${about.token.address}`],
+    ["Revision", about.revision],
+    [
+      "Claim",
+      claim.state === "unclaimed" ? "unclaimed" : `claimed by ${claim.state === "dev" ? "dev" : "community"}`
+    ],
+    ["Lead", identity3(claim.lead) ?? "no current eligible lead"],
+    ["Eligible", claim.eligibleAccounts === null ? "refreshing" : String(claim.eligibleAccounts)],
+    [
+      "Switches",
+      Object.entries(about.features).map(([name2, on]) => `${name2} ${on ? "on" : "off"}`).join(", ")
+    ]
+  ], "About");
+  for (const section2 of TOKEN_PAGE_SECTIONS) {
+    const v = about.sections[section2];
+    if (!v)
+      continue;
+    writeHeading(ctx.deps, "stdout", `${section2} (revision ${v.revision})`);
+    writeFields(ctx.deps, "stdout", [
+      ["Written by", `${identity3(v.author)}${v.dev ? " (dev)" : ""}`],
+      ["Share then", bpsPercent(v.shareBps)],
+      ["At", v.createdAt],
+      ["Version", v.id]
+    ]);
+    if (v.newerAwaitingReview)
+      notice(ctx.deps, "stdout", "note", "A newer version is hidden pending review.");
+    if (v.linksWithheld)
+      notice(ctx.deps, "stdout", "note", "Links are withheld pending review.");
+    ctx.deps.stdout.write(`
+${terminalTextKeepingLines(v.text)}
+`);
+  }
+  writeHeading(ctx.deps, "stdout", "Supply, measured by Candle");
+  const facts = about.facts.filter((f) => f.status === "known" || f.status === "stale");
+  if (!facts.length)
+    ctx.deps.stdout.write(`  Measurements unavailable
+`);
+  else
+    writeFields(ctx.deps, "stdout", facts.map((f) => [terminalText(f.metric), factValue(f)]));
+}
+function terminalTextKeepingLines(text3) {
+  return text3.split(`
+`).map((line) => terminalText(line.replace(/\t/g, "    "))).join(`
+`);
+}
+async function tokenAbout(args, ctx) {
+  const usage11 = usageFor(ctx, USAGE11.about);
+  const parsed = parseArgs(args, { valueFlags: ["--chain"], booleanFlags: ["--capabilities"] });
+  if ("error" in parsed)
+    return usage11(parsed.error);
+  const chain2 = chainOf(parsed.values);
+  const address = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address)
+    return usage11();
+  if (!chain2)
+    return usage11("--chain must be solana or hood.");
+  const withCapabilities = parsed.booleans.has("--capabilities");
+  const apiKey = withCapabilities ? await requireKey(ctx) : undefined;
+  if (withCapabilities && !apiKey)
+    return 1;
+  const summary = await read2(ctx, pagePath(chain2, address));
+  if (!summary.ok)
+    return writeApiFailure(ctx, summary, "none");
+  let capabilities;
+  if (apiKey) {
+    const own = await read2(ctx, pagePath(chain2, address, "/capabilities"), apiKey);
+    if (!own.ok)
+      return writeApiFailure(ctx, own, "key");
+    capabilities = dataOf(own);
+  }
+  const about = dataOf(summary);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data: about, ...apiKey ? { capabilities } : {} })}
+`);
+    return 0;
+  }
+  writeAbout(ctx, about);
+  if (apiKey) {
+    const c = capabilities;
+    writeFields(ctx.deps, "stdout", [
+      ["Can claim", c.canClaim ? "yes" : "no"],
+      ["Can edit", c.canEdit ? "yes" : "no"],
+      ["Can flag", c.canFlag ? "yes" : "no"],
+      ["Creator", c.creatorProven ? "proven" : "not proven"],
+      ["Share now", bpsPercent(c.shareBps)],
+      ["Observed", c.observedAt],
+      ["Why not", c.refusal ? REFUSALS[c.refusal] ?? c.refusal : undefined]
+    ], "This account");
+  }
+  return 0;
+}
+async function tokenClaim(args, ctx) {
+  const usage11 = usageFor(ctx, USAGE11.claim);
+  const parsed = parseArgs(args, {
+    valueFlags: ["--chain", "--challenge-id", "--signature", "--message-out", "--idempotency-key"],
+    booleanFlags: ["--creator", "--challenge"],
+    pathFlags: ["--message-out"]
+  });
+  if ("error" in parsed)
+    return usage11(parsed.error);
+  const { values, booleans } = parsed;
+  const chain2 = chainOf(values);
+  const address = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address)
+    return usage11();
+  if (!chain2)
+    return usage11("--chain must be solana or hood.");
+  const creator = booleans.has("--creator");
+  const challenge = booleans.has("--challenge");
+  const challengeId = values["--challenge-id"];
+  const given = values["--signature"];
+  if ((challenge || challengeId !== undefined || given !== undefined) && !creator)
+    return usage11("--challenge, --challenge-id and --signature are for --creator.");
+  if (challenge && (challengeId !== undefined || given !== undefined))
+    return usage11("--challenge asks for a new challenge; send the signature in a second run.");
+  if (challengeId === undefined !== (given === undefined))
+    return usage11("--challenge-id and --signature go together.");
+  if (values["--message-out"] !== undefined && !challenge)
+    return usage11("--message-out goes with --challenge.");
+  if (challengeId !== undefined && !UUID2.test(challengeId))
+    return usage11("--challenge-id is the id the challenge printed.");
+  let signature;
+  if (given !== undefined) {
+    signature = signatureFor(chain2, given);
+    if (!signature)
+      return usage11(chain2 === "hood" ? "--signature must be the 0x-hex message signature (65 bytes)." : "--signature must be the 64-byte Ed25519 signature, base58 or base64.");
+  }
+  const idempotencyKey = idempotencyKeyOf(values, usage11);
+  if (typeof idempotencyKey === "number")
+    return idempotencyKey;
+  const apiKey = await requireKey(ctx);
+  if (!apiKey)
+    return 1;
+  if (challenge)
+    return creatorChallenge(ctx, chain2, address, apiKey, values["--message-out"]);
+  const body = { kind: creator ? "creator" : "holder", ...challengeId ? { challengeId, signature } : {} };
+  const result = await write(ctx, {
+    method: "POST",
+    path: pagePath(chain2, address, "/claims"),
+    body,
+    apiKey,
+    idempotencyKey
+  });
+  if (result === "unknown")
+    return writeUnknown(ctx, idempotencyKey);
+  if (!result.ok) {
+    const refusal3 = refusalOf2(result);
+    if (refusal3?.code === "invalid_signature" && creator && !challengeId) {
+      writeRefusal(ctx, refusal3, `This account's known wallets do not include the verified creator, so the claim needs a signed challenge: candle token claim ${address} --chain ${chain2} --creator --challenge`);
+      return 1;
+    }
+    return writeApiFailure(ctx, result, "key");
+  }
+  const data = dataOf(result);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [
+      ["Kind", data.kind],
+      ["Creator", data.creatorProven ? "proven" : "not proven"],
+      ["Revision", data.revision]
+    ], "Claimed");
+  return 0;
+}
+async function creatorChallenge(ctx, chain2, address, apiKey, messageOut) {
+  const result = await apiRequest(pagePath(chain2, address, "/creator-challenges"), {
+    apiUrl: ctx.apiUrl,
+    method: "POST",
+    body: {},
+    auth: "key",
+    credentials: { apiKey },
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "key");
+  const data = dataOf(result);
+  const bytes = new TextEncoder().encode(data.message);
+  const sha2564 = createHash5("sha256").update(bytes).digest("hex");
+  if (messageOut !== undefined) {
+    try {
+      await ctx.deps.writeFile(messageOut, data.message);
+    } catch (error) {
+      writeLocalFailure(ctx.deps, {
+        code: "MESSAGE_OUT_FAILED",
+        message: `The challenge could not be written to ${messageOut}: ${error instanceof Error ? error.message : error}.`,
+        details: { challengeId: data.challengeId }
+      }, ctx.json);
+      return 1;
+    }
+  }
+  const next = `candle token claim ${address} --chain ${chain2} --creator --challenge-id ${data.challengeId} --signature <signature>`;
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, byteLength: bytes.length, sha256: sha2564, ...messageOut ? { messageOut } : {}, next })}
+`);
+    return 0;
+  }
+  writeFields(ctx.deps, "stdout", [
+    ["Challenge", data.challengeId],
+    ["Expires", data.expiresAt],
+    ["Bytes", String(bytes.length)],
+    ["sha256", sha2564],
+    ["Written to", messageOut]
+  ], "Creator challenge (a message, not a transaction)");
+  ctx.deps.stdout.write(`
+Sign exactly these UTF-8 bytes (between the lines, no trailing newline) with the creator wallet:
+-----
+${data.message}
+-----
+`);
+  notice(ctx.deps, "stdout", "note", `Sign it on your own machine, for example candle sign message --wallet <external> --file ${messageOut ?? "<file holding exactly these bytes>"}, then run: ${next}`);
+  return 0;
+}
+var SECTION_FLAGS = {
+  set: { valueFlags: ["--chain", "--file", "--base-revision", "--idempotency-key"], booleanFlags: ["--clear"] },
+  restore: { valueFlags: ["--chain", "--version-id", "--base-revision", "--idempotency-key"], booleanFlags: [] }
+};
+async function tokenSection(args, ctx) {
+  const usage11 = usageFor(ctx, USAGE11.section);
+  const action2 = args[0];
+  if (action2 !== "set" && action2 !== "restore")
+    return usage11();
+  const spec = SECTION_FLAGS[action2];
+  const parsed = parseArgs(args.slice(1), {
+    valueFlags: [...spec.valueFlags],
+    booleanFlags: [...spec.booleanFlags],
+    ...action2 === "set" ? { pathFlags: ["--file"] } : {}
+  });
+  if ("error" in parsed)
+    return usage11(parsed.error);
+  const { values } = parsed;
+  const chain2 = chainOf(values);
+  const [address, sectionName] = parsed.positionals;
+  if (parsed.positionals.length !== 2 || !address)
+    return usage11();
+  if (!chain2)
+    return usage11("--chain must be solana or hood.");
+  const section2 = sectionOf(sectionName);
+  if (!section2)
+    return usage11("The section is thesis, tokenomics or lore.");
+  const base2 = values["--base-revision"];
+  if (base2 === undefined || !REVISION.test(base2))
+    return usage11("--base-revision is the section's current revision (0 for a first write), from candle token about.");
+  const idempotencyKey = idempotencyKeyOf(values, usage11);
+  if (typeof idempotencyKey === "number")
+    return idempotencyKey;
+  let body;
+  let path;
+  let method;
+  if (action2 === "set") {
+    const file = values["--file"];
+    if (file === undefined)
+      return usage11("--file is required: the section text comes from a file.");
+    let bytes;
+    try {
+      bytes = await ctx.deps.readBytes(file);
+    } catch (error) {
+      writeLocalFailure(ctx.deps, {
+        code: "FILE_UNREADABLE",
+        message: `${file} could not be read: ${error instanceof Error ? error.message : error}.`
+      }, ctx.json);
+      return 2;
+    }
+    const checked = sectionText(bytes, section2);
+    if ("error" in checked) {
+      writeLocalFailure(ctx.deps, { code: "TEXT_REFUSED", message: `${checked.error} Nothing was sent.` }, ctx.json);
+      return 2;
+    }
+    const empty = checked.text.trim().length === 0;
+    if (empty && !parsed.booleans.has("--clear"))
+      return usage11("The file is empty. An empty write clears the section; pass --clear to mean that.");
+    if (!empty && parsed.booleans.has("--clear"))
+      return usage11("--clear is for an empty file.");
+    body = { text: checked.text, baseRevision: base2 };
+    path = pagePath(chain2, address, `/sections/${section2}`);
+    method = "PUT";
+  } else {
+    const versionId = values["--version-id"];
+    if (versionId === undefined || !UUID2.test(versionId))
+      return usage11("--version-id is a version id from candle token history.");
+    body = { versionId, baseRevision: base2 };
+    path = pagePath(chain2, address, `/sections/${section2}/restore`);
+    method = "POST";
+  }
+  const apiKey = await requireKey(ctx);
+  if (!apiKey)
+    return 1;
+  const result = await write(ctx, { method, path, body, apiKey, idempotencyKey });
+  if (result === "unknown")
+    return writeUnknown(ctx, idempotencyKey);
+  if (!result.ok) {
+    const refusal3 = refusalOf2(result);
+    if (refusal3?.code === "revision_conflict") {
+      const latest = refusal3.extra.latest;
+      writeRefusal(ctx, refusal3, `${latest?.revision !== undefined ? `The latest is revision ${latest.revision}. ` : ""}${action2 === "set" ? SECTION_SUGGESTION : "Rerun with --base-revision set to the latest revision."}`);
+      return EXIT_REVISION_CONFLICT;
+    }
+    return writeApiFailure(ctx, result, "key");
+  }
+  const data = dataOf(result);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [
+      ["Revision", data.revision],
+      ["Version", data.id]
+    ], action2 === "set" ? `${section2} saved` : `${section2} restored as a new version`);
+  return 0;
+}
+async function tokenHistory(args, ctx) {
+  const usage11 = usageFor(ctx, USAGE11.history);
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
+  if ("error" in parsed)
+    return usage11(parsed.error);
+  const { values } = parsed;
+  const chain2 = chainOf(values);
+  const [address, sectionName] = parsed.positionals;
+  if (parsed.positionals.length !== 2 || !address)
+    return usage11();
+  if (!chain2)
+    return usage11("--chain must be solana or hood.");
+  const section2 = sectionOf(sectionName);
+  if (!section2)
+    return usage11("The section is thesis, tokenomics or lore.");
+  const limit = values["--limit"];
+  if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50))
+    return usage11("--limit is a whole number from 1 to 50.");
+  const query = new URLSearchParams({
+    ...limit !== undefined ? { limit } : {},
+    ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
+  });
+  const result = await read2(ctx, pagePath(chain2, address, `/sections/${section2}/history${query.size ? `?${query}` : ""}`));
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "none");
+  const data = dataOf(result);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data })}
+`);
+    return 0;
+  }
+  if (!data.items.length)
+    ctx.deps.stdout.write(`No ${section2} versions.
+`);
+  for (const item of data.items) {
+    writeHeading(ctx.deps, "stdout", `revision ${item.revision}`);
+    writeFields(ctx.deps, "stdout", [
+      ["Version", item.id],
+      ["Written by", `${identity3(item.author)}${item.dev ? " (dev)" : ""}`],
+      ["Share then", bpsPercent(item.shareBps)],
+      ["At", item.createdAt],
+      ["Restored from", item.restoredFrom ?? undefined],
+      ["State", item.tombstone ?? "visible"]
+    ]);
+    if (item.text !== null)
+      ctx.deps.stdout.write(`
+${terminalTextKeepingLines(item.text)}
+`);
+  }
+  if (data.nextCursor)
+    ctx.deps.stdout.write(`
+More: --cursor ${data.nextCursor}
+`);
+  return 0;
+}
+async function tokenFlag(args, ctx) {
+  const usage11 = usageFor(ctx, USAGE11.flag);
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--content", "--reason", "--detail", "--idempotency-key"] });
+  if ("error" in parsed)
+    return usage11(parsed.error);
+  const { values } = parsed;
+  const chain2 = chainOf(values);
+  const address = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address)
+    return usage11();
+  if (!chain2)
+    return usage11("--chain must be solana or hood.");
+  const contentId = values["--content"];
+  if (contentId === undefined || !UUID2.test(contentId))
+    return usage11("--content is the exact version id being reported (candle token about or history).");
+  const reason = values["--reason"];
+  if (!reason || !FLAG_REASONS.includes(reason))
+    return usage11(`--reason is one of ${FLAG_REASONS.join(", ")}.`);
+  const detail = values["--detail"];
+  if (detail !== undefined && [...detail].length > FLAG_DETAIL_LIMIT)
+    return usage11(`--detail is at most ${FLAG_DETAIL_LIMIT} characters.`);
+  const idempotencyKey = idempotencyKeyOf(values, usage11);
+  if (typeof idempotencyKey === "number")
+    return idempotencyKey;
+  const apiKey = await requireKey(ctx);
+  if (!apiKey)
+    return 1;
+  const body = { contentId, reason, ...detail !== undefined ? { detail } : {} };
+  const result = await write(ctx, {
+    method: "POST",
+    path: pagePath(chain2, address, "/flags"),
+    body,
+    apiKey,
+    idempotencyKey
+  });
+  if (result === "unknown")
+    return writeUnknown(ctx, idempotencyKey);
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "key");
+  const data = dataOf(result);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [
+      ["Content", data.contentId],
+      ["Hidden", data.hidden ? "yes, pending Candle review" : "no"]
+    ], "Reported");
+  return 0;
+}
+
 // src/commands/token-paid.ts
 init_args();
 init_deps();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
-import { randomUUID as randomUUID10 } from "node:crypto";
+import { randomUUID as randomUUID11 } from "node:crypto";
 
 // src/x402/pay.ts
 init_client();
@@ -100121,7 +100803,7 @@ async function runPaidRead(ctx, input) {
       blockhash: blockhashFor(ctx),
       env: ctx.deps.env,
       now: ctx.deps.now,
-      newId: randomUUID10
+      newId: randomUUID11
     });
     const line = paymentLine(paid);
     if (line && !ctx.json)
@@ -100216,7 +100898,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE11 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE12 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -100312,7 +100994,7 @@ async function transfer(args, ctx) {
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok) {
-    writeUsageFailure(ctx.deps, USAGE11, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE12, ctx.json);
     return 2;
   }
   const to = flags2["--to"];
@@ -100569,7 +101251,7 @@ import { randomBytes as randomBytes11 } from "node:crypto";
 init_presentation();
 var FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 var INTERVAL_MS3 = 80;
-function stepReporter(write, tty, ascii = false) {
+function stepReporter(write2, tty, ascii = false) {
   let detach = () => {};
   let timer = null;
   let frame = 0;
@@ -100580,7 +101262,7 @@ function stepReporter(write, tty, ascii = false) {
       clearInterval(timer);
     timer = null;
     if (tty && current !== null)
-      write("\r\x1B[2K");
+      write2("\r\x1B[2K");
     current = null;
   };
   return {
@@ -100588,7 +101270,7 @@ function stepReporter(write, tty, ascii = false) {
       clearSpinner();
       current = label;
       if (!tty) {
-        write(`${label}...
+        write2(`${label}...
 `);
         return;
       }
@@ -100607,21 +101289,21 @@ function stepReporter(write, tty, ascii = false) {
         process.off("SIGTERM", sigterm);
       };
       timer = setInterval(() => {
-        write(`\r\x1B[2K${FRAMES[frame % FRAMES.length]} ${current}`);
+        write2(`\r\x1B[2K${FRAMES[frame % FRAMES.length]} ${current}`);
         frame++;
       }, INTERVAL_MS3);
       if (typeof timer === "object" && "unref" in timer)
         timer.unref();
-      write(`${FRAMES[0]} ${label}`);
+      write2(`${FRAMES[0]} ${label}`);
     },
     done(label) {
       clearSpinner();
-      write(`${ascii ? "OK" : "✓"} ${label}
+      write2(`${ascii ? "OK" : "✓"} ${label}
 `);
     },
     fail(label) {
       clearSpinner();
-      write(`${ascii ? "FAIL" : "✗"} ${label}
+      write2(`${ascii ? "FAIL" : "✗"} ${label}
 `);
     },
     stop: clearSpinner
@@ -100643,7 +101325,7 @@ init_release();
 
 // src/release-assets.ts
 init_release();
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 
 // src/bun-crypto-shim.ts
 import crypto3, { KeyObject } from "node:crypto";
@@ -100683,7 +101365,7 @@ installBunCryptoShim();
 var import_bundle = __toESM(require_dist3(), 1);
 var import_protobuf_specs = __toESM(require_dist2(), 1);
 var import_verify = __toESM(require_dist5(), 1);
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 // src/sigstore-trusted-root.json
 var sigstore_trusted_root_default = {
   mediaType: "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
@@ -100843,7 +101525,7 @@ function verifyReleaseAsset(bytes, bundleJson, identityUri, issuer) {
     return { ok: false, reason: LEGACY_BUNDLE_REASON };
   try {
     const bundle = import_bundle.bundleFromJSON(bundleJson);
-    const digest = createHash5("sha256").update(bytes).digest();
+    const digest = createHash6("sha256").update(bytes).digest();
     const content = bundle.content;
     if (content.$case === "messageSignature") {
       const claimed = content.messageSignature.messageDigest?.digest;
@@ -100906,7 +101588,7 @@ async function downloadSums(deps, base2, tag) {
   }
 }
 function checkReleaseAsset(deps, opts) {
-  const actual = createHash6("sha256").update(opts.bytes).digest("hex");
+  const actual = createHash7("sha256").update(opts.bytes).digest("hex");
   const fromSums = opts.sums.split(`
 `).map((line) => line.trim().split(/\s+/)).find((parts) => parts[1] === opts.name)?.[0];
   if (actual !== opts.expectedSha256 || actual !== fromSums) {
@@ -104290,7 +104972,7 @@ async function readLamports(addresses, solana, ctx) {
 }
 async function readEvmBalances(addresses, rpcUrl, fetchFn) {
   const rpc = createEvmRpc(rpcUrl, fetchFn);
-  const read2 = {
+  const read3 = {
     host: rpcHostOf2(rpcUrl),
     chainId: undefined,
     requests: 0,
@@ -104299,30 +104981,30 @@ async function readEvmBalances(addresses, rpcUrl, fetchFn) {
     unavailable: []
   };
   try {
-    read2.requests += 1;
-    read2.chainId = await rpc.chainId();
+    read3.requests += 1;
+    read3.chainId = await rpc.chainId();
   } catch (error) {
-    read2.unavailable.push(...addresses);
-    read2.failure = error instanceof Error ? error.message : String(error);
-    return read2;
+    read3.unavailable.push(...addresses);
+    read3.failure = error instanceof Error ? error.message : String(error);
+    return read3;
   }
-  const hood = read2.chainId === BigInt(HOOD_CHAIN_ID);
+  const hood = read3.chainId === BigInt(HOOD_CHAIN_ID);
   for (const address of addresses) {
     try {
-      read2.requests += 1;
-      read2.wei.set(address, await rpc.getBalance(address));
+      read3.requests += 1;
+      read3.wei.set(address, await rpc.getBalance(address));
       if (hood) {
-        read2.requests += 1;
-        read2.usdg.set(address, await rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, address));
+        read3.requests += 1;
+        read3.usdg.set(address, await rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, address));
       }
     } catch (error) {
-      read2.wei.delete(address);
-      read2.usdg.delete(address);
-      read2.unavailable.push(address);
-      read2.failure ??= error instanceof Error ? error.message : String(error);
+      read3.wei.delete(address);
+      read3.usdg.delete(address);
+      read3.unavailable.push(address);
+      read3.failure ??= error instanceof Error ? error.message : String(error);
     }
   }
-  return read2;
+  return read3;
 }
 function evmRequestsPlanned(count3) {
   return `${1 + count3} to ${1 + 2 * count3}`;
@@ -105195,12 +105877,12 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
   });
 }
 async function refuseWithoutRoom(ctx) {
-  const read2 = await readAccountRoom(ctx);
-  if (!read2.ok) {
-    notice(ctx.deps, "stderr", "note", unreadableRoomLine(read2.reason).trim());
+  const read3 = await readAccountRoom(ctx);
+  if (!read3.ok) {
+    notice(ctx.deps, "stderr", "note", unreadableRoomLine(read3.reason).trim());
     return;
   }
-  const refusal3 = singleRoomRefusal(read2.room);
+  const refusal3 = singleRoomRefusal(read3.room);
   if (refusal3 !== null)
     throw refusal3;
 }
@@ -107133,20 +107815,20 @@ async function addressLooksUsed(rpc, address) {
   return rpc.hasSignatureHistory(address);
 }
 async function matchAgainstAccount(ctx, apiKey, derived) {
-  const read2 = await completeLinkedWalletRead(ctx, apiKey);
-  if (!read2.complete) {
+  const read3 = await completeLinkedWalletRead(ctx, apiKey);
+  if (!read3.complete) {
     return {
       matched: [],
       unmatched: [],
-      account: read2.account || undefined,
+      account: read3.account || undefined,
       complete: false,
-      reason: read2.incompleteReason
+      reason: read3.incompleteReason
     };
   }
   ctx.deps.stdout.write(`
-This profile acts as account ${read2.account}.
+This profile acts as account ${read3.account}.
 `);
-  const confirmed = await typedConfirm(ctx, "account", read2.account, `record exposure against account ${read2.account}`);
+  const confirmed = await typedConfirm(ctx, "account", read3.account, `record exposure against account ${read3.account}`);
   if (!confirmed) {
     return {
       matched: [],
@@ -107160,7 +107842,7 @@ This profile acts as account ${read2.account}.
   const matched = [];
   const unmatched = [];
   const externalListed = [];
-  for (const row of read2.rows) {
+  for (const row of read3.rows) {
     if (typeof row.address !== "string")
       continue;
     const entry = derived.byAddress.get(lookupKey(row.address));
@@ -107171,7 +107853,7 @@ This profile acts as account ${read2.account}.
     else
       unmatched.push(row.address);
   }
-  return { matched, unmatched, externalListed, account: read2.account, complete: true };
+  return { matched, unmatched, externalListed, account: read3.account, complete: true };
 }
 async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
   const now = new Date(ctx.deps.now()).toISOString();
@@ -107414,17 +108096,17 @@ async function vaultReconcileExposure(args, ctx) {
         suggestion: "Run: candle auth login"
       });
     }
-    const read2 = await completeLinkedWalletRead(ctx, apiKey);
-    if (!read2.complete) {
-      throw new VaultError("VAULT_UNREADABLE", `The linked-wallet read did not complete: ${read2.incompleteReason}. Nothing was flagged.`, {
+    const read3 = await completeLinkedWalletRead(ctx, apiKey);
+    if (!read3.complete) {
+      throw new VaultError("VAULT_UNREADABLE", `The linked-wallet read did not complete: ${read3.incompleteReason}. Nothing was flagged.`, {
         suggestion: "A partial list that happened to list nothing would read as good news, so no exposure is recorded from an incomplete read."
       });
     }
     const recorded = vault.index.hd.discovery?.account;
-    if (recorded !== undefined && recorded !== "" && recorded !== read2.account) {
-      throw new VaultError("EXPOSURE_ACCOUNT_MISMATCH", `This vault recorded its discovery against account ${recorded}, and this profile acts as ${read2.account}.`, { suggestion: "Switch profile and run it again. Nothing was flagged." });
+    if (recorded !== undefined && recorded !== "" && recorded !== read3.account) {
+      throw new VaultError("EXPOSURE_ACCOUNT_MISMATCH", `This vault recorded its discovery against account ${recorded}, and this profile acts as ${read3.account}.`, { suggestion: "Switch profile and run it again. Nothing was flagged." });
     }
-    const listed = new Set(read2.rows.map((row) => lookupKey(row.address)));
+    const listed = new Set(read3.rows.map((row) => lookupKey(row.address)));
     const entries = vault.index.entries.map((entry) => entry.role !== "external" && listed.has(lookupKey(entry.address)) && !entry.exposure.everRemoteExposed ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } } : entry);
     const added = entries.filter((entry, i) => entry !== vault.index.entries[i]);
     const exposedIndexes = { ...vault.index.hd.exposedIndexes };
@@ -107464,8 +108146,8 @@ async function vaultReconcileExposure(args, ctx) {
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
-        account: read2.account,
-        listed: read2.rows.length,
+        account: read3.account,
+        listed: read3.rows.length,
         newlyFlagged: added.length,
         cleared: 0,
         exposureReconciledAt: now
@@ -107473,8 +108155,8 @@ async function vaultReconcileExposure(args, ctx) {
       return 0;
     }
     writeFields(deps, "stdout", [
-      ["Account", read2.account],
-      ["Linked wallets read", read2.rows.length],
+      ["Account", read3.account],
+      ["Linked wallets read", read3.rows.length],
       ["Newly flagged remotely exposed", added.length]
     ], "Exposure reconciled");
     notice(deps, "stdout", "note", `Nothing was cleared. This command only ever adds exposure: no read can establish that an address is cold.
@@ -107725,25 +108407,25 @@ async function vaultStatus(args, ctx) {
     }
     const style = terminalStyle(deps, "stdout");
     const miss = symbols(style).missing;
-    const write = (line = "") => deps.stdout.write(`${line}
+    const write2 = (line = "") => deps.stdout.write(`${line}
 `);
-    write(path);
-    write("");
-    write(heading("Vault", style));
-    write("");
+    write2(path);
+    write2("");
+    write2(heading("Vault", style));
+    write2("");
     for (const line of fields([
       ["Version", String(file.version)],
       ["Generation", String(file.generation)],
       ["Updated", formatTime(file.updatedAt)]
     ], style))
-      write(line);
-    write("");
-    write(heading("Factors", style));
-    write("");
-    write(`${" ".repeat(2)}${envelopes.length} factors, ${recoverable} recoverable (domains counted once)`);
+      write2(line);
+    write2("");
+    write2(heading("Factors", style));
+    write2("");
+    write2(`${" ".repeat(2)}${envelopes.length} factors, ${recoverable} recoverable (domains counted once)`);
     for (const envelope of envelopes) {
-      write("");
-      write(`${" ".repeat(2)}${envelope.id}`);
+      write2("");
+      write2(`${" ".repeat(2)}${envelope.id}`);
       const rows = [
         ["Factor", envelope.factor],
         ["Domain", envelope.domain],
@@ -107757,30 +108439,30 @@ async function vaultStatus(args, ctx) {
       if (envelope.sharedDomainNote)
         rows.push(["Note", envelope.sharedDomainNote]);
       for (const line of fields(rows, style, 4))
-        write(line);
+        write2(line);
     }
     if (recoverable === 1) {
       notice(deps, "stdout", "warning", "This vault has exactly one recoverable factor. Lose it and no copy of this file can be opened; the recovery phrase is then the only route, and it restores derived keys only.");
     }
-    write("");
-    write(heading("This machine", style));
+    write2("");
+    write2(heading("This machine", style));
     if (sidecar) {
-      write("");
+      write2("");
       for (const line of fields([
         ["Record", "vault.state.json, cleartext, best effort"],
         ["Last generation seen", String(sidecar.lastGeneration)]
       ], style))
-        write(line);
+        write2(line);
       if (sidecar.lastVerifiedBackupAt && backup) {
         for (const line of lastBackupLines(sidecar, backup))
-          write(line);
+          write2(line);
       }
       if (sidecar.lastBackupSharedDomainAccepted) {
-        write("  shared domain          accepted for the last backup destination (an unsealed copy, every envelope included)");
+        write2("  shared domain          accepted for the last backup destination (an unsealed copy, every envelope included)");
       }
       if (sidecar.removedEnvelopeIds.length > 0) {
-        write(`  removed envelopes      ${sidecar.removedEnvelopeIds.join(", ")}`);
-        write("                         any copy of this file made while one existed still opens with that factor.");
+        write2(`  removed envelopes      ${sidecar.removedEnvelopeIds.join(", ")}`);
+        write2("                         any copy of this file made while one existed still opens with that factor.");
       }
     } else {
       notice(deps, "stdout", "note", "No vault.state.json beside this vault, so an older copy of it cannot be recognized on this machine.");
@@ -107796,11 +108478,11 @@ A key it holds that was never imported opens with an earlier release's \`wallets
       notice(deps, "stdout", "note", "Run with --unlock to list the keys, the derivation counters and the exposure flags, which are inside the encrypted index.");
       return 0;
     }
-    write("");
-    write(heading(`Keys (${unlocked.entries.length})`, style));
+    write2("");
+    write2(heading(`Keys (${unlocked.entries.length})`, style));
     for (const entry of unlocked.entries) {
-      write("");
-      write(`${" ".repeat(2)}${entry.address}`);
+      write2("");
+      write2(`${" ".repeat(2)}${entry.address}`);
       const rows = [
         ["Label", entry.label || miss],
         ["Role", `${entry.role} (${entry.origin})`],
@@ -107814,24 +108496,24 @@ A key it holds that was never imported opens with an earlier release's \`wallets
         rows.push(["Accepted", "an operator asserted this pinned destination's history despite exposureUnknown"]);
       }
       for (const line of fields(rows, style, 4))
-        write(line);
+        write2(line);
     }
-    write("");
-    write(LIST_POINTER);
+    write2("");
+    write2(LIST_POINTER);
     if (unlocked.duplicateLabels.length > 0) {
-      write("");
-      write(heading(`Duplicate labels (${unlocked.duplicateLabels.length})`, style));
+      write2("");
+      write2(heading(`Duplicate labels (${unlocked.duplicateLabels.length})`, style));
       for (const line of duplicateLabelLines(unlocked.duplicateLabels))
-        write(line);
+        write2(line);
     }
-    write("");
-    write(heading("Derivation counters (next index per branch)", style));
-    write("");
+    write2("");
+    write2(heading("Derivation counters (next index per branch)", style));
+    write2("");
     for (const [branch, value] of Object.entries(unlocked.nextIndex)) {
       const exposed = unlocked.exposedIndexes[branch] ?? [];
-      write(`  ${branch.padEnd(12)} ${value}${exposed.length > 0 ? `   known exposed: ${exposed.join(", ")}` : ""}`);
+      write2(`  ${branch.padEnd(12)} ${value}${exposed.length > 0 ? `   known exposed: ${exposed.join(", ")}` : ""}`);
     }
-    write(`  recovery phrase exported: ${unlocked.rootExported ? "yes" : "no"}`);
+    write2(`  recovery phrase exported: ${unlocked.rootExported ? "yes" : "no"}`);
     if (unlocked.restored) {
       notice(deps, "stdout", "note", "This vault was built by `vault restore --phrase`.\nIts keys are recovery artifacts, not fresh cold keys, and it does not allocate new addresses; `vault new-key` and `vault promote --from` refuse here.");
     }
@@ -108074,7 +108756,7 @@ init_human_output();
 init_release();
 import { dirname as dirname11, join as join15 } from "node:path";
 init_key_output();
-var USAGE12 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE13 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -108106,19 +108788,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE12}`, json);
+${USAGE13}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeScreenUsageFailure(deps, `verify takes exactly one file.
-${USAGE12}`, json);
+${USAGE13}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeScreenUsageFailure(deps, `--bundle is required.
-${USAGE12}`, json);
+${USAGE13}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -108132,10 +108814,10 @@ ${USAGE12}`, json);
   }
   if (resolved.kind === "absent") {
     writeScreenUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE12}`, json);
+${USAGE13}`, json);
     return 2;
   }
-  const identity3 = resolved.uri;
+  const identity4 = resolved.uri;
   const issuer = parsed.values["--issuer"] ?? RELEASE_ISSUER;
   let bytes;
   let bundleJson;
@@ -108151,23 +108833,23 @@ ${USAGE12}`, json);
     writeScreenLocalFailure(deps, { code: "BUNDLE_UNREADABLE", message: `Could not read the bundle ${bundlePath}: ${messageOf3(error)}` }, json);
     return 1;
   }
-  const result = verifyReleaseAsset(bytes, bundleJson, identity3, issuer);
+  const result = verifyReleaseAsset(bytes, bundleJson, identity4, issuer);
   if (!result.ok) {
     writeScreenLocalFailure(deps, {
       code: "SIGNATURE_INVALID",
       message: `Refusing ${file}: ${result.reason}.`,
-      suggestion: `Checked against ${identity3} (${resolved.provenance}).`
+      suggestion: `Checked against ${identity4} (${resolved.provenance}).`
     }, json);
     return 1;
   }
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ ok: true, file, identity: identity3, issuer, identitySource: resolved.provenance })}
+    deps.stdout.write(`${JSON.stringify({ ok: true, file, identity: identity4, issuer, identitySource: resolved.provenance })}
 `);
   } else {
     writeSuccess(deps, "stdout", "Release signature verified");
     writeFields(deps, "stdout", [
       ["File", file],
-      ["Identity", identity3],
+      ["Identity", identity4],
       ["Source", resolved.provenance],
       ["Issuer", issuer]
     ]);
@@ -108380,8 +109062,8 @@ init_solana_alt();
 init_solana_lite();
 init_trading();
 init_swap();
-import { randomUUID as randomUUID11 } from "node:crypto";
-var USAGE13 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+import { randomUUID as randomUUID12 } from "node:crypto";
+var USAGE14 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -108644,7 +109326,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE13}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE14}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -108653,9 +109335,9 @@ async function walletsCloseEmpty(args, ctx) {
     return 2;
   }
   const named = parsed.values["--client-trade-id"];
-  const id = named ?? `close-${randomUUID11()}`;
+  const id = named ?? `close-${randomUUID12()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE13, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE14, ctx.json);
     return 2;
   }
   const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
@@ -109063,7 +109745,12 @@ var COMMANDS = {
       clusters: tokenClusters,
       events: tokenEvents,
       forensics: tokenForensics,
-      "vamp-candidates": tokenVampCandidates
+      "vamp-candidates": tokenVampCandidates,
+      about: tokenAbout,
+      claim: tokenClaim,
+      section: tokenSection,
+      history: tokenHistory,
+      flag: tokenFlag
     }
   },
   spend: {
@@ -109384,7 +110071,8 @@ async function runCommand(argv, deps) {
   const publicPerpsRead = word3 === "perps" && ["markets", "market", "book", "candles"].includes(sub ?? "");
   const coreFace = word3 === "core" && sub === "mcp";
   const actsAsIdentity = !publicPerpsRead && !coreFace && (word3 !== "mcp" || mcpActsAsIdentity(tokens.slice(1)));
-  if (ROUTED_COMMANDS.has(word3) && !NEVER_GUARDED.has(word3) && routesToCommand(cmd, sub) && actsAsIdentity) {
+  const tokenPageActs = word3 === "token" && (["claim", "section", "flag"].includes(sub ?? "") || sub === "about" && tokens.includes("--capabilities"));
+  if (ROUTED_COMMANDS.has(word3) && (!NEVER_GUARDED.has(word3) || tokenPageActs) && routesToCommand(cmd, sub) && actsAsIdentity) {
     const verdict = await verifyProfileAccount(ctx, config2);
     if (!verdict.ok) {
       writeLocalFailure(deps, { code: "ACCOUNT_MISMATCH", message: verdict.message, suggestion: verdict.suggestion }, flags2.json);

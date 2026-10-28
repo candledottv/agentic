@@ -815,14 +815,20 @@ export const HELP: Record<string, Topic> = {
   },
   token: {
     group: "Account",
-    summary: "Token events, cluster analysis, forensics and the vamp finder",
+    summary: "Token About pages, events, cluster analysis, forensics and the vamp finder",
+    intro: "Token About pages, events, clusters, forensics, vamp finder",
     description:
-      "events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
+      "about, claim, section, history and flag are the token's About page: three shared sections (thesis, tokenomics, lore) any eligible holder may edit, with full history. about and history are public and send no key. about --capabilities reads this account's own eligibility (token-pages:read). claim, section set, section restore and flag act as the key's account and need token-pages:write; neither scope is in any preset, so grant them with keys create --scopes token-pages:read,token-pages:write. Candle checks on every write that the account's Candle-known wallets hold at least 0.5% of the token's current supply (any positive balance to flag); the scope is never a holding. A creator proof is a message, never a transaction: claim --creator --challenge prints the exact bytes to sign (and --message-out writes them to a file), you sign them on your own machine, for example with candle sign message, and claim --creator --challenge-id <id> --signature <sig> sends the signature; a creator wallet already among the account's known wallets needs no signature. Section text comes from --file and is checked here first (valid UTF-8, at most 32 KiB, no control characters but newline and tab, thesis 280 characters, tokenomics and lore 5,000); the file is only read. Every write sends an Idempotency-Key and retries once on no answer with the same key. Exit codes: 0 done, 1 refused (the code is in --json), 2 usage or local input refused (nothing sent), 3 no answer so the outcome is unknown (rerun with the printed --idempotency-key), 4 revision conflict (your file is untouched; read history, merge, rerun with the latest --base-revision). Token page switches ship off; a switched-off server answers feature_off or not_found. events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
     usage: [
       "candle token clusters <mint> [--chain solana|hood] [--json]",
       "candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]",
       "candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes] [--json]",
       "candle token vamp-candidates [--limit <n>] [--min-copies <n>] [--stage final_stretch|graduated|all] [--wallet <vault key>] [--yes] [--json]",
+      "candle token about <address> [--chain solana|hood] [--capabilities] [--json]",
+      "candle token claim <address> [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--json]",
+      "candle token section set|restore <address> <thesis|tokenomics|lore> --file <path>|--version-id <id> --base-revision <n> [--json]",
+      "candle token history <address> <thesis|tokenomics|lore> [--limit <n>] [--cursor <c>] [--json]",
+      "candle token flag <address> --content <id> --reason <reason> [--detail <text>] [--json]",
     ],
     rows: [
       { invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" },
@@ -835,6 +841,21 @@ export const HELP: Record<string, Topic> = {
         invocation: "vamp-candidates",
         description: "Tokens near graduation whose ticker others copy; may cost a per-use payment",
       },
+      {
+        invocation: "about <address>",
+        description:
+          "The token's About page: claim, sections and measured supply; --capabilities adds your eligibility",
+      },
+      {
+        invocation: "claim <address>",
+        description: "Join the page's editors as a holder, or as its creator with --creator (a signed message)",
+      },
+      {
+        invocation: "section set|restore <address> <section>",
+        description: "Write a section from --file, or restore an earlier --version-id, at --base-revision",
+      },
+      { invocation: "history <address> <section>", description: "A section's versions, newest first" },
+      { invocation: "flag <address>", description: "Report one exact version to Candle's review queue" },
     ],
     flags: [
       { invocation: "--chain <chain>", description: "solana (default) or hood; Hood cluster analysis is unavailable" },
@@ -842,7 +863,10 @@ export const HELP: Record<string, Topic> = {
         invocation: "--kind <kind>",
         description: "events: trade, signal or callout; filters the page locally (the route has no kind filter)",
       },
-      { invocation: "--limit <n>", description: "events or vamp-candidates: how many to read (events: 1 to 1000)" },
+      {
+        invocation: "--limit <n>",
+        description: "events, history or vamp-candidates: how many to read (events 1 to 1000, history 1 to 50)",
+      },
       { invocation: "--min-copies <n>", description: "vamp-candidates: copies in the last 24h, at least" },
       { invocation: "--since <iso-8601>", description: "events: list only events at or after this time" },
       { invocation: "--before <cursor>", description: "events: continue the page a previous answer's cursor names" },
@@ -852,8 +876,23 @@ export const HELP: Record<string, Topic> = {
         description: "The Solana vault key that pays, by label or address (needed when the vault has several)",
       },
       { invocation: "--yes", description: "Pay without the typed confirm (the vault unlock still prompts)" },
+      { invocation: "--file <path>", description: "section set: the section text, UTF-8; an empty file needs --clear" },
+      {
+        invocation: "--base-revision <n>",
+        description: "section set|restore: the revision you started from (0 first)",
+      },
+      { invocation: "--version-id <id>", description: "section restore: the earlier version to copy into a new one" },
+      { invocation: "--content <id>", description: "flag: the exact version id being reported" },
+      {
+        invocation: "--reason <reason>",
+        description: "flag: spam, scam, abuse, misleading, unsafe_link or other; --detail adds up to 500 characters",
+      },
+      { invocation: "--idempotency-key <key>", description: "Writes: reuse a key to retry without writing twice" },
     ],
     examples: [
+      "candle token about <mint> --capabilities",
+      "candle token section set <mint> thesis --file ./thesis.txt --base-revision 3",
+      "candle token claim <mint> --creator --challenge --message-out ./proof.txt",
       "candle token clusters <mint>",
       "candle token clusters <mint> --json",
       "candle token events <mint> --kind signal --limit 50",
