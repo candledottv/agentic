@@ -26,6 +26,7 @@ import { randomUUID } from "node:crypto"
 import type { RequestConfig } from "./client"
 import { decimalToRaw, defaultQuoteId, percentOfBalance, QUOTE_DECIMALS } from "./convert"
 import { type ImageFs, imageRefusalBody, resolveLaunchImage, uploadedFields } from "./image"
+import { socialsRefusal } from "./launch-schema"
 import { noteVersionHeaders, updateAvailable } from "./update-notice"
 
 export type FetchLike = (
@@ -502,6 +503,8 @@ export async function executeLaunchAndSeed(
 ): Promise<ToolText> {
   const apiKey = requireApiKey(cfg)
   const clientLaunchId = args.clientLaunchId ?? randomUUID()
+  const socialsProblem = socialsRefusal(args.socials)
+  if (socialsProblem) return { text: imageRefusalBody(socialsProblem, { clientLaunchId }), isError: true }
   // buyAmount is destructured off and never forwarded: see LaunchAndSeedArgs.buyAmount.
   const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...imageFields } = args
 

@@ -21,6 +21,7 @@ import {
   launchFeeCap,
 } from "../hood-legs"
 import { BundleReadError, readLaunchBundle } from "../launch-bundle"
+import { launchCheck } from "../launch-check"
 import { LAUNCH_DEFINITION } from "../launch-definition"
 import { LAUNCH_IMAGE_FLAG, LAUNCH_USAGE, launchFieldProblem, launchFlagFields } from "../launch-options"
 import { writeUsageFailure } from "../render"
@@ -80,6 +81,7 @@ export const LAUNCH_ARG_SPEC: ArgSpec = {
   ],
   booleanFlags: [
     ...launchFlagFields.filter((field) => field.type === "boolean").map((field) => field.cli.flag),
+    "--check",
     "--yes",
   ],
   pathFlags: ["--image", "--banner"],
@@ -229,6 +231,12 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID()}`
   const embedded = EMBEDDED_WALLET_NAMES.has(flags["--wallet"] ?? "")
   const dryRun = parsed.booleans.has("--dry-run")
+  // BE-2139 (surfaces item B): --check is the preflight that stops before anything is sent.
+  const check = parsed.booleans.has("--check")
+  if (check && dryRun) {
+    writeUsageFailure(ctx.deps, `--check and --dry-run are two different stops; pass one. ${USAGE}`, ctx.json)
+    return 2
+  }
   const fieldProblem = launchFieldProblem(flags)
   if (fieldProblem) {
     writeUsageFailure(ctx.deps, fieldProblem, ctx.json)
@@ -265,14 +273,14 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     writeUsageFailure(ctx.deps, "--banner takes a local file or an https:// URL.", ctx.json)
     return 2
   }
-  if (
-    parsed.positionals.length ||
+  // A preflight names no token: --name, --symbol, --image and --wallet stay optional under --check,
+  // and everything below it reads and sends nothing a launch would.
+  const missingRequired =
     !flags["--name"] ||
     !flags["--symbol"] ||
     (flags["--image"] === undefined && flags["--image-url"] === undefined) ||
-    !flags["--wallet"] ||
-    !validClientId(id)
-  ) {
+    !flags["--wallet"]
+  if (parsed.positionals.length || (!check && missingRequired) || !validClientId(id)) {
     writeUsageFailure(ctx.deps, USAGE, ctx.json)
     return 2
   }
@@ -286,22 +294,27 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     // Before any request, as `candle swap` checks `--amount`; the quote asset's decimals come later.
     if (flags["--buy"]?.trim() && !/^0+(\.0+)?$/.test(flags["--buy"])) launchBuyRaw(flags["--buy"], 18)
     const hinted = flagChain(flags)
-    if (hinted === "hood" && flags["--dex-version"] === undefined) {
+    if (!check && hinted === "hood" && flags["--dex-version"] === undefined) {
       writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE}`, ctx.json)
       return 2
     }
     // BE-1283: a file that is unreadable, over 10MB or not one of the four image types is refused
-    // here, before any request. No launch id is involved yet, so the failure names none.
+    // here, before any request. No launch id is involved yet, so the failure names none. Under
+    // --check nothing is read: the preflight answers before the image exists.
     let image: LocalImage | undefined
     let banner: LocalImage | undefined
-    try {
-      if (flags["--image"] !== undefined) image = await readLocalImage(flags["--image"])
-      if (flags["--banner"] && !flags["--banner"].startsWith("https://"))
-        banner = await readLocalImage(flags["--banner"])
-    } catch (error) {
-      return tradingFailure(ctx, error)
+    if (!check) {
+      try {
+        if (flags["--image"] !== undefined) image = await readLocalImage(flags["--image"])
+        if (flags["--banner"] && !flags["--banner"].startsWith("https://"))
+          banner = await readLocalImage(flags["--banner"])
+      } catch (error) {
+        return tradingFailure(ctx, error)
+      }
     }
     const key = await tradingKey(ctx)
+    // BE-2139 (surfaces item B): the one preflight call, before any upload, build or id claim.
+    if (check) return await launchCheck(ctx, key, flags["--wallet"], hinted)
     // A dry run reads no operation and resumes none: it records nothing under the id.
     const prior = dryRun ? null : await lookupOperation(ctx, key, id, "launch")
     /** BE-1721 (R4): a same-id re-run of an atomic launch whose bundle did not land, and the image it was built with. */
@@ -348,7 +361,8 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         yes: parsed.booleans.has("--yes"),
         dryRun,
       })
-    const wallet = await tradingWallet(ctx, key, flags["--wallet"], "launch:write", hinted ?? "any")
+    // Past --check, the required-flags refusal above guarantees --wallet is present.
+    const wallet = await tradingWallet(ctx, key, flags["--wallet"] ?? "", "launch:write", hinted ?? "any")
     const chain: TradeChain = wallet.chain === "evm" ? "hood" : "solana"
     if (chain === "hood" && flags["--dex-version"] === undefined)
       throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`)
@@ -455,8 +469,9 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     const result = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, signature })
     return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote, ...used })
   } catch (error) {
-    // A dry run started nothing under the id, so its refusal names no operation to check.
-    return tradingFailure(ctx, error, dryRun ? undefined : id)
+    // A dry run started nothing under the id, and neither did --check, so those refusals name no
+    // operation to check.
+    return tradingFailure(ctx, error, dryRun || check ? undefined : id)
   }
 }
 

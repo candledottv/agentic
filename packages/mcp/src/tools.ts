@@ -39,7 +39,8 @@
  * Input schemas are intentionally permissive: the REST API is the authoritative validator (see
  * apps/api/src/lib/headless-validation.ts), so duplicating its rules here would just be a second
  * place for them to go stale. Shapes and required-ness are enough to give an MCP client useful
- * autocomplete.
+ * autocomplete. Launch fields are the exception: their keys, enums and help sentences come from
+ * the generated launch definition. An unknown socials key is refused here, before any request.
  */
 
 import { randomUUID } from "node:crypto"
@@ -55,6 +56,13 @@ import {
   UPLOADED_BANNER_NOTE,
   UPLOADED_IMAGE_NOTE,
 } from "./image"
+import {
+  LAUNCH_SHARED_SENTENCES,
+  launchAndSeedShape,
+  launchSchemaField,
+  launchTokenShape,
+  socialsRefusal,
+} from "./launch-schema"
 import { EXTERNAL_MARKET_DISCLOSURE } from "./market-disclosure"
 import {
   executeLaunchAndSeed,
@@ -89,26 +97,6 @@ export const VAMP_CANDIDATES_DESCRIPTION =
   "Upload your own image through the agent image upload when the image is unavailable. Use `dryRun: true` first. " +
   "Counts exclude the candidate itself and cover both Solana and Hood launches at the venues returned in " +
   "`coverage`, not Candle's own. `coverage.since` is the returned Solana coverage date; Hood history may differ."
-
-/**
- * The launcher-chosen curve's rule in one sentence, then the dry-run instruction, shared word for
- * word by both launch tools here and on the hosted server
- * (docs/superpowers/specs/2026-10-16-launcher-chosen-curves-design.md, sections 3 and 5). The API
- * is the validator; this only tells a model what it will accept. The limits are the API's
- * (`EXP_CUSTOM_CURVE_LIMITS` in packages/shared), which tools.test.ts holds this to.
- */
-export const CUSTOM_CURVE_RULE =
-  'mode "exp-custom" with curve { virtualQuote, threshold } launches a Solana curve with your own V (the virtual ' +
-  "quote it starts with) and G (the quote it raises before graduating), in whole SOL or CNDL as decimal strings, " +
-  "accepted when V is 1 to 100 SOL and G 1 to 250 SOL (66,000 to 6,600,000 and 66,000 to 16,500,000 CNDL), when " +
-  "every price up to 20 x G stays under the ceiling (V + 20G)^2 < V x X at this stakerAllocationBps, when neither " +
-  "is finer than the quote's decimals, and when the dev buy is at most 0.5 SOL (2,000,000 CNDL), or 10% of G when " +
-  "that is lower (every exp- mode; an operator may set the 0.5 SOL lower); a curve past a limit is " +
-  "CURVE_OUT_OF_RANGE, and at the ceiling it carries maxThresholdRaw, the largest G that fits. " +
-  "Dry-run it first (dryRun: true): the dry run spends nothing and returns curveTerms, the market cap at start and " +
-  "at graduation, the supply sold by graduation, the share your own buyAmount takes, the fees and the migration " +
-  "terms, and devBuyMax, the dev-buy ceiling that applies. Only where the API has EXP_CUSTOM_CURVES on; " +
-  "elsewhere exp-custom is refused as an unknown mode."
 
 const localProfileTools = new WeakMap<McpServer, Map<ToolName, RegisteredTool>>()
 export const STAKING_DISCLOSURE =
@@ -722,104 +710,6 @@ async function swap(args: Record<string, unknown>, cfg: RequestConfig, doFetch: 
   }
 }
 
-const launchTokenShape = {
-  clientLaunchId: z.string().describe("Caller-chosen idempotency key, unique per account"),
-  name: z.string().describe("Token name"),
-  symbol: z.string().describe("Token symbol"),
-  imageUrl: z
-    .string()
-    .describe(
-      "https URL to the token image. Must be roughly SQUARE (aspect ratio at most 1.5:1): it " +
-        "renders as a small circle/square avatar everywhere. Share cards, OG images and banners " +
-        "are rejected with IMAGE_WRONG_SHAPE -- pass those as bannerUrl instead",
-    ),
-  bannerUrl: z
-    .string()
-    .optional()
-    .describe(
-      "Optional https URL to WIDE artwork for the token page's banner strip (wider than 1.5:1, " +
-        "e.g. 1200x630). This is where a share card or OG image belongs. A square image here is " +
-        "rejected with BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Omit it and the strip " +
-        "falls back to imageUrl",
-    ),
-  chain: z.string().optional().describe('"solana" or "hood"; defaults to solana'),
-  quoteAsset: z.string().optional().describe("Quote asset symbol; defaults per chain"),
-  mode: z
-    .string()
-    .optional()
-    .describe(
-      '"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' +
-        "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on. " +
-        '"exp-a", "exp-b" and "exp-c" are the experimental fast Solana curves (sol or cndl). ' +
-        '"exp-custom" launches a Solana curve with your own V and G, given in curve, where the API has it ' +
-        "switched on",
-    ),
-  curve: z
-    .object({
-      virtualQuote: z
-        .string()
-        .describe('V: the virtual quote the curve starts with, in whole quote units, e.g. "12" SOL'),
-      threshold: z
-        .string()
-        .describe('G: the quote the curve raises before it graduates, in whole quote units, e.g. "40" SOL'),
-    })
-    .strict()
-    .optional()
-    .describe(
-      'mode "exp-custom" only, and required there. Decimal strings in whole units of the quote asset (sol or ' +
-        "cndl), never raw units. Dry-run first: the API checks the limits and returns the curve's terms",
-    ),
-  creatorFeeBps: z
-    .union([z.literal(0), z.literal(100), z.literal(200)])
-    .optional()
-    .describe(
-      "An exp- mode only: an extra creator fee of 100 or 200 basis points on top of the curve's 1% and the " +
-        "pool's 0.5%, paid to the creator in full. 0 is the same as leaving it out",
-    ),
-  stakerAllocationBps: z.number().optional().describe("Staker allocation in basis points"),
-  poolFee: z
-    .union([
-      z.object({ tier: z.union([z.literal(25), z.literal(50), z.literal(100)]) }).strict(),
-      z
-        .object({
-          startBps: z.number().int().max(2500),
-          endBps: z.union([z.literal(25), z.literal(50), z.literal(100)]),
-          minutes: z.number().positive().max(30),
-        })
-        .strict(),
-    ])
-    .optional()
-    .describe(
-      "Solana only: the graduated pool's fee. { tier: 25 | 50 | 100 } is a flat fee in bps (default 50), or " +
-        "{ startBps, endBps, minutes } is an anti-snipe fall from startBps (at most 2500, at least endBps) to " +
-        "endBps (25, 50 or 100) over minutes (at most 30). Cannot be combined with creatorFeeBps unless the tier is 50. " +
-        "Omit for the standard 50 bps pool",
-    ),
-  poolOpen: z
-    .enum(["legacy", "curve_price"])
-    .optional()
-    .describe(
-      'Solana preset tiers only. "curve_price" opens the pool at the curve\'s last price (the whole reserve is ' +
-        "seeded and the remaining base burned); stakerAllocationBps plus the team allocation must fit the tier's limit, " +
-        "which the dry run returns as graduation.maxStakerCarveBps. Omitted defaults to curve_price when those " +
-        "allocations fit, otherwise falls back to legacy without refusal. Set legacy explicitly to opt out. " +
-        "Explicit curve_price is refused when the allocations exceed the limit",
-    ),
-  expPoolShape: z
-    .enum(["floor", "full_range"])
-    .optional()
-    .describe('Solana exp- curves only. "full_range" opens the pool across the whole price range. Omit for floor'),
-  dexVersion: z.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
-  buyAmount: z
-    .union([z.string(), z.number()])
-    .optional()
-    .describe("Initial buy, in quote base units (string or number)"),
-  description: z.string().optional(),
-  socials: z.record(z.string()).optional().describe("Social links keyed by platform"),
-  visibility: z.string().optional().describe('"production", "test", "local", or "hidden"'),
-  dryRun: z.boolean().optional().describe("Validate without executing the launch"),
-}
-
 const getMarketShape = {
   chain: z.string().describe('"solana" or "hood"'),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
@@ -1086,39 +976,16 @@ const tradeShape = {
   ),
 }
 
-// `buyAmount` (raw base units) is destructured out rather than spread in: this tool's one seed
-// input is `devBuy`, in decimal quote units, and advertising both would invite a caller to pass a
-// raw amount the tool never converted. executeLaunchAndSeed strips it from the body as well.
-const { buyAmount: _rawBuyAmount, ...seedableLaunchShape } = launchTokenShape
-
-const seedShape = {
-  clientLaunchId: z
-    .string()
-    .optional()
-    .describe("Idempotency key. Auto-generated when omitted and echoed in the result."),
-  devBuy: z
-    .string()
-    .optional()
-    .describe(
-      'Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' +
-        "ETH on hood), paid from the account's embedded wallet; the tool's description says how " +
-        "each chain sends it. Follows quoteAsset, which defaults to sol on solana and eth on hood. " +
-        "Capped by the platform dev-buy ceiling; for a larger seed, launch then follow with candle_trade.",
-    ),
-}
-
-const launchAndSeedShape = { ...seedableLaunchShape, ...seedShape }
-
 /**
  * The image input where the operator set CANDLE_IMAGE_DIR (image.ts): either field, and the
  * handler requires exactly one. A raw shape cannot say "one of", so both are optional here and
  * `resolveLaunchImage` refuses both-or-neither before any file is read. Without the variable the
  * tools keep `launchTokenShape` exactly as it was, `imageUrl` required and no `imagePath`.
  */
+const tokenImageUrl = launchSchemaField(launchTokenShape, "imageUrl")
+const tokenBannerUrl = launchSchemaField(launchTokenShape, "bannerUrl")
 const localImageShape = {
-  imageUrl: launchTokenShape.imageUrl
-    .optional()
-    .describe(`${launchTokenShape.imageUrl.description}. Pass this or imagePath, never both`),
+  imageUrl: tokenImageUrl.optional().describe(`${tokenImageUrl.description}. Pass this or imagePath, never both`),
   imagePath: z
     .string()
     .optional()
@@ -1130,9 +997,7 @@ const localImageShape = {
         "after a dry run, instead of uploading the file again. This is the square token image: Candle crops " +
         "it to a square, so a wide banner belongs in bannerPath, not here",
     ),
-  bannerUrl: launchTokenShape.bannerUrl.describe(
-    `${launchTokenShape.bannerUrl.description}. Pass this or bannerPath, never both`,
-  ),
+  bannerUrl: tokenBannerUrl.describe(`${tokenBannerUrl.description}. Pass this or bannerPath, never both`),
   bannerPath: z
     .string()
     .optional()
@@ -1145,7 +1010,7 @@ const localImageShape = {
     ),
 }
 const localLaunchTokenShape = { ...launchTokenShape, ...localImageShape }
-const localLaunchAndSeedShape = { ...seedableLaunchShape, ...localImageShape, ...seedShape }
+const localLaunchAndSeedShape = { ...launchAndSeedShape, ...localImageShape }
 
 /** Added to both launch tools' descriptions where imagePath is offered: an upload is a publication. */
 const IMAGE_PATH_DISCLOSURE =
@@ -1292,11 +1157,15 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       title: "Launch a token on Candle",
       description:
         "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything. " +
-        CUSTOM_CURVE_RULE +
+        LAUNCH_SHARED_SENTENCES +
         (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
       inputSchema: (imageDir ? localLaunchTokenShape : launchTokenShape) as typeof localLaunchTokenShape,
     },
     async (args) => {
+      const socialsProblem = socialsRefusal("socials" in args ? (args as { socials?: unknown }).socials : undefined)
+      if (socialsProblem) {
+        return { content: [{ type: "text", text: imageRefusalBody(socialsProblem) }], isError: true }
+      }
       const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch)
       if ("refused" in image) {
         return { content: [{ type: "text", text: imageRefusalBody(image.refused) }], isError: true }
@@ -1946,7 +1815,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "CNDL, or on an exp- curve 10% of the threshold when that is lower; the server holds the " +
         "creator's own seed to the effective ceiling, so launch with the largest devBuy it allows " +
         "and top up with candle_trade. " +
-        CUSTOM_CURVE_RULE +
+        LAUNCH_SHARED_SENTENCES +
         (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
       inputSchema: (imageDir ? localLaunchAndSeedShape : launchAndSeedShape) as typeof localLaunchAndSeedShape,
     },

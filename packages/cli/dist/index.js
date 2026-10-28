@@ -38089,7 +38089,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.22";
+var SERVER_VERSION = "0.10.23";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -38382,6 +38382,909 @@ var init_image = __esm(() => {
   nodeFs = { realpath, lstat, open: open4 };
 });
 
+// ../mcp/src/launch-definition.ts
+var LAUNCH_DEFINITION2;
+var init_launch_definition = __esm(() => {
+  LAUNCH_DEFINITION2 = {
+    version: 1,
+    wallet: {
+      embeddedNames: [
+        "embedded",
+        "main"
+      ],
+      help: "The paying wallet: a TEE wallet name, or embedded (main) for the account's embedded wallet."
+    },
+    quoteDecimals: {
+      sol: 9,
+      usdc: 6,
+      cndl: 6,
+      eth: 18,
+      usdg: 6
+    },
+    quoteChains: {
+      sol: "solana",
+      usdc: "solana",
+      cndl: "solana",
+      eth: "hood",
+      usdg: "hood"
+    },
+    defaultQuote: {
+      solana: "sol",
+      hood: "eth"
+    },
+    buyLimits: {
+      defaults: {
+        sol: {
+          env: "DEV_BUY_MAX_LAMPORTS",
+          raw: "500000000",
+          unit: "lamports"
+        },
+        usdc: {
+          env: "DEV_BUY_MAX_USDC_RAW",
+          raw: "500000000",
+          unit: "USDC raw units"
+        },
+        cndl: {
+          env: "DEV_BUY_MAX_CNDL_RAW",
+          raw: "2000000000000",
+          unit: "CNDL raw units"
+        },
+        eth: {
+          env: "DEV_BUY_MAX_WEI",
+          raw: "20000000000000000",
+          unit: "wei"
+        }
+      },
+      thresholdBps: 1000,
+      presetThresholds: {
+        "exp-a": {
+          sol: "5000000000",
+          cndl: "330000000000"
+        },
+        "exp-b": {
+          sol: "5000000000",
+          cndl: "330000000000"
+        },
+        "exp-c": {
+          sol: "5000000000",
+          cndl: "330000000000"
+        }
+      }
+    },
+    surfacesIntro: [
+      "CLI: scripts and terminals. Agents always pass --json.",
+      "MCP: chat agents (Claude, the connector). The same launch fields and results as the CLI's --json.",
+      "SDK: code that embeds Candle."
+    ],
+    fields: [
+      {
+        key: "wallet",
+        type: "string",
+        help: "The paying wallet: a TEE wallet name, or embedded (main) for the account's embedded wallet.",
+        required: true,
+        surfaces: {
+          cli: {
+            flag: "--wallet",
+            value: "<tee>|embedded"
+          },
+          mcp: {
+            key: "wallet"
+          },
+          sdk: {
+            key: "wallet"
+          }
+        }
+      },
+      {
+        key: "clientLaunchId",
+        type: "string",
+        help: "An idempotency key of at most 128 characters; reuse it to recover the same launch.",
+        range: {
+          min: "1",
+          max: "128",
+          unit: "characters"
+        },
+        surfaces: {
+          cli: {
+            flag: "--client-trade-id",
+            value: "<id>"
+          },
+          mcp: {
+            key: "clientLaunchId"
+          },
+          sdk: {
+            key: "clientLaunchId"
+          }
+        }
+      },
+      {
+        key: "name",
+        type: "string",
+        help: "The token's name, at most 32 UTF-8 bytes.",
+        required: true,
+        range: {
+          min: "1",
+          max: "32",
+          unit: "UTF-8 bytes"
+        },
+        surfaces: {
+          cli: {
+            flag: "--name",
+            value: "<name>"
+          },
+          mcp: {
+            key: "name"
+          },
+          sdk: {
+            key: "name"
+          }
+        }
+      },
+      {
+        key: "symbol",
+        type: "string",
+        help: "The token's ticker, at most 10 UTF-8 bytes.",
+        required: true,
+        range: {
+          min: "1",
+          max: "10",
+          unit: "UTF-8 bytes"
+        },
+        surfaces: {
+          cli: {
+            flag: "--symbol",
+            value: "<symbol>"
+          },
+          mcp: {
+            key: "symbol"
+          },
+          sdk: {
+            key: "symbol"
+          }
+        }
+      },
+      {
+        key: "imageUrl",
+        type: "url",
+        help: "The roughly square token image at an https URL; --image <path> uploads a local file instead.",
+        required: true,
+        surfaces: {
+          cli: {
+            flag: "--image-url",
+            value: "<https-url>"
+          },
+          mcp: {
+            key: "imageUrl"
+          },
+          sdk: {
+            key: "imageUrl"
+          }
+        }
+      },
+      {
+        key: "bannerUrl",
+        type: "url",
+        help: "A wide banner at an https URL or a local file; uploads are public and permanent.",
+        surfaces: {
+          cli: {
+            flag: "--banner",
+            value: "<file|URL>"
+          },
+          mcp: {
+            key: "bannerUrl"
+          },
+          sdk: {
+            key: "bannerUrl"
+          }
+        }
+      },
+      {
+        key: "description",
+        type: "string",
+        help: "The token's description, safe for on-chain JSON.",
+        surfaces: {
+          cli: {
+            flag: "--description",
+            value: "<text>"
+          },
+          mcp: {
+            key: "description"
+          },
+          sdk: {
+            key: "description"
+          }
+        }
+      },
+      {
+        key: "socials.website",
+        type: "url",
+        help: "The token's website link as an absolute http(s) URL.",
+        surfaces: {
+          cli: {
+            flag: "--website",
+            value: "<url>"
+          },
+          mcp: {
+            key: "socials.website"
+          },
+          sdk: {
+            key: "socials.website"
+          }
+        }
+      },
+      {
+        key: "socials.twitter",
+        type: "url",
+        help: "The token's X link as an absolute http(s) URL.",
+        surfaces: {
+          cli: {
+            flag: "--x",
+            value: "<url>"
+          },
+          mcp: {
+            key: "socials.twitter"
+          },
+          sdk: {
+            key: "socials.twitter"
+          }
+        }
+      },
+      {
+        key: "socials.telegram",
+        type: "url",
+        help: "The token's telegram link as an absolute http(s) URL.",
+        surfaces: {
+          cli: {
+            flag: "--telegram",
+            value: "<url>"
+          },
+          mcp: {
+            key: "socials.telegram"
+          },
+          sdk: {
+            key: "socials.telegram"
+          }
+        }
+      },
+      {
+        key: "socials.discord",
+        type: "url",
+        help: "The token's discord link as an absolute http(s) URL.",
+        surfaces: {
+          cli: {
+            flag: "--discord",
+            value: "<url>"
+          },
+          mcp: {
+            key: "socials.discord"
+          },
+          sdk: {
+            key: "socials.discord"
+          }
+        }
+      },
+      {
+        key: "chain",
+        type: "enum",
+        values: [
+          "solana",
+          "hood"
+        ],
+        default: "solana",
+        help: "The launch chain, inferred from the wallet, quote asset and dex version on the CLI.",
+        surfaces: {
+          cli: {
+            derived: "wallet, --quote-asset and --dex-version"
+          },
+          mcp: {
+            key: "chain"
+          },
+          sdk: {
+            key: "chain"
+          }
+        }
+      },
+      {
+        key: "quoteAsset",
+        type: "enum",
+        help: "The quote asset: sol, usdc or cndl on Solana; eth or usdg on Hood (defaults sol and eth).",
+        values: [
+          "sol",
+          "usdc",
+          "cndl",
+          "eth",
+          "usdg"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--quote-asset",
+            value: "sol|usdc|cndl|eth|usdg"
+          },
+          mcp: {
+            key: "quoteAsset"
+          },
+          sdk: {
+            key: "quoteAsset"
+          }
+        }
+      },
+      {
+        key: "mode",
+        type: "enum",
+        help: "The curve mode: open or exclusive; test-open or test-exclusive need ENABLE_TEST_CURVES; exp-a, exp-b, exp-c and exp-custom are Solana sol/cndl only.",
+        values: [
+          "open",
+          "exclusive",
+          "test-open",
+          "test-exclusive",
+          "exp-a",
+          "exp-b",
+          "exp-c",
+          "exp-custom"
+        ],
+        default: "open",
+        surfaces: {
+          cli: {
+            flag: "--mode",
+            value: "<mode>"
+          },
+          mcp: {
+            key: "mode"
+          },
+          sdk: {
+            key: "mode"
+          }
+        }
+      },
+      {
+        key: "curve.virtualQuote",
+        type: "decimal",
+        help: "exp-custom's virtual quote, in whole quote units: 1 to 100 SOL or 66000 to 6600000 CNDL; requires --curve-g and EXP_CUSTOM_CURVES.",
+        modes: [
+          "exp-custom"
+        ],
+        chains: [
+          "solana"
+        ],
+        requires: [
+          "curve.threshold"
+        ],
+        range: {
+          unit: "whole quote units",
+          byQuote: {
+            sol: {
+              min: "1",
+              max: "100"
+            },
+            cndl: {
+              min: "66000",
+              max: "6600000"
+            }
+          }
+        },
+        surfaces: {
+          cli: {
+            flag: "--curve-v",
+            value: "<V>"
+          },
+          mcp: {
+            key: "curve.virtualQuote"
+          },
+          sdk: {
+            key: "curve.virtualQuote"
+          }
+        }
+      },
+      {
+        key: "curve.threshold",
+        type: "decimal",
+        help: "exp-custom's graduation threshold, in whole quote units: 1 to 250 SOL or 66000 to 16500000 CNDL; requires --curve-v and EXP_CUSTOM_CURVES.",
+        modes: [
+          "exp-custom"
+        ],
+        chains: [
+          "solana"
+        ],
+        requires: [
+          "curve.virtualQuote"
+        ],
+        range: {
+          unit: "whole quote units",
+          byQuote: {
+            sol: {
+              min: "1",
+              max: "250"
+            },
+            cndl: {
+              min: "66000",
+              max: "16500000"
+            }
+          }
+        },
+        surfaces: {
+          cli: {
+            flag: "--curve-g",
+            value: "<G>"
+          },
+          mcp: {
+            key: "curve.threshold"
+          },
+          sdk: {
+            key: "curve.threshold"
+          }
+        }
+      },
+      {
+        key: "creatorFeeBps",
+        type: "enum",
+        help: "An exp- mode's extra creator fee: 0, 100 or 200 bps on the curve and pool, paid to the creator in full.",
+        values: [
+          0,
+          100,
+          200
+        ],
+        default: 0,
+        surfaces: {
+          cli: {
+            flag: "--creator-fee-bps",
+            value: "0|100|200"
+          },
+          mcp: {
+            key: "creatorFeeBps"
+          },
+          sdk: {
+            key: "creatorFeeBps"
+          }
+        }
+      },
+      {
+        key: "stakerAllocationBps",
+        type: "integer",
+        help: "The staker allocation, 50 to 1000 bps; defaults to 50, or 500 on exp- curves.",
+        range: {
+          min: "50",
+          max: "1000",
+          unit: "bps"
+        },
+        default: 50,
+        surfaces: {
+          cli: {
+            flag: "--staker-allocation-bps",
+            value: "<bps>"
+          },
+          mcp: {
+            key: "stakerAllocationBps"
+          },
+          sdk: {
+            key: "stakerAllocationBps"
+          }
+        }
+      },
+      {
+        key: "poolFee.tier",
+        type: "enum",
+        help: "Solana's graduated pool fee: 25, 50 or 100 bps (default 50), or the ending rate with --pool-fee-from.",
+        values: [
+          25,
+          50,
+          100
+        ],
+        default: 50,
+        chains: [
+          "solana"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--pool-fee",
+            value: "25|50|100"
+          },
+          mcp: {
+            key: "poolFee.tier"
+          },
+          sdk: {
+            key: "poolFee.tier"
+          }
+        }
+      },
+      {
+        key: "poolFee.startBps",
+        type: "integer",
+        help: "The falling pool fee's starting rate, at most 2500 bps; requires --pool-fee and --pool-fee-minutes.",
+        range: {
+          min: "25",
+          max: "2500",
+          unit: "bps"
+        },
+        chains: [
+          "solana"
+        ],
+        requires: [
+          "poolFee.tier",
+          "poolFee.minutes"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--pool-fee-from",
+            value: "<bps>"
+          },
+          mcp: {
+            key: "poolFee.startBps"
+          },
+          sdk: {
+            key: "poolFee.startBps"
+          }
+        }
+      },
+      {
+        key: "poolFee.minutes",
+        type: "decimal",
+        help: "The pool fee's fall time, at most 30 minutes; requires --pool-fee and --pool-fee-from.",
+        wireType: "number",
+        range: {
+          min: "0.006666666666666667",
+          max: "30",
+          unit: "minutes"
+        },
+        chains: [
+          "solana"
+        ],
+        requires: [
+          "poolFee.tier",
+          "poolFee.startBps"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--pool-fee-minutes",
+            value: "<min>"
+          },
+          mcp: {
+            key: "poolFee.minutes"
+          },
+          sdk: {
+            key: "poolFee.minutes"
+          }
+        }
+      },
+      {
+        key: "poolFee.endBps",
+        type: "enum",
+        values: [
+          25,
+          50,
+          100
+        ],
+        chains: [
+          "solana"
+        ],
+        help: "The falling fee's ending rate, taken from --pool-fee.",
+        surfaces: {
+          cli: {
+            derived: "--pool-fee with --pool-fee-from"
+          },
+          mcp: {
+            key: "poolFee.endBps"
+          },
+          sdk: {
+            key: "poolFee.endBps"
+          }
+        }
+      },
+      {
+        key: "poolOpen",
+        type: "enum",
+        help: "Solana preset pools: curve_price opens at the curve's last price and burns the rest; omitted uses curve_price when allocations fit graduation.maxStakerCarveBps, otherwise legacy; explicit curve_price above that limit is refused.",
+        values: [
+          "legacy",
+          "curve_price"
+        ],
+        chains: [
+          "solana"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--pool-open",
+            value: "legacy|curve_price"
+          },
+          mcp: {
+            key: "poolOpen"
+          },
+          sdk: {
+            key: "poolOpen"
+          }
+        }
+      },
+      {
+        key: "expPoolShape",
+        type: "enum",
+        help: "Solana exp- pools: floor by default, or full_range to open across the whole price range.",
+        values: [
+          "floor",
+          "full_range"
+        ],
+        default: "floor",
+        chains: [
+          "solana"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--exp-pool-shape",
+            value: "floor|full_range"
+          },
+          mcp: {
+            key: "expPoolShape"
+          },
+          sdk: {
+            key: "expPoolShape"
+          }
+        }
+      },
+      {
+        key: "dexVersion",
+        type: "enum",
+        help: "Hood only, required there: the Uniswap version the curve graduates to.",
+        values: [
+          "v3",
+          "v4"
+        ],
+        chains: [
+          "hood"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--dex-version",
+            value: "v3|v4"
+          },
+          mcp: {
+            key: "dexVersion"
+          },
+          sdk: {
+            key: "dexVersion"
+          }
+        }
+      },
+      {
+        key: "visibility",
+        type: "enum",
+        help: "The token's visibility: production, test, local or hidden; test keys require test or hidden.",
+        values: [
+          "production",
+          "test",
+          "local",
+          "hidden"
+        ],
+        default: "production",
+        surfaces: {
+          cli: {
+            flag: "--visibility",
+            value: "production|test|local|hidden"
+          },
+          mcp: {
+            key: "visibility"
+          },
+          sdk: {
+            key: "visibility"
+          }
+        }
+      },
+      {
+        key: "buy",
+        type: "decimal",
+        help: "An optional first buy in whole quote units; zero or empty means no buy, and the server applies dev-buy ceilings and TEE_LAUNCH_BUYS_ENABLED for TEE buys.",
+        default: "0",
+        range: {
+          min: "0",
+          unit: "whole quote units"
+        },
+        more: "Default raw caps (apps/api/src/lib/headless-validation.ts): DEV_BUY_MAX_LAMPORTS=500000000, DEV_BUY_MAX_USDC_RAW=500000000, DEV_BUY_MAX_CNDL_RAW=2000000000000, DEV_BUY_MAX_WEI=20000000000000000. On exp- curves the lower of the quote cap and 10% of G applies.",
+        surfaces: {
+          cli: {
+            flag: "--buy",
+            value: "<amount>"
+          },
+          mcp: {
+            key: "buy"
+          },
+          sdk: {
+            key: "buy"
+          }
+        }
+      },
+      {
+        key: "dryRun",
+        type: "boolean",
+        help: "Print the launch preview without building, signing or recording a launch; local image uploads still become public and permanent.",
+        default: false,
+        surfaces: {
+          cli: {
+            flag: "--dry-run"
+          },
+          mcp: {
+            key: "dryRun"
+          },
+          sdk: {
+            key: "dryRun"
+          }
+        }
+      }
+    ]
+  };
+});
+
+// ../mcp/src/launch-schema.ts
+function mcpKey(field) {
+  const surface = field.surfaces.mcp;
+  return "key" in surface ? surface.key : undefined;
+}
+function topKey(key) {
+  return key.split(".")[0] ?? key;
+}
+function mcpLaunchFields() {
+  return LAUNCH_DEFINITION2.fields.filter((field) => {
+    const key = mcpKey(field);
+    return key !== undefined && !M2_TOP_KEYS.has(topKey(key));
+  });
+}
+function fieldByKey(key) {
+  const field = LAUNCH_DEFINITION2.fields.find((item) => item.key === key);
+  if (!field)
+    throw new Error(`Missing launch field ${key}`);
+  return field;
+}
+function launchFieldHelp(key) {
+  return fieldByKey(key).help;
+}
+function stringValues(key) {
+  const field = fieldByKey(key);
+  const values = "values" in field ? field.values : undefined;
+  if (!values || values.some((value) => typeof value !== "string")) {
+    throw new Error(`Expected string values for ${key}`);
+  }
+  return [...values];
+}
+function numberValues(key) {
+  const field = fieldByKey(key);
+  const values = "values" in field ? field.values : undefined;
+  if (!values || values.length < 2 || values.some((value) => typeof value !== "number")) {
+    throw new Error(`Expected number values for ${key}`);
+  }
+  return [...values];
+}
+function rangeMax(key) {
+  const field = fieldByKey(key);
+  if (!("range" in field) || field.range === undefined || !("max" in field.range)) {
+    throw new Error(`Missing max for ${key}`);
+  }
+  return Number(field.range.max);
+}
+function numberEnum(key) {
+  const [first, second, ...rest] = numberValues(key);
+  return exports_external.union([exports_external.literal(first), exports_external.literal(second), ...rest.map((value) => exports_external.literal(value))]);
+}
+function described(schema, help, required) {
+  return required ? schema.describe(help) : schema.optional().describe(help);
+}
+function isRequired(field) {
+  return "required" in field && field.required === true || field.key === "clientLaunchId";
+}
+function launchSchemaField(shape, key) {
+  const field = shape[key];
+  if (!field)
+    throw new Error(`Missing launch schema field ${key}`);
+  return field;
+}
+function socialsRefusal(socials) {
+  if (socials === undefined)
+    return;
+  if (!socials || typeof socials !== "object" || Array.isArray(socials)) {
+    return { code: "VALIDATION_FAILED", message: SOCIALS_ONLY, field: "socials" };
+  }
+  for (const [key, value] of Object.entries(socials)) {
+    if (!SOCIAL_KEYS.includes(key))
+      return { code: "VALIDATION_FAILED", message: SOCIALS_ONLY, field: "socials" };
+    if (value === undefined)
+      continue;
+    try {
+      if (typeof value !== "string")
+        throw new Error("not a string");
+      const url = new URL(value);
+      if (!["http:", "https:"].includes(url.protocol))
+        throw new Error("not http(s)");
+    } catch {
+      return { code: "VALIDATION_FAILED", message: `${key} must be an http(s) URL.`, field: `socials.${key}` };
+    }
+  }
+  return;
+}
+function socialsSchema() {
+  const shape = {};
+  const helps = [];
+  for (const field of mcpLaunchFields()) {
+    const key = mcpKey(field);
+    if (!key?.startsWith("socials."))
+      continue;
+    shape[key.slice("socials.".length)] = exports_external.string().optional().describe(field.help);
+    helps.push(field.help);
+  }
+  return exports_external.object(shape).passthrough().optional().describe(helps.join(" "));
+}
+function curveSchema() {
+  const virtual = launchFieldHelp("curve.virtualQuote");
+  const threshold = launchFieldHelp("curve.threshold");
+  return exports_external.object({
+    virtualQuote: exports_external.string().describe(virtual),
+    threshold: exports_external.string().describe(threshold)
+  }).strict().optional().describe(`${virtual} ${threshold}`);
+}
+function poolFeeSchema() {
+  const tierHelp = launchFieldHelp("poolFee.tier");
+  const startHelp = launchFieldHelp("poolFee.startBps");
+  const endHelp = launchFieldHelp("poolFee.endBps");
+  const minutesHelp = launchFieldHelp("poolFee.minutes");
+  return exports_external.union([
+    exports_external.object({ tier: numberEnum("poolFee.tier").describe(tierHelp) }).strict(),
+    exports_external.object({
+      startBps: exports_external.number().int().max(rangeMax("poolFee.startBps")).describe(startHelp),
+      endBps: numberEnum("poolFee.endBps").describe(endHelp),
+      minutes: exports_external.number().positive().max(rangeMax("poolFee.minutes")).describe(minutesHelp)
+    }).strict()
+  ]).optional().describe([tierHelp, startHelp, endHelp, minutesHelp].join(" "));
+}
+function scalarSchema(field) {
+  const values = "values" in field ? field.values : undefined;
+  let schema;
+  if (values?.every((value) => typeof value === "number"))
+    schema = numberEnum(field.key);
+  else if (values?.every((value) => typeof value === "string"))
+    schema = exports_external.enum(stringValues(field.key));
+  else if (field.type === "boolean")
+    schema = exports_external.boolean();
+  else if (field.type === "integer" || "wireType" in field && field.wireType === "number")
+    schema = exports_external.number();
+  else
+    schema = exports_external.string();
+  return described(schema, field.help, isRequired(field));
+}
+function buildLaunchTokenShape() {
+  const shape = {};
+  for (const field of mcpLaunchFields()) {
+    const key = mcpKey(field);
+    if (!key)
+      continue;
+    const top = topKey(key);
+    if (GROUPED_TOP_KEYS.has(top) || top in shape)
+      continue;
+    shape[top] = scalarSchema(field);
+  }
+  shape.socials = socialsSchema();
+  shape.curve = curveSchema();
+  shape.poolFee = poolFeeSchema();
+  shape.buyAmount = exports_external.union([exports_external.string(), exports_external.number()]).optional().describe(BUY_AMOUNT_DESCRIPTION);
+  return shape;
+}
+var M2_TOP_KEYS, GROUPED_TOP_KEYS, LAUNCH_SHARED_SENTENCES, SOCIAL_KEYS, SOCIALS_ONLY, BUY_AMOUNT_DESCRIPTION = "Initial buy, in quote base units (string or number)", DEV_BUY_DESCRIPTION, launchTokenShape, launchAndSeedShape;
+var init_launch_schema = __esm(() => {
+  init_zod();
+  init_launch_definition();
+  M2_TOP_KEYS = new Set(["wallet", "buy"]);
+  GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee"]);
+  LAUNCH_SHARED_SENTENCES = mcpLaunchFields().map((field) => field.help).join(" ");
+  SOCIAL_KEYS = mcpLaunchFields().flatMap((field) => {
+    const key = mcpKey(field);
+    return key?.startsWith("socials.") ? [key.slice("socials.".length)] : [];
+  });
+  SOCIALS_ONLY = `socials accepts only ${SOCIAL_KEYS.join(", ")}.`;
+  DEV_BUY_DESCRIPTION = 'Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' + "ETH on hood), paid from the account's embedded wallet; the tool's description says how " + "each chain sends it. Follows quoteAsset, which defaults to sol on solana and eth on hood. " + "Capped by the platform dev-buy ceiling; for a larger seed, launch then follow with candle_trade.";
+  launchTokenShape = buildLaunchTokenShape();
+  launchAndSeedShape = (() => {
+    const { buyAmount: _rawBuyAmount, ...seedable } = launchTokenShape;
+    return {
+      ...seedable,
+      clientLaunchId: exports_external.string().optional().describe(`${launchFieldHelp("clientLaunchId")} Auto-generated when omitted and echoed in the result.`),
+      devBuy: exports_external.string().optional().describe(DEV_BUY_DESCRIPTION)
+    };
+  })();
+});
+
 // ../mcp/src/market-disclosure.ts
 var EXTERNAL_MARKET_DISCLOSURE;
 var init_market_disclosure = __esm(() => {
@@ -38641,6 +39544,9 @@ async function executeTrade(args, cfg, doFetch) {
 async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs, opts = {}) {
   const apiKey = requireApiKey(cfg);
   const clientLaunchId = args.clientLaunchId ?? randomUUID3();
+  const socialsProblem = socialsRefusal(args.socials);
+  if (socialsProblem)
+    return { text: imageRefusalBody(socialsProblem, { clientLaunchId }), isError: true };
   const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...imageFields } = args;
   let buyAmount;
   if (devBuy !== undefined) {
@@ -38909,6 +39815,7 @@ var SOLANA_SEED_CEILINGS, MAIN_PAYER, SWEEP_BASE_ASSETS;
 var init_orchestrate = __esm(() => {
   init_convert();
   init_image();
+  init_launch_schema();
   init_update_notice();
   SOLANA_SEED_CEILINGS = {
     sol: { raw: 500000000n, unit: "lamports", expRaw: 500000000n },
@@ -42705,8 +43612,7 @@ __export(exports_tools, {
   STAKING_DISCLOSURE: () => STAKING_DISCLOSURE,
   PROFILE_PNL_HYPERLIQUID: () => PROFILE_PNL_HYPERLIQUID,
   PROFILE_EDIT_TOOL_NAMES: () => PROFILE_EDIT_TOOL_NAMES,
-  OPERATION_NOT_FOUND_RULE: () => OPERATION_NOT_FOUND_RULE,
-  CUSTOM_CURVE_RULE: () => CUSTOM_CURVE_RULE
+  OPERATION_NOT_FOUND_RULE: () => OPERATION_NOT_FOUND_RULE
 });
 import { randomUUID as randomUUID4 } from "node:crypto";
 function resolveToolAllowlist(env) {
@@ -43092,9 +43998,13 @@ function registerToolSubset(server, options) {
   const imageDir = configuredImageDir(env);
   register("candle_launch_token", {
     title: "Launch a token on Candle",
-    description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything. " + CUSTOM_CURVE_RULE + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
+    description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
     inputSchema: imageDir ? localLaunchTokenShape : launchTokenShape
   }, async (args) => {
+    const socialsProblem = socialsRefusal("socials" in args ? args.socials : undefined);
+    if (socialsProblem) {
+      return { content: [{ type: "text", text: imageRefusalBody(socialsProblem) }], isError: true };
+    }
     const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch);
     if ("refused" in image) {
       return { content: [{ type: "text", text: imageRefusalBody(image.refused) }], isError: true };
@@ -43352,7 +44262,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   });
   register("candle_launch_and_seed", {
     title: "Launch a token and seed it",
-    description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed, then " + "return the fresh market state and token links in one result. On solana a seed makes this " + (options.headlessSeed === true ? "the seed is a separate first-buy transaction in the same Jito bundle as the launch, so " + "both land or neither does. That works on every plan, Free included, and needs no " + "swap:write. On hood the seed is " : "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " + "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " + "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is ") + "a best-effort follow-up. A launch with no seed works on every plan, Free included. MOVES " + "REAL FUNDS unless dryRun; dry-run first, which spends nothing. Seeds above the platform " + "dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH): at most 0.5 SOL / 500 USDC / 2,000,000 " + "CNDL, or on an exp- curve 10% of the threshold when that is lower; the server holds the " + "creator's own seed to the effective ceiling, so launch with the largest devBuy it allows " + "and top up with candle_trade. " + CUSTOM_CURVE_RULE + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
+    description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed, then " + "return the fresh market state and token links in one result. On solana a seed makes this " + (options.headlessSeed === true ? "the seed is a separate first-buy transaction in the same Jito bundle as the launch, so " + "both land or neither does. That works on every plan, Free included, and needs no " + "swap:write. On hood the seed is " : "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " + "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " + "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is ") + "a best-effort follow-up. A launch with no seed works on every plan, Free included. MOVES " + "REAL FUNDS unless dryRun; dry-run first, which spends nothing. Seeds above the platform " + "dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH): at most 0.5 SOL / 500 USDC / 2,000,000 " + "CNDL, or on an exp- curve 10% of the threshold when that is lower; the server holds the " + "creator's own seed to the effective ceiling, so launch with the largest devBuy it allows " + "and top up with candle_trade. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
     inputSchema: imageDir ? localLaunchAndSeedShape : launchAndSeedShape
   }, async (args) => {
     const result = await executeLaunchAndSeed(args, getConfig(), doFetch, imageDir, undefined, {
@@ -43512,12 +44422,13 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, CUSTOM_CURVE_RULE, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, vampCandidatesShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, vampCandidatesShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
 var init_tools = __esm(() => {
   init_zod();
   init_client2();
   init_convert();
   init_image();
+  init_launch_schema();
   init_market_disclosure();
   init_orchestrate();
   init_perps();
@@ -43526,7 +44437,6 @@ var init_tools = __esm(() => {
   init_plans();
   init_update_notice();
   VAMP_CANDIDATES_DESCRIPTION = "Lists Solana tokens that are close to graduating or graduated in the last 6 hours whose ticker other tokens " + "are copying, most-copied in the last 24 hours first. Each entry carries a launch draft (name, ticker, image URL) " + "for `candle_launch_token` or `candle_launch_and_seed`; draft notes identify fields you must supply or adjust. " + "Upload your own image through the agent image upload when the image is unavailable. Use `dryRun: true` first. " + "Counts exclude the candidate itself and cover both Solana and Hood launches at the venues returned in " + "`coverage`, not Candle's own. `coverage.since` is the returned Solana coverage date; Hood history may differ.";
-  CUSTOM_CURVE_RULE = 'mode "exp-custom" with curve { virtualQuote, threshold } launches a Solana curve with your own V (the virtual ' + "quote it starts with) and G (the quote it raises before graduating), in whole SOL or CNDL as decimal strings, " + "accepted when V is 1 to 100 SOL and G 1 to 250 SOL (66,000 to 6,600,000 and 66,000 to 16,500,000 CNDL), when " + "every price up to 20 x G stays under the ceiling (V + 20G)^2 < V x X at this stakerAllocationBps, when neither " + "is finer than the quote's decimals, and when the dev buy is at most 0.5 SOL (2,000,000 CNDL), or 10% of G when " + "that is lower (every exp- mode; an operator may set the 0.5 SOL lower); a curve past a limit is " + "CURVE_OUT_OF_RANGE, and at the ceiling it carries maxThresholdRaw, the largest G that fits. " + "Dry-run it first (dryRun: true): the dry run spends nothing and returns curveTerms, the market cap at start and " + "at graduation, the supply sold by graduation, the share your own buyAmount takes, the fees and the migration " + "terms, and devBuyMax, the dev-buy ceiling that applies. Only where the API has EXP_CUSTOM_CURVES on; " + "elsewhere exp-custom is refused as an unknown mode.";
   localProfileTools = new WeakMap;
   stakingWriteShape = {
     payer: exports_external.enum(["main", "linked"]).optional().describe("main is the embedded wallet; linked names a linked or TEE wallet"),
@@ -43597,38 +44507,6 @@ var init_tools = __esm(() => {
     "candle_delete_post"
   ];
   OPERATION_NOT_FOUND_RULE = "No record exists under this id in the ledger `kind` asked. That does not prove the write did " + "not run: a write that is still starting has no record yet. If a write was sent with this id, " + "send the SAME request again with the SAME id. It returns the stored outcome, or reports the one " + "still running. It never executes a second time. A refusal of that resend (a conflict or a " + "limit) is an answer about the resend, not about the write: read candle_get_operation again " + "before reporting an outcome. Never send it under a new id: a new id is a second trade or " + "launch. Check `kind`: a swap id is not read here, so replay the swap with its `clientSwapId`.";
-  launchTokenShape = {
-    clientLaunchId: exports_external.string().describe("Caller-chosen idempotency key, unique per account"),
-    name: exports_external.string().describe("Token name"),
-    symbol: exports_external.string().describe("Token symbol"),
-    imageUrl: exports_external.string().describe("https URL to the token image. Must be roughly SQUARE (aspect ratio at most 1.5:1): it " + "renders as a small circle/square avatar everywhere. Share cards, OG images and banners " + "are rejected with IMAGE_WRONG_SHAPE -- pass those as bannerUrl instead"),
-    bannerUrl: exports_external.string().optional().describe("Optional https URL to WIDE artwork for the token page's banner strip (wider than 1.5:1, " + "e.g. 1200x630). This is where a share card or OG image belongs. A square image here is " + "rejected with BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Omit it and the strip " + "falls back to imageUrl"),
-    chain: exports_external.string().optional().describe('"solana" or "hood"; defaults to solana'),
-    quoteAsset: exports_external.string().optional().describe("Quote asset symbol; defaults per chain"),
-    mode: exports_external.string().optional().describe('"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' + "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on. " + '"exp-a", "exp-b" and "exp-c" are the experimental fast Solana curves (sol or cndl). ' + '"exp-custom" launches a Solana curve with your own V and G, given in curve, where the API has it ' + "switched on"),
-    curve: exports_external.object({
-      virtualQuote: exports_external.string().describe('V: the virtual quote the curve starts with, in whole quote units, e.g. "12" SOL'),
-      threshold: exports_external.string().describe('G: the quote the curve raises before it graduates, in whole quote units, e.g. "40" SOL')
-    }).strict().optional().describe('mode "exp-custom" only, and required there. Decimal strings in whole units of the quote asset (sol or ' + "cndl), never raw units. Dry-run first: the API checks the limits and returns the curve's terms"),
-    creatorFeeBps: exports_external.union([exports_external.literal(0), exports_external.literal(100), exports_external.literal(200)]).optional().describe("An exp- mode only: an extra creator fee of 100 or 200 basis points on top of the curve's 1% and the " + "pool's 0.5%, paid to the creator in full. 0 is the same as leaving it out"),
-    stakerAllocationBps: exports_external.number().optional().describe("Staker allocation in basis points"),
-    poolFee: exports_external.union([
-      exports_external.object({ tier: exports_external.union([exports_external.literal(25), exports_external.literal(50), exports_external.literal(100)]) }).strict(),
-      exports_external.object({
-        startBps: exports_external.number().int().max(2500),
-        endBps: exports_external.union([exports_external.literal(25), exports_external.literal(50), exports_external.literal(100)]),
-        minutes: exports_external.number().positive().max(30)
-      }).strict()
-    ]).optional().describe("Solana only: the graduated pool's fee. { tier: 25 | 50 | 100 } is a flat fee in bps (default 50), or " + "{ startBps, endBps, minutes } is an anti-snipe fall from startBps (at most 2500, at least endBps) to " + "endBps (25, 50 or 100) over minutes (at most 30). Cannot be combined with creatorFeeBps unless the tier is 50. " + "Omit for the standard 50 bps pool"),
-    poolOpen: exports_external.enum(["legacy", "curve_price"]).optional().describe(`Solana preset tiers only. "curve_price" opens the pool at the curve's last price (the whole reserve is ` + "seeded and the remaining base burned); stakerAllocationBps plus the team allocation must fit the tier's limit, " + "which the dry run returns as graduation.maxStakerCarveBps. Omitted defaults to curve_price when those " + "allocations fit, otherwise falls back to legacy without refusal. Set legacy explicitly to opt out. " + "Explicit curve_price is refused when the allocations exceed the limit"),
-    expPoolShape: exports_external.enum(["floor", "full_range"]).optional().describe('Solana exp- curves only. "full_range" opens the pool across the whole price range. Omit for floor'),
-    dexVersion: exports_external.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
-    buyAmount: exports_external.union([exports_external.string(), exports_external.number()]).optional().describe("Initial buy, in quote base units (string or number)"),
-    description: exports_external.string().optional(),
-    socials: exports_external.record(exports_external.string()).optional().describe("Social links keyed by platform"),
-    visibility: exports_external.string().optional().describe('"production", "test", "local", or "hidden"'),
-    dryRun: exports_external.boolean().optional().describe("Validate without executing the launch")
-  };
   getMarketShape = {
     chain: exports_external.string().describe('"solana" or "hood"'),
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)")
@@ -43734,20 +44612,16 @@ var init_tools = __esm(() => {
     clientTradeId: exports_external.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
     paper: exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted."))
   };
-  ({ buyAmount: _rawBuyAmount, ...seedableLaunchShape } = launchTokenShape);
-  seedShape = {
-    clientLaunchId: exports_external.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result."),
-    devBuy: exports_external.string().optional().describe('Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' + "ETH on hood), paid from the account's embedded wallet; the tool's description says how " + "each chain sends it. Follows quoteAsset, which defaults to sol on solana and eth on hood. " + "Capped by the platform dev-buy ceiling; for a larger seed, launch then follow with candle_trade.")
-  };
-  launchAndSeedShape = { ...seedableLaunchShape, ...seedShape };
+  tokenImageUrl = launchSchemaField(launchTokenShape, "imageUrl");
+  tokenBannerUrl = launchSchemaField(launchTokenShape, "bannerUrl");
   localImageShape = {
-    imageUrl: launchTokenShape.imageUrl.optional().describe(`${launchTokenShape.imageUrl.description}. Pass this or imagePath, never both`),
+    imageUrl: tokenImageUrl.optional().describe(`${tokenImageUrl.description}. Pass this or imagePath, never both`),
     imagePath: exports_external.string().optional().describe("An absolute image path inside CANDLE_IMAGE_DIR. The file is uploaded and becomes public and permanent, " + "including on a dry run. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " + "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " + "Pass this or imageUrl, never both. The result carries the imageUrl used: pass that on a retry, or " + "after a dry run, instead of uploading the file again. This is the square token image: Candle crops " + "it to a square, so a wide banner belongs in bannerPath, not here"),
-    bannerUrl: launchTokenShape.bannerUrl.describe(`${launchTokenShape.bannerUrl.description}. Pass this or bannerPath, never both`),
+    bannerUrl: tokenBannerUrl.describe(`${tokenBannerUrl.description}. Pass this or bannerPath, never both`),
     bannerPath: exports_external.string().optional().describe("An absolute path, inside CANDLE_IMAGE_DIR, to WIDE banner artwork for the token page strip (wider than " + "1.5:1, e.g. 2171x724 or 1200x630). The file is uploaded uncropped and becomes public and permanent, " + "including on a dry run; PNG, JPEG, GIF or WebP, at most 10MB. A square image is refused with " + "BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Pass this or bannerUrl, never both. " + "The result carries the bannerUrl used: pass that on a retry instead of uploading the file again")
   };
   localLaunchTokenShape = { ...launchTokenShape, ...localImageShape };
-  localLaunchAndSeedShape = { ...seedableLaunchShape, ...localImageShape, ...seedShape };
+  localLaunchAndSeedShape = { ...launchAndSeedShape, ...localImageShape };
   IMAGE_PATH_DISCLOSURE = " With imagePath or bannerPath, the file is uploaded first and becomes public and permanent, on a dry run too; " + "nothing about a dry run keeps that file private. imagePath is the square token image (Candle crops it); " + "a wide banner goes in bannerPath, which is not cropped.";
   transferShape = {
     chain: exports_external.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
@@ -72441,7 +73315,7 @@ var LAUNCH_USAGE = `candle launch ${launchFlagFields.map((field) => {
   if (field.key === "imageUrl")
     return `--image <path>|${invocation}`;
   return "required" in field && field.required ? invocation : `[${invocation}]`;
-}).join(" ")} [--yes] [--rpc-url <url>] [--json]`;
+}).join(" ")} [--check] [--yes] [--rpc-url <url>] [--json]`;
 function launchFieldProblem(flags) {
   for (const field of launchFlagFields) {
     const value = flags[field.cli.flag];
@@ -72966,7 +73840,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery.",
+    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works.",
     usage: [LAUNCH_USAGE],
     rows: [],
     flags: [
@@ -72975,6 +73849,10 @@ var HELP = {
         invocation: "--image <path>",
         description: "Upload a local PNG, JPEG, GIF or WebP (at most 10MB) instead of --image-url; public and permanent before confirmation."
       },
+      {
+        invocation: "--check",
+        description: "Answer which launch path works (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, before any image upload; nothing is sent. Exits 1 when no path works."
+      },
       { invocation: "--yes", description: "Confirm the launch without an interactive prompt." },
       {
         invocation: "--rpc-url <url>",
@@ -72982,6 +73860,8 @@ var HELP = {
       }
     ],
     examples: [
+      "candle launch --check",
+      "candle launch --check --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image ./logo.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet HoodAgent --dex-version v4",
@@ -86342,6 +87222,163 @@ function readLaunchBundle(args) {
   return { lamports: launch.lamports + buy.lamports, quoteRaw, feeRaw };
 }
 
+// src/launch-check.ts
+init_zod();
+init_trading();
+var checkSchema = exports_external.object({
+  key: exports_external.object({
+    keyPrefix: exports_external.string(),
+    scopes: exports_external.array(exports_external.string()),
+    tier: exports_external.string(),
+    selfLaunch: exports_external.boolean(),
+    embeddedWalletPermission: exports_external.enum(["allowed", "denied"])
+  }),
+  switches: exports_external.object({
+    headlessLaunch: exports_external.boolean(),
+    agentTrading: exports_external.boolean(),
+    teeLaunchBuys: exports_external.boolean()
+  }),
+  embedded: exports_external.object({
+    solana: exports_external.object({ address: exports_external.string(), delegated: exports_external.boolean().optional() }).nullable().optional(),
+    evm: exports_external.object({ address: exports_external.string(), delegated: exports_external.boolean().optional() }).nullable().optional()
+  }).optional(),
+  wallets: exports_external.array(exports_external.object({
+    id: exports_external.string(),
+    address: exports_external.string(),
+    chain: exports_external.string(),
+    label: exports_external.string().nullable(),
+    allowLaunch: exports_external.boolean(),
+    active: exports_external.boolean()
+  }))
+}).passthrough();
+var EMBEDDED_NAMES = new Set(LAUNCH_DEFINITION.wallet.embeddedNames);
+function walletName(row) {
+  return row.label ?? row.id;
+}
+function walletLines(answer2, row, requestedChain) {
+  const name2 = walletName(row);
+  const chain2 = row.chain === "evm" ? "Hood" : "Solana";
+  const lines = [];
+  if (requestedChain && rowChain(row) !== requestedChain)
+    return [
+      `${name2} (${chain2}) cannot launch on ${chainName(requestedChain)}: choose a ${chainName(requestedChain)} wallet.`
+    ];
+  const gated = gatedOff(answer2);
+  if (gated) {
+    lines.push(`${name2} (${chain2}): ${gated}`);
+    return lines;
+  }
+  if (!answer2.key.selfLaunch)
+    lines.push(`${name2} (${chain2}) cannot launch: TEE launches need Pro or Max, and this key is ${answer2.key.tier}.`);
+  else if (!row.allowLaunch)
+    lines.push(`${name2} (${chain2}) cannot launch: the account owner has allowLaunch off for it. Run candle wallets allow-launch ${row.id} on a profile signed in with candle auth login.`);
+  else if (!row.active)
+    lines.push(`${name2} (${chain2}) cannot launch: it is not a verified-active TEE wallet.`);
+  else {
+    lines.push(`This key can launch from ${name2} with no first buy.`);
+    if (!answer2.switches.teeLaunchBuys)
+      lines.push(`A first buy from ${name2} is off on this server; launch with no first buy, then buy with candle swap.`);
+    else if (chain2 === "Solana" && !answer2.switches.agentTrading)
+      lines.push(`A first buy from ${name2} is off on this server (AGENT_TRADING_ENABLED off for Solana first buys).`);
+    else
+      lines.push(`A first buy from ${name2} rides the launch (TEE_LAUNCH_BUYS_ENABLED is on).`);
+  }
+  return lines;
+}
+function gatedOff(answer2) {
+  if (!answer2.key.scopes.includes("launch:write"))
+    return "this key lacks launch:write, so no launch path works under it.";
+  if (!answer2.switches.headlessLaunch)
+    return "launches are off on this server (HEADLESS_LAUNCH_ENABLED off).";
+  return;
+}
+function embeddedLines(answer2, requestedChain) {
+  const lines = [];
+  const gated = gatedOff(answer2);
+  if (answer2.key.embeddedWalletPermission === "denied") {
+    lines.push("The embedded wallet is denied on this key.");
+    return lines;
+  }
+  const paths = embeddedPaths(answer2, requestedChain);
+  if (!paths.some((path) => path.wallet)) {
+    lines.push(`This account has no ${requestedChain ? `${chainName(requestedChain)} ` : ""}embedded wallet. Create one in the app, or launch from a TEE wallet with --wallet <tee>.`);
+    return lines;
+  }
+  if (gated) {
+    lines.push(`Embedded wallet: ${gated}`);
+    return lines;
+  }
+  for (const { chain: chain2, wallet: wallet3 } of paths) {
+    if (!wallet3)
+      continue;
+    if (wallet3.delegated === false) {
+      lines.push(`The account's ${chainName(chain2)} embedded wallet is not delegated for agent access.`);
+      continue;
+    }
+    lines.push(`This key can launch from the ${chainName(chain2)} embedded wallet with no first buy.`);
+    if (chain2 === "solana" && !answer2.switches.agentTrading)
+      lines.push("A Solana first buy from the embedded wallet is off on this server (AGENT_TRADING_ENABLED off).");
+    else
+      lines.push(chain2 === "solana" ? "A Solana first buy can ride the launch as one bundle signed by Candle." : "A Hood first buy can ride the launch best effort after creation.");
+  }
+  return lines;
+}
+function walletWorks(answer2, row, requestedChain) {
+  return (requestedChain === undefined || rowChain(row) === requestedChain) && gatedOff(answer2) === undefined && answer2.key.selfLaunch && row.allowLaunch && row.active;
+}
+function embeddedPaths(answer2, requestedChain) {
+  return (requestedChain ? [requestedChain] : ["solana", "hood"]).map((chain2) => ({
+    chain: chain2,
+    wallet: chain2 === "solana" ? answer2.embedded?.solana : answer2.embedded?.evm
+  }));
+}
+function embeddedWorks(answer2, requestedChain) {
+  return gatedOff(answer2) === undefined && answer2.key.embeddedWalletPermission === "allowed" && embeddedPaths(answer2, requestedChain).some(({ wallet: wallet3 }) => wallet3 != null && wallet3.delegated !== false);
+}
+function describeRow(row) {
+  return `${row.label ? `${row.label} ` : ""}(${row.id}, ${row.address})`;
+}
+async function launchCheck(ctx, key, walletFlag, requestedChain) {
+  const answer2 = checkSchema.parse(await request(ctx, key, "/api/v1/launch/preflight"));
+  const embeddedOnly = walletFlag !== undefined && EMBEDDED_NAMES.has(walletFlag);
+  const named = walletFlag === undefined || embeddedOnly ? [] : answer2.wallets.filter((row) => row.id === walletFlag || row.address === walletFlag || row.label === walletFlag);
+  if (walletFlag !== undefined && !embeddedOnly && named.length !== 1)
+    throw new TradingError("TEE_WALLET_REQUIRED", named.length > 1 ? `"${walletFlag}" matches ${named.length} TEE wallets on this key: ${named.map(describeRow).join("; ")}. Name one by id or address.` : answer2.wallets.length === 0 ? "This key has no TEE wallets bound to it. Enrol one, or select the profile whose key holds it." : `No TEE wallet on this key is called "${walletFlag}". Bound to this key: ${answer2.wallets.map(describeRow).join("; ")}.`);
+  const shownWallets = walletFlag === undefined ? answer2.wallets : named;
+  const lines = [`Launch paths for key ${answer2.key.keyPrefix} (tier ${answer2.key.tier}):`];
+  if (requestedChain)
+    lines.push(`Requested launch chain: ${chainName(requestedChain)}.`);
+  if (walletFlag === undefined || embeddedOnly)
+    lines.push(...embeddedLines(answer2, requestedChain));
+  for (const row of shownWallets)
+    lines.push(...walletLines(answer2, row, requestedChain));
+  const works = (walletFlag === undefined || embeddedOnly ? embeddedWorks(answer2, requestedChain) : false) || shownWallets.some((row) => walletWorks(answer2, row, requestedChain));
+  lines.push(works ? "Nothing was uploaded, built or sent; this was the whole check." : "No launch path works for this key. Nothing was uploaded, built or sent.");
+  const result = {
+    success: true,
+    check: true,
+    works,
+    ...requestedChain ? { requestedChain } : {},
+    key: answer2.key,
+    switches: answer2.switches,
+    ...answer2.embedded ? { embedded: answer2.embedded } : {},
+    wallets: shownWallets.map((row) => ({
+      ...row,
+      canLaunch: walletWorks(answer2, row, requestedChain),
+      canBuy: walletWorks(answer2, row, requestedChain) && answer2.switches.teeLaunchBuys && (row.chain !== "solana" || answer2.switches.agentTrading)
+    })),
+    ...embeddedOnly || walletFlag === undefined ? { embeddedCanLaunch: embeddedWorks(answer2, requestedChain) } : {}
+  };
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify(result)}
+`);
+  else
+    ctx.deps.stdout.write(`${lines.join(`
+`)}
+`);
+  return works ? 0 : 1;
+}
+
 // src/commands/launch.ts
 init_render();
 init_solana_endpoint();
@@ -86400,6 +87437,7 @@ var LAUNCH_ARG_SPEC = {
   ],
   booleanFlags: [
     ...launchFlagFields.filter((field) => field.type === "boolean").map((field) => field.cli.flag),
+    "--check",
     "--yes"
   ],
   pathFlags: ["--image", "--banner"]
@@ -86497,6 +87535,11 @@ async function launch(args, ctx) {
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID5()}`;
   const embedded = EMBEDDED_WALLET_NAMES.has(flags["--wallet"] ?? "");
   const dryRun = parsed.booleans.has("--dry-run");
+  const check = parsed.booleans.has("--check");
+  if (check && dryRun) {
+    writeUsageFailure(ctx.deps, `--check and --dry-run are two different stops; pass one. ${USAGE6}`, ctx.json);
+    return 2;
+  }
   const fieldProblem = launchFieldProblem(flags);
   if (fieldProblem) {
     writeUsageFailure(ctx.deps, fieldProblem, ctx.json);
@@ -86519,7 +87562,8 @@ async function launch(args, ctx) {
     writeUsageFailure(ctx.deps, "--banner takes a local file or an https:// URL.", ctx.json);
     return 2;
   }
-  if (parsed.positionals.length || !flags["--name"] || !flags["--symbol"] || flags["--image"] === undefined && flags["--image-url"] === undefined || !flags["--wallet"] || !validClientId(id)) {
+  const missingRequired = !flags["--name"] || !flags["--symbol"] || flags["--image"] === undefined && flags["--image-url"] === undefined || !flags["--wallet"];
+  if (parsed.positionals.length || !check && missingRequired || !validClientId(id)) {
     writeUsageFailure(ctx.deps, USAGE6, ctx.json);
     return 2;
   }
@@ -86533,21 +87577,25 @@ async function launch(args, ctx) {
     if (flags["--buy"]?.trim() && !/^0+(\.0+)?$/.test(flags["--buy"]))
       launchBuyRaw(flags["--buy"], 18);
     const hinted = flagChain(flags);
-    if (hinted === "hood" && flags["--dex-version"] === undefined) {
+    if (!check && hinted === "hood" && flags["--dex-version"] === undefined) {
       writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE6}`, ctx.json);
       return 2;
     }
     let image;
     let banner;
-    try {
-      if (flags["--image"] !== undefined)
-        image = await readLocalImage(flags["--image"]);
-      if (flags["--banner"] && !flags["--banner"].startsWith("https://"))
-        banner = await readLocalImage(flags["--banner"]);
-    } catch (error) {
-      return tradingFailure(ctx, error);
+    if (!check) {
+      try {
+        if (flags["--image"] !== undefined)
+          image = await readLocalImage(flags["--image"]);
+        if (flags["--banner"] && !flags["--banner"].startsWith("https://"))
+          banner = await readLocalImage(flags["--banner"]);
+      } catch (error) {
+        return tradingFailure(ctx, error);
+      }
     }
     const key = await tradingKey(ctx);
+    if (check)
+      return await launchCheck(ctx, key, flags["--wallet"], hinted);
     const prior = dryRun ? null : await lookupOperation(ctx, key, id, "launch");
     let retry;
     if (prior) {
@@ -86584,7 +87632,7 @@ async function launch(args, ctx) {
         yes: parsed.booleans.has("--yes"),
         dryRun
       });
-    const wallet3 = await tradingWallet(ctx, key, flags["--wallet"], "launch:write", hinted ?? "any");
+    const wallet3 = await tradingWallet(ctx, key, flags["--wallet"] ?? "", "launch:write", hinted ?? "any");
     const chain2 = wallet3.chain === "evm" ? "hood" : "solana";
     if (chain2 === "hood" && flags["--dex-version"] === undefined)
       throw new TradingUsage(`${wallet3.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`);
@@ -86672,7 +87720,7 @@ async function launch(args, ctx) {
     const result = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, signature });
     return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote, ...used });
   } catch (error) {
-    return tradingFailure(ctx, error, dryRun ? undefined : id);
+    return tradingFailure(ctx, error, dryRun || check ? undefined : id);
   }
 }
 async function uploadLaunchImages(ctx, key, args) {
@@ -100651,8 +101699,8 @@ async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
     });
   }
   if (helper.biometry !== "available") {
-    const described = describeBiometry(helper);
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", described.message, { suggestion: described.suggestion });
+    const described2 = describeBiometry(helper);
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", described2.message, { suggestion: described2.suggestion });
   }
   const session = {
     path: helper.path,
@@ -106211,9 +107259,9 @@ function solOf(lamports) {
   const digits = lamports.padStart(10, "0");
   return `${digits.slice(0, -9)}.${digits.slice(-9)}`.replace(/\.?0+$/, "");
 }
-function previewLines3(preview, walletName) {
+function previewLines3(preview, walletName2) {
   const lines = [
-    `Close ${preview.accountCount} empty token account${preview.accountCount === 1 ? "" : "s"} on the ${walletName}`,
+    `Close ${preview.accountCount} empty token account${preview.accountCount === 1 ? "" : "s"} on the ${walletName2}`,
     `Rent returned to that same wallet: ${safeText(preview.totalSol)} SOL in ${preview.transactions} transaction${preview.transactions === 1 ? "" : "s"}, network fee about ${solOf(preview.estimatedFeeLamports)} SOL, net ${safeText(preview.netSol)} SOL`
   ];
   for (const row of preview.accounts.slice(0, LISTED_ROWS))
@@ -106242,12 +107290,12 @@ async function confirmClose(ctx, lines, yes) {
     throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes to close without a prompt.");
   return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
 }
-async function previewAndConfirm(ctx, preview, walletName, yes) {
+async function previewAndConfirm(ctx, preview, walletName2, yes) {
   if (preview.accounts.length === 0) {
     const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
-    output.write(`No empty token accounts to close on the ${walletName}.
+    output.write(`No empty token accounts to close on the ${walletName2}.
 `);
-    for (const line of previewLines3(preview, walletName).slice(2))
+    for (const line of previewLines3(preview, walletName2).slice(2))
       output.write(`${line}
 `);
     return printTradingResult(ctx, {
@@ -106257,7 +107305,7 @@ async function previewAndConfirm(ctx, preview, walletName, yes) {
       preview
     });
   }
-  if (!await confirmClose(ctx, previewLines3(preview, walletName), yes))
+  if (!await confirmClose(ctx, previewLines3(preview, walletName2), yes))
     return printTradingResult(ctx, {
       success: true,
       status: "cancelled",
@@ -106457,17 +107505,17 @@ async function walletsCloseEmpty(args, ctx) {
     return 2;
   }
   const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
-  const walletName = parsed.values["--wallet"];
+  const walletName2 = parsed.values["--wallet"];
   try {
     const key = await tradingKey(ctx);
-    if (walletName === undefined || walletName === "embedded")
+    if (walletName2 === undefined || walletName2 === "embedded")
       return await closeEmbedded(ctx, key, run2);
-    if (walletName === await embeddedAddress2(ctx, key))
+    if (walletName2 === await embeddedAddress2(ctx, key))
       return await closeEmbedded(ctx, key, run2);
-    const payer = await tradingPayer(ctx, key, walletName, "swap:write", "solana");
+    const payer = await tradingPayer(ctx, key, walletName2, "swap:write", "solana");
     if (payer.kind === "embedded")
       return await closeEmbedded(ctx, key, run2);
-    return await closeTee(ctx, key, payer.wallet, walletName, run2);
+    return await closeTee(ctx, key, payer.wallet, walletName2, run2);
   } catch (error) {
     return tradingFailure(ctx, error);
   }

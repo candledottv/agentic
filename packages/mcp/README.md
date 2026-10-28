@@ -60,7 +60,11 @@ Solana curve with your own V and G, in whole SOL or CNDL as decimal strings, ins
 API enforces and each tool's description states. Any `exp-` mode takes `creatorFeeBps` (0, 100 or
 200). Dry-run first: the dry run returns the launch preview (`curveTerms`: the curve's terms, the
 share your own `buyAmount` takes, the fees and the migration terms) and `devBuyMax`, the dev-buy
-ceiling that applies. `exp-custom` works only where the deployment has switched it on. See
+ceiling that applies. `exp-custom` works only where the deployment has switched it on. The same
+descriptions state the pool trade-off: `curve_price` opens at the curve's last price and burns the
+rest, and omitted uses `curve_price` when allocations fit, otherwise `legacy`. `expPoolShape` is
+`floor` unless `full_range` is set. `socials` accepts only `website`, `twitter`, `telegram` and
+`discord`. See
 [Custom curves](https://docs.candle.tv/developers/headless-launch#custom-curves-choose-v-and-g-switched-off).
 
 For a full walkthrough of `candle_launch_and_seed` and `candle_trade`, including the keyless read

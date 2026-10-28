@@ -634,7 +634,7 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
     description:
-      "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery.",
+      "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works.",
     usage: [LAUNCH_USAGE],
     rows: [],
     flags: [
@@ -644,6 +644,11 @@ export const HELP: Record<string, Topic> = {
         description:
           "Upload a local PNG, JPEG, GIF or WebP (at most 10MB) instead of --image-url; public and permanent before confirmation.",
       },
+      {
+        invocation: "--check",
+        description:
+          "Answer which launch path works (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, before any image upload; nothing is sent. Exits 1 when no path works.",
+      },
       { invocation: "--yes", description: "Confirm the launch without an interactive prompt." },
       {
         invocation: "--rpc-url <url>",
@@ -651,6 +656,8 @@ export const HELP: Record<string, Topic> = {
       },
     ],
     examples: [
+      "candle launch --check",
+      "candle launch --check --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image ./logo.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet HoodAgent --dex-version v4",

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { z } from "zod"
+import { launchFieldHelp } from "./launch-schema"
 import type { FetchLike } from "./orchestrate"
 import {
   buildRequest,
-  CUSTOM_CURVE_RULE,
   PROFILE_EDIT_TOOL_NAMES,
   registerToolSubset,
   registerTools,
@@ -833,34 +833,27 @@ describe("exp-custom on both launch tools", () => {
   const CURVE = { virtualQuote: "12", threshold: "40" }
   const BASE = { clientLaunchId: "c1", name: "T", symbol: "T", imageUrl: "https://x/y.png" }
 
-  test("the rule states the API's limits in one sentence, then tells the agent to dry-run first", () => {
-    // Inlined, like QUOTE_DECIMALS: this package builds without @candle/shared. hosted.test.ts in
-    // apps/api holds these figures to EXP_CUSTOM_CURVE_LIMITS.
-    for (const figure of [
-      "V is 1 to 100 SOL",
-      "G 1 to 250 SOL",
-      "66,000 to 6,600,000 and 66,000 to 16,500,000 CNDL",
-      "(V + 20G)^2 < V x X",
-      "at most 0.5 SOL (2,000,000 CNDL), or 10% of G when that is lower",
-      "CURVE_OUT_OF_RANGE",
-      "maxThresholdRaw",
-    ]) {
-      expect(CUSTOM_CURVE_RULE).toContain(figure)
+  test("descriptions state the shared exp-custom, poolOpen and expPoolShape sentences", () => {
+    const virtual = launchFieldHelp("curve.virtualQuote")
+    const threshold = launchFieldHelp("curve.threshold")
+    const poolOpen = launchFieldHelp("poolOpen")
+    const shape = launchFieldHelp("expPoolShape")
+    for (const name of LAUNCH_TOOLS) {
+      const description = registered()[name]?.description ?? ""
+      expect(description).toContain(virtual)
+      expect(description).toContain(threshold)
+      expect(description).toContain(poolOpen)
+      expect(description).toContain(shape)
+      expect(description).not.toContain("(V + 20G)^2")
+      expect(description).not.toContain("CURVE_OUT_OF_RANGE")
     }
-    // The rule is one sentence: its only full stop before the dry run ends it.
-    const [rule, rest] = CUSTOM_CURVE_RULE.split(". Dry-run it first")
-    expect(rule?.split(". ")).toHaveLength(1)
-    expect(rest).toContain("dryRun: true")
-    expect(rest).toContain("curveTerms")
-    expect(rest).toContain("devBuyMax")
-    expect(rest).toContain("EXP_CUSTOM_CURVES")
   })
 
   test.each([...LAUNCH_TOOLS])("%s describes exp-custom and takes curve", (name) => {
     const tool = registered()[name]
-    expect(tool?.description).toContain(CUSTOM_CURVE_RULE)
-    expect(tool?.inputSchema.mode?.description).toContain('"exp-custom"')
-    expect(tool?.inputSchema.curve?.description).toContain('mode "exp-custom" only')
+    expect(tool?.description).toContain(launchFieldHelp("curve.virtualQuote"))
+    expect(tool?.inputSchema.mode?.description).toContain("exp-custom")
+    expect(tool?.inputSchema.curve?.description).toContain(launchFieldHelp("curve.threshold"))
     // The schema the MCP SDK parses with keeps curve, so it reaches the API.
     const parsed = z.object(tool?.inputSchema ?? {}).parse({ ...BASE, mode: "exp-custom", curve: CURVE })
     expect(parsed.curve).toEqual(CURVE)
@@ -918,15 +911,10 @@ describe("pool choices on both launch tools", () => {
     "candle_launch_and_seed",
   ])("%s describes the conditional pool opening default", (name) => {
     const description = tools[name]?.inputSchema.poolOpen?.description
-    expect(description).toContain('Solana preset tiers only. "curve_price"')
-    expect(description).toContain("remaining base burned")
-    expect(description).toContain("stakerAllocationBps plus the team allocation")
+    expect(description).toBe(launchFieldHelp("poolOpen"))
     expect(description).toContain("graduation.maxStakerCarveBps")
-    expect(description).toContain("Omitted defaults to curve_price when those allocations fit")
-    expect(description).toContain("otherwise falls back to legacy without refusal")
-    expect(description).toContain("Set legacy explicitly to opt out")
-    expect(description).toContain("Explicit curve_price is refused when the allocations exceed the limit")
-    expect(description).not.toContain("Omit for legacy")
+    expect(description).toContain("otherwise legacy")
+    expect(tools[name]?.inputSchema.expPoolShape?.description).toBe(launchFieldHelp("expPoolShape"))
   })
 
   test.each(["candle_launch_token", "candle_launch_and_seed"])("%s parses a tier, a fall and each shape", (name) => {
