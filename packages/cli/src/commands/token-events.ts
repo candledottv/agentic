@@ -1,8 +1,8 @@
 /**
  * `candle token events <mint>` (BE-2095, design 6.6): the per-token event list behind
  * `GET /api/v1/tokens/:chain/:mint/events` (BE-2094) as one line per event -- time, kind, name or
- * short address, action, size. Needs no key; a configured key is sent so the wallets' group names
- * follow the key's tier. `--kind` filters the fetched page here because the route has no kind
+ * short address, action, size. Needs no key; a configured key selects wallet address/group
+ * visibility for its tier. `--kind` filters the fetched page here because the route has no kind
  * parameter: a filtered page still reports the route's `nextCursor`, so `--before` continues the
  * same mixed page whatever the filter.
  */
@@ -17,6 +17,7 @@ const KINDS = ["trade", "signal", "callout"] as const
 type EventKind = (typeof KINDS)[number]
 
 type EventsWallet = {
+  /** Display text (first4…last4) on free/keyless reads, full on Pro/Max. */
   address: string
   name: string | null
   walletKind: "dev" | "kol" | "smart" | "agent" | "tracked"

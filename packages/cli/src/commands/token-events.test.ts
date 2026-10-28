@@ -77,6 +77,20 @@ function setup(body: unknown, status = 200, env: Record<string, string> = { CAND
 }
 
 describe("candle token events", () => {
+  test("free-tier address display and JSON preserve the shortened address, label and kind", async () => {
+    for (const name of [null, "Ada"]) {
+      const event = { ...page.events[0], wallet: { ...wallet, address: "Wall…1111", name } }
+      const body = { ...page, events: [event] }
+      const human = setup(body)
+      expect(await run(["token", "events", mint], human.deps)).toBe(0)
+      expect(humanText(human.stdout.text)).toContain(`${name ?? "Wall…1111"} (smart)`)
+      const json = setup(body)
+      expect(await run(["--json", "token", "events", mint], json.deps)).toBe(0)
+      expect(JSON.parse(json.stdout.text).data.events[0].wallet).toEqual(event.wallet)
+      expect(json.stdout.text).not.toContain(wallet.address)
+    }
+  })
+
   test("human output prints one line per event with time, kind, who, action and size", async () => {
     const f = setup(page)
     expect(await run(["token", "events", mint], f.deps)).toBe(0)

@@ -29,7 +29,7 @@ function eventsFixture(status = 200, body?: unknown) {
               tx: "tx-1",
               result: "W",
               wallet: {
-                address: "Wallet1111111111111111111111111111111111",
+                address: "Wall…1111",
                 name: "Starlight",
                 walletKind: "smart",
                 groups: [{ name: "winner", visibility: "public" }],
@@ -63,6 +63,7 @@ test("getTokenEvents maps the public route, unwraps the page and sends no key by
   expect(calls[0]?.url).toBe(`http://localhost/api/v1/tokens/solana/${mint}/events`)
   expect(calls[0]?.init?.method).toBe("GET")
   expect(new Headers(calls[0]?.init?.headers).has("x-api-key")).toBe(false)
+  expect(page.events[0]?.wallet?.address).toBe("Wall…1111")
   expect(page.nextCursor).toBe("cur-1")
   expect(page.events).toHaveLength(2)
   expect(page.events[0]).toMatchObject({ kind: "trade", side: "sell", result: "W" })

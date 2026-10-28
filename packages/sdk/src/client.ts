@@ -600,6 +600,7 @@ export interface TokenEventGroup {
 }
 
 export interface TokenEventWallet {
+  /** Display text (first4…last4) for free/keyless reads; full address for Pro/Max keys. */
   address: string
   name: string | null
   walletKind: "dev" | "kol" | "smart" | "agent" | "tracked"
