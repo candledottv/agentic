@@ -210,7 +210,8 @@
         "HOOD_LAUNCH_UNAVAILABLE",
         "CLOSE_LEDGER_UNAVAILABLE",
         "PERPS_WITHDRAW_DISABLED",
-        "TOKEN_EVENTS_DISABLED"
+        "TOKEN_EVENTS_DISABLED",
+        "TOKEN_CARD_DISABLED"
       ]
     },
     "venue_refused": {
