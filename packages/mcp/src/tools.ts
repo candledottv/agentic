@@ -127,6 +127,9 @@ export const TOOL_NAMES = [
   // BE-2095: one token's signals, callouts and tracked-wallet trades, over the public events
   // route. Keyless like the market and feed reads.
   "candle_token_events",
+  // BE-2119: the token card's data for one token, over the public card route. Keyless and the
+  // same for every caller.
+  "candle_token_card",
   "candle_token_forensics",
   "candle_report_activity",
   "candle_get_agent_profile",
@@ -370,6 +373,17 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       if (before !== undefined && before !== "") params.set("before", String(before))
       return {
         url: `${base}/api/v1/tokens/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}/events${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_token_card": {
+      // Keyless: the card is the same for every caller and plan, so no key is sent even when one
+      // is configured. `tag` is the card source tag, sent as `cst` and carried on links.token.
+      const { chain, mint, tag } = args as { chain: string; mint: string; tag?: string }
+      const query = tag !== undefined && tag !== "" ? `?${new URLSearchParams({ cst: tag })}` : ""
+      return {
+        url: `${base}/api/v1/tokens/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}/card${query}`,
         init: { method: "GET", headers: jsonHeaders() },
       }
     }
@@ -811,6 +825,17 @@ const tokenEventsLimit = z.preprocess(
 
 const TOKEN_EVENTS_KIND_NOTE =
   "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null"
+
+const tokenCardShape = {
+  chain: z.string().describe('"solana" or "hood"'),
+  mint: z.string().describe("Token mint (solana) or contract address (hood)"),
+  tag: z
+    .string()
+    .optional()
+    .describe(
+      "Optional card source tag v1.<group>.<poster>.<card> (each part 1-40 of A-Za-z0-9_-), carried on links.token to count card arrivals. Credits nobody; a malformed tag is ignored",
+    ),
+}
 
 const tokenEventsShape = {
   chain: z.string().describe('"solana" or "hood"'),
@@ -1319,6 +1344,17 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: tokenForensicsShape,
     },
     async (args) => callAndRelay("candle_token_forensics", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_token_card",
+    {
+      title: "Token card",
+      description:
+        "The data behind a Quant token card for one token, in one read: identity (name, ticker, launchpad), market (price, market cap, liquidity, 5 minute change, volume, buys and sells), the all-time high since launch (daily high times current supply, FDV basis; null when no source covers it), forensics (the report, or not_covered with its coverage, or unavailable), the last hour's tracked-wallet buys and sells, signals and callouts, hacc's card facts (bundles, snipers, insiders, fresh 1d/7d, mean wallet age, each with source, as_of and basis) and same-name block (which same-name token leads on live market cap, and whether this one trails), sources naming where each block came from, and links.token (Candle's token page). Facts only, never a score or a verdict. A null field has no source: show it as an en dash, never guess it, and not_covered or unknown is not clean. Free and the same for every caller and plan; no key needed and none is sent even when one is configured. Off on a deployment until it switches TOKEN_CARD on: off, the call answers 503 TOKEN_CARD_DISABLED (retryable: false) and that is the server's answer, not a broken tool.",
+      inputSchema: tokenCardShape,
+    },
+    async (args) => callAndRelay("candle_token_card", args, getConfig(), doFetch),
   )
 
   register(

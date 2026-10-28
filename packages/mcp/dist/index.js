@@ -151,7 +151,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.24";
+var SERVER_VERSION = "0.10.25";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -5661,6 +5661,7 @@ var TOOL_NAMES = [
   "candle_get_feed",
   "candle_vamp_candidates",
   "candle_token_events",
+  "candle_token_card",
   "candle_token_forensics",
   "candle_report_activity",
   "candle_get_agent_profile",
@@ -5818,6 +5819,14 @@ function buildRequest(name, args, cfg) {
         params.set("before", String(before));
       return {
         url: `${base2}/api/v1/tokens/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}/events${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders() }
+      };
+    }
+    case "candle_token_card": {
+      const { chain, mint, tag } = args;
+      const query = tag !== undefined && tag !== "" ? `?${new URLSearchParams({ cst: tag })}` : "";
+      return {
+        url: `${base2}/api/v1/tokens/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}/card${query}`,
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
@@ -6134,6 +6143,11 @@ var tokenEventsLimit = z5.preprocess((value) => {
   return /^[0-9]+$/.test(trimmed) ? Number(trimmed) : value;
 }, z5.number({ invalid_type_error: TOKEN_EVENTS_LIMIT_MESSAGE }).int(TOKEN_EVENTS_LIMIT_MESSAGE).min(1, TOKEN_EVENTS_LIMIT_MESSAGE).max(1000, TOKEN_EVENTS_LIMIT_MESSAGE).optional().describe("Page size, an integer from 1 to 1000 (the route's default is 200)."));
 var TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null";
+var tokenCardShape = {
+  chain: z5.string().describe('"solana" or "hood"'),
+  mint: z5.string().describe("Token mint (solana) or contract address (hood)"),
+  tag: z5.string().optional().describe("Optional card source tag v1.<group>.<poster>.<card> (each part 1-40 of A-Za-z0-9_-), carried on links.token to count card arrivals. Credits nobody; a malformed tag is ignored")
+};
 var tokenEventsShape = {
   chain: z5.string().describe('"solana" or "hood"'),
   mint: z5.string().describe("Token mint (solana) or contract address (hood)"),
@@ -6334,6 +6348,11 @@ function registerToolSubset(server, options) {
 MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed, and any Solana mint Jupiter's index knows, now answers with a partial report instead. On Hood, a token Candle did not launch names its launch account (deployer.method cvc_launch_account) for pons.family and pools.trade launches, with no record of earlier coins; other Hood launchpads return no developer.`,
     inputSchema: tokenForensicsShape
   }, async (args) => callAndRelay("candle_token_forensics", args, getConfig(), doFetch));
+  register("candle_token_card", {
+    title: "Token card",
+    description: "The data behind a Quant token card for one token, in one read: identity (name, ticker, launchpad), market (price, market cap, liquidity, 5 minute change, volume, buys and sells), the all-time high since launch (daily high times current supply, FDV basis; null when no source covers it), forensics (the report, or not_covered with its coverage, or unavailable), the last hour's tracked-wallet buys and sells, signals and callouts, hacc's card facts (bundles, snipers, insiders, fresh 1d/7d, mean wallet age, each with source, as_of and basis) and same-name block (which same-name token leads on live market cap, and whether this one trails), sources naming where each block came from, and links.token (Candle's token page). Facts only, never a score or a verdict. A null field has no source: show it as an en dash, never guess it, and not_covered or unknown is not clean. Free and the same for every caller and plan; no key needed and none is sent even when one is configured. Off on a deployment until it switches TOKEN_CARD on: off, the call answers 503 TOKEN_CARD_DISABLED (retryable: false) and that is the server's answer, not a broken tool.",
+    inputSchema: tokenCardShape
+  }, async (args) => callAndRelay("candle_token_card", args, getConfig(), doFetch));
   register("candle_token_events", {
     title: "Token events",
     description: `One token's event list, newest first: every signal (pattern and summary, new_ticker included), every callout, and every tracked-wallet trade (buys and sells, W or L on a sell whose outcome is known), plus trades Candle's own agents and users made. Each wallet carries its display name or short address, its kind (dev, kol, smart, agent, tracked) and its public group names. No key needed; none is sent even when one is configured, so group names follow the public tier. Off on a deployment until it switches TOKEN_EVENTS on: off, the call answers 503 TOKEN_EVENTS_DISABLED (retryable: false) and that is the server's answer, not a broken tool.
@@ -6743,10 +6762,11 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
 // src/server.ts
 var INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You hold a scoped API key, never a private key; signing and funding stay with the key owner's wallet.
 
-START HERE — nine tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
+START HERE — ten tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
   candle_get_feed         the roster: hot streak, new pairs, graduated, final stretch, blue chip (final stretch is refused where it is not switched on; use another bucket)
   candle_token_events     one token's signals, callouts and tracked-wallet trades, newest first, W or L on sells. kind filters the page on this server; page with nextCursor/before until null. Off until the deployment switches it on (503 TOKEN_EVENTS_DISABLED)
+  candle_token_card       one token's card data: market, all-time high since launch, safety and same-name facts, tracked wallets in the last hour, each block with its source; null means no source, not zero. Off until the deployment switches it on (503 TOKEN_CARD_DISABLED)
   candle_resolve_token    a ticker or partial name -> mint address + chain
   candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority; deployer.attribution names the launchpad or issuer when no developer is on chain), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
   candle_get_agent_profile  your own tier, caps and verified activity
