@@ -20,6 +20,7 @@
  * continuation line must never look like the start of a row.
  */
 
+import { LAUNCH_DEFINITION } from "./launch-definition"
 import { LAUNCH_USAGE, launchFlagRows } from "./launch-options"
 import { accent, brandHeader, type TerminalStyle, wrapText } from "./presentation"
 
@@ -1559,6 +1560,8 @@ export function renderTopLevel(style?: TerminalStyle): string {
   const out: string[] = [
     "candle: Candle from the terminal: trade, launch, and hold your keys on your own machine",
     "",
+    ...LAUNCH_DEFINITION.surfacesIntro,
+    "",
     "Usage: candle <command> [<subcommand>] [flags]",
     "       candle help <command>                a command's subcommands, flags and examples",
   ]
@@ -1609,6 +1612,8 @@ function renderPresentedTopLevel(style: TerminalStyle): string {
   const out = [
     ...brandHeader(style),
     ...(!style.styled ? [...wrapText("Candle CLI: Your wallets and agent tools, one command away.", width), ""] : []),
+    ...LAUNCH_DEFINITION.surfacesIntro.flatMap((line) => wrapText(line, width)),
+    "",
     heading("Start here"),
     ...renderRows(
       [

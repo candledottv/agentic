@@ -524,7 +524,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.0";
+var CLI_VERSION = "0.13.1";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -74645,6 +74645,8 @@ function renderTopLevel(style) {
   const out = [
     "candle: Candle from the terminal: trade, launch, and hold your keys on your own machine",
     "",
+    ...LAUNCH_DEFINITION.surfacesIntro,
+    "",
     "Usage: candle <command> [<subcommand>] [flags]",
     "       candle help <command>                a command's subcommands, flags and examples"
   ];
@@ -74695,6 +74697,8 @@ function renderPresentedTopLevel(style) {
   const out = [
     ...brandHeader(style),
     ...!style.styled ? [...wrapText("Candle CLI: Your wallets and agent tools, one command away.", width), ""] : [],
+    ...LAUNCH_DEFINITION.surfacesIntro.flatMap((line) => wrapText(line, width)),
+    "",
     heading2("Start here"),
     ...renderRows([
       { invocation: "candle setup", description: "Connect your account" },

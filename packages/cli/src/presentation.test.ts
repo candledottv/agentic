@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { renderTopic, renderTopLevel } from "./help"
 import { run } from "./index"
+import { LAUNCH_DEFINITION } from "./launch-definition"
 import { brandHeader, terminalStyle } from "./presentation"
 import { TERMINAL_TOKENS } from "./terminal-theme"
 import { createCapture, createTestDeps } from "./test-support"
@@ -52,6 +53,11 @@ describe("terminal presentation", () => {
             ),
           ).toBe(0)
           const text = clean(stdout.text)
+          const intro = LAUNCH_DEFINITION.surfacesIntro.join(" ")
+          const normalized = text.replace(/\s+/g, " ")
+          expect(normalized).toContain(intro)
+          expect(normalized.indexOf(intro)).toBeGreaterThan(normalized.indexOf("one command away."))
+          expect(normalized.indexOf(intro)).toBeLessThan(normalized.indexOf("Start here"))
           expect(text).toContain("candle setup")
           expect(text).toContain("candle portfolio")
           expect(text).toContain("CANDLE_CONFIG_DIR")
