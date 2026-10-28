@@ -22,22 +22,18 @@ import {
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
+import { bold, fields, heading, notice, success, symbols, terminalStyle } from "../presentation"
 import { effectiveProfileFields, printIdentity, profileSecretRef } from "../profiles"
-import {
-  formatScopesForSummary,
-  formatTimestamp,
-  renderTable,
-  writeFailure,
-  writeLocalFailure,
-  writeUsageFailure,
-} from "../render"
+import { formatAgo, formatTime, renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { SECRET_REFS } from "../secret-store"
 import {
-  confirmCreateAllow,
-  EMBEDDED_WALLET_CHOICES,
-  effectiveEmbeddedWallet,
-  embeddedWalletLine,
-} from "./keys-embedded-wallet"
+  embeddedWalletSummary,
+  scopeSummary,
+  writeScreenFailure,
+  writeScreenLocalFailure,
+  writeScreenUsageFailure,
+} from "./key-output"
+import { confirmCreateAllow, EMBEDDED_WALLET_CHOICES, effectiveEmbeddedWallet } from "./keys-embedded-wallet"
 
 const KEYS_PATH = "/api/v1/agent/keys"
 
@@ -131,22 +127,22 @@ export function labelCell(label: string | undefined): string {
  * classification the web reads, so the two surfaces describe a key the same way (keys list Access
  * and Name spec, 2026-09-23, D3).
  */
-export function accessCell(scopes: readonly string[]): string {
+export function accessCell(scopes: readonly string[], missing = "–"): string {
   const access = agentKeyAccess(scopes)
   if (access.kind === "preset") return access.label
   const words = agentKeyAccessWords(access)
-  return words.length > 0 ? words.join(", ") : "–"
+  return words.length > 0 ? words.join(", ") : missing
 }
 
 export async function keysList(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, { booleanFlags: ["--scopes"] })
+  const parsed = parseArgs(args, { booleanFlags: ["--scopes", "--all"] })
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json)
+    writeScreenUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
 
@@ -154,7 +150,7 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
 
   const deviceToken = await resolveDeviceToken(deps, ctx.profile)
   if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json)
+    writeScreenLocalFailure(deps, NO_DEVICE_TOKEN, json)
     return 1
   }
 
@@ -166,7 +162,7 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
     env: deps.env,
   })
   if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json)
+    writeScreenFailure(deps, result, { apiUrl, authType: "device" }, json)
     return 1
   }
 
@@ -183,20 +179,23 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
   // THIS profile's device prefix: reading the legacy top-level one (absent on any profile created
   // since the upgrade) printed this very device's own key as if another machine had minted it.
   const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix
-  // Name and Access lead, raw scopes are opt-in. Two keys holding the same six scopes used to read
-  // as different because the table printed each in stored order; Access says what they are, and
-  // `--scopes` prints them in the one sorted order every surface uses.
-  const rows = body.keys.map((key) => [
+  const style = terminalStyle(deps, "stdout")
+  const missing = symbols(style).missing
+  const all = parsed.booleans.has("--all")
+  const live = body.keys.filter((key) => !key.revokedAt)
+  const revoked = body.keys.length - live.length
+  const shown = all ? body.keys : live
+  const now = deps.now()
+  const rows = shown.map((key) => [
     key.keyPrefix,
-    labelCell(key.label),
-    accessCell(key.scopes),
-    ...(withScopes ? [sortAgentKeyScopes(key.scopes).join(",")] : []),
-    // R5.11: the key's embedded-wallet permission, as the server enforces it (absent is allowed).
+    labelCell(key.label) || missing,
+    accessCell(key.scopes, missing),
+    ...(withScopes ? [sortAgentKeyScopes(key.scopes).join(",") || missing] : []),
     effectiveEmbeddedWallet(key.embeddedWallet),
+    formatAgo(key.lastUsedAt, now, missing),
+    formatTime(key.createdAt, { now, date: true, missing }),
+    ...(all ? [formatTime(key.revokedAt, { now, missing })] : []),
     key.environment,
-    formatTimestamp(key.createdAt),
-    formatTimestamp(key.lastUsedAt),
-    key.revokedAt ? formatTimestamp(key.revokedAt) : "no",
     mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix),
   ])
   const headers = [
@@ -204,15 +203,44 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
     "Name",
     "Access",
     ...(withScopes ? ["Scopes"] : []),
-    "Embedded",
-    "Environment",
-    "Created",
+    "Wallet",
     "Last used",
-    "Revoked",
+    "Created",
+    ...(all ? ["Revoked"] : []),
+    "Environment",
     "Minted by",
   ]
-
-  deps.stdout.write(`${renderTable(headers, rows)}\n`)
+  deps.stdout.write(`${heading("API keys", style)}\n\n`)
+  deps.stdout.write(
+    `${renderTable(headers, rows, {
+      style,
+      width: style.width,
+      indent: 2,
+      rule: false,
+      // Prefix is what the next command pastes, so it is never cut or dropped. Every other
+      // column can drop, lowest priority first. Revoked and Scopes outrank Name and Access:
+      // `--all` and `--scopes` exist to add those columns, and a 40-column terminal cannot
+      // keep Prefix, Name, Access, Scopes and Revoked together (audit 3.3).
+      columns: [
+        { id: true },
+        { priority: 7 },
+        { priority: 6 },
+        ...(withScopes ? [{ priority: 8 }] : []),
+        { priority: 4 },
+        { priority: 3 },
+        { priority: 2 },
+        ...(all ? [{ priority: 9 }] : []),
+        { priority: 1 },
+        { priority: 0, id: true },
+      ],
+    })}\n`,
+  )
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `${live.length} live ${symbols(style).note} ${revoked} revoked${!all && revoked ? " (--all to show)" : ""}`,
+  )
   return 0
 }
 
@@ -231,24 +259,24 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
     ],
   })
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json)
+    writeScreenUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
   // `--access` names a preset, `--scopes` names raw scopes. Both at once is a contradiction to
   // refuse, not a merge to guess at (spec D6: mutually exclusive, exit 2).
   if (parsed.values["--access"] !== undefined && parsed.values["--scopes"] !== undefined) {
-    writeUsageFailure(deps, "--access and --scopes are mutually exclusive; pass one of them.", json)
+    writeScreenUsageFailure(deps, "--access and --scopes are mutually exclusive; pass one of them.", json)
     return 2
   }
   let accessScopes: string[] | undefined
   if (parsed.values["--access"] !== undefined) {
     const preset = CREATE_ACCESS_LEVELS[parsed.values["--access"]]
     if (preset === undefined) {
-      writeUsageFailure(deps, "--access must be one of: read, write, withdraw, trade-perps.", json)
+      writeScreenUsageFailure(deps, "--access must be one of: read, write, withdraw, trade-perps.", json)
       return 2
     }
     accessScopes = scopesForPreset(preset)
@@ -262,7 +290,7 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   // malformed value fails in milliseconds with a usage error, not an HTTP 400.
   const label = parsed.values["--label"]?.trim()
   if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > 64)) {
-    writeUsageFailure(deps, "--label must be 1 to 64 characters.", json)
+    writeScreenUsageFailure(deps, "--label must be 1 to 64 characters.", json)
     return 2
   }
 
@@ -270,7 +298,7 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   if (parsed.values["--expires-in"] !== undefined) {
     const parsedDays = parseExpiresInDays(parsed.values["--expires-in"])
     if (!parsedDays.ok) {
-      writeUsageFailure(deps, parsedDays.message, json)
+      writeScreenUsageFailure(deps, parsedDays.message, json)
       return 2
     }
     expiresInDays = parsedDays.days
@@ -279,19 +307,19 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   // --reset only means something with --tx-limit; a bare --reset is a usage error rather than a
   // silently ignored flag (same posture parseArgs takes toward unknown flags).
   if (parsed.values["--reset"] !== undefined && parsed.values["--tx-limit"] === undefined) {
-    writeUsageFailure(deps, "--reset requires --tx-limit.", json)
+    writeScreenUsageFailure(deps, "--reset requires --tx-limit.", json)
     return 2
   }
   let txLimit: { usdMicros: number; reset: TxLimitReset } | undefined
   if (parsed.values["--tx-limit"] !== undefined) {
     const parsedUsd = parseUsdToMicros(parsed.values["--tx-limit"])
     if (!parsedUsd.ok) {
-      writeUsageFailure(deps, parsedUsd.message, json)
+      writeScreenUsageFailure(deps, parsedUsd.message, json)
       return 2
     }
     const reset = (parsed.values["--reset"] ?? "daily") as TxLimitReset
     if (!TX_LIMIT_RESETS.includes(reset)) {
-      writeUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json)
+      writeScreenUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json)
       return 2
     }
     txLimit = { usdMicros: parsedUsd.usdMicros, reset }
@@ -303,7 +331,7 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   const embeddedFlag = parsed.values["--embedded-wallet"] ?? "deny"
   const embeddedWallet = EMBEDDED_WALLET_CHOICES[embeddedFlag]
   if (embeddedWallet === undefined) {
-    writeUsageFailure(deps, "--embedded-wallet must be allow or deny.", json)
+    writeScreenUsageFailure(deps, "--embedded-wallet must be allow or deny.", json)
     return 2
   }
 
@@ -311,7 +339,7 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
 
   const deviceToken = await resolveDeviceToken(deps, ctx.profile)
   if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json)
+    writeScreenLocalFailure(deps, NO_DEVICE_TOKEN, json)
     return 1
   }
 
@@ -341,7 +369,7 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   })
 
   if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json)
+    writeScreenFailure(deps, result, { apiUrl, authType: "device" }, json)
     return 1
   }
 
@@ -389,41 +417,60 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
     return storeError ? 1 : 0
   }
 
-  // The plaintext key is printed exactly once, right here -- the API's own one-time issuance
-  // display. Nothing else in this command (or `auth login`) ever prints it again.
-  deps.stdout.write(`API key: ${body.key}\n`)
-  deps.stdout.write("This is the only time the plaintext key is shown; store it now.\n")
-  deps.stdout.write(`Prefix: ${body.keyPrefix}\n`)
-  // This is the moment a fund-moving key is actually minted, so swap:write (if granted) is
-  // called out here the same way the login summary calls it out (fix round 1, item 16).
-  deps.stdout.write(`Scopes: ${formatScopesForSummary(body.scopes)}\n`)
-  // The value the server wrote, not the one requested. An API from before the permission echoes
-  // nothing and stores nothing, and a key with no stored value may use the embedded wallet.
-  if (body.embeddedWallet === "allowed" || body.embeddedWallet === "denied") {
-    deps.stdout.write(`${embeddedWalletLine(body.embeddedWallet, body.keyPrefix)}\n`)
-  } else {
-    deps.stderr.write(
-      "Warning: this Candle API does not set a per-key embedded-wallet permission yet, so this key may use the account's embedded wallet whatever --embedded-wallet said.\n",
+  const style = terminalStyle(deps, "stdout")
+  // The full key appears once, even when the credential store failed.
+  deps.stdout.write(`${success("API key created", style)}\n\n  ${bold(body.key, style)}\n`)
+  notice(deps, "stdout", "warning", "Shown once. Store it now.")
+  deps.stdout.write(
+    `${fields(
+      [
+        ["Label", label],
+        ["Prefix", body.keyPrefix],
+        ["Access", accessCell(body.scopes, symbols(style).missing)],
+        ...(body.embeddedWallet === "allowed" || body.embeddedWallet === "denied"
+          ? [["Embedded wallet", embeddedWalletSummary(body.embeddedWallet)] as const]
+          : []),
+        [
+          "Stored",
+          storeError !== undefined
+            ? "no (store failed)"
+            : stored
+              ? `${deps.backend}, as this CLI's working key`
+              : "no (the CLI already manages a different working key)",
+        ],
+      ],
+      style,
+    ).join("\n")}\n`,
+  )
+  deps.stdout.write(scopeSummary(body.scopes, style))
+  if (body.embeddedWallet === "denied") {
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `The owner can allow the embedded wallet with:\ncandle keys update ${body.keyPrefix} --embedded-wallet allow`,
+    )
+  } else if (body.embeddedWallet !== "allowed") {
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      "This Candle API does not set a per-key embedded-wallet permission yet. This key may use the account's embedded wallet whatever --embedded-wallet said.",
     )
   }
   if (storeError !== undefined) {
-    // After the key, never instead of it. The exit code is non-zero so a script notices, but the
-    // key is on screen first because that is the part that cannot be recovered.
-    deps.stderr.write(
-      `\nWARNING: the key above was NOT stored in the ${deps.backend} store: ${storeError}\n` +
-        "It is live on your account. Save it now, or revoke it with: candle keys revoke " +
-        `${body.keyPrefix}\n`,
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      `The key above was NOT stored in the ${deps.backend} store: ${storeError}\nIt is live on your account. Save it now, or revoke it with:\ncandle keys revoke ${body.keyPrefix}`,
     )
   }
   if (!requestedScopes) {
-    deps.stdout.write("No --access or --scopes given: the server granted the default scopes (swap:write excluded).\n")
+    notice(deps, "stdout", "note", "Default scopes: no --access or --scopes given (swap:write excluded).")
   }
-  if (storeError === undefined) {
-    deps.stdout.write(
-      stored
-        ? `Stored in the ${deps.backend} backend as the CLI's working key.\n`
-        : "Not stored: the CLI already manages a different working key. This key belongs to whichever agent it was minted for.\n",
-    )
+  if (!stored && storeError === undefined) {
+    notice(deps, "stdout", "note", "This key belongs to whichever agent it was minted for.")
   }
   // Non-zero when storage failed, so a script notices what a human would read in the warning
   // above. The key was still printed, which is the part that cannot be recovered.

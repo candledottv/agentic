@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
 import { run } from "../index"
+import { displayWidth } from "../presentation"
 import { SECRET_REFS } from "../secret-store"
 import type { RouteHandler } from "../test-support"
 import {
@@ -20,7 +21,7 @@ import {
   jsonResponse,
 } from "../test-support"
 import { CLI_VERSION } from "../version"
-import { authLogout } from "./auth"
+import { authLogin, authLogout } from "./auth"
 
 const CODE_RESPONSE = {
   deviceCode: "dc_abc123",
@@ -291,9 +292,9 @@ describe("auth login: --label names the key as well as the device", () => {
     // The device keeps the same name, trimmed like the key's.
     const codeCall = calls.find((call) => call.url.includes("/device/code"))
     expect((JSON.parse(codeCall?.init.body as string) as { clientName: string }).clientName).toBe("vault-promote")
-    expect(stdout.text).toContain("API key prefix: ck_livepr\nAPI key name: vault-promote\n")
+    expect(stdout.text).toContain("API key prefix       ck_livepr\n  API key name         vault-promote\n")
     expect(stdout.text).toContain(
-      "Granted scopes: account:read, activity:write, launch:read, launch:write, swap:write (",
+      "Granted scopes\n    account:read\n    activity:write\n    launch:read\n    launch:write\n    swap:write      moves funds",
     )
   })
 
@@ -308,7 +309,7 @@ describe("auth login: --label names the key as well as the device", () => {
       const text = createCapture()
       const { fetch } = createRoutedFetch(labelRoutes(undefined, apiKey))
       expect(await run(["auth", "login"], createTestDeps({ fetch, stdout: text }))).toBe(0)
-      expect(text.text).toContain(`Embedded wallet: ${embeddedWallet}.`)
+      expect(text.text).toContain(`Embedded wallet      ${embeddedWallet}`)
       const json = createCapture()
       const again = createRoutedFetch(labelRoutes(undefined, apiKey))
       expect(await run(["--json", "auth", "login"], createTestDeps({ fetch: again.fetch, stdout: json }))).toBe(0)
@@ -346,8 +347,9 @@ describe("auth login: --label names the key as well as the device", () => {
     expect(await store.get("profile:production:device_token")).toBe(LABEL_TOKEN)
     expect(await store.get("profile:production:api_key")).toBe("ck_live_LABEL_FIXTURE_KEY")
     expect(stdout.text).not.toContain("API key name:")
+    expect(stdout.text).toContain("API key prefix       ck_livepr")
     expect(stdout.text).toContain(
-      "API key prefix: ck_livepr\nCould not name the key: boom. Name it in the key manager: https://candle.tv/dev/agent\n",
+      "\n  ! Could not name the key: boom.\n    Name it in the key manager: https://candle.tv/dev/agent\n\n",
     )
   })
 
@@ -382,8 +384,8 @@ describe("auth login: --label names the key as well as the device", () => {
     const code = await run(["auth", "login"], createTestDeps({ fetch, stdout }))
 
     expect(code).toBe(0)
-    const line = stdout.text.split("\n").find((l) => l.startsWith("Authorized scopes (no key issued yet): ")) ?? ""
-    expect(line).toContain("account:read, activity:write, launch:read, launch:write, swap:write (")
+    const line = stdout.text.split("Authorized scopes (no key issued yet)\n")[1] ?? ""
+    expect(line).toContain("    account:read\n    activity:write\n    launch:read\n    launch:write\n    swap:write")
     expect(line).not.toContain("transfer:write")
     expect(line).not.toContain("transfer:bound")
   })
@@ -524,6 +526,9 @@ describe("auth login: --json", () => {
     expect(parsed.deviceTokenPrefix).toBe("dvcpref3")
     expect(parsed.apiKeyPrefix).toBe("ck_livejj")
     expect(parsed.scopes).toEqual(scopes)
+    expect(stderr.text).toBe(
+      `Your device code: ${CODE_RESPONSE.userCode}\nOpen this URL to approve: ${CODE_RESPONSE.verificationUriComplete}\n`,
+    )
 
     // FIX 2: reverting the redaction (JSON.stringify(rawBody)) would leak both plaintext
     // credentials right here.
@@ -1123,7 +1128,9 @@ describe("profiles", () => {
     })
     const stdout = createCapture()
     await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))
-    expect(stdout.text.startsWith("Profile staging · Account FaKwE2xX · staging.api.candle.tv\n\nBackend: ")).toBe(true)
+    expect(
+      stdout.text.startsWith("Profile staging · Account FaKwE2xX · staging.api.candle.tv\n\nCredentials\n\n  Backend "),
+    ).toBe(true)
   })
 
   test("auth status reports the PROFILE's prefixes: a login-created profile has no legacy top-level fields to read", async () => {
@@ -1142,8 +1149,8 @@ describe("profiles", () => {
     expect(await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))).toBe(0)
     // Reading the legacy top-level fields here printed "not set" for both prefixes on every
     // profile created since the upgrade -- the exact opposite of what the command is for.
-    expect(stdout.text).toContain("Device token prefix: RMe25DjO")
-    expect(stdout.text).toContain("API key prefix: 8I0CZztp")
+    expect(stdout.text).toContain("Device token prefix  RMe25DjO")
+    expect(stdout.text).toContain("API key prefix       8I0CZztp")
     expect(stdout.text).not.toContain("not set")
 
     const stdoutJson = createCapture()
@@ -1239,9 +1246,92 @@ describe("auth login never requests transfer:bound", () => {
     expect(code).toBe(2)
     expect(calls).toHaveLength(0)
     expect(stderr.text).toContain("transfer:bound is not available on a device login")
-    expect(stderr.text).toContain("candle keys create --access withdraw")
-    // BE-361 (T-B12): or widen an existing key in place.
-    expect(stderr.text).toContain("or widen an existing key with: candle keys access <prefix> --access withdraw")
+    expect(stderr.text.replace(/\s+/g, " ")).toContain("candle keys create --access withdraw")
+    // BE-361 (T-B12): widen an existing key in place, as its own repair line.
+    expect(stderr.text).toContain("candle keys access <prefix> --access withdraw")
+    expect(stderr.text).not.toContain("with: candle")
+  })
+  test("--plain at width 40 puts each repair on its own command line; --json keeps the sentence", async () => {
+    const usage =
+      "transfer:bound is not available on a device login. Mint a Withdraw key with: candle keys create --access withdraw, or widen an existing key with: candle keys access <prefix> --access withdraw"
+    const narrowErr = createCapture()
+    const narrowOut = createCapture()
+    const { fetch, calls } = createRoutedFetch({})
+    expect(
+      await run(
+        ["auth", "login", "--scopes", "transfer:bound", "--plain", "--no-browser"],
+        createTestDeps({
+          fetch,
+          stdout: narrowOut,
+          stderr: narrowErr,
+          columns: { stderr: 40 },
+          presentation: { plain: true },
+        }),
+      ),
+    ).toBe(2)
+    expect(calls).toHaveLength(0)
+    expect(narrowOut.text).toBe("")
+    expect(narrowErr.text.replace(/\s+/g, " ")).toContain("transfer:bound is not available on a device login.")
+    expect(narrowErr.text).toMatch(/device login\.\n\n/)
+    expect(narrowErr.text).toContain("\n  candle keys create --access withdraw\n")
+    expect(narrowErr.text).not.toContain("with: candle")
+    for (const line of narrowErr.text.split("\n")) expect(displayWidth(line)).toBeLessThanOrEqual(40)
+    const messageLines = narrowErr.text.split("\n\n")[0] ?? ""
+    expect(messageLines).not.toContain("candle keys")
+
+    const stdout = createCapture()
+    const stderr = createCapture()
+    expect(
+      await run(
+        ["auth", "login", "--scopes", "transfer:bound", "--json", "--no-browser"],
+        createTestDeps({ fetch, stdout, stderr }),
+      ),
+    ).toBe(2)
+    expect(stderr.text).toBe("")
+    expect(JSON.parse(stdout.text)).toEqual({ ok: false, code: "USAGE", message: usage })
+  })
+
+  test("an invalid profile flag keeps its repair off the message line", async () => {
+    const stderr = createCapture()
+    const stdout = createCapture()
+    expect(
+      await authLogin([], {
+        deps: createTestDeps({
+          fetch: unusedFetch,
+          stdout,
+          stderr,
+          columns: { stderr: 40 },
+          presentation: { plain: true },
+        }),
+        json: false,
+        apiUrl: "https://api.example.test",
+        profileFlag: "BAD!",
+        verifyAccount: false,
+      }),
+    ).toBe(2)
+    expect(stdout.text).toBe("")
+    expect(stderr.text).toContain("Invalid profile name: BAD!.")
+    expect(stderr.text).toContain("\n  candle auth login --profile <name>\n")
+    expect(stderr.text).not.toContain("Run: candle")
+    for (const line of stderr.text.split("\n")) expect(displayWidth(line)).toBeLessThanOrEqual(40)
+
+    const jsonOut = createCapture()
+    const jsonErr = createCapture()
+    expect(
+      await authLogin([], {
+        deps: createTestDeps({ fetch: unusedFetch, stdout: jsonOut, stderr: jsonErr }),
+        json: true,
+        apiUrl: "https://api.example.test",
+        profileFlag: "BAD!",
+        verifyAccount: false,
+      }),
+    ).toBe(2)
+    expect(jsonErr.text).toBe("")
+    expect(JSON.parse(jsonOut.text)).toEqual({
+      ok: false,
+      code: "USAGE",
+      message: "Invalid profile name: BAD!. Run: candle auth login --profile <name>",
+    })
   })
 
   test("a login that omits scopes sends none, so the server's device default (no transfer:bound) applies", async () => {
@@ -1334,5 +1424,44 @@ describe("logout device and machine metadata", () => {
     expect(await authLogout([], { deps, apiUrl: "https://api.test", json: true, verifyAccount: false })).toBe(0)
     expect(cleared).toBe(true)
     expect(await config.readConfig()).toEqual({})
+  })
+})
+
+describe("auth output kit", () => {
+  test("login groups full approval values and never reveals plaintext credentials at a narrow width", async () => {
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const { fetch } = createRoutedFetch(deviceFlowRoutes())
+    expect(
+      await run(
+        ["auth", "login", "--plain", "--no-browser"],
+        createTestDeps({ fetch, stdout, stderr, columns: { stdout: 40 } }),
+      ),
+    ).toBe(0)
+    expect(stdout.text).toContain("Authorize this device")
+    expect(stdout.text).toContain(CODE_RESPONSE.userCode)
+    expect(stdout.text).toContain(CODE_RESPONSE.verificationUriComplete)
+    expect(stdout.text).toContain("ok Device authorized")
+    expect(stdout.text).toContain("dvcprofl")
+    expect(stdout.text).toContain("ck_livepr")
+    expect(stdout.text).not.toContain(API_KEY)
+    expect(stdout.text).not.toContain(DEVICE_TOKEN)
+    expect(stderr.text).toBe("")
+  })
+  test("status wraps details at 40 columns and uses one missing mark", async () => {
+    const { fetch } = createRoutedFetch({})
+    const stdout = createCapture()
+    const stderr = createCapture()
+    expect(
+      await run(["auth", "status", "--plain"], createTestDeps({ fetch, stdout, stderr, columns: { stdout: 40 } })),
+    ).toBe(0)
+    expect(stdout.text).toContain("Credentials\n")
+    expect(stdout.text).toContain("Device token prefix  -")
+    expect(stdout.text).toContain("API key prefix       -")
+    expect(stdout.text).toContain("Checks\n")
+    expect(stdout.text.replace(/\s+/g, " ")).toContain("Device token SKIP not set. Run: candle auth login")
+    const checks = stdout.text.split("Checks\n")[1] ?? ""
+    for (const line of checks.split("\n")) expect(displayWidth(line)).toBeLessThanOrEqual(40)
+    expect(stderr.text).toBe("")
   })
 })

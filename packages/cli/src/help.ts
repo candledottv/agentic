@@ -941,8 +941,9 @@ export const HELP: Record<string, Topic> = {
     usage: ["candle keys <subcommand> [flags]"],
     rows: [
       {
-        invocation: "list [--scopes]",
-        description: "List API keys: name and Read, Write or Withdraw access; --scopes adds the raw scopes",
+        invocation: "list [--scopes] [--all]",
+        description:
+          "List live API keys: name and Read, Write or Withdraw access; --all includes revoked keys; --scopes adds the raw scopes",
       },
       {
         invocation:

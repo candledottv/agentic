@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { run } from "../index"
+import { displayWidth } from "../presentation"
 import { SECRET_REFS } from "../secret-store"
 import {
   createCapture,
@@ -161,6 +162,7 @@ describe("keys list: Name and Access", () => {
         writeConfig: configStore.writeConfig,
         clearConfig: configStore.clearConfig,
         stdout,
+        columns: { stdout: 250 },
       }),
     )
     expect(code).toBe(0)
@@ -169,39 +171,41 @@ describe("keys list: Name and Access", () => {
 
   /** The table's lines, identity line dropped, each split on the two-space column gap. */
   function tableRows(stdout: string): string[][] {
-    const lines = stdout.split("\n").filter((line) => line.length > 0)
-    const headerAt = lines.findIndex((line) => line.startsWith("Prefix"))
+    const lines = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+    const headerAt = lines.findIndex((line) => line.trimStart().startsWith("Prefix"))
     return lines.slice(headerAt).map((line) => line.split(/ {2,}/).map((cell) => cell.trim()))
   }
 
-  test("both of the operator's keys read Write, the named one leads with its name, the other is blank", async () => {
+  test("both of the operator's keys read Write, the named one leads with its name, the other uses the missing mark", async () => {
     const { stdout } = await list([JPVPY8GS, B6P_TSRS])
     const lines = stdout.split("\n")
-    const header = lines.find((line) => line.startsWith("Prefix")) ?? ""
+    const header = (lines.find((line) => line.trimStart().startsWith("Prefix")) ?? "").trim()
     expect(header.split(/ {2,}/)).toEqual([
       "Prefix",
       "Name",
       "Access",
-      "Embedded",
-      "Environment",
-      "Created",
+      "Wallet",
       "Last used",
-      "Revoked",
+      "Created",
+      "Environment",
       "Minted by",
     ])
-    const first = lines.find((line) => line.startsWith("JpVPY8gs")) ?? ""
-    const second = lines.find((line) => line.startsWith("B6P-TSRs")) ?? ""
+    const first = lines.find((line) => line.trimStart().startsWith("JpVPY8gs")) ?? ""
+    const second = lines.find((line) => line.trimStart().startsWith("B6P-TSRs")) ?? ""
     // Neither row stores an embedded-wallet value, which is how a key from before it reads: allowed.
-    expect(first).toMatch(/^JpVPY8gs {2}cndl {2}Write {3}allowed {3}production /)
-    // Blank Name: the cell is padded to the column's width, so Access starts where it does above.
-    expect(second).toMatch(/^B6P-TSRs {8}Write {3}allowed {3}production /)
+    expect(first.trimStart()).toMatch(/^JpVPY8gs {2}cndl {2}Write {3}allowed /)
+    // Missing Name: the mark is padded to the column's width, so Access starts where it does above.
+    expect(second.trimStart()).toMatch(/^B6P-TSRs {2}– {5}Write {3}allowed /)
     expect(second.indexOf("Write")).toBe(first.indexOf("Write"))
     expect(first.endsWith("browser session")).toBe(true)
     expect(second.endsWith("this device")).toBe(true)
     expect(stdout).not.toContain("account:read")
   })
 
-  test("BE-503 (R5.11): the Embedded column says denied or allowed, and a row without the field reads allowed", async () => {
+  test("BE-503 (R5.11): the Wallet column says denied or allowed, and a row without the field reads allowed", async () => {
     const rows = tableRows(
       (
         await list([
@@ -212,7 +216,7 @@ describe("keys list: Name and Access", () => {
       ).stdout,
     )
     const embedded = (prefix: string) => rows.find((row) => row[0] === prefix)?.[3]
-    expect(rows[0]?.[3]).toBe("Embedded")
+    expect(rows[0]?.[3]).toBe("Wallet")
     expect(embedded("JpVPY8gs")).toBe("denied")
     expect(embedded("B6P-TSRs")).toBe("allowed")
     expect(embedded("legacy01")).toBe("allowed")
@@ -229,8 +233,8 @@ describe("keys list: Name and Access", () => {
         ])
       ).stdout,
     )
-    const access = (prefix: string) => rows.find((row) => row[0] === prefix)?.[1]
-    // No label on these rows, so the blank Name cell collapses and Access is the second cell.
+    const access = (prefix: string) => rows.find((row) => row[0] === prefix)?.[2]
+    // Missing Name uses the same mark as other missing values.
     expect(access("legacyful")).toBe("Launch, Trade, Transfer, Report, launch:read")
     // A Write key minted before 2026-10-08 still holds transfer:write: custom, and the Transfer word
     // is the flag (D3).
@@ -244,12 +248,12 @@ describe("keys list: Name and Access", () => {
     const rows = tableRows(stdout)
     expect(rows[0]?.slice(0, 4)).toEqual(["Prefix", "Name", "Access", "Scopes"])
     expect(rows.find((row) => row[0] === "JpVPY8gs")?.slice(1, 4)).toEqual(["cndl", "Write", SORTED])
-    expect(rows.find((row) => row[0] === "B6P-TSRs")?.slice(1, 3)).toEqual(["Write", SORTED])
+    expect(rows.find((row) => row[0] === "B6P-TSRs")?.slice(1, 4)).toEqual(["–", "Write", SORTED])
   })
 
   test("a label carrying a newline and a bidi override renders on one line with neither", async () => {
     const { stdout } = await list([{ ...JPVPY8GS, label: "evil\nname‮gnp.exe" }])
-    const row = stdout.split("\n").find((line) => line.startsWith("JpVPY8gs")) ?? ""
+    const row = stdout.split("\n").find((line) => line.trimStart().startsWith("JpVPY8gs")) ?? ""
     expect(row).toContain("evil name gnp.exe  Write")
     expect(stdout).not.toContain("‮")
     expect(stdout.split("\n").some((line) => line.startsWith("name"))).toBe(false)
@@ -526,7 +530,7 @@ describe("keys create --embedded-wallet (BE-503, R5.11)", () => {
     const code = await run(["keys", "create"], createTestDeps({ fetch, store: store(), stdout }))
     expect(code).toBe(0)
     expect(JSON.parse(String(calls[0]?.init.body)).embeddedWallet).toBe("denied")
-    expect(stdout.text).toContain("Embedded wallet: denied.")
+    expect(stdout.text).toContain("Embedded wallet  denied")
     expect(stdout.text).toContain("candle keys update ck_liveaa --embedded-wallet allow")
   })
 
@@ -552,7 +556,7 @@ describe("keys create --embedded-wallet (BE-503, R5.11)", () => {
     expect(prompts).toEqual(["Create the key with the embedded wallet allowed? [y/N] "])
     expect(stderr.text).toContain("transfers only with transfer:write")
     expect(JSON.parse(String(calls[0]?.init.body)).embeddedWallet).toBe("allowed")
-    expect(stdout.text).toContain("Embedded wallet: allowed.")
+    expect(stdout.text).toContain("Embedded wallet  allowed")
   })
 
   test("declining the allow prompt mints nothing", async () => {
@@ -628,7 +632,7 @@ describe("profiles", () => {
     })
     expect(stdout.text.startsWith("Profile staging · Account A · ")).toBe(true)
     // The identity line stands apart: one blank line before the command's own output.
-    expect(stdout.text.split("\n").slice(1, 3)).toEqual(["", "API key: ck_live_new"])
+    expect(stdout.text.split("\n").slice(1, 3)).toEqual(["", "✓ API key created"])
   })
 
   test("keys list reads the PROFILE's device prefix, so a key this device minted still says 'this device'", async () => {
@@ -818,7 +822,7 @@ describe("keys create --access (R17)", () => {
       createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }), stdout }),
     )
     expect(code).toBe(0)
-    expect(stdout.text).toContain("transfer:bound (moves funds")
+    expect(stdout.text).toContain("transfer:bound  moves funds")
   })
 
   test("--access with --scopes is a usage error, exit 2, with no request made", async () => {
@@ -869,7 +873,7 @@ describe("keys create --access (R17)", () => {
       createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }), stdout }),
     )
     expect(code).toBe(0)
-    expect(stdout.text).toContain("perps:write (trades Hyperliquid perps")
+    expect(stdout.text).toContain("perps:write   trades Hyperliquid perps")
   })
 
   test("keys access cannot move a key to trade-perps: the access change knows only three levels", async () => {
@@ -926,10 +930,189 @@ describe("keys list: Withdraw (R18)", () => {
     )
     expect(code).toBe(0)
     const [, ...tableLines] = stdout.text.split("\n")
-    const first = tableLines.find((line) => line.startsWith("ck_livermt"))
-    const second = tableLines.find((line) => line.startsWith("ck_livecus"))
-    expect(first).toMatch(/^ck_livermt {2}rebalancer {2}Withdraw {2,}allowed {2,}production /)
+    const first = tableLines.find((line) => line.trimStart().startsWith("ck_livermt"))
+    const second = tableLines.find((line) => line.trimStart().startsWith("ck_livecus"))
+    expect(first?.trimStart()).toMatch(/^ck_livermt {2}rebalancer {2}Withdraw {2,}allowed /)
     expect(second).toContain("Transfer, Withdraw")
     expect(second).not.toMatch(/ {2}Withdraw {2}/)
   })
+})
+
+describe("keys output kit", () => {
+  const keys = [
+    {
+      keyPrefix: "live-prefix",
+      label: "worker",
+      scopes: ["account:read"],
+      environment: "production",
+      createdAt: Date.UTC(2026, 9, 27),
+      lastUsedAt: Date.UTC(2026, 9, 28, 1, 59),
+    },
+    {
+      keyPrefix: "revoked-prefix",
+      label: "retired",
+      scopes: ["account:read"],
+      environment: "production",
+      createdAt: Date.UTC(2025, 8, 23),
+      revokedAt: Date.UTC(2026, 9, 27, 22, 36),
+    },
+  ]
+  async function list(args: string[], width = 100, plain = false) {
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const { fetch } = createRoutedFetch({ "/api/v1/agent/keys": () => jsonResponse(200, { keys }) })
+    const code = await run(
+      ["keys", "list", ...args],
+      createTestDeps({
+        fetch,
+        store: createFakeStore({ device_token: "fixture" }),
+        stdout,
+        stderr,
+        columns: { stdout: width },
+        now: () => Date.UTC(2026, 9, 28, 2),
+        presentation: { plain },
+      }),
+    )
+    return { code, stdout: stdout.text, stderr: stderr.text }
+  }
+  test("live rows by default; --all adds revoked rows and their short UTC time", async () => {
+    const live = await list([])
+    expect(live.code).toBe(0)
+    expect(live.stdout).toContain("live-prefix")
+    expect(live.stdout).not.toContain("revoked-prefix")
+    expect(live.stdout).toContain("1 live · 1 revoked (--all to show)")
+    expect(live.stdout).toContain("1 min ago")
+    expect(live.stdout).toContain("Oct 27")
+    expect(live.stdout).not.toContain("2026-10-27T")
+    const all = await list(["--all"], 250)
+    expect(all.code).toBe(0)
+    expect(all.stdout).toContain("revoked-prefix")
+    expect(all.stdout).toContain("Revoked")
+    expect(all.stdout).toContain("Oct 27 22:36Z")
+    expect(all.stdout).toContain("Sep 23 2025")
+    expect(all.stdout).not.toContain("--all to show")
+  })
+  test("JSON stays the complete raw payload with --all, --scopes, or neither", async () => {
+    for (const flags of [[], ["--all"], ["--scopes"], ["--all", "--scopes"]]) {
+      const result = await list(["--json", ...flags], 40)
+      expect(result.code).toBe(0)
+      expect(result.stdout).toBe(`${JSON.stringify({ keys })}\n`)
+      expect(result.stderr).toBe("")
+    }
+  })
+  test("40, 80 and 100 column tables fit and preserve full prefixes, including --all --scopes", async () => {
+    for (const width of [40, 80, 100]) {
+      for (const flags of [[], ["--all"], ["--scopes"], ["--all", "--scopes"]]) {
+        const result = await list(flags, width)
+        const table = result.stdout.split("API keys\n\n")[1]?.split("\n\n")[0] ?? ""
+        expect(table).toContain("live-prefix")
+        if (flags.includes("--all")) expect(table).toContain("revoked-prefix")
+        else expect(table).not.toContain("revoked-prefix")
+        if (width === 40) expect(table).not.toContain("Minted by")
+        for (const line of table.split("\n")) expect(displayWidth(line)).toBeLessThanOrEqual(width)
+      }
+    }
+  })
+  test("--all --scopes at 40 columns fits a normal nine-character prefix", async () => {
+    const key = {
+      keyPrefix: "ck_liveaa",
+      label: "worker",
+      scopes: ["account:read"],
+      environment: "production",
+      createdAt: Date.UTC(2026, 9, 27),
+      revokedAt: Date.UTC(2026, 9, 27, 22, 36),
+    }
+    const { fetch } = createRoutedFetch({ "/api/v1/agent/keys": () => jsonResponse(200, { keys: [key] }) })
+    for (const width of [40, 80, 100]) {
+      const stdout = createCapture()
+      const code = await run(
+        ["keys", "list", "--all", "--scopes", "--plain"],
+        createTestDeps({
+          fetch,
+          store: createFakeStore({ device_token: "fixture" }),
+          stdout,
+          columns: { stdout: width },
+          now: () => Date.UTC(2026, 9, 28, 2),
+          presentation: { plain: true },
+        }),
+      )
+      expect(code).toBe(0)
+      const table = stdout.text.split("API keys\n\n")[1]?.split("\n\n")[0] ?? ""
+      expect(table).toContain("ck_liveaa")
+      expect(table).not.toContain("ck_liv…")
+      expect(table).not.toContain("ck_l...")
+      if (width >= 80) {
+        expect(table).toContain("Name")
+        expect(table).toContain("Scopes")
+        expect(table).toContain("Revoked")
+      }
+      for (const line of table.split("\n")) expect(displayWidth(line)).toBeLessThanOrEqual(width)
+    }
+  })
+  test("plain output has ASCII markers and no ANSI escapes", async () => {
+    const result = await list([], 80, true)
+    expect(result.stdout).toContain("1 live - 1 revoked")
+    expect(result.stdout).not.toContain("·")
+    expect(result.stdout).not.toContain("–")
+    expect(result.stdout).not.toContain("\u001b[")
+  })
+  test("creation keeps the full key once and separates the warning from fields in plain mode", async () => {
+    const key = "ck_live_FIXTURE_FULL_KEY_THAT_MUST_NEVER_BE_CLIPPED_AT_TERMINAL_WIDTH"
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () =>
+        jsonResponse(200, {
+          key,
+          keyPrefix: "full-prefix",
+          scopes: ["account:read", "swap:write", "transfer:write", "transfer:bound", "perps:write"],
+          environment: "production",
+          embeddedWallet: "denied",
+        }),
+    })
+    const code = await run(
+      ["keys", "create", "--plain"],
+      createTestDeps({
+        fetch,
+        store: createFakeStore({ device_token: "fixture" }),
+        stdout,
+        stderr,
+        columns: { stdout: 80 },
+      }),
+    )
+    expect(code).toBe(0)
+    expect(stdout.text.split(key)).toHaveLength(2)
+    expect(stdout.text).toContain(`ok API key created\n\n  ${key}\n\n  ! Shown once. Store it now.\n\n`)
+    const normalized = stdout.text.replace(/\s+/g, " ")
+    expect(normalized).toContain("moves funds -- this key can execute swaps on your behalf")
+    expect(normalized).toContain("moves funds -- this key can transfer assets between your wallets")
+    expect(normalized).toContain("to your linked wallets and its vault")
+    expect(normalized).toContain("trades Hyperliquid perps")
+    expect(stdout.text).toContain("candle keys update full-prefix --embedded-wallet allow")
+    expect(stderr.text).toBe("")
+    expect(stdout.text).not.toContain("\u001b[")
+  })
+})
+
+test("key screens put human errors and fixes on stderr; JSON retains its stdout envelope", async () => {
+  for (const command of ["list", "create"]) {
+    const { fetch } = createRoutedFetch({})
+    const stdout = createCapture(),
+      stderr = createCapture()
+    expect(await run(["keys", command, "--plain"], createTestDeps({ fetch, stdout, stderr }))).toBe(1)
+    expect(stderr.text).toBe("x No device token available.\n\n  Run:   candle auth login\n")
+    expect(stdout.text).not.toContain("No device token")
+    const machineOut = createCapture(),
+      machineErr = createCapture()
+    expect(
+      await run(["keys", command, "--json"], createTestDeps({ fetch, stdout: machineOut, stderr: machineErr })),
+    ).toBe(1)
+    expect(JSON.parse(machineOut.text)).toEqual({
+      ok: false,
+      code: "NO_DEVICE_TOKEN",
+      message: "No device token available.",
+      suggestion: "Run: candle auth login",
+    })
+    expect(machineErr.text).toBe("")
+  }
 })

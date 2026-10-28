@@ -37,6 +37,7 @@ import { apiRequest } from "../client"
 import { ProfileCoreOwnedError } from "../core/ownership"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
+import { fields, heading, notice, success, symbols, terminalStyle } from "../presentation"
 import {
   credentialEnvOverrides,
   defaultProfileNameFor,
@@ -48,10 +49,17 @@ import {
   printIdentity,
   profileSecretRef,
 } from "../profiles"
-import { formatScopesForSummary, portalDevicesUrl, renderTable, writeFailure, writeUsageFailure } from "../render"
+import { portalDevicesUrl, writeUsageFailure } from "../render"
 import { SECRET_REFS } from "../secret-store"
 import { CLI_VERSION } from "../version"
-import { embeddedWalletLine } from "./keys-embedded-wallet"
+import {
+  embeddedWalletSummary,
+  scopeSummary,
+  writeScreenFailure,
+  writeScreenMessage,
+  writeScreenUsageFailure,
+} from "./key-output"
+import { accessCell } from "./keys"
 
 const DEVICE_CODE_PATH = "/api/v1/agent/device/code"
 const DEVICE_TOKEN_PATH = "/api/v1/agent/device/token"
@@ -93,17 +101,25 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, { valueFlags: ["--scopes", "--label"], booleanFlags: ["--no-browser"] })
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json)
+    writeScreenUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
   // `--profile` here names a profile to CREATE (or re-authenticate), not one to select, so it is
   // validated for shape only -- never checked against what already exists (see finishLogin).
   if (ctx.profileFlag !== undefined && !isValidProfileName(ctx.profileFlag)) {
-    writeUsageFailure(deps, `Invalid profile name: ${ctx.profileFlag}. Run: candle auth login --profile <name>`, json)
+    writeScreenUsageFailure(
+      deps,
+      `Invalid profile name: ${ctx.profileFlag}. Run: candle auth login --profile <name>`,
+      json,
+      {
+        message: `Invalid profile name: ${ctx.profileFlag}.`,
+        fixes: [{ label: "Run", command: "candle auth login --profile <name>" }],
+      },
+    )
     return 2
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined
@@ -111,10 +127,17 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   // login. The API refuses it on that path anyway (R22) until the approval page that labels it
   // has been in production long enough; refusing here says where the level is minted instead.
   if (scopes?.includes("transfer:bound")) {
-    writeUsageFailure(
+    writeScreenUsageFailure(
       deps,
       "transfer:bound is not available on a device login. Mint a Withdraw key with: candle keys create --access withdraw, or widen an existing key with: candle keys access <prefix> --access withdraw",
       json,
+      {
+        message: "transfer:bound is not available on a device login.",
+        fixes: [
+          { label: "Mint a Withdraw key", command: "candle keys create --access withdraw" },
+          { label: "Widen an existing key", command: "candle keys access <prefix> --access withdraw" },
+        ],
+      },
     )
     return 2
   }
@@ -128,7 +151,7 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
     parsed.values["--label"] !== undefined &&
     (label === undefined || label.length < 1 || label.length > MAX_CLIENT_NAME_LENGTH)
   ) {
-    writeUsageFailure(deps, `--label must be 1 to ${MAX_CLIENT_NAME_LENGTH} characters.`, json)
+    writeScreenUsageFailure(deps, `--label must be 1 to ${MAX_CLIENT_NAME_LENGTH} characters.`, json)
     return 2
   }
 
@@ -146,7 +169,7 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   })
 
   if (!codeResult.ok) {
-    writeFailure(deps, codeResult, { apiUrl, authType: "none" }, json)
+    writeScreenFailure(deps, codeResult, { apiUrl, authType: "none" }, json)
     return 1
   }
 
@@ -155,8 +178,21 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   // These two lines are progress information, not the command's result -- in --json mode they
   // go to stderr so stdout stays exactly one parseable JSON value (fix round 1, item 1).
   const progress = json ? deps.stderr : deps.stdout
-  progress.write(`Your device code: ${code.userCode}\n`)
-  progress.write(`Open this URL to approve: ${code.verificationUriComplete}\n`)
+  if (json) {
+    progress.write(`Your device code: ${code.userCode}\n`)
+    progress.write(`Open this URL to approve: ${code.verificationUriComplete}\n`)
+  } else {
+    const style = terminalStyle(deps, "stdout")
+    progress.write(
+      `${heading("Authorize this device", style)}\n\n${fields(
+        [
+          ["Device code", code.userCode],
+          ["Approve at", code.verificationUriComplete],
+        ],
+        style,
+      ).join("\n")}\n\n`,
+    )
+  }
   if (!noBrowser) {
     try {
       deps.openBrowser(code.verificationUriComplete)
@@ -197,18 +233,18 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
       tokenResult.rfcError === "invalid_grant"
     ) {
       if (json) deps.stderr.write(`${JSON.stringify(tokenResult)}\n`)
-      else deps.stderr.write(`${terminalRfcMessage(tokenResult.rfcError)}\n`)
+      else writeLoginFailure(deps, tokenResult.rfcError)
       return 1
     }
 
     // Anything else during polling is unexpected (not part of the RFC vocabulary this endpoint
     // uses) -- surface it and stop, rather than looping forever on an error class not named above.
-    writeFailure(deps, tokenResult, { apiUrl, authType: "none" }, json)
+    writeScreenFailure(deps, tokenResult, { apiUrl, authType: "none" }, json)
     return 1
   }
 
   if (json) deps.stderr.write(`${JSON.stringify({ ok: false, reason: "expired_token" })}\n`)
-  else deps.stderr.write(`${terminalRfcMessage("expired_token")}\n`)
+  else writeLoginFailure(deps, "expired_token")
   return 1
 }
 
@@ -216,6 +252,14 @@ function terminalRfcMessage(rfcError: "access_denied" | "expired_token" | "inval
   if (rfcError === "access_denied") return "Authorization was denied."
   if (rfcError === "expired_token") return "The device code expired before it was approved. Run: candle auth login"
   return "This device code is unknown or was already used. Run: candle auth login"
+}
+
+function writeLoginFailure(
+  deps: CommandContext["deps"],
+  reason: "access_denied" | "expired_token" | "invalid_grant",
+): void {
+  const [message, suggestion] = terminalRfcMessage(reason).split(" Run: ")
+  writeScreenMessage(deps, message ?? "", suggestion ? `Run: ${suggestion}` : undefined)
 }
 
 /** The portal origin to persist, taken from the device-code response's own `verificationUri` (the
@@ -336,27 +380,49 @@ async function finishLogin(
     return 0
   }
 
-  deps.stdout.write(`Profile: ${profileName}\n`)
-  deps.stdout.write(`Device authorized. Credentials stored in the ${deps.backend} backend.\n`)
-  deps.stdout.write(`Device token prefix: ${body.tokenPrefix}\n`)
+  const style = terminalStyle(deps, "stdout")
+  deps.stdout.write(
+    `${success("Device authorized", style)}\n\n${fields(
+      [
+        ["Profile", profileName],
+        ["Stored", `${deps.backend} backend`],
+        ["Device token prefix", body.tokenPrefix],
+        ...(body.apiKey
+          ? [
+              ["API key prefix", body.apiKey.keyPrefix] as const,
+              ...(apiKeyLabel !== undefined ? [["API key name", apiKeyLabel] as const] : []),
+              ["Access", accessCell(body.apiKey.scopes, symbols(style).missing)] as const,
+              ...(body.apiKey.embeddedWallet === "allowed" || body.apiKey.embeddedWallet === "denied"
+                ? [["Embedded wallet", embeddedWalletSummary(body.apiKey.embeddedWallet)] as const]
+                : []),
+            ]
+          : []),
+      ],
+      style,
+    ).join("\n")}\n`,
+  )
   if (body.apiKey) {
-    deps.stdout.write(`API key prefix: ${body.apiKey.keyPrefix}\n`)
-    if (apiKeyLabel !== undefined) deps.stdout.write(`API key name: ${apiKeyLabel}\n`)
-    if (apiKeyLabelError !== undefined) {
-      const where = portalOrigin ? ` Name it in the key manager: ${portalOrigin}/dev/agent` : ""
-      deps.stdout.write(`Could not name the key: ${apiKeyLabelError}.${where}\n`)
+    deps.stdout.write(scopeSummary(body.apiKey.scopes, style, "Granted scopes"))
+    if (body.apiKey.embeddedWallet === "denied") {
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `The owner can allow the embedded wallet with:\ncandle keys update ${body.apiKey.keyPrefix} --embedded-wallet allow`,
+      )
     }
-    deps.stdout.write(`Granted scopes: ${formatScopesForSummary(body.apiKey.scopes)}\n`)
-    if (body.apiKey.embeddedWallet === "allowed" || body.apiKey.embeddedWallet === "denied") {
-      deps.stdout.write(`${embeddedWalletLine(body.apiKey.embeddedWallet, body.apiKey.keyPrefix)}\n`)
+    if (apiKeyLabelError !== undefined) {
+      notice(
+        deps,
+        "stdout",
+        "warning",
+        `Could not name the key: ${apiKeyLabelError}.${portalOrigin ? `\nName it in the key manager: ${portalOrigin}/dev/agent` : ""}`,
+      )
     }
   } else if (body.apiKeyError) {
-    // No --scopes: the device route grants its default, which is the Write preset (key default
-    // without transfer, 2026-10-08 spec, section 6) -- never transfer:write or transfer:bound.
     const authorizedScopes = requested.scopes ?? scopesForPreset("readwrite")
-    deps.stdout.write(`Authorized scopes (no key issued yet): ${formatScopesForSummary(authorizedScopes)}\n`)
-    deps.stdout.write(`${body.apiKeyError}\n`)
-    deps.stdout.write("Run: candle keys create\n")
+    deps.stdout.write(scopeSummary(authorizedScopes, style, "Authorized scopes (no key issued yet)"))
+    notice(deps, "stdout", "warning", `${body.apiKeyError}\nRun: candle keys create`)
   }
   return 0
 }
@@ -478,11 +544,11 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {})
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json)
+    writeScreenUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
 
@@ -557,7 +623,7 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // The profile's own recorded prefixes (or the legacy top-level ones pre-profile). Reading the
   // top-level fields unconditionally reported "not set" for both on every profile created since
   // the upgrade, which is precisely the question this command is run to answer.
-  const fields = effectiveProfileFields(config, ctx.profile)
+  const profileFields = effectiveProfileFields(config, ctx.profile)
   // Both names, whenever they disagree. The live account alone reads as "fine" to an operator who
   // never doubted which account they were on; the mismatch is only visible once the profile's own
   // record is beside it. `cachedAccount` is reported only when a profile is resolved, since
@@ -568,7 +634,7 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // names differing is expected rather than wrong -- and the repair this line offers,
   // `profile use`, re-caches from the stored key that was never acting. The `cachedAccount` field
   // is unconditional; only the sentence and its suggestion are gated.
-  const cachedAccount = ctx.profile !== undefined ? fields.account : undefined
+  const cachedAccount = ctx.profile !== undefined ? profileFields.account : undefined
   const mismatch =
     ctx.profile !== undefined &&
     account !== undefined &&
@@ -581,8 +647,8 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
       `${JSON.stringify({
         backend: deps.backend,
         profile: ctx.profile,
-        deviceTokenPrefix: fields.deviceTokenPrefix,
-        keyPrefix: fields.keyPrefix,
+        deviceTokenPrefix: profileFields.deviceTokenPrefix,
+        keyPrefix: profileFields.keyPrefix,
         account,
         cachedAccount,
         apiUrl,
@@ -601,31 +667,40 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // its username (or none) is shown beside it; only when falling back to the cached account is the
   // cached username used. Mixing them -- a live account with a cached handle -- would print a
   // handle that belongs to a DIFFERENT account, in the very command meant to reveal a mismatch.
-  const shownAccount = account ?? fields.account
-  const shownUsername = account !== undefined ? username : fields.username
+  const shownAccount = account ?? profileFields.account
+  const shownUsername = account !== undefined ? username : profileFields.username
   deps.stdout.write(
     `${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername, identityStyle(deps, "stdout"))}\n`,
   )
   // `profile use` is the cheapest of the three repairs (it re-caches the account from this very
   // key); the guard's own refusal names the other two, which cost a re-authentication or a skipped
   // check. This line is a report, not a refusal, so it names only the cheap one.
+  const style = terminalStyle(deps, "stdout")
   if (mismatch) {
-    deps.stdout.write(
-      `Profile ${ctx.profile} recorded ${cachedAccount}; this key belongs to ${account}. Run: candle profile use ${ctx.profile}\n`,
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `Profile ${ctx.profile} recorded ${cachedAccount}; this key belongs to ${account}.\nRun: candle profile use ${ctx.profile}`,
     )
   }
-  // A blank line after the identity (and its mismatch note, which is about the identity), as
-  // printIdentity leaves one before every other command's own output.
-  deps.stdout.write("\n")
-  deps.stdout.write(`Backend: ${deps.backend}\n`)
-  deps.stdout.write(`Device token prefix: ${fields.deviceTokenPrefix ?? "not set"}\n`)
-  deps.stdout.write(`API key prefix: ${fields.keyPrefix ?? "not set"}\n`)
-  deps.stdout.write(`Config file: ${configPath}\n\n`)
   deps.stdout.write(
-    `${renderTable(
-      ["Check", "Status", "Detail"],
-      rows.map((row) => [row.check, row.state, row.detail]),
-    )}\n`,
+    `\n${heading("Credentials", style)}\n\n${fields(
+      [
+        ["Backend", deps.backend],
+        ["Device token prefix", profileFields.deviceTokenPrefix],
+        ["API key prefix", profileFields.keyPrefix],
+        ["Config file", configPath],
+      ],
+      style,
+    ).join("\n")}\n\n${heading("Checks", style)}\n\n`,
+  )
+  // Details are prose: wrap them as fields instead of squeezing them into a table cell.
+  deps.stdout.write(
+    `${fields(
+      rows.map((row) => [row.check, `${row.state}  ${row.detail}`]),
+      style,
+    ).join("\n")}\n`,
   )
   return exitCode
 }

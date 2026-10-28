@@ -788,6 +788,12 @@ ${renderNotice(level, text, style).join(`
 
 `);
 }
+function success(text, style) {
+  return `${accent(symbols(style).ok, style, "positive")} ${text}`;
+}
+function failure(text, style) {
+  return accent(`${symbols(style).danger} ${text}`, style, "negative");
+}
 var GRAPHEMES, ORDINARY_WORD = 24, WORDMARK, PROSE_MAX = 100, UNICODE_SYMBOLS, ASCII_SYMBOLS;
 var init_presentation = __esm(() => {
   init_terminal_theme();
@@ -896,6 +902,24 @@ function formatTime(at, options = {}) {
   const clock = `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`;
   return `${day} ${clock}Z`;
 }
+function formatAgo(at, now, missing = MISSING) {
+  const date = toDate(at);
+  if (!date)
+    return missing;
+  const seconds = Math.floor((now - date.getTime()) / 1000);
+  if (seconds < -60)
+    return formatTime(date, { now, date: true });
+  if (seconds < 60)
+    return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60)
+    return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48)
+    return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days <= 90 ? `${days}d ago` : formatTime(date, { now, date: true });
+}
 function renderError(result, ctx) {
   if (result.code === "DEVICE_TOKEN_INVALID") {
     return "This device was revoked or its token is stale. Run: candle auth login";
@@ -922,6 +946,82 @@ function suggestionFor(result, ctx) {
   if (result.status === 0)
     return "Set CANDLE_API_URL to override the API endpoint.";
   return result.uiHint;
+}
+function errorParts(result, ctx) {
+  if (result.code === "DEVICE_TOKEN_INVALID") {
+    return {
+      message: "This device was revoked or its token is stale.",
+      fixes: [{ label: "Log in again", command: "candle auth login" }]
+    };
+  }
+  if (result.status === 403 && result.code === "SCOPE_MISSING") {
+    return {
+      message: `${result.message}.`,
+      fixes: [
+        { label: "Mint a key that has it", command: "candle keys create --scopes <a,b,c>" },
+        { label: "Check an existing key's scopes", command: "candle keys list" }
+      ]
+    };
+  }
+  if (result.status === 401 && ctx.authType === "key") {
+    return {
+      message: "API key invalid or revoked.",
+      fixes: [{ label: "Mint a new key", command: "candle keys create" }]
+    };
+  }
+  if (result.status === 0) {
+    return {
+      message: `Could not reach ${ctx.apiUrl}.`,
+      fixes: [{ label: "Use another API endpoint", command: "CANDLE_API_URL=<url>" }]
+    };
+  }
+  return { message: result.message, fixes: result.uiHint ? [{ label: result.uiHint }] : [] };
+}
+function renderErrorBlock(parts, style) {
+  const budget = proseWidth(style);
+  const out = [...errorMessageLines(parts.message, style, budget)];
+  if (parts.fixes.length === 0)
+    return out;
+  out.push("");
+  const labelWidth = Math.max(0, ...parts.fixes.filter((fix) => fix.command).map((fix) => displayWidth(`${fix.label}:`)));
+  for (const fix of parts.fixes) {
+    if (fix.command)
+      out.push(...errorCommandLines(fix.label, fix.command, style, labelWidth, budget));
+    else
+      out.push(...errorAdviceLines(fix.label, budget));
+  }
+  return out;
+}
+function errorMessageLines(message, style, budget) {
+  const lead = displayWidth(symbols(style).danger) + 1;
+  const tight = budget - Math.max(lead, 2);
+  if (tight >= 1 && fitsWidth(message, tight)) {
+    const [first = "", ...rest] = wrapText(message, tight);
+    return [failure(first, style), ...rest.map((line) => `  ${accent(line, style, "negative")}`)];
+  }
+  const mark = accent(symbols(style).danger, style, "negative");
+  return [mark, ...prefixedWrap(message, budget, (line) => accent(line, style, "negative"))];
+}
+function errorCommandLines(label, command, style, labelWidth, budget) {
+  const aligned = `  ${padDisplay(`${label}:`, labelWidth)}   ${command}`;
+  if (displayWidth(aligned) <= budget) {
+    return [`  ${dim(padDisplay(`${label}:`, labelWidth), style)}   ${command}`];
+  }
+  return [...prefixedWrap(`${label}:`, budget, (line) => dim(line, style)), ...prefixedWrap(command, budget)];
+}
+function errorAdviceLines(label, budget) {
+  return prefixedWrap(label, budget);
+}
+function prefixedWrap(text, budget, paint) {
+  const indented = budget - 2;
+  const width = indented >= 1 && fitsWidth(text, indented) ? indented : Math.max(1, budget);
+  const prefix = width === indented ? "  " : "";
+  return wrapText(text, width).map((line) => {
+    if (!line)
+      return "";
+    const body = paint ? paint(line) : line;
+    return `${prefix}${body}`;
+  });
 }
 function errorEnvelope(result, ctx) {
   const code = result.code ?? result.rfcError ?? (result.status === 0 ? "NETWORK_UNREACHABLE" : `HTTP_${result.status}`);
@@ -17550,341 +17650,57 @@ var init_swap = __esm(() => {
   }).passthrough();
 });
 
-// src/commands/keys.ts
-function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
-  if (!mintedBy)
-    return "browser session";
-  if (mintedBy === ownDeviceTokenPrefix)
-    return "this device";
-  return mintedBy;
-}
-function labelCell(label) {
-  if (!label)
-    return "";
-  const cleaned = Array.from(label).map((ch) => {
-    const code = ch.codePointAt(0) ?? 0;
-    const isControl = code < 32 || code >= 127 && code <= 159;
-    const isBidiOrInvisible = code >= 8203 && code <= 8207 || code >= 8234 && code <= 8238 || code >= 8294 && code <= 8297 || code === 65279;
-    return isControl || isBidiOrInvisible ? " " : ch;
-  }).join("");
-  return cleaned.replace(/\s+/g, " ").trim();
-}
-function accessCell(scopes) {
-  const access = agentKeyAccess(scopes);
-  if (access.kind === "preset")
-    return access.label;
-  const words = agentKeyAccessWords(access);
-  return words.length > 0 ? words.join(", ") : "–";
-}
-async function keysList(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { booleanFlags: ["--scopes"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  await printIdentity(ctx);
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
-    return 1;
-  }
-  const result = await apiRequest(KEYS_PATH, {
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
+// src/commands/key-output.ts
+function scopeSummary(scopes, style, title = "Scopes") {
+  const rows = sortAgentKeyScopes(scopes).map((scope) => {
+    const summary = formatScopesForSummary([scope]);
+    return [scope, summary === scope ? "" : summary.slice(scope.length + 2, -1)];
   });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
-    return 1;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(result.body)}
-`);
-    return 0;
-  }
-  const withScopes = parsed.booleans.has("--scopes");
-  const body = result.body;
-  const config = await deps.readConfig();
-  const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix;
-  const rows = body.keys.map((key) => [
-    key.keyPrefix,
-    labelCell(key.label),
-    accessCell(key.scopes),
-    ...withScopes ? [sortAgentKeyScopes(key.scopes).join(",")] : [],
-    effectiveEmbeddedWallet(key.embeddedWallet),
-    key.environment,
-    formatTimestamp(key.createdAt),
-    formatTimestamp(key.lastUsedAt),
-    key.revokedAt ? formatTimestamp(key.revokedAt) : "no",
-    mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix)
-  ]);
-  const headers = [
-    "Prefix",
-    "Name",
-    "Access",
-    ...withScopes ? ["Scopes"] : [],
-    "Embedded",
-    "Environment",
-    "Created",
-    "Last used",
-    "Revoked",
-    "Minted by"
-  ];
-  deps.stdout.write(`${renderTable(headers, rows)}
-`);
-  return 0;
+  const width = Math.max(0, ...scopes.map(displayWidth));
+  const lines = rows.flatMap(([scope, note]) => note ? fields([[padDisplay(scope, width), note]], style, 4) : [`    ${dim(scope, style)}`]);
+  return `
+${heading(title, style)}
+${lines.join(`
+`)}
+`;
 }
-async function keysCreate(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {
-    valueFlags: [
-      "--scopes",
-      "--access",
-      "--environment",
-      "--label",
-      "--expires-in",
-      "--tx-limit",
-      "--reset",
-      "--embedded-wallet"
-    ]
-  });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  if (parsed.values["--access"] !== undefined && parsed.values["--scopes"] !== undefined) {
-    writeUsageFailure(deps, "--access and --scopes are mutually exclusive; pass one of them.", json);
-    return 2;
-  }
-  let accessScopes;
-  if (parsed.values["--access"] !== undefined) {
-    const preset = CREATE_ACCESS_LEVELS[parsed.values["--access"]];
-    if (preset === undefined) {
-      writeUsageFailure(deps, "--access must be one of: read, write, withdraw, trade-perps.", json);
-      return 2;
-    }
-    accessScopes = scopesForPreset(preset);
-  }
-  const requestedScopes = accessScopes ?? (parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined);
-  const environment = parsed.values["--environment"];
-  const label = parsed.values["--label"]?.trim();
-  if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > 64)) {
-    writeUsageFailure(deps, "--label must be 1 to 64 characters.", json);
-    return 2;
-  }
-  let expiresInDays;
-  if (parsed.values["--expires-in"] !== undefined) {
-    const parsedDays = parseExpiresInDays(parsed.values["--expires-in"]);
-    if (!parsedDays.ok) {
-      writeUsageFailure(deps, parsedDays.message, json);
-      return 2;
-    }
-    expiresInDays = parsedDays.days;
-  }
-  if (parsed.values["--reset"] !== undefined && parsed.values["--tx-limit"] === undefined) {
-    writeUsageFailure(deps, "--reset requires --tx-limit.", json);
-    return 2;
-  }
-  let txLimit;
-  if (parsed.values["--tx-limit"] !== undefined) {
-    const parsedUsd = parseUsdToMicros(parsed.values["--tx-limit"]);
-    if (!parsedUsd.ok) {
-      writeUsageFailure(deps, parsedUsd.message, json);
-      return 2;
-    }
-    const reset = parsed.values["--reset"] ?? "daily";
-    if (!TX_LIMIT_RESETS.includes(reset)) {
-      writeUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json);
-      return 2;
-    }
-    txLimit = { usdMicros: parsedUsd.usdMicros, reset };
-  }
-  const embeddedFlag = parsed.values["--embedded-wallet"] ?? "deny";
-  const embeddedWallet = EMBEDDED_WALLET_CHOICES[embeddedFlag];
-  if (embeddedWallet === undefined) {
-    writeUsageFailure(deps, "--embedded-wallet must be allow or deny.", json);
-    return 2;
-  }
-  await printIdentity(ctx);
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
-    return 1;
-  }
-  if (embeddedWallet === "allowed") {
-    const stop = await confirmCreateAllow(ctx);
-    if (stop !== null)
-      return stop;
-  }
-  const result = await apiRequest(KEYS_PATH, {
-    method: "POST",
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env,
-    body: {
-      ...requestedScopes ? { scopes: requestedScopes } : {},
-      ...environment ? { environment } : {},
-      ...label ? { label } : {},
-      ...expiresInDays !== undefined ? { expiresInDays } : {},
-      ...txLimit ? { txLimit } : {},
-      embeddedWallet
-    }
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
-    return 1;
-  }
-  const body = result.body;
-  const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
-  let stored = false;
-  let storeError;
-  try {
-    if (!await deps.store.get(apiKeyRef)) {
-      await deps.store.set(apiKeyRef, body.key);
-      if (ctx.profile) {
-        await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes });
-      } else {
-        await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes });
-      }
-      stored = true;
-    }
-  } catch (error) {
-    storeError = error instanceof Error ? error.message : String(error);
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({ ...body, stored, ...storeError ? { storeError } : {} })}
-`);
-    return storeError ? 1 : 0;
-  }
-  deps.stdout.write(`API key: ${body.key}
-`);
-  deps.stdout.write(`This is the only time the plaintext key is shown; store it now.
-`);
-  deps.stdout.write(`Prefix: ${body.keyPrefix}
-`);
-  deps.stdout.write(`Scopes: ${formatScopesForSummary(body.scopes)}
-`);
-  if (body.embeddedWallet === "allowed" || body.embeddedWallet === "denied") {
-    deps.stdout.write(`${embeddedWalletLine(body.embeddedWallet, body.keyPrefix)}
-`);
-  } else {
-    deps.stderr.write(`Warning: this Candle API does not set a per-key embedded-wallet permission yet, so this key may use the account's embedded wallet whatever --embedded-wallet said.
-`);
-  }
-  if (storeError !== undefined) {
-    deps.stderr.write(`
-WARNING: the key above was NOT stored in the ${deps.backend} store: ${storeError}
-` + "It is live on your account. Save it now, or revoke it with: candle keys revoke " + `${body.keyPrefix}
-`);
-  }
-  if (!requestedScopes) {
-    deps.stdout.write(`No --access or --scopes given: the server granted the default scopes (swap:write excluded).
-`);
-  }
-  if (storeError === undefined) {
-    deps.stdout.write(stored ? `Stored in the ${deps.backend} backend as the CLI's working key.
-` : `Not stored: the CLI already manages a different working key. This key belongs to whichever agent it was minted for.
-`);
-  }
-  return storeError === undefined ? 0 : 1;
+function embeddedWalletSummary(permission) {
+  return permission === "allowed" ? "allowed (Candle signs trades with swap:write, launches with launch:write, transfers only with transfer:write)" : "denied (cannot spend the account's embedded wallet)";
 }
-async function keysRevoke(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length !== 1) {
-    deps.stderr.write(`Usage: candle keys revoke <prefix>
+function writeScreenFailure(deps, result, context, json) {
+  if (json)
+    writeFailure(deps, result, context, json);
+  else
+    deps.stderr.write(`${renderErrorBlock(errorParts(result, context), terminalStyle(deps, "stderr")).join(`
+`)}
 `);
-    return 2;
-  }
-  const prefix = parsed.positionals[0];
-  await printIdentity(ctx);
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
-    return 1;
-  }
-  const result = await apiRequest(`${KEYS_PATH}/${encodeURIComponent(prefix)}`, {
-    method: "DELETE",
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
-    return 1;
-  }
-  const config = await deps.readConfig();
-  const storedPrefix = effectiveProfileFields(config, ctx.profile).keyPrefix;
-  let clearedLocal = false;
-  if (storedPrefix === prefix) {
-    const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
-    await deps.store.delete(apiKeyRef);
-    if (ctx.profile) {
-      await deps.updateProfile(ctx.profile, { keyPrefix: undefined });
-    } else {
-      await deps.writeConfig({ keyPrefix: undefined });
-    }
-    clearedLocal = true;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({ success: true, keyPrefix: prefix, clearedLocal })}
-`);
-    return 0;
-  }
-  deps.stdout.write(`Revoked key ${prefix}.
-`);
-  if (clearedLocal) {
-    deps.stdout.write(`This was the CLI's stored working key; also cleared it locally.
-`);
-  }
-  return 0;
 }
-var KEYS_PATH = "/api/v1/agent/keys", ACCESS_LEVELS, CREATE_ACCESS_LEVELS, NO_DEVICE_TOKEN;
-var init_keys = __esm(() => {
+function writeScreenLocalFailure(deps, failure2, json) {
+  if (json)
+    writeLocalFailure(deps, failure2, json);
+  else
+    writeScreenMessage(deps, failure2.message, failure2.suggestion);
+}
+function writeScreenUsageFailure(deps, message, json, screen) {
+  if (json)
+    writeUsageFailure(deps, message, json);
+  else if (screen) {
+    deps.stderr.write(`${renderErrorBlock({ message: screen.message, fixes: [...screen.fixes] }, terminalStyle(deps, "stderr")).join(`
+`)}
+`);
+  } else
+    writeScreenMessage(deps, message);
+}
+function writeScreenMessage(deps, message, suggestion) {
+  const fixes = suggestion ? [suggestion.startsWith("Run: ") ? { label: "Run", command: suggestion.slice(5) } : { label: suggestion }] : [];
+  deps.stderr.write(`${renderErrorBlock({ message, fixes }, terminalStyle(deps, "stderr")).join(`
+`)}
+`);
+}
+var init_key_output = __esm(() => {
   init_agent_key_access();
-  init_args();
-  init_client();
-  init_deps();
-  init_profiles();
+  init_presentation();
   init_render();
-  init_secret_store();
-  init_keys_embedded_wallet();
-  ACCESS_LEVELS = {
-    read: "read",
-    write: "readwrite",
-    withdraw: "readwritetransfer",
-    transfer: "readwritetransfer",
-    "read-write": "readwrite",
-    "read-write-transfer": "readwritetransfer"
-  };
-  CREATE_ACCESS_LEVELS = {
-    ...ACCESS_LEVELS,
-    "trade-perps": "tradeperps"
-  };
-  NO_DEVICE_TOKEN = {
-    code: "NO_DEVICE_TOKEN",
-    message: "No device token available.",
-    suggestion: "Run: candle auth login"
-  };
 });
 
 // src/vault/signer-roles.ts
@@ -31021,16 +30837,16 @@ function createMergeProxy(baseObj, extObj) {
       return true;
     },
     deleteProperty(_target, prop) {
-      let success = false;
+      let success2 = false;
       if (prop in extObj) {
         delete extObj[prop];
-        success = true;
+        success2 = true;
       }
       if (prop in baseObj) {
         delete baseObj[prop];
-        success = true;
+        success2 = true;
       }
-      return success;
+      return success2;
     },
     ownKeys(_target) {
       const baseKeys = Reflect.ownKeys(baseObj);
@@ -37201,7 +37017,7 @@ function writeRebindFailure(ctx, result, context) {
 }
 async function listAccountKeys(ctx, deviceToken) {
   const { deps, apiUrl } = ctx;
-  return apiRequest(KEYS_PATH2, {
+  return apiRequest(KEYS_PATH, {
     auth: "device",
     credentials: { deviceToken },
     apiUrl,
@@ -37482,7 +37298,7 @@ async function teeRebinds(args, ctx) {
 `);
   return 0;
 }
-var REBIND_PATH = "/api/v1/agent/tee-wallets/rebind", REBINDS_PATH = "/api/v1/agent/tee-wallets/rebinds", KEYS_PATH2 = "/api/v1/agent/keys", USAGE_REBIND = "Usage: candle tee rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>] [--json]", USAGE_REBINDS = "Usage: candle tee rebinds [wallet] [--json]", DEVICE_TOKEN_REQUIRED, KEY_PREFIX_RE2, REBIND_NOTHING_PINNED = "Nothing was signed, nothing moved and nothing was pinned.", RELAY_SIGNER_LINE = "The relay signer does not move: trade these wallets from the machine that promoted them.", PORTAL_REVOKE_LINE = "A device token cannot revoke devices: revoke a device you do not recognise from the portal, with a signed-in session.";
+var REBIND_PATH = "/api/v1/agent/tee-wallets/rebind", REBINDS_PATH = "/api/v1/agent/tee-wallets/rebinds", KEYS_PATH = "/api/v1/agent/keys", USAGE_REBIND = "Usage: candle tee rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>] [--json]", USAGE_REBINDS = "Usage: candle tee rebinds [wallet] [--json]", DEVICE_TOKEN_REQUIRED, KEY_PREFIX_RE2, REBIND_NOTHING_PINNED = "Nothing was signed, nothing moved and nothing was pinned.", RELAY_SIGNER_LINE = "The relay signer does not move: trade these wallets from the machine that promoted them.", PORTAL_REVOKE_LINE = "A device token cannot revoke devices: revoke a device you do not recognise from the portal, with a signed-in session.";
 var init_tee_rebind = __esm(() => {
   init_args();
   init_client();
@@ -37505,9 +37321,6 @@ var init_tee_rebind = __esm(() => {
 // src/commands/keys-embedded-wallet.ts
 function effectiveEmbeddedWallet(value) {
   return value === "denied" ? "denied" : "allowed";
-}
-function embeddedWalletLine(permission, keyPrefix) {
-  return permission === "allowed" ? "Embedded wallet: allowed. This key may use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write." : `Embedded wallet: denied. This key cannot spend the account's embedded wallet; the owner can allow it with: candle keys update ${keyPrefix} --embedded-wallet allow`;
 }
 function keyName(keyPrefix, label) {
   const cleaned = labelCell(label ?? undefined);
@@ -37600,7 +37413,7 @@ async function keysUpdate(args, ctx) {
   });
   if (!resolved.ok)
     return resolved.code;
-  const path = `${KEYS_PATH3}/${encodeURIComponent(resolved.keyPrefix)}/embedded-wallet`;
+  const path = `${KEYS_PATH2}/${encodeURIComponent(resolved.keyPrefix)}/embedded-wallet`;
   const call = (body) => apiRequest(path, {
     method: "PUT",
     body,
@@ -37704,7 +37517,7 @@ async function keysSelf(args, ctx) {
     writeLocalFailure(deps, NO_API_KEY, json);
     return 1;
   }
-  const result = await apiRequest(`${KEYS_PATH3}/self/embedded-wallet`, {
+  const result = await apiRequest(`${KEYS_PATH2}/self/embedded-wallet`, {
     method: "PUT",
     body: { permission: "denied" },
     auth: "key",
@@ -37734,7 +37547,7 @@ function writeChanged(ctx, result, command) {
 `);
   return 0;
 }
-var KEYS_PATH3 = "/api/v1/agent/keys", EMBEDDED_WALLET_CHOICES, USAGE_UPDATE = "Usage: candle keys update <prefix|label> --embedded-wallet <allow|deny> [--yes] [--json]", USAGE_SELF = "Usage: candle keys self embedded-wallet deny [--json]", ALLOW_REQUIRES_TTY, NO_API_KEY, SELF_CANNOT_ALLOW;
+var KEYS_PATH2 = "/api/v1/agent/keys", EMBEDDED_WALLET_CHOICES, USAGE_UPDATE = "Usage: candle keys update <prefix|label> --embedded-wallet <allow|deny> [--yes] [--json]", USAGE_SELF = "Usage: candle keys self embedded-wallet deny [--json]", ALLOW_REQUIRES_TTY, NO_API_KEY, SELF_CANNOT_ALLOW;
 var init_keys_embedded_wallet = __esm(() => {
   init_args();
   init_client();
@@ -37762,6 +37575,379 @@ var init_keys_embedded_wallet = __esm(() => {
     code: "LOOSEN_REQUIRES_SESSION",
     message: "An API key may deny itself the embedded wallet but never allow it; nothing changed.",
     suggestion: "The owner allows it with the device token: candle keys update <prefix> --embedded-wallet allow, or from the web key manager."
+  };
+});
+
+// src/commands/keys.ts
+function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
+  if (!mintedBy)
+    return "browser session";
+  if (mintedBy === ownDeviceTokenPrefix)
+    return "this device";
+  return mintedBy;
+}
+function labelCell(label) {
+  if (!label)
+    return "";
+  const cleaned = Array.from(label).map((ch) => {
+    const code = ch.codePointAt(0) ?? 0;
+    const isControl = code < 32 || code >= 127 && code <= 159;
+    const isBidiOrInvisible = code >= 8203 && code <= 8207 || code >= 8234 && code <= 8238 || code >= 8294 && code <= 8297 || code === 65279;
+    return isControl || isBidiOrInvisible ? " " : ch;
+  }).join("");
+  return cleaned.replace(/\s+/g, " ").trim();
+}
+function accessCell(scopes, missing = "–") {
+  const access3 = agentKeyAccess(scopes);
+  if (access3.kind === "preset")
+    return access3.label;
+  const words = agentKeyAccessWords(access3);
+  return words.length > 0 ? words.join(", ") : missing;
+}
+async function keysList(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { booleanFlags: ["--scopes", "--all"] });
+  if ("error" in parsed) {
+    writeScreenUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeScreenLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const result = await apiRequest(KEYS_PATH3, {
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeScreenFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  const withScopes = parsed.booleans.has("--scopes");
+  const body = result.body;
+  const config = await deps.readConfig();
+  const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix;
+  const style = terminalStyle(deps, "stdout");
+  const missing = symbols(style).missing;
+  const all = parsed.booleans.has("--all");
+  const live = body.keys.filter((key) => !key.revokedAt);
+  const revoked = body.keys.length - live.length;
+  const shown = all ? body.keys : live;
+  const now = deps.now();
+  const rows = shown.map((key) => [
+    key.keyPrefix,
+    labelCell(key.label) || missing,
+    accessCell(key.scopes, missing),
+    ...withScopes ? [sortAgentKeyScopes(key.scopes).join(",") || missing] : [],
+    effectiveEmbeddedWallet(key.embeddedWallet),
+    formatAgo(key.lastUsedAt, now, missing),
+    formatTime(key.createdAt, { now, date: true, missing }),
+    ...all ? [formatTime(key.revokedAt, { now, missing })] : [],
+    key.environment,
+    mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix)
+  ]);
+  const headers = [
+    "Prefix",
+    "Name",
+    "Access",
+    ...withScopes ? ["Scopes"] : [],
+    "Wallet",
+    "Last used",
+    "Created",
+    ...all ? ["Revoked"] : [],
+    "Environment",
+    "Minted by"
+  ];
+  deps.stdout.write(`${heading("API keys", style)}
+
+`);
+  deps.stdout.write(`${renderTable(headers, rows, {
+    style,
+    width: style.width,
+    indent: 2,
+    rule: false,
+    columns: [
+      { id: true },
+      { priority: 7 },
+      { priority: 6 },
+      ...withScopes ? [{ priority: 8 }] : [],
+      { priority: 4 },
+      { priority: 3 },
+      { priority: 2 },
+      ...all ? [{ priority: 9 }] : [],
+      { priority: 1 },
+      { priority: 0, id: true }
+    ]
+  })}
+`);
+  notice(deps, "stdout", "note", `${live.length} live ${symbols(style).note} ${revoked} revoked${!all && revoked ? " (--all to show)" : ""}`);
+  return 0;
+}
+async function keysCreate(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {
+    valueFlags: [
+      "--scopes",
+      "--access",
+      "--environment",
+      "--label",
+      "--expires-in",
+      "--tx-limit",
+      "--reset",
+      "--embedded-wallet"
+    ]
+  });
+  if ("error" in parsed) {
+    writeScreenUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  if (parsed.values["--access"] !== undefined && parsed.values["--scopes"] !== undefined) {
+    writeScreenUsageFailure(deps, "--access and --scopes are mutually exclusive; pass one of them.", json);
+    return 2;
+  }
+  let accessScopes;
+  if (parsed.values["--access"] !== undefined) {
+    const preset = CREATE_ACCESS_LEVELS[parsed.values["--access"]];
+    if (preset === undefined) {
+      writeScreenUsageFailure(deps, "--access must be one of: read, write, withdraw, trade-perps.", json);
+      return 2;
+    }
+    accessScopes = scopesForPreset(preset);
+  }
+  const requestedScopes = accessScopes ?? (parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined);
+  const environment = parsed.values["--environment"];
+  const label = parsed.values["--label"]?.trim();
+  if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > 64)) {
+    writeScreenUsageFailure(deps, "--label must be 1 to 64 characters.", json);
+    return 2;
+  }
+  let expiresInDays;
+  if (parsed.values["--expires-in"] !== undefined) {
+    const parsedDays = parseExpiresInDays(parsed.values["--expires-in"]);
+    if (!parsedDays.ok) {
+      writeScreenUsageFailure(deps, parsedDays.message, json);
+      return 2;
+    }
+    expiresInDays = parsedDays.days;
+  }
+  if (parsed.values["--reset"] !== undefined && parsed.values["--tx-limit"] === undefined) {
+    writeScreenUsageFailure(deps, "--reset requires --tx-limit.", json);
+    return 2;
+  }
+  let txLimit;
+  if (parsed.values["--tx-limit"] !== undefined) {
+    const parsedUsd = parseUsdToMicros(parsed.values["--tx-limit"]);
+    if (!parsedUsd.ok) {
+      writeScreenUsageFailure(deps, parsedUsd.message, json);
+      return 2;
+    }
+    const reset = parsed.values["--reset"] ?? "daily";
+    if (!TX_LIMIT_RESETS.includes(reset)) {
+      writeScreenUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json);
+      return 2;
+    }
+    txLimit = { usdMicros: parsedUsd.usdMicros, reset };
+  }
+  const embeddedFlag = parsed.values["--embedded-wallet"] ?? "deny";
+  const embeddedWallet = EMBEDDED_WALLET_CHOICES[embeddedFlag];
+  if (embeddedWallet === undefined) {
+    writeScreenUsageFailure(deps, "--embedded-wallet must be allow or deny.", json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeScreenLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  if (embeddedWallet === "allowed") {
+    const stop = await confirmCreateAllow(ctx);
+    if (stop !== null)
+      return stop;
+  }
+  const result = await apiRequest(KEYS_PATH3, {
+    method: "POST",
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+    body: {
+      ...requestedScopes ? { scopes: requestedScopes } : {},
+      ...environment ? { environment } : {},
+      ...label ? { label } : {},
+      ...expiresInDays !== undefined ? { expiresInDays } : {},
+      ...txLimit ? { txLimit } : {},
+      embeddedWallet
+    }
+  });
+  if (!result.ok) {
+    writeScreenFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  const body = result.body;
+  const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
+  let stored = false;
+  let storeError;
+  try {
+    if (!await deps.store.get(apiKeyRef)) {
+      await deps.store.set(apiKeyRef, body.key);
+      if (ctx.profile) {
+        await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes });
+      } else {
+        await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes });
+      }
+      stored = true;
+    }
+  } catch (error) {
+    storeError = error instanceof Error ? error.message : String(error);
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...body, stored, ...storeError ? { storeError } : {} })}
+`);
+    return storeError ? 1 : 0;
+  }
+  const style = terminalStyle(deps, "stdout");
+  deps.stdout.write(`${success("API key created", style)}
+
+  ${bold(body.key, style)}
+`);
+  notice(deps, "stdout", "warning", "Shown once. Store it now.");
+  deps.stdout.write(`${fields([
+    ["Label", label],
+    ["Prefix", body.keyPrefix],
+    ["Access", accessCell(body.scopes, symbols(style).missing)],
+    ...body.embeddedWallet === "allowed" || body.embeddedWallet === "denied" ? [["Embedded wallet", embeddedWalletSummary(body.embeddedWallet)]] : [],
+    [
+      "Stored",
+      storeError !== undefined ? "no (store failed)" : stored ? `${deps.backend}, as this CLI's working key` : "no (the CLI already manages a different working key)"
+    ]
+  ], style).join(`
+`)}
+`);
+  deps.stdout.write(scopeSummary(body.scopes, style));
+  if (body.embeddedWallet === "denied") {
+    notice(deps, "stdout", "note", `The owner can allow the embedded wallet with:
+candle keys update ${body.keyPrefix} --embedded-wallet allow`);
+  } else if (body.embeddedWallet !== "allowed") {
+    notice(deps, "stderr", "warning", "This Candle API does not set a per-key embedded-wallet permission yet. This key may use the account's embedded wallet whatever --embedded-wallet said.");
+  }
+  if (storeError !== undefined) {
+    notice(deps, "stderr", "warning", `The key above was NOT stored in the ${deps.backend} store: ${storeError}
+It is live on your account. Save it now, or revoke it with:
+candle keys revoke ${body.keyPrefix}`);
+  }
+  if (!requestedScopes) {
+    notice(deps, "stdout", "note", "Default scopes: no --access or --scopes given (swap:write excluded).");
+  }
+  if (!stored && storeError === undefined) {
+    notice(deps, "stdout", "note", "This key belongs to whichever agent it was minted for.");
+  }
+  return storeError === undefined ? 0 : 1;
+}
+async function keysRevoke(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length !== 1) {
+    deps.stderr.write(`Usage: candle keys revoke <prefix>
+`);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const result = await apiRequest(`${KEYS_PATH3}/${encodeURIComponent(prefix)}`, {
+    method: "DELETE",
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  const config = await deps.readConfig();
+  const storedPrefix = effectiveProfileFields(config, ctx.profile).keyPrefix;
+  let clearedLocal = false;
+  if (storedPrefix === prefix) {
+    const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
+    await deps.store.delete(apiKeyRef);
+    if (ctx.profile) {
+      await deps.updateProfile(ctx.profile, { keyPrefix: undefined });
+    } else {
+      await deps.writeConfig({ keyPrefix: undefined });
+    }
+    clearedLocal = true;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ success: true, keyPrefix: prefix, clearedLocal })}
+`);
+    return 0;
+  }
+  deps.stdout.write(`Revoked key ${prefix}.
+`);
+  if (clearedLocal) {
+    deps.stdout.write(`This was the CLI's stored working key; also cleared it locally.
+`);
+  }
+  return 0;
+}
+var KEYS_PATH3 = "/api/v1/agent/keys", ACCESS_LEVELS, CREATE_ACCESS_LEVELS, NO_DEVICE_TOKEN;
+var init_keys = __esm(() => {
+  init_agent_key_access();
+  init_args();
+  init_client();
+  init_deps();
+  init_presentation();
+  init_profiles();
+  init_render();
+  init_secret_store();
+  init_key_output();
+  init_keys_embedded_wallet();
+  ACCESS_LEVELS = {
+    read: "read",
+    write: "readwrite",
+    withdraw: "readwritetransfer",
+    transfer: "readwritetransfer",
+    "read-write": "readwrite",
+    "read-write-transfer": "readwritetransfer"
+  };
+  CREATE_ACCESS_LEVELS = {
+    ...ACCESS_LEVELS,
+    "trade-perps": "tradeperps"
+  };
+  NO_DEVICE_TOKEN = {
+    code: "NO_DEVICE_TOKEN",
+    message: "No device token available.",
+    suggestion: "Run: candle auth login"
   };
 });
 
@@ -71085,10 +71271,12 @@ async function runLiveCheck(params) {
 init_client();
 init_ownership();
 init_deps();
+init_presentation();
 init_profiles();
 init_render();
 init_secret_store();
-init_keys_embedded_wallet();
+init_key_output();
+init_keys();
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
 var DEVICE_TOKEN_PATH = "/api/v1/agent/device/token";
 var MAX_CLIENT_NAME_LENGTH = 64;
@@ -71096,26 +71284,35 @@ async function authLogin(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--scopes", "--label"], booleanFlags: ["--no-browser"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   if (ctx.profileFlag !== undefined && !isValidProfileName(ctx.profileFlag)) {
-    writeUsageFailure(deps, `Invalid profile name: ${ctx.profileFlag}. Run: candle auth login --profile <name>`, json);
+    writeScreenUsageFailure(deps, `Invalid profile name: ${ctx.profileFlag}. Run: candle auth login --profile <name>`, json, {
+      message: `Invalid profile name: ${ctx.profileFlag}.`,
+      fixes: [{ label: "Run", command: "candle auth login --profile <name>" }]
+    });
     return 2;
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
   if (scopes?.includes("transfer:bound")) {
-    writeUsageFailure(deps, "transfer:bound is not available on a device login. Mint a Withdraw key with: candle keys create --access withdraw, or widen an existing key with: candle keys access <prefix> --access withdraw", json);
+    writeScreenUsageFailure(deps, "transfer:bound is not available on a device login. Mint a Withdraw key with: candle keys create --access withdraw, or widen an existing key with: candle keys access <prefix> --access withdraw", json, {
+      message: "transfer:bound is not available on a device login.",
+      fixes: [
+        { label: "Mint a Withdraw key", command: "candle keys create --access withdraw" },
+        { label: "Widen an existing key", command: "candle keys access <prefix> --access withdraw" }
+      ]
+    });
     return 2;
   }
   const label = parsed.values["--label"]?.trim();
   const noBrowser = parsed.booleans.has("--no-browser");
   if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > MAX_CLIENT_NAME_LENGTH)) {
-    writeUsageFailure(deps, `--label must be 1 to ${MAX_CLIENT_NAME_LENGTH} characters.`, json);
+    writeScreenUsageFailure(deps, `--label must be 1 to ${MAX_CLIENT_NAME_LENGTH} characters.`, json);
     return 2;
   }
   const clientName = (label ?? `candle-cli/${CLI_VERSION}@${deps.hostname}`).slice(0, MAX_CLIENT_NAME_LENGTH);
@@ -71129,15 +71326,28 @@ async function authLogin(args, ctx) {
     body: { clientName, ...scopes ? { scopes } : {} }
   });
   if (!codeResult.ok) {
-    writeFailure(deps, codeResult, { apiUrl, authType: "none" }, json);
+    writeScreenFailure(deps, codeResult, { apiUrl, authType: "none" }, json);
     return 1;
   }
   const code = codeResult.body;
   const progress = json ? deps.stderr : deps.stdout;
-  progress.write(`Your device code: ${code.userCode}
+  if (json) {
+    progress.write(`Your device code: ${code.userCode}
 `);
-  progress.write(`Open this URL to approve: ${code.verificationUriComplete}
+    progress.write(`Open this URL to approve: ${code.verificationUriComplete}
 `);
+  } else {
+    const style = terminalStyle(deps, "stdout");
+    progress.write(`${heading("Authorize this device", style)}
+
+${fields([
+      ["Device code", code.userCode],
+      ["Approve at", code.verificationUriComplete]
+    ], style).join(`
+`)}
+
+`);
+  }
   if (!noBrowser) {
     try {
       deps.openBrowser(code.verificationUriComplete);
@@ -71170,19 +71380,17 @@ async function authLogin(args, ctx) {
         deps.stderr.write(`${JSON.stringify(tokenResult)}
 `);
       else
-        deps.stderr.write(`${terminalRfcMessage(tokenResult.rfcError)}
-`);
+        writeLoginFailure(deps, tokenResult.rfcError);
       return 1;
     }
-    writeFailure(deps, tokenResult, { apiUrl, authType: "none" }, json);
+    writeScreenFailure(deps, tokenResult, { apiUrl, authType: "none" }, json);
     return 1;
   }
   if (json)
     deps.stderr.write(`${JSON.stringify({ ok: false, reason: "expired_token" })}
 `);
   else
-    deps.stderr.write(`${terminalRfcMessage("expired_token")}
-`);
+    writeLoginFailure(deps, "expired_token");
   return 1;
 }
 function terminalRfcMessage(rfcError) {
@@ -71191,6 +71399,10 @@ function terminalRfcMessage(rfcError) {
   if (rfcError === "expired_token")
     return "The device code expired before it was approved. Run: candle auth login";
   return "This device code is unknown or was already used. Run: candle auth login";
+}
+function writeLoginFailure(deps, reason) {
+  const [message, suggestion] = terminalRfcMessage(reason).split(" Run: ");
+  writeScreenMessage(deps, message ?? "", suggestion ? `Run: ${suggestion}` : undefined);
 }
 function portalOriginFrom(verificationUri) {
   if (!verificationUri)
@@ -71264,37 +71476,37 @@ async function finishLogin(rawBody, ctx, requested) {
 `);
     return 0;
   }
-  deps.stdout.write(`Profile: ${profileName}
-`);
-  deps.stdout.write(`Device authorized. Credentials stored in the ${deps.backend} backend.
-`);
-  deps.stdout.write(`Device token prefix: ${body.tokenPrefix}
+  const style = terminalStyle(deps, "stdout");
+  deps.stdout.write(`${success("Device authorized", style)}
+
+${fields([
+    ["Profile", profileName],
+    ["Stored", `${deps.backend} backend`],
+    ["Device token prefix", body.tokenPrefix],
+    ...body.apiKey ? [
+      ["API key prefix", body.apiKey.keyPrefix],
+      ...apiKeyLabel !== undefined ? [["API key name", apiKeyLabel]] : [],
+      ["Access", accessCell(body.apiKey.scopes, symbols(style).missing)],
+      ...body.apiKey.embeddedWallet === "allowed" || body.apiKey.embeddedWallet === "denied" ? [["Embedded wallet", embeddedWalletSummary(body.apiKey.embeddedWallet)]] : []
+    ] : []
+  ], style).join(`
+`)}
 `);
   if (body.apiKey) {
-    deps.stdout.write(`API key prefix: ${body.apiKey.keyPrefix}
-`);
-    if (apiKeyLabel !== undefined)
-      deps.stdout.write(`API key name: ${apiKeyLabel}
-`);
-    if (apiKeyLabelError !== undefined) {
-      const where = portalOrigin ? ` Name it in the key manager: ${portalOrigin}/dev/agent` : "";
-      deps.stdout.write(`Could not name the key: ${apiKeyLabelError}.${where}
-`);
+    deps.stdout.write(scopeSummary(body.apiKey.scopes, style, "Granted scopes"));
+    if (body.apiKey.embeddedWallet === "denied") {
+      notice(deps, "stdout", "note", `The owner can allow the embedded wallet with:
+candle keys update ${body.apiKey.keyPrefix} --embedded-wallet allow`);
     }
-    deps.stdout.write(`Granted scopes: ${formatScopesForSummary(body.apiKey.scopes)}
-`);
-    if (body.apiKey.embeddedWallet === "allowed" || body.apiKey.embeddedWallet === "denied") {
-      deps.stdout.write(`${embeddedWalletLine(body.apiKey.embeddedWallet, body.apiKey.keyPrefix)}
-`);
+    if (apiKeyLabelError !== undefined) {
+      notice(deps, "stdout", "warning", `Could not name the key: ${apiKeyLabelError}.${portalOrigin ? `
+Name it in the key manager: ${portalOrigin}/dev/agent` : ""}`);
     }
   } else if (body.apiKeyError) {
     const authorizedScopes = requested.scopes ?? scopesForPreset("readwrite");
-    deps.stdout.write(`Authorized scopes (no key issued yet): ${formatScopesForSummary(authorizedScopes)}
-`);
-    deps.stdout.write(`${body.apiKeyError}
-`);
-    deps.stdout.write(`Run: candle keys create
-`);
+    deps.stdout.write(scopeSummary(authorizedScopes, style, "Authorized scopes (no key issued yet)"));
+    notice(deps, "stdout", "warning", `${body.apiKeyError}
+Run: candle keys create`);
   }
   return 0;
 }
@@ -71387,11 +71599,11 @@ async function authStatus(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const config = await deps.readConfig();
@@ -71445,15 +71657,15 @@ async function authStatus(args, ctx) {
   }
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
   const configPath = configFilePathForDisplay(deps.env);
-  const fields2 = effectiveProfileFields(config, ctx.profile);
-  const cachedAccount = ctx.profile !== undefined ? fields2.account : undefined;
+  const profileFields = effectiveProfileFields(config, ctx.profile);
+  const cachedAccount = ctx.profile !== undefined ? profileFields.account : undefined;
   const mismatch = ctx.profile !== undefined && account !== undefined && cachedAccount !== undefined && account !== cachedAccount && credentialEnvOverrides(deps.env).length === 0;
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       backend: deps.backend,
       profile: ctx.profile,
-      deviceTokenPrefix: fields2.deviceTokenPrefix,
-      keyPrefix: fields2.keyPrefix,
+      deviceTokenPrefix: profileFields.deviceTokenPrefix,
+      keyPrefix: profileFields.keyPrefix,
       account,
       cachedAccount,
       apiUrl,
@@ -71463,26 +71675,31 @@ async function authStatus(args, ctx) {
 `);
     return exitCode;
   }
-  const shownAccount = account ?? fields2.account;
-  const shownUsername = account !== undefined ? username : fields2.username;
+  const shownAccount = account ?? profileFields.account;
+  const shownUsername = account !== undefined ? username : profileFields.username;
   deps.stdout.write(`${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername, identityStyle(deps, "stdout"))}
 `);
+  const style = terminalStyle(deps, "stdout");
   if (mismatch) {
-    deps.stdout.write(`Profile ${ctx.profile} recorded ${cachedAccount}; this key belongs to ${account}. Run: candle profile use ${ctx.profile}
-`);
+    notice(deps, "stdout", "warning", `Profile ${ctx.profile} recorded ${cachedAccount}; this key belongs to ${account}.
+Run: candle profile use ${ctx.profile}`);
   }
   deps.stdout.write(`
-`);
-  deps.stdout.write(`Backend: ${deps.backend}
-`);
-  deps.stdout.write(`Device token prefix: ${fields2.deviceTokenPrefix ?? "not set"}
-`);
-  deps.stdout.write(`API key prefix: ${fields2.keyPrefix ?? "not set"}
-`);
-  deps.stdout.write(`Config file: ${configPath}
+${heading("Credentials", style)}
+
+${fields([
+    ["Backend", deps.backend],
+    ["Device token prefix", profileFields.deviceTokenPrefix],
+    ["API key prefix", profileFields.keyPrefix],
+    ["Config file", configPath]
+  ], style).join(`
+`)}
+
+${heading("Checks", style)}
 
 `);
-  deps.stdout.write(`${renderTable(["Check", "Status", "Detail"], rows.map((row) => [row.check, row.state, row.detail]))}
+  deps.stdout.write(`${fields(rows.map((row) => [row.check, `${row.state}  ${row.detail}`]), style).join(`
+`)}
 `);
   return exitCode;
 }
@@ -72257,8 +72474,8 @@ var HELP = {
     usage: ["candle keys <subcommand> [flags]"],
     rows: [
       {
-        invocation: "list [--scopes]",
-        description: "List API keys: name and Read, Write or Withdraw access; --scopes adds the raw scopes"
+        invocation: "list [--scopes] [--all]",
+        description: "List live API keys: name and Read, Write or Withdraw access; --all includes revoked keys; --scopes adds the raw scopes"
       },
       {
         invocation: "create [--access read|write|withdraw|trade-perps | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
@@ -96622,11 +96839,11 @@ function settlementOf(headers2) {
     return null;
   try {
     const object4 = decodeHeader(header);
-    const { success, errorReason, payer, transaction, network: network2 } = object4;
-    if (typeof success !== "boolean" || !isString(transaction) || !isString(network2))
+    const { success: success2, errorReason, payer, transaction, network: network2 } = object4;
+    if (typeof success2 !== "boolean" || !isString(transaction) || !isString(network2))
       return null;
     return {
-      success,
+      success: success2,
       ...isString(errorReason) ? { errorReason } : {},
       ...isString(payer) ? { payer } : {},
       transaction,
