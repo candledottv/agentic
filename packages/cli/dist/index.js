@@ -86456,24 +86456,25 @@ async function externalSweep(args, ctx) {
 
 // src/commands/fees.ts
 init_args();
+init_presentation();
 init_render();
 init_trading();
 init_swap();
 var LIST_USAGE = "Usage: candle fees [--cursor <cursor>] [--limit <1-50>] [--json]";
 var CLAIM_USAGE = "Usage: candle fees claim <mint> [--dry-run] [--json]";
-function amountText(row) {
+function amountText(row, missing) {
   const raw = typeof row.amountRaw === "string" && /^\d+$/.test(row.amountRaw) ? row.amountRaw : null;
   if (raw === null)
-    return "unknown";
+    return missing;
   const decimals = Number.isInteger(row.decimals) ? row.decimals : 0;
   const label = row.symbol ? row.symbol : row.mint ?? "";
   const value = decimalAmount(raw, decimals);
   return `${value.includes(".") ? value.replace(/\.?0+$/, "") : value} ${safeText(label)}`.trim();
 }
-function amountsText(rows) {
+function amountsText(rows, missing) {
   if (!Array.isArray(rows) || rows.length === 0)
     return "none";
-  return rows.map((row) => amountText(row)).join(", ");
+  return rows.map((row) => amountText(row, missing)).join(", ");
 }
 var REASON_WORDS = {
   below_dust: "under the dust floor",
@@ -86483,8 +86484,8 @@ var REASON_WORDS = {
   not_recipient: "the fees go to someone else, or the token has no fee vault",
   insufficient_gas: "the recipient wallet cannot cover the network fee"
 };
-function reasonText(reason) {
-  return typeof reason === "string" ? REASON_WORDS[reason] ?? safeText(reason) : "unknown";
+function reasonText(reason, missing) {
+  return typeof reason === "string" ? REASON_WORDS[reason] ?? safeText(reason) : missing;
 }
 async function feesList(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--cursor", "--limit"] });
@@ -86509,19 +86510,30 @@ async function feesList(args, ctx) {
     if (ctx.json)
       return printTradingResult(ctx, body);
     const page = Array.isArray(body.page) ? body.page : [];
-    const out = ctx.deps.stdout;
+    const style = terminalStyle(ctx.deps, "stdout");
+    const missing = symbols(style).missing;
     if (page.length === 0)
-      out.write(`No launched tokens on this account.
-`);
-    for (const row of page) {
-      const name2 = safeText(String(row.symbol ?? row.name ?? row.mint));
-      const status = row.unreadable ? "could not be read" : row.claimable ? `claimable: ${amountsText(row.claimableAmounts)}` : `not claimable: ${reasonText(row.reason)}`;
-      out.write(`${name2}  ${safeText(String(row.chain))}  ${safeText(String(row.mint))}  ${status}
+      notice(ctx.deps, "stdout", "note", "No launched tokens on this account.");
+    else {
+      const rows = page.map((row) => {
+        const status = row.unreadable ? "could not be read" : row.claimable ? `claimable: ${amountsText(row.claimableAmounts, missing)}` : `not claimable: ${reasonText(row.reason, missing)}`;
+        return [
+          safeText(String(row.symbol ?? row.name ?? row.mint)),
+          safeText(String(row.chain)),
+          status,
+          safeText(String(row.mint))
+        ];
+      });
+      ctx.deps.stdout.write(`${renderTable(["TOKEN", "CHAIN", "STATUS", "MINT"], rows, {
+        style,
+        width: style.width,
+        indent: 2,
+        columns: [{}, { priority: 1 }, {}, { id: true }]
+      })}
 `);
     }
     if (body.isDone === false && typeof body.continueCursor === "string")
-      out.write(`More: candle fees --cursor ${safeText(body.continueCursor)}
-`);
+      notice(ctx.deps, "stdout", "note", `More: candle fees --cursor ${safeText(body.continueCursor)}`);
     return 0;
   } catch (error) {
     return tradingFailure(ctx, error);
@@ -86544,26 +86556,40 @@ async function feesClaim(args, ctx) {
     const body = await request(ctx, key, `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`, { dryRun });
     if (ctx.json)
       return printTradingResult(ctx, body);
-    const out = ctx.deps.stdout;
+    const style = terminalStyle(ctx.deps, "stdout");
+    const missing = symbols(style).missing;
     const claimed = Array.isArray(body.claimed) ? body.claimed : [];
-    if (dryRun) {
-      out.write(body.claimable === false ? `Dry run: would be refused: ${reasonText(body.reason)}. Nothing was sent.
-` : `Dry run: would claim ${amountsText(claimed)} to ${safeText(String(body.recipient))}. Nothing was sent.
+    if (dryRun && body.claimable === false) {
+      ctx.deps.stdout.write(`${failure(`Would be refused: ${reasonText(body.reason, missing)}.`, style)}
+`);
+      ctx.deps.stdout.write(`${fields([["Still", amountsText(body.remaining, missing)]], style).join(`
+`)}
 `);
     } else {
-      out.write(`Claimed ${amountsText(claimed)} to ${safeText(String(body.recipient))}
+      const rows = [
+        [dryRun ? "Would claim" : "Amount", amountsText(claimed, missing)],
+        ["To", safeText(String(body.recipient))],
+        ["Still", amountsText(body.remaining, missing)]
+      ];
+      ctx.deps.stdout.write(`${heading(dryRun ? "Dry run" : "Claimed", style)}
+
+${fields(rows, style).join(`
+`)}
 `);
-      for (const row of claimed)
-        if (row.txHash)
-          out.write(`  ${safeText(row.txHash)}
+      if (!dryRun) {
+        for (const row of claimed) {
+          if (row.txHash)
+            ctx.deps.stdout.write(`${bold(safeText(row.txHash), style)}
 `);
+        }
+      }
     }
-    out.write(`Still claimable: ${amountsText(body.remaining)}
-`);
-    if (Array.isArray(body.warnings))
+    if (dryRun)
+      notice(ctx.deps, "stdout", "note", "Nothing was sent.");
+    if (Array.isArray(body.warnings)) {
       for (const warning of body.warnings)
-        ctx.deps.stderr.write(`Warning: ${safeText(String(warning))}
-`);
+        notice(ctx.deps, "stderr", "warning", safeText(String(warning)));
+    }
     return 0;
   } catch (error) {
     return tradingFailure(ctx, error);
@@ -91498,8 +91524,54 @@ function isParsedClearinghouse2(value) {
 }
 
 // src/commands/perps-risk.ts
+init_presentation();
 init_render();
 init_trading();
+
+// src/usd.ts
+init_render();
+var COMPACT_UNITS = [
+  [1000000000000, "T"],
+  [1e9, "B"],
+  [1e6, "M"]
+];
+function formatUsd(value, options = {}) {
+  if (!Number.isFinite(value))
+    return "?";
+  const sign4 = value < 0 ? "-" : options.signed && value > 0 ? "+" : "";
+  const abs = Math.abs(value);
+  if (abs > 0 && abs < 0.005)
+    return `${sign4}<$0.01`;
+  if (options.compact) {
+    for (const [unit, suffix] of COMPACT_UNITS) {
+      if (Math.round(abs / (unit / 100)) >= 100)
+        return `${sign4}$${(abs / unit).toFixed(2)}${suffix}`;
+    }
+  }
+  return `${sign4}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function formatPrice(value) {
+  if (!Number.isFinite(value) || value <= 0)
+    return "?";
+  if (value >= 1)
+    return formatUsd(value);
+  return `$${Number(value.toPrecision(4)).toLocaleString("en-US", { maximumFractionDigits: 12 })}`;
+}
+function formatAmount(raw, decimals) {
+  const digits = BigInt(raw).toString().padStart(decimals + 1, "0");
+  if (decimals === 0)
+    return digits;
+  const whole = digits.slice(0, -decimals);
+  const fraction = digits.slice(-decimals).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+function formatQuantity(value) {
+  if (!Number.isFinite(value))
+    return "?";
+  return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
+}
+
+// src/commands/perps-risk.ts
 init_keys();
 init_swap();
 init_tee_rebind();
@@ -91544,6 +91616,16 @@ var usd = (value) => {
   return Number.isFinite(n) ? n.toFixed(2) : safeText(value);
 };
 var pct = (fraction) => fraction === null ? "-" : `${(fraction * 100).toFixed(1)}%`;
+function signedPct(fraction, missing) {
+  if (fraction === null || !Number.isFinite(fraction))
+    return missing;
+  const body = `${Math.abs(fraction * 100).toFixed(1)}%`;
+  if (fraction > 0)
+    return `+${body}`;
+  if (fraction < 0)
+    return `-${body}`;
+  return body;
+}
 function describeDriver(d) {
   if (d.kind === "position") {
     if (d.reason === "unmarked")
@@ -91570,6 +91652,69 @@ function levelCell(row) {
 }
 function accountText(line) {
   return `Account value ${usd(line.accountValueUsd)} USD (cross ${usd(line.crossAccountValueUsd)}), margin used ${usd(line.marginUsedUsd)}, free margin ${usd(line.freeMarginUsd)}, withdrawable ${usd(line.withdrawableUsd)}, margin ratio ${line.marginRatio === null ? "none (no cross equity)" : line.marginRatio.toFixed(4)}, unrealized ${usd(line.unrealizedPnlUsd)}, ${line.positionCount} ${line.positionCount === 1 ? "position" : "positions"}, ${safeText(line.mode)} mode`;
+}
+function usdField(value, missing, signed = false) {
+  if (value === null || value === undefined || value === "")
+    return missing;
+  const n = Number(value);
+  return Number.isFinite(n) ? formatUsd(n, { signed }) : safeText(value);
+}
+function riskPositionsTable(rows, style) {
+  if (rows.length === 0)
+    return "No open positions.";
+  const missing = symbols(style).missing;
+  const price = (value) => usdField(value, missing);
+  return renderTable([
+    "COIN",
+    "SIDE",
+    "SIZE",
+    "ENTRY",
+    "MARK",
+    "UPNL",
+    "ROE",
+    "LEV",
+    "LIQ",
+    "DIST",
+    "FUNDING PAID",
+    "MARGIN",
+    "VALUE",
+    "LEVEL"
+  ], rows.map((r) => [
+    safeText(r.coin),
+    safeText(r.side),
+    safeText(r.size),
+    price(r.entryPx),
+    r.markPx === null ? missing : price(r.markPx),
+    usdField(r.unrealizedPnlUsd, missing, true),
+    signedPct(Number(r.returnOnEquity), missing),
+    safeText(`${r.leverage.value}x ${r.leverage.type}`),
+    r.liquidationPx === null ? missing : price(r.liquidationPx),
+    r.liquidationDistance === null ? missing : pct(r.liquidationDistance),
+    usdField(r.fundingSinceOpenUsd, missing, true),
+    usdField(r.marginUsedUsd, missing),
+    usdField(r.positionValueUsd, missing),
+    levelCell(r)
+  ]), {
+    style,
+    width: style.width,
+    indent: 2,
+    columns: [
+      { id: true },
+      {},
+      {},
+      { priority: 5 },
+      {},
+      { signed: true },
+      { priority: 4, signed: true },
+      { priority: 6 },
+      {},
+      {},
+      { priority: 1, signed: true },
+      { priority: 3 },
+      { priority: 2 },
+      {}
+    ]
+  });
 }
 function positionsTable(rows) {
   if (rows.length === 0)
@@ -91610,6 +91755,62 @@ function thresholdsText(t) {
   return `Thresholds (${t.source}): warn under ${(t.warnDistanceBps / 100).toFixed(1)}% or ratio above ${(t.warnMarginRatioBps / 1e4).toFixed(2)}; critical under ${(t.criticalDistanceBps / 100).toFixed(1)}% or above ${(t.criticalMarginRatioBps / 1e4).toFixed(2)}; clear band ${(t.clearBandBps / 100).toFixed(1)} points`;
 }
 var NO_MONITOR = "Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch.";
+function writeRiskText(ctx, report) {
+  const style = terminalStyle(ctx.deps, "stdout");
+  const sym = symbols(style);
+  const level = report.level.toUpperCase();
+  const painted = report.level === "critical" ? failure(level, style) : report.level === "warn" ? accent(`${sym.warning} ${level}`, style, "warning") : success(level, style);
+  const lead = report.drivers[0] ?? report.closest;
+  const also = report.drivers.slice(1).map((driver) => describeDriver(driver));
+  const account = report.account;
+  const thresholds2 = report.thresholds;
+  const lines = [
+    painted,
+    "",
+    heading("Risk", style),
+    "",
+    ...fields([
+      ["Driver", lead ? describeDriver(lead) : sym.missing],
+      ...also.length > 0 ? [["Also", also.join(`
+`)]] : []
+    ], style),
+    "",
+    heading("Account", style),
+    "",
+    ...account ? fields([
+      ["Value", usdField(account.accountValueUsd, sym.missing)],
+      ["Cross", usdField(account.crossAccountValueUsd, sym.missing)],
+      ["Margin used", usdField(account.marginUsedUsd, sym.missing)],
+      ["Free margin", usdField(account.freeMarginUsd, sym.missing)],
+      ["Withdrawable", usdField(account.withdrawableUsd, sym.missing)],
+      ["Margin ratio", account.marginRatio === null ? "none (no cross equity)" : account.marginRatio.toFixed(4)],
+      ["Unrealized", usdField(account.unrealizedPnlUsd, sym.missing, true)],
+      ["Positions", String(account.positionCount)],
+      ["Mode", safeText(account.mode)]
+    ], style) : [`${" ".repeat(2)}No account figures.`],
+    "",
+    riskPositionsTable(report.positions, style),
+    "",
+    heading("Thresholds", style),
+    "",
+    ...fields([
+      ["Source", thresholds2.source],
+      [
+        "Warn",
+        `under ${(thresholds2.warnDistanceBps / 100).toFixed(1)}% or ratio above ${(thresholds2.warnMarginRatioBps / 1e4).toFixed(2)}`
+      ],
+      [
+        "Critical",
+        `under ${(thresholds2.criticalDistanceBps / 100).toFixed(1)}% or above ${(thresholds2.criticalMarginRatioBps / 1e4).toFixed(2)}`
+      ],
+      ["Clear band", `${(thresholds2.clearBandBps / 100).toFixed(1)} points`]
+    ], style)
+  ];
+  ctx.deps.stdout.write(`${lines.join(`
+`)}
+`);
+  notice(ctx.deps, "stdout", "note", NO_MONITOR);
+}
 async function perpsRisk(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
   if ("error" in parsed)
@@ -91636,22 +91837,8 @@ async function perpsRisk(args, ctx) {
     if (ctx.json)
       ctx.deps.stdout.write(`${JSON.stringify(report)}
 `);
-    else {
-      const out = ctx.deps.stdout;
-      out.write(`${riskLine(report)}
-`);
-      for (const d of report.drivers.slice(1))
-        out.write(`  also: ${describeDriver(d)}
-`);
-      if (report.account)
-        out.write(`${accountText(report.account)}
-`);
-      out.write(`${positionsTable(report.positions)}
-`);
-      out.write(`${thresholdsText(report.thresholds)}
-${NO_MONITOR}
-`);
-    }
+    else
+      writeRiskText(ctx, report);
     return perpsRiskExitCode(report.level);
   } catch (error) {
     return tradingFailure(ctx, error);
@@ -93648,9 +93835,75 @@ async function perpsReduceOnly(args, ctx) {
 // src/commands/perps-markets.ts
 init_args();
 init_deps();
+init_presentation();
 init_render();
 init_trading();
 init_swap();
+function marketUsd(value, missing, compact) {
+  if (value === null)
+    return missing;
+  const n = Number(value);
+  return Number.isFinite(n) ? formatUsd(n, { compact }) : missing;
+}
+function changeCell(value, missing) {
+  if (value === null)
+    return missing;
+  const n = Number(value);
+  if (!Number.isFinite(n))
+    return safeText(value);
+  const body = `${Math.abs(n).toFixed(1)}%`;
+  if (n > 0)
+    return `+${body}`;
+  if (n < 0)
+    return `-${body}`;
+  return body;
+}
+function fundingCell(rate, missing) {
+  if (rate === null)
+    return missing;
+  const n = Number(rate) * 100;
+  return Number.isFinite(n) ? `${n.toFixed(4)}%` : missing;
+}
+function flagCell(row) {
+  return [
+    row.onlyIsolated ? "iso" : "",
+    row.atOpenInterestCap ? "cap" : "",
+    row.candle.tradeable === false ? `x:${row.candle.reason}` : row.candle.tradeable === null ? "?:networkMismatch" : ""
+  ].filter(Boolean).join(",");
+}
+function writeMarkets(ctx, result) {
+  const style = terminalStyle(ctx.deps, "stdout");
+  const missing = symbols(style).missing;
+  const rows = result.markets.map((row) => [
+    safeText(row.coin),
+    marketUsd(row.markPx, missing, false),
+    changeCell(row.change24hPct, missing),
+    fundingCell(row.fundingRate, missing),
+    row.fundingAprPct === null ? missing : `${row.fundingAprPct}%`,
+    marketUsd(row.openInterestUsd, missing, true),
+    marketUsd(row.dayNotionalVolumeUsd, missing, true),
+    `${row.maxLeverage}x`,
+    flagCell(row)
+  ]);
+  ctx.deps.stdout.write(`${renderTable(["COIN", "MARK", "24H", "FUNDING/H", "APR", "OI", "24H VOL", "LEV", "FLAGS"], rows, {
+    style,
+    width: style.width,
+    indent: 2,
+    columns: [
+      { id: true },
+      {},
+      { signed: true, priority: 4 },
+      { priority: 3 },
+      { priority: 5 },
+      {},
+      { priority: 2 },
+      {},
+      { priority: 1 }
+    ]
+  })}
+`);
+  notice(ctx.deps, "stdout", "note", `Hyperliquid ${result.network}. OI floor ${formatUsd(result.gate.minOpenInterestUsd, { compact: true })} (${result.gate.source}). Tradeable now is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`);
+}
 var flags = {
   markets: ["--sort", "--limit"],
   market: [],
@@ -93694,32 +93947,19 @@ async function read(ctx, argv, command) {
 `);
       return 0;
     }
+    if ("markets" in result) {
+      for (const warning of result.warnings)
+        notice(ctx.deps, "stderr", "warning", safeText(warning));
+      writeMarkets(ctx, result);
+      return 0;
+    }
     for (const warning of result.warnings)
       ctx.deps.stderr.write(`${safeText(warning)}
 `);
     const out = (line) => ctx.deps.stdout.write(`${line}
 `);
     out(`Hyperliquid ${result.network}; OI floor $${result.gate.minOpenInterestUsd} (${result.gate.source}). Tradeability is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`);
-    const money = (n) => n === null ? "-" : Number(n).toFixed(2);
-    if ("markets" in result) {
-      out("COIN  MARK USD  24H %  FUNDING %/h  APR %  OI USD  24H VOLUME USD  LEVERAGE  FLAGS");
-      for (const row of result.markets)
-        out([
-          safeText(row.coin),
-          money(row.markPx),
-          row.change24hPct ?? "-",
-          row.fundingRate === null ? "-" : (Number(row.fundingRate) * 100).toFixed(4),
-          row.fundingAprPct ?? "-",
-          row.openInterestUsd ?? "-",
-          money(row.dayNotionalVolumeUsd),
-          `${row.maxLeverage}x`,
-          [
-            row.onlyIsolated ? "iso" : "",
-            row.atOpenInterestCap ? "cap" : "",
-            row.candle.tradeable === false ? `x:${row.candle.reason}` : row.candle.tradeable === null ? "?:networkMismatch" : ""
-          ].filter(Boolean).join(",")
-        ].join("  "));
-    } else if ("market" in result) {
+    if ("market" in result) {
       out(JSON.stringify({ ...result.market, coin: safeText(result.market.coin) }, null, 2));
     } else if ("bids" in result) {
       out(`${safeText(result.coin)}: BID PX / SIZE / ORDERS | ASK PX / SIZE / ORDERS`);
@@ -94627,49 +94867,6 @@ init_deps();
 init_presentation();
 init_profiles();
 init_render();
-
-// src/usd.ts
-init_render();
-var COMPACT_UNITS = [
-  [1000000000000, "T"],
-  [1e9, "B"],
-  [1e6, "M"]
-];
-function formatUsd(value, options = {}) {
-  if (!Number.isFinite(value))
-    return "?";
-  const sign5 = value < 0 ? "-" : options.signed && value > 0 ? "+" : "";
-  const abs = Math.abs(value);
-  if (abs > 0 && abs < 0.005)
-    return `${sign5}<$0.01`;
-  if (options.compact) {
-    for (const [unit, suffix] of COMPACT_UNITS) {
-      if (Math.round(abs / (unit / 100)) >= 100)
-        return `${sign5}$${(abs / unit).toFixed(2)}${suffix}`;
-    }
-  }
-  return `${sign5}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-function formatPrice(value) {
-  if (!Number.isFinite(value) || value <= 0)
-    return "?";
-  if (value >= 1)
-    return formatUsd(value);
-  return `$${Number(value.toPrecision(4)).toLocaleString("en-US", { maximumFractionDigits: 12 })}`;
-}
-function formatAmount(raw, decimals) {
-  const digits = BigInt(raw).toString().padStart(decimals + 1, "0");
-  if (decimals === 0)
-    return digits;
-  const whole = digits.slice(0, -decimals);
-  const fraction = digits.slice(-decimals).replace(/0+$/, "");
-  return fraction ? `${whole}.${fraction}` : whole;
-}
-function formatQuantity(value) {
-  if (!Number.isFinite(value))
-    return "?";
-  return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
-}
 
 // src/commands/financial-output.ts
 init_presentation();
@@ -99172,6 +99369,7 @@ async function tokenVampCandidates(args, ctx) {
 // src/commands/transfer.ts
 init_args();
 init_evm_lite();
+init_presentation();
 init_profiles();
 init_render();
 init_solana_verify();
@@ -99239,6 +99437,16 @@ function describeDestination(destination) {
     case "address":
       return `address ${destination.address} (not one of this account's linked wallets; Candle decides whether it is allowed)`;
   }
+}
+function writePreview(ctx, title, rows, note) {
+  const style = terminalStyle(ctx.deps, "stderr");
+  ctx.deps.stderr.write(`${heading(title, style)}
+
+${fields(rows, style).join(`
+`)}
+`);
+  if (note)
+    notice(ctx.deps, "stderr", "note", note);
 }
 async function confirmTransfer(ctx, lines, yes) {
   const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
@@ -99321,8 +99529,11 @@ async function transfer(args, ctx) {
     if (builtAmount === null || !isMax && builtAmount !== amountRaw)
       throw new TradingError("INVALID_RESPONSE", "The transfer build does not name the confirmed amount; nothing was signed.");
     const amountShown = asset ? `${decimalAmount(builtAmount, BASES[asset]?.decimals ?? 0)} ${asset}` : `${builtAmount} raw units of ${label}`;
-    ctx.deps.stderr.write(`Built transfer ${transferId}: ${amountShown}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}.
-`);
+    writePreview(ctx, "Built", [
+      ["Transfer", transferId],
+      ["Amount", amountShown],
+      ...typeof built.destinationKind === "string" ? [["To", built.destinationKind === "vault" ? "the vault" : "a linked wallet"]] : []
+    ]);
     const reader = await solana();
     const problem = await tradingRead(ctx, reader, () => solanaSpendProblem(unsigned[0], wallet3.address, reader.rpc, {
       kind: "transfer",
@@ -99332,8 +99543,12 @@ async function transfer(args, ctx) {
     }));
     if (problem)
       throw new TradingError("INVALID_RESPONSE", `The transaction Candle built does not move ${safeText(amountShown)} to ${destination.address} and nothing else (${safeText(problem)}); nothing was signed.`);
-    ctx.deps.stderr.write(`Checked locally: it moves ${safeText(amountShown)} from ${wallet3.address} to ${destination.address} and nothing else (simulated; a program can still behave differently once signed).
-`);
+    writePreview(ctx, "Checked locally", [
+      ["Moves", safeText(amountShown)],
+      ["From", wallet3.address],
+      ["To", destination.address],
+      ["Else", "nothing else"]
+    ], "Simulated. A program can still behave differently once signed.");
     const signed2 = await relaySign(ctx, key, wallet3, unsigned[0]);
     const result = await request(ctx, key, "/api/v1/agent/transfer/submit", {
       transferId,
@@ -99412,8 +99627,15 @@ async function hoodTransfer(ctx, args) {
     throw new TradingError("INVALID_RESPONSE", `The leg Candle built does not move ${decimalAmount(amountRaw, decimals)} ${label} to ${destination.address}; nothing was signed.`);
   const leg = first.nextLeg;
   const maxFee = BigInt(leg.maxFeePerGas);
-  ctx.deps.stderr.write(`Built transfer ${safeText(transferId)}: ${decimalAmount(amountRaw, decimals)} ${safeText(label)}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}. Gas up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei).
-`);
+  writePreview(ctx, "Built", [
+    ["Transfer", safeText(transferId)],
+    ["Amount", `${decimalAmount(amountRaw, decimals)} ${safeText(label)}`],
+    ...typeof built.destinationKind === "string" ? [["To", built.destinationKind === "vault" ? "the vault" : "a linked wallet"]] : [],
+    [
+      "Gas",
+      `up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei)`
+    ]
+  ]);
   const run2 = await runSequencedLegs(ctx, key, {
     wallet: wallet3,
     first,
@@ -106496,6 +106718,8 @@ async function resolveLegacyPath(env, home) {
 
 // src/commands/vault-status.ts
 init_args();
+init_presentation();
+init_render();
 init_fido2();
 init_format();
 init_passphrase();
@@ -106504,7 +106728,9 @@ init_sidecar();
 init_store();
 init_vault_support();
 var LIST_POINTER = "One line per key, with an optional SOL balance: candle vault list";
-var NO_VERIFIED_BACKUP_NOTE = "No backup of this vault has ever been verified from this machine. If this file is lost, only the 24-word recovery phrase can rebuild it, and it rebuilds derived keys only. Take one now: candle vault backup --to <path>   (on a Mac with iCloud Drive: candle vault backup --to icloud)";
+var NO_VERIFIED_BACKUP_NOTE = `No backup of this vault has ever been verified from this machine. If this file is lost, only the 24-word recovery phrase can rebuild it, and it rebuilds derived keys only. Take one now:
+candle vault backup --to <path>
+on a Mac with iCloud Drive: candle vault backup --to icloud`;
 async function vaultStatus(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore"],
@@ -106583,132 +106809,119 @@ async function vaultStatus(args, ctx) {
       });
       return 0;
     }
-    deps.stdout.write(`${path}
+    const style = terminalStyle(deps, "stdout");
+    const miss = symbols(style).missing;
+    const write = (line = "") => deps.stdout.write(`${line}
 `);
-    deps.stdout.write(`  version      ${file.version}
-`);
-    deps.stdout.write(`  generation   ${file.generation}
-`);
-    deps.stdout.write(`  updated      ${file.updatedAt}
-`);
-    deps.stdout.write(`
-Factors (${envelopes.length}), ${recoverable} recoverable (domains counted once):
-`);
+    write(path);
+    write("");
+    write(heading("Vault", style));
+    write("");
+    for (const line of fields([
+      ["Version", String(file.version)],
+      ["Generation", String(file.generation)],
+      ["Updated", formatTime(file.updatedAt)]
+    ], style))
+      write(line);
+    write("");
+    write(heading("Factors", style));
+    write("");
+    write(`${" ".repeat(2)}${envelopes.length} factors, ${recoverable} recoverable (domains counted once)`);
     for (const envelope of envelopes) {
-      deps.stdout.write(`  ${envelope.id}  ${envelope.factor}${envelope.transport ? `/${envelope.transport}` : ""}  ${envelope.domain}  ${envelope.availability}
-`);
-      deps.stdout.write(`      label      ${envelope.label || "(none)"}
-`);
-      if (envelope.strength)
-        deps.stdout.write(`      strength   ${envelope.strengthLabel}
-`);
+      write("");
+      write(`${" ".repeat(2)}${envelope.id}`);
+      const rows = [
+        ["Factor", envelope.factor],
+        ["Domain", envelope.domain],
+        ["Availability", envelope.availability],
+        ["Label", envelope.label || miss]
+      ];
+      if (envelope.transport)
+        rows.splice(1, 0, ["Transport", envelope.transport]);
+      if (envelope.strengthLabel)
+        rows.push(["Strength", envelope.strengthLabel]);
       if (envelope.sharedDomainNote)
-        deps.stdout.write(`      note       ${envelope.sharedDomainNote}
-`);
+        rows.push(["Note", envelope.sharedDomainNote]);
+      for (const line of fields(rows, style, 4))
+        write(line);
     }
     if (recoverable === 1) {
-      deps.stdout.write(`
-This vault has exactly one recoverable factor. Lose it and no copy of this file can be opened; the recovery phrase is then the only route, and it restores derived keys only.
-`);
+      notice(deps, "stdout", "warning", "This vault has exactly one recoverable factor. Lose it and no copy of this file can be opened; the recovery phrase is then the only route, and it restores derived keys only.");
     }
+    write("");
+    write(heading("This machine", style));
     if (sidecar) {
-      deps.stdout.write(`
-This machine's record (vault.state.json, cleartext, best effort):
-`);
-      deps.stdout.write(`  last generation seen   ${sidecar.lastGeneration}
-`);
+      write("");
+      for (const line of fields([
+        ["Record", "vault.state.json, cleartext, best effort"],
+        ["Last generation seen", String(sidecar.lastGeneration)]
+      ], style))
+        write(line);
       if (sidecar.lastVerifiedBackupAt && backup) {
         for (const line of lastBackupLines(sidecar, backup))
-          deps.stdout.write(`${line}
-`);
+          write(line);
       }
       if (sidecar.lastBackupSharedDomainAccepted) {
-        deps.stdout.write(`  shared domain          accepted for the last backup destination (an unsealed copy, every envelope included)
-`);
+        write("  shared domain          accepted for the last backup destination (an unsealed copy, every envelope included)");
       }
       if (sidecar.removedEnvelopeIds.length > 0) {
-        deps.stdout.write(`  removed envelopes      ${sidecar.removedEnvelopeIds.join(", ")}
-`);
-        deps.stdout.write(`                         any copy of this file made while one existed still opens with that factor.
-`);
+        write(`  removed envelopes      ${sidecar.removedEnvelopeIds.join(", ")}`);
+        write("                         any copy of this file made while one existed still opens with that factor.");
       }
     } else {
-      deps.stdout.write(`
-No vault.state.json beside this vault, so an older copy of it cannot be recognized on this machine.
-`);
+      notice(deps, "stdout", "note", "No vault.state.json beside this vault, so an older copy of it cannot be recognized on this machine.");
     }
-    if (sidecar?.lastVerifiedBackupAt === undefined) {
-      deps.stdout.write(`
-${NO_VERIFIED_BACKUP_NOTE}
-`);
-    }
+    if (sidecar?.lastVerifiedBackupAt === undefined)
+      notice(deps, "stdout", "warning", NO_VERIFIED_BACKUP_NOTE);
     if (legacyPresent) {
-      deps.stdout.write(`
-A legacy wallets.enc exists at ${legacy}; this CLI does not read it.
-`);
-      deps.stdout.write(`  A key it holds that was imported is already a linked wallet, managed with: candle wallets
-`);
-      deps.stdout.write(`  A key it holds that was never imported opens with an earlier release's \`wallets export\`; move those funds on chain to a vault key.
-`);
+      notice(deps, "stdout", "warning", `A legacy wallets.enc exists at ${legacy}; this CLI does not read it.
+A key it holds that was imported is already a linked wallet, managed with: candle wallets
+A key it holds that was never imported opens with an earlier release's \`wallets export\`; move those funds on chain to a vault key.`);
     }
     if (!unlocked) {
-      deps.stdout.write(`
-Run with --unlock to list the keys, the derivation counters and the exposure flags, which are inside the encrypted index.
-`);
+      notice(deps, "stdout", "note", "Run with --unlock to list the keys, the derivation counters and the exposure flags, which are inside the encrypted index.");
       return 0;
     }
-    deps.stdout.write(`
-Keys (${unlocked.entries.length}):
-`);
+    write("");
+    write(heading(`Keys (${unlocked.entries.length})`, style));
     for (const entry of unlocked.entries) {
-      deps.stdout.write(`  ${entry.address}
-`);
-      deps.stdout.write(`      label       ${entry.label || "(none)"}
-`);
-      deps.stdout.write(`      role        ${entry.role} (${entry.origin})
-`);
+      write("");
+      write(`${" ".repeat(2)}${entry.address}`);
+      const rows = [
+        ["Label", entry.label || miss],
+        ["Role", `${entry.role} (${entry.origin})`],
+        ["Exposure", entry.exposure]
+      ];
       if (entry.derivation)
-        deps.stdout.write(`      derivation  ${entry.derivation}
-`);
-      deps.stdout.write(`      exposure    ${entry.exposure}
-`);
+        rows.splice(2, 0, ["Derivation", entry.derivation]);
       if (entry.teeLifecycle)
-        deps.stdout.write(`      tee         ${entry.teeLifecycle}${entry.teeRemoteState ? ` (server: ${entry.teeRemoteState})` : ""}
-`);
+        rows.push(["Tee", `${entry.teeLifecycle}${entry.teeRemoteState ? ` (server: ${entry.teeRemoteState})` : ""}`]);
       if (entry.destinationExposureAccepted) {
-        deps.stdout.write(`      accepted    an operator asserted this pinned destination's history despite exposureUnknown
-`);
+        rows.push(["Accepted", "an operator asserted this pinned destination's history despite exposureUnknown"]);
       }
+      for (const line of fields(rows, style, 4))
+        write(line);
     }
-    deps.stdout.write(`
-${LIST_POINTER}
-`);
+    write("");
+    write(LIST_POINTER);
     if (unlocked.duplicateLabels.length > 0) {
-      deps.stdout.write(`
-Duplicate labels (${unlocked.duplicateLabels.length}):
-`);
+      write("");
+      write(heading(`Duplicate labels (${unlocked.duplicateLabels.length})`, style));
       for (const line of duplicateLabelLines(unlocked.duplicateLabels))
-        deps.stdout.write(`${line}
-`);
+        write(line);
     }
-    deps.stdout.write(`
-Derivation counters (next index per branch):
-`);
+    write("");
+    write(heading("Derivation counters (next index per branch)", style));
+    write("");
     for (const [branch, value] of Object.entries(unlocked.nextIndex)) {
       const exposed = unlocked.exposedIndexes[branch] ?? [];
-      deps.stdout.write(`  ${branch.padEnd(12)} ${value}${exposed.length > 0 ? `   known exposed: ${exposed.join(", ")}` : ""}
-`);
+      write(`  ${branch.padEnd(12)} ${value}${exposed.length > 0 ? `   known exposed: ${exposed.join(", ")}` : ""}`);
     }
-    deps.stdout.write(`  recovery phrase exported: ${unlocked.rootExported ? "yes" : "no"}
-`);
+    write(`  recovery phrase exported: ${unlocked.rootExported ? "yes" : "no"}`);
     if (unlocked.restored) {
-      deps.stdout.write(`
-This vault was built by \`vault restore --phrase\`. Its keys are recovery artifacts, not fresh cold keys, and it does not allocate new addresses; \`vault new-key\` and \`vault promote --from\` refuse here.
-`);
+      notice(deps, "stdout", "note", "This vault was built by `vault restore --phrase`.\nIts keys are recovery artifacts, not fresh cold keys, and it does not allocate new addresses; `vault new-key` and `vault promote --from` refuse here.");
     }
-    deps.stdout.write(`
-The recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.
-`);
+    notice(deps, "stdout", "note", "The recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.");
     return 0;
   });
 }
@@ -106741,7 +106954,7 @@ function lastBackupLines(sidecar, backup) {
     return factors.length > 0 ? `, sealed: opens with the passphrase or ${factors.join(", ")}` : ", sealed: opens with the passphrase only";
   };
   const lines = [
-    `  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "not recorded"}${opensWith()})`
+    `  last verified backup   ${formatTime(sidecar.lastVerifiedBackupAt)} (${sidecar.lastBackupDomain ?? "not recorded"}${opensWith()})`
   ];
   if (backup.freshBackupAdvised.length > 0) {
     lines.push(`  fresh backup advised   the last ${sidecar.lastBackupSealed ? "sealed " : ""}copy does not carry security key ${backup.freshBackupAdvised.join(", ")}; a new \`candle vault backup\` to the same destination would open with it too.`);

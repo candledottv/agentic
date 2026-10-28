@@ -19,7 +19,7 @@ import { GENERATED_WORD_COUNT, SAVE_THE_PASSPHRASE, SAVED_IT_PROMPT } from "../v
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { generatedPassphraseFrom, makeVault, relabelEntries, useCheapKdf } from "../vault/test-vault"
 import { INIT_PASSPHRASE_PROMPT } from "./vault-init"
-import { duplicateLabelLines, LIST_POINTER, NO_VERIFIED_BACKUP_NOTE } from "./vault-status"
+import { duplicateLabelLines, LIST_POINTER } from "./vault-status"
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -845,8 +845,11 @@ describe("T39: AD-3's removals", () => {
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     expect(await run(["vault", "status", "--keystore", h.vaultPath], s.deps)).toBe(0)
     expect(s.stdout.text).toContain("A legacy wallets.enc exists")
-    expect(s.stdout.text).toContain("this CLI does not read it")
-    expect(s.stdout.text).toContain("move those funds on chain to a vault key")
+    const flat = s.stdout.text.replace(/\s+/g, " ")
+    expect(flat).toContain("this CLI does not read it")
+    expect(flat).toContain(
+      "opens with an earlier release's `wallets export`; move those funds on chain to a vault key.",
+    )
     // Byte-identical afterwards: the vault has no code path that touches it.
     expect(await readFile(legacy, "utf8")).toBe(contents)
   })
@@ -1325,12 +1328,14 @@ describe("BE-245: init offers a backup, and status nags until there is one", () 
 
     const before = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     await run(["vault", "status", "--keystore", h.vaultPath], before.deps)
-    expect(before.stdout.text).toContain(NO_VERIFIED_BACKUP_NOTE)
+    expect(before.stdout.text).toContain("No backup of this vault has ever been verified from this machine.")
+    expect(before.stdout.text).toContain("candle vault backup --to <path>")
+    expect(before.stdout.text).toContain("candle vault backup --to icloud")
 
     // Twice, because "every time" is the point: the fact does not scroll away after one reading.
     const again = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     await run(["vault", "status", "--keystore", h.vaultPath], again.deps)
-    expect(again.stdout.text).toContain(NO_VERIFIED_BACKUP_NOTE)
+    expect(again.stdout.text).toContain("No backup of this vault has ever been verified from this machine.")
 
     const elsewhere = await mkdtemp(join(tmpdir(), "candle-vault-backup-to-"))
     const b = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
@@ -1392,14 +1397,14 @@ describe("T19: vault status --unlock reports duplicate labels", () => {
         ],
       },
     ])
-    expect(s.stdout.text).toContain(`\nDuplicate labels (1):\n${expected.join("\n")}\n`)
+    expect(s.stdout.text).toContain(`\nDuplicate labels (1)\n${expected.join("\n")}\n`)
     expect(expected[0]).toBe(`  treasury      2 keys: ${addressA} (${ids[0]}), ${addressB} (${ids[1]})`)
     expect(expected[1]).toBe(
       "                --from treasury always picks the first; rename one: candle vault rename <address> <new-label>",
     )
     // After the Keys block and before the derivation counters.
-    const at = s.stdout.text.indexOf("Duplicate labels (1):")
-    expect(at).toBeGreaterThan(s.stdout.text.indexOf("Keys (2):"))
+    const at = s.stdout.text.indexOf("\nDuplicate labels (1)\n")
+    expect(at).toBeGreaterThan(s.stdout.text.indexOf("\nKeys (2)\n"))
     expect(at).toBeLessThan(s.stdout.text.indexOf("Derivation counters"))
 
     const j = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
@@ -1448,9 +1453,9 @@ describe("T13: vault status --unlock keeps its keys and points at vault list", (
 
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)).toBe(0)
-    expect(s.stdout.text).toContain("Keys (1):")
+    expect(s.stdout.text).toContain("\nKeys (1)\n")
     expect(s.stdout.text).toContain(`\n${LIST_POINTER}\n`)
-    expect(s.stdout.text.indexOf(LIST_POINTER)).toBeGreaterThan(s.stdout.text.indexOf("Keys (1):"))
+    expect(s.stdout.text.indexOf(LIST_POINTER)).toBeGreaterThan(s.stdout.text.indexOf("\nKeys (1)\n"))
 
     const j = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "status", "--unlock", "--json", "--keystore", h.vaultPath], j.deps)).toBe(0)

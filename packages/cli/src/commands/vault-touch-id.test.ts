@@ -303,7 +303,7 @@ describe("factor add touch-id: the ceremony", () => {
       await run(["vault", "status", "--unlock", "--factor", "touch-id", "--keystore", v.vaultPath], later.deps),
     ).toBe(0)
     expect(later.asked).toEqual([])
-    expect(later.stdout.text).toContain("Keys (0)")
+    expect(later.stdout.text).toContain("\nKeys (0)\n")
   })
 
   test("no secret reaches stdout, stderr, --json or the file: the unwrapped KEK is the canary", async () => {
@@ -998,7 +998,9 @@ describe("unlocking with Touch ID", () => {
     })
     expect(await run(["vault", "status", "--unlock", "--keystore", t.vaultPath], linux.deps)).toBe(0)
     expect(linux.asked).toEqual(["secret: Vault passphrase (input hidden): "])
-    expect(linux.stdout.text).toContain("secure-enclave  this-device  unsupported-on-this-platform")
+    expect(linux.stdout.text).toContain("secure-enclave")
+    expect(linux.stdout.text).toContain("this-device")
+    expect(linux.stdout.text).toContain("unsupported-on-this-platform")
     expect(linux.calls).toEqual([])
   })
 

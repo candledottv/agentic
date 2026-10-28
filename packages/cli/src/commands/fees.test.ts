@@ -93,7 +93,10 @@ describe("candle fees claim (FE-438)", () => {
     })
     expect(await run(["fees", "claim", "MintA", "--dry-run"], f.deps)).toBe(0)
     expect(f.calls[0]).toEqual({ path: PATH, method: "POST", body: { dryRun: true } })
-    expect(f.stdout.text).toContain("Dry run: would claim 1.5 SOL to W1. Nothing was sent.")
+    expect(f.stdout.text).toContain("Dry run")
+    expect(f.stdout.text).toContain("1.5 SOL")
+    expect(f.stdout.text).toContain("W1")
+    expect(f.stdout.text).toContain("Nothing was sent.")
   })
 
   test("a real claim posts dryRun false and prints the transaction and what remains", async () => {
@@ -112,10 +115,12 @@ describe("candle fees claim (FE-438)", () => {
     })
     expect(await run(["fees", "claim", "MintA"], f.deps)).toBe(0)
     expect(f.calls[0]?.body).toEqual({ dryRun: false })
-    expect(f.stdout.text).toContain("Claimed 1.5 SOL to W1")
+    expect(f.stdout.text).toContain("Claimed")
+    expect(f.stdout.text).toContain("1.5 SOL")
+    expect(f.stdout.text).toContain("W1")
     expect(f.stdout.text).toContain("Sig1")
-    expect(f.stdout.text).toContain("Still claimable: 0.000000001 SOL")
-    expect(f.stderr.text).toContain("Warning: a leg failed")
+    expect(f.stdout.text).toContain("0.000000001 SOL")
+    expect(f.stderr.text).toContain("a leg failed")
   })
 
   test("a LAUNCH_DISABLED 503 answer exits 1", async () => {

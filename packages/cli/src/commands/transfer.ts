@@ -17,6 +17,11 @@
  * or marked trusted (the bound key must hold `transfer:bound`). The confirmation names the
  * destination and which of those it is, so the operator reads what they are approving.
  *
+ * `--json` is unchanged. A cancelled confirm is `{ success, status: "cancelled", walletId,
+ * destination }` (Hood adds `chain`). A submitted transfer is the server receipt plus `transferId`,
+ * `walletId`, `wallet` and `destination`. A cancel never carried a transfer id. The local preview
+ * (Built, Checked locally) is stderr only. MCP `candle_transfer` is the embedded-wallet rail.
+ *
  * Phase 4b-2 (spec `2026-09-24-ember-phase-4b-hood-tee-wallets-design.md`, D9): from a Hood TEE
  * wallet, `--asset ETH|USDG` or `--token <0x...>`. The same destinations apply, with EVM addresses
  * compared case-blind. The one leg runs through the D4 leg loop: Candle sets its nonce and fees,
@@ -26,6 +31,7 @@
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { checkEvmAddress, decodeErc20Transfer, formatUnits, hexToBytes, sameEvmAddress } from "../evm-lite"
+import { fields, heading, notice, terminalStyle } from "../presentation"
 import { apiKeyPrefix } from "../profiles"
 import { writeUsageFailure } from "../render"
 import { solanaSpendProblem } from "../solana-verify"
@@ -174,6 +180,21 @@ export function describeDestination(destination: TransferDestination): string {
   }
 }
 
+/**
+ * The local preview after a build, on stderr (where these lines go today). Addresses stay full:
+ * they are what the operator is about to approve. `--json` does not print this.
+ */
+function writePreview(
+  ctx: CommandContext,
+  title: string,
+  rows: ReadonlyArray<readonly [string, string]>,
+  note?: string,
+): void {
+  const style = terminalStyle(ctx.deps, "stderr")
+  ctx.deps.stderr.write(`${heading(title, style)}\n\n${fields(rows, style).join("\n")}\n`)
+  if (note) notice(ctx.deps, "stderr", "note", note)
+}
+
 async function confirmTransfer(ctx: CommandContext, lines: string[], yes: boolean): Promise<boolean> {
   const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
   for (const line of lines) output.write(`${safeText(line)}\n`)
@@ -299,9 +320,13 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
     const amountShown = asset
       ? `${decimalAmount(builtAmount, BASES[asset]?.decimals ?? 0)} ${asset}`
       : `${builtAmount} raw units of ${label}`
-    ctx.deps.stderr.write(
-      `Built transfer ${transferId}: ${amountShown}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}.\n`,
-    )
+    writePreview(ctx, "Built", [
+      ["Transfer", transferId],
+      ["Amount", amountShown],
+      ...(typeof built.destinationKind === "string"
+        ? [["To", built.destinationKind === "vault" ? "the vault" : "a linked wallet"] as const]
+        : []),
+    ])
     // SEC-003: decode and simulate before the relay signs. The wallet must pay the fee, send
     // exactly that amount of that asset, and nothing it moves may land anywhere but the wallet and
     // the destination this command resolved; no account of the wallet's may change hands.
@@ -320,8 +345,16 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
         "INVALID_RESPONSE",
         `The transaction Candle built does not move ${safeText(amountShown)} to ${destination.address} and nothing else (${safeText(problem)}); nothing was signed.`,
       )
-    ctx.deps.stderr.write(
-      `Checked locally: it moves ${safeText(amountShown)} from ${wallet.address} to ${destination.address} and nothing else (simulated; a program can still behave differently once signed).\n`,
+    writePreview(
+      ctx,
+      "Checked locally",
+      [
+        ["Moves", safeText(amountShown)],
+        ["From", wallet.address],
+        ["To", destination.address],
+        ["Else", "nothing else"],
+      ],
+      "Simulated. A program can still behave differently once signed.",
     )
     const signed = await relaySign(ctx, key, wallet, unsigned[0])
     const result = await request(ctx, key, "/api/v1/agent/transfer/submit", {
@@ -459,9 +492,17 @@ async function hoodTransfer(
     )
   const leg = first.nextLeg
   const maxFee = BigInt(leg.maxFeePerGas)
-  ctx.deps.stderr.write(
-    `Built transfer ${safeText(transferId)}: ${decimalAmount(amountRaw, decimals)} ${safeText(label)}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}. Gas up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei).\n`,
-  )
+  writePreview(ctx, "Built", [
+    ["Transfer", safeText(transferId)],
+    ["Amount", `${decimalAmount(amountRaw, decimals)} ${safeText(label)}`],
+    ...(typeof built.destinationKind === "string"
+      ? [["To", built.destinationKind === "vault" ? "the vault" : "a linked wallet"] as const]
+      : []),
+    [
+      "Gas",
+      `up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei)`,
+    ],
+  ])
   const run = await runSequencedLegs(ctx, key, {
     wallet,
     first,

@@ -145,9 +145,10 @@ test("AC8 failure/degradation retain JSON shape and exit status", async () => {
 test("human markets table includes hourly funding, APR, money and build-gate caveat", async () => {
   const f = fixture()
   expect(await run(["perps", "markets"], f.deps)).toBe(0)
-  expect(f.stdout.text).toContain("FUNDING %/h")
-  expect(f.stdout.text).toContain("0.0013")
-  expect(f.stdout.text).toContain("1000000.00")
+  expect(f.stdout.text).toContain("FUNDING/H")
+  expect(f.stdout.text).toContain("0.0013%")
+  expect(f.stdout.text).toContain("$1.00M")
+  expect(f.stdout.text).toContain("$100.00")
   expect(f.stdout.text).toContain("not a promise")
 })
 

@@ -12,9 +12,15 @@
  * That split is not a convenience. The cleartext half is exactly the pre-unlock exposure N4 asks
  * this document to state out loud, and printing it under one command makes it inspectable rather
  * than something a reader has to infer from the file.
+ *
+ * `--json` is one object. `unlocked` is present only with `--unlock`: the labels live inside the
+ * index, and a locked read must not carry the key (the absence is the contract, not a second
+ * shape to collapse). There is no MCP twin.
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { fields, heading, notice, symbols, terminalStyle } from "../presentation"
+import { formatTime } from "../render"
 import { countRecoverableFactors, isSecurityKeyEnvelope } from "../vault/domains"
 import { VaultError } from "../vault/errors"
 import { currentPlatformFacts } from "../vault/fido2"
@@ -42,13 +48,13 @@ import {
 export const LIST_POINTER = "One line per key, with an optional SOL balance: candle vault list"
 
 /**
- * BE-245's nag. One sentence, said on every `status` until a backup has been verified from this
+ * BE-245's nag. Said on every `status` until a backup has been verified from this
  * machine, because "no copy of this file exists anywhere" is the fact a vault holder most needs
  * and the one this command used to leave to inference. It names both destinations: a path, and
  * the iCloud Drive shorthand for the Macs where the literal path is why nobody bothers.
  */
 export const NO_VERIFIED_BACKUP_NOTE =
-  "No backup of this vault has ever been verified from this machine. If this file is lost, only the 24-word recovery phrase can rebuild it, and it rebuilds derived keys only. Take one now: candle vault backup --to <path>   (on a Mac with iCloud Drive: candle vault backup --to icloud)"
+  "No backup of this vault has ever been verified from this machine. If this file is lost, only the 24-word recovery phrase can rebuild it, and it rebuilds derived keys only. Take one now:\ncandle vault backup --to <path>\non a Mac with iCloud Drive: candle vault backup --to icloud"
 
 export async function vaultStatus(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
@@ -151,52 +157,86 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
       return 0
     }
 
-    deps.stdout.write(`${path}\n`)
-    deps.stdout.write(`  version      ${file.version}\n`)
-    deps.stdout.write(`  generation   ${file.generation}\n`)
-    deps.stdout.write(`  updated      ${file.updatedAt}\n`)
-    deps.stdout.write(`\nFactors (${envelopes.length}), ${recoverable} recoverable (domains counted once):\n`)
+    const style = terminalStyle(deps, "stdout")
+    const miss = symbols(style).missing
+    const write = (line = "") => deps.stdout.write(`${line}\n`)
+    write(path)
+    write("")
+    write(heading("Vault", style))
+    write("")
+    for (const line of fields(
+      [
+        ["Version", String(file.version)],
+        ["Generation", String(file.generation)],
+        ["Updated", formatTime(file.updatedAt)],
+      ],
+      style,
+    ))
+      write(line)
+    write("")
+    write(heading("Factors", style))
+    write("")
+    write(`${" ".repeat(2)}${envelopes.length} factors, ${recoverable} recoverable (domains counted once)`)
     for (const envelope of envelopes) {
-      deps.stdout.write(
-        `  ${envelope.id}  ${envelope.factor}${envelope.transport ? `/${envelope.transport}` : ""}  ${envelope.domain}  ${envelope.availability}\n`,
-      )
-      deps.stdout.write(`      label      ${envelope.label || "(none)"}\n`)
-      if (envelope.strength) deps.stdout.write(`      strength   ${envelope.strengthLabel}\n`)
-      if (envelope.sharedDomainNote) deps.stdout.write(`      note       ${envelope.sharedDomainNote}\n`)
+      write("")
+      write(`${" ".repeat(2)}${envelope.id}`)
+      const rows: [string, string][] = [
+        ["Factor", envelope.factor],
+        ["Domain", envelope.domain],
+        ["Availability", envelope.availability],
+        ["Label", envelope.label || miss],
+      ]
+      if (envelope.transport) rows.splice(1, 0, ["Transport", envelope.transport])
+      if (envelope.strengthLabel) rows.push(["Strength", envelope.strengthLabel])
+      if (envelope.sharedDomainNote) rows.push(["Note", envelope.sharedDomainNote])
+      for (const line of fields(rows, style, 4)) write(line)
     }
     if (recoverable === 1) {
       // CC-07: the one case the blob cannot answer, said in words rather than left to be inferred.
-      deps.stdout.write(
-        `\nThis vault has exactly one recoverable factor. Lose it and no copy of this file can be opened; the recovery phrase is then the only route, and it restores derived keys only.\n`,
+      notice(
+        deps,
+        "stdout",
+        "warning",
+        "This vault has exactly one recoverable factor. Lose it and no copy of this file can be opened; the recovery phrase is then the only route, and it restores derived keys only.",
       )
     }
 
+    write("")
+    write(heading("This machine", style))
     if (sidecar) {
-      deps.stdout.write(`\nThis machine's record (vault.state.json, cleartext, best effort):\n`)
-      deps.stdout.write(`  last generation seen   ${sidecar.lastGeneration}\n`)
+      write("")
+      for (const line of fields(
+        [
+          ["Record", "vault.state.json, cleartext, best effort"],
+          ["Last generation seen", String(sidecar.lastGeneration)],
+        ],
+        style,
+      ))
+        write(line)
       if (sidecar.lastVerifiedBackupAt && backup) {
         // "not recorded" rather than "unknown": since the AD-9 amendment (2026-09-19) `unknown` is
         // a destination class this field really carries, so it cannot double as the empty case.
-        for (const line of lastBackupLines(sidecar, backup)) deps.stdout.write(`${line}\n`)
+        for (const line of lastBackupLines(sidecar, backup)) write(line)
       }
       if (sidecar.lastBackupSharedDomainAccepted) {
         // AD-9: an unsealed copy went to a cloud destination; with a synced passkey on this vault
         // one account holds both, and this line stays for as long as the record does.
-        deps.stdout.write(
-          `  shared domain          accepted for the last backup destination (an unsealed copy, every envelope included)\n`,
+        write(
+          "  shared domain          accepted for the last backup destination (an unsealed copy, every envelope included)",
         )
       }
       if (sidecar.removedEnvelopeIds.length > 0) {
         // N1: removing a factor is not revocation, and these are the ids that still open older
         // copies, which is the thing an operator has to know to decide which copies to worry about.
-        deps.stdout.write(`  removed envelopes      ${sidecar.removedEnvelopeIds.join(", ")}\n`)
-        deps.stdout.write(
-          `                         any copy of this file made while one existed still opens with that factor.\n`,
-        )
+        write(`  removed envelopes      ${sidecar.removedEnvelopeIds.join(", ")}`)
+        write("                         any copy of this file made while one existed still opens with that factor.")
       }
     } else {
-      deps.stdout.write(
-        `\nNo vault.state.json beside this vault, so an older copy of it cannot be recognized on this machine.\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        "No vault.state.json beside this vault, so an older copy of it cannot be recognized on this machine.",
       )
     }
 
@@ -204,70 +244,81 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
     // the day it matters. The sidecar already carried the fact and only ever printed it when there
     // was something to print, so the one state worth shouting about was the one state that said
     // nothing. Both shapes of "never" land here: a sidecar without the field, and no sidecar at all.
-    if (sidecar?.lastVerifiedBackupAt === undefined) {
-      deps.stdout.write(`\n${NO_VERIFIED_BACKUP_NOTE}\n`)
-    }
+    if (sidecar?.lastVerifiedBackupAt === undefined) notice(deps, "stdout", "warning", NO_VERIFIED_BACKUP_NOTE)
 
     if (legacyPresent) {
-      deps.stdout.write(`\nA legacy wallets.enc exists at ${legacy}; this CLI does not read it.\n`)
-      deps.stdout.write(`  A key it holds that was imported is already a linked wallet, managed with: candle wallets\n`)
-      deps.stdout.write(
-        `  A key it holds that was never imported opens with an earlier release's \`wallets export\`; move those funds on chain to a vault key.\n`,
+      notice(
+        deps,
+        "stdout",
+        "warning",
+        `A legacy wallets.enc exists at ${legacy}; this CLI does not read it.\nA key it holds that was imported is already a linked wallet, managed with: candle wallets\nA key it holds that was never imported opens with an earlier release's \`wallets export\`; move those funds on chain to a vault key.`,
       )
     }
 
     if (!unlocked) {
-      deps.stdout.write(
-        `\nRun with --unlock to list the keys, the derivation counters and the exposure flags, which are inside the encrypted index.\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        "Run with --unlock to list the keys, the derivation counters and the exposure flags, which are inside the encrypted index.",
       )
       return 0
     }
 
-    deps.stdout.write(`\nKeys (${unlocked.entries.length}):\n`)
+    write("")
+    write(heading(`Keys (${unlocked.entries.length})`, style))
     for (const entry of unlocked.entries) {
-      deps.stdout.write(`  ${entry.address}\n`)
-      deps.stdout.write(`      label       ${entry.label || "(none)"}\n`)
-      deps.stdout.write(`      role        ${entry.role} (${entry.origin})\n`)
-      if (entry.derivation) deps.stdout.write(`      derivation  ${entry.derivation}\n`)
-      deps.stdout.write(`      exposure    ${entry.exposure}\n`)
+      write("")
+      write(`${" ".repeat(2)}${entry.address}`)
+      const rows: [string, string][] = [
+        ["Label", entry.label || miss],
+        ["Role", `${entry.role} (${entry.origin})`],
+        ["Exposure", entry.exposure],
+      ]
+      if (entry.derivation) rows.splice(2, 0, ["Derivation", entry.derivation])
       if (entry.teeLifecycle)
-        deps.stdout.write(
-          `      tee         ${entry.teeLifecycle}${entry.teeRemoteState ? ` (server: ${entry.teeRemoteState})` : ""}\n`,
-        )
+        rows.push(["Tee", `${entry.teeLifecycle}${entry.teeRemoteState ? ` (server: ${entry.teeRemoteState})` : ""}`])
       if (entry.destinationExposureAccepted) {
-        deps.stdout.write(
-          `      accepted    an operator asserted this pinned destination's history despite exposureUnknown\n`,
-        )
+        rows.push(["Accepted", "an operator asserted this pinned destination's history despite exposureUnknown"])
       }
+      for (const line of fields(rows, style, 4)) write(line)
     }
     // BE-274 (D9): `list` owns the listing, and this is where an operator reading five lines per
     // key meets the one-line-per-key form. The block above stays in this release: removing it is a
     // breaking human-output change and a `--json` contract change (`unlocked.entries` is frozen),
     // and doing both in the slice that introduces `list` would leave no version in which the two
     // spellings overlap.
-    deps.stdout.write(`\n${LIST_POINTER}\n`)
+    write("")
+    write(LIST_POINTER)
     // BE-259 (D5): the finding `rename` is the repair for. Every resolver is first-wins, so the
     // second key under a shared name is unreachable by it, and this block is the only place an
     // operator learns that. Absent when there are none.
     if (unlocked.duplicateLabels.length > 0) {
-      deps.stdout.write(`\nDuplicate labels (${unlocked.duplicateLabels.length}):\n`)
-      for (const line of duplicateLabelLines(unlocked.duplicateLabels)) deps.stdout.write(`${line}\n`)
+      write("")
+      write(heading(`Duplicate labels (${unlocked.duplicateLabels.length})`, style))
+      for (const line of duplicateLabelLines(unlocked.duplicateLabels)) write(line)
     }
-    deps.stdout.write(`\nDerivation counters (next index per branch):\n`)
+    write("")
+    write(heading("Derivation counters (next index per branch)", style))
+    write("")
     for (const [branch, value] of Object.entries(unlocked.nextIndex)) {
       const exposed = unlocked.exposedIndexes[branch] ?? []
-      deps.stdout.write(
-        `  ${branch.padEnd(12)} ${value}${exposed.length > 0 ? `   known exposed: ${exposed.join(", ")}` : ""}\n`,
-      )
+      write(`  ${branch.padEnd(12)} ${value}${exposed.length > 0 ? `   known exposed: ${exposed.join(", ")}` : ""}`)
     }
-    deps.stdout.write(`  recovery phrase exported: ${unlocked.rootExported ? "yes" : "no"}\n`)
+    write(`  recovery phrase exported: ${unlocked.rootExported ? "yes" : "no"}`)
     if (unlocked.restored) {
-      deps.stdout.write(
-        `\nThis vault was built by \`vault restore --phrase\`. Its keys are recovery artifacts, not fresh cold keys, and it does not allocate new addresses; \`vault new-key\` and \`vault promote --from\` refuse here.\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        "This vault was built by `vault restore --phrase`.\nIts keys are recovery artifacts, not fresh cold keys, and it does not allocate new addresses; `vault new-key` and `vault promote --from` refuse here.",
       )
     }
-    deps.stdout.write(
-      `\nThe recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      "The recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.",
     )
     return 0
   })
@@ -338,7 +389,7 @@ export function lastBackupLines(sidecar: VaultSidecar, backup: ReturnType<typeof
       : ", sealed: opens with the passphrase only"
   }
   const lines = [
-    `  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "not recorded"}${opensWith()})`,
+    `  last verified backup   ${formatTime(sidecar.lastVerifiedBackupAt)} (${sidecar.lastBackupDomain ?? "not recorded"}${opensWith()})`,
   ]
   if (backup.freshBackupAdvised.length > 0) {
     lines.push(

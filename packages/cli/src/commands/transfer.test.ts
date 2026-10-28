@@ -197,9 +197,12 @@ describe("candle transfer (R19)", () => {
       f.built() as string,
     )
     // SEC-003: the simulation ran over this machine's RPC before the relay was asked to sign.
-    expect(f.stderr.text).toContain(
-      `Checked locally: it moves 250.000000 USDC from ${TEE} to ${TREASURY} and nothing else`,
-    )
+    expect(f.stderr.text).toContain("Checked locally")
+    expect(f.stderr.text).toContain("250.000000 USDC")
+    expect(f.stderr.text).toContain(TEE)
+    expect(f.stderr.text).toContain(TREASURY)
+    expect(f.stderr.text).toContain("nothing else")
+    expect(f.stderr.text).toContain("A program can still behave differently once signed.")
     const rpc = f.calls.filter((call) => call.path === "/rpc").map((call) => call.body?.method)
     expect(rpc).toContain("simulateTransaction")
     expect(typeof (sign?.body as Record<string, unknown>).authorizationSignature).toBe("string")

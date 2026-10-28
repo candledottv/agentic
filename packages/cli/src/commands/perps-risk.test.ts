@@ -226,11 +226,17 @@ describe("candle perps risk (A-8, AC7, AC8)", () => {
     const f = await fixture({ liq: ["87.9"] })
     expect(await run(["perps", "risk"], f.deps)).toBe(10)
     const out = f.stdout.text
-    expect(out).toContain("Risk: WARN (BTC 12.1% from liquidation, warn under 15.0%)")
-    expect(out).toContain("Account value 1000.50 USD (cross 900.00)")
-    expect(out).toMatch(/BTC\s+long\s+0\.5\s+95\.0\s+100\.0/)
-    expect(out).toContain("FUNDING PAID")
-    expect(out).toContain("nothing warns you unless you poll candle perps risk or run candle perps watch")
+    expect(out).toContain("WARN")
+    expect(out).toContain("BTC 12.1% from liquidation, warn under 15.0%")
+    expect(out).toContain("$1,000.50")
+    expect(out).toContain("$900.00")
+    expect(out).toContain("BTC")
+    expect(out).toContain("long")
+    expect(out).toContain("$95.00")
+    expect(out).toContain("$100.00")
+    expect(out).toContain("FUNDING")
+    expect(out).toContain("nothing warns you unless you poll")
+    expect(out).toContain("candle perps watch")
   })
 
   test("a non-standard account mode is unknown: exit 1 with PERPS_ACCOUNT_MODE, never a level", async () => {

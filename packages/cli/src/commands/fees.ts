@@ -8,11 +8,17 @@
  * The request carries a mint and a dry-run flag, nothing else: the money goes to the recipient
  * fixed at launch, and this machine signs nothing (Candle signs with the embedded wallet, which
  * pays the network fee). Amounts are shown in each asset's own units from the raw figure the
- * server read off chain; `--json` is the server's answer as sent.
+ * server read off chain.
+ *
+ * `--json` is the server body as sent, which is also what `candle_get_fees` and
+ * `candle_claim_fees` relay. List is `{ success, page, isDone, continueCursor }`. Claim, including
+ * `--dry-run`, is one object `{ success, mint, chain, dryRun, recipient, claimable, claimed,
+ * remaining, reason?, warnings? }`: `dryRun` is the variant, not a second shape.
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
-import { writeUsageFailure } from "../render"
+import { bold, failure, fields, heading, notice, symbols, terminalStyle } from "../presentation"
+import { renderTable, writeUsageFailure } from "../render"
 import { decimalAmount, type Json, request, safeText, tradingKey } from "../trading"
 import { printTradingResult, tradingFailure } from "./swap"
 
@@ -27,18 +33,18 @@ interface FeeAmount {
   txHash?: string | null
 }
 
-function amountText(row: FeeAmount): string {
+function amountText(row: FeeAmount, missing: string): string {
   const raw = typeof row.amountRaw === "string" && /^\d+$/.test(row.amountRaw) ? row.amountRaw : null
-  if (raw === null) return "unknown"
+  if (raw === null) return missing
   const decimals = Number.isInteger(row.decimals) ? (row.decimals as number) : 0
   const label = row.symbol ? row.symbol : (row.mint ?? "")
   const value = decimalAmount(raw, decimals)
   return `${value.includes(".") ? value.replace(/\.?0+$/, "") : value} ${safeText(label)}`.trim()
 }
 
-function amountsText(rows: unknown): string {
+function amountsText(rows: unknown, missing: string): string {
   if (!Array.isArray(rows) || rows.length === 0) return "none"
-  return rows.map((row) => amountText(row as FeeAmount)).join(", ")
+  return rows.map((row) => amountText(row as FeeAmount, missing)).join(", ")
 }
 
 const REASON_WORDS: Record<string, string> = {
@@ -50,8 +56,8 @@ const REASON_WORDS: Record<string, string> = {
   insufficient_gas: "the recipient wallet cannot cover the network fee",
 }
 
-function reasonText(reason: unknown): string {
-  return typeof reason === "string" ? (REASON_WORDS[reason] ?? safeText(reason)) : "unknown"
+function reasonText(reason: unknown, missing: string): string {
+  return typeof reason === "string" ? (REASON_WORDS[reason] ?? safeText(reason)) : missing
 }
 
 export async function feesList(args: string[], ctx: CommandContext): Promise<number> {
@@ -74,19 +80,34 @@ export async function feesList(args: string[], ctx: CommandContext): Promise<num
     const body = await request(ctx, key, `/api/v1/agent/fees${params.size ? `?${params}` : ""}`)
     if (ctx.json) return printTradingResult(ctx, body)
     const page = Array.isArray(body.page) ? (body.page as Json[]) : []
-    const out = ctx.deps.stdout
-    if (page.length === 0) out.write("No launched tokens on this account.\n")
-    for (const row of page) {
-      const name = safeText(String(row.symbol ?? row.name ?? row.mint))
-      const status = row.unreadable
-        ? "could not be read"
-        : row.claimable
-          ? `claimable: ${amountsText(row.claimableAmounts)}`
-          : `not claimable: ${reasonText(row.reason)}`
-      out.write(`${name}  ${safeText(String(row.chain))}  ${safeText(String(row.mint))}  ${status}\n`)
+    const style = terminalStyle(ctx.deps, "stdout")
+    const missing = symbols(style).missing
+    if (page.length === 0) notice(ctx.deps, "stdout", "note", "No launched tokens on this account.")
+    else {
+      const rows = page.map((row) => {
+        const status = row.unreadable
+          ? "could not be read"
+          : row.claimable
+            ? `claimable: ${amountsText(row.claimableAmounts, missing)}`
+            : `not claimable: ${reasonText(row.reason, missing)}`
+        return [
+          safeText(String(row.symbol ?? row.name ?? row.mint)),
+          safeText(String(row.chain)),
+          status,
+          safeText(String(row.mint)),
+        ]
+      })
+      ctx.deps.stdout.write(
+        `${renderTable(["TOKEN", "CHAIN", "STATUS", "MINT"], rows, {
+          style,
+          width: style.width,
+          indent: 2,
+          columns: [{}, { priority: 1 }, {}, { id: true }],
+        })}\n`,
+      )
     }
     if (body.isDone === false && typeof body.continueCursor === "string")
-      out.write(`More: candle fees --cursor ${safeText(body.continueCursor)}\n`)
+      notice(ctx.deps, "stdout", "note", `More: candle fees --cursor ${safeText(body.continueCursor)}`)
     return 0
   } catch (error) {
     return tradingFailure(ctx, error)
@@ -109,21 +130,29 @@ export async function feesClaim(args: string[], ctx: CommandContext): Promise<nu
     const key = await tradingKey(ctx)
     const body = await request(ctx, key, `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`, { dryRun })
     if (ctx.json) return printTradingResult(ctx, body)
-    const out = ctx.deps.stdout
+    const style = terminalStyle(ctx.deps, "stdout")
+    const missing = symbols(style).missing
     const claimed = Array.isArray(body.claimed) ? (body.claimed as FeeAmount[]) : []
-    if (dryRun) {
-      out.write(
-        body.claimable === false
-          ? `Dry run: would be refused: ${reasonText(body.reason)}. Nothing was sent.\n`
-          : `Dry run: would claim ${amountsText(claimed)} to ${safeText(String(body.recipient))}. Nothing was sent.\n`,
-      )
+    if (dryRun && body.claimable === false) {
+      ctx.deps.stdout.write(`${failure(`Would be refused: ${reasonText(body.reason, missing)}.`, style)}\n`)
+      ctx.deps.stdout.write(`${fields([["Still", amountsText(body.remaining, missing)]], style).join("\n")}\n`)
     } else {
-      out.write(`Claimed ${amountsText(claimed)} to ${safeText(String(body.recipient))}\n`)
-      for (const row of claimed) if (row.txHash) out.write(`  ${safeText(row.txHash)}\n`)
+      const rows: [string, string][] = [
+        [dryRun ? "Would claim" : "Amount", amountsText(claimed, missing)],
+        ["To", safeText(String(body.recipient))],
+        ["Still", amountsText(body.remaining, missing)],
+      ]
+      ctx.deps.stdout.write(`${heading(dryRun ? "Dry run" : "Claimed", style)}\n\n${fields(rows, style).join("\n")}\n`)
+      if (!dryRun) {
+        for (const row of claimed) {
+          if (row.txHash) ctx.deps.stdout.write(`${bold(safeText(row.txHash), style)}\n`)
+        }
+      }
     }
-    out.write(`Still claimable: ${amountsText(body.remaining)}\n`)
-    if (Array.isArray(body.warnings))
-      for (const warning of body.warnings) ctx.deps.stderr.write(`Warning: ${safeText(String(warning))}\n`)
+    if (dryRun) notice(ctx.deps, "stdout", "note", "Nothing was sent.")
+    if (Array.isArray(body.warnings)) {
+      for (const warning of body.warnings) notice(ctx.deps, "stderr", "warning", safeText(String(warning)))
+    }
     return 0
   } catch (error) {
     return tradingFailure(ctx, error)

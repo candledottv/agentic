@@ -31,6 +31,7 @@ import type { CommandContext, Deps } from "../deps"
 import { AUTHDATA_FLAG_UP, AUTHDATA_FLAG_UV, handleLine, RP_ID } from "../fido2-helper/protocol"
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
 import { run } from "../index"
+import { formatTime } from "../render"
 import { createCapture, createTestDeps } from "../test-support"
 import {
   assertBackupDomainAllowed,
@@ -1188,18 +1189,18 @@ describe("T13, T14, T18, T19, T20: old sealed copies, the floor check, and the s
       lastBackupIdsVerifiedAt: "2026-09-23T15:00:00.000Z",
     }
     expect(lastBackupLines(bound, describeLastBackup(bound, live))).toEqual([
-      "  last verified backup   2026-09-23T15:00:00.000Z (icloud-drive, sealed: opens with the passphrase or security key k1)",
+      `  last verified backup   ${formatTime("2026-09-23T15:00:00.000Z")} (icloud-drive, sealed: opens with the passphrase or security key k1)`,
     ])
     const unbound = { ...bound, lastVerifiedBackupAt: "2026-09-24T09:12:44.000Z" }
     expect(describeLastBackup(unbound, live).bound).toBe(false)
     expect(lastBackupLines(unbound, describeLastBackup(unbound, live))).toEqual([
-      "  last verified backup   2026-09-24T09:12:44.000Z (icloud-drive, sealed: opens with the passphrase only)",
+      `  last verified backup   ${formatTime("2026-09-24T09:12:44.000Z")} (icloud-drive, sealed: opens with the passphrase only)`,
       "  fresh backup advised   the last sealed copy does not carry security key k1; a new `candle vault backup` to the same destination would open with it too.",
     ])
     // An unsealed, unbound record names nothing and advises nothing.
     const unsealed = { ...unbound, lastBackupSealed: false }
     expect(lastBackupLines(unsealed, describeLastBackup(unsealed, live))).toEqual([
-      "  last verified backup   2026-09-24T09:12:44.000Z (icloud-drive)",
+      `  last verified backup   ${formatTime("2026-09-24T09:12:44.000Z")} (icloud-drive)`,
     ])
   })
 
@@ -1264,7 +1265,9 @@ describe("T13, T14, T18, T19, T20: old sealed copies, the floor check, and the s
       lastVerifiedBackupAt: "2099-01-01T00:00:00.000Z",
     })
     const unbound = await statusOf(v)
-    expect(unbound.text).toContain("2099-01-01T00:00:00.000Z (icloud-drive, sealed: opens with the passphrase only)")
+    expect(unbound.text).toContain(
+      `${formatTime("2099-01-01T00:00:00.000Z")} (icloud-drive, sealed: opens with the passphrase only)`,
+    )
     expect(unbound.text).toContain(`fresh backup advised   the last sealed copy does not carry security key ${v.keyId}`)
     expect(unbound.text).not.toContain(`security key ${v.keyId})`)
     expect(unbound.sidecar).toMatchObject({ lastBackupEnvelopeIdsBound: false })
@@ -1297,7 +1300,7 @@ describe("T13, T14, T18, T19, T20: old sealed copies, the floor check, and the s
     })
     const status = await statusOf(v)
     expect(status.text).toContain(
-      `${newStamp} (icloud-drive, sealed: opens with the passphrase or security key ${v.keyId})`,
+      `${formatTime(newStamp)} (icloud-drive, sealed: opens with the passphrase or security key ${v.keyId})`,
     )
     expect(status.text).not.toContain("fresh backup advised")
     expect(status.sidecar).toMatchObject({ lastBackupEnvelopeIdsBound: true })

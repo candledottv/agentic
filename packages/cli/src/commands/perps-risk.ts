@@ -39,8 +39,10 @@ import {
   readPerpsRisk,
   watchPerpsRisk,
 } from "../hyperliquid-risk"
+import { accent, failure, fields, heading, notice, success, symbols, terminalStyle } from "../presentation"
 import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { type Json, safeText, TradingError, tradingKey } from "../trading"
+import { formatUsd } from "../usd"
 import { NO_DEVICE_TOKEN } from "./keys"
 import { perpsNetwork, perpsWallet } from "./perps"
 import { tradingFailure } from "./swap"
@@ -103,6 +105,14 @@ const usd = (value: string | null | undefined) => {
 }
 const pct = (fraction: number | null) => (fraction === null ? "-" : `${(fraction * 100).toFixed(1)}%`)
 
+function signedPct(fraction: number | null, missing: string): string {
+  if (fraction === null || !Number.isFinite(fraction)) return missing
+  const body = `${Math.abs(fraction * 100).toFixed(1)}%`
+  if (fraction > 0) return `+${body}`
+  if (fraction < 0) return `-${body}`
+  return body
+}
+
 function describeDriver(d: PerpsRiskDriver): string {
   if (d.kind === "position") {
     if (d.reason === "unmarked") return `${safeText(d.coin)} has no Hyperliquid mark, so its distance is unknown`
@@ -134,6 +144,77 @@ function levelCell(row: Pick<PerpsPositionRow, "level" | "markPx" | "liquidation
 
 function accountText(line: PerpsAccountLine): string {
   return `Account value ${usd(line.accountValueUsd)} USD (cross ${usd(line.crossAccountValueUsd)}), margin used ${usd(line.marginUsedUsd)}, free margin ${usd(line.freeMarginUsd)}, withdrawable ${usd(line.withdrawableUsd)}, margin ratio ${line.marginRatio === null ? "none (no cross equity)" : line.marginRatio.toFixed(4)}, unrealized ${usd(line.unrealizedPnlUsd)}, ${line.positionCount} ${line.positionCount === 1 ? "position" : "positions"}, ${safeText(line.mode)} mode`
+}
+
+function usdField(value: string | null | undefined, missing: string, signed = false): string {
+  if (value === null || value === undefined || value === "") return missing
+  const n = Number(value)
+  return Number.isFinite(n) ? formatUsd(n, { signed }) : safeText(value)
+}
+
+/**
+ * The positions table on `perps risk` only. `positionsTable` stays the plain table `perps
+ * positions` and `perps account` still print; those screens are a later release.
+ */
+function riskPositionsTable(rows: PerpsPositionRow[], style: ReturnType<typeof terminalStyle>): string {
+  if (rows.length === 0) return "No open positions."
+  const missing = symbols(style).missing
+  const price = (value: string | null) => usdField(value, missing)
+  return renderTable(
+    [
+      "COIN",
+      "SIDE",
+      "SIZE",
+      "ENTRY",
+      "MARK",
+      "UPNL",
+      "ROE",
+      "LEV",
+      "LIQ",
+      "DIST",
+      "FUNDING PAID",
+      "MARGIN",
+      "VALUE",
+      "LEVEL",
+    ],
+    rows.map((r) => [
+      safeText(r.coin),
+      safeText(r.side),
+      safeText(r.size),
+      price(r.entryPx),
+      r.markPx === null ? missing : price(r.markPx),
+      usdField(r.unrealizedPnlUsd, missing, true),
+      signedPct(Number(r.returnOnEquity), missing),
+      safeText(`${r.leverage.value}x ${r.leverage.type}`),
+      r.liquidationPx === null ? missing : price(r.liquidationPx),
+      r.liquidationDistance === null ? missing : pct(r.liquidationDistance),
+      usdField(r.fundingSinceOpenUsd, missing, true),
+      usdField(r.marginUsedUsd, missing),
+      usdField(r.positionValueUsd, missing),
+      levelCell(r),
+    ]),
+    {
+      style,
+      width: style.width,
+      indent: 2,
+      columns: [
+        { id: true },
+        {},
+        {},
+        { priority: 5 },
+        {},
+        { signed: true },
+        { priority: 4, signed: true },
+        { priority: 6 },
+        {},
+        {},
+        { priority: 1, signed: true },
+        { priority: 3 },
+        { priority: 2 },
+        {},
+      ],
+    },
+  )
 }
 
 /** The section 4 table (spec A-2). Funding is Hyperliquid's sign: positive is paid (E8). */
@@ -184,6 +265,80 @@ function thresholdsText(t: PerpsRiskThresholdsReport): string {
 const NO_MONITOR =
   "Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch."
 
+/**
+ * Human `perps risk`. `--json` stays the engine report (`candle.perps.risk/1`), the same object
+ * `candle_perps_risk` returns. Exit codes stay 0 / 10 / 11 / 1.
+ */
+function writeRiskText(ctx: CommandContext, report: PerpsRiskReport): void {
+  const style = terminalStyle(ctx.deps, "stdout")
+  const sym = symbols(style)
+  const level = report.level.toUpperCase()
+  const painted =
+    report.level === "critical"
+      ? failure(level, style)
+      : report.level === "warn"
+        ? accent(`${sym.warning} ${level}`, style, "warning")
+        : success(level, style)
+  const lead = report.drivers[0] ?? report.closest
+  const also = report.drivers.slice(1).map((driver) => describeDriver(driver))
+  const account = report.account
+  const thresholds = report.thresholds
+  const lines = [
+    painted,
+    "",
+    heading("Risk", style),
+    "",
+    ...fields(
+      [
+        ["Driver", lead ? describeDriver(lead) : sym.missing],
+        ...(also.length > 0 ? [["Also", also.join("\n")] as [string, string]] : []),
+      ],
+      style,
+    ),
+    "",
+    heading("Account", style),
+    "",
+    ...(account
+      ? fields(
+          [
+            ["Value", usdField(account.accountValueUsd, sym.missing)],
+            ["Cross", usdField(account.crossAccountValueUsd, sym.missing)],
+            ["Margin used", usdField(account.marginUsedUsd, sym.missing)],
+            ["Free margin", usdField(account.freeMarginUsd, sym.missing)],
+            ["Withdrawable", usdField(account.withdrawableUsd, sym.missing)],
+            ["Margin ratio", account.marginRatio === null ? "none (no cross equity)" : account.marginRatio.toFixed(4)],
+            ["Unrealized", usdField(account.unrealizedPnlUsd, sym.missing, true)],
+            ["Positions", String(account.positionCount)],
+            ["Mode", safeText(account.mode)],
+          ],
+          style,
+        )
+      : [`${" ".repeat(2)}No account figures.`]),
+    "",
+    riskPositionsTable(report.positions, style),
+    "",
+    heading("Thresholds", style),
+    "",
+    ...fields(
+      [
+        ["Source", thresholds.source],
+        [
+          "Warn",
+          `under ${(thresholds.warnDistanceBps / 100).toFixed(1)}% or ratio above ${(thresholds.warnMarginRatioBps / 10_000).toFixed(2)}`,
+        ],
+        [
+          "Critical",
+          `under ${(thresholds.criticalDistanceBps / 100).toFixed(1)}% or above ${(thresholds.criticalMarginRatioBps / 10_000).toFixed(2)}`,
+        ],
+        ["Clear band", `${(thresholds.clearBandBps / 100).toFixed(1)} points`],
+      ],
+      style,
+    ),
+  ]
+  ctx.deps.stdout.write(`${lines.join("\n")}\n`)
+  notice(ctx.deps, "stdout", "note", NO_MONITOR)
+}
+
 // ── risk ────────────────────────────────────────────────────────────────────────────────────
 
 /** `candle perps risk`: one stateless read; exit 0, 10 or 11 by level, 1 when there is none. */
@@ -207,15 +362,9 @@ export async function perpsRisk(args: string[], ctx: CommandContext): Promise<nu
       throw readFailure(error)
     })
     if (report.level === "unknown") throw unknownFailure(report)
+    // `--json` is the engine report, byte for byte, including on warn (10) and critical (11).
     if (ctx.json) ctx.deps.stdout.write(`${JSON.stringify(report)}\n`)
-    else {
-      const out = ctx.deps.stdout
-      out.write(`${riskLine(report)}\n`)
-      for (const d of report.drivers.slice(1)) out.write(`  also: ${describeDriver(d)}\n`)
-      if (report.account) out.write(`${accountText(report.account)}\n`)
-      out.write(`${positionsTable(report.positions)}\n`)
-      out.write(`${thresholdsText(report.thresholds)}\n${NO_MONITOR}\n`)
-    }
+    else writeRiskText(ctx, report)
     return perpsRiskExitCode(report.level)
   } catch (error) {
     return tradingFailure(ctx, error)

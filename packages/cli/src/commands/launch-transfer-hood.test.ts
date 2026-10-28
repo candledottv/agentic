@@ -1126,7 +1126,10 @@ describe("H11: candle transfer from a Hood TEE wallet", () => {
       signature: `0x${"1".repeat(64)}`,
     })
     expect((receipt.landedLegs as Array<{ kind: string }>).map((l) => l.kind)).toEqual(["transfer"])
-    expect(f.stderr.text).toContain("Built transfer tr-1: 0.900000000000000000 ETH to the vault")
+    expect(f.stderr.text).toContain("Built")
+    expect(f.stderr.text).toContain("tr-1")
+    expect(f.stderr.text).toContain("0.900000000000000000 ETH")
+    expect(f.stderr.text).toContain("the vault")
     expect(f.stderr.text).toContain("sweep-home gas reserve")
     expect(f.calls.some((call) => call.url.startsWith(EVM_RPC))).toBe(false)
   })

@@ -1,11 +1,104 @@
-/** Spec B: key-required public market reads. No wallet or signer is opened. */
+/**
+ * Spec B: key-required public market reads. No wallet or signer is opened.
+ *
+ * `--json` is the reader's result object, unchanged, and the same object `candle_perps_markets`,
+ * `candle_perps_market`, `candle_perps_book` and `candle_perps_candles` return. Each command has
+ * one shape (`markets`, `market`, `book` or `candles` on the shared envelope). Human text below
+ * is only the `markets` screen.
+ */
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
-import { PerpsMarketError, PerpsMarketReader, type PerpsMarketSort } from "../hyperliquid-markets"
-import { writeLocalFailure, writeUsageFailure } from "../render"
+import {
+  PerpsMarketError,
+  PerpsMarketReader,
+  type PerpsMarketRow,
+  type PerpsMarketSort,
+  type PerpsMarketsResult,
+} from "../hyperliquid-markets"
+import { notice, symbols, terminalStyle } from "../presentation"
+import { renderTable, writeLocalFailure, writeUsageFailure } from "../render"
 import { safeText } from "../trading"
+import { formatUsd } from "../usd"
 import { perpsRequest } from "./perps"
 import { tradingFailure } from "./swap"
+
+function marketUsd(value: string | null, missing: string, compact: boolean): string {
+  if (value === null) return missing
+  const n = Number(value)
+  return Number.isFinite(n) ? formatUsd(n, { compact }) : missing
+}
+
+/** `change24hPct` is already a percent. Zero stays unsigned; a gain keeps its plus. */
+function changeCell(value: string | null, missing: string): string {
+  if (value === null) return missing
+  const n = Number(value)
+  if (!Number.isFinite(n)) return safeText(value)
+  const body = `${Math.abs(n).toFixed(1)}%`
+  if (n > 0) return `+${body}`
+  if (n < 0) return `-${body}`
+  return body
+}
+
+function fundingCell(rate: string | null, missing: string): string {
+  if (rate === null) return missing
+  const n = Number(rate) * 100
+  return Number.isFinite(n) ? `${n.toFixed(4)}%` : missing
+}
+
+function flagCell(row: PerpsMarketRow): string {
+  return [
+    row.onlyIsolated ? "iso" : "",
+    row.atOpenInterestCap ? "cap" : "",
+    row.candle.tradeable === false
+      ? `x:${row.candle.reason}`
+      : row.candle.tradeable === null
+        ? "?:networkMismatch"
+        : "",
+  ]
+    .filter(Boolean)
+    .join(",")
+}
+
+/** The markets screen (CLI legibility audit 4.6). Book, candles and one market stay as they are. */
+function writeMarkets(ctx: CommandContext, result: PerpsMarketsResult): void {
+  const style = terminalStyle(ctx.deps, "stdout")
+  const missing = symbols(style).missing
+  const rows = result.markets.map((row) => [
+    safeText(row.coin),
+    marketUsd(row.markPx, missing, false),
+    changeCell(row.change24hPct, missing),
+    fundingCell(row.fundingRate, missing),
+    row.fundingAprPct === null ? missing : `${row.fundingAprPct}%`,
+    marketUsd(row.openInterestUsd, missing, true),
+    marketUsd(row.dayNotionalVolumeUsd, missing, true),
+    `${row.maxLeverage}x`,
+    flagCell(row),
+  ])
+  ctx.deps.stdout.write(
+    `${renderTable(["COIN", "MARK", "24H", "FUNDING/H", "APR", "OI", "24H VOL", "LEV", "FLAGS"], rows, {
+      style,
+      width: style.width,
+      indent: 2,
+      columns: [
+        { id: true },
+        {},
+        { signed: true, priority: 4 },
+        { priority: 3 },
+        { priority: 5 },
+        {},
+        { priority: 2 },
+        {},
+        { priority: 1 },
+      ],
+    })}\n`,
+  )
+  notice(
+    ctx.deps,
+    "stdout",
+    "note",
+    `Hyperliquid ${result.network}. OI floor ${formatUsd(result.gate.minOpenInterestUsd, { compact: true })} (${result.gate.source}). Tradeable now is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`,
+  )
+}
 
 type Command = "markets" | "market" | "book" | "candles"
 const flags = {
@@ -61,39 +154,17 @@ async function read(ctx: CommandContext, argv: string[], command: Command): Prom
       ctx.deps.stdout.write(`${JSON.stringify(result)}\n`)
       return 0
     }
+    if ("markets" in result) {
+      for (const warning of result.warnings) notice(ctx.deps, "stderr", "warning", safeText(warning))
+      writeMarkets(ctx, result)
+      return 0
+    }
     for (const warning of result.warnings) ctx.deps.stderr.write(`${safeText(warning)}\n`)
     const out = (line: string) => ctx.deps.stdout.write(`${line}\n`)
     out(
       `Hyperliquid ${result.network}; OI floor $${result.gate.minOpenInterestUsd} (${result.gate.source}). Tradeability is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`,
     )
-    const money = (n: string | null) => (n === null ? "-" : Number(n).toFixed(2))
-    if ("markets" in result) {
-      out("COIN  MARK USD  24H %  FUNDING %/h  APR %  OI USD  24H VOLUME USD  LEVERAGE  FLAGS")
-      for (const row of result.markets)
-        out(
-          [
-            safeText(row.coin),
-            money(row.markPx),
-            row.change24hPct ?? "-",
-            row.fundingRate === null ? "-" : (Number(row.fundingRate) * 100).toFixed(4),
-            row.fundingAprPct ?? "-",
-            row.openInterestUsd ?? "-",
-            money(row.dayNotionalVolumeUsd),
-            `${row.maxLeverage}x`,
-            [
-              row.onlyIsolated ? "iso" : "",
-              row.atOpenInterestCap ? "cap" : "",
-              row.candle.tradeable === false
-                ? `x:${row.candle.reason}`
-                : row.candle.tradeable === null
-                  ? "?:networkMismatch"
-                  : "",
-            ]
-              .filter(Boolean)
-              .join(","),
-          ].join("  "),
-        )
-    } else if ("market" in result) {
+    if ("market" in result) {
       out(JSON.stringify({ ...result.market, coin: safeText(result.market.coin) }, null, 2))
     } else if ("bids" in result) {
       out(`${safeText(result.coin)}: BID PX / SIZE / ORDERS | ASK PX / SIZE / ORDERS`)
