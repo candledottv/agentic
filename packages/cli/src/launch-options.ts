@@ -9,6 +9,7 @@ export const launchFlagFields = LAUNCH_DEFINITION.fields.flatMap((field) =>
 export const launchFlagRows = launchFlagFields.map((field) => ({
   invocation: `${field.cli.flag}${"value" in field.cli ? ` ${field.cli.value}` : ""}`,
   description: field.help,
+  ...("more" in field ? { more: field.more } : {}),
 }))
 export const LAUNCH_USAGE = `candle launch ${launchFlagFields
   .map((field) => {

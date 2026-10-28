@@ -578,9 +578,9 @@ describe("candle perps thresholds (A-4, AC13, E7)", () => {
 })
 
 describe("help (AC20)", () => {
-  test("the perps screen names the exit codes and the no-monitor sentence", async () => {
+  test("extended perps help names the exit codes and the no-monitor sentence", async () => {
     const f = await fixture()
-    expect(await run(["perps", "--help"], f.deps)).toBe(0)
+    expect(await run(["help", "perps", "--more"], f.deps)).toBe(0)
     const out = f.stdout.text.replace(/\s+/g, " ")
     expect(out).toContain("exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code")
     expect(out).toContain(

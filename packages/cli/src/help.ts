@@ -5,8 +5,8 @@
  * and every flag inline: the first thing anyone sees, and the least designed surface in the
  * product. It is now two levels. `renderTopLevel` prints command WORDS only, grouped, with the
  * global flags, the ENVIRONMENT section and the plug-in line. `renderTopic` prints one screen per
- * command word: what it is, its usage, its subcommand rows, the flags every subcommand of that
- * word takes, examples, and the environment it reads. There is no third level.
+ * command word: a short intro, usage, subcommands, shared flags and examples. `--more` includes
+ * the full rules and row descriptions locally; environment descriptions live only at top level.
  *
  * This file imports nothing from `index.ts` -- that would be a cycle, since `index.ts` imports the
  * renderers -- so it cannot check itself against dispatch. `index.test.ts` does: T1 pins
@@ -15,9 +15,8 @@
  * pins each topic's rows against `ROUTED_SUBCOMMANDS`. `commands/completion.ts` reads this file
  * and nothing else, so a completion script cannot offer a command that does not route.
  *
- * A row's `invocation` is one line. The renderer decides the column and wraps; hand-wrapping an
- * invocation here would break the row parsing every drift test does (`/^ {2}(\S+)/`), because a
- * continuation line must never look like the start of a row.
+ * A row's `invocation` is stored on one line. The renderer wraps it with continuation indentation
+ * that cannot look like a row start to the drift tests (`/^ {2}(\S+)/`).
  */
 
 import { LAUNCH_DEFINITION } from "./launch-definition"
@@ -29,6 +28,8 @@ export interface Row {
   /** A single line, never pre-wrapped. For a subcommand row it starts with the subcommand word. */
   invocation: string
   description: string
+  /** Additional rules supplied by the shared launch definition. */
+  more?: string
 }
 
 /** An operator-set environment variable, described once here and referenced by name elsewhere. */
@@ -44,7 +45,10 @@ export interface Topic {
   display?: string
   /** The one line under its group on the top level. */
   summary: string
-  /** Two lines or so, at the head of the topic screen. */
+  /** Optional shorter form of `summary` for the topic screen, so the intro and its More line fit
+   * three lines at 40 columns. */
+  intro?: string
+  /** Full rules, available locally with help <topic> --more. */
   description: string
   usage: string[]
   rows: Row[]
@@ -249,6 +253,7 @@ export const HELP: Record<string, Topic> = {
   },
   doctor: {
     group: "Start here",
+    intro: "Diagnose setup: credentials, storage, API, key helper",
     summary: "Diagnose CLI setup: credentials, storage backend, API reachability, security key helper",
     description:
       "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability, wallet delegation, the install method, the account's plan and its trade fee, and whether the security key helper (candle-fido2) is beside the binary. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
@@ -260,6 +265,7 @@ export const HELP: Record<string, Topic> = {
 
   swap: {
     group: "Trade",
+    intro: "Quote, swap and bridge on Solana or Hood; read an operation",
     summary: "Quote, confirm and swap on Solana or Hood, bridge between them; read an operation by id",
     description:
       "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent. The first buy after a launch is this command, unless the launch carried it with candle launch --buy. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and sell a token it holds that was not launched on Candle; buying such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force.",
@@ -289,6 +295,7 @@ export const HELP: Record<string, Topic> = {
   },
   stake: {
     group: "Trade",
+    intro: "Stake CNDL, withdraw, claim Solana staking rewards",
     summary: "Stake CNDL, start and finish withdrawals, claim Solana staking rewards",
     description:
       "Solana only. MOVES REAL FUNDS from the embedded wallet (default) or a named TEE wallet whose relay signer is on this machine. add takes decimal CNDL; remove takes decimal sCNDL. No instant unstake: finish waits for the pool's withdrawalTimelockSeconds, shown by candle stake. Solana rewards accrue to the holding wallet; sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. Pending withdrawals count toward nothing for Pro. Writes require swap:write and an enabled agent staking rail. Reuse --client-stake-id on retry: a rerun posts the saved signed transaction to submit again without re-signing. The server reads the chain for that signature first, so it lands once. The signed transaction is kept in the CLI operations directory for that retry. Ordinary linked wallets use SDK builds and external signing.",
@@ -331,6 +338,7 @@ export const HELP: Record<string, Topic> = {
   },
   lp: {
     group: "Trade",
+    intro: "Meteora DAMM v2 liquidity from a TEE wallet",
     summary: "Meteora DAMM v2 liquidity from a TEE wallet: pools, add, positions, remove, claim",
     description:
       "Provide liquidity on any Meteora DAMM v2 pool from a TEE wallet, through its bound key (scope lp:write, opt-in). Every write is quoted, shown with the pool's Token-2022 warnings, confirmed, signed by Candle's relay and broadcast over your RPC; no Candle fee. Only configured raw caps and USD limits apply to deposits; unset means unlimited and zero still binds. A sweep closes open positions itself (tee sweep).",
@@ -373,8 +381,8 @@ export const HELP: Record<string, Topic> = {
   // Spec A's non-goals leave pnl unrealized/transfers for a later card; do not promise them here.
   perps: {
     group: "Trade",
-    summary:
-      "Hyperliquid perpetuals: markets, market, book, candles; deposit, setup, withdraw, open, close, cancel, modify, margin, tpsl, schedule-cancel, flatten, reduce-only, orders, positions, fills, funding, leverage, account, risk, watch, thresholds",
+    intro: "Trade Hyperliquid perps from this key's EVM TEE wallet",
+    summary: "Trade Hyperliquid perpetuals from this key's EVM TEE wallet",
     description:
       "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). A key gets an EVM TEE wallet by promoting one from the vault: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>, and candle tee signer new --key <prefix> on the machine that trades it; candle tee new is Solana only. Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). candle pnl --profile <name> shows the profile's Hyperliquid P&L under its own heading, over every EVM TEE wallet bound to the profile: realized, funding, fees, unrealized and the net, which is also counted in the profile's Total. Live positions and risk are shown by candle perps positions and candle portfolio. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch. Candle's server may also watch this wallet; GET /perps/risk reports whether it does. modify, margin, tpsl, schedule-cancel, flatten and close --pct are built, checked against this machine's own read of Hyperliquid, signed and submitted like every other write; tpsl and flatten are plans of several such steps, confirmed once (or --yes), and a plan that does not finish says so and exits 1 (3 when a signed step's submit did not answer). A key that is reduce-only (reduce-only on) can close, cancel, protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure; only the owner's device token turns it off, and it cancels no resting order and revokes no signed action.",
     usage: ["candle perps <subcommand> [flags]"],
@@ -598,6 +606,7 @@ export const HELP: Record<string, Topic> = {
   },
   transfer: {
     group: "Trade",
+    intro: "Move funds out of a TEE wallet to your wallets or its vault",
     summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
     description:
       "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Withdraw key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and the asset must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
@@ -693,6 +702,7 @@ export const HELP: Record<string, Topic> = {
 
   portfolio: {
     group: "Account",
+    intro: "Holdings, prices and value of every wallet",
     summary: "Every wallet's holdings, prices and value on Solana and Hood (vault read over your own RPCs)",
     description:
       "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so. After the totals, a Hyperliquid section (live from Hyperliquid, not in the ledger, and never in the total) lists each EVM TEE wallet's Hyperliquid account value, unrealized P&L, positions and risk at the default thresholds, read from Hyperliquid's public API on this machine; a failed read there is not read and the exit is 3. --chain solana and --no-perps read nothing from Hyperliquid.",
@@ -793,6 +803,7 @@ export const HELP: Record<string, Topic> = {
   },
   pnl: {
     group: "Account",
+    intro: "P&L per chain and combined (--profile: one key's share)",
     summary:
       "P&L per chain and combined: realized, fees, unrealized and open positions (--profile for one key's share)",
     description:
@@ -841,6 +852,7 @@ export const HELP: Record<string, Topic> = {
   },
   spend: {
     group: "Account",
+    intro: "x402 payments: local log, daily limit, per-call ceiling",
     summary: "x402 per-use payments: the local log, the daily limit, the per-call ceiling, pause",
     description:
       "Every per-use x402 payment this machine makes is checked first against limits kept on this machine, per profile: payments not paused, the price at most the per-call ceiling (default $1), and today's per-use total (UTC, counting payments not yet confirmed) plus the price at most the daily limit (default $5). The pay-to address must be the one this CLI pins for the network. Each payment is logged before it is sent, in <config dir>/spend/<profile>.jsonl (mode 0600), and its outcome after: settled, failed (nothing moved), unknown (not yet known; counted until resolved) or credited (Candle failed to serve a settled call and credited it). candle spend shows the log, today's total and the Candle credit balance (with an API key); an unknown older than 15 minutes is resolved against the server's payment list when the profile has a key. Plan purchases are not per-use and are outside the daily limit.",
@@ -863,6 +875,7 @@ export const HELP: Record<string, Topic> = {
   },
   quant: {
     group: "Account",
+    intro: "Quant's terms, accepted before per-use answers",
     summary: "Quant's terms, which per-use Quant answers need accepted first",
     description:
       "terms shows Quant's terms and Privacy Policy and records this account's acceptance through its API key. Quant accepts only its current version; the default is the version this release was built with, and --terms-version sends another. A paid Quant answer past the daily limit is refused until the terms are accepted, before any payment is asked for.",
@@ -877,6 +890,7 @@ export const HELP: Record<string, Topic> = {
   },
   plans: {
     group: "Account",
+    intro: "API plans: prices, fees, limits and what each does",
     summary: "The plans this API serves: prices, fees, limits and what each can do",
     description:
       "The plan table in force on the API this profile points at (GET /api/v1/agent/plans): each plan's monthly price, the agent trade fee, the Hyperliquid perps builder fee, the limits a new key gets, and one row per capability (buying and selling tokens not launched on Candle, self-launch, atomic launch, linked wallets, perps, limit orders). Every number is the server's; the CLI bundles none. Needs no key and sends none. Which plan this account is on is candle doctor's Plan row.",
@@ -971,6 +985,7 @@ export const HELP: Record<string, Topic> = {
   },
   wallets: {
     group: "Account",
+    intro: "Launch and linked wallets; import or revoke one",
     display: "wallet",
     summary: "Launch and linked wallets; import or revoke one (wallets is an alias)",
     description:
@@ -1391,6 +1406,7 @@ export const HELP: Record<string, Topic> = {
   },
   tui: {
     group: "Start here",
+    intro: "The Candle TUI: holdings, feed, agents, approvals (preview)",
     summary: "The Candle TUI: holdings, the feed, your agents and approval cards, in the terminal (preview)",
     description:
       "Starts the Candle TUI (candle-tui), which starts the local core for the profile when it is not running. Every live money action an agent proposes becomes an approval card you approve there with your vault factor. Preview: the TUI is not released yet.",
@@ -1423,6 +1439,7 @@ export const HELP: Record<string, Topic> = {
   },
   update: {
     group: "Maintain",
+    intro: "Update the CLI and its key helper to the latest release",
     summary: "Update the CLI and its security key helper to the latest signed release",
     description:
       "Replaces this binary, and the candle-fido2 security key helper beside it, with the latest signed release. Both downloads are checked the same way and nothing is renamed until both pass: the checksum must match and the Sigstore bundle must verify in process against that exact version's release workflow. A release that ships no helper for this platform updates the binary alone.",
@@ -1474,10 +1491,13 @@ export const HELP: Record<string, Topic> = {
     group: "Maintain",
     summary: "This screen, or a command's own: candle help vault",
     description:
-      "The top-level screen, or one command's own: its subcommands, the flags they share, examples, and the environment it reads. Reads no config and makes no request, so it answers on a machine with no profile selected.",
-    usage: ["candle help", "candle help <command>"],
+      "The top-level screen, or one command's own: its subcommands, flags and examples. --more includes the full rules and row descriptions. Shared environment variables are listed once at the top level. Reads no config and makes no request, so it answers on a machine with no profile selected.",
+    usage: ["candle help", "candle help <command> [--more]"],
+    flags: [
+      { invocation: "--more", description: "Include the full rules and row descriptions, without opening a browser" },
+    ],
     rows: [],
-    examples: ["candle help", "candle help vault", "candle help completion"],
+    examples: ["candle help", "candle help vault", "candle help perps --more", "candle help completion"],
   },
 }
 
@@ -1522,27 +1542,46 @@ export function documentedFlags(topic: Topic): string[] {
   return [...flags].sort()
 }
 
-const WIDTH = 118
+const WIDTH = 100
 
-/**
- * Renders a block of rows at a shared description column.
- *
- * An invocation too long for the column keeps its own line and the description starts on the next
- * one, indented to the column. That is deliberate: hand-wrapping an invocation would put a second
- * line where a row start belongs, and every drift test reads a row start as `/^ {2}(\S+)/`. A
- * continuation line here begins with the column's spaces, so it can never be mistaken for one.
- */
-function renderRows(rows: Row[], maxColumn: number, width = WIDTH): string[] {
+/** Continuations use four or more spaces, never the two-space row-start marker. */
+function indented(text: string, width: number, first = "  ", continuation = "    "): string[] {
+  const leading = text.match(/^ +/)?.[0] ?? ""
+  const lines = wrapText(
+    text.trimStart(),
+    Math.max(1, width - Math.max(first.length + leading.length, continuation.length)),
+  )
+  return lines.map((line, index) => `${index === 0 ? first + leading : continuation}${line}`)
+}
+
+/** Keep the action on the short screen; all qualifications remain in --more. */
+function rowSummary(description: string): string {
+  let depth = 0
+  for (let i = 0; i < description.length; i++) {
+    const char = description[i]
+    if (char === "(" || char === "[") depth++
+    else if (char === ")" || char === "]") depth = Math.max(0, depth - 1)
+    else if (depth === 0 && char === ";" && description[i + 1] === " ") return description.slice(0, i)
+    else if (depth === 0 && char === "." && /^ [A-Z-]/.test(description.slice(i + 1)))
+      return description.slice(0, i + 1)
+  }
+  return description
+}
+
+function renderRows(rows: Row[], maxColumn: number, width = WIDTH, more = true): string[] {
   if (rows.length === 0) return []
   const longest = Math.max(...rows.map((row) => row.invocation.length))
-  const column = Math.min(2 + longest + 2, maxColumn, Math.max(4, width - 24))
+  const column = Math.min(2 + longest + 2, maxColumn, Math.max(4, Math.floor(width / 3)))
   const pad = " ".repeat(column)
   const out: string[] = []
   for (const row of rows) {
-    const [first = "", ...rest] = wrapText(row.description, width - column)
-    if (2 + row.invocation.length + 2 <= column) out.push(`  ${row.invocation.padEnd(column - 2)}${first}`)
-    else out.push(`  ${row.invocation}`, `${pad}${first}`)
-    for (const line of rest) out.push(`${pad}${line}`)
+    const description = more ? [row.description, row.more].filter(Boolean).join(" ") : rowSummary(row.description)
+    if (2 + row.invocation.length + 2 <= column) {
+      const [first = "", ...rest] = wrapText(description, width - column)
+      out.push(`  ${row.invocation.padEnd(column - 2)}${first}`, ...rest.map((line) => `${pad}${line}`))
+    } else {
+      out.push(...indented(row.invocation, width), ...indented(description, width, "    "))
+    }
   }
   return out
 }
@@ -1567,29 +1606,7 @@ function renderEnv(names: readonly string[], width = WIDTH): string[] {
  * live on the topic screens (`candle help <command>`).
  */
 export function renderTopLevel(style?: TerminalStyle): string {
-  if (style) return renderPresentedTopLevel(style)
-  const out: string[] = [
-    "candle: Candle from the terminal: trade, launch, and hold your keys on your own machine",
-    "",
-    ...LAUNCH_DEFINITION.surfacesIntro,
-    "",
-    "Usage: candle <command> [<subcommand>] [flags]",
-    "       candle help <command>                a command's subcommands, flags and examples",
-  ]
-  const entries = Object.entries(HELP)
-  const longest = Math.max(...entries.map(([word]) => displayName(word).length))
-  const column = 2 + longest + 2
-  for (const group of GROUPS) {
-    out.push("", group)
-    for (const [word, topic] of entries) {
-      if (topic.group !== group) continue
-      out.push(`  ${displayName(word).padEnd(column - 2)}${topic.summary}`)
-    }
-  }
-  out.push("", "Global flags", ...renderRows(GLOBAL_FLAGS, 28))
-  out.push("", "Environment", ...renderEnv(ENVIRONMENT.map((entry) => entry.name)))
-  out.push("", "Plug-ins", ...renderRows([PLUGIN_LINE], 26))
-  return `${out.join("\n")}\n`
+  return renderPresentedTopLevel(style)
 }
 
 /**
@@ -1598,72 +1615,58 @@ export function renderTopLevel(style?: TerminalStyle): string {
  * `undefined` for a word that is not a command, which is what lets the caller fall back to the top
  * level and print `Unknown command: <word>` first.
  */
-export function renderTopic(word: string, style?: TerminalStyle): string | undefined {
+export function renderTopic(word: string, style?: TerminalStyle, more = false): string | undefined {
   const topic = topicFor(word)
   if (!topic) return undefined
   const canonical = Object.keys(HELP).find((key) => HELP[key] === topic) ?? word
   const display = displayName(canonical)
-  const width = style?.width ?? WIDTH
-  const out: string[] = [wrapText(`candle ${display}: ${topic.description}`, width).join("\n")]
-  out.push("", `Usage: ${topic.usage.join("\n       ")}`)
-  if (topic.rows.length > 0) out.push("", ...renderRows(topic.rows, 58, width))
+  const width = Math.min(style?.width ?? WIDTH, WIDTH)
+  const out = [
+    ...wrapText(`candle ${display}: ${topic.intro ?? topic.summary}.`, width),
+    ...wrapText(`More: candle help ${display} --more`, width),
+  ]
+  out.push(
+    "",
+    ...topic.usage.flatMap((usage, index) => indented(usage, width, index === 0 ? "Usage: " : "       ", "       ")),
+  )
+  if (topic.rows.length > 0) out.push("", ...renderRows(topic.rows, 58, width, more))
   if (topic.flags && topic.flags.length > 0) {
-    out.push("", `Flags every ${display} subcommand takes`, ...renderRows(topic.flags, 28, width))
+    out.push(
+      "",
+      ...wrapText(`Flags every ${display} subcommand takes`, width),
+      ...renderRows(topic.flags, 28, width, more),
+    )
   }
-  out.push("", "Examples", ...topic.examples.map((example) => `  ${example}`))
-  if (topic.env && topic.env.length > 0) out.push("", "Environment", ...renderEnv(topic.env, width))
+  out.push("", "Examples", ...topic.examples.flatMap((example) => indented(example, width)))
+  if (more) out.push("", "Rules", ...wrapText(topic.description, width))
+  out.push("", ...wrapText("Environment variables: candle --help", width))
   return `${out.join("\n")}\n`
 }
 
-/** Human help only. Errors keep the legacy renderer above so diagnostic bytes do not acquire
- * a banner or terminal escapes. Command data, flags and completion vocabulary stay shared. */
-function renderPresentedTopLevel(style: TerminalStyle): string {
-  const { width } = style
-  const heading = (text: string) => accent(text, style)
+/** One command column at every width, including plain output and routing diagnostics. */
+function renderPresentedTopLevel(style?: TerminalStyle): string {
+  const width = Math.min(style?.width ?? WIDTH, WIDTH)
+  const heading = (text: string) => (style ? accent(text, style) : text)
   const out = [
-    ...brandHeader(style),
-    ...(!style.styled ? [...wrapText("Candle CLI: Your wallets and agent tools, one command away.", width), ""] : []),
+    ...(style ? brandHeader(style) : []),
+    ...(!style?.styled ? [...wrapText("Candle CLI: Your wallets and agent tools, one command away.", width), ""] : []),
     ...LAUNCH_DEFINITION.surfacesIntro.flatMap((line) => wrapText(line, width)),
     "",
-    heading("Start here"),
-    ...renderRows(
-      [
-        { invocation: "candle setup", description: "Connect your account" },
-        { invocation: "candle portfolio", description: "Read your holdings after setup" },
-        { invocation: "candle mcp", description: "Connect an MCP client using this install" },
-      ],
-      24,
-      width,
-    ),
-    "",
-    ...wrapText("Usage: candle <command> [<subcommand>] [flags]", width),
-    "       candle help <command>",
+    ...indented("candle <command> [<subcommand>] [flags]", width, "Usage: ", "       "),
+    ...indented("candle help <command> [--more]", width, "       ", "       "),
   ]
-  const group = (name: string, available: number): string[] => [
-    heading(name),
-    ...renderRows(
-      Object.entries(HELP)
-        .filter(([, topic]) => topic.group === name)
-        .map(([word, topic]) => ({ invocation: displayName(word), description: topic.summary })),
-      18,
-      available,
-    ),
-  ]
-  for (let i = 0; i < GROUPS.length; i++) {
-    const name = GROUPS[i] as string
-    // Two columns only where both have room for a command and readable wrapped description.
-    if (width >= 100 && (name === "Trade" || name === "Custody, on this machine")) {
-      const column = Math.floor((width - 4) / 2)
-      const left = group(name, column)
-      const right = group(GROUPS[++i] as string, column)
-      out.push("")
-      for (let row = 0; row < Math.max(left.length, right.length); row++) {
-        const first = left[row] ?? ""
-        // biome-ignore lint/suspicious/noControlCharactersInRegex: measure SGR-free terminal cells
-        const visible = first.replace(/\x1b\[[0-9;]*m/g, "").length
-        out.push(`${first}${" ".repeat(Math.max(4, column - visible + 4))}${right[row] ?? ""}`.trimEnd())
-      }
-    } else out.push("", ...group(name, width))
+  for (const name of GROUPS) {
+    out.push(
+      "",
+      heading(name),
+      ...renderRows(
+        Object.entries(HELP)
+          .filter(([, topic]) => topic.group === name)
+          .map(([word, topic]) => ({ invocation: displayName(word), description: topic.summary })),
+        18,
+        width,
+      ),
+    )
   }
   out.push("", heading("Global flags"), ...renderRows(GLOBAL_FLAGS, 28, width))
   out.push(

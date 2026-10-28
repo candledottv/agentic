@@ -73494,7 +73494,8 @@ var LAUNCH_IMAGE_FLAG = "--image";
 var launchFlagFields = LAUNCH_DEFINITION.fields.flatMap((field) => ("flag" in field.surfaces.cli) ? [{ ...field, cli: field.surfaces.cli }] : []);
 var launchFlagRows = launchFlagFields.map((field) => ({
   invocation: `${field.cli.flag}${"value" in field.cli ? ` ${field.cli.value}` : ""}`,
-  description: field.help
+  description: field.help,
+  ..."more" in field ? { more: field.more } : {}
 }));
 var LAUNCH_USAGE = `candle launch ${launchFlagFields.map((field) => {
   const invocation = `${field.cli.flag}${"value" in field.cli ? ` ${field.cli.value}` : ""}`;
@@ -73673,6 +73674,7 @@ var HELP = {
   },
   doctor: {
     group: "Start here",
+    intro: "Diagnose setup: credentials, storage, API, key helper",
     summary: "Diagnose CLI setup: credentials, storage backend, API reachability, security key helper",
     description: "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability, wallet delegation, the install method, the account's plan and its trade fee, and whether the security key helper (candle-fido2) is beside the binary. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
     usage: ["candle doctor [--role owner|bot|auto]"],
@@ -73682,6 +73684,7 @@ var HELP = {
   },
   swap: {
     group: "Trade",
+    intro: "Quote, swap and bridge on Solana or Hood; read an operation",
     summary: "Quote, confirm and swap on Solana or Hood, bridge between them; read an operation by id",
     description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent. The first buy after a launch is this command, unless the launch carried it with candle launch --buy. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and sell a token it holds that was not launched on Candle; buying such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force.",
     usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
@@ -73710,6 +73713,7 @@ var HELP = {
   },
   stake: {
     group: "Trade",
+    intro: "Stake CNDL, withdraw, claim Solana staking rewards",
     summary: "Stake CNDL, start and finish withdrawals, claim Solana staking rewards",
     description: "Solana only. MOVES REAL FUNDS from the embedded wallet (default) or a named TEE wallet whose relay signer is on this machine. add takes decimal CNDL; remove takes decimal sCNDL. No instant unstake: finish waits for the pool's withdrawalTimelockSeconds, shown by candle stake. Solana rewards accrue to the holding wallet; sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. Pending withdrawals count toward nothing for Pro. Writes require swap:write and an enabled agent staking rail. Reuse --client-stake-id on retry: a rerun posts the saved signed transaction to submit again without re-signing. The server reads the chain for that signature first, so it lands once. The signed transaction is kept in the CLI operations directory for that retry. Ordinary linked wallets use SDK builds and external signing.",
     usage: [
@@ -73751,6 +73755,7 @@ var HELP = {
   },
   lp: {
     group: "Trade",
+    intro: "Meteora DAMM v2 liquidity from a TEE wallet",
     summary: "Meteora DAMM v2 liquidity from a TEE wallet: pools, add, positions, remove, claim",
     description: "Provide liquidity on any Meteora DAMM v2 pool from a TEE wallet, through its bound key (scope lp:write, opt-in). Every write is quoted, shown with the pool's Token-2022 warnings, confirmed, signed by Candle's relay and broadcast over your RPC; no Candle fee. Only configured raw caps and USD limits apply to deposits; unset means unlimited and zero still binds. A sweep closes open positions itself (tee sweep).",
     usage: ["candle lp <subcommand> [flags]"],
@@ -73790,7 +73795,8 @@ var HELP = {
   },
   perps: {
     group: "Trade",
-    summary: "Hyperliquid perpetuals: markets, market, book, candles; deposit, setup, withdraw, open, close, cancel, modify, margin, tpsl, schedule-cancel, flatten, reduce-only, orders, positions, fills, funding, leverage, account, risk, watch, thresholds",
+    intro: "Trade Hyperliquid perps from this key's EVM TEE wallet",
+    summary: "Trade Hyperliquid perpetuals from this key's EVM TEE wallet",
     description: "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). A key gets an EVM TEE wallet by promoting one from the vault: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>, and candle tee signer new --key <prefix> on the machine that trades it; candle tee new is Solana only. Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). candle pnl --profile <name> shows the profile's Hyperliquid P&L under its own heading, over every EVM TEE wallet bound to the profile: realized, funding, fees, unrealized and the net, which is also counted in the profile's Total. Live positions and risk are shown by candle perps positions and candle portfolio. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch. Candle's server may also watch this wallet; GET /perps/risk reports whether it does. modify, margin, tpsl, schedule-cancel, flatten and close --pct are built, checked against this machine's own read of Hyperliquid, signed and submitted like every other write; tpsl and flatten are plans of several such steps, confirmed once (or --yes), and a plan that does not finish says so and exits 1 (3 when a signed step's submit did not answer). A key that is reduce-only (reduce-only on) can close, cancel, protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure; only the owner's device token turns it off, and it cancels no resting order and revokes no signed action.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
@@ -73991,6 +73997,7 @@ var HELP = {
   },
   transfer: {
     group: "Trade",
+    intro: "Move funds out of a TEE wallet to your wallets or its vault",
     summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
     description: "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Withdraw key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and the asset must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
     usage: [
@@ -74077,6 +74084,7 @@ var HELP = {
   },
   portfolio: {
     group: "Account",
+    intro: "Holdings, prices and value of every wallet",
     summary: "Every wallet's holdings, prices and value on Solana and Hood (vault read over your own RPCs)",
     description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so. After the totals, a Hyperliquid section (live from Hyperliquid, not in the ledger, and never in the total) lists each EVM TEE wallet's Hyperliquid account value, unrealized P&L, positions and risk at the default thresholds, read from Hyperliquid's public API on this machine; a failed read there is not read and the exit is 3. --chain solana and --no-perps read nothing from Hyperliquid.",
     usage: [
@@ -74172,6 +74180,7 @@ var HELP = {
   },
   pnl: {
     group: "Account",
+    intro: "P&L per chain and combined (--profile: one key's share)",
     summary: "P&L per chain and combined: realized, fees, unrealized and open positions (--profile for one key's share)",
     description: "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the console shows, to the cent for the same moment. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its share of the same P&L: realized on the sales it made, and the open positions that belong to it (the wallet's bound key, else the key whose buy opened them), with a row per wallet that sums to the total. Positions live in wallets: each wallet is its own average-cost pool, the account is the sum of its wallets, and a recorded move between two of the account's wallets carries its cost and realizes nothing. Both show a Solana block, a Hood block, then the combined figure, the closed positions as money made, minus money lost, plus partial sells, and a CHAIN column (and WALLET, where the API names it) on positions. The account's books add a By agent table (each key, then Manual for web-app trades, then the account total). Unpriced positions are shown as unpriced and never valued at zero; a position worth under one cent is marked dust and still counted. A bridge between Solana and Hood is not a trade: it opens and closes nothing, and bridge and Relay costs are not netted from P&L. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis), and vs holding (what the deposited tokens would be worth held); Total is the console's token figure, and Total with LP covers tokens and LP. Only --profile <name> adds a Hyperliquid section under its own heading, over every EVM TEE wallet bound to the profile, per binding period: realized gross, funding (received positive, paid negative), fees including builder fees, realized net, unrealized and the net. Facts and unrealized stop at the same cutoff per wallet; a cutoff read now is marked (live, not yet settled). The net is also counted in Total, whose line says it includes Hyperliquid; when the section cannot be read, Total is the token figure and the CLI says it excludes perps and why. Deposits and withdrawals are not P&L. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. For live perps positions and risk, use candle perps positions or candle portfolio.",
     usage: ["candle pnl [--profile <name>] [--dust] [--json]"],
@@ -74217,6 +74226,7 @@ var HELP = {
   },
   spend: {
     group: "Account",
+    intro: "x402 payments: local log, daily limit, per-call ceiling",
     summary: "x402 per-use payments: the local log, the daily limit, the per-call ceiling, pause",
     description: "Every per-use x402 payment this machine makes is checked first against limits kept on this machine, per profile: payments not paused, the price at most the per-call ceiling (default $1), and today's per-use total (UTC, counting payments not yet confirmed) plus the price at most the daily limit (default $5). The pay-to address must be the one this CLI pins for the network. Each payment is logged before it is sent, in <config dir>/spend/<profile>.jsonl (mode 0600), and its outcome after: settled, failed (nothing moved), unknown (not yet known; counted until resolved) or credited (Candle failed to serve a settled call and credited it). candle spend shows the log, today's total and the Candle credit balance (with an API key); an unknown older than 15 minutes is resolved against the server's payment list when the profile has a key. Plan purchases are not per-use and are outside the daily limit.",
     usage: [
@@ -74238,6 +74248,7 @@ var HELP = {
   },
   quant: {
     group: "Account",
+    intro: "Quant's terms, accepted before per-use answers",
     summary: "Quant's terms, which per-use Quant answers need accepted first",
     description: "terms shows Quant's terms and Privacy Policy and records this account's acceptance through its API key. Quant accepts only its current version; the default is the version this release was built with, and --terms-version sends another. A paid Quant answer past the daily limit is refused until the terms are accepted, before any payment is asked for.",
     usage: ["candle quant terms [--terms-version <YYYY-MM-DD>] [--yes] [--json]"],
@@ -74251,6 +74262,7 @@ var HELP = {
   },
   plans: {
     group: "Account",
+    intro: "API plans: prices, fees, limits and what each does",
     summary: "The plans this API serves: prices, fees, limits and what each can do",
     description: "The plan table in force on the API this profile points at (GET /api/v1/agent/plans): each plan's monthly price, the agent trade fee, the Hyperliquid perps builder fee, the limits a new key gets, and one row per capability (buying and selling tokens not launched on Candle, self-launch, atomic launch, linked wallets, perps, limit orders). Every number is the server's; the CLI bundles none. Needs no key and sends none. Which plan this account is on is candle doctor's Plan row.",
     usage: ["candle plans [--json]"],
@@ -74329,6 +74341,7 @@ var HELP = {
   },
   wallets: {
     group: "Account",
+    intro: "Launch and linked wallets; import or revoke one",
     display: "wallet",
     summary: "Launch and linked wallets; import or revoke one (wallets is an alias)",
     description: "The account's embedded launch wallets and any wallet you linked, with a Signer column saying whether this machine holds the signing key and a Trusted column saying whether it is yours: linked while signed in, or marked with wallet trust. Keys are derived in the vault now: this command links and revokes, it never generates or prints one.",
@@ -74699,6 +74712,7 @@ var HELP = {
   },
   tui: {
     group: "Start here",
+    intro: "The Candle TUI: holdings, feed, agents, approvals (preview)",
     summary: "The Candle TUI: holdings, the feed, your agents and approval cards, in the terminal (preview)",
     description: "Starts the Candle TUI (candle-tui), which starts the local core for the profile when it is not running. Every live money action an agent proposes becomes an approval card you approve there with your vault factor. Preview: the TUI is not released yet.",
     usage: ["candle tui [--profile <name>]"],
@@ -74729,6 +74743,7 @@ var HELP = {
   },
   update: {
     group: "Maintain",
+    intro: "Update the CLI and its key helper to the latest release",
     summary: "Update the CLI and its security key helper to the latest signed release",
     description: "Replaces this binary, and the candle-fido2 security key helper beside it, with the latest signed release. Both downloads are checked the same way and nothing is renamed until both pass: the checksum must match and the Sigstore bundle must verify in process against that exact version's release workflow. A release that ships no helper for this platform updates the binary alone.",
     usage: ["candle update [flags]"],
@@ -74774,10 +74789,13 @@ var HELP = {
   help: {
     group: "Maintain",
     summary: "This screen, or a command's own: candle help vault",
-    description: "The top-level screen, or one command's own: its subcommands, the flags they share, examples, and the environment it reads. Reads no config and makes no request, so it answers on a machine with no profile selected.",
-    usage: ["candle help", "candle help <command>"],
+    description: "The top-level screen, or one command's own: its subcommands, flags and examples. --more includes the full rules and row descriptions. Shared environment variables are listed once at the top level. Reads no config and makes no request, so it answers on a machine with no profile selected.",
+    usage: ["candle help", "candle help <command> [--more]"],
+    flags: [
+      { invocation: "--more", description: "Include the full rules and row descriptions, without opening a browser" }
+    ],
     rows: [],
-    examples: ["candle help", "candle help vault", "candle help completion"]
+    examples: ["candle help", "candle help vault", "candle help perps --more", "candle help completion"]
   }
 };
 function topicFor(word3) {
@@ -74809,22 +74827,42 @@ function documentedFlags(topic) {
   }
   return [...flags].sort();
 }
-var WIDTH = 118;
-function renderRows(rows, maxColumn, width = WIDTH) {
+var WIDTH = 100;
+function indented(text, width, first = "  ", continuation = "    ") {
+  const leading = text.match(/^ +/)?.[0] ?? "";
+  const lines = wrapText(text.trimStart(), Math.max(1, width - Math.max(first.length + leading.length, continuation.length)));
+  return lines.map((line, index) => `${index === 0 ? first + leading : continuation}${line}`);
+}
+function rowSummary(description) {
+  let depth = 0;
+  for (let i = 0;i < description.length; i++) {
+    const char = description[i];
+    if (char === "(" || char === "[")
+      depth++;
+    else if (char === ")" || char === "]")
+      depth = Math.max(0, depth - 1);
+    else if (depth === 0 && char === ";" && description[i + 1] === " ")
+      return description.slice(0, i);
+    else if (depth === 0 && char === "." && /^ [A-Z-]/.test(description.slice(i + 1)))
+      return description.slice(0, i + 1);
+  }
+  return description;
+}
+function renderRows(rows, maxColumn, width = WIDTH, more = true) {
   if (rows.length === 0)
     return [];
   const longest = Math.max(...rows.map((row) => row.invocation.length));
-  const column = Math.min(2 + longest + 2, maxColumn, Math.max(4, width - 24));
+  const column = Math.min(2 + longest + 2, maxColumn, Math.max(4, Math.floor(width / 3)));
   const pad = " ".repeat(column);
   const out = [];
   for (const row of rows) {
-    const [first = "", ...rest] = wrapText(row.description, width - column);
-    if (2 + row.invocation.length + 2 <= column)
-      out.push(`  ${row.invocation.padEnd(column - 2)}${first}`);
-    else
-      out.push(`  ${row.invocation}`, `${pad}${first}`);
-    for (const line of rest)
-      out.push(`${pad}${line}`);
+    const description = more ? [row.description, row.more].filter(Boolean).join(" ") : rowSummary(row.description);
+    if (2 + row.invocation.length + 2 <= column) {
+      const [first = "", ...rest] = wrapText(description, width - column);
+      out.push(`  ${row.invocation.padEnd(column - 2)}${first}`, ...rest.map((line) => `${pad}${line}`));
+    } else {
+      out.push(...indented(row.invocation, width), ...indented(description, width, "    "));
+    }
   }
   return out;
 }
@@ -74833,93 +74871,46 @@ function renderEnv(names, width = WIDTH) {
   return renderRows(vars.map((entry) => ({ invocation: entry.name, description: entry.description })), 32, width);
 }
 function renderTopLevel(style) {
-  if (style)
-    return renderPresentedTopLevel(style);
-  const out = [
-    "candle: Candle from the terminal: trade, launch, and hold your keys on your own machine",
-    "",
-    ...LAUNCH_DEFINITION.surfacesIntro,
-    "",
-    "Usage: candle <command> [<subcommand>] [flags]",
-    "       candle help <command>                a command's subcommands, flags and examples"
-  ];
-  const entries = Object.entries(HELP);
-  const longest = Math.max(...entries.map(([word3]) => displayName(word3).length));
-  const column = 2 + longest + 2;
-  for (const group of GROUPS) {
-    out.push("", group);
-    for (const [word3, topic] of entries) {
-      if (topic.group !== group)
-        continue;
-      out.push(`  ${displayName(word3).padEnd(column - 2)}${topic.summary}`);
-    }
-  }
-  out.push("", "Global flags", ...renderRows(GLOBAL_FLAGS, 28));
-  out.push("", "Environment", ...renderEnv(ENVIRONMENT.map((entry) => entry.name)));
-  out.push("", "Plug-ins", ...renderRows([PLUGIN_LINE], 26));
-  return `${out.join(`
-`)}
-`;
+  return renderPresentedTopLevel(style);
 }
-function renderTopic(word3, style) {
+function renderTopic(word3, style, more = false) {
   const topic = topicFor(word3);
   if (!topic)
     return;
   const canonical = Object.keys(HELP).find((key) => HELP[key] === topic) ?? word3;
   const display = displayName(canonical);
-  const width = style?.width ?? WIDTH;
-  const out = [wrapText(`candle ${display}: ${topic.description}`, width).join(`
-`)];
-  out.push("", `Usage: ${topic.usage.join(`
-       `)}`);
+  const width = Math.min(style?.width ?? WIDTH, WIDTH);
+  const out = [
+    ...wrapText(`candle ${display}: ${topic.intro ?? topic.summary}.`, width),
+    ...wrapText(`More: candle help ${display} --more`, width)
+  ];
+  out.push("", ...topic.usage.flatMap((usage3, index) => indented(usage3, width, index === 0 ? "Usage: " : "       ", "       ")));
   if (topic.rows.length > 0)
-    out.push("", ...renderRows(topic.rows, 58, width));
+    out.push("", ...renderRows(topic.rows, 58, width, more));
   if (topic.flags && topic.flags.length > 0) {
-    out.push("", `Flags every ${display} subcommand takes`, ...renderRows(topic.flags, 28, width));
+    out.push("", ...wrapText(`Flags every ${display} subcommand takes`, width), ...renderRows(topic.flags, 28, width, more));
   }
-  out.push("", "Examples", ...topic.examples.map((example) => `  ${example}`));
-  if (topic.env && topic.env.length > 0)
-    out.push("", "Environment", ...renderEnv(topic.env, width));
+  out.push("", "Examples", ...topic.examples.flatMap((example) => indented(example, width)));
+  if (more)
+    out.push("", "Rules", ...wrapText(topic.description, width));
+  out.push("", ...wrapText("Environment variables: candle --help", width));
   return `${out.join(`
 `)}
 `;
 }
 function renderPresentedTopLevel(style) {
-  const { width } = style;
-  const heading2 = (text) => accent(text, style);
+  const width = Math.min(style?.width ?? WIDTH, WIDTH);
+  const heading2 = (text) => style ? accent(text, style) : text;
   const out = [
-    ...brandHeader(style),
-    ...!style.styled ? [...wrapText("Candle CLI: Your wallets and agent tools, one command away.", width), ""] : [],
+    ...style ? brandHeader(style) : [],
+    ...!style?.styled ? [...wrapText("Candle CLI: Your wallets and agent tools, one command away.", width), ""] : [],
     ...LAUNCH_DEFINITION.surfacesIntro.flatMap((line) => wrapText(line, width)),
     "",
-    heading2("Start here"),
-    ...renderRows([
-      { invocation: "candle setup", description: "Connect your account" },
-      { invocation: "candle portfolio", description: "Read your holdings after setup" },
-      { invocation: "candle mcp", description: "Connect an MCP client using this install" }
-    ], 24, width),
-    "",
-    ...wrapText("Usage: candle <command> [<subcommand>] [flags]", width),
-    "       candle help <command>"
+    ...indented("candle <command> [<subcommand>] [flags]", width, "Usage: ", "       "),
+    ...indented("candle help <command> [--more]", width, "       ", "       ")
   ];
-  const group = (name, available) => [
-    heading2(name),
-    ...renderRows(Object.entries(HELP).filter(([, topic]) => topic.group === name).map(([word3, topic]) => ({ invocation: displayName(word3), description: topic.summary })), 18, available)
-  ];
-  for (let i = 0;i < GROUPS.length; i++) {
-    const name = GROUPS[i];
-    if (width >= 100 && (name === "Trade" || name === "Custody, on this machine")) {
-      const column = Math.floor((width - 4) / 2);
-      const left = group(name, column);
-      const right = group(GROUPS[++i], column);
-      out.push("");
-      for (let row = 0;row < Math.max(left.length, right.length); row++) {
-        const first = left[row] ?? "";
-        const visible = first.replace(/\x1b\[[0-9;]*m/g, "").length;
-        out.push(`${first}${" ".repeat(Math.max(4, column - visible + 4))}${right[row] ?? ""}`.trimEnd());
-      }
-    } else
-      out.push("", ...group(name, width));
+  for (const name of GROUPS) {
+    out.push("", heading2(name), ...renderRows(Object.entries(HELP).filter(([, topic]) => topic.group === name).map(([word3, topic]) => ({ invocation: displayName(word3), description: topic.summary })), 18, width));
   }
   out.push("", heading2("Global flags"), ...renderRows(GLOBAL_FLAGS, 28, width));
   out.push("", heading2("Environment"), ...renderEnv(ENVIRONMENT.map((entry) => entry.name), width));
@@ -86796,12 +86787,12 @@ ${fields(rows, style).join(`
 // src/commands/help.ts
 init_presentation();
 async function help(args, ctx) {
-  const word3 = args[0];
+  const word3 = args.find((arg) => arg !== "--more");
   if (word3 === undefined) {
     ctx.deps.stdout.write(renderTopLevel(terminalStyle(ctx.deps, "stdout", ctx.json)));
     return 0;
   }
-  const topic = renderTopic(word3, terminalStyle(ctx.deps, "stdout", ctx.json));
+  const topic = renderTopic(word3, terminalStyle(ctx.deps, "stdout", ctx.json), args.includes("--more"));
   if (topic === undefined) {
     ctx.deps.stderr.write(`Unknown command: ${word3}
 `);
@@ -108652,7 +108643,7 @@ async function runCommand(argv, deps) {
   }
   if (flags2.help) {
     const style = terminalStyle(deps, "stdout", flags2.json);
-    deps.stdout.write(renderTopic(canonicalCommand(tokens[0]) ?? "", style) ?? renderTopLevel(style));
+    deps.stdout.write(renderTopic(canonicalCommand(tokens[0]) ?? "", style, tokens.includes("--more")) ?? renderTopLevel(style));
     return 0;
   }
   if (tokens.length === 0) {

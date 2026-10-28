@@ -651,7 +651,9 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   // not a command falls back to the top level, as a bare `candle --help` does.
   if (flags.help) {
     const style = terminalStyle(deps, "stdout", flags.json)
-    deps.stdout.write(renderTopic(canonicalCommand(tokens[0]) ?? "", style) ?? renderTopLevel(style))
+    deps.stdout.write(
+      renderTopic(canonicalCommand(tokens[0]) ?? "", style, tokens.includes("--more")) ?? renderTopLevel(style),
+    )
     return 0
   }
 

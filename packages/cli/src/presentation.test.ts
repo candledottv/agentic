@@ -58,8 +58,8 @@ describe("terminal presentation", () => {
           expect(normalized).toContain(intro)
           expect(normalized.indexOf(intro)).toBeGreaterThan(normalized.indexOf("one command away."))
           expect(normalized.indexOf(intro)).toBeLessThan(normalized.indexOf("Start here"))
-          expect(text).toContain("candle setup")
-          expect(text).toContain("candle portfolio")
+          expect(text).toMatch(/^ {2}setup\s/m)
+          expect(text).toMatch(/^ {2}portfolio\s/m)
           expect(text).toContain("CANDLE_CONFIG_DIR")
           expect(text).not.toContain("…")
           const styled = mode === "color" || mode === "no-color"
@@ -125,7 +125,7 @@ describe("terminal presentation", () => {
     const style = terminalStyle(createTestDeps({ fetch: unusedFetch, columns: { stdout: 40 } }), "stdout")
     const text = renderTopic("tee", style) ?? ""
     expect(text).toContain("0x000000000000000000000000000000000000dEaD")
-    expect(text).toContain("candle tee rename --pairs-from ./tee-names.csv --dry-run")
+    expect(text.replace(/\s+/g, " ")).toContain("candle tee rename --pairs-from ./tee-names.csv --dry-run")
     expect(text).not.toContain("…")
     expect(text).not.toContain("┌")
   })
@@ -195,11 +195,13 @@ describe("terminal presentation", () => {
     }
   })
 
-  test("every command survives the wide two-column layout", () => {
+  test("wide terminals keep a single column of groups", () => {
     const deps = createTestDeps({ fetch: unusedFetch, columns: { stdout: 120 } })
     const text = clean(renderTopLevel(terminalStyle(deps, "stdout")))
-    expect(text).toMatch(/Trade +Account/)
-    expect(text).toMatch(/Custody, on this machine +Your own services/)
+    expect(text).toContain("\nTrade\n")
+    expect(text).toContain("\nAccount\n")
+    expect(text).toContain("\nCustody, on this machine\n")
+    expect(text).toContain("\nYour own services\n")
   })
   // The public agentic export carries the CLI without packages/tui, so the TUI entry is absent there.
   test.skipIf(!existsSync(TUI_BIN))(

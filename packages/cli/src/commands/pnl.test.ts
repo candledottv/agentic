@@ -705,7 +705,7 @@ describe("Hyperliquid profile PnL", () => {
   test("perps and pnl help direct readers to the profile section and live unrealized views", async () => {
     for (const topic of ["perps", "pnl"]) {
       const h = harness()
-      expect(await run([topic, "--help"], h.deps)).toBe(0)
+      expect(await run(["help", topic, "--more"], h.deps)).toBe(0)
       // Help wraps paragraphs to terminal width; compare words across those line breaks.
       const help = h.stdout.text.replace(/\s+/g, " ")
       expect(help).toContain("--profile <name>")

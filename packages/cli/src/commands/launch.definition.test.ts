@@ -40,6 +40,7 @@ describe("CLI launch definition conformance in both directions", () => {
       expect(topic.flags).toContainEqual({
         invocation: `${field.cli.flag}${"value" in field.cli ? ` ${field.cli.value}` : ""}`,
         description: field.help,
+        ...("more" in field ? { more: field.more } : {}),
       })
     }
   })
