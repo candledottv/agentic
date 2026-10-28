@@ -15,6 +15,7 @@ export { createQuantKeyClient, newClientTurnId, QUANT_AGENT_PATH, QUANT_CALL_TIM
 export type { SecretStore } from "./secret-store";
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store";
 export type * from "./staking";
+export { CLUSTER_CAVEAT, CLUSTER_LABEL, CLUSTER_MESSAGE, CLUSTER_REASONS, type ClusterAnalysis, type ClusterReason, type ClusterResult, } from "./token-clusters";
 export type * from "./token-pages";
 export { TokenPageError } from "./token-pages";
 export * from "./token-pages.types";

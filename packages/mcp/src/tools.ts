@@ -51,6 +51,7 @@ import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
 import { keyedRedirectGuard, type RequestConfig, resolveConfig } from "./client"
+import { CLUSTER_READ_DESCRIPTION, readTokenClusters, tokenClustersShape } from "./cluster-read"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
 import {
   configuredImageDir,
@@ -142,6 +143,8 @@ export const TOOL_NAMES = [
   "candle_token_page_flag",
 
   "candle_token_forensics",
+  // BE-2006: the optional third-party cluster read, keyless. Unavailable is a result, never an error.
+  "candle_token_clusters",
   "candle_report_activity",
   "candle_get_agent_profile",
   // FE-431: the agent directory, keyless.
@@ -258,6 +261,7 @@ type RestToolName = Exclude<
   | "candle_sweep"
   | "candle_resolve_token"
   | "candle_execution_status"
+  | "candle_token_clusters"
   | PerpsToolName
   | PerpsMarketToolName
   | "candle_perps_deposit"
@@ -1467,6 +1471,20 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: tokenForensicsShape,
     },
     async (args) => callAndRelay("candle_token_forensics", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_token_clusters",
+    {
+      title: "Token clusters",
+      description: CLUSTER_READ_DESCRIPTION,
+      inputSchema: tokenClustersShape,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (args) => ({
+      content: [{ type: "text", text: JSON.stringify(await readTokenClusters(args, getConfig(), doFetch)) }],
+      isError: false,
+    }),
   )
 
   register(

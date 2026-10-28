@@ -50,6 +50,7 @@ import { type PerpsFillsPage, type PerpsFundingPage, type PerpsHistoryOptions } 
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans";
 import type { SecretStore } from "./secret-store";
 import type { CandleStaking } from "./staking";
+import { type ClusterResult } from "./token-clusters";
 import { type WalletChain } from "./wallet-import";
 export type Chain = "solana" | "hood";
 /**
@@ -3295,6 +3296,16 @@ export declare class CandleClient {
         tag?: string;
     }): Promise<TokenCard>;
     verify(chain: Chain, mint: string): Promise<VerifyResult>;
+    /**
+     * BE-2006: optional third-party cluster analysis for a Solana token. Resolves the same
+     * `ClusterResult` union as the API and `candle token clusters`, and never throws for an
+     * unavailable analysis: unavailable is a normal result with a `reason`, not zero clustered supply.
+     * A request that fails, times out or returns an unusable body resolves reason `transport_error`.
+     * One request, no retry, no key sent, nothing cached here. Hood resolves `unsupported_chain`.
+     */
+    getTokenClusters(mint: string, opts?: {
+        chain?: Chain;
+    }): Promise<ClusterResult>;
     getOwnProfile(): Promise<OwnAgentProfile>;
     updateOwnProfile(patch: OwnAgentProfilePatch): Promise<{
         success: true;

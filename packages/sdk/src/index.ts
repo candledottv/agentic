@@ -355,6 +355,16 @@ export {
 export type { SecretStore } from "./secret-store"
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store"
 export type * from "./staking"
+// BE-2006: the optional cluster read's union, shared word for word with the CLI and the API.
+export {
+  CLUSTER_CAVEAT,
+  CLUSTER_LABEL,
+  CLUSTER_MESSAGE,
+  CLUSTER_REASONS,
+  type ClusterAnalysis,
+  type ClusterReason,
+  type ClusterResult,
+} from "./token-clusters"
 export type * from "./token-pages"
 export { TokenPageError } from "./token-pages"
 export * from "./token-pages.types"

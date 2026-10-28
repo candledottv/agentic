@@ -142,6 +142,7 @@ import {
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans"
 import type { SecretStore } from "./secret-store"
 import type { CandleStaking, StakingPositions, StakingResult, StakingRewardClaim } from "./staking"
+import { type ClusterResult, clusterUnavailable, readClusterResult } from "./token-clusters"
 import { createTokenPagesClient } from "./token-pages"
 import { encryptWalletKeyForImport, type WalletChain } from "./wallet-import"
 
@@ -3612,6 +3613,8 @@ interface OperationContext {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_RETRIES = 3
+/** `getTokenClusters()`'s bound, the same as the CLI's for this read. */
+const CLUSTER_READ_TIMEOUT_MS = 12000
 const DEFAULT_POLL_MS = 2_000
 const DEFAULT_WAIT_TIMEOUT_MS = 180_000
 
@@ -4008,6 +4011,32 @@ export class CandleClient {
 
   async verify(chain: Chain, mint: string): Promise<VerifyResult> {
     return this.requestJson<VerifyResult>("GET", `/api/v1/verify/${chain}/${encodeURIComponent(mint)}`)
+  }
+
+  /**
+   * BE-2006: optional third-party cluster analysis for a Solana token. Resolves the same
+   * `ClusterResult` union as the API and `candle token clusters`, and never throws for an
+   * unavailable analysis: unavailable is a normal result with a `reason`, not zero clustered supply.
+   * A request that fails, times out or returns an unusable body resolves reason `transport_error`.
+   * One request, no retry, no key sent, nothing cached here. Hood resolves `unsupported_chain`.
+   */
+  async getTokenClusters(mint: string, opts: { chain?: Chain } = {}): Promise<ClusterResult> {
+    const chain = opts.chain ?? "solana"
+    try {
+      const res = await this.fetchImpl(
+        `${this.apiUrl}/api/v1/tokens/${encodeURIComponent(mint)}/clusters?chain=${encodeURIComponent(chain)}`,
+        { method: "GET", cache: "no-store", signal: AbortSignal.timeout(CLUSTER_READ_TIMEOUT_MS) },
+      )
+      noteLatestSdkVersion(res.headers?.get?.("x-candle-sdk-latest") ?? null)
+      if (res.ok) {
+        const body = JSON.parse(await res.text()) as { success?: unknown; data?: unknown } | null
+        if (body?.success === true)
+          return readClusterResult(body.data, mint) ?? clusterUnavailable(mint, "transport_error")
+      }
+    } catch {
+      /* A failed or unreadable request is a normal unavailable result for this optional read. */
+    }
+    return clusterUnavailable(mint, "transport_error")
   }
 
   async getOwnProfile(): Promise<OwnAgentProfile> {

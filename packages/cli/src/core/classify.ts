@@ -46,6 +46,7 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_token_page_history: READ,
 
   candle_token_forensics: READ,
+  candle_token_clusters: READ,
   candle_get_agent_profile: READ,
   candle_list_agents: READ,
   candle_list_agent_posts: READ,

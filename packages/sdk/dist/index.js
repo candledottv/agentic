@@ -4389,6 +4389,88 @@ async function readPerpsHistoryPage(req) {
   return kind === "fills" ? { ...envelope, fills: page } : { ...envelope, funding: page };
 }
 
+// src/token-clusters.ts
+var CLUSTER_REASONS = [
+  "disabled",
+  "invalid_config",
+  "unsupported_chain",
+  "invalid_mint",
+  "key_missing",
+  "gate_uncalibrated",
+  "market_data_missing",
+  "market_data_stale",
+  "token_too_new",
+  "gate_not_met",
+  "not_indexed",
+  "empty_analysis",
+  "invalid_response",
+  "timeout",
+  "upstream_unavailable",
+  "upstream_4xx",
+  "upstream_5xx",
+  "rate_limited",
+  "quota_exhausted",
+  "budget_exhausted",
+  "budget_unavailable",
+  "request_in_progress",
+  "transport_error",
+  "internal_unavailable"
+];
+var CLUSTER_MESSAGE = "Cluster analysis not available for this token";
+var CLUSTER_LABEL = "Third-party cluster analysis";
+var CLUSTER_CAVEAT = "Third-party estimates of linked wallets. Exchange, pool and service wallets may be grouped together. These figures do not establish common ownership, insider conduct or wrongdoing.";
+function clusterUnavailable(mint, reason, retryAt) {
+  return {
+    status: "unavailable",
+    mint,
+    reason,
+    message: CLUSTER_MESSAGE,
+    ...retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt: new Date(retryAt).toISOString() } : {}
+  };
+}
+function readClusterResult(value, mint) {
+  if (!value || typeof value !== "object")
+    return null;
+  const v = value;
+  if (v.mint !== mint)
+    return null;
+  if (v.status === "unavailable" && CLUSTER_REASONS.includes(v.reason)) {
+    const retry = v.retryAt === undefined ? undefined : typeof v.retryAt === "string" ? Date.parse(v.retryAt) : NaN;
+    if (retry !== undefined && !Number.isFinite(retry))
+      return null;
+    return clusterUnavailable(mint, v.reason, retry);
+  }
+  if (v.status !== "available" || v.chain !== "solana" || v.source !== "third_party" || !["hit", "miss"].includes(v.cache) || typeof v.fetchedAt !== "string" || typeof v.expiresAt !== "string" || !Number.isFinite(Date.parse(v.fetchedAt)) || !(Date.parse(v.expiresAt) > Date.parse(v.fetchedAt)))
+    return null;
+  const a = v.analysis;
+  const percent = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 100;
+  if (!a || !percent(a.clusterSupplyPct) || !Array.isArray(a.clusters) || !a.clusters.length || a.clusters.length > 100)
+    return null;
+  let addresses = 0;
+  for (const c of a.clusters) {
+    if (!c || !percent(c.supplyPct) || c.supplyPct > a.clusterSupplyPct + 0.01 || !Array.isArray(c.addresses) || !Array.isArray(c.tags) || c.tags.length > 32 || c.tags.some((t) => typeof t !== "string" || t.length > 100) || c.addresses.some((x) => typeof x !== "string" || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(x)))
+      return null;
+    addresses += c.addresses.length;
+  }
+  if (addresses > 1000 || a.clusterSupplyPct === 0 && a.clusters.every((c) => c.supplyPct === 0))
+    return null;
+  return {
+    status: "available",
+    chain: "solana",
+    mint,
+    source: "third_party",
+    label: CLUSTER_LABEL,
+    caveat: CLUSTER_CAVEAT,
+    fetchedAt: v.fetchedAt,
+    expiresAt: v.expiresAt,
+    cache: v.cache,
+    analysis: {
+      clusterSupplyPct: a.clusterSupplyPct,
+      clusters: a.clusters.map((c) => ({ supplyPct: c.supplyPct, addresses: [...c.addresses], tags: [...c.tags] }))
+    }
+  };
+}
+
 // src/token-pages.ts
 class TokenPageError extends CandleApiError {
   idempotencyKey;
@@ -4715,6 +4797,7 @@ function isAtomicSubmitOutcome(value) {
   return false;
 }
 var DEFAULT_MAX_RETRIES = 3;
+var CLUSTER_READ_TIMEOUT_MS = 12000;
 var DEFAULT_POLL_MS = 2000;
 var DEFAULT_WAIT_TIMEOUT_MS = 180000;
 function isLoopbackHost(hostname) {
@@ -4988,6 +5071,19 @@ class CandleClient {
   }
   async verify(chain, mint) {
     return this.requestJson("GET", `/api/v1/verify/${chain}/${encodeURIComponent(mint)}`);
+  }
+  async getTokenClusters(mint, opts = {}) {
+    const chain = opts.chain ?? "solana";
+    try {
+      const res = await this.fetchImpl(`${this.apiUrl}/api/v1/tokens/${encodeURIComponent(mint)}/clusters?chain=${encodeURIComponent(chain)}`, { method: "GET", cache: "no-store", signal: AbortSignal.timeout(CLUSTER_READ_TIMEOUT_MS) });
+      noteLatestSdkVersion(res.headers?.get?.("x-candle-sdk-latest") ?? null);
+      if (res.ok) {
+        const body = JSON.parse(await res.text());
+        if (body?.success === true)
+          return readClusterResult(body.data, mint) ?? clusterUnavailable(mint, "transport_error");
+      }
+    } catch {}
+    return clusterUnavailable(mint, "transport_error");
   }
   async getOwnProfile() {
     this.requireKey("getOwnProfile()");
@@ -7242,6 +7338,10 @@ export {
   CandleOperationError,
   CandleClient,
   CandleApiError,
+  CLUSTER_REASONS,
+  CLUSTER_MESSAGE,
+  CLUSTER_LABEL,
+  CLUSTER_CAVEAT,
   CANDLE_PERPS_WITHDRAW_PINS,
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   BRIDGE_ERROR_CODES
