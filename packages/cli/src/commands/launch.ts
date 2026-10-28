@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
-import { parseArgs } from "../args"
+import { type ArgSpec, parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import {
@@ -21,6 +21,8 @@ import {
   launchFeeCap,
 } from "../hood-legs"
 import { BundleReadError, readLaunchBundle } from "../launch-bundle"
+import { LAUNCH_DEFINITION } from "../launch-definition"
+import { LAUNCH_IMAGE_FLAG, LAUNCH_USAGE, launchFieldProblem, launchFlagFields } from "../launch-options"
 import { writeUsageFailure } from "../render"
 import { postSignatureRateLimitMessage, postSignatureSuggestion } from "../solana-endpoint"
 import { isRateLimited } from "../solana-lite"
@@ -57,7 +59,7 @@ import {
   walletNameChain,
 } from "../trading"
 import { type LocalImage, readLocalImage, uploadImage, uploadNotice } from "./image"
-import { POOL_FLAGS, poolRequestFields } from "./pool-options"
+import { poolRequestFields } from "./pool-options"
 import {
   lazyEvmRpc,
   lookupOperation,
@@ -67,27 +69,24 @@ import {
   validClientId,
 } from "./swap"
 
-const USAGE =
-  "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee>|embedded [--banner <file|URL>] [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--curve-v <V> --curve-g <G>] [--creator-fee-bps 0|100|200] [--pool-fee <25|50|100> [--pool-fee-from <bps> --pool-fee-minutes <min>]] [--pool-open legacy|curve_price] [--exp-pool-shape floor|full_range] [--dry-run] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
+export const USAGE = `Usage: ${LAUNCH_USAGE}`
+const EMBEDDED_WALLET_NAMES = new Set<string>(LAUNCH_DEFINITION.wallet.embeddedNames)
 
-/**
- * BE-1849: the names `--wallet` takes for the account's embedded wallet, as `candle stake` takes
- * them. Candle holds that wallet's delegation and signs for it, so its launch is the atomic one.
- */
-const EMBEDDED_WALLET_NAMES = new Set(["embedded", "main"])
-
-/** What an embedded-wallet launch needs that a TEE launch does not, said before any request. */
-const EMBEDDED_USAGE =
-  "--wallet embedded launches on Solana as an atomic launch: it needs --buy <amount>, takes --quote-asset sol, usdc or cndl, and takes no --dex-version. To launch from the embedded wallet with no first buy, use the MCP tool candle_launch_token or POST /api/v1/launch/headless."
+export const LAUNCH_ARG_SPEC: ArgSpec = {
+  valueFlags: [
+    ...launchFlagFields.filter((field) => field.type !== "boolean").map((field) => field.cli.flag),
+    LAUNCH_IMAGE_FLAG,
+    "--rpc-url",
+  ],
+  booleanFlags: [
+    ...launchFlagFields.filter((field) => field.type === "boolean").map((field) => field.cli.flag),
+    "--yes",
+  ],
+  pathFlags: ["--image", "--banner"],
+}
 
 /** The launch quote assets by chain, as the server's launch matrix lists them. */
-const QUOTE_CHAIN: Record<string, TradeChain> = {
-  sol: "solana",
-  usdc: "solana",
-  cndl: "solana",
-  eth: "hood",
-  usdg: "hood",
-}
+const QUOTE_CHAIN: Record<string, TradeChain> = LAUNCH_DEFINITION.quoteChains
 
 /**
  * A Hood TEE launch without `--buy` signs the curve and nothing else (D9): Candle charges its fee
@@ -108,17 +107,26 @@ interface LaunchBuy {
  * (SOL by default on Solana, ETH on Hood) to its base units. Undefined without `--buy`, which
  * launches exactly as before.
  */
+function launchBuyRaw(amount: string, decimals: number): string {
+  try {
+    return rawAmount(amount, decimals)
+  } catch (error) {
+    if (!(error instanceof TradingError)) throw error
+    throw new TradingError("VALIDATION_FAILED", error.message, { details: { field: "buyAmount" } })
+  }
+}
+
 function launchBuy(flags: Record<string, string>, chain: TradeChain): LaunchBuy | undefined {
   const amount = flags["--buy"]
-  if (amount === undefined) return undefined
-  const quote = (flags["--quote-asset"] ?? (chain === "hood" ? "eth" : "sol")).toUpperCase()
-  const decimals = chain === "hood" ? HOOD_BASES[quote]?.decimals : BASES[quote]?.decimals
+  if (amount === undefined || amount.trim() === "" || /^0+(\.0+)?$/.test(amount)) return undefined
+  const quote = (flags["--quote-asset"] ?? LAUNCH_DEFINITION.defaultQuote[chain]).toUpperCase()
+  const decimals = LAUNCH_DEFINITION.quoteDecimals[quote.toLowerCase() as keyof typeof LAUNCH_DEFINITION.quoteDecimals]
   if (decimals === undefined)
     throw new TradingError(
       "INVALID_AMOUNT",
       `--buy is in the launch's quote asset, and ${safeText(quote)} is not one on ${chainName(chain)}. Nothing was built.`,
     )
-  const raw = rawAmount(amount, decimals)
+  const raw = launchBuyRaw(amount, decimals)
   return { raw, display: `${decimalAmount(raw, decimals)} ${quote}` }
 }
 
@@ -140,15 +148,11 @@ function buyRefusal(error: unknown): unknown {
   if (!(error instanceof TradingError) || error.code !== "VALIDATION_FAILED") return error
   const field = error.details?.field
   if (field !== "buyAmount" && !(field === "linkedWalletId" && error.message.includes(ATOMIC_TEE_REFUSAL))) return error
-  return new TradingError(
-    "VALIDATION_FAILED",
-    `Candle refused the first buy on this TEE launch: ${safeText(error.message)}. A TEE wallet's launch takes --buy only where the server has TEE_LAUNCH_BUYS_ENABLED on, and it is off on this deployment. Nothing was built or signed.`,
-    {
-      suggestion:
-        "Launch without --buy under a new --client-trade-id, then make the first buy with candle swap once the token lands.",
-      details: error.details,
-    },
-  )
+  return new TradingError("VALIDATION_FAILED", error.message, {
+    suggestion:
+      "Launch without --buy under a new --client-trade-id, then make the first buy with candle swap once the token lands.",
+    details: error.details,
+  })
 }
 
 /**
@@ -164,16 +168,7 @@ function curveFlagProblem(flags: Record<string, string>): string | undefined {
   if (v !== undefined && mode !== "exp-custom") return "--curve-v and --curve-g take --mode exp-custom."
   if (mode === "exp-custom" && v === undefined)
     return "--mode exp-custom needs --curve-v and --curve-g: the curve's V and G in whole units of the quote asset."
-  for (const [flag, value] of [
-    ["--curve-v", v],
-    ["--curve-g", g],
-  ] as const) {
-    if (value !== undefined && !/^\d+(\.\d+)?$/.test(value))
-      return `${flag} takes a whole-unit decimal amount of the quote asset, such as 4 or 0.5.`
-  }
   const fee = flags["--creator-fee-bps"]
-  if (fee !== undefined && fee !== "0" && fee !== "100" && fee !== "200")
-    return "--creator-fee-bps takes 0, 100 or 200."
   if (fee !== undefined && !mode?.startsWith("exp-")) return "--creator-fee-bps takes an exp- --mode."
   return undefined
 }
@@ -221,47 +216,23 @@ function flagChain(flags: Record<string, string>): TradeChain | undefined {
 }
 
 export async function launch(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, {
-    valueFlags: [
-      "--name",
-      "--symbol",
-      "--image",
-      "--image-url",
-      "--banner",
-      "--description",
-      "--wallet",
-      "--client-trade-id",
-      "--rpc-url",
-      "--quote-asset",
-      "--mode",
-      "--dex-version",
-      "--buy",
-      ...POOL_FLAGS,
-      "--curve-v",
-      "--curve-g",
-      "--creator-fee-bps",
-    ],
-    booleanFlags: ["--yes", "--dry-run"],
-    pathFlags: ["--image", "--banner"],
-  })
+  const parsed = parseArgs(
+    args.map((arg, index) => (args[index - 1] === "--buy" && arg.trim() === "" ? "0" : arg)),
+    LAUNCH_ARG_SPEC,
+  )
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
     return 2
   }
   const flags = parsed.values
+  if (flags["--quote-asset"]) flags["--quote-asset"] = flags["--quote-asset"].toLowerCase()
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID()}`
   const embedded = EMBEDDED_WALLET_NAMES.has(flags["--wallet"] ?? "")
   const dryRun = parsed.booleans.has("--dry-run")
-  if (embedded) {
-    const quote = flags["--quote-asset"]?.toLowerCase()
-    if (
-      flags["--buy"] === undefined ||
-      flags["--dex-version"] !== undefined ||
-      (quote && QUOTE_CHAIN[quote] !== "solana")
-    ) {
-      writeUsageFailure(ctx.deps, `${EMBEDDED_USAGE} ${USAGE}`, ctx.json)
-      return 2
-    }
+  const fieldProblem = launchFieldProblem(flags)
+  if (fieldProblem) {
+    writeUsageFailure(ctx.deps, fieldProblem, ctx.json)
+    return 2
   }
   const curveProblem = curveFlagProblem(flags)
   if (curveProblem) {
@@ -300,8 +271,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     !flags["--symbol"] ||
     (flags["--image"] === undefined && flags["--image-url"] === undefined) ||
     !flags["--wallet"] ||
-    !validClientId(id) ||
-    (flags["--dex-version"] !== undefined && flags["--dex-version"] !== "v3" && flags["--dex-version"] !== "v4")
+    !validClientId(id)
   ) {
     writeUsageFailure(ctx.deps, USAGE, ctx.json)
     return 2
@@ -314,7 +284,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
   }
   try {
     // Before any request, as `candle swap` checks `--amount`; the quote asset's decimals come later.
-    if (flags["--buy"] !== undefined) rawAmount(flags["--buy"], 18)
+    if (flags["--buy"]?.trim() && !/^0+(\.0+)?$/.test(flags["--buy"])) launchBuyRaw(flags["--buy"], 18)
     const hinted = flagChain(flags)
     if (hinted === "hood" && flags["--dex-version"] === undefined) {
       writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE}`, ctx.json)
@@ -359,6 +329,12 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
           })
           return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch" })
         }
+        if (embedded && !settled)
+          throw new TradingError(
+            "OPERATION_IN_FLIGHT",
+            `Launch ${id} is ${safeText(prior.job.status)} and may still land. Re-run with the same --client-trade-id; nothing was re-sent.`,
+            { exitCode: 3, details: { job: prior.job } },
+          )
         return printTradingResult(ctx, prior)
       }
     }
@@ -377,10 +353,12 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     if (chain === "hood" && flags["--dex-version"] === undefined)
       throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`)
     const buy = launchBuy(flags, chain)
+    if (chain === "hood" && Object.keys(poolRequestFields(flags)).length)
+      throw new TradingUsage("Pool fee and pool shape choices are Solana only; a Hood launch cannot take them.")
     // BE-1721 (D1): a Solana TEE launch with a first buy is an atomic launch, the buy its own leg.
     // Its local refusals come here, before the upload and before the id is claimed.
     const atomic = chain === "solana" && buy !== undefined
-    if (atomic) atomicPreflight(ctx, flags, wallet, buy)
+    if (atomic) firstBuyCeiling(ctx, flags, buy)
     // Only a self-signed Solana launch reads an RPC (the atomic one is sent by Candle). Resolved
     // before the upload, so an endpoint that fails validation refuses the launch with nothing published.
     const solana =
@@ -389,8 +367,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     if (typeof uploaded === "number") return uploaded
     const { imageUrl, bannerUrl, used } = uploaded
     // BE-1806: the dry run sends the body the launch would build, to the route's dry run, and stops.
-    if (dryRun)
-      return await dryRunLaunch(ctx, key, { flags, id, wallet, chain, atomic, buy, imageUrl, bannerUrl, used })
+    if (dryRun) return await dryRunLaunch(ctx, key, { flags, id, wallet, chain, buy, imageUrl, bannerUrl, used })
     if (atomic)
       return await atomicLaunch(ctx, key, {
         flags,
@@ -553,6 +530,22 @@ interface LaunchBodyArgs {
   bannerUrl?: string
 }
 
+/** Optional metadata is identical on every launch route. */
+function launchMetadataFields(flags: Record<string, string>): Json {
+  const socials = Object.fromEntries(
+    launchFlagFields
+      .filter((field) => field.key.startsWith("socials.") && flags[field.cli.flag] !== undefined)
+      .map((field) => [field.key.slice("socials.".length), flags[field.cli.flag]?.trim()]),
+  )
+  return {
+    ...(Object.keys(socials).length ? { socials } : {}),
+    ...(flags["--staker-allocation-bps"] !== undefined
+      ? { stakerAllocationBps: Number(flags["--staker-allocation-bps"]) }
+      : {}),
+    ...(flags["--visibility"] !== undefined ? { visibility: flags["--visibility"] } : {}),
+  }
+}
+
 /** The fields the three bodies share: the token, the image, and the curve it launches on. */
 function launchFields(args: LaunchBodyArgs): Json {
   const { flags } = args
@@ -565,6 +558,7 @@ function launchFields(args: LaunchBodyArgs): Json {
     ...(flags["--description"] ? { description: flags["--description"] } : {}),
     ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
     ...launchCurveFields(flags),
+    ...launchMetadataFields(flags),
     // Solana graduation choices; a Hood launch refuses these flags before any body is built.
     ...poolRequestFields(flags),
   }
@@ -579,19 +573,6 @@ function solanaSelfBody(args: LaunchBodyArgs): Json {
     buyAmount: args.buy ? args.buy.raw : 0,
     linkedWalletId: args.wallet.id,
     ...(quoteAsset ? { quoteAsset } : {}),
-  }
-}
-
-/** `/launch/atomic/build` (and its dry run): this wallet as the creator and the only first buyer, no buyAmount. */
-function atomicBody(args: LaunchBodyArgs & { buy: LaunchBuy }): Json {
-  const payer = { type: "linked", linkedWalletId: args.wallet.id }
-  const quoteAsset = args.flags["--quote-asset"]
-  return {
-    ...launchFields(args),
-    chain: "solana",
-    ...(quoteAsset ? { quoteAsset } : {}),
-    payer,
-    firstBuys: [{ payer, amountRaw: args.buy.raw }],
   }
 }
 
@@ -647,7 +628,7 @@ function previewLines(answer: Json, chain: TradeChain): string {
   const parsed = previewSchema.safeParse(answer)
   if (!parsed.success) return ""
   const { resolved, curveTerms: terms, devBuyMax, fills } = parsed.data
-  const quote = (resolved?.quoteAsset ?? (chain === "hood" ? "eth" : "sol")).toUpperCase()
+  const quote = (resolved?.quoteAsset ?? LAUNCH_DEFINITION.defaultQuote[chain]).toUpperCase()
   const decimals = (chain === "hood" ? HOOD_BASES[quote] : BASES[quote])?.decimals
   const whole = (raw: string) => (decimals === undefined ? `${raw} raw` : `${shortAmount(raw, decimals)} ${quote}`)
   const lines: string[] = []
@@ -676,7 +657,7 @@ function previewLines(answer: Json, chain: TradeChain): string {
 
 /**
  * `candle launch ... --dry-run` (BE-1806): the body the launch would build, sent to the route's dry
- * run (`/launch/atomic/dry-run` for a Solana launch with --buy, `/launch/self/dry-run` otherwise),
+ * run (`/launch/self/dry-run`, with or without a first buy),
  * after this machine's own refusals and the image upload. Nothing is claimed, built, signed or
  * recorded, and the id stays unused. The upload, with --image, still happens: the dry run checks
  * the image by its URL.
@@ -684,14 +665,13 @@ function previewLines(answer: Json, chain: TradeChain): string {
 async function dryRunLaunch(
   ctx: CommandContext,
   key: string,
-  args: LaunchBodyArgs & { chain: TradeChain; atomic: boolean; used: Json },
+  args: LaunchBodyArgs & { chain: TradeChain; used: Json },
 ): Promise<number> {
-  const { chain, buy } = args
-  const atomic = args.atomic && buy !== undefined
-  const path = atomic ? "/api/v1/launch/atomic/dry-run" : "/api/v1/launch/self/dry-run"
-  const body = atomic ? atomicBody({ ...args, buy }) : chain === "hood" ? hoodBody(args) : solanaSelfBody(args)
+  const { chain } = args
+  const path = "/api/v1/launch/self/dry-run"
+  const body = chain === "hood" ? hoodBody(args) : solanaSelfBody(args)
   const answer = await request(ctx, key, path, body).catch((error) => {
-    throw atomic ? atomicRefusal(error) : buyRefusal(error)
+    throw buyRefusal(error)
   })
   ctx.deps.stderr.write(
     `Dry run: nothing was built, signed or recorded, and launch id ${args.id} is unused.\n${previewLines(answer, chain)}`,
@@ -708,11 +688,8 @@ async function dryRunLaunch(
  * so this local read is the early refusal in the API's words, not the authority: a ceiling this
  * machine does not know is refused by the dry run and the build, and nothing is sent.
  */
-const DEV_BUY_CEILINGS: Record<string, { env: string; fallback: bigint; unit: string }> = {
-  sol: { env: "DEV_BUY_MAX_LAMPORTS", fallback: 500_000_000n, unit: "lamports" },
-  usdc: { env: "DEV_BUY_MAX_USDC_RAW", fallback: 500_000_000n, unit: "USDC raw units" },
-  cndl: { env: "DEV_BUY_MAX_CNDL_RAW", fallback: 2_000_000_000_000n, unit: "CNDL raw units" },
-}
+const DEV_BUY_CEILINGS: Record<string, { env: string; raw: string; unit: string }> =
+  LAUNCH_DEFINITION.buyLimits.defaults
 
 function devBuyCeiling(env: Record<string, string | undefined>, quoteAsset: string): { ceiling: bigint; unit: string } {
   const bounds = DEV_BUY_CEILINGS[quoteAsset]
@@ -723,7 +700,7 @@ function devBuyCeiling(env: Record<string, string | undefined>, quoteAsset: stri
     )
   const raw = env[bounds.env]
   const value = raw && /^\d+$/.test(raw) ? BigInt(raw) : 0n
-  return { ceiling: value > 0n ? value : bounds.fallback, unit: bounds.unit }
+  return { ceiling: value > 0n ? value : BigInt(bounds.raw), unit: bounds.unit }
 }
 
 /** `decimalAmount` without trailing zeros: "0.5" rather than "0.500000000", as the API writes amounts. */
@@ -731,11 +708,6 @@ function shortAmount(raw: string, decimals: number): string {
   const full = decimalAmount(raw, decimals)
   return full.includes(".") ? full.replace(/0+$/, "").replace(/\.$/, "") : full
 }
-
-/** The creator's own buy on an exp- curve is at most this share of its threshold G, in basis points. */
-const EXP_DEV_BUY_MAX_THRESHOLD_BPS = 1000n
-/** G of the exp-a, exp-b and exp-c presets, raw: 5 SOL, or 330,000 CNDL (the API's EXP_CURVE_CELLS). */
-const EXP_PRESET_THRESHOLD_RAW: Record<string, bigint> = { sol: 5_000_000_000n, cndl: 330_000_000_000n }
 
 /** An exp- launch's G in raw units: the preset's, or exp-custom's `--curve-g`. Undefined for any other mode. */
 function expThresholdRaw(flags: Record<string, string>, quoteAsset: string): bigint | undefined {
@@ -745,21 +717,9 @@ function expThresholdRaw(flags: Record<string, string>, quoteAsset: string): big
     const decimals = BASES[quoteAsset.toUpperCase()]?.decimals
     return g === undefined || decimals === undefined ? undefined : BigInt(rawAmount(g, decimals))
   }
-  return mode === "exp-a" || mode === "exp-b" || mode === "exp-c" ? EXP_PRESET_THRESHOLD_RAW[quoteAsset] : undefined
-}
-
-/**
- * Before the upload and the claim: the dev-buy ceiling (D2, in the API's own words) and the
- * `swap:write` scope the atomic route needs (R6), so a refusal here leaves the id unused.
- */
-function atomicPreflight(
-  ctx: CommandContext,
-  flags: Record<string, string>,
-  wallet: TradingWallet,
-  buy: LaunchBuy,
-): void {
-  firstBuyCeiling(ctx, flags, buy)
-  if (wallet.scopes !== undefined && !wallet.scopes.includes("swap:write")) throw swapScopeRefusal()
+  const presets: Record<string, Record<string, string>> = LAUNCH_DEFINITION.buyLimits.presetThresholds
+  const raw = mode ? presets[mode]?.[quoteAsset] : undefined
+  return raw === undefined ? undefined : BigInt(raw)
 }
 
 /**
@@ -775,7 +735,7 @@ function firstBuyCeiling(ctx: CommandContext, flags: Record<string, string>, buy
   // BE-1806: an exp- curve's own ceiling, as the API's devBuyCeiling: min(10% of G, the ordinary).
   const threshold = expThresholdRaw(flags, quoteAsset)
   if (threshold !== undefined) {
-    const curveCap = (threshold * EXP_DEV_BUY_MAX_THRESHOLD_BPS) / 10_000n
+    const curveCap = (threshold * BigInt(LAUNCH_DEFINITION.buyLimits.thresholdBps)) / 10_000n
     const applies = curveCap < ceiling ? curveCap : ceiling
     if (BigInt(buy.raw) > applies) {
       const symbol = quoteAsset.toUpperCase()
@@ -793,36 +753,6 @@ function firstBuyCeiling(ctx: CommandContext, flags: Record<string, string>, buy
       `buyAmount exceeds the per-launch dev-buy ceiling of ${ceiling} ${unit} for ${quoteAsset} on solana`,
       { details: { field: "buyAmount" } },
     )
-}
-
-function swapScopeRefusal(): TradingError {
-  return new TradingError(
-    "SCOPE_MISSING",
-    "This key needs swap:write for a first buy on a TEE launch: the buy is its own leg in an atomic launch. Nothing was built or signed.",
-    {
-      suggestion:
-        "Add swap:write to the key, or launch without --buy and make the first buy with candle swap once the token lands.",
-    },
-  )
-}
-
-/**
- * The atomic route's refusals that a TEE `--buy` meets, said plainly (R6). No refusal falls back to
- * a one-transaction build or to a separate buy: the launch is not made, and nothing was signed.
- */
-function atomicRefusal(error: unknown): unknown {
-  if (!(error instanceof TradingError)) return error
-  if (error.code === "SCOPE_MISSING") return swapScopeRefusal()
-  if (error.code === "VALIDATION_FAILED" && error.message.includes("configured Jito block engine"))
-    return new TradingError(
-      "VALIDATION_FAILED",
-      "A TEE launch with --buy goes to Candle as one Jito bundle, and this Candle deployment has no Jito block engine configured. Nothing was built or signed.",
-      {
-        suggestion:
-          "Launch without --buy under a new --client-trade-id, then make the first buy with candle swap once the token lands.",
-      },
-    )
-  return buyRefusal(error)
 }
 
 const atomicLegSchema = z.object({
@@ -851,7 +781,7 @@ const atomicOutcomeSchema = z.discriminatedUnion("status", [
 
 /**
  * `candle launch --wallet <solana tee> --buy <amount>` (BE-1721, option D): one
- * `/launch/atomic/build` with this wallet as the creator and as the only first buyer (R1), the
+ * `/launch/self/build` with this wallet as the creator and buyAmount as its only first buy (R1), the
  * quote read off the two legs (R2), both legs relay-signed in order and saved with the bundle
  * before one `/submit` (R3), and the bundle's outcome (R4). The CLI never sends a leg itself:
  * Candle relays the bundle to Jito, so the launch and the first buy land together or not at all.
@@ -880,8 +810,8 @@ async function atomicLaunch(
     )
   ctx.deps.stderr.write(`Operation: ${id}\n`)
   const built = atomicBuildSchema.parse(
-    await request(ctx, key, "/api/v1/launch/atomic/build", atomicBody(args)).catch((error) => {
-      throw atomicRefusal(error)
+    await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody(args)).catch((error) => {
+      throw buyRefusal(error)
     }),
   )
   const [launchLeg, buyLeg] = built.legs
@@ -1075,7 +1005,6 @@ function resumeAtomicLaunch(
 // ── BE-1849: a launch from the embedded wallet, as an atomic launch ───────────────────────────
 
 /** The embedded wallet pays for both legs, and Candle signs both at `/submit`. */
-const EMBEDDED_PAYER = { type: "main" } as const
 
 /** `/launch/atomic/dry-run`'s fields this command reads: the launch's wallet and its one first buy. */
 const atomicDryRunSchema = z
@@ -1103,16 +1032,16 @@ const atomicDryRunSchema = z
   .passthrough()
 
 /**
- * The account's Solana embedded wallet, read as `candle swap` reads it, before the upload: a key
+ * The account's embedded wallet for this chain, read as `candle swap` reads it, before the upload: a key
  * the owner denied the embedded wallet is refused here with the fix, as the server would refuse it.
  */
-async function embeddedLaunchWallet(ctx: CommandContext, key: string): Promise<string> {
+async function embeddedLaunchWallet(ctx: CommandContext, key: string, chain: TradeChain): Promise<string> {
   const discovered = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded"))
-  const address = discovered.wallets?.solana?.address
+  const address = chain === "hood" ? discovered.wallets?.evm?.address : discovered.wallets?.solana?.address
   if (!address)
     throw new TradingError(
       "PAYER_REQUIRED",
-      "This account has no Solana embedded wallet. Create one in the app, or launch from a Solana TEE wallet with --wallet <tee>. Nothing was built.",
+      `This account has no ${chainName(chain)} embedded wallet. Create one in the app, or launch from a TEE wallet with --wallet <tee>. Nothing was built.`,
     )
   if (discovered.embeddedWalletPermission === "denied")
     throw new TradingError(
@@ -1126,31 +1055,8 @@ async function embeddedLaunchWallet(ctx: CommandContext, key: string): Promise<s
   return address
 }
 
-/** The atomic route's refusals that an embedded launch meets, said plainly. Nothing was built or signed. */
-function embeddedRefusal(error: unknown): unknown {
-  if (!(error instanceof TradingError)) return error
-  if (error.code === "SCOPE_MISSING")
-    return new TradingError(
-      "SCOPE_MISSING",
-      "This key needs swap:write as well as launch:write: the first buy is its own leg in the atomic launch. Nothing was built or signed.",
-      { suggestion: "Add swap:write to the key, then run the same command again." },
-    )
-  if (error.code === "VALIDATION_FAILED" && error.message.includes("configured Jito block engine"))
-    return new TradingError(
-      "VALIDATION_FAILED",
-      "An embedded-wallet launch goes to Candle as one Jito bundle, and this Candle deployment has no Jito block engine configured. Nothing was built or signed.",
-    )
-  return error
-}
-
-/**
- * `candle launch --wallet embedded --buy <amount>` (BE-1849): the account's embedded wallet as the
- * creator and as the only first buyer, on the same route the TEE `--buy` takes (`/launch/atomic`).
- * The dry run comes first and writes nothing: no day-cap slot, no mint, no reservation, and the id
- * stays unused. Its quote is the one confirmed. Only then is the id claimed and the bundle built,
- * and its first-buy floor must be at least the one shown. Candle signs both legs at `/submit` and
- * relays them to Jito as one bundle, so the launch and the first buy land together or not at all.
- * `--dry-run` stops after the preview.
+/** The embedded wallet previews and executes through headless, with or without a first buy.
+ * The server owns build/sign/submit and its slippage floor. Recovery keeps clientLaunchId.
  */
 async function embeddedLaunch(
   ctx: CommandContext,
@@ -1167,69 +1073,83 @@ async function embeddedLaunch(
   },
 ): Promise<number> {
   const { flags, id } = args
-  const buy = launchBuy(flags, "solana") as LaunchBuy
-  firstBuyCeiling(ctx, flags, buy)
-  const wallet = await embeddedLaunchWallet(ctx, key)
+  const chain = flagChain(flags) ?? "solana"
+  const buy = launchBuy(flags, chain)
+  if (buy && chain === "solana") firstBuyCeiling(ctx, flags, buy)
+  if (chain === "hood" && Object.keys(poolRequestFields(flags)).length)
+    throw new TradingUsage("Pool fee and pool shape choices are Solana only; a Hood launch cannot take them.")
+  const wallet = await embeddedLaunchWallet(ctx, key, chain)
   const uploaded = await uploadLaunchImages(ctx, key, args)
   if (typeof uploaded === "number") return uploaded
   const { imageUrl, bannerUrl, used } = uploaded
   const body = {
     clientLaunchId: id,
-    chain: "solana",
+    chain,
     name: flags["--name"],
     symbol: flags["--symbol"],
     imageUrl,
     ...(bannerUrl ? { bannerUrl } : {}),
     ...(flags["--description"] ? { description: flags["--description"] } : {}),
     ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {}),
+    ...(flags["--dex-version"] ? { dexVersion: flags["--dex-version"] } : {}),
     ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
     ...launchCurveFields(flags),
+    ...launchMetadataFields(flags),
     ...poolRequestFields(flags),
-    payer: EMBEDDED_PAYER,
-    firstBuys: [{ payer: EMBEDDED_PAYER, amountRaw: buy.raw }],
+    ...(buy
+      ? { buyAmount: chain === "hood" || BigInt(buy.raw) > BigInt(Number.MAX_SAFE_INTEGER) ? buy.raw : Number(buy.raw) }
+      : {}),
   }
-  const answer = await request(ctx, key, "/api/v1/launch/atomic/dry-run", body).catch((error) => {
-    throw embeddedRefusal(error)
-  })
-  const preview = atomicDryRunSchema.safeParse(answer)
-  const fill = preview.success ? preview.data.fills[0] : undefined
-  if (
-    !preview.success ||
-    !fill ||
-    preview.data.fills.length !== 1 ||
-    preview.data.launchWallet !== wallet ||
-    preview.data.launchSigner !== "server" ||
-    fill.wallet !== wallet ||
-    fill.signer !== "server" ||
-    fill.amountRaw !== buy.raw
-  )
-    throw new TradingError(
-      "INVALID_RESPONSE",
-      "Candle's dry run does not read as this launch and its first buy from the embedded wallet; nothing was built.",
-    )
-  const quoteAsset = (flags["--quote-asset"] ?? "sol").toUpperCase()
-  const decimals = BASES[quoteAsset]?.decimals ?? 9
-  const quote: QuoteDisplay & Json = {
-    intent: `Launch ${flags["--name"]} (${flags["--symbol"]}) with a first buy of ${buy.display} from the embedded wallet, as one Jito bundle`,
+  const answer = await request(ctx, key, "/api/v1/launch/headless/dry-run", body)
+  let quote: QuoteDisplay & Json = {
+    intent: `Launch ${flags["--name"]} (${flags["--symbol"]})${buy ? ` with a first buy of ${buy.display}` : ""} from the embedded wallet`,
     wallet,
-    venue: "curve launch (atomic bundle, signed by Candle)",
+    venue: "curve launch (signed by Candle)",
     priceImpactPct: null,
-    candleFee:
-      fill.feeRaw !== "0"
-        ? `${decimalAmount(fill.feeRaw, decimals)} ${quoteAsset} (the tier fee on the first buy, in its leg)`
-        : "none on this first buy",
-    minimumReceived: `${fill.expectedFill.minAmountOutRaw} raw units of the new token (the first buy's floor; ${fill.supplyPct}% of the supply expected)`,
+    minimumReceived: "0 tokens (no first buy)",
     tokenRisks: [],
   }
+  if (buy && chain === "solana") {
+    const preview = atomicDryRunSchema.safeParse(answer)
+    const fill = preview.success ? preview.data.fills[0] : undefined
+    if (
+      !preview.success ||
+      !fill ||
+      preview.data.fills.length !== 1 ||
+      preview.data.launchWallet !== wallet ||
+      preview.data.launchSigner !== "server" ||
+      fill.wallet !== wallet ||
+      fill.signer !== "server" ||
+      fill.amountRaw !== buy.raw
+    )
+      throw new TradingError(
+        "INVALID_RESPONSE",
+        "Candle's dry run does not read as this launch and its first buy from the embedded wallet; nothing was built.",
+      )
+    const quoteAsset = (flags["--quote-asset"] ?? "sol").toUpperCase()
+    const decimals =
+      LAUNCH_DEFINITION.quoteDecimals[quoteAsset.toLowerCase() as keyof typeof LAUNCH_DEFINITION.quoteDecimals]
+    quote = {
+      ...quote,
+      venue: "curve launch (atomic bundle, signed by Candle)",
+      candleFee:
+        fill.feeRaw !== "0"
+          ? `${decimalAmount(fill.feeRaw, decimals)} ${quoteAsset} (the tier fee on the first buy, in its leg)`
+          : "none on this first buy",
+      minimumReceived: `${fill.expectedFill.minAmountOutRaw} raw units of the new token (the first buy's floor; ${fill.supplyPct}% of the supply expected)`,
+    }
+    if (preview.data.graduatesInBundle)
+      ctx.deps.stderr.write("This first buy alone takes the new curve to graduation inside the bundle.\n")
+  } else {
+    previewSchema.parse(answer)
+    if (buy) quote.minimumReceived = "not quoted (best-effort first buy after creation)"
+  }
+  ctx.deps.stderr.write(previewLines(answer, chain))
   if (args.dryRun) {
     ctx.deps.stderr.write(`Dry run: nothing was built, signed or recorded, and launch id ${id} is unused.\n`)
     return printTradingResult(ctx, { ...answer, clientTradeId: id, kind: "launch", quote, ...used })
   }
-  ctx.deps.stderr.write(
-    `Launch creates the token, then spends ${buy.display} on a first buy from the embedded wallet as its own transaction. Both go to Candle as one Jito bundle: the launch and the first buy land together or not at all. Candle signs both, and the bundle pays a Jito tip from this wallet inside the launch transaction, beside the launch's rent and network fees. Price impact does not apply to creation.\n`,
-  )
-  if (preview.data.graduatesInBundle)
-    ctx.deps.stderr.write("This first buy alone takes the new curve to graduation inside the bundle.\n")
+  ctx.deps.stderr.write(buyNotice(buy, chain))
   if (!(await confirmQuote(ctx, quote, args.yes)))
     return printTradingResult(ctx, {
       success: true,
@@ -1245,37 +1165,33 @@ async function embeddedLaunch(
       "This machine already started this launch id; no write was resent.",
     )
   ctx.deps.stderr.write(`Operation: ${id}\n`)
-  const built = atomicBuildSchema.parse(
-    await request(ctx, key, "/api/v1/launch/atomic/build", body).catch((error) => {
-      throw embeddedRefusal(error)
-    }),
-  )
-  const bundle = { bundleId: built.bundleId, signatures: [], imageUrl, ...(bannerUrl ? { bannerUrl } : {}) }
-  // Saved before anything can be sent: a re-run after a refusal below builds again under the same id.
-  await saveOperationBundle(ctx, key, id, { ...bundle, outcome: "unsigned" })
-  const [launchLeg, buyLeg] = built.legs
-  if (
-    built.legs.length !== 2 ||
-    launchLeg?.role !== "launch" ||
-    buyLeg?.role !== "buy" ||
-    built.legs.some((leg, index) => leg.index !== index || leg.signer !== "server")
-  )
-    throw new TradingError(
-      "INVALID_RESPONSE",
-      `Candle did not build bundle ${safeText(built.bundleId)} as this launch and its first buy, both from the embedded wallet; nothing was sent. Re-run with the same --client-trade-id ${id} to build it again.`,
-    )
-  const floor = buyLeg.expectedFill?.minAmountOutRaw
-  if (floor === undefined || BigInt(floor) < BigInt(fill.expectedFill.minAmountOutRaw))
-    throw new TradingError(
-      "QUOTE_CHANGED",
-      `Bundle ${safeText(built.bundleId)}'s first-buy floor (${safeText(floor ?? "none")} raw units) is below the ${fill.expectedFill.minAmountOutRaw} you confirmed; nothing was sent. Re-run with the same --client-trade-id ${id} to preview it again.`,
-    )
-  if (!Number.isFinite(built.expiresAt) || built.expiresAt <= ctx.deps.now())
-    throw new TradingError("QUOTE_EXPIRED", "The launch build expired before it was sent.")
-  // From here the bundle may be sent: the saved record carries no outcome until /submit answers.
-  await saveOperationBundle(ctx, key, id, bundle)
-  ctx.deps.stderr.write(`Bundle: ${safeText(built.bundleId)} (Candle signs the launch and the first buy)\n`)
-  return await submitBundle(ctx, key, { id, bundle, signed: [], quote, used })
+  // The server builds, signs and submits in one call. Its slippage floor applies; there is no
+  // separate client-side build-floor comparison. Recovery uses the durable clientLaunchId.
+  const result = await apiRequest("/api/v1/launch/headless", {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    method: "POST",
+    body,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env,
+  })
+  if (!result.ok) {
+    const raw = result.raw as Json | undefined
+    const unresolved = result.status === 0 || raw?.status === "timeout"
+    throw new TradingError(result.code ?? (unresolved ? "BUNDLE_UNRESOLVED" : "REQUEST_FAILED"), result.message, {
+      ...(unresolved ? { exitCode: 3 as const } : {}),
+      suggestion: `Recover with --client-trade-id ${id}; check candle swap status ${id} --kind launch before another attempt.`,
+      ...(typeof raw?.bundleId === "string" ? { details: { bundleId: raw.bundleId } } : {}),
+    })
+  }
+  return printTradingResult(ctx, {
+    ...z.record(z.unknown()).parse(result.body),
+    clientTradeId: id,
+    kind: "launch",
+    quote,
+    ...used,
+  })
 }
 
 // ── Phase 4b-2: a launch from a Hood TEE wallet (D9) ──────────────────────────────────────────

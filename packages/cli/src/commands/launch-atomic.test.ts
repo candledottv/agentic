@@ -34,7 +34,7 @@ type Submit = "landed" | "failed" | "timeout" | { status: number; error: Record<
 async function fixture(
   opts: {
     scopes?: string[]
-    /** A Candle error `/launch/atomic/build` answers, with its HTTP status. */
+    /** A Candle error `/launch/self/build` answers, with its HTTP status. */
     buildError?: { status: number; error: Record<string, unknown> }
     /** Change the legs the build hands out. */
     legs?: Partial<LegOptions>
@@ -90,18 +90,18 @@ async function fixture(
       return built
         ? ok({ success: true, job: { status: opts.jobStatus ?? "built", clientLaunchId: "launch-1" } })
         : ok({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, 404)
-    if (path === "/api/v1/launch/atomic/dry-run" || path === "/api/v1/launch/self/dry-run") {
+    if (path === "/api/v1/launch/self/dry-run" || path === "/api/v1/launch/self/dry-run") {
       if (opts.dryRunError) return ok({ success: false, error: opts.dryRunError.error }, opts.dryRunError.status)
-      return ok(dryRunAnswer(body, path.includes("atomic")))
+      return ok(dryRunAnswer(body, Number(body.buyAmount) > 0))
     }
-    if (path === "/api/v1/launch/atomic/build") {
+    if (path === "/api/v1/launch/self/build") {
       if (opts.buildError) return ok({ success: false, error: opts.buildError.error }, opts.buildError.status)
       built++
       const quote = String(body.quoteAsset ?? "sol").toUpperCase() as "SOL" | "USDC"
       const legOpts: LegOptions = {
         wallet: WALLET,
         quote,
-        buyRaw: BigInt(body.firstBuys[0].amountRaw),
+        buyRaw: BigInt(body.buyAmount),
         feeRaw: FEE[quote],
         minOutRaw: BigInt(MIN_OUT),
         ...opts.legs,
@@ -226,7 +226,7 @@ function dryRunAnswer(body: Record<string, unknown>, atomic: boolean): Record<st
               signer: "client",
               payerType: "linked",
               wallet: WALLET,
-              amountRaw: (body.firstBuys as { amountRaw: string }[])[0]?.amountRaw,
+              amountRaw: String(body.buyAmount),
               feeRaw: "0",
               expectedFill: { amountOutRaw: "4040404", minAmountOutRaw: "4000000" },
               supplyPct: 2.1,
@@ -264,6 +264,42 @@ const writes = (paths: string[]) =>
   paths.filter((path) => path.endsWith("/build") || path.endsWith("/sign") || path.endsWith("/submit"))
 
 describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch", () => {
+  test.each([false, true])("socials reach the TEE self route, buy=%s", async (dryRun) => {
+    const f = await fixture()
+    expect(
+      await run(
+        [
+          ...buyArgs,
+          "--website",
+          "https://example.test",
+          "--x",
+          "https://x.com/candle",
+          "--telegram",
+          "https://t.me/candle",
+          "--discord",
+          "https://discord.gg/candle",
+          "--staker-allocation-bps",
+          "500",
+          "--visibility",
+          "hidden",
+          ...(dryRun ? ["--dry-run"] : []),
+        ],
+        f.deps,
+      ),
+    ).toBe(0)
+    const body = f.calls.find((call) => call.path === `/api/v1/launch/self/${dryRun ? "dry-run" : "build"}`)?.body
+    expect(body).toMatchObject({
+      socials: {
+        website: "https://example.test",
+        twitter: "https://x.com/candle",
+        telegram: "https://t.me/candle",
+        discord: "https://discord.gg/candle",
+      },
+      stakerAllocationBps: 500,
+      visibility: "hidden",
+    })
+  })
+
   test("a failed atomic bundle retries with the saved banner URL, without publishing again", async () => {
     const f = await fixture({ submit: "failed", jobStatus: "failed" })
     const path = join(f.deps.env.CANDLE_CONFIG_DIR as string, "banner.png")
@@ -272,7 +308,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     expect(await run(args, f.deps)).toBe(1)
     expect(await run(args, f.deps)).toBe(1)
     expect(f.calls.filter((c) => c.path === "/api/v1/uploads/agent-image")).toHaveLength(1)
-    const builds = f.calls.filter((c) => c.path === "/api/v1/launch/atomic/build")
+    const builds = f.calls.filter((c) => c.path === "/api/v1/launch/self/build")
     expect(builds).toHaveLength(2)
     expect(builds.map((c) => c.body?.bannerUrl)).toEqual([
       "https://hosted.test/banner.png",
@@ -281,22 +317,21 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     expect(f.operations()[0]).toMatchObject({ bannerUrl: "https://hosted.test/banner.png" })
   })
 
-  test("R1: one /launch/atomic/build, the wallet as creator and only first buyer, no buyAmount", async () => {
+  test("R1: one /launch/self/build with the TEE wallet and buyAmount", async () => {
     const f = await fixture()
     expect(await run(buyArgs, f.deps)).toBe(0)
-    const build = f.calls.find((call) => call.path === "/api/v1/launch/atomic/build")?.body
-    const payer = { type: "linked", linkedWalletId: "wallet" }
+    const build = f.calls.find((call) => call.path === "/api/v1/launch/self/build")?.body
     expect(build).toEqual({
       clientLaunchId: "launch-1",
       chain: "solana",
       name: "N".repeat(32),
       symbol: "T".repeat(10),
       imageUrl: "https://example.test/image.png",
-      payer,
-      firstBuys: [{ payer, amountRaw: "10000000" }],
+      linkedWalletId: "wallet",
+      buyAmount: "10000000",
     })
-    expect(build).not.toHaveProperty("buyAmount")
-    expect(f.paths()).not.toContain("/api/v1/launch/self/build")
+    expect(build).not.toHaveProperty("firstBuys")
+    expect(f.paths()).not.toContain("/api/v1/launch/atomic/build")
     expect(f.paths()).not.toContain("/api/v1/launch/self/confirm")
   })
 
@@ -304,11 +339,11 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     const f = await fixture()
     const args = [...launchArgs, "--buy", "2.5", "--quote-asset", "usdc", "--description", "d", "--mode", "open"]
     expect(await run(args, f.deps)).toBe(0)
-    expect(f.calls.find((call) => call.path === "/api/v1/launch/atomic/build")?.body).toMatchObject({
+    expect(f.calls.find((call) => call.path === "/api/v1/launch/self/build")?.body).toMatchObject({
       quoteAsset: "usdc",
       description: "d",
       mode: "open",
-      firstBuys: [{ amountRaw: "2500000" }],
+      buyAmount: "2500000",
     })
   })
 
@@ -325,7 +360,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     ]
     const f = await fixture()
     expect(await run([...buyArgs, ...choices], f.deps)).toBe(0)
-    expect(f.calls.find((c) => c.path === "/api/v1/launch/atomic/build")?.body).toMatchObject({
+    expect(f.calls.find((c) => c.path === "/api/v1/launch/self/build")?.body).toMatchObject({
       poolFee: { startBps: 2500, endBps: 25, minutes: 30 },
       poolOpen: "curve_price",
     })
@@ -340,7 +375,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     })
     const plain = await fixture()
     expect(await run(buyArgs, plain.deps)).toBe(0)
-    const body = plain.calls.find((c) => c.path === "/api/v1/launch/atomic/build")?.body ?? {}
+    const body = plain.calls.find((c) => c.path === "/api/v1/launch/self/build")?.body ?? {}
     for (const field of ["poolFee", "poolOpen", "expPoolShape"]) expect(body).not.toHaveProperty(field)
   })
 
@@ -397,7 +432,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
   test("R3: both legs relay-signed in order, the bundle and both signatures saved before /submit, nothing broadcast", async () => {
     const f = await fixture()
     expect(await run(buyArgs, f.deps)).toBe(0)
-    const build = f.calls.findIndex((call) => call.path === "/api/v1/launch/atomic/build")
+    const build = f.calls.findIndex((call) => call.path === "/api/v1/launch/self/build")
     const signs = f.calls.filter((call) => call.path.endsWith("/sign"))
     expect(signs).toHaveLength(2)
     expect(f.paths().indexOf("/api/v1/agent/wallets/wallet/sign")).toBeGreaterThan(build)
@@ -486,7 +521,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     const before = f.calls.length
     expect(await run(buyArgs, f.deps)).toBe(1)
     const again = f.calls.slice(before)
-    const rebuild = again.find((call) => call.path === "/api/v1/launch/atomic/build")
+    const rebuild = again.find((call) => call.path === "/api/v1/launch/self/build")
     expect(rebuild?.body?.clientLaunchId).toBe("launch-1")
     // The second bundle is new; the first is never submitted again.
     expect(again.filter((call) => call.path.endsWith("/submit")).map((call) => call.body?.bundleId)).toEqual([
@@ -503,7 +538,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     const before = f.calls.length
     expect(await run(buyArgs, f.deps)).toBe(0)
     const again = f.calls.slice(before)
-    expect(again.find((call) => call.path === "/api/v1/launch/atomic/build")?.body?.clientLaunchId).toBe("launch-1")
+    expect(again.find((call) => call.path === "/api/v1/launch/self/build")?.body?.clientLaunchId).toBe("launch-1")
     expect(again.filter((call) => call.path.endsWith("/submit")).map((call) => call.body?.bundleId)).toEqual([
       "bundle-2",
     ])
@@ -517,70 +552,26 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     expect(lastJson(f.stdout.text).message).toContain("sent nothing")
     const before = f.calls.length
     expect(await run(buyArgs, f.deps)).toBe(1)
-    expect(f.calls.slice(before).some((call) => call.path === "/api/v1/launch/atomic/build")).toBe(true)
+    expect(f.calls.slice(before).some((call) => call.path === "/api/v1/launch/self/build")).toBe(true)
   })
 
-  test("R6: a key without swap:write is refused before the build, and the id stays unused", async () => {
+  test("a TEE creator buy does not require swap:write locally", async () => {
     const f = await fixture({ scopes: ["launch:write", "launch:read"] })
-    expect(await run(buyArgs, f.deps)).toBe(1)
-    const out = lastJson(f.stdout.text)
-    expect(out.code).toBe("SCOPE_MISSING")
-    expect(out.message).toContain("needs swap:write for a first buy on a TEE launch")
-    expect(writes(f.paths())).toEqual([])
-    expect(f.operations()).toEqual([])
+    expect(await run(buyArgs, f.deps)).toBe(0)
+    expect(f.paths()).toContain("/api/v1/launch/self/build")
+    expect(f.paths()).not.toContain("/api/v1/launch/atomic/build")
   })
 
-  const refusals: Array<[string, { status: number; error: Record<string, unknown> }, string, string]> = [
-    [
-      "the server's SCOPE_MISSING",
-      { status: 403, error: { code: "SCOPE_MISSING", message: "This key lacks the swap:write scope" } },
-      "SCOPE_MISSING",
-      "needs swap:write for a first buy on a TEE launch",
-    ],
-    [
-      "the 501 with no Jito block engine",
-      {
-        status: 501,
-        error: {
-          code: "VALIDATION_FAILED",
-          message: "Atomic launches require a configured Jito block engine",
-          retryable: true,
-        },
-      },
-      "VALIDATION_FAILED",
-      "no Jito block engine configured",
-    ],
-    [
-      "the TEE refusal while TEE_LAUNCH_BUYS_ENABLED is off",
-      {
-        status: 400,
-        error: {
-          code: "VALIDATION_FAILED",
-          message: "This is a TEE wallet: agents may only trade it through the trade rail",
-          field: "linkedWalletId",
-        },
-      },
-      "VALIDATION_FAILED",
-      "TEE_LAUNCH_BUYS_ENABLED",
-    ],
-  ]
-  for (const [name, buildError, code, says] of refusals)
-    test(`R6: ${name} is said plainly, and nothing falls back`, async () => {
-      const f = await fixture({ buildError })
-      expect(await run(buyArgs, f.deps)).toBe(1)
-      const out = lastJson(f.stdout.text)
-      expect(out.code).toBe(code)
-      expect(out.message).toContain(says)
-      expect(out.message).toContain("Nothing was built or signed")
-      expect(writes(f.paths())).toEqual(["/api/v1/launch/atomic/build"])
+  test("the TEE buy gate preserves the server code and message, adds a no-buy next step and signs nothing", async () => {
+    const message = "TEE launch buys are disabled on this deployment"
+    const f = await fixture({
+      buildError: { status: 400, error: { code: "VALIDATION_FAILED", message, field: "buyAmount" } },
     })
-
-  test("R6: the flag-off refusal uses BE-869's words", async () => {
-    const f = await fixture({ buildError: refusals[2]?.[1] })
     expect(await run(buyArgs, f.deps)).toBe(1)
-    const out = lastJson(f.stdout.text)
-    expect(out.message).toContain("Candle refused the first buy on this TEE launch")
-    expect(out.suggestion).toContain("Launch without --buy")
+    expect(lastJson(f.stdout.text).code).toBe("VALIDATION_FAILED")
+    expect(lastJson(f.stdout.text).message).toStartWith(message)
+    expect(lastJson(f.stdout.text).suggestion).toContain("Launch without --buy")
+    expect(writes(f.paths())).toEqual(["/api/v1/launch/self/build"])
   })
 
   test("any other build refusal passes through", async () => {
@@ -651,7 +642,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     // The id is not spent: a re-run builds again under it.
     const before = f.calls.length
     expect(await run(buyArgs, f.deps)).toBe(0)
-    expect(f.calls.slice(before).some((call) => call.path === "/api/v1/launch/atomic/build")).toBe(true)
+    expect(f.calls.slice(before).some((call) => call.path === "/api/v1/launch/self/build")).toBe(true)
   })
 })
 
@@ -708,8 +699,7 @@ describe("BE-1806: launch inputs and --dry-run", () => {
   test("--dry-run with --buy goes to the atomic dry run with the atomic build's body, and saves no bundle", async () => {
     const f = await fixture()
     expect(await run([...buyArgs, ...custom, "--dry-run"], f.deps)).toBe(0)
-    const payer = { type: "linked", linkedWalletId: "wallet" }
-    expect(f.calls.find((call) => call.path === "/api/v1/launch/atomic/dry-run")?.body).toEqual({
+    expect(f.calls.find((call) => call.path === "/api/v1/launch/self/dry-run")?.body).toEqual({
       clientLaunchId: "launch-1",
       chain: "solana",
       name: "N".repeat(32),
@@ -718,8 +708,8 @@ describe("BE-1806: launch inputs and --dry-run", () => {
       mode: "exp-custom",
       curve: { virtualQuote: "4", threshold: "20" },
       creatorFeeBps: 100,
-      payer,
-      firstBuys: [{ payer, amountRaw: "10000000" }],
+      linkedWalletId: "wallet",
+      buyAmount: "10000000",
     })
     expect(writes(f.paths())).toEqual([])
     expect(f.operations()).toEqual([])
@@ -727,10 +717,10 @@ describe("BE-1806: launch inputs and --dry-run", () => {
     expect(f.stderr.text).toContain("First buy 1: 0.01 SOL takes 2.1% of the supply.")
   })
 
-  test("the launch itself carries the same curve fields to /launch/atomic/build", async () => {
+  test("the launch itself carries the same curve fields to /launch/self/build", async () => {
     const f = await fixture()
     expect(await run([...buyArgs, ...custom], f.deps)).toBe(0)
-    expect(f.calls.find((call) => call.path === "/api/v1/launch/atomic/build")?.body).toMatchObject({
+    expect(f.calls.find((call) => call.path === "/api/v1/launch/self/build")?.body).toMatchObject({
       mode: "exp-custom",
       curve: { virtualQuote: "4", threshold: "20" },
       creatorFeeBps: 100,
@@ -751,7 +741,7 @@ describe("BE-1806: launch inputs and --dry-run", () => {
     [["--mode", "open", "--curve-v", "4", "--curve-g", "20"], "--curve-v and --curve-g take --mode exp-custom"],
     [["--mode", "exp-custom"], "--mode exp-custom needs --curve-v and --curve-g"],
     [["--mode", "exp-custom", "--curve-v", "4e9", "--curve-g", "20"], "--curve-v takes a whole-unit decimal amount"],
-    [["--mode", "exp-a", "--creator-fee-bps", "150"], "--creator-fee-bps takes 0, 100 or 200"],
+    [["--mode", "exp-a", "--creator-fee-bps", "150"], "--creator-fee-bps takes 0, 100, 200"],
     [["--mode", "open", "--creator-fee-bps", "100"], "--creator-fee-bps takes an exp- --mode"],
   ])("%p is a usage error before any request", async (extra, message) => {
     const f = await fixture()

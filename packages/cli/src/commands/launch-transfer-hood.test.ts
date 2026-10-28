@@ -722,7 +722,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("VALIDATION_FAILED")
-    expect(String(failure.message)).toContain("TEE_LAUNCH_BUYS_ENABLED")
+    expect(String(failure.message)).toStartWith("A TEE wallet launches with buyAmount 0;")
     expect(String(failure.suggestion)).toContain("candle swap")
     expect(signs(f.calls)).toEqual([])
   })

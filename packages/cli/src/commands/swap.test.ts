@@ -491,14 +491,27 @@ describe("TEE CLI trading", () => {
   })
   // BE-1721: a Solana launch --buy is an atomic launch now, its buy its own leg; its tests,
   // the whole-unit amounts included, are in launch-atomic.test.ts.
-  for (const amount of ["0", "abc", "1e3", "0.0000000001"])
-    test(`BE-869: launch --buy ${amount} is INVALID_AMOUNT before any build`, async () => {
+  test("BE-869: launch --buy 0 launches with no buy", async () => {
+    const f = await fixture({ scopes: ["launch:write"] })
+    expect(await run([...launchArgs, "--buy", "0"], f.deps)).toBe(0)
+    expect(f.calls.find((call) => call.path.endsWith("self/build"))?.body).toMatchObject({ buyAmount: 0 })
+    expect(f.calls.some((call) => call.path.includes("atomic"))).toBe(false)
+  })
+  for (const amount of ["abc", "1e3"])
+    test(`BE-869: launch --buy ${amount} is refused locally as a usage error`, async () => {
       const f = await fixture()
-      expect(await run([...launchArgs, "--buy", amount], f.deps)).toBe(1)
-      expect(JSON.parse(f.stdout.text.trim().split("\n").at(-1) ?? "").code).toBe("INVALID_AMOUNT")
+      expect(await run([...launchArgs, "--buy", amount], f.deps)).toBe(2)
       expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
     })
-  test("BE-869: a server that refuses a TEE first buy is told plainly: TEE_LAUNCH_BUYS_ENABLED, nothing signed", async () => {
+  test("BE-869: launch --buy 0.0000000001 is VALIDATION_FAILED on buyAmount before any build", async () => {
+    const f = await fixture()
+    expect(await run([...launchArgs, "--buy", "0.0000000001"], f.deps)).toBe(1)
+    const failure = JSON.parse(f.stdout.text.trim().split("\n").at(-1) ?? "")
+    expect(failure.code).toBe("VALIDATION_FAILED")
+    expect(JSON.stringify(failure)).toContain("buyAmount")
+    expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
+  })
+  test("BE-869: a server that refuses a TEE first buy is relayed unchanged with the next step, nothing signed", async () => {
     const f = await fixture({
       launchBuildError: {
         code: "VALIDATION_FAILED",
@@ -509,12 +522,12 @@ describe("TEE CLI trading", () => {
     expect(await run([...launchArgs, "--buy", "0.1"], f.deps)).toBe(1)
     const failure = JSON.parse(f.stdout.text.trim().split("\n").at(-1) ?? "")
     expect(failure.code).toBe("VALIDATION_FAILED")
-    expect(failure.message).toContain("Candle refused the first buy on this TEE launch")
-    expect(failure.message).toContain("TEE_LAUNCH_BUYS_ENABLED")
-    expect(failure.message).toContain("Nothing was built or signed")
+    expect(failure.message).toContain(
+      "A TEE wallet launches with buyAmount 0; buy the new token with a separate swap once it lands",
+    )
     expect(failure.suggestion).toContain("Launch without --buy")
     expect(failure.details).toMatchObject({ field: "buyAmount" })
-    expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
+    expect(f.calls.some((call) => call.path.endsWith("/sign") || call.path.endsWith("/submit"))).toBe(false)
     expect(f.calls.some((call) => call.body?.method === "sendTransaction")).toBe(false)
   })
   test("BE-869: any other build refusal passes through unchanged", async () => {
