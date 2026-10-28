@@ -7,6 +7,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { mnemonicToAccount } from "viem/accounts"
 import { FIXTURE_EVM_0, FIXTURE_EVM_1 } from "../evm-lite.test"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import { closeVault, commitVault, decryptKey } from "../vault/store"
@@ -66,8 +67,8 @@ describe("E3: new-key --chain evm", () => {
     const first = await newKey(fx, ["--chain", "evm", "--label", "hood-cold"])
     expect(first.code).toBe(0)
     expect(first.stdout).toContain(`${FIXTURE_EVM_0}\n`)
-    expect(first.stdout).toContain("derivation  m/44'/60'/0'/0/0")
-    expect(first.stdout).toContain("verified    re-read from the vault and re-derived from its root")
+    expect(humanText(first.stdout)).toContain(humanText("Derivation m/44'/60'/0'/0/0"))
+    expect(humanText(first.stdout)).toContain(humanText("Verified re-read from the vault and re-derived from its root"))
 
     const second = await newKey(fx, ["--chain", "evm", "--json"])
     expect(second.code).toBe(0)
@@ -129,7 +130,7 @@ describe("E3: new-key --chain evm", () => {
     }
     const clash = await newKey(fx, ["--chain", "evm", "--label", "evm-1"])
     expect(clash.code).toBe(2)
-    expect(clash.stderr).toContain("A key labelled evm-1 already exists")
+    expect(humanText(clash.stderr)).toContain(humanText("A key labelled evm-1 already exists"))
   })
 
   test("an exposed EVM index is skipped, and the address matches viem for the index actually used", async () => {

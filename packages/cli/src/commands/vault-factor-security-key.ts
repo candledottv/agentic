@@ -32,6 +32,8 @@ import { base64 } from "@scure/base"
 import type { ParsedArgs } from "../args"
 import type { CommandContext } from "../deps"
 import type { DeviceReport } from "../fido2-helper/protocol"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 import { b64u, randomBytes, unb64u } from "../vault/crypto"
 import { countRecoverableFactors } from "../vault/domains"
 import { VaultError } from "../vault/errors"
@@ -101,10 +103,14 @@ export async function addSecurityKeyFactor(
       )
     }
     if (!ctx.json) {
-      deps.stderr.write(
-        install.installed
+      notice(
+        deps,
+        "stderr",
+        "note",
+        (install.installed
           ? `Installed ${HELPER_NAME} ${CLI_VERSION} to ${install.path}; enrolling.\n`
-          : `${HELPER_NAME} is already at ${install.path}; nothing downloaded.\n`,
+          : `${HELPER_NAME} is already at ${install.path}; nothing downloaded.\n`
+        ).trim(),
       )
     }
   }
@@ -133,8 +139,11 @@ export async function addSecurityKeyFactor(
   const excludeCountNow = keysInHeader.length
 
   const addingLine = (device: DeviceReport) =>
-    deps.stderr.write(
-      `Adding: ${device.product || "security key"} (--device ${device.deviceId}), a different key from the one that opened the vault.\n`,
+    notice(
+      deps,
+      "stderr",
+      "note",
+      `Adding: ${device.product || "security key"} (--device ${device.deviceId}), a different key from the one that opened the vault.\n`.trim(),
     )
 
   /** The enrolling key's session, when it is opened before the vault (the passphrase path). */
@@ -317,12 +326,24 @@ export async function addSecurityKeyFactor(
     })
     return 0
   }
-  deps.stdout.write(`Added security key factor ${envelopeId} (${envelope.product || "security key"}).\n`)
-  deps.stdout.write(`  domain     hardware-token (backup-eligible: no)\n`)
-  deps.stdout.write(`  verified   the vault was re-read and opened with the new key\n`)
-  deps.stdout.write(`  unlock     candle vault status --unlock --factor ${envelopeId}\n`)
-  deps.stdout.write(`\n${SECURITY_KEY_PAIR_NOTE}\n`)
-  deps.stdout.write(`This vault now has ${recoverable} recoverable factor(s), domains counted once.\n`)
+  writeSuccess(
+    deps,
+    "stdout",
+    `Added security key factor ${envelopeId} (${envelope.product || "security key"}).\n`.trim(),
+  )
+  writeFields(deps, "stdout", [
+    ["Domain", "hardware-token (backup-eligible: no)"],
+    ["Verified", "vault re-read and opened with the new key"],
+    ["Unlock", `candle vault status --unlock --factor ${envelopeId}`],
+  ])
+
+  notice(deps, "stdout", "note", `\n${SECURITY_KEY_PAIR_NOTE}\n`.trim())
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `This vault now has ${recoverable} recoverable factor(s), domains counted once.\n`.trim(),
+  )
   return 0
 }
 

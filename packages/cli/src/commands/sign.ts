@@ -45,6 +45,7 @@ import { sha256 } from "@noble/hashes/sha256"
 import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeFields, writeHeading } from "../human-output"
 import {
   attachSignatures,
   type CompiledKeys,
@@ -390,8 +391,8 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
     ])
     const lines = displayLines({ tx, compiled, signers, simulation, mints })
     if (!ctx.json) {
-      deps.stderr.write("Decoded transaction (simulated, unsigned):\n")
-      for (const line of lines) deps.stderr.write(`  ${line}\n`)
+      writeHeading(deps, "stderr", "Decoded transaction (simulated, unsigned)")
+      for (const line of lines) writeFields(deps, "stderr", [["Checked", line]])
     }
 
     // Step 4b (SEC-001): a change of control over a signer's own account is refused, shown first
@@ -456,8 +457,12 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
       return broadcast?.ok === false ? (rateLimited ? 3 : 1) : 0
     }
     deps.stdout.write(`${signedBase64}\n`)
-    for (const s of signatures) deps.stderr.write(`signed by ${s.wallet}: ${s.signature}\n`)
-    if (broadcast?.ok) deps.stderr.write(`broadcast: ${broadcast.signature}\n`)
+    for (const s of signatures)
+      writeFields(deps, "stderr", [
+        ["Signed by", s.wallet],
+        ["Signature", s.signature],
+      ])
+    if (broadcast?.ok) writeFields(deps, "stderr", [["Broadcast", broadcast.signature]])
     if (rateLimited) return 3
     if (broadcast?.ok === false) {
       throw new VaultError(
@@ -566,7 +571,7 @@ export async function signMessage(args: string[], ctx: CommandContext): Promise<
       text === undefined ? `hex         ${hex(bytes)}` : `text        ${text.split("\n").join("\n            ")}`,
     ]
     if (!ctx.json) {
-      deps.stderr.write("Message to sign (the exact bytes read; nothing was trimmed or normalized):\n")
+      writeHeading(deps, "stderr", "Message to sign (the exact bytes read; nothing was trimmed or normalized)")
       for (const line of lines) deps.stderr.write(`  ${line}\n`)
     }
     if (!parsed.booleans.has("--yes")) await opened.confirm(`sign this message with ${entry.label}`)

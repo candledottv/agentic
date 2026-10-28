@@ -37,6 +37,7 @@ import {
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { sameEvmAddress } from "../evm-lite"
+import { writeFields } from "../human-output"
 import {
   HYPERLIQUID_CLOID_RE,
   HYPERLIQUID_EXCHANGE_URLS,
@@ -63,6 +64,7 @@ import {
   perpsHistoryLines,
   readPerpsHistoryPage,
 } from "../perps-history"
+import { notice } from "../presentation"
 import { writeUsageFailure } from "../render"
 import { solanaSpendProblem } from "../solana-verify"
 import {
@@ -229,11 +231,18 @@ function previewLines(build: Json): string[] {
 }
 
 async function confirm(ctx: CommandContext, build: Json, address: string, yes: boolean): Promise<boolean> {
-  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
-  output.write(`Hyperliquid account: ${safeText(address)} (${safeText(build.network)})\n`)
+  writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+    ["Hyperliquid account", safeText(address)],
+    ["Network", safeText(build.network)],
+  ])
   if (ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER !== undefined)
-    output.write(`Builder trust override: ${builderPin(ctx)} (replaces this release's pin).\n`)
-  for (const line of previewLines(build)) output.write(`${line}\n`)
+    notice(
+      ctx.deps,
+      ctx.json ? "stderr" : "stdout",
+      "warning",
+      `Builder trust override: ${builderPin(ctx)} (replaces this release's pin).\n`.trim(),
+    )
+  for (const line of previewLines(build)) notice(ctx.deps, ctx.json ? "stderr" : "stdout", "note", `${line}\n`.trim())
   if (yes) return true
   if (!ctx.deps.isTTY.stdin)
     throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.")
@@ -322,8 +331,11 @@ export async function runPerpsWrite(
         "PERPS_BUILD_REFUSED",
         "Refused a replay that does not name this request's client id and wallet. Nothing was signed.",
       )
-    ctx.deps.stderr.write(
-      `Client id ${clientId} already names order ${safeText(build.perpOrderId)} (${safeText(build.status)}${build.venueStatus ? `, ${safeText(build.venueStatus)} on Hyperliquid` : ""}). Nothing was signed or sent; use a new --client-id for a new order.\n`,
+    notice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `Client id ${clientId} already names order ${safeText(build.perpOrderId)} (${safeText(build.status)}${build.venueStatus ? `, ${safeText(build.venueStatus)} on Hyperliquid` : ""}). Nothing was signed or sent; use a new --client-id for a new order.\n`.trim(),
     )
     return printTradingResult(ctx, build)
   }
@@ -696,19 +708,28 @@ export async function perpsPositions(args: string[], ctx: CommandContext): Promi
     // (the server caches for about 2 s); the three additions all come from the direct one.
     const additions = await positionsAdditions(ctx, key, row)
     if (ctx.json) return printTradingResult(ctx, { ...result, ...additions })
-    const out = ctx.deps.stdout
-    out.write(`${safeText(result.address)} (${safeText(result.network)}, ${safeText(result.mode)} mode)\n`)
+
+    writeFields(ctx.deps, "stdout", [
+      ["Address", safeText(result.address)],
+      ["Network", safeText(result.network)],
+      ["Mode", safeText(result.mode)],
+    ])
     writePositionsText(ctx, additions)
     // BE-1573 (withdrawals W1): what can leave the account now, and any withdrawal in flight. An API
     // that predates withdrawals sends no `openWithdrawals`, and the line says only what it knows.
     const open = Array.isArray(result.openWithdrawals) ? (result.openWithdrawals as Record<string, unknown>[]) : null
-    out.write(
-      `Withdrawable now: ${safeText(result.withdrawable)} USDC${open === null ? "" : open.length === 0 ? "; no withdrawal in flight" : ""}.\n`,
-    )
+    writeFields(ctx.deps, "stdout", [
+      ["Withdrawable now", `${safeText(result.withdrawable)} USDC`],
+      ["Withdrawal in flight", open === null ? undefined : open.length === 0 ? "none" : open.length],
+    ])
     for (const w of open ?? []) {
-      out.write(
-        `  Withdrawal ${safeText(w.id)}: ${safeText(w.status)}, ${formatUsdcMicros(w.amountUsdcMicros)} USDC to ${safeText(w.to)} (candle perps withdraw status ${safeText(w.id)})\n`,
-      )
+      writeFields(ctx.deps, "stdout", [
+        ["Withdrawal", safeText(w.id)],
+        ["Status", safeText(w.status)],
+        ["Amount", `${formatUsdcMicros(w.amountUsdcMicros)} USDC`],
+        ["To", safeText(w.to)],
+        ["Check", `candle perps withdraw status ${safeText(w.id)}`],
+      ])
     }
     return 0
   } catch (error) {
@@ -729,20 +750,38 @@ export async function perpsOrders(args: string[], ctx: CommandContext): Promise<
     if (limit !== undefined) query.set("limit", limit)
     const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/orders?${query}`)
     if (ctx.json) return printTradingResult(ctx, result)
-    const out = ctx.deps.stdout
     const open = (result.open ?? []) as Record<string, unknown>[]
-    out.write(`Open on Hyperliquid (${open.length}):\n`)
+    writeFields(ctx.deps, "stdout", [["Orders", open.length]], "Open on Hyperliquid")
     for (const o of open) {
-      out.write(
-        `  ${safeText(o.coin)} ${o.side === "B" ? "buy" : "sell"} ${safeText(o.sz)} at ${safeText(o.limitPx)}${o.reduceOnly ? " reduce-only" : ""}${o.isTrigger ? ` trigger ${safeText(o.triggerPx)}` : ""}, cloid ${safeText(o.cloid ?? "none")}\n`,
-      )
+      writeFields(ctx.deps, "stdout", [
+        ["Coin", safeText(o.coin)],
+        ["Side", o.side === "B" ? "buy" : "sell"],
+        ["Size", safeText(o.sz)],
+        ["Limit price", safeText(o.limitPx)],
+        ["Reduce only", o.reduceOnly ? "yes" : "no"],
+        ["Trigger", o.isTrigger ? safeText(o.triggerPx) : undefined],
+        ["Client order id", o.cloid ? safeText(o.cloid) : undefined],
+      ])
     }
     const recorded = (result.recorded ?? []) as Record<string, unknown>[]
-    out.write(`Built by Candle (${recorded.length}, newest first):\n`)
+    writeFields(
+      ctx.deps,
+      "stdout",
+      [
+        ["Orders", recorded.length],
+        ["Order", "newest first"],
+      ],
+      "Built by Candle",
+    )
     for (const r of recorded) {
-      out.write(
-        `  ${safeText(r.kind)} ${safeText(r.coin ?? "")} ${safeText(r.status)}${r.venueStatus ? ` (${safeText(r.venueStatus)})` : ""}${r.cloid ? `, cloid ${safeText(r.cloid)}` : ""}${r.targetCloid ? `, target ${safeText(r.targetCloid)}` : ""}\n`,
-      )
+      writeFields(ctx.deps, "stdout", [
+        ["Kind", safeText(r.kind)],
+        ["Coin", r.coin ? safeText(r.coin) : undefined],
+        ["Status", safeText(r.status)],
+        ["Venue status", r.venueStatus ? safeText(r.venueStatus) : undefined],
+        ["Client order id", r.cloid ? safeText(r.cloid) : undefined],
+        ["Target client order id", r.targetCloid ? safeText(r.targetCloid) : undefined],
+      ])
     }
     return 0
   } catch (error) {
@@ -806,7 +845,7 @@ async function perpsHistory(kind: "fills" | "funding", args: string[], ctx: Comm
       page,
       (next) => `Next page: candle perps ${kind}${walletFlag} --cursor ${next}`,
     ))
-      ctx.deps.stdout.write(`${line}\n`)
+      notice(ctx.deps, "stdout", "note", `${line}\n`.trim())
     return 0
   } catch (error) {
     if (error instanceof PerpsHistoryError) {
@@ -888,9 +927,15 @@ async function perpsDepositStatus(ctx: CommandContext, id: string): Promise<numb
   const job = (result.job ?? {}) as Record<string, unknown>
   const destination = (job.destination ?? {}) as Record<string, unknown>
   const relay = job.relay as { status?: unknown } | null | undefined
-  ctx.deps.stdout.write(
-    `Deposit ${safeText(id)}: ${safeText(job.status)}${job.signature ? ` (${safeText(job.signature)})` : ""}, ${safeText(job.amountRaw)} raw ${safeText(job.asset)} to ${safeText(destination.address)} on Hyperliquid. Relay: ${relay ? safeText(relay.status) : "not sent yet, or unknown"}.\n`,
-  )
+  writeFields(ctx.deps, "stdout", [
+    ["Deposit", safeText(id)],
+    ["Status", safeText(job.status)],
+    ["Signature", job.signature ? safeText(job.signature) : undefined],
+    ["Raw amount", safeText(job.amountRaw)],
+    ["Asset", safeText(job.asset)],
+    ["Hyperliquid account", safeText(destination.address)],
+    ["Relay", relay ? safeText(relay.status) : undefined],
+  ])
   return 0
 }
 
@@ -951,7 +996,7 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
     // BE-1747: --no-submit asks for a preview, which locks no wallet, reserves no USD window and
     // records no id; an API that predates previews builds for real, and that is reported below.
     const noSubmit = parsed.booleans.has("--no-submit")
-    ctx.deps.stderr.write(`Deposit: ${id}\n`)
+    writeFields(ctx.deps, "stderr", [["Deposit", id]])
     const build = await perpsRequest(ctx, key, "/api/v1/agent/perps/deposit", {
       clientDepositId: id,
       walletId: wallet.id,
@@ -1026,29 +1071,50 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
     const decimals = Number(build.outDecimals)
     const minimum = decimalAmount(String(build.minimumOutRaw), decimals)
     const estimate = decimalAmount(String(build.expectedOutRaw), decimals)
-    const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
-    output.write(
-      `Deposit ${amount} ${asset} from ${safeText(wallet.address)} (${origin === "hood" ? "Hood" : "Solana"} TEE wallet) to Hyperliquid account ${safeText(destination.address)} through Relay.\n`,
-    )
-    output.write(
-      `Relay delivers at least ${minimum} USDC (estimate ${estimate})${build.firstDeposit ? "; Hyperliquid keeps 1 USDC to activate this new account" : ""}. Candle fee: none.\n`,
-    )
-    output.write(
-      "To bring it back: candle perps withdraw <amount> --to solana|hood (perps:withdraw). `candle tee disable` and `tee sweep` do not reach it, so withdraw before disabling.\n",
+
+    writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+      ["Deposit", `${amount} ${asset}`],
+      ["From", safeText(wallet.address)],
+      ["Origin", `${origin === "hood" ? "Hood" : "Solana"} TEE wallet`],
+      ["Hyperliquid account", safeText(destination.address)],
+      ["Route", "Relay"],
+      ["Minimum USDC", minimum],
+      ["Estimated USDC", estimate],
+      ["Candle fee", "none"],
+    ])
+    if (build.firstDeposit)
+      notice(
+        ctx.deps,
+        ctx.json ? "stderr" : "stdout",
+        "warning",
+        "Hyperliquid keeps 1 USDC to activate this new account.",
+      )
+    notice(
+      ctx.deps,
+      ctx.json ? "stderr" : "stdout",
+      "warning",
+      "To bring it back: candle perps withdraw <amount> --to solana|hood (perps:withdraw). `candle tee disable` and `tee sweep` do not reach it, so withdraw before disabling.\n".trim(),
     )
     if (sequenced)
-      output.write(
-        `Legs, signed one at a time: ${sequenced.plannedLegCount === 2 ? "approval, bridgeDeposit" : "bridgeDeposit"}\n`,
-      )
-    if (previewLegs) output.write(`Legs, signed one at a time: ${previewLegs.join(", ")}\n`)
+      writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+        ["Legs (signed one at a time)", sequenced.plannedLegCount === 2 ? "approval, bridgeDeposit" : "bridgeDeposit"],
+      ])
+    if (previewLegs)
+      writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [["Legs (signed one at a time)", previewLegs.join(", ")]])
     if (noSubmit) {
       if (preview)
-        ctx.deps.stderr.write(
-          "Dry run: nothing was signed, no wallet is held and no limit was used; the same --id still builds a new deposit.\n",
+        notice(
+          ctx.deps,
+          "stderr",
+          "note",
+          "Dry run: nothing was signed, no wallet is held and no limit was used; the same --id still builds a new deposit.\n".trim(),
         )
       else
-        ctx.deps.stderr.write(
-          `This server predates dry-run deposits and built this one for real. Nothing was signed, but ${sequenced ? `operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}, and ` : ""}the build counts against the key's limits until it expires.\n`,
+        notice(
+          ctx.deps,
+          "stderr",
+          "note",
+          `This server predates dry-run deposits and built this one for real. Nothing was signed, but ${sequenced ? `operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}, and ` : ""}the build counts against the key's limits until it expires.\n`.trim(),
         )
       return printTradingResult(ctx, { ...build, signed: false, submitted: false })
     }
@@ -1057,8 +1123,11 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
         throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.")
       if ((await ctx.deps.promptLine("Sign and send? [y/N] ")).trim().toLowerCase() !== "y") {
         if (sequenced)
-          ctx.deps.stderr.write(
-            `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}.\n`,
+          notice(
+            ctx.deps,
+            "stderr",
+            "note",
+            `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}.\n`.trim(),
           )
         throw new TradingError("CANCELLED", "Nothing was signed.")
       }
@@ -1089,8 +1158,11 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
         signedTransactionsBase64: [signed],
       })
     }
-    ctx.deps.stderr.write(
-      `Deposit sent; Relay fills it on Hyperliquid. Check it with candle perps deposit status ${id}.\n`,
+    notice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `Deposit sent; Relay fills it on Hyperliquid. Check it with candle perps deposit status ${id}.\n`.trim(),
     )
     return printTradingResult(ctx, {
       ...result,

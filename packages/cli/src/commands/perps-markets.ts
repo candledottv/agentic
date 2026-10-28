@@ -159,7 +159,7 @@ async function read(ctx: CommandContext, argv: string[], command: Command): Prom
       writeMarkets(ctx, result)
       return 0
     }
-    for (const warning of result.warnings) ctx.deps.stderr.write(`${safeText(warning)}\n`)
+    for (const warning of result.warnings) notice(ctx.deps, "stderr", "note", `${safeText(warning)}\n`.trim())
     const out = (line: string) => ctx.deps.stdout.write(`${line}\n`)
     out(
       `Hyperliquid ${result.network}; OI floor $${result.gate.minOpenInterestUsd} (${result.gate.source}). Tradeability is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`,

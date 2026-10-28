@@ -1,3 +1,5 @@
+import { writeFields, writeHeading, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 /**
  * `candle setup`: zero to armed in one command (CLI P1, from the 2026-08-23 Kraken/Stripe
  * onboarding comparison -- Kraken ships `kraken setup` as its wizard). Nothing here is new
@@ -21,7 +23,7 @@ import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
-import { accent, brandHeader, terminalStyle } from "../presentation"
+import { brandHeader, terminalStyle } from "../presentation"
 import { effectiveProfileFields, identityLine, identityStyle, printIdentity, resolveProfileName } from "../profiles"
 import { portalDeviceUrl, writeUsageFailure } from "../render"
 import { authLogin } from "./auth"
@@ -44,7 +46,7 @@ interface EmbeddedWalletsResponse {
 }
 
 function section(deps: CommandContext["deps"], title: string): void {
-  deps.stdout.write(`\n${accent(`== ${title} ==`, terminalStyle(deps, "stdout"))}\n`)
+  writeHeading(deps, "stdout", title)
 }
 
 export async function setup(args: string[], ctx: CommandContext): Promise<number> {
@@ -71,7 +73,12 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
   if (deps.isTTY.stdin) deps.stdout.write(brandHeader(style).join("\n"))
   await printIdentity(ctx)
 
-  deps.stdout.write(`candle setup: this wizard authorizes the device, shows funding, and verifies everything.\n`)
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `candle setup: this wizard authorizes the device, shows funding, and verifies everything.\n`.trim(),
+  )
 
   // 1. Authorization -- idempotent: skip when both credentials are already stored.
   section(deps, "1/4 Authorize this device")
@@ -83,12 +90,17 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
   // go through `nextCtx`, never the stale `ctx`.
   let nextCtx = ctx
   if (deviceToken && apiKey) {
-    deps.stdout.write("Already authorized on this machine (device token + API key present). Skipping login.\n")
+    notice(
+      deps,
+      "stdout",
+      "note",
+      "Already authorized on this machine (device token + API key present). Skipping login.\n".trim(),
+    )
   } else {
     const loginArgs = parsed.booleans.has("--no-browser") ? ["--no-browser"] : []
     const loginExit = await authLogin(loginArgs, ctx)
     if (loginExit !== 0) {
-      deps.stderr.write("Setup stopped: device authorization did not complete.\n")
+      notice(deps, "stderr", "warning", "Setup stopped: device authorization did not complete.\n".trim())
       return loginExit
     }
     // `finishLogin` (auth.ts) just filed the device token and key under a profile it derived
@@ -99,7 +111,7 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
     const loginConfig = await deps.readConfig()
     const resolution = resolveProfileName(loginConfig, { flag: ctx.profileFlag, env: deps.env })
     if (!resolution.ok) {
-      deps.stderr.write(`${resolution.message}\n`)
+      notice(deps, "stderr", "warning", `${resolution.message}\n`.trim())
       return 1
     }
     nextCtx = { ...ctx, profile: resolution.name }
@@ -129,35 +141,56 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
         `${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username, identityStyle(deps, "stdout"))}\n\n`,
       )
     }
-    if (solana) deps.stdout.write(`Solana (send SOL here):    ${solana.address}\n`)
-    if (evm) deps.stdout.write(`Hood    (send ETH here):    ${evm.address}\n`)
-    deps.stdout.write(
-      "Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.\n",
+    writeFields(deps, "stdout", [
+      ["Solana (send SOL here)", solana?.address],
+      ["Hood (send ETH here)", evm?.address],
+    ])
+    notice(
+      deps,
+      "stdout",
+      "note",
+      "Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.\n".trim(),
     )
-    deps.stdout.write("\nTell your agent (paste into its context):\n")
-    deps.stdout.write(`  Install the Candle CLI: curl -fsSL https://candle.tv/install.sh | bash\n`)
-    deps.stdout.write(
-      `  You operate a Candle agent account. API base URL: ${apiUrl} (send your API key in the x-api-key header).\n`,
+    writeHeading(deps, "stdout", "Tell your agent (paste into its context)")
+    writeFields(deps, "stdout", [
+      ["Install", "curl -fsSL https://candle.tv/install.sh | bash"],
+      ["Role", "You operate a Candle agent account."],
+      ["API", apiUrl],
+      ["Authentication", "send your API key in the x-api-key header"],
+      ["Solana wallet", solana?.address],
+      ["Hood Chain (EVM) wallet", evm?.address],
+    ])
+
+    notice(
+      deps,
+      "stdout",
+      "note",
+      "  Check balances before trading, and ask me to fund whichever chain you need.\n".trim(),
     )
-    if (solana) deps.stdout.write(`  Your Solana wallet: ${solana.address}\n`)
-    if (evm) deps.stdout.write(`  Your Hood Chain (EVM) wallet: ${evm.address}\n`)
-    deps.stdout.write("  Check balances before trading, and ask me to fund whichever chain you need.\n")
   } else {
-    deps.stdout.write(
-      "Could not read the agent wallets right now; `candle wallets` shows them once the API is reachable.\n",
+    notice(
+      deps,
+      "stdout",
+      "note",
+      "Could not read the agent wallets right now; `candle wallets` shows them once the API is reachable.\n".trim(),
     )
   }
 
   // 3. Connect a coding agent.
   section(deps, "3/4 Connect your agent")
-  deps.stdout.write(`Claude Code skills:  ${SKILLS_CLAUDE_COMMAND}\n`)
-  deps.stdout.write("MCP (any client), paste into the host's MCP config:\n")
+  writeFields(deps, "stdout", [["Claude Code skills", SKILLS_CLAUDE_COMMAND]])
+  writeHeading(deps, "stdout", "MCP (any client), paste into the host config")
   deps.stdout.write(`${await mcpClientConfig([], deps)}\n`)
   // No runtime prerequisite to mention any more: the server is bundled into this binary, so
   // `candle mcp` starts it in-process. This line used to say MCP hosts needed Node 18+ on their
   // own PATH, which was true only while the server was fetched with npx at every launch.
-  deps.stdout.write("The MCP server is built into this binary; the host needs nothing else installed.\n")
-  deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}\n`)
+  notice(
+    deps,
+    "stdout",
+    "note",
+    "The MCP server is built into this binary; the host needs nothing else installed.\n".trim(),
+  )
+  writeFields(deps, "stdout", [["Other platforms", CODING_AGENTS_DOCS]])
 
   // 4. Verify everything end to end. Setup's exit code IS doctor's: `candle setup && ...`
   // means the whole rail checked out.
@@ -168,13 +201,15 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
   // recorded is what points this at the right console on a non-default backend.
   const config = await deps.readConfig()
   const { portalOrigin } = effectiveProfileFields(config, nextCtx.profile)
-  deps.stdout.write(
-    `\nConsole (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl, portalOrigin)}\n`,
-  )
-  deps.stdout.write(
+  writeFields(deps, "stdout", [["Console", portalDeviceUrl(apiUrl, portalOrigin)]])
+  if (doctorExit === 0) writeSuccess(deps, "stdout", "Setup complete.")
+  notice(
+    deps,
+    "stdout",
+    doctorExit === 0 ? "note" : "warning",
     doctorExit === 0
-      ? "Setup complete. Your agent can launch, trade, and transfer the moment the wallets are funded.\n"
-      : "Setup finished with failed checks above; fix them and re-run `candle doctor`.\n",
+      ? "Your agent can launch, trade, and transfer the moment the wallets are funded."
+      : "Setup finished with failed checks above; fix them and re-run `candle doctor`.",
   )
   return doctorExit
 }

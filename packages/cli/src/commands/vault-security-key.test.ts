@@ -33,6 +33,7 @@ import {
   RP_ID,
 } from "../fido2-helper/protocol"
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
+import { humanText } from "../human-output.test-support"
 import { realSpawnHelper, run } from "../index"
 import { releaseIdentityUri } from "../release"
 import {
@@ -273,11 +274,11 @@ describe("factor add security-key: the ceremony", () => {
     expect(JSON.stringify(envelope)).not.toContain("deviceId")
     expect(JSON.stringify(envelope)).not.toContain("hidraw")
 
-    expect(add.stdout.text).toContain("Added security key factor")
-    expect(add.stdout.text).toContain("re-read and opened with the new key")
-    expect(add.stdout.text).toContain("One security key is not a recoverable factor")
+    expect(humanText(add.stdout.text)).toContain(humanText("Added security key factor"))
+    expect(humanText(add.stdout.text)).toContain(humanText("re-read and opened with the new key"))
+    expect(humanText(add.stdout.text)).toContain(humanText("One security key is not a recoverable factor"))
     // One passphrase plus one hardware key: still one recoverable factor (CC-03).
-    expect(add.stdout.text).toContain("1 recoverable factor(s)")
+    expect(humanText(add.stdout.text)).toContain(humanText("1 recoverable factor(s)"))
   })
 
   test("the same ceremony over a real subprocess through the real spawn seam", async () => {
@@ -537,7 +538,7 @@ describe("unlocking with a security key", () => {
     ).toBe(2)
     expect(h.calls.map((call) => call.op)).toEqual(["assert"])
     expect(h.asked).toEqual([expect.stringContaining("PIN for YubiKey 5 NFC")])
-    expect(h.stderr.text).toContain(`to send 1.5 SOL to ${to}.`)
+    expect(humanText(h.stderr.text)).toContain(humanText(`to send 1.5 SOL to ${to}.`))
     expect(h.stderr.text).not.toContain("to unlock the vault")
   })
 
@@ -677,7 +678,7 @@ describe("unlocking with a security key", () => {
     await writeFile(v.vaultPath, JSON.stringify(edited, null, 2))
     const stripped = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [PIN] })
     expect(await run(["vault", "status", "--keystore", v.vaultPath], stripped.deps)).toBe(1)
-    expect(stripped.stderr.text).toContain("userVerification: required")
+    expect(humanText(stripped.stderr.text)).toContain(humanText("userVerification: required"))
 
     const resalted = JSON.parse(original) as VaultJson
     const target = resalted.envelopes.find((candidate) => candidate.factor === "passkey-prf") as Record<string, unknown>
@@ -706,7 +707,7 @@ describe("unlocking with a security key", () => {
     expect(backup.stderr.text + backup.stdout.text).not.toContain("Error")
     expect(code).toBe(0)
     expect(backup.calls.map((call) => call.op)).toEqual(["assert", "assert"])
-    expect(backup.stdout.text).toContain("all 8 passed")
+    expect(humanText(backup.stdout.text)).toContain(humanText("all 8 passed"))
   })
 
   test("factor list and status report the key as available here, with the helper, and as unavailable without", async () => {
@@ -764,8 +765,10 @@ describe("unlocking with a security key", () => {
     expect(second.stderr.text).not.toContain("Passphrase only:")
     // D3 refusal 3: the second enrollment excludes the first key's credential.
     expect(second.calls.find((call) => call.op === "register")?.excludeCredentialIds).toEqual([CRED])
-    expect(second.stdout.text).toContain("2 recoverable factor(s)")
-    expect(second.stdout.text).toContain("Two security key envelopes on two different keys are a recoverable pair")
+    expect(humanText(second.stdout.text)).toContain(humanText("2 recoverable factor(s)"))
+    expect(humanText(second.stdout.text)).toContain(
+      humanText("Two security key envelopes on two different keys are a recoverable pair"),
+    )
   })
 })
 
@@ -1345,9 +1348,11 @@ describe("BE-275 D8: --install-helper installs this release's helper, then enrol
     const helperPath = join(v.dir, "candle-fido2")
     expect(await isExecutable(helperPath)).toBe(true)
     expect(await readFile(helperPath, "utf8")).toBe(new TextDecoder().decode(HELPER_BYTES))
-    expect(h.stderr.text).toContain(`Installed candle-fido2 ${CLI_VERSION} to ${helperPath}; enrolling.`)
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(`Installed candle-fido2 ${CLI_VERSION} to ${helperPath}; enrolling.`),
+    )
     // Then the enrolment it was asked for, in the same run.
-    expect(h.stdout.text).toContain("Added security key factor")
+    expect(humanText(h.stdout.text)).toContain(humanText("Added security key factor"))
     const file = await readVault(v.vaultPath)
     expect(file.envelopes.some((envelope) => envelope.factor === "passkey-prf")).toBe(true)
     expect(await readFile(v.vaultPath, "utf8")).not.toBe(before)
@@ -1384,7 +1389,7 @@ describe("BE-275 D8: --install-helper installs this release's helper, then enrol
     expect(
       await run(["vault", "factor", "add", "security-key", "--install-helper", "--keystore", v.vaultPath], h.deps),
     ).toBe(1)
-    expect(h.stderr.text).toContain(`release ${TAG} declares no ${HELPER_ASSET}`)
+    expect(humanText(h.stderr.text)).toContain(humanText(`release ${TAG} declares no ${HELPER_ASSET}`))
     expect(calls.map((c) => new URL(c.url).pathname)).toEqual([`/releases/download/${TAG}/latest.json`])
     expect(await isExecutable(join(v.dir, "candle-fido2"))).toBe(false)
   })
@@ -1397,9 +1402,9 @@ describe("BE-275 D8: --install-helper installs this release's helper, then enrol
     expect(await run(["vault", "enroll", "security-key", "--install-helper", "--keystore", v.vaultPath], h.deps)).toBe(
       0,
     )
-    expect(h.stderr.text).toContain("candle-fido2 is already at")
-    expect(h.stderr.text).toContain("nothing downloaded")
-    expect(h.stdout.text).toContain("Added security key factor")
+    expect(humanText(h.stderr.text)).toContain(humanText("candle-fido2 is already at"))
+    expect(humanText(h.stderr.text)).toContain(humanText("nothing downloaded"))
+    expect(humanText(h.stdout.text)).toContain(humanText("Added security key factor"))
   })
 
   test("on an npm install the flag cannot help and says so, without touching the network", async () => {
@@ -1564,7 +1569,9 @@ describe("BE-294: the unlock factor menu", () => {
     expect(picked.asked[0]).toContain(`  2  yubikey-b  (security key, attached)  id ${v.bId}\n`)
     const asserted = picked.calls.filter((call) => call.op === "assert")
     expect(asserted.map((call) => [call.path, call.credentialId])).toEqual([[D2, CRED_B]])
-    expect(picked.stderr.text).toContain(`Using the attached security key: YubiKey 5 NFC (--device ${deviceIdAt(D2)})`)
+    expect(humanText(picked.stderr.text)).toContain(
+      humanText(`Using the attached security key: YubiKey 5 NFC (--device ${deviceIdAt(D2)})`),
+    )
     expect(picked.stderr.text).not.toContain("AMBIGUOUS")
 
     const named = await harness({
@@ -1654,7 +1661,7 @@ describe("BE-294: the unlock factor menu", () => {
       expect(spawned).toBe(0)
       expect(h.calls).toEqual([])
       // The command's own terminal refusal comes first, unchanged from 0.11.5.
-      expect(h.stdout.text + h.stderr.text).toContain("vault status --unlock needs a terminal")
+      expect(humanText(h.stdout.text + h.stderr.text)).toContain(humanText("vault status --unlock needs a terminal"))
       expect(h.stdout.text + h.stderr.text).not.toContain("Unlock with:")
     }
 

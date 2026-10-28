@@ -716,7 +716,8 @@ function dim(text, style) {
   return sgr(text, style, "2");
 }
 function heading(text, style) {
-  return bold(text, style);
+  return wrapText(text, proseWidth(style)).map((line) => bold(line, style)).join(`
+`);
 }
 function fields(rows, style, indent = 2) {
   const budget = proseWidth(style);
@@ -789,7 +790,13 @@ ${renderNotice(level, text, style).join(`
 `);
 }
 function success(text, style) {
-  return `${accent(symbols(style).ok, style, "positive")} ${text}`;
+  const mark = symbols(style).ok;
+  const hang = " ".repeat(displayWidth(mark) + 1);
+  const budget = Math.max(1, proseWidth(style) - displayWidth(mark) - 1);
+  const lines = text.split(`
+`).flatMap((line) => wrapText(line, budget));
+  return lines.map((line, i) => i === 0 ? `${accent(mark, style, "positive")} ${line}` : `${hang}${line}`).join(`
+`);
 }
 function failure(text, style) {
   return accent(`${symbols(style).danger} ${text}`, style, "negative");
@@ -877,9 +884,6 @@ function renderPlainTable(headers, rows) {
   const separator = widths.map((width) => "-".repeat(width)).join("  ");
   return [line(headers), separator, ...rows.map(line)].join(`
 `);
-}
-function formatTimestamp(ms, whenAbsent = "never") {
-  return ms === undefined ? whenAbsent : new Date(ms).toISOString();
 }
 function shortId(id, full = false) {
   return full || id.length <= 12 ? id : `${id.slice(0, 4)}…${id.slice(-4)}`;
@@ -16539,6 +16543,45 @@ var init_hood_legs = __esm(() => {
   V4_SWAP_PARAMS = { tuple: [V4_POOL_KEY, "bool", "uint", "uint", "uint", "bytes"] };
 });
 
+// src/human-output.ts
+function writeFields(deps, stream, rows, title) {
+  const style = terminalStyle(deps, stream);
+  deps[stream].write(`${title ? `${heading(title, style)}
+
+` : ""}${fields(rows, style).join(`
+`)}
+`);
+}
+function writeSuccess(deps, stream, text) {
+  deps[stream].write(`${success(text, terminalStyle(deps, stream))}
+`);
+}
+function writeTable(deps, stream, headers, rows, columns) {
+  const style = terminalStyle(deps, stream);
+  deps[stream].write(`${renderHumanTable(headers, rows, style, columns)}
+`);
+}
+function writeHeading(deps, stream, text) {
+  deps[stream].write(`
+${heading(text, terminalStyle(deps, stream))}
+
+`);
+}
+function renderHumanTable(headers, rows, style, columns) {
+  const table = renderTable(headers, rows, { style, width: style.width, indent: 2, rule: false, columns });
+  if (!table.split(`
+`).some((line) => displayWidth(line) > style.width))
+    return table;
+  return rows.map((row) => fields(headers.map((label, i) => [label, row[i]]), style).join(`
+`)).join(`
+
+`);
+}
+var init_human_output = __esm(() => {
+  init_presentation();
+  init_render();
+});
+
 // src/solana-verify.ts
 function isTokenProgram(program) {
   return program === TOKEN_PROGRAM_ID || program === TOKEN_2022_PROGRAM_ID;
@@ -16784,16 +16827,16 @@ async function requestSwapBuild(ctx, key, body) {
 }
 function describeSwapEvidence(ctx, details, terminal) {
   if (details.stage === "not_broadcast" && terminal)
-    ctx.deps.stderr.write(`Nothing was sent. This swap job is terminal; retry with a new id.
-`);
+    notice(ctx.deps, "stderr", "note", `Nothing was sent. This swap job is terminal; retry with a new id.
+`.trim());
   if (details.stage === "unconfirmed") {
     const hashes = Array.isArray(details.hashes) ? details.hashes : typeof details.signature === "string" ? [details.signature] : [];
-    ctx.deps.stderr.write(`Swap outcome needs verification${details.leg !== undefined ? ` (leg ${safeText(String(details.leg))})` : ""}. Known hashes: ${hashes.length ? hashes.map((hash) => safeText(String(hash))).join(", ") : "unknown"}. Do not automatically retry or use a new id.
-`);
+    notice(ctx.deps, "stderr", "warning", `Swap outcome needs verification${details.leg !== undefined ? ` (leg ${safeText(String(details.leg))})` : ""}. Known hashes: ${hashes.length ? hashes.map((hash) => safeText(String(hash))).join(", ") : "unknown"}. Do not automatically retry or use a new id.
+`.trim());
   }
   if (details.stage === "executed")
-    ctx.deps.stderr.write(`The trade landed${typeof details.signature === "string" ? ` (${safeText(details.signature)})` : ""} and a later step failed. Do not retry or use a new id.
-`);
+    notice(ctx.deps, "stderr", "warning", `The trade landed${typeof details.signature === "string" ? ` (${safeText(details.signature)})` : ""} and a later step failed. Do not retry or use a new id.
+`.trim());
 }
 function printTradingResult(ctx, result) {
   if (result.kind === "swap" && result.job && typeof result.job === "object") {
@@ -16813,8 +16856,8 @@ function reportSettlement(ctx, settlement, out, id) {
 `);
   else {
     const state = !reading ? "not measured" : reading.state === "settled" ? "settled, amount not measured" : reading.state;
-    ctx.deps.stderr.write(`Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/${id} (candle swap status ${id}).
-`);
+    notice(ctx.deps, "stderr", "note", `Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/${id} (candle swap status ${id}).
+`.trim());
   }
   return settlement !== null && typeof settlement === "object" ? { settlement } : {};
 }
@@ -16902,8 +16945,8 @@ async function waitForSettlement(ctx, key, id, first, facts, sent = false) {
   const field = bridgeStatusField(ctx, current, facts);
   const finished = waitFinished(current, facts, sent);
   if (!finished)
-    ctx.deps.stderr.write(`Still not final after ten minutes. Re-check with candle swap status ${id} --wait.
-`);
+    notice(ctx.deps, "stderr", "note", `Still not final after ten minutes. Re-check with candle swap status ${id} --wait.
+`.trim());
   return { ...current, ...field, waited: { final: finished } };
 }
 async function decimalsFor(ctx, asset, client) {
@@ -17026,8 +17069,7 @@ async function swap(args, ctx) {
       await assertDeferredExecuteSupported(ctx, key, id);
     if (!await claimOperation(ctx, key, id, kind))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
-    ctx.deps.stderr.write(`Operation: ${id}
-`);
+    writeFields(ctx.deps, "stderr", [["Operation", id]]);
     const payer = payerWallet.kind === "tee" ? { type: "linked", linkedWalletId: payerWallet.wallet.id } : { type: "main" };
     const built = kind === "swap" ? await requestSwapBuild(ctx, key, {
       clientTradeId: id,
@@ -17136,8 +17178,8 @@ function lazyEvmRpc(ctx, flag) {
     const resolved = resolveEvmRpcUrl(flag, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
     if ("error" in resolved)
       throw new TradingUsage(resolved.error);
-    ctx.deps.stderr.write(`Reading from ${rpcHostOf2(resolved.url)} (Hood RPC; reads only, nothing is sent there)
-`);
+    notice(ctx.deps, "stderr", "note", `Reading from ${rpcHostOf2(resolved.url)} (Hood RPC; reads only, nothing is sent there)
+`.trim());
     rpc = createEvmRpc(resolved.url, ctx.deps.fetch);
     return rpc;
   };
@@ -17175,8 +17217,8 @@ async function recordTradedToken(ctx, wallet, token) {
     }
   }
   if (notice2)
-    ctx.deps.stderr.write(`${safeText(notice2)}
-`);
+    notice(ctx.deps, "stderr", "note", `${safeText(notice2)}
+`.trim());
   return notice2;
 }
 function describeHoodLegs(first, hasFee, primary = "trade") {
@@ -17223,8 +17265,7 @@ async function hoodSwap(ctx, args) {
     await assertDeferredExecuteSupported(ctx, key, id);
   if (!await claimOperation(ctx, key, id, kind))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
-  ctx.deps.stderr.write(`Operation: ${id}
-`);
+  writeFields(ctx.deps, "stderr", [["Operation", id]]);
   const payerBody = payer.kind === "tee" ? { type: "linked", linkedWalletId: payer.wallet.id } : { type: "main" };
   const base = from.base ?? to.base;
   const token = from.base ? to.asset : from.asset;
@@ -17288,8 +17329,8 @@ async function hoodSwap(ctx, args) {
   }
   if (!await confirmQuote(ctx, quote, args.yes)) {
     if (sequenced)
-      ctx.deps.stderr.write(`Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.
-`);
+      notice(ctx.deps, "stderr", "note", `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.
+`.trim());
     return printTradingResult(ctx, {
       success: true,
       status: "cancelled",
@@ -17432,8 +17473,7 @@ async function bridgeSwap(ctx, args) {
     amountRaw = rawAmount(flags["--amount"], decimals);
   if (!await claimOperation(ctx, key, id, "swap"))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
-  ctx.deps.stderr.write(`Operation: ${id}
-`);
+  writeFields(ctx.deps, "stderr", [["Operation", id]]);
   const built = await requestSwapBuild(ctx, key, {
     clientTradeId: id,
     from,
@@ -17528,8 +17568,8 @@ async function bridgeSwap(ctx, args) {
   }
   if (!await confirmQuote(ctx, quote, args.yes)) {
     if (sequenced)
-      ctx.deps.stderr.write(`Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade or sweep from it waits until then.
-`);
+      notice(ctx.deps, "stderr", "note", `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade or sweep from it waits until then.
+`.trim());
     return printTradingResult(ctx, {
       success: true,
       status: "cancelled",
@@ -17576,8 +17616,8 @@ async function bridgeSwap(ctx, args) {
     depositHash = hashes[0];
     result = submitted;
   }
-  ctx.deps.stderr.write(`Deposit ${depositHash ? safeText(depositHash) : "sent"}: filling.${args.wait ? "" : ` Check it with candle swap status ${id} (add --wait to follow it).`}
-`);
+  notice(ctx.deps, "stderr", "note", `Deposit ${depositHash ? safeText(depositHash) : "sent"}: filling.${args.wait ? "" : ` Check it with candle swap status ${id} (add --wait to follow it).`}
+`.trim());
   const receipt = {
     ...result,
     clientTradeId: id,
@@ -17601,8 +17641,8 @@ async function bridgeSwap(ctx, args) {
     });
   } catch (error) {
     const reason = safeText(error instanceof Error ? describeRpcFailure(error) : String(error));
-    ctx.deps.stderr.write(`Could not follow the bridge (${reason}). The deposit was sent; do not send it again. Re-check with candle swap status ${id} --wait.
-`);
+    notice(ctx.deps, "stderr", "warning", `Could not follow the bridge (${reason}). The deposit was sent; do not send it again. Re-check with candle swap status ${id} --wait.
+`.trim());
     return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } });
   }
 }
@@ -17613,6 +17653,8 @@ var init_swap = __esm(() => {
   init_bridge();
   init_evm_lite();
   init_hood_legs();
+  init_human_output();
+  init_presentation();
   init_profiles();
   init_render();
   init_solana_endpoint();
@@ -17644,29 +17686,6 @@ var init_swap = __esm(() => {
     venueCostUsd: exports_external.number().finite().optional(),
     venueTimeEstimateSec: exports_external.number().finite().optional()
   }).passthrough();
-});
-
-// src/human-output.ts
-function writeFields(deps, stream, rows, title) {
-  const style = terminalStyle(deps, stream);
-  deps[stream].write(`${title ? `${heading(title, style)}
-
-` : ""}${fields(rows, style).join(`
-`)}
-`);
-}
-function writeSuccess(deps, stream, text) {
-  deps[stream].write(`${success(text, terminalStyle(deps, stream))}
-`);
-}
-function writeTable(deps, stream, headers, rows, columns) {
-  const style = terminalStyle(deps, stream);
-  deps[stream].write(`${renderTable(headers, rows, { style, width: style.width, indent: 2, rule: false, columns })}
-`);
-}
-var init_human_output = __esm(() => {
-  init_presentation();
-  init_render();
 });
 
 // src/commands/key-output.ts
@@ -28956,8 +28975,8 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       await opts.onFactorChosen(choice.envelopeId !== undefined ? { kind: "passphrase", envelopeId: choice.envelopeId } : { kind: "passphrase" });
     }
     if (choice.onlyBecause !== undefined)
-      deps.stderr.write(`${PASSPHRASE_ONLY_PREFIX}${choice.onlyBecause}
-`);
+      notice(deps, "stderr", "note", `${PASSPHRASE_ONLY_PREFIX}${choice.onlyBecause}
+`.trim());
     const typed = await deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ");
     const openWith = (p, r, candidate, purpose) => choice.envelopeId === undefined ? unlockWithPassphrase(p, r, candidate, { notice: noticeFor(purpose) }) : unlockVault(p, r, { factor: "passphrase", passphrase: candidate, envelopeId: choice.envelopeId }, { notice: noticeFor(purpose) });
     const { vault: vault2, passphrase } = await openWithTypedPassphrase(typed, (candidate) => openWith(path, raw, candidate, opts.purpose));
@@ -29064,8 +29083,8 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
     factor: { kind: "security-key", envelopeId: envelope.id, session },
     reopen: open4,
     confirm: async (what) => {
-      deps.stderr.write(`Present the security key again to ${what}.
-`);
+      notice(deps, "stderr", "note", `Present the security key again to ${what}.
+`.trim());
       closeVault(await open4(path, raw));
     }
   };
@@ -29099,8 +29118,8 @@ async function chooseFactor(ctx, vaultId, allEnvelopes, facts, requested, opts =
   if (among2 !== undefined && flag !== undefined && flag !== "passphrase") {
     const namesExcluded = envelopes.every((envelope) => !matchesFlag(envelope, flag)) && allEnvelopes.some((envelope) => matchesFlag(envelope, flag));
     if (namesExcluded) {
-      ctx.deps.stderr.write(`--factor ${flag} is not used here: ${among2.excludedBecause}
-`);
+      notice(ctx.deps, "stderr", "note", `--factor ${flag} is not used here: ${among2.excludedBecause}
+`.trim());
       flag = undefined;
     }
   }
@@ -29318,8 +29337,8 @@ function assertDrivable(envelope, facts) {
 async function assertNotOlderCopy(ctx, path, raw, accept) {
   const sidecar = await readSidecar(sidecarPath(path));
   if (sidecar === null) {
-    ctx.deps.stderr.write(`No vault.state.json beside this vault, so an older copy of it cannot be recognized here.
-`);
+    notice(ctx.deps, "stderr", "warning", `No vault.state.json beside this vault, so an older copy of it cannot be recognized here.
+`.trim());
     return;
   }
   let generation;
@@ -29345,8 +29364,8 @@ async function assertNotOlderCopy(ctx, path, raw, accept) {
       suggestion: "If you meant to restore an older backup, pass --accept-older-copy. Editing vault.state.json defeats this check and it is not a defense against anyone with access to this account."
     });
   }
-  ctx.deps.stderr.write(`Opening an older copy: generation ${String(generation)} against the ${sidecar.lastGeneration} this machine last saw.${detail}
-`);
+  notice(ctx.deps, "stderr", "note", `Opening an older copy: generation ${String(generation)} against the ${sidecar.lastGeneration} this machine last saw.${detail}
+`.trim());
 }
 function groupAddress(address) {
   const prefix = address.startsWith("0x") ? "0x" : "";
@@ -29461,7 +29480,7 @@ function takeRepeatedFlag(args, flag) {
       if (!value || value.startsWith("-"))
         return { error: `${flag} requires a value` };
       values.push(value);
-    } else if (arg !== undefined && arg.startsWith(`${flag}=`)) {
+    } else if (arg?.startsWith(`${flag}=`)) {
       const value = arg.slice(flag.length + 1);
       if (!value)
         return { error: `${flag} requires a value` };
@@ -29474,6 +29493,7 @@ function takeRepeatedFlag(args, flag) {
 var PASSPHRASE_ONLY_PREFIX = "Passphrase only: ";
 var init_vault_support = __esm(() => {
   init_args();
+  init_presentation();
   init_render();
   init_solana_endpoint();
   init_trading();
@@ -34121,8 +34141,8 @@ async function sweepEvmWallet(input) {
     note("EMERGENCY SWEEP: no Candle API call is made. Remote signing authority is NOT verified denied, and a still-authorized agent signer can race these transactions.");
     note(EMERGENCY_BRIDGE_NOTE);
   }
-  deps.stderr.write(`${hoodHostLine(client, "the chain id, nonces, balances and logs")}
-`);
+  notice(deps, "stderr", "note", `${hoodHostLine(client, "the chain id, nonces, balances and logs")}
+`.trim());
   await assertHoodChain(client);
   const resolved = await resolvePending2(ctx, vault, entry, rpc);
   vault = hold(resolved.vault);
@@ -34531,34 +34551,43 @@ async function sweepEvmWallet(input) {
     return exit;
   }
   if (exit === 0) {
-    deps.stdout.write(`Swept. ${allReceipts.length} transaction(s) confirmed; the wallet is observed empty and retired, and must not be reused.
-`);
+    notice(deps, "stdout", "note", `Swept. ${allReceipts.length} transaction(s) confirmed; the wallet is observed empty and retired, and must not be reused.
+`.trim());
     return 0;
   }
   if (stopped !== undefined)
-    deps.stdout.write(`Sweep stopped: ${stopped}.
-`);
+    notice(deps, "stdout", "note", `Sweep stopped: ${stopped}.
+`.trim());
   if (residuals.length > 0) {
-    deps.stdout.write(`Sweep incomplete: ${residuals.length} residual(s) remain.
-`);
+    notice(deps, "stdout", "warning", `Sweep incomplete: ${residuals.length} residual(s) remain.
+`.trim());
     for (const r of residuals) {
-      deps.stdout.write(`  - ${r.kind}${r.token ? ` ${r.token}` : ""}${r.amountRaw ? ` (${r.amountRaw} raw)` : ""}: ${r.detail}
-`);
+      writeFields(deps, "stdout", [
+        ["Residual", r.kind],
+        ["Token", r.token],
+        ["Raw amount", r.amountRaw],
+        ["Detail", r.detail]
+      ]);
     }
   }
   if (missingSources.length > 0) {
-    deps.stdout.write(`Not reported observed-empty: ${missingSources.join(" and ")} did not run, so a token only they would find may remain. ${sources.logs.ran ? "" : `Re-run with --from-block <n> or --token <0x...>: candle tee sweep ${address} --from-block <n>`}
-`);
+    notice(deps, "stdout", "note", `Not reported observed-empty: ${missingSources.join(" and ")} did not run, so a token only they would find may remain. ${sources.logs.ran ? "" : `Re-run with --from-block <n> or --token <0x...>: candle tee sweep ${address} --from-block <n>`}
+`.trim());
   }
   if (emergency) {
-    deps.stdout.write(`Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}
-`);
+    notice(deps, "stdout", "warning", `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}
+`.trim());
   } else if (observedEmpty && !complete) {
-    deps.stdout.write(`The wallet is observed empty, but its server state is ${serverState}; re-run once it is quarantined.
-`);
+    notice(deps, "stdout", "note", `The wallet is observed empty, but its server state is ${serverState}; re-run once it is quarantined.
+`.trim());
   }
-  deps.stdout.write(`Inventory at ${inventory.observedAt}: ${inventory.verified ? `${inventory.ethWei} wei ETH (gas dust ceiling ${inventory.dustCeilingWei} wei), ${candidates.length} token(s) read` : "NOT verified"}.
-`);
+  writeFields(deps, "stdout", [
+    ["Observed at", formatTime(inventory.observedAt)],
+    ["Verified", inventory.verified ? "yes" : "NOT verified"],
+    ["ETH (wei)", inventory.verified ? inventory.ethWei : undefined],
+    ["Gas dust ceiling (wei)", inventory.dustCeilingWei],
+    ["Tokens read", candidates.length]
+  ], "Inventory");
   return exit;
 }
 async function resolvePending2(ctx, vault, entry, rpc) {
@@ -34656,10 +34685,10 @@ async function disableEvmEntry(ctx, opened, hold, entry, inDemote) {
       });
       return { code: 1, vault };
     }
-    deps.stderr.write(`${detail}
+    notice(deps, "stderr", "warning", `${detail}
 Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${entry.address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.
 ${suggestion}
-`);
+`.trim());
     return { code: 1, vault };
   };
   const apiKey = await resolveApiKey(deps, ctx.profile);
@@ -34679,24 +34708,24 @@ ${suggestion}
   }
   const outcome = readDisableOutcome(result.body);
   for (const warning of bridgeDisableWarnings(entry.address, result.body))
-    deps.stderr.write(`${warning}
-`);
+    notice(deps, "stderr", "note", `${warning}
+`.trim());
   if (json) {
     writeJson(deps, { address: entry.address, linkedWalletId, ...result.body });
     return { code: outcome.complete ? 0 : 3, vault };
   }
   if (outcome.complete) {
-    deps.stdout.write(`Stopped ${entry.address}. Remote signing denial verified; the wallet is quarantined.
-`);
+    notice(deps, "stdout", "note", `Stopped ${entry.address}. Remote signing denial verified; the wallet is quarantined.
+`.trim());
     if (!inDemote)
-      deps.stdout.write(`Recover the funds: candle tee sweep ${entry.address}
-`);
+      notice(deps, "stdout", "note", `Recover the funds: candle tee sweep ${entry.address}
+`.trim());
     return { code: 0, vault };
   }
-  deps.stdout.write(`Agent trading stopped at Candle for ${entry.address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
+  notice(deps, "stdout", "warning", `Agent trading stopped at Candle for ${entry.address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
 Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${entry.address}
 ${inDemote ? "" : `If the provider is down or theft is suspected: candle tee sweep ${entry.address} --emergency
-`}`);
+`}`.trim());
   return { code: 3, vault };
 }
 async function vaultDemoteEvm(args, ctx) {
@@ -34747,8 +34776,8 @@ async function vaultDemoteEvm(args, ctx) {
       entry = findEvmTee(vault, address);
     }
     if (entry.linkedWalletId === undefined) {
-      ctx.deps.stdout.write(`No linkedWalletId is recorded for ${entry.address}; disable was not called and remote authority stays unknown.
-`);
+      notice(ctx.deps, "stdout", "warning", `No linkedWalletId is recorded for ${entry.address}; disable was not called and remote authority stays unknown.
+`.trim());
       emergency = true;
     }
     if (!emergency) {
@@ -34759,13 +34788,13 @@ async function vaultDemoteEvm(args, ctx) {
       vault = disabled.vault;
       entry = findEvmTee(vault, address);
       if (disabled.code === 3) {
-        ctx.deps.stdout.write(`The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote ${address} --emergency
-`);
+        notice(ctx.deps, "stdout", "note", `The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote ${address} --emergency
+`.trim());
       }
     }
     if (!ctx.json)
-      ctx.deps.stdout.write(`Sweeping remaining funds to ${entry.tee?.vaultDestination}...
-`);
+      notice(ctx.deps, "stdout", "note", `Sweeping remaining funds to ${entry.tee?.vaultDestination}...
+`.trim());
     return sweepEvmWallet({
       ctx,
       vault,
@@ -34780,6 +34809,9 @@ async function vaultDemoteEvm(args, ctx) {
 }
 var MAX_TOKEN_TRANSFER_GAS = 1000000n;
 var init_tee_evm = __esm(() => {
+  init_human_output();
+  init_presentation();
+  init_render();
   init_args();
   init_bridge();
   init_client();
@@ -34920,8 +34952,8 @@ async function teeStatusEvm(ctx, parsed, address) {
       report.server = { error: error instanceof Error ? error.message : "wallet listing failed" };
     }
   }
-  deps.stderr.write(`Reading ETH, USDG and the fee for ${checked.address} from ${rpcHostOf2(rpcUrl.url)}
-`);
+  notice(deps, "stderr", "note", `Reading ETH, USDG and the fee for ${checked.address} from ${rpcHostOf2(rpcUrl.url)}
+`.trim());
   const rpc = createEvmRpc(rpcUrl.url, deps.fetch);
   try {
     const [eth, usdg, fees] = await Promise.all([
@@ -34957,43 +34989,47 @@ async function teeStatusEvm(ctx, parsed, address) {
 `);
     return 0;
   }
-  deps.stdout.write(`${checked.address}  ${report.label ?? ""}
-`);
-  deps.stdout.write(`  chain         Hood (4663)
-`);
-  deps.stdout.write(`  source        ${report.source}
-`);
+  writeFields(deps, "stdout", [
+    ["Address", checked.address],
+    ["Label", report.label === undefined ? undefined : String(report.label)],
+    ["Chain", "Hood (4663)"],
+    ["Source", String(report.source)]
+  ], "TEE wallet");
   if (!verify)
-    deps.stdout.write(`${UNVERIFIED_KEY_LINE}
-`);
+    notice(deps, "stdout", "note", `${UNVERIFIED_KEY_LINE}
+`.trim());
   if (vault?.vaultDestination)
-    deps.stdout.write(`  vault         ${vault.vaultDestination}
-`);
+    writeFields(deps, "stdout", [["Vault", vault.vaultDestination]]);
   const server = report.server;
   if (server?.error)
-    deps.stdout.write(`  server        (unavailable: ${server.error})
-`);
+    notice(deps, "stdout", "warning", `  server        (unavailable: ${server.error})
+`.trim());
   else if (server)
-    deps.stdout.write(`  server state  ${server.state ?? "?"}  remote authority ${server.remoteAuthority ?? "?"}
-`);
+    writeFields(deps, "stdout", [
+      ["Server state", server.state],
+      ["Remote authority", server.remoteAuthority]
+    ]);
   const balances = report.balances;
   if (balances.error)
-    deps.stdout.write(`  balances      (unavailable: ${balances.error})
-`);
+    notice(deps, "stdout", "warning", `  balances      (unavailable: ${balances.error})
+`.trim());
   else {
     const reserve = report.reserve;
-    deps.stdout.write(`  ETH           ${balances.eth}
-`);
-    deps.stdout.write(`  USDG          ${balances.usdg}
-`);
-    deps.stdout.write(`  reserve       at least ${reserve.eth} ETH (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee)
-`);
-    deps.stdout.write(report.gas === "low" ? `  gas: low      ETH is under twice the reserve. Fund it: ${report.fund}
-` : `  gas           ok
-`);
+    writeFields(deps, "stdout", [
+      ["ETH", balances.eth],
+      ["USDG", balances.usdg],
+      [
+        "Reserve",
+        `at least ${reserve.eth} ETH (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee)`
+      ]
+    ]);
+    writeFields(deps, "stdout", [["Gas", report.gas === "low" ? "low" : "ok"]]);
+    if (report.gas === "low") {
+      notice(deps, "stdout", "warning", "ETH is under twice the reserve.");
+      writeFields(deps, "stdout", [["Fund it", String(report.fund)]]);
+    }
   }
-  deps.stdout.write(`  observed at   ${report.observedAt}
-`);
+  writeFields(deps, "stdout", [["Observed at", formatTime(String(report.observedAt))]]);
   return 0;
 }
 var GAS_LOW_RESERVE_MULTIPLE = 2n;
@@ -35001,6 +35037,8 @@ var init_tee_status_evm = __esm(() => {
   init_client();
   init_deps();
   init_evm_lite();
+  init_human_output();
+  init_presentation();
   init_render();
   init_solana_endpoint();
   init_trading();
@@ -35385,14 +35423,18 @@ Then: candle vault promote --from <label> --to-key <prefix>`
 `);
     return 0;
   }
-  deps.stdout.write(`New TEE wallet [${index}] ${wallet.address}  ${label}
-`);
-  deps.stdout.write(`Sealed to ${path} and verified to restore.
-`);
-  deps.stdout.write(`BACK UP THIS FILE AND REMEMBER THE PASSPHRASE. This key exists nowhere else.
-`);
-  deps.stdout.write(`State: local-only. Next: candle tee enable ${wallet.address} --vault <your-vault-address>
-`);
+  writeFields(deps, "stdout", [
+    ["Index", index],
+    ["Address", wallet.address],
+    ["Label", label],
+    ["Sealed file", path]
+  ], "New TEE wallet");
+  notice(deps, "stdout", "note", `Sealed to ${path} and verified to restore.
+`.trim());
+  notice(deps, "stdout", "warning", `BACK UP THIS FILE AND REMEMBER THE PASSPHRASE. This key exists nowhere else.
+`.trim());
+  notice(deps, "stdout", "note", `State: local-only. Next: candle tee enable ${wallet.address} --vault <your-vault-address>
+`.trim());
   return 0;
 }
 async function teeEnable(args, ctx) {
@@ -35495,22 +35537,17 @@ async function teeEnable(args, ctx) {
     return 1;
   }
   if (!json) {
-    deps.stdout.write(`About to delegate a DEDICATED TEE wallet to this profile's agent:
-`);
-    deps.stdout.write(`  TEE wallet   ${address}
-`);
-    deps.stdout.write(`  network      solana-mainnet
-`);
-    deps.stdout.write(`  sweep vault  ${vault}
-`);
-    deps.stdout.write(`  routes       trade rail only (build/confirm/submit) with THIS profile's API key; nothing else
-`);
-    deps.stdout.write(`  limits       the key's per-transaction cap and USD window cap must both be set; the server refuses otherwise
-`);
-    deps.stdout.write(`Exposure: everything you fund into this wallet, plus anything deposited later, can be lost by a
-`);
-    deps.stdout.write(`compromised agent within those limits. Once enabled a copy of this key stays in the TEE for good.
-`);
+    writeHeading(deps, "stdout", "Delegate a dedicated TEE wallet to this profile's agent");
+    writeFields(deps, "stdout", [
+      ["TEE wallet", address],
+      ["Network", "solana-mainnet"],
+      ["Sweep vault", vault]
+    ]);
+    notice(deps, "stdout", "note", `  routes       trade rail only (build/confirm/submit) with THIS profile's API key; nothing else
+`.trim());
+    notice(deps, "stdout", "note", `  limits       the key's per-transaction cap and USD window cap must both be set; the server refuses otherwise
+`.trim());
+    notice(deps, "stdout", "danger", "Exposure: everything you fund into this wallet, plus anything deposited later, can be lost by a compromised agent within those limits. Once enabled a copy of this key stays in the TEE for good.");
   }
   if (!await confirmVault(deps, json, vault, `enable this TEE wallet with sweeps to ${vault}`)) {
     writeLocalFailure(deps, { code: "VAULT_NOT_CONFIRMED", message: "The vault was not confirmed. Nothing was enabled." }, json);
@@ -35577,15 +35614,18 @@ async function teeEnable(args, ctx) {
     return verified ? 0 : 3;
   }
   if (verified) {
-    deps.stdout.write(`Enabled ${address} as ${submitted.id}, bound to key ${submitted.boundKeyPrefix ?? "?"}.
-`);
-    deps.stdout.write(`Remote authority verified. Fund it: candle tee fund ${address} --amount <n> --asset SOL|USDC
-`);
+    writeFields(deps, "stdout", [
+      ["Address", address],
+      ["Wallet id", submitted.id],
+      ["Bound key", submitted.boundKeyPrefix]
+    ], "TEE wallet enabled");
+    notice(deps, "stdout", "note", `Remote authority verified. Fund it: candle tee fund ${address} --amount <n> --asset SOL|USDC
+`.trim());
     return 0;
   }
-  deps.stdout.write(`Imported ${address} as ${submitted.id}, but the server could NOT verify the remote authority${submitted.reasonCode ? ` (${submitted.reasonCode})` : ""}. The agent cannot trade it.
+  notice(deps, "stdout", "warning", `Imported ${address} as ${submitted.id}, but the server could NOT verify the remote authority${submitted.reasonCode ? ` (${submitted.reasonCode})` : ""}. The agent cannot trade it.
 Do not fund it. Disable it (candle tee disable ${address}) and enable a fresh wallet.
-`);
+`.trim());
   return 3;
 }
 function decimalToRaw(decimal, decimals) {
@@ -35649,16 +35689,16 @@ async function teeFund(args, ctx) {
 `);
       return 0;
     }
-    deps.stdout.write(`Funding instruction (sign this from your VAULT wallet; this CLI signs nothing):
-`);
-    deps.stdout.write(`  send      ${amount} ${asset}${asset === "USDC" ? ` (mint ${USDC_MINT})` : ""}  = ${raw} raw units
-`);
-    deps.stdout.write(`  to        ${address}
-`);
-    deps.stdout.write(`  network   solana-mainnet
-`);
-    deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
-`);
+    writeHeading(deps, "stdout", "Funding instruction (sign from your vault; this CLI signs nothing)");
+    writeFields(deps, "stdout", [
+      ["Send", `${amount} ${asset}`],
+      ["Raw units", raw.toString()],
+      ["Mint", asset === "USDC" ? USDC_MINT : undefined],
+      ["To", address],
+      ["Network", "solana-mainnet"]
+    ]);
+    notice(deps, "stdout", "note", `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
+`.trim());
     return 0;
   } finally {
     releaseResolvedTee(resolved.resolved);
@@ -35774,52 +35814,58 @@ async function teeStatus(args, ctx) {
 `);
       return 0;
     }
-    deps.stdout.write(`${address}  ${entry.label}
-`);
+    writeFields(deps, "stdout", [
+      ["Address", address],
+      ["Label", entry.label]
+    ], "TEE wallet");
     if (local?.source === "vault") {
-      deps.stdout.write(`  source        vault (Phase 1 store is read-only for this address)
-`);
-      deps.stdout.write(`  vault life    ${local.entry.tee?.lifecycle ?? "?"}
-`);
+      writeFields(deps, "stdout", [
+        ["Source", "vault (Phase 1 store is read-only for this address)"],
+        ["Vault lifecycle", local.entry.tee?.lifecycle]
+      ]);
     }
     if (!verify)
-      deps.stdout.write(`${UNVERIFIED_KEY_LINE}
-`);
+      notice(deps, "stdout", "note", `${UNVERIFIED_KEY_LINE}
+`.trim());
     else
-      deps.stdout.write(`  local state   ${report.localState}
-`);
-    if (entry.tee?.vaultDestination)
-      deps.stdout.write(`  vault         ${entry.tee.vaultDestination}
-`);
+      writeFields(deps, "stdout", [
+        ["Local state", String(report.localState)],
+        ["Vault", entry.tee?.vaultDestination]
+      ]);
     const server = report.server;
     if (server) {
       if ("error" in server)
-        deps.stdout.write(`  server        (unavailable: ${server.error})
-`);
+        notice(deps, "stdout", "note", `  server        (unavailable: ${server.error})
+`.trim());
       else {
-        deps.stdout.write(`  server state  ${server.state ?? "?"}  remote authority ${server.remoteAuthority ?? "?"}
-`);
+        writeFields(deps, "stdout", [
+          ["Server state", server.state],
+          ["Remote authority", server.remoteAuthority]
+        ]);
         if (server.evidenceObservedAt)
-          deps.stdout.write(`  evidence at   ${new Date(server.evidenceObservedAt).toISOString()}
-`);
+          writeFields(deps, "stdout", [["Evidence at", formatTime(server.evidenceObservedAt)]]);
       }
     }
     const balances = report.balances;
     if (balances) {
       if (balances.error)
-        deps.stdout.write(`  balances      (unavailable: ${balances.error})
-`);
+        notice(deps, "stdout", "note", `  balances      (unavailable: ${balances.error})
+`.trim());
       else {
-        deps.stdout.write(`  SOL           ${balances.lamports} lamports
-`);
+        writeFields(deps, "stdout", [["SOL", `${balances.lamports} lamports`]]);
         for (const t of balances.tokens ?? []) {
-          deps.stdout.write(`  token         ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp, ${t.state}, ${t.program})  USD unknown
-`);
+          writeFields(deps, "stdout", [
+            ["Token", String(t.mint)],
+            ["Raw amount", String(t.amountRaw)],
+            ["Decimals", String(t.decimals)],
+            ["State", String(t.state)],
+            ["Program", String(t.program)],
+            ["USD", undefined]
+          ]);
         }
       }
     }
-    deps.stdout.write(`  observed at   ${report.observedAt}
-`);
+    writeFields(deps, "stdout", [["Observed at", formatTime(String(report.observedAt))]]);
     return 0;
   } finally {
     if (local)
@@ -35873,11 +35919,11 @@ async function teeDisable(args, ctx, demote) {
 `);
         return;
       }
-      deps.stderr.write(`${detail}
-`);
-      deps.stderr.write(`Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.
+      notice(deps, "stderr", "note", `${detail}
+`.trim());
+      notice(deps, "stderr", "warning", `Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.
 ${suggestion}
-`);
+`.trim());
     };
     const apiKey = await resolveApiKey(deps, ctx.profile);
     if (!apiKey) {
@@ -35898,25 +35944,25 @@ ${suggestion}
     }
     const outcome = readDisableOutcome(result.body);
     for (const warning of bridgeDisableWarnings(address, result.body))
-      deps.stderr.write(`${warning}
-`);
+      notice(deps, "stderr", "note", `${warning}
+`.trim());
     if (json) {
       deps.stdout.write(`${JSON.stringify({ address, linkedWalletId: entry.linkedWalletId, ...result.body })}
 `);
       return outcome.complete ? 0 : 3;
     }
     if (outcome.complete) {
-      deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.
-`);
+      notice(deps, "stdout", "note", `Stopped ${address}. Remote signing denial verified; the wallet is quarantined.
+`.trim());
       if (!demote)
-        deps.stdout.write(`Recover the funds: candle tee sweep ${address}
-`);
+        notice(deps, "stdout", "note", `Recover the funds: candle tee sweep ${address}
+`.trim());
       return 0;
     }
-    deps.stdout.write(`Agent trading stopped at Candle for ${address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
+    notice(deps, "stdout", "warning", `Agent trading stopped at Candle for ${address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
 Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}
 If the provider is down or theft is suspected: ${demote ? `candle vault demote ${address}` : `candle tee sweep ${address}`} --emergency
-`);
+`.trim());
     return 3;
   } finally {
     if (!demote)
@@ -36159,19 +36205,19 @@ async function teeSweep(args, ctx, demote) {
 `);
     }
     if (emergency && !json) {
-      deps.stdout.write(`EMERGENCY SWEEP: remote signing authority is NOT verified denied. A still-authorized agent signer or
-`);
-      deps.stdout.write(`any holder of a raw key copy can race these transactions. Recovered funds are recorded; remote authority stays pending.
-`);
+      notice(deps, "stdout", "danger", "EMERGENCY SWEEP: remote signing authority is NOT verified denied. A still-authorized agent signer or any holder of a raw key copy can race these transactions. Recovered funds are recorded; remote authority stays pending.");
       if (unreadReason !== null) {
-        deps.stdout.write(`The server's lifecycle state was NOT read (${unreadReason}): this recovery uses only the local key and the pinned vault.
+        notice(deps, "stdout", "note", `The server's lifecycle state was NOT read (${unreadReason}): this recovery uses only the local key and the pinned vault.
 Stop the agent from your Candle session if you have not, and re-run candle tee disable once a key is available.
-`);
+`.trim());
       }
     }
     if (!json) {
-      deps.stdout.write(`Sweep ${address} -> vault ${vault} (solana-mainnet)
-`);
+      writeFields(deps, "stdout", [
+        ["From", address],
+        ["Vault", vault],
+        ["Network", "solana-mainnet"]
+      ], "Sweep");
     }
     if (!await confirmVault(deps, json, vault, `sweep everything to ${vault}`)) {
       writeLocalFailure(deps, { code: "VAULT_NOT_CONFIRMED", message: "The vault was not confirmed. Nothing was signed." }, json);
@@ -36285,15 +36331,13 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           ...outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {}
         });
         if (!json) {
-          deps.stdout.write(`  ${detail}
-`);
+          notice(deps, "stdout", "note", `  ${detail}
+`.trim());
           if (outcome.diagnostics) {
             if (outcome.diagnostics.err !== null)
-              deps.stdout.write(`    program error: ${outcome.diagnostics.err}
-`);
+              writeFields(deps, "stdout", [["Program error", outcome.diagnostics.err]]);
             for (const line of outcome.diagnostics.logs)
-              deps.stdout.write(`    log: ${line}
-`);
+              writeFields(deps, "stdout", [["Log", line]]);
           }
         }
         if (!outcome.pendingCleared) {
@@ -36375,8 +36419,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           finalizedAt: new Date(deps.now()).toISOString()
         });
         if (!json)
-          deps.stdout.write(`  pending ${p.signature} from an earlier run finalized: receipt retained
-`);
+          notice(deps, "stdout", "note", `  pending ${p.signature} from an earlier run finalized: receipt retained
+`.trim());
         continue;
       }
       if (resolution.kind === "failed" || resolution.kind === "expired") {
@@ -36385,8 +36429,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           blockingReason = "not signed: an earlier pending record could not be cleared";
         }
         if (!json)
-          deps.stdout.write(`  pending ${p.signature}: ${resolution.detail}; its balance is swept again
-`);
+          notice(deps, "stdout", "warning", `  pending ${p.signature}: ${resolution.detail}; its balance is swept again
+`.trim());
         continue;
       }
       residuals.push({
@@ -36420,8 +36464,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       const leftover = (kind, acct, detail) => residuals.push({ kind, detail, mint: acct.mint, account: acct.pubkey, amountRaw: acct.amountRaw });
       if (!emergency && candidates.length > 0) {
         if (!json)
-          deps.stdout.write(`  ${candidates.length} position NFT candidate(s) (Token-2022, amount 1, decimals 0)
-`);
+          notice(deps, "stdout", "note", `  ${candidates.length} position NFT candidate(s) (Token-2022, amount 1, decimals 0)
+`.trim());
         const verified = [];
         for (const acct of candidates) {
           if (signingBlocked) {
@@ -36487,8 +36531,10 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           const display = describeClose({ verdict, tee: address, vault, nftMint: acct.mint, nftAccount: acct.pubkey });
           lpCloses.push({ mint: acct.mint, account: acct.pubkey, display });
           if (!json) {
-            deps.stdout.write(`  Close for position ${acct.mint} (verified, unsigned; about to sign):
-`);
+            writeFields(deps, "stdout", [
+              ["Position", acct.mint],
+              ["Verification", "verified, unsigned; about to sign"]
+            ], "Close LP position");
             for (const line of display)
               deps.stdout.write(`    ${line}
 `);
@@ -36515,8 +36561,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             finalizedAt: new Date(deps.now()).toISOString()
           });
           if (!json)
-            deps.stdout.write(`  closed LP position ${acct.mint} and withdrew its liquidity: ${outcome.signature}
-`);
+            notice(deps, "stdout", "note", `  closed LP position ${acct.mint} and withdrew its liquidity: ${outcome.signature}
+`.trim());
         }
       }
     }
@@ -36545,8 +36591,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         if (!emergency)
           continue;
         if (!json)
-          deps.stdout.write(`  ${acct.mint}: position NFT moved as-is to the vault (emergency; unwind it from a fresh TEE wallet)
-`);
+          notice(deps, "stdout", "note", `  ${acct.mint}: position NFT moved as-is to the vault (emergency; unwind it from a fresh TEE wallet)
+`.trim());
       }
       if (acct.state !== "initialized") {
         residuals.push({
@@ -36586,19 +36632,23 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             else {
               extraAccountsMissing = true;
               if (!json)
-                deps.stdout.write(`  ${acct.mint}: the transfer hook's extra accounts could not be resolved (${hook.reason})
-`);
+                notice(deps, "stdout", "warning", `  ${acct.mint}: the transfer hook's extra accounts could not be resolved (${hook.reason})
+`.trim());
             }
             if (!json)
               for (const risk of profile.risks)
-                deps.stdout.write(`  ${acct.mint}: ${risk.message}
-`);
+                notice(deps, "stdout", "note", `  ${acct.mint}: ${risk.message}
+`.trim());
             if (profile.newerTransferFee || profile.olderTransferFee) {
               epoch ??= await rpc.getEpoch();
               const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, amount, epoch);
               if (!json)
-                deps.stdout.write(`  ${acct.mint}: ${postFeeAmountRaw} raw will arrive; ${feeRaw} raw is withheld by the mint at epoch ${epoch}
-`);
+                writeFields(deps, "stdout", [
+                  ["Mint", acct.mint],
+                  ["Raw amount arriving", postFeeAmountRaw.toString()],
+                  ["Raw mint fee withheld", feeRaw.toString()],
+                  ["Epoch", epoch.toString()]
+                ]);
             }
           }
           const existing = await rpc.getAccountInfo(encodePubkey(destination));
@@ -36644,8 +36694,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           finalizedAt: new Date(deps.now()).toISOString()
         });
         if (!json)
-          deps.stdout.write(`  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${signature}
-`);
+          notice(deps, "stdout", "note", `  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${signature}
+`.trim());
       } catch (error) {
         if (stopForContext(error, acct))
           continue;
@@ -36702,8 +36752,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
               finalizedAt: new Date(deps.now()).toISOString()
             });
             if (!json)
-              deps.stdout.write(`  moved ${amount} lamports (fee ${fee}): ${signature}
-`);
+              notice(deps, "stdout", "note", `  moved ${amount} lamports (fee ${fee}): ${signature}
+`.trim());
           }
         }
       }
@@ -36821,46 +36871,54 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       return finalState === "swept" ? 0 : 3;
     }
     if (retained.length > 0)
-      deps.stdout.write(`  ${retained.length} receipt(s) retained from an earlier run are included in this reconcile.
-`);
+      notice(deps, "stdout", "note", `  ${retained.length} receipt(s) retained from an earlier run are included in this reconcile.
+`.trim());
     if (finalState === "swept") {
-      deps.stdout.write(`Swept. ${allReceipts.length} transaction(s) finalized; this address is retired and must not be reused.
-`);
+      notice(deps, "stdout", "note", `Swept. ${allReceipts.length} transaction(s) finalized; this address is retired and must not be reused.
+`.trim());
       return 0;
     }
     if (residuals.length > 0) {
-      deps.stdout.write(`Sweep incomplete: ${residuals.length} residual(s) remain. This address stays ${finalState}; no new agent trades are allowed.
-`);
+      notice(deps, "stdout", "warning", `Sweep incomplete: ${residuals.length} residual(s) remain. This address stays ${finalState}; no new agent trades are allowed.
+`.trim());
       for (const r of residuals)
-        deps.stdout.write(`  - ${r.kind}${r.mint ? ` ${r.mint}` : ""}${r.amountRaw ? ` (${r.amountRaw} raw)` : ""}: ${r.detail}
-`);
+        writeFields(deps, "stdout", [
+          ["Residual", r.kind],
+          ["Mint", r.mint],
+          ["Raw amount", r.amountRaw],
+          ["Detail", r.detail]
+        ]);
     }
     if (emergency)
-      deps.stdout.write(`Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}
-`);
+      notice(deps, "stdout", "warning", `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}
+`.trim());
     if (pendingStill.length > 0)
-      deps.stdout.write(`${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.
-`);
+      notice(deps, "stdout", "note", `${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.
+`.trim());
     const rejected = residuals.filter((r) => r.rejection);
     if (pendingStill.length === 0 && rejected.length > 0 && rejected.every((r) => r.rejection?.pendingCleared)) {
-      deps.stdout.write(`Nothing from this run is in flight: ${rejected.length} transaction(s) were rejected before broadcast. Re-run this sweep now.
-`);
+      notice(deps, "stdout", "note", `Nothing from this run is in flight: ${rejected.length} transaction(s) were rejected before broadcast. Re-run this sweep now.
+`.trim());
       if (rejected.some((r) => r.rejection?.reason === "context-behind"))
-        deps.stdout.write(`Fix: ${rpcFixLines(ctx).join(", ")}
-`);
+        notice(deps, "stdout", "note", `Fix: ${rpcFixLines(ctx).join(", ")}
+`.trim());
     }
     for (const r of rejected)
       if (!r.rejection?.pendingCleared)
-        deps.stdout.write(`The local pending record for ${r.signature} could not be removed (${cleanupFailures.get(r.signature ?? "")}). It was never broadcast; the next run drops it once its blockhash expires, normally within two minutes. Re-run after that.
-`);
+        notice(deps, "stdout", "warning", `The local pending record for ${r.signature} could not be removed (${cleanupFailures.get(r.signature ?? "")}). It was never broadcast; the next run drops it once its blockhash expires, normally within two minutes. Re-run after that.
+`.trim());
     if (serverState === "disable-pending" && !emergency)
-      deps.stdout.write(`Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.
-`);
+      notice(deps, "stdout", "warning", `Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.
+`.trim());
     if (allReceipts.length === 0 && residuals.length === 0)
-      deps.stdout.write(`Nothing to sweep: no balances found.
-`);
-    deps.stdout.write(`Inventory at ${inventory.observedAt}: ${inventory.verified ? `${inventory.lamports} lamports, ${inventory.tokenAccounts} token account(s)` : "NOT verified"}.
-`);
+      notice(deps, "stdout", "note", `Nothing to sweep: no balances found.
+`.trim());
+    writeFields(deps, "stdout", [
+      ["Observed at", formatTime(inventory.observedAt)],
+      ["Verified", inventory.verified ? "yes" : "NOT verified"],
+      ["Lamports", inventory.verified ? inventory.lamports : undefined],
+      ["Token accounts", inventory.verified ? inventory.tokenAccounts : undefined]
+    ], "Inventory");
     return 3;
   } finally {
     if (!demote)
@@ -36874,7 +36932,9 @@ var init_tee = __esm(() => {
   init_bridge();
   init_client();
   init_deps();
+  init_human_output();
   init_lp_close();
+  init_presentation();
   init_profiles();
   init_render();
   init_solana_endpoint();
@@ -37094,8 +37154,7 @@ function writeRebindFailure(ctx, result, context) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...suggestion ? { suggestion } : {} })}
 `);
   } else {
-    deps.stderr.write(`${code}: ${message}${suggestion ? ` ${suggestion}` : ""}
-`);
+    writeLocalFailure(deps, { code, message, ...suggestion ? { suggestion } : {} }, false);
   }
   return 1;
 }
@@ -37238,8 +37297,8 @@ async function teeRebind(args, ctx) {
       deps.stdout.write(`${JSON.stringify({ ...shown, command: "tee rebind" })}
 `);
     } else {
-      deps.stdout.write(`Nothing to move: every named wallet is already bound to ${shown.toKey.keyPrefix}.
-`);
+      notice(deps, "stdout", "note", `Nothing to move: every named wallet is already bound to ${shown.toKey.keyPrefix}.
+`.trim());
     }
     return 0;
   }
@@ -37310,9 +37369,35 @@ async function teeRebind(args, ctx) {
     ...ownerSection,
     ""
   ];
-  deps.stderr.write(`${screen.join(`
+  if (json)
+    deps.stderr.write(`${screen.join(`
 `)}
 `);
+  else {
+    writeTable(deps, "stderr", ["Line", "Label", "Address", "From key", "Launch"], moving.map((row, i) => [
+      String(i + 1),
+      labelCell(row.label ?? undefined),
+      row.address,
+      row.fromKeyPrefix,
+      row.allowLaunch ? "yes" : "no"
+    ]), [{ priority: 3 }, { priority: 2 }, { id: true }, { id: true }, { priority: 1 }]);
+    writeFields(deps, "stderr", [
+      ["Wallets moving", n],
+      ["API key", `${shown.toKey.keyPrefix}${keyLabel}${shown.toKey.paused ? " (paused)" : ""}`],
+      ["Candle account", accountLine],
+      ["API", apiUrl],
+      ["Environment", environment]
+    ]);
+    if (shown.unchanged.length > 0)
+      notice(deps, "stderr", "note", `${shown.unchanged.length} already bound to this key: ${shown.unchanged.map((row) => row.label ?? row.address).join(", ")}`);
+    for (const warning of rebindCapWarnings(shown.toKey, moving))
+      notice(deps, "stderr", "warning", warning);
+    const launch = launchWarning(shown.toKey.keyPrefix, shown.toKey, moving);
+    if (launch)
+      notice(deps, "stderr", "warning", launch);
+    for (const line of ownerSection)
+      notice(deps, "stderr", "warning", line);
+  }
   const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to move ${n === 1 ? "this wallet" : `these ${n} wallets`}: `);
   if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
     writeLocalFailure(deps, {
@@ -37348,9 +37433,17 @@ async function teeRebind(args, ctx) {
   }
   const auditIds = result.rebound.map((row) => row.auditId).filter((id) => typeof id === "string");
   const owners = result.ownerChange;
-  deps.stdout.write(`Moved ${result.rebound.length} wallet${result.rebound.length === 1 ? "" : "s"} to ${result.toKey.keyPrefix}.` + `${auditIds.length > 0 ? ` Audit ids: ${auditIds.join(", ")}` : ""}
-` + (owners && targetSigner !== null ? `Owner: key ${result.toKey.keyPrefix}'s signer ${targetSigner.fingerprint} (${owners.forwarded?.length ?? 0} changed, ${owners.alreadyOwned?.length ?? 0} already there).
-` : ""));
+  writeFields(deps, "stdout", [
+    ["Wallets moved", result.rebound.length],
+    ["To key", result.toKey.keyPrefix],
+    ["Audit ids", auditIds.join(", ")],
+    [
+      "Owner",
+      owners && targetSigner !== null ? `key ${result.toKey.keyPrefix} signer ${targetSigner.fingerprint}` : undefined
+    ],
+    ["Owners changed", owners?.forwarded?.length],
+    ["Owners already there", owners?.alreadyOwned?.length]
+  ]);
   return 0;
 }
 async function teeRebinds(args, ctx) {
@@ -37391,22 +37484,35 @@ async function teeRebinds(args, ctx) {
   }
   const rows = body.rebinds ?? [];
   if (rows.length === 0) {
-    deps.stdout.write(`No rebinds on this account${walletId ? ` for ${walletId}` : ""}.
-`);
+    notice(deps, "stdout", "note", `No rebinds on this account${walletId ? ` for ${walletId}` : ""}.
+`.trim());
     return 0;
   }
   deps.stdout.write(`${renderTable(["Time", "Wallet", "From", "To", "Actor", "Device"], rows.map((row) => [
-    formatTimestamp(row.at),
+    formatTime(row.at),
     row.address,
     row.fromKeyPrefix,
     row.toKeyPrefix,
     row.actor,
     row.actorDevicePrefix ?? ""
-  ]))}
+  ]), {
+    style: terminalStyle(deps, "stdout"),
+    width: terminalStyle(deps, "stdout").width,
+    indent: 2,
+    rule: false,
+    columns: [
+      { priority: 2 },
+      { id: true },
+      { id: true },
+      { id: true },
+      { priority: 1 },
+      { id: true, priority: 3 }
+    ]
+  })}
 `);
   if (rows.some((row) => row.actor === "device"))
-    deps.stdout.write(`${PORTAL_REVOKE_LINE}
-`);
+    notice(deps, "stdout", "note", `${PORTAL_REVOKE_LINE}
+`.trim());
   return 0;
 }
 var REBIND_PATH = "/api/v1/agent/tee-wallets/rebind", REBINDS_PATH = "/api/v1/agent/tee-wallets/rebinds", KEYS_PATH = "/api/v1/agent/keys", USAGE_REBIND = "Usage: candle tee rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>] [--json]", USAGE_REBINDS = "Usage: candle tee rebinds [wallet] [--json]", DEVICE_TOKEN_REQUIRED, KEY_PREFIX_RE2, REBIND_NOTHING_PINNED = "Nothing was signed, nothing moved and nothing was pinned.", RELAY_SIGNER_LINE = "The relay signer does not move: trade these wallets from the machine that promoted them.", PORTAL_REVOKE_LINE = "A device token cannot revoke devices: revoke a device you do not recognise from the portal, with a signed-in session.";
@@ -37414,7 +37520,9 @@ var init_tee_rebind = __esm(() => {
   init_args();
   init_client();
   init_deps();
+  init_human_output();
   init_key_signers();
+  init_presentation();
   init_profiles();
   init_render();
   init_secret_store();
@@ -37472,9 +37580,9 @@ async function confirmCreateAllow(ctx) {
     return 1;
   }
   if (json)
-    deps.stderr.write(`This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.
+    notice(deps, "stderr", "warning", (`This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.
 ` + `A key that only trades its own TEE wallets does not need it.
-`);
+`).trim());
   else
     notice(deps, "stderr", "warning", `This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.
 A key that only trades its own TEE wallets does not need it.`);
@@ -80727,7 +80835,7 @@ async function imageUpload(args, ctx) {
       return 1;
     }
     if (ctx.json)
-      ctx.deps.stderr.write(uploadNotice(image));
+      notice(ctx.deps, "stderr", "note", uploadNotice(image).trim());
     else
       notice(ctx.deps, "stderr", "warning", uploadNotice(image).trimEnd());
     const banner = parsed.booleans.has("--banner");
@@ -82291,8 +82399,8 @@ async function teeSignerNew(args, ctx) {
   }
   if (await resolveDeviceToken(deps, ctx.profile) !== undefined)
     if (json) {
-      deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}
-`);
+      notice(deps, "stderr", "warning", `${DEVICE_TOKEN_BESIDE_SIGNER_LINE}
+`.trim());
     } else {
       notice(deps, "stderr", "warning", DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, ""));
     }
@@ -82340,8 +82448,8 @@ async function teeSignerNew(args, ctx) {
     if (active !== null) {
       replaces = { fingerprint: active.fingerprint, wallets: view.wallets.onSigner.length };
       if (json) {
-        deps.stderr.write(`Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
-`);
+        notice(deps, "stderr", "warning", `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
+`.trim());
       } else {
         notice(deps, "stderr", "warning", `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
 `.trimEnd());
@@ -82384,8 +82492,8 @@ async function teeSignerNew(args, ctx) {
     writeScreenFailure(deps, requested, { apiUrl: ctx.apiUrl, authType: "key" }, json);
     if (!json)
       if (json) {
-        deps.stderr.write(`The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.
-`);
+        notice(deps, "stderr", "note", `The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.
+`.trim());
       } else {
         notice(deps, "stderr", "note", `The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.
 `.trimEnd());
@@ -82395,8 +82503,8 @@ async function teeSignerNew(args, ctx) {
   const body = requested.body;
   if (body.supersededPending)
     if (json) {
-      deps.stderr.write(`An earlier pending request for this key was cancelled.
-`);
+      notice(deps, "stderr", "note", `An earlier pending request for this key was cancelled.
+`.trim());
     } else {
       notice(deps, "stderr", "warning", `An earlier pending request for this key was cancelled.
 `.trimEnd());
@@ -82409,18 +82517,16 @@ async function teeSignerNew(args, ctx) {
     return 1;
   }
   if (json) {
-    deps.stderr.write(`${[
-      `Key signer for key ${keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel ?? undefined)})` : ""}${resumed ? ", resumed" : ""}`,
-      "",
-      `    ${entry.fingerprint}`,
-      "",
-      "The account owner approves it, typing this full fingerprint:",
-      `  open ${body.verificationUriComplete}`,
-      `  or, on the owner's machine: candle keys signer approve ${body.userCode} --key ${keyPrefix}`,
-      `The code expires at ${formatTimestamp(body.expiresAt)}. Waiting for approval...`
-    ].join(`
-`)}
-`);
+    writeFields(deps, "stderr", [
+      ["Key", keyPrefix],
+      ["Label", view.keyLabel ? labelCell(view.keyLabel) : undefined],
+      ["Request", resumed ? "resumed" : "new"],
+      ["Fingerprint", entry.fingerprint],
+      ["Open", body.verificationUriComplete],
+      ["Approve on owner machine", `candle keys signer approve ${body.userCode} --key ${keyPrefix}`],
+      ["Expires", formatTime(body.expiresAt)]
+    ], "Key signer request");
+    notice(deps, "stderr", "note", "The account owner approves it, typing this full fingerprint. Waiting for approval...");
   } else {
     writeFields(deps, "stderr", [
       ["Key", keyPrefix],
@@ -82473,8 +82579,8 @@ async function writeOut(ctx, out, entry) {
     return;
   await ctx.deps.writeFile(out, storedSignerToPem(stored));
   if (ctx.json) {
-    ctx.deps.stderr.write(`Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.
-`);
+    notice(ctx.deps, "stderr", "warning", `Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.
+`.trim());
   } else {
     notice(ctx.deps, "stderr", "warning", `Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.
 `.trimEnd());
@@ -82596,8 +82702,8 @@ async function keysSignerApprove(args, ctx) {
   }
   if ((await localKeySigners(deps, keyPrefix)).some((e) => e.spkiSha256 === pending.spkiSha256)) {
     if (json) {
-      deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}
-`);
+      notice(deps, "stderr", "warning", `${DEVICE_TOKEN_BESIDE_SIGNER_LINE}
+`.trim());
     } else {
       notice(deps, "stderr", "warning", DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, ""));
     }
@@ -82606,21 +82712,13 @@ async function keysSignerApprove(args, ctx) {
   const all = allSignerWallets(view);
   const onActive = active !== null ? view.wallets.onSigner.length : 0;
   if (json) {
-    deps.stderr.write(`${[
-      `Signer request for key ${keyPrefix}${view.keyLabel ? `  (${labelCell(view.keyLabel ?? undefined)})` : ""}`,
-      "",
-      `    ${pending.fingerprint}`,
-      "",
-      "Requested from a machine using this key. Compare the fingerprint with what that machine printed.",
-      `Wallets on this key: ${all.length}.`,
-      ...active !== null ? [`Approving replaces signer ${active.fingerprint} as this key's active signer.`] : [],
-      ...active !== null && onActive > 0 ? [
-        `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`
-      ] : [],
-      ""
-    ].join(`
-`)}
-`);
+    writeFields(deps, "stderr", [
+      ["Key", keyPrefix],
+      ["Label", view.keyLabel ? labelCell(view.keyLabel) : undefined],
+      ["Fingerprint", pending.fingerprint],
+      ["Wallets on this key", all.length]
+    ], "Signer request");
+    notice(deps, "stderr", "warning", `Requested from a machine using this key. Compare the fingerprint with what that machine printed.${active !== null ? ` Approving replaces signer ${active.fingerprint} as this key's active signer.` : ""}${active !== null && onActive > 0 ? ` ${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.` : ""}`);
   } else {
     writeFields(deps, "stderr", [
       ["Key", keyPrefix],
@@ -86256,6 +86354,8 @@ init_store();
 // src/commands/vault-new-key.ts
 init_args();
 init_evm_lite();
+init_human_output();
+init_presentation();
 init_ed255192();
 init_errors2();
 init_format();
@@ -86405,8 +86505,11 @@ async function vaultNewKey(args, ctx) {
         await verifyWrittenFromDisk(current, address, keyId, chain2);
         last = { address, keyId };
         if (!ctx.json && batchRequested)
-          deps.stdout.write(`${address}  ${label}  ${derivationPath}
-`);
+          writeFields(deps, "stdout", [
+            ["Address", address],
+            ["Label", label],
+            ["Derivation", derivationPath]
+          ]);
       }
     } catch (error) {
       reportPartialBatch(ctx, derived, batch.count);
@@ -86433,28 +86536,26 @@ async function vaultNewKey(args, ctx) {
       return 0;
     }
     if (batchRequested) {
-      deps.stdout.write(`${derived.length} key${derived.length === 1 ? "" : "s"} created under one unlock, each committed on its own and re-read from the vault and re-derived from its root.
-`);
+      writeSuccess(deps, "stdout", `${derived.length} key${derived.length === 1 ? "" : "s"} created under one unlock, each committed on its own and re-read from the vault and re-derived from its root.
+`.trim());
       return 0;
     }
-    deps.stdout.write(`${only.address}
-`);
-    deps.stdout.write(`  label       ${only.label}
-`);
-    deps.stdout.write(`  derivation  ${only.path}
-`);
-    deps.stdout.write(`  verified    re-read from the vault and re-derived from its root
-`);
+    writeFields(deps, "stdout", [
+      ["Address", only.address],
+      ["Label", only.label],
+      ["Derivation", only.path],
+      ["Verified", "re-read from the vault and re-derived from its root"]
+    ], "Key created");
     return 0;
   });
 }
 function reportPartialBatch(ctx, derived, requested) {
   if (requested <= 1 || derived.length === 0)
     return;
-  ctx.deps.stderr.write(`
+  notice(ctx.deps, "stderr", "note", (`
 ${derived.length} of ${requested} keys were created and ARE in the vault; the vault is intact and its counter is past them.
 ` + `Re-run for the remaining ${requested - derived.length}${derived.length > 0 ? " (with a --labels-from file holding the names that did not land)" : ""}.
-`);
+`).trim());
 }
 function plannedLabels(hd, batch, labelFlag, branch = "solanaVault") {
   const labels = [];
@@ -87572,6 +87673,7 @@ init_args();
 init_client();
 init_evm_lite();
 init_hood_legs();
+init_human_output();
 import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/launch-bundle.ts
@@ -87857,6 +87959,7 @@ async function launchCheck(ctx, key, walletFlag, requestedChain) {
 }
 
 // src/commands/launch.ts
+init_presentation();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
@@ -88082,8 +88185,8 @@ async function launch(args, ctx) {
         if (!atomicRetryable(prior, local))
           return resumeAtomicLaunch(ctx, id, local, prior);
         retry = { imageUrl: local.imageUrl, bannerUrl: local.bannerUrl };
-        ctx.deps.stderr.write(`Bundle ${safeText(local.bundleId)} was never sent or did not land; building launch ${id} again under the same id.
-`);
+        notice(ctx.deps, "stderr", "warning", `Bundle ${safeText(local.bundleId)} was never sent or did not land; building launch ${id} again under the same id.
+`.trim());
       } else {
         if (local?.operationId && !settled)
           return await resumeHoodLaunch(ctx, key, id, local.operationId, prior);
@@ -88151,8 +88254,7 @@ async function launch(args, ctx) {
       });
     if (!await claimOperation(ctx, key, id, "launch"))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
-    ctx.deps.stderr.write(`Operation: ${id}
-`);
+    writeFields(ctx.deps, "stderr", [["Operation", id]]);
     const built = launchBuildSchema.parse(await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody({ flags, id, wallet: wallet3, buy, imageUrl, bannerUrl })).catch((error) => {
       throw buyRefusal(error);
     }));
@@ -88168,7 +88270,7 @@ async function launch(args, ctx) {
       maxDebitLamports: built.maxDebitLamports,
       tokenRisks: []
     };
-    ctx.deps.stderr.write(buyNotice(buy, "solana"));
+    notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim());
     if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
       return printTradingResult(ctx, {
         success: true,
@@ -88206,12 +88308,12 @@ async function uploadLaunchImages(ctx, key, args) {
   if (image && retry?.imageUrl)
     imageUrl = retry.imageUrl;
   else if (image) {
-    ctx.deps.stderr.write(uploadNotice(image));
+    notice(ctx.deps, "stderr", "note", uploadNotice(image).trim());
     try {
       imageUrl = await uploadImage(ctx, key, image);
     } catch (error) {
-      ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.
-`);
+      notice(ctx.deps, "stderr", "note", `The launch was not started, and its id ${id} is unused.
+`.trim());
       return tradingFailure(ctx, error);
     }
     ctx.deps.stderr.write(`Image: ${safeText(imageUrl)}
@@ -88219,12 +88321,12 @@ async function uploadLaunchImages(ctx, key, args) {
   }
   let bannerUrl = retry ? retry.bannerUrl : flags["--banner"]?.startsWith("https://") ? flags["--banner"] : undefined;
   if (banner && !retry) {
-    ctx.deps.stderr.write(uploadNotice(banner));
+    notice(ctx.deps, "stderr", "note", uploadNotice(banner).trim());
     try {
       bannerUrl = await uploadImage(ctx, key, banner, "banner");
     } catch (error) {
-      ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.
-`);
+      notice(ctx.deps, "stderr", "note", `The launch was not started, and its id ${id} is unused.
+`.trim());
       return tradingFailure(ctx, error);
     }
     ctx.deps.stderr.write(`Banner: ${safeText(bannerUrl)}
@@ -88394,8 +88496,7 @@ async function atomicLaunch(ctx, key, args) {
   const { flags, id, wallet: wallet3, buy } = args;
   if (!args.retry && !await claimOperation(ctx, key, id, "launch"))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
-  ctx.deps.stderr.write(`Operation: ${id}
-`);
+  writeFields(ctx.deps, "stderr", [["Operation", id]]);
   const built = atomicBuildSchema.parse(await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody(args)).catch((error) => {
     throw buyRefusal(error);
   }));
@@ -88438,10 +88539,10 @@ async function atomicLaunch(ctx, key, args) {
     ...args.bannerUrl ? { bannerUrl: args.bannerUrl } : {},
     outcome: "unsigned"
   });
-  ctx.deps.stderr.write(buyNotice(buy, "solana"));
+  notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim());
   if (!await confirmQuote(ctx, quote, args.yes)) {
-    ctx.deps.stderr.write(`Nothing was signed. Candle holds bundle ${safeText(built.bundleId)}'s spend reservation until the build expires at ${new Date(built.expiresAt).toISOString()}.
-`);
+    notice(ctx.deps, "stderr", "note", `Nothing was signed. Candle holds bundle ${safeText(built.bundleId)}'s spend reservation until the build expires at ${new Date(built.expiresAt).toISOString()}.
+`.trim());
     return printTradingResult(ctx, {
       success: true,
       status: "cancelled",
@@ -88464,8 +88565,11 @@ async function atomicLaunch(ctx, key, args) {
     ...args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}
   };
   await saveOperationBundle(ctx, key, id, bundle);
-  ctx.deps.stderr.write(`Bundle: ${safeText(built.bundleId)} (launch ${signatures[0]}, first buy ${signatures[1]})
-`);
+  writeFields(ctx.deps, "stderr", [
+    ["Bundle", safeText(built.bundleId)],
+    ["Launch signature", signatures[0]],
+    ["First buy signature", signatures[1]]
+  ]);
   return await submitBundle(ctx, key, { id, bundle, signed, quote, used: args.used });
 }
 async function submitBundle(ctx, key, args) {
@@ -88494,8 +88598,11 @@ async function submitBundle(ctx, key, args) {
   if (outcome.data.status === "timeout")
     throw new TradingError("BUNDLE_UNRESOLVED", `Bundle ${safeText(bundleId)} is unresolved and may still land. Re-run with the same --client-trade-id ${id} to read its outcome; nothing is re-signed or re-sent. Never relaunch under a new id: that would be a second token.`, { exitCode: 3, details });
   const [launchSignature, buySignature] = outcome.data.signatures;
-  ctx.deps.stderr.write(`Launched ${safeText(outcome.data.mint)}. Launch signature: ${safeText(launchSignature)}. First buy signature: ${safeText(buySignature)}.
-`);
+  writeFields(ctx.deps, "stderr", [
+    ["Mint", safeText(outcome.data.mint)],
+    ["Launch signature", safeText(launchSignature)],
+    ["First buy signature", safeText(buySignature)]
+  ], "Launched");
   return printTradingResult(ctx, {
     ...outcome.data,
     success: true,
@@ -88596,8 +88703,8 @@ async function embeddedLaunch(ctx, key, args) {
       minimumReceived: `${fill.expectedFill.minAmountOutRaw} raw units of the new token (the first buy's floor; ${fill.supplyPct}% of the supply expected)`
     };
     if (preview.data.graduatesInBundle)
-      ctx.deps.stderr.write(`This first buy alone takes the new curve to graduation inside the bundle.
-`);
+      notice(ctx.deps, "stderr", "note", `This first buy alone takes the new curve to graduation inside the bundle.
+`.trim());
   } else {
     previewSchema.parse(answer2);
     if (buy)
@@ -88609,7 +88716,7 @@ async function embeddedLaunch(ctx, key, args) {
 `);
     return printTradingResult(ctx, { ...answer2, clientTradeId: id, kind: "launch", quote, ...used });
   }
-  ctx.deps.stderr.write(buyNotice(buy, chain2));
+  notice(ctx.deps, "stderr", "note", buyNotice(buy, chain2).trim());
   if (!await confirmQuote(ctx, quote, args.yes))
     return printTradingResult(ctx, {
       success: true,
@@ -88621,8 +88728,7 @@ async function embeddedLaunch(ctx, key, args) {
     });
   if (!args.retry && !await claimOperation(ctx, key, id, "launch"))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
-  ctx.deps.stderr.write(`Operation: ${id}
-`);
+  writeFields(ctx.deps, "stderr", [["Operation", id]]);
   const result = await apiRequest("/api/v1/launch/headless", {
     apiUrl: ctx.apiUrl,
     credentials: { apiKey: key },
@@ -88656,8 +88762,7 @@ async function hoodLaunch(ctx, key, args) {
   const allowedLegs = buy ? HOOD_LAUNCH_BUY_LEGS : HOOD_LAUNCH_LEGS;
   if (!await claimOperation(ctx, key, id, "launch"))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
-  ctx.deps.stderr.write(`Operation: ${id}
-`);
+  writeFields(ctx.deps, "stderr", [["Operation", id]]);
   const built = await request(ctx, key, "/api/v1/launch/self/build", hoodBody(args)).catch((error) => {
     throw buyRefusal(error);
   });
@@ -88689,10 +88794,10 @@ async function hoodLaunch(ctx, key, args) {
   const feeCap = buy && first.plannedLegCount === 3 ? launchFeeCap(buy.raw) : undefined;
   if (feeCap !== undefined)
     quote.candleFee = `at most ${formatUnits(feeCap, 18)} ETH (the tier fee on the first buy, never above ${Number(LAUNCH_FEE_MAX_BPS) / 100}% of it)`;
-  ctx.deps.stderr.write(buyNotice(buy, "hood"));
+  notice(ctx.deps, "stderr", "note", buyNotice(buy, "hood").trim());
   if (!await confirmQuote(ctx, quote, args.yes)) {
-    ctx.deps.stderr.write(`Nothing was signed. Operation ${first.operationId} holds this wallet until ${new Date(first.expiresAt).toISOString()}; a new Hood operation from it is refused as WALLET_BUSY until then.
-`);
+    notice(ctx.deps, "stderr", "note", `Nothing was signed. Operation ${first.operationId} holds this wallet until ${new Date(first.expiresAt).toISOString()}; a new Hood operation from it is refused as WALLET_BUSY until then.
+`.trim());
     return printTradingResult(ctx, {
       success: true,
       status: "cancelled",
@@ -88811,12 +88916,59 @@ async function resumeHoodLaunch(ctx, key, id, operationId, prior) {
 // src/commands/lp.ts
 init_args();
 init_client();
+init_human_output();
+init_presentation();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
 init_trading();
-init_swap();
 import { randomUUID as randomUUID6 } from "node:crypto";
+
+// src/usd.ts
+init_render();
+var COMPACT_UNITS = [
+  [1000000000000, "T"],
+  [1e9, "B"],
+  [1e6, "M"]
+];
+function formatUsd(value, options = {}) {
+  if (!Number.isFinite(value))
+    return "?";
+  const sign4 = value < 0 ? "-" : options.signed && value > 0 ? "+" : "";
+  const abs = Math.abs(value);
+  if (abs > 0 && abs < 0.005)
+    return `${sign4}<$0.01`;
+  if (options.compact) {
+    for (const [unit, suffix] of COMPACT_UNITS) {
+      if (Math.round(abs / (unit / 100)) >= 100)
+        return `${sign4}$${(abs / unit).toFixed(2)}${suffix}`;
+    }
+  }
+  return `${sign4}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function formatPrice(value) {
+  if (!Number.isFinite(value) || value <= 0)
+    return "?";
+  if (value >= 1)
+    return formatUsd(value);
+  return `$${Number(value.toPrecision(4)).toLocaleString("en-US", { maximumFractionDigits: 12 })}`;
+}
+function formatAmount(raw, decimals) {
+  const digits = BigInt(raw).toString().padStart(decimals + 1, "0");
+  if (decimals === 0)
+    return digits;
+  const whole = digits.slice(0, -decimals);
+  const fraction = digits.slice(-decimals).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+function formatQuantity(value) {
+  if (!Number.isFinite(value))
+    return "?";
+  return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
+}
+
+// src/commands/lp.ts
+init_swap();
 var LP_SCOPE = "lp:write";
 var CONFIRM_POLL_MS3 = 2000;
 var CONFIRM_MAX_POLLS3 = 45;
@@ -88880,15 +89032,21 @@ async function lpPools(args, ctx) {
 `);
       return 0;
     }
-    const usd = (value) => value === null || value === undefined ? "unavailable" : `$${value.toFixed(2)}`;
+    const usd = (value) => value === null || value === undefined ? "unavailable" : formatUsd(value);
     const pct = (value) => value === null || value === undefined ? "unavailable" : `${value.toFixed(2)}%`;
-    out.write(`DAMM v2 pools for ${token} (page ${pools.page} of ${pools.pages}):
-`);
+    writeFields(ctx.deps, "stdout", [
+      ["Token", token],
+      ["Page", `${pools.page} of ${pools.pages}`]
+    ], "DAMM v2 pools");
     for (const pool of pools.pools) {
-      out.write(`  ${safeText(pool.pool)}
-    pair ${pool.tokens.map(safeText).join(" / ")}
-    liquidity ${usd(pool.liquidityUsd)}, fee ${pct(pool.baseFeePercent)}, 24h volume ${usd(pool.volume24hUsd)}, est. yield ${pct(pool.estimatedAprPercent)} APR (indexed, not a quote)
-`);
+      writeFields(ctx.deps, "stdout", [
+        ["Pool", safeText(pool.pool)],
+        ["Pair", pool.tokens.map(safeText).join(" / ")],
+        ["Liquidity", usd(pool.liquidityUsd)],
+        ["Fee", pct(pool.baseFeePercent)],
+        ["24h volume", usd(pool.volume24hUsd)],
+        ["Estimated APR", `${pct(pool.estimatedAprPercent)} (indexed, not a quote)`]
+      ]);
     }
     return 0;
   } catch (error) {
@@ -88930,17 +89088,31 @@ async function lpPositions(args, ctx) {
     for (const wallet3 of report) {
       if (wallet3.positions.length === 0)
         continue;
-      out.write(`${wallet3.label ? `${safeText(wallet3.label)} ` : ""}(${wallet3.id}, ${safeText(wallet3.address)})
-`);
+      writeFields(ctx.deps, "stdout", [
+        ["Wallet", wallet3.id],
+        ["Label", wallet3.label ? safeText(wallet3.label) : undefined],
+        ["Address", safeText(wallet3.address)]
+      ]);
       for (const position of wallet3.positions) {
-        out.write(`  position ${safeText(position.position)} in pool ${safeText(position.pool)}
-`);
+        writeFields(ctx.deps, "stdout", [
+          ["Position", safeText(position.position)],
+          ["Pool", safeText(position.pool)]
+        ]);
         for (const token of position.tokens) {
-          out.write(`    ${amountLine({ mint: token.mint, raw: token.amountRaw, decimals: token.decimals })}, unclaimed fees ${decimalAmount(token.unclaimedFeesRaw, token.decimals)}${token.valueUsd === null || token.valueUsd === undefined ? "" : ` ($${token.valueUsd.toFixed(2)})`}
-`);
+          writeFields(ctx.deps, "stdout", [
+            ["Token", safeText(token.mint)],
+            ["Amount", decimalAmount(token.amountRaw, token.decimals)],
+            ["Unclaimed fees", decimalAmount(token.unclaimedFeesRaw, token.decimals)],
+            ["Value", token.valueUsd === null || token.valueUsd === undefined ? undefined : formatUsd(token.valueUsd)]
+          ]);
         }
-        out.write(`    value ${position.valueUsd === null || position.valueUsd === undefined ? "unpriced" : `$${position.valueUsd.toFixed(2)}`}${position.poolShare === undefined ? "" : `, ${(position.poolShare * 100).toFixed(4)}% of the pool`}
-`);
+        writeFields(ctx.deps, "stdout", [
+          [
+            "Position value",
+            position.valueUsd === null || position.valueUsd === undefined ? undefined : formatUsd(position.valueUsd)
+          ],
+          ["Pool share", position.poolShare === undefined ? undefined : `${(position.poolShare * 100).toFixed(4)}%`]
+        ]);
       }
     }
     return 0;
@@ -88990,31 +89162,30 @@ async function waitConfirmed(ctx, rpc, signature, id) {
   throw new TradingError("LP_CONFIRM_PENDING", `Transaction ${signature} was sent but not confirmed within ${CONFIRM_MAX_POLLS3 * CONFIRM_POLL_MS3 / 1000}s. Re-run the same command with --client-trade-id ${id}: it confirms the saved signature and sends nothing new.`);
 }
 async function confirmPreview(ctx, plan, built) {
-  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
-  output.write(`${safeText(plan.intent)}
-Payer: ${safeText(plan.wallet.address)}
-`);
-  output.write(`Pool: ${safeText(built.build.pool)}
-Position: ${safeText(built.build.position)}
-`);
+  writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+    ["Intent", safeText(plan.intent)],
+    ["Payer", safeText(plan.wallet.address)],
+    ["Pool", safeText(built.build.pool)],
+    ["Position", safeText(built.build.position)]
+  ]);
   const preview = built.preview;
   const amounts = preview?.amounts ?? [];
   if (amounts.length > 0) {
     const verb = plan.action === "add" ? "Deposit (maximum, at the pool's ratio)" : plan.action === "remove" ? "Withdraw (minimum)" : "Claim";
-    output.write(`${verb}: ${amounts.map(amountLine).join(" + ")}
-`);
+    writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", amounts.map((amount) => [verb, amountLine(amount)]));
   }
-  output.write(`Candle LP fee: ${safeText(preview?.candleFeeBps ?? 0)} bps
-`);
+  writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+    ["Candle LP fee", `${safeText(preview?.candleFeeBps ?? 0)} bps`]
+  ]);
   for (const warning of preview?.warnings ?? [])
-    output.write(`Warning: ${safeText(warning)}
-`);
+    notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", `Warning: ${safeText(warning)}
+`.trim());
   for (const risk of preview?.tokenRisks ?? [])
-    output.write(`Warning (${safeText(risk.mint)}): ${safeText(risk.message)}
-`);
+    notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", `Warning (${safeText(risk.mint)}): ${safeText(risk.message)}
+`.trim());
   if (built.replay)
-    output.write(`This client id was already built; the same artifact is shown again.
-`);
+    notice(ctx.deps, ctx.json ? "stderr" : "stdout", "note", `This client id was already built; the same artifact is shown again.
+`.trim());
   if (plan.yes)
     return true;
   if (!ctx.deps.isTTY.stdin)
@@ -89040,8 +89211,7 @@ async function runLpOperation(ctx, plan) {
     return confirm(local.signature, { resumed: true });
   if (!local && !await claimOperation(ctx, key, id, "lp"))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
-  ctx.deps.stderr.write(`Operation: ${id}
-`);
+  writeFields(ctx.deps, "stderr", [["Operation", id]]);
   const built = lpBuildSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/${action}/build`, {
     linkedWalletId: wallet3.id,
     clientTradeId: id,
@@ -89372,6 +89542,7 @@ init_args();
 init_bridge();
 init_client();
 init_evm_lite();
+init_human_output();
 import { randomUUID as randomUUID7, sign as sign4 } from "node:crypto";
 
 // src/hyperliquid.ts
@@ -91213,6 +91384,7 @@ function perpsHistoryLines(page, nextHint) {
 }
 
 // src/commands/perps.ts
+init_presentation();
 init_render();
 init_solana_verify();
 init_trading();
@@ -91221,6 +91393,7 @@ init_trading();
 init_args();
 init_client();
 init_deps();
+init_human_output();
 
 // src/hyperliquid-risk.ts
 var HYPERLIQUID_RISK_INFO_URLS2 = {
@@ -91981,51 +92154,6 @@ function isParsedClearinghouse2(value) {
 init_presentation();
 init_render();
 init_trading();
-
-// src/usd.ts
-init_render();
-var COMPACT_UNITS = [
-  [1000000000000, "T"],
-  [1e9, "B"],
-  [1e6, "M"]
-];
-function formatUsd(value, options = {}) {
-  if (!Number.isFinite(value))
-    return "?";
-  const sign4 = value < 0 ? "-" : options.signed && value > 0 ? "+" : "";
-  const abs = Math.abs(value);
-  if (abs > 0 && abs < 0.005)
-    return `${sign4}<$0.01`;
-  if (options.compact) {
-    for (const [unit, suffix] of COMPACT_UNITS) {
-      if (Math.round(abs / (unit / 100)) >= 100)
-        return `${sign4}$${(abs / unit).toFixed(2)}${suffix}`;
-    }
-  }
-  return `${sign4}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-function formatPrice(value) {
-  if (!Number.isFinite(value) || value <= 0)
-    return "?";
-  if (value >= 1)
-    return formatUsd(value);
-  return `$${Number(value.toPrecision(4)).toLocaleString("en-US", { maximumFractionDigits: 12 })}`;
-}
-function formatAmount(raw, decimals) {
-  const digits = BigInt(raw).toString().padStart(decimals + 1, "0");
-  if (decimals === 0)
-    return digits;
-  const whole = digits.slice(0, -decimals);
-  const fraction = digits.slice(-decimals).replace(/0+$/, "");
-  return fraction ? `${whole}.${fraction}` : whole;
-}
-function formatQuantity(value) {
-  if (!Number.isFinite(value))
-    return "?";
-  return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
-}
-
-// src/commands/perps-risk.ts
 init_keys();
 init_swap();
 init_tee_rebind();
@@ -92063,12 +92191,6 @@ function unknownFailure(report) {
   const message = report.reason === "PERPS_ACCOUNT_MODE" ? `Hyperliquid reports this account in ${safeText(report.mode)} mode, whose perps margin clearinghouseState does not describe. No level was computed.` : report.reason === "PERPS_READ_STALE" ? "The Hyperliquid reads completed more than 30 s apart. No level was computed; run it again." : "Hyperliquid could not be read. No level was computed.";
   return new TradingError(report.reason ?? "PERPS_READ_FAILED", message, { details: { report } });
 }
-var usd = (value) => {
-  if (value === null || value === undefined)
-    return "-";
-  const n = Number(value);
-  return Number.isFinite(n) ? n.toFixed(2) : safeText(value);
-};
 var pct = (fraction) => fraction === null ? "-" : `${(fraction * 100).toFixed(1)}%`;
 function signedPct(fraction, missing) {
   if (fraction === null || !Number.isFinite(fraction))
@@ -92104,8 +92226,19 @@ function levelCell(row) {
     return "n/a";
   return row.liquidationPx === null ? "ok" : "n/a";
 }
-function accountText(line) {
-  return `Account value ${usd(line.accountValueUsd)} USD (cross ${usd(line.crossAccountValueUsd)}), margin used ${usd(line.marginUsedUsd)}, free margin ${usd(line.freeMarginUsd)}, withdrawable ${usd(line.withdrawableUsd)}, margin ratio ${line.marginRatio === null ? "none (no cross equity)" : line.marginRatio.toFixed(4)}, unrealized ${usd(line.unrealizedPnlUsd)}, ${line.positionCount} ${line.positionCount === 1 ? "position" : "positions"}, ${safeText(line.mode)} mode`;
+function writeAccountFields(ctx, line) {
+  const missing = symbols(terminalStyle(ctx.deps, "stdout")).missing;
+  writeFields(ctx.deps, "stdout", [
+    ["Account value", usdField(line.accountValueUsd, missing)],
+    ["Cross account value", usdField(line.crossAccountValueUsd, missing)],
+    ["Margin used", usdField(line.marginUsedUsd, missing)],
+    ["Free margin", usdField(line.freeMarginUsd, missing)],
+    ["Withdrawable", usdField(line.withdrawableUsd, missing)],
+    ["Margin ratio", line.marginRatio === null ? "none (no cross equity)" : line.marginRatio.toFixed(4)],
+    ["Unrealized", usdField(line.unrealizedPnlUsd, missing, true)],
+    ["Positions", line.positionCount],
+    ["Mode", safeText(line.mode)]
+  ]);
 }
 function usdField(value, missing, signed = false) {
   if (value === null || value === undefined || value === "")
@@ -92170,43 +92303,19 @@ function riskPositionsTable(rows, style) {
     ]
   });
 }
-function positionsTable(rows) {
-  if (rows.length === 0)
-    return "No open positions.";
-  return renderTable([
-    "COIN",
-    "SIDE",
-    "SIZE",
-    "ENTRY",
-    "MARK",
-    "UPNL",
-    "ROE",
-    "LEV",
-    "LIQ",
-    "DIST",
-    "FUNDING PAID",
-    "MARGIN",
-    "VALUE",
-    "LEVEL"
-  ], rows.map((r) => [
-    r.coin,
-    r.side,
-    r.size,
-    r.entryPx,
-    r.markPx ?? "no mark",
-    usd(r.unrealizedPnlUsd),
-    pct(Number(r.returnOnEquity)),
-    `${r.leverage.value}x ${r.leverage.type}`,
-    r.liquidationPx ?? "none",
-    pct(r.liquidationDistance),
-    usd(r.fundingSinceOpenUsd),
-    usd(r.marginUsedUsd),
-    usd(r.positionValueUsd),
-    levelCell(r)
-  ].map((cell) => safeText(cell))));
-}
-function thresholdsText(t) {
-  return `Thresholds (${t.source}): warn under ${(t.warnDistanceBps / 100).toFixed(1)}% or ratio above ${(t.warnMarginRatioBps / 1e4).toFixed(2)}; critical under ${(t.criticalDistanceBps / 100).toFixed(1)}% or above ${(t.criticalMarginRatioBps / 1e4).toFixed(2)}; clear band ${(t.clearBandBps / 100).toFixed(1)} points`;
+function writeThresholds(ctx, t) {
+  writeFields(ctx.deps, "stdout", [
+    ["Source", t.source],
+    [
+      "Warn",
+      `under ${(t.warnDistanceBps / 100).toFixed(1)}% or ratio above ${(t.warnMarginRatioBps / 1e4).toFixed(2)}`
+    ],
+    [
+      "Critical",
+      `under ${(t.criticalDistanceBps / 100).toFixed(1)}% or above ${(t.criticalMarginRatioBps / 1e4).toFixed(2)}`
+    ],
+    ["Clear band", `${(t.clearBandBps / 100).toFixed(1)} points`]
+  ], "Thresholds");
 }
 var NO_MONITOR = "Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch.";
 function writeRiskText(ctx, report) {
@@ -92358,21 +92467,30 @@ async function perpsAccount(args, ctx) {
   }
 }
 function writeAccountText(ctx, account, report) {
-  const out = ctx.deps.stdout;
-  out.write(`${safeText(account.address)} on Hyperliquid ${account.network}, read ${account.readAt}
-`);
+  writeFields(ctx.deps, "stdout", [
+    ["Address", safeText(account.address)],
+    ["Hyperliquid network", account.network],
+    ["Read at", formatTime(account.readAt)]
+  ]);
   if (report.account)
-    out.write(`${accountText(report.account)}
-`);
+    writeAccountFields(ctx, report.account);
   else
-    out.write(`No account figures: ${safeText(report.reason)}.
-`);
+    notice(ctx.deps, "stdout", "warning", `No account figures: ${safeText(report.reason)}.
+`.trim());
   const r = account.recent;
   const hours = Math.round((r.endTime - r.startTime) / 3600000);
-  out.write(`Last ${hours} h (main perps): realized ${usd(r.realizedPnlUsd)}, fees ${usd(r.feesUsd)}, funding ${usd(r.fundingUsd)} (positive received); ${r.fills} fills, ${r.fundingPayments} funding payments${r.truncated ? "; Hyperliquid's response cap was hit, so these are partial" : ""}
-`);
-  out.write(`${riskLine(report)}
-`);
+  writeFields(ctx.deps, "stdout", [
+    ["Window", `last ${hours} h (main perps)`],
+    ["Realized", formatUsd(Number(r.realizedPnlUsd), { signed: true })],
+    ["Fees", formatUsd(Number(r.feesUsd))],
+    ["Funding", `${formatUsd(Number(r.fundingUsd), { signed: true })} (positive received)`],
+    ["Fills", r.fills],
+    ["Funding payments", r.fundingPayments]
+  ]);
+  if (r.truncated)
+    notice(ctx.deps, "stdout", "warning", "Hyperliquid's response cap was hit, so these are partial.");
+  notice(ctx.deps, "stdout", "note", `${riskLine(report)}
+`.trim());
 }
 async function positionsAdditions2(ctx, key, row) {
   const thresholds2 = await perpsThresholdsFor(ctx, key);
@@ -92406,14 +92524,12 @@ async function positionsAdditions2(ctx, key, row) {
   return { rows: positions, accountLine: report.account, risk };
 }
 function writePositionsText(ctx, additions) {
-  const out = ctx.deps.stdout;
-  out.write(`${positionsTable(additions.rows)}
+  ctx.deps.stdout.write(`${riskPositionsTable(additions.rows, terminalStyle(ctx.deps, "stdout"))}
 `);
   if (additions.accountLine)
-    out.write(`${accountText(additions.accountLine)}
-`);
-  out.write(`${riskLine(additions.risk)}
-`);
+    writeAccountFields(ctx, additions.accountLine);
+  notice(ctx.deps, "stdout", "note", `${riskLine(additions.risk)}
+`.trim());
 }
 var WATCH_USAGE = "Usage: candle perps watch [--wallet <tee>] [--interval <seconds>] [--heartbeat <seconds>] [--on-warn <command>] [--on-critical <command>] [--once-level-change]";
 var HOOK_TIMEOUT_MS = 30000;
@@ -92538,11 +92654,11 @@ async function perpsThresholds(args, ctx) {
 `);
       return 0;
     }
-    ctx.deps.stdout.write(`${thresholdsText(thresholds2)}
-`);
-    ctx.deps.stdout.write(stored && Object.keys(stored).length > 0 ? `Stored on this key: ${Object.entries(stored).map(([field, value]) => `${field} ${value}`).join(", ")}
-` : `Nothing stored on this key; the defaults apply.
-`);
+    writeThresholds(ctx, thresholds2);
+    if (stored && Object.keys(stored).length > 0)
+      writeFields(ctx.deps, "stdout", Object.entries(stored).map(([field, value]) => [field, value]), "Stored on this key");
+    else
+      notice(ctx.deps, "stdout", "note", "Nothing stored on this key; the defaults apply.");
     return 0;
   } catch (error) {
     return tradingFailure(ctx, error);
@@ -92638,8 +92754,8 @@ async function thresholdsWrite(verb, args, ctx) {
     return 0;
   }
   const effective = { ...HYPERLIQUID_RISK_DEFAULTS2, ...answer2.effective ?? {} };
-  ctx.deps.stdout.write(`${verb === "clear" ? "Cleared" : "Stored"} on key ${safeText(answer2.keyPrefix ?? keyPrefix)}. ${thresholdsText({ ...effective, source: answer2.perpsRisk ? "key" : "defaults" })}
-`);
+  writeSuccess(ctx.deps, "stdout", `${verb === "clear" ? "Cleared" : "Stored"} on key ${safeText(answer2.keyPrefix ?? keyPrefix)}.`);
+  writeThresholds(ctx, { ...effective, source: answer2.perpsRisk ? "key" : "defaults" });
   return 0;
 }
 
@@ -92746,15 +92862,16 @@ function previewLines2(build) {
   return [...lines, ...notes];
 }
 async function confirm(ctx, build, address, yes) {
-  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
-  output.write(`Hyperliquid account: ${safeText(address)} (${safeText(build.network)})
-`);
+  writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+    ["Hyperliquid account", safeText(address)],
+    ["Network", safeText(build.network)]
+  ]);
   if (ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER !== undefined)
-    output.write(`Builder trust override: ${builderPin2(ctx)} (replaces this release's pin).
-`);
+    notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", `Builder trust override: ${builderPin2(ctx)} (replaces this release's pin).
+`.trim());
   for (const line of previewLines2(build))
-    output.write(`${line}
-`);
+    notice(ctx.deps, ctx.json ? "stderr" : "stdout", "note", `${line}
+`.trim());
   if (yes)
     return true;
   if (!ctx.deps.isTTY.stdin)
@@ -92816,8 +92933,8 @@ async function runPerpsWrite(ctx, opts) {
   if (build.replayed === true) {
     if (clientId2 === undefined || build.clientId !== clientId2 || build.walletId !== wallet3.id)
       throw new TradingError("PERPS_BUILD_REFUSED", "Refused a replay that does not name this request's client id and wallet. Nothing was signed.");
-    ctx.deps.stderr.write(`Client id ${clientId2} already names order ${safeText(build.perpOrderId)} (${safeText(build.status)}${build.venueStatus ? `, ${safeText(build.venueStatus)} on Hyperliquid` : ""}). Nothing was signed or sent; use a new --client-id for a new order.
-`);
+    notice(ctx.deps, "stderr", "note", `Client id ${clientId2} already names order ${safeText(build.perpOrderId)} (${safeText(build.status)}${build.venueStatus ? `, ${safeText(build.venueStatus)} on Hyperliquid` : ""}). Nothing was signed or sent; use a new --client-id for a new order.
+`.trim());
     return printTradingResult(ctx, build);
   }
   if (clientId2 !== undefined && (build.clientId !== clientId2 || build.cloid !== clientId2))
@@ -93129,16 +93246,25 @@ async function perpsPositions(args, ctx) {
     const additions = await positionsAdditions2(ctx, key, row);
     if (ctx.json)
       return printTradingResult(ctx, { ...result, ...additions });
-    const out = ctx.deps.stdout;
-    out.write(`${safeText(result.address)} (${safeText(result.network)}, ${safeText(result.mode)} mode)
-`);
+    writeFields(ctx.deps, "stdout", [
+      ["Address", safeText(result.address)],
+      ["Network", safeText(result.network)],
+      ["Mode", safeText(result.mode)]
+    ]);
     writePositionsText(ctx, additions);
     const open8 = Array.isArray(result.openWithdrawals) ? result.openWithdrawals : null;
-    out.write(`Withdrawable now: ${safeText(result.withdrawable)} USDC${open8 === null ? "" : open8.length === 0 ? "; no withdrawal in flight" : ""}.
-`);
+    writeFields(ctx.deps, "stdout", [
+      ["Withdrawable now", `${safeText(result.withdrawable)} USDC`],
+      ["Withdrawal in flight", open8 === null ? undefined : open8.length === 0 ? "none" : open8.length]
+    ]);
     for (const w of open8 ?? []) {
-      out.write(`  Withdrawal ${safeText(w.id)}: ${safeText(w.status)}, ${formatUsdcMicros(w.amountUsdcMicros)} USDC to ${safeText(w.to)} (candle perps withdraw status ${safeText(w.id)})
-`);
+      writeFields(ctx.deps, "stdout", [
+        ["Withdrawal", safeText(w.id)],
+        ["Status", safeText(w.status)],
+        ["Amount", `${formatUsdcMicros(w.amountUsdcMicros)} USDC`],
+        ["To", safeText(w.to)],
+        ["Check", `candle perps withdraw status ${safeText(w.id)}`]
+      ]);
     }
     return 0;
   } catch (error) {
@@ -93161,20 +93287,33 @@ async function perpsOrders(args, ctx) {
     const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/orders?${query}`);
     if (ctx.json)
       return printTradingResult(ctx, result);
-    const out = ctx.deps.stdout;
     const open8 = result.open ?? [];
-    out.write(`Open on Hyperliquid (${open8.length}):
-`);
+    writeFields(ctx.deps, "stdout", [["Orders", open8.length]], "Open on Hyperliquid");
     for (const o of open8) {
-      out.write(`  ${safeText(o.coin)} ${o.side === "B" ? "buy" : "sell"} ${safeText(o.sz)} at ${safeText(o.limitPx)}${o.reduceOnly ? " reduce-only" : ""}${o.isTrigger ? ` trigger ${safeText(o.triggerPx)}` : ""}, cloid ${safeText(o.cloid ?? "none")}
-`);
+      writeFields(ctx.deps, "stdout", [
+        ["Coin", safeText(o.coin)],
+        ["Side", o.side === "B" ? "buy" : "sell"],
+        ["Size", safeText(o.sz)],
+        ["Limit price", safeText(o.limitPx)],
+        ["Reduce only", o.reduceOnly ? "yes" : "no"],
+        ["Trigger", o.isTrigger ? safeText(o.triggerPx) : undefined],
+        ["Client order id", o.cloid ? safeText(o.cloid) : undefined]
+      ]);
     }
     const recorded = result.recorded ?? [];
-    out.write(`Built by Candle (${recorded.length}, newest first):
-`);
+    writeFields(ctx.deps, "stdout", [
+      ["Orders", recorded.length],
+      ["Order", "newest first"]
+    ], "Built by Candle");
     for (const r of recorded) {
-      out.write(`  ${safeText(r.kind)} ${safeText(r.coin ?? "")} ${safeText(r.status)}${r.venueStatus ? ` (${safeText(r.venueStatus)})` : ""}${r.cloid ? `, cloid ${safeText(r.cloid)}` : ""}${r.targetCloid ? `, target ${safeText(r.targetCloid)}` : ""}
-`);
+      writeFields(ctx.deps, "stdout", [
+        ["Kind", safeText(r.kind)],
+        ["Coin", r.coin ? safeText(r.coin) : undefined],
+        ["Status", safeText(r.status)],
+        ["Venue status", r.venueStatus ? safeText(r.venueStatus) : undefined],
+        ["Client order id", r.cloid ? safeText(r.cloid) : undefined],
+        ["Target client order id", r.targetCloid ? safeText(r.targetCloid) : undefined]
+      ]);
     }
     return 0;
   } catch (error) {
@@ -93228,8 +93367,8 @@ async function perpsHistory(kind, args, ctx) {
       return printTradingResult(ctx, page);
     const walletFlag = values["--wallet"] !== undefined ? ` --wallet ${values["--wallet"]}` : "";
     for (const line of perpsHistoryLines(page, (next) => `Next page: candle perps ${kind}${walletFlag} --cursor ${next}`))
-      ctx.deps.stdout.write(`${line}
-`);
+      notice(ctx.deps, "stdout", "note", `${line}
+`.trim());
     return 0;
   } catch (error) {
     if (error instanceof PerpsHistoryError2) {
@@ -93286,8 +93425,15 @@ async function perpsDepositStatus(ctx, id) {
   const job = result.job ?? {};
   const destination = job.destination ?? {};
   const relay2 = job.relay;
-  ctx.deps.stdout.write(`Deposit ${safeText(id)}: ${safeText(job.status)}${job.signature ? ` (${safeText(job.signature)})` : ""}, ${safeText(job.amountRaw)} raw ${safeText(job.asset)} to ${safeText(destination.address)} on Hyperliquid. Relay: ${relay2 ? safeText(relay2.status) : "not sent yet, or unknown"}.
-`);
+  writeFields(ctx.deps, "stdout", [
+    ["Deposit", safeText(id)],
+    ["Status", safeText(job.status)],
+    ["Signature", job.signature ? safeText(job.signature) : undefined],
+    ["Raw amount", safeText(job.amountRaw)],
+    ["Asset", safeText(job.asset)],
+    ["Hyperliquid account", safeText(destination.address)],
+    ["Relay", relay2 ? safeText(relay2.status) : undefined]
+  ]);
   return 0;
 }
 async function perpsDeposit(args, ctx) {
@@ -93333,8 +93479,7 @@ async function perpsDeposit(args, ctx) {
     }
     const amountRaw = rawAmount(amount, BRIDGE_ASSETS[asset].decimals);
     const noSubmit = parsed.booleans.has("--no-submit");
-    ctx.deps.stderr.write(`Deposit: ${id}
-`);
+    writeFields(ctx.deps, "stderr", [["Deposit", id]]);
     const build = await perpsRequest(ctx, key, "/api/v1/agent/perps/deposit", {
       clientDepositId: id,
       walletId: wallet3.id,
@@ -93407,25 +93552,32 @@ async function perpsDeposit(args, ctx) {
     const decimals = Number(build.outDecimals);
     const minimum = decimalAmount(String(build.minimumOutRaw), decimals);
     const estimate2 = decimalAmount(String(build.expectedOutRaw), decimals);
-    const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
-    output.write(`Deposit ${amount} ${asset} from ${safeText(wallet3.address)} (${origin === "hood" ? "Hood" : "Solana"} TEE wallet) to Hyperliquid account ${safeText(destination.address)} through Relay.
-`);
-    output.write(`Relay delivers at least ${minimum} USDC (estimate ${estimate2})${build.firstDeposit ? "; Hyperliquid keeps 1 USDC to activate this new account" : ""}. Candle fee: none.
-`);
-    output.write("To bring it back: candle perps withdraw <amount> --to solana|hood (perps:withdraw). `candle tee disable` and `tee sweep` do not reach it, so withdraw before disabling.\n");
+    writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+      ["Deposit", `${amount} ${asset}`],
+      ["From", safeText(wallet3.address)],
+      ["Origin", `${origin === "hood" ? "Hood" : "Solana"} TEE wallet`],
+      ["Hyperliquid account", safeText(destination.address)],
+      ["Route", "Relay"],
+      ["Minimum USDC", minimum],
+      ["Estimated USDC", estimate2],
+      ["Candle fee", "none"]
+    ]);
+    if (build.firstDeposit)
+      notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", "Hyperliquid keeps 1 USDC to activate this new account.");
+    notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", "To bring it back: candle perps withdraw <amount> --to solana|hood (perps:withdraw). `candle tee disable` and `tee sweep` do not reach it, so withdraw before disabling.\n".trim());
     if (sequenced)
-      output.write(`Legs, signed one at a time: ${sequenced.plannedLegCount === 2 ? "approval, bridgeDeposit" : "bridgeDeposit"}
-`);
+      writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+        ["Legs (signed one at a time)", sequenced.plannedLegCount === 2 ? "approval, bridgeDeposit" : "bridgeDeposit"]
+      ]);
     if (previewLegs)
-      output.write(`Legs, signed one at a time: ${previewLegs.join(", ")}
-`);
+      writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [["Legs (signed one at a time)", previewLegs.join(", ")]]);
     if (noSubmit) {
       if (preview)
-        ctx.deps.stderr.write(`Dry run: nothing was signed, no wallet is held and no limit was used; the same --id still builds a new deposit.
-`);
+        notice(ctx.deps, "stderr", "note", `Dry run: nothing was signed, no wallet is held and no limit was used; the same --id still builds a new deposit.
+`.trim());
       else
-        ctx.deps.stderr.write(`This server predates dry-run deposits and built this one for real. Nothing was signed, but ${sequenced ? `operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}, and ` : ""}the build counts against the key's limits until it expires.
-`);
+        notice(ctx.deps, "stderr", "note", `This server predates dry-run deposits and built this one for real. Nothing was signed, but ${sequenced ? `operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}, and ` : ""}the build counts against the key's limits until it expires.
+`.trim());
       return printTradingResult(ctx, { ...build, signed: false, submitted: false });
     }
     if (!parsed.booleans.has("--yes")) {
@@ -93433,8 +93585,8 @@ async function perpsDeposit(args, ctx) {
         throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.");
       if ((await ctx.deps.promptLine("Sign and send? [y/N] ")).trim().toLowerCase() !== "y") {
         if (sequenced)
-          ctx.deps.stderr.write(`Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}.
-`);
+          notice(ctx.deps, "stderr", "note", `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}.
+`.trim());
         throw new TradingError("CANCELLED", "Nothing was signed.");
       }
     }
@@ -93462,8 +93614,8 @@ async function perpsDeposit(args, ctx) {
         signedTransactionsBase64: [signed]
       });
     }
-    ctx.deps.stderr.write(`Deposit sent; Relay fills it on Hyperliquid. Check it with candle perps deposit status ${id}.
-`);
+    notice(ctx.deps, "stderr", "note", `Deposit sent; Relay fills it on Hyperliquid. Check it with candle perps deposit status ${id}.
+`.trim());
     return printTradingResult(ctx, {
       ...result,
       clientDepositId: id,
@@ -93480,6 +93632,7 @@ async function perpsDeposit(args, ctx) {
 init_args();
 init_client();
 init_deps();
+init_human_output();
 import { randomBytes as randomBytes10 } from "node:crypto";
 
 // src/hyperliquid-manage.ts
@@ -93934,6 +94087,7 @@ async function runPerpsFlatten2(io) {
 }
 
 // src/commands/perps-manage.ts
+init_presentation();
 init_render();
 init_trading();
 init_keys();
@@ -94057,7 +94211,6 @@ async function workflowIo(ctx, opts) {
     throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.");
   const builder = builderPin2(ctx);
   const reduceOnly = await perpsRequest(ctx, key, "/api/v1/agent/keys/self/perps-reduce-only").catch(() => null);
-  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
   return {
     network: perpsNetwork(ctx),
     walletId: wallet3.id,
@@ -94076,14 +94229,16 @@ async function workflowIo(ctx, opts) {
     },
     mode: !opts.submit ? "no-submit" : opts.signOnly ? "sign-only" : "submit",
     confirm: async (plan) => {
-      output.write(`Hyperliquid account: ${safeText(wallet3.address)} (${perpsNetwork(ctx)})
-`);
+      writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+        ["Hyperliquid account", safeText(wallet3.address)],
+        ["Network", perpsNetwork(ctx)]
+      ]);
       for (const step of plan.steps)
-        output.write(`  ${stepLine(step)}
-`);
+        notice(ctx.deps, ctx.json ? "stderr" : "stdout", "note", `  ${stepLine(step)}
+`.trim());
       for (const warning of plan.warnings)
-        output.write(`${safeText(warning)}
-`);
+        notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", `${safeText(warning)}
+`.trim());
       if (opts.yes)
         return true;
       if (!ctx.deps.isTTY.stdin)
@@ -94103,26 +94258,24 @@ function workflowExit(ctx, result, mode) {
     ctx.deps.stdout.write(`${JSON.stringify(result)}
 `);
   else {
-    const out = ctx.deps.stdout;
     for (const step of result.steps)
-      out.write(`${stepLine(step)}
-`);
+      notice(ctx.deps, "stdout", "note", `${stepLine(step)}
+`.trim());
     for (const warning of result.warnings)
-      out.write(`${safeText(warning)}
-`);
+      notice(ctx.deps, "stdout", "warning", `${safeText(warning)}
+`.trim());
     for (const leg of result.unowned ?? [])
-      out.write(`Not Candle's, left untouched: ${leg.leg} order ${leg.oid} at ${safeText(leg.triggerPx)}
-`);
+      notice(ctx.deps, "stdout", "note", `Not Candle's, left untouched: ${leg.leg} order ${leg.oid} at ${safeText(leg.triggerPx)}
+`.trim());
     if (mode !== "submit")
-      out.write(`Only the first step was built (and signed, with --sign-only); the rest is planned.
-`);
+      notice(ctx.deps, "stdout", "note", `Only the first step was built (and signed, with --sign-only); the rest is planned.
+`.trim());
     else if (result.complete)
-      out.write(result.operation === "flatten" ? `Main perps flat (an observed snapshot).
+      writeSuccess(ctx.deps, "stdout", (result.operation === "flatten" ? `Main perps flat (an observed snapshot).
 ` : `Done.
-`);
+`).trim());
     else
-      out.write(`Incomplete. Remaining: ${safeText(JSON.stringify(result.remaining))}
-`);
+      notice(ctx.deps, "stdout", "warning", `Incomplete. Remaining: ${safeText(JSON.stringify(result.remaining))}`);
   }
   if (unknown2)
     return 3;
@@ -94200,8 +94353,11 @@ async function perpsReduceOnly(args, ctx) {
       const answer3 = await perpsRequest(ctx, key, "/api/v1/agent/keys/self/perps-reduce-only");
       if (ctx.json)
         return printTradingResult(ctx, answer3);
-      ctx.deps.stdout.write(`Perps reduce-only on key ${safeText(answer3.keyPrefix)}: ${answer3.perpsReduceOnly === true ? "on" : "off"} (policy version ${safeText(answer3.perpsPolicyVersion)}).
-`);
+      writeFields(ctx.deps, "stdout", [
+        ["Key", safeText(answer3.keyPrefix)],
+        ["Perps reduce-only", answer3.perpsReduceOnly === true ? "on" : "off"],
+        ["Policy version", safeText(answer3.perpsPolicyVersion)]
+      ]);
       return 0;
     }
   } catch (error) {
@@ -94278,11 +94434,15 @@ async function perpsReduceOnly(args, ctx) {
   const answer2 = result.body;
   if (ctx.json)
     return printTradingResult(ctx, answer2);
-  ctx.deps.stdout.write(`Perps reduce-only on key ${safeText(answer2.keyPrefix)}: ${answer2.perpsReduceOnly === true ? "on" : "off"}${answer2.changed === false ? " (unchanged)" : ""} (policy version ${safeText(answer2.perpsPolicyVersion)}).
-`);
+  writeFields(ctx.deps, "stdout", [
+    ["Key", safeText(answer2.keyPrefix)],
+    ["Perps reduce-only", answer2.perpsReduceOnly === true ? "on" : "off"],
+    ["Changed", answer2.changed === false ? "no" : "yes"],
+    ["Policy version", safeText(answer2.perpsPolicyVersion)]
+  ]);
   for (const line of Array.isArray(answer2.limits) ? answer2.limits : [])
-    ctx.deps.stdout.write(`  ${safeText(line)}
-`);
+    notice(ctx.deps, "stdout", "note", `  ${safeText(line)}
+`.trim());
   return 0;
 }
 
@@ -94408,8 +94568,8 @@ async function read(ctx, argv, command) {
       return 0;
     }
     for (const warning of result.warnings)
-      ctx.deps.stderr.write(`${safeText(warning)}
-`);
+      notice(ctx.deps, "stderr", "note", `${safeText(warning)}
+`.trim());
     const out = (line) => ctx.deps.stdout.write(`${line}
 `);
     out(`Hyperliquid ${result.network}; OI floor $${result.gate.minOpenInterestUsd} (${result.gate.source}). Tradeability is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`);
@@ -94449,6 +94609,7 @@ var perpsCandles = (argv, ctx) => read(ctx, argv, "candles");
 
 // src/commands/perps-withdraw.ts
 init_args();
+init_human_output();
 import { randomUUID as randomUUID8 } from "node:crypto";
 
 // src/hyperliquid-withdraw.ts
@@ -94610,6 +94771,7 @@ function verifyWithdrawSendAsset(authorization, expect) {
 }
 
 // src/commands/perps-withdraw.ts
+init_presentation();
 init_render();
 init_trading();
 init_errors2();
@@ -94654,8 +94816,16 @@ async function withdrawStatus(ctx, id) {
     return printTradingResult(ctx, result);
   const to = result.to ?? {};
   const relay2 = result.relay;
-  ctx.deps.stdout.write(`Withdrawal ${safeText(id)}: ${safeText(result.status)}, ${safeText(result.amountUsdc)} USDC to ${safeText(to.address)} (${safeText(to.chain)}), fees ${safeText(result.feesUsdc)} USDC${result.failureReason ? `, ${safeText(result.failureReason)}` : ""}. Relay: ${relay2 ? safeText(relay2.status) : "not read"}.
-`);
+  writeFields(ctx.deps, "stdout", [
+    ["Withdrawal", safeText(id)],
+    ["Status", safeText(result.status)],
+    ["Amount", `${safeText(result.amountUsdc)} USDC`],
+    ["To", safeText(to.address)],
+    ["Chain", safeText(to.chain)],
+    ["Fees", `${safeText(result.feesUsdc)} USDC`],
+    ["Failure", result.failureReason ? safeText(result.failureReason) : undefined],
+    ["Relay", relay2 ? safeText(relay2.status) : undefined]
+  ]);
   return 0;
 }
 async function perpsWithdraw(args, ctx) {
@@ -94707,8 +94877,7 @@ async function perpsWithdraw(args, ctx) {
     const ownDestinations = to === "hood" ? [wallet3.address] : rows.filter((row) => row.chain === "solana").map((row) => row.address);
     if (ownDestinations.length === 0)
       throw new TradingError("TEE_WALLET_REQUIRED", "This key has no Solana TEE wallet, so --to solana has nowhere to land. Withdraw --to hood instead.");
-    ctx.deps.stderr.write(`Withdrawal: ${id}
-`);
+    writeFields(ctx.deps, "stderr", [["Withdrawal", id]]);
     const build = await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw", {
       clientWithdrawalId: id,
       amountUsdc: amount,
@@ -94728,19 +94897,20 @@ async function perpsWithdraw(args, ctx) {
     });
     if (!mapping.ok)
       throw refused2(mapping.reason);
-    const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
-    output.write(`Withdraw ${formatWithdrawAmount(amountMicros)} USDC from Hyperliquid account ${safeText(wallet3.address)} through Relay.
-`);
-    output.write(`Relay fees ${safeText(build.feesUsdc)} USDC; you receive about ${safeText(build.netUsdc)} USDC, at least ${safeText(build.minimumOutUsdc)}.
-`);
-    output.write(`To this key's ${to === "hood" ? "Hood" : "Solana"} TEE wallet:
-`);
-    output.write(`to   ${groupAddress(build.to.address)}
-`);
+    writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+      ["Withdraw", `${formatWithdrawAmount(amountMicros)} USDC`],
+      ["Hyperliquid account", safeText(wallet3.address)],
+      ["Route", "Relay"],
+      ["Relay fees", `${safeText(build.feesUsdc)} USDC`],
+      ["Estimated received", `${safeText(build.netUsdc)} USDC`],
+      ["Minimum received", `${safeText(build.minimumOutUsdc)} USDC`],
+      ["Destination", `this key's ${to === "hood" ? "Hood" : "Solana"} TEE wallet`],
+      ["To", groupAddress(build.to.address)]
+    ]);
     const positions = await perpsRequest(ctx, key, `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(wallet3.id)}`).catch(() => null);
     if (Array.isArray(positions?.positions) && positions.positions.length > 0)
-      output.write(`This account has open positions: withdrawing margin raises their liquidation risk.
-`);
+      notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", `This account has open positions: withdrawing margin raises their liquidation risk.
+`.trim());
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, resolvedVault.path, raw, {
       promptText: "Vault passphrase (input hidden): ",
@@ -94783,8 +94953,8 @@ async function perpsWithdraw(args, ctx) {
     const refusal2 = venueRefusal(exchange);
     if (refusal2)
       throw new TradingError("PERPS_VENUE_REFUSED", refusal2, { details: { clientWithdrawalId: id, exchange } });
-    ctx.deps.stderr.write(`Submitted to Hyperliquid; following Relay's fill.
-`);
+    notice(ctx.deps, "stderr", "note", `Submitted to Hyperliquid; following Relay's fill.
+`.trim());
     const deadline = ctx.deps.now() + WITHDRAW_POLL_MS;
     let status = await perpsRequest(ctx, key, `/api/v1/agent/perps/withdraw/${encodeURIComponent(id)}`);
     while (!TERMINAL.has(String(status.status)) && ctx.deps.now() < deadline) {
@@ -94792,8 +94962,8 @@ async function perpsWithdraw(args, ctx) {
       status = await perpsRequest(ctx, key, `/api/v1/agent/perps/withdraw/${encodeURIComponent(id)}`);
     }
     if (!TERMINAL.has(String(status.status)))
-      ctx.deps.stderr.write(`Still ${safeText(status.status)} after 10 minutes. Check it with candle perps withdraw status ${id}.
-`);
+      notice(ctx.deps, "stderr", "note", `Still ${safeText(status.status)} after 10 minutes. Check it with candle perps withdraw status ${id}.
+`.trim());
     return printTradingResult(ctx, { ...status, signature, exchange });
   } catch (error) {
     if (isVaultError(error))
@@ -95418,21 +95588,21 @@ ${financialHeading("Hyperliquid", style)}
   out.write(`${fields([["Network", section.network]], style).join(`
 `)}
 `);
-  const usd2 = (value) => formatUsd(value, { signed: true });
+  const usd = (value) => formatUsd(value, { signed: true });
   const rows = [
-    ["Realized gross", usd2(section.realizedGrossUsd), ""],
-    ["Funding", usd2(section.fundingUsd), "received positive, paid negative"],
+    ["Realized gross", usd(section.realizedGrossUsd), ""],
+    ["Funding", usd(section.fundingUsd), "received positive, paid negative"],
     ["Fees", formatUsd(section.feesUsd), "includes builder fees"],
-    ["Realized net", usd2(section.realizedNetUsd), "gross + funding - fees"]
+    ["Realized net", usd(section.realizedNetUsd), "gross + funding - fees"]
   ];
   const realizedOnly = typeof section.netUsd !== "string" || typeof section.unrealizedUsd !== "string";
   const wallets2 = Array.isArray(section.byWallet) ? section.byWallet : [];
   if (!realizedOnly) {
     const live = wallets2.some((w) => w.reconciliation === "live");
     const markedAt = typeof section.markedAt === "number" ? ` at ${time(section.markedAt)}` : "";
-    rows.push(["Unrealized", usd2(Number(section.unrealizedUsd)), `open positions${markedAt}`], [
+    rows.push(["Unrealized", usd(Number(section.unrealizedUsd)), `open positions${markedAt}`], [
       "Net",
-      usd2(Number(section.netUsd)),
+      usd(Number(section.netUsd)),
       `realized net + unrealized; in the total${live ? "; live, not yet settled" : ""}`
     ]);
   }
@@ -96052,15 +96222,15 @@ async function portfolio(args, ctx) {
     if (solana && vaultEntries && vaultEntries.length > 0) {
       await solana.disclose();
       const requests = Math.ceil(vaultEntries.length / CHUNK) + vaultEntries.length * 2;
-      deps.stderr.write(`Reading ${vaultEntries.length} vault ${vaultEntries.length === 1 ? "address" : "addresses"} from ${rpcHost} in ${requests} requests. That endpoint sees them together; Candle sees none of them.
-`);
+      notice(deps, "stderr", "note", `Reading ${vaultEntries.length} vault ${vaultEntries.length === 1 ? "address" : "addresses"} from ${rpcHost} in ${requests} requests. That endpoint sees them together; Candle sees none of them.
+`.trim());
     }
     let evmHost;
     if (evmRpc && evmEntries && evmEntries.length > 0) {
       evmHost = rpcHostOf2(evmRpc.url);
       const n = evmEntries.length;
-      deps.stderr.write(`Reading ETH and USDG for ${n} EVM vault ${n === 1 ? "address" : "addresses"} from ${evmHost}${evmRpc.builtIn ? " (the built-in Hood RPC)" : ""} in ${1 + 2 * n} requests. That endpoint sees them together; Candle sees none of them.
-`);
+      notice(deps, "stderr", "note", `Reading ETH and USDG for ${n} EVM vault ${n === 1 ? "address" : "addresses"} from ${evmHost}${evmRpc.builtIn ? " (the built-in Hood RPC)" : ""} in ${1 + 2 * n} requests. That endpoint sees them together; Candle sees none of them.
+`.trim());
     }
     const evmRead2 = evmRpc && evmEntries && evmEntries.length > 0 ? await startEvmRead(evmEntries.map((entry) => entry.address), evmRpc.url, deps.fetch) : undefined;
     const [candle, vaultRead, evmBalances] = await Promise.all([
@@ -96076,13 +96246,13 @@ async function portfolio(args, ctx) {
     ]);
     if (vaultRead?.failure !== undefined) {
       const n = vaultRead.unavailable.length;
-      deps.stderr.write(`${n} vault ${n === 1 ? "address" : "addresses"} could not be read: ${vaultRead.failure}.
-`);
+      notice(deps, "stderr", "warning", `${n} vault ${n === 1 ? "address" : "addresses"} could not be read: ${vaultRead.failure}.
+`.trim());
     }
     if (evmBalances?.failure !== undefined) {
       const n = evmBalances.unavailable.length;
-      deps.stderr.write(`${n} EVM vault ${n === 1 ? "address" : "addresses"} on Hood could not be read in full: ${terminalText(evmBalances.failure)}.
-`);
+      notice(deps, "stderr", "warning", `${n} EVM vault ${n === 1 ? "address" : "addresses"} on Hood could not be read in full: ${terminalText(evmBalances.failure)}.
+`.trim());
     }
     if (!candle.ok) {
       writeFailure(deps, candle, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
@@ -96102,8 +96272,8 @@ async function portfolio(args, ctx) {
       }));
       if (accounts.length > 0) {
         const n = Math.min(accounts.length, PERPS_PORTFOLIO_MAX_ACCOUNTS2);
-        deps.stderr.write(`Reading ${n} EVM TEE ${n === 1 ? "address" : "addresses"} from Hyperliquid's public API in ${n + 1} requests. Pass --no-perps to skip.
-`);
+        notice(deps, "stderr", "note", `Reading ${n} EVM TEE ${n === 1 ? "address" : "addresses"} from Hyperliquid's public API in ${n + 1} requests. Pass --no-perps to skip.
+`.trim());
       }
       perps = await perpsPortfolioSection2(deps.fetch, deps.env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet", accounts, { sleep: deps.sleep, now: deps.now });
     }
@@ -96159,8 +96329,8 @@ async function portfolio(args, ctx) {
       }
     }
     if (priceFailure !== undefined) {
-      deps.stderr.write(`Some vault holdings could not be priced: ${terminalText(priceFailure)}. They are shown as unpriced.
-`);
+      notice(deps, "stderr", "warning", `Some vault holdings could not be priced: ${terminalText(priceFailure)}. They are shown as unpriced.
+`.trim());
     }
     const lpSection = showSolana ? fromCandle.lp : undefined;
     const lpByWallet = new Map;
@@ -96316,10 +96486,10 @@ async function portfolio(args, ctx) {
       return complete ? 0 : 3;
     }
     if (matched) {
-      deps.stdout.write(matched.matched === 0 ? `No wallet matches "${terminalText(matched.filter)}". ${matched.wallets} ${matched.wallets === 1 ? "wallet" : "wallets"} on this account and vault; candle portfolio with no filter shows them.
+      notice(deps, "stdout", "note", (matched.matched === 0 ? `No wallet matches "${terminalText(matched.filter)}". ${matched.wallets} ${matched.wallets === 1 ? "wallet" : "wallets"} on this account and vault; candle portfolio with no filter shows them.
 ` : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.
 
-`);
+`).trim());
       if (matched.matched === 0) {
         writeListNote(ctx, listNote);
         return complete ? 0 : 3;
@@ -96951,8 +97121,8 @@ async function profileUse(args, ctx) {
   const envProfile = deps.env.CANDLE_PROFILE?.trim();
   if (envProfile && envProfile !== name2) {
     if (json)
-      deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.
-`);
+      notice(deps, "stderr", "note", `CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.
+`.trim());
     else
       notice(deps, "stderr", "warning", `CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.`);
   }
@@ -96968,15 +97138,15 @@ async function profileUse(args, ctx) {
       await deps.updateProfile(name2, { account: live, username: liveUsername, accountCachedAt: deps.now() });
     } else {
       if (json)
-        deps.stderr.write(`Could not refresh the account for ${name2} (${failure2}); keeping the cached value.
-`);
+        notice(deps, "stderr", "warning", `Could not refresh the account for ${name2} (${failure2}); keeping the cached value.
+`.trim());
       else
         notice(deps, "stderr", "warning", `Could not refresh the account for ${name2} (${failure2}); keeping the cached value.`);
     }
   } else {
     if (json)
-      deps.stderr.write(`No stored credentials for ${name2}. Run: candle auth login --profile ${name2}
-`);
+      notice(deps, "stderr", "note", `No stored credentials for ${name2}. Run: candle auth login --profile ${name2}
+`.trim());
     else
       notice(deps, "stderr", "warning", `No stored credentials for ${name2}. Run:
 candle auth login --profile ${name2}`);
@@ -97100,10 +97270,11 @@ async function quantTerms(args, ctx) {
     return 1;
   }
   if (ctx.json) {
-    ctx.deps.stderr.write(`Quant's terms (version ${version}): ${QUANT_TERMS_URL}
-`);
-    ctx.deps.stderr.write(`Privacy Policy: ${QUANT_PRIVACY_URL}
-`);
+    writeFields(ctx.deps, "stderr", [
+      ["Quant terms version", version],
+      ["Terms", QUANT_TERMS_URL],
+      ["Privacy policy", QUANT_PRIVACY_URL]
+    ]);
   } else {
     writeFields(ctx.deps, "stdout", [
       ["Version", version],
@@ -97158,6 +97329,8 @@ async function quantTerms(args, ctx) {
 }
 
 // src/commands/setup.ts
+init_human_output();
+init_presentation();
 init_args();
 init_client();
 init_deps();
@@ -97167,9 +97340,7 @@ init_render();
 var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
 var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
 function section(deps, title) {
-  deps.stdout.write(`
-${accent(`== ${title} ==`, terminalStyle(deps, "stdout"))}
-`);
+  writeHeading(deps, "stdout", title);
 }
 async function setup(args, ctx) {
   const { deps, apiUrl, json } = ctx;
@@ -97191,28 +97362,28 @@ async function setup(args, ctx) {
     deps.stdout.write(brandHeader(style).join(`
 `));
   await printIdentity(ctx);
-  deps.stdout.write(`candle setup: this wizard authorizes the device, shows funding, and verifies everything.
-`);
+  notice(deps, "stdout", "note", `candle setup: this wizard authorizes the device, shows funding, and verifies everything.
+`.trim());
   section(deps, "1/4 Authorize this device");
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   let nextCtx = ctx;
   if (deviceToken && apiKey) {
-    deps.stdout.write(`Already authorized on this machine (device token + API key present). Skipping login.
-`);
+    notice(deps, "stdout", "note", `Already authorized on this machine (device token + API key present). Skipping login.
+`.trim());
   } else {
     const loginArgs = parsed.booleans.has("--no-browser") ? ["--no-browser"] : [];
     const loginExit = await authLogin(loginArgs, ctx);
     if (loginExit !== 0) {
-      deps.stderr.write(`Setup stopped: device authorization did not complete.
-`);
+      notice(deps, "stderr", "warning", `Setup stopped: device authorization did not complete.
+`.trim());
       return loginExit;
     }
     const loginConfig = await deps.readConfig();
     const resolution = resolveProfileName(loginConfig, { flag: ctx.profileFlag, env: deps.env });
     if (!resolution.ok) {
-      deps.stderr.write(`${resolution.message}
-`);
+      notice(deps, "stderr", "warning", `${resolution.message}
+`.trim());
       return 1;
     }
     nextCtx = { ...ctx, profile: resolution.name };
@@ -97235,52 +97406,42 @@ async function setup(args, ctx) {
 
 `);
     }
-    if (solana)
-      deps.stdout.write(`Solana (send SOL here):    ${solana.address}
-`);
-    if (evm)
-      deps.stdout.write(`Hood    (send ETH here):    ${evm.address}
-`);
-    deps.stdout.write(`Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.
-`);
-    deps.stdout.write(`
-Tell your agent (paste into its context):
-`);
-    deps.stdout.write(`  Install the Candle CLI: curl -fsSL https://candle.tv/install.sh | bash
-`);
-    deps.stdout.write(`  You operate a Candle agent account. API base URL: ${apiUrl} (send your API key in the x-api-key header).
-`);
-    if (solana)
-      deps.stdout.write(`  Your Solana wallet: ${solana.address}
-`);
-    if (evm)
-      deps.stdout.write(`  Your Hood Chain (EVM) wallet: ${evm.address}
-`);
-    deps.stdout.write(`  Check balances before trading, and ask me to fund whichever chain you need.
-`);
+    writeFields(deps, "stdout", [
+      ["Solana (send SOL here)", solana?.address],
+      ["Hood (send ETH here)", evm?.address]
+    ]);
+    notice(deps, "stdout", "note", `Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.
+`.trim());
+    writeHeading(deps, "stdout", "Tell your agent (paste into its context)");
+    writeFields(deps, "stdout", [
+      ["Install", "curl -fsSL https://candle.tv/install.sh | bash"],
+      ["Role", "You operate a Candle agent account."],
+      ["API", apiUrl],
+      ["Authentication", "send your API key in the x-api-key header"],
+      ["Solana wallet", solana?.address],
+      ["Hood Chain (EVM) wallet", evm?.address]
+    ]);
+    notice(deps, "stdout", "note", `  Check balances before trading, and ask me to fund whichever chain you need.
+`.trim());
   } else {
-    deps.stdout.write("Could not read the agent wallets right now; `candle wallets` shows them once the API is reachable.\n");
+    notice(deps, "stdout", "note", "Could not read the agent wallets right now; `candle wallets` shows them once the API is reachable.\n".trim());
   }
   section(deps, "3/4 Connect your agent");
-  deps.stdout.write(`Claude Code skills:  ${SKILLS_CLAUDE_COMMAND}
-`);
-  deps.stdout.write(`MCP (any client), paste into the host's MCP config:
-`);
+  writeFields(deps, "stdout", [["Claude Code skills", SKILLS_CLAUDE_COMMAND]]);
+  writeHeading(deps, "stdout", "MCP (any client), paste into the host config");
   deps.stdout.write(`${await mcpClientConfig([], deps)}
 `);
-  deps.stdout.write(`The MCP server is built into this binary; the host needs nothing else installed.
-`);
-  deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}
-`);
+  notice(deps, "stdout", "note", `The MCP server is built into this binary; the host needs nothing else installed.
+`.trim());
+  writeFields(deps, "stdout", [["Other platforms", CODING_AGENTS_DOCS]]);
   section(deps, "4/4 Health check");
   const doctorExit = await doctor([], nextCtx);
   const config = await deps.readConfig();
   const { portalOrigin } = effectiveProfileFields(config, nextCtx.profile);
-  deps.stdout.write(`
-Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl, portalOrigin)}
-`);
-  deps.stdout.write(doctorExit === 0 ? `Setup complete. Your agent can launch, trade, and transfer the moment the wallets are funded.
-` : "Setup finished with failed checks above; fix them and re-run `candle doctor`.\n");
+  writeFields(deps, "stdout", [["Console", portalDeviceUrl(apiUrl, portalOrigin)]]);
+  if (doctorExit === 0)
+    writeSuccess(deps, "stdout", "Setup complete.");
+  notice(deps, "stdout", doctorExit === 0 ? "note" : "warning", doctorExit === 0 ? "Your agent can launch, trade, and transfer the moment the wallets are funded." : "Setup finished with failed checks above; fix them and re-run `candle doctor`.");
   return doctorExit;
 }
 
@@ -97288,6 +97449,7 @@ Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl,
 init_sha256();
 init_esm();
 init_args();
+init_human_output();
 init_solana_alt();
 init_solana_endpoint();
 init_solana_lite();
@@ -97522,11 +97684,9 @@ ${simulation.result.logs.map((line) => `  ${line}`).join(`
     ]);
     const lines = displayLines({ tx, compiled, signers, simulation, mints });
     if (!ctx.json) {
-      deps.stderr.write(`Decoded transaction (simulated, unsigned):
-`);
+      writeHeading(deps, "stderr", "Decoded transaction (simulated, unsigned)");
       for (const line of lines)
-        deps.stderr.write(`  ${line}
-`);
+        writeFields(deps, "stderr", [["Checked", line]]);
     }
     const changes = signerControlChanges(signers, simulation);
     if (changes.length > 0) {
@@ -97582,11 +97742,12 @@ ${changes.map((change) => `  ${describeControlChange(change)}`).join(`
     deps.stdout.write(`${signedBase64}
 `);
     for (const s of signatures)
-      deps.stderr.write(`signed by ${s.wallet}: ${s.signature}
-`);
+      writeFields(deps, "stderr", [
+        ["Signed by", s.wallet],
+        ["Signature", s.signature]
+      ]);
     if (broadcast2?.ok)
-      deps.stderr.write(`broadcast: ${broadcast2.signature}
-`);
+      writeFields(deps, "stderr", [["Broadcast", broadcast2.signature]]);
     if (rateLimited)
       return 3;
     if (broadcast2?.ok === false) {
@@ -97677,8 +97838,7 @@ async function signMessage2(args, ctx) {
             `)}`
     ];
     if (!ctx.json) {
-      deps.stderr.write(`Message to sign (the exact bytes read; nothing was trimmed or normalized):
-`);
+      writeHeading(deps, "stderr", "Message to sign (the exact bytes read; nothing was trimmed or normalized)");
       for (const line of lines)
         deps.stderr.write(`  ${line}
 `);
@@ -97716,6 +97876,8 @@ async function signMessage2(args, ctx) {
 init_args();
 init_client();
 init_deps();
+init_human_output();
+init_presentation();
 init_render();
 
 // src/x402/spend-log.ts
@@ -98110,25 +98272,29 @@ async function spendShow(args, ctx) {
 `);
     return 0;
   }
-  const out = ctx.deps.stdout;
-  out.write(`Today (${today} UTC): $${usdText(spentToday)} of the $${usdText(limits.dailyLimitUsdMicros)} daily per-use limit. Per call at most $${usdText(limits.maxPerCallUsdMicros)}.${limits.paused ? " Payments are PAUSED." : ""}
-`);
-  out.write("balanceUsdMicros" in credit ? `Candle credit: ${usdcText(BigInt(credit.balanceUsdMicros))} USDC
-` : `Candle credit: not shown (${terminalText(credit.unavailable)})
-`);
+  writeFields(ctx.deps, "stdout", [
+    ["Today (UTC)", today],
+    ["Spent", `$${usdText(spentToday)}`],
+    ["Daily per-use limit", `$${usdText(limits.dailyLimitUsdMicros)}`],
+    ["Per call at most", `$${usdText(limits.maxPerCallUsdMicros)}`],
+    ["Payments", limits.paused ? "PAUSED" : "enabled"]
+  ], "Per-use spend");
+  writeFields(ctx.deps, "stdout", [
+    ["Candle credit", "balanceUsdMicros" in credit ? `${usdcText(BigInt(credit.balanceUsdMicros))} USDC` : undefined]
+  ]);
+  if ("unavailable" in credit)
+    notice(ctx.deps, "stdout", "note", `Candle credit not shown: ${terminalText(credit.unavailable)}`);
   if (shown.length === 0) {
-    out.write(`No x402 payments in the last ${days} day${days === 1 ? "" : "s"}.
-`);
+    notice(ctx.deps, "stdout", "note", `No x402 payments in the last ${days} day${days === 1 ? "" : "s"}.`);
     return 0;
   }
-  out.write(`${renderTable(["WHEN (UTC)", "KIND", "USDC", "STATE", "SIGNATURE"], shown.map((e) => [
-    e.startedAt.slice(0, 19).replace("T", " "),
+  writeTable(ctx.deps, "stdout", ["WHEN (UTC)", "KIND", "USDC", "STATE", "SIGNATURE"], shown.map((e) => [
+    formatTime(e.startedAt),
     terminalText(e.kind),
     usdcText(e.amountRaw),
     e.state,
-    e.signature ? terminalText(e.signature) : ""
-  ]))}
-`);
+    e.signature ? terminalText(e.signature) : symbols(terminalStyle(ctx.deps, "stdout")).missing
+  ]), [{ priority: 2 }, { priority: 1 }, { align: "right" }, {}, { id: true, priority: 3 }]);
   return 0;
 }
 async function showOrSet(args, ctx, field, word3) {
@@ -98156,8 +98322,7 @@ async function showOrSet(args, ctx, field, word3) {
 `);
   else {
     const label = field === "dailyLimitUsdMicros" ? "Daily per-use limit" : "Per-call ceiling";
-    ctx.deps.stdout.write(`${label}: $${usdText(limits[field])}${raw !== undefined ? " (saved)" : ""}
-`);
+    writeFields(ctx.deps, "stdout", [[label, `$${usdText(limits[field])}${raw !== undefined ? " (saved)" : ""}`]]);
   }
   return 0;
 }
@@ -98183,9 +98348,9 @@ async function setPaused(args, ctx, paused) {
       ctx.deps.stdout.write(`${JSON.stringify({ ok: true, limits: limitsView(limits) })}
 `);
     else
-      ctx.deps.stdout.write(paused ? `Per-use payments paused.
+      writeSuccess(ctx.deps, "stdout", (paused ? `Per-use payments paused.
 ` : `Per-use payments resumed.
-`);
+`).trim());
     return 0;
   } catch (error) {
     writeLocalFailure(ctx.deps, { code: "SPEND_WRITE_FAILED", message: error instanceof Error ? error.message : String(error) }, ctx.json);
@@ -98202,6 +98367,8 @@ function spendResume(args, ctx) {
 // src/commands/stake.ts
 init_zod();
 init_args();
+init_human_output();
+init_presentation();
 init_render();
 init_trading();
 init_swap();
@@ -98310,23 +98477,36 @@ async function runStake(action, args, ctx) {
     if (action === "positions") {
       if (ctx.json)
         return printTradingResult(ctx, { ...view, wallets: wallets2 });
-      const out = ctx.deps.stdout;
-      out.write(`Pool wait: ${view.pool?.withdrawalTimelockSeconds ?? "unavailable"} seconds
-`);
+      writeFields(ctx.deps, "stdout", [
+        [
+          "Pool wait",
+          view.pool?.withdrawalTimelockSeconds === undefined ? undefined : `${view.pool.withdrawalTimelockSeconds} seconds`
+        ]
+      ]);
       for (const w of wallets2) {
-        out.write(`${safeText(w.label ?? w.payer)} (${safeText(w.address)})
-  CNDL: ${decimalAmount(w.cndl.amountRaw, w.cndl.decimals)}; sCNDL: ${decimalAmount(w.staked.amountRaw, w.staked.decimals)}; pending CNDL (raw): ${safeText(w.pendingWithdrawalRaw)}
-`);
+        writeFields(ctx.deps, "stdout", [
+          ["Wallet", safeText(w.label ?? w.payer)],
+          ["Address", safeText(w.address)],
+          ["CNDL", decimalAmount(w.cndl.amountRaw, w.cndl.decimals)],
+          ["sCNDL", decimalAmount(w.staked.amountRaw, w.staked.decimals)],
+          ["Pending CNDL (raw)", safeText(w.pendingWithdrawalRaw)]
+        ]);
         for (const row of w.withdrawals.active)
-          out.write(`  Withdrawal ${safeText(row.withdrawal)}: ${safeText(row.amountRaw)} raw CNDL; ends ${safeText(row.endTime)}; ${row.claimable ? "ready" : "waiting"}
-`);
+          writeFields(ctx.deps, "stdout", [
+            ["Withdrawal", safeText(row.withdrawal)],
+            ["CNDL (raw)", safeText(row.amountRaw)],
+            ["Ends", safeText(row.endTime)],
+            ["Status", row.claimable ? "ready" : "waiting"]
+          ]);
         for (const reward of w.unclaimedRewards)
-          out.write(`  Reward ${safeText(reward.rewardId)}: ${safeText(reward.amountRaw)} raw ${safeText(reward.mint)}
-`);
+          writeFields(ctx.deps, "stdout", [
+            ["Reward", safeText(reward.rewardId)],
+            ["Raw amount", safeText(reward.amountRaw)],
+            ["Mint", safeText(reward.mint)]
+          ]);
       }
       for (const note of view.notes)
-        out.write(`${safeText(note)}
-`);
+        notice(ctx.deps, "stdout", "note", safeText(note));
       return 0;
     }
     const notes = view.notes.map(safeText).join(`
@@ -98367,8 +98547,7 @@ ${notes}`, booleans.has("--yes")))
     const preview = await request(ctx, key, `${ROOT}/${action}/build`, { ...body, dryRun: true });
     if (preview.wallet !== wallet3.address || preview.action !== action || preview.clientStakeId !== id || preview.dryRun !== true)
       throw new TradingError("INVALID_RESPONSE", "The preview does not match the requested wallet and operation.");
-    ctx.deps.stderr.write(`Operation: ${id}
-`);
+    writeFields(ctx.deps, "stderr", [["Operation", id]]);
     if (!await approval(ctx, `MOVES REAL FUNDS: ${action} from ${safeText(wallet3.address)}; amount ${safeText(preview.amountRaw)} raw units.
 Pool wait: ${view.pool?.withdrawalTimelockSeconds ?? "unavailable"} seconds.
 SOL costs and reserve (lamports): ${safeText(JSON.stringify(preview.figures))}
@@ -98402,6 +98581,8 @@ init_tee_rebind();
 init_args();
 init_client();
 init_deps();
+init_human_output();
+init_presentation();
 init_profiles();
 init_render();
 init_errors2();
@@ -98603,6 +98784,8 @@ init_tee();
 
 // src/commands/vault-rename.ts
 init_args();
+init_human_output();
+init_presentation();
 init_errors2();
 init_store();
 init_vault_support();
@@ -98682,12 +98865,18 @@ async function vaultRename(args, ctx) {
       if (ctx.json)
         writeJson(deps, { ok: true, renamed, ...dryRun ? { dryRun: true } : {} });
       else {
-        deps.stdout.write(dryRun ? `Dry run: nothing was written.
-` : `Renamed ${renamed.length} keys in one commit.
-`);
+        writeFields(deps, "stdout", [
+          ["Mode", dryRun ? "Dry run: nothing was written." : "Renamed keys in one commit."],
+          ["Keys", renamed.length]
+        ]);
         for (const row of renamed)
-          deps.stdout.write(`  ${row.from} -> ${row.to}  ${row.address} (${row.id}, ${row.role})
-`);
+          writeFields(deps, "stdout", [
+            ["From", row.from],
+            ["To", row.to],
+            ["Address", row.address],
+            ["Id", row.id],
+            ["Role", row.role]
+          ]);
       }
       return 0;
     }
@@ -98720,16 +98909,14 @@ async function vaultRename(args, ctx) {
       writeJson(deps, { ok: true, id: entry.id, address: entry.address, role: entry.role, from, to: next });
       return 0;
     }
-    deps.stdout.write(`Renamed ${from} to ${next}.
-`);
-    deps.stdout.write(`  address     ${entry.address}
-`);
-    deps.stdout.write(`  id          ${entry.id}
-`);
-    deps.stdout.write(`  role        ${entry.role}
-`);
-    deps.stdout.write(`  unchanged   address, derivation path, key blob, every envelope
-`);
+    writeSuccess(deps, "stdout", `Renamed ${from} to ${next}.
+`.trim());
+    writeFields(deps, "stdout", [
+      ["Address", entry.address],
+      ["Id", entry.id],
+      ["Role", entry.role],
+      ["Unchanged", "address, derivation path, key blob, every envelope"]
+    ]);
     return 0;
   });
 }
@@ -98738,11 +98925,10 @@ function batchRefusal(ctx, findings, exit) {
   if (ctx.json)
     writeJson(ctx.deps, { ok: false, code: "VAULT_RENAME_BATCH_REFUSED", message, findings });
   else {
-    ctx.deps.stderr.write(`${message}
-`);
+    notice(ctx.deps, "stderr", "warning", `${message}
+`.trim());
     for (const finding of findings)
-      ctx.deps.stderr.write(`  ${finding.line === 0 ? "file" : `line ${finding.line}`}: ${finding.problem}
-`);
+      writeFields(ctx.deps, "stderr", [[finding.line === 0 ? "File" : `Line ${finding.line}`, finding.problem]]);
   }
   return exit;
 }
@@ -98780,11 +98966,10 @@ function refusal2(ctx, findings, exit) {
   if (ctx.json)
     writeJson(ctx.deps, { ok: false, code: "TEE_RENAME_BATCH_REFUSED", message, findings });
   else {
-    ctx.deps.stderr.write(`${message}
-`);
+    notice(ctx.deps, "stderr", "warning", `${message}
+`.trim());
     for (const finding of findings)
-      ctx.deps.stderr.write(`  ${finding.line === 0 ? "file" : `line ${finding.line}`}: ${finding.problem}
-`);
+      writeFields(ctx.deps, "stderr", [[finding.line === 0 ? "File" : `Line ${finding.line}`, finding.problem]]);
   }
   return exit;
 }
@@ -98830,15 +99015,15 @@ function unknownCommit(ctx, rows, onServer, inVault) {
   if (json)
     writeJson(deps, { ok: false, code: "TEE_RENAME_SERVER_UNKNOWN", message, rerun });
   else {
-    deps.stderr.write(`${message}
-`);
-    deps.stderr.write(`Re-run it with these rows, saved to a file (the old labels may no longer resolve):
-`);
+    notice(deps, "stderr", "warning", `${message}
+`.trim());
+    notice(deps, "stderr", "warning", `Re-run it with these rows, saved to a file (the old labels may no longer resolve):
+`.trim());
     for (const line of rerunFile(rerun))
       deps.stderr.write(`  ${line}
 `);
-    deps.stderr.write(`Then run: candle tee rename --pairs-from <file>
-`);
+    notice(deps, "stderr", "warning", `Then run: candle tee rename --pairs-from <file>
+`.trim());
   }
   return 1;
 }
@@ -98976,13 +99161,17 @@ async function teeRename(args, ctx) {
     const print = (headline) => {
       if (json)
         return writeJson(deps, { ok: true, renamed: receipt, ...dryRun ? { dryRun: true } : {} });
-      deps.stdout.write(`${headline}
-`);
+      writeSuccess(deps, "stdout", `${headline}
+`.trim());
       for (const row of receipt) {
         const sides = row.server === "renamed" && row.vault === "renamed" ? "server and vault" : row.server === "renamed" ? "server" : row.vault === "renamed" ? "vault; the server already had this name" : "already named";
         const was = row.server === "renamed" ? row.from : localById.get(row.id)?.label ?? row.from;
-        deps.stdout.write(`  ${was ?? "(none)"} -> ${row.to}  ${row.address} (${sides})
-`);
+        writeFields(deps, "stdout", [
+          ["From", was],
+          ["To", row.to],
+          ["Address", row.address],
+          ["Changed in", sides]
+        ]);
       }
     };
     if (dryRun) {
@@ -99018,15 +99207,15 @@ async function teeRename(args, ctx) {
         if (json) {
           writeJson(deps, { ok: false, code: "TEE_RENAME_VAULT_INCOMPLETE", message, cause, rerun, renamed: receipt });
         } else {
-          deps.stderr.write(`${message}
-`);
-          deps.stderr.write(`Finish it with these rows, saved to a file (the old labels no longer resolve):
-`);
+          notice(deps, "stderr", "warning", `${message}
+`.trim());
+          notice(deps, "stderr", "warning", `Finish it with these rows, saved to a file (the old labels no longer resolve):
+`.trim());
           for (const line of rerunFile(rerun))
             deps.stderr.write(`  ${line}
 `);
-          deps.stderr.write(`Then run: candle tee rename --pairs-from <file>
-`);
+          notice(deps, "stderr", "warning", `Then run: candle tee rename --pairs-from <file>
+`.trim());
         }
         return 1;
       }
@@ -99040,6 +99229,8 @@ async function teeRename(args, ctx) {
 // src/commands/token-clusters.ts
 init_args();
 init_client();
+init_human_output();
+init_presentation();
 init_render();
 
 // src/token-clusters.ts
@@ -99153,19 +99344,24 @@ async function tokenClusters(args, ctx) {
     out.write(`${JSON.stringify(result)}
 `);
   else if (result.status === "unavailable")
-    out.write(`${result.message} (${result.reason})
-`);
+    writeFields(ctx.deps, "stdout", [
+      ["Status", result.message],
+      ["Reason", result.reason]
+    ]);
   else {
-    out.write(`${result.label}
-Fetched: ${result.fetchedAt}
-Cluster supply: ${result.analysis.clusterSupplyPct}%
-`);
+    writeFields(ctx.deps, "stdout", [
+      ["Fetched", formatTime(result.fetchedAt)],
+      ["Cluster supply", `${result.analysis.clusterSupplyPct}%`]
+    ], result.label);
     for (const cluster of result.analysis.clusters) {
-      out.write(`${cluster.supplyPct}%: ${cluster.addresses.map(terminalText).join(", ")}${cluster.tags.length ? ` [${cluster.tags.map(terminalText).join(", ")}]` : ""}
-`);
+      writeFields(ctx.deps, "stdout", [
+        ["Supply", `${cluster.supplyPct}%`],
+        ["Addresses", cluster.addresses.map(terminalText).join(" ")],
+        ["Tags", cluster.tags.map(terminalText).join(", ")]
+      ]);
     }
-    out.write(`${result.caveat}
-`);
+    notice(ctx.deps, "stdout", "note", `${result.caveat}
+`.trim());
   }
   return 0;
 }
@@ -100694,8 +100890,8 @@ candle update`);
     }
     if (order > 0 && pinned) {
       if (json)
-        deps.stderr.write(`Warning: ${target.version} is a downgrade from ${current}
-`);
+        notice(deps, "stderr", "note", `Warning: ${target.version} is a downgrade from ${current}
+`.trim());
       else
         notice(deps, "stderr", "warning", `${target.version} is a downgrade from ${current}`);
     }
@@ -100901,6 +101097,8 @@ async function discard(deps, path) {
 
 // src/commands/vault-backup.ts
 init_args();
+init_human_output();
+init_presentation();
 import { chmod as chmod11, copyFile, mkdir as mkdir9, stat as stat5 } from "node:fs/promises";
 import nodePath, { dirname as dirname9, resolve as resolve4 } from "node:path";
 init_crypto();
@@ -101079,8 +101277,8 @@ async function vaultBackup(args, ctx) {
   }
   const destination = target.path;
   if (target.requires !== undefined)
-    deps.stderr.write(`--to ${ICLOUD_SHORTHAND} is ${destination}
-`);
+    notice(deps, "stderr", "note", `--to ${ICLOUD_SHORTHAND} is ${destination}
+`.trim());
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     assertOutsideConfigDir(destination, deps.env, deps.homedir());
@@ -101108,8 +101306,8 @@ async function vaultBackup(args, ctx) {
       throw new VaultError("EXPORT_TARGET_EXISTS", `${copyRecordPath} already exists; this backup would write its sealed EVM record there, and this CLI does not overwrite one.`, { suggestion: "Nothing was written. Choose a backup path whose record path does not exist yet." });
     }
     if (verdict.sealed) {
-      deps.stderr.write(`${sealedBackupLine(verdict.destination, destination)}
-`);
+      notice(deps, "stderr", "note", `${sealedBackupLine(verdict.destination, destination)}
+`.trim());
     }
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
@@ -101180,12 +101378,14 @@ async function vaultBackup(args, ctx) {
       });
       return 0;
     }
-    for (const line of wroteLines(destination, written.size, mode))
-      deps.stdout.write(`${line}
-`);
+    writeFields(deps, "stdout", [
+      ["Path", destination],
+      ["Size", `${formatBytes(written.size)} (${written.size} bytes)`],
+      ["Mode", mode]
+    ], "Backup written");
     if (recordCopy !== undefined)
-      deps.stdout.write(`${recordCopyLine(recordCopy)}
-`);
+      notice(deps, "stdout", "note", `${recordCopyLine(recordCopy)}
+`.trim());
     writeVerifiedReport(ctx, destination, verdict, report, live, {
       record: record4,
       copyEnvelopes,
@@ -101230,9 +101430,6 @@ function carriedClause(passphraseIds) {
 var PASSPHRASE_NOT_EXERCISED = "passphrase not exercised (run with --factor passphrase to prove it)";
 function fileModeOctal(mode) {
   return (mode & 511).toString(8).padStart(4, "0");
-}
-function wroteLines(destination, size, mode) {
-  return [`Wrote ${destination}`, `  size          ${formatBytes(size)} (${size} bytes)`, `  mode          ${mode}`];
 }
 function resolveBackupDestination(to, deps) {
   if (to.trim().toLowerCase() !== ICLOUD_SHORTHAND)
@@ -101409,9 +101606,9 @@ async function vaultVerifyBackup(args, ctx) {
       verifiedWith: verifiedWithLine(copyOpened.word, copyOpened.envelopeId, copyOpened.how, floorClause)
     });
     if (securityKeysNotInCopy.length > 0) {
-      deps.stdout.write(`
+      notice(deps, "stdout", "note", `
 ${freshBackupAdvice(target, securityKeysNotInCopy)}
-`);
+`.trim());
     }
     return 0;
   });
@@ -101483,19 +101680,6 @@ function sealedCopyNote(securityKeyIds) {
 function labelEnvelope(envelope) {
   return `${wordFor(envelope)} ${envelope.id}`;
 }
-function backupVerdictLines(verdict, kept, leftOut) {
-  const lines = [];
-  if (verdict?.destination)
-    lines.push(`  destination   ${verdict.destination}`);
-  if (verdict?.sealed) {
-    lines.push(`  sealed        yes: carries ${kept.join(", ")}${leftOut.length > 0 ? `; left out ${leftOut.join(", ")}` : ""}`);
-    if (verdict.destination === "unknown")
-      lines.push(`  why sealed    ${UNPLACEABLE_DESTINATION_NOTE}`);
-  } else if (verdict?.sharedDomainAccepted) {
-    lines.push(`  sealed        no: every envelope is in this copy (--accept-shared-domain)`);
-  }
-  return lines;
-}
 function sharedDomainLine(verdict) {
   if (verdict.sharedDomain) {
     return `  shared domain this destination and a synced passkey envelope are one Apple account, and this unsealed copy carries that passkey's envelope; you accepted that.`;
@@ -101507,54 +101691,56 @@ function sharedDomainLine(verdict) {
 }
 function writeVerifiedReport(ctx, target, verdict, report, live, opts) {
   const { deps } = ctx;
+  const ninth = opts.record !== undefined && !opts.record.notApplicable;
   const kept = opts.copyEnvelopes.map(labelEnvelope);
   const leftOut = opts.leftOut.map(labelEnvelope);
-  deps.stdout.write(`Verified ${target}
-`);
-  for (const line of backupVerdictLines(verdict, kept, leftOut))
-    deps.stdout.write(`${line}
-`);
-  deps.stdout.write(`${opts.verifiedWith}
-`);
-  const ninth = opts.record !== undefined && !opts.record.notApplicable;
-  deps.stdout.write(`  steps         all ${ninth ? 9 : 8} passed, in order
-`);
+  writeFields(deps, "stdout", [
+    ["Copy", target],
+    ["Steps", `all ${ninth ? 9 : 8} passed, in order`]
+  ], "Backup verified");
+  writeFields(deps, "stdout", [
+    ["Destination", verdict?.destination],
+    ["Sealed", verdict?.sealed ? "yes" : verdict?.sharedDomainAccepted ? "no (--accept-shared-domain)" : undefined],
+    ["Carries", kept.join(", ")],
+    ["Left out", leftOut.join(", ")]
+  ]);
+  if (verdict?.sealed && verdict.destination === "unknown")
+    notice(deps, "stdout", "note", UNPLACEABLE_DESTINATION_NOTE);
+  notice(deps, "stdout", "note", `${opts.verifiedWith}
+`.trim());
   if (ninth && opts.record !== undefined) {
-    deps.stdout.write(opts.record.absent ? `  EVM record    absent beside the copy (${opts.record.path}); nothing to check
+    notice(deps, "stdout", "note", (opts.record.absent ? `  EVM record    absent beside the copy (${opts.record.path}); nothing to check
 ` : `  EVM record    ${opts.record.lines} line(s), each decrypts under this copy's record key
-`);
+`).trim());
   }
-  deps.stdout.write(`  keys checked  ${report.addressChecked.length} (each secret produces the address the index records)
-`);
-  deps.stdout.write(`  re-derived    ${report.rederived.length} from the root along their recorded paths
-`);
-  if (report.notRederived.length > 0) {
-    deps.stdout.write(`  not derived   ${report.notRederived.length}: independent keys, so the address and length checks are the strongest available for them
-`);
-  }
+  writeFields(deps, "stdout", [
+    ["Keys checked", `${report.addressChecked.length} (each secret produces the address the index records)`],
+    ["Re-derived", `${report.rederived.length} from the root along their recorded paths`],
+    [
+      "Independent keys",
+      `${report.notRederived.length}: address and length checks are the strongest available for them`
+    ]
+  ]);
   if (report.comparedAgainstLive)
-    deps.stdout.write(`  address set   matches the live vault
-`);
+    notice(deps, "stdout", "note", `  address set   matches the live vault
+`.trim());
   if (verdict?.sharedDomainAccepted)
-    deps.stdout.write(`${sharedDomainLine(verdict)}
-`);
+    notice(deps, "stdout", "note", `${sharedDomainLine(verdict)}
+`.trim());
   if (verdict?.sealed) {
     const keys = opts.copyEnvelopes.filter(isSecurityKeyEnvelope).map((envelope) => envelope.id);
-    deps.stdout.write(`
+    notice(deps, "stdout", "note", `
 ${sealedCopyNote(keys)}
 ${APPLE_ACCOUNT_NOTICE}
-`);
+`.trim());
   }
-  deps.stdout.write(`
-Derivation counters to keep with your recovery phrase:
-`);
+  writeHeading(deps, "stdout", "Derivation counters to keep with your recovery phrase");
   for (const [branch, value] of Object.entries(live.index.hd.nextIndex)) {
-    deps.stdout.write(`  ${branch.padEnd(12)} ${value}
-`);
+    writeFields(deps, "stdout", [[branch, value]]);
   }
-  deps.stdout.write(`
+  notice(deps, "stdout", "note", `
 The recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; this file plus a factor does that.
-`);
+`.trim());
 }
 function recordCopyLine(outcome) {
   if (!outcome.present)
@@ -101564,6 +101750,7 @@ function recordCopyLine(outcome) {
 
 // src/commands/vault-demote.ts
 init_args();
+init_presentation();
 init_render();
 init_solana_endpoint();
 init_errors2();
@@ -101671,8 +101858,8 @@ async function demoteWithAdapter(ctx, step, address, rpcUrl, emergency) {
     if (disableCode !== 0 && disableCode !== 3 && !emergency)
       return disableCode;
   } else {
-    ctx.deps.stdout.write(`No linkedWalletId is recorded for ${address}; the grant could not be identified, so disable was not called and remote authority stays unknown.
-`);
+    notice(ctx.deps, "stdout", "warning", `No linkedWalletId is recorded for ${address}; the grant could not be identified, so disable was not called and remote authority stays unknown.
+`.trim());
   }
   const destination = step.resolved.entry.tee?.vaultDestination;
   if (await nothingLeftToSweep(step.solana, step.resolved.entry)) {
@@ -101681,14 +101868,14 @@ async function demoteWithAdapter(ctx, step, address, rpcUrl, emergency) {
       ctx.deps.stdout.write(`${JSON.stringify({ address, vaultDestination: destination, swept: false, nothingToSweep: true, lamports: "0", tokenAccounts: 0 })}
 `);
     } else {
-      ctx.deps.stdout.write(`Nothing to sweep: 0 SOL, 0 token accounts.
-`);
+      notice(ctx.deps, "stdout", "note", `Nothing to sweep: 0 SOL, 0 token accounts.
+`.trim());
     }
     return code;
   }
   if (!ctx.json)
-    ctx.deps.stdout.write(`Sweeping remaining funds to ${destination}...
-`);
+    notice(ctx.deps, "stdout", "note", `Sweeping remaining funds to ${destination}...
+`.trim());
   const sweepArgs = rpcUrl === undefined ? [address] : [address, "--rpc-url", rpcUrl];
   if (emergency || linkedWalletId === undefined)
     sweepArgs.push("--emergency");
@@ -101697,6 +101884,7 @@ async function demoteWithAdapter(ctx, step, address, rpcUrl, emergency) {
 
 // src/commands/vault-export-key.ts
 init_args();
+init_presentation();
 init_errors2();
 init_promote_support();
 init_store();
@@ -101744,12 +101932,12 @@ async function vaultExportKey(args, ctx) {
 ` + `The vault will record that this key was exported, and that record never resets.
 `;
     if (ctx.json)
-      ctx.deps.stderr.write(`${warning}
-`);
+      notice(ctx.deps, "stderr", "note", `${warning}
+`.trim());
     else
-      ctx.deps.stdout.write(`
+      notice(ctx.deps, "stdout", "note", `
 ${warning}
-`);
+`.trim());
     await confirmAddress(ctx, "key", entry.address, `export the key for ${entry.address}`);
     vault = hold(await markEverExported(vault, entry, ctx));
     const secret = await decryptKey(vault, entry.id);
@@ -101769,10 +101957,10 @@ ${warning}
       });
       return 0;
     }
-    ctx.deps.stdout.write(`Wrote the key for ${entry.label ?? entry.address} to ${destination} (mode 0600).
+    notice(ctx.deps, "stdout", "warning", (`Wrote the key for ${entry.label ?? entry.address} to ${destination} (mode 0600).
 ` + `This vault now records that the key was exported; that record never resets.
 ` + `Treat the file as a secret. This CLI will not print its contents.
-`);
+`).trim());
     return 0;
   });
 }
@@ -101865,6 +102053,8 @@ async function writeExportFile(destination, body) {
 
 // src/commands/vault-factor.ts
 init_args();
+init_human_output();
+init_presentation();
 init_crypto();
 init_errors2();
 init_fido2();
@@ -101875,6 +102065,8 @@ init_store();
 
 // src/commands/vault-factor-passkey.ts
 init_protocol();
+init_human_output();
+init_presentation();
 init_crypto();
 init_errors2();
 init_fido2();
@@ -101923,8 +102115,8 @@ async function addPasskeyFactor(ctx, parsed, resolvedVault, hold) {
   try {
     registered = await registerPlatformPasskey(deps, session, { vaultId, envelopeId });
   } catch (error) {
-    deps.stderr.write(`Nothing was written to the vault.
-`);
+    notice(deps, "stderr", "note", `Nothing was written to the vault.
+`.trim());
     throw error;
   }
   if (!registered.prfSupported) {
@@ -101968,8 +102160,8 @@ async function addPasskeyFactor(ctx, parsed, resolvedVault, hold) {
     sealed = { ...envelope, wrap };
     committed = hold(await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps));
   } catch (error) {
-    deps.stderr.write(`${PASSKEY_LEFTOVER_NOTE}
-`);
+    notice(deps, "stderr", "note", `${PASSKEY_LEFTOVER_NOTE}
+`.trim());
     throw error;
   }
   try {
@@ -101988,14 +102180,14 @@ async function addPasskeyFactor(ctx, parsed, resolvedVault, hold) {
         index: committed.index,
         envelopes: committed.file.envelopes.filter((candidate) => candidate.id !== envelopeId)
       }, deps);
-      deps.stderr.write(`The unproven envelope ${envelopeId} was removed from the vault again.
-`);
+      notice(deps, "stderr", "note", `The unproven envelope ${envelopeId} was removed from the vault again.
+`.trim());
     } catch {
-      deps.stderr.write(`Envelope ${envelopeId} could not be removed from the vault; remove it with: candle vault factor remove ${envelopeId}
-`);
+      notice(deps, "stderr", "warning", `Envelope ${envelopeId} could not be removed from the vault; remove it with: candle vault factor remove ${envelopeId}
+`.trim());
     }
-    deps.stderr.write(`${PASSKEY_LEFTOVER_NOTE}
-`);
+    notice(deps, "stderr", "note", `${PASSKEY_LEFTOVER_NOTE}
+`.trim());
     throw error;
   }
   const recoverable = countRecoverableFactors(committed.file.envelopes);
@@ -102020,26 +102212,26 @@ async function addPasskeyFactor(ctx, parsed, resolvedVault, hold) {
     });
     return 0;
   }
-  deps.stdout.write(`Added synced passkey factor ${envelopeId} (${PASSKEY_RP_ID}, this Apple account).
-`);
-  deps.stdout.write(`  domain     apple-account (backup-eligible: yes, backed up now: ${registered.backupState ? "yes" : "no"})
-`);
-  deps.stdout.write(`  helper     ${session.identity.bundleId} ${session.version}, signed by team ${session.identity.teamId}
-`);
-  deps.stdout.write(`  verified   the vault was re-read and opened with the new passkey
-`);
-  deps.stdout.write(`  unlock     candle vault status --unlock --factor ${envelopeId}
-`);
-  deps.stdout.write(`
+  writeSuccess(deps, "stdout", `Added synced passkey factor ${envelopeId} (${PASSKEY_RP_ID}, this Apple account).
+`.trim());
+  writeFields(deps, "stdout", [
+    ["Domain", `apple-account (backup-eligible: yes, backed up now: ${registered.backupState ? "yes" : "no"})`],
+    ["Helper", `${session.identity.bundleId} ${session.version}, signed by team ${session.identity.teamId}`],
+    ["Verified", "vault re-read and opened with the new passkey"],
+    ["Unlock", `candle vault status --unlock --factor ${envelopeId}`]
+  ]);
+  notice(deps, "stdout", "note", `
 ${PASSKEY_NOTE}
-`);
-  deps.stdout.write(`This vault now has ${recoverable} recoverable factor(s), domains counted once.
-`);
+`.trim());
+  notice(deps, "stdout", "note", `This vault now has ${recoverable} recoverable factor(s), domains counted once.
+`.trim());
   return 0;
 }
 
 // src/commands/vault-factor-security-key.ts
 init_esm();
+init_human_output();
+init_presentation();
 init_crypto();
 init_errors2();
 init_fido2();
@@ -102166,9 +102358,9 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
       });
     }
     if (!ctx.json) {
-      deps.stderr.write(install.installed ? `Installed ${HELPER_NAME} ${CLI_VERSION} to ${install.path}; enrolling.
+      notice(deps, "stderr", "note", (install.installed ? `Installed ${HELPER_NAME} ${CLI_VERSION} to ${install.path}; enrolling.
 ` : `${HELPER_NAME} is already at ${install.path}; nothing downloaded.
-`);
+`).trim());
     }
   }
   const facts = await currentPlatformFacts(deps);
@@ -102182,8 +102374,8 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
   assertHelperExcludeList(info3, helperPath, keysInHeader.length);
   const attached = keysInHeader.length > 0 ? await probeAttachedKeys(deps, { vaultId, envelopes: keysInHeader }) : undefined;
   const excludeCountNow = keysInHeader.length;
-  const addingLine = (device) => deps.stderr.write(`Adding: ${device.product || "security key"} (--device ${device.deviceId}), a different key from the one that opened the vault.
-`);
+  const addingLine = (device) => notice(deps, "stderr", "note", `Adding: ${device.product || "security key"} (--device ${device.deviceId}), a different key from the one that opened the vault.
+`.trim());
   let session;
   let enrolling;
   let deferredAfter;
@@ -102315,19 +102507,18 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
     });
     return 0;
   }
-  deps.stdout.write(`Added security key factor ${envelopeId} (${envelope.product || "security key"}).
-`);
-  deps.stdout.write(`  domain     hardware-token (backup-eligible: no)
-`);
-  deps.stdout.write(`  verified   the vault was re-read and opened with the new key
-`);
-  deps.stdout.write(`  unlock     candle vault status --unlock --factor ${envelopeId}
-`);
-  deps.stdout.write(`
+  writeSuccess(deps, "stdout", `Added security key factor ${envelopeId} (${envelope.product || "security key"}).
+`.trim());
+  writeFields(deps, "stdout", [
+    ["Domain", "hardware-token (backup-eligible: no)"],
+    ["Verified", "vault re-read and opened with the new key"],
+    ["Unlock", `candle vault status --unlock --factor ${envelopeId}`]
+  ]);
+  notice(deps, "stdout", "note", `
 ${SECURITY_KEY_PAIR_NOTE}
-`);
-  deps.stdout.write(`This vault now has ${recoverable} recoverable factor(s), domains counted once.
-`);
+`.trim());
+  notice(deps, "stdout", "note", `This vault now has ${recoverable} recoverable factor(s), domains counted once.
+`.trim());
   return 0;
 }
 function refuseIfEnrolled(device, attached) {
@@ -102402,6 +102593,8 @@ ${listing}`, { suggestion: "Run the command again with only the key to add inser
 }
 
 // src/commands/vault-factor-touch-id.ts
+init_human_output();
+init_presentation();
 init_enclave();
 init_errors2();
 init_fido2();
@@ -102453,15 +102646,15 @@ async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
   try {
     created = await createEnclaveKey(deps, session, { vaultId, envelopeId, label });
   } catch (error) {
-    deps.stderr.write(`Nothing was written to the vault.
-`);
+    notice(deps, "stderr", "note", `Nothing was written to the vault.
+`.trim());
     throw error;
   }
   const removeKey = async () => {
     const removed = await deleteEnclaveKey(deps, session, { vaultId, envelopeId });
-    deps.stderr.write(removed ? `Removed the Secure Enclave key ${keyTag} this failed enrolment created.
+    notice(deps, "stderr", "warning", (removed ? `Removed the Secure Enclave key ${keyTag} this failed enrolment created.
 ` : `Could not remove the Secure Enclave key ${keyTag}; it opens nothing and a retry creates a new one.
-`);
+`).trim());
   };
   let sealed;
   let committed;
@@ -102490,8 +102683,8 @@ async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
     committed = hold(await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps));
   } catch (error) {
     await removeKey();
-    deps.stderr.write(`Nothing was written to the vault.
-`);
+    notice(deps, "stderr", "note", `Nothing was written to the vault.
+`.trim());
     throw error;
   }
   try {
@@ -102510,11 +102703,11 @@ async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
         index: committed.index,
         envelopes: committed.file.envelopes.filter((envelope) => envelope.id !== envelopeId)
       }, deps);
-      deps.stderr.write(`The unproven envelope ${envelopeId} was removed from the vault again.
-`);
+      notice(deps, "stderr", "note", `The unproven envelope ${envelopeId} was removed from the vault again.
+`.trim());
     } catch {
-      deps.stderr.write(`Envelope ${envelopeId} could not be removed from the vault; remove it with: candle vault factor remove ${envelopeId}
-`);
+      notice(deps, "stderr", "warning", `Envelope ${envelopeId} could not be removed from the vault; remove it with: candle vault factor remove ${envelopeId}
+`.trim());
     }
     await removeKey();
     throw error;
@@ -102535,26 +102728,26 @@ async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
     });
     return 0;
   }
-  deps.stdout.write(`Added Touch ID factor ${envelopeId} (Secure Enclave, this Mac).
-`);
-  deps.stdout.write(`  domain     this-device (never recoverable; the key never leaves this Mac)
-`);
-  deps.stdout.write(`  helper     ${session.identity.bundleId} ${session.version}, signed by team ${session.identity.teamId}
-`);
-  deps.stdout.write(`  verified   the vault was re-read and opened with Touch ID
-`);
-  deps.stdout.write(`  unlock     candle vault status --unlock --factor ${envelopeId}
-`);
-  deps.stdout.write(`
+  writeSuccess(deps, "stdout", `Added Touch ID factor ${envelopeId} (Secure Enclave, this Mac).
+`.trim());
+  writeFields(deps, "stdout", [
+    ["Domain", "this-device (never recoverable; the key never leaves this Mac)"],
+    ["Helper", `${session.identity.bundleId} ${session.version}, signed by team ${session.identity.teamId}`],
+    ["Verified", "vault re-read and opened with Touch ID"],
+    ["Unlock", `candle vault status --unlock --factor ${envelopeId}`]
+  ]);
+  notice(deps, "stdout", "note", `
 ${TOUCH_ID_NOTE}
-`);
-  deps.stdout.write(`This vault now has ${recoverable} recoverable factor(s), domains counted once.
-`);
+`.trim());
+  notice(deps, "stdout", "note", `This vault now has ${recoverable} recoverable factor(s), domains counted once.
+`.trim());
   return 0;
 }
 
 // src/commands/vault-init.ts
 init_args();
+init_human_output();
+init_presentation();
 
 // src/vault/create.ts
 init_crypto();
@@ -102650,6 +102843,7 @@ init_store();
 
 // src/commands/vault-phrase.ts
 init_args();
+init_presentation();
 init_errors2();
 init_store();
 init_vault_support();
@@ -102688,8 +102882,8 @@ async function vaultPhraseShow(args, ctx) {
 function assertPhraseTty(ctx) {
   if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stdout)
     return true;
-  ctx.deps.stderr.write(`The recovery phrase is shown only on a terminal, on both ends. Nothing was rendered, and the vault was not read.
-`);
+  notice(ctx.deps, "stderr", "note", `The recovery phrase is shown only on a terminal, on both ends. Nothing was rendered, and the vault was not read.
+`.trim());
   ctx.deps.stderr.write(`PHRASE_REQUIRES_TTY
 `);
   return false;
@@ -102712,16 +102906,15 @@ async function runPhraseCeremony(ctx, vault, opts = {}) {
     const { closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
     closeVault2(reopened);
   }
-  deps.stdout.write(`
-The 24 words below re-derive every key this vault derives, on any BIP-39 wallet, with no passphrase and no server.
+  notice(deps, "stdout", "danger", `The 24 words below re-derive every key this vault derives, on any BIP-39 wallet, with no passphrase and no server.
 They do NOT restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.
 Anyone who reads them can move every derived key's funds.
 
 `);
   const acknowledgement = (await deps.promptLine(`Type ${ACKNOWLEDGEMENT} to continue, or anything else to stop: `)).trim().toLowerCase();
   if (acknowledgement !== ACKNOWLEDGEMENT) {
-    deps.stdout.write(`Stopped. Nothing was displayed and nothing was written.
-`);
+    notice(deps, "stdout", "note", `Stopped. Nothing was displayed and nothing was written.
+`.trim());
     return 1;
   }
   const at3 = new Date(deps.now()).toISOString();
@@ -102750,18 +102943,18 @@ Anyone who reads them can move every derived key's funds.
       confirmed = false;
   }
   deps.stdout.write("\x1B[2J\x1B[H");
-  deps.stdout.write(`The phrase is no longer on screen. Clear your terminal's scrollback: the words were rendered there and this CLI cannot remove them.
-`);
-  deps.stdout.write(`This vault now records that the recovery phrase was exported; that record never resets.
-`);
+  notice(deps, "stdout", "warning", `The phrase is no longer on screen. Clear your terminal's scrollback: the words were rendered there and this CLI cannot remove them.
+`.trim());
+  notice(deps, "stdout", "warning", `This vault now records that the recovery phrase was exported; that record never resets.
+`.trim());
   words.fill("");
   if (!confirmed) {
     throw new VaultError("PHRASE_NOT_CONFIRMED", "One of the words you typed back did not match, so the copy you wrote down may be wrong.", {
       suggestion: "The export is already recorded, because the words were on the screen. Run `candle vault phrase show` again and check your copy."
     });
   }
-  deps.stdout.write(`Read-back matched.
-`);
+  notice(deps, "stdout", "note", `Read-back matched.
+`.trim());
   return 0;
 }
 function randomPositions(count3, of = PHRASE_WORDS) {
@@ -102811,8 +103004,8 @@ async function vaultInit(args, ctx) {
       throw vaultAlreadyExists(ctx, resolvedVault, "This CLI never overwrites one, including after an interrupted init. Move it aside if you really mean to start over.");
     }
     if (!ownFlag)
-      deps.stdout.write(`${INIT_GENERATED_PASSPHRASE_NOTICE}
-`);
+      notice(deps, "stdout", "note", `${INIT_GENERATED_PASSPHRASE_NOTICE}
+`.trim());
     const own = ownFlag || await askForOwnPassphrase(ctx, INIT_PASSPHRASE_PROMPT);
     const passphrase = own ? await collectOwnPassphrase(ctx) : await collectGeneratedPassphrase(ctx);
     const entropy = randomBytes2(ROOT_ENTROPY_BYTES);
@@ -102838,43 +103031,42 @@ async function vaultInit(args, ctx) {
           })),
           phraseCeremonyOffered: false
         });
-        deps.stderr.write(`The recovery phrase ceremony is interactive only and was not offered under --json. Run: candle vault phrase show
-`);
+        notice(deps, "stderr", "note", `The recovery phrase ceremony is interactive only and was not offered under --json. Run: candle vault phrase show
+`.trim());
         return 0;
       }
-      deps.stdout.write(`Vault created at ${path}
-`);
-      deps.stdout.write(`  vault id     ${vault.file.vaultId}
-`);
-      deps.stdout.write(`  factors      1 (passphrase, human-memory)
-`);
-      deps.stdout.write(`  keys         0 -- create one with: candle vault new-key --chain solana
-`);
-      deps.stdout.write(`
-Verified: the file was re-read and opened with the passphrase you set, and its root blob decrypted.
-`);
-      deps.stdout.write(`
+      writeFields(deps, "stdout", [
+        ["Path", path],
+        ["Vault id", vault.file.vaultId],
+        ["Factors", "1 (passphrase, human-memory)"],
+        ["Keys", 0]
+      ], "Vault created");
+      writeFields(deps, "stdout", [
+        ["Verified", "file re-read, opened with your passphrase, root blob decrypted"],
+        ["Create a key", "candle vault new-key --chain solana"]
+      ]);
+      notice(deps, "stdout", "note", `
 ${APPLE_ACCOUNT_NOTICE}
-`);
+`.trim());
       if (countRecoverableFactors(vault.file.envelopes) === 1) {
-        deps.stdout.write(`
+        notice(deps, "stdout", "warning", `
 This vault has exactly one recoverable factor: the passphrase. Lose it and no copy of this file can be opened, and the recovery phrase becomes the only route back. Add a second when you can: candle vault enroll security-key
-`);
+`.trim());
       }
-      deps.stdout.write(`
+      notice(deps, "stdout", "note", `
 This vault has a 24-word recovery phrase. It re-derives every key this vault derives, on any BIP-39 wallet, and it is the only way back if you lose both the file and your backups.
-`);
+`.trim());
       const answer2 = (await deps.promptLine("Show the recovery phrase now? Type yes to see it, anything else to skip: ")).trim().toLowerCase();
       if (answer2 === "yes") {
         await runPhraseCeremony(ctx, vault);
       } else {
-        deps.stdout.write(`Skipped. You can run the ceremony later with: candle vault phrase show
-`);
+        notice(deps, "stdout", "note", `Skipped. You can run the ceremony later with: candle vault phrase show
+`.trim());
       }
       await offerIcloudBackup(ctx, resolvedVault);
       const footer = nonDefaultVaultFooter(resolvedVault);
       if (footer !== undefined)
-        deps.stdout.write(footer);
+        notice(deps, "stdout", "note", footer.trim());
       return 0;
     } finally {
       closeVault(vault);
@@ -102884,16 +103076,16 @@ This vault has a 24-word recovery phrase. It re-derives every key this vault der
 async function collectGeneratedPassphrase(ctx) {
   const { deps } = ctx;
   const passphrase = generatePassphrase();
-  deps.stdout.write(`
-Your vault passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits.
-
-`);
+  writeFields(deps, "stdout", [
+    ["Words", GENERATED_WORD_COUNT],
+    ["Entropy", `${generatedEntropyBits()} bits`]
+  ], "Your vault passphrase");
   deps.stdout.write(`    ${passphrase}
 
 `);
-  deps.stdout.write(`${SAVE_THE_PASSPHRASE}
+  notice(deps, "stdout", "warning", `${SAVE_THE_PASSPHRASE}
 
-`);
+`.trim());
   await deps.promptLine(SAVED_IT_PROMPT);
   return passphrase;
 }
@@ -102905,7 +103097,7 @@ async function collectOwnPassphrase(ctx) {
     throw new VaultError("VAULT_UNLOCK_FAILED", "The passphrases did not match. Nothing was written.");
   }
   if (!ctx.json) {
-    ctx.deps.stdout.write("Recorded as chosen by you: this CLI cannot know its entropy and `vault status` says so.\n");
+    notice(ctx.deps, "stdout", "note", "Recorded as chosen by you: this CLI cannot know its entropy and `vault status` says so.\n".trim());
   }
   return first;
 }
@@ -102913,22 +103105,22 @@ async function offerIcloudBackup(ctx, resolved) {
   const { deps } = ctx;
   if (!await fileExists(icloudDriveDir(homeDirOf(deps.env))))
     return;
-  deps.stdout.write(`
+  notice(deps, "stdout", "note", `
 Nothing has a copy of this vault yet. A copy in iCloud Drive is a copy of the ciphertext, and Candle seals it: it opens with the passphrase only, and carries no Touch ID, security key or synced passkey envelope, so one Apple account never holds both the blob and a factor that opens it.
-`);
-  deps.stdout.write(`This vault holds no keys yet, so what a copy taken now protects is the root every key comes back from. Back it up again after your first \`vault new-key\`: until then \`verify-backup\` will report this copy as stale, correctly.
-`);
+`.trim());
+  notice(deps, "stdout", "note", `This vault holds no keys yet, so what a copy taken now protects is the root every key comes back from. Back it up again after your first \`vault new-key\`: until then \`verify-backup\` will report this copy as stale, correctly.
+`.trim());
   const answer2 = (await deps.promptLine("Back up your encrypted vault to iCloud Drive now? Type yes to back it up, anything else to skip: ")).trim().toLowerCase();
   if (answer2 !== "yes") {
-    deps.stdout.write(`Skipped. Back it up whenever you like with: candle vault backup --to ${ICLOUD_SHORTHAND}
-`);
+    notice(deps, "stdout", "note", `Skipped. Back it up whenever you like with: candle vault backup --to ${ICLOUD_SHORTHAND}
+`.trim());
     return;
   }
   const code = await vaultBackup(["--to", ICLOUD_SHORTHAND, "--keystore", resolved.path], ctx);
   if (code !== 0) {
-    deps.stdout.write(`
+    notice(deps, "stdout", "note", `
 The vault itself is created and verified; only the copy failed. Run it again when you have dealt with the reason above: candle vault backup --to ${ICLOUD_SHORTHAND}
-`);
+`.trim());
   }
 }
 
@@ -102970,14 +103162,21 @@ async function vaultFactorList(args, ctx) {
       return 0;
     }
     for (const row of rows) {
-      deps.stdout.write(`${row.id}  ${row.factor}${row.transport ? `/${row.transport}` : ""}  ${row.domain}  ${row.label || "(no label)"}
-`);
-      deps.stdout.write(`    ${row.availability}${row.reason ? `: ${row.reason}` : ""}
-`);
+      writeFields(deps, "stdout", [
+        ["Id", row.id],
+        ["Factor", `${row.factor}${row.transport ? `/${row.transport}` : ""}`],
+        ["Domain", row.domain],
+        ["Label", row.label]
+      ]);
+      writeFields(deps, "stdout", [
+        ["Availability", row.availability],
+        ["Reason", row.reason]
+      ]);
     }
-    deps.stdout.write(`
-${countRecoverableFactors(file.envelopes)} recoverable factor(s), domains counted once.
-`);
+    writeFields(deps, "stdout", [
+      ["Recoverable factors", countRecoverableFactors(file.envelopes)],
+      ["Counting", "each domain once"]
+    ]);
     return 0;
   });
 }
@@ -103055,15 +103254,15 @@ async function vaultFactorAdd(args, ctx) {
       });
       return 0;
     }
-    deps.stdout.write(`Added passphrase factor ${sealed.id}.
-`);
-    deps.stdout.write(`  strength   ${strengthLabel(envelope.strength)}
-`);
-    deps.stdout.write(`  verified   the vault was re-read and opened with the new passphrase
-`);
-    deps.stdout.write(`
+    writeSuccess(deps, "stdout", `Added passphrase factor ${sealed.id}.
+`.trim());
+    writeFields(deps, "stdout", [
+      ["Strength", strengthLabel(envelope.strength)],
+      ["Verified", "vault re-read and opened with the new passphrase"]
+    ]);
+    notice(deps, "stdout", "warning", `
 ${APPLE_ACCOUNT_NOTICE}
-`);
+`.trim());
     return 0;
   });
 }
@@ -103119,24 +103318,26 @@ async function vaultFactorRemove(args, ctx) {
       writeJson(deps, { ok: true, removedEnvelopeId: id, notRevocation: notice2.join(" ") });
       return 0;
     }
-    deps.stdout.write(`Removed envelope ${id}.
+    writeSuccess(deps, "stdout", `Removed envelope ${id}.
 
-`);
+`.trim());
     for (const line of notice2)
-      deps.stdout.write(`${line}
-`);
-    deps.stdout.write(`
+      notice(deps, "stdout", "warning", `${line}
+`.trim());
+    notice(deps, "stdout", "warning", `
 \`candle vault status\` lists this id from now on, so you can tell which copies it still opens.
-`);
+`.trim());
     return 0;
   });
 }
 async function collectGenerated(ctx) {
   const passphrase = generatePassphrase();
-  ctx.deps.stdout.write(`
-The new passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits. Written down now; it is shown once.
-
-    ${passphrase}
+  writeFields(ctx.deps, "stdout", [
+    ["Words", GENERATED_WORD_COUNT],
+    ["Entropy", `${generatedEntropyBits()} bits`]
+  ], "The new passphrase");
+  notice(ctx.deps, "stdout", "warning", "Written down now; it is shown once.");
+  ctx.deps.stdout.write(`    ${passphrase}
 
 `);
   const typed = await ctx.deps.promptSecret("Type it back in full to confirm (input hidden): ");
@@ -103175,6 +103376,7 @@ async function vaultFactor(args, ctx) {
 // src/commands/vault-fund.ts
 init_args();
 init_evm_lite();
+init_presentation();
 init_render();
 init_solana_endpoint();
 init_errors2();
@@ -103269,8 +103471,8 @@ async function fundExternal(ctx, vault, external3, input) {
   const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, external3.address], solana.rpc, ctx);
   if (reconciled !== null)
     return reconciled;
-  ctx.deps.stdout.write(`Funding external wallet ${external3.label} (${external3.address}) from vault key ${fromEntry.label}. What this wallet holds is what candle sign can spend; fund a session, not a float.
-`);
+  notice(ctx.deps, "stdout", "note", `Funding external wallet ${external3.label} (${external3.address}) from vault key ${fromEntry.label}. What this wallet holds is what candle sign can spend; fund a session, not a float.
+`.trim());
   const plan = await solana.read(() => planTransfer({
     from: fromEntry.address,
     to: external3.address,
@@ -103385,8 +103587,8 @@ async function vaultFund(args, ctx) {
       });
     }
     assertVaultSigner(fromEntry);
-    ctx.deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
-`);
+    notice(ctx.deps, "stdout", "note", `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
+`.trim());
     const plan = await solana.read(() => planTransfer({
       from: fromEntry.address,
       to: teeAddress,
@@ -103499,8 +103701,8 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
     ctx.deps.stderr.write(`${hoodHostLine(client, "the chain id")}
 `);
     await assertHoodChain(client);
-    ctx.deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
-`);
+    notice(ctx.deps, "stdout", "note", `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
+`.trim());
     return runEvmTransfer({
       ctx,
       rpcUrl: client.url,
@@ -103520,6 +103722,8 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
 
 // src/commands/vault-import-legacy.ts
 init_args();
+init_human_output();
+init_presentation();
 import { readFile as readFile17 } from "node:fs/promises";
 init_ed255192();
 init_errors2();
@@ -103856,32 +104060,39 @@ function reportDone(ctx, result) {
     return 0;
   }
   if (result.idempotent && result.migrated === 0) {
-    deps.stdout.write(`Every address in ${result.path} is already in the vault; nothing was written.
-`);
+    notice(deps, "stdout", "note", `Every address in ${result.path} is already in the vault; nothing was written.
+`.trim());
   } else {
-    deps.stdout.write(`Migrated ${result.migrated} TEE wallet key(s) from ${result.path} into ${result.vaultPath}.
-`);
+    writeFields(deps, "stdout", [
+      ["Keys", result.migrated],
+      ["From", result.path],
+      ["Vault", result.vaultPath]
+    ], "TEE wallet keys migrated");
     for (const row of result.addresses) {
-      deps.stdout.write(`  ${row.address}  ${row.lifecycle}  ${row.label || "(none)"}
-`);
+      writeFields(deps, "stdout", [
+        ["Address", row.address],
+        ["Lifecycle", row.lifecycle],
+        ["Label", row.label]
+      ]);
     }
     if (result.skipped > 0) {
-      deps.stdout.write(`Skipped ${result.skipped} address(es) already present in the vault.
-`);
+      notice(deps, "stdout", "note", `Skipped ${result.skipped} address(es) already present in the vault.
+`.trim());
     }
   }
-  deps.stdout.write(`
+  notice(deps, "stdout", "note", `
 The Phase 1 file was left in place. A 0.9.x binary reading it still sees that stale copy; sweep records written into the vault are not mirrored back. Run \`candle vault retire-legacy\` after a verified backup to rename it.
-`);
-  deps.stdout.write(`The recovery phrase does not restore these entries; the vault file plus a factor does.
-`);
+`.trim());
+  notice(deps, "stdout", "note", `The recovery phrase does not restore these entries; the vault file plus a factor does.
+`.trim());
   return 0;
 }
 
 // src/commands/vault-list.ts
 init_args();
 init_evm_lite();
-init_render();
+init_human_output();
+init_presentation();
 init_solana_endpoint();
 init_solana_lite();
 init_store();
@@ -104009,8 +104220,8 @@ async function vaultList(args, ctx) {
     const rpcHost = solanaClient?.endpoint.host;
     if (balances && solana.length > 0 && solanaClient !== undefined) {
       await solanaClient.disclose();
-      deps.stderr.write(`Reading SOL for ${solana.length} addresses from ${rpcHost}, in ${requests} ${requests === 1 ? "request" : "requests"}. That endpoint sees all ${solana.length} together.
-`);
+      notice(deps, "stderr", "note", `Reading SOL for ${solana.length} addresses from ${rpcHost}, in ${requests} ${requests === 1 ? "request" : "requests"}. That endpoint sees all ${solana.length} together.
+`.trim());
     }
     let lamports = new Map;
     let unavailable6 = [];
@@ -104024,19 +104235,19 @@ async function vaultList(args, ctx) {
     const solanaComplete = unavailable6.length === 0;
     const totalLamports = [...lamports.values()].reduce((sum, value) => sum + value, 0n);
     if (!solanaComplete) {
-      deps.stderr.write(`${unavailable6.length} ${unavailable6.length === 1 ? "address" : "addresses"} could not be read: ${failure2 ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
-`);
+      notice(deps, "stderr", "warning", `${unavailable6.length} ${unavailable6.length === 1 ? "address" : "addresses"} could not be read: ${failure2 ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
+`.trim());
     }
     const evm = balances ? matched.filter((entry) => entry.chain === "evm") : [];
     let evmRead2;
     if (evm.length > 0) {
       const host = rpcHostOf2(evmRpcUrl);
-      deps.stderr.write(`Reading ETH (and USDG when the chain is Hood) for ${evm.length} EVM ${evm.length === 1 ? "address" : "addresses"} from ${host}, in ${evmRequestsPlanned(evm.length)} requests. That endpoint sees all ${evm.length} together.
-`);
+      notice(deps, "stderr", "note", `Reading ETH (and USDG when the chain is Hood) for ${evm.length} EVM ${evm.length === 1 ? "address" : "addresses"} from ${host}, in ${evmRequestsPlanned(evm.length)} requests. That endpoint sees all ${evm.length} together.
+`.trim());
       evmRead2 = await readEvmBalances(evm.map((entry) => entry.address), evmRpcUrl, deps.fetch);
       if (evmRead2.unavailable.length > 0) {
-        deps.stderr.write(`${evmRead2.unavailable.length} EVM ${evmRead2.unavailable.length === 1 ? "address" : "addresses"} could not be read: ${evmRead2.failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --evm-rpc-url.
-`);
+        notice(deps, "stderr", "warning", `${evmRead2.unavailable.length} EVM ${evmRead2.unavailable.length === 1 ? "address" : "addresses"} could not be read: ${evmRead2.failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --evm-rpc-url.
+`.trim());
       }
     }
     const hood = evmRead2?.chainId === BigInt(HOOD_CHAIN_ID);
@@ -104081,13 +104292,16 @@ async function vaultList(args, ctx) {
       return complete ? 0 : 3;
     }
     if (matched.length === 0 && filter !== undefined) {
-      deps.stdout.write(`No key matches "${filter}". ${all.length} keys in this vault; candle vault list with no filter lists them.
-`);
+      notice(deps, "stdout", "note", `No key matches "${filter}". ${all.length} keys in this vault; candle vault list with no filter lists them.
+`.trim());
       return 0;
     }
-    deps.stdout.write(filter === undefined ? `${all.length} keys in ${path}
-` : `${matched.length} of ${all.length} keys match "${filter}" in ${path}
-`);
+    writeFields(deps, "stdout", [
+      ["Vault", path],
+      ["Keys", all.length],
+      ["Matching", matched.length],
+      ["Filter", filter]
+    ]);
     const headers2 = ["ADDRESS", "LABEL", "ROLE", "DERIVATION"];
     if (balances)
       headers2.push("SOL");
@@ -104098,41 +104312,44 @@ async function vaultList(args, ctx) {
     if (evmColumns && hood)
       headers2.push("USDG");
     const rows = matched.map((entry) => {
-      const row = [entry.address, entry.label || "(none)", entry.role, entry.derivation?.path ?? "-"];
+      const row = [
+        entry.address,
+        entry.label || symbols(terminalStyle(deps, "stdout")).missing,
+        entry.role,
+        entry.derivation?.path ?? symbols(terminalStyle(deps, "stdout")).missing
+      ];
       if (balances) {
         const held = lamports.get(entry.address);
-        row.push(entry.chain !== "solana" ? "-" : held === undefined ? "?" : formatSol3(held));
+        row.push(held === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatSol3(held));
       }
       if (evmColumns) {
         const wei = evmRead2?.wei.get(entry.address);
-        row.push(entry.chain !== "evm" ? "-" : wei === undefined ? "?" : formatUnits(wei, NATIVE_DECIMALS));
+        row.push(wei === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatUnits(wei, NATIVE_DECIMALS));
         if (hood) {
           const usdg = evmRead2?.usdg.get(entry.address);
-          row.push(entry.chain !== "evm" ? "-" : usdg === undefined ? "?" : formatUnits(usdg, HOOD_USDG_DECIMALS));
+          row.push(usdg === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatUnits(usdg, HOOD_USDG_DECIMALS));
         }
       }
       return row;
     });
-    deps.stdout.write(`
-${renderTable(headers2, rows)}
-`);
+    writeTable(deps, "stdout", headers2, rows, headers2.map((_, i) => i === 0 ? { id: true } : i === 1 ? { priority: 2 } : i === 3 ? { priority: 3 } : i >= 4 ? { align: "right", priority: 1 } : {}));
     if (balances) {
-      deps.stdout.write(solanaComplete ? `
+      notice(deps, "stdout", "note", (solanaComplete ? `
 total  ${formatSol3(totalLamports)} SOL across ${solana.length} keys
 ` : `
 total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable6.length} of ${solana.length} keys read
-`);
+`).trim());
     }
     if (evmRead2 !== undefined) {
       const totalWei = [...evmRead2.wei.values()].reduce((sum, value) => sum + value, 0n);
       const readCount = evm.length - evmRead2.unavailable.length;
       const chain2 = evmRead2.chainId === undefined ? "an unread chain" : hood ? "Hood" : `chain id ${evmRead2.chainId}`;
-      deps.stdout.write(`total  ${formatUnits(totalWei, NATIVE_DECIMALS)} ${nativeHeader} across ${readCount}${readCount === evm.length ? "" : ` of ${evm.length}`} EVM keys${readCount === evm.length ? "" : " read"} on ${chain2}
-`);
+      notice(deps, "stdout", "note", `total  ${formatUnits(totalWei, NATIVE_DECIMALS)} ${nativeHeader} across ${readCount}${readCount === evm.length ? "" : ` of ${evm.length}`} EVM keys${readCount === evm.length ? "" : " read"} on ${chain2}
+`.trim());
       if (hood) {
         const totalUsdg = [...evmRead2.usdg.values()].reduce((sum, value) => sum + value, 0n);
-        deps.stdout.write(`total  ${formatUnits(totalUsdg, HOOD_USDG_DECIMALS)} USDG across those keys
-`);
+        notice(deps, "stdout", "note", `total  ${formatUnits(totalUsdg, HOOD_USDG_DECIMALS)} USDG across those keys
+`.trim());
       }
     }
     return complete ? 0 : 3;
@@ -104158,6 +104375,8 @@ async function vaultPhrase(args, ctx) {
 init_esm();
 init_args();
 init_deps();
+init_human_output();
+init_presentation();
 init_profiles();
 init_render();
 init_solana_endpoint();
@@ -104276,6 +104495,8 @@ init_wallet_import_flow();
 
 // src/commands/vault-promote-evm.ts
 init_evm_lite();
+init_human_output();
+init_presentation();
 init_render();
 init_errors2();
 init_evm_tee();
@@ -104290,8 +104511,8 @@ function hoodClientFor(ctx, parsed) {
   return client;
 }
 async function promoteHeight(ctx, client) {
-  ctx.deps.stderr.write(`${hoodHostLine(client, "the chain id and the current Hood height")}
-`);
+  notice(ctx.deps, "stderr", "note", `${hoodHostLine(client, "the chain id and the current Hood height")}
+`.trim());
   await assertHoodChain(client);
   return client.rpc.blockNumber();
 }
@@ -104376,9 +104597,9 @@ async function promoteEvmFresh(input, fromLabel) {
     scanStart = await appendScanStart(ctx, vault.path, address, height);
     await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`);
     if (toKey !== undefined) {
-      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")].join(`
+      notice(ctx.deps, "stderr", "note", `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")].join(`
 `)}
-`);
+`.trim());
     }
     if (secret === undefined)
       throw new Error("EVM TEE key was not derived");
@@ -104436,8 +104657,12 @@ async function promoteEvmFresh(input, fromLabel) {
       ...rebound?.json ?? {}
     });
   } else {
-    ctx.deps.stdout.write(`Promoted fresh Hood TEE wallet ${address} at ${derivationPath} (sweep to ${destination.address}). Scan start: Hood block ${scanStart.block}.
-`);
+    writeFields(ctx.deps, "stdout", [
+      ["Address", address],
+      ["Derivation", derivationPath],
+      ["Sweep to", destination.address],
+      ["Hood scan start block", scanStart.block]
+    ], "Fresh Hood TEE wallet promoted");
   }
   return exit;
 }
@@ -104464,11 +104689,11 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
   const height = await promoteHeight(ctx, client);
   const holdings2 = await readEvmHoldings(client.rpc, first.subject.address);
   for (const line of holdingsLines(first.subject.address, holdings2, new Date(ctx.deps.now()).toISOString())) {
-    ctx.deps.stdout.write(`${line}
-`);
+    notice(ctx.deps, "stdout", "note", `${line}
+`.trim());
   }
-  ctx.deps.stdout.write(`Authorities: the signer-role read (mint, freeze, upgrade and stake authorities) is Solana's; nothing is read on Hood, so any contract this key controls is not checked.
-`);
+  notice(ctx.deps, "stdout", "note", `Authorities: the signer-role read (mint, freeze, upgrade and stake authorities) is Solana's; nothing is read on Hood, so any contract this key controls is not checked.
+`.trim());
   printPromoteSentence(ctx, promoteSentence({ n: 1, form: "U", where: "above" }));
   await confirmAddress(ctx, "address", first.subject.address, `promote ${first.subject.address}`);
   ctx.deps.stderr.write(`${renderControlledBy(controlledBy, 1)}
@@ -104563,8 +104788,12 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
       ...rebound?.json ?? {}
     });
   } else if (code === 0 || code === 3) {
-    ctx.deps.stdout.write(`Promoted ${subject.address} in place on Hood (sweep to ${destination.address}). This address never returns to cold. Scan start: Hood block ${scanStart.block}.
-`);
+    writeFields(ctx.deps, "stdout", [
+      ["Address", subject.address],
+      ["Sweep to", destination.address],
+      ["Hood scan start block", scanStart.block],
+      ["Exposure", "This address never returns to cold."]
+    ], "Promoted in place on Hood");
   }
   return exit;
 }
@@ -104617,8 +104846,8 @@ async function vaultPromote(args, ctx) {
 }
 async function rebindAfterImport(ctx, toKey, wallet3, callingKeyPrefix, chain2) {
   if (toKey.keySigner !== undefined && wallet3.importedTo === toKey.target.keyPrefix) {
-    ctx.deps.stderr.write(`${keySignerTradableLine({ target: toKey.target, keySigner: toKey.keySigner })}
-`);
+    notice(ctx.deps, "stderr", "note", `${keySignerTradableLine({ target: toKey.target, keySigner: toKey.keySigner })}
+`.trim());
     return {
       exit: 0,
       json: {
@@ -104640,8 +104869,8 @@ async function rebindAfterImport(ctx, toKey, wallet3, callingKeyPrefix, chain2) 
   const input = { target: toKey.target, callingKeyPrefix, wallets: rebindable, run: run2, notRebindable };
   const report = renderRebindReport(input);
   if (report.length > 0)
-    ctx.deps.stderr.write(`${report}
-`);
+    notice(ctx.deps, "stderr", "note", `${report}
+`.trim());
   const id = wallet3.linkedWalletId;
   return {
     exit: run2 !== undefined && !run2.ok ? 1 : 0,
@@ -104653,9 +104882,9 @@ async function rebindAfterImport(ctx, toKey, wallet3, callingKeyPrefix, chain2) 
   };
 }
 async function confirmResumeRebind(ctx, toKey, chain2) {
-  ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, chain2)].join(`
+  notice(ctx.deps, "stderr", "note", `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, chain2)].join(`
 `)}
-`);
+`.trim());
   const typed = await ctx.deps.promptLine(`Type ${CONFIRM_WORD} to move this wallet to ${toKey.target.keyPrefix}: `);
   if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
     throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", `The acknowledgement is the word ${CONFIRM_WORD}; nothing was moved, and nothing was written.`, { suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.` });
@@ -104748,9 +104977,9 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
     }, ctx.deps));
     await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`);
     if (toKey !== undefined) {
-      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "solana")].join(`
+      notice(ctx.deps, "stderr", "note", `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "solana")].join(`
 `)}
-`);
+`.trim());
     }
     const privateKey = base58.encode(secret64);
     wipe(secret64);
@@ -104800,8 +105029,10 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
         ...rebound?.json ?? {}
       });
     } else {
-      ctx.deps.stdout.write(`Promoted fresh TEE wallet ${address} (sweep to ${destination.address}).
-`);
+      writeFields(ctx.deps, "stdout", [
+        ["Address", address],
+        ["Sweep to", destination.address]
+      ], "Fresh TEE wallet promoted");
     }
     return exit;
   });
@@ -104809,7 +105040,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
 async function refuseWithoutRoom(ctx) {
   const read2 = await readAccountRoom(ctx);
   if (!read2.ok) {
-    ctx.deps.stderr.write(unreadableRoomLine(read2.reason));
+    notice(ctx.deps, "stderr", "note", unreadableRoomLine(read2.reason).trim());
     return;
   }
   const refusal3 = singleRoomRefusal(read2.room);
@@ -104889,8 +105120,8 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
           ...rebound2.json
         });
       } else {
-        ctx.deps.stdout.write(`Resumed ${existing.address}: grant adopted; no re-import.
-`);
+        writeSuccess(ctx.deps, "stdout", `Resumed ${existing.address}: grant adopted; no re-import.
+`.trim());
       }
       return rebound2.exit;
     }
@@ -104921,8 +105152,8 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     const host = solana.endpoint.host;
     await solana.read(() => displayHoldings(ctx, rpc, first.subject.address));
     const roles = await runRoleCheck(ctx, rpc, [first.subject.address]);
-    ctx.deps.stdout.write(`${authoritiesBlock(host, roles)}
-`);
+    notice(ctx.deps, "stdout", "note", `${authoritiesBlock(host, roles)}
+`.trim());
     printPromoteSentence(ctx, promoteSentence({ n: 1, form: sentenceForm(roles), k: keysWithFindings(roles), where: "above" }));
     await confirmAddress(ctx, "address", first.subject.address, `promote ${first.subject.address}`);
     ctx.deps.stderr.write(`${renderControlledBy(controlledBy, 1)}
@@ -105014,8 +105245,11 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
         ...rebound?.json ?? {}
       });
     } else if (code === 0 || code === 3) {
-      ctx.deps.stdout.write(`Promoted ${subject.address} in place (sweep to ${destination.address}). This address never returns to cold.
-`);
+      writeFields(ctx.deps, "stdout", [
+        ["Address", subject.address],
+        ["Sweep to", destination.address],
+        ["Exposure", "This address never returns to cold."]
+      ], "Promoted in place");
     }
     return exit;
   });
@@ -105048,8 +105282,8 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
       }, 1);
     }
     if (announceGrant)
-      ctx.deps.stdout.write(`This profile acts as account ${cached}.
-`);
+      notice(ctx.deps, "stdout", "note", `This profile acts as account ${cached}.
+`.trim());
     await confirmations.confirmAccount(cached);
     assertedAccount = cached;
   }
@@ -105092,8 +105326,8 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
     if (ctx.json)
       writeJson(ctx.deps, { ok: false, lifecycle: "stranded", address: entry.address });
     else
-      ctx.deps.stdout.write(`${stranded}
-`);
+      notice(ctx.deps, "stdout", "note", `${stranded}
+`.trim());
     return { exit: 1 };
   }
   const adoption = await adoptGrantedRow(ctx, entry, verdict.row, verdict.account, {
@@ -105137,8 +105371,8 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
       importCalls: 0
     });
   } else {
-    ctx.deps.stdout.write(`Resumed ${entry.address}: grant adopted; no re-import.
-`);
+    writeSuccess(ctx.deps, "stdout", `Resumed ${entry.address}: grant adopted; no re-import.
+`.trim());
   }
   return { exit: 0, adopted };
 }
@@ -105149,18 +105383,23 @@ async function displayHoldings(ctx, rpc, address) {
     ...await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
     ...await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
   ];
-  ctx.deps.stdout.write(`Holdings at ${address} (observed ${observedAt}):
-`);
-  ctx.deps.stdout.write(`  SOL   ${lamports} lamports
-`);
+  writeFields(ctx.deps, "stdout", [
+    ["Address", address],
+    ["Observed at", formatTime(observedAt)]
+  ], "Holdings");
+  writeFields(ctx.deps, "stdout", [["SOL (lamports)", lamports.toString()]]);
   for (const t of tokens) {
     const program = t.programId === TOKEN_PROGRAM_ID ? "token" : "token-2022";
-    ctx.deps.stdout.write(`  token ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp, ${program})
-`);
+    writeFields(ctx.deps, "stdout", [
+      ["Mint", t.mint],
+      ["Raw amount", t.amountRaw],
+      ["Decimals", t.decimals],
+      ["Program", program]
+    ]);
   }
   if (tokens.length === 0)
-    ctx.deps.stdout.write(`  (no token accounts under either program)
-`);
+    notice(ctx.deps, "stdout", "note", `  (no token accounts under either program)
+`.trim());
 }
 async function runTeeImport(ctx, opts) {
   const report = opts.report ?? "write";
@@ -105281,7 +105520,8 @@ init_esm();
 init_args();
 init_deps();
 init_evm_lite();
-init_render();
+init_human_output();
+init_presentation();
 init_solana_endpoint();
 init_solana_lite();
 init_ed255192();
@@ -105749,8 +105989,8 @@ async function vaultPromoteBatch(args, ctx) {
     });
     let current = hold(opened.vault);
     assertRecoverableFactorExists(current.file.envelopes);
-    deps.stderr.write(`✓ ${rows.length} rows read from ${pairsFile}
-`);
+    writeSuccess(deps, "stderr", `${rows.length} rows read from ${pairsFile}
+`.trim());
     const chain2 = batchChain(current.index, rows);
     if (chain2 === "mixed") {
       throw new VaultError("SOLANA_COMMAND_EVM_KEY", `${pairsFile} names both Solana and EVM keys; a promote-batch run is one chain.`, { suggestion: "Nothing was written. Split the file into a Solana file and an EVM file and run each." });
@@ -105781,8 +106021,8 @@ async function vaultPromoteBatch(args, ctx) {
     const planned = preflight.planned;
     const acting = planned.filter((item) => item.kind !== "skip");
     const destinations2 = actingDestinations(planned);
-    deps.stderr.write(`✓ preflight: ${rows.length} rows, ${destinations2.length} destinations, no conflicts
-`);
+    writeSuccess(deps, "stderr", `preflight: ${rows.length} rows, ${destinations2.length} destinations, no conflicts
+`.trim());
     const promotes = planned.filter((item) => item.kind === "promote").length;
     const roomRead = await readAccountRoom(ctx);
     if (!roomRead.ok)
@@ -105814,8 +106054,8 @@ async function vaultPromoteBatch(args, ctx) {
     let host;
     if (hood !== undefined) {
       host = hood.host;
-      deps.stderr.write(`${hoodHostLine(hood, "the chain id, the Hood height and each key's ETH")}
-`);
+      notice(deps, "stderr", "note", `${hoodHostLine(hood, "the chain id, the Hood height and each key's ETH")}
+`.trim());
       await assertHoodChain(hood);
       try {
         hoodHeight = await hood.rpc.blockNumber();
@@ -105827,8 +106067,8 @@ async function vaultPromoteBatch(args, ctx) {
           balances.set(address, held.eth);
         }
         lamports = balances;
-        deps.stderr.write(`✓ ETH, USDG and WETH read for ${addresses.length} addresses (${addresses.length * 3} requests)
-`);
+        writeSuccess(deps, "stderr", `ETH, USDG and WETH read for ${addresses.length} addresses (${addresses.length * 3} requests)
+`.trim());
       } catch (error) {
         readError = error instanceof Error ? error.message : String(error);
       }
@@ -105841,8 +106081,8 @@ async function vaultPromoteBatch(args, ctx) {
       try {
         const accounts = await rpc.getMultipleAccounts(addresses);
         lamports = new Map(addresses.map((address, at3) => [address, accounts[at3]?.lamports ?? 0n]));
-        deps.stderr.write(`✓ SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)
-`);
+        writeSuccess(deps, "stderr", `SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)
+`.trim());
       } catch (error) {
         if (isRateLimited(error))
           rateLimited = error;
@@ -105851,8 +106091,8 @@ async function vaultPromoteBatch(args, ctx) {
     }
     let tokenCounts;
     if (readTokens && lamports !== undefined && rpc !== undefined) {
-      deps.stderr.write(`Reading token accounts for ${addresses.length} addresses: ${addresses.length * 2} requests over ${host}.
-`);
+      notice(deps, "stderr", "note", `Reading token accounts for ${addresses.length} addresses: ${addresses.length * 2} requests over ${host}.
+`.trim());
       tokenCounts = new Map;
       for (const address of addresses) {
         const classic = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID);
@@ -105873,11 +106113,18 @@ async function vaultPromoteBatch(args, ctx) {
         elapsedMs: 0
       };
     } else if (lamports !== undefined && actingAddresses.length > 0 && rpc !== undefined) {
-      deps.stderr.write(`${checkOpeningLine(actingAddresses.length, host)}
-`);
+      notice(deps, "stderr", "note", `${checkOpeningLine(actingAddresses.length, host)}
+`.trim());
       roles = await runRoleCheck(ctx, rpc, actingAddresses);
     }
-    const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd, roles, evmHoldings });
+    const table = renderBatchTable(planned, {
+      lamports,
+      tokenCounts,
+      hasValueUsd,
+      roles,
+      evmHoldings,
+      style: terminalStyle(deps, "stderr")
+    });
     const footer = renderFooter({
       file: pairsFile,
       planned,
@@ -105896,9 +106143,8 @@ async function vaultPromoteBatch(args, ctx) {
     if (readError !== undefined) {
       deps.stderr.write(`
 ${table}
-
-${footer}
 `);
+      notice(deps, "stderr", "note", footer);
       if (rateLimited !== undefined)
         throw rpcRateLimitedError(ctx, host, rateLimited);
       throw new VaultError("VAULT_UNREADABLE", `The ${hood !== undefined ? "ETH" : "SOL"} read over ${host} failed: ${readError}. Nothing was written.`, {
@@ -105920,10 +106166,9 @@ ${footer}
       if (rebindPhase === undefined || rebindable === undefined || rebindable.wallets.length === 0) {
         deps.stderr.write(`
 ${table}
-
-${footer}
-Nothing to do: every row already landed.
 `);
+        notice(deps, "stderr", "note", footer);
+        notice(deps, "stderr", "note", "Nothing to do: every row already landed.");
         return finish(ctx, {
           file: pairsFile,
           rows: rows.length,
@@ -105938,13 +106183,12 @@ Nothing to do: every row already landed.
       const n = rebindable.wallets.length;
       deps.stderr.write(`
 ${table}
-
-${footer}
-Every row already landed; ${n} wallet${n === 1 ? "" : "s"} to rebind.
 `);
-      deps.stderr.write(`
+      notice(deps, "stderr", "note", footer);
+      notice(deps, "stderr", "note", `Every row already landed; ${n} wallet${n === 1 ? "" : "s"} to rebind.`);
+      notice(deps, "stderr", "note", `
 ${renderControlledBy(controlledBy, n)}
-`);
+`.trim());
       const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to move ${n === 1 ? "this wallet" : `these ${n} wallets`} to ${rebindPhase.toKey.target.keyPrefix}: `);
       if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
         throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", `The acknowledgement is the word ${CONFIRM_WORD}; nothing was moved, and nothing was written.`, { suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.` });
@@ -105970,12 +106214,11 @@ ${renderControlledBy(controlledBy, n)}
       where: "below"
     }));
     deps.stderr.write(`${table}
-
-${footer}
 `);
-    deps.stderr.write(`
+    notice(deps, "stderr", "note", footer);
+    notice(deps, "stderr", "note", `
 ${renderControlledBy(controlledBy, acting.length)}
-`);
+`.trim());
     await confirmPromotion(ctx, acting.length);
     const now = new Date(deps.now()).toISOString();
     const results = [];
@@ -106066,8 +106309,8 @@ ${renderControlledBy(controlledBy, acting.length)}
             remoteAuthority: imported.submitted.remoteAuthority ?? null,
             importCalls: 1
           });
-          deps.stderr.write(`✓ ${String(done).padStart(width)}/${acting.length}  ${subject2.label}  ${shortAddress(subject2.address)}  enabled
-`);
+          writeSuccess(deps, "stderr", `${String(done).padStart(width)}/${acting.length}  ${subject2.label}  ${shortAddress(subject2.address)}  enabled
+`.trim());
           continue;
         }
         const { subject, row, destinationAddress, account } = item;
@@ -106106,8 +106349,8 @@ ${renderControlledBy(controlledBy, acting.length)}
           remoteAuthority: resumed.adopted?.remoteAuthority ?? null,
           importCalls: 0
         });
-        deps.stderr.write(`✓ ${String(done).padStart(width)}/${acting.length}  ${subject.label}  ${shortAddress(subject.address)}  resumed
-`);
+        writeSuccess(deps, "stderr", `${String(done).padStart(width)}/${acting.length}  ${subject.label}  ${shortAddress(subject.address)}  resumed
+`.trim());
       }
     } catch (error) {
       stopped = {
@@ -106133,8 +106376,8 @@ ${renderControlledBy(controlledBy, acting.length)}
         };
         const report = renderRebindReport(notReached);
         if (report.length > 0)
-          deps.stderr.write(`${report}
-`);
+          notice(deps, "stderr", "note", `${report}
+`.trim());
       }
       if (ctx.json) {
         writeJson(deps, {
@@ -106156,8 +106399,8 @@ ${renderControlledBy(controlledBy, acting.length)}
           ...notReached !== undefined ? rebindJson(notReached, chain2) : {}
         });
       } else {
-        deps.stderr.write(`${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}
-`);
+        notice(deps, "stderr", "note", `${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}
+`.trim());
       }
       return stopped.exit;
     }
@@ -106189,12 +106432,12 @@ async function runRebindPhase(ctx, phase, results) {
   };
   const report = renderRebindReport(input);
   if (report.length > 0)
-    ctx.deps.stderr.write(`${report}
-`);
+    notice(ctx.deps, "stderr", "note", `${report}
+`.trim());
   const keySigner = phase.toKey.keySigner;
   if (keySigner !== undefined && results.some((row) => phase.importedTo.get(row.address) === phase.toKey.target.keyPrefix)) {
-    ctx.deps.stderr.write(`${keySignerTradableLine({ target: phase.toKey.target, keySigner })}
-`);
+    notice(ctx.deps, "stderr", "note", `${keySignerTradableLine({ target: phase.toKey.target, keySigner })}
+`.trim());
   }
   return { phase, run: run2, input };
 }
@@ -106320,7 +106563,7 @@ function renderBatchTable(planned, opts) {
   const rows = planned.map((item) => {
     const address = item.subject.address;
     const state = item.kind === "promote" ? item.acceptedUnknown ? "promote*" : "promote" : item.kind === "resume" ? "resume" : "skip";
-    const destination = item.kind === "promote" ? destinationCell(item.destination.label, item.destination.address) : destinationCell(item.row.destination, item.destinationAddress);
+    const destination = item.kind === "promote" ? `${item.destination.label} (${item.destination.address})` : `${item.row.destination} (${item.destinationAddress})`;
     const authority = item.kind === "skip" ? "" : opts.roles === undefined ? "?" : authorityCell(address, opts.roles);
     const cells = [String(item.row.line), state, item.subject.label, address, destination, authority];
     const lamports = opts.lamports?.get(address);
@@ -106336,7 +106579,7 @@ function renderBatchTable(planned, opts) {
       cells.push(item.row.valueUsd ?? "");
     return cells;
   });
-  return renderTable(headers2, rows);
+  return renderHumanTable(headers2, rows, opts.style ?? terminalStyle({ env: {}, isTTY: { stdin: false, stdout: false, stderr: false } }, "stderr"), headers2.map((_, i) => i === 0 || i === 1 || i === 3 || i === 4 || i === 5 ? { id: true } : i === 2 ? { priority: 2 } : { align: "right", priority: 1 }));
 }
 function renderFooter(opts) {
   const skipped = opts.planned.filter((item) => item.kind === "skip").length;
@@ -106385,10 +106628,10 @@ function renderFooter(opts) {
 }
 function reportPartial(ctx, opts) {
   const remaining = opts.acting - opts.landed;
-  ctx.deps.stderr.write(`
+  notice(ctx.deps, "stderr", "note", (`
 ${opts.landed} of ${opts.acting} rows landed and ARE in the vault; the vault is intact. ${remaining} remain.
 ` + `Re-run the same file: the rows that landed are skipped, an interrupted row resumes, and the rest are promoted.
-`);
+`).trim());
 }
 function finish(ctx, opts) {
   const promoted = opts.keys.filter((r) => r.state === "promoted").length;
@@ -106415,26 +106658,23 @@ function finish(ctx, opts) {
     });
     return exit;
   }
-  const parts = [];
-  if (promoted > 0)
-    parts.push(`${promoted} address${promoted === 1 ? "" : "es"} promoted under one unlock, each committed on its own`);
-  if (resumed > 0)
-    parts.push(`${resumed} resumed`);
-  if (skipped > 0)
-    parts.push(`${skipped} already promoted (skipped)`);
-  ctx.deps.stdout.write(`${parts.join("; ")}.
-`);
+  writeFields(ctx.deps, "stdout", [
+    ["Promoted", promoted],
+    ["Resumed", resumed],
+    ["Already promoted (skipped)", skipped],
+    ["Commit", "one unlock, each committed on its own"]
+  ]);
   if (unverified.length > 0) {
-    ctx.deps.stdout.write(`${unverified.length} import${unverified.length === 1 ? "" : "s"} did not report verified-active: ${unverified.map((r) => r.address).join(", ")}
-`);
+    notice(ctx.deps, "stdout", "note", `${unverified.length} import${unverified.length === 1 ? "" : "s"} did not report verified-active: ${unverified.map((r) => r.address).join(", ")}
+`.trim());
   }
   if (opts.rebound !== undefined) {
     const { input, run: run2 } = opts.rebound;
     const moved = input.wallets.filter((w) => run2?.outcomes.get(w.id)?.state === "rebound").length;
     const already = input.wallets.filter((w) => run2?.outcomes.get(w.id)?.state === "unchanged").length;
     const pending = input.wallets.length - moved - already;
-    ctx.deps.stdout.write(`${moved + already} of ${input.wallets.length + input.notRebindable.length} wallets bound to ${input.target.keyPrefix}${pending > 0 ? `; ${pending} still on ${input.callingKeyPrefix}` : ""}${input.notRebindable.length > 0 ? `; ${input.notRebindable.length} not yet rebindable` : ""}.
-`);
+    notice(ctx.deps, "stdout", "note", `${moved + already} of ${input.wallets.length + input.notRebindable.length} wallets bound to ${input.target.keyPrefix}${pending > 0 ? `; ${pending} still on ${input.callingKeyPrefix}` : ""}${input.notRebindable.length > 0 ? `; ${input.notRebindable.length} not yet rebindable` : ""}.
+`.trim());
   }
   return exit;
 }
@@ -106443,6 +106683,8 @@ function finish(ctx, opts) {
 init_args();
 init_deps();
 init_evm_lite();
+init_human_output();
+init_presentation();
 init_solana_endpoint();
 init_solana_lite();
 import { rm as rm7 } from "node:fs/promises";
@@ -106503,11 +106745,11 @@ async function vaultRestore(args, ctx) {
       throw vaultAlreadyExists(ctx, resolvedVault, `Restoring builds a new vault and never merges into one. Move the existing file aside first, and its sealed EVM record with it if there is one: ${evmRecordPath(path)}.`);
     }
     const sidecarExisted = await fileExists(sidecarPath(path));
-    deps.stdout.write(`${RESTORE_NEW_PASSPHRASE_NOTICE}
+    notice(deps, "stdout", "note", `${RESTORE_NEW_PASSPHRASE_NOTICE}
 
-`);
-    deps.stdout.write(`Type your ${PHRASE_WORDS}-word recovery phrase. It is not echoed, and nothing is written until its checksum checks out.
-`);
+`.trim());
+    notice(deps, "stdout", "note", `Type your ${PHRASE_WORDS}-word recovery phrase. It is not echoed, and nothing is written until its checksum checks out.
+`.trim());
     const typed = await deps.promptSecret(`Recovery phrase (${PHRASE_WORDS} words, input hidden): `);
     const entropy = entropyFromPhrase(typed);
     const vault = await withSecret(entropy, async (rootEntropy) => {
@@ -106530,12 +106772,13 @@ async function vaultRestore(args, ctx) {
     let committed = false;
     try {
       await verifyVaultIntegrity(vault);
-      deps.stdout.write(`
-New vault at ${path}, verified in full (all eight steps).
-`);
-      deps.stdout.write(`${APPLE_ACCOUNT_NOTICE}
+      writeFields(deps, "stdout", [
+        ["Path", path],
+        ["Verified", "in full (all eight steps)"]
+      ], "New vault");
+      notice(deps, "stdout", "note", `${APPLE_ACCOUNT_NOTICE}
 
-`);
+`.trim());
       const solana = rpcUrlFlag === undefined ? undefined : solanaClientFor(ctx, flagEndpoint(rpcUrlFlag));
       const derived = await deriveWithinBounds(ctx, vault, counts, solana);
       const apiKey = await resolveApiKey(deps, ctx.profile);
@@ -106549,8 +106792,8 @@ New vault at ${path}, verified in full (all eight steps).
       if (apiKey !== undefined) {
         matches3 = await matchAgainstAccount(ctx, apiKey, derived);
       } else {
-        deps.stderr.write(`No API key is stored for this profile, so this restore read no exposure at all.
-`);
+        notice(deps, "stderr", "warning", `No API key is stored for this profile, so this restore read no exposure at all.
+`.trim());
       }
       const outcome = await writeRestoredIndex(ctx, vault, derived, matches3, counts);
       committed = true;
@@ -106559,7 +106802,7 @@ New vault at ${path}, verified in full (all eight steps).
       const result = reportRestore(ctx, vault, derived, matches3, outcome, counts, ambient);
       const footer = nonDefaultVaultFooter(resolvedVault);
       if (footer !== undefined)
-        deps.stdout.write(footer);
+        notice(deps, "stdout", "note", footer.trim());
       return result;
     } catch (error) {
       if (!committed)
@@ -106590,11 +106833,11 @@ async function discardIncompleteRestore(ctx, path, sidecarExisted) {
     await rm7(path, { force: true });
     if (!sidecarExisted)
       await rm7(sidecarPath(path), { force: true });
-    ctx.deps.stderr.write(`The vault this run had written at ${path} was removed because the restore did not complete, so a retry starts clean.
-`);
+    notice(ctx.deps, "stderr", "note", `The vault this run had written at ${path} was removed because the restore did not complete, so a retry starts clean.
+`.trim());
   } catch {
-    ctx.deps.stderr.write(`The vault this run had written at ${path} could not be removed; it holds no key entry, and a retry needs it moved aside.
-`);
+    notice(ctx.deps, "stderr", "warning", `The vault this run had written at ${path} could not be removed; it holds no key entry, and a retry needs it moved aside.
+`.trim());
   }
 }
 var RESTORED_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal"];
@@ -106665,8 +106908,8 @@ async function deriveWithinBounds(ctx, vault, counts, solana) {
         consecutiveUnused = used ? 0 : consecutiveUnused + 1;
       }
       set2.scanStoppedAt[branch] = index;
-      ctx.deps.stdout.write(`Gap scan on ${branch} stopped at index ${index - 1} after ${GAP_LIMIT} consecutive indices with no balance, no token account and no signature history.
-`);
+      notice(ctx.deps, "stdout", "note", `Gap scan on ${branch} stopped at index ${index - 1} after ${GAP_LIMIT} consecutive indices with no balance, no token account and no signature history.
+`.trim());
     }
     for (let index = 0;index < counts.evm; index++) {
       set2.entries.push(await deriveOneEvm(vault, root, index));
@@ -106905,83 +107148,85 @@ function teeFieldsFor(row, ctx, network2 = "solana-mainnet") {
 }
 function reportRestore(ctx, vault, derived, matches3, outcome, counts, ambientSolanaEndpoint) {
   const { deps } = ctx;
-  deps.stdout.write(`
+  writeSuccess(deps, "stdout", `
 Recovered ${outcome.entries.length} address(es) from the phrase.
-`);
+`.trim());
   for (const entry of outcome.entries) {
-    deps.stdout.write(`  ${entry.address}  ${entry.derivation?.path}  ${entry.role}${entry.exposure.everRemoteExposed ? "  (this account imported it)" : ""}
-`);
+    writeFields(deps, "stdout", [
+      ["Address", entry.address],
+      ["Derivation", entry.derivation?.path],
+      ["Role", entry.role],
+      ["This account imported it", entry.exposure.everRemoteExposed ? "yes" : "not observed"]
+    ]);
   }
-  deps.stdout.write(`
+  notice(deps, "stdout", "warning", `
 Every one of them is recorded with an unknown history and stays that way: this phrase may have been restored under another account, under another deployment, or outside Candle entirely, and no read can rule that out.
-`);
-  deps.stdout.write(`This vault does not allocate. \`vault new-key\`, \`vault promote --from\` and \`candle external new\` refuse here; the exit is \`candle vault init\` for a fresh root and \`candle vault transfer\` to move funds across.
-`);
-  deps.stdout.write(`The Phase 1 TEE wallet store was not read, and no migrated-tee entry was restored: the phrase does not restore those keys, and the vault file plus a factor does.
-`);
+`.trim());
+  notice(deps, "stdout", "note", `This vault does not allocate. \`vault new-key\`, \`vault promote --from\` and \`candle external new\` refuse here; the exit is \`candle vault init\` for a fresh root and \`candle vault transfer\` to move funds across.
+`.trim());
+  notice(deps, "stdout", "note", `The Phase 1 TEE wallet store was not read, and no migrated-tee entry was restored: the phrase does not restore those keys, and the vault file plus a factor does.
+`.trim());
   let scanHint = false;
   for (const branch of RESTORED_BRANCHES) {
     const bound = counts[branch];
     if (bound === undefined) {
-      deps.stdout.write(`  ${branch}: gap-scanned to index ${(derived.scanStoppedAt[branch] ?? 1) - 1}
-`);
+      writeFields(deps, "stdout", [[branch, `gap-scanned to index ${(derived.scanStoppedAt[branch] ?? 1) - 1}`]]);
     } else if (bound <= 1) {
       scanHint = true;
-      deps.stdout.write(`  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count/--external-count, or with --rpc-url to gap-scan.
-`);
+      notice(deps, "stdout", "note", `  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count/--external-count, or with --rpc-url to gap-scan.
+`.trim());
     }
   }
   if (scanHint && ambientSolanaEndpoint) {
-    deps.stdout.write(`A gap scan runs only with --rpc-url on this command; ${RPC_URL_ENV} and profile settings are not used for it.
-`);
+    notice(deps, "stdout", "note", `A gap scan runs only with --rpc-url on this command; ${RPC_URL_ENV} and profile settings are not used for it.
+`.trim());
   }
   if (counts.evm === 0) {
-    deps.stdout.write(`  evm: none. If this root has EVM keys, re-run with --evm-count <n>; the EVM branch is never gap-scanned.
-`);
+    notice(deps, "stdout", "warning", `  evm: none. If this root has EVM keys, re-run with --evm-count <n>; the EVM branch is never gap-scanned.
+`.trim());
   } else {
-    deps.stdout.write(`  evm: indices 0 to ${counts.evm - 1}, on m/44'/60'/n'/0/0.
-`);
+    writeFields(deps, "stdout", [["EVM", `indices 0 to ${counts.evm - 1}, on m/44'/60'/n'/0/0`]]);
   }
   if (counts.evmTee > 0) {
-    deps.stdout.write(`  evm tee: indices 0 to ${counts.evmTee - 1}, on m/44'/60'/n'/1'/0'. The sealed EVM record is not restored by a phrase: a sweep of these wallets needs --from-block <n> (a Hood block at or before the first transfer in) or --token <0x...> to find tokens beyond USDG and WETH.
-`);
+    notice(deps, "stdout", "note", `  evm tee: indices 0 to ${counts.evmTee - 1}, on m/44'/60'/n'/1'/0'. The sealed EVM record is not restored by a phrase: a sweep of these wallets needs --from-block <n> (a Hood block at or before the first transfer in) or --token <0x...> to find tokens beyond USDG and WETH.
+`.trim());
   }
   if ((matches3.externalListed?.length ?? 0) > 0) {
-    deps.stdout.write(`
+    notice(deps, "stdout", "warning", `
 ${matches3.externalListed?.length} address(es) this account imported are external-branch keys of this root. An external key is never registered with Candle, so this read does not flag them; their history is unknown like every other recovered key's.
-`);
+`.trim());
   }
   if (!matches3.complete) {
     if (matches3.refused !== undefined)
-      deps.stdout.write(`
+      notice(deps, "stdout", "note", `
 ${matches3.refused}: the account was not confirmed.
-`);
-    deps.stdout.write(`
+`.trim());
+    notice(deps, "stdout", "warning", `
 No exposure was recorded: ${matches3.reason ?? "the linked-wallet read did not complete"}.
-`);
-    deps.stdout.write(matches3.refused !== undefined ? `The vault was created, verified and written in full; nothing in it is flagged. Run \`candle vault reconcile-exposure\` once you are on the right profile.
+`.trim());
+    notice(deps, "stdout", "note", (matches3.refused !== undefined ? `The vault was created, verified and written in full; nothing in it is flagged. Run \`candle vault reconcile-exposure\` once you are on the right profile.
 ` : `A partial list that happened to be empty would read as good news, so nothing was flagged at all. Run \`candle vault reconcile-exposure\` once the read succeeds.
-`);
+`).trim());
     return 3;
   }
   if (matches3.unmatched.length > 0) {
-    deps.stdout.write(`
+    notice(deps, "stdout", "note", `
 ${matches3.unmatched.length} address(es) this account imported were NOT derived by this restore:
-`);
+`.trim());
     for (const address of matches3.unmatched)
       deps.stdout.write(`  ${address}
 `);
-    deps.stdout.write(`
+    notice(deps, "stdout", "note", `
 Either this root derives them at an index beyond the bounds used here, in which case a higher --count or --tee-count finds them;
-`);
-    deps.stdout.write(`or they are independent keys this root never produced (a \`wallets import\` of an outside keypair, or a Phase 1 \`tee new\` key), in which case no count will ever find them and only a vault backup plus a factor recovers them.
-`);
+`.trim());
+    notice(deps, "stdout", "warning", `or they are independent keys this root never produced (a \`wallets import\` of an outside keypair, or a Phase 1 \`tee new\` key), in which case no count will ever find them and only a vault backup plus a factor recovers them.
+`.trim());
     return 3;
   }
   closeVault(vault);
-  deps.stdout.write(`
+  notice(deps, "stdout", "note", `
 ${matches3.matched.length} of them are addresses this account imported, and each is flagged as remotely exposed.
-`);
+`.trim());
   return 0;
 }
 async function vaultReconcileExposure(args, ctx) {
@@ -107070,10 +107315,13 @@ async function vaultReconcileExposure(args, ctx) {
       });
       return 0;
     }
-    deps.stdout.write(`Reconciled against account ${read2.account}: ${read2.rows.length} linked wallet(s) read, ${added.length} vault address(es) newly flagged as remotely exposed.
-`);
-    deps.stdout.write(`Nothing was cleared. This command only ever adds exposure: no read can establish that an address is cold.
-`);
+    writeFields(deps, "stdout", [
+      ["Account", read2.account],
+      ["Linked wallets read", read2.rows.length],
+      ["Newly flagged remotely exposed", added.length]
+    ], "Exposure reconciled");
+    notice(deps, "stdout", "note", `Nothing was cleared. This command only ever adds exposure: no read can establish that an address is cold.
+`.trim());
     return 0;
   });
 }
@@ -107081,10 +107329,12 @@ var RESTORE_NEW_PASSPHRASE_NOTICE = "This builds a NEW vault from your 24 words,
 var RESTORE_PASSPHRASE_PROMPT = "Passphrase for the new vault. Press Enter to have one generated (8 words, shown once, typed back), or type own to choose your own (16+ characters, typed twice, never shown): ";
 async function collectGenerated2(ctx) {
   const passphrase = generatePassphrase();
-  ctx.deps.stdout.write(`
-The new vault's passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits. Write it down now; it is shown once.
-
-    ${passphrase}
+  writeFields(ctx.deps, "stdout", [
+    ["Words", GENERATED_WORD_COUNT],
+    ["Entropy", `${generatedEntropyBits()} bits`]
+  ], "The new vault's passphrase");
+  notice(ctx.deps, "stdout", "warning", "Write it down now; it is shown once.");
+  ctx.deps.stdout.write(`    ${passphrase}
 
 `);
   const typed = await ctx.deps.promptSecret("Type it back in full to confirm (input hidden): ");
@@ -107104,6 +107354,9 @@ async function collectOwn2(ctx) {
 
 // src/commands/vault-retire-legacy.ts
 init_args();
+init_human_output();
+init_presentation();
+init_render();
 init_errors2();
 init_sidecar();
 import { rename as rename14, stat as stat6 } from "node:fs/promises";
@@ -107198,12 +107451,15 @@ async function vaultRetireLegacy(args, ctx) {
       });
       return 0;
     }
-    deps.stdout.write(`Renamed ${fromPath} to ${retiredPath}.
-`);
-    deps.stdout.write(`Every address it held is in the vault, and the last verified backup was at ${sidecar.lastVerifiedBackupAt}.
-`);
-    deps.stdout.write(`The file was renamed, not deleted.
-`);
+    writeFields(deps, "stdout", [
+      ["From", fromPath],
+      ["To", retiredPath],
+      ["Last verified backup", formatTime(sidecar.lastVerifiedBackupAt)]
+    ], "Legacy file retired");
+    notice(deps, "stdout", "note", `Every address it held is in the vault, and the last verified backup was at ${sidecar.lastVerifiedBackupAt}.
+`.trim());
+    notice(deps, "stdout", "note", `The file was renamed, not deleted.
+`.trim());
     return 0;
   });
 }
@@ -107961,6 +108217,7 @@ function walletsDisallowLaunch(args, ctx) {
 
 // src/commands/wallets-close-empty.ts
 init_args();
+init_presentation();
 init_render();
 init_solana_alt();
 init_solana_lite();
@@ -108173,8 +108430,8 @@ function sameMessage(unsigned, signed2) {
   }
 }
 function printRecovering(ctx, result, id, wallet3) {
-  ctx.deps.stderr.write(`Not every close is settled on chain yet; nothing will be sent again. Read it again with: candle wallet close-empty --wallet ${safeText(wallet3)} --client-trade-id ${id}
-`);
+  notice(ctx.deps, "stderr", "note", `Not every close is settled on chain yet; nothing will be sent again. Read it again with: candle wallet close-empty --wallet ${safeText(wallet3)} --client-trade-id ${id}
+`.trim());
   printTradingResult(ctx, { ...result, clientTradeId: id });
   return 3;
 }
@@ -108184,8 +108441,8 @@ function printTeeJob(ctx, prior, id, wallet3) {
   if (result.status === "recovering")
     return printRecovering(ctx, prior, id, wallet3);
   if (result.status === "built")
-    ctx.deps.stderr.write(`Operation ${id} was built and never submitted to Candle, so Candle sent nothing; its transactions expire at block height ${safeText(result.expiresAtBlockHeight)}. Run again without --client-trade-id to close under a new id.
-`);
+    notice(ctx.deps, "stderr", "warning", `Operation ${id} was built and never submitted to Candle, so Candle sent nothing; its transactions expire at block height ${safeText(result.expiresAtBlockHeight)}. Run again without --client-trade-id to close under a new id.
+`.trim());
   return printTradingResult(ctx, { ...prior, clientTradeId: id });
 }
 async function closeTee(ctx, key, wallet3, name2, run2) {

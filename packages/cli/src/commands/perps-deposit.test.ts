@@ -29,6 +29,7 @@ import {
   hexToBytes,
   signTransaction,
 } from "../evm-lite"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import {
   RELAY_HOOD_DEPOSIT_ERC20_SELECTOR,
@@ -402,8 +403,8 @@ describe("candle perps deposit from Hood", () => {
       signed: false,
       submitted: false,
     })
-    expect(f.stderr.text).toContain("Dry run: nothing was signed, no wallet is held")
-    expect(f.stderr.text).toContain("Legs, signed one at a time: approval, bridgeDeposit")
+    expect(humanText(f.stderr.text)).toContain(humanText("Dry run: nothing was signed, no wallet is held"))
+    expect(humanText(f.stderr.text)).toContain(humanText("Legs (signed one at a time) approval, bridgeDeposit"))
     expect(paths(f.calls).some((p) => p.endsWith("/sign") || p.endsWith("/deposit/submit"))).toBe(false)
   })
 
@@ -427,8 +428,8 @@ describe("candle perps deposit from Hood", () => {
     const f = await fixture({ legacyApi: true })
     expect(await run(["perps", "deposit", "25", "USDG", "--no-submit", "--json"], f.deps)).toBe(0)
     expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ status: "built", signed: false, submitted: false })
-    expect(f.stderr.text).toContain("predates dry-run deposits")
-    expect(f.stderr.text).toContain("operation op-d holds this wallet until")
+    expect(humanText(f.stderr.text)).toContain(humanText("predates dry-run deposits"))
+    expect(humanText(f.stderr.text)).toContain(humanText("operation op-d holds this wallet until"))
     expect(paths(f.calls).some((p) => p.endsWith("/sign"))).toBe(false)
   })
 
@@ -486,7 +487,7 @@ test("candle perps deposit status reads the job", async () => {
   const f = await fixture()
   expect(await run(["perps", "deposit", "status", "dep-x"], f.deps)).toBe(0)
   expect(f.stdout.text).toContain("submitted")
-  expect(f.stdout.text).toContain("Relay: success")
+  expect(humanText(f.stdout.text)).toContain(humanText("Relay success"))
 })
 
 test("usage: an unknown asset or a bad id is exit 2", async () => {

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { Keypair } from "@solana/web3.js"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import {
   createCapture,
@@ -249,7 +250,7 @@ describe("T37: CC-05 TEE store migration", () => {
       })
       const code = await run(["vault", "import-legacy", "--tee", "--from", teePath, "--keystore", vaultPath], deps)
       expect(code).toBe(0)
-      expect(stdout.text).toContain("already in the vault")
+      expect(humanText(stdout.text)).toContain(humanText("already in the vault"))
     }
 
     // ── strict reader accepts every migrated entry ────────────────────────────────────────

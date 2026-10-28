@@ -5,6 +5,7 @@
  * and no prompt for a secret, and a command that reached for either would throw.
  */
 import { describe, expect, test } from "bun:test"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import {
   type CapturedRequest,
@@ -247,7 +248,7 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
     expect(await run(["tee", "rebind", "tr-01", ADDR_2, "--to-key", TO, "--label-prefix", "cn-"], deps)).toBe(0)
     expect(api.bodies[0]).toEqual({ dryRun: true, toKeyPrefix: TO, wallets: ["tr-01", ADDR_2], labelPrefix: "cn-" })
     expect(api.bodies[1]).toEqual({ toKeyPrefix: TO, walletIds: ["k57", "k58"], expect: { k57: FROM, k58: FROM } })
-    expect(stdout.text).toContain(`Moved 2 wallets to ${TO}. Audit ids: aud1, aud2`)
+    expect(humanText(stdout.text)).toContain(humanText(`Wallets moved 2 To key ${TO} Audit ids aud1, aud2`))
   })
 
   test("L5: the mixed-cap screen, on stderr, and --json stdout parses as one document", async () => {
@@ -260,19 +261,23 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
     expect(screen).toContain("allowLaunch")
     expect(screen).toMatch(/1\s+tr-01\s+7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU\s+B6P-TSRs\s+no/)
     expect(screen).toMatch(/2\s+tr-02\s+\S+\s+B6P-TSRs\s+yes/)
-    expect(screen).toContain("1 already bound to this key: tr-03")
+    expect(humanText(screen)).toContain(humanText("1 already bound to this key: tr-03"))
     // The block: key with label and the paused marker, account, API with the environment.
-    expect(screen).toContain("These 2 wallets will move to:")
-    expect(screen).toContain(`API key         ${TO}  tr-01  (paused)`)
-    expect(screen).toContain("Candle account  Quant-  (FfU8M5…8pPD)")
-    expect(screen).toContain("API             https://api.alpha.candle.tv  (production)")
+    expect(humanText(screen)).toContain(humanText("These 2 wallets will move to:"))
+    expect(humanText(screen)).toContain(humanText(`API key         ${TO}  tr-01  (paused)`))
+    expect(humanText(screen)).toContain(humanText("Candle account  Quant-  (FfU8M5…8pPD)"))
+    expect(humanText(screen)).toContain(humanText("API             https://api.alpha.candle.tv  (production)"))
     // The warnings: USDC only (SOL is ready and is not called blocked), and the launch line.
-    expect(screen).toContain(
-      `Warning: key ${TO} has a USDC cap of 0; it cannot trade USDC-quoted swaps until the cap is raised.`,
+    expect(humanText(screen)).toContain(
+      humanText(`Warning: key ${TO} has a USDC cap of 0; it cannot trade USDC-quoted swaps until the cap is raised.`),
     )
     expect(screen).not.toContain("cannot trade SOL-quoted swaps")
-    expect(screen).toContain(`Warning: key ${TO} lacks launch:write; tr-02 has allowLaunch but cannot launch under it.`)
-    expect(screen).toContain("The relay signer does not move: trade these wallets from the machine that promoted them.")
+    expect(humanText(screen)).toContain(
+      humanText(`Warning: key ${TO} lacks launch:write; tr-02 has allowLaunch but cannot launch under it.`),
+    )
+    expect(humanText(screen)).toContain(
+      humanText("The relay signer does not move: trade these wallets from the machine that promoted them."),
+    )
     // stdout: exactly one document, the server response plus the command.
     const parsed = JSON.parse(stdout.text)
     expect(parsed.command).toBe("tee rebind")
@@ -289,8 +294,10 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
     const { fetch } = createRoutedFetch({ "/api/v1/agent/tee-wallets/rebind": api.handlers })
     const { deps, stderr } = depsFor(fetch)
     expect(await run(["tee", "rebind", "tr-01", "--to-key", TO], deps)).toBe(0)
-    expect(stderr.text).toContain(
-      `Warning: key ${TO} has SOL and USDC caps of 0; it cannot trade SOL-quoted or USDC-quoted swaps until they are raised.`,
+    expect(humanText(stderr.text)).toContain(
+      humanText(
+        `Warning: key ${TO} has SOL and USDC caps of 0; it cannot trade SOL-quoted or USDC-quoted swaps until they are raised.`,
+      ),
     )
     expect(stderr.text).not.toContain("can trade")
     expect(stderr.text).not.toContain("txLimit")
@@ -324,14 +331,14 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
 
     test("Solana-only rows print the SOL/USDC lines and no Hood line", async () => {
       const screen = await screenFor([row("k57", ADDR_1, "solana")])
-      expect(screen).toContain(usdcLine)
+      expect(humanText(screen)).toContain(humanText(usdcLine))
       expect(screen).not.toContain("ETH")
       expect(screen).not.toContain("USDG")
     })
 
     test("Hood-only rows print the ETH/USDG lines and no Solana line", async () => {
       const screen = await screenFor([row("k60", "0xabc0000000000000000000000000000000000001", "evm")])
-      expect(screen).toContain(ethLine)
+      expect(humanText(screen)).toContain(humanText(ethLine))
       expect(screen).not.toContain("SOL")
       expect(screen).not.toContain("USDC")
     })
@@ -341,8 +348,8 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
         row("k57", ADDR_1, "solana"),
         row("k60", "0xabc0000000000000000000000000000000000001", "evm"),
       ])
-      expect(screen).toContain(usdcLine)
-      expect(screen).toContain(ethLine)
+      expect(humanText(screen)).toContain(humanText(usdcLine))
+      expect(humanText(screen)).toContain(humanText(ethLine))
     })
 
     test("both Hood caps at zero are one line; a Hood key with no zero cap prints nothing", async () => {
@@ -350,8 +357,10 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
         ...mixedKey,
         hoodTradeReady: { eth: false, usdg: false },
       })
-      expect(bothZero).toContain(
-        `Warning: key ${TO} has ETH and USDG caps of 0; it cannot trade ETH-quoted or USDG-quoted swaps until they are raised.`,
+      expect(humanText(bothZero)).toContain(
+        humanText(
+          `Warning: key ${TO} has ETH and USDG caps of 0; it cannot trade ETH-quoted or USDG-quoted swaps until they are raised.`,
+        ),
       )
       const ready = await screenFor([row("k60", "0xabc0000000000000000000000000000000000001", "evm")], {
         ...mixedKey,
@@ -362,7 +371,7 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
 
     test("an older API: a row without chain reads as Solana, and no hoodTradeReady prints no Hood line", async () => {
       const { hoodTradeReady: _, ...olderKey } = mixedKey
-      expect(await screenFor([row("k57", ADDR_1)], olderKey)).toContain(usdcLine)
+      expect(humanText(await screenFor([row("k57", ADDR_1)], olderKey))).toContain(humanText(usdcLine))
       const hoodRow = await screenFor([row("k60", "0xabc0000000000000000000000000000000000001", "evm")], olderKey)
       expect(hoodRow).not.toContain("Warning:")
     })
@@ -382,7 +391,7 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
     const { fetch } = createRoutedFetch({ "/api/v1/agent/tee-wallets/rebind": api.handlers })
     const { deps, stdout } = depsFor(fetch, { answers: [] })
     expect(await run(["tee", "rebind", "tr-03", "--to-key", TO], deps)).toBe(0)
-    expect(stdout.text).toContain("Nothing to move")
+    expect(humanText(stdout.text)).toContain(humanText("Nothing to move"))
     expect(api.bodies).toHaveLength(1)
   })
 })
@@ -416,8 +425,10 @@ describe("L6: refusals", () => {
     })
     const { deps, stderr } = depsFor(fetch)
     expect(await run(["tee", "rebind", "tr-01", "--to-key", TO], deps)).toBe(1)
-    expect(stderr.text).toContain(`Stop the agent on key ${FROM} (candle keys stop ${FROM}), then run this again after`)
-    expect(stderr.text).toContain(new Date(retryAfter).toLocaleString())
+    expect(humanText(stderr.text)).toContain(
+      humanText(`Stop the agent on key ${FROM} (candle keys stop ${FROM}), then run this again after`),
+    )
+    expect(humanText(stderr.text)).toContain(humanText(new Date(retryAfter).toLocaleString()))
   })
 
   test("REBIND_FORWARD_OPEN prints the in-flight line and never a 30-minute wait", async () => {
@@ -430,7 +441,9 @@ describe("L6: refusals", () => {
     })
     const { deps, stderr, stdout } = depsFor(fetch)
     expect(await run(["tee", "rebind", "tr-01", "--to-key", TO], deps)).toBe(1)
-    expect(stderr.text).toContain("A sign for these wallets is still in flight or not yet expired; nothing changed.")
+    expect(humanText(stderr.text)).toContain(
+      humanText("A sign for these wallets is still in flight or not yet expired; nothing changed."),
+    )
     expect(`${stderr.text}${stdout.text}`).not.toMatch(/30.minute/)
   })
 
@@ -505,7 +518,7 @@ describe("L9: tee rebinds", () => {
     expect(stdout.text).toContain("dvc12345")
     expect(stdout.text).toContain(FROM)
     expect(stdout.text).toContain(TO)
-    expect(stdout.text).toContain("revoke a device you do not recognise from the portal")
+    expect(humanText(stdout.text)).toContain(humanText("revoke a device you do not recognise from the portal"))
     expect(calls).toHaveLength(1)
     expect(JSON.stringify(calls[0]?.init.headers)).toContain("Bearer cndl_dvc_x")
   })

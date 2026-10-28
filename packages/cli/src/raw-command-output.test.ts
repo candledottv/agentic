@@ -1,23 +1,22 @@
 import { expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import baseline from "./fixtures/raw-command-output.json"
 import { rawProseWrites } from "./raw-command-output.test-support"
 
 test("commands add no raw multi-sentence writes; use the output kit", () => {
   const directory = join(import.meta.dir, "commands")
   const unexpected: Array<{ file: string; prose: string }> = []
-  // Frozen residual prose and machine diagnostics. Part 2 removes converted entries. Do not add new prose to
-  // the baseline: new commands use fields/notices/errors from the kit. Held TUI paths are excluded.
-  const allowed: Record<string, string[]> = structuredClone(baseline)
-  for (const file of readdirSync(directory)) {
-    if (!file.endsWith(".ts") || file.endsWith(".test.ts") || ["tui.ts", "core.ts", "core-mcp.ts"].includes(file))
+  // No baseline: release C converts all residual human prose. Held TUI paths stay excluded.
+  for (const file of readdirSync(directory, { recursive: true, encoding: "utf8" })) {
+    if (
+      !file.endsWith(".ts") ||
+      file.endsWith(".test.ts") ||
+      file.startsWith("__fixtures__/") ||
+      ["tui.ts", "core.ts", "core-mcp.ts"].includes(file)
+    )
       continue
-    const remaining = allowed[file] ?? []
     for (const prose of rawProseWrites(readFileSync(join(directory, file), "utf8"))) {
-      const index = remaining.indexOf(prose)
-      if (index === -1) unexpected.push({ file, prose })
-      else remaining.splice(index, 1)
+      unexpected.push({ file, prose })
     }
   }
   expect(unexpected).toEqual([])
@@ -38,4 +37,20 @@ test("the guard sees concatenation, templates and paragraphs but ignores JSON an
   expect(rawProseWrites('out.write(`${JSON.stringify({message: "First. Second."})}\\n`)')).toEqual([])
   // biome-ignore lint/suspicious/noTemplateCurlyInString: literal source code for the parser.
   expect(rawProseWrites("out.write(`Address: ${address}\\n`)")).toEqual([])
+})
+
+test("the guard permits machine diagnostics and kit calls, without letting JSON hide adjacent prose", () => {
+  expect(rawProseWrites('if (ctx.json) deps.stderr.write("Machine diagnostic. Next step.")')).toEqual([])
+  expect(rawProseWrites('if (ctx.json) {} else deps.stderr.write("Human prose. Next step.")')).toEqual([
+    "Human prose. Next step.",
+  ])
+  expect(rawProseWrites('out.write(fields([["Fact", "Value. Advice."]], style).join("\\n"))')).toEqual([])
+  expect(rawProseWrites('out.write("First sentence. Second sentence. " + JSON.stringify(data))')).toEqual([
+    "First sentence. Second sentence.",
+  ])
+  expect(rawProseWrites('out.write(ok ? "First outcome." : "Other outcome.")')).toEqual([])
+  expect(rawProseWrites('out.write("first sentence. second sentence.")')).toEqual(["first sentence. second sentence."])
+  expect(rawProseWrites('out.write(["First sentence.", "Second sentence."].join("\\n"))')).toEqual([
+    "First sentence. Second sentence.",
+  ])
 })

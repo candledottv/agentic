@@ -45,8 +45,11 @@ export async function quantTerms(args: string[], ctx: CommandContext): Promise<n
     return 1
   }
   if (ctx.json) {
-    ctx.deps.stderr.write(`Quant's terms (version ${version}): ${QUANT_TERMS_URL}\n`)
-    ctx.deps.stderr.write(`Privacy Policy: ${QUANT_PRIVACY_URL}\n`)
+    writeFields(ctx.deps, "stderr", [
+      ["Quant terms version", version],
+      ["Terms", QUANT_TERMS_URL],
+      ["Privacy policy", QUANT_PRIVACY_URL],
+    ])
   } else {
     writeFields(
       ctx.deps,

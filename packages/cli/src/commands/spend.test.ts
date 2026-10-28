@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
 import { appendSpendLines, readLimits, spendPaths } from "../x402/spend-log"
@@ -34,7 +35,7 @@ describe("candle spend limits (spec 10.1, 10.3)", () => {
   test("limit and max-per-call show the defaults, then set and persist", async () => {
     const f = setup()
     expect(await run(["spend", "limit"], f.deps)).toBe(0)
-    expect(f.stdout.text).toBe("Daily per-use limit: $5\n")
+    expect(f.stdout.text).toBe("  Daily per-use limit  $5\n")
     f.stdout.text = ""
     expect(await run(["spend", "max-per-call", "$0.25"], f.deps)).toBe(0)
     expect(await run(["spend", "limit", "2", "--json"], f.deps)).toBe(0)
@@ -120,16 +121,16 @@ describe("candle spend (the log, spec 10.4)", () => {
     })
     f.stdout.text = ""
     expect(await run(["spend"], f.deps)).toBe(0)
-    expect(f.stdout.text).toContain("Today (2026-11-02 UTC): $0.01 of the $5 daily per-use limit.")
-    expect(f.stdout.text).toContain("Candle credit: 0.03 USDC")
+    expect(humanText(f.stdout.text)).toContain(humanText("Today (UTC) 2026-11-02 Spent $0.01 Daily per-use limit $5"))
+    expect(humanText(f.stdout.text)).toContain(humanText("Candle credit 0.03 USDC"))
     expect(f.stdout.text).toContain("sig-a")
   })
 
   test("without a key no request is made and the credit is not shown; x402 off reads as off", async () => {
     let f = setup()
     expect(await run(["spend"], f.deps)).toBe(0)
-    expect(f.stdout.text).toContain("Candle credit: not shown (no API key on this profile)")
-    expect(f.stdout.text).toContain("No x402 payments in the last 7 days.")
+    expect(humanText(f.stdout.text)).toContain(humanText("Candle credit not shown: no API key on this profile"))
+    expect(humanText(f.stdout.text)).toContain(humanText("No x402 payments in the last 7 days."))
     expect(f.routed.calls).toHaveLength(0)
     f = setup({ CANDLE_API_KEY: "k" }, { "/api/v1/agent/x402/credits": () => jsonResponse(404, {}) })
     expect(await run(["spend", "--json"], f.deps)).toBe(0)

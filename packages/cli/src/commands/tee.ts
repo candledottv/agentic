@@ -28,6 +28,7 @@ import {
 import { apiRequest } from "../client"
 import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey } from "../deps"
+import { writeFields, writeHeading } from "../human-output"
 import {
   DAMM_CLOSE_TRANSACTION_REFUSED,
   DAMM_POSITION_CLOSE_UNAVAILABLE,
@@ -36,8 +37,9 @@ import {
   parseCloseArtifact,
   verifyCloseArtifact,
 } from "../lp-close"
+import { notice } from "../presentation"
 import { printIdentity } from "../profiles"
-import { writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
+import { formatTime, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import {
   describeRpcFailure,
   notePostSignatureRateLimit,
@@ -684,10 +686,30 @@ export async function teeNew(args: string[], ctx: CommandContext): Promise<numbe
     )
     return 0
   }
-  deps.stdout.write(`New TEE wallet [${index}] ${wallet.address}  ${label}\n`)
-  deps.stdout.write(`Sealed to ${path} and verified to restore.\n`)
-  deps.stdout.write(`BACK UP THIS FILE AND REMEMBER THE PASSPHRASE. This key exists nowhere else.\n`)
-  deps.stdout.write(`State: local-only. Next: candle tee enable ${wallet.address} --vault <your-vault-address>\n`)
+  writeFields(
+    deps,
+    "stdout",
+    [
+      ["Index", index],
+      ["Address", wallet.address],
+      ["Label", label],
+      ["Sealed file", path],
+    ],
+    "New TEE wallet",
+  )
+  notice(deps, "stdout", "note", `Sealed to ${path} and verified to restore.\n`.trim())
+  notice(
+    deps,
+    "stdout",
+    "warning",
+    `BACK UP THIS FILE AND REMEMBER THE PASSPHRASE. This key exists nowhere else.\n`.trim(),
+  )
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `State: local-only. Next: candle tee enable ${wallet.address} --vault <your-vault-address>\n`.trim(),
+  )
   return 0
 }
 
@@ -812,21 +834,30 @@ export async function teeEnable(args: string[], ctx: CommandContext): Promise<nu
 
   // HW-02: the human sees exactly what is being granted before confirming.
   if (!json) {
-    deps.stdout.write(`About to delegate a DEDICATED TEE wallet to this profile's agent:\n`)
-    deps.stdout.write(`  TEE wallet   ${address}\n`)
-    deps.stdout.write(`  network      solana-mainnet\n`)
-    deps.stdout.write(`  sweep vault  ${vault}\n`)
-    deps.stdout.write(
-      `  routes       trade rail only (build/confirm/submit) with THIS profile's API key; nothing else\n`,
+    writeHeading(deps, "stdout", "Delegate a dedicated TEE wallet to this profile's agent")
+    writeFields(deps, "stdout", [
+      ["TEE wallet", address],
+      ["Network", "solana-mainnet"],
+      ["Sweep vault", vault],
+    ])
+
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `  routes       trade rail only (build/confirm/submit) with THIS profile's API key; nothing else\n`.trim(),
     )
-    deps.stdout.write(
-      `  limits       the key's per-transaction cap and USD window cap must both be set; the server refuses otherwise\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `  limits       the key's per-transaction cap and USD window cap must both be set; the server refuses otherwise\n`.trim(),
     )
-    deps.stdout.write(
-      `Exposure: everything you fund into this wallet, plus anything deposited later, can be lost by a\n`,
-    )
-    deps.stdout.write(
-      `compromised agent within those limits. Once enabled a copy of this key stays in the TEE for good.\n`,
+    notice(
+      deps,
+      "stdout",
+      "danger",
+      "Exposure: everything you fund into this wallet, plus anything deposited later, can be lost by a compromised agent within those limits. Once enabled a copy of this key stays in the TEE for good.",
     )
   }
   if (!(await confirmVault(deps, json, vault, `enable this TEE wallet with sweeps to ${vault}`))) {
@@ -909,14 +940,33 @@ export async function teeEnable(args: string[], ctx: CommandContext): Promise<nu
     return verified ? 0 : 3
   }
   if (verified) {
-    deps.stdout.write(`Enabled ${address} as ${submitted.id}, bound to key ${submitted.boundKeyPrefix ?? "?"}.\n`)
-    deps.stdout.write(`Remote authority verified. Fund it: candle tee fund ${address} --amount <n> --asset SOL|USDC\n`)
+    writeFields(
+      deps,
+      "stdout",
+      [
+        ["Address", address],
+        ["Wallet id", submitted.id],
+        ["Bound key", submitted.boundKeyPrefix],
+      ],
+      "TEE wallet enabled",
+    )
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `Remote authority verified. Fund it: candle tee fund ${address} --amount <n> --asset SOL|USDC\n`.trim(),
+    )
     return 0
   }
-  deps.stdout.write(
-    `Imported ${address} as ${submitted.id}, but the server could NOT verify the remote authority` +
+  notice(
+    deps,
+    "stdout",
+    "warning",
+    (
+      `Imported ${address} as ${submitted.id}, but the server could NOT verify the remote authority` +
       `${submitted.reasonCode ? ` (${submitted.reasonCode})` : ""}. The agent cannot trade it.\n` +
-      `Do not fund it. Disable it (candle tee disable ${address}) and enable a fresh wallet.\n`,
+      `Do not fund it. Disable it (candle tee disable ${address}) and enable a fresh wallet.\n`
+    ).trim(),
   )
   return 3
 }
@@ -988,13 +1038,21 @@ export async function teeFund(args: string[], ctx: CommandContext): Promise<numb
       deps.stdout.write(`${JSON.stringify(instruction)}\n`)
       return 0
     }
-    deps.stdout.write(`Funding instruction (sign this from your VAULT wallet; this CLI signs nothing):\n`)
-    deps.stdout.write(
-      `  send      ${amount} ${asset}${asset === "USDC" ? ` (mint ${USDC_MINT})` : ""}  = ${raw} raw units\n`,
+    writeHeading(deps, "stdout", "Funding instruction (sign from your vault; this CLI signs nothing)")
+    writeFields(deps, "stdout", [
+      ["Send", `${amount} ${asset}`],
+      ["Raw units", raw.toString()],
+      ["Mint", asset === "USDC" ? USDC_MINT : undefined],
+      ["To", address],
+      ["Network", "solana-mainnet"],
+    ])
+
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`.trim(),
     )
-    deps.stdout.write(`  to        ${address}\n`)
-    deps.stdout.write(`  network   solana-mainnet\n`)
-    deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`)
     return 0
   } finally {
     releaseResolvedTee(resolved.resolved)
@@ -1140,38 +1198,59 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
       deps.stdout.write(`${JSON.stringify(report)}\n`)
       return 0
     }
-    deps.stdout.write(`${address}  ${entry.label}\n`)
+    writeFields(
+      deps,
+      "stdout",
+      [
+        ["Address", address],
+        ["Label", entry.label],
+      ],
+      "TEE wallet",
+    )
     if (local?.source === "vault") {
-      deps.stdout.write(`  source        vault (Phase 1 store is read-only for this address)\n`)
-      deps.stdout.write(`  vault life    ${local.entry.tee?.lifecycle ?? "?"}\n`)
+      writeFields(deps, "stdout", [
+        ["Source", "vault (Phase 1 store is read-only for this address)"],
+        ["Vault lifecycle", local.entry.tee?.lifecycle],
+      ])
     }
-    if (!verify) deps.stdout.write(`${UNVERIFIED_KEY_LINE}\n`)
-    else deps.stdout.write(`  local state   ${report.localState}\n`)
-    if (entry.tee?.vaultDestination) deps.stdout.write(`  vault         ${entry.tee.vaultDestination}\n`)
+    if (!verify) notice(deps, "stdout", "note", `${UNVERIFIED_KEY_LINE}\n`.trim())
+    else
+      writeFields(deps, "stdout", [
+        ["Local state", String(report.localState)],
+        ["Vault", entry.tee?.vaultDestination],
+      ])
     const server = report.server as LifecycleResponse | { error: string } | undefined
     if (server) {
-      if ("error" in server) deps.stdout.write(`  server        (unavailable: ${server.error})\n`)
+      if ("error" in server) notice(deps, "stdout", "note", `  server        (unavailable: ${server.error})\n`.trim())
       else {
-        deps.stdout.write(`  server state  ${server.state ?? "?"}  remote authority ${server.remoteAuthority ?? "?"}\n`)
+        writeFields(deps, "stdout", [
+          ["Server state", server.state],
+          ["Remote authority", server.remoteAuthority],
+        ])
         if (server.evidenceObservedAt)
-          deps.stdout.write(`  evidence at   ${new Date(server.evidenceObservedAt).toISOString()}\n`)
+          writeFields(deps, "stdout", [["Evidence at", formatTime(server.evidenceObservedAt)]])
       }
     }
     const balances = report.balances as
       | { lamports?: string; tokens?: Array<Record<string, unknown>>; error?: string }
       | undefined
     if (balances) {
-      if (balances.error) deps.stdout.write(`  balances      (unavailable: ${balances.error})\n`)
+      if (balances.error) notice(deps, "stdout", "note", `  balances      (unavailable: ${balances.error})\n`.trim())
       else {
-        deps.stdout.write(`  SOL           ${balances.lamports} lamports\n`)
+        writeFields(deps, "stdout", [["SOL", `${balances.lamports} lamports`]])
         for (const t of balances.tokens ?? []) {
-          deps.stdout.write(
-            `  token         ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp, ${t.state}, ${t.program})  USD unknown\n`,
-          )
+          writeFields(deps, "stdout", [
+            ["Token", String(t.mint)],
+            ["Raw amount", String(t.amountRaw)],
+            ["Decimals", String(t.decimals)],
+            ["State", String(t.state)],
+            ["Program", String(t.program)],
+            ["USD", undefined],
+          ])
         }
       }
     }
-    deps.stdout.write(`  observed at   ${report.observedAt}\n`)
+    writeFields(deps, "stdout", [["Observed at", formatTime(String(report.observedAt))]])
     return 0
   } finally {
     if (local) releaseResolvedTee(local)
@@ -1242,10 +1321,15 @@ export async function teeDisable(args: string[], ctx: CommandContext, demote?: D
         )
         return
       }
-      deps.stderr.write(`${detail}\n`)
-      deps.stderr.write(
-        `Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${address} again. ` +
-          `Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.\n${suggestion}\n`,
+      notice(deps, "stderr", "note", `${detail}\n`.trim())
+      notice(
+        deps,
+        "stderr",
+        "warning",
+        (
+          `Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${address} again. ` +
+          `Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.\n${suggestion}\n`
+        ).trim(),
       )
     }
 
@@ -1275,7 +1359,8 @@ export async function teeDisable(args: string[], ctx: CommandContext, demote?: D
     }
     const outcome = readDisableOutcome(result.body)
     // Ember 4c (4c-ED-10): disabling is never blocked by a bridge; it says the fill or refund still lands.
-    for (const warning of bridgeDisableWarnings(address, result.body)) deps.stderr.write(`${warning}\n`)
+    for (const warning of bridgeDisableWarnings(address, result.body))
+      notice(deps, "stderr", "note", `${warning}\n`.trim())
 
     if (json) {
       deps.stdout.write(
@@ -1284,16 +1369,26 @@ export async function teeDisable(args: string[], ctx: CommandContext, demote?: D
       return outcome.complete ? 0 : 3
     }
     if (outcome.complete) {
-      deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.\n`)
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `Stopped ${address}. Remote signing denial verified; the wallet is quarantined.\n`.trim(),
+      )
       // Demote sweeps next on its own; the standalone hint would read as a step left to the operator.
-      if (!demote) deps.stdout.write(`Recover the funds: candle tee sweep ${address}\n`)
+      if (!demote) notice(deps, "stdout", "note", `Recover the funds: candle tee sweep ${address}\n`.trim())
       return 0
     }
-    deps.stdout.write(
-      `Agent trading stopped at Candle for ${address}. Remote policy verification is pending` +
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      (
+        `Agent trading stopped at Candle for ${address}. Remote policy verification is pending` +
         `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\n` +
         `Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}\n` +
-        `If the provider is down or theft is suspected: ${demote ? `candle vault demote ${address}` : `candle tee sweep ${address}`} --emergency\n`,
+        `If the provider is down or theft is suspected: ${demote ? `candle vault demote ${address}` : `candle tee sweep ${address}`} --emergency\n`
+      ).trim(),
     )
     return 3
   } finally {
@@ -1648,22 +1743,37 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
       ;(json ? deps.stderr : deps.stdout).write(`${EMERGENCY_BRIDGE_NOTE}\n`)
     }
     if (emergency && !json) {
-      deps.stdout.write(
-        `EMERGENCY SWEEP: remote signing authority is NOT verified denied. A still-authorized agent signer or\n`,
+      notice(
+        deps,
+        "stdout",
+        "danger",
+        "EMERGENCY SWEEP: remote signing authority is NOT verified denied. A still-authorized agent signer or any holder of a raw key copy can race these transactions. Recovered funds are recorded; remote authority stays pending.",
       )
-      deps.stdout.write(
-        `any holder of a raw key copy can race these transactions. Recovered funds are recorded; remote authority stays pending.\n`,
-      )
+
       if (unreadReason !== null) {
-        deps.stdout.write(
-          `The server's lifecycle state was NOT read (${unreadReason}): this recovery uses only the local key and the pinned vault.\n` +
-            `Stop the agent from your Candle session if you have not, and re-run candle tee disable once a key is available.\n`,
+        notice(
+          deps,
+          "stdout",
+          "note",
+          (
+            `The server's lifecycle state was NOT read (${unreadReason}): this recovery uses only the local key and the pinned vault.\n` +
+            `Stop the agent from your Candle session if you have not, and re-run candle tee disable once a key is available.\n`
+          ).trim(),
         )
       }
     }
 
     if (!json) {
-      deps.stdout.write(`Sweep ${address} -> vault ${vault} (solana-mainnet)\n`)
+      writeFields(
+        deps,
+        "stdout",
+        [
+          ["From", address],
+          ["Vault", vault],
+          ["Network", "solana-mainnet"],
+        ],
+        "Sweep",
+      )
     }
     if (!(await confirmVault(deps, json, vault, `sweep everything to ${vault}`))) {
       writeLocalFailure(
@@ -1816,10 +1926,11 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
           ...(outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {}),
         })
         if (!json) {
-          deps.stdout.write(`  ${detail}\n`)
+          notice(deps, "stdout", "note", `  ${detail}\n`.trim())
           if (outcome.diagnostics) {
-            if (outcome.diagnostics.err !== null) deps.stdout.write(`    program error: ${outcome.diagnostics.err}\n`)
-            for (const line of outcome.diagnostics.logs) deps.stdout.write(`    log: ${line}\n`)
+            if (outcome.diagnostics.err !== null)
+              writeFields(deps, "stdout", [["Program error", outcome.diagnostics.err]])
+            for (const line of outcome.diagnostics.logs) writeFields(deps, "stdout", [["Log", line]])
           }
         }
         if (!outcome.pendingCleared) {
@@ -1903,7 +2014,13 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
           ...(resolution.slot === undefined ? {} : { slot: resolution.slot }),
           finalizedAt: new Date(deps.now()).toISOString(),
         })
-        if (!json) deps.stdout.write(`  pending ${p.signature} from an earlier run finalized: receipt retained\n`)
+        if (!json)
+          notice(
+            deps,
+            "stdout",
+            "note",
+            `  pending ${p.signature} from an earlier run finalized: receipt retained\n`.trim(),
+          )
         continue
       }
       if (resolution.kind === "failed" || resolution.kind === "expired") {
@@ -1911,7 +2028,13 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
           signingBlocked = true
           blockingReason = "not signed: an earlier pending record could not be cleared"
         }
-        if (!json) deps.stdout.write(`  pending ${p.signature}: ${resolution.detail}; its balance is swept again\n`)
+        if (!json)
+          notice(
+            deps,
+            "stdout",
+            "warning",
+            `  pending ${p.signature}: ${resolution.detail}; its balance is swept again\n`.trim(),
+          )
         continue
       }
       residuals.push({
@@ -1964,7 +2087,12 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
         residuals.push({ kind, detail, mint: acct.mint, account: acct.pubkey, amountRaw: acct.amountRaw })
       if (!emergency && candidates.length > 0) {
         if (!json)
-          deps.stdout.write(`  ${candidates.length} position NFT candidate(s) (Token-2022, amount 1, decimals 0)\n`)
+          notice(
+            deps,
+            "stdout",
+            "note",
+            `  ${candidates.length} position NFT candidate(s) (Token-2022, amount 1, decimals 0)\n`.trim(),
+          )
         // Phase A: fetch and verify every artifact. Sign none.
         const verified: Array<{
           acct: TokenAccountView
@@ -2061,7 +2189,15 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
           const display = describeClose({ verdict, tee: address, vault, nftMint: acct.mint, nftAccount: acct.pubkey })
           lpCloses.push({ mint: acct.mint, account: acct.pubkey, display })
           if (!json) {
-            deps.stdout.write(`  Close for position ${acct.mint} (verified, unsigned; about to sign):\n`)
+            writeFields(
+              deps,
+              "stdout",
+              [
+                ["Position", acct.mint],
+                ["Verification", "verified, unsigned; about to sign"],
+              ],
+              "Close LP position",
+            )
             for (const line of display) deps.stdout.write(`    ${line}\n`)
           }
           const pending = {
@@ -2097,7 +2233,12 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
             finalizedAt: new Date(deps.now()).toISOString(),
           })
           if (!json)
-            deps.stdout.write(`  closed LP position ${acct.mint} and withdrew its liquidity: ${outcome.signature}\n`)
+            notice(
+              deps,
+              "stdout",
+              "note",
+              `  closed LP position ${acct.mint} and withdrew its liquidity: ${outcome.signature}\n`.trim(),
+            )
         }
       }
     }
@@ -2134,8 +2275,11 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
         // already a named leftover. Only --emergency moves the NFT itself, to the pinned vault.
         if (!emergency) continue
         if (!json)
-          deps.stdout.write(
-            `  ${acct.mint}: position NFT moved as-is to the vault (emergency; unwind it from a fresh TEE wallet)\n`,
+          notice(
+            deps,
+            "stdout",
+            "note",
+            `  ${acct.mint}: position NFT moved as-is to the vault (emergency; unwind it from a fresh TEE wallet)\n`.trim(),
           )
       }
       if (acct.state !== "initialized") {
@@ -2179,18 +2323,26 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
               // resolve, and a chain refusal is then named TOKEN_2022_EXTRA_ACCOUNTS_MISSING.
               extraAccountsMissing = true
               if (!json)
-                deps.stdout.write(
-                  `  ${acct.mint}: the transfer hook's extra accounts could not be resolved (${hook.reason})\n`,
+                notice(
+                  deps,
+                  "stdout",
+                  "warning",
+                  `  ${acct.mint}: the transfer hook's extra accounts could not be resolved (${hook.reason})\n`.trim(),
                 )
             }
-            if (!json) for (const risk of profile.risks) deps.stdout.write(`  ${acct.mint}: ${risk.message}\n`)
+            if (!json)
+              for (const risk of profile.risks)
+                notice(deps, "stdout", "note", `  ${acct.mint}: ${risk.message}\n`.trim())
             if (profile.newerTransferFee || profile.olderTransferFee) {
               epoch ??= await rpc.getEpoch()
               const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, amount, epoch)
               if (!json)
-                deps.stdout.write(
-                  `  ${acct.mint}: ${postFeeAmountRaw} raw will arrive; ${feeRaw} raw is withheld by the mint at epoch ${epoch}\n`,
-                )
+                writeFields(deps, "stdout", [
+                  ["Mint", acct.mint],
+                  ["Raw amount arriving", postFeeAmountRaw.toString()],
+                  ["Raw mint fee withheld", feeRaw.toString()],
+                  ["Epoch", epoch.toString()],
+                ])
             }
           }
           const existing = await rpc.getAccountInfo(encodePubkey(destination))
@@ -2246,7 +2398,12 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
           finalizedAt: new Date(deps.now()).toISOString(),
         })
         if (!json)
-          deps.stdout.write(`  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${signature}\n`)
+          notice(
+            deps,
+            "stdout",
+            "note",
+            `  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${signature}\n`.trim(),
+          )
       } catch (error) {
         if (stopForContext(error, acct)) continue
         residuals.push({
@@ -2302,7 +2459,7 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
               ...(outcome.slot === undefined ? {} : { slot: outcome.slot }),
               finalizedAt: new Date(deps.now()).toISOString(),
             })
-            if (!json) deps.stdout.write(`  moved ${amount} lamports (fee ${fee}): ${signature}\n`)
+            if (!json) notice(deps, "stdout", "note", `  moved ${amount} lamports (fee ${fee}): ${signature}\n`.trim())
           }
         }
       }
@@ -2452,52 +2609,88 @@ export async function teeSweep(args: string[], ctx: CommandContext, demote?: Dem
       return finalState === "swept" ? 0 : 3
     }
     if (retained.length > 0)
-      deps.stdout.write(
-        `  ${retained.length} receipt(s) retained from an earlier run are included in this reconcile.\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `  ${retained.length} receipt(s) retained from an earlier run are included in this reconcile.\n`.trim(),
       )
     if (finalState === "swept") {
-      deps.stdout.write(
-        `Swept. ${allReceipts.length} transaction(s) finalized; this address is retired and must not be reused.\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `Swept. ${allReceipts.length} transaction(s) finalized; this address is retired and must not be reused.\n`.trim(),
       )
       return 0
     }
     if (residuals.length > 0) {
-      deps.stdout.write(
-        `Sweep incomplete: ${residuals.length} residual(s) remain. This address stays ${finalState}; no new agent trades are allowed.\n`,
+      notice(
+        deps,
+        "stdout",
+        "warning",
+        `Sweep incomplete: ${residuals.length} residual(s) remain. This address stays ${finalState}; no new agent trades are allowed.\n`.trim(),
       )
       for (const r of residuals)
-        deps.stdout.write(
-          `  - ${r.kind}${r.mint ? ` ${r.mint}` : ""}${r.amountRaw ? ` (${r.amountRaw} raw)` : ""}: ${r.detail}\n`,
-        )
+        writeFields(deps, "stdout", [
+          ["Residual", r.kind],
+          ["Mint", r.mint],
+          ["Raw amount", r.amountRaw],
+          ["Detail", r.detail],
+        ])
     }
     if (emergency)
-      deps.stdout.write(
-        `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}\n`,
+      notice(
+        deps,
+        "stdout",
+        "warning",
+        `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}\n`.trim(),
       )
     if (pendingStill.length > 0)
-      deps.stdout.write(
-        `${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.\n`.trim(),
       )
     const rejected = residuals.filter((r) => r.rejection)
     if (pendingStill.length === 0 && rejected.length > 0 && rejected.every((r) => r.rejection?.pendingCleared)) {
-      deps.stdout.write(
-        `Nothing from this run is in flight: ${rejected.length} transaction(s) were rejected before broadcast. Re-run this sweep now.\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `Nothing from this run is in flight: ${rejected.length} transaction(s) were rejected before broadcast. Re-run this sweep now.\n`.trim(),
       )
       if (rejected.some((r) => r.rejection?.reason === "context-behind"))
-        deps.stdout.write(`Fix: ${rpcFixLines(ctx).join(", ")}\n`)
+        notice(deps, "stdout", "note", `Fix: ${rpcFixLines(ctx).join(", ")}\n`.trim())
     }
     for (const r of rejected)
       if (!r.rejection?.pendingCleared)
-        deps.stdout.write(
-          `The local pending record for ${r.signature} could not be removed (${cleanupFailures.get(r.signature ?? "")}). It was never broadcast; the next run drops it once its blockhash expires, normally within two minutes. Re-run after that.\n`,
+        notice(
+          deps,
+          "stdout",
+          "warning",
+          `The local pending record for ${r.signature} could not be removed (${cleanupFailures.get(r.signature ?? "")}). It was never broadcast; the next run drops it once its blockhash expires, normally within two minutes. Re-run after that.\n`.trim(),
         )
     if (serverState === "disable-pending" && !emergency)
-      deps.stdout.write(
-        `Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.\n`,
+      notice(
+        deps,
+        "stdout",
+        "warning",
+        `Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.\n`.trim(),
       )
-    if (allReceipts.length === 0 && residuals.length === 0) deps.stdout.write(`Nothing to sweep: no balances found.\n`)
-    deps.stdout.write(
-      `Inventory at ${inventory.observedAt}: ${inventory.verified ? `${inventory.lamports} lamports, ${inventory.tokenAccounts} token account(s)` : "NOT verified"}.\n`,
+    if (allReceipts.length === 0 && residuals.length === 0)
+      notice(deps, "stdout", "note", `Nothing to sweep: no balances found.\n`.trim())
+    writeFields(
+      deps,
+      "stdout",
+      [
+        ["Observed at", formatTime(inventory.observedAt)],
+        ["Verified", inventory.verified ? "yes" : "NOT verified"],
+        ["Lamports", inventory.verified ? inventory.lamports : undefined],
+        ["Token accounts", inventory.verified ? inventory.tokenAccounts : undefined],
+      ],
+      "Inventory",
     )
     return 3
   } finally {

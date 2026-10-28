@@ -15,7 +15,9 @@
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
-import { renderTable, terminalText, writeLocalFailure, writeUsageFailure } from "../render"
+import { writeFields, writeSuccess, writeTable } from "../human-output"
+import { notice, symbols, terminalStyle } from "../presentation"
+import { formatTime, terminalText, writeLocalFailure, writeUsageFailure } from "../render"
 import { readServerPayments, reconcileUnknown } from "../x402/reconcile"
 import { usdcText } from "../x402/select"
 import {
@@ -139,30 +141,40 @@ export async function spendShow(args: string[], ctx: CommandContext): Promise<nu
     )
     return 0
   }
-  const out = ctx.deps.stdout
-  out.write(
-    `Today (${today} UTC): $${usdText(spentToday)} of the $${usdText(limits.dailyLimitUsdMicros)} daily per-use limit. Per call at most $${usdText(limits.maxPerCallUsdMicros)}.${limits.paused ? " Payments are PAUSED." : ""}\n`,
+
+  writeFields(
+    ctx.deps,
+    "stdout",
+    [
+      ["Today (UTC)", today],
+      ["Spent", `$${usdText(spentToday)}`],
+      ["Daily per-use limit", `$${usdText(limits.dailyLimitUsdMicros)}`],
+      ["Per call at most", `$${usdText(limits.maxPerCallUsdMicros)}`],
+      ["Payments", limits.paused ? "PAUSED" : "enabled"],
+    ],
+    "Per-use spend",
   )
-  out.write(
-    "balanceUsdMicros" in credit
-      ? `Candle credit: ${usdcText(BigInt(credit.balanceUsdMicros))} USDC\n`
-      : `Candle credit: not shown (${terminalText(credit.unavailable)})\n`,
-  )
+  writeFields(ctx.deps, "stdout", [
+    ["Candle credit", "balanceUsdMicros" in credit ? `${usdcText(BigInt(credit.balanceUsdMicros))} USDC` : undefined],
+  ])
+  if ("unavailable" in credit)
+    notice(ctx.deps, "stdout", "note", `Candle credit not shown: ${terminalText(credit.unavailable)}`)
   if (shown.length === 0) {
-    out.write(`No x402 payments in the last ${days} day${days === 1 ? "" : "s"}.\n`)
+    notice(ctx.deps, "stdout", "note", `No x402 payments in the last ${days} day${days === 1 ? "" : "s"}.`)
     return 0
   }
-  out.write(
-    `${renderTable(
-      ["WHEN (UTC)", "KIND", "USDC", "STATE", "SIGNATURE"],
-      shown.map((e) => [
-        e.startedAt.slice(0, 19).replace("T", " "),
-        terminalText(e.kind),
-        usdcText(e.amountRaw),
-        e.state,
-        e.signature ? terminalText(e.signature) : "",
-      ]),
-    )}\n`,
+  writeTable(
+    ctx.deps,
+    "stdout",
+    ["WHEN (UTC)", "KIND", "USDC", "STATE", "SIGNATURE"],
+    shown.map((e) => [
+      formatTime(e.startedAt),
+      terminalText(e.kind),
+      usdcText(e.amountRaw),
+      e.state,
+      e.signature ? terminalText(e.signature) : symbols(terminalStyle(ctx.deps, "stdout")).missing,
+    ]),
+    [{ priority: 2 }, { priority: 1 }, { align: "right" }, {}, { id: true, priority: 3 }],
   )
   return 0
 }
@@ -194,7 +206,7 @@ async function showOrSet(
   if (ctx.json) ctx.deps.stdout.write(`${JSON.stringify({ ok: true, limits: limitsView(limits) })}\n`)
   else {
     const label = field === "dailyLimitUsdMicros" ? "Daily per-use limit" : "Per-call ceiling"
-    ctx.deps.stdout.write(`${label}: $${usdText(limits[field])}${raw !== undefined ? " (saved)" : ""}\n`)
+    writeFields(ctx.deps, "stdout", [[label, `$${usdText(limits[field])}${raw !== undefined ? " (saved)" : ""}`]])
   }
   return 0
 }
@@ -219,7 +231,8 @@ async function setPaused(args: string[], ctx: CommandContext, paused: boolean): 
     limits.paused = paused
     await writeLimits(paths, limits)
     if (ctx.json) ctx.deps.stdout.write(`${JSON.stringify({ ok: true, limits: limitsView(limits) })}\n`)
-    else ctx.deps.stdout.write(paused ? "Per-use payments paused.\n" : "Per-use payments resumed.\n")
+    else
+      writeSuccess(ctx.deps, "stdout", (paused ? "Per-use payments paused.\n" : "Per-use payments resumed.\n").trim())
     return 0
   } catch (error) {
     writeLocalFailure(

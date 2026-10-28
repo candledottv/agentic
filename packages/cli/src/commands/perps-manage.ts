@@ -20,6 +20,7 @@ import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
 import { HYPERLIQUID_CLOID_RE, type HyperliquidTypedData } from "../hyperliquid"
 import {
   PerpsWorkflowError,
@@ -30,6 +31,7 @@ import {
   runPerpsFlatten,
   runPerpsTpsl,
 } from "../hyperliquid-manage"
+import { notice } from "../presentation"
 import { writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { type Json, safeText, TradingError, tradingKey } from "../trading"
 import { NO_DEVICE_TOKEN } from "./keys"
@@ -196,7 +198,7 @@ async function workflowIo(
   const builder = builderPin(ctx)
   // A failed read never says "unrestricted": the plan is then checked as for a reduce-only key.
   const reduceOnly = await perpsRequest(ctx, key, "/api/v1/agent/keys/self/perps-reduce-only").catch(() => null)
-  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
+
   return {
     network: perpsNetwork(ctx),
     walletId: wallet.id,
@@ -220,9 +222,14 @@ async function workflowIo(
     },
     mode: !opts.submit ? "no-submit" : opts.signOnly ? "sign-only" : "submit",
     confirm: async (plan) => {
-      output.write(`Hyperliquid account: ${safeText(wallet.address)} (${perpsNetwork(ctx)})\n`)
-      for (const step of plan.steps) output.write(`  ${stepLine(step)}\n`)
-      for (const warning of plan.warnings) output.write(`${safeText(warning)}\n`)
+      writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+        ["Hyperliquid account", safeText(wallet.address)],
+        ["Network", perpsNetwork(ctx)],
+      ])
+      for (const step of plan.steps)
+        notice(ctx.deps, ctx.json ? "stderr" : "stdout", "note", `  ${stepLine(step)}\n`.trim())
+      for (const warning of plan.warnings)
+        notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", `${safeText(warning)}\n`.trim())
       if (opts.yes) return true
       if (!ctx.deps.isTTY.stdin)
         throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.")
@@ -246,16 +253,29 @@ function workflowExit(ctx: CommandContext, result: PerpsWorkflowResult, mode: Pe
   const unknown = result.steps.some((s) => s.status === "unknown")
   if (ctx.json) ctx.deps.stdout.write(`${JSON.stringify(result)}\n`)
   else {
-    const out = ctx.deps.stdout
-    for (const step of result.steps) out.write(`${stepLine(step)}\n`)
-    for (const warning of result.warnings) out.write(`${safeText(warning)}\n`)
+    for (const step of result.steps) notice(ctx.deps, "stdout", "note", `${stepLine(step)}\n`.trim())
+    for (const warning of result.warnings) notice(ctx.deps, "stdout", "warning", `${safeText(warning)}\n`.trim())
     for (const leg of result.unowned ?? [])
-      out.write(`Not Candle's, left untouched: ${leg.leg} order ${leg.oid} at ${safeText(leg.triggerPx)}\n`)
+      notice(
+        ctx.deps,
+        "stdout",
+        "note",
+        `Not Candle's, left untouched: ${leg.leg} order ${leg.oid} at ${safeText(leg.triggerPx)}\n`.trim(),
+      )
     if (mode !== "submit")
-      out.write("Only the first step was built (and signed, with --sign-only); the rest is planned.\n")
+      notice(
+        ctx.deps,
+        "stdout",
+        "note",
+        "Only the first step was built (and signed, with --sign-only); the rest is planned.\n".trim(),
+      )
     else if (result.complete)
-      out.write(result.operation === "flatten" ? "Main perps flat (an observed snapshot).\n" : "Done.\n")
-    else out.write(`Incomplete. Remaining: ${safeText(JSON.stringify(result.remaining))}\n`)
+      writeSuccess(
+        ctx.deps,
+        "stdout",
+        (result.operation === "flatten" ? "Main perps flat (an observed snapshot).\n" : "Done.\n").trim(),
+      )
+    else notice(ctx.deps, "stdout", "warning", `Incomplete. Remaining: ${safeText(JSON.stringify(result.remaining))}`)
   }
   if (unknown) return 3
   if (mode !== "submit") return result.steps.some((s) => s.status === "rejected") ? 1 : 0
@@ -352,9 +372,11 @@ export async function perpsReduceOnly(args: string[], ctx: CommandContext): Prom
       const key = await tradingKey(ctx)
       const answer = await perpsRequest(ctx, key, "/api/v1/agent/keys/self/perps-reduce-only")
       if (ctx.json) return printTradingResult(ctx, answer)
-      ctx.deps.stdout.write(
-        `Perps reduce-only on key ${safeText(answer.keyPrefix)}: ${answer.perpsReduceOnly === true ? "on" : "off"} (policy version ${safeText(answer.perpsPolicyVersion)}).\n`,
-      )
+      writeFields(ctx.deps, "stdout", [
+        ["Key", safeText(answer.keyPrefix)],
+        ["Perps reduce-only", answer.perpsReduceOnly === true ? "on" : "off"],
+        ["Policy version", safeText(answer.perpsPolicyVersion)],
+      ])
       return 0
     }
   } catch (error) {
@@ -438,9 +460,13 @@ export async function perpsReduceOnly(args: string[], ctx: CommandContext): Prom
   }
   const answer = result.body as Json
   if (ctx.json) return printTradingResult(ctx, answer)
-  ctx.deps.stdout.write(
-    `Perps reduce-only on key ${safeText(answer.keyPrefix)}: ${answer.perpsReduceOnly === true ? "on" : "off"}${answer.changed === false ? " (unchanged)" : ""} (policy version ${safeText(answer.perpsPolicyVersion)}).\n`,
-  )
-  for (const line of Array.isArray(answer.limits) ? answer.limits : []) ctx.deps.stdout.write(`  ${safeText(line)}\n`)
+  writeFields(ctx.deps, "stdout", [
+    ["Key", safeText(answer.keyPrefix)],
+    ["Perps reduce-only", answer.perpsReduceOnly === true ? "on" : "off"],
+    ["Changed", answer.changed === false ? "no" : "yes"],
+    ["Policy version", safeText(answer.perpsPolicyVersion)],
+  ])
+  for (const line of Array.isArray(answer.limits) ? answer.limits : [])
+    notice(ctx.deps, "stdout", "note", `  ${safeText(line)}\n`.trim())
   return 0
 }

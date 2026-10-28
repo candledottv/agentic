@@ -14,6 +14,9 @@
 import { rename, stat } from "node:fs/promises"
 import { isUsageError, parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeFields } from "../human-output"
+import { notice } from "../presentation"
+import { formatTime } from "../render"
 import { VaultError } from "../vault/errors"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { verifyVaultIntegrity } from "../vault/verify"
@@ -137,11 +140,23 @@ export async function vaultRetireLegacy(args: string[], ctx: CommandContext): Pr
       })
       return 0
     }
-    deps.stdout.write(`Renamed ${fromPath} to ${retiredPath}.\n`)
-    deps.stdout.write(
-      `Every address it held is in the vault, and the last verified backup was at ${sidecar.lastVerifiedBackupAt}.\n`,
+    writeFields(
+      deps,
+      "stdout",
+      [
+        ["From", fromPath],
+        ["To", retiredPath],
+        ["Last verified backup", formatTime(sidecar.lastVerifiedBackupAt)],
+      ],
+      "Legacy file retired",
     )
-    deps.stdout.write(`The file was renamed, not deleted.\n`)
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `Every address it held is in the vault, and the last verified backup was at ${sidecar.lastVerifiedBackupAt}.\n`.trim(),
+    )
+    notice(deps, "stdout", "note", `The file was renamed, not deleted.\n`.trim())
     return 0
   })
 }

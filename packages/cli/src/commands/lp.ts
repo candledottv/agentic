@@ -17,6 +17,8 @@ import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
+import { writeFields } from "../human-output"
+import { notice } from "../presentation"
 import { writeUsageFailure } from "../render"
 import { postSignatureRateLimitMessage, postSignatureSuggestion, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited, type SolanaRpc } from "../solana-lite"
@@ -43,6 +45,7 @@ import {
   tradingSolanaClient,
   tradingWallet,
 } from "../trading"
+import { formatUsd } from "../usd"
 import { decimalsFor, printTradingResult, tradingFailure, validClientId } from "./swap"
 
 const LP_SCOPE = "lp:write"
@@ -128,14 +131,27 @@ export async function lpPools(args: string[], ctx: CommandContext): Promise<numb
       return 0
     }
     const usd = (value: number | null | undefined) =>
-      value === null || value === undefined ? "unavailable" : `$${value.toFixed(2)}`
+      value === null || value === undefined ? "unavailable" : formatUsd(value)
     const pct = (value: number | null | undefined) =>
       value === null || value === undefined ? "unavailable" : `${value.toFixed(2)}%`
-    out.write(`DAMM v2 pools for ${token} (page ${pools.page} of ${pools.pages}):\n`)
+    writeFields(
+      ctx.deps,
+      "stdout",
+      [
+        ["Token", token],
+        ["Page", `${pools.page} of ${pools.pages}`],
+      ],
+      "DAMM v2 pools",
+    )
     for (const pool of pools.pools) {
-      out.write(
-        `  ${safeText(pool.pool)}\n    pair ${pool.tokens.map(safeText).join(" / ")}\n    liquidity ${usd(pool.liquidityUsd)}, fee ${pct(pool.baseFeePercent)}, 24h volume ${usd(pool.volume24hUsd)}, est. yield ${pct(pool.estimatedAprPercent)} APR (indexed, not a quote)\n`,
-      )
+      writeFields(ctx.deps, "stdout", [
+        ["Pool", safeText(pool.pool)],
+        ["Pair", pool.tokens.map(safeText).join(" / ")],
+        ["Liquidity", usd(pool.liquidityUsd)],
+        ["Fee", pct(pool.baseFeePercent)],
+        ["24h volume", usd(pool.volume24hUsd)],
+        ["Estimated APR", `${pct(pool.estimatedAprPercent)} (indexed, not a quote)`],
+      ])
     }
     return 0
   } catch (error) {
@@ -183,17 +199,31 @@ export async function lpPositions(args: string[], ctx: CommandContext): Promise<
     }
     for (const wallet of report) {
       if (wallet.positions.length === 0) continue
-      out.write(`${wallet.label ? `${safeText(wallet.label)} ` : ""}(${wallet.id}, ${safeText(wallet.address)})\n`)
+      writeFields(ctx.deps, "stdout", [
+        ["Wallet", wallet.id],
+        ["Label", wallet.label ? safeText(wallet.label) : undefined],
+        ["Address", safeText(wallet.address)],
+      ])
       for (const position of wallet.positions) {
-        out.write(`  position ${safeText(position.position)} in pool ${safeText(position.pool)}\n`)
+        writeFields(ctx.deps, "stdout", [
+          ["Position", safeText(position.position)],
+          ["Pool", safeText(position.pool)],
+        ])
         for (const token of position.tokens) {
-          out.write(
-            `    ${amountLine({ mint: token.mint, raw: token.amountRaw, decimals: token.decimals })}, unclaimed fees ${decimalAmount(token.unclaimedFeesRaw, token.decimals)}${token.valueUsd === null || token.valueUsd === undefined ? "" : ` ($${token.valueUsd.toFixed(2)})`}\n`,
-          )
+          writeFields(ctx.deps, "stdout", [
+            ["Token", safeText(token.mint)],
+            ["Amount", decimalAmount(token.amountRaw, token.decimals)],
+            ["Unclaimed fees", decimalAmount(token.unclaimedFeesRaw, token.decimals)],
+            ["Value", token.valueUsd === null || token.valueUsd === undefined ? undefined : formatUsd(token.valueUsd)],
+          ])
         }
-        out.write(
-          `    value ${position.valueUsd === null || position.valueUsd === undefined ? "unpriced" : `$${position.valueUsd.toFixed(2)}`}${position.poolShare === undefined ? "" : `, ${(position.poolShare * 100).toFixed(4)}% of the pool`}\n`,
-        )
+        writeFields(ctx.deps, "stdout", [
+          [
+            "Position value",
+            position.valueUsd === null || position.valueUsd === undefined ? undefined : formatUsd(position.valueUsd),
+          ],
+          ["Pool share", position.poolShare === undefined ? undefined : `${(position.poolShare * 100).toFixed(4)}%`],
+        ])
       }
     }
     return 0
@@ -289,9 +319,13 @@ async function confirmPreview(
   plan: LpPlan,
   built: ReturnType<typeof lpBuildSchema.parse>,
 ): Promise<boolean> {
-  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
-  output.write(`${safeText(plan.intent)}\nPayer: ${safeText(plan.wallet.address)}\n`)
-  output.write(`Pool: ${safeText(built.build.pool)}\nPosition: ${safeText(built.build.position)}\n`)
+  writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+    ["Intent", safeText(plan.intent)],
+    ["Payer", safeText(plan.wallet.address)],
+    ["Pool", safeText(built.build.pool)],
+    ["Position", safeText(built.build.position)],
+  ])
+
   const preview = built.preview
   const amounts = preview?.amounts ?? []
   if (amounts.length > 0) {
@@ -301,13 +335,31 @@ async function confirmPreview(
         : plan.action === "remove"
           ? "Withdraw (minimum)"
           : "Claim"
-    output.write(`${verb}: ${amounts.map(amountLine).join(" + ")}\n`)
+    writeFields(
+      ctx.deps,
+      ctx.json ? "stderr" : "stdout",
+      amounts.map((amount) => [verb, amountLine(amount)] as const),
+    )
   }
-  output.write(`Candle LP fee: ${safeText(preview?.candleFeeBps ?? 0)} bps\n`)
-  for (const warning of preview?.warnings ?? []) output.write(`Warning: ${safeText(warning)}\n`)
+  writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+    ["Candle LP fee", `${safeText(preview?.candleFeeBps ?? 0)} bps`],
+  ])
+  for (const warning of preview?.warnings ?? [])
+    notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", `Warning: ${safeText(warning)}\n`.trim())
   for (const risk of preview?.tokenRisks ?? [])
-    output.write(`Warning (${safeText(risk.mint)}): ${safeText(risk.message)}\n`)
-  if (built.replay) output.write("This client id was already built; the same artifact is shown again.\n")
+    notice(
+      ctx.deps,
+      ctx.json ? "stderr" : "stdout",
+      "warning",
+      `Warning (${safeText(risk.mint)}): ${safeText(risk.message)}\n`.trim(),
+    )
+  if (built.replay)
+    notice(
+      ctx.deps,
+      ctx.json ? "stderr" : "stdout",
+      "note",
+      "This client id was already built; the same artifact is shown again.\n".trim(),
+    )
   if (plan.yes) return true
   if (!ctx.deps.isTTY.stdin)
     throw new TradingError(
@@ -336,7 +388,7 @@ async function runLpOperation(ctx: CommandContext, plan: LpPlan): Promise<number
   if (local?.signature) return confirm(local.signature, { resumed: true })
   if (!local && !(await claimOperation(ctx, key, id, "lp")))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
-  ctx.deps.stderr.write(`Operation: ${id}\n`)
+  writeFields(ctx.deps, "stderr", [["Operation", id]])
   const built = lpBuildSchema.parse(
     await lpRequest(ctx, key, `/api/v1/agent/lp/${action}/build`, {
       linkedWalletId: wallet.id,

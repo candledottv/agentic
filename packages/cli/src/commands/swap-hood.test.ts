@@ -45,6 +45,7 @@ import {
   HOOD_V4_UNIVERSAL_ROUTER,
   PERMIT2_APPROVE_SELECTOR,
 } from "../hood-legs"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import {
@@ -613,9 +614,9 @@ describe("H8: the sequenced leg loop", () => {
   test("the quote names every leg, the gas estimate and the reserve before the confirmation", async () => {
     const f = await fixture()
     expect(await run(sellArgs(), f.deps)).toBe(0)
-    expect(f.stderr.text).toContain("Legs, signed one at a time: approve, trade, fee")
-    expect(f.stderr.text).toContain("Gas: the approval leg up to 0.00024 ETH")
-    expect(f.stderr.text).toContain("Gas reserve: at least")
+    expect(humanText(f.stderr.text)).toContain(humanText("Legs, signed one at a time: approve, trade, fee"))
+    expect(humanText(f.stderr.text)).toContain(humanText("Gas: the approval leg up to 0.00024 ETH"))
+    expect(humanText(f.stderr.text)).toContain(humanText("Gas reserve: at least"))
     const quote = lastJson(f.stdout.text).quote as Record<string, unknown>
     expect(quote.legs).toEqual(["approve", "trade", "fee"])
   })
@@ -678,7 +679,7 @@ describe("H8: the sequenced leg loop", () => {
     expect(details.stage).toBe("executed")
     expect(details.signature).toBe(`0x${"2".repeat(64)}`)
     expect(details.landedLegs.map((leg) => leg.kind)).toEqual(["approval", "trade"])
-    expect(f.stderr.text).toContain("Do not retry")
+    expect(humanText(f.stderr.text)).toContain(humanText("Do not retry"))
     expect(f.calls.filter((call) => call.path.endsWith("/submit"))).toHaveLength(3)
   })
 
@@ -776,7 +777,7 @@ describe("H8: the sequenced leg loop", () => {
     expect(
       await run(["swap", "ETH", "USDG", "--amount", "0.5", "--client-trade-id", "hood-2", "--yes", "--json"], f.deps),
     ).toBe(0)
-    expect(f.stderr.text).toContain("settled 1.234567 USDG\n")
+    expect(humanText(f.stderr.text)).toContain(humanText("settled 1.234567 USDG\n"))
     expect(lastJson(f.stdout.text).settlement).toEqual(settlement)
   })
 
@@ -792,8 +793,10 @@ describe("H8: the sequenced leg loop", () => {
       expect(
         await run(["swap", "ETH", "USDG", "--amount", "0.5", "--client-trade-id", "hood-3", "--yes", "--json"], f.deps),
       ).toBe(0)
-      expect(f.stderr.text).toContain(
-        `Settlement: ${settlement ? "pending" : "not measured"}. Re-check with GET /api/v1/agent/swap/jobs/hood-3 (candle swap status hood-3).`,
+      expect(humanText(f.stderr.text)).toContain(
+        humanText(
+          `Settlement: ${settlement ? "pending" : "not measured"}. Re-check with GET /api/v1/agent/swap/jobs/hood-3 (candle swap status hood-3).`,
+        ),
       )
       expect("settlement" in lastJson(f.stdout.text)).toBe(settlement !== undefined)
     }
@@ -812,7 +815,7 @@ describe("H8: the sequenced leg loop", () => {
       await run(["swap", token, "ETH", "--percent", "100", "--client-trade-id", "hood-3", "--yes", "--json"], f.deps),
     ).toBe(0)
     expect(builds(f.calls)[0]?.body).toMatchObject({ side: "sell", mint: token, amountRaw: "4000000000000000000" })
-    expect(f.stderr.text).toContain("Reading from hood.test")
+    expect(humanText(f.stderr.text)).toContain(humanText("Reading from hood.test"))
   })
 
   test("the embedded Hood wallet trades a token through the deferred build, never the leg loop", async () => {
@@ -825,18 +828,18 @@ describe("H8: the sequenced leg loop", () => {
   test("a skipped record append never fails a landed leg; it prints a notice", async () => {
     const f = await fixture({ appendEvmRecord: async () => ({ appended: false, notice: "the header is version 3" }) })
     expect(await run(sellArgs(), f.deps)).toBe(0)
-    expect(f.stderr.text).toContain("the sealed EVM record was not updated")
-    expect(f.stderr.text).toContain("the header is version 3")
+    expect(humanText(f.stderr.text)).toContain(humanText("the sealed EVM record was not updated"))
+    expect(humanText(f.stderr.text)).toContain(humanText("the header is version 3"))
     const thrown = await fixture({
       appendEvmRecord: async () => {
         throw new Error("lock busy")
       },
     })
     expect(await run(sellArgs(), thrown.deps)).toBe(0)
-    expect(thrown.stderr.text).toContain("lock busy")
+    expect(humanText(thrown.stderr.text)).toContain(humanText("lock busy"))
     const none = await fixture()
     expect(await run(sellArgs(), none.deps)).toBe(0)
-    expect(none.stderr.text).toContain("no sealed EVM record writer")
+    expect(humanText(none.stderr.text)).toContain(humanText("no sealed EVM record writer"))
   })
 
   test("a non-TEE Solana wallet never enters the loop (the Solana rail is unchanged)", async () => {

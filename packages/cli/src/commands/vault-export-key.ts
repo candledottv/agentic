@@ -20,6 +20,7 @@ import { access, chmod, constants, lstat, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { notice } from "../presentation"
 import { VaultError } from "../vault/errors"
 import type { KeyEntry } from "../vault/format"
 import { wipe } from "../vault/hygiene"
@@ -80,8 +81,8 @@ export async function vaultExportKey(args: string[], ctx: CommandContext): Promi
       `The vault will record that this key was exported, and that record never resets.\n`
     // Human mode puts the warning on stdout before the confirmation; `--json` keeps stdout for
     // the single result value and puts the same warning on stderr.
-    if (ctx.json) ctx.deps.stderr.write(`${warning}\n`)
-    else ctx.deps.stdout.write(`\n${warning}\n`)
+    if (ctx.json) notice(ctx.deps, "stderr", "note", `${warning}\n`.trim())
+    else notice(ctx.deps, "stdout", "note", `\n${warning}\n`.trim())
     await confirmAddress(ctx, "key", entry.address, `export the key for ${entry.address}`)
 
     // The record precedes the exposure: a vault write, generation increments, and the flag never
@@ -109,10 +110,15 @@ export async function vaultExportKey(args: string[], ctx: CommandContext): Promi
       })
       return 0
     }
-    ctx.deps.stdout.write(
-      `Wrote the key for ${entry.label ?? entry.address} to ${destination} (mode 0600).\n` +
+    notice(
+      ctx.deps,
+      "stdout",
+      "warning",
+      (
+        `Wrote the key for ${entry.label ?? entry.address} to ${destination} (mode 0600).\n` +
         `This vault now records that the key was exported; that record never resets.\n` +
-        `Treat the file as a secret. This CLI will not print its contents.\n`,
+        `Treat the file as a secret. This CLI will not print its contents.\n`
+      ).trim(),
     )
     return 0
   })

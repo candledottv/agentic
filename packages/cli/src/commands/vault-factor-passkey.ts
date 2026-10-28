@@ -30,6 +30,8 @@
 import type { ParsedArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { PASSKEY_RP_ID } from "../enclave-helper/protocol"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 import { b64u, randomBytes } from "../vault/crypto"
 import { countRecoverableFactors } from "../vault/domains"
 import { VaultError } from "../vault/errors"
@@ -121,7 +123,7 @@ export async function addPasskeyFactor(
   try {
     registered = await registerPlatformPasskey(deps, session, { vaultId, envelopeId })
   } catch (error) {
-    deps.stderr.write("Nothing was written to the vault.\n")
+    notice(deps, "stderr", "note", "Nothing was written to the vault.\n".trim())
     throw error
   }
   if (!registered.prfSupported) {
@@ -182,7 +184,7 @@ export async function addPasskeyFactor(
       await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps),
     )
   } catch (error) {
-    deps.stderr.write(`${PASSKEY_LEFTOVER_NOTE}\n`)
+    notice(deps, "stderr", "note", `${PASSKEY_LEFTOVER_NOTE}\n`.trim())
     throw error
   }
 
@@ -213,13 +215,16 @@ export async function addPasskeyFactor(
         },
         deps,
       )
-      deps.stderr.write(`The unproven envelope ${envelopeId} was removed from the vault again.\n`)
+      notice(deps, "stderr", "note", `The unproven envelope ${envelopeId} was removed from the vault again.\n`.trim())
     } catch {
-      deps.stderr.write(
-        `Envelope ${envelopeId} could not be removed from the vault; remove it with: candle vault factor remove ${envelopeId}\n`,
+      notice(
+        deps,
+        "stderr",
+        "warning",
+        `Envelope ${envelopeId} could not be removed from the vault; remove it with: candle vault factor remove ${envelopeId}\n`.trim(),
       )
     }
-    deps.stderr.write(`${PASSKEY_LEFTOVER_NOTE}\n`)
+    notice(deps, "stderr", "note", `${PASSKEY_LEFTOVER_NOTE}\n`.trim())
     throw error
   }
 
@@ -246,16 +251,24 @@ export async function addPasskeyFactor(
     })
     return 0
   }
-  deps.stdout.write(`Added synced passkey factor ${envelopeId} (${PASSKEY_RP_ID}, this Apple account).\n`)
-  deps.stdout.write(
-    `  domain     apple-account (backup-eligible: yes, backed up now: ${registered.backupState ? "yes" : "no"})\n`,
+  writeSuccess(
+    deps,
+    "stdout",
+    `Added synced passkey factor ${envelopeId} (${PASSKEY_RP_ID}, this Apple account).\n`.trim(),
   )
-  deps.stdout.write(
-    `  helper     ${session.identity.bundleId} ${session.version}, signed by team ${session.identity.teamId}\n`,
+  writeFields(deps, "stdout", [
+    ["Domain", `apple-account (backup-eligible: yes, backed up now: ${registered.backupState ? "yes" : "no"})`],
+    ["Helper", `${session.identity.bundleId} ${session.version}, signed by team ${session.identity.teamId}`],
+    ["Verified", "vault re-read and opened with the new passkey"],
+    ["Unlock", `candle vault status --unlock --factor ${envelopeId}`],
+  ])
+
+  notice(deps, "stdout", "note", `\n${PASSKEY_NOTE}\n`.trim())
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `This vault now has ${recoverable} recoverable factor(s), domains counted once.\n`.trim(),
   )
-  deps.stdout.write(`  verified   the vault was re-read and opened with the new passkey\n`)
-  deps.stdout.write(`  unlock     candle vault status --unlock --factor ${envelopeId}\n`)
-  deps.stdout.write(`\n${PASSKEY_NOTE}\n`)
-  deps.stdout.write(`This vault now has ${recoverable} recoverable factor(s), domains counted once.\n`)
   return 0
 }

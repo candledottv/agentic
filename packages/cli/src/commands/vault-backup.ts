@@ -74,6 +74,8 @@ import { chmod, copyFile, mkdir, stat } from "node:fs/promises"
 import nodePath, { dirname, resolve } from "node:path"
 import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
+import { writeFields, writeHeading } from "../human-output"
+import { notice } from "../presentation"
 import { formatBytes } from "../progress"
 import { canonicalBytes } from "../vault/crypto"
 import {
@@ -154,7 +156,8 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
   const destination = target.path
   // Said before the unlock: an operator who typed four characters should see the path those four
   // characters became before they type a passphrase for a copy that lands there.
-  if (target.requires !== undefined) deps.stderr.write(`--to ${ICLOUD_SHORTHAND} is ${destination}\n`)
+  if (target.requires !== undefined)
+    notice(deps, "stderr", "note", `--to ${ICLOUD_SHORTHAND} is ${destination}\n`.trim())
 
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault)
@@ -214,7 +217,7 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     // unlock then authenticates the header, and the copy is written from the opened file. The
     // destination line (row B1) always prints for a sealed backup, before any prompt.
     if (verdict.sealed) {
-      deps.stderr.write(`${sealedBackupLine(verdict.destination, destination)}\n`)
+      notice(deps, "stderr", "note", `${sealedBackupLine(verdict.destination, destination)}\n`.trim())
     }
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
@@ -325,8 +328,17 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     // different claims about the same file, and that they were indistinguishable was the defect:
     // the operator read `Verified` as "I checked something that was already there". A verify
     // failure raises above this line, because a `Wrote` above a failure envelope reads as success.
-    for (const line of wroteLines(destination, written.size, mode)) deps.stdout.write(`${line}\n`)
-    if (recordCopy !== undefined) deps.stdout.write(`${recordCopyLine(recordCopy)}\n`)
+    writeFields(
+      deps,
+      "stdout",
+      [
+        ["Path", destination],
+        ["Size", `${formatBytes(written.size)} (${written.size} bytes)`],
+        ["Mode", mode],
+      ],
+      "Backup written",
+    )
+    if (recordCopy !== undefined) notice(deps, "stdout", "note", `${recordCopyLine(recordCopy)}\n`.trim())
     writeVerifiedReport(ctx, destination, verdict, report, live, {
       record,
       copyEnvelopes,
@@ -704,7 +716,7 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
       verifiedWith: verifiedWithLine(copyOpened.word, copyOpened.envelopeId, copyOpened.how, floorClause),
     })
     if (securityKeysNotInCopy.length > 0) {
-      deps.stdout.write(`\n${freshBackupAdvice(target, securityKeysNotInCopy)}\n`)
+      notice(deps, "stdout", "note", `\n${freshBackupAdvice(target, securityKeysNotInCopy)}\n`.trim())
     }
     return 0
   })
@@ -887,43 +899,64 @@ function writeVerifiedReport(
   opts: { copyEnvelopes: Envelope[]; leftOut: Envelope[]; verifiedWith: string; record?: RecordVerifyOutcome },
 ): void {
   const { deps } = ctx
+  const ninth = opts.record !== undefined && !opts.record.notApplicable
   const kept = opts.copyEnvelopes.map(labelEnvelope)
   const leftOut = opts.leftOut.map(labelEnvelope)
-  deps.stdout.write(`Verified ${target}\n`)
-  for (const line of backupVerdictLines(verdict, kept, leftOut)) deps.stdout.write(`${line}\n`)
-  deps.stdout.write(`${opts.verifiedWith}\n`)
-  const ninth = opts.record !== undefined && !opts.record.notApplicable
-  deps.stdout.write(`  steps         all ${ninth ? 9 : 8} passed, in order\n`)
-  if (ninth && opts.record !== undefined) {
-    deps.stdout.write(
-      opts.record.absent
-        ? `  EVM record    absent beside the copy (${opts.record.path}); nothing to check\n`
-        : `  EVM record    ${opts.record.lines} line(s), each decrypts under this copy's record key\n`,
-    )
-  }
-  deps.stdout.write(
-    `  keys checked  ${report.addressChecked.length} (each secret produces the address the index records)\n`,
+  writeFields(
+    deps,
+    "stdout",
+    [
+      ["Copy", target],
+      ["Steps", `all ${ninth ? 9 : 8} passed, in order`],
+    ],
+    "Backup verified",
   )
-  deps.stdout.write(`  re-derived    ${report.rederived.length} from the root along their recorded paths\n`)
-  if (report.notRederived.length > 0) {
-    deps.stdout.write(
-      `  not derived   ${report.notRederived.length}: independent keys, so the address and length checks are the strongest available for them\n`,
+  writeFields(deps, "stdout", [
+    ["Destination", verdict?.destination],
+    ["Sealed", verdict?.sealed ? "yes" : verdict?.sharedDomainAccepted ? "no (--accept-shared-domain)" : undefined],
+    ["Carries", kept.join(", ")],
+    ["Left out", leftOut.join(", ")],
+  ])
+  if (verdict?.sealed && verdict.destination === "unknown") notice(deps, "stdout", "note", UNPLACEABLE_DESTINATION_NOTE)
+  notice(deps, "stdout", "note", `${opts.verifiedWith}\n`.trim())
+
+  if (ninth && opts.record !== undefined) {
+    notice(
+      deps,
+      "stdout",
+      "note",
+      (opts.record.absent
+        ? `  EVM record    absent beside the copy (${opts.record.path}); nothing to check\n`
+        : `  EVM record    ${opts.record.lines} line(s), each decrypts under this copy's record key\n`
+      ).trim(),
     )
   }
-  if (report.comparedAgainstLive) deps.stdout.write(`  address set   matches the live vault\n`)
-  if (verdict?.sharedDomainAccepted) deps.stdout.write(`${sharedDomainLine(verdict)}\n`)
+  writeFields(deps, "stdout", [
+    ["Keys checked", `${report.addressChecked.length} (each secret produces the address the index records)`],
+    ["Re-derived", `${report.rederived.length} from the root along their recorded paths`],
+    [
+      "Independent keys",
+      `${report.notRederived.length}: address and length checks are the strongest available for them`,
+    ],
+  ])
+
+  if (report.comparedAgainstLive) notice(deps, "stdout", "note", `  address set   matches the live vault\n`.trim())
+  if (verdict?.sharedDomainAccepted) notice(deps, "stdout", "note", `${sharedDomainLine(verdict)}\n`.trim())
   if (verdict?.sealed) {
     const keys = opts.copyEnvelopes.filter(isSecurityKeyEnvelope).map((envelope) => envelope.id)
-    deps.stdout.write(`\n${sealedCopyNote(keys)}\n${APPLE_ACCOUNT_NOTICE}\n`)
+    notice(deps, "stdout", "note", `\n${sealedCopyNote(keys)}\n${APPLE_ACCOUNT_NOTICE}\n`.trim())
   }
   // Every backup output prints the counters, because an operator who kept the phrase needs these
   // two numbers beside it to bound a restore (CC-11).
-  deps.stdout.write(`\nDerivation counters to keep with your recovery phrase:\n`)
+  writeHeading(deps, "stdout", "Derivation counters to keep with your recovery phrase")
   for (const [branch, value] of Object.entries(live.index.hd.nextIndex)) {
-    deps.stdout.write(`  ${branch.padEnd(12)} ${value}\n`)
+    writeFields(deps, "stdout", [[branch, value]])
   }
-  deps.stdout.write(
-    `\nThe recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; this file plus a factor does that.\n`,
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `\nThe recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; this file plus a factor does that.\n`.trim(),
   )
 }
 

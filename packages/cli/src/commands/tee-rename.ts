@@ -28,6 +28,8 @@ import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 import { printIdentity } from "../profiles"
 import { writeFailure, writeLocalFailure } from "../render"
 import { isVaultError } from "../vault/errors"
@@ -94,9 +96,9 @@ function refusal(ctx: CommandContext, findings: RenameFinding[], exit: 1 | 2): n
   const message = "TEE rename refused. Nothing was changed."
   if (ctx.json) writeJson(ctx.deps, { ok: false, code: "TEE_RENAME_BATCH_REFUSED", message, findings })
   else {
-    ctx.deps.stderr.write(`${message}\n`)
+    notice(ctx.deps, "stderr", "warning", `${message}\n`.trim())
     for (const finding of findings)
-      ctx.deps.stderr.write(`  ${finding.line === 0 ? "file" : `line ${finding.line}`}: ${finding.problem}\n`)
+      writeFields(ctx.deps, "stderr", [[finding.line === 0 ? "File" : `Line ${finding.line}`, finding.problem]])
   }
   return exit
 }
@@ -175,10 +177,15 @@ function unknownCommit(
   const message = `The rename request got no answer, so whether the server applied it is unknown. Nothing was written to the vault. ${rerun.length} wallet${rerun.length === 1 ? "" : "s"} may or may not carry the new name on the server.`
   if (json) writeJson(deps, { ok: false, code: "TEE_RENAME_SERVER_UNKNOWN", message, rerun })
   else {
-    deps.stderr.write(`${message}\n`)
-    deps.stderr.write("Re-run it with these rows, saved to a file (the old labels may no longer resolve):\n")
+    notice(deps, "stderr", "warning", `${message}\n`.trim())
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      "Re-run it with these rows, saved to a file (the old labels may no longer resolve):\n".trim(),
+    )
     for (const line of rerunFile(rerun)) deps.stderr.write(`  ${line}\n`)
-    deps.stderr.write("Then run: candle tee rename --pairs-from <file>\n")
+    notice(deps, "stderr", "warning", "Then run: candle tee rename --pairs-from <file>\n".trim())
   }
   return 1
 }
@@ -340,7 +347,7 @@ export async function teeRename(args: string[], ctx: CommandContext): Promise<nu
 
     const print = (headline: string) => {
       if (json) return writeJson(deps, { ok: true, renamed: receipt, ...(dryRun ? { dryRun: true } : {}) })
-      deps.stdout.write(`${headline}\n`)
+      writeSuccess(deps, "stdout", `${headline}\n`.trim())
       for (const row of receipt) {
         const sides =
           row.server === "renamed" && row.vault === "renamed"
@@ -351,7 +358,12 @@ export async function teeRename(args: string[], ctx: CommandContext): Promise<nu
                 ? "vault; the server already had this name"
                 : "already named"
         const was = row.server === "renamed" ? row.from : (localById.get(row.id)?.label ?? row.from)
-        deps.stdout.write(`  ${was ?? "(none)"} -> ${row.to}  ${row.address} (${sides})\n`)
+        writeFields(deps, "stdout", [
+          ["From", was],
+          ["To", row.to],
+          ["Address", row.address],
+          ["Changed in", sides],
+        ])
       }
     }
 
@@ -404,10 +416,15 @@ export async function teeRename(args: string[], ctx: CommandContext): Promise<nu
         if (json) {
           writeJson(deps, { ok: false, code: "TEE_RENAME_VAULT_INCOMPLETE", message, cause, rerun, renamed: receipt })
         } else {
-          deps.stderr.write(`${message}\n`)
-          deps.stderr.write("Finish it with these rows, saved to a file (the old labels no longer resolve):\n")
+          notice(deps, "stderr", "warning", `${message}\n`.trim())
+          notice(
+            deps,
+            "stderr",
+            "warning",
+            "Finish it with these rows, saved to a file (the old labels no longer resolve):\n".trim(),
+          )
           for (const line of rerunFile(rerun)) deps.stderr.write(`  ${line}\n`)
-          deps.stderr.write("Then run: candle tee rename --pairs-from <file>\n")
+          notice(deps, "stderr", "warning", "Then run: candle tee rename --pairs-from <file>\n".trim())
         }
         return 1
       }

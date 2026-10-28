@@ -27,6 +27,7 @@
 import { type ParsedArgs, parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { looksLikeEvmAddress } from "../evm-lite"
+import { notice } from "../presentation"
 import { writeLocalFailure } from "../render"
 import { openSolanaClient, type SolanaClient } from "../solana-endpoint"
 import { VaultError } from "../vault/errors"
@@ -100,8 +101,11 @@ async function fundExternal(
   const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, external.address], solana.rpc, ctx)
   if (reconciled !== null) return reconciled
 
-  ctx.deps.stdout.write(
-    `Funding external wallet ${external.label} (${external.address}) from vault key ${fromEntry.label}. What this wallet holds is what candle sign can spend; fund a session, not a float.\n`,
+  notice(
+    ctx.deps,
+    "stdout",
+    "note",
+    `Funding external wallet ${external.label} (${external.address}) from vault key ${fromEntry.label}. What this wallet holds is what candle sign can spend; fund a session, not a float.\n`.trim(),
   )
   const plan = await solana.read(() =>
     planTransfer({
@@ -251,8 +255,11 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     }
     assertVaultSigner(fromEntry)
 
-    ctx.deps.stdout.write(
-      `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`,
+    notice(
+      ctx.deps,
+      "stdout",
+      "note",
+      `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`.trim(),
     )
 
     const plan = await solana.read(() =>
@@ -394,8 +401,11 @@ async function vaultFundEvm(ctx: CommandContext, parsed: ParsedArgs, teeAddress:
     assertVaultSigner(fromEntry)
     ctx.deps.stderr.write(`${hoodHostLine(client, "the chain id")}\n`)
     await assertHoodChain(client)
-    ctx.deps.stdout.write(
-      `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`,
+    notice(
+      ctx.deps,
+      "stdout",
+      "note",
+      `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`.trim(),
     )
     return runEvmTransfer(
       {

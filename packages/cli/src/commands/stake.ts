@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeFields } from "../human-output"
+import { notice } from "../presentation"
 import { writeUsageFailure } from "../render"
 import {
   claimOperation,
@@ -179,22 +181,38 @@ async function runStake(
     const wallets = selected(view.wallets, values["--wallet"])
     if (action === "positions") {
       if (ctx.json) return printTradingResult(ctx, { ...view, wallets })
-      const out = ctx.deps.stdout
-      out.write(`Pool wait: ${view.pool?.withdrawalTimelockSeconds ?? "unavailable"} seconds\n`)
+
+      writeFields(ctx.deps, "stdout", [
+        [
+          "Pool wait",
+          view.pool?.withdrawalTimelockSeconds === undefined
+            ? undefined
+            : `${view.pool.withdrawalTimelockSeconds} seconds`,
+        ],
+      ])
       for (const w of wallets) {
-        out.write(
-          `${safeText(w.label ?? w.payer)} (${safeText(w.address)})\n  CNDL: ${decimalAmount(w.cndl.amountRaw, w.cndl.decimals)}; sCNDL: ${decimalAmount(w.staked.amountRaw, w.staked.decimals)}; pending CNDL (raw): ${safeText(w.pendingWithdrawalRaw)}\n`,
-        )
+        writeFields(ctx.deps, "stdout", [
+          ["Wallet", safeText(w.label ?? w.payer)],
+          ["Address", safeText(w.address)],
+          ["CNDL", decimalAmount(w.cndl.amountRaw, w.cndl.decimals)],
+          ["sCNDL", decimalAmount(w.staked.amountRaw, w.staked.decimals)],
+          ["Pending CNDL (raw)", safeText(w.pendingWithdrawalRaw)],
+        ])
         for (const row of w.withdrawals.active)
-          out.write(
-            `  Withdrawal ${safeText(row.withdrawal)}: ${safeText(row.amountRaw)} raw CNDL; ends ${safeText(row.endTime)}; ${row.claimable ? "ready" : "waiting"}\n`,
-          )
+          writeFields(ctx.deps, "stdout", [
+            ["Withdrawal", safeText(row.withdrawal)],
+            ["CNDL (raw)", safeText(row.amountRaw)],
+            ["Ends", safeText(row.endTime)],
+            ["Status", row.claimable ? "ready" : "waiting"],
+          ])
         for (const reward of w.unclaimedRewards)
-          out.write(
-            `  Reward ${safeText(reward.rewardId)}: ${safeText(reward.amountRaw)} raw ${safeText(reward.mint)}\n`,
-          )
+          writeFields(ctx.deps, "stdout", [
+            ["Reward", safeText(reward.rewardId)],
+            ["Raw amount", safeText(reward.amountRaw)],
+            ["Mint", safeText(reward.mint)],
+          ])
       }
-      for (const note of view.notes) out.write(`${safeText(note)}\n`)
+      for (const note of view.notes) notice(ctx.deps, "stdout", "note", safeText(note))
       return 0
     }
     const notes = view.notes.map(safeText).join("\n")
@@ -260,7 +278,7 @@ async function runStake(
       preview.dryRun !== true
     )
       throw new TradingError("INVALID_RESPONSE", "The preview does not match the requested wallet and operation.")
-    ctx.deps.stderr.write(`Operation: ${id}\n`)
+    writeFields(ctx.deps, "stderr", [["Operation", id]])
     if (
       !(await approval(
         ctx,

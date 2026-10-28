@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test"
 import { generateKeyPairSync } from "node:crypto"
 import type { CliConfig } from "../config"
 import type { Deps } from "../deps"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import {
   keySignerFingerprint,
@@ -157,10 +158,12 @@ describe("T1: candle tee signer new", () => {
     expect(await h.store.get(keySignerRef(PREFIX, sha))).not.toBeNull()
     // The fingerprint printed is the server's for what was sent, and the code is the request's.
     expect(h.stderr.text).toContain(keySignerFingerprint(sha))
-    expect(h.stderr.text).toContain(`candle keys signer approve ${sim.requests[0]?.userCode} --key ${PREFIX}`)
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(`candle keys signer approve ${sim.requests[0]?.userCode} --key ${PREFIX}`),
+    )
     expect(entry?.signerQuorumId).toBe(sim.keys.get(PREFIX)?.active?.quorum as string)
-    expect(h.stdout.text).toContain(
-      `Key          ${PREFIX}\n  Fingerprint  ${keySignerFingerprint(sha)}\n  Held         on this machine`,
+    expect(humanText(h.stdout.text)).toContain(
+      humanText(`Key          ${PREFIX}\n  Fingerprint  ${keySignerFingerprint(sha)}\n  Held         on this machine`),
     )
     // No device token here: no D2 warning.
     expect(h.stderr.text).not.toContain(DEVICE_TOKEN_BESIDE_SIGNER_LINE)
@@ -217,7 +220,9 @@ describe("T1: candle tee signer new", () => {
     sim.approveOnRead = 1
     const h = machine(sim, { apiKey: true, deviceToken: true, clock })
     expect(await run(["tee", "signer", "new", "--key", PREFIX], h.deps)).toBe(0)
-    expect(h.stderr.text.replace(/\s+/g, " ")).toContain(DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, ""))
+    expect(humanText(h.stderr.text.replace(/\s+/g, " "))).toContain(
+      humanText(DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, "")),
+    )
   })
 })
 
@@ -395,7 +400,9 @@ describe("T9: candle keys signer move", () => {
     const oldSha = await holdSigner(h, PREFIX, old, "q-old")
     expect(await run(["keys", "signer", "move", PREFIX], h.deps)).toBe(1)
     expect(await h.store.get(keySignerRef(PREFIX, oldSha))).not.toBeNull()
-    expect(h.stdout.text.replace(/\s+/g, " ")).toContain(`Kept ${keySignerRef(PREFIX, oldSha)}: 1 wallet still on it.`)
+    expect(humanText(h.stdout.text.replace(/\s+/g, " "))).toContain(
+      humanText(`Kept ${keySignerRef(PREFIX, oldSha)}: 1 wallet still on it.`),
+    )
   })
 
   test("a key with no active signer: KEY_SIGNER_MISSING, nothing signed", async () => {
@@ -428,7 +435,9 @@ describe("T9: candle keys signer move", () => {
     expect(await run(["keys", "signer", "move", PREFIX, "--to-key", TO], h.deps)).toBe(0)
     // D3: the same pin `tee rebind` asks for, before the first owner change is signed.
     expect(h.linePrompts).toEqual([`Type the full fingerprint of key ${TO}'s signer, all three groups: `])
-    expect(h.stderr.text).toContain(`Key ${TO}'s signer is ${liveFp}. This machine has not pinned it yet`)
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(`Key ${TO}'s signer is ${liveFp}. This machine has not pinned it yet`),
+    )
     expect((await readPin(h.deps, TO))?.spkiSha256).toBe(spkiSha256Of(live.publicKeyDer))
     const commits = sim.rebinds.filter((b) => b.dryRun !== true)
     expect(commits).toHaveLength(2)
@@ -519,7 +528,7 @@ describe("T11: candle tee rebind onto a key", () => {
     expect(sim.wallets[0]).toMatchObject({ boundKeyPrefix: TO, owner: "q-to", recorded: "q-to" })
     expect((await readPin(h.deps, TO))?.spkiSha256).toBe(spkiSha256Of(target.publicKeyDer))
     expect(await h.store.get(walletSignerRef("W1"))).toBeNull()
-    expect(h.stderr.text).toContain(`moves to key ${TO}'s signer ${fingerprint}`)
+    expect(humanText(h.stderr.text)).toContain(humanText(`moves to key ${TO}'s signer ${fingerprint}`))
     expect(h.stderr.text).not.toContain(RELAY_SIGNER_LINE)
   })
 
@@ -560,11 +569,11 @@ describe("T11: candle tee rebind onto a key", () => {
     expect(commits[0]?.owner).toBeUndefined()
     expect(sim.wallets.map((w) => w.owner)).toEqual(["q-from", "q-leg"])
     const fp = sim.keys.get(FROM)?.active?.fingerprint as string
-    expect(h.stderr.text).toContain(
-      `w1 stays owned by key ${FROM}'s signer ${fp}: trade it from the machine that holds that signer.`,
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(`w1 stays owned by key ${FROM}'s signer ${fp}: trade it from the machine that holds that signer.`),
     )
     expect(h.stderr.text).not.toContain("w1 stays owned by key FromKey1's signer, which")
-    expect(h.stderr.text).toContain(RELAY_SIGNER_LINE)
+    expect(humanText(h.stderr.text)).toContain(humanText(RELAY_SIGNER_LINE))
   })
 
   test("a signer approved on the target after the pin is not signed to: the commit's keySigner.spkiSha256 differs, KEY_SIGNER_CHANGED, nothing signed", async () => {
@@ -721,9 +730,9 @@ describe("signer replacement notices", () => {
       const h = machine(sim, { apiKey: true, clock })
       expect(await run(["tee", "signer", "new", "--key", PREFIX, "--json"], h.deps)).toBe(0)
       expect(JSON.parse(h.stdout.text).replaces).toEqual({ fingerprint: signer.fingerprint, wallets: count })
-      expect(h.stderr.text).toContain("Approving this request replaces it")
-      expect(h.stderr.text).toContain(
-        count ? `candle keys signer move ${PREFIX}` : "It owns no wallets, so nothing has to move",
+      expect(humanText(h.stderr.text)).toContain(humanText("Approving this request replaces it"))
+      expect(humanText(h.stderr.text)).toContain(
+        humanText(count ? `candle keys signer move ${PREFIX}` : "It owns no wallets, so nothing has to move"),
       )
     })
   }
@@ -756,7 +765,9 @@ describe("signer replacement notices", () => {
     })
     const h = machine(sim, { deviceToken: true, secrets: [fingerprint] })
     expect(await run(["keys", "signer", "approve", "ABCD-EFGH", "--key", PREFIX], h.deps)).toBe(0)
-    expect(h.stderr.text).toContain(`Approving replaces signer ${old.fingerprint} as this key's active signer.`)
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(`Approving replaces signer ${old.fingerprint} as this key's active signer.`),
+    )
   })
 })
 
@@ -779,5 +790,5 @@ test("tee signer new echoes supersededPending", async () => {
   sim.approveOnRead = 2
   const h = machine(sim, { apiKey: true, clock })
   expect(await run(["tee", "signer", "new", "--key", PREFIX], h.deps)).toBe(0)
-  expect(h.stderr.text).toContain("An earlier pending request for this key was cancelled.")
+  expect(humanText(h.stderr.text)).toContain(humanText("An earlier pending request for this key was cancelled."))
 })

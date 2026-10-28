@@ -187,7 +187,7 @@ export async function update(args: string[], ctx: CommandContext, current: strin
     return 0
   }
   if (order > 0 && pinned) {
-    if (json) deps.stderr.write(`Warning: ${target.version} is a downgrade from ${current}\n`)
+    if (json) notice(deps, "stderr", "note", `Warning: ${target.version} is a downgrade from ${current}\n`.trim())
     else notice(deps, "stderr", "warning", `${target.version} is a downgrade from ${current}`)
   }
 

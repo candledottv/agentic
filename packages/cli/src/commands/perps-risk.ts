@@ -16,6 +16,7 @@ import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
 import {
   HYPERLIQUID_RISK_DEFAULTS,
   type HyperliquidInfoFetcher,
@@ -40,7 +41,7 @@ import {
   watchPerpsRisk,
 } from "../hyperliquid-risk"
 import { accent, failure, fields, heading, notice, success, symbols, terminalStyle } from "../presentation"
-import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
+import { formatTime, renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { type Json, safeText, TradingError, tradingKey } from "../trading"
 import { formatUsd } from "../usd"
 import { NO_DEVICE_TOKEN } from "./keys"
@@ -142,8 +143,19 @@ function levelCell(row: Pick<PerpsPositionRow, "level" | "markPx" | "liquidation
   return row.liquidationPx === null ? "ok" : "n/a"
 }
 
-function accountText(line: PerpsAccountLine): string {
-  return `Account value ${usd(line.accountValueUsd)} USD (cross ${usd(line.crossAccountValueUsd)}), margin used ${usd(line.marginUsedUsd)}, free margin ${usd(line.freeMarginUsd)}, withdrawable ${usd(line.withdrawableUsd)}, margin ratio ${line.marginRatio === null ? "none (no cross equity)" : line.marginRatio.toFixed(4)}, unrealized ${usd(line.unrealizedPnlUsd)}, ${line.positionCount} ${line.positionCount === 1 ? "position" : "positions"}, ${safeText(line.mode)} mode`
+function writeAccountFields(ctx: CommandContext, line: PerpsAccountLine): void {
+  const missing = symbols(terminalStyle(ctx.deps, "stdout")).missing
+  writeFields(ctx.deps, "stdout", [
+    ["Account value", usdField(line.accountValueUsd, missing)],
+    ["Cross account value", usdField(line.crossAccountValueUsd, missing)],
+    ["Margin used", usdField(line.marginUsedUsd, missing)],
+    ["Free margin", usdField(line.freeMarginUsd, missing)],
+    ["Withdrawable", usdField(line.withdrawableUsd, missing)],
+    ["Margin ratio", line.marginRatio === null ? "none (no cross equity)" : line.marginRatio.toFixed(4)],
+    ["Unrealized", usdField(line.unrealizedPnlUsd, missing, true)],
+    ["Positions", line.positionCount],
+    ["Mode", safeText(line.mode)],
+  ])
 }
 
 function usdField(value: string | null | undefined, missing: string, signed = false): string {
@@ -153,8 +165,7 @@ function usdField(value: string | null | undefined, missing: string, signed = fa
 }
 
 /**
- * The positions table on `perps risk` only. `positionsTable` stays the plain table `perps
- * positions` and `perps account` still print; those screens are a later release.
+ * Width-aware positions shared by the human risk and positions screens.
  */
 function riskPositionsTable(rows: PerpsPositionRow[], style: ReturnType<typeof terminalStyle>): string {
   if (rows.length === 0) return "No open positions."
@@ -258,8 +269,24 @@ export function positionsTable(rows: PerpsPositionRow[]): string {
   )
 }
 
-function thresholdsText(t: PerpsRiskThresholdsReport): string {
-  return `Thresholds (${t.source}): warn under ${(t.warnDistanceBps / 100).toFixed(1)}% or ratio above ${(t.warnMarginRatioBps / 10_000).toFixed(2)}; critical under ${(t.criticalDistanceBps / 100).toFixed(1)}% or above ${(t.criticalMarginRatioBps / 10_000).toFixed(2)}; clear band ${(t.clearBandBps / 100).toFixed(1)} points`
+function writeThresholds(ctx: CommandContext, t: PerpsRiskThresholdsReport): void {
+  writeFields(
+    ctx.deps,
+    "stdout",
+    [
+      ["Source", t.source],
+      [
+        "Warn",
+        `under ${(t.warnDistanceBps / 100).toFixed(1)}% or ratio above ${(t.warnMarginRatioBps / 10_000).toFixed(2)}`,
+      ],
+      [
+        "Critical",
+        `under ${(t.criticalDistanceBps / 100).toFixed(1)}% or above ${(t.criticalMarginRatioBps / 10_000).toFixed(2)}`,
+      ],
+      ["Clear band", `${(t.clearBandBps / 100).toFixed(1)} points`],
+    ],
+    "Thresholds",
+  )
 }
 
 const NO_MONITOR =
@@ -432,16 +459,25 @@ export async function perpsAccount(args: string[], ctx: CommandContext): Promise
 }
 
 function writeAccountText(ctx: CommandContext, account: PerpsAccountReport, report: PerpsRiskReport): void {
-  const out = ctx.deps.stdout
-  out.write(`${safeText(account.address)} on Hyperliquid ${account.network}, read ${account.readAt}\n`)
-  if (report.account) out.write(`${accountText(report.account)}\n`)
-  else out.write(`No account figures: ${safeText(report.reason)}.\n`)
+  writeFields(ctx.deps, "stdout", [
+    ["Address", safeText(account.address)],
+    ["Hyperliquid network", account.network],
+    ["Read at", formatTime(account.readAt)],
+  ])
+  if (report.account) writeAccountFields(ctx, report.account)
+  else notice(ctx.deps, "stdout", "warning", `No account figures: ${safeText(report.reason)}.\n`.trim())
   const r = account.recent
   const hours = Math.round((r.endTime - r.startTime) / 3_600_000)
-  out.write(
-    `Last ${hours} h (main perps): realized ${usd(r.realizedPnlUsd)}, fees ${usd(r.feesUsd)}, funding ${usd(r.fundingUsd)} (positive received); ${r.fills} fills, ${r.fundingPayments} funding payments${r.truncated ? "; Hyperliquid's response cap was hit, so these are partial" : ""}\n`,
-  )
-  out.write(`${riskLine(report)}\n`)
+  writeFields(ctx.deps, "stdout", [
+    ["Window", `last ${hours} h (main perps)`],
+    ["Realized", formatUsd(Number(r.realizedPnlUsd), { signed: true })],
+    ["Fees", formatUsd(Number(r.feesUsd))],
+    ["Funding", `${formatUsd(Number(r.fundingUsd), { signed: true })} (positive received)`],
+    ["Fills", r.fills],
+    ["Funding payments", r.fundingPayments],
+  ])
+  if (r.truncated) notice(ctx.deps, "stdout", "warning", "Hyperliquid's response cap was hit, so these are partial.")
+  notice(ctx.deps, "stdout", "note", `${riskLine(report)}\n`.trim())
 }
 
 // ── positions (spec A-3): the text half; perps.ts keeps the server read and the JSON ─────────
@@ -494,10 +530,9 @@ export function writePositionsText(
   ctx: CommandContext,
   additions: Awaited<ReturnType<typeof positionsAdditions>>,
 ): void {
-  const out = ctx.deps.stdout
-  out.write(`${positionsTable(additions.rows)}\n`)
-  if (additions.accountLine) out.write(`${accountText(additions.accountLine)}\n`)
-  out.write(`${riskLine(additions.risk)}\n`)
+  ctx.deps.stdout.write(`${riskPositionsTable(additions.rows, terminalStyle(ctx.deps, "stdout"))}\n`)
+  if (additions.accountLine) writeAccountFields(ctx, additions.accountLine)
+  notice(ctx.deps, "stdout", "note", `${riskLine(additions.risk)}\n`.trim())
 }
 
 // ── watch (spec A-9) ────────────────────────────────────────────────────────────────────────
@@ -641,14 +676,15 @@ export async function perpsThresholds(args: string[], ctx: CommandContext): Prom
       ctx.deps.stdout.write(`${JSON.stringify({ stored, effective, source, defaults: HYPERLIQUID_RISK_DEFAULTS })}\n`)
       return 0
     }
-    ctx.deps.stdout.write(`${thresholdsText(thresholds)}\n`)
-    ctx.deps.stdout.write(
-      stored && Object.keys(stored).length > 0
-        ? `Stored on this key: ${Object.entries(stored)
-            .map(([field, value]) => `${field} ${value}`)
-            .join(", ")}\n`
-        : "Nothing stored on this key; the defaults apply.\n",
-    )
+    writeThresholds(ctx, thresholds)
+    if (stored && Object.keys(stored).length > 0)
+      writeFields(
+        ctx.deps,
+        "stdout",
+        Object.entries(stored).map(([field, value]) => [field, value]),
+        "Stored on this key",
+      )
+    else notice(ctx.deps, "stdout", "note", "Nothing stored on this key; the defaults apply.")
     return 0
   } catch (error) {
     return tradingFailure(ctx, error)
@@ -753,8 +789,11 @@ async function thresholdsWrite(verb: "set" | "clear", args: string[], ctx: Comma
     return 0
   }
   const effective = { ...HYPERLIQUID_RISK_DEFAULTS, ...(answer.effective ?? {}) }
-  ctx.deps.stdout.write(
-    `${verb === "clear" ? "Cleared" : "Stored"} on key ${safeText(answer.keyPrefix ?? keyPrefix)}. ${thresholdsText({ ...effective, source: answer.perpsRisk ? "key" : "defaults" })}\n`,
+  writeSuccess(
+    ctx.deps,
+    "stdout",
+    `${verb === "clear" ? "Cleared" : "Stored"} on key ${safeText(answer.keyPrefix ?? keyPrefix)}.`,
   )
+  writeThresholds(ctx, { ...effective, source: answer.perpsRisk ? "key" : "defaults" })
   return 0
 }

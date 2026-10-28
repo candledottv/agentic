@@ -7,6 +7,7 @@
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { generateKeyPairSync } from "node:crypto"
+import { humanText } from "../human-output.test-support"
 import {
   CANDLE_PERPS_WITHDRAW_PINS,
   HYPERLIQUID_SEND_ASSET_TYPES,
@@ -233,9 +234,11 @@ describe("R12: the owner gate", () => {
     expect(unlocks).toHaveLength(1)
     expect(confirms).toHaveLength(1)
     const shown = unlocks[0] ?? ""
-    expect(shown).toContain("Withdraw 5 USDC from Hyperliquid account")
-    expect(shown).toContain("Relay fees 0.1 USDC; you receive about 4.9 USDC, at least 4.89")
-    expect(shown).toContain("to   7ZL9 FvkpCMgdvzfoMSYZSuCXLCYN25dfgtDXej1BBJaB".slice(0, 9))
+    expect(humanText(shown)).toContain(humanText("Withdraw 5 USDC Hyperliquid account"))
+    expect(humanText(shown)).toContain(
+      humanText("Relay fees 0.1 USDC Estimated received 4.9 USDC Minimum received 4.89 USDC"),
+    )
+    expect(humanText(shown)).toContain("To 7ZL9 Fvkp CMgd vzfo MSYZ SuCX LCYN 25df gtDX ej1B BJaB")
     expect(confirms[0]).toBe(`confirm:Type confirm to withdraw 5 USDC to ${SOLANA}: `)
     // Order: display, unlock, confirm, then the first relay signature.
     expect(f.events.indexOf(unlocks[0] as string)).toBeLessThan(f.events.indexOf(confirms[0] as string))
@@ -367,6 +370,6 @@ describe("candle perps withdraw status", () => {
   test("reads one withdrawal", async () => {
     const f = await fixture()
     expect(await run(["perps", "withdraw", "status", "w-1"], f.deps)).toBe(0)
-    expect(f.stdout.text).toContain("Withdrawal w-1: settled, 5 USDC to")
+    expect(humanText(f.stdout.text)).toContain(humanText("Withdrawal w-1 Status settled Amount 5 USDC To"))
   })
 })

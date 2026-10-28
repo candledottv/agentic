@@ -7,6 +7,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { resolveApiKey } from "../deps"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import {
   createCapture,
@@ -52,21 +53,23 @@ describe("setup", () => {
     )
 
     const out = stdout.text
-    expect(out).toContain("Skipping login")
+    expect(humanText(out)).toContain(humanText("Skipping login"))
     expect(out).toContain(SOL)
     expect(out).toContain(EVM)
     // The live identity (section 2) is followed by a blank line. The funding addresses stay
     // whole: they are what the operator pastes into the next command.
-    expect(out).toContain(
-      `Profile none · Account AgentWa11et · api.alpha.candle.tv\n\nSolana (send SOL here):    ${SOL}\nHood    (send ETH here):    ${EVM}\n`,
+    expect(humanText(out)).toContain(
+      humanText(
+        `Profile none · Account AgentWa11et · api.alpha.candle.tv\n\n  Solana (send SOL here)  ${SOL}\n  Hood (send ETH here)    ${EVM}\n`,
+      ),
     )
-    expect(out).toContain("Tell your agent")
-    expect(out).toContain("/plugin marketplace add candledottv/agentic")
-    expect(out).toContain("MCP (any client), paste into the host's MCP config:")
+    expect(humanText(out)).toContain(humanText("Tell your agent"))
+    expect(humanText(out)).toContain(humanText("/plugin marketplace add candledottv/agentic"))
+    expect(humanText(out)).toContain(humanText("MCP (any client), paste into the host config"))
     expect(out).toContain('"command": "/Users/a/.local/bin/candle"')
     // The server is bundled into the binary, so setup no longer tells the operator to install a
     // Node runtime for the MCP host: there is nothing left to install.
-    expect(out).toContain("The MCP server is built into this binary")
+    expect(humanText(out)).toContain(humanText("The MCP server is built into this binary"))
     expect(out).not.toContain("Node 18+")
     expect(out).toContain("/agents")
     // The four numbered stages appear in order.
@@ -97,10 +100,12 @@ describe("setup", () => {
       if (mode !== "tty" && mode !== "no-input") expect(stdout.text).not.toContain("\x1b")
       expect(stdout.text).toContain(SOL)
       expect(stdout.text).toContain(EVM)
-      expect(stdout.text).toContain("Skipping login")
+      expect(humanText(stdout.text)).toContain(humanText("Skipping login"))
       const sep = mode === "plain" || mode === "pipe" || mode === "CI" ? "-" : "·"
-      expect(stdout.text).toContain(
-        `Account AgentWa11et ${sep} api.alpha.candle.tv\n\nSolana (send SOL here):    ${SOL}\nHood    (send ETH here):    ${EVM}\n`,
+      expect(humanText(stdout.text)).toContain(
+        humanText(
+          `Account AgentWa11et ${sep} api.alpha.candle.tv\n\n  Solana (send SOL here)  ${SOL}\n  Hood (send ETH here)    ${EVM}\n`,
+        ),
       )
     }
   })
@@ -115,7 +120,7 @@ describe("setup", () => {
     const stdout = createCapture()
     const code = await run(["setup"], createTestDeps({ fetch, store: authorizedStore(), stdout }))
     expect(code).not.toBe(0)
-    expect(stdout.text).toContain("failed checks")
+    expect(humanText(stdout.text)).toContain(humanText("failed checks"))
   })
 
   test("--json is refused: the wizard is human-only, with guidance to the composable commands", async () => {
@@ -183,11 +188,11 @@ describe("setup", () => {
     expect(await resolveApiKey(deps, "production")).toBe(NEW_KEY)
     expect(Object.keys((await config.readConfig()).profiles ?? {})).toEqual(["production"])
     expect(stdout.text).toContain(SOL)
-    expect(stdout.text).toContain("Tell your agent")
+    expect(humanText(stdout.text)).toContain(humanText("Tell your agent"))
     expect(stdout.text).not.toContain("Could not read the agent wallets")
     // The console link comes from the portal origin the login just recorded ON THE PROFILE, not
     // from the legacy top-level field (absent here) and so not derived from the API host.
-    const consoleLine = stdout.text.split("\n").find((line) => line.startsWith("Console ("))
+    const consoleLine = stdout.text.split("\n").find((line) => line.trimStart().startsWith("Console "))
     expect(consoleLine).toContain("https://candle.tv/agents")
     expect(consoleLine).not.toContain("alpha")
   })
@@ -256,7 +261,7 @@ describe("setup", () => {
     )
     expect(code).not.toBe(0)
     expect(calls.some((c) => c.url.includes("/device/code"))).toBe(true)
-    expect(stderr.text).toContain("Setup stopped")
+    expect(humanText(stderr.text)).toContain(humanText("Setup stopped"))
     expect(stdout.text).not.toContain("Tell your agent")
   })
 })

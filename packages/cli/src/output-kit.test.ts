@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { writeFields } from "./human-output"
 import { run } from "./index"
 import {
   bold,
@@ -85,9 +86,56 @@ describe("bold, dim and heading", () => {
     expect(heading("By agent", plain())).toBe("By agent")
     expect(clean(heading("By agent", color()))).toBe("By agent")
   })
+
+  test("a heading that fits is one line, byte for byte what it always was", () => {
+    const title = "Message to sign (the exact bytes read; nothing was trimmed or normalized)"
+    expect(heading("By agent", plain(40))).toBe("By agent")
+    expect(heading(title, plain(200))).toBe(title)
+    expect(clean(heading(title, color(200)))).toBe(title)
+  })
+
+  test("the converted screens' long headings wrap at the width, plain and styled, cap on a wide terminal", () => {
+    const signTitle = "Message to sign (the exact bytes read; nothing was trimmed or normalized)"
+    expect(heading(signTitle, plain(40)).split("\n")).toEqual([
+      "Message to sign (the exact bytes read;",
+      "nothing was trimmed or normalized)",
+    ])
+    // Styled: each wrapped line carries its own codes, so bolding survives wrapping.
+    expect(heading(signTitle, color(40)).split("\n")).toEqual([
+      "\x1b[1mMessage to sign (the exact bytes read;\x1b[0m",
+      "\x1b[1mnothing was trimmed or normalized)\x1b[0m",
+    ])
+    const backupTitle = "Derivation counters to keep with your recovery phrase"
+    const backupLines = heading(backupTitle, plain(40)).split("\n")
+    expect(backupLines).toEqual(["Derivation counters to keep with your", "recovery phrase"])
+    expectWithin(backupLines, 40)
+    // However wide the terminal, a heading longer than the prose cap still wraps at the cap.
+    const longTitle = `${backupTitle} and every phrase you re-enter when you restore the vault on a new machine`
+    const capped = heading(longTitle, plain(240)).split("\n")
+    expectWithin(capped, PROSE_MAX)
+    expect(capped).toHaveLength(2)
+  })
 })
 
 describe("fields", () => {
+  test("a writeFields title wraps like a heading, and the blank line after it survives", () => {
+    const stdout = createCapture()
+    writeFields(
+      createTestDeps({ fetch: unusedFetch, stdout, columns: { stdout: 40, stderr: 40 } }),
+      "stdout",
+      [["Address", "one"]],
+      "Derivation counters to keep with your recovery phrase",
+    )
+    const lines = stdout.text.split("\n")
+    expect(lines.slice(0, 4)).toEqual([
+      "Derivation counters to keep with your",
+      "recovery phrase",
+      "",
+      "  Address  one",
+    ])
+    expectWithin(lines, 40)
+  })
+
   test("labels in one column padded to the widest plus two; a missing value is the mark", () => {
     expect(
       fields(
@@ -244,6 +292,34 @@ describe("success and failure lines", () => {
     expect(failure("Not created", noColor())).toBe("✗ Not created")
     expect(success("API key created", color())).toBe("\x1b[38;5;42m✓\x1b[0m API key created")
     expect(failure("Not created", color())).toBe("\x1b[38;5;204m✗ Not created\x1b[0m")
+  })
+
+  test("a long success sentence wraps under its mark at the width; the prose cap holds when wide", () => {
+    // The actual `vault new-key --count` completion sentence (vault-new-key.ts), which rendered
+    // one 118-column line at 40 columns before wrapping landed here.
+    const sentence =
+      "3 keys created under one unlock, each committed on its own and re-read from the vault and re-derived from its root."
+    const plainNarrow = success(sentence, plain(40)).split("\n")
+    expect(plainNarrow).toEqual([
+      "ok 3 keys created under one unlock, each",
+      "   committed on its own and re-read from",
+      "   the vault and re-derived from its",
+      "   root.",
+    ])
+    expectWithin(plainNarrow, 40)
+    // Every word of the sentence survives, in order: wrapping never edits prose.
+    expect(plainNarrow.join(" ").replace(/\s+/g, " ")).toBe(`ok ${sentence}`)
+
+    // Styled: the mark keeps its positive color, continuation lines hang under the text column.
+    const styledNarrow = success(sentence, color(40)).split("\n")
+    expect(styledNarrow[0]).toBe("\x1b[38;5;42m✓\x1b[0m 3 keys created under one unlock, each")
+    expectWithin(styledNarrow.map(clean), 40)
+    for (const line of styledNarrow.slice(1)) expect(line.startsWith("  ")).toBe(true)
+
+    // A terminal wide enough for one line still wraps at the prose cap, not the terminal width.
+    const wide = success(sentence, plain(200)).split("\n")
+    expectWithin(wide, PROSE_MAX)
+    expect(wide).toHaveLength(2)
   })
 })
 

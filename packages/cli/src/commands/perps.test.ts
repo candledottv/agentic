@@ -11,6 +11,7 @@ import { generateKeyPairSync, verify } from "node:crypto"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { humanText } from "../human-output.test-support"
 import {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   hyperliquidActionHash,
@@ -304,7 +305,7 @@ describe("candle perps open", () => {
     expect(JSON.parse(f.stdout.text.trim()).preview.builderTrust).toEqual({ address: BUILDER, source: "override" })
     const signed = await fixture()
     expect(await run(OPEN, signed.deps)).toBe(0)
-    expect(signed.stderr.text).toContain("Builder trust override:")
+    expect(humanText(signed.stderr.text)).toContain(humanText("Builder trust override:"))
   })
 
   test("--no-submit stops after the check: nothing signed, nothing posted", async () => {
@@ -441,7 +442,9 @@ describe("the order is held to Hyperliquid's own market (SEC-004)", () => {
 
     const dishonest = await fixture({ build: withTakeProfit("1") })
     expect(await run([...OPEN, "--tp", "66000"], dishonest.deps)).not.toBe(0)
-    expect(dishonest.stdout.text + dishonest.stderr.text).toContain("slippage of the trigger price")
+    expect(humanText(dishonest.stdout.text + dishonest.stderr.text)).toContain(
+      humanText("slippage of the trigger price"),
+    )
     expect(dishonest.calls.some((c) => c.path.endsWith("/sign"))).toBe(false)
   })
 })
@@ -469,8 +472,8 @@ test("confirmation displays the verified action despite a lying preview and fee 
     }),
   })
   expect(await run(["perps", "open", "BTC", "long", "0.01", "--yes"], f.deps)).toBe(0)
-  expect(f.stdout.text).toContain("Open buy 0.01 asset 0 at 60600 (Ioc)")
-  expect(f.stdout.text).toContain("fee: 10 bps")
+  expect(humanText(f.stdout.text)).toContain(humanText("Open buy 0.01 asset 0 at 60600 (Ioc)"))
+  expect(humanText(f.stdout.text)).toContain(humanText("fee: 10 bps"))
   expect(f.stdout.text).not.toContain("FAKE")
   expect(f.stdout.text).not.toContain("Cancel")
 })
@@ -565,7 +568,7 @@ describe("--client-id", () => {
     const f = await fixture({ build: replay })
     expect(await run([...OPEN, "--client-id", ID], f.deps)).toBe(0)
     expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ replayed: true, status: "filled" })
-    expect(f.stderr.text).toContain("Nothing was signed or sent")
+    expect(humanText(f.stderr.text)).toContain(humanText("Nothing was signed or sent"))
     expect(f.calls.some((c) => c.path.endsWith("/sign") || c.host === "api.hyperliquid.xyz")).toBe(false)
     const close = await fixture({ build: { ...replay, kind: "close" } })
     expect(await run(["perps", "close", "BTC", "--client-id", ID, "--yes", "--json"], close.deps)).toBe(0)
@@ -651,9 +654,9 @@ describe("fills and funding", () => {
     ).toBe(0)
     const out = f.stdout.text
     expect(out).toContain("2026-09-21T") // the UTC window
-    expect(out).toContain("closed P&L -1.50 (gross), fee 0.30 USDC, builder fee 0.06 (in fee)")
-    expect(out).toContain("Next page: candle perps fills --cursor ph1.")
-    expect(out).toContain("10,000 most recent fills")
+    expect(humanText(out)).toContain(humanText("closed P&L -1.50 (gross), fee 0.30 USDC, builder fee 0.06 (in fee)"))
+    expect(humanText(out)).toContain(humanText("Next page: candle perps fills --cursor ph1."))
+    expect(humanText(out)).toContain(humanText("10,000 most recent fills"))
   })
 
   test("funding is signed and labelled", async () => {
@@ -667,7 +670,7 @@ describe("fills and funding", () => {
       ],
     })
     expect(await run(["perps", "funding", "--start-time", "0", "--end-time", "10"], f.deps)).toBe(0)
-    expect(f.stdout.text).toContain("BTC paid 0.25 USDC, rate 0.0001, position 1")
+    expect(humanText(f.stdout.text)).toContain(humanText("BTC paid 0.25 USDC, rate 0.0001, position 1"))
     expect(f.calls.find((c) => c.body?.type === "userFunding")?.body).toEqual({
       type: "userFunding",
       user: ADDRESS,

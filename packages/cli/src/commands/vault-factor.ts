@@ -16,6 +16,8 @@
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice as outputNotice } from "../presentation"
 import { freshArgon2Params } from "../vault/crypto"
 import { countRecoverableFactors } from "../vault/domains"
 import { VaultError } from "../vault/errors"
@@ -88,12 +90,21 @@ export async function vaultFactorList(args: string[], ctx: CommandContext): Prom
       return 0
     }
     for (const row of rows) {
-      deps.stdout.write(
-        `${row.id}  ${row.factor}${row.transport ? `/${row.transport}` : ""}  ${row.domain}  ${row.label || "(no label)"}\n`,
-      )
-      deps.stdout.write(`    ${row.availability}${row.reason ? `: ${row.reason}` : ""}\n`)
+      writeFields(deps, "stdout", [
+        ["Id", row.id],
+        ["Factor", `${row.factor}${row.transport ? `/${row.transport}` : ""}`],
+        ["Domain", row.domain],
+        ["Label", row.label],
+      ])
+      writeFields(deps, "stdout", [
+        ["Availability", row.availability],
+        ["Reason", row.reason],
+      ])
     }
-    deps.stdout.write(`\n${countRecoverableFactors(file.envelopes)} recoverable factor(s), domains counted once.\n`)
+    writeFields(deps, "stdout", [
+      ["Recoverable factors", countRecoverableFactors(file.envelopes)],
+      ["Counting", "each domain once"],
+    ])
     return 0
   })
 }
@@ -189,10 +200,13 @@ export async function vaultFactorAdd(args: string[], ctx: CommandContext): Promi
       })
       return 0
     }
-    deps.stdout.write(`Added passphrase factor ${sealed.id}.\n`)
-    deps.stdout.write(`  strength   ${strengthLabel(envelope.strength)}\n`)
-    deps.stdout.write(`  verified   the vault was re-read and opened with the new passphrase\n`)
-    deps.stdout.write(`\n${APPLE_ACCOUNT_NOTICE}\n`)
+    writeSuccess(deps, "stdout", `Added passphrase factor ${sealed.id}.\n`.trim())
+    writeFields(deps, "stdout", [
+      ["Strength", strengthLabel(envelope.strength)],
+      ["Verified", "vault re-read and opened with the new passphrase"],
+    ])
+
+    outputNotice(deps, "stdout", "warning", `\n${APPLE_ACCOUNT_NOTICE}\n`.trim())
     return 0
   })
 }
@@ -262,10 +276,13 @@ export async function vaultFactorRemove(args: string[], ctx: CommandContext): Pr
       writeJson(deps, { ok: true, removedEnvelopeId: id, notRevocation: notice.join(" ") })
       return 0
     }
-    deps.stdout.write(`Removed envelope ${id}.\n\n`)
-    for (const line of notice) deps.stdout.write(`${line}\n`)
-    deps.stdout.write(
-      `\n\`candle vault status\` lists this id from now on, so you can tell which copies it still opens.\n`,
+    writeSuccess(deps, "stdout", `Removed envelope ${id}.\n\n`.trim())
+    for (const line of notice) outputNotice(deps, "stdout", "warning", `${line}\n`.trim())
+    outputNotice(
+      deps,
+      "stdout",
+      "warning",
+      `\n\`candle vault status\` lists this id from now on, so you can tell which copies it still opens.\n`.trim(),
     )
     return 0
   })
@@ -273,9 +290,17 @@ export async function vaultFactorRemove(args: string[], ctx: CommandContext): Pr
 
 async function collectGenerated(ctx: CommandContext): Promise<string> {
   const passphrase = generatePassphrase()
-  ctx.deps.stdout.write(
-    `\nThe new passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits. Written down now; it is shown once.\n\n    ${passphrase}\n\n`,
+  writeFields(
+    ctx.deps,
+    "stdout",
+    [
+      ["Words", GENERATED_WORD_COUNT],
+      ["Entropy", `${generatedEntropyBits()} bits`],
+    ],
+    "The new passphrase",
   )
+  outputNotice(ctx.deps, "stdout", "warning", "Written down now; it is shown once.")
+  ctx.deps.stdout.write(`    ${passphrase}\n\n`)
   const typed = await ctx.deps.promptSecret("Type it back in full to confirm (input hidden): ")
   if (typed.trim() !== passphrase) {
     throw new VaultError("VAULT_UNLOCK_FAILED", "That did not match the passphrase shown above. Nothing was written.")

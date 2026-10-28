@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createTestDeps, jsonResponse } from "../test-support"
 import { CLUSTER_CAVEAT, CLUSTER_LABEL, CLUSTER_REASONS, clusterUnavailable } from "../token-clusters"
@@ -33,7 +34,7 @@ describe("candle token clusters", () => {
   test("human unavailable reason is normal stdout; invalid mint and Hood remain normal", async () => {
     const f = setup({ success: true, data: clusterUnavailable(mint, "unsupported_chain") })
     expect(await run(["token", "clusters", mint, "--chain", "hood"], f.deps)).toBe(0)
-    expect(f.stdout.text).toContain("(unsupported_chain)")
+    expect(humanText(f.stdout.text)).toContain(humanText("Reason unsupported_chain"))
     expect(f.stderr.text).toBe("")
     const invalid = setup({ success: true, data: clusterUnavailable("bad!", "invalid_mint") })
     expect(await run(["token", "clusters", "bad!", "--json"], invalid.deps)).toBe(0)
@@ -54,7 +55,7 @@ describe("candle token clusters", () => {
       throw Error("private secret")
     }) as unknown as typeof fetch
     expect(await run(["token", "clusters", mint], f.deps)).toBe(0)
-    expect(f.stdout.text).toContain("(transport_error)")
+    expect(humanText(f.stdout.text)).toContain(humanText("Reason transport_error"))
     expect(f.stdout.text).not.toContain("secret")
   })
   test("real analysis human and JSON include times and caveat; terminal controls are sanitized", async () => {
@@ -74,7 +75,7 @@ describe("candle token clusters", () => {
     expect(await run(["token", "clusters", mint], human.deps)).toBe(0)
     expect(human.stdout.text).toContain(CLUSTER_LABEL)
     expect(human.stdout.text).toContain("12%")
-    expect(human.stdout.text).toContain(CLUSTER_CAVEAT)
+    expect(humanText(human.stdout.text)).toContain(humanText(CLUSTER_CAVEAT))
     expect(human.stdout.text).not.toContain("\u001b")
     const json = setup({ success: true, data })
     expect(await run(["token", "clusters", mint, "--json"], json.deps)).toBe(0)

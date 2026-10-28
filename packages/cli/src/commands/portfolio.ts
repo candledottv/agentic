@@ -98,6 +98,7 @@ import {
 import {
   dim,
   displayWidth,
+  notice,
   padDisplay,
   proseWidth,
   renderNotice,
@@ -403,8 +404,11 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       await solana.disclose()
       // The host, never the URL: a provider URL can carry an API key. stderr in both modes.
       const requests = Math.ceil(vaultEntries.length / CHUNK) + vaultEntries.length * 2
-      deps.stderr.write(
-        `Reading ${vaultEntries.length} vault ${vaultEntries.length === 1 ? "address" : "addresses"} from ${rpcHost} in ${requests} requests. That endpoint sees them together; Candle sees none of them.\n`,
+      notice(
+        deps,
+        "stderr",
+        "note",
+        `Reading ${vaultEntries.length} vault ${vaultEntries.length === 1 ? "address" : "addresses"} from ${rpcHost} in ${requests} requests. That endpoint sees them together; Candle sees none of them.\n`.trim(),
       )
     }
     // 4d-ED-3, 4d-ED-6: the EVM host before its first request, then Hood or a refusal by name.
@@ -412,8 +416,11 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     if (evmRpc && evmEntries && evmEntries.length > 0) {
       evmHost = rpcHostOf(evmRpc.url)
       const n = evmEntries.length
-      deps.stderr.write(
-        `Reading ETH and USDG for ${n} EVM vault ${n === 1 ? "address" : "addresses"} from ${evmHost}${evmRpc.builtIn ? " (the built-in Hood RPC)" : ""} in ${1 + 2 * n} requests. That endpoint sees them together; Candle sees none of them.\n`,
+      notice(
+        deps,
+        "stderr",
+        "note",
+        `Reading ETH and USDG for ${n} EVM vault ${n === 1 ? "address" : "addresses"} from ${evmHost}${evmRpc.builtIn ? " (the built-in Hood RPC)" : ""} in ${1 + 2 * n} requests. That endpoint sees them together; Candle sees none of them.\n`.trim(),
       )
     }
     const evmRead =
@@ -446,12 +453,20 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       // BE-355 (D3): the same line `vault list` prints, in both modes; under --json stdout stays
       // one document and the exit code says partial.
       const n = vaultRead.unavailable.length
-      deps.stderr.write(`${n} vault ${n === 1 ? "address" : "addresses"} could not be read: ${vaultRead.failure}.\n`)
+      notice(
+        deps,
+        "stderr",
+        "warning",
+        `${n} vault ${n === 1 ? "address" : "addresses"} could not be read: ${vaultRead.failure}.\n`.trim(),
+      )
     }
     if (evmBalances?.failure !== undefined) {
       const n = evmBalances.unavailable.length
-      deps.stderr.write(
-        `${n} EVM vault ${n === 1 ? "address" : "addresses"} on Hood could not be read in full: ${terminalText(evmBalances.failure)}.\n`,
+      notice(
+        deps,
+        "stderr",
+        "warning",
+        `${n} EVM vault ${n === 1 ? "address" : "addresses"} on Hood could not be read in full: ${terminalText(evmBalances.failure)}.\n`.trim(),
       )
     }
     if (!candle.ok) {
@@ -478,8 +493,11 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       }))
       if (accounts.length > 0) {
         const n = Math.min(accounts.length, PERPS_PORTFOLIO_MAX_ACCOUNTS)
-        deps.stderr.write(
-          `Reading ${n} EVM TEE ${n === 1 ? "address" : "addresses"} from Hyperliquid's public API in ${n + 1} requests. Pass --no-perps to skip.\n`,
+        notice(
+          deps,
+          "stderr",
+          "note",
+          `Reading ${n} EVM TEE ${n === 1 ? "address" : "addresses"} from Hyperliquid's public API in ${n + 1} requests. Pass --no-perps to skip.\n`.trim(),
         )
       }
       perps = await perpsPortfolioSection(
@@ -537,8 +555,11 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       }
     }
     if (priceFailure !== undefined) {
-      deps.stderr.write(
-        `Some vault holdings could not be priced: ${terminalText(priceFailure)}. They are shown as unpriced.\n`,
+      notice(
+        deps,
+        "stderr",
+        "warning",
+        `Some vault holdings could not be priced: ${terminalText(priceFailure)}. They are shown as unpriced.\n`.trim(),
       )
     }
 
@@ -776,10 +797,14 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       // Before the table, so a short table is read as a filtered one. No match is an answer, not
       // a refusal (`vault list`'s rule): the exit code still says whether the list and the reads
       // were whole, and a cut-off list says so on this line too.
-      deps.stdout.write(
-        matched.matched === 0
+      notice(
+        deps,
+        "stdout",
+        "note",
+        (matched.matched === 0
           ? `No wallet matches "${terminalText(matched.filter)}". ${matched.wallets} ${matched.wallets === 1 ? "wallet" : "wallets"} on this account and vault; candle portfolio with no filter shows them.\n`
-          : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.\n\n`,
+          : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.\n\n`
+        ).trim(),
       )
       if (matched.matched === 0) {
         writeListNote(ctx, listNote)

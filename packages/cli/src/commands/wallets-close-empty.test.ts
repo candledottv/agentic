@@ -9,6 +9,7 @@ import { generateKeyPairSync } from "node:crypto"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import {
@@ -146,11 +147,15 @@ describe("candle wallet close-empty (BE-418)", () => {
     const code = await run(["wallet", "close-empty", "--keep", KEEP, "--json"], f.deps)
     expect(code).toBe(0)
     // Under --json the preview and prompt go to stderr, and stdout is one JSON line.
-    expect(f.stderr.text).toContain(`Close 2 empty token accounts on the embedded wallet ${EMBEDDED}`)
-    expect(f.stderr.text).toContain("Rent returned to that same wallet: 0.00411336 SOL in 1 transaction")
-    expect(f.stderr.text).toContain("network fee about 0.000005 SOL")
-    expect(f.stderr.text).toContain("MintA  token-2022  0.00207408 SOL")
-    expect(f.stderr.text).toContain("Left open: 1 kept by --keep, 1 wrapped SOL")
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(`Close 2 empty token accounts on the embedded wallet ${EMBEDDED}`),
+    )
+    expect(humanText(f.stderr.text)).toContain(
+      humanText("Rent returned to that same wallet: 0.00411336 SOL in 1 transaction"),
+    )
+    expect(humanText(f.stderr.text)).toContain(humanText("network fee about 0.000005 SOL"))
+    expect(humanText(f.stderr.text)).toContain(humanText("MintA  token-2022  0.00207408 SOL"))
+    expect(humanText(f.stderr.text)).toContain(humanText("Left open: 1 kept by --keep, 1 wrapped SOL"))
     expect(f.paths().filter((p) => p.includes("close-empty"))).toEqual([PREVIEW, EXECUTE])
     expect(f.calls.find((c) => c.path === PREVIEW)?.body).toEqual({ keep: [KEEP] })
     const execute = f.calls.find((c) => c.path === EXECUTE)?.body as Record<string, unknown>
@@ -198,7 +203,9 @@ describe("candle wallet close-empty (BE-418)", () => {
     const f = await fixture({ accounts: [] })
     const code = await run(["wallet", "close-empty"], f.deps)
     expect(code).toBe(0)
-    expect(f.stdout.text).toContain(`No empty token accounts to close on the embedded wallet ${EMBEDDED}.`)
+    expect(humanText(f.stdout.text)).toContain(
+      humanText(`No empty token accounts to close on the embedded wallet ${EMBEDDED}.`),
+    )
     expect(f.paths()).not.toContain(EXECUTE)
   })
 
@@ -460,9 +467,13 @@ describe("candle wallet close-empty --wallet <TEE wallet> (BE-1687)", () => {
     const f = await teeFixture()
     const code = await run(["wallet", "close-empty", "--wallet", "agent-one", "--keep", KEEP, "--json"], f.deps)
     expect(code).toBe(0)
-    expect(f.stderr.text).toContain(`Close 3 empty token accounts on the TEE wallet agent-one (${TEE})`)
-    expect(f.stderr.text).toContain("Rent returned to that same wallet: 0.00615264 SOL in 2 transactions")
-    expect(f.stderr.text).toContain("Left open: 1 kept by --keep")
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(`Close 3 empty token accounts on the TEE wallet agent-one (${TEE})`),
+    )
+    expect(humanText(f.stderr.text)).toContain(
+      humanText("Rent returned to that same wallet: 0.00615264 SOL in 2 transactions"),
+    )
+    expect(humanText(f.stderr.text)).toContain(humanText("Left open: 1 kept by --keep"))
     expect(closePaths(f.paths())).toEqual([TEE_PREVIEW, TEE_BUILD, TEE_SIGN, TEE_SIGN, TEE_SUBMIT])
     expect(f.calls.find((c) => c.path === TEE_PREVIEW)?.body).toEqual({ keep: [KEEP] })
     const build = f.calls.find((c) => c.path === TEE_BUILD)?.body as Record<string, unknown>
@@ -591,7 +602,9 @@ describe("candle wallet close-empty --wallet <TEE wallet> (BE-1687)", () => {
     // JOB_NOT_FOUND for the named id, so the close ran under it.
     expect(closePaths(f.paths())[0]).toBe(`${TEE_BASE}/jobs/close-9`)
     expect(f.calls.find((c) => c.path === TEE_BUILD)?.body?.clientTradeId).toBe("close-9")
-    expect(f.stderr.text).toContain(`candle wallet close-empty --wallet ${TEE} --client-trade-id close-9`)
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(`candle wallet close-empty --wallet ${TEE} --client-trade-id close-9`),
+    )
     expect(JSON.parse(f.stdout.text)).toMatchObject({ status: "recovering", unresolved: [{ index: 1 }] })
   })
 

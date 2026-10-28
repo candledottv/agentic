@@ -28,6 +28,8 @@ import {
   toChecksumAddress,
 } from "../evm-lite"
 import { hoodFeeTreasury, hoodTradeLegCheck, registeredCurveFor } from "../hood-legs"
+import { writeFields } from "../human-output"
+import { notice as outputNotice } from "../presentation"
 import { apiKeyPrefix } from "../profiles"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { describeRpcFailure, type SolanaClient } from "../solana-endpoint"
@@ -153,21 +155,32 @@ async function requestSwapBuild(ctx: CommandContext, key: string, body: Json): P
 
 function describeSwapEvidence(ctx: CommandContext, details: Json, terminal: boolean): void {
   if (details.stage === "not_broadcast" && terminal)
-    ctx.deps.stderr.write("Nothing was sent. This swap job is terminal; retry with a new id.\n")
+    outputNotice(
+      ctx.deps,
+      "stderr",
+      "note",
+      "Nothing was sent. This swap job is terminal; retry with a new id.\n".trim(),
+    )
   if (details.stage === "unconfirmed") {
     const hashes = Array.isArray(details.hashes)
       ? details.hashes
       : typeof details.signature === "string"
         ? [details.signature]
         : []
-    ctx.deps.stderr.write(
-      `Swap outcome needs verification${details.leg !== undefined ? ` (leg ${safeText(String(details.leg))})` : ""}. Known hashes: ${hashes.length ? hashes.map((hash) => safeText(String(hash))).join(", ") : "unknown"}. Do not automatically retry or use a new id.\n`,
+    outputNotice(
+      ctx.deps,
+      "stderr",
+      "warning",
+      `Swap outcome needs verification${details.leg !== undefined ? ` (leg ${safeText(String(details.leg))})` : ""}. Known hashes: ${hashes.length ? hashes.map((hash) => safeText(String(hash))).join(", ") : "unknown"}. Do not automatically retry or use a new id.\n`.trim(),
     )
   }
   // BE-1397: a token trade whose trade leg landed and whose later step (the Hood fee leg) did not.
   if (details.stage === "executed")
-    ctx.deps.stderr.write(
-      `The trade landed${typeof details.signature === "string" ? ` (${safeText(details.signature)})` : ""} and a later step failed. Do not retry or use a new id.\n`,
+    outputNotice(
+      ctx.deps,
+      "stderr",
+      "warning",
+      `The trade landed${typeof details.signature === "string" ? ` (${safeText(details.signature)})` : ""} and a later step failed. Do not retry or use a new id.\n`.trim(),
     )
 }
 
@@ -213,8 +226,11 @@ function reportSettlement(
       : reading.state === "settled"
         ? "settled, amount not measured"
         : reading.state
-    ctx.deps.stderr.write(
-      `Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/${id} (candle swap status ${id}).\n`,
+    outputNotice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/${id} (candle swap status ${id}).\n`.trim(),
     )
   }
   return settlement !== null && typeof settlement === "object" ? { settlement } : {}
@@ -360,7 +376,12 @@ async function waitForSettlement(
   const field = bridgeStatusField(ctx, current, facts)
   const finished = waitFinished(current, facts, sent)
   if (!finished)
-    ctx.deps.stderr.write(`Still not final after ten minutes. Re-check with candle swap status ${id} --wait.\n`)
+    outputNotice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `Still not final after ten minutes. Re-check with candle swap status ${id} --wait.\n`.trim(),
+    )
   return { ...current, ...field, waited: { final: finished } }
 }
 export async function decimalsFor(
@@ -524,7 +545,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     if (payerWallet.kind === "embedded" && kind === "trade") await assertDeferredExecuteSupported(ctx, key, id)
     if (!(await claimOperation(ctx, key, id, kind)))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
-    ctx.deps.stderr.write(`Operation: ${id}\n`)
+    writeFields(ctx.deps, "stderr", [["Operation", id]])
     const payer =
       payerWallet.kind === "tee" ? { type: "linked", linkedWalletId: payerWallet.wallet.id } : { type: "main" }
     const built =
@@ -702,7 +723,12 @@ export function lazyEvmRpc(ctx: CommandContext, flag: string | undefined): () =>
     if (rpc) return rpc
     const resolved = resolveEvmRpcUrl(flag, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url")
     if ("error" in resolved) throw new TradingUsage(resolved.error)
-    ctx.deps.stderr.write(`Reading from ${rpcHostOf(resolved.url)} (Hood RPC; reads only, nothing is sent there)\n`)
+    outputNotice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `Reading from ${rpcHostOf(resolved.url)} (Hood RPC; reads only, nothing is sent there)\n`.trim(),
+    )
     rpc = createEvmRpc(resolved.url, ctx.deps.fetch)
     return rpc
   }
@@ -747,7 +773,7 @@ export async function recordTradedToken(
       notice = skipped(error instanceof Error ? error.message : "the append failed")
     }
   }
-  if (notice) ctx.deps.stderr.write(`${safeText(notice)}\n`)
+  if (notice) outputNotice(ctx.deps, "stderr", "note", `${safeText(notice)}\n`.trim())
   return notice
 }
 
@@ -825,7 +851,7 @@ async function hoodSwap(
   if (payer.kind === "embedded" && kind === "trade") await assertDeferredExecuteSupported(ctx, key, id)
   if (!(await claimOperation(ctx, key, id, kind)))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
-  ctx.deps.stderr.write(`Operation: ${id}\n`)
+  writeFields(ctx.deps, "stderr", [["Operation", id]])
   const payerBody = payer.kind === "tee" ? { type: "linked", linkedWalletId: payer.wallet.id } : { type: "main" }
   const base = (from.base ?? to.base) as string
   const token = from.base ? to.asset : from.asset
@@ -906,8 +932,11 @@ async function hoodSwap(
     // The build already holds the wallet (D4, one operation per wallet), and nothing releases an
     // operation that never sent a leg: the next Hood build for it is WALLET_BUSY until the window closes.
     if (sequenced)
-      ctx.deps.stderr.write(
-        `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.\n`,
+      outputNotice(
+        ctx.deps,
+        "stderr",
+        "note",
+        `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.\n`.trim(),
       )
     return printTradingResult(ctx, {
       success: true,
@@ -1136,7 +1165,7 @@ async function bridgeSwap(
   } else amountRaw = rawAmount(flags["--amount"] as string, decimals)
   if (!(await claimOperation(ctx, key, id, "swap")))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
-  ctx.deps.stderr.write(`Operation: ${id}\n`)
+  writeFields(ctx.deps, "stderr", [["Operation", id]])
   const built = await requestSwapBuild(ctx, key, {
     clientTradeId: id,
     from,
@@ -1265,8 +1294,11 @@ async function bridgeSwap(
   }
   if (!(await confirmQuote(ctx, quote, args.yes))) {
     if (sequenced)
-      ctx.deps.stderr.write(
-        `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade or sweep from it waits until then.\n`,
+      outputNotice(
+        ctx.deps,
+        "stderr",
+        "note",
+        `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade or sweep from it waits until then.\n`.trim(),
       )
     return printTradingResult(ctx, {
       success: true,
@@ -1316,8 +1348,11 @@ async function bridgeSwap(
     depositHash = hashes[0]
     result = submitted
   }
-  ctx.deps.stderr.write(
-    `Deposit ${depositHash ? safeText(depositHash) : "sent"}: filling.${args.wait ? "" : ` Check it with candle swap status ${id} (add --wait to follow it).`}\n`,
+  outputNotice(
+    ctx.deps,
+    "stderr",
+    "note",
+    `Deposit ${depositHash ? safeText(depositHash) : "sent"}: filling.${args.wait ? "" : ` Check it with candle swap status ${id} (add --wait to follow it).`}\n`.trim(),
   )
   const receipt: Json = {
     ...result,
@@ -1342,8 +1377,11 @@ async function bridgeSwap(
     })
   } catch (error) {
     const reason = safeText(error instanceof Error ? describeRpcFailure(error) : String(error))
-    ctx.deps.stderr.write(
-      `Could not follow the bridge (${reason}). The deposit was sent; do not send it again. Re-check with candle swap status ${id} --wait.\n`,
+    outputNotice(
+      ctx.deps,
+      "stderr",
+      "warning",
+      `Could not follow the bridge (${reason}). The deposit was sent; do not send it again. Re-check with candle swap status ${id} --wait.\n`.trim(),
     )
     return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } })
   }

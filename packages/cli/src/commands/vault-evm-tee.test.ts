@@ -18,6 +18,7 @@ import { mnemonicToAccount } from "viem/accounts"
 import type { Deps } from "../deps"
 import { HOOD_WETH_ADDRESS, toChecksumAddress } from "../evm-lite"
 import { FIXTURE_EVM_0, FIXTURE_EVM_1 } from "../evm-lite.test"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import { VaultError } from "../vault/errors"
@@ -472,11 +473,13 @@ describe("H3: vault promote on EVM", () => {
     fx.deps.env.CANDLE_SOLANA_RPC_URL = "http://remote.example"
 
     expect(await fx.cli(["vault", "promote", "--in-place", "hood-hot", "--sweep-to", "hood-cold"])).toBe(0)
-    expect(fx.stdout.text).toContain(`Holdings at ${FIXTURE_EVM_1} on Hood`)
+    expect(humanText(fx.stdout.text)).toContain(humanText(`Holdings at ${FIXTURE_EVM_1} on Hood`))
     expect(fx.stdout.text).toContain("ETH   3")
     expect(fx.stdout.text).toContain("USDG  12.5")
-    expect(fx.stdout.text).toContain("You are about to accept a permanent copy of this key in Privy's TEE")
-    expect(fx.stdout.text).toContain(`Promoted ${FIXTURE_EVM_1} in place on Hood`)
+    expect(humanText(fx.stdout.text)).toContain(
+      humanText("You are about to accept a permanent copy of this key in Privy's TEE"),
+    )
+    expect(humanText(fx.stdout.text)).toContain(humanText(`Promoted in place on Hood Address ${FIXTURE_EVM_1}`))
     expect(fx.prompts.filter((prompt) => prompt.startsWith("Type confirm"))).toEqual([
       `Type confirm to promote ${FIXTURE_EVM_1}: `,
       "Type confirm to accept this for this key: ",
@@ -530,8 +533,10 @@ describe("H3: vault promote on EVM", () => {
     await mkdir(`${evmRecordPath(fx.vaultPath)}.lock`)
     expect(await fx.cli(["vault", "promote", "--from", "hood-cold", "--json"])).toBe(0)
     expect(lastJson(fx.stdout.text)).toMatchObject({ scanStart: { block: "4242", recorded: false } })
-    expect(fx.stderr.text).toContain("The promote height, Hood block 4242, was not written to the sealed EVM record")
-    expect(fx.stderr.text).toContain(`candle tee sweep ${TEE_0} --from-block 4242`)
+    expect(humanText(fx.stderr.text)).toContain(
+      humanText("The promote height, Hood block 4242, was not written to the sealed EVM record"),
+    )
+    expect(humanText(fx.stderr.text)).toContain(humanText(`candle tee sweep ${TEE_0} --from-block 4242`))
     expect((await readVaultJson(fx.vaultPath)).version).toBe(4)
   })
 
@@ -546,8 +551,10 @@ describe("H3: vault promote on EVM", () => {
     fx.node.state.head = 6_060n
     fx.deps.env.CANDLE_SOLANA_RPC_URL = "http://remote.example"
     expect(await fx.cli(["vault", "promote-batch", "--pairs-from", file, "--json"])).toBe(0)
-    expect(fx.stderr.text).toContain("ETH, USDG and WETH read for 2 addresses")
-    expect(fx.stderr.text).toMatch(/ETH\s+USDG\s+WETH/)
+    expect(humanText(fx.stderr.text)).toContain(humanText("ETH, USDG and WETH read for 2 addresses"))
+    expect(fx.stderr.text).toMatch(/^ {2}ETH +/m)
+    expect(fx.stderr.text).toMatch(/^ {2}USDG +/m)
+    expect(fx.stderr.text).toMatch(/^ {2}WETH +/m)
     expect(fx.api.state.imports).toBe(2)
     const vault = await reopen(fx.vaultPath, fx.passphrase)
     try {
@@ -636,7 +643,7 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     expect(
       await fx.cli(["vault", "transfer", OTHER, "--amount", "0.1", "--asset", "ETH", "--from", "evm-tee-0", "--json"]),
     ).toBe(1)
-    expect(String(lastJson(fx.stdout.text).message)).toContain("named no wallet address")
+    expect(humanText(String(lastJson(fx.stdout.text).message))).toContain(humanText("named no wallet address"))
     expect(fx.node.state.sent).toHaveLength(0)
 
     fx.api.state.omitHoodTeeAddress = false
@@ -657,7 +664,7 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     ).toBe(0)
     expect(fx.node.state.sent).toHaveLength(1)
     // The server said enabled, so the operator was warned; the confirmed transfer was reported on Hood.
-    expect(fx.stderr.text).toContain("this wallet is enabled")
+    expect(humanText(fx.stderr.text)).toContain(humanText("this wallet is enabled"))
     expect(lastJson(fx.stdout.text)).toMatchObject({ ok: true, activityReport: "reported" })
     const report = fx.api.state.calls.find((call) => call.path === "/api/v1/activity/report")
     expect(report?.body).toEqual({ chain: "hood", signature: fx.node.state.sent[0]?.hash })
@@ -785,9 +792,11 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     const doc = lastJson(fx.stdout.text)
     expect(doc).toMatchObject({ ok: true, state: "swept", observedEmpty: true, emergency: false, missingSources: [] })
     // Every source ran, and the scan started at the promote height.
-    expect(fx.stderr.text).toContain("sealed EVM record: 1 token(s), 1 scan start(s)")
-    expect(fx.stderr.text).toContain("server traded-token list: 1 token(s)")
-    expect(fx.stderr.text).toContain("Transfer logs over rpc.mainnet.chain.robinhood.com: blocks 5000 to 5200")
+    expect(humanText(fx.stderr.text)).toContain(humanText("sealed EVM record: 1 token(s), 1 scan start(s)"))
+    expect(humanText(fx.stderr.text)).toContain(humanText("server traded-token list: 1 token(s)"))
+    expect(humanText(fx.stderr.text)).toContain(
+      humanText("Transfer logs over rpc.mainnet.chain.robinhood.com: blocks 5000 to 5200"),
+    )
     expect(fx.node.state.logRanges[0]?.from).toBe(5_000n)
     // Six token transfers, then ETH last.
     const kinds = fx.node.state.sent.map((sent) => sent.kind)
@@ -883,12 +892,12 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     ]
     expect(await fx.cli(["tee", "sweep", fx.wallet, "--json"])).toBe(1)
     expect(lastJson(fx.stdout.text)).toMatchObject({ code: "BRIDGE_IN_FLIGHT" })
-    expect(String(lastJson(fx.stdout.text).suggestion)).toContain("candle swap status swap-b1")
+    expect(humanText(String(lastJson(fx.stdout.text).suggestion))).toContain(humanText("candle swap status swap-b1"))
     expect(fx.node.state.sent).toHaveLength(0)
 
     fx.api.state.bridges = [{ clientTradeId: "swap-b1", role: "source", state: "uncertain", openedAt: 1 }]
     expect(await fx.cli(["tee", "sweep", fx.wallet, "--json"])).toBe(0)
-    expect(fx.stderr.text).toContain("no result for over two hours")
+    expect(humanText(fx.stderr.text)).toContain(humanText("no result for over two hours"))
     expect(fx.node.ethOf(fx.wallet)).toBeLessThan(ETH)
   })
 
@@ -909,10 +918,12 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     expect(await fx.cli(["tee", "sweep", w, "--emergency", "--json"])).toBe(3)
     expect(fx.api.state.calls.length).toBe(apiCalls)
     // Ember 4c (4c-ED-10): it cannot see a bridge, and says a later fill or refund needs a second sweep.
-    expect(fx.stderr.text).toContain("cannot see an open bridge")
-    expect(fx.stderr.text).toContain("A transaction already occupies nonce 4 (pending 5 > latest 4)")
-    expect(fx.stderr.text).toContain(
-      "with doubled fees and may replace that in-flight leg; replacement is not guaranteed",
+    expect(humanText(fx.stderr.text)).toContain(humanText("cannot see an open bridge"))
+    expect(humanText(fx.stderr.text)).toContain(
+      humanText("A transaction already occupies nonce 4 (pending 5 > latest 4)"),
+    )
+    expect(humanText(fx.stderr.text)).toContain(
+      humanText("with doubled fees and may replace that in-flight leg; replacement is not guaranteed"),
     )
     expect(fx.node.state.sent[0]).toMatchObject({ kind: "erc20", nonce: 4, token: lower(TOKEN_RECORD) })
     expect(fx.node.tokenOf(TOKEN_RECORD, w)).toBe(0n)
@@ -993,7 +1004,9 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     const fx = await promoted()
     fx.node.setEth(fx.wallet, ETH)
     expect(await fx.cli(["tee", "sweep", fx.wallet, "--emergency"])).toBe(3)
-    expect(fx.stdout.text).toContain("No in-flight transaction was observed (latest and pending nonce are both 0)")
+    expect(humanText(fx.stdout.text)).toContain(
+      humanText("No in-flight transaction was observed (latest and pending nonce are both 0)"),
+    )
   })
 
   test("vault demote disables, then sweeps home", async () => {
@@ -1016,7 +1029,7 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     expect(fx.prompts.filter((prompt) => /passphrase/i.test(prompt))).toHaveLength(1)
     expect(fx.stdout.text).toContain("Stopped")
     expect(fx.stdout.text).not.toContain("Recover the funds:")
-    expect(fx.stdout.text).toContain(`Sweeping remaining funds to ${FIXTURE_EVM_0}...`)
+    expect(humanText(fx.stdout.text)).toContain(humanText(`Sweeping remaining funds to ${FIXTURE_EVM_0}...`))
     expect(fx.stdout.text).toContain("Swept.")
     // The disable reached the server before the sweep signed anything.
     expect(fx.api.state.calls.some((call) => call.method === "DELETE")).toBe(true)
@@ -1092,7 +1105,7 @@ describe("H9: restore --evm-tee-count, no record, and log discovery", () => {
     const file = await readVaultJson(one.vaultPath)
     expect(file.version).toBe(4)
     expect(file.evmRecordPublicKey).toBeDefined()
-    expect(one.stdout.text).toContain("evm tee: indices 0 to 0, on m/44'/60'/n'/1'/0'")
+    expect(humanText(one.stdout.text)).toContain(humanText("evm tee: indices 0 to 0, on m/44'/60'/n'/1'/0'"))
     expect(one.stdout.text).toContain("--from-block")
     const vault = await reopen(one.vaultPath, one.passphrase)
     try {
@@ -1249,8 +1262,8 @@ describe("H13: vault backup carries the record; verify-backup runs the ninth che
     // A version 4 copy with no record beside it passes, and says so.
     await rm(join(backupDir, "copy.evm-record.sealed"))
     expect(await fx.cli(["vault", "verify-backup", copy])).toBe(0)
-    expect(fx.stdout.text).toContain("all 9 passed")
-    expect(fx.stdout.text).toContain("EVM record    absent beside the copy")
+    expect(humanText(fx.stdout.text)).toContain(humanText("all 9 passed"))
+    expect(humanText(fx.stdout.text)).toContain(humanText("EVM record    absent beside the copy"))
 
     // The backup refuses before writing anything when the copy's record path is taken.
     const second = join(backupDir, "second.enc")

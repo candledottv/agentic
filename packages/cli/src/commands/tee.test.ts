@@ -26,6 +26,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { DAMM_V2_PROGRAM_ID } from "../lp-close"
 import { SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
@@ -417,7 +418,7 @@ describe("T27: every tee command refuses while CANDLE_KEYSTORE_PASSPHRASE is set
         env: { CANDLE_CONFIG_DIR: dir, CANDLE_KEYSTORE_PASSPHRASE: "should-never-be-read" },
       })
       expect(await run(argv, deps)).toBe(1)
-      expect(stderr.text).toContain("CANDLE_KEYSTORE_PASSPHRASE is set")
+      expect(humanText(stderr.text)).toContain(humanText("CANDLE_KEYSTORE_PASSPHRASE is set"))
       expect(stderr.text).not.toContain("should-never-be-read")
     }
     expect(calls).toHaveLength(0)
@@ -432,8 +433,8 @@ describe("tee new (T19, HW-01)", () => {
     const code = await run(["tee", "new", "--label", "scalper"], deps)
     expect(code).toBe(1)
     expect(calls).toHaveLength(0)
-    expect(stderr.text).toContain("candle vault new-key --chain solana")
-    expect(stderr.text).toContain("candle vault promote --from <label> --to-key <prefix>")
+    expect(humanText(stderr.text)).toContain(humanText("candle vault new-key --chain solana"))
+    expect(humanText(stderr.text)).toContain(humanText("candle vault promote --from <label> --to-key <prefix>"))
     await expect(realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8")).rejects.toThrow()
   })
 
@@ -445,7 +446,7 @@ describe("tee new (T19, HW-01)", () => {
     expect(code).toBe(2)
     expect(calls).toHaveLength(0)
     expect(stderr.text).toContain("--factor")
-    expect(stderr.text).toContain("vault new-key --chain solana")
+    expect(humanText(stderr.text)).toContain(humanText("vault new-key --chain solana"))
     await expect(realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8")).rejects.toThrow()
   })
 
@@ -606,7 +607,7 @@ describe("tee enable (T19/T20, HW-02/HW-03)", () => {
     })
     // The private key never goes over the wire in the clear.
     expect(JSON.stringify(api.submits[0])).not.toContain(base58.encode(teeKey.secretKey))
-    expect(stdout.text).toContain("Remote authority verified")
+    expect(humanText(stdout.text)).toContain(humanText("Remote authority verified"))
     const opened = await readKeystore(
       await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8"),
       PASSPHRASE,
@@ -628,7 +629,7 @@ describe("tee enable (T19/T20, HW-02/HW-03)", () => {
     // The vault's last six, the old answer, is now just another wrong word.
     const { deps, stderr } = depsFor(dir, api.fetch, [PASSPHRASE, VAULT.slice(-6)])
     expect(await run(["tee", "enable", TEE, "--vault", VAULT], deps)).toBe(1)
-    expect(stderr.text).toContain("vault was not confirmed")
+    expect(humanText(stderr.text)).toContain(humanText("vault was not confirmed"))
     expect(api.calls).toHaveLength(0)
   })
 
@@ -648,7 +649,7 @@ describe("tee enable (T19/T20, HW-02/HW-03)", () => {
     const api = apiRoutes({ remoteAuthority: "unknown", reasonCode: "READ_BACK_UNAVAILABLE" })
     const { deps, stdout } = depsFor(dir, api.fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "enable", TEE, "--vault", VAULT], deps)).toBe(3)
-    expect(stdout.text).toContain("Do not fund it")
+    expect(humanText(stdout.text)).toContain(humanText("Do not fund it"))
     expect(stdout.text).toContain("READ_BACK_UNAVAILABLE")
   })
 
@@ -658,7 +659,7 @@ describe("tee enable (T19/T20, HW-02/HW-03)", () => {
     const api = apiRoutes()
     const { deps, stderr } = depsFor(dir, api.fetch, [PASSPHRASE])
     expect(await run(["tee", "enable", TEE, "--vault", VAULT], deps)).toBe(1)
-    expect(stderr.text).toContain("never re-enabled")
+    expect(humanText(stderr.text)).toContain(humanText("never re-enabled"))
     expect(api.calls).toHaveLength(0)
   })
 })
@@ -699,7 +700,7 @@ describe("tee fund (HW-04)", () => {
     const { fetch } = createRoutedFetch({})
     const a = depsFor(dir, fetch, [PASSPHRASE])
     expect(await run(["tee", "fund", TEE, "--amount", "1"], a.deps)).toBe(1)
-    expect(a.stderr.text).toContain("do not fund")
+    expect(humanText(a.stderr.text)).toContain(humanText("do not fund"))
     const dir2 = await tempDir()
     await seedTeeStore(dir2, [
       enabledEntry({
@@ -713,7 +714,7 @@ describe("tee fund (HW-04)", () => {
     ])
     const b = depsFor(dir2, fetch, [PASSPHRASE])
     expect(await run(["tee", "fund", TEE, "--amount", "1"], b.deps)).toBe(1)
-    expect(b.stderr.text).toContain("never refunded")
+    expect(humanText(b.stderr.text)).toContain(humanText("never refunded"))
   })
 })
 
@@ -755,7 +756,7 @@ describe("tee status (T21 partial, T29)", () => {
     // Unrouted here, so the report carries the failure and the command still exits 0.
     expect(calls.map((call) => new URL(call.url).host)).toEqual(["api.mainnet-beta.solana.com"])
     expect(typeof report.balances.error).toBe("string")
-    expect(stderr.text).toContain("Solana RPC: api.mainnet-beta.solana.com (public default)")
+    expect(humanText(stderr.text)).toContain(humanText("Solana RPC: api.mainnet-beta.solana.com (public default)"))
   })
 })
 
@@ -788,7 +789,7 @@ describe("tee disable (T23, HW-06)", () => {
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
     expect(await run(["tee", "disable", TEE], deps)).toBe(3)
     expect(calls[0]?.init.method).toBe("DELETE")
-    expect(stdout.text).toContain("verification is pending")
+    expect(humanText(stdout.text)).toContain(humanText("verification is pending"))
     expect(stdout.text).toContain("--emergency")
     const opened = await readKeystore(
       await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8"),
@@ -807,7 +808,7 @@ describe("tee disable (T23, HW-06)", () => {
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
     expect(await run(["tee", "disable", TEE], deps)).toBe(0)
     expect(stdout.text).toContain("quarantined")
-    expect(stdout.text).toContain("tee sweep")
+    expect(humanText(stdout.text)).toContain(humanText("tee sweep"))
   })
 
   test("Ember 4c: a disable reports a bridge that still lands in the wallet, and is never blocked by it", async () => {
@@ -823,8 +824,8 @@ describe("tee disable (T23, HW-06)", () => {
     const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE])
     expect(await run(["tee", "disable", TEE], deps)).toBe(0)
     expect(stdout.text).toContain("quarantined")
-    expect(stderr.text).toContain("Bridge swap-b1 out of")
-    expect(stderr.text).toContain("still lands in this wallet")
+    expect(humanText(stderr.text)).toContain(humanText("Bridge swap-b1 out of"))
+    expect(humanText(stderr.text)).toContain(humanText("still lands in this wallet"))
   })
 
   test("a never-enabled wallet has nothing to stop", async () => {
@@ -1028,8 +1029,10 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     // The instruction carries the full raw amount; the mint withholds its own cut on the way.
     const transfer = decodeSent(rpc.sent[0] as string).instructions[1]
     expect(Buffer.from(transfer?.data.subarray(1, 9) ?? []).readBigUInt64LE()).toBe(100_000_000n)
-    expect(stdout.text).toContain("99000000 raw will arrive; 1000000 raw is withheld by the mint at epoch 42")
-    expect(stdout.text).toContain("Transfer fee: 1.5% capped at 1000000 raw units")
+    expect(humanText(stdout.text)).toContain(
+      humanText("Raw amount arriving 99000000 Raw mint fee withheld 1000000 Epoch 42"),
+    )
+    expect(humanText(stdout.text)).toContain(humanText("Transfer fee: 1.5% capped at 1000000 raw units"))
   })
 
   test("a transfer hook's extra accounts are resolved and appended before the TEE key signs", async () => {
@@ -1236,11 +1239,11 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
 
     const emergency = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency"], emergency.deps)).toBe(3)
-    expect(emergency.stdout.text).toContain("EMERGENCY SWEEP")
+    expect(humanText(emergency.stdout.text)).toContain(humanText("EMERGENCY SWEEP"))
     expect(emergency.stdout.text).toContain("race")
     expect(rpc.sent).toHaveLength(1)
     expect(swept).toEqual([])
-    expect(emergency.stdout.text).toContain("remote authority is still pending")
+    expect(humanText(emergency.stdout.text)).toContain(humanText("remote authority is still pending"))
   })
 
   test("an enabled wallet is refused: disable first", async () => {
@@ -1253,7 +1256,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     })
     const { deps, stderr } = depsFor(dir, fetch, [PASSPHRASE])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(1)
-    expect(stderr.text).toContain("tee disable")
+    expect(humanText(stderr.text)).toContain(humanText("tee disable"))
     expect(rpc.sent).toHaveLength(0)
   })
 
@@ -1299,10 +1302,10 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     // A wrong vault confirmation stops it right after the gate, so the warning is the proof it passed.
     const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE, "wrong!"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(1)
-    expect(stdout.text).toContain("bridge swap-b0 out of")
-    expect(stdout.text).toContain("sweep this wallet again")
+    expect(humanText(stdout.text)).toContain(humanText("bridge swap-b0 out of"))
+    expect(humanText(stdout.text)).toContain(humanText("sweep this wallet again"))
     expect(stderr.text).not.toContain("BRIDGE_IN_FLIGHT")
-    expect(stderr.text).toContain("vault was not confirmed")
+    expect(humanText(stderr.text)).toContain(humanText("vault was not confirmed"))
   })
 
   test("Ember 4c: an unread bridge state warns and does not refuse", async () => {
@@ -1315,8 +1318,8 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     })
     const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE, "wrong!"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(1)
-    expect(stdout.text).toContain("could not say whether a bridge")
-    expect(stderr.text).toContain("vault was not confirmed")
+    expect(humanText(stdout.text)).toContain(humanText("could not say whether a bridge"))
+    expect(humanText(stderr.text)).toContain(humanText("vault was not confirmed"))
   })
 
   test("Ember 4c: --emergency is never blocked by an open bridge, and says a later fill needs a second sweep", async () => {
@@ -1330,9 +1333,9 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     })
     const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE, "wrong!"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency"], deps)).toBe(1)
-    expect(stdout.text).toContain("cannot see an open bridge")
-    expect(stdout.text).toContain("Warning: A bridge into")
-    expect(stderr.text).toContain("vault was not confirmed")
+    expect(humanText(stdout.text)).toContain(humanText("cannot see an open bridge"))
+    expect(humanText(stdout.text)).toContain(humanText("Warning: A bridge into"))
+    expect(humanText(stderr.text)).toContain(humanText("vault was not confirmed"))
   })
 
   test("a wrong vault confirmation signs nothing", async () => {
@@ -1409,7 +1412,7 @@ describe("BE-355: rate limits (T10, T11)", () => {
     const report = JSON.parse(stdout.text.trim())
     expect(report.balances.error).toBe(`RPC_RATE_LIMITED (HTTP 429, retried once). Fix: ${PRE_PROFILE_FIX.join(", ")}`)
     expect(seen).toEqual(["getBalance", "getBalance"])
-    expect(stderr.text).toContain("Solana RPC: rpc.test (--rpc-url)")
+    expect(humanText(stderr.text)).toContain(humanText("Solana RPC: rpc.test (--rpc-url)"))
     expect(stderr.text).not.toContain(RPC)
   })
 
@@ -1455,8 +1458,10 @@ describe("BE-355: rate limits (T10, T11)", () => {
     expect(t.seen.filter((m) => m === "sendTransaction")).toHaveLength(1)
     expect(t.pending).toHaveLength(1)
     const signature = t.pending[0]?.signature
-    expect(t.stderr.text).toContain(
-      `The RPC rate-limited this CLI after the transaction was signed. It may still land: check ${signature} before anything else.\nFix: ${PRE_PROFILE_FIX[0]}\n     ${PRE_PROFILE_FIX[1]}\n`,
+    expect(humanText(t.stderr.text)).toContain(
+      humanText(
+        `The RPC rate-limited this CLI after the transaction was signed. It may still land: check ${signature} before anything else.\nFix: ${PRE_PROFILE_FIX[0]}\n     ${PRE_PROFILE_FIX[1]}\n`,
+      ),
     )
     expect(t.stderr.text).not.toContain("profile set")
     expect(t.stderr.text).not.toContain("<name>")
@@ -1470,8 +1475,10 @@ describe("BE-355: rate limits (T10, T11)", () => {
     expect(t.code).toBe(3)
     expect(t.seen.filter((m) => m === "sendTransaction")).toHaveLength(1)
     expect(t.pending).toHaveLength(1)
-    expect(t.stderr.text).toContain(
-      `check ${t.pending[0]?.signature} before anything else.\nFix: candle profile set work --rpc-url https://<your-rpc>\n`,
+    expect(humanText(t.stderr.text)).toContain(
+      humanText(
+        `check ${t.pending[0]?.signature} before anything else.\nFix: candle profile set work --rpc-url https://<your-rpc>\n`,
+      ),
     )
   })
 })
@@ -1611,7 +1618,7 @@ describe("HW-06: the stop intent is durable before the server is asked", () => {
     expect(await run(["tee", "disable", TEE], deps)).toBe(1)
     expect(calls[0]?.init.method).toBe("DELETE")
     expect(stderr.text).toContain("UNCONFIRMED")
-    expect(stderr.text).toContain("tee disable")
+    expect(humanText(stderr.text)).toContain(humanText("tee disable"))
     const stored = await openStore(dir)
     expect(typeof stored.entries[0]?.tee?.stopRequestedAt).toBe("string")
     expect(stored.entries[0]?.tee?.remoteAuthority).toBe("verified-active")
@@ -1691,10 +1698,10 @@ describe("HW-08 / T25: recovery does not depend on the operational credential", 
     expect(Buffer.from(tx.instructions[0]?.data.subarray(4, 12) ?? []).readBigUInt64LE()).toBe(995_000n)
     // Only the RPC was called: no lifecycle read, no sweep record, nothing that needs a key.
     expect(calls.every((c) => c.url.includes("/rpc"))).toBe(true)
-    expect(stdout.text).toContain("EMERGENCY SWEEP")
-    expect(stdout.text).toContain("NOT read")
-    expect(stdout.text).toContain("no API key available")
-    expect(stdout.text).toContain("remote authority is still pending")
+    expect(humanText(stdout.text)).toContain(humanText("EMERGENCY SWEEP"))
+    expect(humanText(stdout.text)).toContain(humanText("NOT read"))
+    expect(humanText(stdout.text)).toContain(humanText("no API key available"))
+    expect(humanText(stdout.text)).toContain(humanText("remote authority is still pending"))
     const stored = await openStore(dir)
     expect(stored.entries[0]?.tee?.sweptAt).toBeUndefined()
     expect(typeof stored.entries[0]?.tee?.stopRequestedAt).toBe("string")
@@ -1849,8 +1856,8 @@ describe("SC-06: completion needs a post-finality inventory", () => {
     // Text output says the same thing: the address is pending, not quarantined.
     const text = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], text.deps)).toBe(3)
-    expect(text.stdout.text).toContain("stays disable-pending")
-    expect(text.stdout.text).toContain("not verified denied")
+    expect(humanText(text.stdout.text)).toContain(humanText("stays disable-pending"))
+    expect(humanText(text.stdout.text)).toContain(humanText("not verified denied"))
     expect(text.stdout.text).not.toContain("stays quarantined")
   })
 })
@@ -2119,8 +2126,8 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     const second = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], second.deps)).toBe(3)
     expect(rpc.sent).toHaveLength(1)
-    expect(second.stdout.text).toContain("still in flight")
-    expect(second.stdout.text).toContain("stays quarantined")
+    expect(humanText(second.stdout.text)).toContain(humanText("still in flight"))
+    expect(humanText(second.stdout.text)).toContain(humanText("stays quarantined"))
     expect((await openStore(dir)).entries[0]?.tee?.sweepPending).toHaveLength(1)
 
     // Now it is gone for good (blockhash expired): the balance is swept again and recorded.
@@ -2266,7 +2273,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
-    expect(JSON.parse(stdout.text).residuals[0].detail).toContain("validity is unknown")
+    expect(humanText(JSON.parse(stdout.text).residuals[0].detail)).toContain(humanText("validity is unknown"))
     expect(rpc.sent).toHaveLength(0)
     expect((await openStore(dir)).entries[0]?.tee?.sweepPending).toHaveLength(1)
   })
@@ -2731,7 +2738,9 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
     const human = depsFor(dir, fetch, [PASSPHRASE, "confirm"])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], human.deps)).toBe(0)
     const text = human.stdout.text
-    const shown = text.indexOf(`Close for position ${NFT_MINT.toBase58()} (verified, unsigned; about to sign):`)
+    const shown = humanText(text).indexOf(
+      `Close LP position Position ${NFT_MINT.toBase58()} Verification verified, unsigned; about to sign`,
+    )
     expect(shown).toBeGreaterThan(-1)
     expect(text).toContain(`fee payer   ${TEE} (this TEE wallet)`)
     expect(text).toContain("program     Meteora DAMM v2")
@@ -2810,7 +2819,7 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
     expect(tx.instructions[1]?.keys[2]?.pubkey.toBase58()).toBe(
       getAssociatedTokenAddressSync(NFT_MINT, new PublicKey(VAULT), false, SPL_TOKEN_2022).toBase58(),
     )
-    expect(stdout.text).toContain("position NFT moved as-is to the vault (emergency")
+    expect(humanText(stdout.text)).toContain(humanText("position NFT moved as-is to the vault (emergency"))
   })
 })
 
@@ -3034,10 +3043,10 @@ describe("BE-667: context floor and guarded preflight rejection (S-T1–S-T16)",
       expect(r.body.receipts).toEqual([])
       expect((await openStore(h.dir)).entries[0]?.tee?.sweepPending).toEqual([])
       const human = await h.execute(false, emergency)
-      expect(human.stdout.text).toContain("rejected at simulation (not broadcast)")
+      expect(humanText(human.stdout.text)).toContain(humanText("rejected at simulation (not broadcast)"))
       for (const log of residual.diagnostics.logs) expect(human.stdout.text).toContain(log)
       expect(human.stdout.text).toContain(residual.signature)
-      expect(human.stdout.text).toContain("Re-run this sweep now")
+      expect(humanText(human.stdout.text)).toContain(humanText("Re-run this sweep now"))
       for (const output of [r.stdout.text, r.stderr.text, human.stdout.text, human.stderr.text]) {
         expect(output).not.toContain("may still land")
         expect(output).not.toContain("still in flight")
@@ -3261,8 +3270,8 @@ describe("BE-667: context floor and guarded preflight rejection (S-T1–S-T16)",
         expect(r.body.pending).toEqual([])
         expect(r.body.residuals.filter((r: { kind: string }) => r.kind === "not-attempted")).toHaveLength(2)
       } else {
-        expect(r.stdout.text).toContain("could not be removed")
-        expect(r.stdout.text).toContain("within two minutes")
+        expect(humanText(r.stdout.text)).toContain(humanText("could not be removed"))
+        expect(humanText(r.stdout.text)).toContain(humanText("within two minutes"))
         expect(r.stdout.text).not.toContain("in flight")
         expect(r.stdout.text).not.toContain("may still land")
         expect(r.stdout.text).toContain("local-record-failed")
@@ -3449,8 +3458,8 @@ describe("BE-667: context floor and guarded preflight rejection (S-T1–S-T16)",
     expect(r.body.residuals[0].detail).toContain("behind slot 100 (it is at 99)")
     expect(r.body.residuals[0].diagnostics).toBeUndefined()
     const human = await h.execute(false)
-    expect(human.stdout.text).toContain("rejected before simulation (not broadcast)")
-    expect(human.stdout.text).toContain("Fix: --rpc-url https://<your-rpc>")
+    expect(humanText(human.stdout.text)).toContain(humanText("rejected before simulation (not broadcast)"))
+    expect(humanText(human.stdout.text)).toContain(humanText("Fix: --rpc-url https://<your-rpc>"))
     expect(h.calls.filter((b) => b.method === "sendTransaction")).toHaveLength(2)
     expect(h.calls.filter((b) => b.method === "getSignatureStatuses")).toHaveLength(2)
   })

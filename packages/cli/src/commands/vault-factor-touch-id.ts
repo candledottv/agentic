@@ -24,6 +24,8 @@
  */
 import type { ParsedArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 import { countRecoverableFactors } from "../vault/domains"
 import {
   createEnclaveKey,
@@ -124,15 +126,19 @@ export async function addTouchIdFactor(
   try {
     created = await createEnclaveKey(deps, session, { vaultId, envelopeId, label })
   } catch (error) {
-    deps.stderr.write("Nothing was written to the vault.\n")
+    notice(deps, "stderr", "note", "Nothing was written to the vault.\n".trim())
     throw error
   }
   const removeKey = async (): Promise<void> => {
     const removed = await deleteEnclaveKey(deps, session, { vaultId, envelopeId })
-    deps.stderr.write(
-      removed
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      (removed
         ? `Removed the Secure Enclave key ${keyTag} this failed enrolment created.\n`
-        : `Could not remove the Secure Enclave key ${keyTag}; it opens nothing and a retry creates a new one.\n`,
+        : `Could not remove the Secure Enclave key ${keyTag}; it opens nothing and a retry creates a new one.\n`
+      ).trim(),
     )
   }
 
@@ -167,7 +173,7 @@ export async function addTouchIdFactor(
     )
   } catch (error) {
     await removeKey()
-    deps.stderr.write("Nothing was written to the vault.\n")
+    notice(deps, "stderr", "note", "Nothing was written to the vault.\n".trim())
     throw error
   }
 
@@ -199,10 +205,13 @@ export async function addTouchIdFactor(
         },
         deps,
       )
-      deps.stderr.write(`The unproven envelope ${envelopeId} was removed from the vault again.\n`)
+      notice(deps, "stderr", "note", `The unproven envelope ${envelopeId} was removed from the vault again.\n`.trim())
     } catch {
-      deps.stderr.write(
-        `Envelope ${envelopeId} could not be removed from the vault; remove it with: candle vault factor remove ${envelopeId}\n`,
+      notice(
+        deps,
+        "stderr",
+        "warning",
+        `Envelope ${envelopeId} could not be removed from the vault; remove it with: candle vault factor remove ${envelopeId}\n`.trim(),
       )
     }
     await removeKey()
@@ -226,14 +235,20 @@ export async function addTouchIdFactor(
     })
     return 0
   }
-  deps.stdout.write(`Added Touch ID factor ${envelopeId} (Secure Enclave, this Mac).\n`)
-  deps.stdout.write(`  domain     this-device (never recoverable; the key never leaves this Mac)\n`)
-  deps.stdout.write(
-    `  helper     ${session.identity.bundleId} ${session.version}, signed by team ${session.identity.teamId}\n`,
+  writeSuccess(deps, "stdout", `Added Touch ID factor ${envelopeId} (Secure Enclave, this Mac).\n`.trim())
+  writeFields(deps, "stdout", [
+    ["Domain", "this-device (never recoverable; the key never leaves this Mac)"],
+    ["Helper", `${session.identity.bundleId} ${session.version}, signed by team ${session.identity.teamId}`],
+    ["Verified", "vault re-read and opened with Touch ID"],
+    ["Unlock", `candle vault status --unlock --factor ${envelopeId}`],
+  ])
+
+  notice(deps, "stdout", "note", `\n${TOUCH_ID_NOTE}\n`.trim())
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `This vault now has ${recoverable} recoverable factor(s), domains counted once.\n`.trim(),
   )
-  deps.stdout.write(`  verified   the vault was re-read and opened with Touch ID\n`)
-  deps.stdout.write(`  unlock     candle vault status --unlock --factor ${envelopeId}\n`)
-  deps.stdout.write(`\n${TOUCH_ID_NOTE}\n`)
-  deps.stdout.write(`This vault now has ${recoverable} recoverable factor(s), domains counted once.\n`)
   return 0
 }

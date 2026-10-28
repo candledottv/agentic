@@ -29,7 +29,9 @@ import {
   rpcHostOf,
   sameEvmAddress,
 } from "../evm-lite"
-import { writeLocalFailure, writeUsageFailure } from "../render"
+import { writeFields } from "../human-output"
+import { notice } from "../presentation"
+import { formatTime, writeLocalFailure, writeUsageFailure } from "../render"
 import { describeRpcFailure } from "../solana-endpoint"
 import { listTradingWallets, sweepReserveFloor, TradingError } from "../trading"
 import { isVaultError, VaultError } from "../vault/errors"
@@ -161,7 +163,12 @@ export async function teeStatusEvm(ctx: CommandContext, parsed: ParsedArgs, addr
     }
   }
 
-  deps.stderr.write(`Reading ETH, USDG and the fee for ${checked.address} from ${rpcHostOf(rpcUrl.url)}\n`)
+  notice(
+    deps,
+    "stderr",
+    "note",
+    `Reading ETH, USDG and the fee for ${checked.address} from ${rpcHostOf(rpcUrl.url)}\n`.trim(),
+  )
   const rpc = createEvmRpc(rpcUrl.url, deps.fetch)
   try {
     const [eth, usdg, fees] = await Promise.all([
@@ -197,30 +204,46 @@ export async function teeStatusEvm(ctx: CommandContext, parsed: ParsedArgs, addr
     deps.stdout.write(`${JSON.stringify(report)}\n`)
     return 0
   }
-  deps.stdout.write(`${checked.address}  ${report.label ?? ""}\n`)
-  deps.stdout.write(`  chain         Hood (4663)\n`)
-  deps.stdout.write(`  source        ${report.source}\n`)
-  if (!verify) deps.stdout.write(`${UNVERIFIED_KEY_LINE}\n`)
-  if (vault?.vaultDestination) deps.stdout.write(`  vault         ${vault.vaultDestination}\n`)
+  writeFields(
+    deps,
+    "stdout",
+    [
+      ["Address", checked.address],
+      ["Label", report.label === undefined ? undefined : String(report.label)],
+      ["Chain", "Hood (4663)"],
+      ["Source", String(report.source)],
+    ],
+    "TEE wallet",
+  )
+
+  if (!verify) notice(deps, "stdout", "note", `${UNVERIFIED_KEY_LINE}\n`.trim())
+  if (vault?.vaultDestination) writeFields(deps, "stdout", [["Vault", vault.vaultDestination]])
   const server = report.server as { state?: string; remoteAuthority?: string; error?: string } | undefined
-  if (server?.error) deps.stdout.write(`  server        (unavailable: ${server.error})\n`)
+  if (server?.error) notice(deps, "stdout", "warning", `  server        (unavailable: ${server.error})\n`.trim())
   else if (server)
-    deps.stdout.write(`  server state  ${server.state ?? "?"}  remote authority ${server.remoteAuthority ?? "?"}\n`)
+    writeFields(deps, "stdout", [
+      ["Server state", server.state],
+      ["Remote authority", server.remoteAuthority],
+    ])
   const balances = report.balances as Record<string, string>
-  if (balances.error) deps.stdout.write(`  balances      (unavailable: ${balances.error})\n`)
+  if (balances.error) notice(deps, "stdout", "warning", `  balances      (unavailable: ${balances.error})\n`.trim())
   else {
     const reserve = report.reserve as { eth: string; erc20Transfers: number }
-    deps.stdout.write(`  ETH           ${balances.eth}\n`)
-    deps.stdout.write(`  USDG          ${balances.usdg}\n`)
-    deps.stdout.write(
-      `  reserve       at least ${reserve.eth} ETH (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee)\n`,
-    )
-    deps.stdout.write(
-      report.gas === "low"
-        ? `  gas: low      ETH is under twice the reserve. Fund it: ${report.fund}\n`
-        : `  gas           ok\n`,
-    )
+    writeFields(deps, "stdout", [
+      ["ETH", balances.eth],
+      ["USDG", balances.usdg],
+      [
+        "Reserve",
+        `at least ${reserve.eth} ETH (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee)`,
+      ],
+    ])
+
+    writeFields(deps, "stdout", [["Gas", report.gas === "low" ? "low" : "ok"]])
+    if (report.gas === "low") {
+      notice(deps, "stdout", "warning", "ETH is under twice the reserve.")
+      writeFields(deps, "stdout", [["Fund it", String(report.fund)]])
+    }
   }
-  deps.stdout.write(`  observed at   ${report.observedAt}\n`)
+  writeFields(deps, "stdout", [["Observed at", formatTime(String(report.observedAt))]])
   return 0
 }

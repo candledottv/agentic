@@ -76,9 +76,9 @@ async function newKey(dir: string, passphrase: string, label: string): Promise<s
     promptSecret: async () => passphrase,
     promptLine: async () => "",
   })
-  const code = await run(["vault", "new-key", "--chain", "solana", "--label", label], deps)
+  const code = await run(["vault", "new-key", "--chain", "solana", "--label", label, "--json"], deps)
   if (code !== 0) throw new Error(`new-key ${label} failed: ${err.text}\n${out.text}`)
-  return out.text.trim().split("\n")[0] as string
+  return JSON.parse(out.text).address as string
 }
 
 /** `--count n` under one unlock, for the 146-address read test. Label -> address, in allocation order. */
@@ -93,13 +93,12 @@ export async function newKeys(dir: string, passphrase: string, count: number): P
     promptSecret: async () => passphrase,
     promptLine: async () => "",
   })
-  const code = await run(["vault", "new-key", "--chain", "solana", "--count", String(count)], deps)
+  const code = await run(["vault", "new-key", "--chain", "solana", "--count", String(count), "--json"], deps)
   if (code !== 0) throw new Error(`new-key --count failed: ${err.text}\n${out.text}`)
   const addresses: Record<string, string> = {}
-  for (const line of out.text.trim().split("\n")) {
-    const [address, label] = line.split(/\s+/)
-    if (address !== undefined && label !== undefined && label.startsWith("key-")) addresses[label] = address
-  }
+  for (const key of JSON.parse(out.text).keys as Array<{ address: string; label: string }>)
+    addresses[key.label] = key.address
+
   return addresses
 }
 

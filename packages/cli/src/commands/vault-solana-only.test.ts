@@ -10,6 +10,7 @@
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { FIXTURE_EVM_0 } from "../evm-lite.test"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
 import { closeVault, commitVault } from "../vault/store"
@@ -70,7 +71,7 @@ describe("E12: Solana-only commands", () => {
     )
     expect(code).not.toBe(2)
     expect(fx.stderr.text + fx.stdout.text).not.toContain("name the source with --from")
-    expect(fx.stdout.text).toContain(`from vault key cold`)
+    expect(humanText(fx.stdout.text)).toContain(humanText(`from vault key cold`))
     expect(fx.stdout.text).not.toContain(FIXTURE_EVM_0)
   })
 

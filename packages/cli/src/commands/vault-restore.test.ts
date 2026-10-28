@@ -19,6 +19,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { CliConfig } from "../config"
 import type { Deps } from "../deps"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { SECRET_REFS } from "../secret-store"
 import {
@@ -124,14 +125,14 @@ describe("T55: a valid phrase builds a new vault, and a bad one writes nothing",
     h.deps.promptSecret = async () =>
       "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon"
     expect(await run(["vault", "restore", "--phrase", "--keystore", h.vaultPath], h.deps)).toBe(1)
-    expect(h.stderr.text).toContain("checksum does not match")
+    expect(humanText(h.stderr.text)).toContain(humanText("checksum does not match"))
     await expect(readFile(h.vaultPath, "utf8")).rejects.toThrow()
   })
 
   test("a valid phrase produces a new vaultId and DEK with the SAME root, and the verifier passes", async () => {
     const h = await harness({ pages: [() => jsonResponse(200, { success: true, page: [], isDone: true })] })
     expect(await restore(h, ["--count", "1"])).toBe(0)
-    expect(h.stdout.text).toContain("verified in full (all eight steps)")
+    expect(humanText(h.stdout.text)).toContain(humanText("Verified in full (all eight steps)"))
 
     const file = JSON.parse(await readFile(h.vaultPath, "utf8")) as { vaultId: string }
     expect(file.vaultId).toHaveLength(22)
@@ -143,7 +144,7 @@ describe("T55: a valid phrase builds a new vault, and a bad one writes nothing",
   test("every derived entry is exposureUnknown, and the output says so in words", async () => {
     const h = await harness()
     expect(await restore(h, ["--count", "2"])).toBe(0)
-    expect(h.stdout.text).toContain("recorded with an unknown history and stays that way")
+    expect(humanText(h.stdout.text)).toContain(humanText("recorded with an unknown history and stays that way"))
 
     const { reopen } = await import("../vault/test-vault")
     const vault = await reopen(h.vaultPath, generatedPassphraseFrom(h.stdout.text))
@@ -158,7 +159,7 @@ describe("T55: a valid phrase builds a new vault, and a bad one writes nothing",
     const second = await harness()
     second.vaultPath = h.vaultPath
     expect(await restore(second, ["--count", "1"])).toBe(1)
-    expect(second.stderr.text).toContain("never merges into one")
+    expect(humanText(second.stderr.text)).toContain(humanText("never merges into one"))
   })
 })
 
@@ -214,15 +215,17 @@ describe("T55: bounds", () => {
     expect(await restore(h)).toBe(0)
     expect(h.stdout.text).toContain(derived.vault0)
     expect(h.stdout.text).not.toContain(derived.vault1)
-    expect(h.stdout.text).toContain("index 0 only")
-    expect(h.stdout.text).toContain("re-run with --count/--tee-count/--external-count")
+    expect(humanText(h.stdout.text)).toContain(humanText("index 0 only"))
+    expect(humanText(h.stdout.text)).toContain(humanText("re-run with --count/--tee-count/--external-count"))
   })
 
   test("R6: --external-count derives external indices 0 to e-1 as role external, and the vault is version 3", async () => {
     const h = await harness()
     expect(await restore(h, ["--count", "1", "--tee-count", "0", "--external-count", "2"])).toBe(0)
     const external1 = (await deriveSolanaKey(Uint8Array.from(FIXTURE_ENTROPY), solanaExternalPath(1))).address
-    expect(h.stdout.text).toContain(`${derived.external0}  m/44'/501'/0'/2'  external`)
+    expect(humanText(h.stdout.text)).toContain(
+      humanText(`Address ${derived.external0} Derivation m/44'/501'/0'/2' Role external`),
+    )
     expect(h.stdout.text).toContain(external1)
     expect(h.stdout.text).not.toContain(derived.tee0)
     const { reopen } = await import("../vault/test-vault")
@@ -244,7 +247,9 @@ describe("T55: bounds", () => {
       pages: [() => jsonResponse(200, { success: true, page: [row(derived.external0)], isDone: true })],
     })
     expect(await restore(h, ["--count", "1"])).toBe(0)
-    expect(h.stdout.text).toContain("1 address(es) this account imported are external-branch keys of this root")
+    expect(humanText(h.stdout.text)).toContain(
+      humanText("1 address(es) this account imported are external-branch keys of this root"),
+    )
     expect(h.stdout.text).not.toContain("were NOT derived by this restore")
     const { reopen } = await import("../vault/test-vault")
     const vault = await reopen(h.vaultPath, generatedPassphraseFrom(h.stdout.text))
@@ -271,8 +276,8 @@ describe("T55: bounds", () => {
     })
     expect(await restore(h, ["--count", "1", "--tee-count", "1", "--rpc-url", "https://rpc.test/rpc"])).toBe(0)
     // Index 2 was used, so the scan runs twenty more and stops at index 22.
-    expect(h.stdout.text).toContain("Gap scan on solanaExternal stopped at index 22")
-    expect(h.stdout.text).toContain("solanaExternal: gap-scanned to index 22")
+    expect(humanText(h.stdout.text)).toContain(humanText("Gap scan on solanaExternal stopped at index 22"))
+    expect(humanText(h.stdout.text)).toContain(humanText("solanaExternal gap-scanned to index 22"))
     const { reopen } = await import("../vault/test-vault")
     const vault = await reopen(h.vaultPath, generatedPassphraseFrom(h.stdout.text))
     expect(vault.index.entries.filter((entry) => entry.role === "external")).toHaveLength(23)
@@ -348,7 +353,7 @@ describe("T55: completeness of the read, which is the defect this covers", () =>
     })
     expect(await restore(h, ["--count", "1"])).toBe(0)
     // A revoked row is STRONGER evidence of exposure than an active one, not weaker.
-    expect(h.stdout.text).toContain("this account imported it")
+    expect(humanText(h.stdout.text)).toContain(humanText("This account imported it yes"))
 
     const listCalls = h.routed.calls.filter((request) => request.url.includes("/agent/wallets?"))
     expect(listCalls.length).toBeGreaterThan(0)
@@ -365,10 +370,10 @@ describe("T55: completeness of the read, which is the defect this covers", () =>
     })
     // Three pages walked, and the match on the last one is found.
     expect(await restore(h, ["--count", "1"])).toBe(3)
-    expect(h.stdout.text).toContain("this account imported it")
+    expect(humanText(h.stdout.text)).toContain(humanText("This account imported it yes"))
     expect(h.routed.calls.filter((request) => request.url.includes("/agent/wallets?"))).toHaveLength(3)
     // Exit 3 because the two unmatched addresses are the ambiguity CC-11 refuses to resolve.
-    expect(h.stdout.text).toContain("were NOT derived by this restore")
+    expect(humanText(h.stdout.text)).toContain(humanText("were NOT derived by this restore"))
   })
 
   test("a single-page caller would fail this: page one alone does not contain the match", async () => {
@@ -392,8 +397,8 @@ describe("T55: completeness of the read, which is the defect this covers", () =>
       ],
     })
     expect(await restore(h, ["--count", "1"])).toBe(3)
-    expect(h.stdout.text).toContain("No exposure was recorded")
-    expect(h.stdout.text).toContain("would read as good news")
+    expect(humanText(h.stdout.text)).toContain(humanText("No exposure was recorded"))
+    expect(humanText(h.stdout.text)).toContain(humanText("would read as good news"))
 
     // Nothing flagged: not even the address that DID appear on the first page.
     const { reopen } = await import("../vault/test-vault")
@@ -406,7 +411,7 @@ describe("T55: completeness of the read, which is the defect this covers", () =>
       pages: [() => jsonResponse(200, { success: true, page: [row(derived.vault0)], isDone: false })],
     })
     expect(await restore(h, ["--count", "1"])).toBe(3)
-    expect(h.stdout.text).toContain("No exposure was recorded")
+    expect(humanText(h.stdout.text)).toContain(humanText("No exposure was recorded"))
   })
 
   test("an account the operator did not confirm is refused for exposure, and the vault on disk is complete", async () => {
@@ -436,10 +441,10 @@ describe("T55: completeness of the read, which is the defect this covers", () =>
     ).toBe(3)
     expect(confirmPrompts).toEqual([`Type confirm to record exposure against account ${ACCOUNT}: `])
     expect(h.stdout.text).toContain(`account ${groupAddress(ACCOUNT)}\n`)
-    expect(h.stdout.text).toContain("the account this profile acts as was not confirmed")
+    expect(humanText(h.stdout.text)).toContain(humanText("the account this profile acts as was not confirmed"))
     expect(h.stdout.text).toContain("EXPOSURE_ACCOUNT_MISMATCH")
-    expect(h.stdout.text).toContain("No exposure was recorded")
-    expect(h.stdout.text).toContain("candle vault reconcile-exposure")
+    expect(humanText(h.stdout.text)).toContain(humanText("No exposure was recorded"))
+    expect(humanText(h.stdout.text)).toContain(humanText("candle vault reconcile-exposure"))
 
     // PERSISTED state, not only the exit code: every derived entry is committed, none is flagged
     // (the listed address included), the discovery record is present so the vault does not
@@ -481,9 +486,9 @@ describe("T55: a restore that fails after the file is written does not strand it
     // was written and verified and before any entry was committed.
     const h = await harness()
     expect(await restore(h, ["--count", "1", "--rpc-url", "https://rpc.test/unrouted"])).toBe(1)
-    expect(h.stdout.text).toContain("verified in full (all eight steps)")
-    expect(h.stderr.text).toContain("No route registered")
-    expect(h.stderr.text).toContain("was removed because the restore did not complete")
+    expect(humanText(h.stdout.text)).toContain(humanText("Verified in full (all eight steps)"))
+    expect(humanText(h.stderr.text)).toContain(humanText("No route registered"))
+    expect(humanText(h.stderr.text)).toContain(humanText("was removed because the restore did not complete"))
     await expect(readFile(h.vaultPath, "utf8")).rejects.toThrow()
     const { sidecarPath } = await import("../vault/sidecar")
     await expect(readFile(sidecarPath(h.vaultPath), "utf8")).rejects.toThrow()
@@ -552,9 +557,9 @@ describe("T55: discovery, not certification", () => {
     expect(h.stdout.text).toContain("SomeAddressNobodyDerived11111")
     // Both explanations, and the action each implies. Never silently dropped, and never an
     // open-ended ladder of higher counts, which for the second case has no top.
-    expect(h.stdout.text).toContain("beyond the bounds used here")
-    expect(h.stdout.text).toContain("no count will ever find them")
-    expect(h.stdout.text).toContain("only a vault backup plus a factor recovers them")
+    expect(humanText(h.stdout.text)).toContain(humanText("beyond the bounds used here"))
+    expect(humanText(h.stdout.text)).toContain(humanText("no count will ever find them"))
+    expect(humanText(h.stdout.text)).toContain(humanText("only a vault backup plus a factor recovers them"))
   })
 
   test("a matched TEE-branch address becomes a tee-wallet entry and is flagged", async () => {
@@ -583,7 +588,7 @@ describe("T55: discovery, not certification", () => {
     await writeFile(legacy, contents, "utf8")
 
     expect(await restore(h, ["--count", "1"])).toBe(0)
-    expect(h.stdout.text).toContain("no migrated-tee entry was restored")
+    expect(humanText(h.stdout.text)).toContain(humanText("no migrated-tee entry was restored"))
     expect(await readFile(legacy, "utf8")).toBe(contents)
   })
 })
@@ -599,10 +604,10 @@ describe("T55: a restored vault does not allocate, on the FIRST call", () => {
     const code = await run(["vault", "new-key", "--chain", "solana", "--keystore", h.vaultPath], k.deps)
     expect(code).toBe(1)
     // No sequence of calls reaches a later index at all, because the FIRST one refuses.
-    expect(k.stderr.text).toContain("never established")
-    expect(k.stderr.text).toContain("There is no flag for this")
-    expect(k.stderr.text).toContain("candle vault init")
-    expect(k.stderr.text).toContain("candle vault transfer")
+    expect(humanText(k.stderr.text)).toContain(humanText("never established"))
+    expect(humanText(k.stderr.text)).toContain(humanText("There is no flag for this"))
+    expect(humanText(k.stderr.text)).toContain(humanText("candle vault init"))
+    expect(humanText(k.stderr.text)).toContain(humanText("candle vault transfer"))
 
     // The stable code is the --json contract, which is where an agent reads it.
     const j = await harness()
@@ -642,9 +647,9 @@ describe("T55: a restored vault does not allocate, on the FIRST call", () => {
     const s = await harness()
     s.deps.promptSecret = async () => passphrase
     await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)
-    expect(s.stdout.text).toContain("recovery artifacts, not fresh cold keys")
-    expect(s.stdout.text).toContain("does not allocate new addresses")
-    expect(s.stdout.text).toContain("history unknown (restored)")
+    expect(humanText(s.stdout.text)).toContain(humanText("recovery artifacts, not fresh cold keys"))
+    expect(humanText(s.stdout.text)).toContain(humanText("does not allocate new addresses"))
+    expect(humanText(s.stdout.text)).toContain(humanText("history unknown (restored)"))
   })
 
   test("the named exit works: a fresh init allocates from zero", async () => {
@@ -672,8 +677,8 @@ describe("T55: reconcile-exposure adds and never clears", () => {
     })
     r.deps.promptSecret = async () => passphrase
     expect(await run(["vault", "reconcile-exposure", "--keystore", h.vaultPath], r.deps)).toBe(0)
-    expect(r.stdout.text).toContain("1 vault address(es) newly flagged")
-    expect(r.stdout.text).toContain("Nothing was cleared")
+    expect(humanText(r.stdout.text)).toContain(humanText("Newly flagged remotely exposed 1"))
+    expect(humanText(r.stdout.text)).toContain(humanText("Nothing was cleared"))
 
     const { reopen } = await import("../vault/test-vault")
     const vault = await reopen(h.vaultPath, passphrase)
@@ -712,8 +717,8 @@ describe("T55: reconcile-exposure adds and never clears", () => {
     const r = await harness({ pages: [() => jsonResponse(503, { success: false, message: "down" })] })
     r.deps.promptSecret = async () => passphrase
     expect(await run(["vault", "reconcile-exposure", "--keystore", h.vaultPath], r.deps)).toBe(1)
-    expect(r.stderr.text).toContain("did not complete")
-    expect(r.stderr.text).toContain("Nothing was flagged")
+    expect(humanText(r.stderr.text)).toContain(humanText("did not complete"))
+    expect(humanText(r.stderr.text)).toContain(humanText("Nothing was flagged"))
   })
 
   test("a different account is refused with EXPOSURE_ACCOUNT_MISMATCH", async () => {
@@ -770,7 +775,7 @@ test("verify-backup recognizes a sealed copy after phrase restore replaces every
     openedWith: { factor: "passphrase", envelopeId: oldFile.envelopes[0].id },
   })
   expect(secrets).toHaveLength(0)
-  expect(stderr.text).toContain("passphrase it was sealed under")
+  expect(humanText(stderr.text)).toContain(humanText("passphrase it was sealed under"))
   expect(stdout.text + stderr.text).not.toContain(oldPassphrase)
   expect(stdout.text + stderr.text).not.toContain(newPassphrase)
 })
@@ -794,7 +799,9 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
     await run(["vault", "restore", "--phrase", "--keystore", h.vaultPath], h.deps).catch(() => {})
     expect(stdoutAtPrompt).toContain("This builds a NEW vault from your 24 words, and it gets a NEW passphrase")
     expect(stdoutAtPrompt).toContain("does not carry over")
-    expect(stdoutAtPrompt).toContain("The words carry the keys; a passphrase belongs to one file.")
+    expect(humanText(stdoutAtPrompt)).toContain(
+      humanText("The words carry the keys; a passphrase belongs to one file."),
+    )
   })
 
   test("Enter at the prompt takes the generated passphrase, shown once and typed back", async () => {
@@ -823,7 +830,7 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
     expect(asked[choice]).toContain("Press Enter to have one generated (8 words, shown once, typed back)")
     expect(asked[choice]).toContain("or type own to choose your own (16+ characters, typed twice, never shown)")
     expect(asked.slice(choice + 1).some((text) => text.includes("Type it back in full"))).toBe(true)
-    expect(h.stdout.text).toContain("The new vault's passphrase")
+    expect(humanText(h.stdout.text)).toContain(humanText("The new vault's passphrase"))
   })
 
   test("typing own takes the chosen-passphrase branch instead", async () => {
@@ -870,7 +877,7 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
     }
     expect(await run(["vault", "restore", "--phrase", "--keystore", h.vaultPath], h.deps)).toBe(0)
     expect(choices.length).toBe(2)
-    expect(h.stdout.text).toContain("The new vault's passphrase")
+    expect(humanText(h.stdout.text)).toContain(humanText("The new vault's passphrase"))
   })
 
   test("--own-passphrase skips the prompt entirely", async () => {
@@ -895,9 +902,9 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
   test("the footer names the non-default location, and only when -k put it there", async () => {
     const h = await harness()
     expect(await restore(h, [])).toBe(0)
-    expect(h.stdout.text).toContain(`This vault is at ${h.vaultPath}, not the default location.`)
-    expect(h.stdout.text).toContain(`Every vault command needs -k ${h.vaultPath}`)
-    expect(h.stdout.text).toContain(`export CANDLE_CONFIG_DIR=${h.dir}`)
+    expect(humanText(h.stdout.text)).toContain(humanText(`This vault is at ${h.vaultPath}, not the default location.`))
+    expect(humanText(h.stdout.text)).toContain(humanText(`Every vault command needs -k ${h.vaultPath}`))
+    expect(humanText(h.stdout.text)).toContain(humanText(`export CANDLE_CONFIG_DIR=${h.dir}`))
 
     // The same restore, located by CANDLE_CONFIG_DIR rather than by the flag: the default location
     // for that shell, so there is nothing to warn about.
@@ -952,9 +959,9 @@ describe("BE-355 T14: restore refuses a default and ambient endpoints", () => {
     expect(solanaCalls(h)).toEqual([])
     expect(h.routed.unmatched).toEqual([])
     for (const branch of ["solanaVault", "solanaTee", "solanaExternal"]) {
-      expect(h.stdout.text).toContain(`${branch}: index 0 only.`)
+      expect(humanText(h.stdout.text)).toContain(humanText(`${branch}: index 0 only.`))
     }
-    expect(h.stdout.text).toContain(NOT_USED)
+    expect(humanText(h.stdout.text)).toContain(humanText(NOT_USED))
     expect(h.stderr.text).not.toContain("Solana RPC:")
     expect(h.stderr.text).not.toContain("Using the public Solana RPC")
   })
@@ -980,8 +987,8 @@ describe("BE-355 T14: restore refuses a default and ambient endpoints", () => {
     })
     expect(await restore(h, ["--rpc-url", "https://rpc.test/rpc"])).toBe(0)
     expect(solanaCalls(h).length).toBeGreaterThan(0)
-    expect(h.stderr.text).toContain("Solana RPC: rpc.test (--rpc-url)")
+    expect(humanText(h.stderr.text)).toContain(humanText("Solana RPC: rpc.test (--rpc-url)"))
     expect(h.stderr.text).not.toContain("Using the public Solana RPC")
-    expect(h.stdout.text).toContain("gap-scanned to index")
+    expect(humanText(h.stdout.text)).toContain(humanText("gap-scanned to index"))
   })
 })

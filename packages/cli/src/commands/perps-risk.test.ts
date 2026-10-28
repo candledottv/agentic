@@ -10,6 +10,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Deps } from "../deps"
+import { humanText } from "../human-output.test-support"
 import { HYPERLIQUID_RISK_DEFAULTS, type PerpsPositionRow, readPerpsRisk } from "../hyperliquid-risk"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
@@ -227,7 +228,7 @@ describe("candle perps risk (A-8, AC7, AC8)", () => {
     expect(await run(["perps", "risk"], f.deps)).toBe(10)
     const out = f.stdout.text
     expect(out).toContain("WARN")
-    expect(out).toContain("BTC 12.1% from liquidation, warn under 15.0%")
+    expect(humanText(out)).toContain(humanText("BTC 12.1% from liquidation, warn under 15.0%"))
     expect(out).toContain("$1,000.50")
     expect(out).toContain("$900.00")
     expect(out).toContain("BTC")
@@ -235,8 +236,8 @@ describe("candle perps risk (A-8, AC7, AC8)", () => {
     expect(out).toContain("$95.00")
     expect(out).toContain("$100.00")
     expect(out).toContain("FUNDING")
-    expect(out).toContain("nothing warns you unless you poll")
-    expect(out).toContain("candle perps watch")
+    expect(humanText(out)).toContain(humanText("nothing warns you unless you poll"))
+    expect(humanText(out)).toContain(humanText("candle perps watch"))
   })
 
   test("a non-standard account mode is unknown: exit 1 with PERPS_ACCOUNT_MODE, never a level", async () => {
@@ -374,10 +375,10 @@ describe("candle perps account (A-10, AC1)", () => {
   test("text, and exit 0 whatever the level", async () => {
     const f = await fixture({ liq: ["95.0"] })
     expect(await run(["perps", "account"], f.deps)).toBe(0)
-    expect(f.stdout.text).toContain(
-      "Last 24 h (main perps): realized 4.00, fees 0.40, funding 0.30 (positive received)",
+    expect(humanText(f.stdout.text)).toContain(
+      humanText("Window last 24 h (main perps) Realized +$4.00 Fees $0.40 Funding +$0.30 (positive received)"),
     )
-    expect(f.stdout.text).toContain("Risk: CRITICAL")
+    expect(humanText(f.stdout.text)).toContain(humanText("Risk: CRITICAL"))
   })
 
   test("--since is checked before any request; a failed read exits 1", async () => {
@@ -526,7 +527,7 @@ describe("candle perps thresholds (A-4, AC13, E7)", () => {
     expect(put?.path).toBe("/api/v1/agent/keys/self/perps-risk")
     expect(put?.headers["x-api-key"]).toBe("bound-key")
     expect(put?.body).toEqual({ perpsRisk: { warnDistanceBps: 2000, warnMarginRatioBps: 5500, clearBandBps: 250 } })
-    expect(f.stdout.text).toContain("Stored on key bound123.")
+    expect(humanText(f.stdout.text)).toContain(humanText("Stored on key bound123."))
   })
 
   test("a loosening as self is refused with the owner's command named, and exit 1", async () => {
@@ -537,8 +538,8 @@ describe("candle perps thresholds (A-4, AC13, E7)", () => {
       ),
     })
     expect(await run(["perps", "thresholds", "set", "--warn-distance", "5"], f.deps)).toBe(1)
-    expect(f.stderr.text).toContain("may only tighten its own thresholds")
-    expect(f.stderr.text).toContain("candle perps thresholds set --key <prefix>")
+    expect(humanText(f.stderr.text)).toContain(humanText("may only tighten its own thresholds"))
+    expect(humanText(f.stderr.text)).toContain(humanText("candle perps thresholds set --key <prefix>"))
     const g = await fixture({
       putAnswer: Response.json(
         { success: false, error: { code: "LOOSEN_REQUIRES_SESSION", message: "only the owner" } },
@@ -582,11 +583,13 @@ describe("help (AC20)", () => {
     const f = await fixture()
     expect(await run(["help", "perps", "--more"], f.deps)).toBe(0)
     const out = f.stdout.text.replace(/\s+/g, " ")
-    expect(out).toContain("exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code")
-    expect(out).toContain(
-      "Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch.",
+    expect(humanText(out)).toContain(humanText("exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code"))
+    expect(humanText(out)).toContain(
+      humanText(
+        "Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch.",
+      ),
     )
-    expect(out).toContain("136 of the 1,200 request weight per minute")
+    expect(humanText(out)).toContain(humanText("136 of the 1,200 request weight per minute"))
     for (const word of ["account", "risk", "watch", "thresholds"]) expect(out).toContain(`${word} `)
   })
 })

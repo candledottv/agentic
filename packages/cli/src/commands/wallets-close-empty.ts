@@ -31,6 +31,7 @@
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { notice } from "../presentation"
 import { writeUsageFailure } from "../render"
 import { decodeStrictBase64, decodeTransaction, TransactionDecodeError } from "../solana-alt"
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
@@ -331,8 +332,11 @@ function sameMessage(unsigned: string, signed: string): boolean {
  * it again. Exit 3: a transaction may still land, and nothing is sent again.
  */
 function printRecovering(ctx: CommandContext, result: Json, id: string, wallet: string): number {
-  ctx.deps.stderr.write(
-    `Not every close is settled on chain yet; nothing will be sent again. Read it again with: candle wallet close-empty --wallet ${safeText(wallet)} --client-trade-id ${id}\n`,
+  notice(
+    ctx.deps,
+    "stderr",
+    "note",
+    `Not every close is settled on chain yet; nothing will be sent again. Read it again with: candle wallet close-empty --wallet ${safeText(wallet)} --client-trade-id ${id}\n`.trim(),
   )
   printTradingResult(ctx, { ...result, clientTradeId: id })
   return 3
@@ -344,8 +348,11 @@ function printTeeJob(ctx: CommandContext, prior: Json, id: string, wallet: strin
   const result = (job.result ?? {}) as Json
   if (result.status === "recovering") return printRecovering(ctx, prior, id, wallet)
   if (result.status === "built")
-    ctx.deps.stderr.write(
-      `Operation ${id} was built and never submitted to Candle, so Candle sent nothing; its transactions expire at block height ${safeText(result.expiresAtBlockHeight)}. Run again without --client-trade-id to close under a new id.\n`,
+    notice(
+      ctx.deps,
+      "stderr",
+      "warning",
+      `Operation ${id} was built and never submitted to Candle, so Candle sent nothing; its transactions expire at block height ${safeText(result.expiresAtBlockHeight)}. Run again without --client-trade-id to close under a new id.\n`.trim(),
     )
   return printTradingResult(ctx, { ...prior, clientTradeId: id })
 }

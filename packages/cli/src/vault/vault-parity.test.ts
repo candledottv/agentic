@@ -20,6 +20,7 @@ import { spawnSync } from "node:child_process"
 import { copyFileSync, existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { humanText } from "../human-output.test-support"
 import { addressFromSecret64 } from "./ed25519"
 import { deriveSolanaKey, phraseFromEntropy, solanaVaultPath } from "./hd"
 import { wipe } from "./hygiene"
@@ -317,7 +318,7 @@ describe("T49: the same fixture, through the COMPILED binary, on a real terminal
     const code = await proc.exited
     const text = transcript()
     expect(`restore exited ${code}:\n${text}`).toStartWith("restore exited 3:")
-    expect(text).toContain("verified in full (all eight steps)")
+    expect(humanText(text)).toContain("Verified in full (all eight steps)")
     // Either no key at all, or a stored key the API refuses: both paths leave exposure unrecorded,
     // and that is the claim this check needs. Naming only the empty-store sentence failed on a
     // machine whose keyring held an invalid key under the test passphrase.

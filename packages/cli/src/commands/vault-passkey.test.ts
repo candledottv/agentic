@@ -27,6 +27,7 @@ import {
 import { type EnclaveLogEntry, type EnclaveScript, scriptedEnclaveBackend } from "../enclave-helper/test-backend"
 import { AUTHDATA_FLAG_UP, AUTHDATA_FLAG_UV, handleLine, RP_ID } from "../fido2-helper/protocol"
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
+import { humanText } from "../human-output.test-support"
 import { realSpawnHelper, run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import { AASA_URL, CODESIGN_PATH, codesignRequirement, ENCLAVE_HELPER_ENV, type ReleasePolicy } from "../vault/enclave"
@@ -287,11 +288,13 @@ describe("factor add passkey: the ceremony", () => {
     )
     const secretsAllocated = tracking.stop()
     expect(`${code} ${add.stderr.text}`).toStartWith("0 ")
-    expect(add.stdout.text).toContain("Added synced passkey factor")
-    expect(add.stdout.text).toContain("domain     apple-account (backup-eligible: yes, backed up now: yes)")
-    expect(add.stdout.text).toContain("verified   the vault was re-read and opened with the new passkey")
-    expect(add.stdout.text).toContain("A synced passkey lives in your Apple account")
-    expect(add.stdout.text).toContain("2 recoverable factor(s)")
+    expect(humanText(add.stdout.text)).toContain(humanText("Added synced passkey factor"))
+    expect(humanText(add.stdout.text)).toContain(
+      humanText("Domain apple-account (backup-eligible: yes, backed up now: yes)"),
+    )
+    expect(humanText(add.stdout.text)).toContain(humanText("Verified vault re-read and opened with the new passkey"))
+    expect(humanText(add.stdout.text)).toContain(humanText("A synced passkey lives in your Apple account"))
+    expect(humanText(add.stdout.text)).toContain(humanText("2 recoverable factor(s)"))
 
     // The passphrase was asked once, after every gate, and nothing else was prompted.
     expect(add.asked).toEqual(["secret: Current vault passphrase, to unlock (input hidden): "])
@@ -311,9 +314,15 @@ describe("factor add passkey: the ceremony", () => {
     // One registration, then exactly two assertions: the derivation and the proof, in that order,
     // each announced on stderr with what the sheet is for.
     expect(ops(add).filter((op) => op !== "info")).toEqual(["passkey-register", "passkey-assert", "passkey-assert"])
-    expect(add.stderr.text).toContain("Confirm in the passkey sheet to create this vault's synced passkey")
-    expect(add.stderr.text).toContain("Confirm the synced passkey to derive this vault's key on it.")
-    expect(add.stderr.text).toContain("Confirm the synced passkey to prove the new synced passkey opens the vault.")
+    expect(humanText(add.stderr.text)).toContain(
+      humanText("Confirm in the passkey sheet to create this vault's synced passkey"),
+    )
+    expect(humanText(add.stderr.text)).toContain(
+      humanText("Confirm the synced passkey to derive this vault's key on it."),
+    )
+    expect(humanText(add.stderr.text)).toContain(
+      humanText("Confirm the synced passkey to prove the new synced passkey opens the vault."),
+    )
     const asserts = add.calls.filter((call) => call.op === "passkey-assert")
     expect(asserts[0]?.credentialId).toBe(asserts[1]?.credentialId)
     expect(asserts[0]?.prfSalt).toBe(asserts[1]?.prfSalt)
@@ -491,8 +500,8 @@ describe("factor add passkey: the ceremony", () => {
     expect(after.envelopes.map((envelope) => envelope.id)).toEqual(before.envelopes.map((envelope) => envelope.id))
     expect(after.generation).toBe(before.generation + 2)
     expect(after.root.ciphertext).toBe(before.root.ciphertext)
-    expect(add.stderr.text).toContain("was removed from the vault again")
-    expect(add.stderr.text).toContain("remains in your Passwords")
+    expect(humanText(add.stderr.text)).toContain(humanText("was removed from the vault again"))
+    expect(humanText(add.stderr.text)).toContain(humanText("remains in your Passwords"))
 
     const retry = await harness({
       env: { CANDLE_CONFIG_DIR: v.dir },
@@ -707,7 +716,7 @@ describe("unlocking with a synced passkey", () => {
     ).toBe(0)
     expect(byKind.asked).toEqual([])
     expect(ops(byKind).filter((op) => op !== "info")).toEqual(["passkey-assert"])
-    expect(byKind.stderr.text).toContain("Confirm the synced passkey to unlock the Candle vault.")
+    expect(humanText(byKind.stderr.text)).toContain(humanText("Confirm the synced passkey to unlock the Candle vault."))
     // At unlock the requirement pins what the ENVELOPE recorded.
     for (const args of byKind.codesign) expect(args[4]).toBe(codesignRequirement({ teamId: TEAM, bundleId: BUNDLE }))
 
@@ -749,9 +758,11 @@ describe("unlocking with a synced passkey", () => {
     await opened.confirm("sign transfer of 1.5 SOL to 9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin")
     closeVault(opened.vault)
     expect(ops(h).filter((op) => op === "passkey-assert")).toHaveLength(2)
-    expect(h.stderr.text).toContain("Confirm the synced passkey to unlock the Candle vault.")
-    expect(h.stderr.text).toContain(
-      "Confirm the synced passkey to sign transfer of 1.5 SOL to 9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin.",
+    expect(humanText(h.stderr.text)).toContain(humanText("Confirm the synced passkey to unlock the Candle vault."))
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(
+        "Confirm the synced passkey to sign transfer of 1.5 SOL to 9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin.",
+      ),
     )
   })
 
@@ -781,7 +792,7 @@ describe("unlocking with a synced passkey", () => {
       ),
     ).toBe(2)
     expect(ops(h).filter((op) => op === "passkey-assert")).toHaveLength(1)
-    expect(h.stderr.text).toContain(`Confirm the synced passkey to send 1.5 SOL to ${to}.`)
+    expect(humanText(h.stderr.text)).toContain(humanText(`Confirm the synced passkey to send 1.5 SOL to ${to}.`))
     expect(h.stderr.text).not.toContain("to unlock the Candle vault")
   })
 
@@ -994,15 +1005,17 @@ describe("AD-9: sealed cloud backups", () => {
     expect(await run(["vault", "backup", "--to", to, "--keystore", t.vaultPath], b.deps)).toBe(0)
     expect(b.asked).toEqual([expect.stringContaining("Vault passphrase")])
     expect(ops(b)).not.toContain("passkey-assert")
-    expect(b.stdout.text).toContain("destination   icloud-drive")
-    expect(b.stdout.text).toContain(
-      `sealed        yes: carries passphrase ${live.envelopes[0]?.id}; left out synced passkey ${t.envelopeId}`,
+    expect(humanText(b.stdout.text)).toContain(humanText("Destination icloud-drive"))
+    expect(humanText(b.stdout.text)).toContain(
+      humanText(`Sealed yes Carries passphrase ${live.envelopes[0]?.id} Left out synced passkey ${t.envelopeId}`),
     )
-    expect(b.stdout.text).toContain("all 8 passed, in order")
-    expect(b.stdout.text).toContain("address set   matches the live vault")
-    expect(b.stdout.text).toContain("This copy opens only with the passphrase")
-    expect(b.stdout.text).toContain("Keep the passphrase somewhere outside the Apple account")
-    expect(b.stdout.text).toContain("live vault plus the recovery phrase remain the everyday path")
+    expect(humanText(b.stdout.text)).toContain(humanText("all 8 passed, in order"))
+    expect(humanText(b.stdout.text)).toContain(humanText("address set   matches the live vault"))
+    expect(humanText(b.stdout.text)).toContain(humanText("This copy opens only with the passphrase"))
+    expect(humanText(b.stdout.text)).toContain(humanText("Keep the passphrase somewhere outside the Apple account"))
+    expect(humanText(b.stdout.text)).toContain(
+      humanText("live vault plus the recovery phrase remain the everyday path"),
+    )
     expect(b.stdout.text).not.toContain("shared domain")
 
     // The copy: same vault id, generation, root and key blobs; one envelope; its own index.
@@ -1030,8 +1043,8 @@ describe("AD-9: sealed cloud backups", () => {
     expect(sidecar?.lastBackupSharedDomainAccepted).toBeUndefined()
     const status = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, script: { store: t.add.script.store } })
     expect(await run(["vault", "status", "--keystore", t.vaultPath], status.deps)).toBe(0)
-    expect(status.stdout.text).toContain("(icloud-drive, sealed: opens with the passphrase only)")
-    expect(status.stdout.text).toContain("lives in your Apple account")
+    expect(humanText(status.stdout.text)).toContain(humanText("(icloud-drive, sealed: opens with the passphrase only)"))
+    expect(humanText(status.stdout.text)).toContain(humanText("lives in your Apple account"))
   })
 
   test("--factor passkey on a sealed backup is not used: the passphrase is used and the output says why", async () => {
@@ -1047,14 +1060,18 @@ describe("AD-9: sealed cloud backups", () => {
     ).toBe(0)
     // BE-292 (rows B1, B3, B2): the destination line, the not-used line, and the reason the
     // passphrase is the only answer, in that order and all before the prompt.
-    expect(b.stderr.text).toContain(
-      "so this backup is a sealed copy: it carries the passphrase and any security key, and leaves out synced passkey and Touch ID envelopes.",
+    expect(humanText(b.stderr.text)).toContain(
+      humanText(
+        "so this backup is a sealed copy: it carries the passphrase and any security key, and leaves out synced passkey and Touch ID envelopes.",
+      ),
     )
-    expect(b.stderr.text).toContain(
-      "--factor passkey is not used here: a sealed copy carries no Touch ID or synced passkey envelope.",
+    expect(humanText(b.stderr.text)).toContain(
+      humanText("--factor passkey is not used here: a sealed copy carries no Touch ID or synced passkey envelope."),
     )
-    expect(b.stderr.text).toContain(
-      "Passphrase only: a sealed copy opens with the passphrase or a security key, and this vault has no security key. Add one with: candle vault enroll security-key",
+    expect(humanText(b.stderr.text)).toContain(
+      humanText(
+        "Passphrase only: a sealed copy opens with the passphrase or a security key, and this vault has no security key. Add one with: candle vault enroll security-key",
+      ),
     )
     expect(ops(b)).not.toContain("passkey-assert")
     const body = JSON.parse(b.stdout.text) as Record<string, unknown>
@@ -1084,9 +1101,11 @@ describe("AD-9: sealed cloud backups", () => {
     ).toBe(0)
     expect(b.asked).toEqual([])
     expect(ops(b).filter((op) => op === "passkey-assert")).toHaveLength(2)
-    expect(b.stdout.text).toContain("sealed        no: every envelope is in this copy (--accept-shared-domain)")
-    expect(b.stdout.text).toContain(
-      "shared domain this destination and a synced passkey envelope are one Apple account, and this unsealed copy carries that passkey's envelope; you accepted that.",
+    expect(humanText(b.stdout.text)).toContain(humanText("Sealed no (--accept-shared-domain)"))
+    expect(humanText(b.stdout.text)).toContain(
+      humanText(
+        "shared domain this destination and a synced passkey envelope are one Apple account, and this unsealed copy carries that passkey's envelope; you accepted that.",
+      ),
     )
     expect(b.stdout.text).not.toContain("This copy opens only with the passphrase")
     expect((await readVault(to)).envelopes.map((e) => e.id)).toEqual(live.envelopes.map((e) => e.id))
@@ -1097,8 +1116,10 @@ describe("AD-9: sealed cloud backups", () => {
     })
     const status = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, script: { store: t.add.script.store } })
     expect(await run(["vault", "status", "--keystore", t.vaultPath], status.deps)).toBe(0)
-    expect(status.stdout.text).toContain(
-      "shared domain          accepted for the last backup destination (an unsealed copy, every envelope included)",
+    expect(humanText(status.stdout.text)).toContain(
+      humanText(
+        "shared domain          accepted for the last backup destination (an unsealed copy, every envelope included)",
+      ),
     )
   })
 
@@ -1137,15 +1158,19 @@ describe("AD-9: sealed cloud backups", () => {
     expect(await run(["vault", "verify-backup", to, "--factor", "passkey", "--keystore", t.vaultPath], v.deps)).toBe(0)
     // BE-292 (D5, row V1): the copy carries only the passphrase, so `--factor passkey` is not
     // used and the line before the prompt says why only the passphrase opens it.
-    expect(v.stderr.text).toContain(`--factor passkey is not used here: ${to} does not carry it as it is now.`)
-    expect(v.stderr.text).toContain(
-      `Passphrase only: ${to} carries no security key envelope (a copy sealed by an earlier CLI, or from a vault that had none then), so only the passphrase opens it.`,
+    expect(humanText(v.stderr.text)).toContain(
+      humanText(`--factor passkey is not used here: ${to} does not carry it as it is now.`),
+    )
+    expect(humanText(v.stderr.text)).toContain(
+      humanText(
+        `Passphrase only: ${to} carries no security key envelope (a copy sealed by an earlier CLI, or from a vault that had none then), so only the passphrase opens it.`,
+      ),
     )
     expect(v.asked).toEqual([expect.stringContaining("Vault passphrase")])
     expect(ops(v)).not.toContain("passkey-assert")
-    expect(v.stdout.text).toContain("sealed        yes")
-    expect(v.stdout.text).toContain("all 8 passed, in order")
-    expect(v.stdout.text).toContain("address set   matches the live vault")
+    expect(humanText(v.stdout.text)).toContain(humanText("Sealed yes"))
+    expect(humanText(v.stdout.text)).toContain(humanText("all 8 passed, in order"))
+    expect(humanText(v.stdout.text)).toContain(humanText("address set   matches the live vault"))
 
     const json = await harness({
       env: { CANDLE_CONFIG_DIR: t.dir },
@@ -1209,8 +1234,8 @@ describe("AD-9: sealed cloud backups", () => {
     )
     expect(v.asked).toEqual([expect.stringContaining("Vault passphrase")])
     expect(ops(v)).not.toContain("passkey-assert")
-    expect(v.stdout.text).toContain("sealed        yes")
-    expect(v.stdout.text).toContain("all 8 passed, in order")
+    expect(humanText(v.stdout.text)).toContain(humanText("Sealed yes"))
+    expect(humanText(v.stdout.text)).toContain(humanText("all 8 passed, in order"))
   })
 })
 
@@ -1253,7 +1278,7 @@ test("signed helper info failures leave status, factor list and passphrase enrol
       ).toBe(0)
       if (command.length < 3) {
         expect(h.stdout.text).toContain("unavailable-on-this-device")
-        expect(h.stdout.text).toContain("could not report its availability")
+        expect(humanText(h.stdout.text)).toContain(humanText("could not report its availability"))
         const envelopes = JSON.parse(h.stdout.text).envelopes as Array<{ factor: string; availability: string }>
         for (const factor of ["secure-enclave", "passkey-prf"]) {
           expect(envelopes.find((e) => e.factor === factor)?.availability).toBe("unavailable-on-this-device")
@@ -1278,7 +1303,7 @@ test("F3: factor add touch-id and passkey say why only the passphrase opens the 
     "Passphrase only: adding a factor opens the vault with the passphrase or a security key, and this vault has no security key."
   const touch = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase] })
   expect(await run(["vault", "factor", "add", "touch-id", "--keystore", t.vaultPath], touch.deps)).toBe(0)
-  expect(touch.stderr.text).toContain(F3)
+  expect(humanText(touch.stderr.text)).toContain(F3)
   expect(touch.stderr.text.indexOf(F3)).toBeLessThan(touch.stderr.text.length)
   // The synced passkey on the vault is not offered: no menu, one passphrase prompt.
   expect(touch.asked).toEqual([expect.stringContaining("Current vault passphrase")])
@@ -1288,7 +1313,7 @@ test("F3: factor add touch-id and passkey say why only the passphrase opens the 
     script: { store: t.add.script.store },
   })
   expect(await run(["vault", "factor", "add", "passkey", "--keystore", t.vaultPath], second.deps)).toBe(0)
-  expect(second.stderr.text).toContain(F3)
+  expect(humanText(second.stderr.text)).toContain(F3)
   expect(second.asked).toEqual([expect.stringContaining("Current vault passphrase")])
 
   // On a vault whose only envelope is the passphrase, nothing needs explaining.
@@ -1339,8 +1364,10 @@ test("a sealed backup retains its old passphrase after rotation", async () => {
     openedWith: { factor: "passphrase", envelopeId: oldId },
   })
   expect(v.asked).toEqual([expect.stringContaining("Passphrase this backup was sealed under")])
-  expect(v.stderr.text).toContain(
-    `Passphrase only: the factor that opened this vault is not in ${to} as it is now, and no security key in it can be used here, so the copy opens with the passphrase it was sealed under, which may predate a rotation.`,
+  expect(humanText(v.stderr.text)).toContain(
+    humanText(
+      `Passphrase only: the factor that opened this vault is not in ${to} as it is now, and no security key in it can be used here, so the copy opens with the passphrase it was sealed under, which may predate a rotation.`,
+    ),
   )
   expect(ops(v).filter((op) => op === "passkey-assert")).toHaveLength(1)
   expect(v.stdout.text + v.stderr.text).not.toContain(t.passphrase)
@@ -1598,11 +1625,13 @@ describe("BE-294: the unlock menu with a security key, Touch ID and a synced pas
     expect(
       await run(["vault", "factor", "add", "touch-id", "--label", "third", "--keystore", t.vaultPath], h.deps),
     ).toBe(0)
-    expect(h.stderr.text).toContain(
-      `Passphrase only: adding a factor opens the vault with the passphrase or a security key, and security key ${t.aId} cannot be used on this machine: unavailable-on-this-device: `,
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(
+        `Passphrase only: adding a factor opens the vault with the passphrase or a security key, and security key ${t.aId} cannot be used on this machine: unavailable-on-this-device: `,
+      ),
     )
-    expect(h.stderr.text).toContain(
-      `; security key ${t.bId} cannot be used on this machine: unavailable-on-this-device: `,
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(`; security key ${t.bId} cannot be used on this machine: unavailable-on-this-device: `),
     )
     expect(h.asked).toEqual([expect.stringContaining("Current vault passphrase")])
   })

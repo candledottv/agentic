@@ -20,10 +20,12 @@ import {
   launchBuyLegOk,
   launchFeeCap,
 } from "../hood-legs"
+import { writeFields } from "../human-output"
 import { BundleReadError, readLaunchBundle } from "../launch-bundle"
 import { launchCheck } from "../launch-check"
 import { LAUNCH_DEFINITION } from "../launch-definition"
 import { LAUNCH_IMAGE_FLAG, LAUNCH_USAGE, launchFieldProblem, launchFlagFields } from "../launch-options"
+import { notice } from "../presentation"
 import { writeUsageFailure } from "../render"
 import { postSignatureRateLimitMessage, postSignatureSuggestion } from "../solana-endpoint"
 import { isRateLimited } from "../solana-lite"
@@ -328,8 +330,11 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         // clean attempt.
         if (!atomicRetryable(prior, local)) return resumeAtomicLaunch(ctx, id, local, prior)
         retry = { imageUrl: local.imageUrl, bannerUrl: local.bannerUrl }
-        ctx.deps.stderr.write(
-          `Bundle ${safeText(local.bundleId)} was never sent or did not land; building launch ${id} again under the same id.\n`,
+        notice(
+          ctx.deps,
+          "stderr",
+          "warning",
+          `Bundle ${safeText(local.bundleId)} was never sent or did not land; building launch ${id} again under the same id.\n`.trim(),
         )
       } else {
         // Phase 4b-2: a Hood TEE launch saved its operation id with the leg's hash. It is recorded
@@ -410,7 +415,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         "OPERATION_ALREADY_STARTED",
         "This machine already started this launch id; no write was resent.",
       )
-    ctx.deps.stderr.write(`Operation: ${id}\n`)
+    writeFields(ctx.deps, "stderr", [["Operation", id]])
     const built = launchBuildSchema.parse(
       await request(
         ctx,
@@ -436,7 +441,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       maxDebitLamports: built.maxDebitLamports,
       tokenRisks: [],
     }
-    ctx.deps.stderr.write(buyNotice(buy, "solana"))
+    notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim())
     if (!(await confirmQuote(ctx, quote, parsed.booleans.has("--yes"))))
       return printTradingResult(ctx, {
         success: true,
@@ -504,11 +509,11 @@ async function uploadLaunchImages(
   // A same-id retry builds with the image the bundle was built with, without uploading again.
   if (image && retry?.imageUrl) imageUrl = retry.imageUrl
   else if (image) {
-    ctx.deps.stderr.write(uploadNotice(image))
+    notice(ctx.deps, "stderr", "note", uploadNotice(image).trim())
     try {
       imageUrl = await uploadImage(ctx, key, image)
     } catch (error) {
-      ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.\n`)
+      notice(ctx.deps, "stderr", "note", `The launch was not started, and its id ${id} is unused.\n`.trim())
       return tradingFailure(ctx, error)
     }
     ctx.deps.stderr.write(`Image: ${safeText(imageUrl)}\n`)
@@ -516,11 +521,11 @@ async function uploadLaunchImages(
   // A retry keeps the original banner, including its absence, so the id's request stays stable.
   let bannerUrl = retry ? retry.bannerUrl : flags["--banner"]?.startsWith("https://") ? flags["--banner"] : undefined
   if (banner && !retry) {
-    ctx.deps.stderr.write(uploadNotice(banner))
+    notice(ctx.deps, "stderr", "note", uploadNotice(banner).trim())
     try {
       bannerUrl = await uploadImage(ctx, key, banner, "banner")
     } catch (error) {
-      ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.\n`)
+      notice(ctx.deps, "stderr", "note", `The launch was not started, and its id ${id} is unused.\n`.trim())
       return tradingFailure(ctx, error)
     }
     ctx.deps.stderr.write(`Banner: ${safeText(bannerUrl)}\n`)
@@ -823,7 +828,7 @@ async function atomicLaunch(
       "OPERATION_ALREADY_STARTED",
       "This machine already started this launch id; no write was resent.",
     )
-  ctx.deps.stderr.write(`Operation: ${id}\n`)
+  writeFields(ctx.deps, "stderr", [["Operation", id]])
   const built = atomicBuildSchema.parse(
     await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody(args)).catch((error) => {
       throw buyRefusal(error)
@@ -885,10 +890,13 @@ async function atomicLaunch(
     ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
     outcome: "unsigned",
   })
-  ctx.deps.stderr.write(buyNotice(buy, "solana"))
+  notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim())
   if (!(await confirmQuote(ctx, quote, args.yes))) {
-    ctx.deps.stderr.write(
-      `Nothing was signed. Candle holds bundle ${safeText(built.bundleId)}'s spend reservation until the build expires at ${new Date(built.expiresAt).toISOString()}.\n`,
+    notice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `Nothing was signed. Candle holds bundle ${safeText(built.bundleId)}'s spend reservation until the build expires at ${new Date(built.expiresAt).toISOString()}.\n`.trim(),
     )
     return printTradingResult(ctx, {
       success: true,
@@ -913,7 +921,11 @@ async function atomicLaunch(
     ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
   }
   await saveOperationBundle(ctx, key, id, bundle)
-  ctx.deps.stderr.write(`Bundle: ${safeText(built.bundleId)} (launch ${signatures[0]}, first buy ${signatures[1]})\n`)
+  writeFields(ctx.deps, "stderr", [
+    ["Bundle", safeText(built.bundleId)],
+    ["Launch signature", signatures[0]],
+    ["First buy signature", signatures[1]],
+  ])
   return await submitBundle(ctx, key, { id, bundle, signed, quote, used: args.used })
 }
 
@@ -974,8 +986,15 @@ async function submitBundle(
       { exitCode: 3, details },
     )
   const [launchSignature, buySignature] = outcome.data.signatures
-  ctx.deps.stderr.write(
-    `Launched ${safeText(outcome.data.mint)}. Launch signature: ${safeText(launchSignature)}. First buy signature: ${safeText(buySignature)}.\n`,
+  writeFields(
+    ctx.deps,
+    "stderr",
+    [
+      ["Mint", safeText(outcome.data.mint)],
+      ["Launch signature", safeText(launchSignature)],
+      ["First buy signature", safeText(buySignature)],
+    ],
+    "Launched",
   )
   return printTradingResult(ctx, {
     ...outcome.data,
@@ -1154,7 +1173,12 @@ async function embeddedLaunch(
       minimumReceived: `${fill.expectedFill.minAmountOutRaw} raw units of the new token (the first buy's floor; ${fill.supplyPct}% of the supply expected)`,
     }
     if (preview.data.graduatesInBundle)
-      ctx.deps.stderr.write("This first buy alone takes the new curve to graduation inside the bundle.\n")
+      notice(
+        ctx.deps,
+        "stderr",
+        "note",
+        "This first buy alone takes the new curve to graduation inside the bundle.\n".trim(),
+      )
   } else {
     previewSchema.parse(answer)
     if (buy) quote.minimumReceived = "not quoted (best-effort first buy after creation)"
@@ -1164,7 +1188,7 @@ async function embeddedLaunch(
     ctx.deps.stderr.write(`Dry run: nothing was built, signed or recorded, and launch id ${id} is unused.\n`)
     return printTradingResult(ctx, { ...answer, clientTradeId: id, kind: "launch", quote, ...used })
   }
-  ctx.deps.stderr.write(buyNotice(buy, chain))
+  notice(ctx.deps, "stderr", "note", buyNotice(buy, chain).trim())
   if (!(await confirmQuote(ctx, quote, args.yes)))
     return printTradingResult(ctx, {
       success: true,
@@ -1179,7 +1203,7 @@ async function embeddedLaunch(
       "OPERATION_ALREADY_STARTED",
       "This machine already started this launch id; no write was resent.",
     )
-  ctx.deps.stderr.write(`Operation: ${id}\n`)
+  writeFields(ctx.deps, "stderr", [["Operation", id]])
   // The server builds, signs and submits in one call. Its slippage floor applies; there is no
   // separate client-side build-floor comparison. Recovery uses the durable clientLaunchId.
   const result = await apiRequest("/api/v1/launch/headless", {
@@ -1246,7 +1270,7 @@ async function hoodLaunch(
       "OPERATION_ALREADY_STARTED",
       "This machine already started this launch id; no write was resent.",
     )
-  ctx.deps.stderr.write(`Operation: ${id}\n`)
+  writeFields(ctx.deps, "stderr", [["Operation", id]])
   const built = await request(ctx, key, "/api/v1/launch/self/build", hoodBody(args)).catch((error) => {
     throw buyRefusal(error)
   })
@@ -1301,11 +1325,14 @@ async function hoodLaunch(
   const feeCap = buy && first.plannedLegCount === 3 ? launchFeeCap(buy.raw) : undefined
   if (feeCap !== undefined)
     quote.candleFee = `at most ${formatUnits(feeCap, 18)} ETH (the tier fee on the first buy, never above ${Number(LAUNCH_FEE_MAX_BPS) / 100}% of it)`
-  ctx.deps.stderr.write(buyNotice(buy, "hood"))
+  notice(ctx.deps, "stderr", "note", buyNotice(buy, "hood").trim())
   if (!(await confirmQuote(ctx, quote, args.yes))) {
     // The build holds the wallet (D4, one operation per wallet) until its window closes.
-    ctx.deps.stderr.write(
-      `Nothing was signed. Operation ${first.operationId} holds this wallet until ${new Date(first.expiresAt).toISOString()}; a new Hood operation from it is refused as WALLET_BUSY until then.\n`,
+    notice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `Nothing was signed. Operation ${first.operationId} holds this wallet until ${new Date(first.expiresAt).toISOString()}; a new Hood operation from it is refused as WALLET_BUSY until then.\n`.trim(),
     )
     return printTradingResult(ctx, {
       success: true,

@@ -42,7 +42,8 @@ import {
   NATIVE_DECIMALS,
   sameEvmAddress,
 } from "../evm-lite"
-import { renderTable } from "../render"
+import { renderHumanTable, writeFields, writeSuccess } from "../human-output"
+import { notice, type TerminalStyle, terminalStyle } from "../presentation"
 import { describeRpcFailure, openSolanaClient, rpcRateLimitedError, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited, type SolanaRpcError, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
@@ -301,7 +302,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     // D6's first uncovered check, once, the call shape of `vault-promote.ts:262`: the shipped
     // `VAULT_NO_RECOVERABLE_FACTOR`, exit 1, zero writes, no table.
     assertRecoverableFactorExists(current.file.envelopes)
-    deps.stderr.write(`✓ ${rows.length} rows read from ${pairsFile}\n`)
+    writeSuccess(deps, "stderr", `${rows.length} rows read from ${pairsFile}\n`.trim())
 
     // Phase 4b (BE-391): a batch is one chain. An EVM batch promotes 4a EVM vault keys to Hood TEE
     // wallets: the Hood preconditions, ETH holdings over the Hood RPC, and no signer-role read.
@@ -341,7 +342,11 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     const planned = preflight.planned
     const acting = planned.filter((item) => item.kind !== "skip")
     const destinations = actingDestinations(planned)
-    deps.stderr.write(`✓ preflight: ${rows.length} rows, ${destinations.length} destinations, no conflicts\n`)
+    writeSuccess(
+      deps,
+      "stderr",
+      `preflight: ${rows.length} rows, ${destinations.length} destinations, no conflicts\n`.trim(),
+    )
 
     // ── The room (BE-288, D7): after the unlock (the number of `promote` rows is only known once
     // the index is classified), before the SOL read, the table, the warning and any commitVault.
@@ -389,7 +394,12 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     let host: string
     if (hood !== undefined) {
       host = hood.host
-      deps.stderr.write(`${hoodHostLine(hood, "the chain id, the Hood height and each key's ETH")}\n`)
+      notice(
+        deps,
+        "stderr",
+        "note",
+        `${hoodHostLine(hood, "the chain id, the Hood height and each key's ETH")}\n`.trim(),
+      )
       await assertHoodChain(hood)
       try {
         hoodHeight = await hood.rpc.blockNumber()
@@ -401,8 +411,10 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
           balances.set(address, held.eth)
         }
         lamports = balances
-        deps.stderr.write(
-          `✓ ETH, USDG and WETH read for ${addresses.length} addresses (${addresses.length * 3} requests)\n`,
+        writeSuccess(
+          deps,
+          "stderr",
+          `ETH, USDG and WETH read for ${addresses.length} addresses (${addresses.length * 3} requests)\n`.trim(),
         )
       } catch (error) {
         readError = error instanceof Error ? error.message : String(error)
@@ -416,8 +428,10 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       try {
         const accounts = await rpc.getMultipleAccounts(addresses)
         lamports = new Map(addresses.map((address, at) => [address, accounts[at]?.lamports ?? 0n]))
-        deps.stderr.write(
-          `✓ SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)\n`,
+        writeSuccess(
+          deps,
+          "stderr",
+          `SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)\n`.trim(),
         )
       } catch (error) {
         if (isRateLimited(error)) rateLimited = error
@@ -426,8 +440,11 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     }
     let tokenCounts: Map<string, number> | undefined
     if (readTokens && lamports !== undefined && rpc !== undefined) {
-      deps.stderr.write(
-        `Reading token accounts for ${addresses.length} addresses: ${addresses.length * 2} requests over ${host}.\n`,
+      notice(
+        deps,
+        "stderr",
+        "note",
+        `Reading token accounts for ${addresses.length} addresses: ${addresses.length * 2} requests over ${host}.\n`.trim(),
       )
       tokenCounts = new Map()
       for (const address of addresses) {
@@ -458,12 +475,19 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
         elapsedMs: 0,
       }
     } else if (lamports !== undefined && actingAddresses.length > 0 && rpc !== undefined) {
-      deps.stderr.write(`${checkOpeningLine(actingAddresses.length, host)}\n`)
+      notice(deps, "stderr", "note", `${checkOpeningLine(actingAddresses.length, host)}\n`.trim())
       roles = await runRoleCheck(ctx, rpc, actingAddresses)
     }
 
     // ── The screen (D8): the sentence, the table, the footer, the block, the prompt ───────
-    const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd, roles, evmHoldings })
+    const table = renderBatchTable(planned, {
+      lamports,
+      tokenCounts,
+      hasValueUsd,
+      roles,
+      evmHoldings,
+      style: terminalStyle(deps, "stderr"),
+    })
     const footer = renderFooter({
       file: pairsFile,
       planned,
@@ -483,7 +507,8 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     if (readError !== undefined) {
       // The table is not lost, and the batch refuses: a listing is a read, this is the last screen
       // before an irreversible write, so a missing column is a reason to stop (D8).
-      deps.stderr.write(`\n${table}\n\n${footer}\n`)
+      deps.stderr.write(`\n${table}\n`)
+      notice(deps, "stderr", "note", footer)
       // BE-355 (D3): a rate limit that survived the retry is named, with the fix, and nothing was written.
       if (rateLimited !== undefined) throw rpcRateLimitedError(ctx, host, rateLimited)
       throw new VaultError(
@@ -511,7 +536,9 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       const skipped = planned.map((item) => skippedResult(item))
       const rebindable = rebindPhase === undefined ? undefined : splitRebindable(skipped)
       if (rebindPhase === undefined || rebindable === undefined || rebindable.wallets.length === 0) {
-        deps.stderr.write(`\n${table}\n\n${footer}\nNothing to do: every row already landed.\n`)
+        deps.stderr.write(`\n${table}\n`)
+        notice(deps, "stderr", "note", footer)
+        notice(deps, "stderr", "note", "Nothing to do: every row already landed.")
         return finish(ctx, {
           file: pairsFile,
           rows: rows.length,
@@ -527,10 +554,10 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       // a rebind that failed or was not reached). A rebind moves control of funded wallets, so it
       // is acknowledged: the block names the target, then `confirm`, the rule `tee rebind` applies.
       const n = rebindable.wallets.length
-      deps.stderr.write(
-        `\n${table}\n\n${footer}\nEvery row already landed; ${n} wallet${n === 1 ? "" : "s"} to rebind.\n`,
-      )
-      deps.stderr.write(`\n${renderControlledBy(controlledBy, n)}\n`)
+      deps.stderr.write(`\n${table}\n`)
+      notice(deps, "stderr", "note", footer)
+      notice(deps, "stderr", "note", `Every row already landed; ${n} wallet${n === 1 ? "" : "s"} to rebind.`)
+      notice(deps, "stderr", "note", `\n${renderControlledBy(controlledBy, n)}\n`.trim())
       const typed = await deps.promptLine(
         `Type ${CONFIRM_WORD} to move ${n === 1 ? "this wallet" : `these ${n} wallets`} to ${rebindPhase.toKey.target.keyPrefix}: `,
       )
@@ -567,8 +594,9 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
         where: "below",
       }),
     )
-    deps.stderr.write(`${table}\n\n${footer}\n`)
-    deps.stderr.write(`\n${renderControlledBy(controlledBy, acting.length)}\n`)
+    deps.stderr.write(`${table}\n`)
+    notice(deps, "stderr", "note", footer)
+    notice(deps, "stderr", "note", `\n${renderControlledBy(controlledBy, acting.length)}\n`.trim())
     await confirmPromotion(ctx, acting.length)
 
     // ── The loop (D9, D11, D12): one commit per key, no factor presentation, stop on failure ──
@@ -674,8 +702,10 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
             remoteAuthority: imported.submitted.remoteAuthority ?? null,
             importCalls: 1,
           })
-          deps.stderr.write(
-            `✓ ${String(done).padStart(width)}/${acting.length}  ${subject.label}  ${shortAddress(subject.address)}  enabled\n`,
+          writeSuccess(
+            deps,
+            "stderr",
+            `${String(done).padStart(width)}/${acting.length}  ${subject.label}  ${shortAddress(subject.address)}  enabled\n`.trim(),
           )
           continue
         }
@@ -720,8 +750,10 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
           remoteAuthority: resumed.adopted?.remoteAuthority ?? null,
           importCalls: 0,
         })
-        deps.stderr.write(
-          `✓ ${String(done).padStart(width)}/${acting.length}  ${subject.label}  ${shortAddress(subject.address)}  resumed\n`,
+        writeSuccess(
+          deps,
+          "stderr",
+          `${String(done).padStart(width)}/${acting.length}  ${subject.label}  ${shortAddress(subject.address)}  resumed\n`.trim(),
         )
       }
     } catch (error) {
@@ -759,7 +791,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
           notRebindable,
         }
         const report = renderRebindReport(notReached)
-        if (report.length > 0) deps.stderr.write(`${report}\n`)
+        if (report.length > 0) notice(deps, "stderr", "note", `${report}\n`.trim())
       }
       if (ctx.json) {
         writeJson(deps, {
@@ -782,7 +814,12 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
           ...(notReached !== undefined ? rebindJson(notReached, chain) : {}),
         })
       } else {
-        deps.stderr.write(`${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}\n`)
+        notice(
+          deps,
+          "stderr",
+          "note",
+          `${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}\n`.trim(),
+        )
       }
       return stopped.exit
     }
@@ -834,7 +871,7 @@ async function runRebindPhase(
     notRebindable,
   }
   const report = renderRebindReport(input)
-  if (report.length > 0) ctx.deps.stderr.write(`${report}\n`)
+  if (report.length > 0) notice(ctx.deps, "stderr", "note", `${report}\n`.trim())
   // Key signers (5.2): the rows imported onto the target's signer were bound in that call; the
   // preview above reports them as already there. Say where they trade from.
   const keySigner = phase.toKey.keySigner
@@ -842,7 +879,7 @@ async function runRebindPhase(
     keySigner !== undefined &&
     results.some((row) => phase.importedTo.get(row.address) === phase.toKey.target.keyPrefix)
   ) {
-    ctx.deps.stderr.write(`${keySignerTradableLine({ target: phase.toKey.target, keySigner })}\n`)
+    notice(ctx.deps, "stderr", "note", `${keySignerTradableLine({ target: phase.toKey.target, keySigner })}\n`.trim())
   }
   return { phase, run, input }
 }
@@ -988,6 +1025,7 @@ function skippedResult(item: Extract<PlannedRow, { kind: "skip" }> | PlannedRow)
 function renderBatchTable(
   planned: PlannedRow[],
   opts: {
+    style?: TerminalStyle
     lamports?: Map<string, bigint>
     tokenCounts?: Map<string, number>
     hasValueUsd: boolean
@@ -1014,8 +1052,8 @@ function renderBatchTable(
           : "skip"
     const destination =
       item.kind === "promote"
-        ? destinationCell(item.destination.label, item.destination.address)
-        : destinationCell(item.row.destination, item.destinationAddress)
+        ? `${item.destination.label} (${item.destination.address})`
+        : `${item.row.destination} (${item.destinationAddress})`
     const authority = item.kind === "skip" ? "" : opts.roles === undefined ? "?" : authorityCell(address, opts.roles)
     const cells = [String(item.row.line), state, item.subject.label, address, destination, authority]
     const lamports = opts.lamports?.get(address)
@@ -1029,7 +1067,18 @@ function renderBatchTable(
     if (opts.hasValueUsd) cells.push(item.row.valueUsd ?? "")
     return cells
   })
-  return renderTable(headers, rows)
+  return renderHumanTable(
+    headers,
+    rows,
+    opts.style ?? terminalStyle({ env: {}, isTTY: { stdin: false, stdout: false, stderr: false } }, "stderr"),
+    headers.map((_, i) =>
+      i === 0 || i === 1 || i === 3 || i === 4 || i === 5
+        ? { id: true }
+        : i === 2
+          ? { priority: 2 }
+          : { align: "right" as const, priority: 1 },
+    ),
+  )
 }
 
 function renderFooter(opts: {
@@ -1126,9 +1175,14 @@ function reportPartial(
   opts: { landed: number; acting: number; failure: RefusedRow | ReturnedFailure },
 ): void {
   const remaining = opts.acting - opts.landed
-  ctx.deps.stderr.write(
-    `\n${opts.landed} of ${opts.acting} rows landed and ARE in the vault; the vault is intact. ${remaining} remain.\n` +
-      `Re-run the same file: the rows that landed are skipped, an interrupted row resumes, and the rest are promoted.\n`,
+  notice(
+    ctx.deps,
+    "stderr",
+    "note",
+    (
+      `\n${opts.landed} of ${opts.acting} rows landed and ARE in the vault; the vault is intact. ${remaining} remain.\n` +
+      `Re-run the same file: the rows that landed are skipped, an interrupted row resumes, and the rest are promoted.\n`
+    ).trim(),
   )
 }
 
@@ -1174,17 +1228,20 @@ function finish(
     })
     return exit
   }
-  const parts: string[] = []
-  if (promoted > 0)
-    parts.push(`${promoted} address${promoted === 1 ? "" : "es"} promoted under one unlock, each committed on its own`)
-  if (resumed > 0) parts.push(`${resumed} resumed`)
-  if (skipped > 0) parts.push(`${skipped} already promoted (skipped)`)
-  ctx.deps.stdout.write(`${parts.join("; ")}.\n`)
+  writeFields(ctx.deps, "stdout", [
+    ["Promoted", promoted],
+    ["Resumed", resumed],
+    ["Already promoted (skipped)", skipped],
+    ["Commit", "one unlock, each committed on its own"],
+  ])
   if (unverified.length > 0) {
-    ctx.deps.stdout.write(
+    notice(
+      ctx.deps,
+      "stdout",
+      "note",
       `${unverified.length} import${unverified.length === 1 ? "" : "s"} did not report verified-active: ${unverified
         .map((r) => r.address)
-        .join(", ")}\n`,
+        .join(", ")}\n`.trim(),
     )
   }
   if (opts.rebound !== undefined) {
@@ -1192,10 +1249,13 @@ function finish(
     const moved = input.wallets.filter((w) => run?.outcomes.get(w.id)?.state === "rebound").length
     const already = input.wallets.filter((w) => run?.outcomes.get(w.id)?.state === "unchanged").length
     const pending = input.wallets.length - moved - already
-    ctx.deps.stdout.write(
+    notice(
+      ctx.deps,
+      "stdout",
+      "note",
       `${moved + already} of ${input.wallets.length + input.notRebindable.length} wallets bound to ${input.target.keyPrefix}${
         pending > 0 ? `; ${pending} still on ${input.callingKeyPrefix}` : ""
-      }${input.notRebindable.length > 0 ? `; ${input.notRebindable.length} not yet rebindable` : ""}.\n`,
+      }${input.notRebindable.length > 0 ? `; ${input.notRebindable.length} not yet rebindable` : ""}.\n`.trim(),
     )
   }
   return exit

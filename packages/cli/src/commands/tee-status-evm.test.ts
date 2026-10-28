@@ -10,7 +10,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { evmAddressFromSecret, hexToBytes } from "../evm-lite"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
+import { displayWidth } from "../presentation"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
 
 const wallet = evmAddressFromSecret(hexToBytes(`0x${"44".repeat(32)}`))
@@ -96,7 +98,7 @@ describe("tee status on a Hood TEE wallet (D5)", () => {
       gas: "ok",
     })
     expect(report.fund).toBeUndefined()
-    expect(f.stderr.text).toContain("from hood.test")
+    expect(humanText(f.stderr.text)).toContain(humanText("from hood.test"))
     expect(f.stderr.text).not.toContain(EVM_RPC)
   })
 
@@ -104,10 +106,12 @@ describe("tee status on a Hood TEE wallet (D5)", () => {
     const eth = RESERVE_WEI * 2n - 1n
     const f = await fixture({ ethWei: eth })
     expect(await run(["tee", "status", wallet], f.deps)).toBe(0)
-    expect(f.stdout.text).toContain("gas: low")
-    expect(f.stdout.text).toContain(`candle vault fund ${wallet} --amount 0.000000000000000001 --asset ETH`)
-    expect(f.stdout.text).toContain("USDG          2.5")
-    expect(f.stdout.text).toContain("reserve       at least")
+    expect(humanText(f.stdout.text)).toContain(humanText("Gas low"))
+    expect(humanText(f.stdout.text)).toContain(
+      humanText(`candle vault fund ${wallet} --amount 0.000000000000000001 --asset ETH`),
+    )
+    expect(humanText(f.stdout.text)).toContain(humanText("USDG          2.5"))
+    expect(humanText(f.stdout.text)).toContain(humanText("Reserve at least"))
   })
 
   test("exactly twice the reserve is not low", async () => {
@@ -139,4 +143,17 @@ test("tee status Hood reads without unlocking a present vault", async () => {
   f.deps.env.CANDLE_KEYSTORE_PASSPHRASE = "must-not-be-used"
   expect(await run(["tee", "status", wallet, "--json"], f.deps)).toBe(0)
   expect(JSON.parse(f.stdout.text)).toMatchObject({ source: "server", verified: false })
+})
+
+test("narrow TEE status keeps the full wallet and funding command, with an isolated gas warning", async () => {
+  const f = await fixture({ ethWei: 1n })
+  const deps = { ...f.deps, env: { ...f.deps.env, CANDLE_PLAIN: "1" }, columns: { stdout: 40, stderr: 80 } }
+  expect(await run(["tee", "status", wallet], deps)).toBe(0)
+  expect(f.stdout.text).toContain(wallet)
+  expect(humanText(f.stdout.text)).toContain(humanText("  Gas  low\n"))
+  expect(humanText(f.stdout.text)).toContain(humanText("\n  ! ETH is under twice the reserve.\n\n"))
+  expect(humanText(f.stdout.text.replace(/\s+/g, " "))).toContain(humanText(`candle vault fund ${wallet} --amount`))
+  for (const line of f.stdout.text.split("\n"))
+    if (!line.includes(wallet)) expect(displayWidth(line)).toBeLessThanOrEqual(40)
+  expect(f.stdout.text).not.toContain("\x1b")
 })

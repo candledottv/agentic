@@ -21,7 +21,9 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js"
 import type { Deps } from "../deps"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
+import { displayWidth } from "../presentation"
 import { ADDRESS_LOOKUP_TABLE_PROGRAM_ID, decodeTransaction } from "../solana-alt"
 import { SYSTEM_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { createCapture, createFakeConfigStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
@@ -304,7 +306,7 @@ describe("candle sign refuses, before any prompt and with --yes", () => {
       const rpc = rpcFake({ pre: {} })
       const h = await harness(rpc, input)
       expect(await run(signArgs("--wallet", "trader", "--yes"), h.deps)).toBe(1)
-      expect(h.stderr.text).toContain("not one base64 legacy or v0 transaction")
+      expect(humanText(h.stderr.text)).toContain(humanText("not one base64 legacy or v0 transaction"))
       expect(h.stderr.text).not.toContain("Decoded transaction")
       expect(rpc.calls).toEqual([])
       // Nothing was even asked of the vault.
@@ -347,7 +349,7 @@ describe("candle sign: v0 with lookup tables, the display, the confirmation and 
     const rpc = rpcFake({ pre: {} })
     const h = await harness(rpc, base64Of(fixture.wire))
     expect(await run(signArgs("--wallet", "trader", "--yes"), h.deps)).toBe(1)
-    expect(h.stderr.text).toContain(`lookup table ${fixture.tableKey} does not exist`)
+    expect(humanText(h.stderr.text)).toContain(humanText(`lookup table ${fixture.tableKey} does not exist`))
     expect(h.stderr.text).not.toContain("Decoded transaction")
     expect(rpc.calls).toEqual(["getMultipleAccounts"])
     expect(h.secretPrompts).toBe(0)
@@ -404,7 +406,7 @@ describe("candle sign: v0 with lookup tables, the display, the confirmation and 
     expect(await run(signArgs("--wallet", "trader", "--yes", "--broadcast"), k.deps)).toBe(1)
     // The signed transaction is still handed back, so a retry needs no second signature.
     expect(k.stdout.text.trim().length).toBeGreaterThan(80)
-    expect(k.stderr.text).toContain("Blockhash not found")
+    expect(humanText(k.stderr.text)).toContain(humanText("Blockhash not found"))
   })
 
   test("stdin is the same byte stream contract as --file", async () => {
@@ -438,8 +440,10 @@ describe("BE-355 T11: a rate-limited --broadcast", () => {
     expect(typeof body.signature).toBe("string")
     expect(typeof body.signedTransaction).toBe("string")
     expect(limited.calls.filter((c) => c === "sendTransaction")).toHaveLength(1)
-    expect(h.stderr.text).toContain(
-      `The RPC rate-limited this CLI after the transaction was signed. It may still land: check ${body.signature} before anything else.\nFix: --rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command\n     or sign in (candle auth login) to store one per profile\n`,
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(
+        `The RPC rate-limited this CLI after the transaction was signed. It may still land: check ${body.signature} before anything else.\nFix: --rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command\n     or sign in (candle auth login) to store one per profile\n`,
+      ),
     )
     expect(h.stderr.text).not.toContain("profile set")
 
@@ -449,7 +453,9 @@ describe("BE-355 T11: a rate-limited --broadcast", () => {
     expect(await run(signArgs("--wallet", "trader", "--yes", "--broadcast"), withProfile.deps)).toBe(3)
     // Human mode: the signed transaction is still on stdout, and the fix names the profile.
     expect(withProfile.stdout.text.trim().length).toBeGreaterThan(80)
-    expect(withProfile.stderr.text).toContain("Fix: candle profile set work --rpc-url https://<your-rpc>\n")
+    expect(humanText(withProfile.stderr.text)).toContain(
+      humanText("Fix: candle profile set work --rpc-url https://<your-rpc>\n"),
+    )
 
     const failing = rpcFake({ pre, post, sendFails: true })
     const k = await harness(failing, base64Of(wire))
@@ -520,11 +526,11 @@ describe("SEC-001: candle sign refuses a change of control over a signer's accou
         `token account ${ata.toBase58()} (mint ${mint.toBase58()}, owned by ${external0.address}): owner changes from ${external0.address} to ${attacker.toBase58()}`,
       )
       if (!json) {
-        expect(h.stderr.text).toContain(`CONTROL     token account ${ata.toBase58()}`)
+        expect(humanText(h.stderr.text)).toContain(humanText(`CONTROL     token account ${ata.toBase58()}`))
         expect(h.stderr.text).not.toContain("no other account gains a balance")
-        expect(h.stderr.text).toContain("control of an account changes hands")
+        expect(humanText(h.stderr.text)).toContain(humanText("control of an account changes hands"))
         // The signer's own line still lists the account it is about to lose.
-        expect(h.stderr.text).toContain(`in ${ata.toBase58()}`)
+        expect(humanText(h.stderr.text)).toContain(`in ${ata.toBase58()}`)
       }
       expect(h.stdout.text).not.toMatch(/^[A-Za-z0-9+/]{80,}={0,2}\n$/)
       expect(rpc.sent).toBeUndefined()
@@ -576,9 +582,13 @@ describe("SEC-001: candle sign refuses a change of control over a signer's accou
     const rpc = rpcFake({ pre, post })
     const h = await harness(rpc, base64Of(wire))
     expect(await run(signArgs("--wallet", "trader", "--yes"), h.deps)).toBe(0)
-    expect(h.stderr.text).toContain(`${mint.toBase58()}: 1000 raw -> 600 raw (-400 raw) in ${ata.toBase58()}`)
-    expect(h.stderr.text).toContain(
-      `receives    ${recipient.toBase58()} receives +400 raw of ${mint.toBase58()} (account ${theirAta.toBase58()})`,
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(`${mint.toBase58()}: 1000 raw -> 600 raw (-400 raw) in ${ata.toBase58()}`),
+    )
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(
+        `receives    ${recipient.toBase58()} receives +400 raw of ${mint.toBase58()} (account ${theirAta.toBase58()})`,
+      ),
     )
     expect(h.stderr.text).not.toContain("CONTROL")
     const signed = decodeTransaction(new Uint8Array(Buffer.from(h.stdout.text.trim(), "base64")))
@@ -589,20 +599,22 @@ describe("SEC-001: candle sign refuses a change of control over a signer's accou
 })
 
 describe("candle sign message: exact bytes from a file or stdin, a lossless display", () => {
-  async function signBytes(bytes: Uint8Array, args: string[]) {
+  async function signBytes(bytes: Uint8Array, args: string[], overrides: Partial<Deps> = {}) {
     const made = await vaultWithEveryRole()
     const stdout = createCapture()
     const stderr = createCapture()
+    const { env: overrideEnv, ...rest } = overrides
     const deps = createTestDeps({
       fetch: (async () => {
         throw new Error("no network")
       }) as unknown as typeof fetch,
       stdout,
       stderr,
-      env: { CANDLE_CONFIG_DIR: made.dir },
       readBytes: async () => bytes,
       readStdin: async () => bytes,
       promptSecret: async () => made.passphrase,
+      ...rest,
+      env: { CANDLE_CONFIG_DIR: made.dir, ...(overrideEnv ?? {}) },
     })
     const code = await run(["sign", "message", ...args], deps)
     return { code, stdout, stderr }
@@ -617,8 +629,10 @@ describe("candle sign message: exact bytes from a file or stdin, a lossless disp
     const signature = base58.decode(viaFile.stdout.text.trim())
     expect(ed25519.verify(signature, bytes, base58.decode(external0.address))).toBe(true)
     expect(viaFile.stderr.text).toContain("bytes       27")
-    expect(viaFile.stderr.text).toContain("form        UTF-8 text with no control characters other than newline")
-    expect(viaFile.stderr.text).toContain("text        Sign in to example\n            nonce 42")
+    expect(humanText(viaFile.stderr.text)).toContain(
+      humanText("form        UTF-8 text with no control characters other than newline"),
+    )
+    expect(humanText(viaFile.stderr.text)).toContain(humanText("text        Sign in to example\n            nonce 42"))
   })
 
   test("non-UTF-8 bytes, and UTF-8 with a control other than newline, are shown as hex only, with no replacement character", async () => {
@@ -645,6 +659,46 @@ describe("candle sign message: exact bytes from a file or stdin, a lossless disp
     expect(JSON.parse(refused.stdout.text.trim()).code).toBe("SIGN_SIGNER_NOT_EXTERNAL")
     const argv = await signBytes(bytes, ["--wallet", "trader", "hello"])
     expect(argv.code).toBe(2)
-    expect(argv.stderr.text).toContain("never an argument")
+    expect(humanText(argv.stderr.text)).toContain(humanText("never an argument"))
+  })
+
+  test("the message-to-sign heading wraps to stderr's own width, plain and styled (BE-2105)", async () => {
+    const bytes = new TextEncoder().encode("narrow heading check")
+    // stderr is the narrow stream (40) while stdout is wide: the heading must take the width of
+    // the stream it is written to, and every word of it must survive the wrap.
+    const columns = { stdout: 100, stderr: 40 }
+    const narrow = async (env: Record<string, string>) =>
+      signBytes(bytes, ["--wallet", "trader", "--file", "m.txt", "--yes"], { env, columns })
+
+    const plainRun = await narrow({ CANDLE_PLAIN: "1" })
+    expect(plainRun.code).toBe(0)
+    const plainLines = plainRun.stderr.text.split("\n")
+    const plainHeading = plainLines.indexOf("Message to sign (the exact bytes read;")
+    expect(plainHeading).toBeGreaterThan(0)
+    expect(plainLines.slice(plainHeading, plainHeading + 2)).toEqual([
+      "Message to sign (the exact bytes read;",
+      "nothing was trimmed or normalized)",
+    ])
+    expect(humanText(plainRun.stderr.text)).toContain(
+      humanText("Message to sign (the exact bytes read; nothing was trimmed or normalized)"),
+    )
+    // The heading block itself stays within the stream's width; the display lines below it keep
+    // whole copyable tokens (the address, the sha256 hex), which may legitimately run past it.
+    for (const line of plainLines.slice(plainHeading, plainHeading + 2))
+      expect(displayWidth(line)).toBeLessThanOrEqual(40)
+    expect(plainRun.stderr.text).not.toContain("\x1b")
+
+    const styledRun = await narrow({ TERM: "xterm-256color" })
+    expect(styledRun.code).toBe(0)
+    const styledLines = styledRun.stderr.text.split("\n")
+    const styledHeading = styledLines.indexOf("\x1b[1mMessage to sign (the exact bytes read;\x1b[0m")
+    expect(styledHeading).toBeGreaterThan(0)
+    expect(styledLines.slice(styledHeading, styledHeading + 2)).toEqual([
+      "\x1b[1mMessage to sign (the exact bytes read;\x1b[0m",
+      "\x1b[1mnothing was trimmed or normalized)\x1b[0m",
+    ])
+    expect(humanText(styledRun.stderr.text)).toContain(
+      humanText("Message to sign (the exact bytes read; nothing was trimmed or normalized)"),
+    )
   })
 })

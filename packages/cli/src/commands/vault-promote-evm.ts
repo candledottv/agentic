@@ -23,6 +23,8 @@
 import type { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { bytesToHex, EVM_DERIVATION_SCHEME, evmAddressFromSecret, sameEvmAddress } from "../evm-lite"
+import { writeFields } from "../human-output"
+import { notice } from "../presentation"
 import { writeLocalFailure } from "../render"
 import { RESTORED_SENTENCE, restoreRefusedFailure, restoresPreImportEntry } from "../vault/account-room"
 import { assertRecoverableFactorExists } from "../vault/domains"
@@ -89,7 +91,7 @@ function hoodClientFor(ctx: CommandContext, parsed: Parsed): HoodClient | { exit
  * the chain check every Hood TEE command makes (TEE wallets are Hood, 4663, only).
  */
 async function promoteHeight(ctx: CommandContext, client: HoodClient): Promise<bigint> {
-  ctx.deps.stderr.write(`${hoodHostLine(client, "the chain id and the current Hood height")}\n`)
+  notice(ctx.deps, "stderr", "note", `${hoodHostLine(client, "the chain id and the current Hood height")}\n`.trim())
   await assertHoodChain(client)
   return client.rpc.blockNumber()
 }
@@ -201,8 +203,11 @@ export async function promoteEvmFresh(input: EvmPromoteContext, fromLabel: strin
 
     await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`)
     if (toKey !== undefined) {
-      ctx.deps.stderr.write(
-        `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")].join("\n")}\n`,
+      notice(
+        ctx.deps,
+        "stderr",
+        "note",
+        `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")].join("\n")}\n`.trim(),
       )
     }
 
@@ -265,8 +270,16 @@ export async function promoteEvmFresh(input: EvmPromoteContext, fromLabel: strin
       ...(rebound?.json ?? {}),
     })
   } else {
-    ctx.deps.stdout.write(
-      `Promoted fresh Hood TEE wallet ${address} at ${derivationPath} (sweep to ${destination.address}). Scan start: Hood block ${scanStart.block}.\n`,
+    writeFields(
+      ctx.deps,
+      "stdout",
+      [
+        ["Address", address],
+        ["Derivation", derivationPath],
+        ["Sweep to", destination.address],
+        ["Hood scan start block", scanStart.block],
+      ],
+      "Fresh Hood TEE wallet promoted",
     )
   }
   return exit
@@ -309,10 +322,13 @@ export async function promoteEvmInPlace(
   const height = await promoteHeight(ctx, client)
   const holdings = await readEvmHoldings(client.rpc, first.subject.address)
   for (const line of holdingsLines(first.subject.address, holdings, new Date(ctx.deps.now()).toISOString())) {
-    ctx.deps.stdout.write(`${line}\n`)
+    notice(ctx.deps, "stdout", "note", `${line}\n`.trim())
   }
-  ctx.deps.stdout.write(
-    "Authorities: the signer-role read (mint, freeze, upgrade and stake authorities) is Solana's; nothing is read on Hood, so any contract this key controls is not checked.\n",
+  notice(
+    ctx.deps,
+    "stdout",
+    "note",
+    "Authorities: the signer-role read (mint, freeze, upgrade and stake authorities) is Solana's; nothing is read on Hood, so any contract this key controls is not checked.\n".trim(),
   )
   printPromoteSentence(ctx, promoteSentence({ n: 1, form: "U", where: "above" }))
   await confirmAddress(ctx, "address", first.subject.address, `promote ${first.subject.address}`)
@@ -425,8 +441,16 @@ export async function promoteEvmInPlace(
       ...(rebound?.json ?? {}),
     })
   } else if (code === 0 || code === 3) {
-    ctx.deps.stdout.write(
-      `Promoted ${subject.address} in place on Hood (sweep to ${destination.address}). This address never returns to cold. Scan start: Hood block ${scanStart.block}.\n`,
+    writeFields(
+      ctx.deps,
+      "stdout",
+      [
+        ["Address", subject.address],
+        ["Sweep to", destination.address],
+        ["Hood scan start block", scanStart.block],
+        ["Exposure", "This address never returns to cold."],
+      ],
+      "Promoted in place on Hood",
     )
   }
   return exit

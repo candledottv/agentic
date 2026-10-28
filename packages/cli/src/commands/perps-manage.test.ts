@@ -11,6 +11,7 @@ import { generateKeyPairSync } from "node:crypto"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { humanText } from "../human-output.test-support"
 import { hyperliquidActionHash, hyperliquidL1TypedData } from "../hyperliquid"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
@@ -402,7 +403,7 @@ describe("reduce-only", () => {
       reduceOnly: { success: true, keyPrefix: "SelfKey1", perpsReduceOnly: true, perpsPolicyVersion: 3 },
     })
     expect(await run(["perps", "reduce-only"], f.deps)).toBe(0)
-    expect(f.stdout.text).toContain("on (policy version 3)")
+    expect(humanText(f.stdout.text)).toContain(humanText("Perps reduce-only on Policy version 3"))
   })
 
   test("on, for this key, uses this key's own credential", async () => {

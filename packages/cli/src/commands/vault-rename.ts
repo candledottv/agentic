@@ -30,6 +30,8 @@
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 import { VaultError } from "../vault/errors"
 import type { KeyEntry } from "../vault/format"
 import { entriesWithLabel, resolveRenameTarget, validateLabel } from "../vault/labels"
@@ -134,11 +136,18 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
       }
       if (ctx.json) writeJson(deps, { ok: true, renamed, ...(dryRun ? { dryRun: true } : {}) })
       else {
-        deps.stdout.write(
-          dryRun ? "Dry run: nothing was written.\n" : `Renamed ${renamed.length} keys in one commit.\n`,
-        )
+        writeFields(deps, "stdout", [
+          ["Mode", dryRun ? "Dry run: nothing was written." : "Renamed keys in one commit."],
+          ["Keys", renamed.length],
+        ])
         for (const row of renamed)
-          deps.stdout.write(`  ${row.from} -> ${row.to}  ${row.address} (${row.id}, ${row.role})\n`)
+          writeFields(deps, "stdout", [
+            ["From", row.from],
+            ["To", row.to],
+            ["Address", row.address],
+            ["Id", row.id],
+            ["Role", row.role],
+          ])
       }
       return 0
     }
@@ -200,11 +209,14 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
       writeJson(deps, { ok: true, id: entry.id, address: entry.address, role: entry.role, from, to: next })
       return 0
     }
-    deps.stdout.write(`Renamed ${from} to ${next}.\n`)
-    deps.stdout.write(`  address     ${entry.address}\n`)
-    deps.stdout.write(`  id          ${entry.id}\n`)
-    deps.stdout.write(`  role        ${entry.role}\n`)
-    deps.stdout.write(`  unchanged   address, derivation path, key blob, every envelope\n`)
+    writeSuccess(deps, "stdout", `Renamed ${from} to ${next}.\n`.trim())
+    writeFields(deps, "stdout", [
+      ["Address", entry.address],
+      ["Id", entry.id],
+      ["Role", entry.role],
+      ["Unchanged", "address, derivation path, key blob, every envelope"],
+    ])
+
     return 0
   })
 }
@@ -213,9 +225,9 @@ function batchRefusal(ctx: CommandContext, findings: RenameFinding[], exit: 1 | 
   const message = "Batch rename refused. Nothing was written."
   if (ctx.json) writeJson(ctx.deps, { ok: false, code: "VAULT_RENAME_BATCH_REFUSED", message, findings })
   else {
-    ctx.deps.stderr.write(`${message}\n`)
+    notice(ctx.deps, "stderr", "warning", `${message}\n`.trim())
     for (const finding of findings)
-      ctx.deps.stderr.write(`  ${finding.line === 0 ? "file" : `line ${finding.line}`}: ${finding.problem}\n`)
+      writeFields(ctx.deps, "stderr", [[finding.line === 0 ? "File" : `Line ${finding.line}`, finding.problem]])
   }
   return exit
 }

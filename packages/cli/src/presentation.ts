@@ -282,9 +282,13 @@ export function dim(text: string, style: TerminalStyle): string {
   return sgr(text, style, "2")
 }
 
-/** A group's heading: bold, flush left, no `==` or colon. The caller puts a blank line before it. */
+/** A group's heading: bold, flush left, no `==` or colon. The caller puts a blank line before it.
+ * A heading longer than the prose width wraps at word boundaries, continuation flush left, so it
+ * is never wider than the terminal. Text that already fits is unchanged, byte for byte. */
 export function heading(text: string, style: TerminalStyle): string {
-  return bold(text, style)
+  return wrapText(text, proseWidth(style))
+    .map((line) => bold(line, style))
+    .join("\n")
 }
 
 /** A value the caller did not have: `undefined`, `null` or an empty string. */
@@ -391,9 +395,15 @@ export function notice(deps: NoticeDeps, stream: "stdout" | "stderr", level: Not
   deps[stream].write(`\n${renderNotice(level, text, style).join("\n")}\n\n`)
 }
 
-/** `✓ text` with the mark in the positive color; `ok text` in plain mode. */
+/** `✓ text` with the mark in the positive color; `ok text` in plain mode. A sentence longer than
+ * the prose width wraps with the mark's column accounted for, and continuation lines run under
+ * the text, not the mark. Text that already fits is unchanged, byte for byte. */
 export function success(text: string, style: TerminalStyle): string {
-  return `${accent(symbols(style).ok, style, "positive")} ${text}`
+  const mark = symbols(style).ok
+  const hang = " ".repeat(displayWidth(mark) + 1)
+  const budget = Math.max(1, proseWidth(style) - displayWidth(mark) - 1)
+  const lines = text.split("\n").flatMap((line) => wrapText(line, budget))
+  return lines.map((line, i) => (i === 0 ? `${accent(mark, style, "positive")} ${line}` : `${hang}${line}`)).join("\n")
 }
 
 /** `✗ text`, mark and text in the negative color; `x text` in plain mode. */

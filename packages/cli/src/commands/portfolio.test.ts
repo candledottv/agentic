@@ -12,6 +12,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Deps } from "../deps"
 import { FIXTURE_EVM_0, FIXTURE_EVM_1 } from "../evm-lite.test"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import type { IndexPlaintext, KeyEntry } from "../vault/format"
@@ -368,7 +369,7 @@ describe("candle portfolio", () => {
     expect(h.rpcRequests()).toEqual([])
     expect(h.candleRequests().map((r) => `${r.method} ${r.path}`)).toEqual(["GET /api/v1/agent/portfolio"])
     const out = h.stdout.text
-    expect(out).toContain("GROUP     CHAIN   WALLET")
+    expect(humanText(out)).toContain(humanText("GROUP     CHAIN   WALLET"))
     expect(out).toMatch(/tee\s+solana\s+tee-1 \(TeeW…[^)]+\)\s+SOL\s+0\.5\s+\$100\.00\s+\$50\.00/)
     expect(out).toMatch(/embedded\s+solana\s+\(Embe…1111\)\s+SOL\s+2\s+\$100\.00\s+\$200\.00/)
     expect(out).toMatch(/vault\s+–\s+no vault at /)
@@ -469,7 +470,7 @@ describe("candle portfolio", () => {
     expect(doc.unpriced).toBe(1)
     expect(doc.rpcHost).toBe("rpc.example.test")
     // stderr names the host, never the URL (which can carry a provider key).
-    expect(h.stderr.text).toContain("from rpc.example.test")
+    expect(humanText(h.stderr.text)).toContain(humanText("from rpc.example.test"))
     expect(h.stderr.text).not.toContain("key-in-path")
   })
 
@@ -520,8 +521,10 @@ describe("candle portfolio", () => {
     // SOL answered, the token read did not: the SOL is shown and counted, the tokens are "not read".
     expect(h.stdout.text).toMatch(/vault\s+solana\s+busy \(7xKX…[^)]+\)\s+SOL\s+1\s+\$100\.00\s+\$100\.00/)
     expect(h.stdout.text).toMatch(/vault\s+solana\s+busy \(7xKX…[^)]+\)\s+tokens\s+not read\s+–\s+–/)
-    expect(flat(h.stdout.text)).toContain(
-      '1 wallet could not be read in full (1 on Solana). What was not read is marked "not read" and is not in the total.',
+    expect(humanText(flat(h.stdout.text))).toContain(
+      humanText(
+        '1 wallet could not be read in full (1 on Solana). What was not read is marked "not read" and is not in the total.',
+      ),
     )
 
     const j = harness({
@@ -652,7 +655,7 @@ describe("candle portfolio", () => {
     const out = h.stdout.text
     // The token table first, then the LP table.
     expect(out.indexOf("GROUP     CHAIN   WALLET")).toBeLessThan(out.indexOf("LP positions"))
-    expect(out).toContain("GROUP  WALLET             POSITION   POOL       HOLDINGS")
+    expect(humanText(out)).toContain(humanText("GROUP  WALLET             POSITION   POOL       HOLDINGS"))
     expect(out).toMatch(
       /tee\s+tee-1 \(TeeW…[^)]+\)\s+Posi…AAAA\s+Pool…XXXX\s+0\.5 SOL \+ 200 USDC\s+0\.01 SOL \+ 1\.5 USDC\s+\$252\.50/,
     )
@@ -794,7 +797,10 @@ describe("candle portfolio", () => {
       tee: [{ id: "w1", address: teeAddress(1), label: "tee-1", active: true, lamports: "500000000", tokens: [] }],
     })
     expect(await run(["portfolio"], t.deps)).toBe(0)
-    expect(t.stdout.text).not.toContain("LP")
+    // The LP markers the screen can print, not the bare substring: a random config-dir suffix
+    // (mkdtemp) can contain "LP" and lands in the vault row's path.
+    expect(t.stdout.text).not.toContain("LP position")
+    expect(t.stdout.text).not.toContain("LP not read")
   })
 
   test("control characters in an LP token symbol never reach the terminal", async () => {
@@ -814,7 +820,7 @@ describe("candle portfolio", () => {
     expect(await run(["portfolio"], h.deps)).toBe(0)
     // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
     expect(h.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
-    expect(h.stdout.text).toContain("3 ME[2JME")
+    expect(humanText(h.stdout.text)).toContain(humanText("3 ME[2JME"))
   })
 
   test("control characters in a server-supplied symbol or label never reach the terminal; --json keeps them escaped", async () => {
@@ -877,10 +883,12 @@ describe("BE-355 T13: a rate-limited vault read is partial, and stops", () => {
     expect(doc.complete).toBe(false)
     expect(doc.unavailable).toHaveLength(250)
     expect(doc.groups[0]?.read).toBe(true)
-    expect(h.stderr.text).toContain(
-      "250 vault addresses could not be read: RPC_RATE_LIMITED (HTTP 429, retried once). Fix: --rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command, or sign in (candle auth login) to store one per profile.",
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(
+        "250 vault addresses could not be read: RPC_RATE_LIMITED (HTTP 429, retried once). Fix: --rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command, or sign in (candle auth login) to store one per profile.",
+      ),
     )
-    expect(h.stderr.text).toContain("Solana RPC: rpc.example.test (CANDLE_SOLANA_RPC_URL)")
+    expect(humanText(h.stderr.text)).toContain(humanText("Solana RPC: rpc.example.test (CANDLE_SOLANA_RPC_URL)"))
     expect(h.stdout.text + h.stderr.text).not.toContain("key-in-path")
   })
 })
@@ -958,7 +966,7 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     expect(h.candleRequests().map((r) => `${r.method} ${r.path}`)).toEqual(["GET /api/v1/agent/portfolio"])
     expect(h.evmRequests()).toEqual([])
     const out = h.stdout.text
-    expect(out).toContain("GROUP     CHAIN   WALLET")
+    expect(humanText(out)).toContain(humanText("GROUP     CHAIN   WALLET"))
     expect(out).toMatch(/tee\s+solana\s+tee-1 \(TeeW…[^)]+\)\s+SOL\s+0\.5\s+\$100\.00\s+\$50\.00/)
     expect(out).toMatch(/tee\s+hood\s+hood-1 \(0x11…1111\)\s+ETH\s+1\s+\$2,000\.00\s+\$2,000\.00/)
     expect(out).toMatch(/tee\s+hood\s+hood-1 \(0x11…1111\)\s+USDG\s+25\s+\$1\.00\s+\$25\.00/)
@@ -1051,15 +1059,17 @@ describe("Ember 4d: Hood in candle portfolio", () => {
       .map((r) => JSON.parse(r.body))
     expect(hoodPriced).toEqual([{ hood: ["native", USDG] }])
     // 4d-ED-6: the host, never the URL, before the first EVM request.
-    expect(h.stderr.text).toContain(
-      "Reading ETH and USDG for 1 EVM vault address from evm.example.test in 3 requests. That endpoint sees them together; Candle sees none of them.",
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(
+        "Reading ETH and USDG for 1 EVM vault address from evm.example.test in 3 requests. That endpoint sees them together; Candle sees none of them.",
+      ),
     )
     expect(h.stderr.text).not.toContain("key-in-path")
     const out = h.stdout.text
     expect(out).toMatch(/vault\s+hood\s+hood-cold \(0xF9…A40F\)\s+ETH\s+2\s+\$2,000\.00\s+\$4,000\.00/)
     expect(out).toMatch(/vault\s+hood\s+hood-cold \(0xF9…A40F\)\s+USDG\s+1\.5\s+\$1\.00\s+\$1\.50/)
     expect(out).toMatch(/vault\s+solana\s+treasury/)
-    expect(out).toContain("EVM vault keys are read for ETH and USDG only")
+    expect(humanText(out)).toContain(humanText("EVM vault keys are read for ETH and USDG only"))
   })
 
   test("--evm-rpc-url wins over the env, and the built-in Hood RPC is named when neither is set", async () => {
@@ -1087,7 +1097,9 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     }) as typeof fetch
     expect(await run(["portfolio", "--chain", "hood"], builtIn.deps)).toBe(3)
     expect(hood).toEqual(new Set(["rpc.mainnet.chain.robinhood.com"]))
-    expect(builtIn.stderr.text).toContain("from rpc.mainnet.chain.robinhood.com (the built-in Hood RPC)")
+    expect(humanText(builtIn.stderr.text)).toContain(
+      humanText("from rpc.mainnet.chain.robinhood.com (the built-in Hood RPC)"),
+    )
   })
 
   test("an EVM RPC on another chain is refused by name before any balance is read (4d-ED-3)", async () => {
@@ -1096,8 +1108,8 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     expect(await run(["portfolio"], h.deps)).toBe(1)
     expect(h.evmRequests().map((r) => (JSON.parse(r.body) as { method: string }).method)).toEqual(["eth_chainId"])
     expect(h.candleRequests()).toEqual([])
-    expect(h.stderr.text).toContain("evm.example.test answered chain id 1")
-    expect(h.stderr.text).toContain("Hood, chain id 4663, only")
+    expect(humanText(h.stderr.text)).toContain(humanText("evm.example.test answered chain id 1"))
+    expect(humanText(h.stderr.text)).toContain(humanText("Hood, chain id 4663, only"))
 
     const j = harness({ dir, env: { CANDLE_EVM_RPC_URL: EVM_RPC_URL }, evm: { chainId: 8453 } })
     expect(await run(["portfolio", "--json"], j.deps)).toBe(1)
@@ -1152,7 +1164,7 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     }
     const bad = harness({ dir })
     await run(["portfolio", "--chain", "base"], bad.deps)
-    expect(bad.stderr.text).toContain("--chain must be solana or hood, not base.")
+    expect(humanText(bad.stderr.text)).toContain(humanText("--chain must be solana or hood, not base."))
   })
 
   test("a Hood wallet Candle could not read: not read, out of the total, exit 3, and the footer names Hood", async () => {
@@ -1169,8 +1181,10 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     })
     expect(await run(["portfolio"], h.deps)).toBe(3)
     expect(h.stdout.text).toMatch(/tee\s+hood\s+hood-1 \(0x11…1111\)\s+–\s+not read\s+–\s+–/)
-    expect(flat(h.stdout.text)).toContain(
-      '1 wallet could not be read in full (1 on Hood). What was not read is marked "not read" and is not in the total.',
+    expect(humanText(flat(h.stdout.text))).toContain(
+      humanText(
+        '1 wallet could not be read in full (1 on Hood). What was not read is marked "not read" and is not in the total.',
+      ),
     )
 
     const j = harness({
@@ -1215,13 +1229,13 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     expect(b.unread).toEqual(["usdg"])
     expect(b.holdings.map((x: { symbol: string }) => x.symbol)).toEqual(["ETH"])
     expect(doc.totalUsd).toBe(4002)
-    expect(h.stderr.text).toContain("1 EVM vault address on Hood could not be read in full")
+    expect(humanText(h.stderr.text)).toContain(humanText("1 EVM vault address on Hood could not be read in full"))
 
     // The EVM chain id not answering at all: every EVM vault key unread, partial, not refused.
     const down = harness({ dir, env: { CANDLE_EVM_RPC_URL: EVM_RPC_URL }, evm: { chainIdFails: true } })
     expect(await run(["portfolio", "--chain", "hood"], down.deps)).toBe(3)
     expect(down.stdout.text).toMatch(/vault\s+hood\s+a \(0xF9…A40F\)\s+–\s+not read/)
-    expect(down.stdout.text).toContain("(2 on Hood)")
+    expect(humanText(down.stdout.text)).toContain(humanText("(2 on Hood)"))
   })
 
   test("an API with no hood section (an older deployment) is no Hood wallets, not an error", async () => {
@@ -1273,7 +1287,7 @@ describe("candle portfolio <filter>", () => {
     expect(await run(["portfolio", "p-", "--json"], h.deps)).toBe(0)
     // Two of four vault keys, case-insensitively: the other two are never named to the endpoint.
     expect(owners(h)).toEqual(new Set([vaultAddress(0), vaultAddress(2)]))
-    expect(h.stderr.text).toContain("Reading 2 vault addresses")
+    expect(humanText(h.stderr.text)).toContain(humanText("Reading 2 vault addresses"))
 
     const doc = JSON.parse(h.stdout.text)
     // 4 vault and external keys, 2 TEE wallets and the embedded wallet are known; 3 match.
@@ -1293,7 +1307,9 @@ describe("candle portfolio <filter>", () => {
   test("the table says how many matched before it prints", async () => {
     const h = await setup()
     expect(await run(["portfolio", "p-"], h.deps)).toBe(0)
-    expect(h.stdout.text).toContain('3 of 7 wallets match "p-". Every figure below is for those wallets only.')
+    expect(humanText(h.stdout.text)).toContain(
+      humanText('3 of 7 wallets match "p-". Every figure below is for those wallets only.'),
+    )
     expect(h.stdout.text).not.toContain("treasury")
     expect(h.stdout.text).not.toContain("scalper")
   })
@@ -1311,7 +1327,9 @@ describe("candle portfolio <filter>", () => {
   test("no match is one line and exit 0, with no RPC request", async () => {
     const h = await setup()
     expect(await run(["portfolio", "nope"], h.deps)).toBe(0)
-    expect(h.stdout.text).toContain('No wallet matches "nope". 7 wallets on this account and vault')
+    expect(humanText(h.stdout.text)).toContain(
+      humanText('No wallet matches "nope". 7 wallets on this account and vault'),
+    )
     expect(h.rpcRequests()).toHaveLength(0)
   })
 
@@ -1382,7 +1400,7 @@ describe("BE-767: a cut-off wallet list stays partial on its own", () => {
 
     const none = await portfolio({ tee: [keep], walletsComplete: false }, ["nomatch"])
     expect(none.code).toBe(3)
-    expect(none.h.stdout.text).toContain('No wallet matches "nomatch".')
+    expect(humanText(none.h.stdout.text)).toContain(humanText('No wallet matches "nomatch".'))
     expect(none.h.stdout.text).toContain(CUT_OFF)
   })
 
@@ -1452,7 +1470,7 @@ describe("BE-767: a cut-off wallet list stays partial on its own", () => {
 
     const cutoff = await portfolio({ tee: [keep], legacyPortfolio: true, candleComplete: false }, ["nomatch"])
     expect(cutoff.code).toBe(3)
-    expect(cutoff.h.stdout.text).toContain('No wallet matches "nomatch".')
+    expect(humanText(cutoff.h.stdout.text)).toContain(humanText('No wallet matches "nomatch".'))
     expect(cutoff.h.stdout.text).toContain(CUT_OFF)
     expect(flat(cutoff.h.stdout.text)).not.toContain(UNKNOWN)
   })
@@ -1461,7 +1479,7 @@ describe("BE-767: a cut-off wallet list stays partial on its own", () => {
     for (const extra of [{}, { legacyPortfolio: true }]) {
       const shown = await portfolio({ tee: [omitFailed], ...extra }, [])
       expect(shown.code).toBe(3)
-      expect(shown.h.stdout.text).toContain("could not be read in full")
+      expect(humanText(shown.h.stdout.text)).toContain(humanText("could not be read in full"))
       expect(shown.h.stdout.text).not.toContain(CUT_OFF)
       expect(shown.h.stdout.text).not.toContain("did not say")
     }
@@ -1470,7 +1488,7 @@ describe("BE-767: a cut-off wallet list stays partial on its own", () => {
   test("an unfiltered cut-off list names the cut-off as well as the failed read", async () => {
     const shown = await portfolio({ tee: [omitFailed], walletsComplete: false }, [])
     expect(shown.code).toBe(3)
-    expect(shown.h.stdout.text).toContain("could not be read in full")
+    expect(humanText(shown.h.stdout.text)).toContain(humanText("could not be read in full"))
     expect(shown.h.stdout.text).toContain(CUT_OFF)
   })
 })
@@ -1515,14 +1533,18 @@ describe("BE-1582: the Hyperliquid section (spec A-11, AC16)", () => {
     const out = h.stdout.text
     // The existing figures are unchanged (D4): the total is the one the Hood test above reads.
     expect(out).toMatch(/total\s+\$3,276\.50\s+1 unpriced holding not counted/)
-    expect(out).toContain("Hyperliquid (live from Hyperliquid, not in the ledger; not in the total above)")
+    expect(humanText(out)).toContain(
+      humanText("Hyperliquid (live from Hyperliquid, not in the ledger; not in the total above)"),
+    )
     expect(out).toMatch(/hood-1 \(0x11…1111\)\s+\$1,500\.50\s+\+\$5\.25\s+1\s+warn/)
-    expect(out).toContain("Hyperliquid subtotal: $1,500.50 account value, +$5.25 unrealized.")
+    expect(humanText(out)).toContain(humanText("Hyperliquid subtotal: $1,500.50 account value, +$5.25 unrealized."))
     expect(out.indexOf("total ")).toBeLessThan(out.indexOf("Hyperliquid ("))
     // The embedded EVM wallet is never read on Hyperliquid; one market read and one account read.
     const users = h.hyperliquidRequests().map((r) => JSON.parse(r.body).user ?? JSON.parse(r.body).type)
     expect(users.sort()).toEqual([HOOD_TEE.toLowerCase(), "metaAndAssetCtxs"].sort())
-    expect(h.stderr.text).toContain("Reading 1 EVM TEE address from Hyperliquid's public API in 2 requests.")
+    expect(humanText(h.stderr.text)).toContain(
+      humanText("Reading 1 EVM TEE address from Hyperliquid's public API in 2 requests."),
+    )
   })
 
   test("--json: a top-level hyperliquid object; every existing field as it was", async () => {
@@ -1568,7 +1590,9 @@ describe("BE-1582: the Hyperliquid section (spec A-11, AC16)", () => {
     expect(doc.complete).toBe(false)
     const text = await scenario({ hyperliquid: "down" })
     expect(await run(["portfolio"], text.deps)).toBe(3)
-    expect(text.stdout.text).toContain("Not read: Hyperliquid metaAndAssetCtxs read failed (PERPS_UNAVAILABLE).")
+    expect(humanText(text.stdout.text)).toContain(
+      humanText("Not read: Hyperliquid metaAndAssetCtxs read failed (PERPS_UNAVAILABLE)."),
+    )
   })
 
   test("--chain solana and --no-perps send nothing to Hyperliquid", async () => {
@@ -1586,7 +1610,7 @@ describe("BE-1582: the Hyperliquid section (spec A-11, AC16)", () => {
   test("a TEE account holding nothing is counted, not listed", async () => {
     const h = await scenario({ hyperliquid: {} })
     expect(await run(["portfolio"], h.deps)).toBe(0)
-    expect(h.stdout.text).toContain("1 EVM TEE wallet holds nothing on Hyperliquid.")
+    expect(humanText(h.stdout.text)).toContain(humanText("1 EVM TEE wallet holds nothing on Hyperliquid."))
     expect(h.stdout.text).not.toContain("Hyperliquid subtotal")
   })
 })

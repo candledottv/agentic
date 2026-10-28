@@ -12,6 +12,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { Keypair } from "@solana/web3.js"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { buyLeg, expectedLamports, type LegOptions, launchLeg, relaySigned } from "../launch-bundle.fixtures"
 import { pemToStoredSigner } from "../secret-store"
@@ -411,21 +412,27 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
       feeRaw: FEE.SOL,
       minOutRaw: 0n,
     })
-    expect(f.stderr.text).toContain("land together or not at all")
-    expect(f.stderr.text).toContain("pays a Jito tip")
-    expect(f.stderr.text).toContain(
-      `Launch ${"N".repeat(32)} (${"T".repeat(10)}) with a first buy of 0.010000000 SOL, as one Jito bundle`,
+    expect(humanText(f.stderr.text)).toContain(humanText("land together or not at all"))
+    expect(humanText(f.stderr.text)).toContain(humanText("pays a Jito tip"))
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(`Launch ${"N".repeat(32)} (${"T".repeat(10)}) with a first buy of 0.010000000 SOL, as one Jito bundle`),
     )
     expect(f.stderr.text).toContain(`Payer: ${WALLET}`)
-    expect(f.stderr.text).toContain("Candle fee: 0.000050000 SOL (the tier fee on the first buy, in its leg)")
-    expect(f.stderr.text).toContain(`Minimum received: ${MIN_OUT} raw units of the new token (the first buy's floor)`)
-    expect(f.stderr.text).toContain(`Most this wallet can lose: 0.0${lamports.toString().padStart(8, "0")} SOL`)
+    expect(humanText(f.stderr.text)).toContain(
+      humanText("Candle fee: 0.000050000 SOL (the tier fee on the first buy, in its leg)"),
+    )
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(`Minimum received: ${MIN_OUT} raw units of the new token (the first buy's floor)`),
+    )
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(`Most this wallet can lose: 0.0${lamports.toString().padStart(8, "0")} SOL`),
+    )
   })
 
   test("R2: a USDC launch's ceiling is SOL and USDC", async () => {
     const f = await fixture()
     expect(await run([...launchArgs, "--buy", "2.5", "--quote-asset", "usdc"], f.deps)).toBe(0)
-    expect(f.stderr.text).toContain("Candle fee: 0.012500 USDC")
+    expect(humanText(f.stderr.text)).toContain(humanText("Candle fee: 0.012500 USDC"))
     expect(f.stderr.text).toMatch(/Most this wallet can lose: 0\.\d{9} SOL and 2\.512500 USDC/)
   })
 
@@ -465,7 +472,9 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
       clientTradeId: "launch-1",
       kind: "launch",
     })
-    expect(f.stderr.text).toContain(`Launched ${MINT}. Launch signature: ${sig(1)}. First buy signature: ${sig(2)}.`)
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(`Mint ${MINT} Launch signature ${sig(1)} First buy signature ${sig(2)}`),
+    )
   })
 
   test("R4 failed: nothing landed, the same id to retry with, exit 1", async () => {
@@ -490,7 +499,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
   test("a lost /submit answer is unresolved too: exit 3", async () => {
     const f = await fixture({ submit: "lost" })
     expect(await run(buyArgs, f.deps)).toBe(3)
-    expect(lastJson(f.stdout.text).message).toContain("may have been sent")
+    expect(humanText(lastJson(f.stdout.text).message)).toContain(humanText("may have been sent"))
   })
 
   test("R5: a re-run after a timeout reads the job, re-signs nothing and re-sends nothing", async () => {
@@ -549,7 +558,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
       submit: { status: 400, error: { code: "UNRECOGNIZED_TRANSACTION", message: "signature does not verify" } },
     })
     expect(await run(buyArgs, f.deps)).toBe(1)
-    expect(lastJson(f.stdout.text).message).toContain("sent nothing")
+    expect(humanText(lastJson(f.stdout.text).message)).toContain(humanText("sent nothing"))
     const before = f.calls.length
     expect(await run(buyArgs, f.deps)).toBe(1)
     expect(f.calls.slice(before).some((call) => call.path === "/api/v1/launch/self/build")).toBe(true)
@@ -570,7 +579,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     expect(await run(buyArgs, f.deps)).toBe(1)
     expect(lastJson(f.stdout.text).code).toBe("VALIDATION_FAILED")
     expect(lastJson(f.stdout.text).message).toStartWith(message)
-    expect(lastJson(f.stdout.text).suggestion).toContain("Launch without --buy")
+    expect(humanText(lastJson(f.stdout.text).suggestion)).toContain(humanText("Launch without --buy"))
     expect(writes(f.paths())).toEqual(["/api/v1/launch/self/build"])
   })
 
@@ -603,7 +612,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     test(`D2: the ceiling for ${args[3]}`, async () => {
       const f = await fixture()
       expect(await run([...launchArgs, ...args], f.deps)).toBe(1)
-      expect(lastJson(f.stdout.text).message).toContain(`dev-buy ceiling of ${ceiling} on solana`)
+      expect(humanText(lastJson(f.stdout.text).message)).toContain(humanText(`dev-buy ceiling of ${ceiling} on solana`))
     })
 
   test("D2: the ceiling reads DEV_BUY_MAX_LAMPORTS as the API does", async () => {
@@ -611,7 +620,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     expect(await run([...launchArgs, "--buy", "0.6"], f.deps)).toBe(0)
     const ignored = await fixture({ env: { DEV_BUY_MAX_LAMPORTS: "0" } })
     expect(await run([...launchArgs, "--buy", "0.6"], ignored.deps)).toBe(1)
-    expect(lastJson(ignored.stdout.text).message).toContain("500000000 lamports")
+    expect(humanText(lastJson(ignored.stdout.text).message)).toContain(humanText("500000000 lamports"))
   })
 
   test("a buy leg that swaps another amount is refused before anything is signed", async () => {
@@ -627,7 +636,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
   test("a launch leg paid by another wallet is refused before anything is signed", async () => {
     const f = await fixture({ legs: { launchPayer: Keypair.generate().publicKey.toBase58() } })
     expect(await run(buyArgs, f.deps)).toBe(1)
-    expect(lastJson(f.stdout.text).message).toContain("leg 0 is not paid by this wallet")
+    expect(humanText(lastJson(f.stdout.text).message)).toContain(humanText("leg 0 is not paid by this wallet"))
     expect(f.paths().some((path) => path.endsWith("/sign"))).toBe(false)
   })
 
@@ -637,7 +646,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     f.deps.isTTY.stdin = true
     expect(await run(args, f.deps)).toBe(0)
     expect(lastJson(f.stdout.text).status).toBe("cancelled")
-    expect(f.stderr.text).toContain("Nothing was signed")
+    expect(humanText(f.stderr.text)).toContain(humanText("Nothing was signed"))
     expect(f.paths().some((path) => path.endsWith("/sign") || path.endsWith("/submit"))).toBe(false)
     // The id is not spent: a re-run builds again under it.
     const before = f.calls.length
@@ -714,7 +723,7 @@ describe("BE-1806: launch inputs and --dry-run", () => {
     expect(writes(f.paths())).toEqual([])
     expect(f.operations()).toEqual([])
     expect(lastJson(f.stdout.text).resolved).toEqual(RESOLVED)
-    expect(f.stderr.text).toContain("First buy 1: 0.01 SOL takes 2.1% of the supply.")
+    expect(humanText(f.stderr.text)).toContain(humanText("First buy 1: 0.01 SOL takes 2.1% of the supply."))
   })
 
   test("the launch itself carries the same curve fields to /launch/self/build", async () => {
@@ -754,12 +763,16 @@ describe("BE-1806: launch inputs and --dry-run", () => {
     const f = await fixture()
     const args = [...launchArgs, "--mode", "exp-custom", "--curve-v", "4", "--curve-g", "2", "--buy", "0.3"]
     expect(await run(args, f.deps)).toBe(1)
-    expect(f.stdout.text + f.stderr.text).toContain(
-      "buyAmount exceeds this launch's dev-buy ceiling of 0.2 SOL (200000000 lamports): at most 0.5 SOL, or 10% of the threshold when that is lower",
+    expect(humanText(f.stdout.text + f.stderr.text)).toContain(
+      humanText(
+        "buyAmount exceeds this launch's dev-buy ceiling of 0.2 SOL (200000000 lamports): at most 0.5 SOL, or 10% of the threshold when that is lower",
+      ),
     )
     expect(writes(f.paths())).toEqual([])
     const preset = await fixture()
     expect(await run([...launchArgs, "--mode", "exp-a", "--buy", "0.6"], preset.deps)).toBe(1)
-    expect(preset.stdout.text + preset.stderr.text).toContain("dev-buy ceiling of 0.5 SOL (500000000 lamports)")
+    expect(humanText(preset.stdout.text + preset.stderr.text)).toContain(
+      humanText("dev-buy ceiling of 0.5 SOL (500000000 lamports)"),
+    )
   })
 })

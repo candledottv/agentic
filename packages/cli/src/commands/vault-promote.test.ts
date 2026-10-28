@@ -10,6 +10,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { Keypair } from "@solana/web3.js"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import {
   createCapture,
@@ -216,9 +217,9 @@ async function newKey(dir: string, passphrase: string, label: string): Promise<s
     promptSecret: async () => passphrase,
     promptLine: async () => "",
   })
-  const code = await run(["vault", "new-key", "--chain", "solana", "--label", label], deps)
+  const code = await run(["vault", "new-key", "--chain", "solana", "--label", label, "--json"], deps)
   if (code !== 0) throw new Error(`new-key failed: ${err.text}\n${out.text}`)
-  const address = out.text.trim().split("\n")[0]!
+  const address = JSON.parse(out.text).address as string
   return address
 }
 
@@ -405,18 +406,26 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
       expect(code).toBe(0)
       // R5: the holdings display covers BOTH programs, and names which is which. A read that only
       // listed classic Token accounts would promote this key while hiding what it holds.
-      expect(out.text).toContain(`token ${MINT_CLASSIC}  700000 raw (6 dp, token)`)
-      expect(out.text).toContain(`token ${MINT_2022}  1 raw (0 dp, token-2022)`)
+      expect(humanText(out.text)).toContain(
+        humanText(`Mint ${MINT_CLASSIC} Raw amount 700000 Decimals 6 Program token`),
+      )
+      expect(humanText(out.text)).toContain(humanText(`Mint ${MINT_2022} Raw amount 1 Decimals 0 Program token-2022`))
       // BE-296: one sentence before both confirmations, Form N because every group answered; the
       // authorities block sits under the holdings; the block is directly above `confirm`.
-      expect(out.text).toContain(`\n${promoteSentence({ n: 1, form: "N", where: "above" })}\n\n`)
-      expect(out.text).toContain("Authorities (read over rpc.prc.test):")
-      expect(out.text).toContain("  none: not a token mint, freeze, program upgrade or stake authority")
-      expect(out.text).toContain(`  ${NOT_CHECKED_LINE}`)
-      expect(err.text).toContain("This key will be controlled by:")
-      expect(err.text).toContain(`  Candle account  ${USERNAME}  (${ACCOUNT.slice(0, 6)}…${ACCOUNT.slice(-4)})`)
-      expect(err.text).toContain(`  API key         ${KEY_PREFIX}…  profile prc`)
-      expect(err.text).toContain(`  API             ${API}  (not a Candle host, from CANDLE_API_URL)`)
+      expect(humanText(out.text)).toContain(humanText(`\n${promoteSentence({ n: 1, form: "N", where: "above" })}\n\n`))
+      expect(humanText(out.text)).toContain(humanText("Authorities (read over rpc.prc.test):"))
+      expect(humanText(out.text)).toContain(
+        humanText("  none: not a token mint, freeze, program upgrade or stake authority"),
+      )
+      expect(humanText(out.text)).toContain(humanText(`  ${NOT_CHECKED_LINE}`))
+      expect(humanText(err.text)).toContain(humanText("This key will be controlled by:"))
+      expect(humanText(err.text)).toContain(
+        humanText(`  Candle account  ${USERNAME}  (${ACCOUNT.slice(0, 6)}…${ACCOUNT.slice(-4)})`),
+      )
+      expect(humanText(err.text)).toContain(humanText(`  API key         ${KEY_PREFIX}…  profile prc`))
+      expect(humanText(err.text)).toContain(
+        humanText(`  API             ${API}  (not a Candle host, from CANDLE_API_URL)`),
+      )
       expect(Object.keys(routes).some((k) => k.includes("reserved"))).toBe(false)
 
       expect(sealed.length).toBe(1)
@@ -961,7 +970,7 @@ describe("BE-1710: a resumed promote asks confirm for the account and the server
     expect(r.code).toBe(1)
     expect(r.asked).toEqual([`Type confirm to act as account ${ACCOUNT}: `])
     expect(r.out).toContain(`account ${groupAddress(ACCOUNT)}\n`)
-    expect(r.err).toContain("That was not confirmed; nothing was done.")
+    expect(humanText(r.err)).toContain(humanText("That was not confirmed; nothing was done."))
     expect(r.importCalls.n).toBe(0)
     expect(r.unchanged).toBe(true)
   })
@@ -1231,7 +1240,7 @@ describe("BE-981: vault demote unlocks once", () => {
     expect(r.unlocks).toHaveLength(1)
     expect(r.out.text).toContain("Stopped")
     expect(r.out.text).not.toContain("Recover the funds:")
-    expect(r.out.text).toContain(`Sweeping remaining funds to ${r.cold}...`)
+    expect(humanText(r.out.text)).toContain(humanText(`Sweeping remaining funds to ${r.cold}...`))
     expect(r.out.text).toContain("Swept.")
     // The sweep still asks for `confirm` (BE-1710; it was the destination's last six) before it signs.
     expect(r.confirmations).toEqual([`Type confirm to sweep everything to ${r.cold}: `])
@@ -1263,7 +1272,7 @@ describe("BE-981: vault demote unlocks once", () => {
     expect(r.confirmations).toHaveLength(0)
     expect(r.out.text).toContain("Stopped")
     expect(r.out.text).not.toContain("Recover the funds:")
-    expect(r.out.text).toContain("Nothing to sweep: 0 SOL, 0 token accounts.")
+    expect(humanText(r.out.text)).toContain(humanText("Nothing to sweep: 0 SOL, 0 token accounts."))
     expect(r.out.text).not.toContain("Sweeping remaining funds")
     expect(r.calls.some((c) => typeof c.init.body === "string" && c.init.body.includes('"sendTransaction"'))).toBe(
       false,
@@ -1330,8 +1339,8 @@ describe("BE-981: vault demote unlocks once", () => {
     })
     await run(["vault", "demote", address, "--rpc-url", RPC], deps)
     expect(out.text).not.toContain("Nothing to sweep: 0 SOL, 0 token accounts.")
-    expect(out.text).toContain("Sweeping remaining funds")
-    expect(out.text).toContain("from an earlier run finalized")
+    expect(humanText(out.text)).toContain(humanText("Sweeping remaining funds"))
+    expect(humanText(out.text)).toContain(humanText("from an earlier run finalized"))
   })
 
   function demoteDepsFor(dir: string, passphrase: string, cold: string, fetch: typeof globalThis.fetch) {
@@ -1460,8 +1469,10 @@ describe("BE-288 C8 to C13: vault promote reads the room, and restores on a defi
       args: inPlace,
     })
     expect(r.code).toBe(1)
-    expect(r.err).toContain(
-      "This promotion would link a wallet to this Candle account, and it has no room: 10 of 10 linked wallets are active on the Pro tier. Nothing was written. Upgrade to Max, or revoke linked wallets you no longer use.",
+    expect(humanText(r.err)).toContain(
+      humanText(
+        "This promotion would link a wallet to this Candle account, and it has no room: 10 of 10 linked wallets are active on the Pro tier. Nothing was written. Upgrade to Max, or revoke linked wallets you no longer use.",
+      ),
     )
     expect(r.out).not.toContain(SENTENCE_PREFIX)
     expect(r.asked).toEqual([])
@@ -1483,8 +1494,10 @@ describe("BE-288 C8 to C13: vault promote reads the room, and restores on a defi
       json: true,
     })
     expect(r.code).toBe(0)
-    expect(r.err).toContain(
-      "Could not read this account's linked-wallet room (HTTP 404); continuing. The server refuses before anything is sent if the account is full.",
+    expect(humanText(r.err)).toContain(
+      humanText(
+        "Could not read this account's linked-wallet room (HTTP 404); continuing. The server refuses before anything is sent if the account is full.",
+      ),
     )
     expect(importCalls.n).toBe(1)
     const docs = jsonDocs(r.out)
@@ -1594,7 +1607,9 @@ describe("BE-288 C8 to C13: vault promote reads the room, and restores on a defi
       lines: [],
     })
     expect(r.code).toBe(1)
-    expect(r.err).toContain("This promotion would link a wallet to this Candle account, and it has no room")
+    expect(humanText(r.err)).toContain(
+      humanText("This promotion would link a wallet to this Candle account, and it has no room"),
+    )
     expect(r.asked).toEqual([])
     expect(importCalls.n).toBe(0)
     const after = await entries(f)
@@ -1726,8 +1741,10 @@ describe("BE-296: vault promote --in-place: one sentence, live block, always-on 
       const before = await readFile(f.vaultPath, "utf8")
       const r = await runSingle(f, { lines: ["confirm", refused, "not asked"] })
       expect([refused, r.code]).toEqual([refused, 1])
-      expect(r.err).toContain("The acknowledgement is the word confirm; nothing was promoted, and nothing was written.")
-      expect(r.err).toContain("Run the command again and type confirm at the prompt.")
+      expect(humanText(r.err)).toContain(
+        humanText("The acknowledgement is the word confirm; nothing was promoted, and nothing was written."),
+      )
+      expect(humanText(r.err)).toContain(humanText("Run the command again and type confirm at the prompt."))
       expect(r.asked).toHaveLength(2)
       expect(r.asked[1]).toBe(confirmPrompt(1))
       expect(r.importCalls.n).toBe(0)
@@ -1807,7 +1824,9 @@ describe("BE-296: vault promote --in-place: one sentence, live block, always-on 
     const r = await runSingle(f)
     expect(r.code).toBe(0)
     expect(r.programCalls).toBe(REQUESTS_PER_KEY)
-    expect(r.err).toContain("✓ authorities read for 1 address (9 requests, 7 of 7 groups read) in 0s")
+    expect(humanText(r.err)).toContain(
+      humanText("✓ authorities read for 1 address (9 requests, 7 of 7 groups read) in 0s"),
+    )
     const flagged = await runSingle(f, { args: [...inPlace, "--check-authorities"] })
     expect(flagged.code).toBe(2)
     expect(flagged.err).toContain("--check-authorities")
@@ -1826,10 +1845,12 @@ describe("BE-296: vault promote --in-place: one sentence, live block, always-on 
       },
     })
     expect(r.code).toBe(0)
-    expect(r.out).toContain(
-      `Authorities (read over rpc.prc.test):\n  withdrawer authority of ${stake} (Stake)\n  ${NOT_CHECKED_LINE}\n`,
+    expect(humanText(r.out)).toContain(
+      humanText(
+        `Authorities (read over rpc.prc.test):\n  withdrawer authority of ${stake} (Stake)\n  ${NOT_CHECKED_LINE}\n`,
+      ),
     )
-    expect(r.out).toContain(promoteSentence({ n: 1, form: "F", k: 1, where: "above" }))
+    expect(humanText(r.out)).toContain(humanText(promoteSentence({ n: 1, form: "F", k: 1, where: "above" })))
     const doc = JSON.parse(r.out.split("\n").filter((line) => line.startsWith("{"))[0] as string)
     expect(doc.authorities.found).toEqual([{ address: f.subject, role: "withdrawer", target: stake, program: "stake" }])
     expect(doc.controlledBy).toMatchObject({
@@ -1847,11 +1868,11 @@ describe("BE-296: vault promote --in-place: one sentence, live block, always-on 
         call.programId === "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" ? jsonResponse(403, { error: "blocked" }) : [],
     })
     expect(r.code).toBe(0)
-    expect(r.out).toContain(
-      "  Token-2022 mint, Token-2022 freeze: not read (RPC getProgramAccounts failed: HTTP 403)\n",
+    expect(humanText(r.out)).toContain(
+      humanText("  Token-2022 mint, Token-2022 freeze: not read (RPC getProgramAccounts failed: HTTP 403)\n"),
     )
     expect(r.out).not.toContain("  none: not a token mint")
-    expect(r.out).toContain(promoteSentence({ n: 1, form: "U", where: "above" }))
+    expect(humanText(r.out)).toContain(humanText(promoteSentence({ n: 1, form: "U", where: "above" })))
     expect(r.err).toMatch(/✓ authorities read for 1 address \(\d+ requests, 5 of 7 groups read, 2 refused\) in 0s/)
   })
 })

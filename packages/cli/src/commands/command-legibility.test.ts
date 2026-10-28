@@ -119,3 +119,39 @@ describe("release C account and wallet output", () => {
     for (const line of stderr.text.split("\n")) expect(displayWidth(line)).toBeLessThanOrEqual(40)
   })
 })
+
+describe("release C remaining commands", () => {
+  test("spend fields and unavailable-credit advice use stdout's width; JSON keeps its original schema", async () => {
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const deps = createTestDeps({
+      fetch: unusedFetch,
+      stdout,
+      stderr,
+      env: { CANDLE_CONFIG_DIR: "/nonexistent/candle-legibility-test", CANDLE_PLAIN: "1" },
+      columns: { stdout: 40, stderr: 80 },
+      now: () => Date.parse("2026-10-28T10:00:00Z"),
+    })
+    expect(await run(["spend"], deps)).toBe(0)
+    expect(stdout.text).toContain("Per-use spend\n\n")
+    expect(stdout.text).toContain("  Spent                $0\n")
+    expect(stdout.text).toContain("  Daily per-use limit  $5\n")
+    expect(stdout.text).toContain("  Candle credit  -\n")
+    expect(stdout.text.replace(/\s+/g, " ")).toContain("Candle credit not shown: no API key on this profile")
+    for (const line of stdout.text.split("\n")) expect(displayWidth(line)).toBeLessThanOrEqual(40)
+    expect(stdout.text).not.toContain("\x1b")
+    expect(stderr.text).toBe("")
+    stdout.text = ""
+    expect(await run(["spend", "--json"], deps)).toBe(0)
+    expect(stdout.text).toBe(
+      `${JSON.stringify({
+        ok: true,
+        limits: { dailyLimitUsd: "5", maxPerCallUsd: "1", paused: false },
+        today: { day: "2026-10-28", spentUsd: "0", limitUsd: "5" },
+        credit: { unavailable: "no API key on this profile" },
+        payments: [],
+      })}\n`,
+    )
+    expect(stderr.text).toBe("")
+  })
+})

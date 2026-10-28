@@ -33,6 +33,8 @@
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { EVM_DERIVATION_SCHEME, evmAddressFromSecret, sameEvmAddress } from "../evm-lite"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { VaultError } from "../vault/errors"
@@ -312,7 +314,12 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
         // Streamed rather than buffered in the human rendering: on a 160-key run the addresses
         // are the operator's record, and a batch that dies at key 90 must not take the 89 that
         // landed off the screen with it.
-        if (!ctx.json && batchRequested) deps.stdout.write(`${address}  ${label}  ${derivationPath}\n`)
+        if (!ctx.json && batchRequested)
+          writeFields(deps, "stdout", [
+            ["Address", address],
+            ["Label", label],
+            ["Derivation", derivationPath],
+          ])
       }
     } catch (error) {
       reportPartialBatch(ctx, derived, batch.count)
@@ -346,15 +353,25 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
       return 0
     }
     if (batchRequested) {
-      deps.stdout.write(
-        `${derived.length} key${derived.length === 1 ? "" : "s"} created under one unlock, each committed on its own and re-read from the vault and re-derived from its root.\n`,
+      writeSuccess(
+        deps,
+        "stdout",
+        `${derived.length} key${derived.length === 1 ? "" : "s"} created under one unlock, each committed on its own and re-read from the vault and re-derived from its root.\n`.trim(),
       )
       return 0
     }
-    deps.stdout.write(`${only.address}\n`)
-    deps.stdout.write(`  label       ${only.label}\n`)
-    deps.stdout.write(`  derivation  ${only.path}\n`)
-    deps.stdout.write(`  verified    re-read from the vault and re-derived from its root\n`)
+    writeFields(
+      deps,
+      "stdout",
+      [
+        ["Address", only.address],
+        ["Label", only.label],
+        ["Derivation", only.path],
+        ["Verified", "re-read from the vault and re-derived from its root"],
+      ],
+      "Key created",
+    )
+
     return 0
   })
 }
@@ -368,11 +385,16 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
  */
 function reportPartialBatch(ctx: CommandContext, derived: DerivedKey[], requested: number): void {
   if (requested <= 1 || derived.length === 0) return
-  ctx.deps.stderr.write(
-    `\n${derived.length} of ${requested} keys were created and ARE in the vault; the vault is intact and its counter is past them.\n` +
+  notice(
+    ctx.deps,
+    "stderr",
+    "note",
+    (
+      `\n${derived.length} of ${requested} keys were created and ARE in the vault; the vault is intact and its counter is past them.\n` +
       `Re-run for the remaining ${requested - derived.length}${
         derived.length > 0 ? " (with a --labels-from file holding the names that did not land)" : ""
-      }.\n`,
+      }.\n`
+    ).trim(),
   )
 }
 

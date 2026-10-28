@@ -12,6 +12,7 @@ import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { Keypair } from "@solana/web3.js"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import {
   type CapturedRequest,
@@ -279,8 +280,10 @@ describe("a wallet whose key is in the vault changes on both sides", () => {
     const out = await cmd(fx.dir, fx.passphrase, ["tee", "rename", "tr-01", "desk-01"], api.fetch)
     expect(out.code).toBe(0)
     expect(out.prompted).toBe(1)
-    expect(out.stdout).toContain("Renamed 1 wallet.\n")
-    expect(out.stdout).toContain(`  tr-01 -> desk-01  ${addr["tr-01"]} (server and vault)\n`)
+    expect(humanText(out.stdout)).toContain(humanText("Renamed 1 wallet.\n"))
+    expect(humanText(out.stdout)).toContain(
+      humanText(`From tr-01 To desk-01 Address ${addr["tr-01"]} Changed in server and vault`),
+    )
 
     expect(api.previews).toEqual([{ dryRun: true, renames: [{ wallet: "tr-01", label: "desk-01" }] }])
     // The commit carries the id the preview named, never the handle.
@@ -341,7 +344,7 @@ describe("a wallet with no vault entry changes on the server only", () => {
     const out = await cmd(dir, "unused", ["tee", "rename", "tr-01", "desk-01"], api.fetch, { tty: false })
     expect(out.code).toBe(0)
     expect(out.prompted).toBe(0)
-    expect(out.stdout).toContain("(server)\n")
+    expect(humanText(out.stdout)).toContain(humanText("Changed in server"))
     expect(wallets[0]?.label).toBe("desk-01")
   })
 
@@ -483,10 +486,12 @@ describe("the server-then-vault boundary", () => {
     })
     const out = await cmd(fx.dir, fx.passphrase, ["tee", "rename", "tr-01", "desk-01"], api.fetch)
     expect(out.code).toBe(1)
-    expect(out.stderr).toContain("The server renamed 1 wallet, but the vault write failed (VAULT_CHANGED:")
-    expect(out.stderr).toContain("1 vault entry still has its old name.")
-    expect(out.stderr).toContain(`  ${addr["tr-01"]} desk-01\n`)
-    expect(out.stderr).toContain("Then run: candle tee rename --pairs-from <file>\n")
+    expect(humanText(out.stderr)).toContain(
+      humanText("The server renamed 1 wallet, but the vault write failed (VAULT_CHANGED:"),
+    )
+    expect(humanText(out.stderr)).toContain(humanText("1 vault entry still has its old name."))
+    expect(humanText(out.stderr)).toContain(humanText(`  ${addr["tr-01"]} desk-01\n`))
+    expect(humanText(out.stderr)).toContain(humanText("Then run: candle tee rename --pairs-from <file>\n"))
     // No receipt: stdout holds only the identity line.
     expect(out.stdout).not.toContain("Renamed")
     expect(out.stdout).not.toContain("desk-01")
@@ -510,9 +515,9 @@ describe("the server-then-vault boundary", () => {
 
     const text = await cmd(fx.dir, fx.passphrase, ["tee", "rename", "tr-01", "desk-01"], dropped)
     expect(text.code).toBe(1)
-    expect(text.stderr).toContain("whether the server applied it is unknown")
-    expect(text.stderr).toContain(`  ${addr["tr-01"]} desk-01\n`)
-    expect(text.stderr).toContain("Then run: candle tee rename --pairs-from <file>\n")
+    expect(humanText(text.stderr)).toContain(humanText("whether the server applied it is unknown"))
+    expect(humanText(text.stderr)).toContain(humanText(`  ${addr["tr-01"]} desk-01\n`))
+    expect(humanText(text.stderr)).toContain(humanText("Then run: candle tee rename --pairs-from <file>\n"))
 
     calls = 0
     const file = await pairsFile(fx, "tr-01 desk-01\ntr-02 desk-02\n")
@@ -668,8 +673,8 @@ describe("the batch form", () => {
     expect(await bytes(fx)).toBe(before)
 
     const text = await cmd(fx.dir, fx.passphrase, ["tee", "rename", "--pairs-from", file, "--dry-run"], api.fetch)
-    expect(text.stdout).toContain(
-      `Dry run: nothing was changed.\n  tr-01 -> desk-01  ${addr["tr-01"]} (server and vault)\n`,
+    expect(humanText(text.stdout)).toContain(
+      humanText(`From tr-01 To desk-01 Address ${addr["tr-01"]} Changed in server and vault`),
     )
   })
 
@@ -735,8 +740,8 @@ describe("the batch form", () => {
     const before = await bytes(fx)
     const out = await cmd(fx.dir, fx.passphrase, ["tee", "rename", "--pairs-from", file], api.fetch)
     expect(out.code).toBe(0)
-    expect(out.stdout).toContain(
-      `Nothing to change: every wallet already has its new name.\n  tr-01 -> tr-01  ${addr["tr-01"]} (already named)\n`,
+    expect(humanText(out.stdout)).toContain(
+      humanText(`From tr-01 To tr-01 Address ${addr["tr-01"]} Changed in already named`),
     )
     expect(api.commits).toHaveLength(0)
     expect(await bytes(fx)).toBe(before)

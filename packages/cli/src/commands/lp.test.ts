@@ -12,6 +12,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
@@ -233,7 +234,7 @@ describe("candle lp: the reads", () => {
     const text = await fixture()
     expect(await run(["lp", "pools", USDC_MINT, "--page", "2"], text.deps)).toBe(0)
     expect(text.calls[0]?.query).toBe("?page=2")
-    expect(text.stdout.text).toContain("est. yield 12.30% APR (indexed, not a quote)")
+    expect(humanText(text.stdout.text)).toContain(humanText("Estimated APR 12.30% (indexed, not a quote)"))
   })
 
   test("positions lists every TEE wallet on the key without demanding lp:write, and --wallet narrows it", async () => {
@@ -255,7 +256,7 @@ describe("candle lp: the reads", () => {
       "/api/v1/agent/wallets/trading",
       "/api/v1/agent/lp/positions?linkedWalletId=wallet-2",
     ])
-    expect(one.stdout.text).toContain("No DAMM v2 positions across 1 TEE wallet(s).")
+    expect(humanText(one.stdout.text)).toContain(humanText("No DAMM v2 positions across 1 TEE wallet(s)."))
     const unknown = await fixture()
     expect(await run(["lp", "positions", "--wallet", "nobody", "--json"], unknown.deps)).toBe(1)
     expect(JSON.parse(unknown.stdout.text.trim()).code).toBe("TEE_WALLET_REQUIRED")
@@ -294,10 +295,16 @@ describe("candle lp: the writes", () => {
       signature,
     })
     // The preview went to stderr (json mode) with both amounts, the warning and the R5 risk.
-    expect(f.stderr.text).toContain("Deposit (maximum, at the pool's ratio): 1.000000 USDC + 0.006666667 SOL")
-    expect(f.stderr.text).toContain("Warning: This pool holds under $10,000 of marked liquidity.")
-    expect(f.stderr.text).toContain(`Warning (${USDC_MINT}): Transfer fee: 1% capped at 100 raw units.`)
-    expect(f.stderr.text).toContain("Candle LP fee: 0 bps")
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(
+        "Deposit (maximum, at the pool's ratio) 1.000000 USDC Deposit (maximum, at the pool's ratio) 0.006666667 SOL",
+      ),
+    )
+    expect(humanText(f.stderr.text)).toContain(humanText("Warning: This pool holds under $10,000 of marked liquidity."))
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(`Warning (${USDC_MINT}): Transfer fee: 1% capped at 100 raw units.`),
+    )
+    expect(humanText(f.stderr.text)).toContain(humanText("Candle LP fee 0 bps"))
     const out = JSON.parse(f.stdout.text.trim())
     expect(out).toMatchObject({
       success: true,
@@ -384,7 +391,7 @@ describe("candle lp: the writes", () => {
       slippageBps: 100,
     })
     expect(f.calls.some((c) => c.path === "/api/v1/agent/wallets/wallet-2/sign")).toBe(true)
-    expect(f.stderr.text).toContain("claim its fees and close it")
+    expect(humanText(f.stderr.text)).toContain(humanText("claim its fees and close it"))
     expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ action: "remove", wallet: TEE_2 })
 
     const claim = await fixture()
@@ -423,7 +430,7 @@ describe("candle lp: the writes", () => {
       ),
     ).toBe(0)
     expect(f.calls.find((c) => c.path === "/api/v1/agent/lp/remove/build")?.body).toMatchObject({ percent: 12.5 })
-    expect(f.stderr.text).toContain("Remove 12.5% of the liquidity")
+    expect(humanText(f.stderr.text)).toContain(humanText("Remove 12.5% of the liquidity"))
     for (const bad of ["0", "101", "12.345", "abc"]) {
       const usage = await fixture()
       expect(await run(["lp", "remove", POSITION, "--percent", bad, "--json"], usage.deps)).toBe(2)

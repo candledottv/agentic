@@ -40,6 +40,8 @@
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeFields } from "../human-output"
+import { notice } from "../presentation"
 import { createVault } from "../vault/create"
 import { randomBytes } from "../vault/crypto"
 import { countRecoverableFactors, homeDirOf, ICLOUD_SHORTHAND, icloudDriveDir } from "../vault/domains"
@@ -131,7 +133,7 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
 
     // D8 (BE-241): said before the ceremony rather than beside the words. BE-235 item 5 asked
     // whether a first-ever init should say so LOUDER, before the words; this is that answer.
-    if (!ownFlag) deps.stdout.write(`${INIT_GENERATED_PASSPHRASE_NOTICE}\n`)
+    if (!ownFlag) notice(deps, "stdout", "note", `${INIT_GENERATED_PASSPHRASE_NOTICE}\n`.trim())
     const own = ownFlag || (await askForOwnPassphrase(ctx, INIT_PASSPHRASE_PROMPT))
     const passphrase = own ? await collectOwnPassphrase(ctx) : await collectGeneratedPassphrase(ctx)
 
@@ -165,32 +167,50 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
           })),
           phraseCeremonyOffered: false,
         })
-        deps.stderr.write(
-          "The recovery phrase ceremony is interactive only and was not offered under --json. Run: candle vault phrase show\n",
+        notice(
+          deps,
+          "stderr",
+          "note",
+          "The recovery phrase ceremony is interactive only and was not offered under --json. Run: candle vault phrase show\n".trim(),
         )
         return 0
       }
 
-      deps.stdout.write(`Vault created at ${path}\n`)
-      deps.stdout.write(`  vault id     ${vault.file.vaultId}\n`)
-      deps.stdout.write(`  factors      1 (passphrase, human-memory)\n`)
-      deps.stdout.write(`  keys         0 -- create one with: candle vault new-key --chain solana\n`)
-      deps.stdout.write(
-        `\nVerified: the file was re-read and opened with the passphrase you set, and its root blob decrypted.\n`,
+      writeFields(
+        deps,
+        "stdout",
+        [
+          ["Path", path],
+          ["Vault id", vault.file.vaultId],
+          ["Factors", "1 (passphrase, human-memory)"],
+          ["Keys", 0],
+        ],
+        "Vault created",
       )
-      deps.stdout.write(`\n${APPLE_ACCOUNT_NOTICE}\n`)
+
+      writeFields(deps, "stdout", [
+        ["Verified", "file re-read, opened with your passphrase, root blob decrypted"],
+        ["Create a key", "candle vault new-key --chain solana"],
+      ])
+      notice(deps, "stdout", "note", `\n${APPLE_ACCOUNT_NOTICE}\n`.trim())
       // BE-245: what `--high-value` was reaching for, said as advice instead of enforced as a gate
       // nothing authenticates. It needs no flag and no stored state, and it is true of every vault
       // this command creates, which is more than the flag ever managed.
       if (countRecoverableFactors(vault.file.envelopes) === 1) {
-        deps.stdout.write(
-          `\nThis vault has exactly one recoverable factor: the passphrase. Lose it and no copy of this file can be opened, and the recovery phrase becomes the only route back. Add a second when you can: candle vault enroll security-key\n`,
+        notice(
+          deps,
+          "stdout",
+          "warning",
+          `\nThis vault has exactly one recoverable factor: the passphrase. Lose it and no copy of this file can be opened, and the recovery phrase becomes the only route back. Add a second when you can: candle vault enroll security-key\n`.trim(),
         )
       }
 
       // CC-11: offered exactly ONCE here, and by `vault phrase show` afterwards.
-      deps.stdout.write(
-        `\nThis vault has a 24-word recovery phrase. It re-derives every key this vault derives, on any BIP-39 wallet, and it is the only way back if you lose both the file and your backups.\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `\nThis vault has a 24-word recovery phrase. It re-derives every key this vault derives, on any BIP-39 wallet, and it is the only way back if you lose both the file and your backups.\n`.trim(),
       )
       const answer = (
         await deps.promptLine("Show the recovery phrase now? Type yes to see it, anything else to skip: ")
@@ -200,7 +220,12 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
       if (answer === "yes") {
         await runPhraseCeremony(ctx, vault)
       } else {
-        deps.stdout.write("Skipped. You can run the ceremony later with: candle vault phrase show\n")
+        notice(
+          deps,
+          "stdout",
+          "note",
+          "Skipped. You can run the ceremony later with: candle vault phrase show\n".trim(),
+        )
       }
 
       // BE-245: after the phrase ceremony, which is where it belongs -- the phrase is the thing a
@@ -210,7 +235,7 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
       // D8/D10's footer, last: this vault is not at the default path, so every later vault command
       // needs -k or the variable. Human mode only; the --json payload above already carries `path`.
       const footer = nonDefaultVaultFooter(resolvedVault)
-      if (footer !== undefined) deps.stdout.write(footer)
+      if (footer !== undefined) notice(deps, "stdout", "note", footer.trim())
       return 0
     } finally {
       closeVault(vault)
@@ -227,9 +252,17 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
 async function collectGeneratedPassphrase(ctx: CommandContext): Promise<string> {
   const { deps } = ctx
   const passphrase = generatePassphrase()
-  deps.stdout.write(`\nYour vault passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits.\n\n`)
+  writeFields(
+    deps,
+    "stdout",
+    [
+      ["Words", GENERATED_WORD_COUNT],
+      ["Entropy", `${generatedEntropyBits()} bits`],
+    ],
+    "Your vault passphrase",
+  )
   deps.stdout.write(`    ${passphrase}\n\n`)
-  deps.stdout.write(`${SAVE_THE_PASSPHRASE}\n\n`)
+  notice(deps, "stdout", "warning", `${SAVE_THE_PASSPHRASE}\n\n`.trim())
   // The answer is deliberately unread. Pressing a key is a nudge, and the prompt says so rather
   // than dressing it as a check.
   await deps.promptLine(SAVED_IT_PROMPT)
@@ -246,7 +279,12 @@ async function collectOwnPassphrase(ctx: CommandContext): Promise<string> {
   }
   // Under --json stdout carries exactly one JSON value, and `status` reports the strength anyway.
   if (!ctx.json) {
-    ctx.deps.stdout.write("Recorded as chosen by you: this CLI cannot know its entropy and `vault status` says so.\n")
+    notice(
+      ctx.deps,
+      "stdout",
+      "note",
+      "Recorded as chosen by you: this CLI cannot know its entropy and `vault status` says so.\n".trim(),
+    )
   }
   return first
 }
@@ -272,11 +310,17 @@ async function collectOwnPassphrase(ctx: CommandContext): Promise<string> {
 async function offerIcloudBackup(ctx: CommandContext, resolved: ResolvedVaultPath): Promise<void> {
   const { deps } = ctx
   if (!(await fileExists(icloudDriveDir(homeDirOf(deps.env))))) return
-  deps.stdout.write(
-    `\nNothing has a copy of this vault yet. A copy in iCloud Drive is a copy of the ciphertext, and Candle seals it: it opens with the passphrase only, and carries no Touch ID, security key or synced passkey envelope, so one Apple account never holds both the blob and a factor that opens it.\n`,
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `\nNothing has a copy of this vault yet. A copy in iCloud Drive is a copy of the ciphertext, and Candle seals it: it opens with the passphrase only, and carries no Touch ID, security key or synced passkey envelope, so one Apple account never holds both the blob and a factor that opens it.\n`.trim(),
   )
-  deps.stdout.write(
-    `This vault holds no keys yet, so what a copy taken now protects is the root every key comes back from. Back it up again after your first \`vault new-key\`: until then \`verify-backup\` will report this copy as stale, correctly.\n`,
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `This vault holds no keys yet, so what a copy taken now protects is the root every key comes back from. Back it up again after your first \`vault new-key\`: until then \`verify-backup\` will report this copy as stale, correctly.\n`.trim(),
   )
   const answer = (
     await deps.promptLine(
@@ -286,13 +330,21 @@ async function offerIcloudBackup(ctx: CommandContext, resolved: ResolvedVaultPat
     .trim()
     .toLowerCase()
   if (answer !== "yes") {
-    deps.stdout.write(`Skipped. Back it up whenever you like with: candle vault backup --to ${ICLOUD_SHORTHAND}\n`)
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `Skipped. Back it up whenever you like with: candle vault backup --to ${ICLOUD_SHORTHAND}\n`.trim(),
+    )
     return
   }
   const code = await vaultBackup(["--to", ICLOUD_SHORTHAND, "--keystore", resolved.path], ctx)
   if (code !== 0) {
-    deps.stdout.write(
-      `\nThe vault itself is created and verified; only the copy failed. Run it again when you have dealt with the reason above: candle vault backup --to ${ICLOUD_SHORTHAND}\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `\nThe vault itself is created and verified; only the copy failed. Run it again when you have dealt with the reason above: candle vault backup --to ${ICLOUD_SHORTHAND}\n`.trim(),
     )
   }
 }

@@ -230,7 +230,13 @@ export async function profileUse(args: string[], ctx: CommandContext): Promise<n
   // that can be acted on.
   const envProfile = deps.env.CANDLE_PROFILE?.trim()
   if (envProfile && envProfile !== name) {
-    if (json) deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.\n`)
+    if (json)
+      notice(
+        deps,
+        "stderr",
+        "note",
+        `CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.\n`.trim(),
+      )
     else
       notice(
         deps,
@@ -256,7 +262,13 @@ export async function profileUse(args: string[], ctx: CommandContext): Promise<n
       username = liveUsername
       await deps.updateProfile(name, { account: live, username: liveUsername, accountCachedAt: deps.now() })
     } else {
-      if (json) deps.stderr.write(`Could not refresh the account for ${name} (${failure}); keeping the cached value.\n`)
+      if (json)
+        notice(
+          deps,
+          "stderr",
+          "warning",
+          `Could not refresh the account for ${name} (${failure}); keeping the cached value.\n`.trim(),
+        )
       else
         notice(
           deps,
@@ -270,7 +282,13 @@ export async function profileUse(args: string[], ctx: CommandContext): Promise<n
     // from a working one. Without this the operator learns it holds no credentials from the next
     // authenticated command, one message removed from the cause. Still exit 0: the switch is what
     // was asked for, and it happened.
-    if (json) deps.stderr.write(`No stored credentials for ${name}. Run: candle auth login --profile ${name}\n`)
+    if (json)
+      notice(
+        deps,
+        "stderr",
+        "note",
+        `No stored credentials for ${name}. Run: candle auth login --profile ${name}\n`.trim(),
+      )
     else
       notice(deps, "stderr", "warning", `No stored credentials for ${name}. Run:\ncandle auth login --profile ${name}`)
   }

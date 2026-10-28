@@ -13,6 +13,7 @@ import { join } from "node:path"
 import { mnemonicToAccount } from "viem/accounts"
 import type { Deps } from "../deps"
 import { FIXTURE_EVM_0, FIXTURE_EVM_1 } from "../evm-lite.test"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { SECRET_REFS } from "../secret-store"
 import {
@@ -77,10 +78,14 @@ describe("E9: restore --evm-count", () => {
   test("derives 0..2 on m/44'/60'/n'/0/0 as EVM vault keys, sets nextIndex.evm = 3, and discovery has no evm count", async () => {
     const h = await harness()
     expect(await h.restore(["--count", "1", "--evm-count", "3"])).toBe(0)
-    expect(h.stdout.text).toContain(`${FIXTURE_EVM_0}  m/44'/60'/0'/0/0  vault`)
-    expect(h.stdout.text).toContain(`${FIXTURE_EVM_1}  m/44'/60'/1'/0/0  vault`)
-    expect(h.stdout.text).toContain(`${EVM_2}  m/44'/60'/2'/0/0  vault`)
-    expect(h.stdout.text).toContain("evm: indices 0 to 2, on m/44'/60'/n'/0/0.")
+    expect(humanText(h.stdout.text)).toContain(
+      humanText(`Address ${FIXTURE_EVM_0} Derivation m/44'/60'/0'/0/0 Role vault`),
+    )
+    expect(humanText(h.stdout.text)).toContain(
+      humanText(`Address ${FIXTURE_EVM_1} Derivation m/44'/60'/1'/0/0 Role vault`),
+    )
+    expect(humanText(h.stdout.text)).toContain(humanText(`Address ${EVM_2} Derivation m/44'/60'/2'/0/0 Role vault`))
+    expect(humanText(h.stdout.text)).toContain(humanText("EVM indices 0 to 2, on m/44'/60'/n'/0/0"))
 
     const vault = await h.reopen()
     try {
@@ -118,8 +123,10 @@ describe("E9: restore --evm-count", () => {
     const h = await harness()
     expect(await h.restore(["--count", "1"])).toBe(0)
     expect(h.stdout.text).not.toContain("m/44'/60'")
-    expect(h.stdout.text).toContain(
-      "evm: none. If this root has EVM keys, re-run with --evm-count <n>; the EVM branch is never gap-scanned.",
+    expect(humanText(h.stdout.text)).toContain(
+      humanText(
+        "evm: none. If this root has EVM keys, re-run with --evm-count <n>; the EVM branch is never gap-scanned.",
+      ),
     )
     const vault = await h.reopen()
     try {
@@ -146,8 +153,10 @@ describe("E9: restore --evm-count", () => {
         }),
     ])
     expect(await h.restore(["--count", "1", "--evm-count", "2"])).toBe(0)
-    expect(h.stdout.text).toContain(`${FIXTURE_EVM_1}  m/44'/60'/1'/0/0  vault  (this account imported it)`)
-    expect(h.stdout.text).toContain("1 of them are addresses this account imported")
+    expect(humanText(h.stdout.text)).toContain(
+      humanText(`Address ${FIXTURE_EVM_1} Derivation m/44'/60'/1'/0/0 Role vault This account imported it yes`),
+    )
+    expect(humanText(h.stdout.text)).toContain(humanText("1 of them are addresses this account imported"))
     const vault = await h.reopen()
     try {
       const flagged = vault.index.entries.find((entry) => entry.address === FIXTURE_EVM_1)
@@ -177,7 +186,9 @@ describe("E9: restore --evm-count", () => {
         jsonResponse(200, { success: true, page: [row("0x000000000000000000000000000000000000dEaD")], isDone: true }),
     ])
     expect(await h.restore(["--count", "1", "--evm-count", "1"])).toBe(3)
-    expect(h.stdout.text).toContain("1 address(es) this account imported were NOT derived by this restore")
+    expect(humanText(h.stdout.text)).toContain(
+      humanText("1 address(es) this account imported were NOT derived by this restore"),
+    )
     expect(h.stdout.text).toContain("0x000000000000000000000000000000000000dEaD")
   })
 })

@@ -166,7 +166,7 @@ export async function imageUpload(args: string[], ctx: CommandContext): Promise<
       )
       return 1
     }
-    if (ctx.json) ctx.deps.stderr.write(uploadNotice(image))
+    if (ctx.json) notice(ctx.deps, "stderr", "note", uploadNotice(image).trim())
     else notice(ctx.deps, "stderr", "warning", uploadNotice(image).trimEnd())
     const banner = parsed.booleans.has("--banner")
     const imageUrl = safeText(await uploadImage(ctx, key, image, banner ? "banner" : "image"))

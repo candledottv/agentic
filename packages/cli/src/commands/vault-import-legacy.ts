@@ -17,6 +17,8 @@
 import { readFile } from "node:fs/promises"
 import { isUsageError, parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeFields } from "../human-output"
+import { notice } from "../presentation"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { VaultError } from "../vault/errors"
@@ -301,19 +303,45 @@ function reportDone(
     return 0
   }
   if (result.idempotent && result.migrated === 0) {
-    deps.stdout.write(`Every address in ${result.path} is already in the vault; nothing was written.\n`)
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `Every address in ${result.path} is already in the vault; nothing was written.\n`.trim(),
+    )
   } else {
-    deps.stdout.write(`Migrated ${result.migrated} TEE wallet key(s) from ${result.path} into ${result.vaultPath}.\n`)
+    writeFields(
+      deps,
+      "stdout",
+      [
+        ["Keys", result.migrated],
+        ["From", result.path],
+        ["Vault", result.vaultPath],
+      ],
+      "TEE wallet keys migrated",
+    )
     for (const row of result.addresses) {
-      deps.stdout.write(`  ${row.address}  ${row.lifecycle}  ${row.label || "(none)"}\n`)
+      writeFields(deps, "stdout", [
+        ["Address", row.address],
+        ["Lifecycle", row.lifecycle],
+        ["Label", row.label],
+      ])
     }
     if (result.skipped > 0) {
-      deps.stdout.write(`Skipped ${result.skipped} address(es) already present in the vault.\n`)
+      notice(deps, "stdout", "note", `Skipped ${result.skipped} address(es) already present in the vault.\n`.trim())
     }
   }
-  deps.stdout.write(
-    `\nThe Phase 1 file was left in place. A 0.9.x binary reading it still sees that stale copy; sweep records written into the vault are not mirrored back. Run \`candle vault retire-legacy\` after a verified backup to rename it.\n`,
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `\nThe Phase 1 file was left in place. A 0.9.x binary reading it still sees that stale copy; sweep records written into the vault are not mirrored back. Run \`candle vault retire-legacy\` after a verified backup to rename it.\n`.trim(),
   )
-  deps.stdout.write(`The recovery phrase does not restore these entries; the vault file plus a factor does.\n`)
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `The recovery phrase does not restore these entries; the vault file plus a factor does.\n`.trim(),
+  )
   return 0
 }

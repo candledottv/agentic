@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { canonicalAuthorizationPayloadBytes } from "../../../sdk/src/authorization-signature"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import { type SolanaScenario, scenarioRpcResult, swapScenario, tokenApprove } from "../solana-verify.fixtures"
@@ -320,8 +321,8 @@ describe("TEE CLI trading", () => {
     ).toBe(true)
     expect(f.calls.filter((call) => call.path === "/rpc").some((call) => call.headers.has("x-api-key"))).toBe(false)
     expect(JSON.parse(f.stdout.text).quote).toMatchObject({ venue: "jupiter", minimumReceived: "0.123456 USDC" })
-    expect(f.stderr.text).toContain("Tier fee: 50 bps")
-    expect(f.stderr.text).toContain("Price impact: 0.1%")
+    expect(humanText(f.stderr.text)).toContain(humanText("Tier fee: 50 bps"))
+    expect(humanText(f.stderr.text)).toContain(humanText("Price impact: 0.1%"))
   })
   for (const venue of ["curve", "jupiter", "dflow"])
     test(`token rail displays ${venue} and R5 warnings before sign`, async () => {
@@ -332,7 +333,7 @@ describe("TEE CLI trading", () => {
       expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", "tee", "--yes", "--json"], f.deps)).toBe(0)
       const build = f.calls.find((call) => call.path.endsWith("trade/agent/build"))
       expect(build?.body).toMatchObject({ mint, side: "buy", quoteAsset: "sol" })
-      expect(f.stderr.text).toContain("Issuer can move or burn tokens.")
+      expect(humanText(f.stderr.text)).toContain(humanText("Issuer can move or burn tokens."))
       expect(JSON.parse(f.stdout.text).quote.venue).toBe(venue)
     })
   test("percentage sell sums classic and Token-2022 holdings in raw units", async () => {
@@ -382,7 +383,7 @@ describe("TEE CLI trading", () => {
     test("a base swap whose build pays someone else's account is refused", async () => {
       const f = await fixture({ scenario: (honest) => swapScenario({ ...honest, receiveRaw: 0n }) })
       expect(await run(swapArgs, f.deps)).toBe(1)
-      expect(JSON.parse(f.stdout.text).message).toContain("receive 0 raw")
+      expect(humanText(JSON.parse(f.stdout.text).message)).toContain(humanText("receive 0 raw"))
       expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
     })
     test("a Jupiter sell that delivers less than the minimum shown is refused, even by less than the fee", async () => {
@@ -399,7 +400,7 @@ describe("TEE CLI trading", () => {
     test("a base swap that delivers less than the minimum shown is refused", async () => {
       const f = await fixture({ scenario: (honest) => swapScenario({ ...honest, receiveRaw: 123456n - 1000n }) })
       expect(await run(swapArgs, f.deps)).toBe(1)
-      expect(JSON.parse(f.stdout.text).message).toContain("less than the 123456 confirmed")
+      expect(humanText(JSON.parse(f.stdout.text).message)).toContain(humanText("less than the 123456 confirmed"))
       expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
     })
     test("the honest build is simulated over the wallet's RPC, then signed", async () => {
@@ -487,7 +488,7 @@ describe("TEE CLI trading", () => {
       linkedWalletId: "wallet",
     })
     expect(f.calls.find((call) => call.path.endsWith("self/confirm"))?.body.signature).toBe(signature)
-    expect(f.stderr.text).toContain("Maximum launch debit: 30000000")
+    expect(humanText(f.stderr.text)).toContain(humanText("Maximum launch debit: 30000000"))
   })
   // BE-1721: a Solana launch --buy is an atomic launch now, its buy its own leg; its tests,
   // the whole-unit amounts included, are in launch-atomic.test.ts.
@@ -570,7 +571,7 @@ describe("TEE CLI trading", () => {
       expect(uploads(f.calls)[0]?.bytes).toEqual(pngBytes)
       expect(f.calls.find((call) => call.path.endsWith("self/build"))?.body?.bannerUrl).toBe(hostedImage)
       expect(lastJson(f.stdout.text).bannerUrl).toBe(hostedImage)
-      expect(f.stderr.text).toContain("public and permanent")
+      expect(humanText(f.stderr.text)).toContain(humanText("public and permanent"))
     })
 
     test("--banner https URL passes through without any upload", async () => {
@@ -616,7 +617,7 @@ describe("TEE CLI trading", () => {
       expect(JSON.stringify(build?.body)).not.toContain(path)
       expect(Object.keys(build?.body ?? {})).not.toContain("imagePath")
       // The publication is said before the confirm, and the result names the URL that was used.
-      expect(f.stderr.text).toContain("The file becomes public and permanent")
+      expect(humanText(f.stderr.text)).toContain(humanText("The file becomes public and permanent"))
       expect(f.stderr.text).toContain(`Image: ${hostedImage}`)
       expect(lastJson(f.stdout.text)).toMatchObject({ kind: "launch", imageUrl: hostedImage })
     })
@@ -642,7 +643,9 @@ describe("TEE CLI trading", () => {
         code: "RATE_LIMITED",
         message: "Too many image uploads; retry shortly",
       })
-      expect(f.stderr.text).toContain("The launch was not started, and its id launch-1 is unused.")
+      expect(humanText(f.stderr.text)).toContain(
+        humanText("The launch was not started, and its id launch-1 is unused."),
+      )
       expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
       expect(f.calls.at(-1)?.claims).toBe(0)
       // The same id launches once the route accepts the file: the failure did not consume it.
@@ -673,7 +676,7 @@ describe("TEE CLI trading", () => {
       const f = await fixture()
       const path = await f.file("logo.png", pngBytes)
       expect(await run([...launchArgs, "--image", path], f.deps)).toBe(2)
-      expect(lastJson(f.stdout.text).message).toContain("not both")
+      expect(humanText(lastJson(f.stdout.text).message)).toContain(humanText("not both"))
       const neither = launchArgs.filter((arg, i) => arg !== "--image-url" && launchArgs[i - 1] !== "--image-url")
       expect(await run(neither, f.deps)).toBe(2)
       expect(lastJson(f.stdout.text)).toMatchObject({ ok: false, code: "USAGE" })
@@ -827,7 +830,7 @@ describe("TEE CLI trading", () => {
       )
       expect(f.stderr.text).toContain("known-hash")
       expect(f.stderr.text).toContain(`leg ${leg}`)
-      expect(f.stderr.text).toContain("Do not automatically retry")
+      expect(humanText(f.stderr.text)).toContain(humanText("Do not automatically retry"))
       expect(f.calls.filter((call) => call.path === "/api/v1/agent/swap/submit")).toHaveLength(1)
     })
   // ── BE-1397 (BE-1123 item 12): a token trade that may have landed ──────────────────────────
@@ -857,7 +860,9 @@ describe("TEE CLI trading", () => {
         })
         expect(failure.message).toContain("candle swap status t-1")
         expect(f.stderr.text).toContain("trade-sig")
-        expect(f.stderr.text).toContain(stage === "executed" ? "Do not retry" : "Do not automatically retry")
+        expect(humanText(f.stderr.text)).toContain(
+          humanText(stage === "executed" ? "Do not retry" : "Do not automatically retry"),
+        )
         // One call past the embedded rail's support probe: nothing is re-sent.
         expect(f.calls.filter((call) => call.path === path)).toHaveLength(rail.startsWith("embedded") ? 2 : 1)
       })
@@ -995,7 +1000,7 @@ describe("BE-355: rate limits (T10, T11)", () => {
     )
     expect(rpcMethods(f)).toEqual(["getBalance", "getBalance"])
     expect(f.calls.some((c) => /\/(sign|submit|execute)$/.test(c.path))).toBe(false)
-    expect(f.stderr.text).toContain("Solana RPC: localhost (CANDLE_SOLANA_RPC_URL)")
+    expect(humanText(f.stderr.text)).toContain(humanText("Solana RPC: localhost (CANDLE_SOLANA_RPC_URL)"))
   })
 
   test("T10: pre-profile: the suggestion is D3's pre-profile text byte for byte", async () => {
@@ -1073,7 +1078,7 @@ describe("BE-505 (R8.4): the settled receipt of a base-pair swap", () => {
     })
     const f = await fixture({ swapSubmit: submitted(measured) })
     expect(await run(swapArgs, f.deps)).toBe(0)
-    expect(f.stderr.text).toContain("settled 0.123789 USDC\n")
+    expect(humanText(f.stderr.text)).toContain(humanText("settled 0.123789 USDC\n"))
     expect(f.stderr.text).not.toContain("Re-check")
     const out = JSON.parse(f.stdout.text)
     expect(out.settlement).toEqual(measured)
@@ -1084,8 +1089,10 @@ describe("BE-505 (R8.4): the settled receipt of a base-pair swap", () => {
     test(`${state}: prints the state and names the job read, never the receipt route`, async () => {
       const f = await fixture({ swapSubmit: submitted(settlement({ state })) })
       expect(await run(swapArgs, f.deps)).toBe(0)
-      expect(f.stderr.text).toContain(
-        `Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/test-1 (candle swap status test-1).`,
+      expect(humanText(f.stderr.text)).toContain(
+        humanText(
+          `Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/test-1 (candle swap status test-1).`,
+        ),
       )
       expect(f.stderr.text).not.toContain("receipts")
       expect(f.stderr.text).not.toMatch(/^settled /m)
@@ -1096,8 +1103,8 @@ describe("BE-505 (R8.4): the settled receipt of a base-pair swap", () => {
   test("settled without a measured amount prints no number", async () => {
     const f = await fixture({ swapSubmit: submitted(settlement({ state: "settled" })) })
     expect(await run(swapArgs, f.deps)).toBe(0)
-    expect(f.stderr.text).toContain(
-      "Settlement: settled, amount not measured. Re-check with GET /api/v1/agent/swap/jobs/test-1",
+    expect(humanText(f.stderr.text)).toContain(
+      humanText("Settlement: settled, amount not measured. Re-check with GET /api/v1/agent/swap/jobs/test-1"),
     )
     expect(f.stderr.text).not.toMatch(/^settled /m)
   })
@@ -1105,7 +1112,9 @@ describe("BE-505 (R8.4): the settled receipt of a base-pair swap", () => {
   test("an older API with no settlement is not measured: no amount, no zero, no settlement key invented", async () => {
     const f = await fixture({ swapSubmit: submitted(undefined) })
     expect(await run(swapArgs, f.deps)).toBe(0)
-    expect(f.stderr.text).toContain("Settlement: not measured. Re-check with GET /api/v1/agent/swap/jobs/test-1")
+    expect(humanText(f.stderr.text)).toContain(
+      humanText("Settlement: not measured. Re-check with GET /api/v1/agent/swap/jobs/test-1"),
+    )
     expect(f.stderr.text).not.toMatch(/settled 0/)
     const out = JSON.parse(f.stdout.text)
     expect("settlement" in out).toBe(false)
@@ -1116,7 +1125,7 @@ describe("BE-505 (R8.4): the settled receipt of a base-pair swap", () => {
     const odd = { state: "reconciling", settledOutRaw: "12" }
     const f = await fixture({ swapSubmit: submitted(odd) })
     expect(await run(swapArgs, f.deps)).toBe(0)
-    expect(f.stderr.text).toContain("Settlement: not measured.")
+    expect(humanText(f.stderr.text)).toContain(humanText("Settlement: not measured."))
     expect(JSON.parse(f.stdout.text).settlement).toEqual(odd)
   })
 

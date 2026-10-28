@@ -18,6 +18,7 @@ import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
+import { writeFields, writeTable } from "../human-output"
 import {
   activeSigner,
   confirmSignerPin,
@@ -28,8 +29,9 @@ import {
   type SignerView,
   signOwnerChange,
 } from "../key-signers"
+import { notice, terminalStyle } from "../presentation"
 import { apiKeyPrefix, candleEnvironment, effectiveProfileFields, printIdentity } from "../profiles"
-import { errorEnvelope, formatTimestamp, renderTable, writeLocalFailure, writeUsageFailure } from "../render"
+import { errorEnvelope, formatTime, renderTable, writeLocalFailure, writeUsageFailure } from "../render"
 import { walletSignerRef } from "../secret-store"
 import { CONFIRM_WORD, shortAddress } from "../vault/promote-support"
 import { type KeyRow, labelCell } from "./keys"
@@ -443,7 +445,7 @@ function writeRebindFailure(
   if (json) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...(suggestion ? { suggestion } : {}) })}\n`)
   } else {
-    deps.stderr.write(`${code}: ${message}${suggestion ? ` ${suggestion}` : ""}\n`)
+    writeLocalFailure(deps, { code, message, ...(suggestion ? { suggestion } : {}) }, false)
   }
   return 1
 }
@@ -642,7 +644,12 @@ export async function teeRebind(args: string[], ctx: CommandContext): Promise<nu
     if (json) {
       deps.stdout.write(`${JSON.stringify({ ...shown, command: "tee rebind" })}\n`)
     } else {
-      deps.stdout.write(`Nothing to move: every named wallet is already bound to ${shown.toKey.keyPrefix}.\n`)
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `Nothing to move: every named wallet is already bound to ${shown.toKey.keyPrefix}.\n`.trim(),
+      )
     }
     return 0
   }
@@ -731,7 +738,40 @@ export async function teeRebind(args: string[], ctx: CommandContext): Promise<nu
     ...ownerSection,
     "",
   ]
-  deps.stderr.write(`${screen.join("\n")}\n`)
+  if (json) deps.stderr.write(`${screen.join("\n")}\n`)
+  else {
+    writeTable(
+      deps,
+      "stderr",
+      ["Line", "Label", "Address", "From key", "Launch"],
+      moving.map((row, i) => [
+        String(i + 1),
+        labelCell(row.label ?? undefined),
+        row.address,
+        row.fromKeyPrefix,
+        row.allowLaunch ? "yes" : "no",
+      ]),
+      [{ priority: 3 }, { priority: 2 }, { id: true }, { id: true }, { priority: 1 }],
+    )
+    writeFields(deps, "stderr", [
+      ["Wallets moving", n],
+      ["API key", `${shown.toKey.keyPrefix}${keyLabel}${shown.toKey.paused ? " (paused)" : ""}`],
+      ["Candle account", accountLine],
+      ["API", apiUrl],
+      ["Environment", environment],
+    ])
+    if (shown.unchanged.length > 0)
+      notice(
+        deps,
+        "stderr",
+        "note",
+        `${shown.unchanged.length} already bound to this key: ${shown.unchanged.map((row) => row.label ?? row.address).join(", ")}`,
+      )
+    for (const warning of rebindCapWarnings(shown.toKey, moving)) notice(deps, "stderr", "warning", warning)
+    const launch = launchWarning(shown.toKey.keyPrefix, shown.toKey, moving)
+    if (launch) notice(deps, "stderr", "warning", launch)
+    for (const line of ownerSection) notice(deps, "stderr", "warning", line)
+  }
 
   const typed = await deps.promptLine(
     `Type ${CONFIRM_WORD} to move ${n === 1 ? "this wallet" : `these ${n} wallets`}: `,
@@ -781,13 +821,17 @@ export async function teeRebind(args: string[], ctx: CommandContext): Promise<nu
   }
   const auditIds = result.rebound.map((row) => row.auditId).filter((id): id is string => typeof id === "string")
   const owners = result.ownerChange
-  deps.stdout.write(
-    `Moved ${result.rebound.length} wallet${result.rebound.length === 1 ? "" : "s"} to ${result.toKey.keyPrefix}.` +
-      `${auditIds.length > 0 ? ` Audit ids: ${auditIds.join(", ")}` : ""}\n` +
-      (owners && targetSigner !== null
-        ? `Owner: key ${result.toKey.keyPrefix}'s signer ${targetSigner.fingerprint} (${owners.forwarded?.length ?? 0} changed, ${owners.alreadyOwned?.length ?? 0} already there).\n`
-        : ""),
-  )
+  writeFields(deps, "stdout", [
+    ["Wallets moved", result.rebound.length],
+    ["To key", result.toKey.keyPrefix],
+    ["Audit ids", auditIds.join(", ")],
+    [
+      "Owner",
+      owners && targetSigner !== null ? `key ${result.toKey.keyPrefix} signer ${targetSigner.fingerprint}` : undefined,
+    ],
+    ["Owners changed", owners?.forwarded?.length],
+    ["Owners already there", owners?.alreadyOwned?.length],
+  ])
   return 0
 }
 
@@ -843,23 +887,37 @@ export async function teeRebinds(args: string[], ctx: CommandContext): Promise<n
   }
   const rows = body.rebinds ?? []
   if (rows.length === 0) {
-    deps.stdout.write(`No rebinds on this account${walletId ? ` for ${walletId}` : ""}.\n`)
+    notice(deps, "stdout", "note", `No rebinds on this account${walletId ? ` for ${walletId}` : ""}.\n`.trim())
     return 0
   }
   deps.stdout.write(
     `${renderTable(
       ["Time", "Wallet", "From", "To", "Actor", "Device"],
       rows.map((row) => [
-        formatTimestamp(row.at),
+        formatTime(row.at),
         row.address,
         row.fromKeyPrefix,
         row.toKeyPrefix,
         row.actor,
         row.actorDevicePrefix ?? "",
       ]),
+      {
+        style: terminalStyle(deps, "stdout"),
+        width: terminalStyle(deps, "stdout").width,
+        indent: 2,
+        rule: false,
+        columns: [
+          { priority: 2 },
+          { id: true },
+          { id: true },
+          { id: true },
+          { priority: 1 },
+          { id: true, priority: 3 },
+        ],
+      },
     )}\n`,
   )
-  if (rows.some((row) => row.actor === "device")) deps.stdout.write(`${PORTAL_REVOKE_LINE}\n`)
+  if (rows.some((row) => row.actor === "device")) notice(deps, "stdout", "note", `${PORTAL_REVOKE_LINE}\n`.trim())
   return 0
 }
 

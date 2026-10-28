@@ -21,6 +21,7 @@
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeFields } from "../human-output"
 import { HYPERLIQUID_EXCHANGE_URLS, type HyperliquidTypedData, hyperliquidExchangeBody } from "../hyperliquid"
 import {
   CANDLE_PERPS_WITHDRAW_PINS,
@@ -32,6 +33,7 @@ import {
   verifyWithdrawMapping,
   verifyWithdrawSendAsset,
 } from "../hyperliquid-withdraw"
+import { notice } from "../presentation"
 import { writeUsageFailure } from "../render"
 import { type Json, listTradingWallets, safeText, TradingError, tradingKey } from "../trading"
 import { isVaultError } from "../vault/errors"
@@ -102,9 +104,16 @@ async function withdrawStatus(ctx: CommandContext, id: string): Promise<number> 
   if (ctx.json) return printTradingResult(ctx, result)
   const to = (result.to ?? {}) as Record<string, unknown>
   const relay = result.relay as { status?: unknown } | null | undefined
-  ctx.deps.stdout.write(
-    `Withdrawal ${safeText(id)}: ${safeText(result.status)}, ${safeText(result.amountUsdc)} USDC to ${safeText(to.address)} (${safeText(to.chain)}), fees ${safeText(result.feesUsdc)} USDC${result.failureReason ? `, ${safeText(result.failureReason)}` : ""}. Relay: ${relay ? safeText(relay.status) : "not read"}.\n`,
-  )
+  writeFields(ctx.deps, "stdout", [
+    ["Withdrawal", safeText(id)],
+    ["Status", safeText(result.status)],
+    ["Amount", `${safeText(result.amountUsdc)} USDC`],
+    ["To", safeText(to.address)],
+    ["Chain", safeText(to.chain)],
+    ["Fees", `${safeText(result.feesUsdc)} USDC`],
+    ["Failure", result.failureReason ? safeText(result.failureReason) : undefined],
+    ["Relay", relay ? safeText(relay.status) : undefined],
+  ])
   return 0
 }
 
@@ -159,7 +168,7 @@ export async function perpsWithdraw(args: string[], ctx: CommandContext): Promis
         "This key has no Solana TEE wallet, so --to solana has nowhere to land. Withdraw --to hood instead.",
       )
 
-    ctx.deps.stderr.write(`Withdrawal: ${id}\n`)
+    writeFields(ctx.deps, "stderr", [["Withdrawal", id]])
     const build = (await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw", {
       clientWithdrawalId: id,
       amountUsdc: amount,
@@ -181,22 +190,29 @@ export async function perpsWithdraw(args: string[], ctx: CommandContext): Promis
     if (!mapping.ok) throw refused(mapping.reason)
 
     // The decoded withdrawal, then one unlock that names it, then one typed confirm.
-    const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
-    output.write(
-      `Withdraw ${formatWithdrawAmount(amountMicros)} USDC from Hyperliquid account ${safeText(wallet.address)} through Relay.\n`,
-    )
-    output.write(
-      `Relay fees ${safeText(build.feesUsdc)} USDC; you receive about ${safeText(build.netUsdc)} USDC, at least ${safeText(build.minimumOutUsdc)}.\n`,
-    )
-    output.write(`To this key's ${to === "hood" ? "Hood" : "Solana"} TEE wallet:\n`)
-    output.write(`to   ${groupAddress(build.to.address)}\n`)
+    writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
+      ["Withdraw", `${formatWithdrawAmount(amountMicros)} USDC`],
+      ["Hyperliquid account", safeText(wallet.address)],
+      ["Route", "Relay"],
+      ["Relay fees", `${safeText(build.feesUsdc)} USDC`],
+      ["Estimated received", `${safeText(build.netUsdc)} USDC`],
+      ["Minimum received", `${safeText(build.minimumOutUsdc)} USDC`],
+      ["Destination", `this key's ${to === "hood" ? "Hood" : "Solana"} TEE wallet`],
+      ["To", groupAddress(build.to.address)],
+    ])
+
     const positions = await perpsRequest(
       ctx,
       key,
       `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(wallet.id)}`,
     ).catch(() => null)
     if (Array.isArray(positions?.positions) && positions.positions.length > 0)
-      output.write("This account has open positions: withdrawing margin raises their liquidation risk.\n")
+      notice(
+        ctx.deps,
+        ctx.json ? "stderr" : "stdout",
+        "warning",
+        "This account has open positions: withdrawing margin raises their liquidation risk.\n".trim(),
+      )
 
     const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, resolvedVault.path, raw, {
@@ -253,7 +269,7 @@ export async function perpsWithdraw(args: string[], ctx: CommandContext): Promis
     if (refusal)
       throw new TradingError("PERPS_VENUE_REFUSED", refusal, { details: { clientWithdrawalId: id, exchange } })
 
-    ctx.deps.stderr.write("Submitted to Hyperliquid; following Relay's fill.\n")
+    notice(ctx.deps, "stderr", "note", "Submitted to Hyperliquid; following Relay's fill.\n".trim())
     const deadline = ctx.deps.now() + WITHDRAW_POLL_MS
     let status: Json = await perpsRequest(ctx, key, `/api/v1/agent/perps/withdraw/${encodeURIComponent(id)}`)
     while (!TERMINAL.has(String(status.status)) && ctx.deps.now() < deadline) {
@@ -261,8 +277,11 @@ export async function perpsWithdraw(args: string[], ctx: CommandContext): Promis
       status = await perpsRequest(ctx, key, `/api/v1/agent/perps/withdraw/${encodeURIComponent(id)}`)
     }
     if (!TERMINAL.has(String(status.status)))
-      ctx.deps.stderr.write(
-        `Still ${safeText(status.status)} after 10 minutes. Check it with candle perps withdraw status ${id}.\n`,
+      notice(
+        ctx.deps,
+        "stderr",
+        "note",
+        `Still ${safeText(status.status)} after 10 minutes. Check it with candle perps withdraw status ${id}.\n`.trim(),
       )
     return printTradingResult(ctx, { ...status, signature, exchange } as Json)
   } catch (error) {

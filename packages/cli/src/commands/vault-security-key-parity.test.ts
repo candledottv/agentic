@@ -30,6 +30,7 @@ import { base64 } from "@scure/base"
 import type { CommandContext, Deps } from "../deps"
 import { AUTHDATA_FLAG_UP, AUTHDATA_FLAG_UV, handleLine, RP_ID } from "../fido2-helper/protocol"
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { formatTime } from "../render"
 import { createCapture, createTestDeps } from "../test-support"
@@ -357,23 +358,31 @@ describe("T1, T2, T3, T6: a sealed copy carries the passphrase and the security 
     expect(b.calls.every((call) => call.pin === PIN)).toBe(true)
     // Row B1 before the PIN; no `Passphrase only:` line, since the passphrase was not the only answer.
     const b1 = b.events.findIndex((e) =>
-      e.includes("so this backup is a sealed copy: it carries the passphrase and any security key"),
+      humanText(e).includes(
+        humanText("so this backup is a sealed copy: it carries the passphrase and any security key"),
+      ),
     )
     const pin = b.events.findIndex((e) => e.startsWith("secret: "))
     expect(b1).toBeGreaterThan(-1)
     expect(b1).toBeLessThan(pin)
     expect(b.stderr.text).not.toContain(PASSPHRASE_ONLY_PREFIX)
-    expect(b.stderr.text).toContain("Touch YubiKey 5 NFC to unlock the vault.")
+    expect(humanText(b.stderr.text)).toContain(humanText("Touch YubiKey 5 NFC to unlock the vault."))
     // The report: what the copy carries, what opened it, and that the passphrase came along.
-    expect(b.stdout.text).toContain(
-      `  sealed        yes: carries passphrase ${v.passphraseId}, security key ${v.keyId}; left out synced passkey s1, Touch ID t1`,
+    expect(humanText(b.stdout.text)).toContain(
+      humanText(
+        `  Sealed yes Carries passphrase ${v.passphraseId}, security key ${v.keyId} Left out synced passkey s1, Touch ID t1`,
+      ),
     )
-    expect(b.stdout.text).toContain(
-      `  verified with security key ${v.keyId} (the copy was re-opened with it); passphrase ${v.passphraseId} carried byte for byte`,
+    expect(humanText(b.stdout.text)).toContain(
+      humanText(
+        `  verified with security key ${v.keyId} (the copy was re-opened with it); passphrase ${v.passphraseId} carried byte for byte`,
+      ),
     )
-    expect(b.stdout.text).toContain("  steps         all 8 passed, in order")
-    expect(b.stdout.text).toContain(sealedCopyNote([v.keyId]))
-    expect(b.stdout.text).toContain("Removing a key from this vault later does not remove it from this copy.")
+    expect(humanText(b.stdout.text)).toContain(humanText("Steps all 8 passed, in order"))
+    expect(humanText(b.stdout.text)).toContain(humanText(sealedCopyNote([v.keyId])))
+    expect(humanText(b.stdout.text)).toContain(
+      humanText("Removing a key from this vault later does not remove it from this copy."),
+    )
     expect(b.stdout.text + b.stderr.text).not.toContain(PIN)
     expect(b.stdout.text + b.stderr.text).not.toContain(HMAC_SECRET)
 
@@ -430,8 +439,8 @@ describe("T1, T2, T3, T6: a sealed copy carries the passphrase and the security 
       const to = join(icloud, `not-used-${flag}.enc`)
       const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: home }, lines: [v.keyId], secrets: [PIN] })
       expect(await run(["vault", "backup", "--to", to, "--factor", flag, "--keystore", v.vaultPath], b.deps)).toBe(0)
-      expect(b.stderr.text).toContain(
-        `--factor ${flag} is not used here: a sealed copy carries no Touch ID or synced passkey envelope.`,
+      expect(humanText(b.stderr.text)).toContain(
+        humanText(`--factor ${flag} is not used here: a sealed copy carries no Touch ID or synced passkey envelope.`),
       )
       // Then the restricted chooser, which the key answered.
       expect(b.asked[0]).toContain("Unlock with:")
@@ -450,18 +459,22 @@ describe("T1, T2, T3, T6: a sealed copy carries the passphrase and the security 
     expect(copy.envelopes.map((e) => e.factor)).toEqual(["passphrase"])
     expect(copy.envelopes.some((e) => e.domain === "apple-account")).toBe(false)
     // B1, then B2, both before the passphrase prompt.
-    const b1 = b.events.findIndex((e) => e.includes("so this backup is a sealed copy"))
+    const b1 = b.events.findIndex((e) => humanText(e).includes(humanText("so this backup is a sealed copy")))
     const b2 = b.events.findIndex((e) =>
-      e.includes(
-        `${PASSPHRASE_ONLY_PREFIX}a sealed copy opens with the passphrase or a security key, and this vault has no security key. Add one with: candle vault enroll security-key`,
+      humanText(e).includes(
+        humanText(
+          `${PASSPHRASE_ONLY_PREFIX}a sealed copy opens with the passphrase or a security key, and this vault has no security key. Add one with: candle vault enroll security-key`,
+        ),
       ),
     )
     const prompt = b.events.findIndex((e) => e.startsWith("secret: Vault passphrase"))
     expect(b1).toBeGreaterThan(-1)
     expect(b2).toBeGreaterThan(b1)
     expect(prompt).toBeGreaterThan(b2)
-    expect(b.stdout.text).toContain("This copy opens only with the passphrase it was sealed under")
-    expect(b.stdout.text).toContain("This vault had no security key for it to carry.")
+    expect(humanText(b.stdout.text)).toContain(
+      humanText("This copy opens only with the passphrase it was sealed under"),
+    )
+    expect(humanText(b.stdout.text)).toContain(humanText("This vault had no security key for it to carry."))
   })
 })
 
@@ -599,10 +612,12 @@ describe("T4, T5, T16: verify-backup and restore with either carried factor", ()
     // Human output with the key: the report names the factor and says the passphrase was carried.
     const human = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: home }, lines: [v.keyId], secrets: [PIN] })
     expect(await run(["vault", "verify-backup", to, "--keystore", v.vaultPath], human.deps)).toBe(0)
-    expect(human.stdout.text).toContain(
-      `  verified with security key ${v.keyId} (the copy was re-opened with it); passphrase ${v.passphraseId} carried byte for byte`,
+    expect(humanText(human.stdout.text)).toContain(
+      humanText(
+        `  verified with security key ${v.keyId} (the copy was re-opened with it); passphrase ${v.passphraseId} carried byte for byte`,
+      ),
     )
-    expect(human.stdout.text).toContain("  sealed        yes: carries passphrase")
+    expect(humanText(human.stdout.text)).toContain("Sealed yes Carries passphrase")
     expect(human.stdout.text).not.toContain("Fresh backup advised")
   })
 
@@ -646,8 +661,10 @@ describe("T4, T5, T16: verify-backup and restore with either carried factor", ()
     expect(
       await run(["vault", "verify-backup", to, "--factor", "security-key", "--keystore", v.vaultPath], byKey.deps),
     ).toBe(0)
-    expect(byKey.stdout.text).toContain(
-      `  verified with security key ${v.keyId} (the copy was re-opened with it); ${PASSPHRASE_NOT_EXERCISED}`,
+    expect(humanText(byKey.stdout.text)).toContain(
+      humanText(
+        `  verified with security key ${v.keyId} (the copy was re-opened with it); ${PASSPHRASE_NOT_EXERCISED}`,
+      ),
     )
     // And with --factor passphrase the copy's own passphrase proves the floor (row V2).
     const byOld = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: home }, secrets: [fresh, v.passphrase] })
@@ -667,8 +684,10 @@ describe("T4, T5, T16: verify-backup and restore with either carried factor", ()
       expect.stringContaining("Passphrase this backup was sealed under"),
     ])
     expect(byOld.calls).toEqual([])
-    expect(byOld.stderr.text).toContain(
-      `${PASSPHRASE_ONLY_PREFIX}the factor that opened this vault is not in ${to} as it is now, so the copy opens with the passphrase it was sealed under, which may predate a rotation.`,
+    expect(humanText(byOld.stderr.text)).toContain(
+      humanText(
+        `${PASSPHRASE_ONLY_PREFIX}the factor that opened this vault is not in ${to} as it is now, so the copy opens with the passphrase it was sealed under, which may predate a rotation.`,
+      ),
     )
   })
 
@@ -796,8 +815,8 @@ describe("T9, T10, T11: phrase show with a security key", () => {
       expect(p.asked.filter((a) => a.startsWith("secret:"))).toEqual([expect.stringContaining("PIN for YubiKey 5 NFC")])
       expect(p.asked.some((a) => a.includes("Vault passphrase"))).toBe(false)
       expect(p.calls.map((call) => call.op)).toEqual(flags.length === 0 ? ["probe", "assert"] : ["assert"])
-      expect(p.stderr.text).toContain("Touch YubiKey 5 NFC to show the recovery phrase.")
-      expect(p.stdout.text).toContain("Read-back matched")
+      expect(humanText(p.stderr.text)).toContain(humanText("Touch YubiKey 5 NFC to show the recovery phrase."))
+      expect(humanText(p.stdout.text)).toContain(humanText("Read-back matched"))
       // The record precedes the exposure: at the write that rendered the first word row, the
       // vault's generation had already moved.
       const lines2 = p.stdout.text.split("\n")
@@ -850,7 +869,9 @@ describe("T9, T10, T11: phrase show with a security key", () => {
     expect(await run(["vault", "phrase", "show", "--factor", "security-key", "--keystore", v.vaultPath], p.deps)).toBe(
       1,
     )
-    expect(p.stderr.text).toContain("without user presence (the UP flag is clear); nothing was derived")
+    expect(humanText(p.stderr.text)).toContain(
+      humanText("without user presence (the UP flag is clear); nothing was derived"),
+    )
     expect(p.stdout.text).not.toMatch(/\b1\. \w+/)
     expect(await readFile(v.vaultPath, "utf8")).toBe(original)
 
@@ -862,7 +883,7 @@ describe("T9, T10, T11: phrase show with a security key", () => {
       ),
     ).toBe(1)
     expect(JSON.parse(plain.stdout.text)).toMatchObject({ ok: false, code: "VAULT_UNLOCK_FAILED" })
-    expect(plain.stdout.text).toContain("UP flag is clear")
+    expect(humanText(plain.stdout.text)).toContain(humanText("UP flag is clear"))
     expect(plain.stdout.text + plain.stderr.text).not.toContain(HMAC_SECRET)
   })
 })
@@ -870,7 +891,9 @@ describe("T9, T10, T11: phrase show with a security key", () => {
 describe("T12: one Passphrase only: line before every passphrase-only prompt, and none where it is the only envelope", () => {
   /** The index of the line and of the passphrase prompt in the ordered log; the line must come first. */
   function lineBeforePrompt(h: Harness, text: string, prompt = "secret: ") {
-    const line = h.events.findIndex((e) => e.startsWith("stderr: ") && e.includes(`${PASSPHRASE_ONLY_PREFIX}${text}`))
+    const line = h.events.findIndex(
+      (e) => e.startsWith("stderr: ") && humanText(e).includes(humanText(`${PASSPHRASE_ONLY_PREFIX}${text}`)),
+    )
     const ask = h.events.findIndex((e) => e.startsWith(prompt))
     expect(line, `no line containing ${JSON.stringify(text)} in:\n${h.events.join("")}`).toBeGreaterThan(-1)
     expect(ask).toBeGreaterThan(line)
@@ -889,7 +912,9 @@ describe("T12: one Passphrase only: line before every passphrase-only prompt, an
     )
     // B1 comes before the first prompt of a sealed backup with no --factor: Andrew's case.
     const b1 = b.events.findIndex((e) =>
-      e.includes("so this backup is a sealed copy: it carries the passphrase and any security key"),
+      humanText(e).includes(
+        humanText("so this backup is a sealed copy: it carries the passphrase and any security key"),
+      ),
     )
     expect(b1).toBeGreaterThan(-1)
     expect(b1).toBeLessThan(b.events.findIndex((e) => e.startsWith("secret: ")))
@@ -968,14 +993,18 @@ describe("T12: one Passphrase only: line before every passphrase-only prompt, an
     expect(await run(["vault", "verify-backup", to, "--keystore", v.vaultPath], verify.deps)).toBe(0)
     // C1 before the live prompt: the synced passkey cannot be driven here.
     const c1 = verify.events.findIndex((e) =>
-      e.includes(
-        `${PASSPHRASE_ONLY_PREFIX}no other factor on this vault can be used on this machine (s1 synced passkey: unsupported-on-this-platform: `,
+      humanText(e).includes(
+        humanText(
+          `${PASSPHRASE_ONLY_PREFIX}no other factor on this vault can be used on this machine (s1 synced passkey: unsupported-on-this-platform: `,
+        ),
       ),
     )
     const livePrompt = verify.events.findIndex((e) => e.startsWith("secret: Vault passphrase"))
     const v2 = verify.events.findIndex((e) =>
-      e.includes(
-        `${PASSPHRASE_ONLY_PREFIX}the factor that opened this vault is not in ${to} as it is now, and no security key in it can be used here, so the copy opens with the passphrase it was sealed under, which may predate a rotation.`,
+      humanText(e).includes(
+        humanText(
+          `${PASSPHRASE_ONLY_PREFIX}the factor that opened this vault is not in ${to} as it is now, and no security key in it can be used here, so the copy opens with the passphrase it was sealed under, which may predate a rotation.`,
+        ),
       ),
     )
     const copyPrompt = verify.events.findIndex((e) => e.startsWith("secret: Passphrase this backup was sealed under"))
@@ -983,7 +1012,7 @@ describe("T12: one Passphrase only: line before every passphrase-only prompt, an
     expect(livePrompt).toBeGreaterThan(c1)
     expect(v2).toBeGreaterThan(livePrompt)
     expect(copyPrompt).toBeGreaterThan(v2)
-    expect(verify.stderr.text).toContain("Details: candle vault status")
+    expect(humanText(verify.stderr.text)).toContain(humanText("Details: candle vault status"))
   })
 
   // BE-337 (D1) retired rows F1 and F2 for F3: `factor add` opens with the passphrase or a security
@@ -1030,7 +1059,7 @@ describe("T12: one Passphrase only: line before every passphrase-only prompt, an
     )
     // The key being added is settled (its PIN typed) before the line and the passphrase, as before.
     const pin = first.events.findIndex((e) => e.startsWith("secret: PIN for"))
-    const line = first.events.findIndex((e) => e.includes(PASSPHRASE_ONLY_PREFIX))
+    const line = first.events.findIndex((e) => humanText(e).includes(humanText(PASSPHRASE_ONLY_PREFIX)))
     expect(pin).toBeGreaterThan(-1)
     expect(pin).toBeLessThan(line)
   })
@@ -1043,7 +1072,7 @@ describe("T12: one Passphrase only: line before every passphrase-only prompt, an
       s,
       `no other factor on this vault can be used on this machine (${v.keyId} security key: unavailable-on-this-device: `,
     )
-    expect(s.stderr.text).toContain("). Details: candle vault status")
+    expect(humanText(s.stderr.text)).toContain(humanText("). Details: candle vault status"))
   })
 
   test("no line on a passphrase-only vault, on init's re-prompt, or after the operator chose the passphrase", async () => {
@@ -1057,7 +1086,7 @@ describe("T12: one Passphrase only: line before every passphrase-only prompt, an
     expect(await run(["vault", "backup", "--to", join(icloud, "only.enc"), "--keystore", only.vaultPath], b.deps)).toBe(
       0,
     )
-    expect(b.stderr.text).toContain("so this backup is a sealed copy")
+    expect(humanText(b.stderr.text)).toContain(humanText("so this backup is a sealed copy"))
     expect(b.stderr.text).not.toContain(PASSPHRASE_ONLY_PREFIX)
 
     // init's re-prompt: the offer accepted, the passphrase asked again, no line.
@@ -1111,8 +1140,10 @@ describe("T13, T14, T18, T19, T20: old sealed copies, the floor check, and the s
 
     const verify = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: home }, secrets: [v.passphrase] })
     expect(await run(["vault", "verify-backup", to, "--keystore", v.vaultPath], verify.deps)).toBe(0)
-    expect(verify.stderr.text).toContain(`${PASSPHRASE_ONLY_PREFIX}${to} carries no security key envelope`)
-    expect(verify.stdout.text).toContain(freshBackupAdvice(to, [keyId]))
+    expect(humanText(verify.stderr.text)).toContain(
+      humanText(`${PASSPHRASE_ONLY_PREFIX}${to} carries no security key envelope`),
+    )
+    expect(humanText(verify.stdout.text)).toContain(humanText(freshBackupAdvice(to, [keyId])))
     const json = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: home }, secrets: [v.passphrase] })
     expect(await run(["vault", "verify-backup", to, "--json", "--keystore", v.vaultPath], json.deps)).toBe(0)
     expect(JSON.parse(json.stdout.text)).toMatchObject({
@@ -1136,9 +1167,11 @@ describe("T13, T14, T18, T19, T20: old sealed copies, the floor check, and the s
     await writeSidecar(path, { ...old, lastBackupSealed: true })
     const status = await harness({ env: { CANDLE_CONFIG_DIR: v.dir } })
     expect(await run(["vault", "status", "--keystore", v.vaultPath], status.deps)).toBe(0)
-    expect(status.stdout.text).toContain("sealed: opens with the passphrase only)")
-    expect(status.stdout.text).toContain(
-      `  fresh backup advised   the last sealed copy does not carry security key ${keyId}; a new \`candle vault backup\` to the same destination would open with it too.`,
+    expect(humanText(status.stdout.text)).toContain(humanText("sealed: opens with the passphrase only)"))
+    expect(humanText(status.stdout.text)).toContain(
+      humanText(
+        `  fresh backup advised   the last sealed copy does not carry security key ${keyId}; a new \`candle vault backup\` to the same destination would open with it too.`,
+      ),
     )
     expect(status.stdout.text).not.toContain(`security key ${keyId})`)
   })
@@ -1248,7 +1281,7 @@ describe("T13, T14, T18, T19, T20: old sealed copies, the floor check, and the s
     })
     expect(after?.lastBackupEnvelopeIds).toContain(v.keyId)
     const bound = await statusOf(v)
-    expect(bound.text).toContain(`sealed: opens with the passphrase or security key ${v.keyId})`)
+    expect(humanText(bound.text)).toContain(humanText(`sealed: opens with the passphrase or security key ${v.keyId})`))
     expect(bound.text).not.toContain("fresh backup advised")
     expect(bound.sidecar).toMatchObject({
       lastBackupEnvelopeIdsBound: true,
@@ -1265,10 +1298,12 @@ describe("T13, T14, T18, T19, T20: old sealed copies, the floor check, and the s
       lastVerifiedBackupAt: "2099-01-01T00:00:00.000Z",
     })
     const unbound = await statusOf(v)
-    expect(unbound.text).toContain(
-      `${formatTime("2099-01-01T00:00:00.000Z")} (icloud-drive, sealed: opens with the passphrase only)`,
+    expect(humanText(unbound.text)).toContain(
+      humanText(`${formatTime("2099-01-01T00:00:00.000Z")} (icloud-drive, sealed: opens with the passphrase only)`),
     )
-    expect(unbound.text).toContain(`fresh backup advised   the last sealed copy does not carry security key ${v.keyId}`)
+    expect(humanText(unbound.text)).toContain(
+      humanText(`fresh backup advised   the last sealed copy does not carry security key ${v.keyId}`),
+    )
     expect(unbound.text).not.toContain(`security key ${v.keyId})`)
     expect(unbound.sidecar).toMatchObject({ lastBackupEnvelopeIdsBound: false })
   })
@@ -1299,8 +1334,8 @@ describe("T13, T14, T18, T19, T20: old sealed copies, the floor check, and the s
       lastBackupIdsVerifiedAt: newStamp,
     })
     const status = await statusOf(v)
-    expect(status.text).toContain(
-      `${formatTime(newStamp)} (icloud-drive, sealed: opens with the passphrase or security key ${v.keyId})`,
+    expect(humanText(status.text)).toContain(
+      humanText(`${formatTime(newStamp)} (icloud-drive, sealed: opens with the passphrase or security key ${v.keyId})`),
     )
     expect(status.text).not.toContain("fresh backup advised")
     expect(status.sidecar).toMatchObject({ lastBackupEnvelopeIdsBound: true })
@@ -1330,8 +1365,10 @@ describe("T13, T14, T18, T19, T20: old sealed copies, the floor check, and the s
       lastBackupIdsVerifiedAt: stamp,
     })
     const status = await statusOf(v)
-    expect(status.text).toContain("(icloud-drive, sealed: opens with the passphrase only)")
-    expect(status.text).toContain(`fresh backup advised   the last sealed copy does not carry security key ${v.keyId}`)
+    expect(humanText(status.text)).toContain(humanText("(icloud-drive, sealed: opens with the passphrase only)"))
+    expect(humanText(status.text)).toContain(
+      humanText(`fresh backup advised   the last sealed copy does not carry security key ${v.keyId}`),
+    )
     expect(status.text).not.toContain(`security key ${v.keyId})`)
     expect(status.sidecar).toMatchObject({ lastBackupEnvelopeIdsBound: false })
   })
@@ -1361,7 +1398,7 @@ describe("BE-294 T11: the unlock menu inside BE-292's `among` and beside its Pas
     expect(b.calls.map((call) => call.op)).toEqual(["probe", "assert", "assert"])
     expect(b.stderr.text).not.toContain(PASSPHRASE_ONLY_PREFIX)
     // BE-292's B1 line comes before the menu.
-    const b1 = b.events.findIndex((e) => e.includes("so this backup is a sealed copy"))
+    const b1 = b.events.findIndex((e) => humanText(e).includes(humanText("so this backup is a sealed copy")))
     const menu = b.events.findIndex((e) => e.startsWith("line: Unlock with:"))
     expect(b1).toBeGreaterThan(-1)
     expect(menu).toBeGreaterThan(b1)
@@ -1382,7 +1419,7 @@ describe("BE-294 T11: the unlock menu inside BE-292's `among` and beside its Pas
         b.deps,
       ),
     ).toBe(0)
-    const notUsed = b.events.findIndex((e) => e.includes("--factor touch-id is not used here"))
+    const notUsed = b.events.findIndex((e) => humanText(e).includes(humanText("--factor touch-id is not used here")))
     const menu = b.events.findIndex((e) => e.startsWith("line: Unlock with:"))
     expect(notUsed).toBeGreaterThan(-1)
     expect(menu).toBeGreaterThan(notUsed)
@@ -1408,7 +1445,7 @@ describe("BE-294 T11: the unlock menu inside BE-292's `among` and beside its Pas
     expect(h.asked.some((a) => a.includes("Unlock with:"))).toBe(false)
     expect(h.calls).toEqual([])
     const line = h.events.findIndex((e) =>
-      e.includes(`${PASSPHRASE_ONLY_PREFIX}this command opens with the passphrase only`),
+      humanText(e).includes(humanText(`${PASSPHRASE_ONLY_PREFIX}this command opens with the passphrase only`)),
     )
     const prompt = h.events.findIndex((e) => e.startsWith("secret: Vault passphrase"))
     expect(line).toBeGreaterThan(-1)

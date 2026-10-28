@@ -16,6 +16,7 @@ import { base64, base64urlnopad } from "@scure/base"
 import type { CommandContext, Deps } from "../deps"
 import { ENCLAVE_BUNDLE_NAME, ENCLAVE_EXECUTABLE_RELATIVE, handleEnclaveLine } from "../enclave-helper/protocol"
 import { type EnclaveLogEntry, type EnclaveScript, scriptedEnclaveBackend } from "../enclave-helper/test-backend"
+import { humanText } from "../human-output.test-support"
 import { realSpawnHelper, run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import { pointFromSpki } from "../vault/ecies"
@@ -220,10 +221,10 @@ describe("factor add touch-id: the ceremony", () => {
     )
     const secretsAllocated = tracking.stop()
     expect(code).toBe(0)
-    expect(add.stdout.text).toContain("Added Touch ID factor")
-    expect(add.stdout.text).toContain("verified   the vault was re-read and opened with Touch ID")
-    expect(add.stdout.text).toContain("Touch ID is a daily-use factor, not a recovery factor")
-    expect(add.stdout.text).toContain("1 recoverable factor(s)")
+    expect(humanText(add.stdout.text)).toContain(humanText("Added Touch ID factor"))
+    expect(humanText(add.stdout.text)).toContain(humanText("Verified vault re-read and opened with Touch ID"))
+    expect(humanText(add.stdout.text)).toContain(humanText("Touch ID is a daily-use factor, not a recovery factor"))
+    expect(humanText(add.stdout.text)).toContain(humanText("1 recoverable factor(s)"))
 
     // The passphrase was asked once, after the platform and helper checks, and nothing else.
     expect(add.asked).toEqual(["secret: Current vault passphrase, to unlock (input hidden): "])
@@ -341,7 +342,7 @@ describe("factor add touch-id: the ceremony", () => {
     expect(failure(add)).toMatchObject({ code: "VAULT_FACTOR_UNAVAILABLE" })
     expect(failure(add).message).toContain("missing entitlement")
     expect(await readVault(v.vaultPath)).toEqual(before)
-    expect(add.stderr.text).toContain("Nothing was written to the vault")
+    expect(humanText(add.stderr.text)).toContain(humanText("Nothing was written to the vault"))
   })
 
   test("a failed proof rolls the envelope back out of the file, deletes the key, and a retry succeeds", async () => {
@@ -360,8 +361,8 @@ describe("factor add touch-id: the ceremony", () => {
     expect(after.generation).toBe(before.generation + 2)
     expect(after.root.ciphertext).toBe(before.root.ciphertext)
     expect(JSON.parse(await readFile(add.script.store, "utf8"))).toEqual({})
-    expect(add.stderr.text).toContain("was removed from the vault again")
-    expect(add.stderr.text).toContain("Removed the Secure Enclave key")
+    expect(humanText(add.stderr.text)).toContain(humanText("was removed from the vault again"))
+    expect(humanText(add.stderr.text)).toContain(humanText("Removed the Secure Enclave key"))
 
     const retry = await harness({
       env: { CANDLE_CONFIG_DIR: v.dir },
@@ -654,7 +655,7 @@ describe("unlocking with Touch ID", () => {
     expect(status.calls.filter((call) => call.op === "decrypt").map((call) => call.reason)).toEqual([
       "unlock the Candle vault",
     ])
-    expect(status.stderr.text).toContain("Confirm with Touch ID to unlock the Candle vault.")
+    expect(humanText(status.stderr.text)).toContain(humanText("Confirm with Touch ID to unlock the Candle vault."))
 
     const newKey = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, script: { store: t.add.script.store } })
     expect(
@@ -712,7 +713,7 @@ describe("unlocking with Touch ID", () => {
       const h = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, script: { store: t.add.script.store } })
       expect(await run([...args, "--factor", "touch-id", "--keystore", t.vaultPath], h.deps)).not.toBe(0)
       expect(h.calls.filter((call) => call.op === "decrypt").map((call) => call.reason)).toEqual([reason])
-      expect(h.stderr.text).toContain(`Confirm with Touch ID to ${reason}.`)
+      expect(humanText(h.stderr.text)).toContain(humanText(`Confirm with Touch ID to ${reason}.`))
       expect(h.asked).toEqual([])
     }
   })
@@ -1029,7 +1030,7 @@ describe("unlocking with Touch ID", () => {
         remove.deps,
       ),
     ).toBe(0)
-    expect(remove.stdout.text).toContain("Removing a factor is not revocation")
+    expect(humanText(remove.stdout.text)).toContain(humanText("Removing a factor is not revocation"))
     expect((await readVault(t.vaultPath)).envelopes).toHaveLength(1)
   })
 })

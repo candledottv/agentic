@@ -37,6 +37,7 @@ import {
   HOOD_SPLITTER_FACTORY,
   SPLITTER_PLATFORM_VAULT_SELECTOR,
 } from "../hood-legs"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
@@ -1006,7 +1007,11 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       expect(upload[0]?.url).toContain("?kind=banner")
       expect(builds(f.calls)[0]?.body?.bannerUrl).toBe(hostedImage)
       expect(lastJson(f.stdout.text).bannerUrl).toBe(hostedImage)
-      expect(f.stderr.text).toContain("public and permanent")
+      // Wrap-tolerant: the upload notice wraps at the prose width, and where it breaks depends
+      // on the uploaded path's length (CI and a local /tmp differ).
+      expect(humanText(f.stderr.text)).toContain(
+        humanText("The file becomes public and permanent: Candle pins it, and the URL cannot be withdrawn."),
+      )
     })
 
     test("one upload before the build and before the id is claimed; the Hood build carries imageUrl and never a path", async () => {
@@ -1032,7 +1037,9 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
         linkedWalletId: "hood-tee",
         dexVersion: "v4",
       })
-      expect(f.stderr.text).toContain("The file becomes public and permanent")
+      expect(humanText(f.stderr.text)).toContain(
+        humanText("The file becomes public and permanent: Candle pins it, and the URL cannot be withdrawn."),
+      )
       expect(lastJson(f.stdout.text)).toMatchObject({ mint: launched, chain: "hood", imageUrl: hostedImage })
     })
 

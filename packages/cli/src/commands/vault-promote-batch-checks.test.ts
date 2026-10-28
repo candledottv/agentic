@@ -10,6 +10,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 import { base58, base64 } from "@scure/base"
+import { humanText } from "../human-output.test-support"
 import { jsonResponse, type RouteHandler } from "../test-support"
 import type { KeyEntry } from "../vault/format"
 import { wipe } from "../vault/hygiene"
@@ -118,7 +119,7 @@ describe("T-J1, T-J2, T-J3: --json", () => {
       message: "privy down",
     })
     expect(body.keys).toHaveLength(1)
-    expect(o.err).toContain("1 of 3 rows landed and ARE in the vault")
+    expect(humanText(o.err)).toContain(humanText("1 of 3 rows landed and ARE in the vault"))
 
     // resumePromote: Phase B reads a grant, the loop's second read finds nothing (unresolved, exit 3).
     const g = await fixture(["x", "ip", "cold"])
@@ -157,7 +158,7 @@ describe("T-J1, T-J2, T-J3: --json", () => {
     const pipe = await runBatch(f, { file, json: true, tty: false })
     expect(pipe.code).toBe(1)
     expect(JSON.parse(pipe.out)).toMatchObject({ ok: false, code: "VAULT_UNLOCK_FAILED" })
-    expect(String(JSON.parse(pipe.out).message)).toContain("vault promote-batch needs a terminal")
+    expect(humanText(String(JSON.parse(pipe.out).message))).toContain(humanText("vault promote-batch needs a terminal"))
     const env = await runBatch(f, { file, json: true, env: { CANDLE_KEYSTORE_PASSPHRASE: "x" } })
     expect(env.code).toBe(1)
     expect(JSON.parse(env.out)).toMatchObject({ ok: false, code: "ENV_PASSPHRASE_REFUSED" })
@@ -182,8 +183,8 @@ describe("--accept-unknown-exposure applies to every row and is visible per row"
     ])
     const admitted = await runBatch(f, { file, ack: "correct", args: ["--accept-unknown-exposure"] })
     expect(admitted.code).toBe(0)
-    expect(admitted.err).toMatch(/^1\s+promote\*\s+a\s/m)
-    expect(admitted.err).toContain("2 rows needed --accept-unknown-exposure (promote*): a, b")
+    expect(admitted.err).toMatch(/^\s+line\s+1\s+state\s+promote\*\s+label\s+a\s/m)
+    expect(humanText(admitted.err)).toContain(humanText("2 rows needed --accept-unknown-exposure (promote*): a, b"))
     const after = await readEntries(f)
     expect(after.entries.find((e) => e.label === "a")?.tee?.destinationExposureAccepted).toBe(true)
   })
@@ -276,7 +277,7 @@ describe("BE-288 C1, C2: a Pro account with 146 promote rows is refused at prefl
     const o = await runBatch(f, { file, api: { room: roomOf({ tier: "pro", active: 0, cap: 10 }) } })
     expect(o.code).toBe(1)
     // §4.1's transcript starts after the unlock: everything from the first progress line on.
-    expect(o.err.slice(o.err.indexOf("✓"))).toBe(
+    expect(o.err.slice(humanText(o.err).indexOf(humanText("✓")))).toBe(
       `✓ 146 rows read from ${file}\n✓ preflight: 146 rows, 5 destinations, no conflicts\n${message} ${suggestion}\n`,
     )
     expect(o.out).toBe("")
@@ -328,8 +329,10 @@ describe("BE-288 C3: only promote rows take room", () => {
     // The acknowledgement was refused, so nothing ran; the point is that the room check passed
     // 146 rows against a room of 6, and said so in the footer.
     expect(o.code).toBe(1)
-    expect(o.err).toContain("140 already promoted (skipped), 0 to resume, 6 to promote.")
-    expect(o.err).toContain("Linked wallets: 4 of 10 active on the Pro tier; this run links 6, leaving 0.")
+    expect(humanText(o.err)).toContain(humanText("140 already promoted (skipped), 0 to resume, 6 to promote."))
+    expect(humanText(o.err)).toContain(
+      humanText("Linked wallets: 4 of 10 active on the Pro tier; this run links 6, leaving 0."),
+    )
     expect(o.err).not.toContain("This batch would link")
     expect(o.linePrompts).toEqual([confirmPrompt(6)])
     expect(o.inits.n).toBe(0)
@@ -375,8 +378,8 @@ describe("BE-288 C4, C5: an unreadable room refuses, and so does a tier with no 
     const before = await readFile(f.path, "utf8")
     const o = await runBatch(f, { file, api: { room: roomOf({ tier: "free", active: 0, cap: 0 }) } })
     expect(o.code).toBe(1)
-    expect(o.err).toContain(
-      "Linked wallets need the Pro or Max tier, and this account is on Free. Nothing was written.",
+    expect(humanText(o.err)).toContain(
+      humanText("Linked wallets need the Pro or Max tier, and this account is on Free. Nothing was written."),
     )
     expect(await readFile(f.path, "utf8")).toBe(before)
     expect(o.inits.n).toBe(0)
@@ -397,8 +400,10 @@ describe("BE-288 C6, C7, C12: a mid-run refusal at init restores the row; at sub
     expect(o.code).toBe(1)
     expect(o.inits.n).toBe(3)
     expect(o.submits.addresses).toEqual([f.addresses.a as string, f.addresses.b as string])
-    expect(o.err).toContain("2 of 3 rows landed and ARE in the vault; the vault is intact. 1 remain.")
-    expect(o.err).toContain(`${LIMIT_MESSAGE} ${RESTORED} ${LIMIT_HINT}\n`)
+    expect(humanText(o.err)).toContain(
+      humanText("2 of 3 rows landed and ARE in the vault; the vault is intact. 1 remain."),
+    )
+    expect(humanText(o.err)).toContain(humanText(`${LIMIT_MESSAGE} ${RESTORED} ${LIMIT_HINT}\n`))
     const after = await readEntries(f)
     const by = (entries: KeyEntry[], label: string) => entries.find((e) => e.label === label)
     expect(["a", "b"].map((l) => by(after.entries, l)?.tee?.lifecycle)).toEqual(["enabled", "enabled"])
@@ -418,7 +423,7 @@ describe("BE-288 C6, C7, C12: a mid-run refusal at init restores the row; at sub
     })
     expect(o.code).toBe(1)
     expect(o.submits.n).toBe(3)
-    expect(o.err).toContain(LIMIT_MESSAGE)
+    expect(humanText(o.err)).toContain(humanText(LIMIT_MESSAGE))
     expect(o.err).not.toContain(RESTORED)
     const after = await readEntries(f)
     const c = after.entries.find((e) => e.label === "c")
@@ -438,7 +443,7 @@ describe("BE-288 C6, C7, C12: a mid-run refusal at init restores the row; at sub
     })
     expect(o.code).toBe(1)
     expect(o.submits.addresses).toEqual([f.addresses.a as string, f.addresses.b as string])
-    expect(o.err).toContain(`\n${IMPORT_FAILED_MESSAGE} ${RESTORED}\n`)
+    expect(humanText(o.err)).toContain(humanText(`\n${IMPORT_FAILED_MESSAGE} ${RESTORED}\n`))
     const after = await readEntries(f)
     expect(after.entries.find((e) => e.label === "c")).toEqual(before.entries.find((e) => e.label === "c"))
 
@@ -505,9 +510,9 @@ describe("BE-296 T5, T5a: the controlled-by block", () => {
     const o = await runBatch(f, { file, ack: "correct", deviceToken: true })
     expect(o.code).toBe(0)
     const block = controlledByBlock(2, { label: KEY_LABEL })
-    expect(o.err).toContain(block)
+    expect(humanText(o.err)).toContain(humanText(block))
     // Directly above the prompt: the block is the last stderr output before `confirm` is asked.
-    expect(o.stderrAtPrompt[0]?.endsWith(`\n${block}\n`)).toBe(true)
+    expect(humanText(o.stderrAtPrompt[0] ?? "").endsWith(humanText(`\n${block}\n`))).toBe(true)
     expect(o.err).not.toContain(API_KEY)
     expect(o.out).not.toContain(API_KEY)
     expect(o.err).not.toContain(DEVICE_TOKEN)
@@ -532,8 +537,10 @@ describe("BE-296 T5, T5a: the controlled-by block", () => {
       api: { embedded: () => jsonResponse(200, { success: true, account: ACCOUNT }) },
     })
     expect(env.code).toBe(1)
-    expect(env.err).toContain(`  API key         ${KEY_PREFIX}…  CANDLE_API_KEY`)
-    expect(env.err).toContain(`  Candle account  (no username)  (${ACCOUNT.slice(0, 6)}…${ACCOUNT.slice(-4)})`)
+    expect(humanText(env.err)).toContain(humanText(`  API key         ${KEY_PREFIX}…  CANDLE_API_KEY`))
+    expect(humanText(env.err)).toContain(
+      humanText(`  Candle account  (no username)  (${ACCOUNT.slice(0, 6)}…${ACCOUNT.slice(-4)})`),
+    )
     // No profile key, no device token: nothing reads the label, and the run still reaches the prompt.
     expect(env.calls.some((call) => call.url.endsWith("/api/v1/agent/keys"))).toBe(false)
     expect(env.linePrompts).toEqual([confirmPrompt(2)])
@@ -590,7 +597,9 @@ describe("BE-296 T5, T5a: the controlled-by block", () => {
       expect([c.name, o.code]).toEqual([c.name, 1])
       expect([c.name, o.err.includes(`  API key         ${KEY_PREFIX}…  profile pb\n`)]).toEqual([c.name, true])
       expect([c.name, o.err.includes(`(${KEY_LABEL})`)]).toEqual([c.name, false])
-      expect([c.name, o.stderrAtPrompt[0]?.endsWith(`\n${controlledByBlock(2)}\n`)]).toEqual([c.name, true])
+      expect([c.name, humanText(o.stderrAtPrompt[0] ?? "").endsWith(humanText(`\n${controlledByBlock(2)}\n`))]).toEqual(
+        [c.name, true],
+      )
       expect([c.name, o.linePrompts]).toEqual([c.name, [confirmPrompt(2)]])
       expect([c.name, o.calls.some((call) => call.url.endsWith("/api/v1/agent/keys"))]).toEqual([c.name, c.deviceToken])
     }
@@ -605,8 +614,8 @@ describe("BE-296 T5, T5a: the controlled-by block", () => {
       api: { embedded: () => jsonResponse(500, { success: false }) },
     })
     expect(o.code).toBe(1)
-    expect(o.err).toContain(
-      "Could not confirm which Candle account this API key acts for (HTTP 500); nothing was written.",
+    expect(humanText(o.err)).toContain(
+      humanText("Could not confirm which Candle account this API key acts for (HTTP 500); nothing was written."),
     )
     expect(o.calls.some((call) => call.url.endsWith("/api/v1/agent/keys"))).toBe(false)
   })
@@ -647,8 +656,10 @@ describe("BE-296 T6: the account read is live or the batch refuses", () => {
       const o = await runBatch(f, { file, api: { embedded: c.embedded } })
       expect([c.name, o.code]).toEqual([c.name, 1])
       expect([c.name, o.err.includes(c.reason)]).toEqual([c.name, true])
-      expect(o.err).toContain(
-        "Check the key with: candle doctor. Promotion registers the keys to that account, so it does not proceed on a cached value.",
+      expect(humanText(o.err)).toContain(
+        humanText(
+          "Check the key with: candle doctor. Promotion registers the keys to that account, so it does not proceed on a cached value.",
+        ),
       )
       // The cached profile account is never printed as the answer.
       expect([c.name, o.err.includes("will be controlled by")]).toEqual([c.name, false])
@@ -676,8 +687,10 @@ describe("BE-296 T6: the account read is live or the batch refuses", () => {
     const file = await pairsFile(f.dir, "a cold\nb cold\n")
     const o = await runBatch(f, { file, noApiKey: true })
     expect(o.code).toBe(1)
-    expect(o.err).toContain(
-      "Could not read how many linked wallets this account has room for (no API key is available). Nothing was written.",
+    expect(humanText(o.err)).toContain(
+      humanText(
+        "Could not read how many linked wallets this account has room for (no API key is available). Nothing was written.",
+      ),
     )
     expect(o.err).not.toContain("will be controlled by")
     expect(o.linePrompts).toEqual([])
@@ -705,9 +718,13 @@ describe("BE-296 T10 to T13: the role check always runs", () => {
     expect(o.rpc.getProgramAccounts).toBe(2 * REQUESTS_PER_KEY)
     const opening =
       "Checking token mint, freeze, program upgrade and stake authorities for 2 addresses: 18 requests over rpc.pb.test."
-    expect(o.err.indexOf(opening)).toBeGreaterThan(-1)
-    expect(o.err.indexOf(opening)).toBeLessThan(o.err.indexOf("Checking authorities:"))
-    expect(o.err.indexOf(opening)).toBeLessThan(o.err.indexOf("✓ authorities read"))
+    expect(humanText(o.err).indexOf(humanText(opening))).toBeGreaterThan(-1)
+    expect(humanText(o.err).indexOf(humanText(opening))).toBeLessThan(
+      humanText(o.err).indexOf(humanText("Checking authorities:")),
+    )
+    expect(humanText(o.err).indexOf(humanText(opening))).toBeLessThan(
+      humanText(o.err).indexOf(humanText("✓ authorities read")),
+    )
 
     const flagged = await runBatch(f, { file, args: ["--check-authorities"] })
     expect(flagged.code).toBe(2)
@@ -724,11 +741,15 @@ describe("BE-296 T10 to T13: the role check always runs", () => {
     const o = await runBatch(f, { file, lines: ["no"], rpc: { programAccounts } })
     expect(o.code).toBe(1)
     expect(o.linePrompts).toEqual([confirmPrompt(2)])
-    expect(o.out).toContain(promoteSentence({ n: 2, form: "U", where: "below" }))
-    expect(o.err).toMatch(/^1\s+promote\s+a\s+\S+\s+cold \(…\w+\)\s+\?\s+0\.021400$/m)
-    expect(o.err).toContain("Authorities: none found; 1 of 7 groups were not read (see below).")
-    expect(o.err).toContain(
-      "Authorities read over rpc.pb.test: token freeze, Token-2022 mint, Token-2022 freeze, program upgrade, stake staker, stake withdrawer. Not read: token mint (HTTP 403). Not checked: multisig membership, Token-2022 extension authorities, metadata update authority.",
+    expect(humanText(o.out)).toContain(humanText(promoteSentence({ n: 2, form: "U", where: "below" })))
+    expect(o.err).toMatch(
+      /line\s+1\s+state\s+promote\s+label\s+a\s+address\s+\S+\s+destination\s+cold \(\w+\)\s+authority\s+\?\s+SOL \(tokens not read\)\s+0\.021400/m,
+    )
+    expect(humanText(o.err)).toContain(humanText("Authorities: none found; 1 of 7 groups were not read (see below)."))
+    expect(humanText(o.err)).toContain(
+      humanText(
+        "Authorities read over rpc.pb.test: token freeze, Token-2022 mint, Token-2022 freeze, program upgrade, stake staker, stake withdrawer. Not read: token mint (HTTP 403). Not checked: multisig membership, Token-2022 extension authorities, metadata update authority.",
+      ),
     )
     expect(o.err).toMatch(/✓ authorities read for 2 addresses \(\d+ requests, 6 of 7 groups read, 1 refused\) in 0s/)
 
@@ -754,8 +775,8 @@ describe("BE-296 T10 to T13: the role check always runs", () => {
       },
     })
     expect(o.code).toBe(1)
-    expect(o.err).toContain("Not read: stake staker (timed out after 20 s).")
-    expect(o.out).toContain(promoteSentence({ n: 2, form: "U", where: "below" }))
+    expect(humanText(o.err)).toContain(humanText("Not read: stake staker (timed out after 20 s)."))
+    expect(humanText(o.out)).toContain(humanText(promoteSentence({ n: 2, form: "U", where: "below" })))
     expect(o.linePrompts).toEqual([confirmPrompt(2)])
   })
 
@@ -764,9 +785,11 @@ describe("BE-296 T10 to T13: the role check always runs", () => {
     const file = await pairsFile(f.dir, "a cold\nb cold\n")
     const o = await runBatch(f, { file, ack: "correct", json: true })
     expect(o.code).toBe(0)
-    expect(o.err).toContain("\rChecking authorities: 1 of 18 requests, 0 s elapsed")
-    expect(o.err).toContain("\rChecking authorities: 18 of 18 requests, 0 s elapsed")
-    expect(o.err).toContain("\r✓ authorities read for 2 addresses (18 requests, 7 of 7 groups read) in 0s\n")
+    expect(humanText(o.err)).toContain(humanText("\rChecking authorities: 1 of 18 requests, 0 s elapsed"))
+    expect(humanText(o.err)).toContain(humanText("\rChecking authorities: 18 of 18 requests, 0 s elapsed"))
+    expect(humanText(o.err)).toContain(
+      humanText("\r✓ authorities read for 2 addresses (18 requests, 7 of 7 groups read) in 0s\n"),
+    )
     expect(o.out).not.toContain("Checking authorities")
     expect(o.out).not.toContain("✓ authorities")
     expect(jsonDocuments(o.out)).toHaveLength(1)
@@ -786,11 +809,17 @@ describe("BE-296 T10 to T13: the role check always runs", () => {
     }
     const o = await runBatch(f, { file, lines: ["no"], rpc: { programAccounts } })
     expect(o.code).toBe(1)
-    expect(o.err).toContain(`  mint authority of ${mint}; withdrawer authority of ${stake}  `)
-    expect(o.err).toMatch(/^2\s+promote\s+b\s+\S+\s+cold \(…\w+\)\s+none\s+0\.021400$/m)
-    expect(o.err).toContain("Authorities: 1 of 2 keys holds one (2 findings, in the authority column).")
-    expect(o.out).toContain(promoteSentence({ n: 2, form: "F", k: 1, where: "below" }))
-    expect(o.out).toContain("1 of them holds a mint, freeze, upgrade or stake authority, named below")
+    expect(humanText(o.err)).toContain(humanText(`  mint authority of ${mint}; withdrawer authority of ${stake}  `))
+    expect(o.err).toMatch(
+      /line\s+2\s+state\s+promote\s+label\s+b\s+address\s+\S+\s+destination\s+cold \(\w+\)\s+authority\s+none\s+SOL \(tokens not read\)\s+0\.021400/m,
+    )
+    expect(humanText(o.err)).toContain(
+      humanText("Authorities: 1 of 2 keys holds one (2 findings, in the authority column)."),
+    )
+    expect(humanText(o.out)).toContain(humanText(promoteSentence({ n: 2, form: "F", k: 1, where: "below" })))
+    expect(humanText(o.out)).toContain(
+      humanText("1 of them holds a mint, freeze, upgrade or stake authority, named below"),
+    )
 
     const j = await runBatch(f, { file, ack: "correct", json: true, rpc: { programAccounts } })
     const body = JSON.parse(jsonDocuments(j.out)[0] as string)
@@ -825,10 +854,14 @@ describe("BE-296 T10 to T13: the role check always runs", () => {
     expect(o.code).toBe(1)
     // 18 scans plus 2 resolves.
     expect(o.rpc.getProgramAccounts).toBe(20)
-    expect(o.err).toContain(
-      `upgrade authority of ${programId}; upgrade authority of ${orphan} (ProgramData account; the program id could not be resolved)`,
+    expect(humanText(o.err)).toContain(
+      humanText(
+        `upgrade authority of ${programId}; upgrade authority of ${orphan} (ProgramData account; the program id could not be resolved)`,
+      ),
     )
-    expect(o.err).toContain("✓ authorities read for 2 addresses (20 requests, 7 of 7 groups read) in 0s")
+    expect(humanText(o.err)).toContain(
+      humanText("✓ authorities read for 2 addresses (20 requests, 7 of 7 groups read) in 0s"),
+    )
   })
 })
 
@@ -837,10 +870,10 @@ describe("BE-296 T14, T15: the line header and --json", () => {
     const f = await fixture(["a", "b", "cold"])
     const file = await pairsFile(f.dir, "# plan\n\na cold\n\nb cold\n")
     const o = await runBatch(f, { file, lines: ["no"] })
-    expect(o.err).toMatch(/^line\s+state\s+label\s+address\s+destination\s+authority\s+SOL \(tokens not read\)$/m)
+    expect(o.err).toMatch(/^\s+line\s+3$/m)
     expect(o.err).not.toMatch(/^#\s+state/m)
-    expect(o.err).toMatch(/^3\s+promote\s+a\s/m)
-    expect(o.err).toMatch(/^5\s+promote\s+b\s/m)
+    expect(o.err).toMatch(/^\s+line\s+3\s+state\s+promote\s+label\s+a\s/m)
+    expect(o.err).toMatch(/^\s+line\s+5\s+state\s+promote\s+label\s+b\s/m)
     const j = await runBatch(f, { file, ack: "correct", json: true })
     const body = JSON.parse(jsonDocuments(j.out)[0] as string)
     expect(body.keys.map((k: { line: number }) => k.line)).toEqual([3, 5])
@@ -916,4 +949,24 @@ describe("BE-296 T14, T15: the line header and --json", () => {
     })
     expect(stopped.authorities).toEqual({ checked: [...ROLE_GROUP_IDS], notChecked: [], found: [] })
   })
+})
+
+test("40-column batch rows retain the promote marker and both full addresses before confirmation", async () => {
+  const f = await fixture(["a", "b", "cold"])
+  const file = await pairsFile(f.dir, "a cold\nb cold\n")
+  const o = await runBatch(f, {
+    file,
+    lines: ["no"],
+    env: { CANDLE_PLAIN: "1" },
+    deps: { columns: { stdout: 80, stderr: 40 } },
+  })
+  expect(o.code, o.err).toBe(1)
+  expect(o.submits.n).toBe(0)
+  const fields = o.err.slice(o.err.indexOf("  line"), o.err.indexOf("2 rows from"))
+  expect(fields).toMatch(/line\s+1\s+state\s+promote/)
+  expect(fields).toContain(f.addresses.a as string)
+  expect(fields).toContain(f.addresses.cold as string)
+  expect(fields).not.toContain("...")
+  expect(fields).not.toContain("\x1b")
+  expect(o.linePrompts).toEqual([confirmPrompt(2)])
 })

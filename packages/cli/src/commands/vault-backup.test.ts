@@ -23,6 +23,7 @@ import { mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from "no
 import { tmpdir } from "node:os"
 import { join, posix, win32 } from "node:path"
 import type { Deps } from "../deps"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { formatBytes } from "../progress"
 import { createCapture, createTestDeps, TEST_HOME } from "../test-support"
@@ -590,14 +591,14 @@ describe("backup runs the full verifier, and records only on a full pass", () =>
     const b = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "backup", "--to", to, "--keystore", h.vaultPath], b.deps)).toBe(0)
 
-    expect(b.stdout.text).toContain("all 8 passed, in order")
-    expect(b.stdout.text).toContain("keys checked  1")
-    expect(b.stdout.text).toContain("re-derived    1")
-    expect(b.stdout.text).toContain("address set   matches the live vault")
+    expect(humanText(b.stdout.text)).toContain(humanText("all 8 passed, in order"))
+    expect(humanText(b.stdout.text)).toContain(humanText("Keys checked 1"))
+    expect(humanText(b.stdout.text)).toContain(humanText("Re-derived 1"))
+    expect(humanText(b.stdout.text)).toContain(humanText("address set   matches the live vault"))
     // Every backup output prints the counters and the phrase caveat (CC-11, CC-07).
-    expect(b.stdout.text).toContain("Derivation counters to keep with your recovery phrase")
+    expect(humanText(b.stdout.text)).toContain(humanText("Derivation counters to keep with your recovery phrase"))
     expect(b.stdout.text).toContain("solanaVault  1")
-    expect(b.stdout.text).toContain("restores derived keys only")
+    expect(humanText(b.stdout.text)).toContain(humanText("restores derived keys only"))
 
     const sidecar = await readSidecar(sidecarPath(h.vaultPath))
     expect(sidecar?.lastVerifiedBackupAt).toBeDefined()
@@ -609,8 +610,8 @@ describe("backup runs the full verifier, and records only on a full pass", () =>
     const b = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     const code = await run(["vault", "backup", "--to", join(h.dir, "copy.enc"), "--keystore", h.vaultPath], b.deps)
     expect(code).toBe(1)
-    expect(b.stderr.text).toContain("where the vault itself lives")
-    expect(b.stderr.text).toContain("lost with it")
+    expect(humanText(b.stderr.text)).toContain(humanText("where the vault itself lives"))
+    expect(humanText(b.stderr.text)).toContain(humanText("lost with it"))
     // No secret was collected: the harness's queue was empty and would have thrown.
     await expect(stat(join(h.dir, "copy.enc"))).rejects.toThrow()
   })
@@ -622,7 +623,7 @@ describe("backup runs the full verifier, and records only on a full pass", () =>
 
     const b = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     expect(await run(["vault", "backup", "--to", to, "--keystore", h.vaultPath], b.deps)).toBe(1)
-    expect(b.stderr.text).toContain("already exists")
+    expect(humanText(b.stderr.text)).toContain(humanText("already exists"))
     expect(await readFile(to, "utf8")).toBe("someone else's file\n")
   })
 
@@ -640,7 +641,7 @@ describe("backup runs the full verifier, and records only on a full pass", () =>
     })
     const v = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "verify-backup", to, "--keystore", h.vaultPath], v.deps)).toBe(1)
-    expect(v.stderr.text).toContain("root blob failed its authentication tag")
+    expect(humanText(v.stderr.text)).toContain(humanText("root blob failed its authentication tag"))
 
     // The copy is left in place for inspection, and nothing new was recorded.
     await stat(to)
@@ -695,8 +696,8 @@ describe("BE-236: `vault backup` through a symlink into iCloud", () => {
     b.deps.realpath = realLinks
     expect(await run(["vault", "backup", "--to", to, "--keystore", h.vaultPath], b.deps)).toBe(0)
 
-    expect(b.stdout.text).toContain("destination   icloud-drive")
-    expect(b.stdout.text).toContain("sealed        yes")
+    expect(humanText(b.stdout.text)).toContain("Destination icloud-drive")
+    expect(humanText(b.stdout.text)).toContain("Sealed yes")
     const sidecar = await readSidecar(sidecarPath(h.vaultPath))
     expect(sidecar?.lastBackupDomain).toBe("icloud-drive")
     expect(sidecar?.lastBackupSealed).toBe(true)
@@ -715,8 +716,8 @@ describe("BE-236: `vault backup` through a symlink into iCloud", () => {
     b.deps.realpath = realLinks
     expect(await run(["vault", "backup", "--to", to, "--keystore", h.vaultPath], b.deps)).toBe(0)
 
-    expect(b.stdout.text).toContain("destination   unknown")
-    expect(b.stdout.text).toContain(UNPLACEABLE_DESTINATION_NOTE)
+    expect(humanText(b.stdout.text)).toContain("Destination unknown")
+    expect(humanText(b.stdout.text)).toContain(humanText(UNPLACEABLE_DESTINATION_NOTE))
     const sidecar = await readSidecar(sidecarPath(h.vaultPath))
     expect(sidecar?.lastBackupDomain).toBe("unknown")
     expect(sidecar?.lastBackupSealed).toBe(true)
@@ -808,14 +809,14 @@ describe("BE-245: the iCloud shorthand, and a write failure that says why", () =
     b.deps.realpath = realLinks
     expect(await run(["vault", "backup", "--to", "icloud", "--keystore", v.vaultPath], b.deps)).toBe(0)
 
-    expect(b.stdout.text).toContain("destination   icloud-drive")
-    expect(b.stdout.text).toContain("sealed        yes")
+    expect(humanText(b.stdout.text)).toContain("Destination icloud-drive")
+    expect(humanText(b.stdout.text)).toContain("Sealed yes")
     expect(b.stdout.text).not.toContain("--accept-shared-domain")
     expect(b.stdout.text).not.toContain(UNPLACEABLE_DESTINATION_NOTE)
     const sidecar = await readSidecar(sidecarPath(v.vaultPath))
     expect(sidecar?.lastBackupDomain).toBe("icloud-drive")
     expect(sidecar?.lastBackupSealed).toBe(true)
-    const verified = b.stdout.text.match(/^Verified (.+)$/m)?.[1]
+    const verified = humanText(b.stdout.text).match(/Copy (.+?) Steps /)?.[1]
     if (verified === undefined) throw new Error(`no Verified line in:\n${b.stdout.text}`)
     expect(verified.startsWith(join(drive, "Candle"))).toBe(true)
     expect(isSealedCopy(await readFile(verified, "utf8"))).toBe(true)
@@ -845,7 +846,7 @@ describe("BE-245: the iCloud shorthand, and a write failure that says why", () =
     expect(((await stat(body.destination)).mode & 0o777).toString(8)).toBe("600")
     expect(isSealedCopy(await readFile(body.destination, "utf8"))).toBe(true)
     // And the path it became was said out loud before the passphrase prompt.
-    expect(b.stderr.text).toContain(`--to icloud is ${body.destination}`)
+    expect(humanText(b.stderr.text)).toContain(humanText(`--to icloud is ${body.destination}`))
   })
 
   test("--to icloud on a machine without iCloud Drive refuses, before any prompt", async () => {
@@ -854,7 +855,7 @@ describe("BE-245: the iCloud shorthand, and a write failure that says why", () =
     const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: empty }, secrets: [] })
     // Usage, not a vault failure: nothing about the vault is wrong, and nothing was asked for.
     expect(await run(["vault", "backup", "--to", "icloud", "--keystore", v.vaultPath], b.deps)).toBe(2)
-    expect(b.stderr.text).toContain("no iCloud Drive folder at")
+    expect(humanText(b.stderr.text)).toContain(humanText("no iCloud Drive folder at"))
     expect(b.stderr.text).toContain("pass --to <path>")
   })
 
@@ -953,22 +954,22 @@ describe("BE-259: the backup says it wrote the file, and each Argon2id line says
     expect(await run(["vault", "backup", "--to", to, "--keystore", v.vaultPath], b.deps)).toBe(0)
 
     const written = await stat(to)
-    const lines = b.stdout.text.split("\n")
-    const wrote = lines.indexOf(`Wrote ${to}`)
-    const verified = lines.indexOf(`Verified ${to}`)
+    const text = humanText(b.stdout.text)
+    const wrote = text.indexOf("Backup written")
+    const verified = text.indexOf("Backup verified")
     expect(wrote).toBe(0)
     expect(verified).toBeGreaterThan(wrote)
-    expect(lines[1]).toBe(`  size          ${formatBytes(written.size)} (${written.size} bytes)`)
-    expect(lines[2]).toBe("  mode          0600")
-    expect(lines[2]).toBe(`  mode          ${fileModeOctal(written.mode)}`)
-    // The size is the file's, not this process's idea of it.
+    expect(text).toContain(
+      `Path ${to} Size ${formatBytes(written.size)} (${written.size} bytes) Mode ${fileModeOctal(written.mode)}`,
+    )
     expect(written.size).toBe(Buffer.byteLength(await readFile(to, "utf8")))
-    // Everything from `Verified` down is the shared report, untouched.
-    expect(lines.slice(verified)).toContain("  steps         all 8 passed, in order")
+    expect(text.slice(verified)).toContain(`Copy ${to} Steps all 8 passed, in order`)
 
     // The two Argon2id lines, in order: the live open, then the copy's reopen. Each on one line.
     expect(purposesIn(b.stderr.text)).toEqual(["opening the vault", "re-opening the copy to verify it"])
-    expect(b.stderr.text).toContain("Deriving the vault key (Argon2id, 19 MiB) -- opening the vault\n")
+    expect(humanText(b.stderr.text)).toContain(
+      humanText("Deriving the vault key (Argon2id, 19 MiB) -- opening the vault\n"),
+    )
   })
 
   test("T2: vault backup --json carries bytesWritten and mode beside every key it carried before", async () => {
@@ -1019,11 +1020,12 @@ describe("BE-259: the backup says it wrote the file, and each Argon2id line says
     expect(purposesIn(h.stderr.text)).toEqual(["opening the live vault", "opening the copy"])
     // The stdout report: no `Wrote` block, the headline first, the shared report as it was.
     const lines = h.stdout.text.split("\n")
-    expect(lines[0]).toBe(`Verified ${to}`)
+    expect(lines[0]).toBe("Backup verified")
+    expect(humanText(h.stdout.text)).toContain(`Copy ${to} Steps all 8 passed, in order`)
     expect(h.stdout.text).not.toContain("Wrote ")
     expect(h.stdout.text).not.toContain("  size ")
     expect(h.stdout.text).not.toContain("  mode ")
-    expect(h.stdout.text).toContain("  steps         all 8 passed, in order")
+    expect(humanText(h.stdout.text)).toContain(humanText("  Steps  all 8 passed, in order"))
 
     const j = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
     expect(await run(["vault", "verify-backup", to, "--json", "--keystore", v.vaultPath], j.deps)).toBe(0)
@@ -1055,7 +1057,7 @@ describe("BE-259: the backup says it wrote the file, and each Argon2id line says
     const s = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
     expect(await run(["vault", "status", "--unlock", "--keystore", v.vaultPath], s.deps)).toBe(0)
     expect(purposesIn(s.stderr.text)).toEqual([undefined])
-    expect(s.stderr.text).toContain("Deriving the vault key (Argon2id, 19 MiB)\n")
+    expect(humanText(s.stderr.text)).toContain(humanText("Deriving the vault key (Argon2id, 19 MiB)\n"))
     expect(s.stderr.text).not.toContain(" -- ")
   })
 })

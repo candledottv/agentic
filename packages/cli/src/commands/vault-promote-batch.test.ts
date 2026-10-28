@@ -18,6 +18,7 @@ import { Keypair } from "@solana/web3.js"
 import type { Deps } from "../deps"
 import { AUTHDATA_FLAG_UP, AUTHDATA_FLAG_UV, handleLine, RP_ID } from "../fido2-helper/protocol"
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createTestDeps, jsonResponse } from "../test-support"
 import { HELPER_ENV } from "../vault/fido2"
@@ -89,11 +90,15 @@ describe("T-P1: the named failure, a destination this file promotes", () => {
     const file = await pairsFile(f.dir, "a d1\nq1 d1\nb q1\n")
     const o = await runBatch(f, { file })
     expect(o.code).toBe(1)
-    expect(o.err).toContain("This batch was refused and NOTHING was written. 1 of 3 rows cannot run:")
+    expect(humanText(o.err)).toContain(
+      humanText("This batch was refused and NOTHING was written. 1 of 3 rows cannot run:"),
+    )
     expect(o.err).toContain("PROMOTE_DESTINATION_NOT_COLD")
-    expect(o.err).toContain("No vault key matches q1. q1 is promoted by row 2 of this file.")
-    expect(o.err).toContain("Each row was checked against the vault as it will be when the rows above it have run")
-    expect(o.err).toContain("the next run re-checks all 3")
+    expect(humanText(o.err)).toContain(humanText("No vault key matches q1. q1 is promoted by row 2 of this file."))
+    expect(humanText(o.err)).toContain(
+      humanText("Each row was checked against the vault as it will be when the rows above it have run"),
+    )
+    expect(humanText(o.err)).toContain(humanText("the next run re-checks all 3"))
     // No sentence and no table on a refusal: nothing to acknowledge (D8, point 1).
     expect(o.out).not.toContain(SENTENCE_PREFIX)
     expect(o.err).not.toContain("value_usd")
@@ -222,9 +227,12 @@ async function keyFixture(
       promptSecret: async () => passphrase,
       promptLine: async () => "",
     })
-    const code = await run(["vault", "new-key", "--chain", "solana", "--label", label, "--factor", "passphrase"], deps)
+    const code = await run(
+      ["vault", "new-key", "--chain", "solana", "--label", label, "--factor", "passphrase", "--json"],
+      deps,
+    )
     if (code !== 0) throw new Error(`new-key ${label} failed`)
-    addresses[label] = out.text.trim().split("\n")[0] as string
+    addresses[label] = JSON.parse(out.text).address as string
   }
   return { dir, path: join(dir, "vault.enc"), passphrase, addresses, calls, keyDeps }
 }
@@ -312,7 +320,7 @@ describe("T-R7: resume rows are reconciled in Phase B, and never prompt in the l
     })
     expect(o.code).toBe(0)
     const footerLine = `Resume rows with no grant identity assert this profile's account ${ACCOUNT} (…${ACCOUNT.slice(-6)}).`
-    expect(o.err.split(footerLine)).toHaveLength(2)
+    expect(humanText(o.err).split(footerLine)).toHaveLength(2)
     // One visible prompt for the whole run: the acknowledgement. No `confirmLastSix` for the
     // account, none for the destination, and no grant block on stdout.
     expect(o.linePrompts).toEqual([confirmPrompt(2)])
@@ -430,7 +438,7 @@ describe("T-P3, T-P4: pins and the continuation rule", () => {
     })
     expect(body.rows[0]?.why).toBeUndefined()
     const human = await runBatch(f, { file })
-    expect(human.err).toContain("every row that fails on that basis")
+    expect(humanText(human.err)).toContain(humanText("every row that fails on that basis"))
   })
 })
 
@@ -473,7 +481,7 @@ describe("T-P5, T-P6, T-P7: Phase A, before the unlock", () => {
     expect(o.code).toBe(2)
     expect(o.secretPrompts).toBe(0)
     expect(JSON.parse(o.out)).toMatchObject({ ok: false, code: "USAGE" })
-    expect(String(JSON.parse(o.out).message)).toContain("nothing was unlocked")
+    expect(humanText(String(JSON.parse(o.out).message))).toContain(humanText("nothing was unlocked"))
   })
 
   test("T-P6: every malformed line is named together, not the first", async () => {
@@ -481,10 +489,10 @@ describe("T-P5, T-P6, T-P7: Phase A, before the unlock", () => {
     const file = await pairsFile(f.dir, "a cold\nlonely\nb cold extra\n\n# comment\nc\n")
     const o = await runBatch(f, { file })
     expect(o.code).toBe(2)
-    expect(o.err).toContain(`${file}: 3 lines cannot be used, and nothing was unlocked.`)
-    expect(o.err).toContain(`line 2   only one field; a row is "<label> <destination>"`)
-    expect(o.err).toContain(`line 3   3 fields; a row is "<label> <destination>"`)
-    expect(o.err).toContain(`line 6   only one field`)
+    expect(humanText(o.err)).toContain(humanText(`${file}: 3 lines cannot be used, and nothing was unlocked.`))
+    expect(humanText(o.err)).toContain(humanText(`line 2   only one field; a row is "<label> <destination>"`))
+    expect(humanText(o.err)).toContain(humanText(`line 3   3 fields; a row is "<label> <destination>"`))
+    expect(humanText(o.err)).toContain(humanText(`line 6   only one field`))
     expect(o.secretPrompts).toBe(0)
   })
 
@@ -492,25 +500,27 @@ describe("T-P5, T-P6, T-P7: Phase A, before the unlock", () => {
     const f = await fixture(["a", "cold"])
     const dup = await runBatch(f, { file: await pairsFile(f.dir, "a cold\nb cold\na cold\n", "dup.txt") })
     expect(dup.code).toBe(2)
-    expect(dup.err).toContain("line 1   label a appears again on line 3")
+    expect(humanText(dup.err)).toContain(humanText("line 1   label a appears again on line 3"))
 
     const order = await runBatch(f, {
       file: await pairsFile(f.dir, "order,label,sweep_to\n51,a,cold\n44,b,cold\n", "order.csv"),
     })
     expect(order.code).toBe(2)
-    expect(order.err).toContain(
-      "line 3   order 44 is not greater than the previous row's 51; the file's line order is what runs",
+    expect(humanText(order.err)).toContain(
+      humanText("line 3   order 44 is not greater than the previous row's 51; the file's line order is what runs"),
     )
 
     const many = Array.from({ length: 257 }, (_, i) => `k${i} cold`).join("\n")
     const cap = await runBatch(f, { file: await pairsFile(f.dir, `${many}\n`, "cap.txt") })
     expect(cap.code).toBe(2)
-    expect(cap.err).toContain("holds 257 rows; a batch is capped at 256")
+    expect(humanText(cap.err)).toContain(humanText("holds 257 rows; a batch is capped at 256"))
 
     const one = await runBatch(f, { file: await pairsFile(f.dir, "a cold\n", "one.txt") })
     expect(one.code).toBe(2)
     // BE-355 (invariant 1): the flag, never its value, which may carry a key.
-    expect(one.err).toContain("Run: candle vault promote --in-place a --sweep-to cold --rpc-url <url>")
+    expect(humanText(one.err)).toContain(
+      humanText("Run: candle vault promote --in-place a --sweep-to cold --rpc-url <url>"),
+    )
     expect(one.err).not.toContain(RPC)
     for (const o of [dup, order, cap, one]) expect(o.secretPrompts).toBe(0)
   })
@@ -520,11 +530,11 @@ describe("T-P5, T-P6, T-P7: Phase A, before the unlock", () => {
     const file = await pairsFile(f.dir, "a cold\nb cold\n")
     const from = await runBatch(f, { file, args: ["--from", "x"] })
     expect(from.code).toBe(2)
-    expect(from.err).toContain("takes no --from")
-    expect(from.err).toContain("vault new-key --chain solana --labels-from")
+    expect(humanText(from.err)).toContain(humanText("takes no --from"))
+    expect(humanText(from.err)).toContain(humanText("vault new-key --chain solana --labels-from"))
     const label = await runBatch(f, { file, args: ["--label", "x"] })
     expect(label.code).toBe(2)
-    expect(label.err).toContain("Unknown flag: --label")
+    expect(humanText(label.err)).toContain(humanText("Unknown flag: --label"))
     const tilde = await runBatch(f, { file: "~/plan.txt" })
     expect(tilde.code).toBe(2)
     expect(tilde.err).toContain('literal "~"')
@@ -570,9 +580,13 @@ describe("T-I1, T-I2, T-I3: the input file", () => {
     expect(o.code).toBe(1)
     expect(o.err).toContain("value_usd (yours)")
     // Echoed verbatim: the cell as the file spells it, not a reformatting of it (D4).
-    expect(o.err).toMatch(/^2\s+promote\s+tr-1\s+\S+\s+p-2 \(…\w+\)\s+none\s+0\.021400\s+2140\.00$/m)
-    expect(o.err).toContain(
-      "value_usd totals your file's own column; this CLI reads no price. Total for the 2 rows this run will act on: $3,020.50",
+    expect(o.err).toMatch(
+      /line\s+2\s+state\s+promote\s+label\s+tr-1\s+address\s+\S+\s+destination\s+p-2 \(\w+\)\s+authority\s+none\s+SOL \(tokens not read\)\s+0\.021400\s+value_usd \(yours\)\s+2140\.00/m,
+    )
+    expect(humanText(o.err)).toContain(
+      humanText(
+        "value_usd totals your file's own column; this CLI reads no price. Total for the 2 rows this run will act on: $3,020.50",
+      ),
     )
     expect(o.err).not.toContain("tr  ")
   })
@@ -598,8 +612,8 @@ describe("T-I1, T-I2, T-I3: the input file", () => {
     const o = await runBatch(f, { file, ack: "correct" })
     expect(o.code).toBe(0)
     expect(o.err).toContain("n/a")
-    expect(o.err).toContain(
-      "Total for the 2 rows this run will act on: $1,500.00 (1 row excluded: the cell did not parse)",
+    expect(humanText(o.err)).toContain(
+      humanText("Total for the 2 rows this run will act on: $1,500.00 (1 row excluded: the cell did not parse)"),
     )
     expect(parseValueUsdCell("$1,500")).toBe(1500)
     expect(parseValueUsdCell("n/a")).toBeUndefined()
@@ -616,10 +630,12 @@ describe("T-U2: a passphrase batch asks for the passphrase once", () => {
     expect(o.code).toBe(0)
     expect(o.secretPrompts).toBe(1)
     expect(o.submits.n).toBe(5)
-    expect(o.out).toContain("5 addresses promoted under one unlock, each committed on its own.")
+    expect(humanText(o.out)).toContain(
+      humanText("Promoted 5 Resumed 0 Already promoted (skipped) 0 Commit one unlock, each committed on its own"),
+    )
     // Streamed as they land, one line per row, on stderr.
-    expect(o.err).toContain("✓ 1/5  a  ")
-    expect(o.err).toContain("✓ 5/5  e  ")
+    expect(humanText(o.err)).toContain(humanText("✓ 1/5  a  "))
+    expect(humanText(o.err)).toContain(humanText("✓ 5/5  e  "))
   })
 })
 
@@ -637,10 +653,12 @@ describe("T-A1 to T-A4: the sentence and the acknowledgement (BE-296)", () => {
     // At the moment the prompt was asked, the sentence was already on stdout.
     expect(o.stdoutAtPrompt[0]).toContain(sentence)
     // The table is on stderr, `line` first, `authority` after `destination` (D10, D8).
-    expect(o.err).toMatch(/line\s+state\s+label\s+address\s+destination\s+authority\s+SOL \(tokens not read\)/)
+    expect(o.err).toMatch(
+      /line\s+1\s+state\s+promote\s+label\s+a\s+address\s+\S+\s+destination\s+\S+ \(\w+\)\s+authority\s+\S+\s+SOL \(tokens not read\)/,
+    )
     expect(o.err).not.toContain("This acknowledges permanent TEE exposure")
     // The controlled-by block is the last thing on stderr before the prompt (D4).
-    expect(o.stderrAtPrompt[0]?.endsWith(`\n${controlledByBlock(2)}\n`)).toBe(true)
+    expect(humanText(o.stderrAtPrompt[0] ?? "").endsWith(humanText(`\n${controlledByBlock(2)}\n`))).toBe(true)
     expect(o.linePrompts).toEqual([confirmPrompt(2)])
   })
 
@@ -658,7 +676,9 @@ describe("T-A1 to T-A4: the sentence and the acknowledgement (BE-296)", () => {
       const file = await pairsFile(f.dir, "a cold\nb cold\n")
       const o = await runBatch(f, { file, lines: [refused, "should not be asked"] })
       expect([refused, o.code]).toEqual([refused, 1])
-      expect(o.err).toContain("The acknowledgement is the word confirm; nothing was promoted, and nothing was written.")
+      expect(humanText(o.err)).toContain(
+        humanText("The acknowledgement is the word confirm; nothing was promoted, and nothing was written."),
+      )
       expect(o.linePrompts).toEqual([confirmPrompt(2)])
       expect((await readEntries(f)).generation).toBe(before.generation)
       expect(o.submits.n).toBe(0)
@@ -697,13 +717,13 @@ describe("T-R2 to T-R6: re-runs", () => {
     // the block name.
     const wrong = await runBatch(f, { file, lines: ["no"] })
     expect(wrong.code).toBe(1)
-    expect(wrong.err).toContain("The acknowledgement is the word confirm")
-    expect(wrong.err).toContain("5 rows from")
-    expect(wrong.err).toContain("3 already promoted (skipped), 0 to resume, 2 to promote.")
-    expect(wrong.err).toMatch(/^1\s+skip\s+a\s/m)
-    expect(wrong.err).toMatch(/^4\s+promote\s+d\s/m)
-    expect(wrong.out).toContain("a permanent copy of these 2 keys")
-    expect(wrong.err).toContain("These 2 keys will be controlled by:")
+    expect(humanText(wrong.err)).toContain(humanText("The acknowledgement is the word confirm"))
+    expect(humanText(wrong.err)).toContain(humanText("5 rows from"))
+    expect(humanText(wrong.err)).toContain(humanText("3 already promoted (skipped), 0 to resume, 2 to promote."))
+    expect(wrong.err).toMatch(/^\s+line\s+1\s+state\s+skip\s+label\s+a\s/m)
+    expect(wrong.err).toMatch(/^\s+line\s+4\s+state\s+promote\s+label\s+d\s/m)
+    expect(humanText(wrong.out)).toContain(humanText("a permanent copy of these 2 keys"))
+    expect(humanText(wrong.err)).toContain(humanText("These 2 keys will be controlled by:"))
     expect(wrong.linePrompts).toEqual([confirmPrompt(2)])
     // Skip rows get no role requests: two acting keys, nine each (D7).
     expect(wrong.rpc.getProgramAccounts).toBe(2 * REQUESTS_PER_KEY)
@@ -712,8 +732,8 @@ describe("T-R2 to T-R6: re-runs", () => {
     void cold
     expect(right.code).toBe(0)
     expect(right.submits.addresses).toEqual([f.addresses.d as string, f.addresses.e as string])
-    expect(right.out).toContain(
-      "2 addresses promoted under one unlock, each committed on its own; 3 already promoted (skipped).",
+    expect(humanText(right.out)).toContain(
+      humanText("Promoted 2 Resumed 0 Already promoted (skipped) 3 Commit one unlock, each committed on its own"),
     )
   })
 
@@ -796,8 +816,8 @@ describe("T-R2 to T-R6: re-runs", () => {
     const o = await runBatch(f, { file })
     expect(o.code).toBe(0)
     expect(o.linePrompts).toEqual([])
-    expect(o.err).toContain("2 already promoted (skipped), 0 to resume, 0 to promote.")
-    expect(o.err).toContain("Nothing to do: every row already landed.")
+    expect(humanText(o.err)).toContain(humanText("2 already promoted (skipped), 0 to resume, 0 to promote."))
+    expect(humanText(o.err)).toContain(humanText("Nothing to do: every row already landed."))
     expect(o.out).not.toContain(SENTENCE_PREFIX)
     // No acting rows, so the role check does not run: no requests, no opening line, no done line.
     expect(o.rpc.getProgramAccounts).toBe(0)
@@ -828,9 +848,13 @@ describe("T-C1, T-C2: one commit per key, a mid-run failure stops the batch", ()
     })
     expect(o.code).toBe(1)
     expect(o.submits.n).toBe(4)
-    expect(o.err).toContain("3 of 5 rows landed and ARE in the vault; the vault is intact. 2 remain.")
-    expect(o.err).toContain(
-      "Re-run the same file: the rows that landed are skipped, an interrupted row resumes, and the rest are promoted.",
+    expect(humanText(o.err)).toContain(
+      humanText("3 of 5 rows landed and ARE in the vault; the vault is intact. 2 remain."),
+    )
+    expect(humanText(o.err)).toContain(
+      humanText(
+        "Re-run the same file: the rows that landed are skipped, an interrupted row resumes, and the rest are promoted.",
+      ),
     )
     const after = await readEntries(f)
     const by = (label: string) => after.entries.find((e) => e.label === label)
@@ -845,7 +869,7 @@ describe("T-C1, T-C2: one commit per key, a mid-run failure stops the batch", ()
       api: { wallets: grantedWallets([{ address: f.addresses.d as string, vaultDestination: f.addresses.cold }]) },
     })
     expect(again.code).toBe(0)
-    expect(again.err).toContain("3 already promoted (skipped), 1 to resume, 1 to promote.")
+    expect(humanText(again.err)).toContain(humanText("3 already promoted (skipped), 1 to resume, 1 to promote."))
     expect(again.submits.addresses).toEqual([f.addresses.e as string])
     const done = await readEntries(f)
     expect(done.entries.filter((e) => e.tee?.lifecycle === "enabled")).toHaveLength(5)
@@ -871,32 +895,38 @@ describe("T-H1, T-H2, T-H3: the bounded holdings read", () => {
     expect(o.code).toBe(1)
     expect(o.rpc.getMultipleAccounts).toBe(2)
     expect(o.rpc.getTokenAccountsByOwner).toBe(0)
-    expect(o.err).toContain("✓ SOL read for 146 addresses (2 requests)")
-    expect(o.err).toContain("146 rows from")
+    expect(humanText(o.err)).toContain(humanText("✓ SOL read for 146 addresses (2 requests)"))
+    expect(humanText(o.err)).toContain(humanText("146 rows from"))
     // BE-296 (D7): the opening line names the request count before the first one is sent, and
     // the acting rows get nine requests each.
-    expect(o.err).toContain(
-      "Checking token mint, freeze, program upgrade and stake authorities for 146 addresses: 1,314 requests over rpc.pb.test.",
+    expect(humanText(o.err)).toContain(
+      humanText(
+        "Checking token mint, freeze, program upgrade and stake authorities for 146 addresses: 1,314 requests over rpc.pb.test.",
+      ),
     )
     expect(o.rpc.getProgramAccounts).toBe(1314)
-    expect(o.err).toContain("✓ authorities read for 146 addresses (1,314 requests, 7 of 7 groups read) in 0s")
-    expect(o.out).toContain("a permanent copy of these 146 keys")
+    expect(humanText(o.err)).toContain(
+      humanText("✓ authorities read for 146 addresses (1,314 requests, 7 of 7 groups read) in 0s"),
+    )
+    expect(humanText(o.out)).toContain(humanText("a permanent copy of these 146 keys"))
     expect(o.linePrompts).toEqual([confirmPrompt(146)])
 
     const tokens = await runBatch(f, { file, lines: ["no"], args: ["--token-holdings"] })
     expect(tokens.rpc.getMultipleAccounts).toBe(2)
     expect(tokens.rpc.getTokenAccountsByOwner).toBe(292)
-    expect(tokens.err).toContain("Reading token accounts for 146 addresses: 292 requests over rpc.pb.test.")
-    expect(tokens.err).toContain("Token accounts were read under both programs.")
+    expect(humanText(tokens.err)).toContain(
+      humanText("Reading token accounts for 146 addresses: 292 requests over rpc.pb.test."),
+    )
+    expect(humanText(tokens.err)).toContain(humanText("Token accounts were read under both programs."))
   })
 
   test("T-H2: without --token-holdings the header and the footer both say token accounts were not read", async () => {
     const f = await fixture(["a", "b", "cold"])
     const file = await pairsFile(f.dir, "a cold\nb cold\n")
     const o = await runBatch(f, { file, lines: ["no"] })
-    expect(o.err).toContain("SOL (tokens not read)")
-    expect(o.err).toContain("Token accounts were not read (pass --token-holdings).")
-    expect(o.err).toContain("SOL read at 1970-01-01T00:00:00.000Z over rpc.pb.test.")
+    expect(humanText(o.err)).toContain(humanText("SOL (tokens not read)"))
+    expect(humanText(o.err)).toContain(humanText("Token accounts were not read (pass --token-holdings)."))
+    expect(humanText(o.err)).toContain(humanText("SOL read at 1970-01-01T00:00:00.000Z over rpc.pb.test."))
   })
 
   test("T-H3: a failed SOL read keeps the table, shows unread, and refuses rather than degrading", async () => {
@@ -906,11 +936,13 @@ describe("T-H1, T-H2, T-H3: the bounded holdings read", () => {
     const o = await runBatch(f, { file, rpc: { failMultiple: true } })
     expect(o.code).toBe(1)
     expect(o.linePrompts).toEqual([])
-    expect(o.err).toMatch(/^1\s+promote\s+a\s+\S+\s+cold \(…\w+\)\s+\?\s+unread$/m)
-    expect(o.err).toContain(
-      "SOL read over rpc.pb.test FAILED: RPC getMultipleAccounts failed: HTTP 500. The batch is refused.",
+    expect(o.err).toMatch(
+      /line\s+1\s+state\s+promote\s+label\s+a\s+address\s+\S+\s+destination\s+cold \(\w+\)\s+authority\s+\?\s+SOL \(tokens not read\)\s+unread/m,
     )
-    expect(o.err).toContain("The SOL read over rpc.pb.test failed")
+    expect(humanText(o.err)).toContain(
+      humanText("SOL read over rpc.pb.test FAILED: RPC getMultipleAccounts failed: HTTP 500. The batch is refused."),
+    )
+    expect(humanText(o.err)).toContain(humanText("The SOL read over rpc.pb.test failed"))
     expect(o.out).not.toContain(SENTENCE_PREFIX)
     // The batch refuses right here, so the role read is not made and the column reads `?`.
     expect(o.rpc.getProgramAccounts).toBe(0)

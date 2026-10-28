@@ -41,7 +41,8 @@ import {
   resolveEvmRpcUrl,
   rpcHostOf,
 } from "../evm-lite"
-import { renderTable } from "../render"
+import { writeFields, writeTable } from "../human-output"
+import { notice, symbols, terminalStyle } from "../presentation"
 import { describeRpcFailure, openSolanaClient, rateLimitedReadFailure, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited } from "../solana-lite"
 import type { KeyEntry } from "../vault/format"
@@ -241,8 +242,11 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
       await solanaClient.disclose()
       // The host, never the URL: a provider URL can carry an API key in its path or query. On
       // stderr in both modes, so `--json` stdout stays exactly one JSON value.
-      deps.stderr.write(
-        `Reading SOL for ${solana.length} addresses from ${rpcHost}, in ${requests} ${requests === 1 ? "request" : "requests"}. That endpoint sees all ${solana.length} together.\n`,
+      notice(
+        deps,
+        "stderr",
+        "note",
+        `Reading SOL for ${solana.length} addresses from ${rpcHost}, in ${requests} ${requests === 1 ? "request" : "requests"}. That endpoint sees all ${solana.length} together.\n`.trim(),
       )
     }
 
@@ -264,8 +268,11 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
     // D11: the RPC's own message, on stderr in both modes. `--json` stdout stays one JSON value,
     // and an agent that exits 3 can still tell a rate limit from an outage.
     if (!solanaComplete) {
-      deps.stderr.write(
-        `${unavailable.length} ${unavailable.length === 1 ? "address" : "addresses"} could not be read: ${failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.\n`,
+      notice(
+        deps,
+        "stderr",
+        "warning",
+        `${unavailable.length} ${unavailable.length === 1 ? "address" : "addresses"} could not be read: ${failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.\n`.trim(),
       )
     }
 
@@ -275,8 +282,11 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
     let evmRead: EvmRead | undefined
     if (evm.length > 0) {
       const host = rpcHostOf(evmRpcUrl)
-      deps.stderr.write(
-        `Reading ETH (and USDG when the chain is Hood) for ${evm.length} EVM ${evm.length === 1 ? "address" : "addresses"} from ${host}, in ${evmRequestsPlanned(evm.length)} requests. That endpoint sees all ${evm.length} together.\n`,
+      notice(
+        deps,
+        "stderr",
+        "note",
+        `Reading ETH (and USDG when the chain is Hood) for ${evm.length} EVM ${evm.length === 1 ? "address" : "addresses"} from ${host}, in ${evmRequestsPlanned(evm.length)} requests. That endpoint sees all ${evm.length} together.\n`.trim(),
       )
       evmRead = await readEvmBalances(
         evm.map((entry) => entry.address),
@@ -284,8 +294,11 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
         deps.fetch,
       )
       if (evmRead.unavailable.length > 0) {
-        deps.stderr.write(
-          `${evmRead.unavailable.length} EVM ${evmRead.unavailable.length === 1 ? "address" : "addresses"} could not be read: ${evmRead.failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --evm-rpc-url.\n`,
+        notice(
+          deps,
+          "stderr",
+          "warning",
+          `${evmRead.unavailable.length} EVM ${evmRead.unavailable.length === 1 ? "address" : "addresses"} could not be read: ${evmRead.failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --evm-rpc-url.\n`.trim(),
         )
       }
     }
@@ -347,17 +360,21 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
     if (matched.length === 0 && filter !== undefined) {
       // Exit 0: an empty result is an answer, not a refusal. `if candle vault list foo` must not
       // come to mean "the vault is broken" in a script that meant "is there a key called foo".
-      deps.stdout.write(
-        `No key matches "${filter}". ${all.length} keys in this vault; candle vault list with no filter lists them.\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `No key matches "${filter}". ${all.length} keys in this vault; candle vault list with no filter lists them.\n`.trim(),
       )
       return 0
     }
 
-    deps.stdout.write(
-      filter === undefined
-        ? `${all.length} keys in ${path}\n`
-        : `${matched.length} of ${all.length} keys match "${filter}" in ${path}\n`,
-    )
+    writeFields(deps, "stdout", [
+      ["Vault", path],
+      ["Keys", all.length],
+      ["Matching", matched.length],
+      ["Filter", filter],
+    ])
     const headers = ["ADDRESS", "LABEL", "ROLE", "DERIVATION"]
     if (balances) headers.push("SOL")
     // Phase 4a: an ETH column when an EVM row was read, named by the chain when it is not Hood so
@@ -367,43 +384,78 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
     if (evmColumns) headers.push(nativeHeader)
     if (evmColumns && hood) headers.push("USDG")
     const rows = matched.map((entry) => {
-      const row = [entry.address, entry.label || "(none)", entry.role, entry.derivation?.path ?? "-"]
+      const row = [
+        entry.address,
+        entry.label || symbols(terminalStyle(deps, "stdout")).missing,
+        entry.role,
+        entry.derivation?.path ?? symbols(terminalStyle(deps, "stdout")).missing,
+      ]
       if (balances) {
         const held = lamports.get(entry.address)
         // `-` for a non-Solana entry, which was never in the batch; `?` for a Solana address whose
         // chunk threw. The two are different facts and read differently.
-        row.push(entry.chain !== "solana" ? "-" : held === undefined ? "?" : formatSol(held))
+        row.push(held === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatSol(held))
       }
       if (evmColumns) {
         const wei = evmRead?.wei.get(entry.address)
-        row.push(entry.chain !== "evm" ? "-" : wei === undefined ? "?" : formatUnits(wei, NATIVE_DECIMALS))
+        row.push(wei === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatUnits(wei, NATIVE_DECIMALS))
         if (hood) {
           const usdg = evmRead?.usdg.get(entry.address)
-          row.push(entry.chain !== "evm" ? "-" : usdg === undefined ? "?" : formatUnits(usdg, HOOD_USDG_DECIMALS))
+          row.push(
+            usdg === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatUnits(usdg, HOOD_USDG_DECIMALS),
+          )
         }
       }
       return row
     })
-    deps.stdout.write(`\n${renderTable(headers, rows)}\n`)
+    writeTable(
+      deps,
+      "stdout",
+      headers,
+      rows,
+      headers.map((_, i) =>
+        i === 0
+          ? { id: true }
+          : i === 1
+            ? { priority: 2 }
+            : i === 3
+              ? { priority: 3 }
+              : i >= 4
+                ? { align: "right" as const, priority: 1 }
+                : {},
+      ),
+    )
 
     if (balances) {
       // The count is Solana keys: an `evm` match is in the match line above and not in this one.
-      deps.stdout.write(
-        solanaComplete
+      notice(
+        deps,
+        "stdout",
+        "note",
+        (solanaComplete
           ? `\ntotal  ${formatSol(totalLamports)} SOL across ${solana.length} keys\n`
-          : `\ntotal  ${formatSol(totalLamports)} SOL across ${solana.length - unavailable.length} of ${solana.length} keys read\n`,
+          : `\ntotal  ${formatSol(totalLamports)} SOL across ${solana.length - unavailable.length} of ${solana.length} keys read\n`
+        ).trim(),
       )
     }
     if (evmRead !== undefined) {
       const totalWei = [...evmRead.wei.values()].reduce((sum, value) => sum + value, 0n)
       const readCount = evm.length - evmRead.unavailable.length
       const chain = evmRead.chainId === undefined ? "an unread chain" : hood ? "Hood" : `chain id ${evmRead.chainId}`
-      deps.stdout.write(
-        `total  ${formatUnits(totalWei, NATIVE_DECIMALS)} ${nativeHeader} across ${readCount}${readCount === evm.length ? "" : ` of ${evm.length}`} EVM keys${readCount === evm.length ? "" : " read"} on ${chain}\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `total  ${formatUnits(totalWei, NATIVE_DECIMALS)} ${nativeHeader} across ${readCount}${readCount === evm.length ? "" : ` of ${evm.length}`} EVM keys${readCount === evm.length ? "" : " read"} on ${chain}\n`.trim(),
       )
       if (hood) {
         const totalUsdg = [...evmRead.usdg.values()].reduce((sum, value) => sum + value, 0n)
-        deps.stdout.write(`total  ${formatUnits(totalUsdg, HOOD_USDG_DECIMALS)} USDG across those keys\n`)
+        notice(
+          deps,
+          "stdout",
+          "note",
+          `total  ${formatUnits(totalUsdg, HOOD_USDG_DECIMALS)} USDG across those keys\n`.trim(),
+        )
       }
     }
     // Exit 3 is the shipped meaning of "pending or partial" (`vault/errors.ts`; `wallets revoke`

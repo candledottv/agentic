@@ -13,8 +13,10 @@
 import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 import { apiKeyPrefix } from "../profiles"
-import { errorEnvelope, renderError, suggestionFor, writeFailure, writeLocalFailure } from "../render"
+import { errorEnvelope, formatTime, renderError, suggestionFor, writeFailure, writeLocalFailure } from "../render"
 import { openSolanaClient } from "../solana-endpoint"
 import { type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
@@ -180,7 +182,12 @@ export async function rebindAfterImport(
   // Key signers (5.2): a keySigner import already owned the wallet by the target's signer and
   // bound it to the target, in that call. There is nothing to rebind.
   if (toKey.keySigner !== undefined && wallet.importedTo === toKey.target.keyPrefix) {
-    ctx.deps.stderr.write(`${keySignerTradableLine({ target: toKey.target, keySigner: toKey.keySigner })}\n`)
+    notice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `${keySignerTradableLine({ target: toKey.target, keySigner: toKey.keySigner })}\n`.trim(),
+    )
     return {
       exit: 0,
       json: {
@@ -213,7 +220,7 @@ export async function rebindAfterImport(
       : undefined
   const input = { target: toKey.target, callingKeyPrefix, wallets: rebindable, run, notRebindable }
   const report = renderRebindReport(input)
-  if (report.length > 0) ctx.deps.stderr.write(`${report}\n`)
+  if (report.length > 0) notice(ctx.deps, "stderr", "note", `${report}\n`.trim())
   const id = wallet.linkedWalletId
   return {
     exit: run !== undefined && !run.ok ? 1 : 0,
@@ -235,8 +242,11 @@ export async function confirmResumeRebind(
   toKey: ToKeyContext,
   chain: PromoteChain,
 ): Promise<void> {
-  ctx.deps.stderr.write(
-    `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, chain)].join("\n")}\n`,
+  notice(
+    ctx.deps,
+    "stderr",
+    "note",
+    `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, chain)].join("\n")}\n`.trim(),
   )
   const typed = await ctx.deps.promptLine(`Type ${CONFIRM_WORD} to move this wallet to ${toKey.target.keyPrefix}: `)
   if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
@@ -363,8 +373,11 @@ async function promoteFresh(
     if (toKey !== undefined) {
       // BE-322: the fresh mode has no controlled-by block; the target is named here, with its cap
       // lines, before the import.
-      ctx.deps.stderr.write(
-        `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "solana")].join("\n")}\n`,
+      notice(
+        ctx.deps,
+        "stderr",
+        "note",
+        `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "solana")].join("\n")}\n`.trim(),
       )
     }
 
@@ -426,7 +439,15 @@ async function promoteFresh(
         ...(rebound?.json ?? {}),
       })
     } else {
-      ctx.deps.stdout.write(`Promoted fresh TEE wallet ${address} (sweep to ${destination.address}).\n`)
+      writeFields(
+        ctx.deps,
+        "stdout",
+        [
+          ["Address", address],
+          ["Sweep to", destination.address],
+        ],
+        "Fresh TEE wallet promoted",
+      )
     }
     return exit
   })
@@ -442,7 +463,7 @@ async function promoteFresh(
 export async function refuseWithoutRoom(ctx: CommandContext): Promise<void> {
   const read = await readAccountRoom(ctx)
   if (!read.ok) {
-    ctx.deps.stderr.write(unreadableRoomLine(read.reason))
+    notice(ctx.deps, "stderr", "note", unreadableRoomLine(read.reason).trim())
     return
   }
   const refusal = singleRoomRefusal(read.room)
@@ -555,7 +576,7 @@ async function promoteInPlace(
           ...rebound.json,
         })
       } else {
-        ctx.deps.stdout.write(`Resumed ${existing.address}: grant adopted; no re-import.\n`)
+        writeSuccess(ctx.deps, "stdout", `Resumed ${existing.address}: grant adopted; no re-import.\n`.trim())
       }
       return rebound.exit
     }
@@ -609,7 +630,7 @@ async function promoteInPlace(
     // The role read (BE-296, D6, D7): always, no flag, nine requests, warns and never refuses.
     // Its block sits under the holdings, on stdout like them; the sentence names it as "above".
     const roles = await runRoleCheck(ctx, rpc, [first.subject.address])
-    ctx.deps.stdout.write(`${authoritiesBlock(host, roles)}\n`)
+    notice(ctx.deps, "stdout", "note", `${authoritiesBlock(host, roles)}\n`.trim())
 
     // The sentence BEFORE both typed confirmations (step 5 then 6): `confirm` to promote the address
     // (BE-1710; it was the address's last six), then the controlled-by block directly above the
@@ -739,8 +760,15 @@ async function promoteInPlace(
         ...(rebound?.json ?? {}),
       })
     } else if (code === 0 || code === 3) {
-      ctx.deps.stdout.write(
-        `Promoted ${subject.address} in place (sweep to ${destination.address}). This address never returns to cold.\n`,
+      writeFields(
+        ctx.deps,
+        "stdout",
+        [
+          ["Address", subject.address],
+          ["Sweep to", destination.address],
+          ["Exposure", "This address never returns to cold."],
+        ],
+        "Promoted in place",
       )
     }
     return exit
@@ -828,7 +856,7 @@ export async function resumePromote(
         1,
       )
     }
-    if (announceGrant) ctx.deps.stdout.write(`This profile acts as account ${cached}.\n`)
+    if (announceGrant) notice(ctx.deps, "stdout", "note", `This profile acts as account ${cached}.\n`.trim())
     await confirmations.confirmAccount(cached)
     assertedAccount = cached
   }
@@ -881,7 +909,7 @@ export async function resumePromote(
       return { exit: 1, failure: { code: "PROMOTE_ALREADY_TEE_WALLET", message: stranded }, vault: next }
     }
     if (ctx.json) writeJson(ctx.deps, { ok: false, lifecycle: "stranded", address: entry.address })
-    else ctx.deps.stdout.write(`${stranded}\n`)
+    else notice(ctx.deps, "stdout", "note", `${stranded}\n`.trim())
     return { exit: 1 }
   }
 
@@ -935,7 +963,7 @@ export async function resumePromote(
       importCalls: 0,
     })
   } else {
-    ctx.deps.stdout.write(`Resumed ${entry.address}: grant adopted; no re-import.\n`)
+    writeSuccess(ctx.deps, "stdout", `Resumed ${entry.address}: grant adopted; no re-import.\n`.trim())
   }
   void reopen
   void path
@@ -951,13 +979,26 @@ async function displayHoldings(ctx: CommandContext, rpc: SolanaRpc, address: str
     ...(await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)),
     ...(await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)),
   ]
-  ctx.deps.stdout.write(`Holdings at ${address} (observed ${observedAt}):\n`)
-  ctx.deps.stdout.write(`  SOL   ${lamports} lamports\n`)
+  writeFields(
+    ctx.deps,
+    "stdout",
+    [
+      ["Address", address],
+      ["Observed at", formatTime(observedAt)],
+    ],
+    "Holdings",
+  )
+  writeFields(ctx.deps, "stdout", [["SOL (lamports)", lamports.toString()]])
   for (const t of tokens) {
     const program = t.programId === TOKEN_PROGRAM_ID ? "token" : "token-2022"
-    ctx.deps.stdout.write(`  token ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp, ${program})\n`)
+    writeFields(ctx.deps, "stdout", [
+      ["Mint", t.mint],
+      ["Raw amount", t.amountRaw],
+      ["Decimals", t.decimals],
+      ["Program", program],
+    ])
   }
-  if (tokens.length === 0) ctx.deps.stdout.write(`  (no token accounts under either program)\n`)
+  if (tokens.length === 0) notice(ctx.deps, "stdout", "note", `  (no token accounts under either program)\n`.trim())
 }
 
 export interface TeeImportOutcome {

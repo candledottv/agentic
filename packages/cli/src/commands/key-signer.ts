@@ -51,7 +51,7 @@ import {
 import { SecretStoreLockedError } from "../keychain"
 import { notice } from "../presentation"
 import { apiKeyPrefix, printIdentity } from "../profiles"
-import { formatTime, formatTimestamp } from "../render"
+import { formatTime } from "../render"
 import { pemToStoredSigner, storedSignerToPem, walletSignerRef } from "../secret-store"
 import { chunkWallets } from "../vault/promote-to-key"
 import {
@@ -159,7 +159,7 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
   // D2, before anything is generated or sent.
   if ((await resolveDeviceToken(deps, ctx.profile)) !== undefined)
     if (json) {
-      deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}\n`)
+      notice(deps, "stderr", "warning", `${DEVICE_TOKEN_BESIDE_SIGNER_LINE}\n`.trim())
     } else {
       notice(deps, "stderr", "warning", DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, ""))
     }
@@ -228,8 +228,11 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     if (active !== null) {
       replaces = { fingerprint: active.fingerprint, wallets: view.wallets.onSigner.length }
       if (json) {
-        deps.stderr.write(
-          `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}\n`,
+        notice(
+          deps,
+          "stderr",
+          "warning",
+          `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}\n`.trim(),
         )
       } else {
         notice(
@@ -283,8 +286,11 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     writeFailure(deps, requested, { apiUrl: ctx.apiUrl, authType: "key" }, json)
     if (!json)
       if (json) {
-        deps.stderr.write(
-          `The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.\n`,
+        notice(
+          deps,
+          "stderr",
+          "note",
+          `The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.\n`.trim(),
         )
       } else {
         notice(
@@ -307,7 +313,7 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
   }
   if (body.supersededPending)
     if (json) {
-      deps.stderr.write("An earlier pending request for this key was cancelled.\n")
+      notice(deps, "stderr", "note", "An earlier pending request for this key was cancelled.\n".trim())
     } else {
       notice(deps, "stderr", "warning", "An earlier pending request for this key was cancelled.\n".trimEnd())
     }
@@ -325,17 +331,25 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
   }
 
   if (json) {
-    deps.stderr.write(
-      `${[
-        `Key signer for key ${keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel ?? undefined)})` : ""}${resumed ? ", resumed" : ""}`,
-        "",
-        `    ${entry.fingerprint}`,
-        "",
-        "The account owner approves it, typing this full fingerprint:",
-        `  open ${body.verificationUriComplete}`,
-        `  or, on the owner's machine: candle keys signer approve ${body.userCode} --key ${keyPrefix}`,
-        `The code expires at ${formatTimestamp(body.expiresAt)}. Waiting for approval...`,
-      ].join("\n")}\n`,
+    writeFields(
+      deps,
+      "stderr",
+      [
+        ["Key", keyPrefix],
+        ["Label", view.keyLabel ? labelCell(view.keyLabel) : undefined],
+        ["Request", resumed ? "resumed" : "new"],
+        ["Fingerprint", entry.fingerprint],
+        ["Open", body.verificationUriComplete],
+        ["Approve on owner machine", `candle keys signer approve ${body.userCode} --key ${keyPrefix}`],
+        ["Expires", formatTime(body.expiresAt)],
+      ],
+      "Key signer request",
+    )
+    notice(
+      deps,
+      "stderr",
+      "note",
+      "The account owner approves it, typing this full fingerprint. Waiting for approval...",
     )
   } else {
     writeFields(
@@ -406,8 +420,11 @@ async function writeOut(ctx: CommandContext, out: string | undefined, entry: Key
   if (stored === null) return
   await ctx.deps.writeFile(out, storedSignerToPem(stored))
   if (ctx.json) {
-    ctx.deps.stderr.write(
-      `Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.\n`,
+    notice(
+      ctx.deps,
+      "stderr",
+      "warning",
+      `Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.\n`.trim(),
     )
   } else {
     notice(
@@ -573,7 +590,7 @@ async function keysSignerApprove(args: string[], ctx: CommandContext): Promise<n
   // D2: approving a request this very machine made is the device token approving its own signer.
   if ((await localKeySigners(deps, keyPrefix)).some((e) => e.spkiSha256 === pending.spkiSha256)) {
     if (json) {
-      deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}\n`)
+      notice(deps, "stderr", "warning", `${DEVICE_TOKEN_BESIDE_SIGNER_LINE}\n`.trim())
     } else {
       notice(deps, "stderr", "warning", DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, ""))
     }
@@ -582,22 +599,22 @@ async function keysSignerApprove(args: string[], ctx: CommandContext): Promise<n
   const all = allSignerWallets(view)
   const onActive = active !== null ? view.wallets.onSigner.length : 0
   if (json) {
-    deps.stderr.write(
-      `${[
-        `Signer request for key ${keyPrefix}${view.keyLabel ? `  (${labelCell(view.keyLabel ?? undefined)})` : ""}`,
-        "",
-        `    ${pending.fingerprint}`,
-        "",
-        "Requested from a machine using this key. Compare the fingerprint with what that machine printed.",
-        `Wallets on this key: ${all.length}.`,
-        ...(active !== null ? [`Approving replaces signer ${active.fingerprint} as this key's active signer.`] : []),
-        ...(active !== null && onActive > 0
-          ? [
-              `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`,
-            ]
-          : []),
-        "",
-      ].join("\n")}\n`,
+    writeFields(
+      deps,
+      "stderr",
+      [
+        ["Key", keyPrefix],
+        ["Label", view.keyLabel ? labelCell(view.keyLabel) : undefined],
+        ["Fingerprint", pending.fingerprint],
+        ["Wallets on this key", all.length],
+      ],
+      "Signer request",
+    )
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      `Requested from a machine using this key. Compare the fingerprint with what that machine printed.${active !== null ? ` Approving replaces signer ${active.fingerprint} as this key's active signer.` : ""}${active !== null && onActive > 0 ? ` ${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.` : ""}`,
     )
   } else {
     writeFields(

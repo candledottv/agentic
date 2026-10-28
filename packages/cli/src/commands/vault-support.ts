@@ -9,6 +9,7 @@
 import { dirname } from "node:path"
 import { isUsageError, type ParsedArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
+import { notice as outputNotice } from "../presentation"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { describeRpcFailure } from "../solana-endpoint"
 import { safeText } from "../trading"
@@ -512,7 +513,8 @@ export async function unlockInteractively(
     }
     // BE-292 (D7): one line, immediately before the prompt, whenever the passphrase is the only
     // answer and there was another factor the operator might have expected to use.
-    if (choice.onlyBecause !== undefined) deps.stderr.write(`${PASSPHRASE_ONLY_PREFIX}${choice.onlyBecause}\n`)
+    if (choice.onlyBecause !== undefined)
+      outputNotice(deps, "stderr", "note", `${PASSPHRASE_ONLY_PREFIX}${choice.onlyBecause}\n`.trim())
     const typed = await deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ")
     const openWith = (p: string, r: string, candidate: string, purpose: string | undefined) =>
       choice.envelopeId === undefined
@@ -666,7 +668,7 @@ export async function unlockInteractively(
     confirm: async (what) => {
       // A fresh user-verified assertion that opens the file again: the same proof the first open
       // was, made a second time, for the same reason the passphrase is typed a second time.
-      deps.stderr.write(`Present the security key again to ${what}.\n`)
+      outputNotice(deps, "stderr", "note", `Present the security key again to ${what}.\n`.trim())
       closeVault(await open(path, raw))
     },
   }
@@ -740,7 +742,7 @@ async function chooseFactor(
       envelopes.every((envelope) => !matchesFlag(envelope, flag as string)) &&
       allEnvelopes.some((envelope) => matchesFlag(envelope, flag as string))
     if (namesExcluded) {
-      ctx.deps.stderr.write(`--factor ${flag} is not used here: ${among.excludedBecause}\n`)
+      outputNotice(ctx.deps, "stderr", "note", `--factor ${flag} is not used here: ${among.excludedBecause}\n`.trim())
       flag = undefined
     }
   }
@@ -1042,7 +1044,12 @@ export async function assertNotOlderCopy(
 ): Promise<void> {
   const sidecar = await readSidecar(sidecarPath(path))
   if (sidecar === null) {
-    ctx.deps.stderr.write(`No vault.state.json beside this vault, so an older copy of it cannot be recognized here.\n`)
+    outputNotice(
+      ctx.deps,
+      "stderr",
+      "warning",
+      `No vault.state.json beside this vault, so an older copy of it cannot be recognized here.\n`.trim(),
+    )
     return
   }
   let generation: unknown
@@ -1073,8 +1080,11 @@ export async function assertNotOlderCopy(
       },
     )
   }
-  ctx.deps.stderr.write(
-    `Opening an older copy: generation ${String(generation)} against the ${sidecar.lastGeneration} this machine last saw.${detail}\n`,
+  outputNotice(
+    ctx.deps,
+    "stderr",
+    "note",
+    `Opening an older copy: generation ${String(generation)} against the ${sidecar.lastGeneration} this machine last saw.${detail}\n`.trim(),
   )
 }
 
@@ -1282,7 +1292,7 @@ export function takeRepeatedFlag(
       const value = args[++i]
       if (!value || value.startsWith("-")) return { error: `${flag} requires a value` }
       values.push(value)
-    } else if (arg !== undefined && arg.startsWith(`${flag}=`)) {
+    } else if (arg?.startsWith(`${flag}=`)) {
       const value = arg.slice(flag.length + 1)
       if (!value) return { error: `${flag} requires a value` }
       values.push(value)

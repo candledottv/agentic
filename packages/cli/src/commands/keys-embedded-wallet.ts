@@ -147,9 +147,14 @@ export async function confirmCreateAllow(ctx: CommandContext): Promise<number | 
     return 1
   }
   if (json)
-    deps.stderr.write(
-      "This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.\n" +
-        "A key that only trades its own TEE wallets does not need it.\n",
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      (
+        "This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.\n" +
+        "A key that only trades its own TEE wallets does not need it.\n"
+      ).trim(),
     )
   else
     notice(

@@ -43,6 +43,8 @@ import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { EVM_DERIVATION_SCHEME, looksLikeEvmAddress } from "../evm-lite"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 import { flagEndpoint, RPC_URL_ENV, type SolanaClient, solanaClientFor, validateSolanaRpcUrl } from "../solana-endpoint"
 import { type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { createVault, freshHdRecord } from "../vault/create"
@@ -158,9 +160,12 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
     // D8 (BE-241): said BEFORE anything has been typed. The operator in BE-235 item 5 typed the
     // SOURCE vault's passphrase at the copy-back prompt, the AD-6 gate refused correctly, nothing
     // was written, and it read as being stuck. The gate is right; what was missing was this line.
-    deps.stdout.write(`${RESTORE_NEW_PASSPHRASE_NOTICE}\n\n`)
-    deps.stdout.write(
-      `Type your ${PHRASE_WORDS}-word recovery phrase. It is not echoed, and nothing is written until its checksum checks out.\n`,
+    notice(deps, "stdout", "note", `${RESTORE_NEW_PASSPHRASE_NOTICE}\n\n`.trim())
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `Type your ${PHRASE_WORDS}-word recovery phrase. It is not echoed, and nothing is written until its checksum checks out.\n`.trim(),
     )
     const typed = await deps.promptSecret(`Recovery phrase (${PHRASE_WORDS} words, input hidden): `)
     // A checksum failure writes nothing and the message never echoes a word back.
@@ -213,8 +218,16 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
       // the three callers of that function cannot drift and a restore that produced an unopenable
       // root is caught here rather than on the day it is needed.
       await verifyVaultIntegrity(vault)
-      deps.stdout.write(`\nNew vault at ${path}, verified in full (all eight steps).\n`)
-      deps.stdout.write(`${APPLE_ACCOUNT_NOTICE}\n\n`)
+      writeFields(
+        deps,
+        "stdout",
+        [
+          ["Path", path],
+          ["Verified", "in full (all eight steps)"],
+        ],
+        "New vault",
+      )
+      notice(deps, "stdout", "note", `${APPLE_ACCOUNT_NOTICE}\n\n`.trim())
 
       const solana = rpcUrlFlag === undefined ? undefined : solanaClientFor(ctx, flagEndpoint(rpcUrlFlag))
 
@@ -235,7 +248,12 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
       if (apiKey !== undefined) {
         matches = await matchAgainstAccount(ctx, apiKey, derived)
       } else {
-        deps.stderr.write("No API key is stored for this profile, so this restore read no exposure at all.\n")
+        notice(
+          deps,
+          "stderr",
+          "warning",
+          "No API key is stored for this profile, so this restore read no exposure at all.\n".trim(),
+        )
       }
 
       const outcome = await writeRestoredIndex(ctx, vault, derived, matches, counts)
@@ -249,7 +267,7 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
       // later vault command needs the flag, or the variable that moves every file together. Human
       // mode only, which is every mode here: restore has no --json form at all.
       const footer = nonDefaultVaultFooter(resolvedVault)
-      if (footer !== undefined) deps.stdout.write(footer)
+      if (footer !== undefined) notice(deps, "stdout", "note", footer.trim())
       return result
     } catch (error) {
       if (!committed) await discardIncompleteRestore(ctx, path, sidecarExisted)
@@ -297,12 +315,18 @@ async function discardIncompleteRestore(ctx: CommandContext, path: string, sidec
   try {
     await rm(path, { force: true })
     if (!sidecarExisted) await rm(sidecarPath(path), { force: true })
-    ctx.deps.stderr.write(
-      `The vault this run had written at ${path} was removed because the restore did not complete, so a retry starts clean.\n`,
+    notice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `The vault this run had written at ${path} was removed because the restore did not complete, so a retry starts clean.\n`.trim(),
     )
   } catch {
-    ctx.deps.stderr.write(
-      `The vault this run had written at ${path} could not be removed; it holds no key entry, and a retry needs it moved aside.\n`,
+    notice(
+      ctx.deps,
+      "stderr",
+      "warning",
+      `The vault this run had written at ${path} could not be removed; it holds no key entry, and a retry needs it moved aside.\n`.trim(),
     )
   }
 }
@@ -440,8 +464,11 @@ async function deriveWithinBounds(
         consecutiveUnused = used ? 0 : consecutiveUnused + 1
       }
       set.scanStoppedAt[branch] = index
-      ctx.deps.stdout.write(
-        `Gap scan on ${branch} stopped at index ${index - 1} after ${GAP_LIMIT} consecutive indices with no balance, no token account and no signature history.\n`,
+      notice(
+        ctx.deps,
+        "stdout",
+        "note",
+        `Gap scan on ${branch} stopped at index ${index - 1} after ${GAP_LIMIT} consecutive indices with no balance, no token account and no signature history.\n`.trim(),
       )
     }
     // Phase 4a (D7): the EVM branch, bounded by `--evm-count` and never scanned.
@@ -782,67 +809,104 @@ function reportRestore(
   ambientSolanaEndpoint: boolean,
 ): number {
   const { deps } = ctx
-  deps.stdout.write(`\nRecovered ${outcome.entries.length} address(es) from the phrase.\n`)
+  writeSuccess(deps, "stdout", `\nRecovered ${outcome.entries.length} address(es) from the phrase.\n`.trim())
   for (const entry of outcome.entries) {
-    deps.stdout.write(
-      `  ${entry.address}  ${entry.derivation?.path}  ${entry.role}${entry.exposure.everRemoteExposed ? "  (this account imported it)" : ""}\n`,
-    )
+    writeFields(deps, "stdout", [
+      ["Address", entry.address],
+      ["Derivation", entry.derivation?.path],
+      ["Role", entry.role],
+      ["This account imported it", entry.exposure.everRemoteExposed ? "yes" : "not observed"],
+    ])
   }
-  deps.stdout.write(
-    `\nEvery one of them is recorded with an unknown history and stays that way: this phrase may have been restored under another account, under another deployment, or outside Candle entirely, and no read can rule that out.\n`,
+  notice(
+    deps,
+    "stdout",
+    "warning",
+    `\nEvery one of them is recorded with an unknown history and stays that way: this phrase may have been restored under another account, under another deployment, or outside Candle entirely, and no read can rule that out.\n`.trim(),
   )
-  deps.stdout.write(
-    `This vault does not allocate. \`vault new-key\`, \`vault promote --from\` and \`candle external new\` refuse here; the exit is \`candle vault init\` for a fresh root and \`candle vault transfer\` to move funds across.\n`,
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `This vault does not allocate. \`vault new-key\`, \`vault promote --from\` and \`candle external new\` refuse here; the exit is \`candle vault init\` for a fresh root and \`candle vault transfer\` to move funds across.\n`.trim(),
   )
-  deps.stdout.write(
-    `The Phase 1 TEE wallet store was not read, and no migrated-tee entry was restored: the phrase does not restore those keys, and the vault file plus a factor does.\n`,
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `The Phase 1 TEE wallet store was not read, and no migrated-tee entry was restored: the phrase does not restore those keys, and the vault file plus a factor does.\n`.trim(),
   )
 
   let scanHint = false
   for (const branch of RESTORED_BRANCHES) {
     const bound = counts[branch]
     if (bound === undefined) {
-      deps.stdout.write(`  ${branch}: gap-scanned to index ${(derived.scanStoppedAt[branch] ?? 1) - 1}\n`)
+      writeFields(deps, "stdout", [[branch, `gap-scanned to index ${(derived.scanStoppedAt[branch] ?? 1) - 1}`]])
     } else if (bound <= 1) {
       scanHint = true
-      deps.stdout.write(
-        `  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count/--external-count, or with --rpc-url to gap-scan.\n`,
+      notice(
+        deps,
+        "stdout",
+        "note",
+        `  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count/--external-count, or with --rpc-url to gap-scan.\n`.trim(),
       )
     }
   }
   // BE-355 (D7): an ambient endpoint was set and deliberately not used for a scan; say so once.
   if (scanHint && ambientSolanaEndpoint) {
-    deps.stdout.write(
-      `A gap scan runs only with --rpc-url on this command; ${RPC_URL_ENV} and profile settings are not used for it.\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `A gap scan runs only with --rpc-url on this command; ${RPC_URL_ENV} and profile settings are not used for it.\n`.trim(),
     )
   }
   if (counts.evm === 0) {
-    deps.stdout.write(
-      `  evm: none. If this root has EVM keys, re-run with --evm-count <n>; the EVM branch is never gap-scanned.\n`,
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `  evm: none. If this root has EVM keys, re-run with --evm-count <n>; the EVM branch is never gap-scanned.\n`.trim(),
     )
   } else {
-    deps.stdout.write(`  evm: indices 0 to ${counts.evm - 1}, on m/44'/60'/n'/0/0.\n`)
+    writeFields(deps, "stdout", [["EVM", `indices 0 to ${counts.evm - 1}, on m/44'/60'/n'/0/0`]])
   }
   if (counts.evmTee > 0) {
-    deps.stdout.write(
-      `  evm tee: indices 0 to ${counts.evmTee - 1}, on m/44'/60'/n'/1'/0'. The sealed EVM record is not restored by a phrase: a sweep of these wallets needs --from-block <n> (a Hood block at or before the first transfer in) or --token <0x...> to find tokens beyond USDG and WETH.\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `  evm tee: indices 0 to ${counts.evmTee - 1}, on m/44'/60'/n'/1'/0'. The sealed EVM record is not restored by a phrase: a sweep of these wallets needs --from-block <n> (a Hood block at or before the first transfer in) or --token <0x...> to find tokens beyond USDG and WETH.\n`.trim(),
     )
   }
   if ((matches.externalListed?.length ?? 0) > 0) {
     // R6: an external key is never registered with Candle, so a listed address that is one of this
     // root's external keys is a fact worth stating, and not one the read is allowed to act on.
-    deps.stdout.write(
-      `\n${matches.externalListed?.length} address(es) this account imported are external-branch keys of this root. An external key is never registered with Candle, so this read does not flag them; their history is unknown like every other recovered key's.\n`,
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `\n${matches.externalListed?.length} address(es) this account imported are external-branch keys of this root. An external key is never registered with Candle, so this read does not flag them; their history is unknown like every other recovered key's.\n`.trim(),
     )
   }
 
   if (!matches.complete) {
-    if (matches.refused !== undefined) deps.stdout.write(`\n${matches.refused}: the account was not confirmed.\n`)
-    deps.stdout.write(`\nNo exposure was recorded: ${matches.reason ?? "the linked-wallet read did not complete"}.\n`)
-    deps.stdout.write(
-      matches.refused !== undefined
+    if (matches.refused !== undefined)
+      notice(deps, "stdout", "note", `\n${matches.refused}: the account was not confirmed.\n`.trim())
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `\nNo exposure was recorded: ${matches.reason ?? "the linked-wallet read did not complete"}.\n`.trim(),
+    )
+    notice(
+      deps,
+      "stdout",
+      "note",
+      (matches.refused !== undefined
         ? `The vault was created, verified and written in full; nothing in it is flagged. Run \`candle vault reconcile-exposure\` once you are on the right profile.\n`
-        : `A partial list that happened to be empty would read as good news, so nothing was flagged at all. Run \`candle vault reconcile-exposure\` once the read succeeds.\n`,
+        : `A partial list that happened to be empty would read as good news, so nothing was flagged at all. Run \`candle vault reconcile-exposure\` once the read succeeds.\n`
+      ).trim(),
     )
     return 3
   }
@@ -851,22 +915,34 @@ function reportRestore(
     // The ambiguity, named as one. Two different things produce it and the CLI cannot tell them
     // apart, so it prints both explanations and the action each implies rather than prescribing an
     // open-ended ladder of higher-count restores, which for the second case has no top.
-    deps.stdout.write(
-      `\n${matches.unmatched.length} address(es) this account imported were NOT derived by this restore:\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `\n${matches.unmatched.length} address(es) this account imported were NOT derived by this restore:\n`.trim(),
     )
     for (const address of matches.unmatched) deps.stdout.write(`  ${address}\n`)
-    deps.stdout.write(
-      `\nEither this root derives them at an index beyond the bounds used here, in which case a higher --count or --tee-count finds them;\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `\nEither this root derives them at an index beyond the bounds used here, in which case a higher --count or --tee-count finds them;\n`.trim(),
     )
-    deps.stdout.write(
-      `or they are independent keys this root never produced (a \`wallets import\` of an outside keypair, or a Phase 1 \`tee new\` key), in which case no count will ever find them and only a vault backup plus a factor recovers them.\n`,
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `or they are independent keys this root never produced (a \`wallets import\` of an outside keypair, or a Phase 1 \`tee new\` key), in which case no count will ever find them and only a vault backup plus a factor recovers them.\n`.trim(),
     )
     return 3
   }
 
   closeVault(vault)
-  deps.stdout.write(
-    `\n${matches.matched.length} of them are addresses this account imported, and each is flagged as remotely exposed.\n`,
+  notice(
+    deps,
+    "stdout",
+    "note",
+    `\n${matches.matched.length} of them are addresses this account imported, and each is flagged as remotely exposed.\n`.trim(),
   )
   return 0
 }
@@ -993,11 +1069,21 @@ export async function vaultReconcileExposure(args: string[], ctx: CommandContext
       })
       return 0
     }
-    deps.stdout.write(
-      `Reconciled against account ${read.account}: ${read.rows.length} linked wallet(s) read, ${added.length} vault address(es) newly flagged as remotely exposed.\n`,
+    writeFields(
+      deps,
+      "stdout",
+      [
+        ["Account", read.account],
+        ["Linked wallets read", read.rows.length],
+        ["Newly flagged remotely exposed", added.length],
+      ],
+      "Exposure reconciled",
     )
-    deps.stdout.write(
-      `Nothing was cleared. This command only ever adds exposure: no read can establish that an address is cold.\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `Nothing was cleared. This command only ever adds exposure: no read can establish that an address is cold.\n`.trim(),
     )
     return 0
   })
@@ -1015,9 +1101,17 @@ export const RESTORE_PASSPHRASE_PROMPT =
 
 async function collectGenerated(ctx: CommandContext): Promise<string> {
   const passphrase = generatePassphrase()
-  ctx.deps.stdout.write(
-    `\nThe new vault's passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits. Write it down now; it is shown once.\n\n    ${passphrase}\n\n`,
+  writeFields(
+    ctx.deps,
+    "stdout",
+    [
+      ["Words", GENERATED_WORD_COUNT],
+      ["Entropy", `${generatedEntropyBits()} bits`],
+    ],
+    "The new vault's passphrase",
   )
+  notice(ctx.deps, "stdout", "warning", "Write it down now; it is shown once.")
+  ctx.deps.stdout.write(`    ${passphrase}\n\n`)
   const typed = await ctx.deps.promptSecret("Type it back in full to confirm (input hidden): ")
   if (typed.trim() !== passphrase) {
     throw new VaultError("VAULT_UNLOCK_FAILED", "That did not match the passphrase shown above. Nothing was written.")

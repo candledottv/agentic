@@ -20,6 +20,7 @@
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { notice } from "../presentation"
 import { VaultError } from "../vault/errors"
 import { PHRASE_WORDS, phraseFromEntropy } from "../vault/hd"
 import { wipe } from "../vault/hygiene"
@@ -82,8 +83,11 @@ export async function vaultPhraseShow(args: string[], ctx: CommandContext): Prom
  */
 export function assertPhraseTty(ctx: CommandContext): boolean {
   if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stdout) return true
-  ctx.deps.stderr.write(
-    "The recovery phrase is shown only on a terminal, on both ends. Nothing was rendered, and the vault was not read.\n",
+  notice(
+    ctx.deps,
+    "stderr",
+    "note",
+    "The recovery phrase is shown only on a terminal, on both ends. Nothing was rendered, and the vault was not read.\n".trim(),
   )
   // Written directly rather than through the shared writer: there is no `--json` branch to take
   // here (that case exited 2 above), and the code still has to reach the caller.
@@ -129,14 +133,17 @@ export async function runPhraseCeremony(
     closeVault(reopened)
   }
 
-  deps.stdout.write(
-    `\nThe 24 words below re-derive every key this vault derives, on any BIP-39 wallet, with no passphrase and no server.\nThey do NOT restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.\nAnyone who reads them can move every derived key's funds.\n\n`,
+  notice(
+    deps,
+    "stdout",
+    "danger",
+    `The 24 words below re-derive every key this vault derives, on any BIP-39 wallet, with no passphrase and no server.\nThey do NOT restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.\nAnyone who reads them can move every derived key's funds.\n\n`,
   )
   const acknowledgement = (await deps.promptLine(`Type ${ACKNOWLEDGEMENT} to continue, or anything else to stop: `))
     .trim()
     .toLowerCase()
   if (acknowledgement !== ACKNOWLEDGEMENT) {
-    deps.stdout.write("Stopped. Nothing was displayed and nothing was written.\n")
+    notice(deps, "stdout", "note", "Stopped. Nothing was displayed and nothing was written.\n".trim())
     return 1
   }
 
@@ -178,10 +185,18 @@ export async function runPhraseCeremony(
   // Hygiene, not a guarantee (CC-04): the words were on a screen and this only removes them from
   // the visible region. The scrollback is the operator's to clear and the output says so.
   deps.stdout.write("\u001b[2J\u001b[H")
-  deps.stdout.write(
-    "The phrase is no longer on screen. Clear your terminal's scrollback: the words were rendered there and this CLI cannot remove them.\n",
+  notice(
+    deps,
+    "stdout",
+    "warning",
+    "The phrase is no longer on screen. Clear your terminal's scrollback: the words were rendered there and this CLI cannot remove them.\n".trim(),
   )
-  deps.stdout.write("This vault now records that the recovery phrase was exported; that record never resets.\n")
+  notice(
+    deps,
+    "stdout",
+    "warning",
+    "This vault now records that the recovery phrase was exported; that record never resets.\n".trim(),
+  )
   words.fill("")
 
   if (!confirmed) {
@@ -194,7 +209,7 @@ export async function runPhraseCeremony(
       },
     )
   }
-  deps.stdout.write("Read-back matched.\n")
+  notice(deps, "stdout", "note", "Read-back matched.\n".trim())
   return 0
 }
 

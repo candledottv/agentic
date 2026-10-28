@@ -34,6 +34,7 @@ import {
   RP_ID,
 } from "../fido2-helper/protocol"
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import { HELPER_ENV } from "../vault/fido2"
@@ -377,10 +378,12 @@ describe("T2, T3: open with A, enroll B", () => {
     ])
     // The `Using` line for the opener, then the `Adding:` line for the key being added, before any PIN.
     const using = h.events.findIndex((e) =>
-      e.includes(`Using the attached security key: YubiKey 5 Nano (--device ${idOf(A)})`),
+      humanText(e).includes(humanText(`Using the attached security key: YubiKey 5 Nano (--device ${idOf(A)})`)),
     )
     const adding = h.events.findIndex((e) =>
-      e.includes(`Adding: YubiKey 5 Nano (--device ${idOf(B)}), a different key from the one that opened the vault.`),
+      humanText(e).includes(
+        humanText(`Adding: YubiKey 5 Nano (--device ${idOf(B)}), a different key from the one that opened the vault.`),
+      ),
     )
     const firstPin = h.events.findIndex((e) => e.startsWith("secret:"))
     expect(adding).toBeGreaterThan(-1)
@@ -440,7 +443,7 @@ describe("T2, T3: open with A, enroll B", () => {
       excludeCredentialIds: [CRED_A],
     })
     expect((await readVault(v.vaultPath)).envelopes.filter((e) => e.factor === "passkey-prf")).toHaveLength(2)
-    expect(h.stdout.text).toContain("2 recoverable factor(s)")
+    expect(humanText(h.stdout.text)).toContain(humanText("2 recoverable factor(s)"))
   })
 
   test("T2 with the probe unable to place K1 (unknown) and a step-2 guess: two keys attached needs --device", async () => {
@@ -496,7 +499,9 @@ describe("T4: the deferred insert", () => {
       "assert@B",
     ])
     // The `Adding:` line follows the Enter, and the second PIN prompt is the key being added.
-    const adding = h.events.findIndex((e) => e.includes(`Adding: YubiKey 5 Nano (--device ${idOf(B)})`))
+    const adding = h.events.findIndex((e) =>
+      humanText(e).includes(humanText(`Adding: YubiKey 5 Nano (--device ${idOf(B)})`)),
+    )
     expect(adding).toBeGreaterThan(enter)
     expect(h.asked.filter((a) => a.startsWith("secret:"))[1]).toBe(
       "secret: PIN for the key being added, YubiKey 5 Nano (input hidden): ",
@@ -983,8 +988,10 @@ describe("T15: --factor on factor add security-key", () => {
         ),
       ).toBe(1)
       const excluded = h.events.findIndex((e) =>
-        e.includes(
-          `--factor ${flag} is not used here: adding a factor opens the vault with the passphrase or a security key.`,
+        humanText(e).includes(
+          humanText(
+            `--factor ${flag} is not used here: adding a factor opens the vault with the passphrase or a security key.`,
+          ),
         ),
       )
       const menu = h.events.findIndex((e) => e.startsWith("line: Unlock with:"))
@@ -1021,8 +1028,10 @@ describe("T16: row F3", () => {
     })
     expect(await run(["vault", "factor", "add", "security-key", "--keystore", v.vaultPath], h.deps)).toBe(0)
     const line = h.events.findIndex((e) =>
-      e.includes(
-        `${PASSPHRASE_ONLY_PREFIX}adding a factor opens the vault with the passphrase or a security key, and this vault has no security key.`,
+      humanText(e).includes(
+        humanText(
+          `${PASSPHRASE_ONLY_PREFIX}adding a factor opens the vault with the passphrase or a security key, and this vault has no security key.`,
+        ),
       ),
     )
     const pin = h.events.findIndex((e) => e.startsWith("secret: PIN for"))

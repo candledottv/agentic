@@ -10,6 +10,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { generateKeyPairSync } from "node:crypto"
 import { readFile, writeFile } from "node:fs/promises"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { keySignerFingerprint, readPin, spkiSha256Of } from "../key-signers"
 import { walletSignerRef } from "../secret-store"
@@ -220,9 +221,9 @@ describe("promote-batch --to-key: a valid target", () => {
       urls.indexOf("/api/v1/agent/tee-wallets/rebind"),
     )
     // The block names the target, says how it is reached, names the import key, and warns on USDC.
-    expect(o.err).toContain(targetBlock(2))
-    expect(o.stderrAtPrompt[0]?.endsWith(`\n${targetBlock(2)}\n`)).toBe(true)
-    expect(o.err).toContain(`✓ 2 wallets moved to key ${TO} in 2 requests.`)
+    expect(humanText(o.err)).toContain(humanText(humanText(targetBlock(2))))
+    expect(humanText(o.stderrAtPrompt[0] ?? "").endsWith(humanText(`\n${targetBlock(2)}\n`))).toBe(true)
+    expect(humanText(o.err)).toContain(humanText(`✓ 2 wallets moved to key ${TO} in 2 requests.`))
     // One document: each wallet's final key and rebind outcome, the target, and the controller.
     const docs = jsonDocuments(o.out)
     expect(docs).toHaveLength(1)
@@ -309,8 +310,10 @@ describe("promote-batch --to-key: a valid target", () => {
     })
     expect(o.code).toBe(0)
     expect(rebind.bodies[0]).toMatchObject({ dryRun: true, toKeyPrefix: TO })
-    expect(o.out).toContain("2 addresses promoted under one unlock, each committed on its own.")
-    expect(o.out).toContain(`2 of 2 wallets bound to ${TO}.`)
+    expect(humanText(o.out)).toContain(
+      humanText("Promoted 2 Resumed 0 Already promoted (skipped) 0 Commit one unlock, each committed on its own"),
+    )
+    expect(humanText(o.out)).toContain(humanText(`2 of 2 wallets bound to ${TO}.`))
   })
 
   test("a wallet the import left short of verified-active is not rebound and is listed with the reason; the other moves", async () => {
@@ -332,8 +335,12 @@ describe("promote-batch --to-key: a valid target", () => {
     expect(o.code).toBe(3)
     const a = linkedId(f.addresses.a as string)
     expect(rebind.bodies[0]).toEqual({ dryRun: true, toKeyPrefix: TO, wallets: [a] })
-    expect(o.err).toContain("1 wallet cannot be rebound yet (only a verified-active wallet moves):")
-    expect(o.err).toContain(`  b (${f.addresses.b}): remote authority is unknown, not verified-active`)
+    expect(humanText(o.err)).toContain(
+      humanText("1 wallet cannot be rebound yet (only a verified-active wallet moves):"),
+    )
+    expect(humanText(o.err)).toContain(
+      humanText(`  b (${f.addresses.b}): remote authority is unknown, not verified-active`),
+    )
     const body = JSON.parse(jsonDocuments(o.out)[0] as string)
     expect(body).toMatchObject({ ok: true, complete: false })
     expect(body.keys[0]).toMatchObject({ boundKeyPrefix: TO, rebind: { state: "rebound" } })
@@ -494,13 +501,17 @@ describe("promote-batch --to-key: partial failure and the re-run", () => {
     expect(first.code).toBe(1)
     expect(first.submits.n).toBe(2)
     expect(failing.bodies).toHaveLength(2)
-    expect(first.err).toContain(
-      "Rebind REBIND_BUILD_OPEN: server says REBIND_BUILD_OPEN Stop the agent on key ck_live_p",
+    expect(humanText(first.err)).toContain(
+      humanText("Rebind REBIND_BUILD_OPEN: server says REBIND_BUILD_OPEN Stop the agent on key ck_live_p"),
     )
-    expect(first.err).toContain(`2 promoted wallets are still bound to the calling key ${KEY_PREFIX}, not ${TO}:`)
-    expect(first.err).toContain(`  a (${f.addresses.a})`)
-    expect(first.err).toContain(`  b (${f.addresses.b})`)
-    expect(first.err).toContain(`Finish with:\n  candle tee rebind ${f.addresses.a} ${f.addresses.b} --to-key ${TO}`)
+    expect(humanText(first.err)).toContain(
+      humanText(`2 promoted wallets are still bound to the calling key ${KEY_PREFIX}, not ${TO}:`),
+    )
+    expect(humanText(first.err)).toContain(humanText(`  a (${f.addresses.a})`))
+    expect(humanText(first.err)).toContain(humanText(`  b (${f.addresses.b})`))
+    expect(humanText(first.err)).toContain(
+      humanText(`Finish with:\n  candle tee rebind ${f.addresses.a} ${f.addresses.b} --to-key ${TO}`),
+    )
     const doc = JSON.parse(jsonDocuments(first.out)[0] as string)
     expect(doc).toMatchObject({ ok: false, complete: false, promoted: 2 })
     expect(
@@ -538,8 +549,8 @@ describe("promote-batch --to-key: partial failure and the re-run", () => {
     expect(second.code).toBe(0)
     expect(second.submits.n).toBe(0)
     expect(second.linePrompts).toEqual([`Type confirm to move these 2 wallets to ${TO}: `])
-    expect(second.err).toContain("Every row already landed; 2 wallets to rebind.")
-    expect(second.stderrAtPrompt[0]?.endsWith(`\n${targetBlock(2)}\n`)).toBe(true)
+    expect(humanText(second.err)).toContain(humanText("Every row already landed; 2 wallets to rebind."))
+    expect(humanText(second.stderrAtPrompt[0] ?? "").endsWith(humanText(`\n${targetBlock(2)}\n`))).toBe(true)
     expect(working.bodies).toEqual([
       { dryRun: true, toKeyPrefix: TO, wallets: [a, b] },
       { toKeyPrefix: TO, walletIds: [a, b], expect: { [a]: IMPORTED_TO, [b]: IMPORTED_TO } },
@@ -583,7 +594,7 @@ describe("promote-batch --to-key: partial failure and the re-run", () => {
     })
     expect(o.code).toBe(0)
     expect(already.bodies).toHaveLength(1)
-    expect(o.err).toContain(`✓ 0 wallets moved to key ${TO} (2 already there) in 1 request.`)
+    expect(humanText(o.err)).toContain(humanText(`✓ 0 wallets moved to key ${TO} (2 already there) in 1 request.`))
     const body = JSON.parse(jsonDocuments(o.out)[0] as string)
     expect(body.keys.map((k: { rebind: { state: string } }) => k.rebind.state)).toEqual(["unchanged", "unchanged"])
     expect(body.rebind).toMatchObject({ ok: true, requests: 1, rebound: 0, unchanged: 2 })
@@ -607,9 +618,11 @@ describe("promote-batch --to-key: partial failure and the re-run", () => {
     })
     expect(o.code).toBe(1)
     expect(rebind.bodies).toHaveLength(0)
-    expect(o.err).toContain("1 of 2 rows landed and ARE in the vault")
-    expect(o.err).toContain(`1 promoted wallet is still bound to the calling key ${KEY_PREFIX}, not ${TO}:`)
-    expect(o.err).toContain(`  candle tee rebind ${f.addresses.a} --to-key ${TO}`)
+    expect(humanText(o.err)).toContain(humanText("1 of 2 rows landed and ARE in the vault"))
+    expect(humanText(o.err)).toContain(
+      humanText(`1 promoted wallet is still bound to the calling key ${KEY_PREFIX}, not ${TO}:`),
+    )
+    expect(humanText(o.err)).toContain(humanText(`  candle tee rebind ${f.addresses.a} --to-key ${TO}`))
     const body = JSON.parse(jsonDocuments(o.out)[0] as string)
     expect(body).toMatchObject({ ok: false, complete: false, failedLine: 2 })
     expect(body.keys).toHaveLength(1)
@@ -647,7 +660,7 @@ describe("promote-batch without --to-key is unchanged", () => {
       apiUrl: API,
       environment: null,
     })
-    expect(o.err).toContain(`  API key         ${KEY_PREFIX}…  (${KEY_LABEL})  profile pb`)
+    expect(humanText(o.err)).toContain(humanText(`  API key         ${KEY_PREFIX}…  (${KEY_LABEL})  profile pb`))
     expect(o.err).not.toContain("imported under")
   })
 })
@@ -813,8 +826,8 @@ describe("vault promote --to-key", () => {
     ])
     // The block, directly above the confirm prompt, names the target and the import key.
     expect(r.linePrompts[1]).toBe("Type confirm to accept this for this key: ")
-    expect(r.stderrAtPrompt[1]?.endsWith(`\n${targetBlock(1)}\n`)).toBe(true)
-    expect(r.err).toContain(`✓ 1 wallet moved to key ${TO} in 2 requests.`)
+    expect(humanText(r.stderrAtPrompt[1] ?? "").endsWith(humanText(`\n${targetBlock(1)}\n`))).toBe(true)
+    expect(humanText(r.err)).toContain(humanText(`✓ 1 wallet moved to key ${TO} in 2 requests.`))
     const body = lastLine(r.out)
     expect(body).toMatchObject({
       ok: true,
@@ -845,9 +858,13 @@ describe("vault promote --to-key", () => {
     })
     expect(r.code).toBe(1)
     expect(r.submits.n).toBe(1)
-    expect(r.err).toContain("A sign for these wallets is still in flight or not yet expired; nothing changed.")
-    expect(r.err).toContain(`1 promoted wallet is still bound to the calling key ${KEY_PREFIX}, not ${TO}:`)
-    expect(r.err).toContain(`  candle tee rebind ${f.addresses.subject} --to-key ${TO}`)
+    expect(humanText(r.err)).toContain(
+      humanText("A sign for these wallets is still in flight or not yet expired; nothing changed."),
+    )
+    expect(humanText(r.err)).toContain(
+      humanText(`1 promoted wallet is still bound to the calling key ${KEY_PREFIX}, not ${TO}:`),
+    )
+    expect(humanText(r.err)).toContain(humanText(`  candle tee rebind ${f.addresses.subject} --to-key ${TO}`))
     const body = lastLine(r.out)
     expect(body).toMatchObject({
       ok: false,
@@ -903,10 +920,12 @@ describe("vault promote --to-key", () => {
     expect(r.code).toBe(0)
     expect(r.submits.n).toBe(1)
     const address = r.submits.addresses[0] as string
-    expect(r.err).toContain(`This wallet will be bound to key ${TO}  (${TO_LABEL}) by a rebind after the import.`)
+    expect(humanText(r.err)).toContain(
+      humanText(`This wallet will be bound to key ${TO}  (${TO_LABEL}) by a rebind after the import.`),
+    )
     // BE-1749 item 2: a rebind moves the binding, never the signer, and the screen says so.
-    expect(r.err).toContain("The rebind does not move the wallet's signer")
-    expect(r.err).toContain(`Warning: key ${TO} has a USDC cap of 0`)
+    expect(humanText(r.err)).toContain(humanText("The rebind does not move the wallet's signer"))
+    expect(humanText(r.err)).toContain(humanText(`Warning: key ${TO} has a USDC cap of 0`))
     expect(rebind.bodies[0]).toEqual({ dryRun: true, toKeyPrefix: TO, wallets: [linkedId(address)] })
     const body = lastLine(r.out)
     expect(body).toMatchObject({
@@ -961,7 +980,7 @@ describe("vault promote --to-key", () => {
       { target: hood, deviceToken: DEVICE_TOKEN },
       "evm",
     )
-    expect(stderr.text).toContain(`bound to key ${TO}`)
+    expect(humanText(stderr.text)).toContain(humanText(`bound to key ${TO}`))
     expect(stderr.text).not.toContain("SOL")
     expect(stderr.text).not.toContain("USDC")
     expect(stderr.text).not.toContain("Warning:")
@@ -982,8 +1001,8 @@ describe("vault promote --to-key", () => {
       { target: ethOnly, deviceToken: DEVICE_TOKEN },
       "evm",
     )
-    expect(stderr.text).toContain(
-      `Warning: key ${TO} has a USDG cap of 0; it cannot trade USDG-quoted swaps until the cap is raised.`,
+    expect(humanText(stderr.text)).toContain(
+      humanText(`Warning: key ${TO} has a USDG cap of 0; it cannot trade USDG-quoted swaps until the cap is raised.`),
     )
     expect(stderr.text).not.toContain("SOL")
     expect(stderr.text).not.toContain("USDC")
@@ -1025,10 +1044,10 @@ describe("vault promote --to-key", () => {
     expect(r.code).toBe(0)
     expect(r.submits.n).toBe(0)
     expect(r.linePrompts).toEqual([`Type confirm to move this wallet to ${TO}: `])
-    expect(r.stderrAtPrompt[0]).toContain(
-      `This wallet will be bound to key ${TO}  (${TO_LABEL}) by a rebind after the import.`,
+    expect(humanText(r.stderrAtPrompt[0] ?? "")).toContain(
+      humanText(`This wallet will be bound to key ${TO}  (${TO_LABEL}) by a rebind after the import.`),
     )
-    expect(r.stderrAtPrompt[0]).toContain(`Warning: key ${TO} has a USDC cap of 0`)
+    expect(humanText(r.stderrAtPrompt[0] ?? "")).toContain(humanText(`Warning: key ${TO} has a USDC cap of 0`))
     expect(rebind.bodies).toEqual([
       { dryRun: true, toKeyPrefix: TO, wallets: [id] },
       { toKeyPrefix: TO, walletIds: [id], expect: { [id]: IMPORTED_TO } },
@@ -1136,7 +1155,7 @@ describe("vault promote --to-key and key signers", () => {
     const id = linkedId(f.addresses.subject as string)
     expect(await r.store.get(walletSignerRef(id))).not.toBeNull()
     expect(rebind.bodies.map((b) => b.owner)).toEqual([undefined, undefined])
-    expect(r.err).toContain(RELAY_SIGNER_LINE)
+    expect(humanText(r.err)).toContain(humanText(RELAY_SIGNER_LINE))
   })
 
   test("T5: onto a key with a signer, the first promote asks for the full fingerprint with echo, pins the full sha256, and imports onto the target in one call with the device token alone", async () => {
@@ -1164,8 +1183,10 @@ describe("vault promote --to-key and key signers", () => {
     // No rebind after, and no signer stored on the vault machine.
     expect(rebind.bodies).toHaveLength(0)
     expect(await r.store.get(walletSignerRef(linkedId(f.addresses.subject as string)))).toBeNull()
-    expect(r.err).toContain(`Tradable from the machine holding key ${TO_LABEL} (signer ${signerFp})`)
-    expect(r.err).toContain(`--to-key, owned by its signer ${signerFp} from the import`)
+    expect(humanText(r.err)).toContain(
+      humanText(`Tradable from the machine holding key ${TO_LABEL} (signer ${signerFp})`),
+    )
+    expect(humanText(r.err)).toContain(humanText(`--to-key, owned by its signer ${signerFp} from the import`))
     expect(lastLine(r.out)).toMatchObject({
       ok: true,
       boundKeyPrefix: TO,
@@ -1210,8 +1231,8 @@ describe("vault promote --to-key and key signers", () => {
     })
     expect(changed.code).toBe(1)
     expect(JSON.parse(changed.out.trim()).code).toBe("KEY_SIGNER_CHANGED")
-    expect(changed.err).toContain(
-      `KEY_SIGNER_CHANGED: key ${TO}'s signer is not the one this machine pinned (${oldFp})`,
+    expect(humanText(changed.err)).toContain(
+      humanText(`KEY_SIGNER_CHANGED: key ${TO}'s signer is not the one this machine pinned (${oldFp})`),
     )
     expect((await readPin(changed.deps, TO))?.spkiSha256).toBe(oldSha)
     expect(changed.submits.n).toBe(0)
@@ -1246,8 +1267,8 @@ describe("vault promote --to-key and key signers", () => {
     expect(refused.submits.n).toBe(1)
     expect(wrong.bodies.map((b) => b.dryRun === true)).toEqual([true])
     expect(await readPin(refused.deps, TO)).toBeUndefined()
-    expect(refused.err).toContain("Rebind KEY_SIGNER_FINGERPRINT_MISMATCH")
-    expect(refused.err).toContain(`  candle tee rebind ${f.addresses.subject} --to-key ${TO}`)
+    expect(humanText(refused.err)).toContain(humanText("Rebind KEY_SIGNER_FINGERPRINT_MISMATCH"))
+    expect(humanText(refused.err)).toContain(humanText(`  candle tee rebind ${f.addresses.subject} --to-key ${TO}`))
     expect(lastLine(refused.out)).toMatchObject({ walletRebind: { state: "failed" } })
 
     const g = await fixture(["subject", "cold"])
@@ -1326,8 +1347,8 @@ describe("promote-batch --to-key onto a key with a signer (5.2)", () => {
       expect([headers.authorization, headers["x-api-key"]]).toEqual([`Bearer ${DEVICE_TOKEN}`, undefined])
     }
     expect(rebind.bodies.filter((body) => body.dryRun !== true)).toHaveLength(0)
-    expect(o.err).toContain(`--to-key, owned by its signer ${fp} from the import`)
-    expect(o.err).toContain(`Tradable from the machine holding key ${TO_LABEL} (signer ${fp})`)
+    expect(humanText(o.err)).toContain(humanText(`--to-key, owned by its signer ${fp} from the import`))
+    expect(humanText(o.err)).toContain(humanText(`Tradable from the machine holding key ${TO_LABEL} (signer ${fp})`))
     const body = JSON.parse(jsonDocuments(o.out)[0] as string)
     expect(body.keys.map((k: { boundKeyPrefix: string }) => k.boundKeyPrefix)).toEqual([TO, TO])
   })

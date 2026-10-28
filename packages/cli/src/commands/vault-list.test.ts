@@ -10,6 +10,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import type { CliConfig } from "../config"
 import type { Deps } from "../deps"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createFakeConfigStore, createTestDeps } from "../test-support"
 import type { IndexPlaintext, KeyEntry } from "../vault/format"
@@ -220,23 +221,25 @@ describe("T4: the listing itself", () => {
     const h = harness({ dir: fx.dir })
     expect(await run(["vault", "list"], h.deps)).toBe(0)
 
-    expect(h.stdout.text.startsWith(`3 keys in ${fx.path}\n`)).toBe(true)
+    expect(humanText(h.stdout.text)).toContain(`Vault ${fx.path} Keys 3 Matching 3`)
     expect(h.stdout.text).toContain("ADDRESS")
     expect(h.stdout.text).toContain("LABEL")
     expect(h.stdout.text).toContain("ROLE")
     expect(h.stdout.text).toContain("DERIVATION")
     const lines = h.stdout.text.split("\n")
-    const rows = lines.filter((line) => line.startsWith(STEM))
+    const rows = lines.filter((line) => line.trimStart().startsWith(STEM))
     expect(rows).toHaveLength(3)
     expect(rows[0]).toContain("treasury")
     expect(rows[0]).toContain("vault")
     expect(rows[0]).toContain("m/44'/501'/0'/0'")
     // An empty label reads `(none)`, matching status, and an entry with no derivation reads `-`.
-    expect(rows[2]).toContain("(none)")
+    expect(rows[2]).toContain("–")
     expect(rows[2]).toContain("tee-wallet")
-    expect((rows[2] as string).trimEnd().endsWith("-")).toBe(true)
+    expect((rows[2] as string).trimEnd().endsWith("–")).toBe(true)
     // Index order, not sorted by anything.
-    expect(rows.map((row) => (row as string).slice(0, 44))).toEqual(THREE_KEYS.map((entry) => entry.address))
+    expect(rows.map((row) => (row as string).trimStart().slice(0, 44))).toEqual(
+      THREE_KEYS.map((entry) => entry.address),
+    )
 
     // The passphrase prompt is the command's only prompt, and it is not on stdout.
     expect(h.asked).toHaveLength(1)
@@ -262,7 +265,7 @@ describe("T5: it prompts, and the env passphrase is refused", () => {
     const fx = await vaultWith(THREE_KEYS)
     const h = harness({ dir: fx.dir })
     expect(await run(["vault", "list", "--unlock"], h.deps)).toBe(2)
-    expect(h.stderr.text).toContain("Unknown flag: --unlock")
+    expect(humanText(h.stderr.text)).toContain(humanText("Unknown flag: --unlock"))
     expect(h.asked).toEqual([])
   })
 
@@ -270,7 +273,7 @@ describe("T5: it prompts, and the env passphrase is refused", () => {
     const fx = await vaultWith(THREE_KEYS)
     const h = harness({ dir: fx.dir, env: { CANDLE_KEYSTORE_PASSPHRASE: "nope" } })
     expect(await run(["vault", "list"], h.deps)).toBe(1)
-    expect(h.stderr.text).toContain("CANDLE_KEYSTORE_PASSPHRASE is set")
+    expect(humanText(h.stderr.text)).toContain(humanText("CANDLE_KEYSTORE_PASSPHRASE is set"))
     expect(h.asked).toEqual([])
 
     const json = harness({ dir: fx.dir, env: { CANDLE_KEYSTORE_PASSPHRASE: "nope" } })
@@ -284,22 +287,22 @@ describe("T6: the filter, and what a filtered balance read sends", () => {
     const fx = await vaultWith(THREE_KEYS)
     const byLabel = harness({ dir: fx.dir })
     expect(await run(["vault", "list", "CN-S"], byLabel.deps)).toBe(0)
-    expect(byLabel.stdout.text.startsWith(`1 of 3 keys match "CN-S" in ${fx.path}\n`)).toBe(true)
-    expect(byLabel.stdout.text.split("\n").filter((line) => line.startsWith(STEM))).toHaveLength(1)
+    expect(humanText(byLabel.stdout.text)).toContain(`Vault ${fx.path} Keys 3 Matching 1 Filter CN-S`)
+    expect(byLabel.stdout.text.split("\n").filter((line) => line.trimStart().startsWith(STEM))).toHaveLength(1)
 
     const byAddress = harness({ dir: fx.dir })
     const tail = (THREE_KEYS[1] as KeyEntry).address.slice(-6).toLowerCase()
     expect(await run(["vault", "list", tail], byAddress.deps)).toBe(0)
-    expect(byAddress.stdout.text).toContain("1 of 3 keys match")
-    expect(byAddress.stdout.text).toContain((THREE_KEYS[1] as KeyEntry).address)
+    expect(humanText(byAddress.stdout.text)).toContain(humanText("Keys 3 Matching 1"))
+    expect(humanText(byAddress.stdout.text)).toContain(humanText((THREE_KEYS[1] as KeyEntry).address))
   })
 
   test("no match is exit 0, with the line that says what the vault holds", async () => {
     const fx = await vaultWith(THREE_KEYS)
     const h = harness({ dir: fx.dir })
     expect(await run(["vault", "list", "cn-x"], h.deps)).toBe(0)
-    expect(h.stdout.text).toBe(
-      'No key matches "cn-x". 3 keys in this vault; candle vault list with no filter lists them.\n',
+    expect(humanText(h.stdout.text)).toContain(
+      'No key matches "cn-x". 3 keys in this vault; candle vault list with no filter lists them.',
     )
     expect(h.stdout.text).not.toContain("ADDRESS")
   })
@@ -310,10 +313,10 @@ describe("T6: the filter, and what a filtered balance read sends", () => {
     expect(await run(["vault", "list", "cn-s", "--balances", "--rpc-url", RPC_URL], h.deps)).toBe(0)
     expect(h.calls).toHaveLength(1)
     expect(h.calls[0]?.addresses).toEqual([(THREE_KEYS[1] as KeyEntry).address])
-    expect(h.stderr.text).toContain(
-      `Reading SOL for 1 addresses from ${RPC_HOST}, in 1 request. That endpoint sees all 1 together.`,
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(`Reading SOL for 1 addresses from ${RPC_HOST}, in 1 request. That endpoint sees all 1 together.`),
     )
-    expect(h.stdout.text).toContain("total  1 SOL across 1 keys")
+    expect(humanText(h.stdout.text)).toContain(humanText("total  1 SOL across 1 keys"))
   })
 
   test("no Solana match makes no request, prints no Reading SOL line, and carries the zero-request object", async () => {
@@ -344,12 +347,12 @@ describe("T6: the filter, and what a filtered balance read sends", () => {
     // Phase 4a: the Solana endpoint is never sent the EVM address; the EVM row is read from Hood.
     expect(h.calls).toEqual([])
     expect(h.stderr.text).not.toContain("Reading SOL")
-    expect(h.stdout.text).toContain("1 of 2 keys match")
-    const row = h.stdout.text.split("\n").find((line) => line.startsWith(EVM_FIXTURE)) as string
+    expect(humanText(h.stdout.text)).toContain(humanText("Keys 2 Matching 1 Filter hood"))
+    const row = h.stdout.text.split("\n").find((line) => line.trimStart().startsWith(EVM_FIXTURE)) as string
     // SOL `-`, then ETH 0 and USDG 0 from the Hood read.
-    expect(row.trimEnd()).toMatch(/-\s+0\s+0$/)
+    expect(row.trimEnd()).toMatch(/[–-]\s+0\s+0$/)
     // The 0 is the Solana key count: the matched evm key is in the match line and not in this one.
-    expect(h.stdout.text).toContain("total  0 SOL across 0 keys")
+    expect(humanText(h.stdout.text)).toContain(humanText("total  0 SOL across 0 keys"))
   })
 
   test("an evm entry stays in --json with no lamports key at all, and is not `unavailable`", async () => {
@@ -408,15 +411,17 @@ describe("E10: EVM rows under --balances", () => {
     expect(h.calls.flatMap((call) => call.addresses)).toEqual([fakeAddress(0)])
     expect(h.evmCalls.map((call) => call.host)).toEqual([HOOD_HOST, HOOD_HOST, HOOD_HOST])
     expect(h.evmCalls.map((call) => call.method)).toEqual(["eth_chainId", "eth_getBalance", "eth_call"])
-    expect(h.stderr.text).toContain(`Reading ETH (and USDG when the chain is Hood) for 1 EVM address from ${HOOD_HOST}`)
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(`Reading ETH (and USDG when the chain is Hood) for 1 EVM address from ${HOOD_HOST}`),
+    )
     expect(h.stderr.text).not.toContain(RPC_URL)
-    const row = h.stdout.text.split("\n").find((line) => line.startsWith(EVM_ADDRESS)) as string
+    const row = h.stdout.text.split("\n").find((line) => line.trimStart().startsWith(EVM_ADDRESS)) as string
     expect(row).toContain("hood-cold")
-    expect(row.trimEnd()).toMatch(/-\s+2\s+1\.5$/)
+    expect(row.trimEnd()).toMatch(/[–-]\s+2\s+1\.5$/)
     expect(h.stdout.text).toContain("ETH")
     expect(h.stdout.text).toContain("USDG")
-    expect(h.stdout.text).toContain("total  2 ETH across 1 EVM keys on Hood")
-    expect(h.stdout.text).toContain("total  1.5 USDG across those keys")
+    expect(humanText(h.stdout.text)).toContain(humanText("total  2 ETH across 1 EVM keys on Hood"))
+    expect(humanText(h.stdout.text)).toContain(humanText("total  1.5 USDG across those keys"))
   })
 
   test("--evm-rpc-url, then CANDLE_EVM_RPC_URL, beat the built-in host; off Hood no USDG is read", async () => {
@@ -441,7 +446,7 @@ describe("E10: EVM rows under --balances", () => {
     const fromEnv = harness({ dir: fx.dir, env: { CANDLE_EVM_RPC_URL: "https://env.evm.test/rpc" } })
     expect(await run(["vault", "list", "hood", "--balances", "--rpc-url", RPC_URL], fromEnv.deps)).toBe(0)
     expect(new Set(fromEnv.evmCalls.map((call) => call.host))).toEqual(new Set(["env.evm.test"]))
-    expect(fromEnv.stderr.text).toContain("from env.evm.test")
+    expect(humanText(fromEnv.stderr.text)).toContain(humanText("from env.evm.test"))
   })
 
   test("a blank CANDLE_EVM_RPC_URL is the built-in host; an invalid one is a usage error before the prompt", async () => {
@@ -452,13 +457,13 @@ describe("E10: EVM rows under --balances", () => {
 
     const invalid = harness({ dir: fx.dir, env: { CANDLE_EVM_RPC_URL: "not a url" } })
     expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL], invalid.deps)).toBe(2)
-    expect(invalid.stderr.text).toContain("CANDLE_EVM_RPC_URL is not a valid URL")
+    expect(humanText(invalid.stderr.text)).toContain(humanText("CANDLE_EVM_RPC_URL is not a valid URL"))
     expect(invalid.asked).toEqual([])
     expect(invalid.evmCalls).toEqual([])
 
     const cleartext = harness({ dir: fx.dir, env: { CANDLE_EVM_RPC_URL: "http://rpc.example.test/rpc" } })
     expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL], cleartext.deps)).toBe(2)
-    expect(cleartext.stderr.text).toContain("CANDLE_EVM_RPC_URL must be https://")
+    expect(humanText(cleartext.stderr.text)).toContain(humanText("CANDLE_EVM_RPC_URL must be https://"))
     expect(cleartext.asked).toEqual([])
   })
 
@@ -498,14 +503,14 @@ describe("E10: EVM rows under --balances", () => {
     expect(partial.entries[1]?.wei).toBeNull()
     expect(partial.evmBalances.complete).toBe(false)
     expect(partial.evmBalances.unavailable).toEqual([EVM_ADDRESS])
-    expect(failing.stderr.text).toContain("1 EVM address could not be read")
+    expect(humanText(failing.stderr.text)).toContain(humanText("1 EVM address could not be read"))
   })
 
   test("--evm-rpc-url without --balances is a usage error, like --rpc-url", async () => {
     const fx = await vaultWithEvm()
     const h = harness({ dir: fx.dir })
     expect(await run(["vault", "list", "--evm-rpc-url", "https://flag.evm.test/rpc"], h.deps)).toBe(2)
-    expect(h.stderr.text).toContain("--evm-rpc-url has no effect without --balances")
+    expect(humanText(h.stderr.text)).toContain(humanText("--evm-rpc-url has no effect without --balances"))
   })
 })
 
@@ -563,8 +568,10 @@ describe("T8: D7's streams", () => {
     ]) {
       const h = harness({ dir: fx.dir, tty })
       expect(await run(["vault", "list"], h.deps)).toBe(1)
-      expect(h.stderr.text).toContain(
-        "vault list needs a terminal for the passphrase prompt: standard input and standard error must both be a terminal. Standard output may be redirected; that is where the listing goes.",
+      expect(humanText(h.stderr.text)).toContain(
+        humanText(
+          "vault list needs a terminal for the passphrase prompt: standard input and standard error must both be a terminal. Standard output may be redirected; that is where the listing goes.",
+        ),
       )
       expect(h.asked).toEqual([])
       expect(h.stdout.text).toBe("")
@@ -593,10 +600,10 @@ describe("T9, T11: what --balances costs, and what it reads", () => {
     expect(h.calls.map((call) => call.addresses.length)).toEqual([100, 100, 50])
     // T11: the invariant, not a default. Tokens cannot arrive by accident.
     expect(new Set(h.calls.map((call) => call.method))).toEqual(new Set(["getMultipleAccounts"]))
-    expect(h.stderr.text).toContain(
-      `Reading SOL for 250 addresses from ${RPC_HOST}, in 3 requests. That endpoint sees all 250 together.`,
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(`Reading SOL for 250 addresses from ${RPC_HOST}, in 3 requests. That endpoint sees all 250 together.`),
     )
-    expect(h.stdout.text).toContain("total  13.4821932 SOL across 250 keys")
+    expect(humanText(h.stdout.text)).toContain(humanText("total  13.4821932 SOL across 250 keys"))
     // Every address, once, in index order.
     expect(h.calls.flatMap((call) => call.addresses)).toEqual(entries.map((entry) => entry.address))
   })
@@ -646,17 +653,19 @@ describe("T10: a failed chunk does not lose the listing", () => {
 
     // Every chunk was still issued, and the failed one was not retried.
     expect(h.calls).toHaveLength(3)
-    const rows = h.stdout.text.split("\n").filter((line) => line.startsWith(STEM))
+    const rows = h.stdout.text.split("\n").filter((line) => line.trimStart().startsWith(STEM))
     expect(rows).toHaveLength(250)
     expect((rows[0] as string).endsWith("12.4821932")).toBe(true)
     expect((rows[99] as string).endsWith("0")).toBe(true)
     // The 50 addresses of the thrown call.
-    expect((rows[200] as string).endsWith("?")).toBe(true)
-    expect((rows[249] as string).endsWith("?")).toBe(true)
-    expect(h.stdout.text).toContain("total  12.4821932 SOL across 200 of 250 keys read")
-    expect(h.stderr.text).toContain("50 addresses could not be read: ")
+    expect((rows[200] as string).endsWith("–")).toBe(true)
+    expect((rows[249] as string).endsWith("–")).toBe(true)
+    expect(humanText(h.stdout.text)).toContain(humanText("total  12.4821932 SOL across 200 of 250 keys read"))
+    expect(humanText(h.stderr.text)).toContain(humanText("50 addresses could not be read: "))
     expect(h.stderr.text).toContain("HTTP 503")
-    expect(h.stderr.text).toContain("Narrow with a filter, or use your own endpoint with --rpc-url.")
+    expect(humanText(h.stderr.text)).toContain(
+      humanText("Narrow with a filter, or use your own endpoint with --rpc-url."),
+    )
   })
 
   test("--json says the same thing: lamports null, complete false, requests counts the thrown call", async () => {
@@ -679,9 +688,11 @@ describe("T10: a failed chunk does not lose the listing", () => {
     expect(body.balances.totalLamports).toBe("12482193200")
     expect(body.balances.unavailable).toEqual(entries.slice(200).map((entry) => entry.address))
     // D11: the RPC's message is on stderr in this mode too, not only on the human path.
-    expect(h.stderr.text).toContain("50 addresses could not be read: ")
+    expect(humanText(h.stderr.text)).toContain(humanText("50 addresses could not be read: "))
     expect(h.stderr.text).toContain("HTTP 503")
-    expect(h.stderr.text).toContain("Narrow with a filter, or use your own endpoint with --rpc-url.")
+    expect(humanText(h.stderr.text)).toContain(
+      humanText("Narrow with a filter, or use your own endpoint with --rpc-url."),
+    )
   })
 })
 
@@ -690,13 +701,13 @@ describe("the refusals §4.5 names, in the order they are decided", () => {
     const fx = await vaultWith(THREE_KEYS)
     const extra = harness({ dir: fx.dir })
     expect(await run(["vault", "list", "cn-s", "treasury"], extra.deps)).toBe(2)
-    expect(extra.stderr.text).toContain("Unexpected argument: treasury")
+    expect(humanText(extra.stderr.text)).toContain(humanText("Unexpected argument: treasury"))
 
     // There is no --tokens in this slice, and it is parseArgs's ordinary refusal rather than a
     // special case: 608 requests is not a flag an operator should be able to fire by habit (D8).
     const tokens = harness({ dir: fx.dir })
     expect(await run(["vault", "list", "--tokens"], tokens.deps)).toBe(2)
-    expect(tokens.stderr.text).toContain("Unknown flag: --tokens")
+    expect(humanText(tokens.stderr.text)).toContain(humanText("Unknown flag: --tokens"))
     expect(tokens.calls).toEqual([])
   })
 
@@ -704,7 +715,9 @@ describe("the refusals §4.5 names, in the order they are decided", () => {
     const fx = await vaultWith(THREE_KEYS)
     const h = harness({ dir: fx.dir })
     expect(await run(["vault", "list", "--rpc-url", RPC_URL], h.deps)).toBe(2)
-    expect(h.stderr.text).toContain("--rpc-url has no effect without --balances; vault list is offline by default.")
+    expect(humanText(h.stderr.text)).toContain(
+      humanText("--rpc-url has no effect without --balances; vault list is offline by default."),
+    )
     expect(h.asked).toEqual([])
   })
 
@@ -725,7 +738,7 @@ describe("the refusals §4.5 names, in the order they are decided", () => {
     const fx = await vaultWith(THREE_KEYS)
     const h = harness({ dir: fx.dir })
     expect(await run(["vault", "list", "--balances", "--rpc-url", "http://rpc.example.test"], h.deps)).toBe(2)
-    expect(h.stderr.text).toContain("--rpc-url must be https://")
+    expect(humanText(h.stderr.text)).toContain(humanText("--rpc-url must be https://"))
   })
 
   test("no vault at the resolved path is VAULT_MISSING, with the parenthetical and the details", async () => {
@@ -798,16 +811,18 @@ describe("BE-355: partial reads and the profile endpoint (T13, T16)", () => {
     expect(body.entries[249]?.lamports).toBeNull()
     expect(body.balances.complete).toBe(false)
     expect(body.balances.unavailable).toEqual(entries.slice(100).map((entry) => entry.address))
-    expect(h.stderr.text).toContain(
-      "150 addresses could not be read: RPC_RATE_LIMITED (HTTP 429, retried once). Fix: --rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command, or sign in (candle auth login) to store one per profile.",
+    expect(humanText(h.stderr.text)).toContain(
+      humanText(
+        "150 addresses could not be read: RPC_RATE_LIMITED (HTTP 429, retried once). Fix: --rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command, or sign in (candle auth login) to store one per profile.",
+      ),
     )
 
     const human = harness({ dir: fx.dir, rateLimitCalls: [2, 3] })
     expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL], human.deps)).toBe(3)
-    const rows = human.stdout.text.split("\n").filter((line) => line.startsWith(STEM))
+    const rows = human.stdout.text.split("\n").filter((line) => line.trimStart().startsWith(STEM))
     expect((rows[99] as string).endsWith("0")).toBe(true)
-    expect((rows[100] as string).endsWith("?")).toBe(true)
-    expect((rows[249] as string).endsWith("?")).toBe(true)
+    expect((rows[100] as string).endsWith("–")).toBe(true)
+    expect((rows[249] as string).endsWith("–")).toBe(true)
   })
 
   test("T16: a stored profile endpoint is used, disclosed as (profile work), with no notice", async () => {
@@ -818,7 +833,7 @@ describe("BE-355: partial reads and the profile endpoint (T13, T16)", () => {
     })
     expect(await run(["vault", "list", "--balances"], h.deps)).toBe(0)
     expect(h.hosts).toEqual(["profile.rpc.test"])
-    expect(h.stderr.text).toContain("Solana RPC: profile.rpc.test (profile work)")
+    expect(humanText(h.stderr.text)).toContain(humanText("Solana RPC: profile.rpc.test (profile work)"))
     expect(h.stderr.text).not.toContain("Using the public Solana RPC")
     expect(h.stdout.text + h.stderr.text).not.toContain("KEY")
   })

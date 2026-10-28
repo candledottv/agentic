@@ -1,7 +1,9 @@
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
-import { terminalText, writeUsageFailure } from "../render"
+import { writeFields } from "../human-output"
+import { notice } from "../presentation"
+import { formatTime, terminalText, writeUsageFailure } from "../render"
 import { type ClusterResult, clusterUnavailable, readClusterResult } from "../token-clusters"
 
 export async function tokenClusters(args: string[], ctx: CommandContext): Promise<number> {
@@ -35,15 +37,29 @@ export async function tokenClusters(args: string[], ctx: CommandContext): Promis
   }
   const out = ctx.deps.stdout
   if (ctx.json) out.write(`${JSON.stringify(result)}\n`)
-  else if (result.status === "unavailable") out.write(`${result.message} (${result.reason})\n`)
+  else if (result.status === "unavailable")
+    writeFields(ctx.deps, "stdout", [
+      ["Status", result.message],
+      ["Reason", result.reason],
+    ])
   else {
-    out.write(`${result.label}\nFetched: ${result.fetchedAt}\nCluster supply: ${result.analysis.clusterSupplyPct}%\n`)
+    writeFields(
+      ctx.deps,
+      "stdout",
+      [
+        ["Fetched", formatTime(result.fetchedAt)],
+        ["Cluster supply", `${result.analysis.clusterSupplyPct}%`],
+      ],
+      result.label,
+    )
     for (const cluster of result.analysis.clusters) {
-      out.write(
-        `${cluster.supplyPct}%: ${cluster.addresses.map(terminalText).join(", ")}${cluster.tags.length ? ` [${cluster.tags.map(terminalText).join(", ")}]` : ""}\n`,
-      )
+      writeFields(ctx.deps, "stdout", [
+        ["Supply", `${cluster.supplyPct}%`],
+        ["Addresses", cluster.addresses.map(terminalText).join(" ")],
+        ["Tags", cluster.tags.map(terminalText).join(", ")],
+      ])
     }
-    out.write(`${result.caveat}\n`)
+    notice(ctx.deps, "stdout", "note", `${result.caveat}\n`.trim())
   }
   return 0
 }

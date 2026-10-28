@@ -17,6 +17,7 @@ import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { Keypair } from "@solana/web3.js"
 import type { Deps } from "../deps"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { SECRET_REFS } from "../secret-store"
 import {
@@ -156,10 +157,10 @@ describe("T5: rename changes the label, and the resolver follows it", () => {
 
     const out = await cmd(fx, ["vault", "rename", "treasury", "treasury-cold"])
     expect(out.code).toBe(0)
-    expect(out.stdout).toContain("Renamed treasury to treasury-cold.\n")
-    expect(out.stdout).toContain(`  address     ${treasury}\n`)
-    expect(out.stdout).toContain("  role        vault\n")
-    expect(out.stdout).toContain("  unchanged   address, derivation path, key blob, every envelope\n")
+    expect(humanText(out.stdout)).toContain(humanText("Renamed treasury to treasury-cold.\n"))
+    expect(humanText(out.stdout)).toContain(humanText(`Address ${treasury}`))
+    expect(humanText(out.stdout)).toContain(humanText("Role vault"))
+    expect(humanText(out.stdout)).toContain(humanText("Unchanged address, derivation path, key blob, every envelope"))
     expect(out.prompted).toBe(1)
 
     const vault = await reopen(fx.path, fx.passphrase)
@@ -280,7 +281,7 @@ describe("T8: the five refusals, each with its code, exit, message, suggestion a
     // Human mode: exit 1 and the same sentence on stderr.
     const human = await cmd(fx, ["vault", "rename", "ghost", "cold"])
     expect(human.code).toBe(1)
-    expect(human.stderr).toContain("No key in this vault is called ghost")
+    expect(humanText(human.stderr)).toContain(humanText("No key in this vault is called ghost"))
   })
 
   test("VAULT_LABEL_TAKEN: <new> is some other entry's label", async () => {
@@ -590,7 +591,7 @@ describe("the argument-shape refusals: exit 2, before any prompt", () => {
     const out = await cmd(fx, ["vault", "rename", "treasury", "-cold"])
     expect(out.code).toBe(2)
     expect(out.prompted).toBe(0)
-    expect(out.stderr).toContain("Unknown flag: -cold")
+    expect(humanText(out.stderr)).toContain(humanText("Unknown flag: -cold"))
   })
 
   test("no terminal: the unlock is refused before anything is asked, in both modes", async () => {
@@ -665,7 +666,7 @@ describe("BE-1145: batch rename", () => {
             { from: "b", to: "cold two" },
           ],
         })
-      else expect(out.stdout).toContain("Dry run: nothing was written.")
+      else expect(humanText(out.stdout)).toContain(humanText("Dry run: nothing was written."))
     }
     expect((await cmd(fx, ["vault", "rename", "--pairs-from", file])).code).toBe(0)
     expect((await entries(fx)).map((entry) => entry.label)).toEqual(["cold, one", "cold two"])

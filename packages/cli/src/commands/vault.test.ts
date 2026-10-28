@@ -13,7 +13,9 @@ import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Deps } from "../deps"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
+import { displayWidth } from "../presentation"
 import { createCapture, createTestDeps } from "../test-support"
 import { GENERATED_WORD_COUNT, SAVE_THE_PASSPHRASE, SAVED_IT_PROMPT } from "../vault/passphrase"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
@@ -114,8 +116,8 @@ describe("T33: AD-6's passphrase policy", () => {
 
     // The sentence that was missing: where it goes, that this CLI cannot get it back, and what
     // the fallback is. Below the words, so it is read with them in view.
-    const words = h.stdout.text.indexOf(h.passphrase)
-    const save = h.stdout.text.indexOf(SAVE_THE_PASSPHRASE)
+    const words = humanText(h.stdout.text).indexOf(h.passphrase)
+    const save = humanText(h.stdout.text).indexOf(SAVE_THE_PASSPHRASE)
     expect(words).toBeGreaterThan(-1)
     expect(save).toBeGreaterThan(words)
     expect(SAVE_THE_PASSPHRASE).toContain("password manager or on paper")
@@ -162,18 +164,18 @@ describe("T33: AD-6's passphrase policy", () => {
 
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     await run(["vault", "status", "--keystore", h.vaultPath], s.deps)
-    expect(s.stdout.text).toContain("generated, 8 words (about 103 bits)")
+    expect(humanText(s.stdout.text)).toContain(humanText("generated, 8 words (about 103 bits)"))
   })
 
   test("--own-passphrase under 16 characters, or on the denylist, is refused", async () => {
     const short = await harness({ secrets: ["too short"] })
     expect(await run(["vault", "init", "--own-passphrase", "--keystore", short.vaultPath], short.deps)).toBe(1)
-    expect(short.stderr.text).toContain("at least 16 characters")
+    expect(humanText(short.stderr.text)).toContain(humanText("at least 16 characters"))
     await expect(stat(short.vaultPath)).rejects.toThrow()
 
     const denied = await harness({ secrets: ["correct horse battery staple"] })
     expect(await run(["vault", "init", "--own-passphrase", "--keystore", denied.vaultPath], denied.deps)).toBe(1)
-    expect(denied.stderr.text).toContain("list of common passphrases")
+    expect(humanText(denied.stderr.text)).toContain(humanText("list of common passphrases"))
     await expect(stat(denied.vaultPath)).rejects.toThrow()
   })
 
@@ -187,26 +189,28 @@ describe("T33: AD-6's passphrase policy", () => {
 
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     await run(["vault", "status", "--keystore", h.vaultPath], s.deps)
-    expect(s.stdout.text).toContain("this CLI cannot know its entropy")
+    expect(humanText(s.stdout.text)).toContain(humanText("this CLI cannot know its entropy"))
   })
 
   test("a mistyped confirmation of a chosen passphrase writes nothing", async () => {
     const h = await harness({ secrets: ["a passphrase I picked myself", "a different one entirely"] })
     expect(await run(["vault", "init", "--own-passphrase", "--keystore", h.vaultPath], h.deps)).toBe(1)
-    expect(h.stderr.text).toContain("did not match")
+    expect(humanText(h.stderr.text)).toContain(humanText("did not match"))
     await expect(stat(h.vaultPath)).rejects.toThrow()
   })
 
   test("init prints the AD-6 line about the Apple account", async () => {
     const h = await initVault()
-    expect(h.stdout.text).toContain("outside the Apple account that holds a synced passkey")
+    expect(humanText(h.stdout.text)).toContain(humanText("outside the Apple account that holds a synced passkey"))
   })
 })
 
 describe("T34: invariant 1, a recoverable factor exists before any key is created", () => {
   test("init writes the envelope and the root and verifies BOTH before reporting", async () => {
     const h = await initVault()
-    expect(h.stdout.text).toContain("re-read and opened with the passphrase you set, and its root blob decrypted")
+    expect(humanText(h.stdout.text)).toContain(
+      humanText("file re-read, opened with your passphrase, root blob decrypted"),
+    )
 
     const file = JSON.parse(await readFile(h.vaultPath, "utf8")) as {
       root?: unknown
@@ -225,10 +229,10 @@ describe("T34: invariant 1, a recoverable factor exists before any key is create
 
     const second = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [] })
     expect(await run(["vault", "init", "--keystore", h.vaultPath], second.deps)).toBe(1)
-    expect(second.stderr.text).toContain("already exists")
+    expect(humanText(second.stderr.text)).toContain(humanText("already exists"))
     // A crash after the write and before the verify leaves exactly this file, and the next init
     // refuses it rather than replacing a vault whose factor was never proven.
-    expect(second.stderr.text).toContain("including after an interrupted init")
+    expect(humanText(second.stderr.text)).toContain(humanText("including after an interrupted init"))
     expect(await readFile(h.vaultPath, "utf8")).toBe(before)
   })
 
@@ -268,7 +272,7 @@ describe("T34: invariant 1, a recoverable factor exists before any key is create
     expect(code).toBe(1)
     // It cannot even unlock, because the only envelope left is one this build cannot drive -- which
     // is itself the invariant holding: a vault whose only envelope is `secure-enclave` cannot exist.
-    expect(k.stderr.text).toContain("no passphrase envelope")
+    expect(humanText(k.stderr.text)).toContain(humanText("no passphrase envelope"))
   })
 
   test("two apple-account envelopes count as ONE recoverable factor (AD-2)", async () => {
@@ -351,7 +355,7 @@ describe("new-key derives, records and verifies", () => {
     const first = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "new-key", "--chain", "solana", "--keystore", h.vaultPath], first.deps)).toBe(0)
     expect(first.stdout.text).toContain("m/44'/501'/0'/0'")
-    expect(first.stdout.text).toContain("re-read from the vault and re-derived from its root")
+    expect(humanText(first.stdout.text)).toContain(humanText("re-read from the vault and re-derived from its root"))
 
     const second = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "new-key", "--chain", "solana", "--keystore", h.vaultPath], second.deps)).toBe(0)
@@ -366,12 +370,12 @@ describe("new-key derives, records and verifies", () => {
     const h = await initVault()
     const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "new-key", "--chain", "evm", "--keystore", h.vaultPath], k.deps)).toBe(0)
-    expect(k.stdout.text).toMatch(/^0x[0-9a-fA-F]{40}\n/)
-    expect(k.stdout.text).toContain("derivation  m/44'/60'/0'/0/0")
+    expect(k.stdout.text).toMatch(/^ {2}Address +0x[0-9a-fA-F]{40}$/m)
+    expect(humanText(k.stdout.text)).toContain(humanText("Derivation  m/44'/60'/0'/0/0"))
     expect(k.stderr.text).not.toContain("CHAIN_NOT_OFFERED")
     const u = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     expect(await run(["vault", "new-key", "--chain", "bitcoin", "--keystore", h.vaultPath], u.deps)).toBe(2)
-    expect(u.stderr.text).toContain("Unknown chain: bitcoin")
+    expect(humanText(u.stderr.text)).toContain(humanText("Unknown chain: bitcoin"))
   })
 
   test("an index in hd.exposedIndexes is never allocated, even when the boundary is known", async () => {
@@ -398,7 +402,7 @@ describe("T45: factor changes re-encrypt only the index, and removal is not revo
     expect(
       await run(["vault", "factor", "add", "passphrase", "--own-passphrase", "--keystore", h.vaultPath], add.deps),
     ).toBe(0)
-    expect(add.stdout.text).toContain("re-read and opened with the new passphrase")
+    expect(humanText(add.stdout.text)).toContain(humanText("re-read and opened with the new passphrase"))
 
     const after = JSON.parse(await readFile(h.vaultPath, "utf8")) as {
       generation: number
@@ -440,8 +444,8 @@ describe("T45: factor changes re-encrypt only the index, and removal is not revo
 
     const r = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "factor", "remove", id, "--keystore", h.vaultPath], r.deps)).toBe(1)
-    expect(r.stderr.text).toContain("only passphrase factor")
-    expect(r.stderr.text).toContain("recovery floor")
+    expect(humanText(r.stderr.text)).toContain(humanText("only passphrase factor"))
+    expect(humanText(r.stderr.text)).toContain(humanText("recovery floor"))
   })
 
   test("removal prints the not-revocation notice, and status then names the removed id", async () => {
@@ -455,9 +459,9 @@ describe("T45: factor changes re-encrypt only the index, and removal is not revo
 
     const r = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "factor", "remove", removedId, "--keystore", h.vaultPath], r.deps)).toBe(0)
-    expect(r.stdout.text).toContain("Removing a factor is not revocation")
-    expect(r.stdout.text).toContain("still opens with that factor")
-    expect(r.stdout.text).toContain("including keys created after this removal")
+    expect(humanText(r.stdout.text)).toContain(humanText("Removing a factor is not revocation"))
+    expect(humanText(r.stdout.text)).toContain(humanText("still opens with that factor"))
+    expect(humanText(r.stdout.text)).toContain(humanText("including keys created after this removal"))
 
     const sidecar = await readSidecar(sidecarPath(h.vaultPath))
     expect(sidecar?.removedEnvelopeIds).toContain(removedId)
@@ -517,14 +521,14 @@ describe("T44: ED-6's two rollback shapes", () => {
 
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)).toBe(1)
-    expect(s.stderr.text).toContain("older copy")
+    expect(humanText(s.stderr.text)).toContain(humanText("older copy"))
     expect(s.stderr.text).toContain("--accept-older-copy")
     // And it says, in the refusal, that editing the sidecar defeats it: a non-defense stated.
-    expect(s.stderr.text).toContain("not a defense")
+    expect(humanText(s.stderr.text)).toContain(humanText("not a defense"))
 
     const a = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "status", "--unlock", "--accept-older-copy", "--keystore", h.vaultPath], a.deps)).toBe(0)
-    expect(a.stderr.text).toContain("Opening an older copy")
+    expect(humanText(a.stderr.text)).toContain(humanText("Opening an older copy"))
   })
 
   test("no sidecar is a warning, not a refusal", async () => {
@@ -534,7 +538,7 @@ describe("T44: ED-6's two rollback shapes", () => {
 
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)).toBe(0)
-    expect(s.stderr.text).toContain("cannot be recognized here")
+    expect(humanText(s.stderr.text)).toContain(humanText("cannot be recognized here"))
   })
 
   test("BE-178 finding 3: a write committed onto an accepted older copy does not lower the anchor", async () => {
@@ -568,7 +572,7 @@ describe("T44: ED-6's two rollback shapes", () => {
     // A normal open still reports it as an older copy.
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)).toBe(1)
-    expect(s.stderr.text).toContain("older copy")
+    expect(humanText(s.stderr.text)).toContain(humanText("older copy"))
   })
 })
 
@@ -576,8 +580,8 @@ describe("BE-178 finding 1: passphrases and surrounding whitespace", () => {
   test("a chosen passphrase with surrounding whitespace is refused before anything is written", async () => {
     const h = await harness({ secrets: [" sixteen characters long "] })
     expect(await run(["vault", "init", "--own-passphrase", "--keystore", h.vaultPath], h.deps)).toBe(1)
-    expect(h.stderr.text).toContain("must not begin or end with a space")
-    expect(h.stderr.text).toContain("Nothing was written")
+    expect(humanText(h.stderr.text)).toContain(humanText("must not begin or end with a space"))
+    expect(humanText(h.stderr.text)).toContain(humanText("Nothing was written"))
     // Refused at the first prompt: the confirmation was never asked for.
     expect(h.asked).toHaveLength(1)
     await expect(stat(h.vaultPath)).rejects.toThrow()
@@ -594,7 +598,7 @@ describe("BE-178 finding 1: passphrases and surrounding whitespace", () => {
     expect(
       await run(["vault", "factor", "add", "passphrase", "--own-passphrase", "--keystore", h.vaultPath], add.deps),
     ).toBe(1)
-    expect(add.stderr.text).toContain("must not begin or end with a space")
+    expect(humanText(add.stderr.text)).toContain(humanText("must not begin or end with a space"))
     expect(await readFile(h.vaultPath, "utf8")).toBe(before)
   })
 
@@ -609,7 +613,7 @@ describe("BE-178 finding 1: passphrases and surrounding whitespace", () => {
 
     const s = await harness({ env: { CANDLE_CONFIG_DIR: made.dir }, secrets: [kept] })
     expect(await run(["vault", "status", "--unlock", "--keystore", made.path], s.deps)).toBe(0)
-    expect(s.stdout.text).toContain("chosen by you")
+    expect(humanText(s.stdout.text)).toContain(humanText("chosen by you"))
   })
 
   test("a normal vault re-opens when the unlock is typed with a stray trailing space", async () => {
@@ -620,7 +624,7 @@ describe("BE-178 finding 1: passphrases and surrounding whitespace", () => {
     // Trimming is not a second guess at the content: a wrong passphrase stays wrong.
     const w = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [`${h.passphrase}x `] })
     expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], w.deps)).toBe(1)
-    expect(w.stderr.text).toContain("wrong passphrase")
+    expect(humanText(w.stderr.text)).toContain(humanText("wrong passphrase"))
   })
 })
 
@@ -666,7 +670,7 @@ describe("T54: the phrase ceremony", () => {
       const code = await run(["vault", "phrase", "show", "--keystore", h.vaultPath], p.deps)
       expect(code).toBe(1)
       expect(p.stderr.text).toContain("PHRASE_REQUIRES_TTY")
-      expect(p.stderr.text).toContain("Nothing was rendered")
+      expect(humanText(p.stderr.text)).toContain(humanText("Nothing was rendered"))
       expect(p.stdout.text).toBe("")
       // And it never asked for a passphrase, so the vault was not opened at all.
       expect(p.asked).toEqual([])
@@ -688,7 +692,7 @@ describe("T54: the phrase ceremony", () => {
     // Declining the acknowledgement: nothing is displayed and nothing is written.
     const declined = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase], lines: ["no"] })
     expect(await run(["vault", "phrase", "show", "--keystore", h.vaultPath], declined.deps)).toBe(1)
-    expect(declined.stdout.text).toContain("Nothing was displayed and nothing was written")
+    expect(humanText(declined.stdout.text)).toContain(humanText("Nothing was displayed and nothing was written"))
     const unchanged = JSON.parse(await readFile(h.vaultPath, "utf8")) as { generation: number; index: unknown }
     expect(unchanged.generation).toBe(before.generation)
   })
@@ -719,13 +723,13 @@ describe("T54: the phrase ceremony", () => {
 
     expect(await run(["vault", "phrase", "show", "--keystore", h.vaultPath], p.deps)).toBe(0)
     expect(answered).toHaveLength(3)
-    expect(p.stdout.text).toContain("Read-back matched")
+    expect(humanText(p.stdout.text)).toContain(humanText("Read-back matched"))
 
     // The record precedes the exposure: the write happened, and the flag never resets.
     const after = JSON.parse(await readFile(h.vaultPath, "utf8")) as { generation: number }
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)
-    expect(s.stdout.text).toContain("recovery phrase exported: yes")
+    expect(humanText(s.stdout.text)).toContain(humanText("recovery phrase exported: yes"))
     expect(after.generation).toBeGreaterThan(1)
 
     // A canary word never reaches stderr, the sidecar, or a JSON output.
@@ -741,12 +745,12 @@ describe("T54: the phrase ceremony", () => {
     p.deps.promptLine = async (text: string) => (text.startsWith("Type understood") ? "understood" : "wrongword")
 
     expect(await run(["vault", "phrase", "show", "--keystore", h.vaultPath], p.deps)).toBe(1)
-    expect(p.stderr.text).toContain("did not match")
+    expect(humanText(p.stderr.text)).toContain(humanText("did not match"))
     // Already recorded, because the words were on the screen: the record precedes the exposure and
     // a failed read-back does not undo it.
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)
-    expect(s.stdout.text).toContain("recovery phrase exported: yes")
+    expect(humanText(s.stdout.text)).toContain(humanText("recovery phrase exported: yes"))
   })
 })
 
@@ -816,8 +820,8 @@ describe("T39: AD-3's removals", () => {
       const c = await harness({ env: { CANDLE_CONFIG_DIR: h.dir, CANDLE_KEYSTORE_PASSPHRASE: "anything at all" } })
       const code = await run([...args, "--keystore", h.vaultPath], c.deps)
       expect(`${args.join(" ")} -> ${code}`).toBe(`${args.join(" ")} -> 1`)
-      expect(c.stderr.text).toContain("CANDLE_KEYSTORE_PASSPHRASE is set")
-      expect(c.stderr.text).toContain("No Candle command reads its value")
+      expect(humanText(c.stderr.text)).toContain(humanText("CANDLE_KEYSTORE_PASSPHRASE is set"))
+      expect(humanText(c.stderr.text)).toContain(humanText("No Candle command reads its value"))
       // Nothing was prompted, so nothing was unlocked.
       expect(c.asked).toEqual([])
     }
@@ -832,7 +836,7 @@ describe("T39: AD-3's removals", () => {
     ]) {
       const c = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
       expect(await run([...args, "--keystore", h.vaultPath], c.deps)).toBe(2)
-      expect(c.stderr.text).toContain("Unknown flag: --yes")
+      expect(humanText(c.stderr.text)).toContain(humanText("Unknown flag: --yes"))
     }
   })
 
@@ -844,7 +848,7 @@ describe("T39: AD-3's removals", () => {
 
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     expect(await run(["vault", "status", "--keystore", h.vaultPath], s.deps)).toBe(0)
-    expect(s.stdout.text).toContain("A legacy wallets.enc exists")
+    expect(humanText(s.stdout.text)).toContain(humanText("A legacy wallets.enc exists"))
     const flat = s.stdout.text.replace(/\s+/g, " ")
     expect(flat).toContain("this CLI does not read it")
     expect(flat).toContain(
@@ -952,8 +956,10 @@ describe("the TTY rule, and what answers without one", () => {
     const h = await initVault()
     const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, tty: false })
     expect(await run(["vault", "new-key", "--chain", "solana", "--keystore", h.vaultPath], k.deps)).toBe(1)
-    expect(k.stderr.text).toContain("needs a terminal")
-    expect(k.stderr.text).toContain("There is no environment variable and no flag that supplies one")
+    expect(humanText(k.stderr.text)).toContain(humanText("needs a terminal"))
+    expect(humanText(k.stderr.text)).toContain(
+      humanText("There is no environment variable and no flag that supplies one"),
+    )
     expect(k.asked).toEqual([])
   })
 
@@ -984,9 +990,9 @@ describe("T17: D8's init copy and footer", () => {
     const h = await initVault()
     const notice = h.stdout.text.indexOf("Your vault passphrase is about to be generated and shown once.")
     expect(notice).toBeGreaterThan(-1)
-    expect(h.stdout.text).toContain("This CLI keeps no copy and cannot recover it.")
-    expect(h.stdout.text).toContain("To choose your own instead, type own at the prompt below.")
-    expect(h.stdout.text.indexOf(h.passphrase)).toBeGreaterThan(notice)
+    expect(humanText(h.stdout.text)).toContain(humanText("This CLI keeps no copy and cannot recover it."))
+    expect(humanText(h.stdout.text)).toContain(humanText("To choose your own instead, type own at the prompt below."))
+    expect(humanText(h.stdout.text).indexOf(h.passphrase)).toBeGreaterThan(notice)
   })
 
   test("it is not printed with --own-passphrase, where nothing is generated", async () => {
@@ -1000,9 +1006,9 @@ describe("T17: D8's init copy and footer", () => {
 
   test("the footer names the non-default location, and where to set it once", async () => {
     const h = await initVault()
-    expect(h.stdout.text).toContain(`This vault is at ${h.vaultPath}, not the default location.`)
-    expect(h.stdout.text).toContain(`Every vault command needs -k ${h.vaultPath}`)
-    expect(h.stdout.text).toContain(`export CANDLE_CONFIG_DIR=${h.dir}`)
+    expect(humanText(h.stdout.text)).toContain(humanText(`This vault is at ${h.vaultPath}, not the default location.`))
+    expect(humanText(h.stdout.text)).toContain(humanText(`Every vault command needs -k ${h.vaultPath}`))
+    expect(humanText(h.stdout.text)).toContain(humanText(`export CANDLE_CONFIG_DIR=${h.dir}`))
   })
 
   test("there is no footer when CANDLE_CONFIG_DIR is what located the vault", async () => {
@@ -1046,7 +1052,7 @@ describe("new-key --count: one unlock, many keys", () => {
     expect(k.stdout.text).toContain("m/44'/501'/0'/0'")
     expect(k.stdout.text).toContain("m/44'/501'/1'/0'")
     expect(k.stdout.text).toContain("m/44'/501'/2'/0'")
-    expect(k.stdout.text).toContain("3 keys created under one unlock")
+    expect(humanText(k.stdout.text)).toContain(humanText("3 keys created under one unlock"))
     // The whole point: ONE passphrase prompt for three keys. The harness throws if a run asks
     // for more input than the test scripted, so a second prompt would fail this outright -- but
     // asserted explicitly too, since that is the property the flag exists for.
@@ -1055,6 +1061,42 @@ describe("new-key --count: one unlock, many keys", () => {
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)
     expect(s.stdout.text).toContain("solanaVault  3")
+  })
+
+  test("the batch completion sentence wraps to stdout's width and the prose cap (BE-2105)", async () => {
+    const h = await initVault()
+    const sentence =
+      "2 keys created under one unlock, each committed on its own and re-read from the vault and re-derived from its root."
+    const narrow = async (env: Record<string, string>) => {
+      const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir, ...env }, secrets: [h.passphrase] })
+      k.deps.columns = { stdout: 40, stderr: 40 }
+      const code = await run(
+        ["vault", "new-key", "--chain", "solana", "--count", "2", "--keystore", h.vaultPath],
+        k.deps,
+      )
+      expect(code).toBe(0)
+      return k
+    }
+
+    const plain = await narrow({ CANDLE_PLAIN: "1" })
+    // The completion sentence is the screen's last block: wrapped under the mark, never one
+    // 118-column line.
+    expect(plain.stdout.text.split("\n").slice(-5)).toEqual([
+      "ok 2 keys created under one unlock, each",
+      "   committed on its own and re-read from",
+      "   the vault and re-derived from its",
+      "   root.",
+      "",
+    ])
+    expect(humanText(plain.stdout.text)).toContain(humanText(sentence))
+
+    // Styled (no-color: the Unicode mark without codes) takes its own narrower mark column.
+    const styled = await narrow({})
+    const tail = styled.stdout.text.split("\n").slice(-5)
+    expect(tail[0]).toBe("✓ 2 keys created under one unlock, each")
+    expect(tail[1]).toBe("  committed on its own and re-read from")
+    for (const line of tail) expect(displayWidth(line)).toBeLessThanOrEqual(40)
+    expect(humanText(styled.stdout.text)).toContain(humanText(sentence))
   })
 
   test("three distinct addresses land in the vault and each re-derives from the root", async () => {
@@ -1178,14 +1220,14 @@ describe("new-key --count: one unlock, many keys", () => {
     expect(
       await run(["vault", "new-key", "--chain", "solana", "--count", "9999", "--keystore", h.vaultPath], cap.deps),
     ).toBe(2)
-    expect(cap.stderr.text).toContain("capped at 256")
+    expect(humanText(cap.stderr.text)).toContain(humanText("capped at 256"))
 
     const dup = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     dup.deps.readFile = async () => "a\nb\na\n"
     expect(
       await run(["vault", "new-key", "--chain", "solana", "--labels-from", "/n", "--keystore", h.vaultPath], dup.deps),
     ).toBe(2)
-    expect(dup.stderr.text).toContain("more than once")
+    expect(humanText(dup.stderr.text)).toContain(humanText("more than once"))
 
     const empty = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     empty.deps.readFile = async () => "\n  \n"
@@ -1195,7 +1237,7 @@ describe("new-key --count: one unlock, many keys", () => {
         empty.deps,
       ),
     ).toBe(2)
-    expect(empty.stderr.text).toContain("empty file")
+    expect(humanText(empty.stderr.text)).toContain(humanText("empty file"))
 
     const disagree = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     disagree.deps.readFile = async () => "a\nb\n"
@@ -1205,7 +1247,7 @@ describe("new-key --count: one unlock, many keys", () => {
         disagree.deps,
       ),
     ).toBe(2)
-    expect(disagree.stderr.text).toContain("disagrees with --labels-from")
+    expect(humanText(disagree.stderr.text)).toContain(humanText("disagrees with --labels-from"))
   })
 
   test("a single key with no batch flag answers in the shape it always did", async () => {
@@ -1239,7 +1281,7 @@ describe("--count is a convenience for one unlock, never a way to derive keys un
     expect(
       await run(["vault", "new-key", "--chain", "solana", "--count", "10", "--keystore", h.vaultPath], k.deps),
     ).toBe(1)
-    expect(k.stderr.text).toContain("needs a terminal")
+    expect(humanText(k.stderr.text)).toContain(humanText("needs a terminal"))
     expect(k.asked).toEqual([])
 
     // A refusal above the loop fails the WHOLE batch: the counter has not moved. (This assertion
@@ -1258,7 +1300,7 @@ describe("--count is a convenience for one unlock, never a way to derive keys un
     expect(
       await run(["vault", "new-key", "--chain", "solana", "--count", "10", "--keystore", h.vaultPath], k.deps),
     ).toBe(1)
-    expect(k.stderr.text).toContain("CANDLE_KEYSTORE_PASSPHRASE is set")
+    expect(humanText(k.stderr.text)).toContain(humanText("CANDLE_KEYSTORE_PASSPHRASE is set"))
     expect(k.asked).toEqual([])
   })
 })
@@ -1298,9 +1340,9 @@ describe("BE-245: init offers a backup, and status nags until there is one", () 
 
     // The copy is `vault backup`'s: same command, same sealing, same eight steps.
     const destination = `${join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "Candle")}/`
-    expect(h.stdout.text).toContain(`Verified ${destination}`)
-    expect(h.stdout.text).toContain("steps         all 8 passed, in order")
-    expect(h.stdout.text).toContain("sealed        yes")
+    expect(humanText(h.stdout.text)).toContain(`Copy ${destination}`)
+    expect(humanText(h.stdout.text)).toContain(humanText("Steps  all 8 passed, in order"))
+    expect(humanText(h.stdout.text)).toContain(humanText("Sealed yes"))
 
     const sidecar = await readSidecar(sidecarPath(h.vaultPath))
     expect(sidecar?.lastVerifiedBackupAt).toBeDefined()
@@ -1316,8 +1358,8 @@ describe("BE-245: init offers a backup, and status nags until there is one", () 
     // `init` allocates no key, so `verify-backup` calls a copy taken here stale the moment the
     // first `new-key` lands. Said out loud rather than papered over, because the copy is still
     // worth taking: what it protects is the root every key comes back from.
-    expect(h.stdout.text).toContain("Back it up again after your first `vault new-key`")
-    expect(h.stdout.text).toContain("candle vault backup --to icloud")
+    expect(humanText(h.stdout.text)).toContain(humanText("Back it up again after your first `vault new-key`"))
+    expect(humanText(h.stdout.text)).toContain(humanText("candle vault backup --to icloud"))
     // Anything but yes skips, and skipping costs nothing: the vault is already created.
     const sidecar = await readSidecar(sidecarPath(h.vaultPath))
     expect(sidecar?.lastVerifiedBackupAt).toBeUndefined()
@@ -1328,14 +1370,18 @@ describe("BE-245: init offers a backup, and status nags until there is one", () 
 
     const before = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     await run(["vault", "status", "--keystore", h.vaultPath], before.deps)
-    expect(before.stdout.text).toContain("No backup of this vault has ever been verified from this machine.")
-    expect(before.stdout.text).toContain("candle vault backup --to <path>")
-    expect(before.stdout.text).toContain("candle vault backup --to icloud")
+    expect(humanText(before.stdout.text)).toContain(
+      humanText("No backup of this vault has ever been verified from this machine."),
+    )
+    expect(humanText(before.stdout.text)).toContain(humanText("candle vault backup --to <path>"))
+    expect(humanText(before.stdout.text)).toContain(humanText("candle vault backup --to icloud"))
 
     // Twice, because "every time" is the point: the fact does not scroll away after one reading.
     const again = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     await run(["vault", "status", "--keystore", h.vaultPath], again.deps)
-    expect(again.stdout.text).toContain("No backup of this vault has ever been verified from this machine.")
+    expect(humanText(again.stdout.text)).toContain(
+      humanText("No backup of this vault has ever been verified from this machine."),
+    )
 
     const elsewhere = await mkdtemp(join(tmpdir(), "candle-vault-backup-to-"))
     const b = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
@@ -1346,7 +1392,7 @@ describe("BE-245: init offers a backup, and status nags until there is one", () 
     const after = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
     await run(["vault", "status", "--keystore", h.vaultPath], after.deps)
     expect(after.stdout.text).not.toContain("has ever been verified from this machine")
-    expect(after.stdout.text).toContain("last verified backup")
+    expect(humanText(after.stdout.text)).toContain(humanText("last verified backup"))
   })
 })
 
@@ -1397,7 +1443,7 @@ describe("T19: vault status --unlock reports duplicate labels", () => {
         ],
       },
     ])
-    expect(s.stdout.text).toContain(`\nDuplicate labels (1)\n${expected.join("\n")}\n`)
+    expect(humanText(s.stdout.text)).toContain(humanText(`\nDuplicate labels (1)\n${expected.join("\n")}\n`))
     expect(expected[0]).toBe(`  treasury      2 keys: ${addressA} (${ids[0]}), ${addressB} (${ids[1]})`)
     expect(expected[1]).toBe(
       "                --from treasury always picks the first; rename one: candle vault rename <address> <new-label>",

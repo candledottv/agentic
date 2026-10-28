@@ -1,3 +1,6 @@
+import { writeFields } from "../human-output"
+import { notice } from "../presentation"
+import { formatTime } from "../render"
 /**
  * Ember Phase 4b (BE-391, spec `2026-09-24-ember-phase-4b-hood-tee-wallets-design.md`, D1): moving a
  * Hood TEE wallet's funds home, never needing the Candle API.
@@ -384,7 +387,7 @@ async function sweepEvmWallet(input: SweepInput): Promise<number> {
   }
 
   // ── Pending transactions an earlier run left (SC-06): resolve before anything new is signed. ──
-  deps.stderr.write(`${hoodHostLine(client, "the chain id, nonces, balances and logs")}\n`)
+  notice(deps, "stderr", "note", `${hoodHostLine(client, "the chain id, nonces, balances and logs")}\n`.trim())
   await assertHoodChain(client)
   const resolved = await resolvePending(ctx, vault, entry, rpc)
   vault = hold(resolved.vault)
@@ -854,36 +857,60 @@ async function sweepEvmWallet(input: SweepInput): Promise<number> {
     return exit
   }
   if (exit === 0) {
-    deps.stdout.write(
-      `Swept. ${allReceipts.length} transaction(s) confirmed; the wallet is observed empty and retired, and must not be reused.\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `Swept. ${allReceipts.length} transaction(s) confirmed; the wallet is observed empty and retired, and must not be reused.\n`.trim(),
     )
     return 0
   }
-  if (stopped !== undefined) deps.stdout.write(`Sweep stopped: ${stopped}.\n`)
+  if (stopped !== undefined) notice(deps, "stdout", "note", `Sweep stopped: ${stopped}.\n`.trim())
   if (residuals.length > 0) {
-    deps.stdout.write(`Sweep incomplete: ${residuals.length} residual(s) remain.\n`)
+    notice(deps, "stdout", "warning", `Sweep incomplete: ${residuals.length} residual(s) remain.\n`.trim())
     for (const r of residuals) {
-      deps.stdout.write(
-        `  - ${r.kind}${r.token ? ` ${r.token}` : ""}${r.amountRaw ? ` (${r.amountRaw} raw)` : ""}: ${r.detail}\n`,
-      )
+      writeFields(deps, "stdout", [
+        ["Residual", r.kind],
+        ["Token", r.token],
+        ["Raw amount", r.amountRaw],
+        ["Detail", r.detail],
+      ])
     }
   }
   if (missingSources.length > 0) {
-    deps.stdout.write(
-      `Not reported observed-empty: ${missingSources.join(" and ")} did not run, so a token only they would find may remain. ${sources.logs.ran ? "" : `Re-run with --from-block <n> or --token <0x...>: candle tee sweep ${address} --from-block <n>`}\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `Not reported observed-empty: ${missingSources.join(" and ")} did not run, so a token only they would find may remain. ${sources.logs.ran ? "" : `Re-run with --from-block <n> or --token <0x...>: candle tee sweep ${address} --from-block <n>`}\n`.trim(),
     )
   }
   if (emergency) {
-    deps.stdout.write(
-      `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}\n`,
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}\n`.trim(),
     )
   } else if (observedEmpty && !complete) {
-    deps.stdout.write(
-      `The wallet is observed empty, but its server state is ${serverState}; re-run once it is quarantined.\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `The wallet is observed empty, but its server state is ${serverState}; re-run once it is quarantined.\n`.trim(),
     )
   }
-  deps.stdout.write(
-    `Inventory at ${inventory.observedAt}: ${inventory.verified ? `${inventory.ethWei} wei ETH (gas dust ceiling ${inventory.dustCeilingWei} wei), ${candidates.length} token(s) read` : "NOT verified"}.\n`,
+  writeFields(
+    deps,
+    "stdout",
+    [
+      ["Observed at", formatTime(inventory.observedAt)],
+      ["Verified", inventory.verified ? "yes" : "NOT verified"],
+      ["ETH (wei)", inventory.verified ? inventory.ethWei : undefined],
+      ["Gas dust ceiling (wei)", inventory.dustCeilingWei],
+      ["Tokens read", candidates.length],
+    ],
+    "Inventory",
   )
   return exit
 }
@@ -1013,8 +1040,11 @@ async function disableEvmEntry(
       })
       return { code: 1, vault }
     }
-    deps.stderr.write(
-      `${detail}\nStop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${entry.address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.\n${suggestion}\n`,
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      `${detail}\nStop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${entry.address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.\n${suggestion}\n`.trim(),
     )
     return { code: 1, vault }
   }
@@ -1041,19 +1071,28 @@ async function disableEvmEntry(
   }
   const outcome = readDisableOutcome(result.body)
   // Ember 4c (4c-ED-10): disabling is never blocked by a bridge; it says the fill or refund still lands.
-  for (const warning of bridgeDisableWarnings(entry.address, result.body)) deps.stderr.write(`${warning}\n`)
+  for (const warning of bridgeDisableWarnings(entry.address, result.body))
+    notice(deps, "stderr", "note", `${warning}\n`.trim())
   if (json) {
     writeJson(deps, { address: entry.address, linkedWalletId, ...(result.body as object) })
     return { code: outcome.complete ? 0 : 3, vault }
   }
   if (outcome.complete) {
-    deps.stdout.write(`Stopped ${entry.address}. Remote signing denial verified; the wallet is quarantined.\n`)
-    if (!inDemote) deps.stdout.write(`Recover the funds: candle tee sweep ${entry.address}\n`)
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `Stopped ${entry.address}. Remote signing denial verified; the wallet is quarantined.\n`.trim(),
+    )
+    if (!inDemote) notice(deps, "stdout", "note", `Recover the funds: candle tee sweep ${entry.address}\n`.trim())
     return { code: 0, vault }
   }
   // Under demote, the line after this one says what to run if the provider is down.
-  deps.stdout.write(
-    `Agent trading stopped at Candle for ${entry.address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\nFunds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${entry.address}\n${inDemote ? "" : `If the provider is down or theft is suspected: candle tee sweep ${entry.address} --emergency\n`}`,
+  notice(
+    deps,
+    "stdout",
+    "warning",
+    `Agent trading stopped at Candle for ${entry.address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\nFunds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${entry.address}\n${inDemote ? "" : `If the provider is down or theft is suspected: candle tee sweep ${entry.address} --emergency\n`}`.trim(),
   )
   return { code: 3, vault }
 }
@@ -1114,8 +1153,11 @@ export async function vaultDemoteEvm(args: string[], ctx: CommandContext): Promi
       entry = findEvmTee(vault, address) as KeyEntry
     }
     if (entry.linkedWalletId === undefined) {
-      ctx.deps.stdout.write(
-        `No linkedWalletId is recorded for ${entry.address}; disable was not called and remote authority stays unknown.\n`,
+      notice(
+        ctx.deps,
+        "stdout",
+        "warning",
+        `No linkedWalletId is recorded for ${entry.address}; disable was not called and remote authority stays unknown.\n`.trim(),
       )
       emergency = true
     }
@@ -1127,12 +1169,16 @@ export async function vaultDemoteEvm(args: string[], ctx: CommandContext): Promi
       vault = disabled.vault
       entry = findEvmTee(vault, address) as KeyEntry
       if (disabled.code === 3) {
-        ctx.deps.stdout.write(
-          `The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote ${address} --emergency\n`,
+        notice(
+          ctx.deps,
+          "stdout",
+          "note",
+          `The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote ${address} --emergency\n`.trim(),
         )
       }
     }
-    if (!ctx.json) ctx.deps.stdout.write(`Sweeping remaining funds to ${entry.tee?.vaultDestination}...\n`)
+    if (!ctx.json)
+      notice(ctx.deps, "stdout", "note", `Sweeping remaining funds to ${entry.tee?.vaultDestination}...\n`.trim())
     return sweepEvmWallet({
       ctx,
       vault,

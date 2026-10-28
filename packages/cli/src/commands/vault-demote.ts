@@ -7,6 +7,7 @@
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { notice } from "../presentation"
 import { writeLocalFailure } from "../render"
 import { openSolanaClient } from "../solana-endpoint"
 import { VaultError } from "../vault/errors"
@@ -157,8 +158,11 @@ async function demoteWithAdapter(
     disableCode = await teeDisable([address], ctx, step)
     if (disableCode !== 0 && disableCode !== 3 && !emergency) return disableCode
   } else {
-    ctx.deps.stdout.write(
-      `No linkedWalletId is recorded for ${address}; the grant could not be identified, so disable was not called and remote authority stays unknown.\n`,
+    notice(
+      ctx.deps,
+      "stdout",
+      "warning",
+      `No linkedWalletId is recorded for ${address}; the grant could not be identified, so disable was not called and remote authority stays unknown.\n`.trim(),
     )
   }
 
@@ -172,12 +176,12 @@ async function demoteWithAdapter(
         `${JSON.stringify({ address, vaultDestination: destination, swept: false, nothingToSweep: true, lamports: "0", tokenAccounts: 0 })}\n`,
       )
     } else {
-      ctx.deps.stdout.write("Nothing to sweep: 0 SOL, 0 token accounts.\n")
+      notice(ctx.deps, "stdout", "note", "Nothing to sweep: 0 SOL, 0 token accounts.\n".trim())
     }
     return code
   }
 
-  if (!ctx.json) ctx.deps.stdout.write(`Sweeping remaining funds to ${destination}...\n`)
+  if (!ctx.json) notice(ctx.deps, "stdout", "note", `Sweeping remaining funds to ${destination}...\n`.trim())
   const sweepArgs = rpcUrl === undefined ? [address] : [address, "--rpc-url", rpcUrl]
   if (emergency || linkedWalletId === undefined) sweepArgs.push("--emergency")
   return teeSweep(sweepArgs, ctx, step)
