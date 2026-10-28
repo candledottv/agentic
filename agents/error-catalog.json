@@ -209,7 +209,8 @@
         "FEE_LEG_MISSING",
         "HOOD_LAUNCH_UNAVAILABLE",
         "CLOSE_LEDGER_UNAVAILABLE",
-        "PERPS_WITHDRAW_DISABLED"
+        "PERPS_WITHDRAW_DISABLED",
+        "TOKEN_EVENTS_DISABLED"
       ]
     },
     "venue_refused": {
