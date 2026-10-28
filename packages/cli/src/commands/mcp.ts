@@ -52,6 +52,7 @@ export const MCP_TOOL_NAMES = [
   "candle_get_market",
   "candle_get_feed",
   "candle_vamp_candidates",
+  "candle_token_events",
   "candle_token_forensics",
   "candle_get_agent_profile",
   "candle_list_agents",
@@ -116,6 +117,7 @@ export const MCP_TOOL_NAMES = [
 export const READ_ONLY_TOOL_NAMES = [
   "candle_get_market",
   "candle_get_feed",
+  "candle_token_events",
   "candle_token_forensics",
   "candle_get_agent_profile",
   "candle_list_agents",

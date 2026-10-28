@@ -68,6 +68,7 @@ test("all registered tools are listed", () => {
     "candle_stake",
     "candle_swap",
     "candle_sweep",
+    "candle_token_events",
     "candle_token_forensics",
     "candle_trade",
     "candle_transfer",

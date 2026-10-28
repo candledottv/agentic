@@ -35,6 +35,8 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_get_market: READ,
   candle_get_feed: READ,
   candle_vamp_candidates: READ,
+  // BE-2095: the public per-token events read. Keyless; filters the page itself when kind is set.
+  candle_token_events: READ,
   candle_token_forensics: READ,
   candle_get_agent_profile: READ,
   candle_list_agents: READ,

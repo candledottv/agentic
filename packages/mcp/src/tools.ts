@@ -9,7 +9,10 @@
  * verbatim -- this package never reinterprets an error body, it relays exactly what the endpoint
  * sent. Two tools ADD top-level fields to that body and change none of its own: `candle_swap`
  * adds the `clientSwapId` it sent, and `candle_get_operation` adds `outcome` and `next` to a 404
- * `JOB_NOT_FOUND` (see `swap` and `getOperation` below). That body is NOT one uniform shape
+ * `JOB_NOT_FOUND` (see `swap` and `getOperation` below). One tool narrows the body's own list:
+ * `candle_token_events`, called with `kind`, filters the relayed `events` to that kind and adds
+ * `filteredByKind`, because the route has no kind parameter (see `tokenEventsRelay` below). That
+ * body is NOT one uniform shape
  * across all six one-request tools:
  *   - `candle_launch_token`, `candle_get_market`, `candle_get_feed`, and `candle_swap` hit
  *     endpoints that use the structured `{ success: false, error: { code, message, ... } }`
@@ -121,6 +124,9 @@ export const TOOL_NAMES = [
   "candle_get_feed",
   // BE-1504: tickers being copied near graduation, each with a launch draft. Needs a key.
   "candle_vamp_candidates",
+  // BE-2095: one token's signals, callouts and tracked-wallet trades, over the public events
+  // route. Keyless like the market and feed reads.
+  "candle_token_events",
   "candle_token_forensics",
   "candle_report_activity",
   "candle_get_agent_profile",
@@ -243,6 +249,40 @@ type RestToolName = Exclude<
   | "candle_perps_deposit"
 >
 
+/**
+ * candle_token_events: the events page relayed as it is, except with `kind` set the relayed
+ * body's `events` array is narrowed to that kind and the body gains `filteredByKind`, because
+ * the route has no kind parameter and the filter is this server's. `nextCursor` is relayed
+ * untouched: it continues the same mixed page whatever the filter.
+ */
+async function tokenEventsRelay(args: Record<string, unknown>, cfg: RequestConfig, doFetch: FetchLike) {
+  const { url, init } = buildRequest("candle_token_events", args, cfg)
+  const res = await doFetch(url, init)
+  noteVersionHeaders(res)
+  let text = await res.text()
+  const kind = (args as { kind?: unknown }).kind
+  if (res.ok && (kind === "trade" || kind === "signal" || kind === "callout")) {
+    let body: unknown
+    try {
+      body = JSON.parse(text)
+    } catch {
+      // Not the API's envelope: relayed as it is, below.
+    }
+    const events = (body as { events?: unknown } | null)?.events
+    if (body !== null && typeof body === "object" && Array.isArray(events)) {
+      text = JSON.stringify({
+        ...(body as Record<string, unknown>),
+        events: events.filter((event) => (event as { kind?: unknown }).kind === kind),
+        filteredByKind: kind,
+      })
+    }
+  }
+  return {
+    content: [{ type: "text" as const, text }],
+    ...(res.ok ? {} : { isError: true }),
+  }
+}
+
 export interface BuiltRequest {
   url: string
   init: RequestInit
@@ -309,6 +349,27 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       const { chain, mint } = args as { chain: string; mint: string }
       return {
         url: `${base}/api/v1/markets/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_token_events": {
+      // Keyless like the market and feed reads: no key is sent even when one is configured, so
+      // wallet group names follow the public tier. `kind` is deliberately NOT forwarded: the
+      // route has no kind parameter, so this server filters the page itself (tokenEventsRelay).
+      const { chain, mint, since, limit, before } = args as {
+        chain: string
+        mint: string
+        since?: string | number
+        limit?: string | number
+        before?: string
+      }
+      const params = new URLSearchParams()
+      if (since !== undefined && since !== "") params.set("since", String(since))
+      if (limit !== undefined && limit !== "") params.set("limit", String(limit))
+      if (before !== undefined && before !== "") params.set("before", String(before))
+      return {
+        url: `${base}/api/v1/tokens/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}/events${params.size ? `?${params}` : ""}`,
         init: { method: "GET", headers: jsonHeaders() },
       }
     }
@@ -723,6 +784,44 @@ async function swap(args: Record<string, unknown>, cfg: RequestConfig, doFetch: 
 const getMarketShape = {
   chain: z.string().describe('"solana" or "hood"'),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
+}
+
+const TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000"
+
+/**
+ * The events page's size cap, published as an integer 1-1000 like the feed's row cap (numeric
+ * strings accepted, empty string means "not set"). The REST API is the authoritative validator;
+ * this exists so a model sends a number and gets one readable refusal instead of the API's.
+ */
+const tokenEventsLimit = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value
+    const trimmed = value.trim()
+    if (trimmed === "") return undefined
+    return /^[0-9]+$/.test(trimmed) ? Number(trimmed) : value
+  },
+  z
+    .number({ invalid_type_error: TOKEN_EVENTS_LIMIT_MESSAGE })
+    .int(TOKEN_EVENTS_LIMIT_MESSAGE)
+    .min(1, TOKEN_EVENTS_LIMIT_MESSAGE)
+    .max(1000, TOKEN_EVENTS_LIMIT_MESSAGE)
+    .optional()
+    .describe("Page size, an integer from 1 to 1000 (the route's default is 200)."),
+)
+
+const TOKEN_EVENTS_KIND_NOTE =
+  "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null"
+
+const tokenEventsShape = {
+  chain: z.string().describe('"solana" or "hood"'),
+  mint: z.string().describe("Token mint (solana) or contract address (hood)"),
+  kind: z.enum(["trade", "signal", "callout"]).optional().describe(`Only this kind; ${TOKEN_EVENTS_KIND_NOTE}`),
+  since: z
+    .string()
+    .optional()
+    .describe("Inclusive ISO 8601 time: the page starts at the newest event and goes back no further than this"),
+  limit: tokenEventsLimit,
+  before: z.string().optional().describe("The previous page's nextCursor, exactly as received; continues that page"),
 }
 
 const tokenForensicsShape = {
@@ -1220,6 +1319,18 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: tokenForensicsShape,
     },
     async (args) => callAndRelay("candle_token_forensics", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_token_events",
+    {
+      title: "Token events",
+      description:
+        "One token's event list, newest first: every signal (pattern and summary, new_ticker included), every callout, and every tracked-wallet trade (buys and sells, W or L on a sell whose outcome is known), plus trades Candle's own agents and users made. Each wallet carries its display name or short address, its kind (dev, kol, smart, agent, tracked) and its public group names. No key needed; none is sent even when one is configured, so group names follow the public tier. Off on a deployment until it switches TOKEN_EVENTS on: off, the call answers 503 TOKEN_EVENTS_DISABLED (retryable: false) and that is the server's answer, not a broken tool.\n\n" +
+        "since (inclusive ISO 8601) and limit go to the route; kind is THIS server's filter, not the route's: a filtered page can be shorter than limit while older events of other kinds remain behind the same nextCursor, so keep paging with before until nextCursor is null -- even an empty page can carry one. A page can also exceed limit (it finishes a second in full). Use it to see who bought early and who is dumping, and to explain a feed's signals count from the rows behind it.",
+      inputSchema: tokenEventsShape,
+    },
+    async (args) => tokenEventsRelay(args, getConfig(), doFetch),
   )
 
   register(

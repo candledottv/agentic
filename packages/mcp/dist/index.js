@@ -151,7 +151,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.23";
+var SERVER_VERSION = "0.10.24";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -5660,6 +5660,7 @@ var TOOL_NAMES = [
   "candle_get_market",
   "candle_get_feed",
   "candle_vamp_candidates",
+  "candle_token_events",
   "candle_token_forensics",
   "candle_report_activity",
   "candle_get_agent_profile",
@@ -5731,6 +5732,31 @@ function resolveToolAllowlist(env) {
   }
   return new Set(requested);
 }
+async function tokenEventsRelay(args, cfg, doFetch) {
+  const { url, init } = buildRequest("candle_token_events", args, cfg);
+  const res = await doFetch(url, init);
+  noteVersionHeaders(res);
+  let text = await res.text();
+  const kind = args.kind;
+  if (res.ok && (kind === "trade" || kind === "signal" || kind === "callout")) {
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {}
+    const events = body?.events;
+    if (body !== null && typeof body === "object" && Array.isArray(events)) {
+      text = JSON.stringify({
+        ...body,
+        events: events.filter((event) => event.kind === kind),
+        filteredByKind: kind
+      });
+    }
+  }
+  return {
+    content: [{ type: "text", text }],
+    ...res.ok ? {} : { isError: true }
+  };
+}
 function requireApiKey2(cfg) {
   if (!cfg.apiKey) {
     throw new Error("CANDLE_AGENT_API_KEY is required for this tool. Set it in the environment or MCP client config.");
@@ -5778,6 +5804,20 @@ function buildRequest(name, args, cfg) {
       const { chain, mint } = args;
       return {
         url: `${base2}/api/v1/markets/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}`,
+        init: { method: "GET", headers: jsonHeaders() }
+      };
+    }
+    case "candle_token_events": {
+      const { chain, mint, since, limit, before } = args;
+      const params = new URLSearchParams;
+      if (since !== undefined && since !== "")
+        params.set("since", String(since));
+      if (limit !== undefined && limit !== "")
+        params.set("limit", String(limit));
+      if (before !== undefined && before !== "")
+        params.set("before", String(before));
+      return {
+        url: `${base2}/api/v1/tokens/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}/events${params.size ? `?${params}` : ""}`,
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
@@ -6084,6 +6124,24 @@ var getMarketShape = {
   chain: z5.string().describe('"solana" or "hood"'),
   mint: z5.string().describe("Token mint (solana) or contract address (hood)")
 };
+var TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000";
+var tokenEventsLimit = z5.preprocess((value) => {
+  if (typeof value !== "string")
+    return value;
+  const trimmed = value.trim();
+  if (trimmed === "")
+    return;
+  return /^[0-9]+$/.test(trimmed) ? Number(trimmed) : value;
+}, z5.number({ invalid_type_error: TOKEN_EVENTS_LIMIT_MESSAGE }).int(TOKEN_EVENTS_LIMIT_MESSAGE).min(1, TOKEN_EVENTS_LIMIT_MESSAGE).max(1000, TOKEN_EVENTS_LIMIT_MESSAGE).optional().describe("Page size, an integer from 1 to 1000 (the route's default is 200)."));
+var TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null";
+var tokenEventsShape = {
+  chain: z5.string().describe('"solana" or "hood"'),
+  mint: z5.string().describe("Token mint (solana) or contract address (hood)"),
+  kind: z5.enum(["trade", "signal", "callout"]).optional().describe(`Only this kind; ${TOKEN_EVENTS_KIND_NOTE}`),
+  since: z5.string().optional().describe("Inclusive ISO 8601 time: the page starts at the newest event and goes back no further than this"),
+  limit: tokenEventsLimit,
+  before: z5.string().optional().describe("The previous page's nextCursor, exactly as received; continues that page")
+};
 var tokenForensicsShape = {
   chain: z5.string().describe('"solana" or "hood"'),
   mint: z5.string().describe("Token mint (solana) or contract address (hood)")
@@ -6276,6 +6334,13 @@ function registerToolSubset(server, options) {
 MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed, and any Solana mint Jupiter's index knows, now answers with a partial report instead. On Hood, a token Candle did not launch names its launch account (deployer.method cvc_launch_account) for pons.family and pools.trade launches, with no record of earlier coins; other Hood launchpads return no developer.`,
     inputSchema: tokenForensicsShape
   }, async (args) => callAndRelay("candle_token_forensics", args, getConfig(), doFetch));
+  register("candle_token_events", {
+    title: "Token events",
+    description: `One token's event list, newest first: every signal (pattern and summary, new_ticker included), every callout, and every tracked-wallet trade (buys and sells, W or L on a sell whose outcome is known), plus trades Candle's own agents and users made. Each wallet carries its display name or short address, its kind (dev, kol, smart, agent, tracked) and its public group names. No key needed; none is sent even when one is configured, so group names follow the public tier. Off on a deployment until it switches TOKEN_EVENTS on: off, the call answers 503 TOKEN_EVENTS_DISABLED (retryable: false) and that is the server's answer, not a broken tool.
+
+` + "since (inclusive ISO 8601) and limit go to the route; kind is THIS server's filter, not the route's: a filtered page can be shorter than limit while older events of other kinds remain behind the same nextCursor, so keep paging with before until nextCursor is null -- even an empty page can carry one. A page can also exceed limit (it finishes a second in full). Use it to see who bought early and who is dumping, and to explain a feed's signals count from the rows behind it.",
+    inputSchema: tokenEventsShape
+  }, async (args) => tokenEventsRelay(args, getConfig(), doFetch));
   register("candle_get_feed", {
     title: "Get a token feed",
     description: "Read one of the trade page's public feeds: new, graduated, onfire, or finalstretch " + "(bluechip still answers, is deprecated, and will be removed; where finalstretch is not " + "switched on it is refused as an unknown bucket, so use another bucket). Reads " + `only; moves nothing. No key needed. Start here when nobody has named a token.
@@ -6678,9 +6743,10 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
 // src/server.ts
 var INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You hold a scoped API key, never a private key; signing and funding stay with the key owner's wallet.
 
-START HERE — eight tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
+START HERE — nine tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
   candle_get_feed         the roster: hot streak, new pairs, graduated, final stretch, blue chip (final stretch is refused where it is not switched on; use another bucket)
+  candle_token_events     one token's signals, callouts and tracked-wallet trades, newest first, W or L on sells. kind filters the page on this server; page with nextCursor/before until null. Off until the deployment switches it on (503 TOKEN_EVENTS_DISABLED)
   candle_resolve_token    a ticker or partial name -> mint address + chain
   candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority; deployer.attribution names the launchpad or issuer when no developer is on chain), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
   candle_get_agent_profile  your own tier, caps and verified activity
