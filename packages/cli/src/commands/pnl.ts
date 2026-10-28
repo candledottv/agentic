@@ -1,5 +1,5 @@
 /**
- * `candle pnl [--profile <name>] [--json]` (Ember Phase 3 R7, P3-ED-9 and P3-ED-10; BE-316).
+ * `candle pnl [--profile <name>] [--dust] [--json]` (Ember Phase 3 R7, P3-ED-9 and P3-ED-10; BE-316).
  *
  * Two reads, and which one runs is decided by whether `--profile` was typed on THIS invocation:
  *
@@ -75,9 +75,18 @@ import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import type { HyperliquidPnlSection } from "../hyperliquid-pnl"
+import { proseWidth, renderNotice, symbols, terminalStyle, wrapText } from "../presentation"
 import { apiKeyPrefix, printIdentity } from "../profiles"
-import { renderTable, terminalText, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
-import { formatPrice, formatQuantity, formatUsd, shortAddress } from "../usd"
+import {
+  formatTime,
+  type TableColumn,
+  terminalText,
+  writeFailure,
+  writeLocalFailure,
+  writeUsageFailure,
+} from "../render"
+import { formatPrice, formatQuantity, formatUsd } from "../usd"
+import { financialHeading, financialId, financialTable, financialToken, writeFinancialLines } from "./financial-output"
 import { writeHyperliquidPnl } from "./pnl-hyperliquid"
 
 type Chain = "solana" | "hood"
@@ -289,13 +298,18 @@ const NO_API_KEY = {
 
 export async function pnl(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, {})
+  const parsed = parseArgs(args, { booleanFlags: ["--dust"] })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
     return 2
   }
+  const dust = parsed.booleans.has("--dust")
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}. Usage: candle pnl [--profile <name>]`, json)
+    writeUsageFailure(
+      deps,
+      `Unexpected argument: ${parsed.positionals[0]}. Usage: candle pnl [--profile <name>] [--dust]`,
+      json,
+    )
     return 2
   }
 
@@ -362,9 +376,12 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
     // mean the old thing (one pool across the key's wallets, its last 500 trades).
     const engine = typeof p.totalUsd === "number"
     deps.stdout.write(
-      engine
-        ? `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's share of the account's P&L\n\n`
-        : `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills\n\n`,
+      `${financialHeading(
+        engine
+          ? `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's share of the account's P&L`
+          : `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills`,
+        terminalStyle(deps, "stdout"),
+      )}\n\n`,
     )
     writeChainBlocks(ctx, p.byChain)
     writeSummary(ctx, {
@@ -379,6 +396,7 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
       openPositionsExDust: p.openPositionsExDust,
       closed: p.closed,
       positions: p.openPositions.length,
+      dust,
       truncated: p.truncated,
       lookback: p.lookback,
       lookbackUnit: engine ? "of the account's ledger rows" : "trades",
@@ -388,7 +406,7 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
         ? { inTotal: perpsInTotal === true, ...(hyperliquid.read ? {} : { reason: hyperliquid.reason }) }
         : undefined,
     })
-    writePositions(ctx, p.openPositions, false)
+    writePositions(ctx, p.openPositions, false, dust)
     writeWallets(ctx, p.byWallet, engine)
     writeLpPositions(ctx, lp, false)
     writeHyperliquidPnl(ctx, hyperliquid)
@@ -396,11 +414,14 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
   }
 
   const books = body as unknown as BooksBody
-  deps.stdout.write("P&L for the account: every profile, the web app and the CLI, one ledger\n\n")
+  deps.stdout.write(
+    `${financialHeading("P&L for the account: every profile, the web app and the CLI, one ledger", terminalStyle(deps, "stdout"))}\n\n`,
+  )
   writeChainBlocks(ctx, { solana: books.solana, hood: books.hood })
   writeSummary(ctx, {
     ...books.all,
     positions: books.positions.length,
+    dust,
     truncated: books.truncated,
     lookback: books.lookback,
     lookbackUnit: "ledger rows",
@@ -409,7 +430,7 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
   })
   writeWalletEvents(ctx, books)
   writeAgents(ctx, books.byAgent, books.all)
-  writePositions(ctx, books.positions, true)
+  writePositions(ctx, books.positions, true, dust)
   writeLpPositions(ctx, books.lp, true)
   return 0
 }
@@ -432,28 +453,31 @@ function writeChainBlocks(ctx: CommandContext, byChain: Partial<Record<Chain, un
   for (const [chain, s] of blocks) {
     const unmarked = s.unmarked ?? s.unmarkedPositions ?? 0
     const marked = s.openPositions - unmarked
-    ctx.deps.stdout.write(`${CHAIN_TITLES[chain]}\n`)
-    writeLines(ctx, [
+    ctx.deps.stdout.write(`${financialHeading(CHAIN_TITLES[chain], terminalStyle(ctx.deps, "stdout"))}\n`)
+    writeFinancialLines(ctx, [
       [
         "Realized net",
-        formatUsd(s.realizedNetUsd),
+        formatUsd(s.realizedNetUsd, SIGNED),
         `gross ${formatUsd(s.realizedGrossUsd)}, fees ${formatUsd(s.feesUsd)}`,
       ],
       [
         "Unrealized",
-        formatUsd(s.unrealizedUsd),
+        formatUsd(s.unrealizedUsd, SIGNED),
         `${marked} of ${s.openPositions} open ${s.openPositions === 1 ? "position" : "positions"} marked${unmarked > 0 ? `; ${unmarked} unpriced, not counted` : ""}`,
       ],
-      ["Total", formatUsd(totalOf(s)), "realized net plus unrealized"],
+      ["Total", formatUsd(totalOf(s), SIGNED), "realized net plus unrealized"],
     ])
     if (s.unvalued > 0) {
-      ctx.deps.stdout.write(
-        `${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.\n`,
-      )
+      writeNotes(ctx, [
+        [
+          "warning",
+          `${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.`,
+        ],
+      ])
     }
     ctx.deps.stdout.write("\n")
   }
-  ctx.deps.stdout.write("All chains\n")
+  ctx.deps.stdout.write(`${financialHeading("All chains", terminalStyle(ctx.deps, "stdout"))}\n`)
 }
 
 /** The server's `totalUsd`, the console's Total; summed here only for an API that sends none. */
@@ -466,12 +490,31 @@ function isUnplacedWallet(wallet: string): boolean {
   return wallet.startsWith("unknown:")
 }
 
-function writeLines(ctx: CommandContext, lines: string[][]): void {
-  const width = Math.max(...lines.map(([label]) => (label as string).length))
-  const valueWidth = Math.max(...lines.map(([, value]) => (value as string).length))
-  for (const [label, value, note] of lines) {
-    ctx.deps.stdout.write(`${(label as string).padEnd(width)}  ${(value as string).padStart(valueWidth)}  (${note})\n`)
-  }
+const SIGNED = { signed: true } as const
+
+/** The mark for a value that is not there: `–`, or `-` in plain mode. */
+function symbolsMissing(ctx: CommandContext): string {
+  return symbols(terminalStyle(ctx.deps, "stdout")).missing
+}
+
+/** Notices set apart under the figures: a blank line, then one block per note. Stdout, as before. */
+function writeNotes(ctx: CommandContext, notes: ReadonlyArray<readonly ["note" | "warning", string]>): void {
+  if (notes.length === 0) return
+  const style = terminalStyle(ctx.deps, "stdout")
+  ctx.deps.stdout.write(`\n${notes.map(([level, text]) => renderNotice(level, text, style).join("\n")).join("\n")}\n`)
+}
+
+/** The kit's table at the terminal's width, indented under its heading. */
+function writeTable(
+  ctx: CommandContext,
+  title: string,
+  headers: string[],
+  rows: string[][],
+  columns: (TableColumn | undefined)[],
+): void {
+  const style = terminalStyle(ctx.deps, "stdout")
+  const table = financialTable(ctx, headers, rows, columns)
+  ctx.deps.stdout.write(`\n${financialHeading(title, style)}\n${table}\n`)
 }
 
 /**
@@ -484,28 +527,32 @@ function writeWallets(ctx: CommandContext, wallets: WalletRow[] | undefined, eng
   const rows = wallets.map((w) => [
     isUnplacedWallet(w.wallet)
       ? "not placed in a wallet"
-      : `${w.label?.trim() ? `${w.label.trim()} ` : w.payerType === "main" ? "main " : ""}(${shortAddress(w.wallet)})`,
-    w.chain ?? "-",
+      : `${w.label?.trim() ? `${w.label.trim()} ` : w.payerType === "main" ? "main " : ""}(${financialId(ctx, w.wallet)})`,
+    w.chain ?? symbolsMissing(ctx),
     String(w.tradesConsidered),
-    formatUsd(w.realizedNetUsd),
-    formatUsd(w.unrealizedUsd),
+    formatUsd(w.realizedNetUsd, SIGNED),
+    formatUsd(w.unrealizedUsd, SIGNED),
     `${w.openPositions.length}${w.unmarkedPositions > 0 ? ` (${w.unmarkedPositions} unpriced)` : ""}`,
   ])
-  const heading = engine
+  const title = engine
     ? "By wallet (each its own cost basis; the rows sum to the total)"
     : "By wallet (each its own cost basis, so the rows need not sum to the total)"
-  ctx.deps.stdout.write(
-    `\n${heading}\n${renderTable(
-      ["WALLET", "CHAIN", "TRADES", "REALIZED NET", "UNREALIZED", "OPEN"],
-      rows.map((row) => row.map(terminalText)),
-    )}\n`,
-  )
+  writeTable(ctx, title, ["WALLET", "CHAIN", "TRADES", "REALIZED NET", "UNREALIZED", "OPEN"], rows, [
+    { id: true },
+    { priority: 1 },
+    { priority: 2 },
+    { signed: true },
+    { signed: true },
+    {},
+  ])
 }
 
 function writeSummary(
   ctx: CommandContext,
   s: Summary & {
     positions: number
+    /** `--dust` was given: dust positions are listed. */
+    dust: boolean
     truncated: boolean
     lookback: number
     lookbackUnit: string
@@ -525,12 +572,12 @@ function writeSummary(
   const lines = [
     [
       "Realized net",
-      formatUsd(s.realizedNetUsd),
+      formatUsd(s.realizedNetUsd, SIGNED),
       `gross ${formatUsd(s.realizedGrossUsd)}, fees ${formatUsd(s.feesUsd)}`,
     ],
     [
       "Unrealized",
-      formatUsd(s.unrealizedUsd),
+      formatUsd(s.unrealizedUsd, SIGNED),
       `${marked} of ${s.positions} open ${s.positions === 1 ? "position" : "positions"} marked${s.unmarked > 0 ? `; ${s.unmarked} unpriced, not counted` : ""}`,
     ],
   ]
@@ -541,79 +588,85 @@ function writeSummary(
     lines.push(
       [
         "LP realized",
-        formatUsd(lp.realizedUsd),
+        formatUsd(lp.realizedUsd, SIGNED),
         `withdrawn ${formatUsd(lp.withdrawnUsd)} against ${formatUsd(lp.realizedBasisUsd)} of cost basis, plus ${formatUsd(lp.claimedFeesUsd)} claimed fees`,
       ],
       [
         "LP unrealized",
-        formatUsd(lp.unrealizedUsd),
+        formatUsd(lp.unrealizedUsd, SIGNED),
         `${lp.valued} of ${plural(lp.openPositions, "open LP position", "open LP positions")} valued${lp.unpriced > 0 ? `; ${lp.unpriced} unpriced, not counted` : ""}${lp.unreadable > 0 ? `; ${lp.unreadable} not read, not counted` : ""}${lp.closedOutsideLedger > 0 ? `; ${lp.closedOutsideLedger} closed outside the ledger, not counted` : ""}`,
       ],
       [
         "LP vs holding",
-        lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd) : "-",
+        lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd, SIGNED) : symbolsMissing(ctx),
         lp.vsHoldingPositions > 0
           ? `${lp.vsHoldingPositions} of ${lp.valued} valued, against holding the deposited tokens (now ${formatUsd(lp.holdValueUsd)})`
           : "no valued LP position with every deposit priced",
       ],
-      ["Total", formatUsd(total), totalNote(", tokens only, as the console shows it")],
+      ["Total", formatUsd(total, SIGNED), totalNote(", tokens only, as the console shows it")],
       [
         "Total with LP",
-        formatUsd(total + lp.realizedUsd + lp.unrealizedUsd),
+        formatUsd(total + lp.realizedUsd + lp.unrealizedUsd, SIGNED),
         "the total plus LP realized and unrealized",
       ],
     )
   } else if (lp) {
     lines.push(
       ["LP", "not read", `${terminalText(lp.reason)}; not in the total`],
-      ["Total", formatUsd(total), totalNote(", tokens only")],
+      ["Total", formatUsd(total, SIGNED), totalNote(", tokens only")],
     )
   } else {
-    lines.push(["Total", formatUsd(total), totalNote("")])
+    lines.push(["Total", formatUsd(total, SIGNED), totalNote("")])
   }
-  writeLines(ctx, lines)
-  if (s.perps && !withPerps) {
-    ctx.deps.stdout.write(
-      `The total excludes Hyperliquid perps${s.perps.reason ? `: ${terminalText(s.perps.reason)}` : "."}\n`,
-    )
-  }
+  writeFinancialLines(ctx, lines)
   if (s.closed) writeClosed(ctx, s.closed)
-  const dust = s.openPositionsExDust !== undefined ? s.positions - s.openPositionsExDust : 0
-  if (dust > 0) {
-    ctx.deps.stdout.write(
-      `${dust} open ${dust === 1 ? "position is" : "positions are"} dust (worth under one cent): listed and marked, and counted in the figures.\n`,
-    )
+  const notes: ["note" | "warning", string][] = []
+  const fills = (n: number) => `${n} ${n === 1 ? "fill" : "fills"} could not be valued and are not in these figures.`
+  if (s.perps && !withPerps) {
+    notes.push([
+      "warning",
+      `The total excludes Hyperliquid perps${s.perps.reason ? `: ${terminalText(s.perps.reason)}` : "."}`,
+    ])
   }
-  if (s.oldestMarkAt !== undefined) {
-    ctx.deps.stdout.write(`Marks as old as ${new Date(s.oldestMarkAt).toISOString()}.\n`)
+  const dustCount = s.openPositionsExDust !== undefined ? s.positions - s.openPositionsExDust : 0
+  if (dustCount > 0) {
+    const them = dustCount === 1 ? "position is" : "positions are"
+    notes.push([
+      "note",
+      s.dust
+        ? `${dustCount} open ${them} dust (worth under one cent): listed and marked, and counted in the figures.`
+        : `${dustCount} dust ${dustCount === 1 ? "position" : "positions"} hidden (worth under one cent; --dust to show). ${dustCount === 1 ? "It is" : "They are"} counted in the figures.`,
+    ])
   }
-  if (s.unvalued > 0 || (s.unresolved ?? 0) > 0) {
-    ctx.deps.stdout.write(
-      `${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.\n`,
-    )
-  }
+  if (s.oldestMarkAt !== undefined) notes.push(["note", `Oldest mark ${formatTime(s.oldestMarkAt)}.`])
+  if (s.unvalued > 0 || (s.unresolved ?? 0) > 0) notes.push(["warning", fills(s.unvalued)])
   if (s.truncated) {
-    ctx.deps.stdout.write(
-      `History is truncated: this covers the most recent ${s.lookback} ${s.lookbackUnit}, not the account's lifetime.\n`,
-    )
+    notes.push([
+      "warning",
+      `History is truncated: this covers the most recent ${s.lookback} ${s.lookbackUnit}, not the account's lifetime.`,
+    ])
   }
   if (lp?.read) {
     if (lp.unvalued > 0) {
-      ctx.deps.stdout.write(
-        `${lp.unvalued} LP ledger ${lp.unvalued === 1 ? "leg" : "legs"} could not be valued and ${lp.unvalued === 1 ? "is" : "are"} not in these figures.\n`,
-      )
+      notes.push([
+        "warning",
+        `${lp.unvalued} LP ledger ${lp.unvalued === 1 ? "leg" : "legs"} could not be valued and ${lp.unvalued === 1 ? "is" : "are"} not in these figures.`,
+      ])
     }
     if (lp.closedOutsideLedger > 0) {
-      ctx.deps.stdout.write(
-        `${lp.closedOutsideLedger} LP ${lp.closedOutsideLedger === 1 ? "position was" : "positions were"} closed outside the ledger (a sweep close writes no confirmation), so ${lp.closedOutsideLedger === 1 ? "its" : "their"} result is unknown and not in these figures.\n`,
-      )
+      notes.push([
+        "warning",
+        `${lp.closedOutsideLedger} LP ${lp.closedOutsideLedger === 1 ? "position was" : "positions were"} closed outside the ledger (a sweep close writes no confirmation), so ${lp.closedOutsideLedger === 1 ? "its" : "their"} result is unknown and not in these figures.`,
+      ])
     }
     if (lp.truncated) {
-      ctx.deps.stdout.write(
-        `LP history is truncated: this covers the most recent ${lp.lookback} LP operations, not the account's lifetime.\n`,
-      )
+      notes.push([
+        "warning",
+        `LP history is truncated: this covers the most recent ${lp.lookback} LP operations, not the account's lifetime.`,
+      ])
     }
   }
+  writeNotes(ctx, notes)
 }
 
 /**
@@ -621,27 +674,37 @@ function writeSummary(
  * the realized net. `lostUsd` is zero or negative, so the three figures add up as printed.
  */
 function writeClosed(ctx: CommandContext, c: ClosedSummary): void {
+  const style = terminalStyle(ctx.deps, "stdout")
   const counts = [`${c.wins} won`, `${c.losses} lost`]
   if (c.costUnknown > 0) counts.push(`${c.costUnknown} with unknown cost`)
   ctx.deps.stdout.write(
-    `Closed: ${c.closed} ${c.closed === 1 ? "position" : "positions"} (${counts.join(", ")}). Money made ${formatUsd(c.madeUsd)}, money lost ${formatUsd(c.lostUsd)} and partial sells ${formatUsd(c.partialSellsUsd)} add up to the realized net.\n`,
+    `\n${wrapText(
+      `Closed ${c.closed} ${c.closed === 1 ? "position" : "positions"} (${counts.join(", ")}). Money made ${formatUsd(c.madeUsd, SIGNED)}, money lost ${formatUsd(c.lostUsd, SIGNED)} and partial sells ${formatUsd(c.partialSellsUsd, SIGNED)} add up to the realized net.`,
+      proseWidth(style) - 2,
+    )
+      .map((line) => `  ${line}`)
+      .join("\n")}\n`,
   )
 }
 
 /** Account scope: tokens with no cost anyone can state, and moves Candle does not follow. */
 function writeWalletEvents(ctx: CommandContext, books: BooksBody): void {
+  const notes: ["note", string][] = []
   const unknown = books.costUnknown?.length ?? 0
   if (unknown > 0) {
-    ctx.deps.stdout.write(
-      `${unknown} ${unknown === 1 ? "arrival" : "arrivals"} of tokens came with no cost anyone can state: selling them realizes nothing (--json lists them).\n`,
-    )
+    notes.push([
+      "note",
+      `${unknown} ${unknown === 1 ? "arrival" : "arrivals"} of tokens came with no cost anyone can state: selling them realizes nothing (--json lists them).`,
+    ])
   }
   const out = books.movedOutUntracked?.length ?? 0
   if (out > 0) {
-    ctx.deps.stdout.write(
-      `${out} ${out === 1 ? "move" : "moves"} out of a wallet went where Candle does not follow: the tokens left at cost, not as a sale (--json lists them).\n`,
-    )
+    notes.push([
+      "note",
+      `${out} ${out === 1 ? "move" : "moves"} out of a wallet went where Candle does not follow: the tokens left at cost, not as a sale (--json lists them).`,
+    ])
   }
+  writeNotes(ctx, notes)
 }
 
 /**
@@ -658,25 +721,26 @@ function writeAgents(ctx: CommandContext, agents: AgentRow[] | undefined, all: B
       : a.label && a.label !== a.keyPrefix
         ? `${a.label} (${a.keyPrefix})`
         : a.keyPrefix,
-    formatUsd(a.realizedNetUsd),
-    formatUsd(a.unrealizedUsd),
-    formatUsd(totalOf(a)),
+    formatUsd(a.realizedNetUsd, SIGNED),
+    formatUsd(a.unrealizedUsd, SIGNED),
+    formatUsd(totalOf(a), SIGNED),
     open(a.openPositions, a.unmarked),
     String(a.closedRounds),
   ])
   rows.push([
     "Account total",
-    formatUsd(all.realizedNetUsd),
-    formatUsd(all.unrealizedUsd),
-    formatUsd(totalOf(all)),
+    formatUsd(all.realizedNetUsd, SIGNED),
+    formatUsd(all.unrealizedUsd, SIGNED),
+    formatUsd(totalOf(all), SIGNED),
     open(all.openPositions, all.unmarked),
-    all.closedRounds !== undefined ? String(all.closedRounds) : "-",
+    all.closedRounds !== undefined ? String(all.closedRounds) : symbolsMissing(ctx),
   ])
-  ctx.deps.stdout.write(
-    `\nBy agent (each key, then Manual; the rows sum to the account total)\n${renderTable(
-      ["AGENT", "REALIZED NET", "UNREALIZED", "TOTAL", "OPEN", "CLOSED"],
-      rows.map((row) => row.map(terminalText)),
-    )}\n`,
+  writeTable(
+    ctx,
+    "By agent (each key, then Manual; the rows sum to the account total)",
+    ["AGENT", "REALIZED NET", "UNREALIZED", "TOTAL", "OPEN", "CLOSED"],
+    rows,
+    [{ id: true }, { signed: true }, { signed: true }, { signed: true }, {}, { priority: 1 }],
   )
 }
 
@@ -692,30 +756,39 @@ function writeLpPositions(ctx: CommandContext, lp: LpSection | undefined, withBo
         : p.status === "unreadable"
           ? "not read"
           : "closed outside the ledger"
+  const none = symbolsMissing(ctx)
   const rows = lp.positions.map((p) => {
     const row = [
-      shortAddress(p.position),
-      shortAddress(p.pool),
-      shortAddress(p.wallet),
+      financialId(ctx, p.position),
+      financialId(ctx, p.pool),
+      financialId(ctx, p.wallet),
       value(p),
       formatUsd(p.costBasisUsd),
-      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-",
-      p.vsHoldingUsd !== undefined ? formatUsd(p.vsHoldingUsd) : "-",
+      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd, SIGNED) : none,
+      p.vsHoldingUsd !== undefined ? formatUsd(p.vsHoldingUsd, SIGNED) : none,
     ]
-    if (withBook) row.push(p.book ?? "-")
+    if (withBook) row.push(p.book ?? none)
     return row
   })
-  ctx.deps.stdout.write(
-    `\nOpen LP positions\n${renderTable(
-      headers,
-      rows.map((row) => row.map(terminalText)),
-    )}\n`,
-  )
+  writeTable(ctx, "Open LP positions", headers, rows, [
+    { id: true },
+    { id: true },
+    { id: true },
+    {},
+    {},
+    { signed: true },
+    { signed: true },
+    { priority: 1 },
+  ])
 }
 
-function writePositions(ctx: CommandContext, positions: Position[], withBook: boolean): void {
+function writePositions(ctx: CommandContext, all: Position[], withBook: boolean, showDust: boolean): void {
+  // Dust (worth under one cent, PNL-ED-9) is still counted in every figure; the list hides it
+  // unless `--dust` asks, and the summary says how many are hidden.
+  const positions = showDust ? all : all.filter((p) => p.dust !== true)
+  const none = symbolsMissing(ctx)
   if (positions.length === 0) {
-    ctx.deps.stdout.write("\nNo open positions.\n")
+    ctx.deps.stdout.write(`\n${all.length === 0 ? "No open positions." : "No open positions above dust."}\n`)
     return
   }
   // Positions live in wallets (PNL-ED-2): name the wallet whenever the API does.
@@ -724,30 +797,36 @@ function writePositions(ctx: CommandContext, positions: Position[], withBook: bo
   const headers = ["TOKEN", "CHAIN", ...(withWallet ? ["WALLET"] : []), "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"]
   if (withBook) headers.push("BOOK")
   if (withBasis) headers.push("COST SOURCE")
-  const wallet = (w: string | undefined) => (w === undefined || isUnplacedWallet(w) ? "-" : shortAddress(w))
+  const wallet = (w: string | undefined) => (w === undefined || isUnplacedWallet(w) ? none : financialId(ctx, w))
   const rows = positions.map((p) => {
     const row = [
-      `${p.symbol?.trim() || shortAddress(p.mint)}${p.dust === true ? " (dust)" : ""}`,
-      p.chain ?? "-",
+      `${financialToken(ctx, p.symbol, p.mint)}${p.dust === true ? " (dust)" : ""}`,
+      p.chain ?? none,
       ...(withWallet ? [wallet(p.wallet)] : []),
       formatQuantity(p.quantity),
       formatPrice(p.avgEntryUsd),
       p.markPriceUsd !== undefined ? formatPrice(p.markPriceUsd) : "unpriced",
-      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-",
+      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd, SIGNED) : none,
     ]
-    if (withBook) row.push(p.book ?? "-")
+    if (withBook) row.push(p.book ?? none)
     if (withBasis)
       row.push(
         p.transferredIn
-          ? `Moved in${p.movedInFromWallet ? ` from ${shortAddress(p.movedInFromWallet)}` : ""}: ${p.basisSource ?? "unknown"}${p.zeroCostQuantity ? `, ${formatQuantity(p.zeroCostQuantity)} at $0 (no purchase found)` : ""}${p.basisComplete === false ? " (partial)" : ""}`
-          : "-",
+          ? `Moved in${p.movedInFromWallet ? ` from ${financialId(ctx, p.movedInFromWallet)}` : ""}: ${p.basisSource ?? "unknown"}${p.zeroCostQuantity ? `, ${formatQuantity(p.zeroCostQuantity)} at $0 (no purchase found)` : ""}${p.basisComplete === false ? " (partial)" : ""}`
+          : none,
       )
     return row
   })
-  ctx.deps.stdout.write(
-    `\nOpen positions\n${renderTable(
-      headers,
-      rows.map((row) => row.map(terminalText)),
-    )}\n`,
-  )
+  const columns: (TableColumn | undefined)[] = [
+    { id: true },
+    { priority: 3 },
+    ...(withWallet ? [{ id: true, priority: 2 }] : []),
+    {},
+    {},
+    {},
+    { signed: true },
+    ...(withBook ? [{ priority: 1 }] : []),
+    ...(withBasis ? [{ priority: 0 }] : []),
+  ]
+  writeTable(ctx, "Open positions", headers, rows, columns)
 }

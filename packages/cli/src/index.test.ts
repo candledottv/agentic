@@ -722,7 +722,7 @@ describe("the account guard at dispatch", () => {
     const code = await run(["doctor"], createTestDeps({ fetch, store: store(), stdout, stderr, ...guarded() }))
     expect(code).toBe(0)
     expect(stderr.text).not.toContain("Refusing")
-    expect(stdout.text).toContain("PASS")
+    expect(stdout.text).toContain("✓ Runtime version")
   })
 
   test("profile commands are never guarded, and make no verification call at all", async () => {

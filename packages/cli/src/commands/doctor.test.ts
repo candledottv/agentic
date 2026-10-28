@@ -10,6 +10,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { run } from "../index"
+import type { TerminalStyle } from "../presentation"
 import { homeRepository, updateHomeFor } from "../release"
 import {
   createCapture,
@@ -21,6 +22,7 @@ import {
   type RouteHandler,
 } from "../test-support"
 import { CLI_VERSION } from "../version"
+import { renderDoctorReport } from "./doctor"
 
 /** The four routes every doctor row below "API reachable" needs to PASS, keyed by PATH the way
  * `createRoutedFetch` routes them -- reused as a base by the install/update tests below, which
@@ -38,6 +40,12 @@ const HEALTHY_ROUTES: Record<string, RouteHandler | RouteHandler[]> = {
 function healthyStores() {
   return { store: createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_x" }) }
 }
+
+const flat = (text: string): string => text.replace(/\s+/g, " ")
+
+/** One doctor row, its wrapped detail joined: from its mark to the next row's mark or the tally. */
+const rowOf = (text: string, label: string): string | undefined =>
+  flat(text).match(new RegExp(`[✓✗–!] ${label} .*?(?= [✓✗–!] [A-Z]| \\d+ passed|$)`))?.[0]
 
 describe("doctor", () => {
   test("renders a PASS/FAIL/SKIP table and exits 1 when any check FAILs; the FAIL line names its fix", async () => {
@@ -71,8 +79,8 @@ describe("doctor", () => {
     const code = await run(["doctor"], deps)
 
     expect(code).toBe(1)
-    expect(stdout.text).toContain("PASS")
-    expect(stdout.text).toContain("FAIL")
+    expect(stdout.text).toContain("✓ ")
+    expect(stdout.text).toContain("✗ ")
     expect(stdout.text).toContain("candle auth login")
     expect(unmatched).toHaveLength(0)
   })
@@ -98,7 +106,7 @@ describe("doctor", () => {
     const code = await run(["doctor"], deps)
     // WARN is a fact about money, not a broken setup: the exit code stays a setup verdict.
     expect(code).toBe(0)
-    expect(stdout.text).toMatch(/Plan\s+WARN\s+Your Max plan expired on 2026-08-30/)
+    expect(flat(stdout.text)).toMatch(/! Plan Your Max plan expired on 2026-08-30/)
     expect(stdout.text).toContain("/agents/pricing")
   })
 
@@ -111,7 +119,7 @@ describe("doctor", () => {
     const stdout = createCapture()
     const deps = createTestDeps({ fetch, ...healthyStores(), stdout, env: {} })
     await run(["doctor"], deps)
-    expect(stdout.text).toMatch(/Plan\s+PASS\s+max \(0% trade fee\)/)
+    expect(flat(stdout.text)).toMatch(/✓ Plan max \(0% trade fee\)/)
   })
 
   test("all checks passing exits 0 with no FAIL rows", async () => {
@@ -130,7 +138,7 @@ describe("doctor", () => {
     const code = await run(["doctor"], deps)
 
     expect(code).toBe(0)
-    expect(stdout.text).not.toContain("FAIL")
+    expect(stdout.text).not.toMatch(/^ {2}✗ /m)
   })
 
   test("missing credentials SKIP the checks that need them rather than FAILing, but credentials-present itself FAILs with no device token at all", async () => {
@@ -144,8 +152,8 @@ describe("doctor", () => {
     const code = await run(["doctor"], deps)
 
     expect(code).toBe(1)
-    expect(stdout.text).toContain("SKIP")
-    expect(stdout.text).toContain("FAIL")
+    expect(stdout.text).toMatch(/^ {2}– /m)
+    expect(stdout.text).toContain("✗ ")
   })
 
   // Fix round 1, item 6: a mutant that FAILs the exit code on ANY SKIP (not just on an actual
@@ -163,8 +171,8 @@ describe("doctor", () => {
     const code = await run(["doctor"], deps)
 
     expect(code).toBe(0)
-    expect(stdout.text).toContain("SKIP")
-    expect(stdout.text).not.toContain("FAIL")
+    expect(stdout.text).toMatch(/^ {2}– /m)
+    expect(stdout.text).not.toMatch(/^ {2}✗ /m)
   })
 
   // The agent-key row probes GET /agent/tier, which is behind requireAgentKey("launch:write").
@@ -189,9 +197,9 @@ describe("doctor", () => {
     const code = await run(["doctor"], createTestDeps({ fetch, store, stdout }))
 
     expect(code).toBe(1)
-    const row = stdout.text.split("\n").find((line) => line.startsWith("API key valid"))
+    const row = rowOf(stdout.text, "API key valid")
     expect(row).toBeDefined()
-    expect(row).toContain("FAIL")
+    expect(row).toMatch(/^✗ /)
     expect(row).toContain("candle keys create --scopes")
     expect(row).toContain("candle keys list")
   })
@@ -205,7 +213,7 @@ describe("doctor", () => {
     const oldCode = await run(["doctor"], createTestDeps({ fetch, stdout: stdoutOld, nodeVersion: "16.20.0" }))
     expect(oldCode).toBe(1)
     expect(stdoutOld.text).toContain("Runtime version")
-    expect(stdoutOld.text).toContain("FAIL")
+    expect(stdoutOld.text).toMatch(/^ {2}✗ /m)
     expect(stdoutOld.text).toContain("16.20.0")
     expect(stdoutOld.text).toContain("upgrade Node.js")
 
@@ -214,8 +222,8 @@ describe("doctor", () => {
     // Runtime version alone doesn't determine the overall exit code (no credentials configured
     // either, which FAILs "Credentials present" independently) -- assert the ROW, not the code.
     expect(newCode).toBe(1)
-    const runtimeLine = stdoutNew.text.split("\n").find((line) => line.startsWith("Runtime version"))
-    expect(runtimeLine).toContain("PASS")
+    const runtimeLine = stdoutNew.text.split("\n").find((line) => line.includes("Runtime version"))
+    expect(runtimeLine).toMatch(/^ {2}✓ /)
   })
 
   test("reports which account the credentials act as", async () => {
@@ -260,7 +268,7 @@ describe("profiles", () => {
     expect(stdout.text.startsWith("Profile staging · Account A · ")).toBe(true)
     // The agent-key row's scopes come from the same profile, not from the legacy top-level
     // `scopes` (absent on every login-created profile, which left the row bare).
-    const keyRow = stdout.text.split("\n").find((line) => line.startsWith("API key valid"))
+    const keyRow = stdout.text.split("\n").find((line) => line.includes("API key valid"))
     expect(keyRow).toContain("scopes (cached): launch:write")
   })
 
@@ -305,7 +313,7 @@ describe("profiles", () => {
     const code = await run(["doctor"], createTestDeps({ fetch, store, stdout, ...config }))
     // Doctor's exit code is unchanged by this wave: `setup` depends on it.
     expect(code).toBe(0)
-    const accountRow = stdout.text.split("\n").find((line) => line.startsWith("Account"))
+    const accountRow = rowOf(stdout.text, "Account")
     expect(accountRow).toContain("OTHER22")
     expect(accountRow).toContain("CACHED1")
     expect(accountRow).toContain("candle profile use staging")
@@ -349,7 +357,7 @@ describe("profiles", () => {
         ...createFakeConfigStore({ profiles: { staging: { account: "OTHER22" } }, activeProfile: "staging" }),
       }),
     )
-    const accountRow = matching.text.split("\n").find((line) => line.startsWith("Account"))
+    const accountRow = rowOf(matching.text, "Account")
     expect(accountRow).toContain("OTHER22")
     expect(accountRow).not.toContain("recorded")
     expect(accountRow).not.toContain("candle profile use")
@@ -380,7 +388,7 @@ describe("profiles", () => {
       createTestDeps({ fetch, store, stdout, env: { CANDLE_API_KEY: "ck_live_env" }, ...config }),
     )
     expect(code).toBe(0)
-    const row = stdout.text.split("\n").find((line) => line.startsWith("Account"))
+    const row = rowOf(stdout.text, "Account")
     expect(row).toContain("OTHER22")
     expect(row).not.toContain("recorded")
     expect(row).not.toContain("candle profile use")
@@ -404,8 +412,8 @@ describe("doctor install and update rows", () => {
       ...healthyStores(),
     })
     await run(["doctor"], deps)
-    expect(stdout.text).toMatch(/Install\s+PASS\s+binary at \/home\/u\/\.local\/bin\/candle/)
-    expect(stdout.text).toMatch(/Update\s+PASS\s+99\.0\.0 available: candle update/)
+    expect(flat(stdout.text)).toMatch(/✓ Install binary at \/home\/u\/\.local\/bin\/candle/)
+    expect(flat(stdout.text)).toMatch(/✓ Update 99\.0\.0 available: candle update/)
   })
 
   test("a Homebrew install points at brew, and offline the update row is SKIP", async () => {
@@ -419,8 +427,8 @@ describe("doctor install and update rows", () => {
       ...healthyStores(),
     })
     await run(["doctor"], deps)
-    expect(stdout.text).toMatch(/Install\s+PASS\s+Homebrew/)
-    expect(stdout.text).toMatch(/Update\s+SKIP\s+could not check/)
+    expect(flat(stdout.text)).toMatch(/✓ Install Homebrew/)
+    expect(flat(stdout.text)).toMatch(/– Update could not check/)
   })
 
   test("--json carries install and update", async () => {
@@ -488,7 +496,7 @@ describe("BE-275 D9: the security key helper row", () => {
       ...healthyStores(),
     })
     expect(await run(["doctor"], deps)).toBe(0)
-    expect(stdout.text).toMatch(new RegExp(`Security key helper\\s+PASS\\s+${helper} \\(from CANDLE_FIDO2_HELPER\\)`))
+    expect(flat(stdout.text)).toMatch(new RegExp(`✓ Security key helper ${helper} \\(from CANDLE_FIDO2_HELPER\\)`))
     expect(stdout.text.indexOf("Security key helper")).toBeGreaterThan(stdout.text.indexOf("Install "))
     expect(stdout.text.indexOf("Security key helper")).toBeLessThan(stdout.text.indexOf("Update "))
   })
@@ -505,8 +513,8 @@ describe("BE-275 D9: the security key helper row", () => {
     })
     // Every other row is healthy; this row alone moves the exit code.
     expect(await run(["doctor"], deps)).toBe(1)
-    expect(stdout.text).toMatch(
-      /Security key helper\s+FAIL\s+no candle-fido2 executable beside \/home\/u\/\.local\/bin\/candle\. Fix: candle vault factor add security-key --install-helper/,
+    expect(flat(stdout.text)).toMatch(
+      /✗ Security key helper no candle-fido2 executable beside \/home\/u\/\.local\/bin\/candle\. Fix: candle vault factor add security-key --install-helper/,
     )
   })
 
@@ -526,9 +534,9 @@ describe("BE-275 D9: the security key helper row", () => {
     })
     expect(await run(["doctor"], deps)).toBe(1)
     const escaped = helper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    expect(stdout.text).toMatch(
+    expect(flat(stdout.text)).toMatch(
       new RegExp(
-        `Security key helper\\s+FAIL\\s+CANDLE_FIDO2_HELPER points at ${escaped}, which is not an executable file\\. Fix: correct or unset CANDLE_FIDO2_HELPER`,
+        `✗ Security key helper CANDLE_FIDO2_HELPER points at ${escaped}, which is not an executable file\\. Fix: correct or unset CANDLE_FIDO2_HELPER`,
       ),
     )
     expect(stdout.text).not.toContain("--install-helper")
@@ -546,7 +554,7 @@ describe("BE-275 D9: the security key helper row", () => {
       ...healthyStores(),
     })
     expect(await run(["doctor"], deps)).toBe(1)
-    expect(stdout.text).toMatch(/Security key helper\s+FAIL\s+.*Fix: brew reinstall candle/)
+    expect(flat(stdout.text)).toMatch(/✗ Security key helper .*Fix: brew reinstall candle/)
   })
 
   test("SKIP on an npm install: there is no helper to install, and the exit code does not move", async () => {
@@ -554,7 +562,7 @@ describe("BE-275 D9: the security key helper row", () => {
     const stdout = createCapture()
     const deps = createTestDeps({ fetch, stdout, execPath: "/usr/local/bin/node", env, ...healthyStores() })
     expect(await run(["doctor"], deps)).toBe(0)
-    expect(stdout.text).toMatch(/Security key helper\s+SKIP\s+this CLI is running from the npm package.*release build/)
+    expect(flat(stdout.text)).toMatch(/– Security key helper this CLI is running from the npm package.*release build/)
   })
 
   test("SKIP when the release declares no helper for this platform (D6), naming the release", async () => {
@@ -562,8 +570,8 @@ describe("BE-275 D9: the security key helper row", () => {
     const stdout = createCapture()
     const deps = createTestDeps({ fetch, stdout, execPath: "/home/u/.local/bin/candle", env, ...healthyStores() })
     expect(await run(["doctor"], deps)).toBe(0)
-    expect(stdout.text).toMatch(
-      /Security key helper\s+SKIP\s+.*release 99\.0\.0 ships no candle-fido2-linux-x64 for this platform/,
+    expect(flat(stdout.text)).toMatch(
+      /– Security key helper .*release 99\.0\.0 ships no candle-fido2-linux-x64 for this platform/,
     )
   })
 
@@ -572,7 +580,7 @@ describe("BE-275 D9: the security key helper row", () => {
     const stdout = createCapture()
     const deps = createTestDeps({ fetch, stdout, execPath: "/home/u/.local/bin/candle", env, ...healthyStores() })
     expect(await run(["doctor"], deps)).toBe(0)
-    expect(stdout.text).toMatch(/Security key helper\s+SKIP\s+.*could not read the release manifest/)
+    expect(flat(stdout.text)).toMatch(/– Security key helper .*could not read the release manifest/)
   })
 
   test("--json carries the row like every other", async () => {
@@ -584,5 +592,46 @@ describe("BE-275 D9: the security key helper row", () => {
     const row = body.rows.find((r) => r.check === "Security key helper")
     expect(row?.state).toBe("FAIL")
     expect(row?.detail).toContain("--install-helper")
+  })
+})
+
+describe("doctor report layout", () => {
+  const plain: TerminalStyle = { width: 118, styled: false, color: 0, theme: "light", motion: false }
+  const styled: TerminalStyle = { ...plain, styled: true }
+  const rows = [
+    { check: "Runtime version", state: "PASS" as const, detail: "node 24.3.0" },
+    { check: "Update", state: "SKIP" as const, detail: "could not check" },
+    {
+      check: "Device token beside signer",
+      state: "WARN" as const,
+      detail: "Warning: this machine holds a device token as well as a key signer.",
+    },
+    { check: "API key valid", state: "FAIL" as const, detail: "revoked. Fix: candle auth login" },
+  ]
+
+  test("the device-token warning is its own block under the list, with the fix on its own line", () => {
+    const text = renderDoctorReport(rows, "owner", styled)
+    expect(text).toContain("  ! Device token beside signer\n")
+    const lines = text.split("\n")
+    const notice = lines.findIndex((line) => line.includes("so it can approve its own signer request"))
+    expect(notice).toBeGreaterThan(lines.findIndex((line) => line.includes("API key valid")))
+    expect(lines[notice - 1]).toBe("")
+    expect(flat(text)).toContain("approve from the owner's machine:")
+    expect(text).toContain("\n      candle auth logout --profile <name>\n")
+    // Never inside a table cell or past the prose width.
+    expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(100)
+  })
+
+  test("the tally counts each state, and plain mode keeps the same layout with ASCII marks", () => {
+    expect(renderDoctorReport(rows, "owner", styled)).toContain("1 passed · 1 warning · 1 failed · 1 skipped")
+    const text = renderDoctorReport(rows, "owner", plain)
+    expect(text).toContain("  ok Runtime version")
+    expect(text).toContain("  x  API key valid")
+    expect(text).toContain("  -  Update")
+    expect(text).toContain("1 passed - 1 warning - 1 failed - 1 skipped")
+  })
+
+  test("no warning row, no warning block", () => {
+    expect(renderDoctorReport(rows.slice(0, 2), "owner", styled)).not.toContain("approve its own signer request")
   })
 })

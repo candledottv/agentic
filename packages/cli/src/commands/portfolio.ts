@@ -76,7 +76,7 @@
  */
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
-import type { CommandContext, Writer } from "../deps"
+import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import {
   createEvmRpc,
@@ -95,13 +95,25 @@ import {
   type PerpsPortfolioSection,
   perpsPortfolioSection,
 } from "../hyperliquid-risk"
+import {
+  dim,
+  displayWidth,
+  padDisplay,
+  proseWidth,
+  renderNotice,
+  symbols,
+  type TerminalStyle,
+  terminalStyle,
+  wrapText,
+} from "../presentation"
 import { printIdentity } from "../profiles"
-import { renderTable, terminalText, writeFailure, writeLocalFailure } from "../render"
+import { type TableColumn, terminalText, writeFailure, writeLocalFailure } from "../render"
 import { describeRpcFailure, openSolanaClient, rateLimitedReadFailure, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
-import { formatAmount, formatPrice, formatUsd, shortAddress } from "../usd"
+import { formatAmount, formatPrice, formatUsd } from "../usd"
 import { VaultError } from "../vault/errors"
 import { readVaultRaw } from "../vault/store"
+import { financialHeading, financialId, financialTable, financialToken } from "./financial-output"
 import {
   refuseEnvPassphrase,
   requirePromptStreams,
@@ -770,7 +782,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
           : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.\n\n`,
       )
       if (matched.matched === 0) {
-        writeListNote(deps.stdout, listNote)
+        writeListNote(ctx, listNote)
         return complete ? 0 : 3
       }
     }
@@ -860,13 +872,38 @@ function walletListStatus(answered: CandlePortfolio): WalletListStatus {
   return readFailed ? "unknown" : "cut-off"
 }
 
-const LIST_CUT_OFF_LINE = "Candle listed only part of this account's wallets. The total is partial.\n"
+const LIST_CUT_OFF_LINE = "Candle listed only part of this account's wallets. The total is partial."
 const LIST_UNKNOWN_LINE =
-  "Candle did not say whether it listed every wallet. One it left out would be missing here, so this is not a complete result.\n"
+  "Candle did not say whether it listed every wallet. One it left out would be missing here, so this is not a complete result."
 
-function writeListNote(stdout: Writer, note: "cut-off" | "unknown" | null): void {
-  if (note === "cut-off") stdout.write(LIST_CUT_OFF_LINE)
-  else if (note === "unknown") stdout.write(LIST_UNKNOWN_LINE)
+function writeListNote(ctx: CommandContext, note: "cut-off" | "unknown" | null): void {
+  if (note === "cut-off") writeNotes(ctx, [LIST_CUT_OFF_LINE])
+  else if (note === "unknown") writeNotes(ctx, [LIST_UNKNOWN_LINE])
+}
+
+/** Warnings set apart under the figures (one block each), on stdout as they always were. */
+function writeNotes(ctx: CommandContext, texts: readonly string[], level: "note" | "warning" = "warning"): void {
+  if (texts.length === 0) return
+  const style = terminalStyle(ctx.deps, "stdout")
+  ctx.deps.stdout.write(`\n${texts.map((text) => renderNotice(level, text, style).join("\n")).join("\n")}\n`)
+}
+
+/** The mark for a value that is not there: `–`, or `-` in plain mode. */
+function missingMark(ctx: CommandContext): string {
+  return symbols(terminalStyle(ctx.deps, "stdout")).missing
+}
+
+/** A titled kit table at the terminal's width, indented two under its heading. */
+function tableBlock(
+  ctx: CommandContext,
+  title: string | undefined,
+  headers: string[],
+  rows: string[][],
+  columns: (TableColumn | undefined)[],
+): string {
+  const style: TerminalStyle = terminalStyle(ctx.deps, "stdout")
+  const table = financialTable(ctx, headers, rows, columns)
+  return `${title === undefined ? "" : `${financialHeading(title, style)}\n`}${table}\n`
 }
 
 /**
@@ -1148,6 +1185,7 @@ function writeTable(
   },
 ): void {
   const { deps } = ctx
+  const none = missingMark(ctx)
   const rows: string[][] = []
   const lpRows: string[][] = []
   const notes: string[][] = []
@@ -1165,15 +1203,15 @@ function writeTable(
     let lpCount = 0
     let lpUnread = 0
     for (const w of shown) {
-      const name = `${w.label ? `${w.label} ` : ""}(${shortAddress(w.address)})${w.role === "external" ? " external" : ""}`
-      const side = (t: LpPositionToken, amount: string) => `${amount} ${t.symbol ?? shortAddress(t.mint)}`
+      const name = `${w.label ? `${w.label} ` : ""}(${financialId(ctx, w.address)})${w.role === "external" ? " external" : ""}`
+      const side = (t: LpPositionToken, amount: string) => `${amount} ${financialToken(ctx, t.symbol, t.mint)}`
       for (const p of [...(w.lpPositions ?? [])].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1))) {
         lpCount += 1
         lpRows.push([
           g.group,
           name,
-          shortAddress(p.position),
-          shortAddress(p.pool),
+          financialId(ctx, p.position),
+          financialId(ctx, p.pool),
           p.tokens.map((t) => side(t, t.amount)).join(" + "),
           p.tokens.map((t) => side(t, t.unclaimedFees)).join(" + "),
           p.valueUsd === null ? "unpriced" : formatUsd(p.valueUsd),
@@ -1181,10 +1219,10 @@ function writeTable(
       }
       for (const position of w.lpUnread ?? []) {
         lpUnread += 1
-        lpRows.push([g.group, name, shortAddress(position), "-", "not read", "-", "-"])
+        lpRows.push([g.group, name, financialId(ctx, position), none, "not read", none, none])
       }
       if (w.holdings === null) {
-        rows.push([g.group, w.chain, name, "-", "not read", "-", "-"])
+        rows.push([g.group, w.chain, name, none, "not read", none, none])
         continue
       }
       const sorted = [...w.holdings].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1))
@@ -1193,20 +1231,21 @@ function writeTable(
           g.group,
           w.chain,
           name,
-          h.symbol ?? shortAddress(h.mint),
+          financialToken(ctx, h.symbol, h.mint),
           h.amount,
           h.priceUsd === null ? "unpriced" : formatPrice(h.priceUsd),
           // 4d-ED-4: where a value would be, why there is none.
-          h.valueUsd === null ? (h.unpricedReason ?? "-") : formatUsd(h.valueUsd),
+          h.valueUsd === null ? (h.unpricedReason ?? none) : formatUsd(h.valueUsd),
         ])
       }
-      for (const part of w.unread ?? []) rows.push([g.group, w.chain, name, UNREAD_LABELS[part], "not read", "-", "-"])
+      for (const part of w.unread ?? [])
+        rows.push([g.group, w.chain, name, UNREAD_LABELS[part], "not read", none, none])
     }
     const empty = g.wallets.length - shown.length
     const count = `${g.wallets.length} ${g.wallets.length === 1 ? "wallet" : "wallets"}`
     notes.push([
       g.group,
-      g.read ? formatUsd(g.valueUsd) : "-",
+      g.read ? formatUsd(g.valueUsd) : none,
       g.read
         ? `${count}${empty > 0 ? `, ${empty} empty not shown` : ""}${lpCount > 0 ? `, ${lpCount} LP ${lpCount === 1 ? "position" : "positions"}` : ""}${lpUnread > 0 ? `, ${lpUnread} LP not read` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}`
         : (g.reason ?? "not read"),
@@ -1214,19 +1253,27 @@ function writeTable(
   }
   if (rows.length > 0)
     deps.stdout.write(
-      `${renderTable(
-        ["GROUP", "CHAIN", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"],
-        rows.map((row) => row.map(terminalText)),
-      )}\n`,
+      tableBlock(ctx, undefined, ["GROUP", "CHAIN", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"], rows, [
+        { priority: 1 },
+        { priority: 2 },
+        { id: true },
+        { id: true },
+        {},
+        {},
+        {},
+      ]),
     )
   else deps.stdout.write("Nothing held in any wallet read.\n")
   // LP positions after the tokens (R7): share of the pool plus unclaimed fees, at the same marks.
   if (lpRows.length > 0)
     deps.stdout.write(
-      `\nLP positions\n${renderTable(
+      `\n${tableBlock(
+        ctx,
+        "LP positions",
         ["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEES", "VALUE"],
-        lpRows.map((row) => row.map(terminalText)),
-      )}\n`,
+        lpRows,
+        [{ priority: 1 }, { id: true }, { id: true }, { id: true }, { id: true }, { id: true, priority: 2 }, {}],
+      )}`,
     )
 
   // 4d-ED-7: per group above, then per chain, then one total.
@@ -1249,40 +1296,48 @@ function writeTable(
       ? `${totals.unpriced} unpriced ${totals.unpriced === 1 ? "holding" : "holdings"} not counted`
       : "every holding priced",
   ])
-  const width = Math.max(...notes.map(([label]) => (label as string).length))
-  const valueWidth = Math.max(...notes.map(([, value]) => (value as string).length))
+  const style = terminalStyle(deps, "stdout")
+  const width = Math.max(...notes.map(([label]) => displayWidth(label as string)))
+  const valueWidth = Math.max(...notes.map(([, value]) => displayWidth(value as string)))
+  const noteWidth = Math.max(1, proseWidth(style) - 2 - width - 2 - valueWidth - 2)
   deps.stdout.write("\n")
   for (const [label, value, note] of notes) {
+    const [first = "", ...rest] = wrapText(terminalText(note as string), noteWidth)
     deps.stdout.write(
-      `${(label as string).padEnd(width)}  ${(value as string).padStart(valueWidth)}  ${terminalText(note as string)}\n`,
+      `  ${dim(padDisplay(label as string, width), style)}  ${" ".repeat(valueWidth - displayWidth(value as string))}${value}  ${dim(first, style)}\n`,
     )
+    for (const line of rest) deps.stdout.write(`${" ".repeat(2 + width + 2 + valueWidth + 2)}${dim(line, style)}\n`)
   }
   // 4d-ED-7: a failed read names its chain.
   const unreadByChain = totals.chains
     .map((chain) => [chain, totals.unavailableByChain[chain].length] as const)
     .filter(([, n]) => n > 0)
   const unavailable = unreadByChain.reduce((sum, [, n]) => sum + n, 0)
+  const warnings: string[] = []
   if (unavailable > 0) {
-    deps.stdout.write(
-      `${unavailable} ${unavailable === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain, n]) => `${n} on ${CHAIN_NAMES[chain]}`).join(", ")}). What was not read is marked "not read" and is not in the total.\n`,
+    warnings.push(
+      `${unavailable} ${unavailable === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain, n]) => `${n} on ${CHAIN_NAMES[chain]}`).join(", ")}). What was not read is marked "not read" and is not in the total.`,
     )
   }
-  writeListNote(deps.stdout, totals.listNote)
+  writeNotes(ctx, warnings)
+  writeListNote(ctx, totals.listNote)
+  const later: string[] = []
   const truncated = groups.flatMap((g) => g.wallets).filter((w) => w.truncated).length
   if (truncated > 0) {
-    deps.stdout.write(
-      `${truncated} Hood ${truncated === 1 ? "wallet holds" : "wallets hold"} more tokens than Candle lists. The rest are not shown and not in the total.\n`,
+    later.push(
+      `${truncated} Hood ${truncated === 1 ? "wallet holds" : "wallets hold"} more tokens than Candle lists. The rest are not shown and not in the total.`,
     )
   }
   if ((totals.lp?.unreadable ?? 0) > 0) {
     const n = totals.lp?.unreadable ?? 0
-    deps.stdout.write(
-      `${n} LP ${n === 1 ? "position" : "positions"} could not be read (the pool did not answer). ${n === 1 ? "It is" : "They are"} marked "not read" and not in the total.\n`,
+    later.push(
+      `${n} LP ${n === 1 ? "position" : "positions"} could not be read (the pool did not answer). ${n === 1 ? "It is" : "They are"} marked "not read" and not in the total.`,
     )
   }
+  writeNotes(ctx, later)
   // 4d-ED-2: the vault's Hood rows are ETH and USDG only, and the help says so; so does the table.
   if (groups.some((g) => g.group === "vault" && g.wallets.some((w) => w.chain === "hood"))) {
-    deps.stdout.write("EVM vault keys are read for ETH and USDG only; other tokens they hold are not shown.\n")
+    writeNotes(ctx, ["EVM vault keys are read for ETH and USDG only; other tokens they hold are not shown."], "note")
   }
 }
 
@@ -1293,38 +1348,46 @@ function writeTable(
  */
 function writePerpsSection(ctx: CommandContext, section: PerpsPortfolioSection): void {
   const out = ctx.deps.stdout
-  out.write("\nHyperliquid (live from Hyperliquid, not in the ledger; not in the total above)\n")
+  const style = terminalStyle(ctx.deps, "stdout")
+  out.write(
+    `\n${financialHeading("Hyperliquid (live from Hyperliquid, not in the ledger; not in the total above)", style)}\n`,
+  )
   if (!section.read) {
-    out.write(`Not read: ${terminalText(section.reason)}. The EVM TEE wallets' Hyperliquid accounts are unknown.\n`)
+    writeNotes(ctx, [
+      `Not read: ${terminalText(section.reason)}. The EVM TEE wallets' Hyperliquid accounts are unknown.`,
+    ])
     return
   }
   if (section.accounts.length > 0) {
     out.write(
-      `${renderTable(
+      tableBlock(
+        ctx,
+        undefined,
         ["WALLET", "ACCOUNT VALUE", "UNREALIZED", "POSITIONS", "RISK AT DEFAULT THRESHOLDS"],
-        section.accounts.map((a) =>
-          [
-            `${a.label ? `${a.label} ` : ""}(${shortAddress(a.address)})`,
-            formatUsd(Number(a.accountValueUsd)),
-            formatUsd(Number(a.unrealizedPnlUsd)),
-            String(a.positionCount),
-            a.level,
-          ].map(terminalText),
-        ),
-      )}\n`,
+        section.accounts.map((a) => [
+          `${a.label ? `${a.label} ` : ""}(${financialId(ctx, a.address)})`,
+          formatUsd(Number(a.accountValueUsd)),
+          formatUsd(Number(a.unrealizedPnlUsd), { signed: true }),
+          String(a.positionCount),
+          a.level,
+        ]),
+        [{ id: true }, {}, { signed: true }, { priority: 1 }, {}],
+      ),
     )
     out.write(
-      `Hyperliquid subtotal: ${formatUsd(Number(section.subtotal.accountValueUsd))} account value, ${formatUsd(Number(section.subtotal.unrealizedPnlUsd))} unrealized.\n`,
+      `\n  Hyperliquid subtotal: ${formatUsd(Number(section.subtotal.accountValueUsd))} account value, ${formatUsd(Number(section.subtotal.unrealizedPnlUsd), { signed: true })} unrealized.\n`,
     )
   }
+  const notes: string[] = []
   if (section.empty > 0)
-    out.write(
-      `${section.empty} EVM TEE ${section.empty === 1 ? "wallet holds" : "wallets hold"} nothing on Hyperliquid.\n`,
+    notes.push(
+      `${section.empty} EVM TEE ${section.empty === 1 ? "wallet holds" : "wallets hold"} nothing on Hyperliquid.`,
     )
   if (section.accounts.length === 0 && section.empty === 0 && section.unread.length === 0)
-    out.write("No EVM TEE wallet to read.\n")
+    notes.push("No EVM TEE wallet to read.")
+  writeNotes(ctx, notes, "note")
   if (section.unread.length > 0)
-    out.write(
-      `${section.unread.length} EVM TEE ${section.unread.length === 1 ? "wallet" : "wallets"} not read on Hyperliquid (${terminalText(section.unread[0]?.reason ?? "read failed")}${section.unread.length > 1 ? ", ..." : ""}). Their accounts are unknown, not empty.\n`,
-    )
+    writeNotes(ctx, [
+      `${section.unread.length} EVM TEE ${section.unread.length === 1 ? "wallet" : "wallets"} not read on Hyperliquid (${terminalText(section.unread[0]?.reason ?? "read failed")}${section.unread.length > 1 ? ", ..." : ""}). Their accounts are unknown, not empty.`,
+    ])
 }

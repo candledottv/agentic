@@ -349,6 +349,9 @@ async function emptyConfigDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "candle-portfolio-"))
 }
 
+/** Wrapped notices read as one line. */
+const flat = (text: string): string => text.replace(/\s+/g, " ")
+
 describe("candle portfolio", () => {
   test("no RPC and no vault file: the public default is resolved, nothing is asked or sent, and the row says where it looked (BE-355)", async () => {
     const dir = await emptyConfigDir()
@@ -368,7 +371,7 @@ describe("candle portfolio", () => {
     expect(out).toContain("GROUP     CHAIN   WALLET")
     expect(out).toMatch(/tee\s+solana\s+tee-1 \(TeeW…[^)]+\)\s+SOL\s+0\.5\s+\$100\.00\s+\$50\.00/)
     expect(out).toMatch(/embedded\s+solana\s+\(Embe…1111\)\s+SOL\s+2\s+\$100\.00\s+\$200\.00/)
-    expect(out).toMatch(/vault\s+-\s+no vault at /)
+    expect(out).toMatch(/vault\s+–\s+no vault at /)
     // No vault entry, so no request: neither the notice nor the host line was printed (invariant 4).
     expect(h.stderr.text).not.toContain("Solana RPC:")
     expect(out).toMatch(/tee\s+\$50\.00\s+2 wallets, 1 empty not shown/)
@@ -495,12 +498,12 @@ describe("candle portfolio", () => {
     expect(methods.filter((m) => m === "getTokenAccountsByOwner")).toHaveLength(300)
     expect(h.peak()).toBeLessThanOrEqual(8)
     // Only wallets holding something become rows: 10 TEE, 1 vault, 1 embedded.
-    const rows = h.stdout.text.split("\n").filter((line) => /^(vault|tee|embedded)\s+\S+.*\$/.test(line))
-    expect(rows.filter((line) => line.startsWith("tee ") && line.includes("(TeeW"))).toHaveLength(10)
+    const rows = h.stdout.text.split("\n").filter((line) => /^ {2}(vault|tee|embedded)\s+\S+.*\$/.test(line))
+    expect(rows.filter((line) => line.startsWith("  tee ") && line.includes("(TeeW"))).toHaveLength(10)
     expect(h.stdout.text).toMatch(/tee\s+\$550\.00\s+146 wallets, 136 empty not shown/)
     expect(h.stdout.text).toMatch(/vault\s+\$100\.00\s+150 wallets, 149 empty not shown/)
     // Sorted by value: the largest TEE wallet first.
-    const firstTee = rows.find((line) => line.startsWith("tee "))
+    const firstTee = rows.find((line) => line.startsWith("  tee "))
     expect(firstTee).toContain("tee-9 ")
   })
 
@@ -516,8 +519,8 @@ describe("candle portfolio", () => {
     expect(code).toBe(3)
     // SOL answered, the token read did not: the SOL is shown and counted, the tokens are "not read".
     expect(h.stdout.text).toMatch(/vault\s+solana\s+busy \(7xKX…[^)]+\)\s+SOL\s+1\s+\$100\.00\s+\$100\.00/)
-    expect(h.stdout.text).toMatch(/vault\s+solana\s+busy \(7xKX…[^)]+\)\s+tokens\s+not read\s+-\s+-/)
-    expect(h.stdout.text).toContain(
+    expect(h.stdout.text).toMatch(/vault\s+solana\s+busy \(7xKX…[^)]+\)\s+tokens\s+not read\s+–\s+–/)
+    expect(flat(h.stdout.text)).toContain(
       '1 wallet could not be read in full (1 on Solana). What was not read is marked "not read" and is not in the total.',
     )
 
@@ -542,7 +545,7 @@ describe("candle portfolio", () => {
     expect(await run(["portfolio"], h.deps)).toBe(0)
     expect(h.asked).toEqual([])
     expect(h.rpcRequests()).toEqual([])
-    expect(h.stdout.text).toMatch(/vault\s+-\s+no vault at /)
+    expect(h.stdout.text).toMatch(/vault\s+–\s+no vault at /)
   })
 
   test("a vault to read without a terminal refuses before any request", async () => {
@@ -662,6 +665,40 @@ describe("candle portfolio", () => {
     expect(out).toMatch(/total\s+\$502\.50\s+1 unpriced holding not counted/)
   })
 
+  test("--full keeps wallet, token and LP identifiers whole at 80 columns", async () => {
+    const dir = await emptyConfigDir()
+    const lp = lpSection()
+    const h = harness({
+      dir,
+      tee: [
+        {
+          id: "w1",
+          address: teeAddress(1),
+          active: true,
+          lamports: "0",
+          tokens: [{ mint: ODD, amountRaw: "2000000", decimals: 6, program: "token" }],
+        },
+        { id: "w2", address: teeAddress(2), active: true, lamports: "0", tokens: [] },
+      ],
+      lp,
+    })
+    h.deps.columns = { stdout: 80 }
+    expect(await run(["portfolio", "--full"], h.deps)).toBe(0)
+    for (const id of [
+      teeAddress(1),
+      ODD,
+      ...lp.positions.flatMap((p) => [p.position, p.pool, ...p.tokens.map((t) => t.mint)]),
+    ]) {
+      expect(h.stdout.text).toContain(id)
+    }
+    expect(h.stdout.text).not.toContain("TeeW…")
+    expect(h.stdout.text).not.toContain("OddM…")
+    // The vault location is also copyable and may exceed the terminal on this test host.
+    for (const line of h.stdout.text.split("\n").filter((line) => !line.includes(dir))) {
+      expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80)
+    }
+  })
+
   test("--json carries the positions per wallet and a top-level lp summary", async () => {
     const dir = await emptyConfigDir()
     const h = harness({
@@ -724,9 +761,9 @@ describe("candle portfolio", () => {
     })
     expect(await run(["portfolio"], h.deps)).toBe(3)
     const out = h.stdout.text
-    expect(out).toMatch(/tee\s+tee-1 \(TeeW…[^)]+\)\s+Posi…CCCC\s+-\s+not read\s+-\s+-/)
+    expect(out).toMatch(/tee\s+tee-1 \(TeeW…[^)]+\)\s+Posi…CCCC\s+–\s+not read\s+–\s+–/)
     expect(out).toMatch(/tee\s+\$302\.50\s+1 wallet, 1 LP position, 1 LP not read/)
-    expect(out).toContain(
+    expect(flat(out)).toContain(
       '1 LP position could not be read (the pool did not answer). It is marked "not read" and not in the total.',
     )
 
@@ -937,7 +974,7 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     expect(out).toMatch(/hood\s+\$3,026\.50\s+2 wallets, 1 unpriced \(1 stale-mark\)/)
     expect(out).toMatch(/total\s+\$3,276\.50\s+1 unpriced holding not counted/)
     const lines = out.split("\n")
-    const at = (label: string) => lines.findIndex((line) => line.startsWith(label))
+    const at = (label: string) => lines.findIndex((line) => line.startsWith(`  ${label}`))
     expect(at("embedded ")).toBeLessThan(at("solana "))
     expect(at("solana ")).toBeLessThan(at("hood "))
     expect(at("hood ")).toBeLessThan(at("total "))
@@ -1131,8 +1168,8 @@ describe("Ember 4d: Hood in candle portfolio", () => {
       }),
     })
     expect(await run(["portfolio"], h.deps)).toBe(3)
-    expect(h.stdout.text).toMatch(/tee\s+hood\s+hood-1 \(0x11…1111\)\s+-\s+not read\s+-\s+-/)
-    expect(h.stdout.text).toContain(
+    expect(h.stdout.text).toMatch(/tee\s+hood\s+hood-1 \(0x11…1111\)\s+–\s+not read\s+–\s+–/)
+    expect(flat(h.stdout.text)).toContain(
       '1 wallet could not be read in full (1 on Hood). What was not read is marked "not read" and is not in the total.',
     )
 
@@ -1183,7 +1220,7 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     // The EVM chain id not answering at all: every EVM vault key unread, partial, not refused.
     const down = harness({ dir, env: { CANDLE_EVM_RPC_URL: EVM_RPC_URL }, evm: { chainIdFails: true } })
     expect(await run(["portfolio", "--chain", "hood"], down.deps)).toBe(3)
-    expect(down.stdout.text).toMatch(/vault\s+hood\s+a \(0xF9…A40F\)\s+-\s+not read/)
+    expect(down.stdout.text).toMatch(/vault\s+hood\s+a \(0xF9…A40F\)\s+–\s+not read/)
     expect(down.stdout.text).toContain("(2 on Hood)")
   })
 
@@ -1395,7 +1432,7 @@ describe("BE-767: a cut-off wallet list stays partial on its own", () => {
   test("an older API that cannot separate the causes does not call the filtered result complete", async () => {
     const wallet = await portfolio({ tee: [keep, omitFailed], legacyPortfolio: true }, ["keep"])
     expect(wallet.code).toBe(3)
-    expect(wallet.h.stdout.text).toContain(UNKNOWN)
+    expect(flat(wallet.h.stdout.text)).toContain(UNKNOWN)
     expect(wallet.h.stdout.text).not.toContain(CUT_OFF)
 
     const walletJson = await portfolio({ tee: [keep, omitFailed], legacyPortfolio: true }, ["keep", "--json"])
@@ -1417,7 +1454,7 @@ describe("BE-767: a cut-off wallet list stays partial on its own", () => {
     expect(cutoff.code).toBe(3)
     expect(cutoff.h.stdout.text).toContain('No wallet matches "nomatch".')
     expect(cutoff.h.stdout.text).toContain(CUT_OFF)
-    expect(cutoff.h.stdout.text).not.toContain(UNKNOWN)
+    expect(flat(cutoff.h.stdout.text)).not.toContain(UNKNOWN)
   })
 
   test("an unfiltered failed read keeps the released footer", async () => {
@@ -1479,8 +1516,8 @@ describe("BE-1582: the Hyperliquid section (spec A-11, AC16)", () => {
     // The existing figures are unchanged (D4): the total is the one the Hood test above reads.
     expect(out).toMatch(/total\s+\$3,276\.50\s+1 unpriced holding not counted/)
     expect(out).toContain("Hyperliquid (live from Hyperliquid, not in the ledger; not in the total above)")
-    expect(out).toMatch(/hood-1 \(0x11…1111\)\s+\$1,500\.50\s+\$5\.25\s+1\s+warn/)
-    expect(out).toContain("Hyperliquid subtotal: $1,500.50 account value, $5.25 unrealized.")
+    expect(out).toMatch(/hood-1 \(0x11…1111\)\s+\$1,500\.50\s+\+\$5\.25\s+1\s+warn/)
+    expect(out).toContain("Hyperliquid subtotal: $1,500.50 account value, +$5.25 unrealized.")
     expect(out.indexOf("total ")).toBeLessThan(out.indexOf("Hyperliquid ("))
     // The embedded EVM wallet is never read on Hyperliquid; one market read and one account read.
     const users = h.hyperliquidRequests().map((r) => JSON.parse(r.body).user ?? JSON.parse(r.body).type)

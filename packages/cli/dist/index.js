@@ -554,6 +554,25 @@ function displayWidth(text) {
   const measure = globalThis.Bun?.stringWidth;
   return measure ? measure(text) : estimateDisplayWidth(text);
 }
+function fitsWidth(text, width) {
+  if (width < 1)
+    return false;
+  for (const part of text.split(`
+`)) {
+    for (const word of part.split(" ")) {
+      if (!word)
+        continue;
+      const wordWidth = displayWidth(word);
+      if (wordWidth > width && wordWidth <= ORDINARY_WORD)
+        return false;
+    }
+  }
+  return true;
+}
+function padDisplay(text, width) {
+  const gap = width - displayWidth(text);
+  return gap > 0 ? `${text}${" ".repeat(gap)}` : text;
+}
 function clipDisplay(text, width, ellipsis) {
   if (width < 1)
     return "";
@@ -681,6 +700,9 @@ function brandHeader(style) {
 function fullIds(deps) {
   return deps.presentation?.full === true;
 }
+function proseWidth(style) {
+  return Math.min(style.width, PROSE_MAX);
+}
 function symbols(style) {
   return style.styled ? UNICODE_SYMBOLS : ASCII_SYMBOLS;
 }
@@ -693,7 +715,80 @@ function bold(text, style) {
 function dim(text, style) {
   return sgr(text, style, "2");
 }
-var GRAPHEMES, WORDMARK, UNICODE_SYMBOLS, ASCII_SYMBOLS;
+function heading(text, style) {
+  return bold(text, style);
+}
+function fields(rows, style, indent = 2) {
+  const budget = proseWidth(style);
+  const pad = " ".repeat(Math.min(indent, Math.max(0, budget)));
+  const labelWidth = Math.max(0, ...rows.map(([label]) => displayWidth(label)));
+  const sideWidth = budget - pad.length - labelWidth - 2;
+  const out = [];
+  for (const [label, raw] of rows) {
+    const value = raw === undefined || raw === null || raw === "" ? symbols(style).missing : String(raw);
+    if (sideWidth >= 1 && fitsWidth(value, sideWidth)) {
+      const [first = "", ...rest] = value.split(`
+`).flatMap((line) => wrapText(line, sideWidth));
+      out.push(`${pad}${dim(padDisplay(label, labelWidth), style)}  ${first}`);
+      for (const line of rest)
+        out.push(`${pad}${" ".repeat(labelWidth + 2)}${line}`);
+    } else {
+      out.push(...stackedField(label, value, style, pad, budget));
+    }
+  }
+  return out;
+}
+function stackedField(label, value, style, pad, budget) {
+  const labelBudget = Math.max(1, budget - pad.length);
+  const out = wrapText(label, labelBudget).map((line) => `${pad}${dim(line, style)}`);
+  const nested = budget - pad.length - 2;
+  const flat = Math.max(1, budget - pad.length);
+  let valueWidth = flat;
+  let valuePad = pad;
+  if (nested >= 1 && fitsWidth(value, nested)) {
+    valueWidth = nested;
+    valuePad = `${pad}  `;
+  } else if (!fitsWidth(value, flat) && fitsWidth(value, Math.max(1, budget))) {
+    valueWidth = Math.max(1, budget);
+    valuePad = "";
+  }
+  for (const part of value.split(`
+`)) {
+    for (const line of wrapText(part, valueWidth))
+      out.push(line ? `${valuePad}${line}` : "");
+  }
+  return out;
+}
+function renderNotice(level, text, style, indent = 2) {
+  const sym = symbols(style);
+  const mark = level === "note" ? sym.note : level === "warning" ? sym.warning : sym.danger;
+  const budget = proseWidth(style);
+  const leadWidth = indent + displayWidth(mark) + 1;
+  const tight = budget - leadWidth;
+  const paint = (line) => level === "note" ? dim(line, style) : accent(line, style, level === "warning" ? "warning" : "negative");
+  if (tight >= 1 && fitsWidth(text, tight)) {
+    const hang = " ".repeat(leadWidth);
+    const lines2 = text.split(`
+`).flatMap((line) => line ? wrapText(line, tight) : [""]);
+    return lines2.map((line, i) => line ? `${i === 0 ? `${" ".repeat(indent)}${paint(mark)} ` : hang}${paint(line)}` : "");
+  }
+  const markPrefix = " ".repeat(Math.min(indent, Math.max(0, budget - displayWidth(mark))));
+  const indented = Math.max(1, budget - markPrefix.length);
+  const textWidth = fitsWidth(text, indented) ? indented : Math.max(1, budget);
+  const textPrefix = textWidth === indented ? markPrefix : "";
+  const lines = text.split(`
+`).flatMap((line) => line ? wrapText(line, textWidth) : [""]);
+  return [`${markPrefix}${paint(mark)}`, ...lines.map((line) => line ? `${textPrefix}${paint(line)}` : "")];
+}
+function notice(deps, stream, level, text) {
+  const style = terminalStyle(deps, stream);
+  deps[stream].write(`
+${renderNotice(level, text, style).join(`
+`)}
+
+`);
+}
+var GRAPHEMES, ORDINARY_WORD = 24, WORDMARK, PROSE_MAX = 100, UNICODE_SYMBOLS, ASCII_SYMBOLS;
 var init_presentation = __esm(() => {
   init_terminal_theme();
   GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -782,6 +877,24 @@ function formatTimestamp(ms, whenAbsent = "never") {
 }
 function shortId(id, full = false) {
   return full || id.length <= 12 ? id : `${id.slice(0, 4)}…${id.slice(-4)}`;
+}
+function toDate(at) {
+  if (at === undefined || at === null || at === "")
+    return;
+  const date = at instanceof Date ? at : new Date(at);
+  return Number.isFinite(date.getTime()) ? date : undefined;
+}
+function formatTime(at, options = {}) {
+  const date = toDate(at);
+  if (!date)
+    return options.missing ?? MISSING;
+  const nowYear = new Date(options.now ?? Date.now()).getUTCFullYear();
+  const year = date.getUTCFullYear() === nowYear ? "" : ` ${date.getUTCFullYear()}`;
+  const day = `${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}${year}`;
+  if (options.date)
+    return day;
+  const clock = `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`;
+  return `${day} ${clock}Z`;
 }
 function renderError(result, ctx) {
   if (result.code === "DEVICE_TOKEN_INVALID") {
@@ -877,7 +990,7 @@ function portalDeviceUrl(apiUrl, portalOrigin) {
     return `${apiUrl}/agents`;
   }
 }
-var ALL_AGENT_SCOPES, DEFAULT_AGENT_SCOPES, SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf", TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets", TRANSFER_BOUND_NOTE = "moves funds -- this key can move funds out of the wallet it runs, to your linked wallets and its vault", PERPS_WRITE_NOTE = "trades Hyperliquid perps -- this key can open and close positions from its EVM TEE wallet, within its limits", NUMERIC_CELL;
+var ALL_AGENT_SCOPES, DEFAULT_AGENT_SCOPES, SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf", TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets", TRANSFER_BOUND_NOTE = "moves funds -- this key can move funds out of the wallet it runs, to your linked wallets and its vault", PERPS_WRITE_NOTE = "trades Hyperliquid perps -- this key can open and close positions from its EVM TEE wallet, within its limits", NUMERIC_CELL, MISSING = "–", MONTHS;
 var init_render = __esm(() => {
   init_agent_key_access();
   init_presentation();
@@ -893,6 +1006,7 @@ var init_render = __esm(() => {
   ];
   DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write" && scope !== "transfer:write" && scope !== "transfer:bound" && scope !== "perps:write");
   NUMERIC_CELL = /^[+\-−]?(?:<|>|~)?[$]?[\d,]*\.?\d+(?:[%xKMBT]|\/h)?$/;
+  MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 });
 
 // ../../node_modules/@noble/hashes/esm/_u64.js
@@ -5849,8 +5963,8 @@ async function printIdentity(ctx) {
   if (ctx.json)
     return;
   const config = await ctx.deps.readConfig();
-  const fields = effectiveProfileFields(config, ctx.profile);
-  const line = identityLine(ctx.profile, fields.account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env), fields.username, identityStyle(ctx.deps, "stdout"));
+  const fields2 = effectiveProfileFields(config, ctx.profile);
+  const line = identityLine(ctx.profile, fields2.account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env), fields2.username, identityStyle(ctx.deps, "stdout"));
   ctx.deps.stdout.write(`${line}
 
 `);
@@ -7672,9 +7786,9 @@ function kekReuseKey(passphrase, kdf) {
   const inputs = JSON.stringify([passphrase, kdf.salt, kdf.m, kdf.t, kdf.p, kdf.version]);
   return b64u(sha2562(new TextEncoder().encode(inputs)));
 }
-async function derivePassphraseKek(passphrase, kdf, notice) {
+async function derivePassphraseKek(passphrase, kdf, notice2) {
   assertKdfInBounds(kdf);
-  notice?.(`Deriving the vault key (Argon2id, ${Math.round(kdf.m / 1024)} MiB)
+  notice2?.(`Deriving the vault key (Argon2id, ${Math.round(kdf.m / 1024)} MiB)
 `);
   const reuseKey = testKekReuse ? kekReuseKey(passphrase, kdf) : null;
   const reused = reuseKey ? testKekReuse?.get(reuseKey) : undefined;
@@ -7899,7 +8013,7 @@ function createHmacDrbg(hashLen, qByteLen, hmacFn) {
   };
   return genUntil;
 }
-function _validateObject(object, fields, optFields = {}) {
+function _validateObject(object, fields2, optFields = {}) {
   if (!object || typeof object !== "object")
     throw new Error("expected valid options object");
   function checkField(fieldName, expectedType, isOpt) {
@@ -7910,7 +8024,7 @@ function _validateObject(object, fields, optFields = {}) {
     if (current !== expectedType || val === null)
       throw new Error(`param "${fieldName}" is invalid: expected ${expectedType}, got ${current}`);
   }
-  Object.entries(fields).forEach(([k, v]) => checkField(k, v, false));
+  Object.entries(fields2).forEach(([k, v]) => checkField(k, v, false));
   Object.entries(optFields).forEach(([k, v]) => checkField(k, v, true));
 }
 function memoized(fn) {
@@ -10759,9 +10873,9 @@ async function unlockVault(path, raw, request, opts = {}) {
     throw error;
   }
 }
-async function unwrapDek(file, envelope, request, notice) {
+async function unwrapDek(file, envelope, request, notice2) {
   if (request.factor === "passphrase") {
-    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice);
+    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice2);
     return withSecret(kek, async (kekBytes) => {
       const kekKey2 = await importAesKey(kekBytes);
       return open(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
@@ -10862,8 +10976,8 @@ function freshVaultId() {
 function freshDek() {
   return randomBytes2(DEK_BYTES);
 }
-async function wrapDekForPassphrase(dek, passphrase, envelope, header, notice) {
-  const kek = await derivePassphraseKek(passphrase, passphraseKdf(envelope), notice);
+async function wrapDekForPassphrase(dek, passphrase, envelope, header, notice2) {
+  const kek = await derivePassphraseKek(passphrase, passphraseKdf(envelope), notice2);
   return withSecret(kek, async (kekBytes) => {
     const kekKey = await importAesKey(kekBytes);
     const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
@@ -15943,29 +16057,29 @@ function v3SwapOf(call) {
     const args = decodeArgs(call, [V3_SINGLE]);
     if (!args)
       return;
-    const fields = asList(args[0]);
+    const fields2 = asList(args[0]);
     return {
-      tokenIn: asAddress(fields[0]),
-      tokenOut: asAddress(fields[1]),
-      amountIn: asNumber(fields[4]),
-      minimum: asNumber(fields[5]),
-      recipient: asAddress(fields[3])
+      tokenIn: asAddress(fields2[0]),
+      tokenOut: asAddress(fields2[1]),
+      amountIn: asNumber(fields2[4]),
+      minimum: asNumber(fields2[5]),
+      recipient: asAddress(fields2[3])
     };
   }
   if (selector === V3_EXACT_INPUT_SELECTOR) {
     const args = decodeArgs(call, [V3_PATH]);
     if (!args)
       return;
-    const fields = asList(args[0]);
-    const path = asBytes(fields[0]);
+    const fields2 = asList(args[0]);
+    const path = asBytes(fields2[0]);
     if (path.length < 43 || (path.length - 20) % 23 !== 0)
       return;
     return {
       tokenIn: bytesToHex2(path.subarray(0, 20)),
       tokenOut: bytesToHex2(path.subarray(-20)),
-      amountIn: asNumber(fields[2]),
-      minimum: asNumber(fields[3]),
-      recipient: asAddress(fields[1])
+      amountIn: asNumber(fields2[2]),
+      minimum: asNumber(fields2[3]),
+      recipient: asAddress(fields2[1])
     };
   }
   return;
@@ -16048,9 +16162,9 @@ function v4DirectOk(input, terms) {
   const take2 = decodeArgs(params[2], ["address", "uint"], 0);
   if (!swap || !settle || !take2)
     return false;
-  const fields = asList(swap[0]);
-  const { input: inCurrency, output: outCurrency } = v4Sides(fields);
-  return v4InputIs(inCurrency, terms) && sameEvmAddress(outCurrency, terms.outputToken ?? NATIVE_CURRENCY) && asNumber(fields[3]) >= terms.minOutRaw && asNumber(take2[1]) >= terms.minOutRaw && asNumber(fields[2]) <= terms.amountRaw && sameEvmAddress(asAddress(settle[0]), inCurrency) && asNumber(settle[1]) <= terms.amountRaw && sameEvmAddress(asAddress(take2[0]), outCurrency);
+  const fields2 = asList(swap[0]);
+  const { input: inCurrency, output: outCurrency } = v4Sides(fields2);
+  return v4InputIs(inCurrency, terms) && sameEvmAddress(outCurrency, terms.outputToken ?? NATIVE_CURRENCY) && asNumber(fields2[3]) >= terms.minOutRaw && asNumber(take2[1]) >= terms.minOutRaw && asNumber(fields2[2]) <= terms.amountRaw && sameEvmAddress(asAddress(settle[0]), inCurrency) && asNumber(settle[1]) <= terms.amountRaw && sameEvmAddress(asAddress(take2[0]), outCurrency);
 }
 function v3IntoRouterOk(input, firstToken, lastToken) {
   const args = decodeArgs(input, ["address", "uint", "uint", "bytes", "bool"], 0);
@@ -16076,9 +16190,9 @@ function v4BridgedBuyOk([wrap, v3, v4], terms) {
   const take2 = decodeArgs(params[2], ["address", "uint"], 0);
   if (!settle || !swap || !take2 || settle[2] !== false)
     return false;
-  const fields = asList(swap[0]);
-  const { input, output } = v4Sides(fields);
-  return v3IntoRouterOk(v3, HOOD_WETH_ADDRESS, input) && sameEvmAddress(output, terms.outputToken) && asNumber(fields[3]) >= terms.minOutRaw && asNumber(take2[1]) >= terms.minOutRaw && sameEvmAddress(asAddress(settle[0]), input) && sameEvmAddress(asAddress(take2[0]), output);
+  const fields2 = asList(swap[0]);
+  const { input, output } = v4Sides(fields2);
+  return v3IntoRouterOk(v3, HOOD_WETH_ADDRESS, input) && sameEvmAddress(output, terms.outputToken) && asNumber(fields2[3]) >= terms.minOutRaw && asNumber(take2[1]) >= terms.minOutRaw && sameEvmAddress(asAddress(settle[0]), input) && sameEvmAddress(asAddress(take2[0]), output);
 }
 function v4BridgedSellOk([v4, v3, unwrap], terms) {
   if (terms.inputToken === undefined || terms.outputToken !== undefined)
@@ -16953,21 +17067,21 @@ async function hoodDecimals(asset, rpc) {
 async function recordTradedToken(ctx, wallet, token) {
   const skipped = (reason) => `Notice: the sealed EVM record was not updated for ${token} (${reason}). The leg landed. A later sweep still finds this token with --token ${token}, or with --from-block.`;
   const append = ctx.deps.appendEvmRecord;
-  let notice;
+  let notice2;
   if (!append)
-    notice = skipped("this CLI build has no sealed EVM record writer");
+    notice2 = skipped("this CLI build has no sealed EVM record writer");
   else {
     try {
       const outcome = await append(ctx, { kind: "token", wallet: toChecksumAddress(wallet), token });
-      notice = outcome.appended ? outcome.notice : skipped(outcome.notice);
+      notice2 = outcome.appended ? outcome.notice : skipped(outcome.notice);
     } catch (error) {
-      notice = skipped(error instanceof Error ? error.message : "the append failed");
+      notice2 = skipped(error instanceof Error ? error.message : "the append failed");
     }
   }
-  if (notice)
-    ctx.deps.stderr.write(`${safeText(notice)}
+  if (notice2)
+    ctx.deps.stderr.write(`${safeText(notice2)}
 `);
-  return notice;
+  return notice2;
 }
 function describeHoodLegs(first, hasFee, primary = "trade") {
   const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee, primary);
@@ -17132,9 +17246,9 @@ async function hoodSwap(ctx, args) {
     allowedLegs: HOOD_TRADE_LEGS,
     checkLeg,
     onLanded: async (_leg) => {
-      const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded));
-      if (notice)
-        notices.push(notice);
+      const notice2 = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded));
+      if (notice2)
+        notices.push(notice2);
     }
   });
   const settled = kind === "swap" ? reportSettlement(ctx, run.final.settlement, { asset: to.asset, decimals: outDecimals }, id) : {};
@@ -19946,8 +20060,8 @@ async function callEnclaveHelper(deps, helperPath, request2) {
   }
   return response;
 }
-function enclaveOperationDigest(fields) {
-  return base64.encode(sha2562(canonicalBytes({ purpose: "candle-enclave/operation", ...fields })));
+function enclaveOperationDigest(fields2) {
+  return base64.encode(sha2562(canonicalBytes({ purpose: "candle-enclave/operation", ...fields2 })));
 }
 function requestCommon(vaultId, envelopeId, op) {
   const nonce = randomBytes2(16);
@@ -20502,8 +20616,8 @@ function prfSaltForAuthenticator(prfSalt) {
   input.set(prfSalt, prefix.length + 1);
   return sha2562(input);
 }
-function operationDigest(fields) {
-  return sha2562(canonicalBytes({ purpose: "candle-fido2/operation", ...fields }));
+function operationDigest(fields2) {
+  return sha2562(canonicalBytes({ purpose: "candle-fido2/operation", ...fields2 }));
 }
 function userIdFor(vaultId, envelopeId) {
   return sha2562(new TextEncoder().encode(`candle-vault/v2/user|${vaultId}|${envelopeId}`));
@@ -29001,7 +29115,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
   const facts = await currentPlatformFacts(deps);
   const choice = await chooseFactor(ctx, file.vaultId, file.envelopes, facts, opts.factor ?? ctx.vaultFactor, opts);
   const noticeFor = (purpose) => (line) => deps.stderr.write(derivationNotice(line, purpose));
-  const notice = noticeFor(opts.purpose);
+  const notice2 = noticeFor(opts.purpose);
   if (choice.kind === "passphrase") {
     if (opts.onFactorChosen) {
       await opts.onFactorChosen(choice.envelopeId !== undefined ? { kind: "passphrase", envelopeId: choice.envelopeId } : { kind: "passphrase" });
@@ -29039,7 +29153,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       pinnedHelperIdentity(deps, target.helper);
       const kek = await unwrapKekWithEnclave(deps, session2, target, current.vaultId, reason2);
       try {
-        return await unlockVault(p, r, { factor: "secure-enclave", envelopeId: target.id, kek }, { notice });
+        return await unlockVault(p, r, { factor: "secure-enclave", envelopeId: target.id, kek }, { notice: notice2 });
       } finally {
         wipe(kek);
       }
@@ -29069,7 +29183,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       pinnedHelperIdentity(deps, target.helper);
       const prfOutput = await assertPlatformPrf(deps, session2, target, current.vaultId, purpose);
       try {
-        return await unlockVault(p, r, { factor: "passkey-prf", envelopeId: target.id, prfOutput }, { notice });
+        return await unlockVault(p, r, { factor: "passkey-prf", envelopeId: target.id, prfOutput }, { notice: notice2 });
       } finally {
         wipe(prfOutput);
       }
@@ -29104,7 +29218,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
     }
     const prfOutput = await assertPrf(deps, session, target, current.vaultId, opts.reason ?? "unlock the vault");
     try {
-      return await unlockVault(p, r, { factor: "passkey-prf", envelopeId: target.id, prfOutput }, { notice });
+      return await unlockVault(p, r, { factor: "passkey-prf", envelopeId: target.id, prfOutput }, { notice: notice2 });
     } finally {
       wipe(prfOutput);
     }
@@ -37247,9 +37361,9 @@ async function teeRebind(args, ctx) {
     row.allowLaunch ? "yes" : "no"
   ]));
   const config = await deps.readConfig();
-  const fields = effectiveProfileFields(config, ctx.profile);
-  const account = fields.account ? shortAddress(fields.account) : "unknown";
-  const accountLine = fields.username ? `${fields.username}  (${account})` : account;
+  const fields2 = effectiveProfileFields(config, ctx.profile);
+  const account = fields2.account ? shortAddress(fields2.account) : "unknown";
+  const accountLine = fields2.username ? `${fields2.username}  (${account})` : account;
   const environment = candleEnvironment(apiUrl) ?? "not a Candle host";
   const keyLabel = shown.toKey.label ? `  ${labelCell(shown.toKey.label)}` : "";
   const n = moving.length;
@@ -37524,12 +37638,12 @@ async function keysUpdate(args, ctx) {
     writeUsageFailure(deps, "Denying without a terminal needs --yes; nothing changed. Run it in an interactive shell, or pass --yes.", json);
     return 2;
   }
-  const fields = effectiveProfileFields(await deps.readConfig(), ctx.profile);
-  const account = fields.account ? shortAddress(fields.account) : "unknown";
+  const fields2 = effectiveProfileFields(await deps.readConfig(), ctx.profile);
+  const account = fields2.account ? shortAddress(fields2.account) : "unknown";
   const label = labelCell(shown.label ?? undefined);
   deps.stderr.write([
     `Key             ${shown.keyPrefix}${label ? `  ${label}` : ""}`,
-    `Candle account  ${fields.username ? `${fields.username}  (${account})` : account}`,
+    `Candle account  ${fields2.username ? `${fields2.username}  (${account})` : account}`,
     `API             ${apiUrl}  (${candleEnvironment(apiUrl) ?? "not a Candle host"})`,
     "",
     `Embedded wallet ${shown.from}  ->  ${shown.to}   (${shown.direction})`,
@@ -41473,13 +41587,13 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
     }
     if (tool === "candle_perps_set_thresholds") {
       const { clear, ...rest } = args;
-      const fields = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
-      if (clear === true && Object.keys(fields).length > 0)
+      const fields2 = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
+      if (clear === true && Object.keys(fields2).length > 0)
         return fail2("MCP_VALIDATION", "Pass clear: true alone, or the thresholds to set; not both.");
-      if (clear !== true && Object.keys(fields).length === 0)
+      if (clear !== true && Object.keys(fields2).length === 0)
         return fail2("MCP_VALIDATION", "Name at least one threshold, or pass clear: true.");
       const answer2 = await call(cfg, fetch2, "PUT", "/api/v1/agent/keys/self/perps-risk", {
-        perpsRisk: clear === true ? null : fields
+        perpsRisk: clear === true ? null : fields2
       });
       return { text: JSON.stringify(answer2) };
     }
@@ -41667,49 +41781,49 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       return await executeReduceOnly(args, cfg, fetch2);
     const { wallet: _w, submit: _s, ...rest } = args;
     const clientId2 = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined;
-    let fields = { ...rest, ...clientId2 !== undefined ? { clientId: clientId2 } : {} };
+    let fields2 = { ...rest, ...clientId2 !== undefined ? { clientId: clientId2 } : {} };
     let path = PATHS[tool];
     let method = path.split("/").at(-1);
     if (tool === "candle_perps_close") {
-      if (fields.pct !== undefined && fields.size !== undefined)
+      if (fields2.pct !== undefined && fields2.size !== undefined)
         return fail2("MCP_VALIDATION", "Give size or pct, not both.");
-      if (fields.pct !== undefined && hyperliquidClosePct(fields.pct) === null)
+      if (fields2.pct !== undefined && hyperliquidClosePct(fields2.pct) === null)
         return fail2("MCP_VALIDATION", "pct must be above 0 and at most 100, with at most 4 decimals.");
     }
     if (tool === "candle_perps_modify") {
-      if (fields.price === undefined && fields.size === undefined)
+      if (fields2.price === undefined && fields2.size === undefined)
         return fail2("MCP_VALIDATION", "Give price, size, or both.");
-      fields = { ...fields, cloid: String(fields.cloid).toLowerCase() };
+      fields2 = { ...fields2, cloid: String(fields2.cloid).toLowerCase() };
     }
     if (tool === "candle_perps_margin") {
-      if (fields.amount === undefined === (fields.mode === undefined))
+      if (fields2.amount === undefined === (fields2.mode === undefined))
         return fail2("MCP_VALIDATION", "Give amount or mode, exactly one.");
-      if (fields.amount !== undefined) {
-        if (fields.leverage !== undefined)
+      if (fields2.amount !== undefined) {
+        if (fields2.leverage !== undefined)
           return fail2("MCP_VALIDATION", "leverage goes with mode.");
-        if (/^0+(\.0+)?$/.test(String(fields.amount)))
+        if (/^0+(\.0+)?$/.test(String(fields2.amount)))
           return fail2("MCP_VALIDATION", "amount must be positive.");
-        fields = { coin: fields.coin, amount: fields.amount };
+        fields2 = { coin: fields2.coin, amount: fields2.amount };
         method = "margin";
       } else {
         path = PATHS.candle_perps_leverage;
         method = "leverage";
-        fields = {
-          coin: fields.coin,
-          mode: fields.mode,
-          ...fields.leverage !== undefined ? { leverage: fields.leverage } : {}
+        fields2 = {
+          coin: fields2.coin,
+          mode: fields2.mode,
+          ...fields2.leverage !== undefined ? { leverage: fields2.leverage } : {}
         };
       }
     }
     if (tool === "candle_perps_schedule_cancel") {
-      const clear = fields.clear === true;
-      if (clear === (fields.seconds !== undefined))
+      const clear = fields2.clear === true;
+      if (clear === (fields2.seconds !== undefined))
         return fail2("MCP_VALIDATION", "Give seconds, or clear: true.");
-      fields = clear ? { clear: true } : { seconds: fields.seconds };
+      fields2 = clear ? { clear: true } : { seconds: fields2.seconds };
       method = "scheduleCancel";
     }
     if (tool === "candle_perps_tpsl") {
-      const problem = perpsTpslParamsProblem(fields);
+      const problem = perpsTpslParamsProblem(fields2);
       if (problem)
         return fail2("MCP_VALIDATION", problem);
     }
@@ -41765,7 +41879,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         cloid: () => `0x${randomBytes6(16).toString("hex")}`
       };
       try {
-        const result = tool === "candle_perps_tpsl" ? await runPerpsTpsl(io, fields) : await runPerpsFlatten(io);
+        const result = tool === "candle_perps_tpsl" ? await runPerpsTpsl(io, fields2) : await runPerpsFlatten(io);
         const failed = willSubmit ? !result.complete : result.steps.some((s) => s.status === "rejected");
         return { text: JSON.stringify(result), ...failed ? { isError: true } : {} };
       } catch (error) {
@@ -41786,8 +41900,8 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     }
     const build = await call(cfg, fetch2, "POST", path, {
       walletId: row.id,
-      ...fields,
-      ...tool === "candle_perps_open" ? { type: fields.price === undefined ? "market" : "limit" } : {}
+      ...fields2,
+      ...tool === "candle_perps_open" ? { type: fields2.price === undefined ? "market" : "limit" } : {}
     });
     build.preview = {
       ...build.preview,
@@ -41814,7 +41928,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       builder,
       network: network2,
       address: row.address,
-      intent: { method, params: fields },
+      intent: { method, params: fields2 },
       keyReduceOnly: build.perpsReduceOnly === true
     };
     const check = method === "setup" ? verifyPerpsBuild(build, verifyOpts) : await verifyPerpsBuildAgainstVenue(build, { ...verifyOpts, fetcher: fetch2 });
@@ -41849,20 +41963,20 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       }).catch(() => null);
       Object.assign(extra, { time: build.time ?? null, acknowledged: ack?.acknowledged === true, verified: false });
     }
-    if (accepted && method === "leverage" && typeof fields.mode === "string") {
+    if (accepted && method === "leverage" && typeof fields2.mode === "string") {
       let confirmedMode = null;
       try {
         const res = await fetch2(HYPERLIQUID_EXCHANGE_URLS[network2].replace("/exchange", "/info"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "activeAssetData", user: row.address, coin: String(fields.coin) })
+          body: JSON.stringify({ type: "activeAssetData", user: row.address, coin: String(fields2.coin) })
         });
         const type = JSON.parse(await res.text())?.leverage?.type;
         confirmedMode = type === "cross" || type === "isolated" ? type : null;
       } catch {
         confirmedMode = null;
       }
-      Object.assign(extra, { requestedMode: fields.mode, confirmedMode });
+      Object.assign(extra, { requestedMode: fields2.mode, confirmedMode });
     }
     if (outcome.status === "rejected" && method === "scheduleCancel")
       return fail2("PERPS_SCHEDULE_CANCEL_REJECTED", `Hyperliquid refused the scheduled cancel: ${outcome.error}`, {
@@ -42478,13 +42592,13 @@ function buildRequest(name, args, cfg) {
       };
     }
     case "candle_get_feed": {
-      const { bucket, chain: chain2, where, sort, fields, limit } = args;
+      const { bucket, chain: chain2, where, sort, fields: fields2, limit } = args;
       const query = new URLSearchParams({
         bucket,
         ...chain2 ? { chain: chain2 } : {},
         ...where ? { where } : {},
         ...sort ? { sort } : {},
-        ...fields ? { fields } : {},
+        ...fields2 ? { fields: fields2 } : {},
         ...limit !== undefined && limit !== "" ? { limit: String(limit) } : {}
       });
       return {
@@ -55108,9 +55222,9 @@ var require_error = __commonJS((exports) => {
 
   class ValidationError2 extends Error {
     fields;
-    constructor(message, fields) {
+    constructor(message, fields2) {
       super(message);
-      this.fields = fields;
+      this.fields = fields2;
     }
   }
   exports.ValidationError = ValidationError2;
@@ -71331,15 +71445,15 @@ async function authStatus(args, ctx) {
   }
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
   const configPath = configFilePathForDisplay(deps.env);
-  const fields = effectiveProfileFields(config, ctx.profile);
-  const cachedAccount = ctx.profile !== undefined ? fields.account : undefined;
+  const fields2 = effectiveProfileFields(config, ctx.profile);
+  const cachedAccount = ctx.profile !== undefined ? fields2.account : undefined;
   const mismatch = ctx.profile !== undefined && account !== undefined && cachedAccount !== undefined && account !== cachedAccount && credentialEnvOverrides(deps.env).length === 0;
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       backend: deps.backend,
       profile: ctx.profile,
-      deviceTokenPrefix: fields.deviceTokenPrefix,
-      keyPrefix: fields.keyPrefix,
+      deviceTokenPrefix: fields2.deviceTokenPrefix,
+      keyPrefix: fields2.keyPrefix,
       account,
       cachedAccount,
       apiUrl,
@@ -71349,8 +71463,8 @@ async function authStatus(args, ctx) {
 `);
     return exitCode;
   }
-  const shownAccount = account ?? fields.account;
-  const shownUsername = account !== undefined ? username : fields.username;
+  const shownAccount = account ?? fields2.account;
+  const shownUsername = account !== undefined ? username : fields2.username;
   deps.stdout.write(`${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername, identityStyle(deps, "stdout"))}
 `);
   if (mismatch) {
@@ -71361,9 +71475,9 @@ async function authStatus(args, ctx) {
 `);
   deps.stdout.write(`Backend: ${deps.backend}
 `);
-  deps.stdout.write(`Device token prefix: ${fields.deviceTokenPrefix ?? "not set"}
+  deps.stdout.write(`Device token prefix: ${fields2.deviceTokenPrefix ?? "not set"}
 `);
-  deps.stdout.write(`API key prefix: ${fields.keyPrefix ?? "not set"}
+  deps.stdout.write(`API key prefix: ${fields2.keyPrefix ?? "not set"}
 `);
   deps.stdout.write(`Config file: ${configPath}
 
@@ -72052,7 +72166,7 @@ var HELP = {
     group: "Account",
     summary: "P&L per chain and combined: realized, fees, unrealized and open positions (--profile for one key's share)",
     description: "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the console shows, to the cent for the same moment. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its share of the same P&L: realized on the sales it made, and the open positions that belong to it (the wallet's bound key, else the key whose buy opened them), with a row per wallet that sums to the total. Positions live in wallets: each wallet is its own average-cost pool, the account is the sum of its wallets, and a recorded move between two of the account's wallets carries its cost and realizes nothing. Both show a Solana block, a Hood block, then the combined figure, the closed positions as money made, minus money lost, plus partial sells, and a CHAIN column (and WALLET, where the API names it) on positions. The account's books add a By agent table (each key, then Manual for web-app trades, then the account total). Unpriced positions are shown as unpriced and never valued at zero; a position worth under one cent is marked dust and still counted. A bridge between Solana and Hood is not a trade: it opens and closes nothing, and bridge and Relay costs are not netted from P&L. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis), and vs holding (what the deposited tokens would be worth held); Total is the console's token figure, and Total with LP covers tokens and LP. Only --profile <name> adds a Hyperliquid section under its own heading, over every EVM TEE wallet bound to the profile, per binding period: realized gross, funding (received positive, paid negative), fees including builder fees, realized net, unrealized and the net. Facts and unrealized stop at the same cutoff per wallet; a cutoff read now is marked (live, not yet settled). The net is also counted in Total, whose line says it includes Hyperliquid; when the section cannot be read, Total is the token figure and the CLI says it excludes perps and why. Deposits and withdrawals are not P&L. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. For live perps positions and risk, use candle perps positions or candle portfolio.",
-    usage: ["candle pnl [--profile <name>] [--json]"],
+    usage: ["candle pnl [--profile <name>] [--dust] [--json]"],
     rows: [],
     examples: ["candle pnl", "candle pnl --profile scalper --json"],
     env: ENV_API
@@ -72755,11 +72869,11 @@ function renderTopic(word3, style) {
 }
 function renderPresentedTopLevel(style) {
   const { width } = style;
-  const heading = (text) => accent(text, style);
+  const heading2 = (text) => accent(text, style);
   const out = [
     ...brandHeader(style),
     ...!style.styled ? [...wrapText("Candle CLI: Your wallets and agent tools, one command away.", width), ""] : [],
-    heading("Start here"),
+    heading2("Start here"),
     ...renderRows([
       { invocation: "candle setup", description: "Connect your account" },
       { invocation: "candle portfolio", description: "Read your holdings after setup" },
@@ -72770,7 +72884,7 @@ function renderPresentedTopLevel(style) {
     "       candle help <command>"
   ];
   const group = (name, available) => [
-    heading(name),
+    heading2(name),
     ...renderRows(Object.entries(HELP).filter(([, topic]) => topic.group === name).map(([word3, topic]) => ({ invocation: displayName(word3), description: topic.summary })), 18, available)
   ];
   for (let i = 0;i < GROUPS.length; i++) {
@@ -72788,9 +72902,9 @@ function renderPresentedTopLevel(style) {
     } else
       out.push("", ...group(name, width));
   }
-  out.push("", heading("Global flags"), ...renderRows(GLOBAL_FLAGS, 28, width));
-  out.push("", heading("Environment"), ...renderEnv(ENVIRONMENT.map((entry) => entry.name), width));
-  out.push("", heading("Plug-ins"), ...renderRows([PLUGIN_LINE], 26, width));
+  out.push("", heading2("Global flags"), ...renderRows(GLOBAL_FLAGS, 28, width));
+  out.push("", heading2("Environment"), ...renderEnv(ENVIRONMENT.map((entry) => entry.name), width));
+  out.push("", heading2("Plug-ins"), ...renderRows([PLUGIN_LINE], 26, width));
   return `${out.join(`
 `)}
 `;
@@ -79552,6 +79666,7 @@ async function resolveSecretStore(platform = process.platform, namespace = { ser
 }
 
 // src/commands/doctor.ts
+init_presentation();
 init_profiles();
 init_release();
 init_render();
@@ -80882,6 +80997,50 @@ async function teeLimitsRow(ctx, apiKey, wallets2) {
     ].filter(Boolean).join("; ")
   };
 }
+var DEVICE_TOKEN_ROW = "Device token beside signer";
+var DEVICE_TOKEN_NOTICE = "This machine holds a device token and a key signer, so it can approve its own signer request. Do not leave the trading machine logged in. If you signed in for a move, log out here and approve from the owner's machine:";
+var DEVICE_TOKEN_FIX = "candle auth logout --profile <name>";
+function plural2(count2, one, many) {
+  return `${count2} ${count2 === 1 ? one : many}`;
+}
+function renderDoctorReport(rows, role, style) {
+  const sym = symbols(style);
+  const marks = {
+    PASS: accent(sym.ok, style, "positive"),
+    WARN: accent(sym.warning, style, "warning"),
+    FAIL: accent(sym.danger, style, "negative"),
+    SKIP: dim(sym.missing, style)
+  };
+  const markWidth = Math.max(sym.ok.length, sym.warning.length, sym.danger.length, sym.missing.length);
+  const labelWidth = Math.max(...rows.map((row) => row.check.length));
+  const indent = 2;
+  const detailWidth = Math.max(1, proseWidth(style) - indent - markWidth - 1 - labelWidth - 2);
+  const out = [...fields([["Role", role]], style), ""];
+  for (const row of rows) {
+    const text3 = row.check === DEVICE_TOKEN_ROW ? "" : row.detail;
+    const [first = "", ...rest] = text3 === "" ? [] : wrapText(text3, detailWidth);
+    const mark = `${marks[row.state]}${" ".repeat(markWidth - displayMarkWidth(row.state, sym))}`;
+    out.push(`${" ".repeat(indent)}${mark} ${padDisplay(row.check, labelWidth)}  ${first}`.trimEnd());
+    for (const line of rest)
+      out.push(`${" ".repeat(indent + markWidth + 1 + labelWidth + 2)}${line}`);
+  }
+  if (rows.some((row) => row.check === DEVICE_TOKEN_ROW)) {
+    out.push("", ...renderNotice("warning", DEVICE_TOKEN_NOTICE, style), `${" ".repeat(indent + 4)}${DEVICE_TOKEN_FIX}`);
+  }
+  const count2 = (state) => rows.filter((row) => row.state === state).length;
+  const tally = [
+    plural2(count2("PASS"), "passed", "passed"),
+    ...count2("WARN") > 0 ? [plural2(count2("WARN"), "warning", "warnings")] : [],
+    ...count2("FAIL") > 0 ? [plural2(count2("FAIL"), "failed", "failed")] : [],
+    ...count2("SKIP") > 0 ? [plural2(count2("SKIP"), "skipped", "skipped")] : []
+  ].join(` ${sym.note} `);
+  out.push("", `${" ".repeat(indent)}${dim(tally, style)}`);
+  return out.join(`
+`);
+}
+function displayMarkWidth(state, sym) {
+  return { PASS: sym.ok, WARN: sym.warning, FAIL: sym.danger, SKIP: sym.missing }[state].length;
+}
 async function doctor(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--role"] });
@@ -80900,7 +81059,7 @@ async function doctor(args, ctx) {
   }
   const rows = [];
   const config = await deps.readConfig();
-  const fields = effectiveProfileFields(config, ctx.profile);
+  const fields2 = effectiveProfileFields(config, ctx.profile);
   const nodeMajor = Number(deps.nodeVersion.split(".")[0]);
   rows.push(Number.isFinite(nodeMajor) && nodeMajor >= MIN_NODE_MAJOR ? { check: "Runtime version", state: "PASS", detail: `node ${deps.nodeVersion}` } : {
     check: "Runtime version",
@@ -81016,7 +81175,7 @@ async function doctor(args, ctx) {
     }));
   }
   let trading;
-  let scopes = fields.scopes;
+  let scopes = fields2.scopes;
   if (!apiKey) {
     rows.push({ check: API_KEY_CHECK, state: "SKIP", detail: "no API key to check" });
   } else {
@@ -81129,7 +81288,7 @@ async function doctor(args, ctx) {
       });
     }
   }
-  const cachedAccount = ctx.profile !== undefined ? fields.account : undefined;
+  const cachedAccount = ctx.profile !== undefined ? fields2.account : undefined;
   const mismatch = account !== undefined && cachedAccount !== undefined && account !== cachedAccount && credentialEnvOverrides(deps.env).length === 0;
   rows.push(account === undefined ? { check: "Account", state: "SKIP", detail: "could not resolve which account these credentials act as" } : {
     check: "Account",
@@ -81219,9 +81378,7 @@ async function doctor(args, ctx) {
 `);
     return exitCode;
   }
-  deps.stdout.write(`Role: ${role}
-`);
-  deps.stdout.write(`${renderTable(["Check", "Status", "Detail"], rows.map((row) => [row.check, row.state, row.detail]))}
+  deps.stdout.write(`${renderDoctorReport(rows, role, terminalStyle(deps, "stdout"))}
 `);
   return exitCode;
 }
@@ -84827,9 +84984,9 @@ async function keysAccess(args, ctx) {
     return 2;
   }
   const config = await deps.readConfig();
-  const fields = effectiveProfileFields(config, ctx.profile);
-  const account = fields.account ? shortAddress(fields.account) : "unknown";
-  deps.stderr.write(`${accessScreen(shown, { account: fields.username ? `${fields.username}  (${account})` : account, apiUrl })}
+  const fields2 = effectiveProfileFields(config, ctx.profile);
+  const account = fields2.account ? shortAddress(fields2.account) : "unknown";
+  deps.stderr.write(`${accessScreen(shown, { account: fields2.username ? `${fields2.username}  (${account})` : account, apiUrl })}
 `);
   if (widen) {
     const typed = await deps.promptLine(`Type the key prefix ${shown.keyPrefix} to widen it: `);
@@ -84856,7 +85013,7 @@ async function keysAccess(args, ctx) {
   if (!committed.ok)
     return writeAccessFailure(ctx, committed, failureContext);
   const result = committed.body;
-  if (fields.keyPrefix !== undefined && fields.keyPrefix === result.keyPrefix && result.direction !== "unchanged") {
+  if (fields2.keyPrefix !== undefined && fields2.keyPrefix === result.keyPrefix && result.direction !== "unchanged") {
     const scopes = scopesForPreset(result.to.access);
     if (ctx.profile)
       await deps.updateProfile(ctx.profile, { scopes });
@@ -86197,14 +86354,14 @@ function hoodLaunchLegNames(count2, buys) {
 async function recordLaunchedToken(ctx, wallet3, final) {
   const mint = typeof final.mint === "string" ? checkEvmAddress(final.mint) : undefined;
   if (!mint?.ok) {
-    const notice2 = "Notice: Candle did not name the launched token, so the sealed EVM record was not updated. The launch landed.";
-    ctx.deps.stderr.write(`${notice2}
+    const notice3 = "Notice: Candle did not name the launched token, so the sealed EVM record was not updated. The launch landed.";
+    ctx.deps.stderr.write(`${notice3}
 `);
-    return { evmRecord: { notices: [notice2] } };
+    return { evmRecord: { notices: [notice3] } };
   }
   const token = toChecksumAddress(mint.address);
-  const notice = await recordTradedToken(ctx, wallet3.address, token);
-  return { evmRecord: { token, notices: notice ? [notice] : [] } };
+  const notice2 = await recordTradedToken(ctx, wallet3.address, token);
+  return { evmRecord: { token, notices: notice2 ? [notice2] : [] } };
 }
 async function resumeHoodLaunch(ctx, key, id, operationId, prior) {
   const operation = prior.job.operation;
@@ -89800,7 +89957,7 @@ async function thresholdsWrite(verb, args, ctx) {
   if (verb === "clear")
     body = { perpsRisk: null };
   else {
-    const fields = {};
+    const fields2 = {};
     for (const [flag, spec] of Object.entries(SET_FLAGS)) {
       const raw = parsed.values[flag];
       if (raw === undefined)
@@ -89808,11 +89965,11 @@ async function thresholdsWrite(verb, args, ctx) {
       const bps2 = thresholdBps(raw, spec.kind);
       if (bps2 === null)
         return usage6(ctx, `${flag} takes ${spec.kind === "pct" ? "a percentage such as 17 or 17.5" : "a ratio such as 0.6"}, not ${raw}.`);
-      fields[spec.field] = bps2;
+      fields2[spec.field] = bps2;
     }
-    if (Object.keys(fields).length === 0)
+    if (Object.keys(fields2).length === 0)
       return usage6(ctx, `Name at least one threshold. ${THRESHOLDS_USAGE}`);
-    body = { perpsRisk: fields };
+    body = { perpsRisk: fields2 };
   }
   const target = parsed.values["--key"] ?? "self";
   const self = target === "self";
@@ -91708,8 +91865,8 @@ function typesMatch(types2, expected) {
   if (!isObject(types2) || !exactKeys3(types2, Object.keys(expected)))
     return false;
   return Object.entries(expected).every(([key, want]) => {
-    const fields = types2[key];
-    return Array.isArray(fields) && fields.length === want.length && fields.every((field, i) => isObject(field) && exactKeys3(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
+    const fields2 = types2[key];
+    return Array.isArray(fields2) && fields2.length === want.length && fields2.every((field, i) => isObject(field) && exactKeys3(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
   });
 }
 function domainMatches(domain, expected) {
@@ -92507,6 +92664,7 @@ async function runPlugin(name2, rawArgs, ctx) {
 init_args();
 init_client();
 init_deps();
+init_presentation();
 init_profiles();
 init_render();
 
@@ -92552,78 +92710,177 @@ function formatQuantity(value) {
     return "?";
   return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
 }
-function shortAddress2(address) {
-  return shortId(address);
+
+// src/commands/financial-output.ts
+init_presentation();
+init_render();
+function financialId(ctx, value) {
+  return shortId(value, fullIds(ctx.deps));
+}
+function financialToken(ctx, symbol, mint) {
+  return symbol?.trim() ? `${symbol.trim()}${fullIds(ctx.deps) ? ` (${financialId(ctx, mint)})` : ""}` : financialId(ctx, mint);
+}
+function financialHeading(text3, style) {
+  return wrapText(terminalText(text3), proseWidth(style)).map((line) => heading(line, style)).join(`
+`);
+}
+function signed(text3, style) {
+  return /^\+/.test(text3) ? accent(text3, style, "positive") : /^[-−]/.test(text3) ? accent(text3, style, "negative") : text3;
+}
+function financialTable(ctx, headers2, rows, columns) {
+  const style = terminalStyle(ctx.deps, "stdout");
+  const clean3 = rows.map((row) => row.map(terminalText));
+  const specs = headers2.map((_, col) => {
+    const spec = columns[col] ?? {};
+    const numeric = clean3.some((row) => /^[+−-]?[<>~]?[$]?[\d,.]+(?:[%xKMBT])?$/.test(row[col] ?? ""));
+    return {
+      ...spec,
+      ...numeric ? { id: true } : {},
+      ...fullIds(ctx.deps) ? { id: true, priority: undefined } : {}
+    };
+  });
+  const table = renderTable(headers2, clean3, { columns: specs, width: style.width, style, indent: 2 });
+  if (style.width >= 60 && table.split(`
+`).every((line) => displayWidth(line) <= style.width))
+    return table;
+  return clean3.map((row) => fields(headers2.map((label, col) => [label, specs[col]?.signed ? signed(row[col] ?? "", style) : row[col]]), style).join(`
+`)).join(`
+
+`);
+}
+function writeFinancialLines(ctx, rows) {
+  const style = terminalStyle(ctx.deps, "stdout");
+  const labelWidth = Math.max(...rows.map(([label]) => displayWidth(label)));
+  const valueWidth = Math.max(...rows.map(([, value]) => displayWidth(value)));
+  const noteIndent = 2 + labelWidth + 2 + valueWidth + 2;
+  const noteWidth = proseWidth(style) - noteIndent;
+  for (const [label = "", value = "", note = ""] of rows) {
+    const head = `  ${dim(padDisplay(label, labelWidth), style)}  ${" ".repeat(valueWidth - displayWidth(value))}${signed(value, style)}`;
+    if (displayWidth(head) > style.width) {
+      ctx.deps.stdout.write(`${fields([[label, signed(value, style)]], style).join(`
+`)}
+`);
+      if (note)
+        ctx.deps.stdout.write(`${wrapText(terminalText(note), Math.max(1, proseWidth(style) - 4)).map((line) => `    ${dim(line, style)}`).join(`
+`)}
+`);
+    } else if (note && (noteWidth < 16 || !fitsWidth(note, noteWidth))) {
+      ctx.deps.stdout.write(`${head}
+${wrapText(terminalText(note), Math.max(1, proseWidth(style) - 4)).map((line) => `    ${dim(line, style)}`).join(`
+`)}
+`);
+    } else {
+      const [first = "", ...rest] = wrapText(terminalText(note), Math.max(1, noteWidth));
+      ctx.deps.stdout.write(`${head}${first ? `  ${dim(first, style)}` : ""}
+`);
+      for (const line of rest)
+        ctx.deps.stdout.write(`${" ".repeat(noteIndent)}${dim(line, style)}
+`);
+    }
+  }
 }
 
 // src/commands/pnl-hyperliquid.ts
+init_presentation();
 init_render();
 function writeHyperliquidPnl(ctx, section) {
   if (!section)
     return;
   const out = ctx.deps.stdout;
+  const style = terminalStyle(ctx.deps, "stdout");
+  const time = (ms) => formatTime(ms, { now: ctx.deps.now() });
   out.write(`
-Hyperliquid
+${financialHeading("Hyperliquid", style)}
 `);
   if (!section.read) {
-    out.write(`Unavailable: ${terminalText(section.reason)}
-`);
+    notice(ctx.deps, "stdout", "warning", `Unavailable: ${terminalText(section.reason)}`);
     return;
   }
-  out.write(`Network: ${section.network}
+  out.write(`${fields([["Network", section.network]], style).join(`
+`)}
 `);
-  out.write(`Realized gross  ${formatUsd(section.realizedGrossUsd)}
-`);
-  out.write(`Funding         ${formatUsd(section.fundingUsd)} (received positive, paid negative)
-`);
-  out.write(`Fees            ${formatUsd(section.feesUsd)} (includes builder fees)
-`);
-  out.write(`Realized net    ${formatUsd(section.realizedNetUsd)} (gross + funding - fees)
-`);
-  if (typeof section.netUsd !== "string" || typeof section.unrealizedUsd !== "string") {
-    out.write(`${section.fills} fills; ${section.fundingPayments} funding payments.
-`);
-    out.write(`This server reports realized perps only, for the current binding, outside the total.
-`);
-    return;
-  }
+  const usd2 = (value) => formatUsd(value, { signed: true });
+  const rows = [
+    ["Realized gross", usd2(section.realizedGrossUsd), ""],
+    ["Funding", usd2(section.fundingUsd), "received positive, paid negative"],
+    ["Fees", formatUsd(section.feesUsd), "includes builder fees"],
+    ["Realized net", usd2(section.realizedNetUsd), "gross + funding - fees"]
+  ];
+  const realizedOnly = typeof section.netUsd !== "string" || typeof section.unrealizedUsd !== "string";
   const wallets2 = Array.isArray(section.byWallet) ? section.byWallet : [];
-  const live = wallets2.some((w) => w.reconciliation === "live");
-  const markedAt = typeof section.markedAt === "number" ? ` at ${new Date(section.markedAt).toISOString()}` : "";
-  out.write(`Unrealized      ${formatUsd(Number(section.unrealizedUsd))} (open positions${markedAt})
+  if (!realizedOnly) {
+    const live = wallets2.some((w) => w.reconciliation === "live");
+    const markedAt = typeof section.markedAt === "number" ? ` at ${time(section.markedAt)}` : "";
+    rows.push(["Unrealized", usd2(Number(section.unrealizedUsd)), `open positions${markedAt}`], [
+      "Net",
+      usd2(Number(section.netUsd)),
+      `realized net + unrealized; in the total${live ? "; live, not yet settled" : ""}`
+    ]);
+  }
+  writeFinancialLines(ctx, rows);
+  out.write(`${fields([
+    ["Fills", section.fills],
+    ["Funding payments", section.fundingPayments]
+  ], style).join(`
+`)}
 `);
-  out.write(`Net             ${formatUsd(Number(section.netUsd))} (realized net + unrealized; in the total)${live ? " (live, not yet settled)" : ""}
-`);
-  out.write(`${section.fills} fills; ${section.fundingPayments} funding payments.
-`);
-  out.write(`Coverage: every EVM TEE wallet bound to this profile, per binding period.
-`);
+  if (realizedOnly) {
+    notice(ctx.deps, "stdout", "warning", "This server reports realized perps only, for the current binding, outside the total.");
+    return;
+  }
+  notice(ctx.deps, "stdout", "note", "Coverage: every EVM TEE wallet bound to this profile, per binding period.");
   for (const wallet3 of wallets2) {
-    const to = wallet3.toMs === null ? "now" : new Date(wallet3.toMs).toISOString();
-    const state = wallet3.reconciliation === "live" ? `live to ${new Date(wallet3.observationCutoffMs).toISOString()}, not yet settled` : `settled to ${new Date(wallet3.observationCutoffMs).toISOString()}`;
-    out.write(`${terminalText(wallet3.address)} ${new Date(wallet3.fromMs).toISOString()} to ${to} (${state})
+    const to = wallet3.toMs === null ? "now" : time(wallet3.toMs);
+    const state = wallet3.reconciliation === "live" ? `live to ${time(wallet3.observationCutoffMs)}, not yet settled` : `settled to ${time(wallet3.observationCutoffMs)}`;
+    out.write(`${fields([
+      ["Wallet", terminalText(wallet3.address)],
+      ["Binding", `${time(wallet3.fromMs)} to ${to}`],
+      ["Reconciliation", state]
+    ], style).join(`
+`)}
+
 `);
   }
   const positions = Array.isArray(section.positions) ? section.positions : [];
   if (positions.length) {
-    out.write(`Open perps:
+    out.write(`${financialHeading("Open perps", style)}
 `);
     for (const position of positions)
-      out.write(`${positionLine(position)}
-`);
+      writePosition(ctx, position);
   }
   if (section.historyPartial) {
     const reasons = Array.isArray(section.partialReasons) ? section.partialReasons.map(terminalText).join(", ") : "";
-    out.write(`These figures are partial${reasons ? ` (${reasons})` : ""}.
-`);
+    notice(ctx.deps, "stdout", "warning", `These figures are partial${reasons ? ` (${reasons})` : ""}.`);
   }
 }
-function positionLine(p) {
+function writePosition(ctx, p) {
+  const style = terminalStyle(ctx.deps, "stdout");
   const funding = Number(p.fundingNetUsd);
-  const fundingText = `${funding < 0 ? "paid" : "earned"} ${formatUsd(Math.abs(funding))} funding`;
-  const pnl = p.markPx === null ? "no mark" : `${formatUsd(Number(p.unrealizedPnlUsd))} unrealized`;
-  const liquidation = p.liquidationPx === null ? "no liquidation price" : `liquidation ${terminalText(p.liquidationPx)}`;
-  return `  ${terminalText(p.coin)} ${p.leverage.value}x ${p.side === "long" ? "Long" : "Short"} ${terminalText(p.size)}: entry ${terminalText(p.entryPx)}, mark ${p.markPx === null ? "-" : terminalText(p.markPx)}, ${pnl}, ${fundingText}, ${liquidation}`;
+  ctx.deps.stdout.write(`${fields([
+    [
+      "Position",
+      `${terminalText(p.coin)} ${p.leverage.value}x ${p.side === "long" ? "Long" : "Short"} ${terminalText(p.size)}`
+    ],
+    ["Entry", terminalText(p.entryPx)],
+    ["Mark", p.markPx === null ? symbols(style).missing : terminalText(p.markPx)],
+    ["Liquidation", p.liquidationPx === null ? "no liquidation price" : terminalText(p.liquidationPx)]
+  ], style).join(`
+`)}
+`);
+  writeFinancialLines(ctx, [
+    [
+      "Unrealized",
+      p.markPx === null ? symbols(style).missing : formatUsd(Number(p.unrealizedPnlUsd), { signed: true }),
+      p.markPx === null ? "no mark; not counted" : ""
+    ],
+    [
+      "Funding",
+      formatUsd(funding, { signed: true }),
+      `${funding < 0 ? "paid" : "earned"} ${formatUsd(Math.abs(funding))} funding`
+    ]
+  ]);
+  ctx.deps.stdout.write(`
+`);
 }
 
 // src/commands/pnl.ts
@@ -92636,13 +92893,14 @@ var NO_API_KEY4 = {
 };
 async function pnl(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
+  const parsed = parseArgs(args, { booleanFlags: ["--dust"] });
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
+  const dust = parsed.booleans.has("--dust");
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}. Usage: candle pnl [--profile <name>]`, json);
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}. Usage: candle pnl [--profile <name>] [--dust]`, json);
     return 2;
   }
   const apiKey = await resolveApiKey(deps, ctx.profile);
@@ -92694,9 +92952,7 @@ async function pnl(args, ctx) {
   if (perProfile) {
     const { pnl: p, lp, hyperliquid, perpsInTotal } = body;
     const engine = typeof p.totalUsd === "number";
-    deps.stdout.write(engine ? `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's share of the account's P&L
-
-` : `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills
+    deps.stdout.write(`${financialHeading(engine ? `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's share of the account's P&L` : `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills`, terminalStyle(deps, "stdout"))}
 
 `);
     writeChainBlocks(ctx, p.byChain);
@@ -92712,6 +92968,7 @@ async function pnl(args, ctx) {
       openPositionsExDust: p.openPositionsExDust,
       closed: p.closed,
       positions: p.openPositions.length,
+      dust,
       truncated: p.truncated,
       lookback: p.lookback,
       lookbackUnit: engine ? "of the account's ledger rows" : "trades",
@@ -92719,20 +92976,21 @@ async function pnl(args, ctx) {
       lp,
       perps: hyperliquid ? { inTotal: perpsInTotal === true, ...hyperliquid.read ? {} : { reason: hyperliquid.reason } } : undefined
     });
-    writePositions(ctx, p.openPositions, false);
+    writePositions(ctx, p.openPositions, false, dust);
     writeWallets(ctx, p.byWallet, engine);
     writeLpPositions(ctx, lp, false);
     writeHyperliquidPnl(ctx, hyperliquid);
     return 0;
   }
   const books = body;
-  deps.stdout.write(`P&L for the account: every profile, the web app and the CLI, one ledger
+  deps.stdout.write(`${financialHeading("P&L for the account: every profile, the web app and the CLI, one ledger", terminalStyle(deps, "stdout"))}
 
 `);
   writeChainBlocks(ctx, { solana: books.solana, hood: books.hood });
   writeSummary(ctx, {
     ...books.all,
     positions: books.positions.length,
+    dust,
     truncated: books.truncated,
     lookback: books.lookback,
     lookbackUnit: "ledger rows",
@@ -92741,7 +92999,7 @@ async function pnl(args, ctx) {
   });
   writeWalletEvents(ctx, books);
   writeAgents(ctx, books.byAgent, books.all);
-  writePositions(ctx, books.positions, true);
+  writePositions(ctx, books.positions, true, dust);
   writeLpPositions(ctx, books.lp, true);
   return 0;
 }
@@ -92758,29 +93016,33 @@ function writeChainBlocks(ctx, byChain) {
   for (const [chain2, s] of blocks) {
     const unmarked = s.unmarked ?? s.unmarkedPositions ?? 0;
     const marked = s.openPositions - unmarked;
-    ctx.deps.stdout.write(`${CHAIN_TITLES[chain2]}
+    ctx.deps.stdout.write(`${financialHeading(CHAIN_TITLES[chain2], terminalStyle(ctx.deps, "stdout"))}
 `);
-    writeLines(ctx, [
+    writeFinancialLines(ctx, [
       [
         "Realized net",
-        formatUsd(s.realizedNetUsd),
+        formatUsd(s.realizedNetUsd, SIGNED),
         `gross ${formatUsd(s.realizedGrossUsd)}, fees ${formatUsd(s.feesUsd)}`
       ],
       [
         "Unrealized",
-        formatUsd(s.unrealizedUsd),
+        formatUsd(s.unrealizedUsd, SIGNED),
         `${marked} of ${s.openPositions} open ${s.openPositions === 1 ? "position" : "positions"} marked${unmarked > 0 ? `; ${unmarked} unpriced, not counted` : ""}`
       ],
-      ["Total", formatUsd(totalOf(s)), "realized net plus unrealized"]
+      ["Total", formatUsd(totalOf(s), SIGNED), "realized net plus unrealized"]
     ]);
     if (s.unvalued > 0) {
-      ctx.deps.stdout.write(`${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.
-`);
+      writeNotes(ctx, [
+        [
+          "warning",
+          `${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.`
+        ]
+      ]);
     }
     ctx.deps.stdout.write(`
 `);
   }
-  ctx.deps.stdout.write(`All chains
+  ctx.deps.stdout.write(`${financialHeading("All chains", terminalStyle(ctx.deps, "stdout"))}
 `);
 }
 function totalOf(s) {
@@ -92789,30 +93051,48 @@ function totalOf(s) {
 function isUnplacedWallet(wallet3) {
   return wallet3.startsWith("unknown:");
 }
-function writeLines(ctx, lines) {
-  const width = Math.max(...lines.map(([label]) => label.length));
-  const valueWidth = Math.max(...lines.map(([, value]) => value.length));
-  for (const [label, value, note] of lines) {
-    ctx.deps.stdout.write(`${label.padEnd(width)}  ${value.padStart(valueWidth)}  (${note})
+var SIGNED = { signed: true };
+function symbolsMissing(ctx) {
+  return symbols(terminalStyle(ctx.deps, "stdout")).missing;
+}
+function writeNotes(ctx, notes) {
+  if (notes.length === 0)
+    return;
+  const style = terminalStyle(ctx.deps, "stdout");
+  ctx.deps.stdout.write(`
+${notes.map(([level, text3]) => renderNotice(level, text3, style).join(`
+`)).join(`
+`)}
 `);
-  }
+}
+function writeTable(ctx, title, headers2, rows, columns) {
+  const style = terminalStyle(ctx.deps, "stdout");
+  const table = financialTable(ctx, headers2, rows, columns);
+  ctx.deps.stdout.write(`
+${financialHeading(title, style)}
+${table}
+`);
 }
 function writeWallets(ctx, wallets2, engine) {
   if (!wallets2 || wallets2.length === 0)
     return;
   const rows = wallets2.map((w) => [
-    isUnplacedWallet(w.wallet) ? "not placed in a wallet" : `${w.label?.trim() ? `${w.label.trim()} ` : w.payerType === "main" ? "main " : ""}(${shortAddress2(w.wallet)})`,
-    w.chain ?? "-",
+    isUnplacedWallet(w.wallet) ? "not placed in a wallet" : `${w.label?.trim() ? `${w.label.trim()} ` : w.payerType === "main" ? "main " : ""}(${financialId(ctx, w.wallet)})`,
+    w.chain ?? symbolsMissing(ctx),
     String(w.tradesConsidered),
-    formatUsd(w.realizedNetUsd),
-    formatUsd(w.unrealizedUsd),
+    formatUsd(w.realizedNetUsd, SIGNED),
+    formatUsd(w.unrealizedUsd, SIGNED),
     `${w.openPositions.length}${w.unmarkedPositions > 0 ? ` (${w.unmarkedPositions} unpriced)` : ""}`
   ]);
-  const heading = engine ? "By wallet (each its own cost basis; the rows sum to the total)" : "By wallet (each its own cost basis, so the rows need not sum to the total)";
-  ctx.deps.stdout.write(`
-${heading}
-${renderTable(["WALLET", "CHAIN", "TRADES", "REALIZED NET", "UNREALIZED", "OPEN"], rows.map((row) => row.map(terminalText)))}
-`);
+  const title = engine ? "By wallet (each its own cost basis; the rows sum to the total)" : "By wallet (each its own cost basis, so the rows need not sum to the total)";
+  writeTable(ctx, title, ["WALLET", "CHAIN", "TRADES", "REALIZED NET", "UNREALIZED", "OPEN"], rows, [
+    { id: true },
+    { priority: 1 },
+    { priority: 2 },
+    { signed: true },
+    { signed: true },
+    {}
+  ]);
 }
 function writeSummary(ctx, s) {
   const marked = s.positions - s.unmarked;
@@ -92821,98 +93101,119 @@ function writeSummary(ctx, s) {
   const lines = [
     [
       "Realized net",
-      formatUsd(s.realizedNetUsd),
+      formatUsd(s.realizedNetUsd, SIGNED),
       `gross ${formatUsd(s.realizedGrossUsd)}, fees ${formatUsd(s.feesUsd)}`
     ],
     [
       "Unrealized",
-      formatUsd(s.unrealizedUsd),
+      formatUsd(s.unrealizedUsd, SIGNED),
       `${marked} of ${s.positions} open ${s.positions === 1 ? "position" : "positions"} marked${s.unmarked > 0 ? `; ${s.unmarked} unpriced, not counted` : ""}`
     ]
   ];
   const total = totalOf(s);
   const lp = s.lp;
   if (lp?.read) {
-    const plural2 = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+    const plural3 = (n, one, many) => `${n} ${n === 1 ? one : many}`;
     lines.push([
       "LP realized",
-      formatUsd(lp.realizedUsd),
+      formatUsd(lp.realizedUsd, SIGNED),
       `withdrawn ${formatUsd(lp.withdrawnUsd)} against ${formatUsd(lp.realizedBasisUsd)} of cost basis, plus ${formatUsd(lp.claimedFeesUsd)} claimed fees`
     ], [
       "LP unrealized",
-      formatUsd(lp.unrealizedUsd),
-      `${lp.valued} of ${plural2(lp.openPositions, "open LP position", "open LP positions")} valued${lp.unpriced > 0 ? `; ${lp.unpriced} unpriced, not counted` : ""}${lp.unreadable > 0 ? `; ${lp.unreadable} not read, not counted` : ""}${lp.closedOutsideLedger > 0 ? `; ${lp.closedOutsideLedger} closed outside the ledger, not counted` : ""}`
+      formatUsd(lp.unrealizedUsd, SIGNED),
+      `${lp.valued} of ${plural3(lp.openPositions, "open LP position", "open LP positions")} valued${lp.unpriced > 0 ? `; ${lp.unpriced} unpriced, not counted` : ""}${lp.unreadable > 0 ? `; ${lp.unreadable} not read, not counted` : ""}${lp.closedOutsideLedger > 0 ? `; ${lp.closedOutsideLedger} closed outside the ledger, not counted` : ""}`
     ], [
       "LP vs holding",
-      lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd) : "-",
+      lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd, SIGNED) : symbolsMissing(ctx),
       lp.vsHoldingPositions > 0 ? `${lp.vsHoldingPositions} of ${lp.valued} valued, against holding the deposited tokens (now ${formatUsd(lp.holdValueUsd)})` : "no valued LP position with every deposit priced"
-    ], ["Total", formatUsd(total), totalNote(", tokens only, as the console shows it")], [
+    ], ["Total", formatUsd(total, SIGNED), totalNote(", tokens only, as the console shows it")], [
       "Total with LP",
-      formatUsd(total + lp.realizedUsd + lp.unrealizedUsd),
+      formatUsd(total + lp.realizedUsd + lp.unrealizedUsd, SIGNED),
       "the total plus LP realized and unrealized"
     ]);
   } else if (lp) {
-    lines.push(["LP", "not read", `${terminalText(lp.reason)}; not in the total`], ["Total", formatUsd(total), totalNote(", tokens only")]);
+    lines.push(["LP", "not read", `${terminalText(lp.reason)}; not in the total`], ["Total", formatUsd(total, SIGNED), totalNote(", tokens only")]);
   } else {
-    lines.push(["Total", formatUsd(total), totalNote("")]);
+    lines.push(["Total", formatUsd(total, SIGNED), totalNote("")]);
   }
-  writeLines(ctx, lines);
-  if (s.perps && !withPerps) {
-    ctx.deps.stdout.write(`The total excludes Hyperliquid perps${s.perps.reason ? `: ${terminalText(s.perps.reason)}` : "."}
-`);
-  }
+  writeFinancialLines(ctx, lines);
   if (s.closed)
     writeClosed(ctx, s.closed);
-  const dust = s.openPositionsExDust !== undefined ? s.positions - s.openPositionsExDust : 0;
-  if (dust > 0) {
-    ctx.deps.stdout.write(`${dust} open ${dust === 1 ? "position is" : "positions are"} dust (worth under one cent): listed and marked, and counted in the figures.
-`);
+  const notes = [];
+  const fills = (n) => `${n} ${n === 1 ? "fill" : "fills"} could not be valued and are not in these figures.`;
+  if (s.perps && !withPerps) {
+    notes.push([
+      "warning",
+      `The total excludes Hyperliquid perps${s.perps.reason ? `: ${terminalText(s.perps.reason)}` : "."}`
+    ]);
   }
-  if (s.oldestMarkAt !== undefined) {
-    ctx.deps.stdout.write(`Marks as old as ${new Date(s.oldestMarkAt).toISOString()}.
-`);
+  const dustCount = s.openPositionsExDust !== undefined ? s.positions - s.openPositionsExDust : 0;
+  if (dustCount > 0) {
+    const them = dustCount === 1 ? "position is" : "positions are";
+    notes.push([
+      "note",
+      s.dust ? `${dustCount} open ${them} dust (worth under one cent): listed and marked, and counted in the figures.` : `${dustCount} dust ${dustCount === 1 ? "position" : "positions"} hidden (worth under one cent; --dust to show). ${dustCount === 1 ? "It is" : "They are"} counted in the figures.`
+    ]);
   }
-  if (s.unvalued > 0 || (s.unresolved ?? 0) > 0) {
-    ctx.deps.stdout.write(`${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.
-`);
-  }
+  if (s.oldestMarkAt !== undefined)
+    notes.push(["note", `Oldest mark ${formatTime(s.oldestMarkAt)}.`]);
+  if (s.unvalued > 0 || (s.unresolved ?? 0) > 0)
+    notes.push(["warning", fills(s.unvalued)]);
   if (s.truncated) {
-    ctx.deps.stdout.write(`History is truncated: this covers the most recent ${s.lookback} ${s.lookbackUnit}, not the account's lifetime.
-`);
+    notes.push([
+      "warning",
+      `History is truncated: this covers the most recent ${s.lookback} ${s.lookbackUnit}, not the account's lifetime.`
+    ]);
   }
   if (lp?.read) {
     if (lp.unvalued > 0) {
-      ctx.deps.stdout.write(`${lp.unvalued} LP ledger ${lp.unvalued === 1 ? "leg" : "legs"} could not be valued and ${lp.unvalued === 1 ? "is" : "are"} not in these figures.
-`);
+      notes.push([
+        "warning",
+        `${lp.unvalued} LP ledger ${lp.unvalued === 1 ? "leg" : "legs"} could not be valued and ${lp.unvalued === 1 ? "is" : "are"} not in these figures.`
+      ]);
     }
     if (lp.closedOutsideLedger > 0) {
-      ctx.deps.stdout.write(`${lp.closedOutsideLedger} LP ${lp.closedOutsideLedger === 1 ? "position was" : "positions were"} closed outside the ledger (a sweep close writes no confirmation), so ${lp.closedOutsideLedger === 1 ? "its" : "their"} result is unknown and not in these figures.
-`);
+      notes.push([
+        "warning",
+        `${lp.closedOutsideLedger} LP ${lp.closedOutsideLedger === 1 ? "position was" : "positions were"} closed outside the ledger (a sweep close writes no confirmation), so ${lp.closedOutsideLedger === 1 ? "its" : "their"} result is unknown and not in these figures.`
+      ]);
     }
     if (lp.truncated) {
-      ctx.deps.stdout.write(`LP history is truncated: this covers the most recent ${lp.lookback} LP operations, not the account's lifetime.
-`);
+      notes.push([
+        "warning",
+        `LP history is truncated: this covers the most recent ${lp.lookback} LP operations, not the account's lifetime.`
+      ]);
     }
   }
+  writeNotes(ctx, notes);
 }
 function writeClosed(ctx, c) {
+  const style = terminalStyle(ctx.deps, "stdout");
   const counts = [`${c.wins} won`, `${c.losses} lost`];
   if (c.costUnknown > 0)
     counts.push(`${c.costUnknown} with unknown cost`);
-  ctx.deps.stdout.write(`Closed: ${c.closed} ${c.closed === 1 ? "position" : "positions"} (${counts.join(", ")}). Money made ${formatUsd(c.madeUsd)}, money lost ${formatUsd(c.lostUsd)} and partial sells ${formatUsd(c.partialSellsUsd)} add up to the realized net.
+  ctx.deps.stdout.write(`
+${wrapText(`Closed ${c.closed} ${c.closed === 1 ? "position" : "positions"} (${counts.join(", ")}). Money made ${formatUsd(c.madeUsd, SIGNED)}, money lost ${formatUsd(c.lostUsd, SIGNED)} and partial sells ${formatUsd(c.partialSellsUsd, SIGNED)} add up to the realized net.`, proseWidth(style) - 2).map((line) => `  ${line}`).join(`
+`)}
 `);
 }
 function writeWalletEvents(ctx, books) {
+  const notes = [];
   const unknown2 = books.costUnknown?.length ?? 0;
   if (unknown2 > 0) {
-    ctx.deps.stdout.write(`${unknown2} ${unknown2 === 1 ? "arrival" : "arrivals"} of tokens came with no cost anyone can state: selling them realizes nothing (--json lists them).
-`);
+    notes.push([
+      "note",
+      `${unknown2} ${unknown2 === 1 ? "arrival" : "arrivals"} of tokens came with no cost anyone can state: selling them realizes nothing (--json lists them).`
+    ]);
   }
   const out = books.movedOutUntracked?.length ?? 0;
   if (out > 0) {
-    ctx.deps.stdout.write(`${out} ${out === 1 ? "move" : "moves"} out of a wallet went where Candle does not follow: the tokens left at cost, not as a sale (--json lists them).
-`);
+    notes.push([
+      "note",
+      `${out} ${out === 1 ? "move" : "moves"} out of a wallet went where Candle does not follow: the tokens left at cost, not as a sale (--json lists them).`
+    ]);
   }
+  writeNotes(ctx, notes);
 }
 function writeAgents(ctx, agents, all) {
   if (!agents || agents.length === 0)
@@ -92920,24 +93221,21 @@ function writeAgents(ctx, agents, all) {
   const open8 = (count3, unmarked) => `${count3}${unmarked > 0 ? ` (${unmarked} unpriced)` : ""}`;
   const rows = agents.map((a) => [
     a.keyPrefix === null ? "Manual (web app)" : a.label && a.label !== a.keyPrefix ? `${a.label} (${a.keyPrefix})` : a.keyPrefix,
-    formatUsd(a.realizedNetUsd),
-    formatUsd(a.unrealizedUsd),
-    formatUsd(totalOf(a)),
+    formatUsd(a.realizedNetUsd, SIGNED),
+    formatUsd(a.unrealizedUsd, SIGNED),
+    formatUsd(totalOf(a), SIGNED),
     open8(a.openPositions, a.unmarked),
     String(a.closedRounds)
   ]);
   rows.push([
     "Account total",
-    formatUsd(all.realizedNetUsd),
-    formatUsd(all.unrealizedUsd),
-    formatUsd(totalOf(all)),
+    formatUsd(all.realizedNetUsd, SIGNED),
+    formatUsd(all.unrealizedUsd, SIGNED),
+    formatUsd(totalOf(all), SIGNED),
     open8(all.openPositions, all.unmarked),
-    all.closedRounds !== undefined ? String(all.closedRounds) : "-"
+    all.closedRounds !== undefined ? String(all.closedRounds) : symbolsMissing(ctx)
   ]);
-  ctx.deps.stdout.write(`
-By agent (each key, then Manual; the rows sum to the account total)
-${renderTable(["AGENT", "REALIZED NET", "UNREALIZED", "TOTAL", "OPEN", "CLOSED"], rows.map((row) => row.map(terminalText)))}
-`);
+  writeTable(ctx, "By agent (each key, then Manual; the rows sum to the account total)", ["AGENT", "REALIZED NET", "UNREALIZED", "TOTAL", "OPEN", "CLOSED"], rows, [{ id: true }, { signed: true }, { signed: true }, { signed: true }, {}, { priority: 1 }]);
 }
 function writeLpPositions(ctx, lp, withBook) {
   if (!lp?.read || lp.positions.length === 0)
@@ -92946,29 +93244,38 @@ function writeLpPositions(ctx, lp, withBook) {
   if (withBook)
     headers2.push("BOOK");
   const value = (p) => p.status === "valued" && p.valueUsd !== undefined ? formatUsd(p.valueUsd) : p.status === "unpriced" ? "unpriced" : p.status === "unreadable" ? "not read" : "closed outside the ledger";
+  const none = symbolsMissing(ctx);
   const rows = lp.positions.map((p) => {
     const row = [
-      shortAddress2(p.position),
-      shortAddress2(p.pool),
-      shortAddress2(p.wallet),
+      financialId(ctx, p.position),
+      financialId(ctx, p.pool),
+      financialId(ctx, p.wallet),
       value(p),
       formatUsd(p.costBasisUsd),
-      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-",
-      p.vsHoldingUsd !== undefined ? formatUsd(p.vsHoldingUsd) : "-"
+      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd, SIGNED) : none,
+      p.vsHoldingUsd !== undefined ? formatUsd(p.vsHoldingUsd, SIGNED) : none
     ];
     if (withBook)
-      row.push(p.book ?? "-");
+      row.push(p.book ?? none);
     return row;
   });
-  ctx.deps.stdout.write(`
-Open LP positions
-${renderTable(headers2, rows.map((row) => row.map(terminalText)))}
-`);
+  writeTable(ctx, "Open LP positions", headers2, rows, [
+    { id: true },
+    { id: true },
+    { id: true },
+    {},
+    {},
+    { signed: true },
+    { signed: true },
+    { priority: 1 }
+  ]);
 }
-function writePositions(ctx, positions, withBook) {
+function writePositions(ctx, all, withBook, showDust) {
+  const positions = showDust ? all : all.filter((p) => p.dust !== true);
+  const none = symbolsMissing(ctx);
   if (positions.length === 0) {
     ctx.deps.stdout.write(`
-No open positions.
+${all.length === 0 ? "No open positions." : "No open positions above dust."}
 `);
     return;
   }
@@ -92979,27 +93286,35 @@ No open positions.
     headers2.push("BOOK");
   if (withBasis)
     headers2.push("COST SOURCE");
-  const wallet3 = (w) => w === undefined || isUnplacedWallet(w) ? "-" : shortAddress2(w);
+  const wallet3 = (w) => w === undefined || isUnplacedWallet(w) ? none : financialId(ctx, w);
   const rows = positions.map((p) => {
     const row = [
-      `${p.symbol?.trim() || shortAddress2(p.mint)}${p.dust === true ? " (dust)" : ""}`,
-      p.chain ?? "-",
+      `${financialToken(ctx, p.symbol, p.mint)}${p.dust === true ? " (dust)" : ""}`,
+      p.chain ?? none,
       ...withWallet ? [wallet3(p.wallet)] : [],
       formatQuantity(p.quantity),
       formatPrice(p.avgEntryUsd),
       p.markPriceUsd !== undefined ? formatPrice(p.markPriceUsd) : "unpriced",
-      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-"
+      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd, SIGNED) : none
     ];
     if (withBook)
-      row.push(p.book ?? "-");
+      row.push(p.book ?? none);
     if (withBasis)
-      row.push(p.transferredIn ? `Moved in${p.movedInFromWallet ? ` from ${shortAddress2(p.movedInFromWallet)}` : ""}: ${p.basisSource ?? "unknown"}${p.zeroCostQuantity ? `, ${formatQuantity(p.zeroCostQuantity)} at $0 (no purchase found)` : ""}${p.basisComplete === false ? " (partial)" : ""}` : "-");
+      row.push(p.transferredIn ? `Moved in${p.movedInFromWallet ? ` from ${financialId(ctx, p.movedInFromWallet)}` : ""}: ${p.basisSource ?? "unknown"}${p.zeroCostQuantity ? `, ${formatQuantity(p.zeroCostQuantity)} at $0 (no purchase found)` : ""}${p.basisComplete === false ? " (partial)" : ""}` : none);
     return row;
   });
-  ctx.deps.stdout.write(`
-Open positions
-${renderTable(headers2, rows.map((row) => row.map(terminalText)))}
-`);
+  const columns = [
+    { id: true },
+    { priority: 3 },
+    ...withWallet ? [{ id: true, priority: 2 }] : [],
+    {},
+    {},
+    {},
+    { signed: true },
+    ...withBook ? [{ priority: 1 }] : [],
+    ...withBasis ? [{ priority: 0 }] : []
+  ];
+  writeTable(ctx, "Open positions", headers2, rows, columns);
 }
 
 // src/commands/portfolio.ts
@@ -93007,6 +93322,7 @@ init_args();
 init_client();
 init_deps();
 init_evm_lite();
+init_presentation();
 init_profiles();
 init_render();
 init_solana_endpoint();
@@ -93386,11 +93702,11 @@ async function portfolio(args, ctx) {
 
 `);
       if (matched.matched === 0) {
-        writeListNote(deps.stdout, listNote);
+        writeListNote(ctx, listNote);
         return complete ? 0 : 3;
       }
     }
-    writeTable(ctx, groups, {
+    writeTable2(ctx, groups, {
       totalUsd,
       unpriced,
       chains,
@@ -93446,15 +93762,33 @@ function walletListStatus(answered) {
   const readFailed = (answered.unavailable ?? []).length > 0 || (answered.hood?.unavailable ?? []).length > 0 || (answered.lp?.unreadable ?? []).length > 0;
   return readFailed ? "unknown" : "cut-off";
 }
-var LIST_CUT_OFF_LINE = `Candle listed only part of this account's wallets. The total is partial.
-`;
-var LIST_UNKNOWN_LINE = `Candle did not say whether it listed every wallet. One it left out would be missing here, so this is not a complete result.
-`;
-function writeListNote(stdout, note) {
+var LIST_CUT_OFF_LINE = "Candle listed only part of this account's wallets. The total is partial.";
+var LIST_UNKNOWN_LINE = "Candle did not say whether it listed every wallet. One it left out would be missing here, so this is not a complete result.";
+function writeListNote(ctx, note) {
   if (note === "cut-off")
-    stdout.write(LIST_CUT_OFF_LINE);
+    writeNotes2(ctx, [LIST_CUT_OFF_LINE]);
   else if (note === "unknown")
-    stdout.write(LIST_UNKNOWN_LINE);
+    writeNotes2(ctx, [LIST_UNKNOWN_LINE]);
+}
+function writeNotes2(ctx, texts, level = "warning") {
+  if (texts.length === 0)
+    return;
+  const style = terminalStyle(ctx.deps, "stdout");
+  ctx.deps.stdout.write(`
+${texts.map((text3) => renderNotice(level, text3, style).join(`
+`)).join(`
+`)}
+`);
+}
+function missingMark(ctx) {
+  return symbols(terminalStyle(ctx.deps, "stdout")).missing;
+}
+function tableBlock(ctx, title, headers2, rows, columns) {
+  const style = terminalStyle(ctx.deps, "stdout");
+  const table = financialTable(ctx, headers2, rows, columns);
+  return `${title === undefined ? "" : `${financialHeading(title, style)}
+`}${table}
+`;
 }
 async function startEvmRead(addresses, rpcUrl, fetchFn) {
   const rpc = createEvmRpc(rpcUrl, fetchFn);
@@ -93668,8 +94002,9 @@ function lpRow(position, prices) {
     unpriced: position.unpriced
   };
 }
-function writeTable(ctx, groups, totals) {
+function writeTable2(ctx, groups, totals) {
   const { deps } = ctx;
+  const none = missingMark(ctx);
   const rows = [];
   const lpRows = [];
   const notes = [];
@@ -93678,15 +94013,15 @@ function writeTable(ctx, groups, totals) {
     let lpCount = 0;
     let lpUnread = 0;
     for (const w of shown) {
-      const name2 = `${w.label ? `${w.label} ` : ""}(${shortAddress2(w.address)})${w.role === "external" ? " external" : ""}`;
-      const side = (t, amount) => `${amount} ${t.symbol ?? shortAddress2(t.mint)}`;
+      const name2 = `${w.label ? `${w.label} ` : ""}(${financialId(ctx, w.address)})${w.role === "external" ? " external" : ""}`;
+      const side = (t, amount) => `${amount} ${financialToken(ctx, t.symbol, t.mint)}`;
       for (const p of [...w.lpPositions ?? []].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1))) {
         lpCount += 1;
         lpRows.push([
           g.group,
           name2,
-          shortAddress2(p.position),
-          shortAddress2(p.pool),
+          financialId(ctx, p.position),
+          financialId(ctx, p.pool),
           p.tokens.map((t) => side(t, t.amount)).join(" + "),
           p.tokens.map((t) => side(t, t.unclaimedFees)).join(" + "),
           p.valueUsd === null ? "unpriced" : formatUsd(p.valueUsd)
@@ -93694,10 +94029,10 @@ function writeTable(ctx, groups, totals) {
       }
       for (const position of w.lpUnread ?? []) {
         lpUnread += 1;
-        lpRows.push([g.group, name2, shortAddress2(position), "-", "not read", "-", "-"]);
+        lpRows.push([g.group, name2, financialId(ctx, position), none, "not read", none, none]);
       }
       if (w.holdings === null) {
-        rows.push([g.group, w.chain, name2, "-", "not read", "-", "-"]);
+        rows.push([g.group, w.chain, name2, none, "not read", none, none]);
         continue;
       }
       const sorted = [...w.holdings].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1));
@@ -93706,34 +94041,39 @@ function writeTable(ctx, groups, totals) {
           g.group,
           w.chain,
           name2,
-          h.symbol ?? shortAddress2(h.mint),
+          financialToken(ctx, h.symbol, h.mint),
           h.amount,
           h.priceUsd === null ? "unpriced" : formatPrice(h.priceUsd),
-          h.valueUsd === null ? h.unpricedReason ?? "-" : formatUsd(h.valueUsd)
+          h.valueUsd === null ? h.unpricedReason ?? none : formatUsd(h.valueUsd)
         ]);
       }
       for (const part of w.unread ?? [])
-        rows.push([g.group, w.chain, name2, UNREAD_LABELS[part], "not read", "-", "-"]);
+        rows.push([g.group, w.chain, name2, UNREAD_LABELS[part], "not read", none, none]);
     }
     const empty = g.wallets.length - shown.length;
     const count3 = `${g.wallets.length} ${g.wallets.length === 1 ? "wallet" : "wallets"}`;
     notes.push([
       g.group,
-      g.read ? formatUsd(g.valueUsd) : "-",
+      g.read ? formatUsd(g.valueUsd) : none,
       g.read ? `${count3}${empty > 0 ? `, ${empty} empty not shown` : ""}${lpCount > 0 ? `, ${lpCount} LP ${lpCount === 1 ? "position" : "positions"}` : ""}${lpUnread > 0 ? `, ${lpUnread} LP not read` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}` : g.reason ?? "not read"
     ]);
   }
   if (rows.length > 0)
-    deps.stdout.write(`${renderTable(["GROUP", "CHAIN", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"], rows.map((row) => row.map(terminalText)))}
-`);
+    deps.stdout.write(tableBlock(ctx, undefined, ["GROUP", "CHAIN", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"], rows, [
+      { priority: 1 },
+      { priority: 2 },
+      { id: true },
+      { id: true },
+      {},
+      {},
+      {}
+    ]));
   else
     deps.stdout.write(`Nothing held in any wallet read.
 `);
   if (lpRows.length > 0)
     deps.stdout.write(`
-LP positions
-${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEES", "VALUE"], lpRows.map((row) => row.map(terminalText)))}
-`);
+${tableBlock(ctx, "LP positions", ["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEES", "VALUE"], lpRows, [{ priority: 1 }, { id: true }, { id: true }, { id: true }, { id: true }, { id: true, priority: 2 }, {}])}`);
   for (const chain2 of totals.chains) {
     const sub = totals.byChain[chain2];
     if (!sub)
@@ -93750,67 +94090,76 @@ ${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEE
     formatUsd(totals.totalUsd),
     totals.unpriced > 0 ? `${totals.unpriced} unpriced ${totals.unpriced === 1 ? "holding" : "holdings"} not counted` : "every holding priced"
   ]);
-  const width = Math.max(...notes.map(([label]) => label.length));
-  const valueWidth = Math.max(...notes.map(([, value]) => value.length));
+  const style = terminalStyle(deps, "stdout");
+  const width = Math.max(...notes.map(([label]) => displayWidth(label)));
+  const valueWidth = Math.max(...notes.map(([, value]) => displayWidth(value)));
+  const noteWidth = Math.max(1, proseWidth(style) - 2 - width - 2 - valueWidth - 2);
   deps.stdout.write(`
 `);
   for (const [label, value, note] of notes) {
-    deps.stdout.write(`${label.padEnd(width)}  ${value.padStart(valueWidth)}  ${terminalText(note)}
+    const [first = "", ...rest] = wrapText(terminalText(note), noteWidth);
+    deps.stdout.write(`  ${dim(padDisplay(label, width), style)}  ${" ".repeat(valueWidth - displayWidth(value))}${value}  ${dim(first, style)}
+`);
+    for (const line of rest)
+      deps.stdout.write(`${" ".repeat(2 + width + 2 + valueWidth + 2)}${dim(line, style)}
 `);
   }
   const unreadByChain = totals.chains.map((chain2) => [chain2, totals.unavailableByChain[chain2].length]).filter(([, n]) => n > 0);
   const unavailable6 = unreadByChain.reduce((sum, [, n]) => sum + n, 0);
+  const warnings = [];
   if (unavailable6 > 0) {
-    deps.stdout.write(`${unavailable6} ${unavailable6 === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain2, n]) => `${n} on ${CHAIN_NAMES[chain2]}`).join(", ")}). What was not read is marked "not read" and is not in the total.
-`);
+    warnings.push(`${unavailable6} ${unavailable6 === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain2, n]) => `${n} on ${CHAIN_NAMES[chain2]}`).join(", ")}). What was not read is marked "not read" and is not in the total.`);
   }
-  writeListNote(deps.stdout, totals.listNote);
+  writeNotes2(ctx, warnings);
+  writeListNote(ctx, totals.listNote);
+  const later = [];
   const truncated = groups.flatMap((g) => g.wallets).filter((w) => w.truncated).length;
   if (truncated > 0) {
-    deps.stdout.write(`${truncated} Hood ${truncated === 1 ? "wallet holds" : "wallets hold"} more tokens than Candle lists. The rest are not shown and not in the total.
-`);
+    later.push(`${truncated} Hood ${truncated === 1 ? "wallet holds" : "wallets hold"} more tokens than Candle lists. The rest are not shown and not in the total.`);
   }
   if ((totals.lp?.unreadable ?? 0) > 0) {
     const n = totals.lp?.unreadable ?? 0;
-    deps.stdout.write(`${n} LP ${n === 1 ? "position" : "positions"} could not be read (the pool did not answer). ${n === 1 ? "It is" : "They are"} marked "not read" and not in the total.
-`);
+    later.push(`${n} LP ${n === 1 ? "position" : "positions"} could not be read (the pool did not answer). ${n === 1 ? "It is" : "They are"} marked "not read" and not in the total.`);
   }
+  writeNotes2(ctx, later);
   if (groups.some((g) => g.group === "vault" && g.wallets.some((w) => w.chain === "hood"))) {
-    deps.stdout.write(`EVM vault keys are read for ETH and USDG only; other tokens they hold are not shown.
-`);
+    writeNotes2(ctx, ["EVM vault keys are read for ETH and USDG only; other tokens they hold are not shown."], "note");
   }
 }
 function writePerpsSection(ctx, section) {
   const out = ctx.deps.stdout;
+  const style = terminalStyle(ctx.deps, "stdout");
   out.write(`
-Hyperliquid (live from Hyperliquid, not in the ledger; not in the total above)
+${financialHeading("Hyperliquid (live from Hyperliquid, not in the ledger; not in the total above)", style)}
 `);
   if (!section.read) {
-    out.write(`Not read: ${terminalText(section.reason)}. The EVM TEE wallets' Hyperliquid accounts are unknown.
-`);
+    writeNotes2(ctx, [
+      `Not read: ${terminalText(section.reason)}. The EVM TEE wallets' Hyperliquid accounts are unknown.`
+    ]);
     return;
   }
   if (section.accounts.length > 0) {
-    out.write(`${renderTable(["WALLET", "ACCOUNT VALUE", "UNREALIZED", "POSITIONS", "RISK AT DEFAULT THRESHOLDS"], section.accounts.map((a) => [
-      `${a.label ? `${a.label} ` : ""}(${shortAddress2(a.address)})`,
+    out.write(tableBlock(ctx, undefined, ["WALLET", "ACCOUNT VALUE", "UNREALIZED", "POSITIONS", "RISK AT DEFAULT THRESHOLDS"], section.accounts.map((a) => [
+      `${a.label ? `${a.label} ` : ""}(${financialId(ctx, a.address)})`,
       formatUsd(Number(a.accountValueUsd)),
-      formatUsd(Number(a.unrealizedPnlUsd)),
+      formatUsd(Number(a.unrealizedPnlUsd), { signed: true }),
       String(a.positionCount),
       a.level
-    ].map(terminalText)))}
-`);
-    out.write(`Hyperliquid subtotal: ${formatUsd(Number(section.subtotal.accountValueUsd))} account value, ${formatUsd(Number(section.subtotal.unrealizedPnlUsd))} unrealized.
+    ]), [{ id: true }, {}, { signed: true }, { priority: 1 }, {}]));
+    out.write(`
+  Hyperliquid subtotal: ${formatUsd(Number(section.subtotal.accountValueUsd))} account value, ${formatUsd(Number(section.subtotal.unrealizedPnlUsd), { signed: true })} unrealized.
 `);
   }
+  const notes = [];
   if (section.empty > 0)
-    out.write(`${section.empty} EVM TEE ${section.empty === 1 ? "wallet holds" : "wallets hold"} nothing on Hyperliquid.
-`);
+    notes.push(`${section.empty} EVM TEE ${section.empty === 1 ? "wallet holds" : "wallets hold"} nothing on Hyperliquid.`);
   if (section.accounts.length === 0 && section.empty === 0 && section.unread.length === 0)
-    out.write(`No EVM TEE wallet to read.
-`);
+    notes.push("No EVM TEE wallet to read.");
+  writeNotes2(ctx, notes, "note");
   if (section.unread.length > 0)
-    out.write(`${section.unread.length} EVM TEE ${section.unread.length === 1 ? "wallet" : "wallets"} not read on Hyperliquid (${terminalText(section.unread[0]?.reason ?? "read failed")}${section.unread.length > 1 ? ", ..." : ""}). Their accounts are unknown, not empty.
-`);
+    writeNotes2(ctx, [
+      `${section.unread.length} EVM TEE ${section.unread.length === 1 ? "wallet" : "wallets"} not read on Hyperliquid (${terminalText(section.unread[0]?.reason ?? "read failed")}${section.unread.length > 1 ? ", ..." : ""}). Their accounts are unknown, not empty.`
+    ]);
 }
 
 // src/commands/profile.ts
@@ -94544,19 +94893,19 @@ ${changes.map((change) => `  ${describeControlChange(change)}`).join(`
     }
     if (!yes)
       await opened.confirm(`sign with ${signers.map((entry) => entry.label).join(", ")}`);
-    const signed = new Map;
+    const signed2 = new Map;
     const signatures = [];
     for (const [i, entry] of signers.entries()) {
       const secret = await decryptKey(vault, entry.id);
       try {
         const signature = signMessage(tx.message.bytes, secret);
-        signed.set(i, signature);
+        signed2.set(i, signature);
         signatures.push({ wallet: entry.label, address: entry.address, signature: base58.encode(signature) });
       } finally {
         wipe(secret);
       }
     }
-    const wire = attachSignatures(tx, signed);
+    const wire = attachSignatures(tx, signed2);
     const signedBase64 = toBase642(wire);
     const txSignature = signatures[0]?.signature ?? "";
     let broadcast2;
@@ -95391,9 +95740,9 @@ ${notes}`, booleans.has("--yes")))
       return printTradingResult(ctx, built);
     if (!signer || built.status !== "built" || typeof built.transaction !== "string")
       throw new TradingError("INVALID_RESPONSE", "Expected a linked wallet build or embedded confirmation.");
-    const signed = await relaySign(ctx, key, signer, built.transaction);
-    await saveOperationSignature(ctx, key, id, "stake", signed, true);
-    return printTradingResult(ctx, await request(ctx, key, `${ROOT}/submit`, { clientStakeId: id, signedTransaction: signed }));
+    const signed2 = await relaySign(ctx, key, signer, built.transaction);
+    await saveOperationSignature(ctx, key, id, "stake", signed2, true);
+    return printTradingResult(ctx, await request(ctx, key, `${ROOT}/submit`, { clientStakeId: id, signedTransaction: signed2 }));
   } catch (error) {
     return tradingFailure(ctx, error);
   }
@@ -97025,10 +97374,10 @@ async function transfer(args, ctx) {
       throw new TradingError("INVALID_RESPONSE", `The transaction Candle built does not move ${safeText(amountShown)} to ${destination.address} and nothing else (${safeText(problem)}); nothing was signed.`);
     ctx.deps.stderr.write(`Checked locally: it moves ${safeText(amountShown)} from ${wallet3.address} to ${destination.address} and nothing else (simulated; a program can still behave differently once signed).
 `);
-    const signed = await relaySign(ctx, key, wallet3, unsigned[0]);
+    const signed2 = await relaySign(ctx, key, wallet3, unsigned[0]);
     const result = await request(ctx, key, "/api/v1/agent/transfer/submit", {
       transferId,
-      signedTransactionsBase64: [signed]
+      signedTransactionsBase64: [signed2]
     });
     const receipt = {
       ...result,
@@ -100077,20 +100426,20 @@ async function vaultFactorRemove(args, ctx) {
       });
     }
     await commitVault(vault, { index: vault.index, envelopes: remaining }, deps);
-    const notice = [
+    const notice2 = [
       "Removing a factor is not revocation.",
       `Envelope ${id} is gone from this file, and nothing else changed.`,
       "The data key never rotates, so any copy of this vault made while that envelope existed still opens with that factor, and the key it yields opens every key blob in the current file, including keys created after this removal.",
       "The only revocation of a compromised factor is a new vault (candle vault init) and moving the funds to its keys."
     ];
     if (ctx.json) {
-      writeJson(deps, { ok: true, removedEnvelopeId: id, notRevocation: notice.join(" ") });
+      writeJson(deps, { ok: true, removedEnvelopeId: id, notRevocation: notice2.join(" ") });
       return 0;
     }
     deps.stdout.write(`Removed envelope ${id}.
 
 `);
-    for (const line of notice)
+    for (const line of notice2)
       deps.stdout.write(`${line}
 `);
     deps.stdout.write(`
@@ -100613,10 +100962,10 @@ function buildTeeMeta(entry, lifecycle, grant) {
   }
   return meta;
 }
-function carryOptional(target, source, fields) {
+function carryOptional(target, source, fields2) {
   if (source === undefined)
     return;
-  for (const field of fields) {
+  for (const field of fields2) {
     const value = source[field];
     if (value !== undefined)
       target[field] = value;
@@ -102325,15 +102674,15 @@ function parsePairsFile(contents, opts) {
     };
   } else {
     for (const { line, text: text3 } of meaningful) {
-      const fields = text3.trim().split(/\s+/);
-      if (fields.length !== 2) {
+      const fields2 = text3.trim().split(/\s+/);
+      if (fields2.length !== 2) {
         findings.push({
           line,
-          problem: fields.length === 1 ? `only one field; a row is "<label> <destination>"` : `${fields.length} fields; a row is "<label> <destination>"`
+          problem: fields2.length === 1 ? `only one field; a row is "<label> <destination>"` : `${fields2.length} fields; a row is "<label> <destination>"`
         });
         continue;
       }
-      rows.push({ line, label: fields[0], destination: fields[1] });
+      rows.push({ line, label: fields2[0], destination: fields2[1] });
     }
   }
   const seen = new Map;
@@ -104534,9 +104883,9 @@ async function vaultTransfer(args, ctx) {
         apiKey2 = await resolveApiKey(ctx.deps, ctx.profile);
         const note2 = (line) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}
 `);
-        const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey2));
-        if (notice !== undefined)
-          note2(notice);
+        const notice2 = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey2));
+        if (notice2 !== undefined)
+          note2(notice2);
         assertWalletLockFree(fromEntry, (await readHoodTeeServer(ctx, fromEntry)).lock, ctx.deps.now());
       }
       return runEvmTransfer({
@@ -104591,9 +104940,9 @@ async function vaultTransfer(args, ctx) {
     displayTransferPlan(ctx, plan, feeQuote);
     await assertTransferAffordable(solana, plan, feeQuote);
     if (promoted) {
-      const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey));
-      if (notice !== undefined)
-        note(notice);
+      const notice2 = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey));
+      if (notice2 !== undefined)
+        note(notice2);
     }
     await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: to });
     const secret = await decryptKey(vault, fromEntry.id);
@@ -105112,10 +105461,10 @@ function checkedBuild(build, wallet3, previewed) {
   }
   return out.sort((a, b) => a.index - b.index);
 }
-function sameMessage(unsigned, signed) {
+function sameMessage(unsigned, signed2) {
   try {
     const a = decodeTransaction(decodeStrictBase64(unsigned)).message.bytes;
-    const b = decodeTransaction(decodeStrictBase64(signed)).message.bytes;
+    const b = decodeTransaction(decodeStrictBase64(signed2)).message.bytes;
     return Buffer.from(a).equals(Buffer.from(b));
   } catch (error) {
     if (error instanceof TransactionDecodeError)
@@ -105166,14 +105515,14 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
   if (build.submitState !== undefined)
     return printTeeJob(ctx, await request(ctx, key, jobPath2), id, wallet3.address);
   const transactions = checkedBuild(build, wallet3.address, new Set(accounts));
-  const signed = [];
+  const signed2 = [];
   for (const transaction of transactions) {
     const signedTransaction = await relaySign(ctx, key, wallet3, transaction.unsignedTransaction);
     if (!sameMessage(transaction.unsignedTransaction, signedTransaction))
       throw new TradingError("INVALID_RESPONSE", `The relay returned a different transaction for close ${transaction.index} than the one checked; nothing was submitted.`);
-    signed.push({ index: transaction.index, signedTransaction });
+    signed2.push({ index: transaction.index, signedTransaction });
   }
-  const result = await request(ctx, key, `${base2}/submit`, { clientTradeId: id, signed });
+  const result = await request(ctx, key, `${base2}/submit`, { clientTradeId: id, signed: signed2 });
   if (result.status === "recovering")
     return printRecovering(ctx, result, id, wallet3.address);
   return printTradingResult(ctx, { ...result, clientTradeId: id });

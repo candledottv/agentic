@@ -12,6 +12,9 @@ import { describe, expect, test } from "bun:test"
 import { run } from "../index"
 import { createCapture, createFakeConfigStore, createFakeStore, createTestDeps } from "../test-support"
 
+/** Wrapped notes and captions read as one line. */
+const flat = (text: string): string => text.replace(/\s+/g, " ")
+
 const API = "https://api.example.test"
 const KEY_A = `cndl_live_${"A".repeat(8)}${"a".repeat(35)}`
 const KEY_B = `cndl_live_${"B".repeat(8)}${"b".repeat(35)}`
@@ -190,15 +193,103 @@ describe("candle pnl", () => {
     expect(h.calls).toEqual([{ path: "/api/v1/agent/books", key: KEY_A }])
     const out = h.stdout.text
     expect(out).toContain("P&L for the account: every profile, the web app and the CLI, one ledger")
-    expect(out).toMatch(/Realized net\s+\$97\.00\s+\(gross \$100\.00, fees \$3\.00\)/)
-    expect(out).toMatch(/Unrealized\s+\$12\.00\s+\(1 of 2 open positions marked; 1 unpriced, not counted\)/)
-    expect(out).toMatch(/Total\s+\$109\.00/)
+    expect(out).toMatch(/Realized net\s+\+\$97\.00\s+gross \$100\.00, fees \$3\.00/)
+    expect(out).toMatch(/Unrealized\s+\+\$12\.00\s+1 of 2 open positions marked; 1 unpriced, not counted/)
+    expect(out).toMatch(/Total\s+\+\$109\.00/)
     expect(out).toContain("History is truncated: this covers the most recent 2000 ledger rows")
     // `solana: {}` and `hood: {}` carry no figures: no chain blocks, the output an older API gets.
     expect(out).not.toContain("All chains")
-    expect(out).toMatch(/MEME\s+solana\s+6\s+\$1\.00\s+\$3\.00\s+\$12\.00\s+Scalper/)
+    expect(out).toMatch(/MEME\s+solana\s+6\s+\$1\.00\s+\$3\.00\s+\+\$12\.00\s+Scalper/)
     // No name and no mark: the short mint, "unpriced", and no figure -- never $0.00.
-    expect(out).toMatch(/Dust…2222\s+solana\s+1,000\s+\$0\.001\s+unpriced\s+-\s+-/)
+    expect(out).toMatch(/Dust…2222\s+solana\s+1,000\s+\$0\.001\s+unpriced\s+–\s+–/)
+  })
+
+  test("--full retains every ID in account and profile tables at 80 columns", async () => {
+    const wallet = `Wall${"A".repeat(40)}`
+    const movedFrom = `From${"C".repeat(40)}`
+    const mint = `Mint${"B".repeat(40)}`
+    const positions = [
+      {
+        ...BOOKS.positions[0],
+        symbol: null,
+        mint,
+        wallet,
+        transferredIn: true,
+        movedInFromWallet: movedFrom,
+        basisSource: "chain",
+      },
+    ]
+    for (const profile of [false, true]) {
+      const h = harness({
+        withProfiles: profile,
+        books: Response.json({ ...BOOKS, positions, lp: LP }),
+        profile: Response.json({
+          ...PROFILE_PNL,
+          lp: LP,
+          pnl: {
+            ...PROFILE_PNL.pnl,
+            totalUsd: 21,
+            openPositions: positions,
+            byWallet: [
+              {
+                wallet,
+                label: "long wallet",
+                chain: "solana",
+                tradesConsidered: 2,
+                realizedNetUsd: 9,
+                unrealizedUsd: 12,
+                openPositions: positions,
+                unmarkedPositions: 0,
+              },
+            ],
+          },
+        }),
+      })
+      h.deps.columns = { stdout: 80 }
+      expect(await run(["pnl", "--full", ...(profile ? ["--profile", "scalper"] : [])], h.deps)).toBe(0)
+      for (const id of [wallet, movedFrom, mint, POS_OPEN, POS_UNPRICED, POS_SWEPT, POOL, TEE]) {
+        expect(h.stdout.text).toContain(id)
+      }
+      expect(h.stdout.text).not.toContain("Mint…")
+      expect(h.stdout.text).not.toContain("Wall…")
+      expect(h.stderr.text).toBe("")
+      for (const line of h.stdout.text.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80)
+    }
+  })
+
+  test("40-column account and profile output wraps titles and keeps unnamed tokens and figures meaningful", async () => {
+    const mint = `Mint${"B".repeat(40)}`
+    const wallet = `Wall${"A".repeat(40)}`
+    const positions = [{ ...BOOKS.positions[0], symbol: null, mint, wallet, markPriceUsd: 2 }]
+    for (const profile of [false, true]) {
+      for (const plain of [false, true]) {
+        const h = harness({
+          withProfiles: profile,
+          books: Response.json({ ...BOOKS, positions }),
+          profile: Response.json({
+            ...PROFILE_PNL,
+            pnl: { ...PROFILE_PNL.pnl, totalUsd: 21, openPositions: positions },
+          }),
+        })
+        h.deps.columns = { stdout: 40 }
+        expect(
+          await run(
+            ["pnl", ...(plain ? ["--plain"] : ["--no-color"]), ...(profile ? ["--profile", "scalper"] : [])],
+            h.deps,
+          ),
+        ).toBe(0)
+        const output = h.stdout.text.split("\n\n").slice(1).join("\n\n") // identity is a separate shared surface
+        expect(flat(output)).toContain(profile ? "P&L for profile scalper" : "P&L for the account")
+        expect(output).toContain("Mint…BBBB")
+        expect(output).toContain("Wall…AAAA")
+        expect(output).toMatch(/AVG ENTRY\s+\$1\.00/)
+        expect(output).toMatch(/MARK\s+\$2\.00/)
+        expect(output).toMatch(/UNREALIZED\s+\+\$12\.00/)
+        expect(output).not.toContain("$...")
+        for (const line of output.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(40)
+        expect(h.stderr.text).toBe("")
+      }
+    }
   })
 
   test("--json is the books with the scope named, one line", async () => {
@@ -217,7 +308,7 @@ describe("candle pnl", () => {
     expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
     expect(h.calls).toEqual([{ path: "/api/v1/agent/keys/BBBBBBBB/pnl", key: KEY_B }])
     expect(h.stdout.text).toContain("P&L for profile scalper (key BBBBBBBB): this key's own fills")
-    expect(h.stdout.text).toMatch(/Total\s+\$9\.00/)
+    expect(h.stdout.text).toMatch(/Total\s+\+\$9\.00/)
     expect(h.stdout.text).toContain("No open positions.")
 
     const j = harness({ withProfiles: true })
@@ -267,25 +358,25 @@ describe("candle pnl", () => {
     const h = harness({ books: Response.json({ ...BOOKS, lp: LP }) })
     expect(await run(["pnl"], h.deps)).toBe(0)
     const out = h.stdout.text
-    expect(out).toMatch(/Realized net\s+\$97\.00/)
-    expect(out).toMatch(/Unrealized\s+\$12\.00/)
+    expect(out).toMatch(/Realized net\s+\+\$97\.00/)
+    expect(out).toMatch(/Unrealized\s+\+\$12\.00/)
     expect(out).toMatch(
-      /LP realized\s+\$16\.50\s+\(withdrawn \$315\.00 against \$300\.00 of cost basis, plus \$1\.50 claimed fees\)/,
+      /LP realized\s+\+\$16\.50\s+withdrawn \$315\.00 against \$300\.00 of cost basis, plus \$1\.50 claimed fees/,
+    )
+    expect(flat(out)).toMatch(
+      /LP unrealized \+\$3\.50 1 of 3 open LP positions valued; 1 unpriced, not counted; 1 closed outside the ledger, not counted/,
     )
     expect(out).toMatch(
-      /LP unrealized\s+\$3\.50\s+\(1 of 3 open LP positions valued; 1 unpriced, not counted; 1 closed outside the ledger, not counted\)/,
-    )
-    expect(out).toMatch(
-      /LP vs holding\s+-\$46\.50\s+\(1 of 1 valued, against holding the deposited tokens \(now \$350\.00\)\)/,
+      /LP vs holding\s+-\$46\.50\s+1 of 1 valued, against holding the deposited tokens \(now \$350\.00\)/,
     )
     // The token Total is the console's figure (P&L spec R4); LP is added on its own line: 109 + 16.5 + 3.5.
-    expect(out).toMatch(/Total\s+\$109\.00\s+\(realized net plus unrealized, tokens only, as the console shows it\)/)
-    expect(out).toMatch(/Total with LP\s+\$129\.00\s+\(the total plus LP realized and unrealized\)/)
+    expect(out).toMatch(/Total\s+\+\$109\.00\s+realized net plus unrealized, tokens only, as the console shows it/)
+    expect(out).toMatch(/Total with LP\s+\+\$129\.00\s+the total plus LP realized and unrealized/)
     expect(out).toContain("1 LP position was closed outside the ledger")
     expect(out).toContain("Open LP positions")
-    expect(out).toMatch(/Posi…AAAA\s+Pool…XXXX\s+TeeW…TTTT\s+\$303\.50\s+\$300\.00\s+\$3\.50\s+-\$46\.50\s+Scalper/)
-    expect(out).toMatch(/Posi…CCCC\s+Pool…XXXX\s+TeeW…TTTT\s+closed outside the ledger\s+\$120\.00\s+-\s+-\s+-/)
-    expect(out).toMatch(/Posi…BBBB\s+Pool…XXXX\s+TeeW…TTTT\s+unpriced\s+\$50\.00\s+-\s+-\s+Scalper/)
+    expect(out).toMatch(/Posi…AAAA\s+Pool…XXXX\s+TeeW…TTTT\s+\$303\.50\s+\$300\.00\s+\+\$3\.50\s+-\$46\.50\s+Scalper/)
+    expect(out).toMatch(/Posi…CCCC\s+Pool…XXXX\s+TeeW…TTTT\s+closed outside the ledger\s+\$120\.00\s+–\s+–\s+–/)
+    expect(out).toMatch(/Posi…BBBB\s+Pool…XXXX\s+TeeW…TTTT\s+unpriced\s+\$50\.00\s+–\s+–\s+Scalper/)
     // The token positions table is still there, before the LP one.
     expect(out.indexOf("Open positions")).toBeLessThan(out.indexOf("Open LP positions"))
   })
@@ -297,9 +388,9 @@ describe("candle pnl", () => {
 
     const p = harness({ withProfiles: true, profile: Response.json({ ...PROFILE_PNL, lp: LP }) })
     expect(await run(["pnl", "--profile", "scalper"], p.deps)).toBe(0)
-    expect(p.stdout.text).toMatch(/Total\s+\$9\.00\s+\(realized net plus unrealized, tokens only/)
-    expect(p.stdout.text).toMatch(/Total with LP\s+\$29\.00/)
-    expect(p.stdout.text).toMatch(/Posi…AAAA\s+Pool…XXXX\s+TeeW…TTTT\s+\$303\.50\s+\$300\.00\s+\$3\.50\s+-\$46\.50\n/)
+    expect(p.stdout.text).toMatch(/Total\s+\+\$9\.00\s+realized net plus unrealized, tokens only/)
+    expect(p.stdout.text).toMatch(/Total with LP\s+\+\$29\.00/)
+    expect(p.stdout.text).toMatch(/Posi…AAAA\s+Pool…XXXX\s+TeeW…TTTT\s+\$303\.50\s+\$300\.00\s+\+\$3\.50\s+-\$46\.50\n/)
     expect(p.stdout.text).not.toContain("BOOK")
   })
 
@@ -308,8 +399,8 @@ describe("candle pnl", () => {
       books: Response.json({ ...BOOKS, lp: { read: false, reason: "The LP ledger or positions could not be read" } }),
     })
     expect(await run(["pnl"], h.deps)).toBe(0)
-    expect(h.stdout.text).toMatch(/LP\s+not read\s+\(The LP ledger or positions could not be read; not in the total\)/)
-    expect(h.stdout.text).toMatch(/Total\s+\$109\.00\s+\(realized net plus unrealized, tokens only\)/)
+    expect(h.stdout.text).toMatch(/LP\s+not read\s+The LP ledger or positions could not be read; not in the total/)
+    expect(h.stdout.text).toMatch(/Total\s+\+\$109\.00\s+realized net plus unrealized, tokens only/)
     expect(h.stdout.text).not.toContain("Open LP positions")
   })
 
@@ -328,8 +419,8 @@ describe("candle pnl", () => {
     }
     const h = harness({ books: Response.json({ ...BOOKS, lp }) })
     expect(await run(["pnl"], h.deps)).toBe(0)
-    expect(h.stdout.text).toMatch(/LP unrealized\s+\$0\.00\s+\(0 of 0 open LP positions valued\)/)
-    expect(h.stdout.text).toMatch(/LP vs holding\s+-\s+\(no valued LP position with every deposit priced\)/)
+    expect(h.stdout.text).toMatch(/LP unrealized\s+\$0\.00\s+0 of 0 open LP positions valued/)
+    expect(h.stdout.text).toMatch(/LP vs holding\s+–\s+no valued LP position with every deposit priced/)
     expect(h.stdout.text).toContain("2 LP ledger legs could not be valued and are not in these figures.")
     expect(h.stdout.text).toContain("LP history is truncated: this covers the most recent 500 LP operations")
     expect(h.stdout.text).not.toContain("Open LP positions")
@@ -344,7 +435,7 @@ describe("candle pnl", () => {
     expect(await run(["pnl"], h.deps)).toBe(0)
     // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
     expect(h.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
-    expect(h.stdout.text).toMatch(/\[2JMEME\s+solana\s+6\s+\$1\.00\s+\$3\.00\s+\$12\.00\s+Scal\[31mper/)
+    expect(h.stdout.text).toMatch(/\[2JMEME\s+solana\s+6\s+\$1\.00\s+\$3\.00\s+\+\$12\.00\s+Scal\[31mper/)
 
     // The LP table and the not-read reason pass through the same filter.
     const lpHostile = {
@@ -360,7 +451,7 @@ describe("candle pnl", () => {
     expect(await run(["pnl"], r.deps)).toBe(0)
     // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
     expect(r.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
-    expect(r.stdout.text).toContain("(down; not in the total)")
+    expect(r.stdout.text).toContain("down; not in the total")
   })
 })
 
@@ -468,18 +559,18 @@ describe("Ember 4d: both chains in candle pnl", () => {
     expect(at("Solana\n")).toBeLessThan(at("Hood\n"))
     expect(at("Hood\n")).toBeLessThan(at("All chains\n"))
     const solana = out.slice(at("Solana\n"), at("Hood\n"))
-    expect(solana).toMatch(/Realized net\s+\$90\.00\s+\(gross \$91\.00, fees \$1\.00\)/)
-    expect(solana).toMatch(/Unrealized\s+\$12\.00\s+\(1 of 2 open positions marked; 1 unpriced, not counted\)/)
-    expect(solana).toMatch(/Total\s+\$102\.00/)
+    expect(solana).toMatch(/Realized net\s+\+\$90\.00\s+gross \$91\.00, fees \$1\.00/)
+    expect(solana).toMatch(/Unrealized\s+\+\$12\.00\s+1 of 2 open positions marked; 1 unpriced, not counted/)
+    expect(solana).toMatch(/Total\s+\+\$102\.00/)
     const hood = out.slice(at("Hood\n"), at("All chains\n"))
-    expect(hood).toMatch(/Realized net\s+\$7\.00/)
-    expect(hood).toMatch(/Unrealized\s+\$20\.00\s+\(1 of 1 open position marked\)/)
-    expect(hood).toMatch(/Total\s+\$27\.00/)
+    expect(hood).toMatch(/Realized net\s+\+\$7\.00/)
+    expect(hood).toMatch(/Unrealized\s+\+\$20\.00\s+1 of 1 open position marked/)
+    expect(hood).toMatch(/Total\s+\+\$27\.00/)
     const all = out.slice(at("All chains\n"))
-    expect(all).toMatch(/Realized net\s+\$97\.00/)
-    expect(all).toMatch(/Total\s+\$129\.00/)
+    expect(all).toMatch(/Realized net\s+\+\$97\.00/)
+    expect(all).toMatch(/Total\s+\+\$129\.00/)
     expect(out).toContain("TOKEN      CHAIN   QUANTITY")
-    expect(out).toMatch(/HOODIE\s+hood\s+40\s+\$0\.5\s+\$1\.00\s+\$20\.00\s+Scalper/)
+    expect(out).toMatch(/HOODIE\s+hood\s+40\s+\$0\.5\s+\$1\.00\s+\+\$20\.00\s+Scalper/)
     expect(out).toMatch(/MEME\s+solana\s+6/)
   })
 
@@ -500,12 +591,12 @@ describe("Ember 4d: both chains in candle pnl", () => {
     const at = (text: string) => out.indexOf(text)
     expect(at("Solana\n")).toBeLessThan(at("Hood\n"))
     expect(at("Hood\n")).toBeLessThan(at("All chains\n"))
-    expect(out.slice(at("Hood\n"), at("All chains\n"))).toMatch(/Total\s+\$25\.00/)
+    expect(out.slice(at("Hood\n"), at("All chains\n"))).toMatch(/Total\s+\+\$25\.00/)
     expect(out).toMatch(/HOODIE\s+hood\s+40/)
     expect(out).toContain("By wallet (each its own cost basis, so the rows need not sum to the total)")
     expect(out).toMatch(/WALLET\s+CHAIN\s+TRADES\s+REALIZED NET\s+UNREALIZED\s+OPEN/)
-    expect(out).toMatch(/hood-tee \(0xF6…0001\)\s+hood\s+1\s+\$5\.00\s+\$20\.00\s+1/)
-    expect(out).toMatch(/main \(Main…1111\)\s+solana\s+1\s+\$4\.00\s+\$0\.00\s+0/)
+    expect(out).toMatch(/hood-tee \(0xF6…0001\)\s+hood\s+1\s+\+\$5\.00\s+\+\$20\.00\s+1/)
+    expect(out).toMatch(/main \(Main…1111\)\s+solana\s+1\s+\+\$4\.00\s+\$0\.00\s+0/)
 
     const j = harness({ withProfiles: true, profile: Response.json(BOTH_CHAINS_PROFILE) })
     expect(await run(["pnl", "--profile", "scalper", "--json"], j.deps)).toBe(0)
@@ -526,7 +617,7 @@ describe("Ember 4d: both chains in candle pnl", () => {
     expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
     expect(h.stdout.text).not.toContain("All chains")
     expect(h.stdout.text).not.toContain("By wallet")
-    expect(h.stdout.text).toMatch(/MEME\s+-\s+6\s+\$1\.00\s+unpriced/)
+    expect(h.stdout.text).toMatch(/MEME\s+–\s+6\s+\$1\.00\s+unpriced/)
   })
 
   test("control characters in a wallet label never reach the terminal", async () => {
@@ -633,24 +724,32 @@ describe("Hyperliquid profile PnL", () => {
   })
   test("R7 amended: a separate heading and net, also counted in the total", async () => {
     const h = harness({ withProfiles: true, profile: Response.json(withPerps) })
+    h.deps.now = () => AT
     expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
     const text = h.stdout.text
     const perps = text.split("\nHyperliquid\n")[1] ?? ""
-    expect(text).toMatch(/Total\s+\$103\.75\s+\(includes Hyperliquid; realized net plus unrealized\)/)
+    expect(text).toMatch(/Total\s+\+\$103\.75\s+includes Hyperliquid; realized net plus unrealized/)
     expect(text).not.toContain("The total excludes Hyperliquid perps")
-    expect(perps).toMatch(/Realized net\s+\$102\.00 \(gross \+ funding - fees\)/)
-    expect(perps).toMatch(/Unrealized\s+-\$7\.25 \(open positions at 2026-10-27T10:02:00\.000Z\)/)
-    expect(perps).toMatch(/Net\s+\$94\.75 \(realized net \+ unrealized; in the total\) \(live, not yet settled\)/)
-    expect(perps).toContain("Coverage: every EVM TEE wallet bound to this profile, per binding period.")
-    expect(perps).toContain(
-      `${W} 2026-10-01T00:00:00.000Z to 2026-10-10T00:00:00.000Z (settled to 2026-10-27T10:02:00.000Z)`,
-    )
-    expect(perps).toContain(`${W} 2026-10-20T00:00:00.000Z to now (live to 2026-10-27T10:02:00.000Z, not yet settled)`)
+    expect(perps).toMatch(/Realized gross\s+\+\$100\.00/)
+    expect(perps).toMatch(/Realized net\s+\+\$102\.00\s+gross \+ funding - fees/)
+    expect(perps).toMatch(/Unrealized\s+-\$7\.25\s+open positions at Oct 27 10:02Z/)
+    expect(perps).toMatch(/Net\s+\+\$94\.75\s+realized net \+ unrealized; in the total; live, not yet settled/)
+    expect(flat(perps)).toContain("Coverage: every EVM TEE wallet bound to this profile, per binding period.")
+    expect(perps).toMatch(new RegExp(`Wallet\\s+${W}`))
+    expect(perps).toMatch(/Binding\s+Oct 1 00:00Z to Oct 10 00:00Z/)
+    expect(perps).toMatch(/Reconciliation\s+settled to Oct 27 10:02Z/)
+    expect(perps).toMatch(/Binding\s+Oct 20 00:00Z to now/)
+    expect(perps).toMatch(/Reconciliation\s+live to Oct 27 10:02Z, not yet settled/)
+    expect(perps).toMatch(/Fills\s+2/)
+    expect(perps).toMatch(/Funding payments\s+1/)
     // I8: funding is positive when earned, on the figures and on every position.
-    expect(perps).toContain("$2.50 (received positive, paid negative)")
-    expect(perps).toContain(
-      "ETH 10x Short 1.5: entry 2000, mark 2005, -$7.25 unrealized, earned $1.25 funding, liquidation 2200",
-    )
+    expect(perps).toMatch(/\+\$2\.50\s+received positive, paid negative/)
+    expect(perps).toMatch(/Position\s+ETH 10x Short 1\.5/)
+    expect(perps).toMatch(/Entry\s+2000\n/)
+    expect(perps).toMatch(/Mark\s+2005\n/)
+    expect(perps).toMatch(/Liquidation\s+2200\n/)
+    expect(perps).toMatch(/Funding\s+\+\$1\.25\s+earned \$1\.25 funding/)
+    expect(perps).not.toContain("2026-10-")
     expect(perps).not.toContain("Unrealized perps are excluded")
     expect(perps).not.toContain("previous bindings excluded")
   })
@@ -666,7 +765,7 @@ describe("Hyperliquid profile PnL", () => {
     const h = harness({ withProfiles: true, profile: Response.json({ ...withPerps, hyperliquid: settled }) })
     expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
     expect(h.stdout.text).not.toContain("live, not yet settled")
-    expect(h.stdout.text).not.toContain("Open perps:")
+    expect(h.stdout.text).not.toContain("Open perps")
     expect(h.stdout.text).toContain("These figures are partial (history_partial).")
   })
   test("an unread section leaves the spot total and says why, with no false zero", async () => {
@@ -681,10 +780,10 @@ describe("Hyperliquid profile PnL", () => {
       }),
     })
     expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
-    expect(h.stdout.text).toMatch(/Total\s+\$9\.00\s+\(realized net plus unrealized\)\n/)
+    expect(h.stdout.text).toMatch(/Total\s+\+\$9\.00\s+realized net plus unrealized\n/)
     expect(h.stdout.text).not.toContain("includes Hyperliquid")
-    expect(h.stdout.text).toContain(`The total excludes Hyperliquid perps: ${reason}`)
-    expect(h.stdout.text).toContain(`Hyperliquid\nUnavailable: ${reason}`)
+    expect(flat(h.stdout.text)).toContain(`The total excludes Hyperliquid perps: ${reason}`)
+    expect(flat(h.stdout.text.split("Hyperliquid\n")[1] ?? "")).toContain(`! Unavailable: ${reason}`)
     expect(h.stdout.text.split("Hyperliquid\n")[1]).not.toContain("$0.00")
   })
   test("an older server's realized-only section is not presented as in the total", async () => {
@@ -705,12 +804,66 @@ describe("Hyperliquid profile PnL", () => {
     }
     const h = harness({ withProfiles: true, profile: Response.json({ ...SPOT_TOTAL, hyperliquid: old }) })
     expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
-    expect(h.stdout.text).toMatch(/Total\s+\$9\.00/)
+    expect(h.stdout.text).toMatch(/Total\s+\+\$9\.00/)
     expect(h.stdout.text).toContain("The total excludes Hyperliquid perps.")
     expect(h.stdout.text).toContain(
       "This server reports realized perps only, for the current binding, outside the total.",
     )
   })
+  test("the kit keeps Hyperliquid meaning at 40 columns, without ISO times or ANSI in plain mode", async () => {
+    const h = harness({
+      withProfiles: true,
+      profile: Response.json({
+        ...withPerps,
+        hyperliquid: {
+          ...section,
+          historyPartial: true,
+          partialReasons: ["missing marks"],
+          positions: [
+            {
+              ...section.positions[0],
+              markPx: null,
+              liquidationPx: null,
+              fundingNetUsd: "-1.25",
+            },
+          ],
+        },
+      }),
+    })
+    h.deps.now = () => AT
+    h.deps.columns = { stdout: 40 }
+    expect(await run(["pnl", "--profile", "scalper", "--plain"], h.deps)).toBe(0)
+    const perps = h.stdout.text.split("\nHyperliquid\n")[1] ?? ""
+    expect(flat(perps)).toContain("received positive, paid negative")
+    expect(flat(perps)).toContain("gross + funding - fees")
+    expect(flat(perps)).toContain("realized net + unrealized; in the total; live, not yet settled")
+    expect(flat(perps)).toContain("Coverage: every EVM TEE wallet bound to this profile, per binding period.")
+    expect(flat(perps)).toContain("settled to Oct 27 10:02Z")
+    expect(flat(perps)).toContain("live to Oct 27 10:02Z, not yet settled")
+    expect(flat(perps)).toContain("paid $1.25 funding")
+    expect(flat(perps)).toContain("no mark; not counted")
+    expect(flat(perps)).toContain("no liquidation price")
+    expect(flat(perps)).toContain("! These figures are partial (missing marks).")
+    expect(perps).not.toContain("2026-10-")
+    expect(perps).not.toContain("\x1b")
+    // The one longer word is a complete wallet address, deliberately preserved for copying.
+    for (const line of perps.split("\n").filter((line) => !line.includes(W))) {
+      expect(Bun.stringWidth(line)).toBeLessThanOrEqual(40)
+    }
+    expect(h.stderr.text).toBe("")
+  })
+
+  test("Hyperliquid signed gains and losses use the kit colors", async () => {
+    const h = harness({
+      withProfiles: true,
+      env: { TERM: "xterm-256color", COLORFGBG: "15;0" },
+      profile: Response.json(withPerps),
+    })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    expect(h.stdout.text).toContain("\x1b[38;5;42m+$100.00\x1b[0m")
+    expect(h.stdout.text).toContain("\x1b[38;5;204m-$7.25\x1b[0m")
+  })
+
   test("JSON passes through the section and perpsInTotal without extra requests", async () => {
     const h = harness({ withProfiles: true, profile: Response.json(withPerps) })
     expect(await run(["pnl", "--profile", "scalper", "--json"], h.deps)).toBe(0)
@@ -833,7 +986,7 @@ describe("P&L A4: one engine in candle pnl", () => {
     const skewed = { ...ENGINE_BOOKS, all: { ...ENGINE_BOOKS.all, totalUsd: 50 } }
     const h = harness({ books: Response.json(skewed) })
     expect(await run(["pnl"], h.deps)).toBe(0)
-    expect(h.stdout.text).toMatch(/Total\s+\$50\.00\s+\(realized net plus unrealized\)/)
+    expect(h.stdout.text).toMatch(/Total\s+\+\$50\.00\s+realized net plus unrealized/)
 
     const chain = {
       ...ENGINE_BOOKS,
@@ -843,41 +996,57 @@ describe("P&L A4: one engine in candle pnl", () => {
     const c = harness({ books: Response.json(chain) })
     expect(await run(["pnl"], c.deps)).toBe(0)
     const out = c.stdout.text
-    expect(out.slice(out.indexOf("Solana\n"), out.indexOf("Hood\n"))).toMatch(/Total\s+\$77\.00/)
+    expect(out.slice(out.indexOf("Solana\n"), out.indexOf("Hood\n"))).toMatch(/Total\s+\+\$77\.00/)
     // Hood sends no totalUsd (an older API): summed here, as before.
-    expect(out.slice(out.indexOf("Hood\n"), out.indexOf("All chains\n"))).toMatch(/Total\s+\$27\.00/)
+    expect(out.slice(out.indexOf("Hood\n"), out.indexOf("All chains\n"))).toMatch(/Total\s+\+\$27\.00/)
   })
 
   test("account scope: the closed-position equation, dust, a WALLET column, By agent and the wallet events", async () => {
     const h = harness({ books: Response.json(ENGINE_BOOKS) })
     expect(await run(["pnl"], h.deps)).toBe(0)
     const out = h.stdout.text
-    expect(out).toContain(
-      "Closed: 3 positions (1 won, 1 lost, 1 with unknown cost). Money made $60.00, money lost -$20.00 and partial sells $57.00 add up to the realized net.",
+    expect(flat(out)).toContain(
+      "Closed 3 positions (1 won, 1 lost, 1 with unknown cost). Money made +$60.00, money lost -$20.00 and partial sells +$57.00 add up to the realized net.",
     )
-    expect(out).toContain(
-      "1 open position is dust (worth under one cent): listed and marked, and counted in the figures.",
+    // Dust is counted in the figures and hidden from the list unless --dust asks.
+    expect(flat(out)).toContain(
+      "1 dust position hidden (worth under one cent; --dust to show). It is counted in the figures.",
     )
+    expect(out).not.toContain("DUSTY")
     expect(out).toContain("1 arrival of tokens came with no cost anyone can state")
     expect(out).toContain("2 moves out of a wallet went where Candle does not follow")
     // One token in two wallets is two rows, each with its wallet.
     expect(out).toMatch(/TOKEN\s+CHAIN\s+WALLET\s+QUANTITY/)
     expect(out).toMatch(/MEME\s+solana\s+Wall…AAA1\s+6\s+.*Scalper/)
-    expect(out).toMatch(/MEME\s+solana\s+Wall…BBB2\s+2\s+.*-\n/)
-    expect(out).toMatch(/DUSTY \(dust\)\s+solana\s+-\s+1\s+/)
+    expect(out).toMatch(/MEME\s+solana\s+Wall…BBB2\s+2\s+.*–\n/)
     // By agent: each key, then Manual, then the account total the rows sum to.
     expect(out).toContain("By agent (each key, then Manual; the rows sum to the account total)")
-    expect(out).toMatch(/Scalper \(AAAAAAAA\)\s+\$80\.00\s+\$12\.00\s+\$92\.00\s+1\s+2/)
-    expect(out).toMatch(/Manual \(web app\)\s+\$17\.00\s+\$0\.00\s+\$17\.00\s+2\s+1/)
-    expect(out).toMatch(/Account total\s+\$97\.00\s+\$12\.00\s+\$109\.00\s+3\s+3/)
+    expect(out).toMatch(/Scalper \(AAAAAAAA\)\s+\+\$80\.00\s+\+\$12\.00\s+\+\$92\.00\s+1\s+2/)
+    expect(out).toMatch(/Manual \(web app\)\s+\+\$17\.00\s+\$0\.00\s+\+\$17\.00\s+2\s+1/)
+    expect(out).toMatch(/Account total\s+\+\$97\.00\s+\+\$12\.00\s+\+\$109\.00\s+3\s+3/)
     expect(out.indexOf("By agent")).toBeLessThan(out.indexOf("Open positions"))
+  })
+
+  test("--dust lists the dust positions, marked, and drops the hidden-count note", async () => {
+    const h = harness({ books: Response.json(ENGINE_BOOKS) })
+    expect(await run(["pnl", "--dust"], h.deps)).toBe(0)
+    const out = h.stdout.text
+    expect(out).toMatch(/DUSTY \(dust\)\s+solana\s+–\s+1\s+/)
+    expect(flat(out)).toContain(
+      "1 open position is dust (worth under one cent): listed and marked, and counted in the figures.",
+    )
+    expect(out).not.toContain("hidden")
+    // Counted either way: the figures do not move.
+    const plain = harness({ books: Response.json(ENGINE_BOOKS) })
+    await run(["pnl"], plain.deps)
+    expect(out.match(/Total\s+\S+/)?.[0]).toBe(plain.stdout.text.match(/Total\s+\S+/)?.[0])
   })
 
   test("account scope from an API that predates A2: none of the new lines or columns", async () => {
     const h = harness()
     expect(await run(["pnl"], h.deps)).toBe(0)
     const out = h.stdout.text
-    for (const text of ["Closed:", "dust", "By agent", "WALLET", "arrival", "moves out"])
+    for (const text of ["Closed ", "dust", "By agent", "WALLET", "arrival", "moves out"])
       expect(out).not.toContain(text)
   })
 
@@ -886,13 +1055,13 @@ describe("P&L A4: one engine in candle pnl", () => {
     expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
     const out = h.stdout.text
     expect(out).toContain("P&L for profile scalper (key BBBBBBBB): this key's share of the account's P&L")
-    expect(out).toMatch(/Total\s+\$9\.00/)
-    expect(out).toContain("Closed: 1 position (1 won, 0 lost). Money made $9.00")
-    expect(out).toContain("History is truncated: this covers the most recent 2000 of the account's ledger rows")
+    expect(out).toMatch(/Total\s+\+\$9\.00/)
+    expect(out).toContain("Closed 1 position (1 won, 0 lost). Money made +$9.00")
+    expect(flat(out)).toContain("History is truncated: this covers the most recent 2000 of the account's ledger rows")
     expect(out).toContain("By wallet (each its own cost basis; the rows sum to the total)")
-    expect(out).toMatch(/main \(Wall…AAA1\)\s+solana\s+2\s+\$6\.00/)
+    expect(out).toMatch(/main \(Wall…AAA1\)\s+solana\s+2\s+\+\$6\.00/)
     // The pool for legs no record places in a wallet is not an address.
-    expect(out).toMatch(/not placed in a wallet\s+solana\s+0\s+\$3\.00/)
+    expect(out).toMatch(/not placed in a wallet\s+solana\s+0\s+\+\$3\.00/)
     expect(out).not.toContain("unknown:")
   })
 

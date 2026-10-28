@@ -262,7 +262,7 @@ describe("A1 role-aware doctor", () => {
       for (let i = 0; i <= secret.length - 12; i++) expect(output).not.toContain(secret.slice(i, i + 12))
     expect(output).toContain("CANDLE_API_KEY")
     expect(output).not.toContain("CANDLE_IGNORED")
-    expect(output).toContain("export them, or store them in a profile")
+    expect(output.replace(/\s+/g, " ")).toContain("export them, or store them in a profile")
     if (json) expect(f.body().provenance.apiKey).toEqual({ source: "CANDLE_API_KEY", prefix: "abcdefgh" })
   })
 })
@@ -403,6 +403,6 @@ describe("TEE limits row", () => {
   test("the human table shows the row under its label", async () => {
     const f = fixture({ readiness: { txLimit: false, rawCaps: caps } })
     await run(["doctor"], f.deps)
-    expect(f.stdout.text).toMatch(/TEE limits\s+PASS\s+no USD limit \(unlimited\)/)
+    expect(f.stdout.text).toMatch(/✓ TEE limits\s+no USD limit \(unlimited\)/)
   })
 })

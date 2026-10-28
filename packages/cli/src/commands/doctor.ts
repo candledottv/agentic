@@ -7,9 +7,21 @@ import { ProfileCoreOwnedError } from "../core/ownership"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
 import { SecretStoreLockedError } from "../keychain"
+import {
+  accent,
+  dim,
+  fields,
+  padDisplay,
+  proseWidth,
+  renderNotice,
+  symbols,
+  type TerminalStyle,
+  terminalStyle,
+  wrapText,
+} from "../presentation"
 import { apiKeyPrefix, credentialEnvOverrides, effectiveProfileFields, printIdentity } from "../profiles"
 import { compareVersions, detectInstall, fetchLatest, helperAssetName, releaseBaseUrl, updateHomeFor } from "../release"
-import { renderError, renderTable, writeUsageFailure } from "../render"
+import { renderError, writeUsageFailure } from "../render"
 import { parseTeeReadiness, TEE_CHAIN_ASSETS } from "../tee-readiness"
 import { HELPER_ENV, HELPER_NAME, locateFido2Helper } from "../vault/fido2"
 import { CONFIG_DIR_ENV, candleConfigDir, defaultVaultPath, fileExists } from "../vault/store"
@@ -85,6 +97,62 @@ async function teeLimitsRow(ctx: CommandContext, apiKey: string, wallets: { chai
       .filter(Boolean)
       .join("; "),
   }
+}
+
+const DEVICE_TOKEN_ROW = "Device token beside signer"
+
+/** What the human report says in place of the row's long detail (the JSON row keeps the full
+ * sentence): the same warning, set apart under the list, with the fix on its own line. */
+const DEVICE_TOKEN_NOTICE =
+  "This machine holds a device token and a key signer, so it can approve its own signer request. Do not leave the trading machine logged in. If you signed in for a move, log out here and approve from the owner's machine:"
+const DEVICE_TOKEN_FIX = "candle auth logout --profile <name>"
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`
+}
+
+/**
+ * The human report: the role, one line per check (a state mark, the check, its detail wrapped
+ * under the detail column), the device-token warning set apart below, then the tally. The state
+ * is the first column's mark (`✓ ! ✗ –`, `ok ! x -` in plain mode), so a FAIL still reads
+ * without color. Exit codes and `--json` rows are decided before this runs.
+ */
+export function renderDoctorReport(rows: CheckRow[], role: string, style: TerminalStyle): string {
+  const sym = symbols(style)
+  const marks: Record<CheckRow["state"], string> = {
+    PASS: accent(sym.ok, style, "positive"),
+    WARN: accent(sym.warning, style, "warning"),
+    FAIL: accent(sym.danger, style, "negative"),
+    SKIP: dim(sym.missing, style),
+  }
+  const markWidth = Math.max(sym.ok.length, sym.warning.length, sym.danger.length, sym.missing.length)
+  const labelWidth = Math.max(...rows.map((row) => row.check.length))
+  const indent = 2
+  const detailWidth = Math.max(1, proseWidth(style) - indent - markWidth - 1 - labelWidth - 2)
+  const out: string[] = [...fields([["Role", role]], style), ""]
+  for (const row of rows) {
+    const text = row.check === DEVICE_TOKEN_ROW ? "" : row.detail
+    const [first = "", ...rest] = text === "" ? [] : wrapText(text, detailWidth)
+    const mark = `${marks[row.state]}${" ".repeat(markWidth - displayMarkWidth(row.state, sym))}`
+    out.push(`${" ".repeat(indent)}${mark} ${padDisplay(row.check, labelWidth)}  ${first}`.trimEnd())
+    for (const line of rest) out.push(`${" ".repeat(indent + markWidth + 1 + labelWidth + 2)}${line}`)
+  }
+  if (rows.some((row) => row.check === DEVICE_TOKEN_ROW)) {
+    out.push("", ...renderNotice("warning", DEVICE_TOKEN_NOTICE, style), `${" ".repeat(indent + 4)}${DEVICE_TOKEN_FIX}`)
+  }
+  const count = (state: CheckRow["state"]) => rows.filter((row) => row.state === state).length
+  const tally = [
+    plural(count("PASS"), "passed", "passed"),
+    ...(count("WARN") > 0 ? [plural(count("WARN"), "warning", "warnings")] : []),
+    ...(count("FAIL") > 0 ? [plural(count("FAIL"), "failed", "failed")] : []),
+    ...(count("SKIP") > 0 ? [plural(count("SKIP"), "skipped", "skipped")] : []),
+  ].join(` ${sym.note} `)
+  out.push("", `${" ".repeat(indent)}${dim(tally, style)}`)
+  return out.join("\n")
+}
+
+function displayMarkWidth(state: CheckRow["state"], sym: ReturnType<typeof symbols>): number {
+  return { PASS: sym.ok, WARN: sym.warning, FAIL: sym.danger, SKIP: sym.missing }[state].length
 }
 
 export async function doctor(args: string[], ctx: CommandContext): Promise<number> {
@@ -617,12 +685,6 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
     return exitCode
   }
 
-  deps.stdout.write(`Role: ${role}\n`)
-  deps.stdout.write(
-    `${renderTable(
-      ["Check", "Status", "Detail"],
-      rows.map((row) => [row.check, row.state, row.detail]),
-    )}\n`,
-  )
+  deps.stdout.write(`${renderDoctorReport(rows, role, terminalStyle(deps, "stdout"))}\n`)
   return exitCode
 }
