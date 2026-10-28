@@ -114,9 +114,9 @@ describe("wallets signer column", () => {
   /** The rendered linked-wallets line for `id`, split into cells. `renderTable` pads every column
    * except the last and joins with two spaces, so the Signer value is always the final cell. */
   function cellsFor(text: string, id: string): string[] {
-    const line = text.split("\n").find((candidate) => candidate.startsWith(`${id} `))
+    const line = text.split("\n").find((candidate) => candidate.trimStart().startsWith(`${id} `))
     if (line === undefined) throw new Error(`no rendered row for ${id} in:\n${text}`)
-    return line.split(/\s{2,}/)
+    return line.trim().split(/\s{2,}/)
   }
 
   function signerCell(text: string, id: string): string | undefined {
@@ -162,8 +162,8 @@ describe("wallets signer column", () => {
     // Reverting the column drops both of these cells and leaves the two rows indistinguishable.
     expect(signerCell(stdout.text, "lw_here")).toBe("stored")
     expect(signerCell(stdout.text, "lw_elsewhere")).toBe("none")
-    expect(stdout.text).toContain(NONE_HINT_FIRST_LINE)
-    expect(stdout.text).toContain(NONE_HINT_SECOND_LINE)
+    expect(stdout.text.replace(/\s+/g, " ")).toContain(NONE_HINT_FIRST_LINE)
+    expect(stdout.text.replace(/\s+/g, " ")).toContain(NONE_HINT_SECOND_LINE)
     // The hint is about the signer, not an error: nothing failed here.
     expect(stderr.text).toBe("")
   })
@@ -183,7 +183,7 @@ describe("wallets signer column", () => {
     expect(code).toBe(0)
     // On revert this reads "no" in the Revoked column and says nothing about the leftover secret.
     expect(signerCell(stdout.text, "lw_stale")).toBe("stale")
-    expect(stdout.text).toContain(STALE_HINT)
+    expect(stdout.text.replace(/\s+/g, " ")).toContain(STALE_HINT)
     // Only the state a row is actually in gets a hint.
     expect(stdout.text).not.toContain(NONE_HINT_FIRST_LINE)
   })
@@ -202,7 +202,7 @@ describe("wallets signer column", () => {
 
     expect(code).toBe(0)
     // There is nothing to say about a revoked wallet with no local secret, so it says nothing.
-    expect(signerCell(stdout.text, "lw_gone")).toBe("-")
+    expect(signerCell(stdout.text, "lw_gone")).toBe("–")
     expect(stdout.text).not.toContain(NONE_HINT_FIRST_LINE)
     expect(stdout.text).not.toContain(STALE_HINT)
   })
@@ -314,9 +314,9 @@ describe("wallets signer column", () => {
     const code = await run(["wallets"], createTestDeps({ fetch, store, stdout }))
 
     expect(code).toBe(0)
-    const header = stdout.text.split("\n").find((line) => line.startsWith("Id "))
+    const header = stdout.text.split("\n").find((line) => line.trimStart().startsWith("Id "))
     // BE-329 added Trusted before Signer; Signer stays last.
-    expect(header?.split(/\s{2,}/)).toEqual([
+    expect(header?.trim().split(/\s{2,}/)).toEqual([
       "Id",
       "Wallet",
       "Address",
@@ -356,7 +356,7 @@ describe("wallets signer column", () => {
     expect(cellsFor(stdout.text, "lw_sess")?.[6]).toBe("yes")
     expect(cellsFor(stdout.text, "lw_mark")?.[6]).toBe("yes")
     expect(cellsFor(stdout.text, "lw_key")?.[6]).toBe("no")
-    expect(cellsFor(stdout.text, "lw_gone")?.[6]).toBe("-")
+    expect(cellsFor(stdout.text, "lw_gone")?.[6]).toBe("–")
     expect(stdout.text).toContain("candle wallets trust")
   })
 
@@ -400,7 +400,7 @@ describe("wallets signer column", () => {
     expect(cellsFor(stdout.text, "lw_tee02")?.[4]).toBe("tee")
     expect(cellsFor(stdout.text, "lw_future")?.[4]).toBe("linked")
     expect(cellsFor(stdout.text, "lw_plain1")?.[4]).toBe("linked")
-    expect(stdout.text).toContain("candle swap --wallet")
+    expect(stdout.text.replace(/\s+/g, " ")).toContain("candle swap --wallet")
   })
 
   test("an all-linked listing says nothing about TEE wallets", async () => {
@@ -445,7 +445,7 @@ describe("wallets signer column", () => {
     expect(signerCell(stdout.text, "lw_here")).toBe("stored")
     // The id cell is empty, so this row is found by its address rather than by `startsWith`.
     const orphan = stdout.text.split("\n").find((line) => line.includes("So1NoId"))
-    expect(orphan?.split(/\s{2,}/).at(-1)).toBe("-")
+    expect(orphan?.split(/\s{2,}/).at(-1)).toBe("–")
     // Exactly one signer ref was asked for: the row with an id.
     expect(probed.filter((ref) => ref.startsWith("wallet_signer_"))).toEqual(["wallet_signer_lw_here"])
 
@@ -650,7 +650,7 @@ describe("the listing follows the cursor to the end of the list", () => {
     const code = await run(["wallets"], createTestDeps({ fetch, store: createFakeStore({ api_key: "ck_x" }), stdout }))
 
     expect(code).toBe(0)
-    expect(stdout.text).toContain("Linked wallets (207):")
+    expect(stdout.text).toContain("Linked wallets (207)")
     // The first row, one from page two, and the LAST row -- the one the old single-page read
     // could never reach.
     expect(stdout.text).toContain("Addr0")

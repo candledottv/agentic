@@ -55,7 +55,9 @@ describe("verify", () => {
       }),
     )
     expect(code).toBe(0)
-    expect(stdout.text).toBe(`verified: ${IDENTITY} (identity from --identity)\n`)
+    expect(stdout.text).toBe(
+      `✓ Release signature verified\n  File      ${FILE}\n  Identity  ${IDENTITY}\n  Source    identity from --identity\n  Issuer    https://token.actions.githubusercontent.com\n`,
+    )
     expect(stderr.text).toBe("")
   })
 
@@ -126,7 +128,7 @@ describe("verify", () => {
     )
     expect(code).toBe(1)
     expect(stderr.text).toContain("invalid release version: x|")
-    expect(stdout.text).not.toContain("verified:")
+    expect(stdout.text).not.toContain("Release signature verified")
   })
 
   // The other provenance: a real verification whose identity nobody typed. The fixture is signed
@@ -145,7 +147,7 @@ describe("verify", () => {
         }),
       ),
     ).toBe(0)
-    expect(typed.text).toContain("(identity from --identity)")
+    expect(typed.text).toContain("Source    identity from --identity")
     expect(typed.text).not.toContain("latest.json")
   })
 

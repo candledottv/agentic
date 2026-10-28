@@ -3,13 +3,19 @@
  * Phase 2). These commands need no credentials and bypass profile resolution at dispatch, which
  * is what lets `profile use` resolve the "several profiles, none selected" refusal.
  */
+
 import { fetchAccount } from "../account"
 import { parseArgs } from "../args"
 import { insecureApiUrlFault, resolveApiUrl } from "../client"
 import type { CommandContext } from "../deps"
+import { writeFields, writeSuccess, writeTable } from "../human-output"
+import { notice, symbols, terminalStyle } from "../presentation"
 import { identityLine, identityStyle, isValidProfileName, profileSecretRef, profileTable, rpcHostOf } from "../profiles"
-import { renderTable, writeLocalFailure, writeUsageFailure } from "../render"
 import { validateSolanaRpcUrl } from "../solana-endpoint"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 
 export async function profileList(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
@@ -24,22 +30,23 @@ export async function profileList(args: string[], ctx: CommandContext): Promise<
     return 0
   }
   if (rows.length === 0) {
-    deps.stdout.write("No profiles on this machine. Run: candle auth login\n")
+    notice(deps, "stdout", "note", "No profiles on this machine. Run:\ncandle auth login")
     return 0
   }
-  deps.stdout.write(
-    renderTable(
-      ["Profile", "Account", "Cached", "Host", "Solana RPC", "Key"],
-      rows.map((r) => [
-        r.active ? `${r.name} (active)` : r.name,
-        r.account ?? "unknown",
-        r.cachedAge,
-        r.apiUrl ?? "-",
-        // BE-355 (D5): the host, or `public default`; never the URL.
-        r.rpcHost ?? "public default",
-        r.keyPrefix ?? "-",
-      ]),
-    ),
+  writeTable(
+    deps,
+    "stdout",
+    ["Profile", "Account", "Cached", "Host", "Solana RPC", "Key"],
+    rows.map((r) => [
+      r.active ? `${r.name} (active)` : r.name,
+      r.account ?? symbols(terminalStyle(deps, "stdout")).missing,
+      r.cachedAge,
+      r.apiUrl ?? symbols(terminalStyle(deps, "stdout")).missing,
+      // BE-355 (D5): the host, or `public default`; never the URL.
+      r.rpcHost ?? "public default",
+      r.keyPrefix ?? symbols(terminalStyle(deps, "stdout")).missing,
+    ]),
+    [{ id: true }, { id: true }, { priority: 1 }, { priority: 3, id: true }, { priority: 2, id: true }, { id: true }],
   )
   return 0
 }
@@ -95,7 +102,11 @@ export async function profileSet(args: string[], ctx: CommandContext): Promise<n
   await deps.updateProfile(name, { rpcUrl })
   const rpcHost = rpcUrl === undefined ? null : rpcHostOf(rpcUrl)
   if (json) deps.stdout.write(`${JSON.stringify({ ok: true, profile: name, rpcHost })}\n`)
-  else deps.stdout.write(`Solana RPC for ${name}: ${rpcHost ?? "public default"}\n`)
+  else
+    writeFields(deps, "stdout", [
+      ["Profile", name],
+      ["Solana RPC", rpcHost ?? "public default"],
+    ])
   return 0
 }
 
@@ -173,7 +184,11 @@ export async function profileAdd(args: string[], ctx: CommandContext): Promise<n
   await deps.updateProfile(name, { apiUrl: apiUrlFlag })
   if (!config.activeProfile) await deps.writeConfig({ activeProfile: name })
   if (json) deps.stdout.write(`${JSON.stringify({ name, apiUrl: apiUrlFlag })}\n`)
-  else deps.stdout.write(`Created profile ${name} for ${apiUrlFlag}. Run: candle auth login --profile ${name}\n`)
+  else {
+    writeSuccess(deps, "stdout", `Created profile ${name}.`)
+    writeFields(deps, "stdout", [["API", apiUrlFlag]])
+    notice(deps, "stdout", "note", `Run:\ncandle auth login --profile ${name}`)
+  }
   return 0
 }
 
@@ -215,7 +230,14 @@ export async function profileUse(args: string[], ctx: CommandContext): Promise<n
   // that can be acted on.
   const envProfile = deps.env.CANDLE_PROFILE?.trim()
   if (envProfile && envProfile !== name) {
-    deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.\n`)
+    if (json) deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.\n`)
+    else
+      notice(
+        deps,
+        "stderr",
+        "warning",
+        `CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.`,
+      )
   }
 
   // Refresh the cached account from the profile's OWN stored key (not an env override, which
@@ -234,14 +256,23 @@ export async function profileUse(args: string[], ctx: CommandContext): Promise<n
       username = liveUsername
       await deps.updateProfile(name, { account: live, username: liveUsername, accountCachedAt: deps.now() })
     } else {
-      deps.stderr.write(`Could not refresh the account for ${name} (${failure}); keeping the cached value.\n`)
+      if (json) deps.stderr.write(`Could not refresh the account for ${name} (${failure}); keeping the cached value.\n`)
+      else
+        notice(
+          deps,
+          "stderr",
+          "warning",
+          `Could not refresh the account for ${name} (${failure}); keeping the cached value.`,
+        )
     }
   } else {
     // A profile with no stored key switches fine, and prints an identity line indistinguishable
     // from a working one. Without this the operator learns it holds no credentials from the next
     // authenticated command, one message removed from the cause. Still exit 0: the switch is what
     // was asked for, and it happened.
-    deps.stderr.write(`No stored credentials for ${name}. Run: candle auth login --profile ${name}\n`)
+    if (json) deps.stderr.write(`No stored credentials for ${name}. Run: candle auth login --profile ${name}\n`)
+    else
+      notice(deps, "stderr", "warning", `No stored credentials for ${name}. Run:\ncandle auth login --profile ${name}`)
   }
   // The identity line is this command's own output, so it ends the stream. A preface
   // (printIdentity, setup's live account, mcp's stderr line) keeps a blank line after it
@@ -293,7 +324,7 @@ export async function profileRename(args: string[], ctx: CommandContext): Promis
   delete profiles[from]
   await deps.writeConfig({ profiles, ...(config.activeProfile === from ? { activeProfile: to } : {}) })
   if (json) deps.stdout.write(`${JSON.stringify({ from, to })}\n`)
-  else deps.stdout.write(`Renamed profile ${from} to ${to}.\n`)
+  else writeSuccess(deps, "stdout", `Renamed profile ${from} to ${to}.`)
   return 0
 }
 
@@ -341,9 +372,8 @@ export async function profileRemove(args: string[], ctx: CommandContext): Promis
     // command refuses with "several profiles exist and none is selected", so the way out is
     // named here instead of being discovered there.
     const needsPick = wasActive && Object.keys(profiles).length > 1
-    deps.stdout.write(
-      `Deleted profile ${name} and its stored credentials.${needsPick ? " Run: candle profile use <name>" : ""}\n`,
-    )
+    writeSuccess(deps, "stdout", `Deleted profile ${name} and its stored credentials.`)
+    if (needsPick) notice(deps, "stdout", "note", "Run:\ncandle profile use <name>")
   }
   return 0
 }

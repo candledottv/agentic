@@ -69,7 +69,7 @@ test("the compiled binary reports its version, verifies the fixture, and refuses
   const ok = await verify(join(fx, "fixture.bin"))
   expect(ok.err).toBe("")
   expect(ok.code).toBe(0)
-  expect(ok.out).toContain("verified:")
+  expect(ok.out).toContain("Release signature verified")
 
   // One flipped byte, written as bytes: the fixture is committed as `.bin` precisely so nothing
   // normalizes it, and a round trip through text would defeat that.

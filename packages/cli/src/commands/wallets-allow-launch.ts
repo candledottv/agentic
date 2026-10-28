@@ -14,13 +14,21 @@
  * `disallow-launch --yes` skips the confirm, since turning it off only narrows what an agent may do;
  * `allow-launch` has no such flag.
  */
+
 import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
+import { writeSuccess } from "../human-output"
+import { notice, symbols, type TerminalStyle, terminalStyle } from "../presentation"
 import { printIdentity } from "../profiles"
-import { errorEnvelope, renderTable, writeLocalFailure, writeUsageFailure } from "../render"
+import { errorEnvelope, renderTable } from "../render"
 import { CONFIRM_WORD } from "../vault/promote-support"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenMessage,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 
 const PREVIEW_PATH = "/api/v1/agent/tee-wallets/allow-launch/preview"
 const capabilityPath = (id: string) => `/api/v1/agent/wallets/${encodeURIComponent(id)}/capabilities`
@@ -57,10 +65,25 @@ interface PreviewResponse {
 const nameOf = (row: AllowLaunchRow) => row.label ?? row.address
 
 /** The screen's wallet table: what will change, with the key each wallet is bound to. */
-export function allowLaunchTable(rows: AllowLaunchRow[]): string {
+export function allowLaunchTable(rows: AllowLaunchRow[], style?: TerminalStyle): string {
   return renderTable(
     ["line", "label", "wallet", "address", "bound key"],
-    rows.map((row, i) => [String(i + 1), row.label ?? "-", row.chain, row.address, row.boundKeyPrefix ?? "-"]),
+    rows.map((row, i) => [
+      String(i + 1),
+      row.label ?? (style ? symbols(style).missing : "-"),
+      row.chain,
+      row.address,
+      row.boundKeyPrefix ?? (style ? symbols(style).missing : "-"),
+    ]),
+    style
+      ? {
+          style,
+          width: style.width,
+          indent: 2,
+          rule: false,
+          columns: [{ priority: 1 }, { priority: 2 }, { priority: 3 }, { id: true }, { id: true }],
+        }
+      : undefined,
   )
 }
 
@@ -101,7 +124,7 @@ function writeFailure(ctx: CommandContext, result: Extract<ApiResult, { ok: fals
   if (json) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...(suggestion ? { suggestion } : {}) })}\n`)
   } else {
-    deps.stderr.write(`${code ?? `HTTP ${result.status}`}: ${message}${suggestion ? ` ${suggestion}` : ""}\n`)
+    writeScreenMessage(deps, `${code ?? `HTTP ${result.status}`}: ${message}`, suggestion)
   }
   return 1
 }
@@ -160,7 +183,7 @@ async function setAllowLaunch(args: string[], ctx: CommandContext, enabled: bool
   const changing = shown.changed
   if (changing.length === 0) {
     if (json) deps.stdout.write(`${JSON.stringify({ ...shown, command })}\n`)
-    else deps.stdout.write(nothingToChangeLine(shown, enabled))
+    else notice(deps, "stdout", "note", nothingToChangeLine(shown, enabled).trimEnd())
     // Naming only wallets the capability cannot apply to is a mistake to report, not a no-op.
     return shown.unchanged.length === 0 && shown.notTee.length > 0 ? 1 : 0
   }
@@ -168,7 +191,7 @@ async function setAllowLaunch(args: string[], ctx: CommandContext, enabled: bool
   // The screen, on stderr, so `--json` stdout carries exactly one document.
   const n = changing.length
   const screen = [
-    allowLaunchTable(changing),
+    allowLaunchTable(changing, json ? undefined : terminalStyle(deps, "stderr")),
     ...(shown.unchanged.length > 0
       ? [`${shown.unchanged.length} already ${enabled ? "on" : "off"}: ${shown.unchanged.map(nameOf).join(", ")}`]
       : []),
@@ -179,7 +202,11 @@ async function setAllowLaunch(args: string[], ctx: CommandContext, enabled: bool
       : `${n === 1 ? "This wallet" : `These ${n} wallets`} will no longer be able to pay for a launch. Trading is unchanged.`,
     "",
   ]
-  deps.stderr.write(`${screen.join("\n")}\n`)
+  if (json) deps.stderr.write(`${screen.join("\n")}\n`)
+  else {
+    deps.stderr.write(`${screen[0]}\n`)
+    for (const text of screen.slice(1)) if (text) notice(deps, "stderr", "warning", text)
+  }
 
   if (!skipConfirm) {
     const typed = await deps.promptLine(
@@ -221,9 +248,14 @@ async function setAllowLaunch(args: string[], ctx: CommandContext, enabled: bool
     return failed.length > 0 ? 1 : 0
   }
   const verb = enabled ? "Allowed launches from" : "Stopped launches from"
-  deps.stdout.write(`${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.\n`)
+  writeSuccess(deps, "stdout", `${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.`)
   for (const failure of failed) {
-    deps.stderr.write(`Not changed: ${failure.id}: ${failure.message}${failure.code ? ` (${failure.code})` : ""}.\n`)
+    notice(
+      deps,
+      "stderr",
+      "danger",
+      `Not changed: ${failure.id}: ${failure.message}${failure.code ? ` (${failure.code})` : ""}.`,
+    )
   }
   return failed.length > 0 ? 1 : 0
 }

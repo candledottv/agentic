@@ -37,6 +37,7 @@ import { apiRequest, insecureApiUrlFault } from "../client"
 import { ProfileCoreOwnedError } from "../core/ownership"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
 import { fields, heading, notice, success, symbols, terminalStyle } from "../presentation"
 import {
   credentialEnvOverrides,
@@ -657,7 +658,7 @@ export async function authLogout(args: string[], ctx: CommandContext): Promise<n
     if (result.ok) {
       revokedKey = keyPrefix
     } else if (!json) {
-      deps.stdout.write("Could not revoke the stored API key remotely (clearing it locally anyway).\n")
+      notice(deps, "stdout", "warning", "Could not revoke the stored API key remotely (clearing it locally anyway).")
     }
   }
 
@@ -709,20 +710,29 @@ export async function authLogout(args: string[], ctx: CommandContext): Promise<n
     return 0
   }
 
-  deps.stdout.write("Local credentials cleared.\n")
+  writeSuccess(deps, "stdout", "Local credentials cleared.")
   if (liveEnvOverrides.length > 0) {
-    deps.stdout.write(
-      `Still set in this shell: ${liveEnvOverrides.join(", ")}. Those beat the store, so they remain live until you unset them.\n`,
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `Still set in this shell: ${liveEnvOverrides.join(", ")}. Those beat the store, so they remain live until you unset them.`,
     )
   }
-  deps.stdout.write(
-    "The device token itself is session-only to revoke -- that is intentional (a stolen token cannot read device metadata or revoke a sibling device). Sign in to the portal to revoke it there.\n",
+  notice(
+    deps,
+    "stdout",
+    "note",
+    "The device token itself is session-only to revoke -- that is intentional (a stolen token cannot read device metadata or revoke a sibling device). Sign in to the portal to revoke it there.",
   )
   if (device)
-    deps.stdout.write(
-      `Device ${device.prefix}${device.label ? ` (${device.label})` : ""} is still live on the server. Revoke it under Connected devices: ${portalUrl}\n`,
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `Device ${device.prefix}${device.label ? ` (${device.label})` : ""} is still live on the server. Revoke it under Connected devices:\n${portalUrl}`,
     )
-  else deps.stdout.write(`Connected devices: ${portalUrl}\n`)
+  else writeFields(deps, "stdout", [["Connected devices", portalUrl]])
   return 0
 }
 

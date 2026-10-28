@@ -320,7 +320,7 @@ describe("wallets import", () => {
     expect(code).toBe(0)
     const listCalls = calls.filter((c) => new URL(c.url).pathname === "/api/v1/agent/wallets")
     expect(listCalls.length).toBeLessThanOrEqual(25)
-    expect(stdout.text).toContain("could not read the wallet back")
+    expect(stdout.text).toContain("Could not read the wallet back")
     // And it does NOT accuse the operator of being on the wrong account.
     expect(stderr.text).not.toContain("not on the account")
   })
@@ -341,7 +341,7 @@ describe("wallets import", () => {
 
     const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/k"], deps)
     expect(code).toBe(0)
-    expect(stdout.text).toContain("could not read the wallet back")
+    expect(stdout.text).toContain("Could not read the wallet back")
   })
 
   test("success names the account and host, and does not ask the caller to keep a key they never got", async () => {
@@ -356,7 +356,7 @@ describe("wallets import", () => {
 
     const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/k"], deps)
     expect(code).toBe(0)
-    expect(stdout.text).toContain(`Account:`)
+    expect(stdout.text).toContain(`  Account          ${ACCOUNT}\n`)
     expect(stdout.text).toContain(ACCOUNT)
     expect(stdout.text).toContain("nothing to save by hand")
     // The old copy told the caller to "keep the signer key" while also saying it was in the

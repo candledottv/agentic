@@ -68,8 +68,8 @@ describe("keys update --embedded-wallet (device token)", () => {
       { permission: "allowed", expect: "denied" },
     ])
     expect(prompts).toEqual([`Type the key prefix ${PREFIX} to allow it: `])
-    expect(stderr.text).toContain("Embedded wallet denied  ->  allowed   (widen)")
-    expect(stdout.text).toContain(`${PREFIX} (agent-one)'s embedded wallet is now allowed. Change id chg1`)
+    expect(stderr.text).toContain("Embedded wallet  denied  ->  allowed   (widen)")
+    expect(stdout.text).toContain(`✓ ${PREFIX} (agent-one)'s embedded wallet is now allowed.\n  Change id  chg1\n`)
     expect(stored.value).toBe("allowed")
   })
 
@@ -210,7 +210,7 @@ describe("keys self embedded-wallet deny (the profile's own API key)", () => {
     expect(await run(["keys", "self", "embedded-wallet", "deny"], deps)).toBe(0)
     expect(bodies(calls)).toEqual([{ permission: "denied" }])
     expect(new Headers(calls[0]?.init.headers).get("x-api-key")).toBe(API_KEY)
-    expect(stdout.text).toContain(`${PREFIX}'s embedded wallet is now denied. Change id chg2`)
+    expect(stdout.text).toContain(`ok ${PREFIX}'s embedded wallet is now denied.\n  Change id  chg2\n`)
   })
 
   test("allow is refused locally before any request: a key can never allow itself", async () => {

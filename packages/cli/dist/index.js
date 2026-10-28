@@ -17646,6 +17646,29 @@ var init_swap = __esm(() => {
   }).passthrough();
 });
 
+// src/human-output.ts
+function writeFields(deps, stream, rows, title) {
+  const style = terminalStyle(deps, stream);
+  deps[stream].write(`${title ? `${heading(title, style)}
+
+` : ""}${fields(rows, style).join(`
+`)}
+`);
+}
+function writeSuccess(deps, stream, text) {
+  deps[stream].write(`${success(text, terminalStyle(deps, stream))}
+`);
+}
+function writeTable(deps, stream, headers, rows, columns) {
+  const style = terminalStyle(deps, stream);
+  deps[stream].write(`${renderTable(headers, rows, { style, width: style.width, indent: 2, rule: false, columns })}
+`);
+}
+var init_human_output = __esm(() => {
+  init_presentation();
+  init_render();
+});
+
 // src/commands/key-output.ts
 function scopeSummary(scopes, style, title = "Scopes") {
   const rows = sortAgentKeyScopes(scopes).map((scope) => {
@@ -33476,17 +33499,17 @@ async function wallets(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
-    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
+    writeScreenLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
     return 1;
   }
   const embedded = await apiRequest("/api/v1/agent/wallets/embedded", {
@@ -33497,23 +33520,31 @@ async function wallets(args, ctx) {
     env: deps.env
   });
   if (!embedded.ok) {
-    writeFailure(deps, embedded, { apiUrl, authType: "key" }, json);
+    writeScreenFailure(deps, embedded, { apiUrl, authType: "key" }, json);
     return 1;
   }
   const linked = await readAllLinkedWallets({ apiKey, apiUrl, deps });
   if (!linked.ok) {
-    writeFailure(deps, linked.response, { apiUrl, authType: "key" }, json);
+    writeScreenFailure(deps, linked.response, { apiUrl, authType: "key" }, json);
     return 1;
   }
   const listing = linked.listing;
   const linkedRows = listing.rows;
   const keySignerQuorums = new Set((await localKeySigners(deps)).flatMap((entry) => entry.signerQuorumId ? [entry.signerQuorumId] : []));
   const { states: signerStates, storeError } = await probeSignerStates(linkedRows, deps.store, keySignerQuorums);
-  if (storeError !== undefined)
-    deps.stderr.write(`Could not read the signer store: ${storeError}
+  if (storeError !== undefined) {
+    if (json)
+      deps.stderr.write(`Could not read the signer store: ${storeError}
 `);
-  if (listing.incomplete !== undefined)
-    deps.stderr.write(incompleteNotice(listing));
+    else
+      notice(deps, "stderr", "warning", `Could not read the signer store: ${storeError}`);
+  }
+  if (listing.incomplete !== undefined) {
+    if (json)
+      deps.stderr.write(incompleteNotice(listing));
+    else
+      notice(deps, "stderr", "warning", incompleteNotice(listing).trimEnd());
+  }
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       embedded: embedded.body,
@@ -33530,43 +33561,75 @@ async function wallets(args, ctx) {
 `);
     return 0;
   }
+  const style = terminalStyle(deps, "stdout");
+  const tableOptions = { style, width: style.width, indent: 2, rule: false };
   const embeddedBody = embedded.body;
-  deps.stdout.write(`Embedded (launch) wallets:
+  deps.stdout.write(`${heading("Embedded (launch) wallets", style)}
+
 `);
   deps.stdout.write(`${renderTable(["Wallet", "Address", "Delegated", "Launches on"], [
     [
       "solana",
-      embeddedBody.wallets.solana?.address ?? "none",
+      embeddedBody.wallets.solana?.address ?? symbols(style).missing,
       embeddedBody.wallets.solana?.delegated ? "yes" : "no",
       "solana"
     ],
     [
       "evm",
-      embeddedBody.wallets.evm?.address ?? "none",
+      embeddedBody.wallets.evm?.address ?? symbols(style).missing,
       embeddedBody.wallets.evm?.delegated ? "yes" : "no",
       "hood"
     ]
-  ])}
+  ], { ...tableOptions, columns: [{ priority: 3 }, { id: true }, { priority: 2 }, { priority: 1 }] })}
 `);
   deps.stdout.write(`
-Linked wallets (${linkedRows.length}):
+${heading(`Linked wallets (${linkedRows.length})`, style)}
+
 `);
   if (linkedRows.length === 0) {
-    deps.stdout.write(`(none)
-`);
+    notice(deps, "stdout", "note", "No linked wallets.");
   } else {
     const cells = linkedRows.map((wallet) => signerCell(signerStates.get(wallet._id), wallet));
-    deps.stdout.write(`${renderTable(["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Trusted", "Signer"], linkedRows.map((wallet, index) => [
-      wallet._id,
-      wallet.chain,
-      wallet.address,
-      wallet.label ?? "-",
-      isTeeRow(wallet) ? "tee" : "linked",
-      wallet.revokedAt ? "yes" : "no",
-      trustedCell(wallet),
-      cells[index] ?? "-"
-    ]))}
+    if (style.width < 100) {
+      for (const [index, wallet] of linkedRows.entries()) {
+        writeFields(deps, "stdout", [
+          ["Id", wallet._id],
+          ["Address", wallet.address],
+          ["Label", wallet.label],
+          ["Wallet", wallet.chain],
+          ["Kind", isTeeRow(wallet) ? "tee" : "linked"],
+          ["Revoked", wallet.revokedAt ? "yes" : "no"],
+          ["Trusted", trustedCell(wallet) === "-" ? undefined : trustedCell(wallet)],
+          ["Signer", cells[index] === "-" ? undefined : cells[index]]
+        ]);
+        deps.stdout.write(`
 `);
+      }
+    } else {
+      deps.stdout.write(`${renderTable(["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Trusted", "Signer"], linkedRows.map((wallet, index) => [
+        wallet._id,
+        wallet.chain,
+        wallet.address,
+        wallet.label ?? symbols(style).missing,
+        isTeeRow(wallet) ? "tee" : "linked",
+        wallet.revokedAt ? "yes" : "no",
+        trustedCell(wallet) === "-" ? symbols(style).missing : trustedCell(wallet),
+        cells[index] === "-" ? symbols(style).missing : cells[index] ?? symbols(style).missing
+      ]), {
+        ...tableOptions,
+        columns: [
+          { id: true },
+          { priority: 5 },
+          { id: true },
+          { priority: 2 },
+          { priority: 4 },
+          { priority: 1 },
+          { priority: 3 },
+          { priority: 6 }
+        ]
+      })}
+`);
+    }
     const anyNone = cells.includes("none");
     const anyStale = cells.includes("stale");
     const anyTee = linkedRows.some(isTeeRow);
@@ -33575,13 +33638,13 @@ Linked wallets (${linkedRows.length}):
       deps.stdout.write(`
 `);
     if (anyTee)
-      deps.stdout.write(TEE_HINT);
+      notice(deps, "stdout", "note", TEE_HINT.trimEnd());
     if (anyUntrusted)
-      deps.stdout.write(UNTRUSTED_HINT);
+      notice(deps, "stdout", "warning", UNTRUSTED_HINT.trimEnd());
     if (anyNone)
-      deps.stdout.write(NONE_HINT);
+      notice(deps, "stdout", "warning", NONE_HINT.trimEnd());
     if (anyStale)
-      deps.stdout.write(STALE_HINT);
+      notice(deps, "stdout", "warning", STALE_HINT.trimEnd());
   }
   return 0;
 }
@@ -33636,11 +33699,11 @@ async function walletsImport(args, ctx) {
     pathFlags: ["--key-file", "--signer-out"]
   });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const chainFlag = parsed.values["--chain"];
@@ -33651,28 +33714,31 @@ async function walletsImport(args, ctx) {
   if (chainFlag === "evm" && parsed.values["--address"] === undefined)
     missing.push("--address <0x...>");
   if (missing.length > 0) {
-    deps.stderr.write(`Missing required: ${missing.join(", ")}
+    if (json) {
+      deps.stderr.write(`Missing required: ${missing.join(", ")}
 `);
-    deps.stderr.write(`Example: candle wallets import --chain evm --address 0xYourWallet --api-url ${apiUrl}
+      deps.stderr.write(`Example: candle wallets import --chain evm --address 0xYourWallet --api-url ${apiUrl}
 `);
+    } else
+      writeScreenMessage(deps, `Missing required: ${missing.join(", ")}`, `Run: candle wallets import --chain evm --address 0xYourWallet --api-url ${apiUrl}`);
     return 2;
   }
   const chain2 = chainFlag;
   await printIdentity(ctx);
   const material = await resolveKeyMaterial(parsed.values["--key-file"], chain2, ctx);
   if (!material.ok) {
-    writeLocalFailure(deps, { code: "KEY_INPUT_FAILED", message: material.message }, json);
+    writeScreenLocalFailure(deps, { code: "KEY_INPUT_FAILED", message: material.message }, json);
     return 1;
   }
   const resolvedAddress = resolveImportAddress(chain2, material.privateKey, parsed.values["--address"]);
   if (!resolvedAddress.ok) {
-    writeLocalFailure(deps, { code: "KEY_INPUT_FAILED", message: resolvedAddress.message }, json);
+    writeScreenLocalFailure(deps, { code: "KEY_INPUT_FAILED", message: resolvedAddress.message }, json);
     return 1;
   }
   const address = resolvedAddress.address;
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
-    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
+    writeScreenLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
     return 1;
   }
   const flow = await runImportFlow({
@@ -33687,18 +33753,18 @@ async function walletsImport(args, ctx) {
   if (!flow.ok) {
     const failure2 = flow.failure;
     if (failure2.kind === "api") {
-      writeFailure(deps, failure2.response, { apiUrl, authType: "key" }, json);
+      writeScreenFailure(deps, failure2.response, { apiUrl, authType: "key" }, json);
       return 1;
     }
     if (failure2.kind === "signer-store") {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "SIGNER_STORE_FAILED",
         message: `Could not store the new signer in the ${deps.backend} store: ${failure2.error instanceof Error ? failure2.error.message : failure2.error}`,
         suggestion: "Nothing was imported. Unlock the store (or fix the error above) and run the command again."
       }, json);
       return 1;
     }
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "SIGNER_COMMIT_FAILED",
       message: `Wallet ${failure2.walletId} was imported, but its signer could not be stored under the wallet's own ` + `ref: ${failure2.error instanceof Error ? failure2.error.message : failure2.error}`,
       suggestion: `The signer is not lost: it is in the ${deps.backend} store under "${failure2.pendingRef}". Copy it to ` + `"${walletSignerRef(failure2.walletId)}", or revoke the wallet with: candle wallets revoke ${failure2.walletId}`
@@ -33711,13 +33777,16 @@ async function walletsImport(args, ctx) {
     try {
       await deps.writeFile(signerOut, flow.signerPrivateKeyPem);
     } catch (error) {
-      deps.stderr.write(`Warning: could not write --signer-out (${error instanceof Error ? error.message : error}); the signer is stored in the ${deps.backend} store
+      if (json)
+        deps.stderr.write(`Warning: could not write --signer-out (${error instanceof Error ? error.message : error}); the signer is stored in the ${deps.backend} store
 `);
+      else
+        notice(deps, "stderr", "warning", `Could not write --signer-out (${error instanceof Error ? error.message : error}); the signer is stored in the ${deps.backend} store`);
     }
   }
   const verification = await verifyImportLanded({ id: result.id, apiKey, apiUrl, ctx });
   if (verification.status === "missing") {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "IMPORT_NOT_VISIBLE",
       message: `The server accepted the import (wallet id ${result.id}) but it is not on the account these ` + `credentials belong to${verification.account !== undefined ? ` (${verification.account})` : ""}. ` + `That usually means the CLI is logged in as a different Candle account than you expect. ` + `Run: candle doctor --api-url ${apiUrl}`
     }, json);
@@ -33738,26 +33807,23 @@ async function walletsImport(args, ctx) {
 `);
     return 0;
   }
-  deps.stdout.write(`Imported ${result.chain} wallet ${result.address}
-`);
-  deps.stdout.write(`  Account:         ${verification.account ?? "unknown"} at ${apiUrl}
-`);
-  deps.stdout.write(`  Wallet id:       ${result.id}
-`);
-  deps.stdout.write(`  Privy wallet id: ${result.privyWalletId}
-`);
+  writeSuccess(deps, "stdout", `Imported ${result.chain} wallet`);
+  writeFields(deps, "stdout", [
+    ["Account", verification.account],
+    ["API", apiUrl],
+    ["Address", result.address],
+    ["Wallet id", result.id],
+    ["Privy wallet id", result.privyWalletId]
+  ]);
   if (signerOut !== undefined) {
-    deps.stdout.write(`  Signer key:      exported to ${signerOut} (and in the ${deps.backend} store)
-`);
-    deps.stdout.write(`Back up ${signerOut}: trades from this wallet sign with it, and it cannot be re-downloaded.
-`);
+    writeFields(deps, "stdout", [["Signer key", `exported to ${signerOut} (and in the ${deps.backend} store)`]]);
+    notice(deps, "stdout", "warning", `Back up ${signerOut}: trades from this wallet sign with it, and it cannot be re-downloaded.`);
   } else {
-    deps.stdout.write(`  Signer key:      stored in your ${deps.backend} store; nothing to save by hand
-`);
+    writeFields(deps, "stdout", [["Signer key", `stored in your ${deps.backend} store; nothing to save by hand`]]);
   }
   if (verification.status === "unchecked") {
-    deps.stdout.write(`Note: could not read the wallet back to confirm which account it landed on. Run: candle wallets --api-url ${apiUrl}
-`);
+    notice(deps, "stdout", "warning", `Could not read the wallet back to confirm which account it landed on. Run:
+candle wallets --api-url ${apiUrl}`);
   }
   return 0;
 }
@@ -33779,7 +33845,7 @@ async function walletsRevoke(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const [walletId, extra] = parsed.positionals;
@@ -33791,7 +33857,7 @@ async function walletsRevoke(args, ctx) {
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
-    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
+    writeScreenLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
     return 1;
   }
   const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(walletId)}`, {
@@ -33803,7 +33869,7 @@ async function walletsRevoke(args, ctx) {
     env: deps.env
   });
   if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    writeScreenFailure(deps, result, { apiUrl, authType: "key" }, json);
     return 1;
   }
   const outcome = readDisableOutcome(result.body);
@@ -33818,14 +33884,14 @@ async function walletsRevoke(args, ctx) {
     return outcome.complete ? 0 : 3;
   }
   if (outcome.complete) {
-    deps.stdout.write(outcome.remoteAuthority === "none" ? `Revoked linked wallet ${walletId} (attribution-only link; no agent signer to neutralize).
+    notice(deps, "stdout", "note", outcome.remoteAuthority === "none" ? `Revoked linked wallet ${walletId} (attribution-only link; no agent signer to neutralize).
 ` : `Revoked linked wallet ${walletId}. Remote signing denial verified; the wallet is quarantined.
 `);
     return 0;
   }
-  deps.stdout.write(`Agent trading stopped at Candle for ${walletId}. Remote policy verification is pending` + `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
-` + `Funds remain in the wallet and its TEE signing authority may still be active. Re-run: candle wallets revoke ${walletId}
-`);
+  notice(deps, "stdout", "warning", `Agent trading stopped at Candle for ${walletId}. Remote policy verification is pending` + `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
+` + `Funds remain in the wallet and its TEE signing authority may still be active. Re-run:
+candle wallets revoke ${walletId}`);
   return 3;
 }
 function readDisableOutcome(body) {
@@ -33843,12 +33909,15 @@ var init_wallets = __esm(() => {
   init_args();
   init_client();
   init_deps();
+  init_human_output();
   init_key_signers();
+  init_presentation();
   init_profiles();
   init_render();
   init_secret_store();
   init_wallet_import();
   init_wallet_import_flow();
+  init_key_output();
   TEE_PROFILES = new Set(["ember-tee", "ember-hot"]);
   NONE_HINT = `A wallet marked none has no signer on this machine, so a trade from here cannot sign with it.
 ` + `Import it here (candle wallets import), or run the trade from the machine that imported it.
@@ -37392,24 +37461,27 @@ function writeEmbeddedWalletFailure(ctx, result, context) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...suggestion ? { suggestion } : {} })}
 `);
   } else {
-    deps.stderr.write(`${code}: ${message}${suggestion ? ` ${suggestion}` : ""}
-`);
+    writeScreenMessage(deps, `${code}: ${message}`, suggestion);
   }
   return 1;
 }
 async function confirmCreateAllow(ctx) {
   const { deps, json } = ctx;
   if (!(deps.isTTY.stdin && deps.isTTY.stdout)) {
-    writeLocalFailure(deps, ALLOW_REQUIRES_TTY, json);
+    writeScreenLocalFailure(deps, ALLOW_REQUIRES_TTY, json);
     return 1;
   }
-  deps.stderr.write(`This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.
+  if (json)
+    deps.stderr.write(`This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.
 ` + `A key that only trades its own TEE wallets does not need it.
 `);
+  else
+    notice(deps, "stderr", "warning", `This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.
+A key that only trades its own TEE wallets does not need it.`);
   const answer = await deps.promptLine("Create the key with the embedded wallet allowed? [y/N] ");
   if (["y", "yes"].includes(answer.trim().toLowerCase()))
     return null;
-  writeLocalFailure(deps, {
+  writeScreenLocalFailure(deps, {
     code: "EMBEDDED_WALLET_NOT_ACKNOWLEDGED",
     message: "Not confirmed; no key was created.",
     suggestion: "Run the command again and answer y, or create it with --embedded-wallet deny."
@@ -37420,33 +37492,33 @@ async function keysUpdate(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--embedded-wallet"], booleanFlags: ["--yes"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const [target, extra] = parsed.positionals;
   if (target === undefined || extra !== undefined) {
-    writeUsageFailure(deps, `${extra !== undefined ? `Unexpected argument: ${extra}. ` : "Name one key. "}${USAGE_UPDATE}`, json);
+    writeScreenUsageFailure(deps, `${extra !== undefined ? `Unexpected argument: ${extra}. ` : "Name one key. "}${USAGE_UPDATE}`, json);
     return 2;
   }
   if (target === "self") {
-    writeUsageFailure(deps, `A key changes its own permission with: candle keys self embedded-wallet deny. ${USAGE_UPDATE}`, json);
+    writeScreenUsageFailure(deps, `A key changes its own permission with: candle keys self embedded-wallet deny. ${USAGE_UPDATE}`, json);
     return 2;
   }
   const flag = parsed.values["--embedded-wallet"];
   if (flag === undefined) {
-    writeUsageFailure(deps, `Pass --embedded-wallet allow or deny. ${USAGE_UPDATE}`, json);
+    writeScreenUsageFailure(deps, `Pass --embedded-wallet allow or deny. ${USAGE_UPDATE}`, json);
     return 2;
   }
   const permission = EMBEDDED_WALLET_CHOICES[flag];
   if (permission === undefined) {
-    writeUsageFailure(deps, "--embedded-wallet must be allow or deny.", json);
+    writeScreenUsageFailure(deps, "--embedded-wallet must be allow or deny.", json);
     return 2;
   }
   const yes = parsed.booleans.has("--yes");
   await printIdentity(ctx);
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    writeScreenLocalFailure(deps, NO_DEVICE_TOKEN, json);
     return 1;
   }
   const resolved = await resolveTargetKey(ctx, deviceToken, target, {
@@ -37475,42 +37547,51 @@ async function keysUpdate(args, ctx) {
       deps.stdout.write(`${JSON.stringify({ ...shown, command: "keys update" })}
 `);
     else
-      deps.stdout.write(`${name}'s embedded wallet is already ${shown.to}. Nothing changed.
-`);
+      notice(deps, "stdout", "note", `${name}'s embedded wallet is already ${shown.to}. Nothing changed.`);
     return 0;
   }
   const widen = shown.direction === "widen";
   const interactive = deps.isTTY.stdin && deps.isTTY.stdout;
   if (widen && yes) {
-    writeUsageFailure(deps, "--yes only skips the prompt when denying; nothing changed.", json);
+    writeScreenUsageFailure(deps, "--yes only skips the prompt when denying; nothing changed.", json);
     return 2;
   }
   if (widen && !interactive) {
-    writeLocalFailure(deps, ALLOW_REQUIRES_TTY, json);
+    writeScreenLocalFailure(deps, ALLOW_REQUIRES_TTY, json);
     return 1;
   }
   if (!widen && !yes && !interactive) {
-    writeUsageFailure(deps, "Denying without a terminal needs --yes; nothing changed. Run it in an interactive shell, or pass --yes.", json);
+    writeScreenUsageFailure(deps, "Denying without a terminal needs --yes; nothing changed. Run it in an interactive shell, or pass --yes.", json);
     return 2;
   }
   const fields2 = effectiveProfileFields(await deps.readConfig(), ctx.profile);
-  const account = fields2.account ? shortAddress(fields2.account) : "unknown";
+  const account = fields2.account ? shortAddress(fields2.account) : json ? "unknown" : symbols(terminalStyle(deps, "stderr")).missing;
   const label = labelCell(shown.label ?? undefined);
-  deps.stderr.write([
-    `Key             ${shown.keyPrefix}${label ? `  ${label}` : ""}`,
-    `Candle account  ${fields2.username ? `${fields2.username}  (${account})` : account}`,
-    `API             ${apiUrl}  (${candleEnvironment(apiUrl) ?? "not a Candle host"})`,
-    "",
-    `Embedded wallet ${shown.from}  ->  ${shown.to}   (${shown.direction})`,
-    widen ? "It can use the account's embedded wallet for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write." : "It stops spending the account's embedded wallet from its next request.",
-    "",
-    ""
-  ].join(`
+  if (json)
+    deps.stderr.write([
+      `Key             ${shown.keyPrefix}${label ? `  ${label}` : ""}`,
+      `Candle account  ${fields2.username ? `${fields2.username}  (${account})` : account}`,
+      `API             ${apiUrl}  (${candleEnvironment(apiUrl) ?? "not a Candle host"})`,
+      "",
+      `Embedded wallet ${shown.from}  ->  ${shown.to}   (${shown.direction})`,
+      widen ? "It can use the account's embedded wallet for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write." : "It stops spending the account's embedded wallet from its next request.",
+      "",
+      ""
+    ].join(`
 `));
+  else {
+    writeFields(deps, "stderr", [
+      ["Key", `${shown.keyPrefix}${label ? `  ${label}` : ""}`],
+      ["Candle account", fields2.username ? `${fields2.username}  (${account})` : account],
+      ["API", `${apiUrl}  (${candleEnvironment(apiUrl) ?? "not a Candle host"})`],
+      ["Embedded wallet", `${shown.from}  ->  ${shown.to}   (${shown.direction})`]
+    ], "Embedded wallet change");
+    notice(deps, "stderr", "warning", widen ? "It can use the account's embedded wallet for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write." : "It stops spending the account's embedded wallet from its next request.");
+  }
   if (widen) {
     const typed = await deps.promptLine(`Type the key prefix ${shown.keyPrefix} to allow it: `);
     if (typed.trim() !== shown.keyPrefix) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "EMBEDDED_WALLET_NOT_ACKNOWLEDGED",
         message: `The acknowledgement is the key prefix ${shown.keyPrefix}; nothing changed.`,
         suggestion: `Run the command again and type ${shown.keyPrefix} at the prompt.`
@@ -37520,7 +37601,7 @@ async function keysUpdate(args, ctx) {
   } else if (!yes) {
     const answer = await deps.promptLine(`Deny ${name} the embedded wallet? [y/N] `);
     if (!["y", "yes"].includes(answer.trim().toLowerCase())) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "EMBEDDED_WALLET_NOT_ACKNOWLEDGED",
         message: "Not confirmed; nothing changed.",
         suggestion: "Run the command again and answer y, or pass --yes."
@@ -37537,26 +37618,26 @@ async function keysSelf(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const [setting, value, extra] = parsed.positionals;
   if (setting !== "embedded-wallet" || value === undefined || extra !== undefined) {
-    writeUsageFailure(deps, USAGE_SELF, json);
+    writeScreenUsageFailure(deps, USAGE_SELF, json);
     return 2;
   }
   if (value === "allow") {
-    writeLocalFailure(deps, SELF_CANNOT_ALLOW, json);
+    writeScreenLocalFailure(deps, SELF_CANNOT_ALLOW, json);
     return 1;
   }
   if (value !== "deny") {
-    writeUsageFailure(deps, `The setting is deny. ${USAGE_SELF}`, json);
+    writeScreenUsageFailure(deps, `The setting is deny. ${USAGE_SELF}`, json);
     return 2;
   }
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY, json);
+    writeScreenLocalFailure(deps, NO_API_KEY, json);
     return 1;
   }
   const result = await apiRequest(`${KEYS_PATH2}/self/embedded-wallet`, {
@@ -37581,12 +37662,12 @@ function writeChanged(ctx, result, command) {
   }
   const name = keyName(result.keyPrefix, result.label);
   if (result.direction === "unchanged") {
-    deps.stdout.write(`${name}'s embedded wallet is already ${result.to}. Nothing changed.
-`);
+    notice(deps, "stdout", "note", `${name}'s embedded wallet is already ${result.to}. Nothing changed.`);
     return 0;
   }
-  deps.stdout.write(`${name}'s embedded wallet is now ${result.to}.${result.changeId ? ` Change id ${result.changeId}` : ""}
-`);
+  writeSuccess(deps, "stdout", `${name}'s embedded wallet is now ${result.to}.`);
+  if (result.changeId)
+    writeFields(deps, "stdout", [["Change id", result.changeId]]);
   return 0;
 }
 var KEYS_PATH2 = "/api/v1/agent/keys", EMBEDDED_WALLET_CHOICES, USAGE_UPDATE = "Usage: candle keys update <prefix|label> --embedded-wallet <allow|deny> [--yes] [--json]", USAGE_SELF = "Usage: candle keys self embedded-wallet deny [--json]", ALLOW_REQUIRES_TTY, NO_API_KEY, SELF_CANNOT_ALLOW;
@@ -37594,9 +37675,12 @@ var init_keys_embedded_wallet = __esm(() => {
   init_args();
   init_client();
   init_deps();
+  init_human_output();
+  init_presentation();
   init_profiles();
   init_render();
   init_promote_support();
+  init_key_output();
   init_keys();
   init_tee_rebind();
   EMBEDDED_WALLET_CHOICES = {
@@ -37954,11 +38038,9 @@ async function keysRevoke(args, ctx) {
 `);
     return 0;
   }
-  deps.stdout.write(`Revoked key ${prefix}.
-`);
+  writeSuccess(deps, "stdout", `Revoked key ${prefix}.`);
   if (clearedLocal) {
-    deps.stdout.write(`This was the CLI's stored working key; also cleared it locally.
-`);
+    notice(deps, "stdout", "note", "This was the CLI's stored working key; also cleared it locally.");
   }
   return 0;
 }
@@ -37968,6 +38050,7 @@ var init_keys = __esm(() => {
   init_args();
   init_client();
   init_deps();
+  init_human_output();
   init_presentation();
   init_profiles();
   init_render();
@@ -72187,6 +72270,7 @@ async function runLiveCheck(params) {
 init_client();
 init_ownership();
 init_deps();
+init_human_output();
 init_presentation();
 init_profiles();
 init_render();
@@ -72599,8 +72683,7 @@ async function authLogout(args, ctx) {
     if (result.ok) {
       revokedKey = keyPrefix;
     } else if (!json) {
-      deps.stdout.write(`Could not revoke the stored API key remotely (clearing it locally anyway).
-`);
+      notice(deps, "stdout", "warning", "Could not revoke the stored API key remotely (clearing it locally anyway).");
     }
   }
   if (ctx.profile) {
@@ -72635,20 +72718,16 @@ async function authLogout(args, ctx) {
 `);
     return 0;
   }
-  deps.stdout.write(`Local credentials cleared.
-`);
+  writeSuccess(deps, "stdout", "Local credentials cleared.");
   if (liveEnvOverrides.length > 0) {
-    deps.stdout.write(`Still set in this shell: ${liveEnvOverrides.join(", ")}. Those beat the store, so they remain live until you unset them.
-`);
+    notice(deps, "stdout", "warning", `Still set in this shell: ${liveEnvOverrides.join(", ")}. Those beat the store, so they remain live until you unset them.`);
   }
-  deps.stdout.write(`The device token itself is session-only to revoke -- that is intentional (a stolen token cannot read device metadata or revoke a sibling device). Sign in to the portal to revoke it there.
-`);
+  notice(deps, "stdout", "note", "The device token itself is session-only to revoke -- that is intentional (a stolen token cannot read device metadata or revoke a sibling device). Sign in to the portal to revoke it there.");
   if (device)
-    deps.stdout.write(`Device ${device.prefix}${device.label ? ` (${device.label})` : ""} is still live on the server. Revoke it under Connected devices: ${portalUrl}
-`);
+    notice(deps, "stdout", "warning", `Device ${device.prefix}${device.label ? ` (${device.label})` : ""} is still live on the server. Revoke it under Connected devices:
+${portalUrl}`);
   else
-    deps.stdout.write(`Connected devices: ${portalUrl}
-`);
+    writeFields(deps, "stdout", [["Connected devices", portalUrl]]);
   return 0;
 }
 function configFilePathForDisplay(env) {
@@ -80545,8 +80624,9 @@ async function reportTransferActivity(ctx, apiKey, signature, chain2 = "solana")
 init_args();
 init_client();
 init_deps();
-init_render();
+init_presentation();
 init_trading();
+init_key_output();
 init_swap();
 import { open as open7 } from "node:fs/promises";
 var UPLOAD_USAGE = "Usage: candle image upload <path> [--banner] [--json]";
@@ -80627,26 +80707,29 @@ async function uploadImage(ctx, key, image, kind = "image") {
 async function imageUpload(args, ctx) {
   const parsed = parseArgs(args, { pathPositionals: ["<path>"], booleanFlags: ["--banner"] });
   if ("error" in parsed) {
-    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    writeScreenUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
   }
   const [path, ...rest] = parsed.positionals;
   if (path === undefined || rest.length !== 0) {
-    writeUsageFailure(ctx.deps, UPLOAD_USAGE, ctx.json);
+    writeScreenUsageFailure(ctx.deps, UPLOAD_USAGE, ctx.json);
     return 2;
   }
   try {
     const image = await readLocalImage(path);
     const key = await resolveApiKey(ctx.deps, ctx.profile);
     if (!key) {
-      writeLocalFailure(ctx.deps, {
+      writeScreenLocalFailure(ctx.deps, {
         code: "NO_API_KEY",
         message: `No API key available. ${NOTHING_UPLOADED2}`,
         suggestion: "Run: candle auth login, or set CANDLE_API_KEY. The key needs the launch:write scope."
       }, ctx.json);
       return 1;
     }
-    ctx.deps.stderr.write(uploadNotice(image));
+    if (ctx.json)
+      ctx.deps.stderr.write(uploadNotice(image));
+    else
+      notice(ctx.deps, "stderr", "warning", uploadNotice(image).trimEnd());
     const banner = parsed.booleans.has("--banner");
     const imageUrl = safeText(await uploadImage(ctx, key, image, banner ? "banner" : "image"));
     ctx.deps.stdout.write(ctx.json ? `${JSON.stringify({ success: true, imageUrl, contentType: image.contentType, bytes: image.bytes.length })}
@@ -81707,8 +81790,10 @@ init_store();
 init_args();
 init_client();
 init_deps();
+init_human_output();
 init_key_signers();
 import { generateKeyPairSync as generateKeyPairSync2 } from "node:crypto";
+init_presentation();
 init_profiles();
 init_render();
 init_secret_store();
@@ -82144,6 +82229,7 @@ function rebindJson(input, chain2) {
 }
 
 // src/commands/key-signer.ts
+init_key_output();
 init_keys();
 init_tee_rebind();
 var USAGE_TEE_SIGNER = "Usage: candle tee signer new --key <prefix|label> [--out <pem>] [--force] [--json]";
@@ -82165,7 +82251,7 @@ async function teeSigner(args, ctx) {
   const [sub, ...rest] = args;
   if (sub === "new")
     return teeSignerNew(rest, ctx);
-  writeUsageFailure(ctx.deps, sub === undefined ? USAGE_TEE_SIGNER : `Unknown subcommand: ${sub}. ${USAGE_TEE_SIGNER}`, ctx.json);
+  writeScreenUsageFailure(ctx.deps, sub === undefined ? USAGE_TEE_SIGNER : `Unknown subcommand: ${sub}. ${USAGE_TEE_SIGNER}`, ctx.json);
   return 2;
 }
 function generatePair() {
@@ -82179,16 +82265,16 @@ async function teeSignerNew(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--key", "--out"], booleanFlags: ["--force"], pathFlags: ["--out"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, `${parsed.error}. ${USAGE_TEE_SIGNER}`, json);
+    writeScreenUsageFailure(deps, `${parsed.error}. ${USAGE_TEE_SIGNER}`, json);
     return 2;
   }
   const keyRaw = parsed.values["--key"];
   if (!keyRaw) {
-    writeUsageFailure(deps, `--key is required. ${USAGE_TEE_SIGNER}`, json);
+    writeScreenUsageFailure(deps, `--key is required. ${USAGE_TEE_SIGNER}`, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}. ${USAGE_TEE_SIGNER}`, json);
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}. ${USAGE_TEE_SIGNER}`, json);
     return 2;
   }
   const out = parsed.values["--out"];
@@ -82196,7 +82282,7 @@ async function teeSignerNew(args, ctx) {
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "NO_API_KEY",
       message: "tee signer new runs on the trading machine, with the API key it trades under; none is configured here.",
       suggestion: "Configure the key (candle auth login, or CANDLE_API_KEY) on the machine that will trade."
@@ -82204,17 +82290,21 @@ async function teeSignerNew(args, ctx) {
     return 1;
   }
   if (await resolveDeviceToken(deps, ctx.profile) !== undefined)
-    deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}
+    if (json) {
+      deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}
 `);
+    } else {
+      notice(deps, "stderr", "warning", DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, ""));
+    }
   const first = await readSigner(ctx, "self", { apiKey });
   if (!first.ok)
     return writeSignerReadFailure(ctx, first);
   let view = first.body;
   const keyPrefix = view.keyPrefix;
   if (keyRaw !== keyPrefix && keyRaw !== view.keyLabel) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "KEY_SIGNER_KEY_MISMATCH",
-      message: `This machine's API key is key ${keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel)})` : ""}, not ${keyRaw}. A key's signer is generated on the machine that trades under it.`,
+      message: `This machine's API key is key ${keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel ?? undefined)})` : ""}, not ${keyRaw}. A key's signer is generated on the machine that trades under it.`,
       suggestion: `Run this on the machine holding ${keyRaw}'s API key, or pass --key ${keyPrefix}.`
     }, json);
     return 1;
@@ -82239,7 +82329,7 @@ async function teeSignerNew(args, ctx) {
     const owning = locals.filter((e) => e.signerQuorumId !== undefined).map((e) => ({ entry: e, count: all.filter((w) => w.signerQuorumId === e.signerQuorumId).length })).filter((o) => o.count > 0);
     if (owning.length > 0 && !force) {
       const count2 = owning.reduce((n, o) => n + o.count, 0);
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "KEY_SIGNER_ROTATION_REFUSED",
         message: `This machine's signer ${owning.map((o) => o.entry.fingerprint).join(", ")} for key ${keyPrefix} still owns ${plural(count2, "wallet")}. A new signer does not move them. Nothing was generated.`,
         suggestion: `Pass --force to add a new signer and keep the old one here, so those wallets keep trading until candle keys signer move ${keyPrefix} moves them.`,
@@ -82249,14 +82339,19 @@ async function teeSignerNew(args, ctx) {
     }
     if (active !== null) {
       replaces = { fingerprint: active.fingerprint, wallets: view.wallets.onSigner.length };
-      deps.stderr.write(`Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
+      if (json) {
+        deps.stderr.write(`Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
 `);
+      } else {
+        notice(deps, "stderr", "warning", `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
+`.trimEnd());
+      }
     }
     const pair = generatePair();
     const spkiSha256 = spkiSha256Of(pair.publicKeyDer);
     const ref = keySignerRef(keyPrefix, spkiSha256);
     if (await deps.store.get(ref) !== null) {
-      writeLocalFailure(deps, { code: "KEY_SIGNER_SLOT_EXISTS", message: `The slot ${ref} is already in use; nothing was written.` }, json);
+      writeScreenLocalFailure(deps, { code: "KEY_SIGNER_SLOT_EXISTS", message: `The slot ${ref} is already in use; nothing was written.` }, json);
       return 1;
     }
     await deps.store.set(ref, pemToStoredSigner(pair.pem));
@@ -82286,35 +82381,60 @@ async function teeSignerNew(args, ctx) {
         });
       }
     }
-    writeFailure(deps, requested, { apiUrl: ctx.apiUrl, authType: "key" }, json);
+    writeScreenFailure(deps, requested, { apiUrl: ctx.apiUrl, authType: "key" }, json);
     if (!json)
-      deps.stderr.write(`The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.
+      if (json) {
+        deps.stderr.write(`The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.
 `);
+      } else {
+        notice(deps, "stderr", "note", `The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.
+`.trimEnd());
+      }
     return 1;
   }
   const body = requested.body;
   if (body.supersededPending)
-    deps.stderr.write(`An earlier pending request for this key was cancelled.
+    if (json) {
+      deps.stderr.write(`An earlier pending request for this key was cancelled.
 `);
+    } else {
+      notice(deps, "stderr", "warning", `An earlier pending request for this key was cancelled.
+`.trimEnd());
+    }
   if (body.spkiSha256 !== entry.spkiSha256) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "KEY_SIGNER_CHANGED",
       message: `The server recorded a different public key (${body.fingerprint}) than this machine sent (${entry.fingerprint}). Do not approve it.`
     }, json);
     return 1;
   }
-  deps.stderr.write(`${[
-    `Key signer for key ${keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel)})` : ""}${resumed ? ", resumed" : ""}`,
-    "",
-    `    ${entry.fingerprint}`,
-    "",
-    "The account owner approves it, typing this full fingerprint:",
-    `  open ${body.verificationUriComplete}`,
-    `  or, on the owner's machine: candle keys signer approve ${body.userCode} --key ${keyPrefix}`,
-    `The code expires at ${formatTimestamp(body.expiresAt)}. Waiting for approval...`
-  ].join(`
+  if (json) {
+    deps.stderr.write(`${[
+      `Key signer for key ${keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel ?? undefined)})` : ""}${resumed ? ", resumed" : ""}`,
+      "",
+      `    ${entry.fingerprint}`,
+      "",
+      "The account owner approves it, typing this full fingerprint:",
+      `  open ${body.verificationUriComplete}`,
+      `  or, on the owner's machine: candle keys signer approve ${body.userCode} --key ${keyPrefix}`,
+      `The code expires at ${formatTimestamp(body.expiresAt)}. Waiting for approval...`
+    ].join(`
 `)}
 `);
+  } else {
+    writeFields(deps, "stderr", [
+      ["Key", keyPrefix],
+      ["Label", labelCell(view.keyLabel ?? undefined)],
+      ["State", resumed ? "resumed" : "pending"],
+      ["Fingerprint", entry.fingerprint],
+      ["Approve at", body.verificationUriComplete],
+      ["Expires", formatTime(body.expiresAt, { now: deps.now() })]
+    ], "Key signer request");
+    notice(deps, "stderr", "warning", "The account owner approves it, typing this full fingerprint.");
+    notice(deps, "stderr", "note", `Or, on the owner's machine:
+candle keys signer approve ${body.userCode} --key ${keyPrefix}
+Waiting for approval...`);
+  }
   while (deps.now() < body.expiresAt) {
     await deps.sleep(SIGNER_POLL_MS);
     const read = await readSigner(ctx, "self", { apiKey });
@@ -82328,7 +82448,7 @@ async function teeSignerNew(args, ctx) {
       return reportApproved(ctx, view, recorded, { resumed, requested: true, replaces });
     }
     if (view.pending === null || view.pending.spkiSha256 !== entry.spkiSha256) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "KEY_SIGNER_NOT_APPROVED",
         message: `The request for ${entry.fingerprint} was ${view.pending === null ? "rejected or withdrawn" : "superseded by another request for this key"}. The pair stays pending on this machine.`,
         suggestion: `Run candle tee signer new --key ${keyPrefix} again to request a new code for the same signer.`,
@@ -82337,7 +82457,7 @@ async function teeSignerNew(args, ctx) {
       return 1;
     }
   }
-  writeLocalFailure(deps, {
+  writeScreenLocalFailure(deps, {
     code: "KEY_SIGNER_NOT_APPROVED",
     message: `The code expired before the owner approved ${entry.fingerprint}. The pair stays pending on this machine.`,
     suggestion: `Run candle tee signer new --key ${keyPrefix} again to request a new code for the same signer.`,
@@ -82352,8 +82472,13 @@ async function writeOut(ctx, out, entry) {
   if (stored === null)
     return;
   await ctx.deps.writeFile(out, storedSignerToPem(stored));
-  ctx.deps.stderr.write(`Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.
+  if (ctx.json) {
+    ctx.deps.stderr.write(`Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.
 `);
+  } else {
+    notice(ctx.deps, "stderr", "warning", `Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.
+`.trimEnd());
+  }
 }
 function reportApproved(ctx, view, entry, how) {
   const { deps, json } = ctx;
@@ -82389,17 +82514,22 @@ function reportApproved(ctx, view, entry, how) {
   if (legacy.length > 0) {
     lines.push(`${plural(legacy.length, "wallet")} keep${legacy.length === 1 ? "s" : ""} a per-wallet signer on the machine that promoted ${legacy.length === 1 ? "it" : "them"} until candle keys signer move ${entry.keyPrefix} runs there: ${legacy.map(name).join(", ")}`);
   }
-  deps.stdout.write(`${lines.join(`
-`)}
-`);
+  writeSuccess(deps, "stdout", "Key signer approved");
+  writeFields(deps, "stdout", [
+    ["Key", entry.keyPrefix],
+    ["Fingerprint", entry.fingerprint],
+    ["Held", "on this machine"]
+  ]);
+  for (const line of lines.slice(1))
+    notice(deps, "stdout", "note", line);
   return 0;
 }
 function writeSignerReadFailure(ctx, result) {
   if (result.status === 404 && result.code === undefined) {
-    writeLocalFailure(ctx.deps, unsupported, ctx.json);
+    writeScreenLocalFailure(ctx.deps, unsupported, ctx.json);
     return 1;
   }
-  writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
+  writeScreenFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
   return 1;
 }
 async function keysSigner(args, ctx) {
@@ -82408,34 +82538,34 @@ async function keysSigner(args, ctx) {
     return keysSignerApprove(rest, ctx);
   if (sub === "move")
     return keysSignerMove(rest, ctx);
-  writeUsageFailure(ctx.deps, sub === undefined ? USAGE_KEYS_SIGNER : `Unknown subcommand: ${sub}. ${USAGE_KEYS_SIGNER}`, ctx.json);
+  writeScreenUsageFailure(ctx.deps, sub === undefined ? USAGE_KEYS_SIGNER : `Unknown subcommand: ${sub}. ${USAGE_KEYS_SIGNER}`, ctx.json);
   return 2;
 }
 async function keysSignerApprove(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--key"], booleanFlags: ["--reject"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, `${parsed.error}. ${USAGE_KEYS_SIGNER}`, json);
+    writeScreenUsageFailure(deps, `${parsed.error}. ${USAGE_KEYS_SIGNER}`, json);
     return 2;
   }
   const [code, extra] = parsed.positionals;
   const keyRaw = parsed.values["--key"];
   if (code === undefined || extra !== undefined || !keyRaw) {
-    writeUsageFailure(deps, USAGE_KEYS_SIGNER, json);
+    writeScreenUsageFailure(deps, USAGE_KEYS_SIGNER, json);
     return 2;
   }
   const reject = parsed.booleans.has("--reject");
   await printIdentity(ctx);
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       ...DEVICE_TOKEN_REQUIRED,
       message: "Approving a key signer needs the device token, the owner's credential; an API key cannot."
     }, json);
     return 1;
   }
   if (!reject && (!deps.isTTY.stdin || !deps.isTTY.stdout)) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "KEY_SIGNER_REQUIRES_TTY",
       message: "candle keys signer approve needs a terminal: the fingerprint is typed, and nothing else supplies it."
     }, json);
@@ -82448,16 +82578,16 @@ async function keysSignerApprove(args, ctx) {
   const read = await readSigner(ctx, keyPrefix, { deviceToken });
   if (!read.ok) {
     if (read.status === 404 && read.code === undefined) {
-      writeLocalFailure(deps, unsupported, json);
+      writeScreenLocalFailure(deps, unsupported, json);
       return 1;
     }
-    writeFailure(deps, read, { apiUrl: ctx.apiUrl, authType: "device" }, json);
+    writeScreenFailure(deps, read, { apiUrl: ctx.apiUrl, authType: "device" }, json);
     return 1;
   }
   const view = read.body;
   const pending = view.pending;
   if (pending === null) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "KEY_SIGNER_CODE_INVALID",
       message: `Key ${keyPrefix} has no pending signer request.`,
       suggestion: `Run candle tee signer new --key ${keyPrefix} on the trading machine first.`
@@ -82465,32 +82595,50 @@ async function keysSignerApprove(args, ctx) {
     return 1;
   }
   if ((await localKeySigners(deps, keyPrefix)).some((e) => e.spkiSha256 === pending.spkiSha256)) {
-    deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}
+    if (json) {
+      deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}
 `);
+    } else {
+      notice(deps, "stderr", "warning", DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, ""));
+    }
   }
   const active = activeSigner(view);
   const all = allSignerWallets(view);
   const onActive = active !== null ? view.wallets.onSigner.length : 0;
-  deps.stderr.write(`${[
-    `Signer request for key ${keyPrefix}${view.keyLabel ? `  (${labelCell(view.keyLabel)})` : ""}`,
-    "",
-    `    ${pending.fingerprint}`,
-    "",
-    "Requested from a machine using this key. Compare the fingerprint with what that machine printed.",
-    `Wallets on this key: ${all.length}.`,
-    ...active !== null ? [`Approving replaces signer ${active.fingerprint} as this key's active signer.`] : [],
-    ...active !== null && onActive > 0 ? [
-      `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`
-    ] : [],
-    ""
-  ].join(`
+  if (json) {
+    deps.stderr.write(`${[
+      `Signer request for key ${keyPrefix}${view.keyLabel ? `  (${labelCell(view.keyLabel ?? undefined)})` : ""}`,
+      "",
+      `    ${pending.fingerprint}`,
+      "",
+      "Requested from a machine using this key. Compare the fingerprint with what that machine printed.",
+      `Wallets on this key: ${all.length}.`,
+      ...active !== null ? [`Approving replaces signer ${active.fingerprint} as this key's active signer.`] : [],
+      ...active !== null && onActive > 0 ? [
+        `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`
+      ] : [],
+      ""
+    ].join(`
 `)}
 `);
+  } else {
+    writeFields(deps, "stderr", [
+      ["Key", keyPrefix],
+      ["Label", labelCell(view.keyLabel ?? undefined)],
+      ["Fingerprint", pending.fingerprint],
+      ["Wallets", all.length]
+    ], "Signer approval");
+    notice(deps, "stderr", "warning", "Requested from a machine using this key. Compare the fingerprint with what that machine printed.");
+    if (active !== null)
+      notice(deps, "stderr", "warning", `Approving replaces signer ${active.fingerprint} as this key's active signer.`);
+    if (active !== null && onActive > 0)
+      notice(deps, "stderr", "warning", `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`);
+  }
   let typed;
   if (!reject) {
     typed = await deps.promptLine("Type the full fingerprint the trading machine printed, all three groups: ");
     if (!fingerprintMatches(typed, pending.fingerprint)) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "KEY_SIGNER_FINGERPRINT_MISMATCH",
         message: `${fingerprintMismatchMessage(typed, pending.fingerprint)} Nothing was approved.`,
         suggestion: "Type all three groups exactly as the trading machine printed them, for example CNDL-7K2Q-94XM-A1TD."
@@ -82504,7 +82652,7 @@ async function keysSignerApprove(args, ctx) {
     decision: reject ? "reject" : "approve"
   });
   if (!answered.ok) {
-    writeFailure(deps, answered, { apiUrl: ctx.apiUrl, authType: "device" }, json);
+    writeScreenFailure(deps, answered, { apiUrl: ctx.apiUrl, authType: "device" }, json);
     return 1;
   }
   if (json) {
@@ -82513,26 +82661,30 @@ async function keysSignerApprove(args, ctx) {
     return 0;
   }
   if (reject) {
-    deps.stdout.write(`Rejected the signer request ${pending.fingerprint} for key ${keyPrefix}.
-`);
+    writeSuccess(deps, "stdout", `Rejected the signer request ${pending.fingerprint} for key ${keyPrefix}.`);
     return 0;
   }
   const after = answered.body;
   const moving = after.wallets?.moving?.length ?? 0;
-  deps.stdout.write(`Approved: key ${keyPrefix}'s signer is ${pending.fingerprint}.${moving > 0 ? ` ${plural(moving, "wallet")} ${moving === 1 ? "is" : "are"} moving: ${moving === 1 ? "it keeps" : "they keep"} trading from the machine holding the previous signer until candle keys signer move ${keyPrefix} runs there.` : ""}
-`);
+  writeSuccess(deps, "stdout", "Key signer approved");
+  writeFields(deps, "stdout", [
+    ["Key", keyPrefix],
+    ["Fingerprint", pending.fingerprint]
+  ]);
+  if (moving > 0)
+    notice(deps, "stdout", "warning", `${plural(moving, "wallet")} ${moving === 1 ? "is" : "are"} moving: ${moving === 1 ? "it keeps" : "they keep"} trading from the machine holding the previous signer until candle keys signer move ${keyPrefix} runs there.`);
   return 0;
 }
 async function keysSignerMove(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--to-key"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, `${parsed.error}. ${USAGE_KEYS_SIGNER}`, json);
+    writeScreenUsageFailure(deps, `${parsed.error}. ${USAGE_KEYS_SIGNER}`, json);
     return 2;
   }
   const [sourceRaw, extra] = parsed.positionals;
   if (sourceRaw === undefined || extra !== undefined) {
-    writeUsageFailure(deps, USAGE_KEYS_SIGNER, json);
+    writeScreenUsageFailure(deps, USAGE_KEYS_SIGNER, json);
     return 2;
   }
   const toKeyRaw = parsed.values["--to-key"];
@@ -82557,7 +82709,7 @@ async function keysSignerMove(args, ctx) {
       return writeSignerReadFailure(ctx, self);
     const view2 = self.body;
     if (sourceRaw !== view2.keyPrefix && sourceRaw !== view2.keyLabel) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "KEY_SIGNER_KEY_MISMATCH",
         message: `This machine's API key is key ${view2.keyPrefix}; moving key ${sourceRaw}'s wallets needs that key's API key or the device token.`
       }, json);
@@ -82566,19 +82718,19 @@ async function keysSignerMove(args, ctx) {
     source = view2.keyPrefix;
     auth = { apiKey };
   } else {
-    writeLocalFailure(deps, toKeyRaw !== undefined ? DEVICE_TOKEN_REQUIRED : {
+    writeScreenLocalFailure(deps, toKeyRaw !== undefined ? DEVICE_TOKEN_REQUIRED : {
       code: "NO_CREDENTIAL",
       message: "keys signer move needs the key's API key or the device token; this machine has neither."
     }, json);
     return 1;
   }
   if (!KEY_PREFIX_RE.test(source)) {
-    writeUsageFailure(deps, `Not a key prefix: ${source}. ${USAGE_KEYS_SIGNER}`, json);
+    writeScreenUsageFailure(deps, `Not a key prefix: ${source}. ${USAGE_KEYS_SIGNER}`, json);
     return 2;
   }
   if (toKeyRaw !== undefined) {
     if (deviceToken === undefined) {
-      writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED, json);
+      writeScreenLocalFailure(deps, DEVICE_TOKEN_REQUIRED, json);
       return 1;
     }
     return moveToLiveKey(ctx, deviceToken, source, toKeyRaw);
@@ -82589,7 +82741,7 @@ async function keysSignerMove(args, ctx) {
   const view = read.body;
   const active = activeSigner(view);
   if (active === null) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "KEY_SIGNER_MISSING",
       message: `Key ${source} has no active signer, so there is nothing to move its wallets onto. Nothing changed.`,
       suggestion: `Approve one first (candle tee signer new --key ${source} on the trading machine), or, for a revoked key, move the wallets to a live key: candle keys signer move ${source} --to-key <prefix|label> (device token).`
@@ -82597,7 +82749,7 @@ async function keysSignerMove(args, ctx) {
     return 1;
   }
   if (!view.privyAppId) {
-    writeLocalFailure(deps, unsupported, json);
+    writeScreenLocalFailure(deps, unsupported, json);
     return 1;
   }
   const outcomes = [];
@@ -82618,8 +82770,8 @@ async function keysSignerMove(args, ctx) {
       outcomes.push({ walletId: wallet3.id, label: wallet3.label ?? null, state: forwarded ? "moved" : "already" });
       used.push(signer);
       if (!json)
-        deps.stderr.write(`  moved ${name(wallet3)}
-`);
+        writeSuccess(deps, "stderr", `  moved ${name(wallet3)}
+`.trim());
     } else {
       outcomes.push({
         walletId: wallet3.id,
@@ -82629,8 +82781,8 @@ async function keysSignerMove(args, ctx) {
         message: relayed.message
       });
       if (!json)
-        deps.stderr.write(`  failed ${name(wallet3)}: ${relayed.code ?? relayed.status} ${relayed.message}
-`);
+        notice(deps, "stderr", "danger", `  failed ${name(wallet3)}: ${relayed.code ?? relayed.status} ${relayed.message}
+`.trim());
     }
   }
   const cleanup = await deleteDrainedSlots(ctx, {
@@ -82666,7 +82818,7 @@ async function moveToLiveKey(ctx, deviceToken, source, toKeyRaw) {
     const preview = await postRebind(ctx, deviceToken, { dryRun: true, toKeyPrefix: target.keyPrefix, wallets: chunk });
     if (!preview.ok) {
       const failure2 = rebindFailureDetails(preview, {});
-      writeLocalFailure(deps, failure2, json);
+      writeScreenLocalFailure(deps, failure2, json);
       return 1;
     }
     const shown = preview.body;
@@ -82679,7 +82831,7 @@ async function moveToLiveKey(ctx, deviceToken, source, toKeyRaw) {
     if (signer !== null && signer.spkiSha256 !== pinned) {
       const confirmed = await confirmSignerPin(ctx, target.keyPrefix, signer, { nothing: REBIND_NOTHING_PINNED });
       if (!confirmed.ok) {
-        writeLocalFailure(deps, confirmed.failure, json);
+        writeScreenLocalFailure(deps, confirmed.failure, json);
         return 1;
       }
       pinned = signer.spkiSha256;
@@ -82700,18 +82852,18 @@ async function moveToLiveKey(ctx, deviceToken, source, toKeyRaw) {
     });
     if (!committed.ok) {
       if ("missing" in committed)
-        writeLocalFailure(deps, missingSignerFailure(committed.missing), json);
+        writeScreenLocalFailure(deps, missingSignerFailure(committed.missing), json);
       else if ("changed" in committed)
-        writeLocalFailure(deps, committed.changed, json);
+        writeScreenLocalFailure(deps, committed.changed, json);
       else
-        writeLocalFailure(deps, rebindFailureDetails(committed.result, { fromKeyPrefixes: [source] }), json);
+        writeScreenLocalFailure(deps, rebindFailureDetails(committed.result, { fromKeyPrefixes: [source] }), json);
       return 1;
     }
     for (const row of committed.result.body.rebound) {
       outcomes.push({ walletId: row.id, label: row.label, state: "moved" });
       if (!json)
-        deps.stderr.write(`  moved ${row.label ?? row.id} to ${target.keyPrefix}
-`);
+        writeSuccess(deps, "stderr", `  moved ${row.label ?? row.id} to ${target.keyPrefix}
+`.trim());
     }
   }
   const cleanup = await deleteDrainedSlots(ctx, { source, auth: { deviceToken }, deviceToken, apiKey: undefined, used });
@@ -82845,10 +82997,17 @@ function reportMove(ctx, report) {
 `);
     return exit;
   }
-  const where = report.target.fingerprint ? `key ${report.target.keyPrefix}'s signer ${report.target.fingerprint}` : `key ${report.target.keyPrefix} (binding only: it has no signer, so the owners stay)`;
-  const lines = [
-    `Moved ${plural(count2("moved").length, "wallet")} onto ${where}${count2("already").length > 0 ? `; ${count2("already").length} already there` : ""}${report.alreadyOn > 0 ? `; ${report.alreadyOn} on it before this run` : ""}.`
-  ];
+  writeFields(deps, "stdout", [
+    ["Source key", report.source],
+    ["Target key", report.target.keyPrefix],
+    ["Fingerprint", report.target.fingerprint],
+    ["Moved", count2("moved").length],
+    ["Already there", count2("already").length],
+    ["Before this run", report.alreadyOn]
+  ], "Signer move");
+  if (!report.target.fingerprint)
+    notice(deps, "stdout", "warning", "Binding only: the target key has no signer, so the owners stay.");
+  const lines = [];
   if (failed.length > 0) {
     lines.push(`${plural(failed.length, "wallet")} failed; run the same command again:`);
     for (const o of failed)
@@ -82861,9 +83020,8 @@ function reportMove(ctx, report) {
     lines.push(`Deleted ${slot}: no wallet is left on it.`);
   for (const kept of report.cleanup.kept)
     lines.push(`Kept ${kept.slot}: ${kept.reason}.`);
-  deps.stdout.write(`${lines.join(`
-`)}
-`);
+  for (const line of lines)
+    notice(deps, "stdout", failed.length > 0 ? "warning" : "note", line);
   return exit;
 }
 async function keySignerDoctorReport(ctx, creds) {
@@ -83395,6 +83553,8 @@ async function doctor(args, ctx) {
 
 // src/commands/external.ts
 init_args();
+init_human_output();
+init_presentation();
 init_solana_endpoint();
 
 // src/vault/domains.ts
@@ -86462,22 +86622,19 @@ async function externalNew(args, ctx) {
       });
       return 0;
     }
-    deps.stdout.write(`${address}
-`);
-    deps.stdout.write(`  label       ${label}
-`);
-    deps.stdout.write(`  derivation  ${derivationPath}
-`);
-    deps.stdout.write(`  role        external: signs only through candle sign and candle external sweep
-`);
-    deps.stdout.write(`  verified    re-read from the vault and re-derived from its root
-`);
+    writeSuccess(deps, "stdout", "External wallet created");
+    writeFields(deps, "stdout", [
+      ["Address", address],
+      ["Label", label],
+      ["Derivation", derivationPath],
+      ["Role", "external: signs only through candle sign and candle external sweep"],
+      ["Verified", "re-read from the vault and re-derived from its root"]
+    ]);
     if (wasVersion2) {
-      deps.stdout.write(`  format      the vault is now version 3 (the external branch); a CLI before 0.12 refuses to open it
-`);
+      notice(deps, "stdout", "warning", "The vault is now version 3 (the external branch); a CLI before 0.12 refuses to open it.");
     }
-    deps.stdout.write(`Fund it from the vault with: candle vault fund ${label} --amount <n>
-`);
+    notice(deps, "stdout", "note", `Fund it from the vault with:
+candle vault fund ${label} --amount <n>`);
     return 0;
   });
 }
@@ -86515,24 +86672,21 @@ async function externalList(args, ctx) {
       return 0;
     }
     if (rows.length === 0) {
-      deps.stdout.write(`No external wallets. Create one: candle external new --label <name>
-`);
+      notice(deps, "stdout", "note", `No external wallets. Create one:
+candle external new --label <name>`);
       return 0;
     }
     for (const row of rows) {
-      deps.stdout.write(`${row.address}
-`);
-      deps.stdout.write(`  label       ${row.label || "(none)"}
-`);
-      if (row.derivation)
-        deps.stdout.write(`  derivation  ${row.derivation}
-`);
-      if (row.exposureUnknown)
-        deps.stdout.write(`  history     unknown (restored from the phrase)
+      writeFields(deps, "stdout", [
+        ["Address", row.address],
+        ["Label", row.label],
+        ...row.derivation ? [["Derivation", row.derivation]] : [],
+        ...row.exposureUnknown ? [["History", "unknown (restored from the phrase)"]] : []
+      ]);
+      deps.stdout.write(`
 `);
     }
-    deps.stdout.write(`External wallets are never delegated to Privy and never registered with Candle. Balances are read over your own RPC; Candle is not in their transactions.
-`);
+    notice(deps, "stdout", "note", "External wallets are never delegated to Privy and never registered with Candle. Balances are read over your own RPC; Candle is not in their transactions.");
     return 0;
   });
 }
@@ -86582,16 +86736,11 @@ async function externalSweep(args, ctx) {
       return usage(ctx, "The source and the destination are the same address.");
     }
     if (!ctx.json) {
-      deps.stdout.write(`Sweep everything from external wallet:
-`);
-      deps.stdout.write(`  source      ${sourceEntry.label}  ${sourceEntry.address}
-`);
-      deps.stdout.write(`to vault receive key:
-`);
-      deps.stdout.write(`  destination ${destination.label}  ${destination.address}
-`);
-      deps.stdout.write(`SOL, classic SPL and Token-2022 balances move, signed locally with the external key.
-`);
+      writeFields(deps, "stdout", [
+        ["Source", `${sourceEntry.label}  ${sourceEntry.address}`],
+        ["Destination", `${destination.label}  ${destination.address}`]
+      ], "Sweep everything to vault receive key");
+      notice(deps, "stdout", "warning", "SOL, classic SPL and Token-2022 balances move, signed locally with the external key.");
     }
     await confirmSend(ctx, { amount: `everything from ${sourceEntry.label}`, address: destination.address });
     const secret = await decryptKey(vault, sourceEntry.id);
@@ -86602,8 +86751,7 @@ async function externalSweep(args, ctx) {
         secret64: secret,
         owner: sourceEntry.address,
         destination: destination.address,
-        say: ctx.json ? () => {} : (line) => deps.stdout.write(`${line}
-`)
+        say: ctx.json ? () => {} : (line) => notice(deps, "stdout", "note", line)
       });
       const complete = outcome.leftovers.length === 0;
       if (ctx.json) {
@@ -86618,23 +86766,23 @@ async function externalSweep(args, ctx) {
         return complete ? 0 : 3;
       }
       if (outcome.receipts.length === 0 && outcome.leftovers.length === 0) {
-        deps.stdout.write(`Nothing to sweep: no balances found.
-`);
+        notice(deps, "stdout", "note", "Nothing to sweep: no balances found.");
         return 0;
       }
       if (complete) {
-        deps.stdout.write(`Swept: ${outcome.receipts.length} transaction(s) finalized.
-`);
+        writeSuccess(deps, "stdout", `Swept: ${outcome.receipts.length} transaction(s) finalized.`);
         return 0;
       }
-      deps.stdout.write(`Sweep incomplete: ${outcome.leftovers.length} leftover(s).
-`);
+      notice(deps, "stdout", "warning", `Sweep incomplete: ${outcome.leftovers.length} leftover(s).`);
       for (const l of outcome.leftovers) {
-        deps.stdout.write(`  - ${l.kind}${l.mint ? ` ${l.mint}` : ""}${l.amountRaw ? ` (${l.amountRaw} raw)` : ""}: ${l.detail}
-`);
+        writeFields(deps, "stdout", [
+          ["Kind", l.kind],
+          ...l.mint ? [["Mint", l.mint]] : [],
+          ...l.amountRaw ? [["Amount (raw)", l.amountRaw]] : [],
+          ["Detail", l.detail]
+        ]);
       }
-      deps.stdout.write(`Re-run this sweep once the leftovers are resolved.
-`);
+      notice(deps, "stdout", "note", "Re-run this sweep once the leftovers are resolved.");
       return 3;
     } finally {
       wipe(secret);
@@ -86811,9 +86959,12 @@ init_agent_key_access();
 init_args();
 init_client();
 init_deps();
+init_human_output();
+init_presentation();
 init_profiles();
 init_render();
 init_promote_support();
+init_key_output();
 init_keys();
 init_tee_rebind();
 var KEYS_PATH4 = "/api/v1/agent/keys";
@@ -86855,10 +87006,22 @@ function linkedTransferLine(ready) {
   ].join(" ");
 }
 var LOCALLY_RENDERED = new Set(["MOVES_FUNDS", "VAULT_TRANSFER_READY", "LINKED_TRANSFER_NEEDS_LIMITS"]);
-function accessScreen(shown, identity2) {
+function accessScreen(shown, identity2, style) {
   const environment = candleEnvironment(identity2.apiUrl) ?? "not a Candle host";
   const label = labelCell(shown.label ?? undefined);
-  const lines = [
+  const lines = style ? [
+    heading("Access change", style),
+    "",
+    ...fields([
+      ["Key", `${shown.keyPrefix}${label ? `  ${label}` : ""}`],
+      ["Candle account", identity2.account],
+      ["API", `${identity2.apiUrl}  (${environment})`],
+      ["Access", `${levelName(shown.from)}  ->  ${levelName(shown.to)}   (${shown.direction})`],
+      ["Adds", shown.added.length > 0 ? formatScopesForSummary(shown.added) : "nothing"],
+      ["Removes", shown.removed.length > 0 ? shown.removed.join(", ") : "nothing"]
+    ], style),
+    ""
+  ] : [
     `Key             ${shown.keyPrefix}${label ? `  ${label}` : ""}`,
     `Candle account  ${identity2.account}`,
     `API             ${identity2.apiUrl}  (${environment})`,
@@ -86868,24 +87031,27 @@ function accessScreen(shown, identity2) {
     `Removes         ${shown.removed.length > 0 ? shown.removed.join(", ") : "nothing"}`,
     ""
   ];
+  const advice = (text3, level = "warning") => {
+    lines.push(...style ? [...renderNotice(level, text3, style), ""] : [text3]);
+  };
   const bound = shown.effects.boundTeeWallets;
   if (bound && bound.count > 0) {
     const names = bound.sample.map((w) => labelCell(w.label ?? undefined) || shortAddress(w.address));
     const more = bound.count > names.length ? `, and ${bound.count - names.length} more` : "";
-    lines.push(`TEE wallets on this key: ${bound.count}  (${names.join(", ")}${more})`);
+    advice(`TEE wallets on this key: ${bound.count}  (${names.join(", ")}${more})`, "note");
     if (shown.direction === "widen" && shown.added.includes("transfer:bound")) {
-      lines.push("It can move these wallets' funds to their vaults as soon as you confirm.");
+      advice("It can move these wallets' funds to their vaults as soon as you confirm.");
     }
   }
   const ready = shown.effects.linkedTransferReady;
   if (shown.direction === "widen" && ready) {
     const line = linkedTransferLine(ready);
     if (line)
-      lines.push(line);
+      advice(line);
   }
   for (const warning of shown.warnings) {
     if (!LOCALLY_RENDERED.has(warning.code))
-      lines.push(`Warning: ${warning.message}`);
+      advice(style ? warning.message : `Warning: ${warning.message}`);
   }
   if (lines[lines.length - 1] !== "")
     lines.push("");
@@ -86919,8 +87085,7 @@ function writeAccessFailure(ctx, result, context) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...suggestion ? { suggestion } : {} })}
 `);
   } else {
-    deps.stderr.write(`${code}: ${message}${suggestion ? ` ${suggestion}` : ""}
-`);
+    writeScreenMessage(deps, `${code}: ${message}`, suggestion);
   }
   return 1;
 }
@@ -86928,35 +87093,35 @@ async function keysAccess(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--access"], booleanFlags: ["--yes", "--history"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const [target, extra] = parsed.positionals;
   if (target === undefined || extra !== undefined) {
-    writeUsageFailure(deps, `${extra !== undefined ? `Unexpected argument: ${extra}. ` : "Name one key. "}${USAGE_ACCESS}`, json);
+    writeScreenUsageFailure(deps, `${extra !== undefined ? `Unexpected argument: ${extra}. ` : "Name one key. "}${USAGE_ACCESS}`, json);
     return 2;
   }
   const accessFlag = parsed.values["--access"];
   const history2 = parsed.booleans.has("--history");
   const yes = parsed.booleans.has("--yes");
   if (accessFlag === undefined === !history2) {
-    writeUsageFailure(deps, `Pass exactly one of --access and --history. ${USAGE_ACCESS}`, json);
+    writeScreenUsageFailure(deps, `Pass exactly one of --access and --history. ${USAGE_ACCESS}`, json);
     return 2;
   }
   if (history2) {
     if (yes) {
-      writeUsageFailure(deps, "--yes only applies to a change, not to --history.", json);
+      writeScreenUsageFailure(deps, "--yes only applies to a change, not to --history.", json);
       return 2;
     }
     if (target === SELF) {
-      writeUsageFailure(deps, "--history needs the device token: name the key by prefix or label, not self.", json);
+      writeScreenUsageFailure(deps, "--history needs the device token: name the key by prefix or label, not self.", json);
       return 2;
     }
     return keysAccessHistory(target, ctx);
   }
   const preset = ACCESS_LEVELS[accessFlag];
   if (preset === undefined) {
-    writeUsageFailure(deps, "--access must be one of: read, write, withdraw.", json);
+    writeScreenUsageFailure(deps, "--access must be one of: read, write, withdraw.", json);
     return 2;
   }
   await printIdentity(ctx);
@@ -86967,7 +87132,7 @@ async function keysAccess(args, ctx) {
   if (self) {
     const apiKey = await resolveApiKey(deps, ctx.profile);
     if (!apiKey) {
-      writeLocalFailure(deps, NO_API_KEY2, json);
+      writeScreenLocalFailure(deps, NO_API_KEY2, json);
       return 1;
     }
     path = `${KEYS_PATH4}/self/access`;
@@ -86976,7 +87141,7 @@ async function keysAccess(args, ctx) {
   } else {
     const deviceToken = await resolveDeviceToken(deps, ctx.profile);
     if (!deviceToken) {
-      writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+      writeScreenLocalFailure(deps, NO_DEVICE_TOKEN, json);
       return 1;
     }
     const resolved = await resolveTargetKey(ctx, deviceToken, target, {
@@ -87001,33 +87166,32 @@ async function keysAccess(args, ctx) {
       deps.stdout.write(`${JSON.stringify({ ...shown, command: "keys access" })}
 `);
     else
-      deps.stdout.write(`${name2} is already ${levelName(shown.to)}. Nothing changed.
-`);
+      notice(deps, "stdout", "note", `${name2} is already ${levelName(shown.to)}. Nothing changed.`);
     return 0;
   }
   const widen = shown.direction === "widen";
   const interactive = deps.isTTY.stdin && deps.isTTY.stdout;
   if (widen && yes) {
-    writeUsageFailure(deps, "--yes only skips the prompt when narrowing; nothing changed.", json);
+    writeScreenUsageFailure(deps, "--yes only skips the prompt when narrowing; nothing changed.", json);
     return 2;
   }
   if (widen && !interactive) {
-    writeLocalFailure(deps, REQUIRES_TTY, json);
+    writeScreenLocalFailure(deps, REQUIRES_TTY, json);
     return 1;
   }
   if (!widen && !yes && !interactive) {
-    writeUsageFailure(deps, "Narrowing a key without a terminal needs --yes; nothing changed. Run it in an interactive shell, or pass --yes.", json);
+    writeScreenUsageFailure(deps, "Narrowing a key without a terminal needs --yes; nothing changed. Run it in an interactive shell, or pass --yes.", json);
     return 2;
   }
   const config = await deps.readConfig();
   const fields2 = effectiveProfileFields(config, ctx.profile);
-  const account = fields2.account ? shortAddress(fields2.account) : "unknown";
-  deps.stderr.write(`${accessScreen(shown, { account: fields2.username ? `${fields2.username}  (${account})` : account, apiUrl })}
+  const account = fields2.account ? shortAddress(fields2.account) : json ? "unknown" : symbols(terminalStyle(deps, "stderr")).missing;
+  deps.stderr.write(`${accessScreen(shown, { account: fields2.username ? `${fields2.username}  (${account})` : account, apiUrl }, json ? undefined : terminalStyle(deps, "stderr"))}
 `);
   if (widen) {
     const typed = await deps.promptLine(`Type the key prefix ${shown.keyPrefix} to widen it: `);
     if (typed.trim() !== shown.keyPrefix) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "KEY_ACCESS_NOT_ACKNOWLEDGED",
         message: `The acknowledgement is the key prefix ${shown.keyPrefix}; nothing changed.`,
         suggestion: `Run the command again and type ${shown.keyPrefix} at the prompt.`
@@ -87037,7 +87201,7 @@ async function keysAccess(args, ctx) {
   } else if (!yes) {
     const answer2 = await deps.promptLine(`Change ${name2} from ${levelName(shown.from)} to ${levelName(shown.to)}? [y/N] `);
     if (!["y", "yes"].includes(answer2.trim().toLowerCase())) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "KEY_ACCESS_NOT_ACKNOWLEDGED",
         message: "Not confirmed; nothing changed.",
         suggestion: "Run the command again and answer y, or pass --yes."
@@ -87062,12 +87226,12 @@ async function keysAccess(args, ctx) {
     return 0;
   }
   if (result.direction === "unchanged") {
-    deps.stdout.write(`${keyName2(result.keyPrefix, result.label)} is already ${levelName(result.to)}. Nothing changed.
-`);
+    notice(deps, "stdout", "note", `${keyName2(result.keyPrefix, result.label)} is already ${levelName(result.to)}. Nothing changed.`);
     return 0;
   }
-  deps.stdout.write(`Changed ${keyName2(result.keyPrefix, result.label)} to ${levelName(result.to)}.` + `${result.changeId ? ` Change id ${result.changeId}` : ""}
-`);
+  writeSuccess(deps, "stdout", `Changed ${keyName2(result.keyPrefix, result.label)} to ${levelName(result.to)}.`);
+  if (result.changeId)
+    writeFields(deps, "stdout", [["Change id", result.changeId]]);
   return 0;
 }
 async function keysAccessHistory(target, ctx) {
@@ -87075,7 +87239,7 @@ async function keysAccessHistory(target, ctx) {
   await printIdentity(ctx);
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    writeScreenLocalFailure(deps, NO_DEVICE_TOKEN, json);
     return 1;
   }
   const resolved = await resolveTargetKey(ctx, deviceToken, target, {
@@ -87100,21 +87264,25 @@ async function keysAccessHistory(target, ctx) {
   }
   const rows = result.body.changes ?? [];
   if (rows.length === 0) {
-    deps.stdout.write(`No access changes on key ${resolved.keyPrefix}.
-`);
+    notice(deps, "stdout", "note", `No access changes on key ${resolved.keyPrefix}.`);
     return 0;
   }
   deps.stdout.write(`${renderTable(["Time", "From", "To", "Actor", "Device or key"], rows.map((row) => [
-    formatTimestamp(row.at),
+    formatTime(row.at, { now: deps.now(), missing: symbols(terminalStyle(deps, "stdout")).missing }),
     levelName(row.from),
     levelName(row.to),
     row.actor,
     row.actorDevicePrefix ?? row.actorKeyPrefix ?? ""
-  ]))}
+  ]), {
+    style: terminalStyle(deps, "stdout"),
+    width: terminalStyle(deps, "stdout").width,
+    indent: 2,
+    rule: false,
+    columns: [{ id: true }, { priority: 2 }, { priority: 3 }, { priority: 1 }, { id: true }]
+  })}
 `);
   if (rows.some((row) => row.actor === "device"))
-    deps.stdout.write(`${PORTAL_REVOKE_LINE}
-`);
+    notice(deps, "stdout", "note", PORTAL_REVOKE_LINE);
   return 0;
 }
 
@@ -87215,6 +87383,8 @@ ${fields(rows, style).join(`
 init_args();
 init_client();
 init_deps();
+init_human_output();
+init_presentation();
 init_profiles();
 init_render();
 init_key_output();
@@ -87227,25 +87397,22 @@ function widenRefusedHint(prefix, walletIds) {
   const wallets2 = walletIds.length > 0 ? walletIds.join(" ") : "<wallet...>";
   return `To move TEE wallets to this key, run: candle tee rebind ${wallets2} --to-key ${prefix} ` + "(owner, device token; --label-prefix <p> names many at once). To grant a linked wallet to the key " + "instead, use the agent console's Agents tab in a signed-in session. If `tee rebind` says the wallets " + "are already bound, grant them to the key in the agent console's Agents tab (signed in).";
 }
-function formatTimestamp2(ms) {
-  return ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) : "-";
-}
 async function keysWalletsList(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const prefix = parsed.positionals[0];
   if (!prefix) {
-    writeUsageFailure(deps, "Usage: candle keys wallets <prefix>", json);
+    writeScreenUsageFailure(deps, "Usage: candle keys wallets <prefix>", json);
     return 2;
   }
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY3, json);
+    writeScreenLocalFailure(deps, NO_API_KEY3, json);
     return 1;
   }
   const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
@@ -87256,7 +87423,7 @@ async function keysWalletsList(args, ctx) {
     env: deps.env
   });
   if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    writeScreenFailure(deps, result, { apiUrl, authType: "key" }, json);
     return 1;
   }
   if (json) {
@@ -87265,51 +87432,53 @@ async function keysWalletsList(args, ctx) {
     return 0;
   }
   const body = result.body;
-  deps.stdout.write(body.walletScope === "selected" ? `Scope: selected — this profile can only spend from the wallets below.
-` : `Scope: all — this profile can spend from every wallet on the account, listed here or not.
-`);
+  notice(deps, "stdout", "warning", body.walletScope === "selected" ? `Scope: selected — this profile can only spend from the wallets below.` : `Scope: all — this profile can spend from every wallet on the account, listed here or not.`);
   if (body.profileId)
-    deps.stdout.write(`Profile: ${body.profileId}
-`);
+    writeFields(deps, "stdout", [["Profile", body.profileId]]);
   if (body.wallets.length === 0) {
-    deps.stdout.write(`No wallets assigned.
-`);
+    notice(deps, "stdout", "note", "No wallets assigned.");
     return 0;
   }
   const rows = body.wallets.map((w) => [
     w.linkedWalletId,
     w.chain,
     w.address,
-    w.label ?? "-",
+    w.label ?? symbols(terminalStyle(deps, "stdout")).missing,
     w.spendCapable ? "yes" : "no",
-    formatTimestamp2(w.assignedAt)
+    formatTime(w.assignedAt, { now: deps.now(), missing: symbols(terminalStyle(deps, "stdout")).missing })
   ]);
-  deps.stdout.write(`${renderTable(["Id", "Chain", "Address", "Label", "Can sign", "Assigned"], rows)}
-`);
+  writeTable(deps, "stdout", ["Id", "Chain", "Address", "Label", "Can sign", "Assigned"], rows, [
+    { id: true },
+    { priority: 3 },
+    { id: true },
+    { priority: 2 },
+    { priority: 4 },
+    { priority: 1, id: true }
+  ]);
   return 0;
 }
 async function keysWalletsSet(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--wallets"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const prefix = parsed.positionals[0];
   if (!prefix) {
-    writeUsageFailure(deps, "Usage: candle keys wallets set <prefix> --wallets <id,id,...>", json);
+    writeScreenUsageFailure(deps, "Usage: candle keys wallets set <prefix> --wallets <id,id,...>", json);
     return 2;
   }
   const raw = parsed.values["--wallets"];
   if (raw === undefined) {
-    writeUsageFailure(deps, 'Missing --wallets. Pass a comma-separated list, or "" to assign none.', json);
+    writeScreenUsageFailure(deps, 'Missing --wallets. Pass a comma-separated list, or "" to assign none.', json);
     return 2;
   }
   const walletIds = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY3, json);
+    writeScreenLocalFailure(deps, NO_API_KEY3, json);
     return 1;
   }
   const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
@@ -87331,14 +87500,13 @@ async function keysWalletsSet(args, ctx) {
       return 1;
     }
     if (result.code !== "LOOSEN_REQUIRES_SESSION") {
-      writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+      writeScreenFailure(deps, result, { apiUrl, authType: "key" }, json);
       return 1;
     }
     const hint = widenRefusedHint(prefix, walletIds);
-    writeFailure(deps, { ...result, uiHint: hint }, { apiUrl, authType: "key" }, json);
+    writeScreenFailure(deps, { ...result, uiHint: hint }, { apiUrl, authType: "key" }, json);
     if (!json)
-      deps.stderr.write(`${hint}
-`);
+      notice(deps, "stderr", "note", hint);
     return 1;
   }
   if (json) {
@@ -87346,28 +87514,26 @@ async function keysWalletsSet(args, ctx) {
 `);
     return 0;
   }
-  deps.stdout.write(walletIds.length === 0 ? `Cleared every wallet assignment on ${prefix}.
-` : `Assigned ${walletIds.length} wallet${walletIds.length === 1 ? "" : "s"} to ${prefix}.
-`);
+  writeSuccess(deps, "stdout", walletIds.length === 0 ? `Cleared every wallet assignment on ${prefix}.` : `Assigned ${walletIds.length} wallet${walletIds.length === 1 ? "" : "s"} to ${prefix}.`);
   return 0;
 }
 async function keysWalletsScope(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--scope"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const prefix = parsed.positionals[0];
   const scope = parsed.values["--scope"];
   if (!prefix || scope !== "all" && scope !== "selected") {
-    writeUsageFailure(deps, "Usage: candle keys wallets scope <prefix> --scope <all|selected>", json);
+    writeScreenUsageFailure(deps, "Usage: candle keys wallets scope <prefix> --scope <all|selected>", json);
     return 2;
   }
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY3, json);
+    writeScreenLocalFailure(deps, NO_API_KEY3, json);
     return 1;
   }
   const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallet-scope`, {
@@ -87380,7 +87546,7 @@ async function keysWalletsScope(args, ctx) {
     env: deps.env
   });
   if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    writeScreenFailure(deps, result, { apiUrl, authType: "key" }, json);
     return 1;
   }
   if (json) {
@@ -87388,9 +87554,7 @@ async function keysWalletsScope(args, ctx) {
 `);
     return 0;
   }
-  deps.stdout.write(scope === "selected" ? `${prefix} is now limited to its assigned wallets.
-` : `${prefix} can now spend from every wallet on the account.
-`);
+  writeSuccess(deps, "stdout", scope === "selected" ? `${prefix} is now limited to its assigned wallets.` : `${prefix} can now spend from every wallet on the account.`);
   return 0;
 }
 async function keysWallets(args, ctx) {
@@ -89030,9 +89194,10 @@ async function lpClaim(args, ctx) {
 // src/commands/mcp.ts
 init_args();
 init_deps();
+init_human_output();
 init_profiles();
 init_release();
-init_render();
+init_key_output();
 var MCP_TOOL_NAMES = [
   "candle_launch_token",
   "candle_launch_and_seed",
@@ -89134,17 +89299,17 @@ async function mcp(args, ctx) {
     booleanFlags: ["--read-only", "--print-config"]
   });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const readOnly = parsed.booleans.has("--read-only");
   const toolsFlag = parsed.values["--tools"];
   if (readOnly && toolsFlag !== undefined) {
-    writeUsageFailure(deps, "--read-only and --tools are mutually exclusive; --read-only IS a tool selection.", json);
+    writeScreenUsageFailure(deps, "--read-only and --tools are mutually exclusive; --read-only IS a tool selection.", json);
     return 2;
   }
   let toolAllowlist;
@@ -89154,7 +89319,7 @@ async function mcp(args, ctx) {
     const requested = toolsFlag.split(",").map((name2) => name2.trim()).filter((name2) => name2.length > 0);
     const unknown2 = requested.filter((name2) => !MCP_TOOL_NAMES.includes(name2));
     if (requested.length === 0 || unknown2.length > 0) {
-      writeUsageFailure(deps, `--tools must be a comma-separated list of: ${MCP_TOOL_NAMES.join(", ")}${unknown2.length > 0 ? ` (unknown: ${unknown2.join(", ")})` : ""}`, json);
+      writeScreenUsageFailure(deps, `--tools must be a comma-separated list of: ${MCP_TOOL_NAMES.join(", ")}${unknown2.length > 0 ? ` (unknown: ${unknown2.join(", ")})` : ""}`, json);
       return 2;
     }
     toolAllowlist = requested.join(",");
@@ -89175,7 +89340,7 @@ async function mcp(args, ctx) {
   }
   const apiKey = readOnly ? undefined : await resolveApiKey(deps, ctx.profile);
   if (!readOnly && !apiKey) {
-    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle auth login" }, json);
+    writeScreenLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle auth login" }, json);
     return 1;
   }
   const serverEnv = {
@@ -89185,13 +89350,15 @@ async function mcp(args, ctx) {
     ...apiKey ? { CANDLE_AGENT_API_KEY: apiKey } : {},
     ...toolAllowlist ? { CANDLE_MCP_TOOLS: toolAllowlist } : {}
   };
-  deps.stderr.write(`Starting the Candle MCP server against ${apiUrl}${toolAllowlist ? ` (tools: ${toolAllowlist})` : ""}
-`);
+  writeFields(deps, "stderr", [
+    ["API", apiUrl],
+    ["Tools", toolAllowlist ?? "all"]
+  ], "Starting the Candle MCP server");
   try {
     await deps.runMcpServer(serverEnv);
     return 0;
   } catch (error) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "MCP_SERVER_FAILED",
       message: `The MCP server could not start: ${error instanceof Error ? error.message : error}`
     }, json);
@@ -94644,6 +94811,7 @@ async function relaySignature(ctx, key, wallet3, typedData) {
 // src/commands/plans.ts
 init_args();
 init_client();
+init_human_output();
 
 // src/plans.ts
 var PLAN_CAPABILITY_NOTE2 = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs. Every plan can launch a token from its embedded wallet, with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the headless launch; the two launch rows are additional routes, not the only ones.";
@@ -94714,12 +94882,14 @@ function planPromotionLine2(table) {
 }
 
 // src/commands/plans.ts
+init_presentation();
 init_render();
+init_key_output();
 var USAGE9 = "Usage: candle plans";
 async function plans(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed || parsed.positionals.length > 0) {
-    writeUsageFailure(ctx.deps, "error" in parsed ? `${parsed.error}
+    writeScreenUsageFailure(ctx.deps, "error" in parsed ? `${parsed.error}
 ${USAGE9}` : USAGE9, ctx.json);
     return 2;
   }
@@ -94732,11 +94902,10 @@ ${USAGE9}` : USAGE9, ctx.json);
   });
   if (!result.ok) {
     if (result.status === 404 && !ctx.json) {
-      ctx.deps.stderr.write(`${ctx.apiUrl} does not serve the plan table yet (GET /api/v1/agent/plans answered 404).
-`);
+      notice(ctx.deps, "stderr", "danger", `${ctx.apiUrl} does not serve the plan table yet (GET /api/v1/agent/plans answered 404).`);
       return 1;
     }
-    writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json);
+    writeScreenFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json);
     return 1;
   }
   const body = result.body;
@@ -94747,27 +94916,27 @@ ${USAGE9}` : USAGE9, ctx.json);
   }
   const { headers: headers2, rows } = planTableRows2(body);
   const out = ctx.deps.stdout;
-  out.write(`Plans served by ${ctx.apiUrl}
-
-`);
-  out.write(`${renderTable(headers2.map(terminalText), rows.map((row) => row.map(terminalText)))}
+  writeFields(ctx.deps, "stdout", [["API", ctx.apiUrl]], "Plans");
+  out.write(`${renderTable(headers2.map(terminalText), rows.map((row) => row.map(terminalText)), {
+    style: terminalStyle(ctx.deps, "stdout"),
+    width: terminalStyle(ctx.deps, "stdout").width,
+    indent: 2,
+    rule: false,
+    columns: headers2.map((_, index) => index === 0 ? {} : { id: true })
+  })}
 `);
   const promotion = planPromotionLine2(body);
   if (promotion)
-    out.write(`
-${promotion}
-`);
-  out.write(`
-${PLAN_CAPABILITY_NOTE2}
-`);
-  out.write(`
-The agent trade fee is charged on top of each trade or dev buy the API builds. Your account's plan: candle doctor.
-`);
+    notice(ctx.deps, "stdout", "note", promotion);
+  notice(ctx.deps, "stdout", "note", PLAN_CAPABILITY_NOTE2);
+  notice(ctx.deps, "stdout", "note", `The agent trade fee is charged on top of each trade or dev buy the API builds. Your account's plan:
+candle doctor`);
   return 0;
 }
 
 // src/commands/plugins.ts
 init_args();
+init_human_output();
 
 // src/plugins.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -94931,13 +95100,16 @@ function pluginInvocation(argv, env, isBuiltIn) {
 }
 
 // src/commands/plugins.ts
-init_render();
+init_presentation();
 init_solana_endpoint();
 init_store();
+init_key_output();
 
 // src/commands/secrets.ts
 init_args();
-init_render();
+init_human_output();
+init_presentation();
+init_key_output();
 var NAME_SHAPE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 function canonicalSecretName(raw) {
   if (!NAME_SHAPE.test(raw))
@@ -94960,7 +95132,7 @@ async function writeSecretNames(deps, profile, names) {
     await deps.updateProfile(profile, { secretNames: sorted });
 }
 function usage10(ctx, line) {
-  writeUsageFailure(ctx.deps, line, ctx.json);
+  writeScreenUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
 async function secretsSet(args, ctx) {
@@ -94975,7 +95147,7 @@ async function secretsSet(args, ctx) {
     return usage10(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
-    writeLocalFailure(ctx.deps, {
+    writeScreenLocalFailure(ctx.deps, {
       code: "SECRET_REQUIRES_TTY",
       message: "candle secrets set reads the value from a hidden prompt on a terminal and from nowhere else.",
       suggestion: "There is no environment variable and no flag that supplies a secret's value."
@@ -94988,7 +95160,7 @@ async function secretsSet(args, ctx) {
   try {
     await ctx.deps.secretsStore.set(secretRef(ctx.profile, name2), value);
   } catch (error) {
-    writeLocalFailure(ctx.deps, { code: "SECRET_STORE_FAILED", message: error instanceof Error ? error.message : String(error) }, ctx.json);
+    writeScreenLocalFailure(ctx.deps, { code: "SECRET_STORE_FAILED", message: error instanceof Error ? error.message : String(error) }, ctx.json);
     return 1;
   }
   await writeSecretNames(ctx.deps, ctx.profile, [...await storedSecretNames(ctx.deps, ctx.profile), name2]);
@@ -94997,8 +95169,12 @@ async function secretsSet(args, ctx) {
 `);
     return 0;
   }
-  ctx.deps.stdout.write(`Stored ${name2} in the ${ctx.deps.backend} secrets namespace. It is never sent to Candle and never shown again; a plug-in receives it as CANDLE_SECRET_${name2} only when you pass --secret ${name2}.
-`);
+  writeSuccess(ctx.deps, "stdout", `Stored ${name2}.`);
+  writeFields(ctx.deps, "stdout", [
+    ["Backend", `${ctx.deps.backend} secrets namespace`],
+    ["Plug-in variable", `CANDLE_SECRET_${name2}`]
+  ]);
+  notice(ctx.deps, "stdout", "note", `It is never sent to Candle and never shown again; a plug-in receives it only when you pass --secret ${name2}.`);
   return 0;
 }
 async function secretsList(args, ctx) {
@@ -95014,12 +95190,11 @@ async function secretsList(args, ctx) {
     return 0;
   }
   if (names.length === 0) {
-    ctx.deps.stdout.write(`No secrets stored. Add one: candle secrets set <name>
-`);
+    notice(ctx.deps, "stdout", "note", `No secrets stored. Add one:
+candle secrets set <name>`);
     return 0;
   }
-  ctx.deps.stdout.write(`${renderTable(["Name", "Passed to a plug-in as"], names.map((n) => [n, `CANDLE_SECRET_${n}`]))}
-`);
+  writeTable(ctx.deps, "stdout", ["Name", "Passed to a plug-in as"], names.map((n) => [n, `CANDLE_SECRET_${n}`]), [{ id: true }, { id: true }]);
   return 0;
 }
 async function secretsRemove(args, ctx) {
@@ -95041,9 +95216,10 @@ async function secretsRemove(args, ctx) {
 `);
     return 0;
   }
-  ctx.deps.stdout.write(names.includes(name2) ? `Removed ${name2}.
-` : `No secret named ${name2} was stored.
-`);
+  if (names.includes(name2))
+    writeSuccess(ctx.deps, "stdout", `Removed ${name2}.`);
+  else
+    notice(ctx.deps, "stdout", "note", `No secret named ${name2} was stored.`);
   return 0;
 }
 
@@ -95053,11 +95229,11 @@ var PLUGIN_NETWORK = "solana-mainnet";
 async function plugins(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    writeScreenUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    writeUsageFailure(ctx.deps, `Unexpected argument: ${parsed.positionals[0]}`, ctx.json);
+    writeScreenUsageFailure(ctx.deps, `Unexpected argument: ${parsed.positionals[0]}`, ctx.json);
     return 2;
   }
   const found = listPlugins(ctx.deps.env.PATH);
@@ -95067,23 +95243,22 @@ async function plugins(args, ctx) {
     return 0;
   }
   if (found.length === 0) {
-    ctx.deps.stdout.write(`No plug-ins found. An executable named candle-<name> on your PATH runs as: candle <name> [--secret <name>]... [--wallet <label>]... [args]
-`);
+    notice(ctx.deps, "stdout", "note", `No plug-ins found. An executable named candle-<name> on your PATH runs as:
+candle <name> [--secret <name>]... [--wallet <label>]... [args]`);
     return 0;
   }
-  ctx.deps.stdout.write(`${renderTable(["Command", "Executable"], found.map((plugin) => [`candle ${plugin.name}`, plugin.path]))}
-`);
+  writeTable(ctx.deps, "stdout", ["Command", "Executable"], found.map((plugin) => [`candle ${plugin.name}`, plugin.path]), [{ id: true }, { id: true }]);
   return 0;
 }
 async function runPlugin(name2, rawArgs, ctx) {
   const path = findPlugin(name2, ctx.deps.env.PATH);
   if (path === undefined) {
-    writeLocalFailure(ctx.deps, { code: "PLUGIN_NOT_FOUND", message: `No candle-${name2} executable on PATH.` }, ctx.json);
+    writeScreenLocalFailure(ctx.deps, { code: "PLUGIN_NOT_FOUND", message: `No candle-${name2} executable on PATH.` }, ctx.json);
     return 1;
   }
   const split2 = splitPluginArgs(rawArgs);
   if ("error" in split2) {
-    writeUsageFailure(ctx.deps, split2.error, ctx.json);
+    writeScreenUsageFailure(ctx.deps, split2.error, ctx.json);
     return 2;
   }
   const secrets = {};
@@ -95091,7 +95266,7 @@ async function runPlugin(name2, rawArgs, ctx) {
     const name3 = requested.toUpperCase();
     const value = await ctx.deps.secretsStore.get(secretRef(ctx.profile, name3));
     if (value === null) {
-      writeLocalFailure(ctx.deps, {
+      writeScreenLocalFailure(ctx.deps, {
         code: "SECRET_MISSING",
         message: `No secret named ${name3} is stored for this profile.`,
         suggestion: `Store it first: candle secrets set ${name3}`
@@ -95117,7 +95292,7 @@ async function runPlugin(name2, rawArgs, ctx) {
         const entry = findExternalEntry(vault.index, requested);
         if (entry === undefined) {
           const other = vault.index.entries.find((e) => e.label === requested || e.address === requested);
-          writeLocalFailure(ctx.deps, {
+          writeScreenLocalFailure(ctx.deps, {
             code: "PLUGIN_WALLET_NOT_EXTERNAL",
             message: other === undefined ? `No external wallet in this vault matches --wallet ${requested}.` : `${requested} is ${describeRole(other)}; only an external wallet's address is passed to a plug-in.`,
             suggestion: "Create one: candle external new --label <name>"
@@ -95134,7 +95309,7 @@ async function runPlugin(name2, rawArgs, ctx) {
   }
   const endpoint = resolveSolanaEndpoint(ctx, undefined, await ctx.deps.readConfig());
   if ("error" in endpoint) {
-    writeUsageFailure(ctx.deps, endpoint.error, ctx.json);
+    writeScreenUsageFailure(ctx.deps, endpoint.error, ctx.json);
     return 2;
   }
   const env = pluginEnvironment({
@@ -95509,7 +95684,7 @@ ${notes.map(([level, text3]) => renderNotice(level, text3, style).join(`
 `)}
 `);
 }
-function writeTable(ctx, title, headers2, rows, columns) {
+function writeTable2(ctx, title, headers2, rows, columns) {
   const style = terminalStyle(ctx.deps, "stdout");
   const table = financialTable(ctx, headers2, rows, columns);
   ctx.deps.stdout.write(`
@@ -95529,7 +95704,7 @@ function writeWallets(ctx, wallets2, engine) {
     `${w.openPositions.length}${w.unmarkedPositions > 0 ? ` (${w.unmarkedPositions} unpriced)` : ""}`
   ]);
   const title = engine ? "By wallet (each its own cost basis; the rows sum to the total)" : "By wallet (each its own cost basis, so the rows need not sum to the total)";
-  writeTable(ctx, title, ["WALLET", "CHAIN", "TRADES", "REALIZED NET", "UNREALIZED", "OPEN"], rows, [
+  writeTable2(ctx, title, ["WALLET", "CHAIN", "TRADES", "REALIZED NET", "UNREALIZED", "OPEN"], rows, [
     { id: true },
     { priority: 1 },
     { priority: 2 },
@@ -95679,7 +95854,7 @@ function writeAgents(ctx, agents, all) {
     open8(all.openPositions, all.unmarked),
     all.closedRounds !== undefined ? String(all.closedRounds) : symbolsMissing(ctx)
   ]);
-  writeTable(ctx, "By agent (each key, then Manual; the rows sum to the account total)", ["AGENT", "REALIZED NET", "UNREALIZED", "TOTAL", "OPEN", "CLOSED"], rows, [{ id: true }, { signed: true }, { signed: true }, { signed: true }, {}, { priority: 1 }]);
+  writeTable2(ctx, "By agent (each key, then Manual; the rows sum to the account total)", ["AGENT", "REALIZED NET", "UNREALIZED", "TOTAL", "OPEN", "CLOSED"], rows, [{ id: true }, { signed: true }, { signed: true }, { signed: true }, {}, { priority: 1 }]);
 }
 function writeLpPositions(ctx, lp, withBook) {
   if (!lp?.read || lp.positions.length === 0)
@@ -95703,7 +95878,7 @@ function writeLpPositions(ctx, lp, withBook) {
       row.push(p.book ?? none);
     return row;
   });
-  writeTable(ctx, "Open LP positions", headers2, rows, [
+  writeTable2(ctx, "Open LP positions", headers2, rows, [
     { id: true },
     { id: true },
     { id: true },
@@ -95758,7 +95933,7 @@ ${all.length === 0 ? "No open positions." : "No open positions above dust."}
     ...withBook ? [{ priority: 1 }] : [],
     ...withBasis ? [{ priority: 0 }] : []
   ];
-  writeTable(ctx, "Open positions", headers2, rows, columns);
+  writeTable2(ctx, "Open positions", headers2, rows, columns);
 }
 
 // src/commands/portfolio.ts
@@ -96150,7 +96325,7 @@ async function portfolio(args, ctx) {
         return complete ? 0 : 3;
       }
     }
-    writeTable2(ctx, groups, {
+    writeTable3(ctx, groups, {
       totalUsd,
       unpriced,
       chains,
@@ -96446,7 +96621,7 @@ function lpRow(position, prices) {
     unpriced: position.unpriced
   };
 }
-function writeTable2(ctx, groups, totals) {
+function writeTable3(ctx, groups, totals) {
   const { deps } = ctx;
   const none = missingMark(ctx);
   const rows = [];
@@ -96609,14 +96784,16 @@ ${financialHeading("Hyperliquid (live from Hyperliquid, not in the ledger; not i
 // src/commands/profile.ts
 init_args();
 init_client();
+init_human_output();
+init_presentation();
 init_profiles();
-init_render();
 init_solana_endpoint();
+init_key_output();
 async function profileList(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const rows = profileTable(await deps.readConfig(), deps.now());
@@ -96626,18 +96803,18 @@ async function profileList(args, ctx) {
     return 0;
   }
   if (rows.length === 0) {
-    deps.stdout.write(`No profiles on this machine. Run: candle auth login
-`);
+    notice(deps, "stdout", "note", `No profiles on this machine. Run:
+candle auth login`);
     return 0;
   }
-  deps.stdout.write(renderTable(["Profile", "Account", "Cached", "Host", "Solana RPC", "Key"], rows.map((r) => [
+  writeTable(deps, "stdout", ["Profile", "Account", "Cached", "Host", "Solana RPC", "Key"], rows.map((r) => [
     r.active ? `${r.name} (active)` : r.name,
-    r.account ?? "unknown",
+    r.account ?? symbols(terminalStyle(deps, "stdout")).missing,
     r.cachedAge,
-    r.apiUrl ?? "-",
+    r.apiUrl ?? symbols(terminalStyle(deps, "stdout")).missing,
     r.rpcHost ?? "public default",
-    r.keyPrefix ?? "-"
-  ])));
+    r.keyPrefix ?? symbols(terminalStyle(deps, "stdout")).missing
+  ]), [{ id: true }, { id: true }, { priority: 1 }, { priority: 3, id: true }, { priority: 2, id: true }, { id: true }]);
   return 0;
 }
 var SET_USAGE = "Usage: candle profile set <name> --rpc-url <url> | --clear-rpc-url";
@@ -96645,30 +96822,30 @@ async function profileSet(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--rpc-url"], booleanFlags: ["--clear-rpc-url"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const name2 = parsed.positionals[0];
   if (!name2 || parsed.positionals.length !== 1) {
-    writeUsageFailure(deps, SET_USAGE, json);
+    writeScreenUsageFailure(deps, SET_USAGE, json);
     return 2;
   }
   const rpcUrl = parsed.values["--rpc-url"];
   const clear = parsed.booleans.has("--clear-rpc-url");
   if (rpcUrl === undefined === !clear) {
-    writeUsageFailure(deps, SET_USAGE, json);
+    writeScreenUsageFailure(deps, SET_USAGE, json);
     return 2;
   }
   const config = await deps.readConfig();
   if (config.profiles === undefined || !Object.hasOwn(config.profiles, name2)) {
     const none = Object.keys(config.profiles ?? {}).length === 0;
-    writeUsageFailure(deps, none ? `No profile named ${name2}. Run: candle auth login` : `No profile named ${name2}. Run: candle profile list`, json);
+    writeScreenUsageFailure(deps, none ? `No profile named ${name2}. Run: candle auth login` : `No profile named ${name2}. Run: candle profile list`, json);
     return 2;
   }
   if (rpcUrl !== undefined) {
     const fault = validateSolanaRpcUrl(rpcUrl, "--rpc-url");
     if (fault !== undefined) {
-      writeUsageFailure(deps, fault, json);
+      writeScreenUsageFailure(deps, fault, json);
       return 2;
     }
   }
@@ -96678,8 +96855,10 @@ async function profileSet(args, ctx) {
     deps.stdout.write(`${JSON.stringify({ ok: true, profile: name2, rpcHost })}
 `);
   else
-    deps.stdout.write(`Solana RPC for ${name2}: ${rpcHost ?? "public default"}
-`);
+    writeFields(deps, "stdout", [
+      ["Profile", name2],
+      ["Solana RPC", rpcHost ?? "public default"]
+    ]);
   return 0;
 }
 var NEEDS_SCHEME = (value) => `It needs a scheme, such as https://${value}`;
@@ -96701,30 +96880,30 @@ async function profileAdd(args, ctx) {
   const { deps, json, apiUrlFlag } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const name2 = parsed.positionals[0];
   if (!name2 || parsed.positionals.length !== 1) {
-    writeUsageFailure(deps, "Usage: candle profile add <name> --api-url <url>", json);
+    writeScreenUsageFailure(deps, "Usage: candle profile add <name> --api-url <url>", json);
     return 2;
   }
   if (!isValidProfileName(name2)) {
-    writeUsageFailure(deps, `Invalid profile name: ${name2}`, json);
+    writeScreenUsageFailure(deps, `Invalid profile name: ${name2}`, json);
     return 2;
   }
   if (!apiUrlFlag) {
-    writeUsageFailure(deps, "profile add needs --api-url <url>: the host this profile authenticates against", json);
+    writeScreenUsageFailure(deps, "profile add needs --api-url <url>: the host this profile authenticates against", json);
     return 2;
   }
   const fault = apiUrlFault(apiUrlFlag, deps.env);
   if (fault) {
-    writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. ${fault}`, json);
+    writeScreenUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. ${fault}`, json);
     return 2;
   }
   const config = await deps.readConfig();
   if (config.profiles !== undefined && Object.hasOwn(config.profiles, name2)) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "PROFILE_EXISTS",
       message: `Profile "${name2}" already exists.`,
       suggestion: `Run: candle profile use ${name2}`
@@ -96737,28 +96916,31 @@ async function profileAdd(args, ctx) {
   if (json)
     deps.stdout.write(`${JSON.stringify({ name: name2, apiUrl: apiUrlFlag })}
 `);
-  else
-    deps.stdout.write(`Created profile ${name2} for ${apiUrlFlag}. Run: candle auth login --profile ${name2}
-`);
+  else {
+    writeSuccess(deps, "stdout", `Created profile ${name2}.`);
+    writeFields(deps, "stdout", [["API", apiUrlFlag]]);
+    notice(deps, "stdout", "note", `Run:
+candle auth login --profile ${name2}`);
+  }
   return 0;
 }
 async function profileUse(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const name2 = parsed.positionals[0];
   if (!name2 || parsed.positionals.length !== 1) {
-    writeUsageFailure(deps, "Usage: candle profile use <name>", json);
+    writeScreenUsageFailure(deps, "Usage: candle profile use <name>", json);
     return 2;
   }
   const config = await deps.readConfig();
   const profile = config.profiles !== undefined && Object.hasOwn(config.profiles, name2) ? config.profiles[name2] : undefined;
   if (!profile) {
     const names = Object.keys(config.profiles ?? {}).join(", ") || "(none)";
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "NO_SUCH_PROFILE",
       message: `No profile named "${name2}".`,
       suggestion: `Profiles on this machine: ${names}`
@@ -96768,8 +96950,11 @@ async function profileUse(args, ctx) {
   await deps.writeConfig({ activeProfile: name2 });
   const envProfile = deps.env.CANDLE_PROFILE?.trim();
   if (envProfile && envProfile !== name2) {
-    deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.
+    if (json)
+      deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.
 `);
+    else
+      notice(deps, "stderr", "warning", `CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.`);
   }
   const apiUrl = ctx.apiUrlFlag ?? resolveApiUrl(profile.apiUrl, deps.env);
   const apiKey = await deps.store.get(profileSecretRef(name2, "apiKey"));
@@ -96782,12 +96967,19 @@ async function profileUse(args, ctx) {
       username = liveUsername;
       await deps.updateProfile(name2, { account: live, username: liveUsername, accountCachedAt: deps.now() });
     } else {
-      deps.stderr.write(`Could not refresh the account for ${name2} (${failure2}); keeping the cached value.
+      if (json)
+        deps.stderr.write(`Could not refresh the account for ${name2} (${failure2}); keeping the cached value.
 `);
+      else
+        notice(deps, "stderr", "warning", `Could not refresh the account for ${name2} (${failure2}); keeping the cached value.`);
     }
   } else {
-    deps.stderr.write(`No stored credentials for ${name2}. Run: candle auth login --profile ${name2}
+    if (json)
+      deps.stderr.write(`No stored credentials for ${name2}. Run: candle auth login --profile ${name2}
 `);
+    else
+      notice(deps, "stderr", "warning", `No stored credentials for ${name2}. Run:
+candle auth login --profile ${name2}`);
   }
   if (json)
     deps.stdout.write(`${JSON.stringify({ name: name2, account, apiUrl })}
@@ -96802,26 +96994,26 @@ async function profileRename(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const [from, to] = parsed.positionals;
   if (!from || !to || parsed.positionals.length !== 2) {
-    writeUsageFailure(deps, "Usage: candle profile rename <old> <new>", json);
+    writeScreenUsageFailure(deps, "Usage: candle profile rename <old> <new>", json);
     return 2;
   }
   if (!isValidProfileName(to)) {
-    writeUsageFailure(deps, `Invalid profile name: ${to}`, json);
+    writeScreenUsageFailure(deps, `Invalid profile name: ${to}`, json);
     return 2;
   }
   const config = await deps.readConfig();
   const profiles = { ...config.profiles ?? {} };
   if (!profiles[from]) {
-    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${from}".` }, json);
+    writeScreenLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${from}".` }, json);
     return 1;
   }
   if (profiles[to]) {
-    writeLocalFailure(deps, { code: "PROFILE_EXISTS", message: `Profile "${to}" already exists.` }, json);
+    writeScreenLocalFailure(deps, { code: "PROFILE_EXISTS", message: `Profile "${to}" already exists.` }, json);
     return 1;
   }
   for (const kind of SECRET_KINDS) {
@@ -96838,31 +97030,30 @@ async function profileRename(args, ctx) {
     deps.stdout.write(`${JSON.stringify({ from, to })}
 `);
   else
-    deps.stdout.write(`Renamed profile ${from} to ${to}.
-`);
+    writeSuccess(deps, "stdout", `Renamed profile ${from} to ${to}.`);
   return 0;
 }
 async function profileRemove(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const name2 = parsed.positionals[0];
   if (!name2 || parsed.positionals.length !== 1) {
-    writeUsageFailure(deps, "Usage: candle profile remove <name> --yes", json);
+    writeScreenUsageFailure(deps, "Usage: candle profile remove <name> --yes", json);
     return 2;
   }
   const config = await deps.readConfig();
   const profiles = { ...config.profiles ?? {} };
   const profile = profiles[name2];
   if (!profile) {
-    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${name2}".` }, json);
+    writeScreenLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${name2}".` }, json);
     return 1;
   }
   if (!parsed.booleans.has("--yes")) {
-    writeUsageFailure(deps, `Would delete profile ${name2} (${profile.account ?? "unknown"} at ${profile.apiUrl ?? "default host"}) and its stored credentials. Re-run with --yes to confirm.`, json);
+    writeScreenUsageFailure(deps, `Would delete profile ${name2} (${profile.account ?? "unknown"} at ${profile.apiUrl ?? "default host"}) and its stored credentials. Re-run with --yes to confirm.`, json);
     return 2;
   }
   for (const kind of SECRET_KINDS)
@@ -96875,8 +97066,10 @@ async function profileRemove(args, ctx) {
 `);
   else {
     const needsPick = wasActive && Object.keys(profiles).length > 1;
-    deps.stdout.write(`Deleted profile ${name2} and its stored credentials.${needsPick ? " Run: candle profile use <name>" : ""}
-`);
+    writeSuccess(deps, "stdout", `Deleted profile ${name2} and its stored credentials.`);
+    if (needsPick)
+      notice(deps, "stdout", "note", `Run:
+candle profile use <name>`);
   }
   return 0;
 }
@@ -96885,7 +97078,8 @@ async function profileRemove(args, ctx) {
 init_args();
 init_client();
 init_deps();
-init_render();
+init_human_output();
+init_key_output();
 var QUANT_TERMS_VERSION = "2026-10-25";
 var QUANT_TERMS_URL = "https://docs.candle.tv/terms";
 var QUANT_PRIVACY_URL = "https://docs.candle.tv/privacy";
@@ -96893,30 +97087,38 @@ async function quantTerms(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--terms-version"], booleanFlags: ["--yes"] });
   const version = "error" in parsed ? "" : parsed.values["--terms-version"] ?? QUANT_TERMS_VERSION;
   if ("error" in parsed || parsed.positionals.length !== 0 || !/^\d{4}-\d{2}-\d{2}$/.test(version)) {
-    writeUsageFailure(ctx.deps, "Usage: candle quant terms [--terms-version <YYYY-MM-DD>] [--yes] [--json]", ctx.json);
+    writeScreenUsageFailure(ctx.deps, "Usage: candle quant terms [--terms-version <YYYY-MM-DD>] [--yes] [--json]", ctx.json);
     return 2;
   }
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
-    writeLocalFailure(ctx.deps, {
+    writeScreenLocalFailure(ctx.deps, {
       code: "NO_API_KEY",
       message: "Quant's terms are accepted per account, through an API key, and this profile has none.",
       suggestion: "Run: candle auth login"
     }, ctx.json);
     return 1;
   }
-  const note = (line) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}
+  if (ctx.json) {
+    ctx.deps.stderr.write(`Quant's terms (version ${version}): ${QUANT_TERMS_URL}
 `);
-  note(`Quant's terms (version ${version}): ${QUANT_TERMS_URL}`);
-  note(`Privacy Policy: ${QUANT_PRIVACY_URL}`);
+    ctx.deps.stderr.write(`Privacy Policy: ${QUANT_PRIVACY_URL}
+`);
+  } else {
+    writeFields(ctx.deps, "stdout", [
+      ["Version", version],
+      ["Terms", QUANT_TERMS_URL],
+      ["Privacy Policy", QUANT_PRIVACY_URL]
+    ], "Quant terms");
+  }
   if (!parsed.booleans.has("--yes")) {
     if (!ctx.deps.isTTY.stdin) {
-      writeUsageFailure(ctx.deps, "Accepting needs a terminal to confirm at, or --yes.", ctx.json);
+      writeScreenUsageFailure(ctx.deps, "Accepting needs a terminal to confirm at, or --yes.", ctx.json);
       return 2;
     }
     const answer2 = await ctx.deps.promptLine(`Type accept to accept Quant's terms ${version}: `);
     if (answer2.trim().toLowerCase() !== "accept") {
-      writeLocalFailure(ctx.deps, { code: "TERMS_NOT_ACCEPTED", message: "Not accepted; nothing was recorded." }, ctx.json);
+      writeScreenLocalFailure(ctx.deps, { code: "TERMS_NOT_ACCEPTED", message: "Not accepted; nothing was recorded." }, ctx.json);
       return 1;
     }
   }
@@ -96934,14 +97136,13 @@ async function quantTerms(args, ctx) {
       ctx.deps.stdout.write(`${JSON.stringify({ ok: true, version })}
 `);
     else
-      ctx.deps.stdout.write(`Accepted Quant's terms ${version}.
-`);
+      writeSuccess(ctx.deps, "stdout", `Accepted Quant's terms ${version}.`);
     return 0;
   }
   const relayCode = result.raw?.code;
   const code = typeof relayCode === "string" ? relayCode : result.code;
   if (code === "terms_version_mismatch") {
-    writeLocalFailure(ctx.deps, {
+    writeScreenLocalFailure(ctx.deps, {
       code: "TERMS_VERSION_MISMATCH",
       message: `Quant's current terms are not version ${version}; nothing was recorded.`,
       suggestion: "Read the terms and pass the current version with --terms-version <YYYY-MM-DD>."
@@ -96949,10 +97150,10 @@ async function quantTerms(args, ctx) {
     return 1;
   }
   if (result.status === 404) {
-    writeLocalFailure(ctx.deps, { code: "QUANT_TERMS_UNAVAILABLE", message: "This API does not take Quant's terms over a key yet." }, ctx.json);
+    writeScreenLocalFailure(ctx.deps, { code: "QUANT_TERMS_UNAVAILABLE", message: "This API does not take Quant's terms over a key yet." }, ctx.json);
     return 1;
   }
-  writeFailure(ctx.deps, { ...result, ...typeof code === "string" ? { code } : {} }, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
+  writeScreenFailure(ctx.deps, { ...result, ...typeof code === "string" ? { code } : {} }, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
   return 1;
 }
 
@@ -100007,6 +100208,8 @@ Usage: candle tui [--profile <name>]`, json);
 
 // src/commands/update.ts
 init_args();
+init_human_output();
+init_presentation();
 import { randomBytes as randomBytes11 } from "node:crypto";
 
 // src/progress.ts
@@ -100377,8 +100580,8 @@ function messageOf2(error) {
 }
 
 // src/commands/update.ts
-init_render();
 init_fido2();
+init_key_output();
 var SIGNATURE_VERIFIED = "signature verified (Sigstore, keyless; signer pinned to the release workflow)";
 var INSTALLER_LINE = "curl -fsSL https://candle.tv/install.sh | bash";
 async function update(args, ctx, current = CLI_VERSION) {
@@ -100387,18 +100590,18 @@ async function update(args, ctx, current = CLI_VERSION) {
     const { deps, json } = ctx;
     const parsed = parseArgs(args, { valueFlags: ["--to"], booleanFlags: ["--check"] });
     if ("error" in parsed) {
-      writeUsageFailure(deps, parsed.error, json);
+      writeScreenUsageFailure(deps, parsed.error, json);
       return 2;
     }
     if (parsed.positionals.length > 0) {
-      writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+      writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
       return 2;
     }
     const check = parsed.booleans.has("--check");
     const pinned = parsed.values["--to"];
     const pinnedVersion = pinned === undefined ? undefined : versionOfTag(pinned);
     if (pinned !== undefined && pinnedVersion === null) {
-      writeUsageFailure(deps, `--to takes a release tag such as cli-v${current}, not ${pinned}`, json);
+      writeScreenUsageFailure(deps, `--to takes a release tag such as cli-v${current}, not ${pinned}`, json);
       return 2;
     }
     const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath);
@@ -100409,8 +100612,9 @@ async function update(args, ctx, current = CLI_VERSION) {
         deps.stdout.write(`${JSON.stringify(payload)}
 `);
       } else {
-        deps.stdout.write(`Installed by Homebrew. Run: brew upgrade candle
-`);
+        writeFields(deps, "stdout", [["Installed by", "Homebrew"]]);
+        notice(deps, "stdout", "note", `Run:
+brew upgrade candle`);
       }
       return 0;
     }
@@ -100420,8 +100624,9 @@ async function update(args, ctx, current = CLI_VERSION) {
         deps.stdout.write(`${JSON.stringify(payload)}
 `);
       } else {
-        deps.stdout.write(`Installed with npm (or a dev checkout). Run: npm i -g @candledottv/cli@latest
-`);
+        writeFields(deps, "stdout", [["Installed with", "npm (or a dev checkout)"]]);
+        notice(deps, "stdout", "note", `Run:
+npm i -g @candledottv/cli@latest`);
       }
       return 0;
     }
@@ -100435,14 +100640,13 @@ async function update(args, ctx, current = CLI_VERSION) {
         deps.stdout.write(`${JSON.stringify(payload)}
 `);
       } else {
-        deps.stdout.write(`${message}
-`);
+        notice(deps, "stdout", "note", message);
       }
       return 0;
     }
     if (!fetched.ok) {
       const code = fetched.kind === "invalid" ? "MANIFEST_INVALID" : "UPDATE_UNREACHABLE";
-      writeLocalFailure(deps, { code, message: fetched.message }, json);
+      writeScreenLocalFailure(deps, { code, message: fetched.message }, json);
       return 1;
     }
     const target = fetched.manifest;
@@ -100453,7 +100657,7 @@ async function update(args, ctx, current = CLI_VERSION) {
         throw new Error(mismatch);
       identityUri = releaseIdentityUri(target.version);
     } catch (error) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "MANIFEST_INVALID",
         message: `Refusing the release manifest at ${base2}: ${messageOf2(error)}.`,
         suggestion: "Nothing was downloaded or installed."
@@ -100467,11 +100671,14 @@ async function update(args, ctx, current = CLI_VERSION) {
         deps.stdout.write(`${JSON.stringify(payload)}
 `);
       } else if (order < 0) {
-        deps.stdout.write(`candle ${current}; ${target.version} available. Run: candle update
-`);
+        writeFields(deps, "stdout", [
+          ["Current", current],
+          ["Available", target.version]
+        ]);
+        notice(deps, "stdout", "note", `Run:
+candle update`);
       } else {
-        deps.stdout.write(`candle ${current} is up to date (latest ${target.version})
-`);
+        writeSuccess(deps, "stdout", `candle ${current} is up to date (latest ${target.version})`);
       }
       return 0;
     }
@@ -100481,16 +100688,19 @@ async function update(args, ctx, current = CLI_VERSION) {
         deps.stdout.write(`${JSON.stringify(payload)}
 `);
       } else {
-        deps.stdout.write(`candle ${current} is up to date
-`);
+        writeSuccess(deps, "stdout", `candle ${current} is up to date`);
       }
       return 0;
     }
-    if (order > 0 && pinned)
-      deps.stderr.write(`Warning: ${target.version} is a downgrade from ${current}
+    if (order > 0 && pinned) {
+      if (json)
+        deps.stderr.write(`Warning: ${target.version} is a downgrade from ${current}
 `);
+      else
+        notice(deps, "stderr", "warning", `${target.version} is a downgrade from ${current}`);
+    }
     if (!deps.platformKey) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "UPDATE_UNSUPPORTED_PLATFORM",
         message: "No release binary for this platform.",
         suggestion: "Run: npm i -g @candledottv/cli@latest"
@@ -100500,14 +100710,14 @@ async function update(args, ctx, current = CLI_VERSION) {
     const expectedName = `candle-${deps.platformKey}`;
     const asset = target.assets[deps.platformKey];
     if (!asset) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "UPDATE_UNSUPPORTED_PLATFORM",
         message: `Release ${target.tag} has no asset for ${deps.platformKey}.`
       }, json);
       return 1;
     }
     if (asset.name !== expectedName) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "MANIFEST_INVALID",
         message: `Release ${target.tag} names ${asset.name} as the ${deps.platformKey} asset; this platform installs ${expectedName}.`,
         suggestion: "Nothing was downloaded or installed."
@@ -100517,7 +100727,7 @@ async function update(args, ctx, current = CLI_VERSION) {
     const helperName = helperAssetName(deps.platformKey);
     const helperAsset = target.helpers?.[deps.platformKey];
     if (helperAsset !== undefined && helperAsset.name !== helperName) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "MANIFEST_INVALID",
         message: `Release ${target.tag} names ${helperAsset.name} as the ${deps.platformKey} security key helper; this platform installs ${helperName}.`,
         suggestion: "Nothing was downloaded or installed."
@@ -100527,14 +100737,17 @@ async function update(args, ctx, current = CLI_VERSION) {
     const steps = __using(__stack, commandSteps(ctx), 0);
     if (!json) {
       const total = asset.size + (helperAsset?.size ?? 0);
-      deps.stderr.write(`Updating candle ${current} -> ${target.version} (${formatBytes(total)})
-`);
+      writeFields(deps, "stderr", [
+        ["Current", current],
+        ["Target", target.version],
+        ["Download", formatBytes(total)]
+      ], "Updating candle");
     }
     steps.start("downloading SHA256SUMS");
     const sums = await downloadSums(deps, base2, target.tag);
     if (!sums.ok) {
       steps.fail("downloading SHA256SUMS");
-      writeLocalFailure(deps, { code: "UPDATE_UNREACHABLE", message: sums.message }, json);
+      writeScreenLocalFailure(deps, { code: "UPDATE_UNREACHABLE", message: sums.message }, json);
       return 1;
     }
     steps.done("downloaded SHA256SUMS");
@@ -100558,7 +100771,7 @@ async function update(args, ctx, current = CLI_VERSION) {
     });
     if (!binary.ok) {
       await discardAll();
-      writeLocalFailure(deps, binary.failure, json);
+      writeScreenLocalFailure(deps, binary.failure, json);
       return 1;
     }
     let helper = null;
@@ -100577,7 +100790,7 @@ async function update(args, ctx, current = CLI_VERSION) {
       });
       if (!fetched2.ok) {
         await discardAll();
-        writeLocalFailure(deps, fetched2.failure, json);
+        writeScreenLocalFailure(deps, fetched2.failure, json);
         return 1;
       }
       helper = { tmpPath: fetched2.tmpPath, target: `${dir}/${HELPER_NAME}` };
@@ -100588,7 +100801,7 @@ async function update(args, ctx, current = CLI_VERSION) {
     } catch (error) {
       steps.fail("installing");
       await discardAll();
-      writeLocalFailure(deps, notWritable(dir, error), json);
+      writeScreenLocalFailure(deps, notWritable(dir, error), json);
       return 1;
     }
     if (helper !== null) {
@@ -100598,7 +100811,7 @@ async function update(args, ctx, current = CLI_VERSION) {
         steps.fail("installing");
         await discard(deps, helper.tmpPath);
         const failure2 = notWritable(dir, error);
-        writeLocalFailure(deps, {
+        writeScreenLocalFailure(deps, {
           ...failure2,
           message: `${failure2.message} candle ${target.version} was installed to ${realExec}, but its security key helper could not be renamed to ${helper.target}.`
         }, json);
@@ -100618,11 +100831,12 @@ async function update(args, ctx, current = CLI_VERSION) {
       deps.stdout.write(`${JSON.stringify(payload)}
 `);
     } else {
-      deps.stdout.write(`Updated candle ${current} -> ${target.version}
-`);
+      writeSuccess(deps, "stdout", `Updated candle ${current} -> ${target.version}`);
       if (helper !== null)
-        deps.stdout.write(`Installed ${HELPER_NAME} ${target.version} to ${helper.target}
-`);
+        writeFields(deps, "stdout", [
+          ["Helper", `${HELPER_NAME} ${target.version}`],
+          ["Installed to", helper.target]
+        ]);
     }
     return 0;
   } catch (_catch) {
@@ -107443,9 +107657,10 @@ async function vaultTransfer(args, ctx) {
 
 // src/commands/verify.ts
 init_args();
+init_human_output();
 init_release();
 import { dirname as dirname11, join as join15 } from "node:path";
-init_render();
+init_key_output();
 var USAGE11 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
@@ -107477,25 +107692,25 @@ async function verify(args, ctx) {
     pathPositionals: ["<file>"]
   });
   if ("error" in parsed) {
-    writeUsageFailure(deps, `${parsed.error}
+    writeScreenUsageFailure(deps, `${parsed.error}
 ${USAGE11}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
-    writeUsageFailure(deps, `verify takes exactly one file.
+    writeScreenUsageFailure(deps, `verify takes exactly one file.
 ${USAGE11}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
-    writeUsageFailure(deps, `--bundle is required.
+    writeScreenUsageFailure(deps, `--bundle is required.
 ${USAGE11}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
   if (resolved.kind === "invalid") {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "MANIFEST_INVALID",
       message: `Refusing ${file}: ${resolved.message}.`,
       suggestion: `The latest.json beside ${bundlePath} does not name a release version. Pass --identity to say what signature to expect.`
@@ -107503,7 +107718,7 @@ ${USAGE11}`, json);
     return 1;
   }
   if (resolved.kind === "absent") {
-    writeUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
+    writeScreenUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
 ${USAGE11}`, json);
     return 2;
   }
@@ -107514,18 +107729,18 @@ ${USAGE11}`, json);
   try {
     bytes = await deps.readBytes(file);
   } catch (error) {
-    writeLocalFailure(deps, { code: "FILE_UNREADABLE", message: `Could not read ${file}: ${messageOf3(error)}` }, json);
+    writeScreenLocalFailure(deps, { code: "FILE_UNREADABLE", message: `Could not read ${file}: ${messageOf3(error)}` }, json);
     return 1;
   }
   try {
     bundleJson = JSON.parse(await deps.readFile(bundlePath));
   } catch (error) {
-    writeLocalFailure(deps, { code: "BUNDLE_UNREADABLE", message: `Could not read the bundle ${bundlePath}: ${messageOf3(error)}` }, json);
+    writeScreenLocalFailure(deps, { code: "BUNDLE_UNREADABLE", message: `Could not read the bundle ${bundlePath}: ${messageOf3(error)}` }, json);
     return 1;
   }
   const result = verifyReleaseAsset(bytes, bundleJson, identity3, issuer);
   if (!result.ok) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "SIGNATURE_INVALID",
       message: `Refusing ${file}: ${result.reason}.`,
       suggestion: `Checked against ${identity3} (${resolved.provenance}).`
@@ -107536,8 +107751,13 @@ ${USAGE11}`, json);
     deps.stdout.write(`${JSON.stringify({ ok: true, file, identity: identity3, issuer, identitySource: resolved.provenance })}
 `);
   } else {
-    deps.stdout.write(`verified: ${identity3} (${resolved.provenance})
-`);
+    writeSuccess(deps, "stdout", "Release signature verified");
+    writeFields(deps, "stdout", [
+      ["File", file],
+      ["Identity", identity3],
+      ["Source", resolved.provenance],
+      ["Issuer", issuer]
+    ]);
   }
   return 0;
 }
@@ -107552,9 +107772,12 @@ init_wallets();
 init_args();
 init_client();
 init_deps();
+init_human_output();
+init_presentation();
 init_profiles();
 init_render();
 init_promote_support();
+init_key_output();
 var PREVIEW_PATH = "/api/v1/agent/tee-wallets/allow-launch/preview";
 var capabilityPath = (id) => `/api/v1/agent/wallets/${encodeURIComponent(id)}/capabilities`;
 var USAGE_ALLOW = "Usage: candle wallets allow-launch <label|address|id|prefix*>... [--json]";
@@ -107565,8 +107788,20 @@ var DEVICE_TOKEN_REQUIRED3 = {
   suggestion: "Run: candle auth login"
 };
 var nameOf = (row) => row.label ?? row.address;
-function allowLaunchTable(rows) {
-  return renderTable(["line", "label", "wallet", "address", "bound key"], rows.map((row, i) => [String(i + 1), row.label ?? "-", row.chain, row.address, row.boundKeyPrefix ?? "-"]));
+function allowLaunchTable(rows, style) {
+  return renderTable(["line", "label", "wallet", "address", "bound key"], rows.map((row, i) => [
+    String(i + 1),
+    row.label ?? (style ? symbols(style).missing : "-"),
+    row.chain,
+    row.address,
+    row.boundKeyPrefix ?? (style ? symbols(style).missing : "-")
+  ]), style ? {
+    style,
+    width: style.width,
+    indent: 2,
+    rule: false,
+    columns: [{ priority: 1 }, { priority: 2 }, { priority: 3 }, { id: true }, { id: true }]
+  } : undefined);
 }
 function nothingToChangeLine(shown, enabled) {
   const bits = [];
@@ -107606,8 +107841,7 @@ function writeFailure2(ctx, result) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...suggestion ? { suggestion } : {} })}
 `);
   } else {
-    deps.stderr.write(`${code ?? `HTTP ${result.status}`}: ${message}${suggestion ? ` ${suggestion}` : ""}
-`);
+    writeScreenMessage(deps, `${code ?? `HTTP ${result.status}`}: ${message}`, suggestion);
   }
   return 1;
 }
@@ -107617,22 +107851,22 @@ async function setAllowLaunch(args, ctx, enabled) {
   const command = enabled ? "wallets allow-launch" : "wallets disallow-launch";
   const parsed = parseArgs(args, enabled ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeUsageFailure(deps, `Name at least one wallet. ${usage11}`, json);
+    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage11}`, json);
     return 2;
   }
   const skipConfirm = !enabled && parsed.booleans.has("--yes");
   await printIdentity(ctx);
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
-    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED3, json);
+    writeScreenLocalFailure(deps, DEVICE_TOKEN_REQUIRED3, json);
     return 1;
   }
   if (!skipConfirm && (!deps.isTTY.stdin || !deps.isTTY.stdout)) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "ALLOW_LAUNCH_REQUIRES_TTY",
       message: `candle ${command} needs a terminal: the acknowledgement is typed, and nothing else supplies it.`,
       suggestion: enabled ? "Run it in an interactive shell; there is no flag and no environment variable for confirm." : "Run it in an interactive shell, or pass --yes to turn it off without the prompt."
@@ -107658,25 +107892,33 @@ async function setAllowLaunch(args, ctx, enabled) {
       deps.stdout.write(`${JSON.stringify({ ...shown, command })}
 `);
     else
-      deps.stdout.write(nothingToChangeLine(shown, enabled));
+      notice(deps, "stdout", "note", nothingToChangeLine(shown, enabled).trimEnd());
     return shown.unchanged.length === 0 && shown.notTee.length > 0 ? 1 : 0;
   }
   const n = changing.length;
   const screen = [
-    allowLaunchTable(changing),
+    allowLaunchTable(changing, json ? undefined : terminalStyle(deps, "stderr")),
     ...shown.unchanged.length > 0 ? [`${shown.unchanged.length} already ${enabled ? "on" : "off"}: ${shown.unchanged.map(nameOf).join(", ")}`] : [],
     ...shown.notTee.length > 0 ? [`Not a TEE wallet, left alone: ${shown.notTee.map(nameOf).join(", ")}`] : [],
     "",
     enabled ? `${n === 1 ? "This wallet" : `These ${n} wallets`} will be allowed to pay for a launch: the bound key, with launch:write, can create tokens from ${n === 1 ? "it" : "them"} (candle launch).` : `${n === 1 ? "This wallet" : `These ${n} wallets`} will no longer be able to pay for a launch. Trading is unchanged.`,
     ""
   ];
-  deps.stderr.write(`${screen.join(`
+  if (json)
+    deps.stderr.write(`${screen.join(`
 `)}
 `);
+  else {
+    deps.stderr.write(`${screen[0]}
+`);
+    for (const text3 of screen.slice(1))
+      if (text3)
+        notice(deps, "stderr", "warning", text3);
+  }
   if (!skipConfirm) {
     const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to ${enabled ? "allow" : "stop"} launches from ${n === 1 ? "this wallet" : `these ${n} wallets`}: `);
     if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "ALLOW_LAUNCH_NOT_ACKNOWLEDGED",
         message: `The acknowledgement is the word ${CONFIRM_WORD}; nothing changed.`,
         suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.`
@@ -107704,11 +107946,9 @@ async function setAllowLaunch(args, ctx, enabled) {
     return failed.length > 0 ? 1 : 0;
   }
   const verb = enabled ? "Allowed launches from" : "Stopped launches from";
-  deps.stdout.write(`${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.
-`);
+  writeSuccess(deps, "stdout", `${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.`);
   for (const failure2 of failed) {
-    deps.stderr.write(`Not changed: ${failure2.id}: ${failure2.message}${failure2.code ? ` (${failure2.code})` : ""}.
-`);
+    notice(deps, "stderr", "danger", `Not changed: ${failure2.id}: ${failure2.message}${failure2.code ? ` (${failure2.code})` : ""}.`);
   }
   return failed.length > 0 ? 1 : 0;
 }
@@ -108025,9 +108265,12 @@ async function walletsCloseEmpty(args, ctx) {
 init_args();
 init_client();
 init_deps();
+init_human_output();
+init_presentation();
 init_profiles();
 init_render();
 init_promote_support();
+init_key_output();
 var TRUST_PATH = "/api/v1/agent/linked-wallets/trust";
 var USAGE_TRUST = "Usage: candle wallets trust <label|address|id|prefix*>... [--json]";
 var USAGE_UNTRUST = "Usage: candle wallets untrust <label|address|id|prefix*>... [--yes] [--json]";
@@ -108084,13 +108327,18 @@ function writeTrustFailure(ctx, result) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...suggestion ? { suggestion } : {} })}
 `);
   } else {
-    deps.stderr.write(`${code ?? `HTTP ${result.status}`}: ${message}${suggestion ? ` ${suggestion}` : ""}
-`);
+    writeScreenMessage(deps, `${code ?? `HTTP ${result.status}`}: ${message}`, suggestion);
   }
   return 1;
 }
-function trustTable(rows) {
-  return renderTable(["line", "label", "wallet", "address"], rows.map((row, i) => [String(i + 1), row.label ?? "-", row.chain, row.address]));
+function trustTable(rows, style) {
+  return renderTable(["line", "label", "wallet", "address"], rows.map((row, i) => [String(i + 1), row.label ?? (style ? symbols(style).missing : "-"), row.chain, row.address]), style ? {
+    style,
+    width: style.width,
+    indent: 2,
+    rule: false,
+    columns: [{ priority: 1 }, { priority: 2 }, { priority: 3 }, { id: true }]
+  } : undefined);
 }
 async function setTrust(args, ctx, trusted) {
   const { deps, apiUrl, json } = ctx;
@@ -108098,22 +108346,22 @@ async function setTrust(args, ctx, trusted) {
   const command = trusted ? "wallets trust" : "wallets untrust";
   const parsed = parseArgs(args, trusted ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
+    writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeUsageFailure(deps, `Name at least one wallet. ${usage11}`, json);
+    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage11}`, json);
     return 2;
   }
   const skipConfirm = !trusted && parsed.booleans.has("--yes");
   await printIdentity(ctx);
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
-    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED4, json);
+    writeScreenLocalFailure(deps, DEVICE_TOKEN_REQUIRED4, json);
     return 1;
   }
   if (!skipConfirm && (!deps.isTTY.stdin || !deps.isTTY.stdout)) {
-    writeLocalFailure(deps, {
+    writeScreenLocalFailure(deps, {
       code: "TRUST_REQUIRES_TTY",
       message: `candle ${command} needs a terminal: the acknowledgement is typed, and nothing else supplies it.`,
       suggestion: trusted ? "Run it in an interactive shell; there is no flag and no environment variable for confirm." : "Run it in an interactive shell, or pass --yes to untrust without the prompt."
@@ -108139,13 +108387,13 @@ async function setTrust(args, ctx, trusted) {
       deps.stdout.write(`${JSON.stringify({ ...shown, command })}
 `);
     } else {
-      deps.stdout.write(nothingToChangeLine2(shown, trusted));
+      notice(deps, "stdout", "note", nothingToChangeLine2(shown, trusted).trimEnd());
     }
     return 0;
   }
   const n = changing.length;
   const screen = [
-    trustTable(changing),
+    trustTable(changing, json ? undefined : terminalStyle(deps, "stderr")),
     ...shown.unchanged.length > 0 ? [
       `${shown.unchanged.length} already ${trusted ? "trusted" : "untrusted"}: ${shown.unchanged.map((row) => row.label ?? row.address).join(", ")}`
     ] : [],
@@ -108154,13 +108402,21 @@ async function setTrust(args, ctx, trusted) {
     trusted ? `${n === 1 ? "This wallet" : `These ${n} wallets`} will be trusted: your agents can move funds into ${n === 1 ? "it" : "them"} with no cap, like a wallet you linked while signed in.` : `${n === 1 ? "This wallet" : `These ${n} wallets`} will no longer be trusted: moving funds into ${n === 1 ? "it" : "them"} will need the withdrawal allowlist again.`,
     ""
   ];
-  deps.stderr.write(`${screen.join(`
+  if (json)
+    deps.stderr.write(`${screen.join(`
 `)}
 `);
+  else {
+    deps.stderr.write(`${screen[0]}
+`);
+    for (const text3 of screen.slice(1))
+      if (text3)
+        notice(deps, "stderr", "warning", text3);
+  }
   if (!skipConfirm) {
     const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to ${trusted ? "trust" : "untrust"} ${n === 1 ? "this wallet" : `these ${n} wallets`}: `);
     if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
-      writeLocalFailure(deps, {
+      writeScreenLocalFailure(deps, {
         code: "TRUST_NOT_ACKNOWLEDGED",
         message: `The acknowledgement is the word ${CONFIRM_WORD}; nothing changed.`,
         suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.`
@@ -108178,11 +108434,9 @@ async function setTrust(args, ctx, trusted) {
     return result.skipped.length > 0 ? 1 : 0;
   }
   const done = result.changed.length;
-  deps.stdout.write(`${trusted ? "Trusted" : "Untrusted"} ${done} wallet${done === 1 ? "" : "s"}.
-`);
+  writeSuccess(deps, "stdout", `${trusted ? "Trusted" : "Untrusted"} ${done} wallet${done === 1 ? "" : "s"}.`);
   for (const skip of result.skipped) {
-    deps.stderr.write(`Skipped ${skip.walletId}: ${skip.reason === "revoked" ? "revoked" : "not on this account"}.
-`);
+    notice(deps, "stderr", "warning", `Skipped ${skip.walletId}: ${skip.reason === "revoked" ? "revoked" : "not on this account"}.`);
   }
   return result.skipped.length > 0 ? 1 : 0;
 }

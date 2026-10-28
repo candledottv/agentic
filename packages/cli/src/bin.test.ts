@@ -66,7 +66,7 @@ describe("the built bin entry", () => {
       "--issuer",
       readFileSync(join(fx, "issuer.txt"), "utf8").trim(),
     ])
-    expect(res.stdout).toContain("verified:")
+    expect(res.stdout).toContain("Release signature verified")
     expect(res.status).toBe(0)
   })
 

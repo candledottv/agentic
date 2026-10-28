@@ -17,9 +17,16 @@ import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
+import { writeFields, writeSuccess, writeTable } from "../human-output"
+import { notice, symbols, terminalStyle } from "../presentation"
 import { printIdentity } from "../profiles"
-import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
-import { writeScreenLocalFailure } from "./key-output"
+import { formatTime } from "../render"
+import {
+  writeScreenFailure as writeFailure,
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenLocalFailure,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 
 const NO_API_KEY = {
   code: "NO_API_KEY",
@@ -60,10 +67,6 @@ interface ProfileWalletsResponse {
   profileId: string | null
   walletScope: "all" | "selected"
   wallets: ProfileWalletRow[]
-}
-
-function formatTimestamp(ms: number | undefined): string {
-  return ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) : "-"
 }
 
 /** `candle keys wallets <prefix>` */
@@ -108,26 +111,36 @@ export async function keysWalletsList(args: string[], ctx: CommandContext): Prom
   const body = result.body as ProfileWalletsResponse
   // Stated before the table, not after it, because it changes what the table MEANS: the same
   // empty list is "everything" under `all` and "nothing" under `selected`.
-  deps.stdout.write(
+  notice(
+    deps,
+    "stdout",
+    "warning",
     body.walletScope === "selected"
-      ? `Scope: selected — this profile can only spend from the wallets below.\n`
-      : `Scope: all — this profile can spend from every wallet on the account, listed here or not.\n`,
+      ? `Scope: selected — this profile can only spend from the wallets below.`
+      : `Scope: all — this profile can spend from every wallet on the account, listed here or not.`,
   )
-  if (body.profileId) deps.stdout.write(`Profile: ${body.profileId}\n`)
+  if (body.profileId) writeFields(deps, "stdout", [["Profile", body.profileId]])
 
   if (body.wallets.length === 0) {
-    deps.stdout.write("No wallets assigned.\n")
+    notice(deps, "stdout", "note", "No wallets assigned.")
     return 0
   }
   const rows = body.wallets.map((w) => [
     w.linkedWalletId,
     w.chain,
     w.address,
-    w.label ?? "-",
+    w.label ?? symbols(terminalStyle(deps, "stdout")).missing,
     w.spendCapable ? "yes" : "no",
-    formatTimestamp(w.assignedAt),
+    formatTime(w.assignedAt, { now: deps.now(), missing: symbols(terminalStyle(deps, "stdout")).missing }),
   ])
-  deps.stdout.write(`${renderTable(["Id", "Chain", "Address", "Label", "Can sign", "Assigned"], rows)}\n`)
+  writeTable(deps, "stdout", ["Id", "Chain", "Address", "Label", "Can sign", "Assigned"], rows, [
+    { id: true },
+    { priority: 3 },
+    { id: true },
+    { priority: 2 },
+    { priority: 4 },
+    { priority: 1, id: true },
+  ])
   return 0
 }
 
@@ -198,17 +211,19 @@ export async function keysWalletsSet(args: string[], ctx: CommandContext): Promi
     // agent reading the plain output) gets it on its own line too.
     const hint = widenRefusedHint(prefix, walletIds)
     writeFailure(deps, { ...result, uiHint: hint }, { apiUrl, authType: "key" }, json)
-    if (!json) deps.stderr.write(`${hint}\n`)
+    if (!json) notice(deps, "stderr", "note", hint)
     return 1
   }
   if (json) {
     deps.stdout.write(`${JSON.stringify(result.body)}\n`)
     return 0
   }
-  deps.stdout.write(
+  writeSuccess(
+    deps,
+    "stdout",
     walletIds.length === 0
-      ? `Cleared every wallet assignment on ${prefix}.\n`
-      : `Assigned ${walletIds.length} wallet${walletIds.length === 1 ? "" : "s"} to ${prefix}.\n`,
+      ? `Cleared every wallet assignment on ${prefix}.`
+      : `Assigned ${walletIds.length} wallet${walletIds.length === 1 ? "" : "s"} to ${prefix}.`,
   )
   return 0
 }
@@ -255,10 +270,12 @@ export async function keysWalletsScope(args: string[], ctx: CommandContext): Pro
     deps.stdout.write(`${JSON.stringify(result.body)}\n`)
     return 0
   }
-  deps.stdout.write(
+  writeSuccess(
+    deps,
+    "stdout",
     scope === "selected"
-      ? `${prefix} is now limited to its assigned wallets.\n`
-      : `${prefix} can now spend from every wallet on the account.\n`,
+      ? `${prefix} is now limited to its assigned wallets.`
+      : `${prefix} can now spend from every wallet on the account.`,
   )
   return 0
 }

@@ -1,0 +1,156 @@
+{
+  "key-signer.ts": [
+    "Key already has active signer . Approving this request replaces it. Its wallet keep trading only from the machine that holds it until candle keys signer move runs there. It owns no wallets, so nothing has to move.",
+    "Key signer for key ( ) , resumed The account owner approves it, typing this full fingerprint: open or, on the owner's machine: candle keys signer approve --key The code expires at . Waiting for approval...",
+    "Wrote the signer's private key to (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.",
+    "Signer request for key ( ) Requested from a machine using this key. Compare the fingerprint with what that machine printed. Wallets on this key: . Approving replaces signer as this key's active signer. wallet is are owned by signer . They keep trading from the machine that holds that signer until you move them."
+  ],
+  "keys-embedded-wallet.ts": [
+    "This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write. A key that only trades its own TEE wallets does not need it.",
+    "Key Candle account ( ) API ( not a Candle host ) Embedded wallet -> ( ) It can use the account's embedded wallet for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write. It stops spending the account's embedded wallet from its next request."
+  ],
+  "launch.ts": [
+    "Nothing was signed. Candle holds bundle 's spend reservation until the build expires at .",
+    "Launched . Launch signature: . First buy signature: .",
+    "Nothing was signed. Operation holds this wallet until ; a new Hood operation from it is refused as WALLET_BUSY until then."
+  ],
+  "perps-manage.ts": ["flatten Main perps flat (an observed snapshot). Done."],
+  "perps-withdraw.ts": [
+    "Withdrawal : , USDC to ( ), fees USDC , . Relay: not read .",
+    "Still after 10 minutes. Check it with candle perps withdraw status ."
+  ],
+  "perps.ts": [
+    "Client id already names order ( , on Hyperliquid ). Nothing was signed or sent; use a new --client-id for a new order.",
+    "Deposit : ( ) , raw to on Hyperliquid. Relay: not sent yet, or unknown .",
+    "Relay delivers at least USDC (estimate ) ; Hyperliquid keeps 1 USDC to activate this new account . Candle fee: none.",
+    "This server predates dry-run deposits and built this one for real. Nothing was signed, but operation holds this wallet until , and the build counts against the key's limits until it expires.",
+    "Nothing was signed. Operation holds this wallet until .",
+    "Deposit sent; Relay fills it on Hyperliquid. Check it with candle perps deposit status ."
+  ],
+  "pnl.ts": [
+    "Closed position positions ( , ). Money made , money lost and partial sells add up to the realized net.",
+    "No open positions. No open positions above dust."
+  ],
+  "portfolio.ts": [
+    "Reading vault address addresses from in requests. That endpoint sees them together; Candle sees none of them.",
+    "Reading ETH and USDG for EVM vault address addresses from (the built-in Hood RPC) in requests. That endpoint sees them together; Candle sees none of them.",
+    "Reading EVM TEE address addresses from Hyperliquid's public API in requests. Pass --no-perps to skip.",
+    "Some vault holdings could not be priced: . They are shown as unpriced.",
+    "No wallet matches \" \". wallet wallets on this account and vault; candle portfolio with no filter shows them. of wallets match \" \". Every figure below is for those wallets only."
+  ],
+  "profile.ts": ["No stored credentials for . Run: candle auth login --profile"],
+  "setup.ts": [
+    "Already authorized on this machine (device token + API key present). Skipping login.",
+    "Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.",
+    "You operate a Candle agent account. API base URL: (send your API key in the x-api-key header).",
+    "Setup complete. Your agent can launch, trade, and transfer the moment the wallets are funded. Setup finished with failed checks above; fix them and re-run `candle doctor`."
+  ],
+  "spend.ts": [
+    "Today ( UTC): $ of the $ daily per-use limit. Per call at most $ . Payments are PAUSED.",
+    "Per-use payments paused. Per-use payments resumed."
+  ],
+  "swap.ts": [
+    "Nothing was sent. This swap job is terminal; retry with a new id.",
+    "Swap outcome needs verification (leg ) . Known hashes: , unknown . Do not automatically retry or use a new id.",
+    "The trade landed string ( ) and a later step failed. Do not retry or use a new id.",
+    "Settlement: . Re-check with GET /api/v1/agent/swap/jobs/ (candle swap status ).",
+    "Still not final after ten minutes. Re-check with candle swap status --wait.",
+    "Nothing was signed. Operation holds this wallet until ; a new Hood trade from it is refused as WALLET_BUSY until then.",
+    "Nothing was signed. Operation holds this wallet until ; a new Hood trade or sweep from it waits until then.",
+    "Deposit sent : filling. Check it with candle swap status (add --wait to follow it).",
+    "Could not follow the bridge ( ). The deposit was sent; do not send it again. Re-check with candle swap status --wait."
+  ],
+  "tee-evm.ts": [
+    "Not reported observed-empty: and did not run, so a token only they would find may remain. Re-run with --from-block <n> or --token <0x...>: candle tee sweep --from-block <n>",
+    "Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable",
+    "Stop intent recorded locally at : this CLI will not fund again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.",
+    "Stopped . Remote signing denial verified; the wallet is quarantined.",
+    "Agent trading stopped at Candle for . Remote policy verification is pending ( ) . Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable If the provider is down or theft is suspected: candle tee sweep --emergency",
+    "The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote --emergency"
+  ],
+  "tee-rebind.ts": ["Moved wallet s to . Audit ids: , Owner: key 's signer ( changed, already there)."],
+  "tee-status-evm.ts": ["low gas: low ETH is under twice the reserve. Fund it: gas ok"],
+  "tee.ts": [
+    "BACK UP THIS FILE AND REMEMBER THE PASSPHRASE. This key exists nowhere else.",
+    "State: local-only. Next: candle tee enable --vault <your-vault-address>",
+    "compromised agent within those limits. Once enabled a copy of this key stays in the TEE for good.",
+    "Remote authority verified. Fund it: candle tee fund --amount <n> --asset SOL|USDC",
+    "Imported as , but the server could NOT verify the remote authority ( ) . The agent cannot trade it. Do not fund it. Disable it (candle tee disable ) and enable a fresh wallet.",
+    "Stop intent recorded locally at : this CLI will not fund again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.",
+    "Stopped . Remote signing denial verified; the wallet is quarantined.",
+    "Agent trading stopped at Candle for . Remote policy verification is pending ( ) . Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable If the provider is down or theft is suspected: candle vault demote candle tee sweep --emergency",
+    "EMERGENCY SWEEP: remote signing authority is NOT verified denied. A still-authorized agent signer or",
+    "any holder of a raw key copy can race these transactions. Recovered funds are recorded; remote authority stays pending.",
+    "The server's lifecycle state was NOT read ( ): this recovery uses only the local key and the pinned vault. Stop the agent from your Candle session if you have not, and re-run candle tee disable once a key is available.",
+    "Sweep incomplete: residual(s) remain. This address stays ; no new agent trades are allowed.",
+    "Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable",
+    "transaction(s) still in flight ( , ). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.",
+    "Nothing from this run is in flight: transaction(s) were rejected before broadcast. Re-run this sweep now.",
+    "The local pending record for could not be removed ( ). It was never broadcast; the next run drops it once its blockhash expires, normally within two minutes. Re-run after that.",
+    "Remote signing authority is not verified denied. Re-run: candle tee disable , then re-run this sweep to record it."
+  ],
+  "vault-backup.ts": [
+    "The recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; this file plus a factor does that."
+  ],
+  "vault-export-key.ts": [
+    "Wrote the key for to (mode 0600). This vault now records that the key was exported; that record never resets. Treat the file as a secret. This CLI will not print its contents."
+  ],
+  "vault-factor-touch-id.ts": [
+    "Removed the Secure Enclave key this failed enrolment created. Could not remove the Secure Enclave key ; it opens nothing and a retry creates a new one."
+  ],
+  "vault-factor.ts": ["The new passphrase, words, about bits. Written down now; it is shown once."],
+  "vault-fund.ts": [
+    "Funding external wallet ( ) from vault key . What this wallet holds is what candle sign can spend; fund a session, not a float."
+  ],
+  "vault-import-legacy.ts": [
+    "The Phase 1 file was left in place. A 0.9.x binary reading it still sees that stale copy; sweep records written into the vault are not mirrored back. Run `candle vault retire-legacy` after a verified backup to rename it."
+  ],
+  "vault-init.ts": [
+    "The recovery phrase ceremony is interactive only and was not offered under --json. Run: candle vault phrase show",
+    "This vault has exactly one recoverable factor: the passphrase. Lose it and no copy of this file can be opened, and the recovery phrase becomes the only route back. Add a second when you can: candle vault enroll security-key",
+    "This vault has a 24-word recovery phrase. It re-derives every key this vault derives, on any BIP-39 wallet, and it is the only way back if you lose both the file and your backups.",
+    "Skipped. You can run the ceremony later with: candle vault phrase show",
+    "Nothing has a copy of this vault yet. A copy in iCloud Drive is a copy of the ciphertext, and Candle seals it: it opens with the passphrase only, and carries no Touch ID, security key or synced passkey envelope, so one Apple account never holds both the blob and a factor that opens it.",
+    "This vault holds no keys yet, so what a copy taken now protects is the root every key comes back from. Back it up again after your first `vault new-key`: until then `verify-backup` will report this copy as stale, correctly.",
+    "Skipped. Back it up whenever you like with: candle vault backup --to",
+    "The vault itself is created and verified; only the copy failed. Run it again when you have dealt with the reason above: candle vault backup --to"
+  ],
+  "vault-list.ts": [
+    "Reading SOL for addresses from , in request requests . That endpoint sees all together.",
+    "address addresses could not be read: the RPC did not answer . Narrow with a filter, or use your own endpoint with --rpc-url.",
+    "Reading ETH (and USDG when the chain is Hood) for EVM address addresses from , in requests. That endpoint sees all together.",
+    "EVM address addresses could not be read: the RPC did not answer . Narrow with a filter, or use your own endpoint with --evm-rpc-url."
+  ],
+  "vault-new-key.ts": [
+    "of keys were created and ARE in the vault; the vault is intact and its counter is past them. Re-run for the remaining (with a --labels-from file holding the names that did not land) ."
+  ],
+  "vault-phrase.ts": [
+    "The recovery phrase is shown only on a terminal, on both ends. Nothing was rendered, and the vault was not read.",
+    "The 24 words below re-derive every key this vault derives, on any BIP-39 wallet, with no passphrase and no server. They do NOT restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that. Anyone who reads them can move every derived key's funds.",
+    "Stopped. Nothing was displayed and nothing was written.",
+    "The phrase is no longer on screen. Clear your terminal's scrollback: the words were rendered there and this CLI cannot remove them."
+  ],
+  "vault-promote-batch.ts": [
+    "of rows landed and ARE in the vault; the vault is intact. remain. Re-run the same file: the rows that landed are skipped, an interrupted row resumes, and the rest are promoted."
+  ],
+  "vault-promote-evm.ts": [
+    "Promoted fresh Hood TEE wallet at (sweep to ). Scan start: Hood block .",
+    "Promoted in place on Hood (sweep to ). This address never returns to cold. Scan start: Hood block ."
+  ],
+  "vault-promote.ts": ["Promoted in place (sweep to ). This address never returns to cold."],
+  "vault-rename.ts": ["Dry run: nothing was written. Renamed keys in one commit."],
+  "vault-restore.ts": [
+    "Type your -word recovery phrase. It is not echoed, and nothing is written until its checksum checks out.",
+    ": index 0 only. If you derived more, re-run with --count/--tee-count/--external-count, or with --rpc-url to gap-scan.",
+    "evm: none. If this root has EVM keys, re-run with --evm-count <n>; the EVM branch is never gap-scanned.",
+    "evm tee: indices 0 to , on m/44'/60'/n'/1'/0'. The sealed EVM record is not restored by a phrase: a sweep of these wallets needs --from-block <n> (a Hood block at or before the first transfer in) or --token <0x...> to find tokens beyond USDG and WETH.",
+    "address(es) this account imported are external-branch keys of this root. An external key is never registered with Candle, so this read does not flag them; their history is unknown like every other recovered key's.",
+    "The vault was created, verified and written in full; nothing in it is flagged. Run `candle vault reconcile-exposure` once you are on the right profile. A partial list that happened to be empty would read as good news, so nothing was flagged at all. Run `candle vault reconcile-exposure` once the read succeeds.",
+    "Nothing was cleared. This command only ever adds exposure: no read can establish that an address is cold.",
+    "The new vault's passphrase, words, about bits. Write it down now; it is shown once."
+  ],
+  "wallets-close-empty.ts": [
+    "Not every close is settled on chain yet; nothing will be sent again. Read it again with: candle wallet close-empty --wallet --client-trade-id",
+    "Operation was built and never submitted to Candle, so Candle sent nothing; its transactions expire at block height . Run again without --client-trade-id to close under a new id."
+  ]
+}

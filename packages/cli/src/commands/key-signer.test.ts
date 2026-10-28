@@ -159,7 +159,9 @@ describe("T1: candle tee signer new", () => {
     expect(h.stderr.text).toContain(keySignerFingerprint(sha))
     expect(h.stderr.text).toContain(`candle keys signer approve ${sim.requests[0]?.userCode} --key ${PREFIX}`)
     expect(entry?.signerQuorumId).toBe(sim.keys.get(PREFIX)?.active?.quorum as string)
-    expect(h.stdout.text).toContain(`Approved: key ${PREFIX}'s signer is ${keySignerFingerprint(sha)}`)
+    expect(h.stdout.text).toContain(
+      `Key          ${PREFIX}\n  Fingerprint  ${keySignerFingerprint(sha)}\n  Held         on this machine`,
+    )
     // No device token here: no D2 warning.
     expect(h.stderr.text).not.toContain(DEVICE_TOKEN_BESIDE_SIGNER_LINE)
   })
@@ -215,7 +217,7 @@ describe("T1: candle tee signer new", () => {
     sim.approveOnRead = 1
     const h = machine(sim, { apiKey: true, deviceToken: true, clock })
     expect(await run(["tee", "signer", "new", "--key", PREFIX], h.deps)).toBe(0)
-    expect(h.stderr.text).toContain(DEVICE_TOKEN_BESIDE_SIGNER_LINE)
+    expect(h.stderr.text.replace(/\s+/g, " ")).toContain(DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, ""))
   })
 })
 
@@ -393,7 +395,7 @@ describe("T9: candle keys signer move", () => {
     const oldSha = await holdSigner(h, PREFIX, old, "q-old")
     expect(await run(["keys", "signer", "move", PREFIX], h.deps)).toBe(1)
     expect(await h.store.get(keySignerRef(PREFIX, oldSha))).not.toBeNull()
-    expect(h.stdout.text).toContain(`Kept ${keySignerRef(PREFIX, oldSha)}: 1 wallet still on it.`)
+    expect(h.stdout.text.replace(/\s+/g, " ")).toContain(`Kept ${keySignerRef(PREFIX, oldSha)}: 1 wallet still on it.`)
   })
 
   test("a key with no active signer: KEY_SIGNER_MISSING, nothing signed", async () => {

@@ -54,7 +54,7 @@ describe("candle plans", () => {
     expect(calls[0]?.url).toBe("https://api.test/api/v1/agent/plans")
     expect(JSON.stringify(calls[0]?.headers)).not.toContain("cndl_test_secret")
     const out = stdout.text
-    expect(out).toContain("Plans served by https://api.test")
+    expect(out).toContain("Plans\n\n  API  https://api.test\n")
     expect(out).toMatch(/Price\s+free\s+\$50 a month\s+\$200 a month/)
     expect(out).toMatch(/Agent trade fee\s+1%\s+0\.5%\s+0\.25%/)
     expect(out).toMatch(/Perps builder fee\s+0\.1%\s+0\.1%\s+none/)

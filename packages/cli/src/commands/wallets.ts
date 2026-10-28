@@ -23,12 +23,20 @@ import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
 import { localKeySigners } from "../key-signers"
+import { heading, notice, symbols, terminalStyle } from "../presentation"
 import { printIdentity } from "../profiles"
-import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
-import { importPendingSignerRef, pemToStoredSigner, type SecretStore, walletSignerRef } from "../secret-store"
+import { renderTable } from "../render"
+import { type SecretStore, walletSignerRef } from "../secret-store"
 import { parseSolanaSecret, type WalletChain } from "../wallet-import"
 import { runImportFlow } from "../wallet-import-flow"
+import {
+  writeScreenFailure as writeFailure,
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenMessage,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 
 interface EmbeddedWalletsResponse {
   wallets: {
@@ -328,11 +336,17 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
   const { states: signerStates, storeError } = await probeSignerStates(linkedRows, deps.store, keySignerQuorums)
   // On STDERR in both modes: a warning must never land in the middle of the JSON document
   // stdout is contracted to carry, and it is not a failure of the listing either way.
-  if (storeError !== undefined) deps.stderr.write(`Could not read the signer store: ${storeError}\n`)
+  if (storeError !== undefined) {
+    if (json) deps.stderr.write(`Could not read the signer store: ${storeError}\n`)
+    else notice(deps, "stderr", "warning", `Could not read the signer store: ${storeError}`)
+  }
   // Item 3: a bounded fetch that stopped short says so, rather than truncating silently a second
   // time. On stderr in both modes, for the same reason the store warning is: stdout is the JSON
   // document, and this is not a failure of the listing either way.
-  if (listing.incomplete !== undefined) deps.stderr.write(incompleteNotice(listing))
+  if (listing.incomplete !== undefined) {
+    if (json) deps.stderr.write(incompleteNotice(listing))
+    else notice(deps, "stderr", "warning", incompleteNotice(listing).trimEnd())
+  }
 
   if (json) {
     // `linked` keeps the server's own envelope, with `page` replaced by EVERY row and `isDone` /
@@ -358,6 +372,8 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     return 0
   }
 
+  const style = terminalStyle(deps, "stdout")
+  const tableOptions = { style, width: style.width, indent: 2, rule: false }
   const embeddedBody = embedded.body as EmbeddedWalletsResponse
 
   // Two vocabularies meet in this table: the rows are WALLETS ("solana" | "evm", an address and
@@ -365,55 +381,85 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
   // ("solana" | "hood"). Heading the column "Chain" made them look like one axis and left
   // nothing on screen to say that a Hood launch spends from the `evm` row, so the mapping is
   // stated outright. See docs/reference/chain-vocabulary.md.
-  deps.stdout.write("Embedded (launch) wallets:\n")
+  deps.stdout.write(`${heading("Embedded (launch) wallets", style)}\n\n`)
   deps.stdout.write(
     `${renderTable(
       ["Wallet", "Address", "Delegated", "Launches on"],
       [
         [
           "solana",
-          embeddedBody.wallets.solana?.address ?? "none",
+          embeddedBody.wallets.solana?.address ?? symbols(style).missing,
           embeddedBody.wallets.solana?.delegated ? "yes" : "no",
           "solana",
         ],
         [
           "evm",
-          embeddedBody.wallets.evm?.address ?? "none",
+          embeddedBody.wallets.evm?.address ?? symbols(style).missing,
           embeddedBody.wallets.evm?.delegated ? "yes" : "no",
           "hood",
         ],
       ],
+      { ...tableOptions, columns: [{ priority: 3 }, { id: true }, { priority: 2 }, { priority: 1 }] },
     )}\n`,
   )
 
   // The count is on the heading because the old failure was invisible: 20 rows looked exactly
   // like an account with 20 wallets. A number the operator can check against what they expect is
   // what makes a wrong list say so.
-  deps.stdout.write(`\nLinked wallets (${linkedRows.length}):\n`)
+  deps.stdout.write(`\n${heading(`Linked wallets (${linkedRows.length})`, style)}\n\n`)
   if (linkedRows.length === 0) {
-    deps.stdout.write("(none)\n")
+    notice(deps, "stdout", "note", "No linked wallets.")
   } else {
     // Rendered once, then read back for the hints, so what the hint says about "a wallet marked
     // none" is the same value the table actually printed and cannot drift from it.
     const cells = linkedRows.map((wallet) => signerCell(signerStates.get(wallet._id), wallet))
-    deps.stdout.write(
-      `${renderTable(
-        // "Kind" rather than a bare TEE flag: the column has to be readable by someone who does
-        // not know what Ember is, and "tee" / "linked" is the distinction that decides which
-        // wallets `candle swap --wallet` and `candle launch --wallet` will accept.
-        ["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Trusted", "Signer"],
-        linkedRows.map((wallet, index) => [
-          wallet._id,
-          wallet.chain,
-          wallet.address,
-          wallet.label ?? "-",
-          isTeeRow(wallet) ? "tee" : "linked",
-          wallet.revokedAt ? "yes" : "no",
-          trustedCell(wallet),
-          cells[index] ?? "-",
-        ]),
-      )}\n`,
-    )
+    if (style.width < 100) {
+      for (const [index, wallet] of linkedRows.entries()) {
+        writeFields(deps, "stdout", [
+          ["Id", wallet._id],
+          ["Address", wallet.address],
+          ["Label", wallet.label],
+          ["Wallet", wallet.chain],
+          ["Kind", isTeeRow(wallet) ? "tee" : "linked"],
+          ["Revoked", wallet.revokedAt ? "yes" : "no"],
+          ["Trusted", trustedCell(wallet) === "-" ? undefined : trustedCell(wallet)],
+          ["Signer", cells[index] === "-" ? undefined : cells[index]],
+        ])
+        deps.stdout.write("\n")
+      }
+    } else {
+      deps.stdout.write(
+        `${renderTable(
+          // "Kind" rather than a bare TEE flag: the column has to be readable by someone who does
+          // not know what Ember is, and "tee" / "linked" is the distinction that decides which
+          // wallets `candle swap --wallet` and `candle launch --wallet` will accept.
+          ["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Trusted", "Signer"],
+          linkedRows.map((wallet, index) => [
+            wallet._id,
+            wallet.chain,
+            wallet.address,
+            wallet.label ?? symbols(style).missing,
+            isTeeRow(wallet) ? "tee" : "linked",
+            wallet.revokedAt ? "yes" : "no",
+            trustedCell(wallet) === "-" ? symbols(style).missing : trustedCell(wallet),
+            cells[index] === "-" ? symbols(style).missing : (cells[index] ?? symbols(style).missing),
+          ]),
+          {
+            ...tableOptions,
+            columns: [
+              { id: true },
+              { priority: 5 },
+              { id: true },
+              { priority: 2 },
+              { priority: 4 },
+              { priority: 1 },
+              { priority: 3 },
+              { priority: 6 },
+            ],
+          },
+        )}\n`,
+      )
+    }
     // Only for a state some row is actually in: a listing where every signer is present says
     // nothing extra.
     const anyNone = cells.includes("none")
@@ -421,10 +467,10 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     const anyTee = linkedRows.some(isTeeRow)
     const anyUntrusted = linkedRows.some((row) => trustedCell(row) === "no")
     if (anyNone || anyStale || anyTee || anyUntrusted) deps.stdout.write("\n")
-    if (anyTee) deps.stdout.write(TEE_HINT)
-    if (anyUntrusted) deps.stdout.write(UNTRUSTED_HINT)
-    if (anyNone) deps.stdout.write(NONE_HINT)
-    if (anyStale) deps.stdout.write(STALE_HINT)
+    if (anyTee) notice(deps, "stdout", "note", TEE_HINT.trimEnd())
+    if (anyUntrusted) notice(deps, "stdout", "warning", UNTRUSTED_HINT.trimEnd())
+    if (anyNone) notice(deps, "stdout", "warning", NONE_HINT.trimEnd())
+    if (anyStale) notice(deps, "stdout", "warning", STALE_HINT.trimEnd())
   }
   return 0
 }
@@ -523,8 +569,15 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
   // Checked before the key prompt so nobody types a private key and then learns a flag is absent.
   if (chainFlag === "evm" && parsed.values["--address"] === undefined) missing.push("--address <0x...>")
   if (missing.length > 0) {
-    deps.stderr.write(`Missing required: ${missing.join(", ")}\n`)
-    deps.stderr.write(`Example: candle wallets import --chain evm --address 0xYourWallet --api-url ${apiUrl}\n`)
+    if (json) {
+      deps.stderr.write(`Missing required: ${missing.join(", ")}\n`)
+      deps.stderr.write(`Example: candle wallets import --chain evm --address 0xYourWallet --api-url ${apiUrl}\n`)
+    } else
+      writeScreenMessage(
+        deps,
+        `Missing required: ${missing.join(", ")}`,
+        `Run: candle wallets import --chain evm --address 0xYourWallet --api-url ${apiUrl}`,
+      )
     return 2
   }
   const chain: WalletChain = chainFlag as WalletChain
@@ -608,9 +661,17 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
     } catch (error) {
       // The import itself succeeded and the keychain holds the signer; report the export
       // failure without failing the command, and say where the signer still lives.
-      deps.stderr.write(
-        `Warning: could not write --signer-out (${error instanceof Error ? error.message : error}); the signer is stored in the ${deps.backend} store\n`,
-      )
+      if (json)
+        deps.stderr.write(
+          `Warning: could not write --signer-out (${error instanceof Error ? error.message : error}); the signer is stored in the ${deps.backend} store\n`,
+        )
+      else
+        notice(
+          deps,
+          "stderr",
+          "warning",
+          `Could not write --signer-out (${error instanceof Error ? error.message : error}); the signer is stored in the ${deps.backend} store`,
+        )
     }
   }
 
@@ -655,23 +716,35 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
     return 0
   }
 
-  deps.stdout.write(`Imported ${result.chain} wallet ${result.address}\n`)
+  writeSuccess(deps, "stdout", `Imported ${result.chain} wallet`)
   // The account and host lead, because they are the two facts that were missing when this went
   // wrong, and the only two the caller cannot check from the rest of this output.
-  deps.stdout.write(`  Account:         ${verification.account ?? "unknown"} at ${apiUrl}\n`)
-  deps.stdout.write(`  Wallet id:       ${result.id}\n`)
-  deps.stdout.write(`  Privy wallet id: ${result.privyWalletId}\n`)
+  writeFields(deps, "stdout", [
+    ["Account", verification.account],
+    ["API", apiUrl],
+    ["Address", result.address],
+    ["Wallet id", result.id],
+    ["Privy wallet id", result.privyWalletId],
+  ])
   if (signerOut !== undefined) {
-    deps.stdout.write(`  Signer key:      exported to ${signerOut} (and in the ${deps.backend} store)\n`)
-    deps.stdout.write(`Back up ${signerOut}: trades from this wallet sign with it, and it cannot be re-downloaded.\n`)
+    writeFields(deps, "stdout", [["Signer key", `exported to ${signerOut} (and in the ${deps.backend} store)`]])
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `Back up ${signerOut}: trades from this wallet sign with it, and it cannot be re-downloaded.`,
+    )
   } else {
     // Previously this said "stored in the keychain" and then "keep the signer key", which asks
     // for an action against something the caller was never handed.
-    deps.stdout.write(`  Signer key:      stored in your ${deps.backend} store; nothing to save by hand\n`)
+    writeFields(deps, "stdout", [["Signer key", `stored in your ${deps.backend} store; nothing to save by hand`]])
   }
   if (verification.status === "unchecked") {
-    deps.stdout.write(
-      `Note: could not read the wallet back to confirm which account it landed on. Run: candle wallets --api-url ${apiUrl}\n`,
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `Could not read the wallet back to confirm which account it landed on. Run:\ncandle wallets --api-url ${apiUrl}`,
     )
   }
   return 0
@@ -774,17 +847,23 @@ export async function walletsRevoke(args: string[], ctx: CommandContext): Promis
     return outcome.complete ? 0 : 3
   }
   if (outcome.complete) {
-    deps.stdout.write(
+    notice(
+      deps,
+      "stdout",
+      "note",
       outcome.remoteAuthority === "none"
         ? `Revoked linked wallet ${walletId} (attribution-only link; no agent signer to neutralize).\n`
         : `Revoked linked wallet ${walletId}. Remote signing denial verified; the wallet is quarantined.\n`,
     )
     return 0
   }
-  deps.stdout.write(
+  notice(
+    deps,
+    "stdout",
+    "warning",
     `Agent trading stopped at Candle for ${walletId}. Remote policy verification is pending` +
       `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\n` +
-      `Funds remain in the wallet and its TEE signing authority may still be active. Re-run: candle wallets revoke ${walletId}\n`,
+      `Funds remain in the wallet and its TEE signing authority may still be active. Re-run:\ncandle wallets revoke ${walletId}`,
   )
   return 3
 }

@@ -17,21 +17,30 @@
  * do). As with `tee rebind`, the typed prefix is not the security boundary, the API is; it stops a
  * scripted or mistaken widening on an owner's machine.
  */
+
 import { AGENT_KEY_PRESET_LABELS, type AgentKeyPreset, presetForScopes, scopesForPreset } from "../agent-key-access"
 import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
-import { candleEnvironment, effectiveProfileFields, printIdentity } from "../profiles"
+import { writeFields, writeSuccess } from "../human-output"
 import {
-  errorEnvelope,
-  formatScopesForSummary,
-  formatTimestamp,
-  renderTable,
-  writeLocalFailure,
-  writeUsageFailure,
-} from "../render"
+  heading,
+  notice,
+  fields as renderFields,
+  renderNotice,
+  symbols,
+  type TerminalStyle,
+  terminalStyle,
+} from "../presentation"
+import { candleEnvironment, effectiveProfileFields, printIdentity } from "../profiles"
+import { errorEnvelope, formatScopesForSummary, formatTime, renderTable } from "../render"
 import { shortAddress } from "../vault/promote-support"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenMessage,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 import { ACCESS_LEVELS, accessCell, labelCell, NO_DEVICE_TOKEN } from "./keys"
 import { PORTAL_REVOKE_LINE, resolveTargetKey } from "./tee-rebind"
 
@@ -134,35 +143,59 @@ export function linkedTransferLine(ready: NonNullable<AccessResponse["effects"][
 const LOCALLY_RENDERED = new Set(["MOVES_FUNDS", "VAULT_TRANSFER_READY", "LINKED_TRANSFER_NEEDS_LIMITS"])
 
 /** The screen (stderr): which key, which account, which API, what changes, and what it costs. */
-export function accessScreen(shown: AccessResponse, identity: { account: string; apiUrl: string }): string {
+export function accessScreen(
+  shown: AccessResponse,
+  identity: { account: string; apiUrl: string },
+  style?: TerminalStyle,
+): string {
   const environment = candleEnvironment(identity.apiUrl) ?? "not a Candle host"
   const label = labelCell(shown.label ?? undefined)
-  const lines = [
-    `Key             ${shown.keyPrefix}${label ? `  ${label}` : ""}`,
-    `Candle account  ${identity.account}`,
-    `API             ${identity.apiUrl}  (${environment})`,
-    "",
-    `Access          ${levelName(shown.from)}  ->  ${levelName(shown.to)}   (${shown.direction})`,
-    `Adds            ${shown.added.length > 0 ? formatScopesForSummary(shown.added) : "nothing"}`,
-    `Removes         ${shown.removed.length > 0 ? shown.removed.join(", ") : "nothing"}`,
-    "",
-  ]
+  const lines = style
+    ? [
+        heading("Access change", style),
+        "",
+        ...renderFields(
+          [
+            ["Key", `${shown.keyPrefix}${label ? `  ${label}` : ""}`],
+            ["Candle account", identity.account],
+            ["API", `${identity.apiUrl}  (${environment})`],
+            ["Access", `${levelName(shown.from)}  ->  ${levelName(shown.to)}   (${shown.direction})`],
+            ["Adds", shown.added.length > 0 ? formatScopesForSummary(shown.added) : "nothing"],
+            ["Removes", shown.removed.length > 0 ? shown.removed.join(", ") : "nothing"],
+          ],
+          style,
+        ),
+        "",
+      ]
+    : [
+        `Key             ${shown.keyPrefix}${label ? `  ${label}` : ""}`,
+        `Candle account  ${identity.account}`,
+        `API             ${identity.apiUrl}  (${environment})`,
+        "",
+        `Access          ${levelName(shown.from)}  ->  ${levelName(shown.to)}   (${shown.direction})`,
+        `Adds            ${shown.added.length > 0 ? formatScopesForSummary(shown.added) : "nothing"}`,
+        `Removes         ${shown.removed.length > 0 ? shown.removed.join(", ") : "nothing"}`,
+        "",
+      ]
+  const advice = (text: string, level: "note" | "warning" = "warning") => {
+    lines.push(...(style ? [...renderNotice(level, text, style), ""] : [text]))
+  }
   const bound = shown.effects.boundTeeWallets
   if (bound && bound.count > 0) {
     const names = bound.sample.map((w) => labelCell(w.label ?? undefined) || shortAddress(w.address))
     const more = bound.count > names.length ? `, and ${bound.count - names.length} more` : ""
-    lines.push(`TEE wallets on this key: ${bound.count}  (${names.join(", ")}${more})`)
+    advice(`TEE wallets on this key: ${bound.count}  (${names.join(", ")}${more})`, "note")
     if (shown.direction === "widen" && shown.added.includes("transfer:bound")) {
-      lines.push("It can move these wallets' funds to their vaults as soon as you confirm.")
+      advice("It can move these wallets' funds to their vaults as soon as you confirm.")
     }
   }
   const ready = shown.effects.linkedTransferReady
   if (shown.direction === "widen" && ready) {
     const line = linkedTransferLine(ready)
-    if (line) lines.push(line)
+    if (line) advice(line)
   }
   for (const warning of shown.warnings) {
-    if (!LOCALLY_RENDERED.has(warning.code)) lines.push(`Warning: ${warning.message}`)
+    if (!LOCALLY_RENDERED.has(warning.code)) advice(style ? warning.message : `Warning: ${warning.message}`)
   }
   if (lines[lines.length - 1] !== "") lines.push("")
   return lines.join("\n")
@@ -209,7 +242,7 @@ function writeAccessFailure(
   if (json) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...(suggestion ? { suggestion } : {}) })}\n`)
   } else {
-    deps.stderr.write(`${code}: ${message}${suggestion ? ` ${suggestion}` : ""}\n`)
+    writeScreenMessage(deps, `${code}: ${message}`, suggestion)
   }
   return 1
 }
@@ -297,7 +330,7 @@ export async function keysAccess(args: string[], ctx: CommandContext): Promise<n
 
   if (shown.direction === "unchanged") {
     if (json) deps.stdout.write(`${JSON.stringify({ ...shown, command: "keys access" })}\n`)
-    else deps.stdout.write(`${name} is already ${levelName(shown.to)}. Nothing changed.\n`)
+    else notice(deps, "stdout", "note", `${name} is already ${levelName(shown.to)}. Nothing changed.`)
     return 0
   }
 
@@ -323,9 +356,13 @@ export async function keysAccess(args: string[], ctx: CommandContext): Promise<n
   // The screen, on stderr, so `--json` stdout carries exactly one document.
   const config = await deps.readConfig()
   const fields = effectiveProfileFields(config, ctx.profile)
-  const account = fields.account ? shortAddress(fields.account) : "unknown"
+  const account = fields.account
+    ? shortAddress(fields.account)
+    : json
+      ? "unknown"
+      : symbols(terminalStyle(deps, "stderr")).missing
   deps.stderr.write(
-    `${accessScreen(shown, { account: fields.username ? `${fields.username}  (${account})` : account, apiUrl })}\n`,
+    `${accessScreen(shown, { account: fields.username ? `${fields.username}  (${account})` : account, apiUrl }, json ? undefined : terminalStyle(deps, "stderr"))}\n`,
   )
 
   if (widen) {
@@ -378,15 +415,16 @@ export async function keysAccess(args: string[], ctx: CommandContext): Promise<n
     return 0
   }
   if (result.direction === "unchanged") {
-    deps.stdout.write(
-      `${keyName(result.keyPrefix, result.label)} is already ${levelName(result.to)}. Nothing changed.\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      `${keyName(result.keyPrefix, result.label)} is already ${levelName(result.to)}. Nothing changed.`,
     )
     return 0
   }
-  deps.stdout.write(
-    `Changed ${keyName(result.keyPrefix, result.label)} to ${levelName(result.to)}.` +
-      `${result.changeId ? ` Change id ${result.changeId}` : ""}\n`,
-  )
+  writeSuccess(deps, "stdout", `Changed ${keyName(result.keyPrefix, result.label)} to ${levelName(result.to)}.`)
+  if (result.changeId) writeFields(deps, "stdout", [["Change id", result.changeId]])
   return 0
 }
 
@@ -418,21 +456,28 @@ async function keysAccessHistory(target: string, ctx: CommandContext): Promise<n
   }
   const rows = (result.body as { changes?: AccessChangeRow[] }).changes ?? []
   if (rows.length === 0) {
-    deps.stdout.write(`No access changes on key ${resolved.keyPrefix}.\n`)
+    notice(deps, "stdout", "note", `No access changes on key ${resolved.keyPrefix}.`)
     return 0
   }
   deps.stdout.write(
     `${renderTable(
       ["Time", "From", "To", "Actor", "Device or key"],
       rows.map((row) => [
-        formatTimestamp(row.at),
+        formatTime(row.at, { now: deps.now(), missing: symbols(terminalStyle(deps, "stdout")).missing }),
         levelName(row.from),
         levelName(row.to),
         row.actor,
         row.actorDevicePrefix ?? row.actorKeyPrefix ?? "",
       ]),
+      {
+        style: terminalStyle(deps, "stdout"),
+        width: terminalStyle(deps, "stdout").width,
+        indent: 2,
+        rule: false,
+        columns: [{ id: true }, { priority: 2 }, { priority: 3 }, { priority: 1 }, { id: true }],
+      },
     )}\n`,
   )
-  if (rows.some((row) => row.actor === "device")) deps.stdout.write(`${PORTAL_REVOKE_LINE}\n`)
+  if (rows.some((row) => row.actor === "device")) notice(deps, "stdout", "note", PORTAL_REVOKE_LINE)
   return 0
 }

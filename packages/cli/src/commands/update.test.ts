@@ -111,7 +111,7 @@ describe("update", () => {
     const { deps, stdout, writes } = binaryDeps(f.fetch)
     const code = await run(["update", "--check"], deps)
     expect(code).toBe(0)
-    expect(stdout.text).toContain(`${NEWER} available`)
+    expect(stdout.text).toContain(`Available  ${NEWER}`)
     expect(stdout.text).toContain(CLI_VERSION)
     expect(writes).toHaveLength(0)
   })
@@ -401,7 +401,7 @@ describe("T18: D9's two lines", () => {
     const { deps, stderr } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
     expect(await run(["update"], deps)).toBe(0)
     expect(stderr.text).toContain(
-      `Updating candle ${CLI_VERSION} -> ${NEWER} (${formatBytes(f.manifest.assets["linux-x64"].size)})`,
+      `Updating candle\n\n  Current   ${CLI_VERSION}\n  Target    ${NEWER}\n  Download  ${formatBytes(f.manifest.assets["linux-x64"].size)}`,
     )
   })
 
@@ -412,7 +412,9 @@ describe("T18: D9's two lines", () => {
     f.manifest.assets["linux-x64"] = { name: "candle-linux-x64", sha256: f.sum, size: 13_002_342 }
     const { deps, stderr } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
     expect(await run(["update"], deps)).toBe(0)
-    expect(stderr.text).toContain(`Updating candle ${CLI_VERSION} -> ${NEWER} (12.4 MB)`)
+    expect(stderr.text).toContain(
+      `Updating candle\n\n  Current   ${CLI_VERSION}\n  Target    ${NEWER}\n  Download  12.4 MB`,
+    )
   })
 
   test("the signature step names the scheme and the pin", async () => {
@@ -482,11 +484,11 @@ describe("BE-275: update installs the security key helper", () => {
     ])
     expect(unlinks).toHaveLength(0)
     expect(stdout.text).toContain(`Updated candle ${CLI_VERSION} -> ${NEWER}`)
-    expect(stdout.text).toContain(`Installed candle-fido2 ${NEWER} to ${HELPER_PATH}`)
+    expect(stdout.text).toContain(`Helper        candle-fido2 ${NEWER}\n  Installed to  ${HELPER_PATH}`)
     // The size line sums both assets (D5): a line naming half of what then transfers reads as a
     // hang. And the helper gets its own progress stages.
     expect(stderr.text).toContain(
-      `Updating candle ${CLI_VERSION} -> ${NEWER} (${formatBytes(BINARY.length + HELPER_BYTES.length)})`,
+      `Updating candle\n\n  Current   ${CLI_VERSION}\n  Target    ${NEWER}\n  Download  ${formatBytes(BINARY.length + HELPER_BYTES.length)}`,
     )
     expect(stderr.text).toContain(`downloading ${HELPER_ASSET}`)
     expect(stderr.text).toContain(`${HELPER_ASSET} checksum verified`)

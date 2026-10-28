@@ -34,9 +34,13 @@
 import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey } from "../deps"
+import { writeFields } from "../human-output"
 import { credentialEnvOverrides, effectiveProfileFields, identityLine, identityStyle } from "../profiles"
 import { detectInstall } from "../release"
-import { writeLocalFailure, writeUsageFailure } from "../render"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 
 /** Mirrors `TOOL_NAMES` in packages/mcp/src/tools.ts -- duplicated here since the CLI has zero
  * runtime dependencies and no cross-package import (same convention as ALL_AGENT_SCOPES).
@@ -278,8 +282,14 @@ export async function mcp(args: string[], ctx: CommandContext): Promise<number> 
     ...(toolAllowlist ? { CANDLE_MCP_TOOLS: toolAllowlist } : {}),
   }
   // stderr, not stdout: under MCP the protocol owns stdout, and that is now THIS process's stdout.
-  deps.stderr.write(
-    `Starting the Candle MCP server against ${apiUrl}${toolAllowlist ? ` (tools: ${toolAllowlist})` : ""}\n`,
+  writeFields(
+    deps,
+    "stderr",
+    [
+      ["API", apiUrl],
+      ["Tools", toolAllowlist ?? "all"],
+    ],
+    "Starting the Candle MCP server",
   )
   // Resolves when the transport is connected; the transport then holds stdin open, which is what
   // keeps the process alive. Exit code 0 because there is nothing left to fail: a server that

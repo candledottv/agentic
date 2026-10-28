@@ -32,7 +32,7 @@ describe("keys wallets set: a refused widening", () => {
     expect(stderr.text).toContain("candle tee rebind wal_1 wal_2 --to-key B6P-TSRs")
     expect(stderr.text).toContain("--label-prefix")
     // BE-362: bound to this key but outside its set, the rebind has nothing to move.
-    expect(stderr.text).toContain(
+    expect(stderr.text.replace(/\s+/g, " ")).toContain(
       "If `tee rebind` says the wallets are already bound, grant them to the key in the agent console's Agents tab (signed in).",
     )
   })

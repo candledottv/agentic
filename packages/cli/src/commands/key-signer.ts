@@ -13,12 +13,14 @@
  * network is its public half (the request), an owner's typed confirmation (the approval), and an
  * owner-change signature that only the relay forwards.
  */
+
 import { generateKeyPairSync } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CheckRow } from "../checks"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
 import {
   activeSigner,
   allSignerWallets,
@@ -47,10 +49,16 @@ import {
   spkiSha256Of,
 } from "../key-signers"
 import { SecretStoreLockedError } from "../keychain"
+import { notice } from "../presentation"
 import { apiKeyPrefix, printIdentity } from "../profiles"
-import { formatTimestamp, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
+import { formatTime, formatTimestamp } from "../render"
 import { pemToStoredSigner, storedSignerToPem, walletSignerRef } from "../secret-store"
 import { chunkWallets } from "../vault/promote-to-key"
+import {
+  writeScreenFailure as writeFailure,
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 import { labelCell } from "./keys"
 import {
   commitRebind,
@@ -150,7 +158,11 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
   }
   // D2, before anything is generated or sent.
   if ((await resolveDeviceToken(deps, ctx.profile)) !== undefined)
-    deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}\n`)
+    if (json) {
+      deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}\n`)
+    } else {
+      notice(deps, "stderr", "warning", DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, ""))
+    }
 
   // The key this API key is, from the server: `--key` must name it, by prefix or by label.
   const first = await readSigner(ctx, "self", { apiKey })
@@ -162,7 +174,7 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
       deps,
       {
         code: "KEY_SIGNER_KEY_MISMATCH",
-        message: `This machine's API key is key ${keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel)})` : ""}, not ${keyRaw}. A key's signer is generated on the machine that trades under it.`,
+        message: `This machine's API key is key ${keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel ?? undefined)})` : ""}, not ${keyRaw}. A key's signer is generated on the machine that trades under it.`,
         suggestion: `Run this on the machine holding ${keyRaw}'s API key, or pass --key ${keyPrefix}.`,
       },
       json,
@@ -215,9 +227,18 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     }
     if (active !== null) {
       replaces = { fingerprint: active.fingerprint, wallets: view.wallets.onSigner.length }
-      deps.stderr.write(
-        `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}\n`,
-      )
+      if (json) {
+        deps.stderr.write(
+          `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}\n`,
+        )
+      } else {
+        notice(
+          deps,
+          "stderr",
+          "warning",
+          `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}\n`.trimEnd(),
+        )
+      }
     }
     const pair = generatePair()
     const spkiSha256 = spkiSha256Of(pair.publicKeyDer)
@@ -261,9 +282,18 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     }
     writeFailure(deps, requested, { apiUrl: ctx.apiUrl, authType: "key" }, json)
     if (!json)
-      deps.stderr.write(
-        `The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.\n`,
-      )
+      if (json) {
+        deps.stderr.write(
+          `The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.\n`,
+        )
+      } else {
+        notice(
+          deps,
+          "stderr",
+          "note",
+          `The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.\n`.trimEnd(),
+        )
+      }
     return 1
   }
   const body = requested.body as {
@@ -275,7 +305,12 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     expiresAt: number
     supersededPending?: boolean
   }
-  if (body.supersededPending) deps.stderr.write("An earlier pending request for this key was cancelled.\n")
+  if (body.supersededPending)
+    if (json) {
+      deps.stderr.write("An earlier pending request for this key was cancelled.\n")
+    } else {
+      notice(deps, "stderr", "warning", "An earlier pending request for this key was cancelled.\n".trimEnd())
+    }
   // T1: the fingerprint printed is the one the server hashed from what was sent.
   if (body.spkiSha256 !== entry.spkiSha256) {
     writeLocalFailure(
@@ -289,18 +324,41 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     return 1
   }
 
-  deps.stderr.write(
-    `${[
-      `Key signer for key ${keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel)})` : ""}${resumed ? ", resumed" : ""}`,
-      "",
-      `    ${entry.fingerprint}`,
-      "",
-      "The account owner approves it, typing this full fingerprint:",
-      `  open ${body.verificationUriComplete}`,
-      `  or, on the owner's machine: candle keys signer approve ${body.userCode} --key ${keyPrefix}`,
-      `The code expires at ${formatTimestamp(body.expiresAt)}. Waiting for approval...`,
-    ].join("\n")}\n`,
-  )
+  if (json) {
+    deps.stderr.write(
+      `${[
+        `Key signer for key ${keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel ?? undefined)})` : ""}${resumed ? ", resumed" : ""}`,
+        "",
+        `    ${entry.fingerprint}`,
+        "",
+        "The account owner approves it, typing this full fingerprint:",
+        `  open ${body.verificationUriComplete}`,
+        `  or, on the owner's machine: candle keys signer approve ${body.userCode} --key ${keyPrefix}`,
+        `The code expires at ${formatTimestamp(body.expiresAt)}. Waiting for approval...`,
+      ].join("\n")}\n`,
+    )
+  } else {
+    writeFields(
+      deps,
+      "stderr",
+      [
+        ["Key", keyPrefix],
+        ["Label", labelCell(view.keyLabel ?? undefined)],
+        ["State", resumed ? "resumed" : "pending"],
+        ["Fingerprint", entry.fingerprint],
+        ["Approve at", body.verificationUriComplete],
+        ["Expires", formatTime(body.expiresAt, { now: deps.now() })],
+      ],
+      "Key signer request",
+    )
+    notice(deps, "stderr", "warning", "The account owner approves it, typing this full fingerprint.")
+    notice(
+      deps,
+      "stderr",
+      "note",
+      `Or, on the owner's machine:\ncandle keys signer approve ${body.userCode} --key ${keyPrefix}\nWaiting for approval...`,
+    )
+  }
 
   // Like `candle login`: read until the owner approves, the request is superseded or it expires.
   while (deps.now() < body.expiresAt) {
@@ -347,9 +405,18 @@ async function writeOut(ctx: CommandContext, out: string | undefined, entry: Key
   const stored = await ctx.deps.store.get(keySignerRef(entry.keyPrefix, entry.spkiSha256))
   if (stored === null) return
   await ctx.deps.writeFile(out, storedSignerToPem(stored))
-  ctx.deps.stderr.write(
-    `Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.\n`,
-  )
+  if (ctx.json) {
+    ctx.deps.stderr.write(
+      `Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.\n`,
+    )
+  } else {
+    notice(
+      ctx.deps,
+      "stderr",
+      "warning",
+      `Wrote the signer's private key to ${out} (mode 0600). It is plaintext on disk and weaker than the secret store, which still holds it.\n`.trimEnd(),
+    )
+  }
 }
 
 function reportApproved(
@@ -398,7 +465,13 @@ function reportApproved(
       `${plural(legacy.length, "wallet")} keep${legacy.length === 1 ? "s" : ""} a per-wallet signer on the machine that promoted ${legacy.length === 1 ? "it" : "them"} until candle keys signer move ${entry.keyPrefix} runs there: ${legacy.map(name).join(", ")}`,
     )
   }
-  deps.stdout.write(`${lines.join("\n")}\n`)
+  writeSuccess(deps, "stdout", "Key signer approved")
+  writeFields(deps, "stdout", [
+    ["Key", entry.keyPrefix],
+    ["Fingerprint", entry.fingerprint],
+    ["Held", "on this machine"],
+  ])
+  for (const line of lines.slice(1)) notice(deps, "stdout", "note", line)
   return 0
 }
 
@@ -499,28 +572,61 @@ async function keysSignerApprove(args: string[], ctx: CommandContext): Promise<n
   }
   // D2: approving a request this very machine made is the device token approving its own signer.
   if ((await localKeySigners(deps, keyPrefix)).some((e) => e.spkiSha256 === pending.spkiSha256)) {
-    deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}\n`)
+    if (json) {
+      deps.stderr.write(`${DEVICE_TOKEN_BESIDE_SIGNER_LINE}\n`)
+    } else {
+      notice(deps, "stderr", "warning", DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: /, ""))
+    }
   }
   const active = activeSigner(view)
   const all = allSignerWallets(view)
   const onActive = active !== null ? view.wallets.onSigner.length : 0
-  deps.stderr.write(
-    `${[
-      `Signer request for key ${keyPrefix}${view.keyLabel ? `  (${labelCell(view.keyLabel)})` : ""}`,
-      "",
-      `    ${pending.fingerprint}`,
-      "",
+  if (json) {
+    deps.stderr.write(
+      `${[
+        `Signer request for key ${keyPrefix}${view.keyLabel ? `  (${labelCell(view.keyLabel ?? undefined)})` : ""}`,
+        "",
+        `    ${pending.fingerprint}`,
+        "",
+        "Requested from a machine using this key. Compare the fingerprint with what that machine printed.",
+        `Wallets on this key: ${all.length}.`,
+        ...(active !== null ? [`Approving replaces signer ${active.fingerprint} as this key's active signer.`] : []),
+        ...(active !== null && onActive > 0
+          ? [
+              `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`,
+            ]
+          : []),
+        "",
+      ].join("\n")}\n`,
+    )
+  } else {
+    writeFields(
+      deps,
+      "stderr",
+      [
+        ["Key", keyPrefix],
+        ["Label", labelCell(view.keyLabel ?? undefined)],
+        ["Fingerprint", pending.fingerprint],
+        ["Wallets", all.length],
+      ],
+      "Signer approval",
+    )
+    notice(
+      deps,
+      "stderr",
+      "warning",
       "Requested from a machine using this key. Compare the fingerprint with what that machine printed.",
-      `Wallets on this key: ${all.length}.`,
-      ...(active !== null ? [`Approving replaces signer ${active.fingerprint} as this key's active signer.`] : []),
-      ...(active !== null && onActive > 0
-        ? [
-            `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`,
-          ]
-        : []),
-      "",
-    ].join("\n")}\n`,
-  )
+    )
+    if (active !== null)
+      notice(deps, "stderr", "warning", `Approving replaces signer ${active.fingerprint} as this key's active signer.`)
+    if (active !== null && onActive > 0)
+      notice(
+        deps,
+        "stderr",
+        "warning",
+        `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`,
+      )
+  }
 
   let typed: string | undefined
   if (!reject) {
@@ -553,18 +659,23 @@ async function keysSignerApprove(args: string[], ctx: CommandContext): Promise<n
     return 0
   }
   if (reject) {
-    deps.stdout.write(`Rejected the signer request ${pending.fingerprint} for key ${keyPrefix}.\n`)
+    writeSuccess(deps, "stdout", `Rejected the signer request ${pending.fingerprint} for key ${keyPrefix}.`)
     return 0
   }
   const after = answered.body as Partial<SignerView>
   const moving = after.wallets?.moving?.length ?? 0
-  deps.stdout.write(
-    `Approved: key ${keyPrefix}'s signer is ${pending.fingerprint}.${
-      moving > 0
-        ? ` ${plural(moving, "wallet")} ${moving === 1 ? "is" : "are"} moving: ${moving === 1 ? "it keeps" : "they keep"} trading from the machine holding the previous signer until candle keys signer move ${keyPrefix} runs there.`
-        : ""
-    }\n`,
-  )
+  writeSuccess(deps, "stdout", "Key signer approved")
+  writeFields(deps, "stdout", [
+    ["Key", keyPrefix],
+    ["Fingerprint", pending.fingerprint],
+  ])
+  if (moving > 0)
+    notice(
+      deps,
+      "stdout",
+      "warning",
+      `${plural(moving, "wallet")} ${moving === 1 ? "is" : "are"} moving: ${moving === 1 ? "it keeps" : "they keep"} trading from the machine holding the previous signer until candle keys signer move ${keyPrefix} runs there.`,
+    )
   return 0
 }
 
@@ -706,7 +817,7 @@ async function keysSignerMove(args: string[], ctx: CommandContext): Promise<numb
       const forwarded = (relayed.body as { forwarded?: unknown }).forwarded !== false
       outcomes.push({ walletId: wallet.id, label: wallet.label ?? null, state: forwarded ? "moved" : "already" })
       used.push(signer)
-      if (!json) deps.stderr.write(`  moved ${name(wallet)}\n`)
+      if (!json) writeSuccess(deps, "stderr", `  moved ${name(wallet)}\n`.trim())
     } else {
       outcomes.push({
         walletId: wallet.id,
@@ -715,7 +826,13 @@ async function keysSignerMove(args: string[], ctx: CommandContext): Promise<numb
         code: relayed.code ?? `HTTP ${relayed.status}`,
         message: relayed.message,
       })
-      if (!json) deps.stderr.write(`  failed ${name(wallet)}: ${relayed.code ?? relayed.status} ${relayed.message}\n`)
+      if (!json)
+        notice(
+          deps,
+          "stderr",
+          "danger",
+          `  failed ${name(wallet)}: ${relayed.code ?? relayed.status} ${relayed.message}\n`.trim(),
+        )
     }
   }
 
@@ -803,7 +920,7 @@ async function moveToLiveKey(
     }
     for (const row of (committed.result.body as RebindResponse).rebound) {
       outcomes.push({ walletId: row.id, label: row.label, state: "moved" })
-      if (!json) deps.stderr.write(`  moved ${row.label ?? row.id} to ${target.keyPrefix}\n`)
+      if (!json) writeSuccess(deps, "stderr", `  moved ${row.label ?? row.id} to ${target.keyPrefix}\n`.trim())
     }
   }
   const cleanup = await deleteDrainedSlots(ctx, { source, auth: { deviceToken }, deviceToken, apiKey: undefined, used })
@@ -986,12 +1103,22 @@ function reportMove(
     )
     return exit
   }
-  const where = report.target.fingerprint
-    ? `key ${report.target.keyPrefix}'s signer ${report.target.fingerprint}`
-    : `key ${report.target.keyPrefix} (binding only: it has no signer, so the owners stay)`
-  const lines = [
-    `Moved ${plural(count("moved").length, "wallet")} onto ${where}${count("already").length > 0 ? `; ${count("already").length} already there` : ""}${report.alreadyOn > 0 ? `; ${report.alreadyOn} on it before this run` : ""}.`,
-  ]
+  writeFields(
+    deps,
+    "stdout",
+    [
+      ["Source key", report.source],
+      ["Target key", report.target.keyPrefix],
+      ["Fingerprint", report.target.fingerprint],
+      ["Moved", count("moved").length],
+      ["Already there", count("already").length],
+      ["Before this run", report.alreadyOn],
+    ],
+    "Signer move",
+  )
+  if (!report.target.fingerprint)
+    notice(deps, "stdout", "warning", "Binding only: the target key has no signer, so the owners stay.")
+  const lines: string[] = []
   if (failed.length > 0) {
     lines.push(`${plural(failed.length, "wallet")} failed; run the same command again:`)
     for (const o of failed) lines.push(`  ${o.label ?? o.walletId}: ${o.code} ${o.message ?? ""}`)
@@ -1003,7 +1130,7 @@ function reportMove(
   }
   for (const slot of report.cleanup.deleted) lines.push(`Deleted ${slot}: no wallet is left on it.`)
   for (const kept of report.cleanup.kept) lines.push(`Kept ${kept.slot}: ${kept.reason}.`)
-  deps.stdout.write(`${lines.join("\n")}\n`)
+  for (const line of lines) notice(deps, "stdout", failed.length > 0 ? "warning" : "note", line)
   return exit
 }
 

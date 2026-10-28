@@ -20,6 +20,8 @@
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 import { openSolanaClient } from "../solana-endpoint"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { VaultError } from "../vault/errors"
@@ -163,17 +165,23 @@ export async function externalNew(args: string[], ctx: CommandContext): Promise<
       })
       return 0
     }
-    deps.stdout.write(`${address}\n`)
-    deps.stdout.write(`  label       ${label}\n`)
-    deps.stdout.write(`  derivation  ${derivationPath}\n`)
-    deps.stdout.write(`  role        external: signs only through candle sign and candle external sweep\n`)
-    deps.stdout.write(`  verified    re-read from the vault and re-derived from its root\n`)
+    writeSuccess(deps, "stdout", "External wallet created")
+    writeFields(deps, "stdout", [
+      ["Address", address],
+      ["Label", label],
+      ["Derivation", derivationPath],
+      ["Role", "external: signs only through candle sign and candle external sweep"],
+      ["Verified", "re-read from the vault and re-derived from its root"],
+    ])
     if (wasVersion2) {
-      deps.stdout.write(
-        `  format      the vault is now version 3 (the external branch); a CLI before 0.12 refuses to open it\n`,
+      notice(
+        deps,
+        "stdout",
+        "warning",
+        "The vault is now version 3 (the external branch); a CLI before 0.12 refuses to open it.",
       )
     }
-    deps.stdout.write(`Fund it from the vault with: candle vault fund ${label} --amount <n>\n`)
+    notice(deps, "stdout", "note", `Fund it from the vault with:\ncandle vault fund ${label} --amount <n>`)
     return 0
   })
 }
@@ -211,17 +219,23 @@ export async function externalList(args: string[], ctx: CommandContext): Promise
       return 0
     }
     if (rows.length === 0) {
-      deps.stdout.write("No external wallets. Create one: candle external new --label <name>\n")
+      notice(deps, "stdout", "note", "No external wallets. Create one:\ncandle external new --label <name>")
       return 0
     }
     for (const row of rows) {
-      deps.stdout.write(`${row.address}\n`)
-      deps.stdout.write(`  label       ${row.label || "(none)"}\n`)
-      if (row.derivation) deps.stdout.write(`  derivation  ${row.derivation}\n`)
-      if (row.exposureUnknown) deps.stdout.write(`  history     unknown (restored from the phrase)\n`)
+      writeFields(deps, "stdout", [
+        ["Address", row.address],
+        ["Label", row.label],
+        ...(row.derivation ? [["Derivation", row.derivation] as const] : []),
+        ...(row.exposureUnknown ? [["History", "unknown (restored from the phrase)"] as const] : []),
+      ])
+      deps.stdout.write("\n")
     }
-    deps.stdout.write(
-      `External wallets are never delegated to Privy and never registered with Candle. Balances are read over your own RPC; Candle is not in their transactions.\n`,
+    notice(
+      deps,
+      "stdout",
+      "note",
+      "External wallets are never delegated to Privy and never registered with Candle. Balances are read over your own RPC; Candle is not in their transactions.",
     )
     return 0
   })
@@ -285,11 +299,21 @@ export async function externalSweep(args: string[], ctx: CommandContext): Promis
     // The source is displayed separately, by label and full address, ABOVE the destination, so a
     // sweep of the wrong wallet is visible without being what the operator confirms (R6).
     if (!ctx.json) {
-      deps.stdout.write(`Sweep everything from external wallet:\n`)
-      deps.stdout.write(`  source      ${sourceEntry.label}  ${sourceEntry.address}\n`)
-      deps.stdout.write(`to vault receive key:\n`)
-      deps.stdout.write(`  destination ${destination.label}  ${destination.address}\n`)
-      deps.stdout.write(`SOL, classic SPL and Token-2022 balances move, signed locally with the external key.\n`)
+      writeFields(
+        deps,
+        "stdout",
+        [
+          ["Source", `${sourceEntry.label}  ${sourceEntry.address}`],
+          ["Destination", `${destination.label}  ${destination.address}`],
+        ],
+        "Sweep everything to vault receive key",
+      )
+      notice(
+        deps,
+        "stdout",
+        "warning",
+        "SOL, classic SPL and Token-2022 balances move, signed locally with the external key.",
+      )
     }
     // The one typed confirmation; anything but `confirm` refuses with nothing signed.
     await confirmSend(ctx, { amount: `everything from ${sourceEntry.label}`, address: destination.address })
@@ -302,7 +326,7 @@ export async function externalSweep(args: string[], ctx: CommandContext): Promis
         secret64: secret,
         owner: sourceEntry.address,
         destination: destination.address,
-        say: ctx.json ? () => {} : (line) => deps.stdout.write(`${line}\n`),
+        say: ctx.json ? () => {} : (line) => notice(deps, "stdout", "note", line),
       })
       const complete = outcome.leftovers.length === 0
       if (ctx.json) {
@@ -317,20 +341,23 @@ export async function externalSweep(args: string[], ctx: CommandContext): Promis
         return complete ? 0 : 3
       }
       if (outcome.receipts.length === 0 && outcome.leftovers.length === 0) {
-        deps.stdout.write("Nothing to sweep: no balances found.\n")
+        notice(deps, "stdout", "note", "Nothing to sweep: no balances found.")
         return 0
       }
       if (complete) {
-        deps.stdout.write(`Swept: ${outcome.receipts.length} transaction(s) finalized.\n`)
+        writeSuccess(deps, "stdout", `Swept: ${outcome.receipts.length} transaction(s) finalized.`)
         return 0
       }
-      deps.stdout.write(`Sweep incomplete: ${outcome.leftovers.length} leftover(s).\n`)
+      notice(deps, "stdout", "warning", `Sweep incomplete: ${outcome.leftovers.length} leftover(s).`)
       for (const l of outcome.leftovers) {
-        deps.stdout.write(
-          `  - ${l.kind}${l.mint ? ` ${l.mint}` : ""}${l.amountRaw ? ` (${l.amountRaw} raw)` : ""}: ${l.detail}\n`,
-        )
+        writeFields(deps, "stdout", [
+          ["Kind", l.kind],
+          ...(l.mint ? [["Mint", l.mint] as const] : []),
+          ...(l.amountRaw ? [["Amount (raw)", l.amountRaw] as const] : []),
+          ["Detail", l.detail],
+        ])
       }
-      deps.stdout.write("Re-run this sweep once the leftovers are resolved.\n")
+      notice(deps, "stdout", "note", "Re-run this sweep once the leftovers are resolved.")
       return 3
     } finally {
       wipe(secret)

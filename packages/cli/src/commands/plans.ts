@@ -14,11 +14,15 @@
  * `--json` is the server's body unchanged. A server that predates the table answers 404, which is
  * reported as such rather than as an empty table.
  */
+
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
+import { writeFields } from "../human-output"
 import { type AgentPlansResult, PLAN_CAPABILITY_NOTE, planPromotionLine, planTableRows } from "../plans"
-import { renderTable, terminalText, writeFailure, writeUsageFailure } from "../render"
+import { notice, terminalStyle } from "../presentation"
+import { renderTable, terminalText } from "../render"
+import { writeScreenFailure as writeFailure, writeScreenUsageFailure as writeUsageFailure } from "./key-output"
 
 const USAGE = "Usage: candle plans"
 
@@ -37,7 +41,12 @@ export async function plans(args: string[], ctx: CommandContext): Promise<number
   })
   if (!result.ok) {
     if (result.status === 404 && !ctx.json) {
-      ctx.deps.stderr.write(`${ctx.apiUrl} does not serve the plan table yet (GET /api/v1/agent/plans answered 404).\n`)
+      notice(
+        ctx.deps,
+        "stderr",
+        "danger",
+        `${ctx.apiUrl} does not serve the plan table yet (GET /api/v1/agent/plans answered 404).`,
+      )
       return 1
     }
     writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json)
@@ -50,18 +59,28 @@ export async function plans(args: string[], ctx: CommandContext): Promise<number
   }
   const { headers, rows } = planTableRows(body)
   const out = ctx.deps.stdout
-  out.write(`Plans served by ${ctx.apiUrl}\n\n`)
+  writeFields(ctx.deps, "stdout", [["API", ctx.apiUrl]], "Plans")
   out.write(
     `${renderTable(
       headers.map(terminalText),
       rows.map((row) => row.map(terminalText)),
+      {
+        style: terminalStyle(ctx.deps, "stdout"),
+        width: terminalStyle(ctx.deps, "stdout").width,
+        indent: 2,
+        rule: false,
+        columns: headers.map((_, index) => (index === 0 ? {} : { id: true })),
+      },
     )}\n`,
   )
   const promotion = planPromotionLine(body)
-  if (promotion) out.write(`\n${promotion}\n`)
-  out.write(`\n${PLAN_CAPABILITY_NOTE}\n`)
-  out.write(
-    "\nThe agent trade fee is charged on top of each trade or dev buy the API builds. Your account's plan: candle doctor.\n",
+  if (promotion) notice(ctx.deps, "stdout", "note", promotion)
+  notice(ctx.deps, "stdout", "note", PLAN_CAPABILITY_NOTE)
+  notice(
+    ctx.deps,
+    "stdout",
+    "note",
+    "The agent trade fee is charged on top of each trade or dev buy the API builds. Your account's plan:\ncandle doctor",
   )
   return 0
 }

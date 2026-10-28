@@ -9,9 +9,15 @@
  * invocation names it (`candle <plugin> --secret <name>`), as `CANDLE_SECRET_<NAME>` in its
  * environment, and reads neither keychain namespace itself.
  */
+
 import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
-import { renderTable, writeLocalFailure, writeUsageFailure } from "../render"
+import { writeFields, writeSuccess, writeTable } from "../human-output"
+import { notice } from "../presentation"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 
 /** A name is an environment-variable suffix: letters, digits and underscores, uppercased. */
 const NAME_SHAPE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
@@ -83,8 +89,16 @@ export async function secretsSet(args: string[], ctx: CommandContext): Promise<n
     ctx.deps.stdout.write(`${JSON.stringify({ ok: true, name, backend: ctx.deps.backend })}\n`)
     return 0
   }
-  ctx.deps.stdout.write(
-    `Stored ${name} in the ${ctx.deps.backend} secrets namespace. It is never sent to Candle and never shown again; a plug-in receives it as CANDLE_SECRET_${name} only when you pass --secret ${name}.\n`,
+  writeSuccess(ctx.deps, "stdout", `Stored ${name}.`)
+  writeFields(ctx.deps, "stdout", [
+    ["Backend", `${ctx.deps.backend} secrets namespace`],
+    ["Plug-in variable", `CANDLE_SECRET_${name}`],
+  ])
+  notice(
+    ctx.deps,
+    "stdout",
+    "note",
+    `It is never sent to Candle and never shown again; a plug-in receives it only when you pass --secret ${name}.`,
   )
   return 0
 }
@@ -99,14 +113,15 @@ export async function secretsList(args: string[], ctx: CommandContext): Promise<
     return 0
   }
   if (names.length === 0) {
-    ctx.deps.stdout.write("No secrets stored. Add one: candle secrets set <name>\n")
+    notice(ctx.deps, "stdout", "note", "No secrets stored. Add one:\ncandle secrets set <name>")
     return 0
   }
-  ctx.deps.stdout.write(
-    `${renderTable(
-      ["Name", "Passed to a plug-in as"],
-      names.map((n) => [n, `CANDLE_SECRET_${n}`]),
-    )}\n`,
+  writeTable(
+    ctx.deps,
+    "stdout",
+    ["Name", "Passed to a plug-in as"],
+    names.map((n) => [n, `CANDLE_SECRET_${n}`]),
+    [{ id: true }, { id: true }],
   )
   return 0
 }
@@ -131,6 +146,7 @@ export async function secretsRemove(args: string[], ctx: CommandContext): Promis
     ctx.deps.stdout.write(`${JSON.stringify({ ok: true, name, removed: names.includes(name) })}\n`)
     return 0
   }
-  ctx.deps.stdout.write(names.includes(name) ? `Removed ${name}.\n` : `No secret named ${name} was stored.\n`)
+  if (names.includes(name)) writeSuccess(ctx.deps, "stdout", `Removed ${name}.`)
+  else notice(ctx.deps, "stdout", "note", `No secret named ${name} was stored.`)
   return 0
 }

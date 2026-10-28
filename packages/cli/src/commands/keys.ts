@@ -22,6 +22,7 @@ import {
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
+import { writeSuccess } from "../human-output"
 import { bold, fields, heading, notice, success, symbols, terminalStyle } from "../presentation"
 import { effectiveProfileFields, printIdentity, profileSecretRef } from "../profiles"
 import { formatAgo, formatTime, renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
@@ -531,9 +532,9 @@ export async function keysRevoke(args: string[], ctx: CommandContext): Promise<n
     return 0
   }
 
-  deps.stdout.write(`Revoked key ${prefix}.\n`)
+  writeSuccess(deps, "stdout", `Revoked key ${prefix}.`)
   if (clearedLocal) {
-    deps.stdout.write("This was the CLI's stored working key; also cleared it locally.\n")
+    notice(deps, "stdout", "note", "This was the CLI's stored working key; also cleared it locally.")
   }
   return 0
 }

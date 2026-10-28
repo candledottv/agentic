@@ -113,7 +113,7 @@ describe("candle image upload", () => {
       // The URL alone on stdout, so `$(candle image upload logo.png)` is the link.
       expect(f.stdout.text).toBe(`${HOSTED}\n`)
       expect(f.stderr.text).toContain(`(${contentType}, ${bytes.length} bytes)`)
-      expect(f.stderr.text).toContain("The file becomes public and permanent")
+      expect(f.stderr.text.replace(/\s+/g, " ")).toContain("The file becomes public and permanent")
     })
   }
 

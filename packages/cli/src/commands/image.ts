@@ -14,12 +14,17 @@
  * back, so both callers say so on stderr before the request. It spends no funds and does not count
  * against the daily launch cap; the key's own uploads-per-minute limit applies.
  */
+
 import { open } from "node:fs/promises"
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
-import { writeLocalFailure, writeUsageFailure } from "../render"
+import { notice } from "../presentation"
 import { safeText, TradingError } from "../trading"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 import { tradingFailure } from "./swap"
 
 const UPLOAD_USAGE = "Usage: candle image upload <path> [--banner] [--json]"
@@ -161,7 +166,8 @@ export async function imageUpload(args: string[], ctx: CommandContext): Promise<
       )
       return 1
     }
-    ctx.deps.stderr.write(uploadNotice(image))
+    if (ctx.json) ctx.deps.stderr.write(uploadNotice(image))
+    else notice(ctx.deps, "stderr", "warning", uploadNotice(image).trimEnd())
     const banner = parsed.booleans.has("--banner")
     const imageUrl = safeText(await uploadImage(ctx, key, image, banner ? "banner" : "image"))
     ctx.deps.stdout.write(

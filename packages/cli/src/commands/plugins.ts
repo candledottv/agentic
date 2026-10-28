@@ -9,12 +9,18 @@
  * verbatim. Nothing of Candle's reaches the child: no API key, no device token, no passphrase, no
  * private key, and no inherited `CANDLE_*` variable of any kind (`plugins.ts`).
  */
+
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { writeTable } from "../human-output"
 import { findPlugin, listPlugins, pluginEnvironment, splitPluginArgs } from "../plugins"
-import { renderTable, writeLocalFailure, writeUsageFailure } from "../render"
+import { notice } from "../presentation"
 import { resolveSolanaEndpoint } from "../solana-endpoint"
 import { closeVault } from "../vault/store"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 import { secretRef } from "./secrets"
 import {
   describeRole,
@@ -47,16 +53,20 @@ export async function plugins(args: string[], ctx: CommandContext): Promise<numb
     return 0
   }
   if (found.length === 0) {
-    ctx.deps.stdout.write(
-      "No plug-ins found. An executable named candle-<name> on your PATH runs as: candle <name> [--secret <name>]... [--wallet <label>]... [args]\n",
+    notice(
+      ctx.deps,
+      "stdout",
+      "note",
+      "No plug-ins found. An executable named candle-<name> on your PATH runs as:\ncandle <name> [--secret <name>]... [--wallet <label>]... [args]",
     )
     return 0
   }
-  ctx.deps.stdout.write(
-    `${renderTable(
-      ["Command", "Executable"],
-      found.map((plugin) => [`candle ${plugin.name}`, plugin.path]),
-    )}\n`,
+  writeTable(
+    ctx.deps,
+    "stdout",
+    ["Command", "Executable"],
+    found.map((plugin) => [`candle ${plugin.name}`, plugin.path]),
+    [{ id: true }, { id: true }],
   )
   return 0
 }

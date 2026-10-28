@@ -232,7 +232,7 @@ describe("preview, confirm, commit", () => {
     let routed = createRoutedFetch({ [PATH]: api.handlers })
     let d = depsFor(routed.fetch, { answers: [] })
     expect(await run(["wallets", "trust", "tr-03"], d.deps)).toBe(0)
-    expect(d.stdout.text).toEndWith("Nothing to change: that wallet is already trusted.\n")
+    expect(d.stdout.text).toEndWith("  · Nothing to change: that wallet is already trusted.\n\n")
     expect(nothingToChangeLine({ unchanged: [row("k3", "tr-03", 5)], sessionLinked: [] }, true)).toBe(
       "Nothing to change: that wallet is already trusted.\n",
     )
@@ -253,7 +253,7 @@ describe("preview, confirm, commit", () => {
     const d = depsFor(routed.fetch, { answers: [] })
     expect(await run(["wallets", "untrust", "signed-in"], d.deps)).toBe(0)
     expect(d.stdout.text).toEndWith(
-      "Nothing to change: that wallet is always yours while linked. Revoke it to remove it.\n",
+      "  · Nothing to change: that wallet is always yours while linked. Revoke it to remove it.\n\n",
     )
     expect(api.bodies).toHaveLength(1)
     expect(d.prompts()).toBe(0)

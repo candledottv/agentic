@@ -9,10 +9,16 @@
  * The version sent by default is the one this release was built against, the same date the web
  * app sends (`TERMS_VERSION`, `apps/frontend/src/utils/social-links.ts`); `--terms-version` sends another.
  */
+
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
-import { writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
+import { writeFields, writeSuccess } from "../human-output"
+import {
+  writeScreenFailure as writeFailure,
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 
 export const QUANT_TERMS_VERSION = "2026-10-25"
 export const QUANT_TERMS_URL = "https://docs.candle.tv/terms"
@@ -38,9 +44,21 @@ export async function quantTerms(args: string[], ctx: CommandContext): Promise<n
     )
     return 1
   }
-  const note = (line: string) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}\n`)
-  note(`Quant's terms (version ${version}): ${QUANT_TERMS_URL}`)
-  note(`Privacy Policy: ${QUANT_PRIVACY_URL}`)
+  if (ctx.json) {
+    ctx.deps.stderr.write(`Quant's terms (version ${version}): ${QUANT_TERMS_URL}\n`)
+    ctx.deps.stderr.write(`Privacy Policy: ${QUANT_PRIVACY_URL}\n`)
+  } else {
+    writeFields(
+      ctx.deps,
+      "stdout",
+      [
+        ["Version", version],
+        ["Terms", QUANT_TERMS_URL],
+        ["Privacy Policy", QUANT_PRIVACY_URL],
+      ],
+      "Quant terms",
+    )
+  }
   if (!parsed.booleans.has("--yes")) {
     if (!ctx.deps.isTTY.stdin) {
       writeUsageFailure(ctx.deps, "Accepting needs a terminal to confirm at, or --yes.", ctx.json)
@@ -67,7 +85,7 @@ export async function quantTerms(args: string[], ctx: CommandContext): Promise<n
   })
   if (result.ok) {
     if (ctx.json) ctx.deps.stdout.write(`${JSON.stringify({ ok: true, version })}\n`)
-    else ctx.deps.stdout.write(`Accepted Quant's terms ${version}.\n`)
+    else writeSuccess(ctx.deps, "stdout", `Accepted Quant's terms ${version}.`)
     return 0
   }
   // Quant's own refusals are `{ code }` (the relay shape); the key middleware's are the envelope.

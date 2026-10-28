@@ -236,7 +236,7 @@ describe("preview, confirm, commit", () => {
     let routed = createRoutedFetch(fake.routes)
     let d = depsFor(routed.fetch, { answers: [] })
     expect(await run(["wallets", "allow-launch", "launcher-3"], d.deps)).toBe(0)
-    expect(d.stdout.text).toEndWith("Nothing to change: that wallet already has allowLaunch on.\n")
+    expect(d.stdout.text).toEndWith("  · Nothing to change: that wallet already has allowLaunch on.\n\n")
     expect(fake.sent).toHaveLength(1)
 
     const plain = row("p1", "plain", false, null)
@@ -244,7 +244,7 @@ describe("preview, confirm, commit", () => {
     routed = createRoutedFetch(fake.routes)
     d = depsFor(routed.fetch, { answers: [] })
     expect(await run(["wallets", "allow-launch", "plain"], d.deps)).toBe(1)
-    expect(d.stdout.text).toEndWith("Nothing to change: plain is not a TEE wallet.\n")
+    expect(d.stdout.text).toEndWith("  · Nothing to change: plain is not a TEE wallet.\n\n")
     expect(nothingToChangeLine({ unchanged: [], notTee: [plain] }, true)).toBe(
       "Nothing to change: plain is not a TEE wallet.\n",
     )

@@ -14,13 +14,21 @@
  * the preview showed, never the selectors. `untrust --yes` skips the confirm, since clearing trust
  * only narrows what an agent may do; `trust` has no such flag.
  */
+
 import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
+import { writeSuccess } from "../human-output"
+import { notice, symbols, type TerminalStyle, terminalStyle } from "../presentation"
 import { printIdentity } from "../profiles"
-import { errorEnvelope, renderTable, writeLocalFailure, writeUsageFailure } from "../render"
+import { errorEnvelope, renderTable } from "../render"
 import { CONFIRM_WORD } from "../vault/promote-support"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenMessage,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 
 const TRUST_PATH = "/api/v1/agent/linked-wallets/trust"
 
@@ -108,16 +116,25 @@ function writeTrustFailure(ctx: CommandContext, result: Extract<ApiResult, { ok:
   if (json) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...(suggestion ? { suggestion } : {}) })}\n`)
   } else {
-    deps.stderr.write(`${code ?? `HTTP ${result.status}`}: ${message}${suggestion ? ` ${suggestion}` : ""}\n`)
+    writeScreenMessage(deps, `${code ?? `HTTP ${result.status}`}: ${message}`, suggestion)
   }
   return 1
 }
 
 /** The screen's wallet table: what will change, one line each. */
-export function trustTable(rows: TrustRow[]): string {
+export function trustTable(rows: TrustRow[], style?: TerminalStyle): string {
   return renderTable(
     ["line", "label", "wallet", "address"],
-    rows.map((row, i) => [String(i + 1), row.label ?? "-", row.chain, row.address]),
+    rows.map((row, i) => [String(i + 1), row.label ?? (style ? symbols(style).missing : "-"), row.chain, row.address]),
+    style
+      ? {
+          style,
+          width: style.width,
+          indent: 2,
+          rule: false,
+          columns: [{ priority: 1 }, { priority: 2 }, { priority: 3 }, { id: true }],
+        }
+      : undefined,
   )
 }
 
@@ -177,7 +194,7 @@ async function setTrust(args: string[], ctx: CommandContext, trusted: boolean): 
     if (json) {
       deps.stdout.write(`${JSON.stringify({ ...shown, command })}\n`)
     } else {
-      deps.stdout.write(nothingToChangeLine(shown, trusted))
+      notice(deps, "stdout", "note", nothingToChangeLine(shown, trusted).trimEnd())
     }
     return 0
   }
@@ -185,7 +202,7 @@ async function setTrust(args: string[], ctx: CommandContext, trusted: boolean): 
   // The screen, on stderr, so `--json` stdout carries exactly one document.
   const n = changing.length
   const screen = [
-    trustTable(changing),
+    trustTable(changing, json ? undefined : terminalStyle(deps, "stderr")),
     ...(shown.unchanged.length > 0
       ? [
           `${shown.unchanged.length} already ${trusted ? "trusted" : "untrusted"}: ${shown.unchanged
@@ -200,7 +217,11 @@ async function setTrust(args: string[], ctx: CommandContext, trusted: boolean): 
       : `${n === 1 ? "This wallet" : `These ${n} wallets`} will no longer be trusted: moving funds into ${n === 1 ? "it" : "them"} will need the withdrawal allowlist again.`,
     "",
   ]
-  deps.stderr.write(`${screen.join("\n")}\n`)
+  if (json) deps.stderr.write(`${screen.join("\n")}\n`)
+  else {
+    deps.stderr.write(`${screen[0]}\n`)
+    for (const text of screen.slice(1)) if (text) notice(deps, "stderr", "warning", text)
+  }
 
   if (!skipConfirm) {
     const typed = await deps.promptLine(
@@ -229,10 +250,15 @@ async function setTrust(args: string[], ctx: CommandContext, trusted: boolean): 
     return result.skipped.length > 0 ? 1 : 0
   }
   const done = result.changed.length
-  deps.stdout.write(`${trusted ? "Trusted" : "Untrusted"} ${done} wallet${done === 1 ? "" : "s"}.\n`)
+  writeSuccess(deps, "stdout", `${trusted ? "Trusted" : "Untrusted"} ${done} wallet${done === 1 ? "" : "s"}.`)
   // A wallet revoked between the preview and the commit is skipped by the server, and said so.
   for (const skip of result.skipped) {
-    deps.stderr.write(`Skipped ${skip.walletId}: ${skip.reason === "revoked" ? "revoked" : "not on this account"}.\n`)
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      `Skipped ${skip.walletId}: ${skip.reason === "revoked" ? "revoked" : "not on this account"}.`,
+    )
   }
   return result.skipped.length > 0 ? 1 : 0
 }

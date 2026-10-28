@@ -158,7 +158,7 @@ describe("profile add", () => {
     )
     expect(code).toBe(2)
     expect(stderr.text).toBe(
-      "Invalid --api-url: staging.api.candle.tv. It needs a scheme, such as https://staging.api.candle.tv\n",
+      "✗ Invalid --api-url: staging.api.candle.tv. It needs a scheme, such as https://staging.api.candle.tv\n",
     )
     expect((await config.readConfig()).profiles).toBeUndefined()
   })
@@ -208,7 +208,7 @@ describe("profile add", () => {
         createTestDeps({ fetch: unusedFetch, stderr, ...config }),
       )
       expect(code).toBe(2)
-      expect(stderr.text).toBe(expected)
+      expect(stderr.text).toBe(`✗ ${expected}`)
       expect((await config.readConfig()).profiles).toBeUndefined()
     }
   })
@@ -511,7 +511,7 @@ describe("profile set (BE-355, T15)", () => {
     const deps = createTestDeps({ fetch: unusedFetch, stdout, now: () => NOW, ...config })
     expect(await run(["profile", "set", "work", "--rpc-url", SECRET_URL], deps)).toBe(0)
     expect((await deps.readConfig()).profiles?.work?.rpcUrl).toBe(SECRET_URL)
-    expect(stdout.text).toBe("Solana RPC for work: rpc.example\n")
+    expect(stdout.text).toBe("  Profile     work\n  Solana RPC  rpc.example\n")
 
     stdout.text = ""
     expect(await run(["profile", "list"], deps)).toBe(0)
@@ -530,7 +530,7 @@ describe("profile set (BE-355, T15)", () => {
     stdout.text = ""
     expect(await run(["profile", "set", "work", "--clear-rpc-url"], deps)).toBe(0)
     expect((await deps.readConfig()).profiles?.work?.rpcUrl).toBeUndefined()
-    expect(stdout.text).toBe("Solana RPC for work: public default\n")
+    expect(stdout.text).toBe("  Profile     work\n  Solana RPC  public default\n")
     stdout.text = ""
     expect(await run(["profile", "list"], deps)).toBe(0)
     expect(stdout.text).toContain("public default")

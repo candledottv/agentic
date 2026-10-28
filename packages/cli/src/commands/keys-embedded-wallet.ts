@@ -13,13 +13,21 @@
  * the key's prefix typed back at a terminal, with no flag and no environment variable to supply it;
  * denying takes a plain yes, or `--yes`. The typed prefix is not the security boundary, the API is.
  */
+
 import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice, symbols, terminalStyle } from "../presentation"
 import { candleEnvironment, effectiveProfileFields, printIdentity } from "../profiles"
-import { errorEnvelope, writeLocalFailure, writeUsageFailure } from "../render"
+import { errorEnvelope } from "../render"
 import { shortAddress } from "../vault/promote-support"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenMessage,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 import { labelCell, NO_DEVICE_TOKEN } from "./keys"
 import { resolveTargetKey } from "./tee-rebind"
 
@@ -123,7 +131,7 @@ function writeEmbeddedWalletFailure(
   if (json) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...(suggestion ? { suggestion } : {}) })}\n`)
   } else {
-    deps.stderr.write(`${code}: ${message}${suggestion ? ` ${suggestion}` : ""}\n`)
+    writeScreenMessage(deps, `${code}: ${message}`, suggestion)
   }
   return 1
 }
@@ -138,10 +146,18 @@ export async function confirmCreateAllow(ctx: CommandContext): Promise<number | 
     writeLocalFailure(deps, ALLOW_REQUIRES_TTY, json)
     return 1
   }
-  deps.stderr.write(
-    "This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.\n" +
-      "A key that only trades its own TEE wallets does not need it.\n",
-  )
+  if (json)
+    deps.stderr.write(
+      "This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.\n" +
+        "A key that only trades its own TEE wallets does not need it.\n",
+    )
+  else
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      "This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.\nA key that only trades its own TEE wallets does not need it.",
+    )
   const answer = await deps.promptLine("Create the key with the embedded wallet allowed? [y/N] ")
   if (["y", "yes"].includes(answer.trim().toLowerCase())) return null
   writeLocalFailure(
@@ -223,7 +239,7 @@ export async function keysUpdate(args: string[], ctx: CommandContext): Promise<n
   const name = keyName(shown.keyPrefix, shown.label)
   if (shown.direction === "unchanged") {
     if (json) deps.stdout.write(`${JSON.stringify({ ...shown, command: "keys update" })}\n`)
-    else deps.stdout.write(`${name}'s embedded wallet is already ${shown.to}. Nothing changed.\n`)
+    else notice(deps, "stdout", "note", `${name}'s embedded wallet is already ${shown.to}. Nothing changed.`)
     return 0
   }
 
@@ -248,22 +264,48 @@ export async function keysUpdate(args: string[], ctx: CommandContext): Promise<n
 
   // The screen, on stderr, so `--json` stdout carries exactly one document.
   const fields = effectiveProfileFields(await deps.readConfig(), ctx.profile)
-  const account = fields.account ? shortAddress(fields.account) : "unknown"
+  const account = fields.account
+    ? shortAddress(fields.account)
+    : json
+      ? "unknown"
+      : symbols(terminalStyle(deps, "stderr")).missing
   const label = labelCell(shown.label ?? undefined)
-  deps.stderr.write(
-    [
-      `Key             ${shown.keyPrefix}${label ? `  ${label}` : ""}`,
-      `Candle account  ${fields.username ? `${fields.username}  (${account})` : account}`,
-      `API             ${apiUrl}  (${candleEnvironment(apiUrl) ?? "not a Candle host"})`,
-      "",
-      `Embedded wallet ${shown.from}  ->  ${shown.to}   (${shown.direction})`,
+  if (json)
+    deps.stderr.write(
+      [
+        `Key             ${shown.keyPrefix}${label ? `  ${label}` : ""}`,
+        `Candle account  ${fields.username ? `${fields.username}  (${account})` : account}`,
+        `API             ${apiUrl}  (${candleEnvironment(apiUrl) ?? "not a Candle host"})`,
+        "",
+        `Embedded wallet ${shown.from}  ->  ${shown.to}   (${shown.direction})`,
+        widen
+          ? "It can use the account's embedded wallet for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write."
+          : "It stops spending the account's embedded wallet from its next request.",
+        "",
+        "",
+      ].join("\n"),
+    )
+  else {
+    writeFields(
+      deps,
+      "stderr",
+      [
+        ["Key", `${shown.keyPrefix}${label ? `  ${label}` : ""}`],
+        ["Candle account", fields.username ? `${fields.username}  (${account})` : account],
+        ["API", `${apiUrl}  (${candleEnvironment(apiUrl) ?? "not a Candle host"})`],
+        ["Embedded wallet", `${shown.from}  ->  ${shown.to}   (${shown.direction})`],
+      ],
+      "Embedded wallet change",
+    )
+    notice(
+      deps,
+      "stderr",
+      "warning",
       widen
         ? "It can use the account's embedded wallet for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write."
         : "It stops spending the account's embedded wallet from its next request.",
-      "",
-      "",
-    ].join("\n"),
-  )
+    )
+  }
 
   if (widen) {
     const typed = await deps.promptLine(`Type the key prefix ${shown.keyPrefix} to allow it: `)
@@ -352,11 +394,10 @@ function writeChanged(ctx: CommandContext, result: EmbeddedWalletResponse, comma
   }
   const name = keyName(result.keyPrefix, result.label)
   if (result.direction === "unchanged") {
-    deps.stdout.write(`${name}'s embedded wallet is already ${result.to}. Nothing changed.\n`)
+    notice(deps, "stdout", "note", `${name}'s embedded wallet is already ${result.to}. Nothing changed.`)
     return 0
   }
-  deps.stdout.write(
-    `${name}'s embedded wallet is now ${result.to}.${result.changeId ? ` Change id ${result.changeId}` : ""}\n`,
-  )
+  writeSuccess(deps, "stdout", `${name}'s embedded wallet is now ${result.to}.`)
+  if (result.changeId) writeFields(deps, "stdout", [["Change id", result.changeId]])
   return 0
 }

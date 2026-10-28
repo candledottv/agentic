@@ -12,9 +12,12 @@
  * and no remembered state, so a machine that only ever ran `candle update` (and so never had the
  * helper) is repaired by the first update that runs this code (D7).
  */
+
 import { randomBytes } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
+import { notice } from "../presentation"
 import { commandSteps, formatBytes, type StepReporter } from "../progress"
 import {
   BRIDGE_VERSION,
@@ -33,9 +36,12 @@ import {
   versionOfTag,
 } from "../release"
 import { checkReleaseAsset, downloadReleaseAsset, downloadSums, messageOf } from "../release-assets"
-import { writeLocalFailure, writeUsageFailure } from "../render"
 import { HELPER_NAME } from "../vault/fido2"
 import { CLI_VERSION } from "../version"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 
 /** D9's second copy change. `verifying signature` has been its own stage since 0.8.4 (`8019923d`);
  * what this adds is naming the scheme and the pin, which is the fact a reader wants here. */
@@ -81,7 +87,8 @@ export async function update(args: string[], ctx: CommandContext, current: strin
       const payload = { current, latest: null, updated: false, path: realExec, method }
       deps.stdout.write(`${JSON.stringify(payload)}\n`)
     } else {
-      deps.stdout.write("Installed by Homebrew. Run: brew upgrade candle\n")
+      writeFields(deps, "stdout", [["Installed by", "Homebrew"]])
+      notice(deps, "stdout", "note", "Run:\nbrew upgrade candle")
     }
     return 0
   }
@@ -90,7 +97,8 @@ export async function update(args: string[], ctx: CommandContext, current: strin
       const payload = { current, latest: null, updated: false, path: realExec, method }
       deps.stdout.write(`${JSON.stringify(payload)}\n`)
     } else {
-      deps.stdout.write("Installed with npm (or a dev checkout). Run: npm i -g @candledottv/cli@latest\n")
+      writeFields(deps, "stdout", [["Installed with", "npm (or a dev checkout)"]])
+      notice(deps, "stdout", "note", "Run:\nnpm i -g @candledottv/cli@latest")
     }
     return 0
   }
@@ -109,7 +117,7 @@ export async function update(args: string[], ctx: CommandContext, current: strin
       const payload = { current, latest: null, updated: false, path: realExec, pending: homeRepository("current") }
       deps.stdout.write(`${JSON.stringify(payload)}\n`)
     } else {
-      deps.stdout.write(`${message}\n`)
+      notice(deps, "stdout", "note", message)
     }
     return 0
   }
@@ -157,9 +165,13 @@ export async function update(args: string[], ctx: CommandContext, current: strin
       const payload = { current, latest: target.version, updated: false, path: realExec }
       deps.stdout.write(`${JSON.stringify(payload)}\n`)
     } else if (order < 0) {
-      deps.stdout.write(`candle ${current}; ${target.version} available. Run: candle update\n`)
+      writeFields(deps, "stdout", [
+        ["Current", current],
+        ["Available", target.version],
+      ])
+      notice(deps, "stdout", "note", "Run:\ncandle update")
     } else {
-      deps.stdout.write(`candle ${current} is up to date (latest ${target.version})\n`)
+      writeSuccess(deps, "stdout", `candle ${current} is up to date (latest ${target.version})`)
     }
     return 0
   }
@@ -170,11 +182,14 @@ export async function update(args: string[], ctx: CommandContext, current: strin
       const payload = { current, latest: target.version, updated: false, path: realExec }
       deps.stdout.write(`${JSON.stringify(payload)}\n`)
     } else {
-      deps.stdout.write(`candle ${current} is up to date\n`)
+      writeSuccess(deps, "stdout", `candle ${current} is up to date`)
     }
     return 0
   }
-  if (order > 0 && pinned) deps.stderr.write(`Warning: ${target.version} is a downgrade from ${current}\n`)
+  if (order > 0 && pinned) {
+    if (json) deps.stderr.write(`Warning: ${target.version} is a downgrade from ${current}\n`)
+    else notice(deps, "stderr", "warning", `${target.version} is a downgrade from ${current}`)
+  }
 
   if (!deps.platformKey) {
     writeLocalFailure(
@@ -250,7 +265,16 @@ export async function update(args: string[], ctx: CommandContext, current: strin
   // what then transfers is the kind of thing that looks like a hang (BE-275 D5).
   if (!json) {
     const total = asset.size + (helperAsset?.size ?? 0)
-    deps.stderr.write(`Updating candle ${current} -> ${target.version} (${formatBytes(total)})\n`)
+    writeFields(
+      deps,
+      "stderr",
+      [
+        ["Current", current],
+        ["Target", target.version],
+        ["Download", formatBytes(total)],
+      ],
+      "Updating candle",
+    )
   }
 
   // SHA256SUMS once, for both assets. Then each asset and its bundle by its platform-derived
@@ -372,8 +396,12 @@ export async function update(args: string[], ctx: CommandContext, current: strin
     }
     deps.stdout.write(`${JSON.stringify(payload)}\n`)
   } else {
-    deps.stdout.write(`Updated candle ${current} -> ${target.version}\n`)
-    if (helper !== null) deps.stdout.write(`Installed ${HELPER_NAME} ${target.version} to ${helper.target}\n`)
+    writeSuccess(deps, "stdout", `Updated candle ${current} -> ${target.version}`)
+    if (helper !== null)
+      writeFields(deps, "stdout", [
+        ["Helper", `${HELPER_NAME} ${target.version}`],
+        ["Installed to", helper.target],
+      ])
   }
   return 0
 }

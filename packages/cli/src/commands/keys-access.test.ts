@@ -301,7 +301,7 @@ describe("T-B4: the typed prefix", () => {
     const { deps, stdout, stderr } = depsFor(fetch, { answers: [`  ${PREFIX} `] })
     expect(await run(["keys", "access", PREFIX, "--access", level], deps)).toBe(0)
     expect(bodies[1]).toEqual({ access: "readwritetransfer", expectScopes: RW })
-    expect(lastLine(stdout.text)).toBe(`Changed ${PREFIX} (cndl) to Withdraw. Change id j97abc`)
+    expect(stdout.text).toContain(`✓ Changed ${PREFIX} (cndl) to Withdraw.\n  Change id  j97abc\n`)
     // The screen: key, account, API, the change, the fund-moving label, the wallets and the caps.
     expect(stderr.text).toContain(`Key             ${PREFIX}  cndl`)
     expect(stderr.text).toContain("Candle account  Quant-")
@@ -339,7 +339,7 @@ describe("T-B5: narrowing", () => {
     expect(prompts).toHaveLength(0)
     expect(bodies[1]).toEqual({ access: "readwrite", expectScopes: RWT })
     expect(stdout.text).toContain(`Changed ${PREFIX} (cndl) to Write.`)
-    expect(stderr.text).toContain("Warning: 2 prepared transactions will be refused at signing.")
+    expect(stderr.text).toContain("! 2 prepared transactions will be refused at signing.")
   })
 
   test("without --yes it asks y/N at a terminal; anything but y changes nothing", async () => {
@@ -377,7 +377,7 @@ describe("T-B6: unchanged", () => {
     const { fetch } = createRoutedFetch({ [ACCESS_PATH]: handlers })
     const { deps, stdout, prompts } = depsFor(fetch)
     expect(await run(["keys", "access", PREFIX, "--access", "read-write"], deps)).toBe(0)
-    expect(lastLine(stdout.text)).toBe(`${PREFIX} (cndl) is already Write. Nothing changed.`)
+    expect(lastLine(stdout.text)).toBe(`  · ${PREFIX} (cndl) is already Write. Nothing changed.`)
     expect(prompts).toHaveLength(0)
     expect(bodies).toHaveLength(1)
   })
@@ -450,7 +450,7 @@ describe("T-B9: self", () => {
     const { deps, stderr } = depsFor(fetch)
     expect(await run(["keys", "access", "self", "--access", "read-write-transfer"], deps)).toBe(1)
     expect(stderr.text).toContain("LOOSEN_REQUIRES_SESSION")
-    expect(stderr.text).toContain(
+    expect(stderr.text.replace(/\s+/g, " ")).toContain(
       "Widen it from a signed-in session or with the device token: candle keys access <prefix> --access withdraw",
     )
   })
@@ -538,7 +538,7 @@ describe("T-B11: --history", () => {
       const { fetch } = createRoutedFetch({ [HISTORY_PATH]: () => jsonResponse(200, { success: true, changes: [] }) })
       const { deps, stdout } = depsFor(fetch)
       expect(await run(["keys", "access", PREFIX, "--history"], deps)).toBe(0)
-      expect(lastLine(stdout.text)).toBe(`No access changes on key ${PREFIX}.`)
+      expect(lastLine(stdout.text)).toBe(`  · No access changes on key ${PREFIX}.`)
     }
     {
       const { fetch } = createRoutedFetch({ [HISTORY_PATH]: () => jsonResponse(200, { success: true, changes: rows }) })

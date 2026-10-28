@@ -159,7 +159,7 @@ describe("T10: a literal ~ is refused, and nothing is read, written or prompted"
       expect(out.code).toBe(2)
       expect(out.stderr).toContain(`${flag} ~`)
       expect(out.stderr).toContain('begins with a literal "~"')
-      expect(out.stderr).toContain("Nothing was read or written.")
+      expect(out.stderr.replace(/\s+/g, " ")).toContain("Nothing was read or written.")
       expect(out.stdout).toBe("")
       expect(out.secretsAsked).toEqual([])
       expect(out.writes).toEqual([])

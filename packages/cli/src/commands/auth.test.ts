@@ -686,8 +686,8 @@ describe("auth logout", () => {
     // Asserted on the Portal line itself rather than on the whole of stdout: the identity line
     // logout now prints ahead of everything names the API host legitimately, and the claim here
     // was only ever about the portal pointer not being derived from it.
-    expect(stdout.text.split("\n").find((line) => line.startsWith("Connected devices: "))).toBe(
-      "Connected devices: https://staging.candle.tv/agents?tab=keys#connected-devices",
+    expect(stdout.text.split("\n").find((line) => line.startsWith("  Connected devices  "))).toBe(
+      "  Connected devices  https://staging.candle.tv/agents?tab=keys#connected-devices",
     )
   })
 
@@ -1236,8 +1236,8 @@ describe("profiles", () => {
     expect(code).toBe(0)
     expect(stdout.text.startsWith("Profile staging · Account FaKwE2xX · staging.api.candle.tv\n")).toBe(true)
     // And the portal pointer still comes from the profile's own recorded origin.
-    expect(stdout.text.split("\n").find((line) => line.startsWith("Connected devices: "))).toBe(
-      "Connected devices: https://staging.candle.tv/agents?tab=keys#connected-devices",
+    expect(stdout.text.split("\n").find((line) => line.startsWith("  Connected devices  "))).toBe(
+      "  Connected devices  https://staging.candle.tv/agents?tab=keys#connected-devices",
     )
   })
 
@@ -1464,7 +1464,7 @@ describe("logout device and machine metadata", () => {
         })
       else
         expect(stdout.text).toContain(
-          "Device dvc12345 (test-box) is still live on the server. Revoke it under Connected devices: https://staging.candle.tv/agents?tab=keys#connected-devices",
+          "Device dvc12345 (test-box) is still live on the server. Revoke it under Connected devices:\n    https://staging.candle.tv/agents?tab=keys#connected-devices",
         )
     })
   }

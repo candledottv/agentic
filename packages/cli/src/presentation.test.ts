@@ -130,13 +130,12 @@ describe("terminal presentation", () => {
     expect(text).not.toContain("┌")
   })
 
-  test("version, completion, ordinary and error bytes/codes ignore cosmetic flags anywhere", async () => {
+  test("version, completion, machine output and parser errors ignore cosmetic flags anywhere", async () => {
     for (const argv of [
       ["--version"],
       ["completion", "zsh"],
       ["completion", "bash"],
       ["completion", "fish"],
-      ["secrets", "list"],
       ["setup", "--json"],
       ["keys", "bad-subcommand"],
       ["bogus"],

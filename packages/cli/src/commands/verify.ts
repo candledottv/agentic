@@ -15,9 +15,13 @@
 import { dirname, join } from "node:path"
 import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
+import { writeFields, writeSuccess } from "../human-output"
 import { RELEASE_ISSUER, releaseIdentityUri } from "../release"
 import { verifyReleaseAsset } from "../release-verify"
-import { writeLocalFailure, writeUsageFailure } from "../render"
+import {
+  writeScreenLocalFailure as writeLocalFailure,
+  writeScreenUsageFailure as writeUsageFailure,
+} from "./key-output"
 
 const USAGE = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]"
 
@@ -158,7 +162,13 @@ export async function verify(args: string[], ctx: CommandContext): Promise<numbe
   if (json) {
     deps.stdout.write(`${JSON.stringify({ ok: true, file, identity, issuer, identitySource: resolved.provenance })}\n`)
   } else {
-    deps.stdout.write(`verified: ${identity} (${resolved.provenance})\n`)
+    writeSuccess(deps, "stdout", "Release signature verified")
+    writeFields(deps, "stdout", [
+      ["File", file],
+      ["Identity", identity],
+      ["Source", resolved.provenance],
+      ["Issuer", issuer],
+    ])
   }
   return 0
 }
