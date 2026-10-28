@@ -154,6 +154,7 @@ Every command accepts these global options:
 | `--factor <id\|kind>` | Vault commands: unlock with this envelope. |
 | `--device <id>` | Vault commands: the security key to use, by id. |
 | `--no-verify-account` | Skips the check that the stored key belongs to the profile's account. |
+| `--full` | Prints ids in full where a table would shorten them (`9EAq…9Hd7`). |
 | `--json` | Machine-readable output instead of a formatted table or summary, generally the underlying API response. One exception: `auth login`'s JSON output still omits the plaintext device token and API key, matching its human-readable summary, since login never displays either value in any mode. |
 | `--help`, `-h` | Prints usage. |
 | `--version`, `-v` | Prints the CLI version. |

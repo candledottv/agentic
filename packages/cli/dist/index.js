@@ -497,6 +497,205 @@ var init_agent_key_access = __esm(() => {
   ];
 });
 
+// src/terminal-theme.ts
+var TERMINAL_TOKENS;
+var init_terminal_theme = __esm(() => {
+  TERMINAL_TOKENS = {
+    web: {
+      primary: "#32fe9f",
+      positive: "#32d583",
+      negative: "#f2536d",
+      warning: "#f5a524",
+      edge: "#26262b"
+    },
+    dark: {
+      brand: { hex: "#32fe9f", ansi256: 48, ansi16: 92 },
+      positive: { hex: "#32d583", ansi256: 42, ansi16: 92 },
+      negative: { hex: "#f2536d", ansi256: 204, ansi16: 91 },
+      warning: { hex: "#f5a524", ansi256: 214, ansi16: 93 }
+    },
+    light: {
+      brand: { hex: "#006b40", ansi256: 22, ansi16: 32 },
+      positive: { hex: "#087443", ansi256: 22, ansi16: 32 },
+      negative: { hex: "#b4233c", ansi256: 125, ansi16: 31 },
+      warning: { hex: "#875400", ansi256: 94, ansi16: 33 }
+    }
+  };
+});
+
+// src/version.ts
+var CLI_VERSION = "0.12.0";
+
+// src/presentation.ts
+function terminalStyle(deps, stream, machine = false) {
+  const { env, presentation } = deps;
+  const styled = !(machine || presentation?.plain || env.CANDLE_PLAIN === "1" || !deps.isTTY[stream] || env.CI || env.TERM === "dumb");
+  const noColor = presentation?.noColor || Boolean(env.NO_COLOR);
+  const color = !styled || noColor ? 0 : /truecolor|24bit/i.test(env.COLORTERM ?? "") ? 24 : /256color/i.test(env.TERM ?? "") ? 256 : env.TERM ? 16 : 0;
+  const background = Number(env.COLORFGBG?.split(";").at(-1));
+  const theme = Number.isFinite(background) && background >= 0 && background <= 6 ? "dark" : "light";
+  const columns = deps.columns?.[stream];
+  return {
+    width: columns && Number.isFinite(columns) ? Math.max(20, Math.floor(columns)) : 118,
+    styled,
+    color,
+    theme,
+    motion: styled && !noColor
+  };
+}
+function accent(text, style, role = "brand") {
+  if (!style.color)
+    return text;
+  const token = TERMINAL_TOKENS[style.theme][role];
+  const code = style.color === 24 ? `38;2;${token.hex.slice(1).match(/../g)?.map((part) => Number.parseInt(part, 16)).join(";")}` : style.color === 256 ? `38;5;${token.ansi256}` : `${token.ansi16}`;
+  return `\x1B[${code}m${text}\x1B[0m`;
+}
+function displayWidth(text) {
+  const measure = globalThis.Bun?.stringWidth;
+  return measure ? measure(text) : estimateDisplayWidth(text);
+}
+function clipDisplay(text, width, ellipsis) {
+  if (width < 1)
+    return "";
+  if (displayWidth(text) <= width)
+    return text;
+  const mark = displayWidth(ellipsis) <= width ? ellipsis : "";
+  const budget = width - displayWidth(mark);
+  let kept = "";
+  let used = 0;
+  for (const { segment } of GRAPHEMES.segment(text)) {
+    const segmentWidth = displayWidth(segment);
+    if (used + segmentWidth > budget)
+      break;
+    kept += segment;
+    used += segmentWidth;
+  }
+  return `${kept}${mark}`;
+}
+function wrapText(text, width) {
+  const lines = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    const next = line ? `${line} ${word}` : word;
+    if (!line || displayWidth(next) <= width)
+      line = next;
+    else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  lines.push(line);
+  return lines;
+}
+function codePointsOf(text) {
+  const points = [];
+  for (const char of text) {
+    const point = char.codePointAt(0);
+    if (point !== undefined)
+      points.push(point);
+  }
+  return points;
+}
+function eastAsianWide(codePoint) {
+  if (codePoint >= 4352 && codePoint <= 4447)
+    return true;
+  if (codePoint >= 9001 && codePoint <= 9002)
+    return true;
+  if (codePoint >= 11904 && codePoint <= 42191 && codePoint !== 12351)
+    return true;
+  if (codePoint >= 43360 && codePoint <= 43391)
+    return true;
+  if (codePoint >= 44032 && codePoint <= 55203)
+    return true;
+  if (codePoint >= 55216 && codePoint <= 55295)
+    return true;
+  if (codePoint >= 63744 && codePoint <= 64255)
+    return true;
+  if (codePoint >= 65040 && codePoint <= 65049)
+    return true;
+  if (codePoint >= 65072 && codePoint <= 65135)
+    return true;
+  if (codePoint >= 65281 && codePoint <= 65376)
+    return true;
+  if (codePoint >= 65504 && codePoint <= 65510)
+    return true;
+  if (codePoint >= 127744 && codePoint <= 128591)
+    return true;
+  if (codePoint >= 129280 && codePoint <= 129791)
+    return true;
+  if (codePoint >= 131072 && codePoint <= 262141)
+    return true;
+  return false;
+}
+function estimateCodePoint(codePoint) {
+  if (codePoint === 0 || codePoint === 173 || codePoint === 8203 || codePoint === 8204 || codePoint === 8205 || codePoint === 65279 || codePoint === 65038 || codePoint === 65039) {
+    return 0;
+  }
+  if (codePoint < 32 || codePoint >= 127 && codePoint <= 159)
+    return 0;
+  if (eastAsianWide(codePoint))
+    return 2;
+  const char = String.fromCodePoint(codePoint);
+  if (/^\p{Mn}$/u.test(char) || /^\p{Me}$/u.test(char) || /^\p{Cf}$/u.test(char))
+    return 0;
+  if (/^\p{Emoji_Presentation}$/u.test(char))
+    return 2;
+  return 1;
+}
+function estimateGrapheme(segment) {
+  const points = codePointsOf(segment);
+  if (points.some((point) => point === 65039))
+    return 2;
+  if (points.length >= 2 && points.every((point) => point >= 127462 && point <= 127487))
+    return 2;
+  if (points.includes(8205) && points.some((point) => point !== 8205 && point !== 65039))
+    return 2;
+  let width = 0;
+  for (const point of points)
+    width += estimateCodePoint(point);
+  return width;
+}
+function estimateDisplayWidth(text) {
+  let width = 0;
+  for (const { segment } of GRAPHEMES.segment(text))
+    width += estimateGrapheme(segment);
+  return width;
+}
+function brandHeader(style) {
+  if (!style.styled)
+    return [];
+  const lines = [
+    ...style.width >= 80 ? WORDMARK : ["CANDLE"],
+    `CLI ${CLI_VERSION}`,
+    "",
+    ...wrapText("Your wallets and agent tools, one command away.", style.width - 6)
+  ];
+  const width = Math.min(style.width - 2, 68);
+  return [
+    accent(`┌${"─".repeat(width - 2)}┐`, style),
+    ...lines.map((line) => `│ ${accent(line, style)}${" ".repeat(Math.max(0, width - 4 - line.length))} │`),
+    accent(`└${"─".repeat(width - 2)}┘`, style),
+    ""
+  ];
+}
+function symbols(style) {
+  return style.styled ? UNICODE_SYMBOLS : ASCII_SYMBOLS;
+}
+function sgr(text, style, code) {
+  return style.color && text ? `\x1B[${code}m${text}\x1B[0m` : text;
+}
+function dim(text, style) {
+  return sgr(text, style, "2");
+}
+var GRAPHEMES, WORDMARK, UNICODE_SYMBOLS, ASCII_SYMBOLS;
+var init_presentation = __esm(() => {
+  init_terminal_theme();
+  GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  WORDMARK = ["█▀▀ ▄▀█ █▄░█ █▀▄ █░░ █▀▀", "█▄▄ █▀█ █░▀█ █▄▀ █▄▄ ██▄"];
+  UNICODE_SYMBOLS = { ok: "✓", warning: "!", danger: "✗", note: "·", ellipsis: "…", missing: "–" };
+  ASCII_SYMBOLS = { ok: "ok", warning: "!", danger: "x", note: "-", ellipsis: "...", missing: "-" };
+});
+
 // src/render.ts
 function formatScopesForSummary(scopes) {
   return sortAgentKeyScopes(scopes).map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope === "transfer:bound" ? `${scope} (${TRANSFER_BOUND_NOTE})` : scope === "perps:write" ? `${scope} (${PERPS_WRITE_NOTE})` : scope).join(", ");
@@ -504,7 +703,68 @@ function formatScopesForSummary(scopes) {
 function terminalText(value) {
   return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
 }
-function renderTable(headers, rows) {
+function numericColumn(rows, col) {
+  const known = rows.map((row) => row[col] ?? "").filter((cell) => cell !== "" && cell !== "–" && cell !== "-");
+  return known.length > 0 && known.every((cell) => NUMERIC_CELL.test(cell));
+}
+function renderTable(headers, rows, options) {
+  if (!options)
+    return renderPlainTable(headers, rows);
+  const specs = headers.map((_, col) => options.columns?.[col] ?? {});
+  const align = headers.map((_, col) => {
+    const spec = specs[col]?.align ?? "auto";
+    return spec === "auto" ? numericColumn(rows, col) ? "right" : "left" : spec;
+  });
+  const natural = headers.map((header, col) => Math.max(displayWidth(header), ...rows.map((row) => displayWidth(row[col] ?? ""))));
+  let visible = headers.map((_, col) => col);
+  const widths = [...natural];
+  const indent = options.indent ?? 0;
+  const total = () => indent + visible.reduce((sum, col) => sum + (widths[col] ?? 0), 0) + 2 * (visible.length - 1);
+  const limit = options.width;
+  if (limit !== undefined) {
+    while (total() > limit) {
+      const droppable = visible.filter((col) => specs[col]?.priority !== undefined);
+      if (droppable.length === 0)
+        break;
+      const drop = droppable.reduce((a, b) => (specs[b]?.priority ?? 0) <= (specs[a]?.priority ?? 0) ? b : a);
+      visible = visible.filter((col) => col !== drop);
+    }
+    while (total() > limit) {
+      const cuttable = visible.filter((col) => !specs[col]?.id && (widths[col] ?? 0) > Math.max(3, displayWidth(headers[col] ?? "")));
+      if (cuttable.length === 0)
+        break;
+      const widest = cuttable.reduce((a, b) => (widths[b] ?? 0) > (widths[a] ?? 0) ? b : a);
+      widths[widest] = (widths[widest] ?? 0) - 1;
+    }
+  }
+  const style = options.style;
+  const ellipsis = style ? symbols(style).ellipsis : "...";
+  const pad = " ".repeat(indent);
+  const line = (cells, header) => pad + visible.map((col, i) => {
+    const width = widths[col] ?? 0;
+    const text = clipDisplay(cells[col] ?? "", width, ellipsis);
+    const gap = " ".repeat(Math.max(0, width - displayWidth(text)));
+    const last = i === visible.length - 1;
+    const padded = align[col] === "right" ? `${gap}${text}` : last ? text : `${text}${gap}`;
+    if (!style)
+      return padded;
+    if (header)
+      return dim(padded, style);
+    if (specs[col]?.signed && /^[+]/.test(text))
+      return accent(padded, style, "positive");
+    if (specs[col]?.signed && /^[-−]/.test(text))
+      return accent(padded, style, "negative");
+    return padded;
+  }).join("  ");
+  const rule = pad + visible.map((col) => "-".repeat(widths[col] ?? 0)).join("  ");
+  return [
+    line(headers, true),
+    ...options.rule ?? true ? [style ? dim(rule, style) : rule] : [],
+    ...rows.map((row) => line(row, false))
+  ].join(`
+`);
+}
+function renderPlainTable(headers, rows) {
   const widths = headers.map((header, col) => Math.max(header.length, ...rows.map((row) => (row[col] ?? "").length)));
   const line = (cells) => cells.map((cell, col) => col === cells.length - 1 ? cell ?? "" : (cell ?? "").padEnd(widths[col] ?? 0)).join("  ");
   const separator = widths.map((width) => "-".repeat(width)).join("  ");
@@ -513,6 +773,9 @@ function renderTable(headers, rows) {
 }
 function formatTimestamp(ms, whenAbsent = "never") {
   return ms === undefined ? whenAbsent : new Date(ms).toISOString();
+}
+function shortId(id, full = false) {
+  return full || id.length <= 12 ? id : `${id.slice(0, 4)}…${id.slice(-4)}`;
 }
 function renderError(result, ctx) {
   if (result.code === "DEVICE_TOKEN_INVALID") {
@@ -566,16 +829,16 @@ function writeFailure(deps, result, ctx, json) {
     deps.stderr.write(`${renderError(result, ctx)}
 `);
 }
-function writeLocalFailure(deps, failure, json) {
+function writeLocalFailure(deps, failure2, json) {
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ ok: false, ...failure })}
+    deps.stdout.write(`${JSON.stringify({ ok: false, ...failure2 })}
 `);
     return;
   }
-  const separator = failure.suggestion?.includes(`
+  const separator = failure2.suggestion?.includes(`
 `) ? `
 ` : " ";
-  deps.stderr.write(`${failure.suggestion ? `${failure.message}${separator}${failure.suggestion}` : failure.message}
+  deps.stderr.write(`${failure2.suggestion ? `${failure2.message}${separator}${failure2.suggestion}` : failure2.message}
 `);
 }
 function writeUsageFailure(deps, message, json) {
@@ -608,9 +871,10 @@ function portalDeviceUrl(apiUrl, portalOrigin) {
     return `${apiUrl}/agents`;
   }
 }
-var ALL_AGENT_SCOPES, DEFAULT_AGENT_SCOPES, SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf", TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets", TRANSFER_BOUND_NOTE = "moves funds -- this key can move funds out of the wallet it runs, to your linked wallets and its vault", PERPS_WRITE_NOTE = "trades Hyperliquid perps -- this key can open and close positions from its EVM TEE wallet, within its limits";
+var ALL_AGENT_SCOPES, DEFAULT_AGENT_SCOPES, SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf", TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets", TRANSFER_BOUND_NOTE = "moves funds -- this key can move funds out of the wallet it runs, to your linked wallets and its vault", PERPS_WRITE_NOTE = "trades Hyperliquid perps -- this key can open and close positions from its EVM TEE wallet, within its limits", NUMERIC_CELL;
 var init_render = __esm(() => {
   init_agent_key_access();
+  init_presentation();
   ALL_AGENT_SCOPES = [
     "launch:write",
     "launch:read",
@@ -622,6 +886,7 @@ var init_render = __esm(() => {
     "perps:write"
   ];
   DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write" && scope !== "transfer:write" && scope !== "transfer:bound" && scope !== "perps:write");
+  NUMERIC_CELL = /^[+\-−]?(?:<|>|~)?[$]?[\d,]*\.?\d+(?:[%xKMBT]|\/h)?$/;
 });
 
 // ../../node_modules/@noble/hashes/esm/_u64.js
@@ -7444,7 +7709,7 @@ async function seal(key, plaintext, aad) {
   const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, plaintext);
   return { iv: b64u(iv), ciphertext: b64u(new Uint8Array(sealed)) };
 }
-async function open(key, blob, aad, failure) {
+async function open(key, blob, aad, failure2) {
   let plain;
   try {
     plain = await crypto.subtle.decrypt({
@@ -7453,7 +7718,7 @@ async function open(key, blob, aad, failure) {
       additionalData: aad
     }, key, unb64u(blob.ciphertext, "ciphertext"));
   } catch {
-    throw new VaultError(failure.code, failure.message, { suggestion: failure.suggestion });
+    throw new VaultError(failure2.code, failure2.message, { suggestion: failure2.suggestion });
   }
   return ownSecret(new Uint8Array(plain));
 }
@@ -29384,9 +29649,9 @@ async function reconcileGrant(ctx, entry, opts = {}) {
   if (!stranded.complete) {
     return { kind: "unreadable", reason: stranded.incompleteReason ?? "the stranded-import read was incomplete" };
   }
-  const failure = stranded.failures.find((candidate) => sameWalletAddress(candidate.address, entry.address));
-  if (failure?.stage === "convex_link") {
-    return { kind: "strand-final", account: wallets.account, failure };
+  const failure2 = stranded.failures.find((candidate) => sameWalletAddress(candidate.address, entry.address));
+  if (failure2?.stage === "convex_link") {
+    return { kind: "strand-final", account: wallets.account, failure: failure2 };
   }
   return { kind: "unresolved", account: wallets.account };
 }
@@ -33471,23 +33736,23 @@ async function walletsImport(args, ctx) {
     deps
   });
   if (!flow.ok) {
-    const failure = flow.failure;
-    if (failure.kind === "api") {
-      writeFailure(deps, failure.response, { apiUrl, authType: "key" }, json);
+    const failure2 = flow.failure;
+    if (failure2.kind === "api") {
+      writeFailure(deps, failure2.response, { apiUrl, authType: "key" }, json);
       return 1;
     }
-    if (failure.kind === "signer-store") {
+    if (failure2.kind === "signer-store") {
       writeLocalFailure(deps, {
         code: "SIGNER_STORE_FAILED",
-        message: `Could not store the new signer in the ${deps.backend} store: ${failure.error instanceof Error ? failure.error.message : failure.error}`,
+        message: `Could not store the new signer in the ${deps.backend} store: ${failure2.error instanceof Error ? failure2.error.message : failure2.error}`,
         suggestion: "Nothing was imported. Unlock the store (or fix the error above) and run the command again."
       }, json);
       return 1;
     }
     writeLocalFailure(deps, {
       code: "SIGNER_COMMIT_FAILED",
-      message: `Wallet ${failure.walletId} was imported, but its signer could not be stored under the wallet's own ` + `ref: ${failure.error instanceof Error ? failure.error.message : failure.error}`,
-      suggestion: `The signer is not lost: it is in the ${deps.backend} store under "${failure.pendingRef}". Copy it to ` + `"${walletSignerRef(failure.walletId)}", or revoke the wallet with: candle wallets revoke ${failure.walletId}`
+      message: `Wallet ${failure2.walletId} was imported, but its signer could not be stored under the wallet's own ` + `ref: ${failure2.error instanceof Error ? failure2.error.message : failure2.error}`,
+      suggestion: `The signer is not lost: it is in the ${deps.backend} store under "${failure2.pendingRef}". Copy it to ` + `"${walletSignerRef(failure2.walletId)}", or revoke the wallet with: candle wallets revoke ${failure2.walletId}`
     }, json);
     return 1;
   }
@@ -34942,8 +35207,8 @@ function releaseActiveTee(active) {
   if (active.source === "vault")
     releaseResolvedTee(active.resolved);
 }
-function writeCommitFailure(ctx, failure, consequence) {
-  writeLocalFailure(ctx.deps, { code: failure.code, message: failure.message, suggestion: consequence }, ctx.json);
+function writeCommitFailure(ctx, failure2, consequence) {
+  writeLocalFailure(ctx.deps, { code: failure2.code, message: failure2.message, suggestion: consequence }, ctx.json);
 }
 async function openExistingTeeStore(ctx, parsed) {
   const { deps, json } = ctx;
@@ -35232,13 +35497,13 @@ async function teeEnable(args, ctx) {
     vaultDestination: vault
   });
   if (!flow.ok) {
-    const failure = flow.failure;
-    if (failure.kind === "api")
-      writeFailure(deps, failure.response, { apiUrl, authType: "key" }, json);
+    const failure2 = flow.failure;
+    if (failure2.kind === "api")
+      writeFailure(deps, failure2.response, { apiUrl, authType: "key" }, json);
     else {
       writeLocalFailure(deps, {
-        code: failure.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
-        message: `${address}: ${failure.error instanceof Error ? failure.error.message : failure.error}`,
+        code: failure2.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
+        message: `${address}: ${failure2.error instanceof Error ? failure2.error.message : failure2.error}`,
         suggestion: "The key is still sealed locally. Fix the error above and run enable again."
       }, json);
     }
@@ -70692,11 +70957,6 @@ init_deps();
 init_profiles();
 init_render();
 init_secret_store();
-
-// src/version.ts
-var CLI_VERSION = "0.12.0";
-
-// src/commands/auth.ts
 init_keys_embedded_wallet();
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
 var DEVICE_TOKEN_PATH = "/api/v1/agent/device/token";
@@ -71094,87 +71354,8 @@ async function authStatus(args, ctx) {
   return exitCode;
 }
 
-// src/terminal-theme.ts
-var TERMINAL_TOKENS = {
-  web: {
-    primary: "#32fe9f",
-    positive: "#32d583",
-    negative: "#f2536d",
-    warning: "#f5a524",
-    edge: "#26262b"
-  },
-  dark: {
-    brand: { hex: "#32fe9f", ansi256: 48, ansi16: 92 },
-    positive: { hex: "#32d583", ansi256: 42, ansi16: 92 },
-    negative: { hex: "#f2536d", ansi256: 204, ansi16: 91 },
-    warning: { hex: "#f5a524", ansi256: 214, ansi16: 93 }
-  },
-  light: {
-    brand: { hex: "#006b40", ansi256: 22, ansi16: 32 },
-    positive: { hex: "#087443", ansi256: 22, ansi16: 32 },
-    negative: { hex: "#b4233c", ansi256: 125, ansi16: 31 },
-    warning: { hex: "#875400", ansi256: 94, ansi16: 33 }
-  }
-};
-
-// src/presentation.ts
-function terminalStyle(deps, stream, machine = false) {
-  const { env, presentation } = deps;
-  const styled = !(machine || presentation?.plain || env.CANDLE_PLAIN === "1" || !deps.isTTY[stream] || env.CI || env.TERM === "dumb");
-  const noColor = presentation?.noColor || Boolean(env.NO_COLOR);
-  const color = !styled || noColor ? 0 : /truecolor|24bit/i.test(env.COLORTERM ?? "") ? 24 : /256color/i.test(env.TERM ?? "") ? 256 : env.TERM ? 16 : 0;
-  const background = Number(env.COLORFGBG?.split(";").at(-1));
-  const theme = Number.isFinite(background) && background >= 0 && background <= 6 ? "dark" : "light";
-  const columns = deps.columns?.[stream];
-  return {
-    width: columns && Number.isFinite(columns) ? Math.max(20, Math.floor(columns)) : 118,
-    styled,
-    color,
-    theme,
-    motion: styled && !noColor
-  };
-}
-function accent(text, style, role = "brand") {
-  if (!style.color)
-    return text;
-  const token = TERMINAL_TOKENS[style.theme][role];
-  const code = style.color === 24 ? `38;2;${token.hex.slice(1).match(/../g)?.map((part) => Number.parseInt(part, 16)).join(";")}` : style.color === 256 ? `38;5;${token.ansi256}` : `${token.ansi16}`;
-  return `\x1B[${code}m${text}\x1B[0m`;
-}
-function wrapText(text, width) {
-  const lines = [];
-  let line = "";
-  for (const word3 of text.split(" ")) {
-    if (!line || line.length + word3.length + 1 <= width)
-      line += `${line ? " " : ""}${word3}`;
-    else {
-      lines.push(line);
-      line = word3;
-    }
-  }
-  lines.push(line);
-  return lines;
-}
-var WORDMARK = ["█▀▀ ▄▀█ █▄░█ █▀▄ █░░ █▀▀", "█▄▄ █▀█ █░▀█ █▄▀ █▄▄ ██▄"];
-function brandHeader(style) {
-  if (!style.styled)
-    return [];
-  const lines = [
-    ...style.width >= 80 ? WORDMARK : ["CANDLE"],
-    `CLI ${CLI_VERSION}`,
-    "",
-    ...wrapText("Your wallets and agent tools, one command away.", style.width - 6)
-  ];
-  const width = Math.min(style.width - 2, 68);
-  return [
-    accent(`┌${"─".repeat(width - 2)}┐`, style),
-    ...lines.map((line) => `│ ${accent(line, style)}${" ".repeat(Math.max(0, width - 4 - line.length))} │`),
-    accent(`└${"─".repeat(width - 2)}┘`, style),
-    ""
-  ];
-}
-
 // src/help.ts
+init_presentation();
 var GROUPS = [
   "Start here",
   "Trade",
@@ -71257,6 +71438,7 @@ var KEYSTORE_FLAG = {
 var GLOBAL_FLAGS = [
   { invocation: "--plain", description: "Plain ASCII: no banner, boxes, color or animation" },
   { invocation: "--no-color", description: "Suppress color and decorative animation; keep terminal layout" },
+  { invocation: "--full", description: "Print ids in full where a table would shorten them" },
   { invocation: "--profile <name>", description: "Act as a named profile" },
   { invocation: "--api-url <url>", description: "Override the API base URL" },
   { invocation: "--json", description: "Machine-readable output: exactly one JSON value on stdout" },
@@ -75623,10 +75805,10 @@ function registerLaunchHandlers(server, deps) {
   server.handle("launch.dryRun", async (params, { client }) => deps.cards.dryRun({ cardId: params.cardId, factor: parseFactor(params.factor) }, client.clientId));
 }
 function coded(error, fallback) {
-  const failure = error;
-  if (failure !== null && typeof failure === "object" && "rpcCode" in failure)
+  const failure2 = error;
+  if (failure2 !== null && typeof failure2 === "object" && "rpcCode" in failure2)
     return error;
-  return refused(typeof failure?.code === "string" ? failure.code : fallback, typeof failure?.message === "string" ? failure.message : String(error));
+  return refused(typeof failure2?.code === "string" ? failure2.code : fallback, typeof failure2?.message === "string" ? failure2.message : String(error));
 }
 
 // src/commands/core.ts
@@ -76027,7 +76209,7 @@ ${text2}` : text2;
     const sleep = this.deps.sleep ?? defaultSleep;
     let tooMany = 0;
     let lost = 0;
-    let failure;
+    let failure2;
     while (!poll.stopped) {
       const answer2 = await client.events(poll.turnId, poll.next, { signal: poll.abort.signal });
       if (poll.stopped)
@@ -76062,7 +76244,7 @@ ${text2}` : text2;
       if (refusal.code === "too_many_polls") {
         tooMany++;
         if (tooMany > TOO_MANY_POLLS_RETRIES) {
-          failure = "too_many_polls";
+          failure2 = "too_many_polls";
           break;
         }
         await sleep(TOO_MANY_POLLS_WAIT_MS);
@@ -76071,13 +76253,13 @@ ${text2}` : text2;
       if (refusal.shape === "transport") {
         lost++;
         if (lost > LOST_POLL_RETRIES) {
-          failure = "QUANT_UNREACHABLE";
+          failure2 = "QUANT_UNREACHABLE";
           break;
         }
         await sleep(Math.min(1000 * lost, 5000));
         continue;
       }
-      failure = refusal.code;
+      failure2 = refusal.code;
       break;
     }
     if (this.poll !== poll)
@@ -76088,11 +76270,11 @@ ${text2}` : text2;
       this.ended.delete(this.ended.values().next().value);
     if (this.turn?.turnId === poll.turnId)
       this.turn.running = false;
-    if (failure !== undefined) {
+    if (failure2 !== undefined) {
       this.publish({
         turnId: poll.turnId,
         kind: "poll_failed",
-        data: { code: failure },
+        data: { code: failure2 },
         seq: poll.next,
         origin: poll.origin
       });
@@ -78071,8 +78253,8 @@ async function prepare(params, call2, deps) {
     try {
       preview = await deps.reads.previewVault(parsed, wallet3);
     } catch (error) {
-      const failure = error;
-      throw refused(typeof failure.code === "string" ? failure.code : "TRANSFER_PREVIEW_FAILED", `${terminalText(typeof failure.message === "string" ? failure.message : String(error))} Nothing was prepared.`);
+      const failure2 = error;
+      throw refused(typeof failure2.code === "string" ? failure2.code : "TRANSFER_PREVIEW_FAILED", `${terminalText(typeof failure2.message === "string" ? failure2.message : String(error))} Nothing was prepared.`);
     }
   } else {
     const withdraw = deps.trading.withdrawState();
@@ -78216,7 +78398,6 @@ async function reportTransferActivity(ctx, apiKey, signature, chain2 = "solana")
     return { outcome: "failed", line: `Could not report this transfer (${reason}); ${unseen}` };
   }
 }
-
 // src/commands/image.ts
 init_args();
 init_client();
@@ -79561,8 +79742,8 @@ async function readTargetSigner(ctx, deviceToken, keyPrefix) {
 }
 async function preflightToKey(ctx, raw, opts) {
   const { deps, json } = ctx;
-  const refuse3 = (failure) => {
-    writeLocalFailure(deps, failure, json);
+  const refuse3 = (failure2) => {
+    writeLocalFailure(deps, failure2, json);
     return { ok: false, exit: 1 };
   };
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
@@ -79714,8 +79895,8 @@ async function rebindPromoted(ctx, deviceToken, toKeyPrefix, wallets2, pinnedSpk
     if (!committed.ok) {
       run2.ok = false;
       if ("missing" in committed) {
-        const failure = missingSignerFailure(committed.missing);
-        run2.failure = { ...failure, status: 409, chunk: at2 + 1 };
+        const failure2 = missingSignerFailure(committed.missing);
+        run2.failure = { ...failure2, status: 409, chunk: at2 + 1 };
       } else if ("changed" in committed) {
         run2.failure = { ...committed.changed, status: 409, chunk: at2 + 1 };
       } else {
@@ -80340,8 +80521,8 @@ async function moveToLiveKey(ctx, deviceToken, source, toKeyRaw) {
   for (const chunk of chunkWallets(ids)) {
     const preview = await postRebind(ctx, deviceToken, { dryRun: true, toKeyPrefix: target.keyPrefix, wallets: chunk });
     if (!preview.ok) {
-      const failure = rebindFailureDetails(preview, {});
-      writeLocalFailure(deps, failure, json);
+      const failure2 = rebindFailureDetails(preview, {});
+      writeLocalFailure(deps, failure2, json);
       return 1;
     }
     const shown = preview.body;
@@ -84392,6 +84573,7 @@ async function feesClaim(args, ctx) {
 }
 
 // src/commands/help.ts
+init_presentation();
 async function help(args, ctx) {
   const word3 = args[0];
   if (word3 === undefined) {
@@ -91422,8 +91604,8 @@ async function read(ctx, argv, command) {
         writeUsageFailure(ctx.deps, error.message, ctx.json);
         return 2;
       }
-      const failure = { code: error.code, message: error.message, retryable: error.retryable };
-      writeLocalFailure(ctx.deps, failure, ctx.json);
+      const failure2 = { code: error.code, message: error.message, retryable: error.retryable };
+      writeLocalFailure(ctx.deps, failure2, ctx.json);
       return 1;
     }
     return tradingFailure(ctx, error);
@@ -92309,13 +92491,25 @@ init_profiles();
 init_render();
 
 // src/usd.ts
-function formatUsd(value) {
+init_render();
+var COMPACT_UNITS = [
+  [1000000000000, "T"],
+  [1e9, "B"],
+  [1e6, "M"]
+];
+function formatUsd(value, options = {}) {
   if (!Number.isFinite(value))
     return "?";
-  const sign5 = value < 0 ? "-" : "";
+  const sign5 = value < 0 ? "-" : options.signed && value > 0 ? "+" : "";
   const abs = Math.abs(value);
   if (abs > 0 && abs < 0.005)
     return `${sign5}<$0.01`;
+  if (options.compact) {
+    for (const [unit, suffix] of COMPACT_UNITS) {
+      if (Math.round(abs / (unit / 100)) >= 100)
+        return `${sign5}$${(abs / unit).toFixed(2)}${suffix}`;
+    }
+  }
   return `${sign5}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 function formatPrice(value) {
@@ -92339,7 +92533,7 @@ function formatQuantity(value) {
   return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
 }
 function shortAddress2(address) {
-  return address.length > 12 ? `${address.slice(0, 4)}…${address.slice(-4)}` : address;
+  return shortId(address);
 }
 
 // src/commands/pnl-hyperliquid.ts
@@ -93250,12 +93444,12 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
   try {
     chainId = await rpc.chainId();
   } catch (error) {
-    const failure = message(error);
+    const failure2 = message(error);
     return {
       balances: async () => ({
         byAddress: new Map(unique.map((address) => [address, { wei: null, usdg: null }])),
         unavailable: unique,
-        failure
+        failure: failure2
       })
     };
   }
@@ -93267,7 +93461,7 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
   return {
     balances: async () => {
       const byAddress = new Map;
-      let failure;
+      let failure2;
       let next = 0;
       await Promise.all(Array.from({ length: Math.min(EVM_READS_IN_FLIGHT, unique.length) }, async () => {
         while (next < unique.length) {
@@ -93276,7 +93470,7 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
             try {
               return await call2();
             } catch (error) {
-              failure ??= message(error);
+              failure2 ??= message(error);
               return null;
             }
           };
@@ -93289,7 +93483,7 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
         const read2 = byAddress.get(address);
         return read2 === undefined || read2.wei === null || read2.usdg === null;
       });
-      return { byAddress, unavailable: unavailable6, ...failure === undefined ? {} : { failure } };
+      return { byAddress, unavailable: unavailable6, ...failure2 === undefined ? {} : { failure: failure2 } };
     }
   };
 }
@@ -93298,13 +93492,13 @@ async function readOwnRpc(addresses, solana, ctx) {
   const unique = [...new Set(addresses)];
   const lamports = new Map;
   let rateLimited = false;
-  let failure;
+  let failure2;
   const noteFailure = (error) => {
     if (isRateLimited(error)) {
       rateLimited = true;
-      failure ??= rateLimitedReadFailure(ctx, error);
+      failure2 ??= rateLimitedReadFailure(ctx, error);
     } else
-      failure ??= describeRpcFailure(error);
+      failure2 ??= describeRpcFailure(error);
   };
   for (let at3 = 0;at3 < unique.length; at3 += CHUNK) {
     const chunk = unique.slice(at3, at3 + CHUNK);
@@ -93366,7 +93560,7 @@ async function readOwnRpc(addresses, solana, ctx) {
     if (sol === null || held === null)
       unavailable6.push(address);
   }
-  return { byAddress, unavailable: unavailable6, ...failure === undefined ? {} : { failure } };
+  return { byAddress, unavailable: unavailable6, ...failure2 === undefined ? {} : { failure: failure2 } };
 }
 function solanaHoldings(read2, prices) {
   if (read2 === undefined || read2.lamports === null && read2.tokens === null)
@@ -93770,13 +93964,13 @@ async function profileUse(args, ctx) {
   let account = profile.account;
   let username = profile.username;
   if (apiKey) {
-    const { account: live, username: liveUsername, failure } = await fetchAccount(deps, apiUrl, apiKey);
+    const { account: live, username: liveUsername, failure: failure2 } = await fetchAccount(deps, apiUrl, apiKey);
     if (live) {
       account = live;
       username = liveUsername;
       await deps.updateProfile(name2, { account: live, username: liveUsername, accountCachedAt: deps.now() });
     } else {
-      deps.stderr.write(`Could not refresh the account for ${name2} (${failure}); keeping the cached value.
+      deps.stderr.write(`Could not refresh the account for ${name2} (${failure2}); keeping the cached value.
 `);
     }
   } else {
@@ -93954,6 +94148,7 @@ async function quantTerms(args, ctx) {
 init_args();
 init_client();
 init_deps();
+init_presentation();
 init_profiles();
 init_render();
 var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
@@ -96976,6 +97171,7 @@ init_args();
 import { randomBytes as randomBytes11 } from "node:crypto";
 
 // src/progress.ts
+init_presentation();
 var FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 var INTERVAL_MS3 = 80;
 function stepReporter(write, tty, ascii = false) {
@@ -97562,10 +97758,10 @@ async function update(args, ctx, current = CLI_VERSION) {
       } catch (error) {
         steps.fail("installing");
         await discard(deps, helper.tmpPath);
-        const failure = notWritable(dir, error);
+        const failure2 = notWritable(dir, error);
         writeLocalFailure(deps, {
-          ...failure,
-          message: `${failure.message} candle ${target.version} was installed to ${realExec}, but its security key helper could not be renamed to ${helper.target}.`
+          ...failure2,
+          message: `${failure2.message} candle ${target.version} was installed to ${realExec}, but its security key helper could not be renamed to ${helper.target}.`
         }, json);
         return 1;
       }
@@ -100648,7 +100844,7 @@ async function readLamports(addresses, solana, ctx) {
   const { rpc } = solana;
   const lamports = new Map;
   const unavailable6 = [];
-  let failure;
+  let failure2;
   let rateLimited = false;
   for (let at3 = 0;at3 < addresses.length; at3 += CHUNK2) {
     const chunk = addresses.slice(at3, at3 + CHUNK2);
@@ -100664,12 +100860,12 @@ async function readLamports(addresses, solana, ctx) {
       unavailable6.push(...chunk);
       if (isRateLimited(error)) {
         rateLimited = true;
-        failure ??= rateLimitedReadFailure(ctx, error);
+        failure2 ??= rateLimitedReadFailure(ctx, error);
       } else
-        failure ??= describeRpcFailure(error);
+        failure2 ??= describeRpcFailure(error);
     }
   }
-  return { lamports, unavailable: unavailable6, ...failure === undefined ? {} : { failure } };
+  return { lamports, unavailable: unavailable6, ...failure2 === undefined ? {} : { failure: failure2 } };
 }
 async function readEvmBalances(addresses, rpcUrl, fetchFn) {
   const rpc = createEvmRpc(rpcUrl, fetchFn);
@@ -100765,17 +100961,17 @@ async function vaultList(args, ctx) {
     }
     let lamports = new Map;
     let unavailable6 = [];
-    let failure;
+    let failure2;
     if (balances && solana.length > 0 && solanaClient !== undefined) {
       const outcome = await readLamports(solana.map((entry) => entry.address), solanaClient, ctx);
       lamports = outcome.lamports;
       unavailable6 = outcome.unavailable;
-      failure = outcome.failure;
+      failure2 = outcome.failure;
     }
     const solanaComplete = unavailable6.length === 0;
     const totalLamports = [...lamports.values()].reduce((sum, value) => sum + value, 0n);
     if (!solanaComplete) {
-      deps.stderr.write(`${unavailable6.length} ${unavailable6.length === 1 ? "address" : "addresses"} could not be read: ${failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
+      deps.stderr.write(`${unavailable6.length} ${unavailable6.length === 1 ? "address" : "addresses"} could not be read: ${failure2 ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
 `);
     }
     const evm = balances ? matched.filter((entry) => entry.chain === "evm") : [];
@@ -100996,8 +101192,8 @@ function unreadableRoomLine(reason) {
 `;
 }
 var RESTORED_SENTENCE = "The vault entry is back as it was: nothing left this machine.";
-function restoresPreImportEntry(failure) {
-  return failure.stage === "init" && failure.status !== undefined && failure.status !== 0;
+function restoresPreImportEntry(failure2) {
+  return failure2.stage === "init" && failure2.status !== undefined && failure2.status !== 0;
 }
 function restoreRefusedFailure(init, error) {
   if (error instanceof VaultError && error.code === "VAULT_CHANGED") {
@@ -101269,7 +101465,7 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
   });
   const code = imported.exit;
   if (imported.failure !== undefined) {
-    let failure = {
+    let failure2 = {
       code: imported.failure.code,
       message: imported.failure.message,
       ...imported.failure.suggestion !== undefined ? { suggestion: imported.failure.suggestion } : {}
@@ -101277,12 +101473,12 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
     if (restoresPreImportEntry(imported.failure)) {
       try {
         vault = hold(await commitVault(vault, { index: preImportIndex }, ctx.deps));
-        failure = { ...failure, message: `${failure.message} ${RESTORED_SENTENCE}` };
+        failure2 = { ...failure2, message: `${failure2.message} ${RESTORED_SENTENCE}` };
       } catch (error) {
-        failure = restoreRefusedFailure(failure, error);
+        failure2 = restoreRefusedFailure(failure2, error);
       }
     }
-    writeLocalFailure(ctx.deps, failure, ctx.json);
+    writeLocalFailure(ctx.deps, failure2, ctx.json);
     return code;
   }
   let rebound;
@@ -101722,7 +101918,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     });
     const code = imported.exit;
     if (imported.failure !== undefined) {
-      let failure = {
+      let failure2 = {
         code: imported.failure.code,
         message: imported.failure.message,
         ...imported.failure.suggestion !== undefined ? { suggestion: imported.failure.suggestion } : {}
@@ -101730,12 +101926,12 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
       if (restoresPreImportEntry(imported.failure)) {
         try {
           vault = hold(await commitVault(vault, { index: preImportIndex }, ctx.deps));
-          failure = { ...failure, message: `${failure.message} ${RESTORED_SENTENCE}` };
+          failure2 = { ...failure2, message: `${failure2.message} ${RESTORED_SENTENCE}` };
         } catch (error) {
-          failure = restoreRefusedFailure(failure, error);
+          failure2 = restoreRefusedFailure(failure2, error);
         }
       }
-      writeLocalFailure(ctx.deps, failure, ctx.json);
+      writeLocalFailure(ctx.deps, failure2, ctx.json);
       return code;
     }
     let rebound;
@@ -101774,10 +101970,10 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
 async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmations) {
   const announceGrant = confirmations.announceGrant ?? true;
   const report = confirmations.report ?? "write";
-  const fail4 = (failure, exit) => {
+  const fail4 = (failure2, exit) => {
     if (report === "write")
-      writeLocalFailure(ctx.deps, failure, ctx.json);
-    return { exit, ...report === "return" ? { failure } : {} };
+      writeLocalFailure(ctx.deps, failure2, ctx.json);
+    return { exit, ...report === "return" ? { failure: failure2 } : {} };
   };
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
@@ -101918,10 +102114,10 @@ async function runTeeImport(ctx, opts) {
   const closeReopened = opts.closeReopened ?? true;
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
-    const failure = { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" };
+    const failure2 = { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" };
     if (report === "write")
-      writeLocalFailure(ctx.deps, failure, ctx.json);
-    return { exit: 1, ...report === "return" ? { failure } : {} };
+      writeLocalFailure(ctx.deps, failure2, ctx.json);
+    return { exit: 1, ...report === "return" ? { failure: failure2 } : {} };
   }
   opts.onImport?.();
   const flow = await runImportFlow({
@@ -101937,28 +102133,28 @@ async function runTeeImport(ctx, opts) {
     ...opts.keySigner !== undefined ? { keySigner: opts.keySigner } : {}
   });
   if (!flow.ok) {
-    const failure = flow.failure;
-    if (failure.kind === "api") {
+    const failure2 = flow.failure;
+    if (failure2.kind === "api") {
       const render = { apiUrl: ctx.apiUrl, authType: "key" };
       if (report === "write") {
-        writeFailure(ctx.deps, failure.response, render, ctx.json);
+        writeFailure(ctx.deps, failure2.response, render, ctx.json);
         return { exit: 1 };
       }
-      const suggestion = suggestionFor(failure.response, render);
+      const suggestion = suggestionFor(failure2.response, render);
       return {
         exit: 1,
         failure: {
-          code: errorEnvelope(failure.response, render).code,
-          message: renderError(failure.response, render),
+          code: errorEnvelope(failure2.response, render).code,
+          message: renderError(failure2.response, render),
           ...suggestion ? { suggestion } : {},
-          stage: failure.stage,
-          status: failure.response.status
+          stage: failure2.stage,
+          status: failure2.response.status
         }
       };
     }
     const local = {
-      code: failure.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
-      message: `${opts.address}: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`,
+      code: failure2.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
+      message: `${opts.address}: ${failure2.error instanceof Error ? failure2.error.message : String(failure2.error)}`,
       suggestion: "The vault entry is import-pending. Fix the error and re-run promote to resume."
     };
     if (report === "write")
@@ -102221,15 +102417,15 @@ async function preflightBatch(index, rows, opts) {
   const failures = [];
   const pinnedBy = new Map;
   const promotedBy = new Map;
-  const refuse3 = (row, failure) => {
+  const refuse3 = (row, failure2) => {
     failures.push({
       line: row.line,
       label: row.label,
       destination: row.destination,
-      code: failure.code,
-      message: failure.message,
-      ...failure.suggestion !== undefined ? { suggestion: failure.suggestion } : {},
-      ...failure.why !== undefined ? { why: failure.why } : {}
+      code: failure2.code,
+      message: failure2.message,
+      ...failure2.suggestion !== undefined ? { suggestion: failure2.suggestion } : {},
+      ...failure2.why !== undefined ? { why: failure2.why } : {}
     });
   };
   const refuseWith = (row, error, why) => {
@@ -102778,24 +102974,24 @@ ${renderControlledBy(controlledBy, acting.length)}
             keySigner: keySignerImport(rebindPhase?.toKey)
           });
           if (imported.failure !== undefined || imported.submitted === undefined) {
-            let failure = imported.failure ?? {
+            let failure2 = imported.failure ?? {
               code: "VAULT_WRITE_FAILED",
               message: "The import did not complete."
             };
-            if (restoresPreImportEntry(failure)) {
+            if (restoresPreImportEntry(failure2)) {
               try {
                 current = hold(await commitVault(current, { index: preImportIndex }, deps));
-                failure = { ...failure, message: `${failure.message} ${RESTORED_SENTENCE}` };
+                failure2 = { ...failure2, message: `${failure2.message} ${RESTORED_SENTENCE}` };
               } catch (error) {
-                failure = restoreRefusedFailure(failure, error);
+                failure2 = restoreRefusedFailure(failure2, error);
               }
             }
             stopped = {
               line: row2.line,
               exit: imported.exit,
-              code: failure.code,
-              message: failure.message,
-              ...failure.suggestion !== undefined ? { suggestion: failure.suggestion } : {}
+              code: failure2.code,
+              message: failure2.message,
+              ...failure2.suggestion !== undefined ? { suggestion: failure2.suggestion } : {}
             };
             break;
           }
@@ -102964,7 +103160,7 @@ async function verifySubjectSecret(vault, subject) {
 }
 async function reconcileForPreflight(ctx, row, subject, resolved) {
   const { onDisk } = resolved;
-  const refuse3 = (failure) => ({ ok: false, failure });
+  const refuse3 = (failure2) => ({ ok: false, failure: failure2 });
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
     return refuse3({
@@ -104680,8 +104876,8 @@ async function setAllowLaunch(args, ctx, enabled) {
   const verb = enabled ? "Allowed launches from" : "Stopped launches from";
   deps.stdout.write(`${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.
 `);
-  for (const failure of failed) {
-    deps.stderr.write(`Not changed: ${failure.id}: ${failure.message}${failure.code ? ` (${failure.code})` : ""}.
+  for (const failure2 of failed) {
+    deps.stderr.write(`Not changed: ${failure2.id}: ${failure2.message}${failure2.code ? ` (${failure2.code})` : ""}.
 `);
   }
   return failed.length > 0 ? 1 : 0;
@@ -105229,11 +105425,11 @@ async function verifyProfileAccount(ctx, config) {
   const apiKey = await deps.store.get(profileSecretRef(profile, "apiKey"));
   if (!apiKey)
     return { ok: true, skipped: "no stored key" };
-  const { account: live, failure } = await fetchAccount(deps, ctx.apiUrl, apiKey);
+  const { account: live, failure: failure2 } = await fetchAccount(deps, ctx.apiUrl, apiKey);
   if (!live) {
     return {
       ok: true,
-      warning: `Could not verify the account for ${profile} (${failure}); proceeding on the cached value ${cached}.`
+      warning: `Could not verify the account for ${profile} (${failure2}); proceeding on the cached value ${cached}.`
     };
   }
   if (live !== cached) {
@@ -105252,6 +105448,7 @@ async function verifyProfileAccount(ctx, config) {
 }
 
 // src/index.ts
+init_presentation();
 init_profiles();
 init_release();
 init_render();
@@ -105259,6 +105456,7 @@ init_secret_store();
 
 // src/update-notice.ts
 init_client();
+init_presentation();
 init_release();
 var DAY_MS2 = 24 * 60 * 60 * 1000;
 async function maybeWriteUpdateNotice(deps, opts = {}) {
@@ -105310,6 +105508,8 @@ function extractGlobalFlags(argv) {
       flags2.plain = true;
     else if (arg === "--no-color")
       flags2.noColor = true;
+    else if (arg === "--full")
+      flags2.full = true;
     else if (arg === "--help" || arg === "-h")
       flags2.help = true;
     else if (arg === "--version" || arg === "-v")
@@ -105540,7 +105740,8 @@ async function run2(argv, deps) {
       ...deps,
       presentation: {
         plain: cosmetic.flags.plain ?? deps.presentation?.plain,
-        noColor: cosmetic.flags.noColor ?? deps.presentation?.noColor
+        noColor: cosmetic.flags.noColor ?? deps.presentation?.noColor,
+        full: cosmetic.flags.full ?? deps.presentation?.full
       }
     };
   }

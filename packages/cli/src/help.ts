@@ -185,6 +185,7 @@ const KEYSTORE_FLAG: Row = {
 export const GLOBAL_FLAGS: Row[] = [
   { invocation: "--plain", description: "Plain ASCII: no banner, boxes, color or animation" },
   { invocation: "--no-color", description: "Suppress color and decorative animation; keep terminal layout" },
+  { invocation: "--full", description: "Print ids in full where a table would shorten them" },
   { invocation: "--profile <name>", description: "Act as a named profile" },
   { invocation: "--api-url <url>", description: "Override the API base URL" },
   { invocation: "--json", description: "Machine-readable output: exactly one JSON value on stdout" },

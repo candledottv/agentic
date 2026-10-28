@@ -148,6 +148,7 @@ interface GlobalFlags {
   noVerifyAccount: boolean
   plain?: boolean
   noColor?: boolean
+  full?: boolean
 }
 
 function extractGlobalFlags(argv: string[]): { rest: string[]; flags: GlobalFlags } | { error: string } {
@@ -158,6 +159,7 @@ function extractGlobalFlags(argv: string[]): { rest: string[]; flags: GlobalFlag
     if (arg === "--json") flags.json = true
     else if (arg === "--plain") flags.plain = true
     else if (arg === "--no-color") flags.noColor = true
+    else if (arg === "--full") flags.full = true
     else if (arg === "--help" || arg === "-h") flags.help = true
     else if (arg === "--version" || arg === "-v") flags.version = true
     else if (arg === "--no-verify-account") flags.noVerifyAccount = true
@@ -528,6 +530,7 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
       presentation: {
         plain: cosmetic.flags.plain ?? deps.presentation?.plain,
         noColor: cosmetic.flags.noColor ?? deps.presentation?.noColor,
+        full: cosmetic.flags.full ?? deps.presentation?.full,
       },
     }
   }
