@@ -83,6 +83,7 @@ import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./c
 import { teeRebind, teeRebinds } from "./commands/tee-rebind"
 import { teeRename } from "./commands/tee-rename"
 import { tokenClusters } from "./commands/token-clusters"
+import { tokenEvents } from "./commands/token-events"
 import { tokenForensics, tokenVampCandidates } from "./commands/token-paid"
 import { transfer } from "./commands/transfer"
 import { tui } from "./commands/tui"
@@ -230,7 +231,12 @@ const COMMANDS: Record<string, CommandRoute> = {
   // x402 C4 (BE-1875): forensics and the vamp finder may answer a per-use 402, paid from a vault
   // key inside the local spending rules (src/x402/), or shown and not paid.
   token: {
-    subcommands: { clusters: tokenClusters, forensics: tokenForensics, "vamp-candidates": tokenVampCandidates },
+    subcommands: {
+      clusters: tokenClusters,
+      events: tokenEvents,
+      forensics: tokenForensics,
+      "vamp-candidates": tokenVampCandidates,
+    },
   },
   // x402 C4: the local payment log and the limits every per-use payment is checked against.
   spend: {

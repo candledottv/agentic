@@ -486,6 +486,59 @@ export interface MigrationStatus {
     nextAttemptAt?: number;
     gaveUpAt?: number;
 }
+/** GET /api/v1/tokens/:chain/:mint/events (BE-2094). The three event kinds one list returns. */
+export type TokenEventKind = "trade" | "signal" | "callout";
+export type TokenEventGroupVisibility = "public" | "pro" | "max" | "internal";
+export interface TokenEventGroup {
+    name: string;
+    visibility: TokenEventGroupVisibility;
+}
+export interface TokenEventWallet {
+    address: string;
+    name: string | null;
+    walletKind: "dev" | "kol" | "smart" | "agent" | "tracked";
+    groups: TokenEventGroup[];
+    image: string | null;
+    isDev: boolean;
+}
+export type TokenEvent = {
+    id: string;
+    chain: Chain;
+    mint: string;
+    at: number;
+    wallet: TokenEventWallet | null;
+} & ({
+    kind: "trade";
+    side: "buy" | "sell";
+    usd: number | null;
+    tokenAmount: number;
+    priceUsd: number | null;
+    marketCapUsd: number | null;
+    tx: string;
+    /** `W` or `L` on a sell whose outcome is known; omitted on buys and unknown sells. */
+    result?: "W" | "L" | null;
+} | {
+    kind: "signal";
+    pattern: string;
+    summary: string;
+    tx: string | null;
+} | {
+    kind: "callout";
+    caller: {
+        handle: string | null;
+        name: string | null;
+        rank: number | null;
+    };
+    size: number | null;
+    marketCapUsd: number | null;
+    tx: string;
+    status: string;
+});
+/** One page of a token's events, newest first. `nextCursor` continues it via `before`. */
+export interface TokenEventsPage {
+    events: TokenEvent[];
+    nextCursor: string | null;
+}
 /** GET /api/v1/markets/:chain/:mint, unwrapped from `{ success, market }`. */
 export interface MarketState {
     /** Additive Release A fields are optional when connected to an older API. */
@@ -3065,6 +3118,24 @@ export declare class CandleClient {
         slippageBps?: number;
     }): Promise<QuoteResult>;
     getFeed(bucket: FeedBucket, chain?: Chain): Promise<FeedResult>;
+    /**
+     * One page of one token's events: every signal, callout and tracked-wallet trade the deployment
+     * has, plus Candle's own trades, newest first (`GET /api/v1/tokens/:chain/:mint/events`).
+     * Needs no key; a configured key changes only the wallets' `groups` and the rate limit. The
+     * route is off until the deployment sets `TOKEN_EVENTS_ENABLED` on; off it answers
+     * 503 `TOKEN_EVENTS_DISABLED`.
+     *
+     * `since` (inclusive ISO 8601) and `limit` (1 to 1000, default 200) go to the route. `kind`
+     * filters THIS page locally -- the route has no kind parameter -- so a filtered page can be
+     * shorter than `limit` while older events of other kinds remain: keep paging with the returned
+     * `nextCursor` as `before` until it is null.
+     */
+    getTokenEvents(chain: Chain, mint: string, opts?: {
+        kind?: TokenEventKind;
+        since?: string;
+        limit?: number;
+        before?: string;
+    }): Promise<TokenEventsPage>;
     verify(chain: Chain, mint: string): Promise<VerifyResult>;
     getOwnProfile(): Promise<OwnAgentProfile>;
     updateOwnProfile(patch: OwnAgentProfilePatch): Promise<{
@@ -4087,7 +4158,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.8";
+export declare const SDK_VERSION = "0.6.9";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

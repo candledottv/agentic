@@ -815,16 +815,21 @@ export const HELP: Record<string, Topic> = {
   },
   token: {
     group: "Account",
-    summary: "Token cluster analysis, forensics and the vamp finder",
+    summary: "Token events, cluster analysis, forensics and the vamp finder",
     description:
-      "clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
+      "events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
     usage: [
       "candle token clusters <mint> [--chain solana|hood] [--json]",
+      "candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]",
       "candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes] [--json]",
       "candle token vamp-candidates [--limit <n>] [--min-copies <n>] [--stage final_stretch|graduated|all] [--wallet <vault key>] [--yes] [--json]",
     ],
     rows: [
       { invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" },
+      {
+        invocation: "events <mint>",
+        description: "Signals, callouts and tracked-wallet trades for one token, one per line",
+      },
       { invocation: "forensics <mint>", description: "Token forensics; may cost a per-use payment past the free rate" },
       {
         invocation: "vamp-candidates",
@@ -833,8 +838,14 @@ export const HELP: Record<string, Topic> = {
     ],
     flags: [
       { invocation: "--chain <chain>", description: "solana (default) or hood; Hood cluster analysis is unavailable" },
-      { invocation: "--limit <n>", description: "vamp-candidates: how many to list" },
+      {
+        invocation: "--kind <kind>",
+        description: "events: trade, signal or callout; filters the page locally (the route has no kind filter)",
+      },
+      { invocation: "--limit <n>", description: "events or vamp-candidates: how many to read (events: 1 to 1000)" },
       { invocation: "--min-copies <n>", description: "vamp-candidates: copies in the last 24h, at least" },
+      { invocation: "--since <iso-8601>", description: "events: list only events at or after this time" },
+      { invocation: "--before <cursor>", description: "events: continue the page a previous answer's cursor names" },
       { invocation: "--stage <stage>", description: "vamp-candidates: final_stretch, graduated or all (default)" },
       {
         invocation: "--wallet <vault key>",
@@ -845,6 +856,7 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle token clusters <mint>",
       "candle token clusters <mint> --json",
+      "candle token events <mint> --kind signal --limit 50",
       "candle token forensics <mint>",
       "candle token vamp-candidates --stage graduated --json",
     ],

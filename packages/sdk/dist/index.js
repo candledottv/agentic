@@ -4846,6 +4846,21 @@ class CandleClient {
     const params = new URLSearchParams({ bucket, ...chain ? { chain } : {} });
     return this.requestJson("GET", `/api/v1/markets/feed?${params.toString()}`);
   }
+  async getTokenEvents(chain, mint, opts = {}) {
+    const params = new URLSearchParams;
+    if (opts.since !== undefined)
+      params.set("since", opts.since);
+    if (opts.limit !== undefined)
+      params.set("limit", String(opts.limit));
+    if (opts.before !== undefined)
+      params.set("before", opts.before);
+    const query = params.toString();
+    const body = await this.requestJson("GET", `/api/v1/tokens/${chain}/${encodeURIComponent(mint)}/events${query ? `?${query}` : ""}`);
+    return {
+      events: opts.kind === undefined ? body.events : body.events.filter((event) => event.kind === opts.kind),
+      nextCursor: body.nextCursor
+    };
+  }
   async verify(chain, mint) {
     return this.requestJson("GET", `/api/v1/verify/${chain}/${encodeURIComponent(mint)}`);
   }
@@ -6489,7 +6504,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.8";
+var SDK_VERSION = "0.6.9";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

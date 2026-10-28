@@ -524,7 +524,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.1";
+var CLI_VERSION = "0.13.2";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -74377,15 +74377,20 @@ var HELP = {
   },
   token: {
     group: "Account",
-    summary: "Token cluster analysis, forensics and the vamp finder",
-    description: "clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
+    summary: "Token events, cluster analysis, forensics and the vamp finder",
+    description: "events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
     usage: [
       "candle token clusters <mint> [--chain solana|hood] [--json]",
+      "candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]",
       "candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes] [--json]",
       "candle token vamp-candidates [--limit <n>] [--min-copies <n>] [--stage final_stretch|graduated|all] [--wallet <vault key>] [--yes] [--json]"
     ],
     rows: [
       { invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" },
+      {
+        invocation: "events <mint>",
+        description: "Signals, callouts and tracked-wallet trades for one token, one per line"
+      },
       { invocation: "forensics <mint>", description: "Token forensics; may cost a per-use payment past the free rate" },
       {
         invocation: "vamp-candidates",
@@ -74394,8 +74399,14 @@ var HELP = {
     ],
     flags: [
       { invocation: "--chain <chain>", description: "solana (default) or hood; Hood cluster analysis is unavailable" },
-      { invocation: "--limit <n>", description: "vamp-candidates: how many to list" },
+      {
+        invocation: "--kind <kind>",
+        description: "events: trade, signal or callout; filters the page locally (the route has no kind filter)"
+      },
+      { invocation: "--limit <n>", description: "events or vamp-candidates: how many to read (events: 1 to 1000)" },
       { invocation: "--min-copies <n>", description: "vamp-candidates: copies in the last 24h, at least" },
+      { invocation: "--since <iso-8601>", description: "events: list only events at or after this time" },
+      { invocation: "--before <cursor>", description: "events: continue the page a previous answer's cursor names" },
       { invocation: "--stage <stage>", description: "vamp-candidates: final_stretch, graduated or all (default)" },
       {
         invocation: "--wallet <vault key>",
@@ -74406,6 +74417,7 @@ var HELP = {
     examples: [
       "candle token clusters <mint>",
       "candle token clusters <mint> --json",
+      "candle token events <mint> --kind signal --limit 50",
       "candle token forensics <mint>",
       "candle token vamp-candidates --stage graduated --json"
     ],
@@ -88966,6 +88978,9 @@ function formatQuantity(value) {
     return "?";
   return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
 }
+function shortAddress2(address) {
+  return shortId(address);
+}
 
 // src/commands/lp.ts
 init_swap();
@@ -99366,6 +99381,148 @@ async function tokenClusters(args, ctx) {
   return 0;
 }
 
+// src/commands/token-events.ts
+init_args();
+init_client();
+init_deps();
+init_human_output();
+init_render();
+var KINDS = ["trade", "signal", "callout"];
+var USAGE10 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
+function readEventsBody(body) {
+  if (body === null || typeof body !== "object" || !Array.isArray(body.events))
+    return null;
+  const typed = body;
+  const cursor = typed.nextCursor;
+  return typed.success === true && (cursor === null || typeof cursor === "string") ? typed : null;
+}
+function who(event) {
+  if (event.kind === "callout") {
+    const caller = event.caller.handle ?? event.caller.name ?? "unknown";
+    return event.caller.rank === null ? caller : `${caller} (rank ${event.caller.rank})`;
+  }
+  const wallet3 = event.wallet;
+  if (!wallet3)
+    return "unattributed";
+  return `${wallet3.name ?? shortAddress2(wallet3.address)} (${wallet3.walletKind})`;
+}
+function action(event) {
+  switch (event.kind) {
+    case "trade": {
+      const doing = event.side === "buy" ? "bought" : "sold";
+      const size = event.usd === null ? "size not known" : formatUsd(event.usd);
+      const at3 = event.priceUsd === null || event.priceUsd === undefined ? "" : ` at ${formatPrice(event.priceUsd)}`;
+      const outcome = event.side === "sell" && event.result ? `, ${event.result}` : "";
+      return { doing, detail: `${size}${at3}${outcome}` };
+    }
+    case "signal":
+      return { doing: event.pattern, detail: event.summary };
+    case "callout": {
+      const size = event.size === null ? "size not known" : formatUsd(event.size);
+      const cap = event.marketCapUsd === null || event.marketCapUsd === undefined ? "" : ` at ${formatUsd(event.marketCapUsd, { compact: true })} MC`;
+      return { doing: "called out", detail: `${size}${cap}` };
+    }
+  }
+}
+function eventLine(event, widths) {
+  const { doing, detail } = action(event);
+  return [
+    formatTime(event.at).padEnd(widths.time),
+    event.kind.padEnd(widths.kind),
+    who(event).padEnd(widths.who),
+    doing,
+    detail
+  ].filter((cell) => cell.trim().length > 0).join("  ").trimEnd();
+}
+async function tokenEvents(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--kind", "--since", "--limit", "--before"] });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const chain2 = parsed.values["--chain"] ?? "solana";
+  const kind = parsed.values["--kind"];
+  const limit = parsed.values["--limit"];
+  const since = parsed.values["--since"];
+  const before = parsed.values["--before"];
+  if (parsed.positionals.length !== 1 || chain2 !== "solana" && chain2 !== "hood") {
+    writeUsageFailure(ctx.deps, USAGE10, ctx.json);
+    return 2;
+  }
+  if (kind !== undefined && !KINDS.includes(kind)) {
+    writeUsageFailure(ctx.deps, USAGE10, ctx.json);
+    return 2;
+  }
+  if (limit !== undefined && !/^[1-9][0-9]{0,3}$/.test(limit) || Number(limit) > 1000) {
+    writeUsageFailure(ctx.deps, "Usage: --limit is an integer from 1 to 1000", ctx.json);
+    return 2;
+  }
+  if (since !== undefined && !Number.isFinite(Date.parse(since))) {
+    writeUsageFailure(ctx.deps, "Usage: --since is an ISO 8601 time, e.g. 2026-10-28T00:00:00Z", ctx.json);
+    return 2;
+  }
+  const mint = parsed.positionals[0];
+  const query = new URLSearchParams;
+  if (limit !== undefined)
+    query.set("limit", limit);
+  if (since !== undefined)
+    query.set("since", since);
+  if (before !== undefined)
+    query.set("before", before);
+  const search = query.toString();
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  const result = await apiRequest(`/api/v1/tokens/${chain2}/${encodeURIComponent(mint)}/events${search ? `?${search}` : ""}`, {
+    apiUrl: ctx.apiUrl,
+    auth: apiKey ? "key" : "none",
+    credentials: apiKey ? { apiKey } : {},
+    env: ctx.deps.env,
+    fetch: ctx.deps.fetch
+  });
+  if (!result.ok) {
+    writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: apiKey ? "key" : "none" }, ctx.json);
+    return 1;
+  }
+  const body = readEventsBody(result.body);
+  if (!body) {
+    writeFailure(ctx.deps, {
+      ok: false,
+      status: result.status,
+      code: "BAD_RESPONSE",
+      message: "The events answer was not readable.",
+      raw: result.body
+    }, { apiUrl: ctx.apiUrl, authType: apiKey ? "key" : "none" }, ctx.json);
+    return 1;
+  }
+  const events = kind === undefined ? body.events : body.events.filter((event) => event.kind === kind);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data: { events, nextCursor: body.nextCursor } })}
+`);
+    return 0;
+  }
+  const out = ctx.deps.stdout;
+  writeFields(ctx.deps, "stdout", [
+    ["Token", mint],
+    ["Chain", chain2],
+    ["Events", `${events.length}${kind !== undefined ? ` (${kind} only)` : ""}`]
+  ]);
+  if (events.length === 0)
+    out.write(`No events on this page.
+`);
+  else {
+    const widths = {
+      time: Math.max(...events.map((event) => formatTime(event.at).length)),
+      kind: Math.max(...events.map((event) => event.kind.length)),
+      who: Math.max(...events.map((event) => who(event).length))
+    };
+    for (const event of events)
+      out.write(`${eventLine(event, widths)}
+`);
+  }
+  if (body.nextCursor !== null)
+    writeFields(ctx.deps, "stdout", [["Next page", `--before ${body.nextCursor}`]]);
+  return 0;
+}
+
 // src/commands/token-paid.ts
 init_args();
 init_deps();
@@ -100059,7 +100216,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE10 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE11 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -100155,7 +100312,7 @@ async function transfer(args, ctx) {
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok) {
-    writeUsageFailure(ctx.deps, USAGE10, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE11, ctx.json);
     return 2;
   }
   const to = flags2["--to"];
@@ -107917,7 +108074,7 @@ init_human_output();
 init_release();
 import { dirname as dirname11, join as join15 } from "node:path";
 init_key_output();
-var USAGE11 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE12 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -107949,19 +108106,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE11}`, json);
+${USAGE12}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeScreenUsageFailure(deps, `verify takes exactly one file.
-${USAGE11}`, json);
+${USAGE12}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeScreenUsageFailure(deps, `--bundle is required.
-${USAGE11}`, json);
+${USAGE12}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -107975,7 +108132,7 @@ ${USAGE11}`, json);
   }
   if (resolved.kind === "absent") {
     writeScreenUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE11}`, json);
+${USAGE12}`, json);
     return 2;
   }
   const identity3 = resolved.uri;
@@ -108224,7 +108381,7 @@ init_solana_lite();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID11 } from "node:crypto";
-var USAGE12 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE13 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -108487,7 +108644,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE12}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE13}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -108498,7 +108655,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID11()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE12, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE13, ctx.json);
     return 2;
   }
   const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
@@ -108902,7 +109059,12 @@ var COMMANDS = {
   fees: { bare: feesList, subcommands: { claim: feesClaim } },
   plans: { bare: plans },
   token: {
-    subcommands: { clusters: tokenClusters, forensics: tokenForensics, "vamp-candidates": tokenVampCandidates }
+    subcommands: {
+      clusters: tokenClusters,
+      events: tokenEvents,
+      forensics: tokenForensics,
+      "vamp-candidates": tokenVampCandidates
+    }
   },
   spend: {
     bare: spendShow,

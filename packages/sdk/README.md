@@ -37,6 +37,7 @@ const candle = new CandleClient({
 const market = await candle.getMarket("solana", "So11...mint")
 const quote = await candle.getQuote("solana", "So11...mint", { side: "buy", amountIn: "1000000000" })
 const feed = await candle.getFeed("new", "solana")
+const events = await candle.getTokenEvents("solana", "So11...mint", { kind: "signal", since: "2026-10-28T00:00:00Z" })
 const verdict = await candle.verify("hood", "0xToken")
 
 // Presets: fetch once, expand locally into a launch body.
