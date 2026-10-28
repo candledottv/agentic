@@ -19,7 +19,7 @@
  *   endpoints (launch, dry run, jobs, activity, uploads) refuse to fetch at all without one,
  *   throwing a plain `Error` that names the missing option, so a misconfigured agent fails
  *   fast and locally instead of with a server 401.
- * - Idempotent launch retries: `launch()` fills in `clientLaunchId` ("sdk-" + UUID) when the
+ * - Embedded launch retries: `launch()` fills in `clientLaunchId` ("sdk-" + UUID) when the
  *   caller omits one and re-sends the SAME id on network errors, non-envelope 5xx responses,
  *   retryable envelopes with 5xx status, and the retryable in-flight 409. It never retries a
  *   non-retryable envelope (IDEMPOTENCY_CONFLICT with a different body, LAUNCH_DISABLED, every
@@ -131,6 +131,8 @@ import {
 } from "./hyperliquid-withdraw"
 import { fromBase64 } from "./internal/encoding"
 import { describeRpcEndpoint } from "./internal/rpc-endpoint"
+import type { GeneratedLaunchFields } from "./launch-definition"
+import { embeddedLaunchWallet, launchBody, launchInputError, validateLaunchInput } from "./launch-input"
 import {
   type PerpsFillsPage,
   type PerpsFundingPage,
@@ -342,58 +344,16 @@ export interface LaunchCurve {
   threshold: string
 }
 
-/** POST /api/v1/launch/headless request body. The server is the authoritative validator. */
-export interface LaunchRequest {
-  /** Idempotency key, unique per account. launch() generates "sdk-" + UUID when absent. */
-  clientLaunchId?: string
-  chain?: Chain
-  quoteAsset?: string
-  mode?: LaunchTier
-  /** `mode: "exp-custom"` only, and required there. Dry-run first: the API checks the limits. */
-  curve?: LaunchCurve
-  /**
-   * An `exp-` mode only: an extra creator fee of 100 or 200 basis points on top of the curve's 1%
-   * and the pool's 0.5%, paid to the creator in full. 0 is the same as leaving it out.
-   */
-  creatorFeeBps?: 0 | 100 | 200
-  stakerAllocationBps?: number
-  /** Solana only: the graduated pool's fee. Omitted keeps the flat 50 bps pool. */
-  poolFee?: PoolFee
-  /**
-   * Solana preset tiers only: "curve_price" opens the pool at the curve's last price and burns the rest.
-   * Omitted defaults to "curve_price" when stakerAllocationBps plus the team allocation fit the tier's
-   * limit (dry-run graduation.maxStakerCarveBps), otherwise falls back to "legacy" without refusal.
-   * Set "legacy" explicitly to opt out. Explicit "curve_price" is refused above the limit.
-   */
-  poolOpen?: "legacy" | "curve_price"
-  /** Solana exp- curves only: "full_range" opens the pool across the whole price range. Omitted is "floor". */
-  expPoolShape?: "floor" | "full_range"
-  /** Hood only, required there: which Uniswap version the curve graduates through. */
-  dexVersion?: "v3" | "v4"
-  /** Initial dev buy. Solana: JSON number in the pair's base units. Hood: decimal string in wei. */
+/** Shared launch fields, plus SDK wallet identifiers and the legacy raw first buy. */
+export interface LaunchRequest extends Omit<GeneratedLaunchFields, "wallet" | "dryRun"> {
+  /** Omitted means embedded. A TEE wallet may be named by label, address or id. */
+  wallet?: string | { linkedWalletId: string; privyWalletId: string }
+  /** @deprecated Use buy, a decimal string in whole quote units, for one release. */
   buyAmount?: number | string
-  name: string
-  symbol: string
-  /** Roughly SQUARE (at most 1.5:1): this is the avatar. Wider is rejected as IMAGE_WRONG_SHAPE. */
-  imageUrl: string
-  /**
-   * Optional WIDE artwork (wider than 1.5:1, e.g. 1200x630) for the token page's banner strip.
-   * Where a share card or OG image belongs; a square image here is rejected as
-   * BANNER_WRONG_SHAPE. Omitted, the strip falls back to `imageUrl`.
-   */
-  bannerUrl?: string
-  description?: string
-  socials?: { twitter?: string; telegram?: string; website?: string; discord?: string }
-  /*
-    No streamerAddress. Who earns a token's streamer share is decided by the platform from
-    whoever is live when the launch is submitted, not named by the caller. Sending the field is a
-    type error rather than a value the API quietly drops.
-  */
-  visibility?: "production" | "test" | "local" | "hidden"
 }
 
 /** POST /api/v1/launch/self/build request body. Extends LaunchRequest with linkedWalletId. */
-export interface BuildSelfLaunchRequest extends LaunchRequest {
+export interface BuildSelfLaunchRequest extends Omit<LaunchRequest, "wallet" | "buy"> {
   linkedWalletId: string
 }
 
@@ -3155,7 +3115,7 @@ export interface AtomicFirstBuyRequest {
  * buy via `firstBuys` instead, so it lands as bundle leg 1 against a still-virgin curve) plus the
  * creator's own payer and 1-4 first-buy legs.
  */
-export interface BuildAtomicLaunchRequest extends Omit<LaunchRequest, "buyAmount"> {
+export interface BuildAtomicLaunchRequest extends Omit<LaunchRequest, "buyAmount" | "buy" | "wallet"> {
   payer: AtomicLaunchPayer
   /** 1 to 4 buy legs, sharing the launch transaction's own recent blockhash and landing atomically with it (Jito's 5-transaction bundle cap: 1 launch + up to 4 buys). */
   firstBuys: AtomicFirstBuyRequest[]
@@ -3938,13 +3898,74 @@ export class CandleClient {
 
   // -- keyed endpoints ------------------------------------------------------
 
-  async dryRunLaunch(req: LaunchRequest): Promise<DryRunResult> {
+  async dryRunLaunch(req: LaunchRequest): Promise<DryRunResult | SelfLaunchDryRunResult> {
     this.requireKey("dryRunLaunch()")
-    return this.requestJson<DryRunResult>("POST", "/api/v1/launch/headless/dry-run", req)
+    const { body, wallet } = await this.prepareLaunch(req)
+    return wallet
+      ? this.dryRunSelfLaunch({ ...body, linkedWalletId: wallet.linkedWalletId })
+      : this.requestJson<DryRunResult>("POST", "/api/v1/launch/headless/dry-run", body)
+  }
+
+  /** Resolve only wallets explicitly named by this caller; server gates remain authoritative. */
+  private async prepareLaunch(req: LaunchRequest) {
+    validateLaunchInput(req)
+    let wallet: { linkedWalletId: string; privyWalletId: string } | undefined
+    let chain = req.chain
+    if (typeof req.wallet === "object") {
+      wallet = req.wallet
+    } else if (typeof req.wallet === "string" && !embeddedLaunchWallet(req.wallet)) {
+      type Row = { id: string; address: string; label?: string; chain: string; privyWalletId?: string }
+      const rows: Row[] = []
+      const cursors = new Set<string>()
+      let cursor: string | undefined
+      while (true) {
+        const page = await this.requestJson<{ page: Row[]; isDone: boolean; continueCursor?: string | null }>(
+          "GET",
+          `/api/v1/agent/wallets/trading${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+        )
+        rows.push(...page.page)
+        if (page.isDone === true) break
+        if (!page.continueCursor || cursors.has(page.continueCursor))
+          throw launchInputError("wallet", "Wallet discovery did not complete.")
+        cursor = page.continueCursor
+        cursors.add(cursor)
+      }
+      const matches = rows.filter(
+        (row) =>
+          row.id === req.wallet ||
+          row.label === req.wallet ||
+          (row.chain === "evm"
+            ? row.address.toLowerCase() === String(req.wallet).toLowerCase()
+            : row.address === req.wallet),
+      )
+      if (matches.length !== 1) {
+        const choices = (matches.length ? matches : rows)
+          .map((row) => `${row.label ?? row.id} (${row.id}, ${row.address})`)
+          .join("; ")
+        throw launchInputError(
+          "wallet",
+          `Name one TEE wallet by label, id or address. Matches: ${choices || "none"}.`,
+          "TEE_WALLET_REQUIRED",
+        )
+      }
+      const row = matches[0] as Row
+      if (!row.privyWalletId)
+        throw launchInputError("wallet", "The wallet has no signing identifier.", "SIGNER_UNAVAILABLE")
+      const walletChain = row.chain === "solana" ? "solana" : row.chain === "evm" ? "hood" : undefined
+      if (!walletChain) throw launchInputError("wallet", "The wallet chain is unsupported.", "CHAIN_MISMATCH")
+      if (chain !== undefined && chain !== walletChain)
+        throw launchInputError("chain", "The launch chain disagrees with the named wallet.", "CHAIN_MISMATCH")
+      chain = walletChain
+      wallet = { linkedWalletId: row.id, privyWalletId: row.privyWalletId }
+    }
+    return { body: launchBody(req, chain), wallet }
   }
 
   /**
-   * Blocking launch with idempotent retries. Generates `clientLaunchId` when absent and
+   * Launch from the named wallet (embedded by default), optionally with a whole-unit `buy`.
+   * TEE wallets use selfLaunch()'s signing and recovery flow, including SelfLaunchOutcomeError
+   * on Hood. Embedded launches use the idempotent retries described below.
+   * Generates `clientLaunchId` when absent and
    * re-sends the SAME id on retryable failures; see the module doc for the exact policy.
    *
    * The id this call sent, yours or the generated one, is on the result
@@ -3958,8 +3979,10 @@ export class CandleClient {
    */
   async launch(req: LaunchRequest): Promise<LaunchResult> {
     this.requireKey("launch()")
+    const prepared = await this.prepareLaunch(req)
+    if (prepared.wallet) return this.selfLaunch({ ...prepared.body, ...prepared.wallet })
     const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId()
-    const body: LaunchRequest = { ...req, clientLaunchId }
+    const body = { ...prepared.body, clientLaunchId }
     return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
       let lastError: unknown
       for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
@@ -3989,8 +4012,11 @@ export class CandleClient {
    */
   async launchAsync(req: LaunchRequest): Promise<AcceptedJob> {
     this.requireKey("launchAsync()")
+    validateLaunchInput(req)
+    if (!embeddedLaunchWallet(req.wallet))
+      throw launchInputError("wallet", "launchAsync() supports embedded launches; use launch() for a TEE wallet.")
     const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId()
-    const body = { ...req, clientLaunchId, async: true }
+    const body = { ...launchBody(req), clientLaunchId, async: true }
     return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
       const accepted = await this.requestJson<AcceptedJob>("POST", "/api/v1/launch/headless", body, op)
       return { ...accepted, clientLaunchId: accepted.clientLaunchId ?? clientLaunchId }
@@ -4382,6 +4408,8 @@ export class CandleClient {
    * recording anything; the `clientLaunchId` stays unused. Does not check the payer's balance, the
    * day cap, a `clientLaunchId` already used with another body or payer, or a Solana TEE wallet's
    * USD spend window; `buildSelfLaunch()` can still refuse for those.
+   *
+   * @deprecated Use dryRunLaunch({ ...fields, wallet }) for one release.
    */
   async dryRunSelfLaunch(req: BuildSelfLaunchRequest): Promise<SelfLaunchDryRunResult> {
     this.requireKey("dryRunSelfLaunch()")
@@ -4400,6 +4428,8 @@ export class CandleClient {
    * round trip (build -> sign -> broadcast -> confirm) in one call for both Solana and Hood; call
    * this method directly only to drive the steps yourself. See "Self-signed launches" in
    * docs/headless-launch.md.
+   *
+   * @deprecated Use launch({ ...fields, wallet }) for one release.
    */
   async buildSelfLaunch(req: BuildSelfLaunchRequest): Promise<BuildSelfLaunchResult> {
     return this.postSelfLaunchBuild(req)
@@ -4977,6 +5007,8 @@ export class CandleClient {
    * error's doc describes for each `feeOutcome`. This method sends nothing a second time and
    * does not pay a fee again. An error from before the create-curve receipt is unchanged,
    * including a create-curve broadcast whose answer was lost: that case keeps no hash.
+   *
+   * @deprecated Use launch({ ...fields, wallet }) for one release.
    */
   async selfLaunch(req: SelfLaunchRequest): Promise<ConfirmSelfLaunchResult> {
     const { privyWalletId, ...launchReq } = req
@@ -6717,7 +6749,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.7"
+export const SDK_VERSION = "0.6.8"
 
 let sdkUpdateWarned = false
 

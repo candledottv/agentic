@@ -19,7 +19,7 @@
  *   endpoints (launch, dry run, jobs, activity, uploads) refuse to fetch at all without one,
  *   throwing a plain `Error` that names the missing option, so a misconfigured agent fails
  *   fast and locally instead of with a server 401.
- * - Idempotent launch retries: `launch()` fills in `clientLaunchId` ("sdk-" + UUID) when the
+ * - Embedded launch retries: `launch()` fills in `clientLaunchId` ("sdk-" + UUID) when the
  *   caller omits one and re-sends the SAME id on network errors, non-envelope 5xx responses,
  *   retryable envelopes with 5xx status, and the retryable in-flight 409. It never retries a
  *   non-retryable envelope (IDEMPOTENCY_CONFLICT with a different body, LAUNCH_DISABLED, every
@@ -45,6 +45,7 @@ import { type PerpsBookOptions, type PerpsBookResult, type PerpsCandlesOptions, 
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
 import { type PerpsAccountLine, type PerpsAccountReport, type PerpsPortfolioSection, type PerpsPositionRow, type PerpsRiskReport, type PerpsRiskSettings, type PerpsRiskThresholds, type PerpsRiskThresholdsReport, type PerpsWatchEvent } from "./hyperliquid-risk";
 import { type PerpsWithdrawAuthorization, type PerpsWithdrawBuild, type PerpsWithdrawPins } from "./hyperliquid-withdraw";
+import type { GeneratedLaunchFields } from "./launch-definition";
 import { type PerpsFillsPage, type PerpsFundingPage, type PerpsHistoryOptions } from "./perps-history";
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans";
 import type { SecretStore } from "./secret-store";
@@ -230,57 +231,18 @@ export interface LaunchCurve {
     /** G: the quote the curve raises before it graduates. */
     threshold: string;
 }
-/** POST /api/v1/launch/headless request body. The server is the authoritative validator. */
-export interface LaunchRequest {
-    /** Idempotency key, unique per account. launch() generates "sdk-" + UUID when absent. */
-    clientLaunchId?: string;
-    chain?: Chain;
-    quoteAsset?: string;
-    mode?: LaunchTier;
-    /** `mode: "exp-custom"` only, and required there. Dry-run first: the API checks the limits. */
-    curve?: LaunchCurve;
-    /**
-     * An `exp-` mode only: an extra creator fee of 100 or 200 basis points on top of the curve's 1%
-     * and the pool's 0.5%, paid to the creator in full. 0 is the same as leaving it out.
-     */
-    creatorFeeBps?: 0 | 100 | 200;
-    stakerAllocationBps?: number;
-    /** Solana only: the graduated pool's fee. Omitted keeps the flat 50 bps pool. */
-    poolFee?: PoolFee;
-    /**
-     * Solana preset tiers only: "curve_price" opens the pool at the curve's last price and burns the rest.
-     * Omitted defaults to "curve_price" when stakerAllocationBps plus the team allocation fit the tier's
-     * limit (dry-run graduation.maxStakerCarveBps), otherwise falls back to "legacy" without refusal.
-     * Set "legacy" explicitly to opt out. Explicit "curve_price" is refused above the limit.
-     */
-    poolOpen?: "legacy" | "curve_price";
-    /** Solana exp- curves only: "full_range" opens the pool across the whole price range. Omitted is "floor". */
-    expPoolShape?: "floor" | "full_range";
-    /** Hood only, required there: which Uniswap version the curve graduates through. */
-    dexVersion?: "v3" | "v4";
-    /** Initial dev buy. Solana: JSON number in the pair's base units. Hood: decimal string in wei. */
-    buyAmount?: number | string;
-    name: string;
-    symbol: string;
-    /** Roughly SQUARE (at most 1.5:1): this is the avatar. Wider is rejected as IMAGE_WRONG_SHAPE. */
-    imageUrl: string;
-    /**
-     * Optional WIDE artwork (wider than 1.5:1, e.g. 1200x630) for the token page's banner strip.
-     * Where a share card or OG image belongs; a square image here is rejected as
-     * BANNER_WRONG_SHAPE. Omitted, the strip falls back to `imageUrl`.
-     */
-    bannerUrl?: string;
-    description?: string;
-    socials?: {
-        twitter?: string;
-        telegram?: string;
-        website?: string;
-        discord?: string;
+/** Shared launch fields, plus SDK wallet identifiers and the legacy raw first buy. */
+export interface LaunchRequest extends Omit<GeneratedLaunchFields, "wallet" | "dryRun"> {
+    /** Omitted means embedded. A TEE wallet may be named by label, address or id. */
+    wallet?: string | {
+        linkedWalletId: string;
+        privyWalletId: string;
     };
-    visibility?: "production" | "test" | "local" | "hidden";
+    /** @deprecated Use buy, a decimal string in whole quote units, for one release. */
+    buyAmount?: number | string;
 }
 /** POST /api/v1/launch/self/build request body. Extends LaunchRequest with linkedWalletId. */
-export interface BuildSelfLaunchRequest extends LaunchRequest {
+export interface BuildSelfLaunchRequest extends Omit<LaunchRequest, "wallet" | "buy"> {
     linkedWalletId: string;
 }
 /** POST /api/v1/launch/self/build response for Solana (unsigned transaction). */
@@ -2898,7 +2860,7 @@ export interface AtomicFirstBuyRequest {
  * buy via `firstBuys` instead, so it lands as bundle leg 1 against a still-virgin curve) plus the
  * creator's own payer and 1-4 first-buy legs.
  */
-export interface BuildAtomicLaunchRequest extends Omit<LaunchRequest, "buyAmount"> {
+export interface BuildAtomicLaunchRequest extends Omit<LaunchRequest, "buyAmount" | "buy" | "wallet"> {
     payer: AtomicLaunchPayer;
     /** 1 to 4 buy legs, sharing the launch transaction's own recent blockhash and landing atomically with it (Jito's 5-transaction bundle cap: 1 launch + up to 4 buys). */
     firstBuys: AtomicFirstBuyRequest[];
@@ -3166,9 +3128,14 @@ export declare class CandleClient {
      * it. A server that predates the table answers 404 (`CandleApiError`).
      */
     getPlans(): Promise<AgentPlansResult>;
-    dryRunLaunch(req: LaunchRequest): Promise<DryRunResult>;
+    dryRunLaunch(req: LaunchRequest): Promise<DryRunResult | SelfLaunchDryRunResult>;
+    /** Resolve only wallets explicitly named by this caller; server gates remain authoritative. */
+    private prepareLaunch;
     /**
-     * Blocking launch with idempotent retries. Generates `clientLaunchId` when absent and
+     * Launch from the named wallet (embedded by default), optionally with a whole-unit `buy`.
+     * TEE wallets use selfLaunch()'s signing and recovery flow, including SelfLaunchOutcomeError
+     * on Hood. Embedded launches use the idempotent retries described below.
+     * Generates `clientLaunchId` when absent and
      * re-sends the SAME id on retryable failures; see the module doc for the exact policy.
      *
      * The id this call sent, yours or the generated one, is on the result
@@ -3397,6 +3364,8 @@ export declare class CandleClient {
      * recording anything; the `clientLaunchId` stays unused. Does not check the payer's balance, the
      * day cap, a `clientLaunchId` already used with another body or payer, or a Solana TEE wallet's
      * USD spend window; `buildSelfLaunch()` can still refuse for those.
+     *
+     * @deprecated Use dryRunLaunch({ ...fields, wallet }) for one release.
      */
     dryRunSelfLaunch(req: BuildSelfLaunchRequest): Promise<SelfLaunchDryRunResult>;
     /**
@@ -3411,6 +3380,8 @@ export declare class CandleClient {
      * round trip (build -> sign -> broadcast -> confirm) in one call for both Solana and Hood; call
      * this method directly only to drive the steps yourself. See "Self-signed launches" in
      * docs/headless-launch.md.
+     *
+     * @deprecated Use launch({ ...fields, wallet }) for one release.
      */
     buildSelfLaunch(req: BuildSelfLaunchRequest): Promise<BuildSelfLaunchResult>;
     /** buildSelfLaunch()'s request; selfLaunch() passes its `op` so its exits can expose the id. */
@@ -3680,6 +3651,8 @@ export declare class CandleClient {
      * error's doc describes for each `feeOutcome`. This method sends nothing a second time and
      * does not pay a fee again. An error from before the create-curve receipt is unchanged,
      * including a create-curve broadcast whose answer was lost: that case keeps no hash.
+     *
+     * @deprecated Use launch({ ...fields, wallet }) for one release.
      */
     selfLaunch(req: SelfLaunchRequest): Promise<ConfirmSelfLaunchResult>;
     /** selfLaunch()'s steps. Every error leaves through selfLaunch()'s runOperation(), which adds the id. */
@@ -4114,7 +4087,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.7";
+export declare const SDK_VERSION = "0.6.8";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

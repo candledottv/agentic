@@ -25,6 +25,7 @@ import {
   type PortfolioResult,
   type PresetsPayload,
   type SelfBalancesResult,
+  type SelfLaunchRequest,
   type SpendLimitsResult,
   type SubmitAtomicLaunchRequest,
   type SubmitTradeRequest,
@@ -3040,7 +3041,12 @@ describe("linked-wallet signing relay + one-shot flows", () => {
     })
   })
 
-  describe("selfLaunch()", () => {
+  describe.each(["selfLaunch", "launch"] as const)("%s TEE signing and recovery", (method) => {
+    const launchSelf = (client: CandleClient, req: SelfLaunchRequest) => {
+      if (method === "selfLaunch") return client.selfLaunch(req)
+      const { linkedWalletId, privyWalletId, ...fields } = req
+      return client.launch({ ...fields, wallet: { linkedWalletId, privyWalletId } })
+    }
     const BUILD_SELF_LAUNCH_SOLANA = {
       success: true,
       transaction: "AQADABc5unsignedlaunch",
@@ -3069,6 +3075,45 @@ describe("linked-wallet signing relay + one-shot flows", () => {
       expiresAt: 1692345678000,
     }
 
+    test("launch selects a named TEE wallet and signs, broadcasts and confirms", async () => {
+      const store = await keyedSecretStore()
+      const { client, calls } = makeClient(
+        { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+        [
+          json(200, {
+            page: [
+              {
+                id: LINKED_WALLET_ID,
+                privyWalletId: PRIVY_WALLET_ID,
+                address: "Address1",
+                label: "spider-01",
+                chain: "solana",
+              },
+            ],
+            isDone: true,
+          }),
+          json(200, BUILD_SELF_LAUNCH_SOLANA),
+          json(200, SIGN_RELAY_OK),
+          solanaRpcOk("BroadcastSig222"),
+          json(200, LAUNCH_OK),
+        ],
+      )
+      const result = await client.launch({ ...LAUNCH_REQ, wallet: "spider-01", clientLaunchId: "run-linked-1" })
+      expect(result.clientLaunchId).toBe("run-linked-1")
+      expect(calls.map((call) => call.url)).toEqual([
+        "https://api.test/api/v1/agent/wallets/trading",
+        "https://api.test/api/v1/launch/self/build",
+        SIGN_RELAY_URL,
+        SOLANA_RPC,
+        "https://api.test/api/v1/launch/self/confirm",
+      ])
+      expect(JSON.parse(String(calls[1]?.body))).toEqual({
+        ...LAUNCH_REQ,
+        clientLaunchId: "run-linked-1",
+        linkedWalletId: LINKED_WALLET_ID,
+      })
+    })
+
     test("BE-1847: a creator bundle signs both legs and submits them together, with no RPC broadcast", async () => {
       const store = await keyedSecretStore()
       const built = {
@@ -3095,12 +3140,19 @@ describe("linked-wallet signing relay + one-shot flows", () => {
           }),
         ],
       )
-      const result = await client.selfLaunch({
-        ...LAUNCH_REQ,
-        buyAmount: "10000000",
-        linkedWalletId: LINKED_WALLET_ID,
-        privyWalletId: PRIVY_WALLET_ID,
-      })
+      const result = await (method === "launch"
+        ? client.launch({
+            ...LAUNCH_REQ,
+            buy: "0.1",
+            wallet: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+          })
+        : launchSelf(client, {
+            ...LAUNCH_REQ,
+            buyAmount: "10000000",
+            linkedWalletId: LINKED_WALLET_ID,
+            privyWalletId: PRIVY_WALLET_ID,
+          }))
+      expect(JSON.parse(String(calls[0]?.body)).buyAmount).toBe(method === "launch" ? 100000000 : "10000000")
       expect(result.devBuy?.signature).toBe("buy-sig")
       expect(calls.map((c) => String(c.url).replace("https://api.test", ""))).toEqual([
         "/api/v1/launch/self/build",
@@ -3137,14 +3189,12 @@ describe("linked-wallet signing relay + one-shot flows", () => {
           json(502, { status, bundleId: built.bundleId, retryable: false }),
         ],
       )
-      const error = await client
-        .selfLaunch({
-          ...LAUNCH_REQ,
-          buyAmount: "10000000",
-          linkedWalletId: LINKED_WALLET_ID,
-          privyWalletId: PRIVY_WALLET_ID,
-        })
-        .catch((e) => e)
+      const error = await launchSelf(client, {
+        ...LAUNCH_REQ,
+        buyAmount: "10000000",
+        linkedWalletId: LINKED_WALLET_ID,
+        privyWalletId: PRIVY_WALLET_ID,
+      }).catch((e) => e)
       expect(error).toBeInstanceOf(CandleApiError)
       expect(error.stage).toBe(status === "failed" ? "reverted" : "unconfirmed")
       expect(operationIds(error)).toEqual({ clientLaunchId: LAUNCH_REQ.clientLaunchId, bundleId: built.bundleId })
@@ -3154,14 +3204,12 @@ describe("linked-wallet signing relay + one-shot flows", () => {
 
     test("BE-1847: an older API's combined creator transaction is never signed or broadcast", async () => {
       const { client, calls } = makeClient(KEYED, [json(200, BUILD_SELF_LAUNCH_SOLANA)])
-      const error = await client
-        .selfLaunch({
-          ...LAUNCH_REQ,
-          buyAmount: "10000000",
-          linkedWalletId: LINKED_WALLET_ID,
-          privyWalletId: PRIVY_WALLET_ID,
-        })
-        .catch((e) => e)
+      const error = await launchSelf(client, {
+        ...LAUNCH_REQ,
+        buyAmount: "10000000",
+        linkedWalletId: LINKED_WALLET_ID,
+        privyWalletId: PRIVY_WALLET_ID,
+      }).catch((e) => e)
       expect(String(error)).toContain("bundle support")
       expect(calls).toHaveLength(1)
     })
@@ -3177,7 +3225,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
           json(200, LAUNCH_OK),
         ],
       )
-      const result = await client.selfLaunch({
+      const result = await launchSelf(client, {
         ...LAUNCH_REQ,
         clientLaunchId: "run-linked-1",
         linkedWalletId: LINKED_WALLET_ID,
@@ -3206,7 +3254,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
           json(200, confirmed), // confirm
         ],
       )
-      const result = await client.selfLaunch({
+      const result = await launchSelf(client, {
         ...LAUNCH_REQ,
         chain: "hood",
         clientLaunchId: "run-linked-2",
@@ -3252,7 +3300,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
           json(200, confirmed),
         ],
       )
-      const result = await client.selfLaunch({
+      const result = await launchSelf(client, {
         ...LAUNCH_REQ,
         chain: "hood",
         clientLaunchId: "run-linked-3",
@@ -3285,7 +3333,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
         json(200, BUILD_SELF_LAUNCH_HOOD),
       ])
       await expect(
-        client.selfLaunch({
+        launchSelf(client, {
           ...LAUNCH_REQ,
           chain: "hood",
           clientLaunchId: "run-linked-2",
@@ -3335,18 +3383,16 @@ describe("linked-wallet signing relay + one-shot flows", () => {
           { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
           [json(200, build), ...evmSetupResponses(), ...evmLegResponses(CREATE_CURVE_HASH), ...afterCreateCurve],
         )
-        const error: unknown = await client
-          .selfLaunch({
-            ...LAUNCH_REQ,
-            chain: "hood",
-            clientLaunchId: build.clientLaunchId,
-            linkedWalletId: LINKED_WALLET_ID,
-            privyWalletId: PRIVY_WALLET_ID,
-          })
-          .then(
-            () => null,
-            (e: unknown) => e,
-          )
+        const error: unknown = await launchSelf(client, {
+          ...LAUNCH_REQ,
+          chain: "hood",
+          clientLaunchId: build.clientLaunchId,
+          linkedWalletId: LINKED_WALLET_ID,
+          privyWalletId: PRIVY_WALLET_ID,
+        }).then(
+          () => null,
+          (e: unknown) => e,
+        )
         return { client, calls, error }
       }
 
@@ -3534,18 +3580,16 @@ describe("linked-wallet signing relay + one-shot flows", () => {
           privyAppId: PRIVY_APP_ID,
           evmRpcUrl: EVM_RPC,
         })
-        const error: unknown = await client
-          .selfLaunch({
-            ...LAUNCH_REQ,
-            chain: "hood",
-            clientLaunchId: "run-linked-3",
-            linkedWalletId: LINKED_WALLET_ID,
-            privyWalletId: PRIVY_WALLET_ID,
-          })
-          .then(
-            () => null,
-            (e: unknown) => e,
-          )
+        const error: unknown = await launchSelf(client, {
+          ...LAUNCH_REQ,
+          chain: "hood",
+          clientLaunchId: "run-linked-3",
+          linkedWalletId: LINKED_WALLET_ID,
+          privyWalletId: PRIVY_WALLET_ID,
+        }).then(
+          () => null,
+          (e: unknown) => e,
+        )
         const typed = outcomeError(error)
         expect(typed).toMatchObject({ step: "confirm", feeOutcome: "landed", feeTxHash: FEE_HASH })
         expect(typed.cause).toBe(rejection)
@@ -3663,12 +3707,15 @@ describe("linked-wallet signing relay + one-shot flows", () => {
           evmRpcUrl: EVM_RPC,
         })
         const { clientLaunchId: _omitted, ...withoutId } = LAUNCH_REQ
-        const error: unknown = await client
-          .selfLaunch({ ...withoutId, chain: "hood", linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID })
-          .then(
-            () => null,
-            (e: unknown) => e,
-          )
+        const error: unknown = await launchSelf(client, {
+          ...withoutId,
+          chain: "hood",
+          linkedWalletId: LINKED_WALLET_ID,
+          privyWalletId: PRIVY_WALLET_ID,
+        }).then(
+          () => null,
+          (e: unknown) => e,
+        )
         const generated = outcomeError(error)
         expect(sentId).toMatch(/^sdk-/)
         expect(generated.clientLaunchId).toBe(sentId)
@@ -3722,18 +3769,16 @@ describe("linked-wallet signing relay + one-shot flows", () => {
             { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
             [json(200, BUILD_SELF_LAUNCH_HOOD_WITH_FEE), ...evmSetupResponses(), ...createCurveResponses],
           )
-          const error: unknown = await client
-            .selfLaunch({
-              ...LAUNCH_REQ,
-              chain: "hood",
-              clientLaunchId: "run-linked-3",
-              linkedWalletId: LINKED_WALLET_ID,
-              privyWalletId: PRIVY_WALLET_ID,
-            })
-            .then(
-              () => null,
-              (e: unknown) => e,
-            )
+          const error: unknown = await launchSelf(client, {
+            ...LAUNCH_REQ,
+            chain: "hood",
+            clientLaunchId: "run-linked-3",
+            linkedWalletId: LINKED_WALLET_ID,
+            privyWalletId: PRIVY_WALLET_ID,
+          }).then(
+            () => null,
+            (e: unknown) => e,
+          )
           expect(error).not.toBeInstanceOf(SelfLaunchOutcomeError)
           expect(operationIds(error)).toEqual({ clientLaunchId: "run-linked-3" })
           expect(counts(calls).confirms).toBe(0)
@@ -3789,7 +3834,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
             json(200, confirmedSecondAttempt), // confirm with the SECOND signature
           ],
         )
-        const result = await client.selfLaunch({
+        const result = await launchSelf(client, {
           ...LAUNCH_REQ,
           clientLaunchId: "run-linked-1",
           linkedWalletId: LINKED_WALLET_ID,
@@ -3826,14 +3871,12 @@ describe("linked-wallet signing relay + one-shot flows", () => {
             json(200, { jsonrpc: "2.0", id: 1, error: { code: -32603, message: "Internal JSON-RPC error" } }),
           ],
         )
-        const error = await client
-          .selfLaunch({
-            ...LAUNCH_REQ,
-            clientLaunchId: "run-linked-1",
-            linkedWalletId: LINKED_WALLET_ID,
-            privyWalletId: PRIVY_WALLET_ID,
-          })
-          .catch((e) => e)
+        const error = await launchSelf(client, {
+          ...LAUNCH_REQ,
+          clientLaunchId: "run-linked-1",
+          linkedWalletId: LINKED_WALLET_ID,
+          privyWalletId: PRIVY_WALLET_ID,
+        }).catch((e) => e)
         expect(error).toBeInstanceOf(JsonRpcError)
         expect((error as JsonRpcError).code).toBe(-32603)
         expect(calls.filter((c) => c.url === "https://api.test/api/v1/launch/self/build")).toHaveLength(1)
@@ -3858,14 +3901,12 @@ describe("linked-wallet signing relay + one-shot flows", () => {
             blockhashNotFoundError(), // broadcast #3 fails -- attempts exhausted, throw
           ],
         )
-        const error = await client
-          .selfLaunch({
-            ...LAUNCH_REQ,
-            clientLaunchId: "run-linked-1",
-            linkedWalletId: LINKED_WALLET_ID,
-            privyWalletId: PRIVY_WALLET_ID,
-          })
-          .catch((e) => e)
+        const error = await launchSelf(client, {
+          ...LAUNCH_REQ,
+          clientLaunchId: "run-linked-1",
+          linkedWalletId: LINKED_WALLET_ID,
+          privyWalletId: PRIVY_WALLET_ID,
+        }).catch((e) => e)
         expect(error).toBeInstanceOf(JsonRpcError)
         const err = error as JsonRpcError
         expect(err.code).toBe(-32002) // structured cause preserved through the hint wrapper
@@ -3901,7 +3942,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
             },
           })
         const launch = (client: CandleClient) =>
-          client.selfLaunch({
+          launchSelf(client, {
             ...LAUNCH_REQ,
             clientLaunchId: "run-linked-1",
             linkedWalletId: LINKED_WALLET_ID,

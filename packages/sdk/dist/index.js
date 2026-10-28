@@ -3318,6 +3318,795 @@ function describeRpcEndpoint(url) {
   }
 }
 
+// src/launch-definition.ts
+var LAUNCH_DEFINITION = {
+  version: 1,
+  wallet: {
+    embeddedNames: [
+      "embedded",
+      "main"
+    ],
+    help: "The paying wallet: a TEE wallet name, or embedded (main) for the account's embedded wallet."
+  },
+  quoteDecimals: {
+    sol: 9,
+    usdc: 6,
+    cndl: 6,
+    eth: 18,
+    usdg: 6
+  },
+  quoteChains: {
+    sol: "solana",
+    usdc: "solana",
+    cndl: "solana",
+    eth: "hood",
+    usdg: "hood"
+  },
+  defaultQuote: {
+    solana: "sol",
+    hood: "eth"
+  },
+  buyLimits: {
+    defaults: {
+      sol: {
+        env: "DEV_BUY_MAX_LAMPORTS",
+        raw: "500000000",
+        unit: "lamports"
+      },
+      usdc: {
+        env: "DEV_BUY_MAX_USDC_RAW",
+        raw: "500000000",
+        unit: "USDC raw units"
+      },
+      cndl: {
+        env: "DEV_BUY_MAX_CNDL_RAW",
+        raw: "2000000000000",
+        unit: "CNDL raw units"
+      },
+      eth: {
+        env: "DEV_BUY_MAX_WEI",
+        raw: "20000000000000000",
+        unit: "wei"
+      }
+    },
+    thresholdBps: 1000,
+    presetThresholds: {
+      "exp-a": {
+        sol: "5000000000",
+        cndl: "330000000000"
+      },
+      "exp-b": {
+        sol: "5000000000",
+        cndl: "330000000000"
+      },
+      "exp-c": {
+        sol: "5000000000",
+        cndl: "330000000000"
+      }
+    }
+  },
+  surfacesIntro: [
+    "CLI: scripts and terminals. Agents always pass --json.",
+    "MCP: chat agents (Claude, the connector). The same launch fields and results as the CLI's --json.",
+    "SDK: code that embeds Candle."
+  ],
+  fields: [
+    {
+      key: "wallet",
+      type: "string",
+      help: "The paying wallet: a TEE wallet name, or embedded (main) for the account's embedded wallet.",
+      required: true,
+      surfaces: {
+        cli: {
+          flag: "--wallet",
+          value: "<tee>|embedded"
+        },
+        mcp: {
+          key: "wallet"
+        },
+        sdk: {
+          key: "wallet"
+        }
+      }
+    },
+    {
+      key: "clientLaunchId",
+      type: "string",
+      help: "An idempotency key of at most 128 characters; reuse it to recover the same launch.",
+      range: {
+        min: "1",
+        max: "128",
+        unit: "characters"
+      },
+      surfaces: {
+        cli: {
+          flag: "--client-trade-id",
+          value: "<id>"
+        },
+        mcp: {
+          key: "clientLaunchId"
+        },
+        sdk: {
+          key: "clientLaunchId"
+        }
+      }
+    },
+    {
+      key: "name",
+      type: "string",
+      help: "The token's name, at most 32 UTF-8 bytes.",
+      required: true,
+      range: {
+        min: "1",
+        max: "32",
+        unit: "UTF-8 bytes"
+      },
+      surfaces: {
+        cli: {
+          flag: "--name",
+          value: "<name>"
+        },
+        mcp: {
+          key: "name"
+        },
+        sdk: {
+          key: "name"
+        }
+      }
+    },
+    {
+      key: "symbol",
+      type: "string",
+      help: "The token's ticker, at most 10 UTF-8 bytes.",
+      required: true,
+      range: {
+        min: "1",
+        max: "10",
+        unit: "UTF-8 bytes"
+      },
+      surfaces: {
+        cli: {
+          flag: "--symbol",
+          value: "<symbol>"
+        },
+        mcp: {
+          key: "symbol"
+        },
+        sdk: {
+          key: "symbol"
+        }
+      }
+    },
+    {
+      key: "imageUrl",
+      type: "url",
+      help: "The roughly square token image at an https URL; --image <path> uploads a local file instead.",
+      required: true,
+      surfaces: {
+        cli: {
+          flag: "--image-url",
+          value: "<https-url>"
+        },
+        mcp: {
+          key: "imageUrl"
+        },
+        sdk: {
+          key: "imageUrl"
+        }
+      }
+    },
+    {
+      key: "bannerUrl",
+      type: "url",
+      help: "A wide banner at an https URL or a local file; uploads are public and permanent.",
+      surfaces: {
+        cli: {
+          flag: "--banner",
+          value: "<file|URL>"
+        },
+        mcp: {
+          key: "bannerUrl"
+        },
+        sdk: {
+          key: "bannerUrl"
+        }
+      }
+    },
+    {
+      key: "description",
+      type: "string",
+      help: "The token's description, safe for on-chain JSON.",
+      surfaces: {
+        cli: {
+          flag: "--description",
+          value: "<text>"
+        },
+        mcp: {
+          key: "description"
+        },
+        sdk: {
+          key: "description"
+        }
+      }
+    },
+    {
+      key: "socials.website",
+      type: "url",
+      help: "The token's website link as an absolute http(s) URL.",
+      surfaces: {
+        cli: {
+          flag: "--website",
+          value: "<url>"
+        },
+        mcp: {
+          key: "socials.website"
+        },
+        sdk: {
+          key: "socials.website"
+        }
+      }
+    },
+    {
+      key: "socials.twitter",
+      type: "url",
+      help: "The token's X link as an absolute http(s) URL.",
+      surfaces: {
+        cli: {
+          flag: "--x",
+          value: "<url>"
+        },
+        mcp: {
+          key: "socials.twitter"
+        },
+        sdk: {
+          key: "socials.twitter"
+        }
+      }
+    },
+    {
+      key: "socials.telegram",
+      type: "url",
+      help: "The token's telegram link as an absolute http(s) URL.",
+      surfaces: {
+        cli: {
+          flag: "--telegram",
+          value: "<url>"
+        },
+        mcp: {
+          key: "socials.telegram"
+        },
+        sdk: {
+          key: "socials.telegram"
+        }
+      }
+    },
+    {
+      key: "socials.discord",
+      type: "url",
+      help: "The token's discord link as an absolute http(s) URL.",
+      surfaces: {
+        cli: {
+          flag: "--discord",
+          value: "<url>"
+        },
+        mcp: {
+          key: "socials.discord"
+        },
+        sdk: {
+          key: "socials.discord"
+        }
+      }
+    },
+    {
+      key: "chain",
+      type: "enum",
+      values: [
+        "solana",
+        "hood"
+      ],
+      default: "solana",
+      help: "The launch chain, inferred from the wallet, quote asset and dex version on the CLI.",
+      surfaces: {
+        cli: {
+          derived: "wallet, --quote-asset and --dex-version"
+        },
+        mcp: {
+          key: "chain"
+        },
+        sdk: {
+          key: "chain"
+        }
+      }
+    },
+    {
+      key: "quoteAsset",
+      type: "enum",
+      help: "The quote asset: sol, usdc or cndl on Solana; eth or usdg on Hood (defaults sol and eth).",
+      values: [
+        "sol",
+        "usdc",
+        "cndl",
+        "eth",
+        "usdg"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--quote-asset",
+          value: "sol|usdc|cndl|eth|usdg"
+        },
+        mcp: {
+          key: "quoteAsset"
+        },
+        sdk: {
+          key: "quoteAsset"
+        }
+      }
+    },
+    {
+      key: "mode",
+      type: "enum",
+      help: "The curve mode: open or exclusive; test-open or test-exclusive need ENABLE_TEST_CURVES; exp-a, exp-b, exp-c and exp-custom are Solana sol/cndl only.",
+      values: [
+        "open",
+        "exclusive",
+        "test-open",
+        "test-exclusive",
+        "exp-a",
+        "exp-b",
+        "exp-c",
+        "exp-custom"
+      ],
+      default: "open",
+      surfaces: {
+        cli: {
+          flag: "--mode",
+          value: "<mode>"
+        },
+        mcp: {
+          key: "mode"
+        },
+        sdk: {
+          key: "mode"
+        }
+      }
+    },
+    {
+      key: "curve.virtualQuote",
+      type: "decimal",
+      help: "exp-custom's virtual quote, in whole quote units: 1 to 100 SOL or 66000 to 6600000 CNDL; requires --curve-g and EXP_CUSTOM_CURVES.",
+      modes: [
+        "exp-custom"
+      ],
+      chains: [
+        "solana"
+      ],
+      requires: [
+        "curve.threshold"
+      ],
+      range: {
+        unit: "whole quote units",
+        byQuote: {
+          sol: {
+            min: "1",
+            max: "100"
+          },
+          cndl: {
+            min: "66000",
+            max: "6600000"
+          }
+        }
+      },
+      surfaces: {
+        cli: {
+          flag: "--curve-v",
+          value: "<V>"
+        },
+        mcp: {
+          key: "curve.virtualQuote"
+        },
+        sdk: {
+          key: "curve.virtualQuote"
+        }
+      }
+    },
+    {
+      key: "curve.threshold",
+      type: "decimal",
+      help: "exp-custom's graduation threshold, in whole quote units: 1 to 250 SOL or 66000 to 16500000 CNDL; requires --curve-v and EXP_CUSTOM_CURVES.",
+      modes: [
+        "exp-custom"
+      ],
+      chains: [
+        "solana"
+      ],
+      requires: [
+        "curve.virtualQuote"
+      ],
+      range: {
+        unit: "whole quote units",
+        byQuote: {
+          sol: {
+            min: "1",
+            max: "250"
+          },
+          cndl: {
+            min: "66000",
+            max: "16500000"
+          }
+        }
+      },
+      surfaces: {
+        cli: {
+          flag: "--curve-g",
+          value: "<G>"
+        },
+        mcp: {
+          key: "curve.threshold"
+        },
+        sdk: {
+          key: "curve.threshold"
+        }
+      }
+    },
+    {
+      key: "creatorFeeBps",
+      type: "enum",
+      help: "An exp- mode's extra creator fee: 0, 100 or 200 bps on the curve and pool, paid to the creator in full.",
+      values: [
+        0,
+        100,
+        200
+      ],
+      default: 0,
+      surfaces: {
+        cli: {
+          flag: "--creator-fee-bps",
+          value: "0|100|200"
+        },
+        mcp: {
+          key: "creatorFeeBps"
+        },
+        sdk: {
+          key: "creatorFeeBps"
+        }
+      }
+    },
+    {
+      key: "stakerAllocationBps",
+      type: "integer",
+      help: "The staker allocation, 50 to 1000 bps; defaults to 50, or 500 on exp- curves.",
+      range: {
+        min: "50",
+        max: "1000",
+        unit: "bps"
+      },
+      default: 50,
+      surfaces: {
+        cli: {
+          flag: "--staker-allocation-bps",
+          value: "<bps>"
+        },
+        mcp: {
+          key: "stakerAllocationBps"
+        },
+        sdk: {
+          key: "stakerAllocationBps"
+        }
+      }
+    },
+    {
+      key: "poolFee.tier",
+      type: "enum",
+      help: "Solana's graduated pool fee: 25, 50 or 100 bps (default 50), or the ending rate with --pool-fee-from.",
+      values: [
+        25,
+        50,
+        100
+      ],
+      default: 50,
+      chains: [
+        "solana"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--pool-fee",
+          value: "25|50|100"
+        },
+        mcp: {
+          key: "poolFee.tier"
+        },
+        sdk: {
+          key: "poolFee.tier"
+        }
+      }
+    },
+    {
+      key: "poolFee.startBps",
+      type: "integer",
+      help: "The falling pool fee's starting rate, at most 2500 bps; requires --pool-fee and --pool-fee-minutes.",
+      range: {
+        min: "25",
+        max: "2500",
+        unit: "bps"
+      },
+      chains: [
+        "solana"
+      ],
+      requires: [
+        "poolFee.tier",
+        "poolFee.minutes"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--pool-fee-from",
+          value: "<bps>"
+        },
+        mcp: {
+          key: "poolFee.startBps"
+        },
+        sdk: {
+          key: "poolFee.startBps"
+        }
+      }
+    },
+    {
+      key: "poolFee.minutes",
+      type: "decimal",
+      help: "The pool fee's fall time, at most 30 minutes; requires --pool-fee and --pool-fee-from.",
+      wireType: "number",
+      range: {
+        min: "0.006666666666666667",
+        max: "30",
+        unit: "minutes"
+      },
+      chains: [
+        "solana"
+      ],
+      requires: [
+        "poolFee.tier",
+        "poolFee.startBps"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--pool-fee-minutes",
+          value: "<min>"
+        },
+        mcp: {
+          key: "poolFee.minutes"
+        },
+        sdk: {
+          key: "poolFee.minutes"
+        }
+      }
+    },
+    {
+      key: "poolFee.endBps",
+      type: "enum",
+      values: [
+        25,
+        50,
+        100
+      ],
+      chains: [
+        "solana"
+      ],
+      help: "The falling fee's ending rate, taken from --pool-fee.",
+      surfaces: {
+        cli: {
+          derived: "--pool-fee with --pool-fee-from"
+        },
+        mcp: {
+          key: "poolFee.endBps"
+        },
+        sdk: {
+          key: "poolFee.endBps"
+        }
+      }
+    },
+    {
+      key: "poolOpen",
+      type: "enum",
+      help: "Solana preset pools: curve_price opens at the curve's last price and burns the rest; omitted uses curve_price when allocations fit graduation.maxStakerCarveBps, otherwise legacy; explicit curve_price above that limit is refused.",
+      values: [
+        "legacy",
+        "curve_price"
+      ],
+      chains: [
+        "solana"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--pool-open",
+          value: "legacy|curve_price"
+        },
+        mcp: {
+          key: "poolOpen"
+        },
+        sdk: {
+          key: "poolOpen"
+        }
+      }
+    },
+    {
+      key: "expPoolShape",
+      type: "enum",
+      help: "Solana exp- pools: floor by default, or full_range to open across the whole price range.",
+      values: [
+        "floor",
+        "full_range"
+      ],
+      default: "floor",
+      chains: [
+        "solana"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--exp-pool-shape",
+          value: "floor|full_range"
+        },
+        mcp: {
+          key: "expPoolShape"
+        },
+        sdk: {
+          key: "expPoolShape"
+        }
+      }
+    },
+    {
+      key: "dexVersion",
+      type: "enum",
+      help: "Hood only, required there: the Uniswap version the curve graduates to.",
+      values: [
+        "v3",
+        "v4"
+      ],
+      chains: [
+        "hood"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--dex-version",
+          value: "v3|v4"
+        },
+        mcp: {
+          key: "dexVersion"
+        },
+        sdk: {
+          key: "dexVersion"
+        }
+      }
+    },
+    {
+      key: "visibility",
+      type: "enum",
+      help: "The token's visibility: production, test, local or hidden; test keys require test or hidden.",
+      values: [
+        "production",
+        "test",
+        "local",
+        "hidden"
+      ],
+      default: "production",
+      surfaces: {
+        cli: {
+          flag: "--visibility",
+          value: "production|test|local|hidden"
+        },
+        mcp: {
+          key: "visibility"
+        },
+        sdk: {
+          key: "visibility"
+        }
+      }
+    },
+    {
+      key: "buy",
+      type: "decimal",
+      help: "An optional first buy in whole quote units; zero or empty means no buy, and the server applies dev-buy ceilings and TEE_LAUNCH_BUYS_ENABLED for TEE buys.",
+      default: "0",
+      range: {
+        min: "0",
+        unit: "whole quote units"
+      },
+      more: "Default raw caps (apps/api/src/lib/headless-validation.ts): DEV_BUY_MAX_LAMPORTS=500000000, DEV_BUY_MAX_USDC_RAW=500000000, DEV_BUY_MAX_CNDL_RAW=2000000000000, DEV_BUY_MAX_WEI=20000000000000000. On exp- curves the lower of the quote cap and 10% of G applies.",
+      surfaces: {
+        cli: {
+          flag: "--buy",
+          value: "<amount>"
+        },
+        mcp: {
+          key: "buy"
+        },
+        sdk: {
+          key: "buy"
+        }
+      }
+    },
+    {
+      key: "dryRun",
+      type: "boolean",
+      help: "Print the launch preview without building, signing or recording a launch; local image uploads still become public and permanent.",
+      default: false,
+      surfaces: {
+        cli: {
+          flag: "--dry-run"
+        },
+        mcp: {
+          key: "dryRun"
+        },
+        sdk: {
+          key: "dryRun"
+        }
+      }
+    }
+  ]
+};
+
+// src/launch-input.ts
+function embeddedLaunchWallet(wallet) {
+  return wallet === undefined || typeof wallet === "string" && LAUNCH_DEFINITION.wallet.embeddedNames.includes(wallet);
+}
+function launchInputError(field, message, code = "VALIDATION_FAILED") {
+  return new CandleApiError({ status: 400, code, field, message, retryable: false });
+}
+function validateLaunchInput(req) {
+  if (req.buy !== undefined && req.buyAmount !== undefined)
+    throw launchInputError("buy", "Pass buy or the deprecated buyAmount, never both.");
+  if (req.wallet !== undefined && "linkedWalletId" in req)
+    throw launchInputError("wallet", "Pass wallet without the legacy linkedWalletId field.");
+  if (req.wallet !== undefined && typeof req.wallet !== "string" && (!req.wallet || typeof req.wallet.linkedWalletId !== "string" || !req.wallet.linkedWalletId || typeof req.wallet.privyWalletId !== "string" || !req.wallet.privyWalletId))
+    throw launchInputError("wallet", "wallet needs linkedWalletId and privyWalletId.");
+  if (req.buy !== undefined && (typeof req.buy !== "string" || req.buy.trim() !== "" && !/^\d+(\.\d+)?$/.test(req.buy)))
+    throw launchInputError("buy", "buy must be a non-negative decimal string in whole quote units.");
+  const keys = LAUNCH_DEFINITION.fields.filter((field) => field.key.startsWith("socials.")).map((field) => field.key.slice(8));
+  if (req.socials !== undefined) {
+    if (!req.socials || typeof req.socials !== "object" || Array.isArray(req.socials))
+      throw launchInputError("socials", `socials accepts only ${keys.join(", ")}.`);
+    for (const [key, value] of Object.entries(req.socials)) {
+      if (!keys.includes(key))
+        throw launchInputError("socials", `socials accepts only ${keys.join(", ")}.`);
+      if (value === undefined)
+        continue;
+      try {
+        if (typeof value !== "string")
+          throw new Error;
+        const url = new URL(value);
+        if (!["http:", "https:"].includes(url.protocol))
+          throw new Error;
+      } catch {
+        throw launchInputError(`socials.${key}`, `${key} must be an http(s) URL.`);
+      }
+    }
+  }
+  if (req.quoteAsset !== undefined || req.chain !== undefined || embeddedLaunchWallet(req.wallet))
+    launchBody(req);
+}
+function launchBody(req, chain) {
+  const { wallet: _wallet, buy, ...body } = req;
+  if (chain !== undefined)
+    body.chain = chain;
+  const quote = body.quoteAsset ?? LAUNCH_DEFINITION.defaultQuote[body.chain ?? "solana"];
+  const quoteChain = LAUNCH_DEFINITION.quoteChains[quote];
+  if (!quoteChain)
+    throw launchInputError("quoteAsset", "Unsupported launch quote asset.");
+  if (body.chain !== undefined && body.chain !== quoteChain)
+    throw launchInputError("quoteAsset", "The quote asset disagrees with the launch chain.", "CHAIN_MISMATCH");
+  if (buy === undefined || buy.trim() === "" || /^0+(\.0+)?$/.test(buy))
+    return body;
+  const decimals = LAUNCH_DEFINITION.quoteDecimals[quote];
+  const [whole = "0", fraction = ""] = buy.split(".");
+  if (fraction.length > decimals)
+    throw launchInputError("buy", `buy allows at most ${decimals} decimals for ${quote}.`);
+  const raw = BigInt(whole) * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, "0"));
+  if (raw === 0n)
+    return body;
+  if (quoteChain === "solana" && raw > BigInt(Number.MAX_SAFE_INTEGER))
+    throw launchInputError("buy", "buy exceeds the safe integer range for this quote asset.");
+  body.buyAmount = quoteChain === "solana" ? Number(raw) : String(raw);
+  return body;
+}
+
 // src/perps-history.ts
 var PERPS_HISTORY_INFO_URLS = {
   mainnet: "https://api.hyperliquid.xyz/info",
@@ -4126,12 +4915,54 @@ class CandleClient {
   }
   async dryRunLaunch(req) {
     this.requireKey("dryRunLaunch()");
-    return this.requestJson("POST", "/api/v1/launch/headless/dry-run", req);
+    const { body, wallet } = await this.prepareLaunch(req);
+    return wallet ? this.dryRunSelfLaunch({ ...body, linkedWalletId: wallet.linkedWalletId }) : this.requestJson("POST", "/api/v1/launch/headless/dry-run", body);
+  }
+  async prepareLaunch(req) {
+    validateLaunchInput(req);
+    let wallet;
+    let chain = req.chain;
+    if (typeof req.wallet === "object") {
+      wallet = req.wallet;
+    } else if (typeof req.wallet === "string" && !embeddedLaunchWallet(req.wallet)) {
+      const rows = [];
+      const cursors = new Set;
+      let cursor;
+      while (true) {
+        const page = await this.requestJson("GET", `/api/v1/agent/wallets/trading${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
+        rows.push(...page.page);
+        if (page.isDone === true)
+          break;
+        if (!page.continueCursor || cursors.has(page.continueCursor))
+          throw launchInputError("wallet", "Wallet discovery did not complete.");
+        cursor = page.continueCursor;
+        cursors.add(cursor);
+      }
+      const matches = rows.filter((row2) => row2.id === req.wallet || row2.label === req.wallet || (row2.chain === "evm" ? row2.address.toLowerCase() === String(req.wallet).toLowerCase() : row2.address === req.wallet));
+      if (matches.length !== 1) {
+        const choices = (matches.length ? matches : rows).map((row2) => `${row2.label ?? row2.id} (${row2.id}, ${row2.address})`).join("; ");
+        throw launchInputError("wallet", `Name one TEE wallet by label, id or address. Matches: ${choices || "none"}.`, "TEE_WALLET_REQUIRED");
+      }
+      const row = matches[0];
+      if (!row.privyWalletId)
+        throw launchInputError("wallet", "The wallet has no signing identifier.", "SIGNER_UNAVAILABLE");
+      const walletChain = row.chain === "solana" ? "solana" : row.chain === "evm" ? "hood" : undefined;
+      if (!walletChain)
+        throw launchInputError("wallet", "The wallet chain is unsupported.", "CHAIN_MISMATCH");
+      if (chain !== undefined && chain !== walletChain)
+        throw launchInputError("chain", "The launch chain disagrees with the named wallet.", "CHAIN_MISMATCH");
+      chain = walletChain;
+      wallet = { linkedWalletId: row.id, privyWalletId: row.privyWalletId };
+    }
+    return { body: launchBody(req, chain), wallet };
   }
   async launch(req) {
     this.requireKey("launch()");
+    const prepared = await this.prepareLaunch(req);
+    if (prepared.wallet)
+      return this.selfLaunch({ ...prepared.body, ...prepared.wallet });
     const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId();
-    const body = { ...req, clientLaunchId };
+    const body = { ...prepared.body, clientLaunchId };
     return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
       let lastError;
       for (let attempt = 0;attempt <= this.maxRetries; attempt++) {
@@ -4151,8 +4982,11 @@ class CandleClient {
   }
   async launchAsync(req) {
     this.requireKey("launchAsync()");
+    validateLaunchInput(req);
+    if (!embeddedLaunchWallet(req.wallet))
+      throw launchInputError("wallet", "launchAsync() supports embedded launches; use launch() for a TEE wallet.");
     const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId();
-    const body = { ...req, clientLaunchId, async: true };
+    const body = { ...launchBody(req), clientLaunchId, async: true };
     return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
       const accepted = await this.requestJson("POST", "/api/v1/launch/headless", body, op);
       return { ...accepted, clientLaunchId: accepted.clientLaunchId ?? clientLaunchId };
@@ -5655,7 +6489,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.7";
+var SDK_VERSION = "0.6.8";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

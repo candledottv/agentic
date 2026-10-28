@@ -52,7 +52,7 @@ The API key is attached as `x-api-key` on every request when configured. The key
 (`launch`, `launchAsync`, `dryRunLaunch`, `getLaunchJob`, `reportActivity`, `uploadImage`)
 refuse to fetch without one and throw a plain `Error` locally instead of a server 401.
 
-## Launching with built-in idempotent retries
+## Embedded launches with built-in idempotent retries
 
 `launch()` fills in a `clientLaunchId` (`"sdk-" + crypto.randomUUID()`) when you omit one, and
 retries transient failures by re-sending the SAME id, which the server's idempotency ledger
@@ -73,7 +73,7 @@ try {
     symbol: "TREND",
     imageUrl: "https://example.com/logo.png",
     chain: "solana",
-    buyAmount: 100_000_000, // lamports
+    buy: "0.1", // SOL
   })
   console.log("minted", result.mint, "explorer:", result.links.explorer, "id:", result.clientLaunchId)
 } catch (error) {
@@ -100,15 +100,55 @@ else console.error("failed:", job.errorCode)
 Need a hosted image first? `uploadImage(bytes, contentType)` posts raw bytes to
 `/api/v1/uploads/agent-image` and returns `{ imageUrl }`, ready for the launch body.
 
-`launch()` works on every plan, Free included: it launches from the account's embedded wallet,
-and `buyAmount` adds an optional dev buy: in the launch transaction on Solana (up to 0.5 SOL by default), a best-effort follow-up transaction on Hood.
+`launch()` with an embedded wallet works on every plan, Free included. `buy` adds an optional
+first buy: atomic on Solana (up to 0.5 SOL by default), a best-effort follow-up on Hood.
 
-Two more paths need the Pro or Max plan. `selfLaunch()` launches from a linked or TEE wallet the
-agent signs for locally. `launchAtomic()` lands the launch and 1 to 4 first buys in one Jito bundle: several
+A TEE wallet passed to `launch()` needs Pro or Max and the agent signs locally; the deprecated
+`selfLaunch()` follows the same path. `launchAtomic()` lands the launch and 1 to 4 first buys in one Jito bundle: several
 transactions in the same block, all or none. Each buy is paid by the embedded wallet or a linked
 wallet; the same payer may fund more than one leg. A TEE wallet can be the creator or a buyer, and
-`selfLaunch()` from a TEE wallet can carry a `buyAmount`, only where the server has
+A TEE `launch()` can carry `buy`, only where the server has
 `TEE_LAUNCH_BUYS_ENABLED` on. It is off by default, and a TEE wallet is refused there until it is.
+
+## One launch method
+
+`launch()` and `dryRunLaunch()` take the shared generated launch fields. Omit `wallet` or use
+`wallet: "embedded"` to pay from the account's embedded wallet. Name a TEE wallet by label, id or
+address, or pass `{ linkedWalletId, privyWalletId }` for an existing SDK integration. A named
+wallet's chain is inferred; supply `chain: "hood"` for an explicit Hood wallet object. Conflicting
+chains or quote assets are refused before building. The SDK uses your configured `privyAppId`
+and `secretStore` for TEE signing, and `solanaRpcUrl` / `evmRpcUrl` for caller broadcasts.
+
+```ts
+await candle.launch({
+  wallet: "spider-01",
+  name: "Trend Coin",
+  symbol: "TREND",
+  imageUrl: "https://example.com/logo.png",
+  buy: "0.1", // optional, whole units of the quote asset (SOL by default)
+})
+```
+
+`buy` is a decimal string: SOL has 9 decimals, USDC/CNDL/USDG 6, ETH 18. Empty or zero means no
+first buy. Excess precision and passing both `buy` and deprecated raw `buyAmount` are refused
+locally. `socials` accepts only `website`, `twitter`, `telegram` and `discord`, each an http(s) URL.
+The remaining limits, defaults and field help come from the shared launch definition; the server
+validates ranges and eligibility.
+
+Embedded launches use `/launch/headless` with or without a buy. TEE launches use `/launch/self/build`
+and the existing sign/broadcast/confirm flow; a Solana TEE buy signs the returned bundle and sends
+it to `/launch/atomic/submit`. Dry runs use the selected family's `/dry-run`. Existing server
+gates still apply: embedded-wallet allowance, launch availability, and TEE tier, `allowLaunch`
+and first-buy switches. No server switch is enabled by this SDK release. `launchAsync()` remains
+embedded-only.
+
+Migration for this release: replace `selfLaunch({ linkedWalletId, privyWalletId, ...fields })`
+with `launch({ wallet: { linkedWalletId, privyWalletId }, ...fields })`. Replace raw `buyAmount`
+with whole-unit `buy`. `selfLaunch()`, `buildSelfLaunch()` and `dryRunSelfLaunch()` are deprecated
+for one release; existing calls still work. `confirmSelfLaunch()` remains the recovery method.
+TEE `launch()` preserves `SelfLaunchOutcomeError` on Hood: after a create-curve broadcast,
+recover by confirming its original id and hashes, never by starting another launch. Embedded
+launch retries and Solana same-id recovery retain their existing behavior.
 
 ## Trading, swaps and account reads
 
@@ -223,7 +263,7 @@ safe for a main payer.
 | `failed`, other | not confirmed. A row with broadcast evidence may still be on chain, and a same-id call answers `stage: "unconfirmed"` for it. The same-id call is the check | call again with the same id |
 | `built` | in flight or unresolved | a same-id `trade()` answers `IDEMPOTENCY_CONFLICT`. If it carries `stage: "unconfirmed"` and `retryable: false`, check its `signature` on chain and do not retry |
 
-### `launch()`, `launchAsync()`
+### Embedded `launch()`, `launchAsync()`
 
 Retry with the same `clientLaunchId` and body, or read `getLaunchJob(id)` (`waitForLaunch(id)`
 polls it). The rules are the ones under "Idempotency" in
