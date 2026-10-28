@@ -643,6 +643,121 @@ export interface TokenEventsPage {
   nextCursor: string | null
 }
 
+/**
+ * One hacc card fact (BE-2117 `/v1/tokens/:mint/card-facts`, carried whole by the card route).
+ * `state: "ok"` has a `value`, `source`, `as_of` and `basis`; anything else has `value: null` and
+ * `display: "–"`. A percent fact's `value` is 0 to 100.
+ */
+export interface TokenCardFact {
+  value: number | null
+  display: string
+  state: "ok" | "pending" | "unavailable"
+  source: string | null
+  as_of: string | null
+  basis: string | null
+  note: string | null
+}
+
+/** A same-name candidate: another token on a venue whose ticker or name matches. */
+export interface TokenCardSameNameCandidate {
+  mint: string
+  chain: Chain
+  ticker: string | null
+  name: string | null
+  venue: string | null
+  market_cap_usd: number | null
+  liquidity_usd: number | null
+  pair_created_at: string | null
+  match: "ticker" | "name" | "both" | "self"
+  found_by: "dexscreener" | "hacc" | "both"
+}
+
+/** hacc's same-name block: which same-name token leads on live market cap, then liquidity. */
+export interface TokenCardSameName {
+  state: "found" | "none" | "unavailable"
+  source: string
+  display: string
+  leader: TokenCardSameNameCandidate | null
+  subject: (TokenCardSameNameCandidate & { rank: number | null }) | null
+  trailing: boolean | null
+  others: TokenCardSameNameCandidate[]
+  detail: string | null
+}
+
+/** hacc's card facts for one token, as `GET /v1/tokens/:mint/card-facts` answers them (BE-2117). */
+export interface TokenCardFacts {
+  mint: string
+  chain: Chain
+  as_of: string
+  cache_s: number
+  fields: Record<"bundles" | "snipers" | "insiders" | "fresh_1d" | "fresh_7d" | "avg_wallet_age", TokenCardFact>
+  launch: {
+    state: "ok" | "pending" | "failed" | "not_read"
+    source: string | null
+    computed_at: string | null
+    deployer: string | null
+    first_buy_at: string | null
+    rows_read: number | null
+    covered_s: number | null
+    truncated: boolean | null
+    detail: string | null
+  }
+  holders: { source: string | null; sampled: number; known_age: number; detail: string | null }
+  same_name: TokenCardSameName
+  ath: {
+    source: string
+    stored_usd: number | null
+    stored_at: string | null
+    usable_usd: number | null
+    check: "confirmed" | "unconfirmed" | "over_ceiling" | "below_live" | "unverifiable" | "none"
+  }
+  vendor_reads: Record<"dexscreener" | "helius" | "cvc" | "blockscout" | "birdeye" | "other", number>
+  cached: boolean
+}
+
+/**
+ * GET /api/v1/tokens/:chain/:mint/card (BE-2118): the data behind a token card, the same for every
+ * caller and every plan. Facts only, never a score. A field with no source is `null` (show an en
+ * dash), and `sources` names where each block came from.
+ */
+export interface TokenCard {
+  chain: Chain
+  mint: string
+  generatedAt: number
+  identity: { name: string | null; symbol: string | null; launchpad: string | null; isCandle: boolean | null }
+  market: {
+    priceUsd: number | null
+    marketCapUsd: number | null
+    liquidityUsd: number | null
+    change5mPct: number | null
+    volume5mUsd: number | null
+    buys5m: number | null
+    sells5m: number | null
+    updatedAt: number | null
+  }
+  /** The highest daily price since launch times current supply; null when no source covers it. */
+  ath: { marketCapUsd: number; at: number; precision: "day"; basis: "price times current supply (FDV)" } | null
+  /** The forensics route's report, or why there is none (`not_covered` carries its coverage). */
+  forensics: { state: "ok"; report: unknown } | { state: "not_covered"; coverage: unknown } | { state: "unavailable" }
+  /** Tracked-wallet trades, signals and callouts in the last hour, at the free tier. */
+  events:
+    | {
+        state: "ok"
+        windowMinutes: 60
+        trackedBuys: number
+        trackedSells: number
+        signals: number
+        callouts: number
+        names: string[]
+      }
+    | { state: "off" | "unavailable" }
+  hacc: { state: "ok"; facts: TokenCardFacts } | { state: "off" | "unavailable" }
+  sameName: TokenCardSameName | { state: "off" | "unavailable" }
+  sources: Record<"identity" | "market" | "ath" | "forensics" | "events" | "sameName" | "hacc", string>
+  /** Candle's token page, carrying the card source tag when one was given. */
+  links: { token: string }
+}
+
 /** GET /api/v1/markets/:chain/:mint, unwrapped from `{ success, market }`. */
 export interface MarketState {
   /** Additive Release A fields are optional when connected to an older API. */
@@ -3873,6 +3988,23 @@ export class CandleClient {
     }
   }
 
+  /**
+   * The token card for one token (`GET /api/v1/tokens/:chain/:mint/card`): market, the all-time
+   * high since launch, forensics coverage, hacc's safety and same-name facts, and tracked wallets
+   * in the last hour. Free for every plan and the same for every caller; no key is needed. `tag`
+   * is a card source tag (`v1.<group>.<poster>.<card>`) carried on `links.token` for counting card
+   * arrivals; it credits nobody, and the route ignores a malformed one. The route is off until the
+   * deployment sets `TOKEN_CARD_ENABLED` on; off it answers 503 `TOKEN_CARD_DISABLED`.
+   */
+  async getTokenCard(chain: Chain, mint: string, opts: { tag?: string } = {}): Promise<TokenCard> {
+    const query = opts.tag !== undefined ? `?${new URLSearchParams({ cst: opts.tag }).toString()}` : ""
+    const body = await this.requestJson<{ success: true; card: TokenCard }>(
+      "GET",
+      `/api/v1/tokens/${chain}/${encodeURIComponent(mint)}/card${query}`,
+    )
+    return body.card
+  }
+
   async verify(chain: Chain, mint: string): Promise<VerifyResult> {
     return this.requestJson<VerifyResult>("GET", `/api/v1/verify/${chain}/${encodeURIComponent(mint)}`)
   }
@@ -6848,7 +6980,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.9"
+export const SDK_VERSION = "0.6.10"
 
 let sdkUpdateWarned = false
 

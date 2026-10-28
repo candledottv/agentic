@@ -73,6 +73,7 @@ import { pnl } from "./commands/pnl"
 import { portfolio } from "./commands/portfolio"
 import { profileAdd, profileList, profileRemove, profileRename, profileSet, profileUse } from "./commands/profile"
 import { quantTerms } from "./commands/quant-terms"
+import { scan } from "./commands/scan"
 import { secretsList, secretsRemove, secretsSet } from "./commands/secrets"
 import { setup } from "./commands/setup"
 import { sign, signMessage } from "./commands/sign"
@@ -246,6 +247,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       flag: tokenFlag,
     },
   },
+  // BE-2119 (Quant in groups 6.8): the token card for one pasted contract. Public and keyless.
+  scan: { bare: scan },
   // x402 C4: the local payment log and the limits every per-use payment is checked against.
   spend: {
     bare: spendShow,
@@ -521,6 +524,8 @@ export const NEVER_GUARDED = new Set([
   // BE-723: `GET /agent/plans` is public; the command acts as no identity.
   "plans",
   "token",
+  // BE-2119: the token card route is public and reads no key; `scan` acts as no identity.
+  "scan",
   // x402 C4: local limits and the local log. `spend pause` must work offline and before any
   // login, since it is how a person stops payments; the credit read is the key's own account.
   "spend",

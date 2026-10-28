@@ -524,7 +524,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.2";
+var CLI_VERSION = "0.13.3";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -56836,17 +56836,17 @@ var require_stream = __commonJS((exports) => {
       this.view[this.start] = char;
       this.start += 1;
     }
-    appendUint16(num) {
+    appendUint16(num2) {
       this.ensureCapacity(2);
-      const value = new Uint16Array([num]);
+      const value = new Uint16Array([num2]);
       const view = new Uint8Array(value.buffer);
       this.view[this.start] = view[1];
       this.view[this.start + 1] = view[0];
       this.start += 2;
     }
-    appendUint24(num) {
+    appendUint24(num2) {
       this.ensureCapacity(3);
-      const value = new Uint32Array([num]);
+      const value = new Uint32Array([num2]);
       const view = new Uint8Array(value.buffer);
       this.view[this.start] = view[2];
       this.view[this.start + 1] = view[1];
@@ -57091,9 +57091,9 @@ var require_tag = __commonJS((exports) => {
     isUniversal() {
       return this.class === TAG_CLASS.UNIVERSAL;
     }
-    isContextSpecific(num) {
+    isContextSpecific(num2) {
       const res = this.class === TAG_CLASS.CONTEXT_SPECIFIC;
-      return num !== undefined ? res && this.number === num : res;
+      return num2 !== undefined ? res && this.number === num2 : res;
     }
     isBoolean() {
       return this.isUniversal() && this.number === UNIVERSAL_TAG.BOOLEAN;
@@ -59555,8 +59555,8 @@ var require_merkle = __commonJS((exports) => {
   function innerProofSize(index, size) {
     return bitLength(index ^ size - BigInt(1));
   }
-  function onesCount(num) {
-    return num.toString(2).split("1").length - 1;
+  function onesCount(num2) {
+    return num2.toString(2).split("1").length - 1;
   }
   function bitLength(n) {
     if (n === 0n) {
@@ -60261,9 +60261,9 @@ class ParseStatus2 {
   }
   static async mergeObjectAsync(status, pairs) {
     const syncPairs = [];
-    for (const pair of pairs) {
-      const key = await pair.key;
-      const value = await pair.value;
+    for (const pair2 of pairs) {
+      const key = await pair2.key;
+      const value = await pair2.value;
       syncPairs.push({
         key,
         value
@@ -60273,8 +60273,8 @@ class ParseStatus2 {
   }
   static mergeObjectSync(status, pairs) {
     const finalObject = {};
-    for (const pair of pairs) {
-      const { key, value } = pair;
+    for (const pair2 of pairs) {
+      const { key, value } = pair2;
       if (key.status === "aborted")
         return INVALID2;
       if (value.status === "aborted")
@@ -60283,7 +60283,7 @@ class ParseStatus2 {
         status.dirty();
       if (value.status === "dirty")
         status.dirty();
-      if (key.value !== "__proto__" && (typeof value.value !== "undefined" || pair.alwaysSet)) {
+      if (key.value !== "__proto__" && (typeof value.value !== "undefined" || pair2.alwaysSet)) {
         finalObject[key.value] = value.value;
       }
     }
@@ -62266,13 +62266,13 @@ var init_types3 = __esm(() => {
       if (ctx.common.async) {
         return Promise.resolve().then(async () => {
           const syncPairs = [];
-          for (const pair of pairs) {
-            const key = await pair.key;
-            const value = await pair.value;
+          for (const pair2 of pairs) {
+            const key = await pair2.key;
+            const value = await pair2.value;
             syncPairs.push({
               key,
               value,
-              alwaysSet: pair.alwaysSet
+              alwaysSet: pair2.alwaysSet
             });
           }
           return syncPairs;
@@ -62799,9 +62799,9 @@ var init_types3 = __esm(() => {
       if (ctx.common.async) {
         const finalMap = new Map;
         return Promise.resolve().then(async () => {
-          for (const pair of pairs) {
-            const key = await pair.key;
-            const value = await pair.value;
+          for (const pair2 of pairs) {
+            const key = await pair2.key;
+            const value = await pair2.value;
             if (key.status === "aborted" || value.status === "aborted") {
               return INVALID2;
             }
@@ -62814,9 +62814,9 @@ var init_types3 = __esm(() => {
         });
       } else {
         const finalMap = new Map;
-        for (const pair of pairs) {
-          const key = pair.key;
-          const value = pair.value;
+        for (const pair2 of pairs) {
+          const key = pair2.key;
+          const value = pair2.value;
           if (key.status === "aborted" || value.status === "aborted") {
             return INVALID2;
           }
@@ -63771,7 +63771,7 @@ __export(exports_util, {
   joinValues: () => joinValues,
   issue: () => issue,
   isPlainObject: () => isPlainObject2,
-  isObject: () => isObject4,
+  isObject: () => isObject5,
   hexToUint8Array: () => hexToUint8Array,
   getSizableOrigin: () => getSizableOrigin,
   getParsedType: () => getParsedType3,
@@ -63938,11 +63938,11 @@ function esc(str) {
 function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
-function isObject4(data) {
+function isObject5(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 function isPlainObject2(o) {
-  if (isObject4(o) === false)
+  if (isObject5(o) === false)
     return false;
   const ctor = o.constructor;
   if (ctor === undefined)
@@ -63950,7 +63950,7 @@ function isPlainObject2(o) {
   if (typeof ctor !== "function")
     return true;
   const prot = ctor.prototype;
-  if (isObject4(prot) === false)
+  if (isObject5(prot) === false)
     return false;
   if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) {
     return false;
@@ -65831,13 +65831,13 @@ var init_schemas = __esm(() => {
       }
       return propValues;
     });
-    const isObject5 = isObject4;
+    const isObject6 = isObject5;
     const catchall = def.catchall;
     let value;
     inst._zod.parse = (payload, ctx) => {
       value ?? (value = _normalized.value);
       const input = payload.value;
-      if (!isObject5(input)) {
+      if (!isObject6(input)) {
         payload.issues.push({
           expected: "object",
           code: "invalid_type",
@@ -65935,7 +65935,7 @@ var init_schemas = __esm(() => {
       return (payload, ctx) => fn(shape, payload, ctx);
     };
     let fastpass;
-    const isObject5 = isObject4;
+    const isObject6 = isObject5;
     const jit = !globalConfig.jitless;
     const allowsEval2 = allowsEval;
     const fastEnabled = jit && allowsEval2.value;
@@ -65944,7 +65944,7 @@ var init_schemas = __esm(() => {
     inst._zod.parse = (payload, ctx) => {
       value ?? (value = _normalized.value);
       const input = payload.value;
-      if (!isObject5(input)) {
+      if (!isObject6(input)) {
         payload.issues.push({
           expected: "object",
           code: "invalid_type",
@@ -66048,7 +66048,7 @@ var init_schemas = __esm(() => {
     });
     inst._zod.parse = (payload, ctx) => {
       const input = payload.value;
-      if (!isObject4(input)) {
+      if (!isObject5(input)) {
         payload.issues.push({
           code: "invalid_type",
           expected: "object",
@@ -71662,10 +71662,10 @@ class McpServer2 {
       return registeredResourceTemplate;
     }
   }
-  _createRegisteredResource(name2, title, uri, metadata, readCallback) {
+  _createRegisteredResource(name2, title2, uri, metadata, readCallback) {
     const registeredResource = {
       name: name2,
-      title,
+      title: title2,
       metadata,
       readCallback,
       enabled: true,
@@ -71694,10 +71694,10 @@ class McpServer2 {
     this._registeredResources[uri] = registeredResource;
     return registeredResource;
   }
-  _createRegisteredResourceTemplate(name2, title, template, metadata, readCallback) {
+  _createRegisteredResourceTemplate(name2, title2, template, metadata, readCallback) {
     const registeredResourceTemplate = {
       resourceTemplate: template,
-      title,
+      title: title2,
       metadata,
       readCallback,
       enabled: true,
@@ -71731,9 +71731,9 @@ class McpServer2 {
     }
     return registeredResourceTemplate;
   }
-  _createRegisteredPrompt(name2, title, description, argsSchema, callback) {
+  _createRegisteredPrompt(name2, title2, description, argsSchema, callback) {
     const registeredPrompt = {
-      title,
+      title: title2,
       description,
       argsSchema: argsSchema === undefined ? undefined : objectFromShape(argsSchema),
       callback,
@@ -71772,10 +71772,10 @@ class McpServer2 {
     }
     return registeredPrompt;
   }
-  _createRegisteredTool(name2, title, description, inputSchema, outputSchema, annotations, execution, _meta, handler) {
+  _createRegisteredTool(name2, title2, description, inputSchema, outputSchema, annotations, execution, _meta, handler) {
     validateAndWarnToolName2(name2);
     const registeredTool = {
-      title,
+      title: title2,
       description,
       inputSchema: getZodSchemaObject2(inputSchema),
       outputSchema: getZodSchemaObject2(outputSchema),
@@ -71849,8 +71849,8 @@ class McpServer2 {
     if (this._registeredTools[name2]) {
       throw new Error(`Tool ${name2} is already registered`);
     }
-    const { title, description, inputSchema, outputSchema, annotations, _meta } = config2;
-    return this._createRegisteredTool(name2, title, description, inputSchema, outputSchema, annotations, { taskSupport: "forbidden" }, _meta, cb);
+    const { title: title2, description, inputSchema, outputSchema, annotations, _meta } = config2;
+    return this._createRegisteredTool(name2, title2, description, inputSchema, outputSchema, annotations, { taskSupport: "forbidden" }, _meta, cb);
   }
   prompt(name2, ...rest) {
     if (this._registeredPrompts[name2]) {
@@ -71874,8 +71874,8 @@ class McpServer2 {
     if (this._registeredPrompts[name2]) {
       throw new Error(`Prompt ${name2} is already registered`);
     }
-    const { title, description, argsSchema } = config2;
-    const registeredPrompt = this._createRegisteredPrompt(name2, title, description, argsSchema, cb);
+    const { title: title2, description, argsSchema } = config2;
+    const registeredPrompt = this._createRegisteredPrompt(name2, title2, description, argsSchema, cb);
     this.setPromptRequestHandlers();
     this.sendPromptListChanged();
     return registeredPrompt;
@@ -74268,6 +74268,17 @@ var HELP = {
       "candle image upload ./banner.png --banner"
     ],
     env: ENV_API
+  },
+  scan: {
+    group: "Trade",
+    summary: "The token card for one contract: market, all-time high, safety facts, tracked wallets",
+    intro: "The token card for one pasted contract",
+    description: "Prints the token card a Quant group gets when a contract is pasted, from the public card route (GET /api/v1/tokens/:chain/:mint/card): ticker, name, chain and launchpad, then price, market cap, the all-time high since launch, 5 minute change, liquidity, volume and buys and sells, the bundles, snipers, insiders, fresh-wallet and wallet-age facts, tracked wallets and signals in the last hour, the same-name token that leads, whether Candle's forensics covers it, and the Candle page. Facts only: there is no score and no verdict. A field with no source prints a dash, never a guess, and a Sources block names where each figure came from. The chain is read from the address (0x is Hood, base58 is Solana); --chain overrides it, and any other address is refused before a request. Free for every plan: needs no key and sends none. Off on a deployment until TOKEN_CARD_ENABLED is on; until then the command answers TOKEN_CARD_DISABLED.",
+    usage: ["candle scan <contract address> [--chain solana|hood] [--json]"],
+    rows: [],
+    flags: [{ invocation: "--chain <chain>", description: "solana or hood; read from the address when omitted" }],
+    examples: ["candle scan <mint>", "candle scan 0x<token> --json"],
+    env: ["CANDLE_API_URL"]
   },
   portfolio: {
     group: "Account",
@@ -97381,6 +97392,190 @@ async function quantTerms(args, ctx) {
   return 1;
 }
 
+// src/commands/scan.ts
+init_args();
+init_client();
+init_human_output();
+init_presentation();
+init_render();
+var USAGE10 = "Usage: candle scan <contract address> [--chain solana|hood] [--json]";
+var OTHER_CHAIN = "Candle trades Solana and Hood today; that is not a Solana or Hood contract address.";
+var HOOD_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+var SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+function chainOfAddress(address) {
+  if (HOOD_ADDRESS.test(address))
+    return "hood";
+  if (SOLANA_ADDRESS.test(address))
+    return "solana";
+  return null;
+}
+var isObject2 = (value) => value !== null && typeof value === "object";
+function readCard(body) {
+  if (!isObject2(body) || body.success !== true || !isObject2(body.card))
+    return null;
+  const card2 = body.card;
+  const blocks = ["identity", "market", "forensics", "events", "hacc", "sameName", "sources", "links"];
+  if (typeof card2.mint !== "string" || card2.chain !== "solana" && card2.chain !== "hood")
+    return null;
+  if (!blocks.every((block2) => isObject2(card2[block2])))
+    return null;
+  return card2;
+}
+var num = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
+function usd(value) {
+  const n = num(value);
+  return n === null ? null : formatUsd(n, { compact: true });
+}
+function percentChange(value) {
+  const n = num(value);
+  if (n === null)
+    return null;
+  const rounded = Number(n.toFixed(1));
+  return `${rounded > 0 ? "+" : ""}${rounded}%`;
+}
+function title(card2) {
+  const { symbol, name: name2, launchpad, isCandle } = card2.identity;
+  const parts = [
+    symbol || shortAddress2(card2.mint),
+    name2 && name2 !== symbol ? name2 : null,
+    card2.chain === "hood" ? "Hood" : "Solana",
+    launchpad,
+    isCandle === true ? "launched on Candle" : null
+  ];
+  return parts.filter((part) => typeof part === "string" && part.length > 0).join(" · ");
+}
+function fact(card2, key) {
+  if (card2.hacc.state !== "ok")
+    return null;
+  const field = card2.hacc.facts.fields?.[key];
+  return field?.state === "ok" && field.display ? field.display : null;
+}
+function pair(a, b, missing) {
+  return a === null && b === null ? null : `${a ?? missing} / ${b ?? missing}`;
+}
+function eventsLine(card2, missing) {
+  const events = card2.events;
+  if (events.state !== "ok")
+    return `${missing} (${events.state})`;
+  const parts = [
+    `${events.trackedBuys} bought, ${events.trackedSells} sold`,
+    `${events.signals} signal${events.signals === 1 ? "" : "s"}`,
+    `${events.callouts} callout${events.callouts === 1 ? "" : "s"}`
+  ];
+  const names = Array.isArray(events.names) && events.names.length > 0 ? ` (${events.names.join(", ")})` : "";
+  return `${parts.join(" · ")}${names}`;
+}
+function sameNameLine(card2, missing) {
+  const same = card2.sameName;
+  if (same.state === "off" || same.state === "unavailable")
+    return `${missing} (${same.state})`;
+  if (same.state === "none")
+    return "none found";
+  const display = same.display && same.display !== "–" ? same.display : missing;
+  return same.trailing === true ? `${display} (this token trails)` : display;
+}
+function forensicsLine(card2, missing) {
+  switch (card2.forensics.state) {
+    case "ok":
+      return `read; the full report is candle token forensics ${card2.mint}${card2.chain === "hood" ? " --chain hood" : ""}`;
+    case "not_covered":
+      return "not covered for this token (bundles, snipers and insiders are unknown, not clean)";
+    default:
+      return `${missing} (unavailable)`;
+  }
+}
+function athLine(card2) {
+  const ath = card2.ath;
+  if (!ath || num(ath.marketCapUsd) === null)
+    return null;
+  return `${formatUsd(ath.marketCapUsd, { compact: true })} on ${formatTime(ath.at, { date: true, now: card2.generatedAt })} (daily high, FDV)`;
+}
+async function scan(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--chain"] });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const named = parsed.values["--chain"];
+  if (parsed.positionals.length !== 1 || named !== undefined && named !== "solana" && named !== "hood") {
+    writeUsageFailure(ctx.deps, USAGE10, ctx.json);
+    return 2;
+  }
+  const address = parsed.positionals[0].trim();
+  const found = chainOfAddress(address);
+  if (found === null) {
+    writeUsageFailure(ctx.deps, `${OTHER_CHAIN}
+${USAGE10}`, ctx.json);
+    return 2;
+  }
+  if (named !== undefined && named !== found) {
+    const label = (c) => c === "hood" ? "Hood" : "Solana";
+    writeUsageFailure(ctx.deps, `That address is a ${label(found)} contract, not a ${label(named)} one. Candle trades Solana and Hood today.
+${USAGE10}`, ctx.json);
+    return 2;
+  }
+  const chain2 = found;
+  const result = await apiRequest(`/api/v1/tokens/${chain2}/${encodeURIComponent(address)}/card`, {
+    apiUrl: ctx.apiUrl,
+    auth: "none",
+    credentials: {},
+    env: ctx.deps.env,
+    fetch: ctx.deps.fetch
+  });
+  if (!result.ok) {
+    writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json);
+    return 1;
+  }
+  const card2 = readCard(result.body);
+  if (!card2) {
+    writeFailure(ctx.deps, {
+      ok: false,
+      status: result.status,
+      code: "BAD_RESPONSE",
+      message: "The card answer was not readable.",
+      raw: result.body
+    }, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json);
+    return 1;
+  }
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data: { card: card2 } })}
+`);
+    return 0;
+  }
+  const missing = symbols(terminalStyle(ctx.deps, "stdout")).missing;
+  const m = card2.market;
+  const buys = num(m.buys5m);
+  const sells = num(m.sells5m);
+  const rows = [
+    ["Contract", card2.mint],
+    ["Price", num(m.priceUsd) === null ? null : formatPrice(m.priceUsd)],
+    ["Market cap", usd(m.marketCapUsd)],
+    ["All-time high", athLine(card2)],
+    ["5m change", percentChange(m.change5mPct)],
+    ["Liquidity", usd(m.liquidityUsd)],
+    ["Volume 5m", usd(m.volume5mUsd)],
+    ["Buys / sells 5m", pair(buys === null ? null : String(buys), sells === null ? null : String(sells), missing)],
+    ["Bundles", fact(card2, "bundles")],
+    ["Snipers", fact(card2, "snipers")],
+    ["Insiders", fact(card2, "insiders")],
+    ["Fresh 1d / 7d", pair(fact(card2, "fresh_1d"), fact(card2, "fresh_7d"), missing)],
+    ["Mean wallet age", fact(card2, "avg_wallet_age")],
+    ["Tracked, 1h", eventsLine(card2, missing)],
+    ["Same name", sameNameLine(card2, missing)],
+    ["Forensics", forensicsLine(card2, missing)],
+    ["Market as of", num(m.updatedAt) === null ? null : formatTime(m.updatedAt, { now: card2.generatedAt })],
+    ["Candle page", card2.links.token]
+  ];
+  writeFields(ctx.deps, "stdout", rows, title(card2));
+  const sources2 = Object.entries(card2.sources).filter(([, text3]) => typeof text3 === "string");
+  if (sources2.length > 0) {
+    ctx.deps.stdout.write(`
+`);
+    writeFields(ctx.deps, "stdout", sources2, "Sources");
+  }
+  return 0;
+}
+
 // src/commands/setup.ts
 init_human_output();
 init_presentation();
@@ -97392,8 +97587,8 @@ init_profiles();
 init_render();
 var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
 var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
-function section(deps, title) {
-  writeHeading(deps, "stdout", title);
+function section(deps, title2) {
+  writeHeading(deps, "stdout", title2);
 }
 async function setup(args, ctx) {
   const { deps, apiUrl, json } = ctx;
@@ -99135,7 +99330,7 @@ async function teeRename(args, ctx) {
   });
   const preview = await call2({
     dryRun: true,
-    renames: pairs.map((pair) => ({ wallet: pair.from, label: pair.to }))
+    renames: pairs.map((pair2) => ({ wallet: pair2.from, label: pair2.to }))
   });
   if (!preview.ok)
     return serverFailure(ctx, preview, pairs, batch);
@@ -99426,7 +99621,7 @@ init_deps();
 init_human_output();
 init_render();
 var KINDS = ["trade", "signal", "callout"];
-var USAGE10 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
+var USAGE11 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
 function readEventsBody(body) {
   if (body === null || typeof body !== "object" || !Array.isArray(body.events))
     return null;
@@ -99484,11 +99679,11 @@ async function tokenEvents(args, ctx) {
   const since = parsed.values["--since"];
   const before = parsed.values["--before"];
   if (parsed.positionals.length !== 1 || chain2 !== "solana" && chain2 !== "hood") {
-    writeUsageFailure(ctx.deps, USAGE10, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE11, ctx.json);
     return 2;
   }
   if (kind !== undefined && !KINDS.includes(kind)) {
-    writeUsageFailure(ctx.deps, USAGE10, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE11, ctx.json);
     return 2;
   }
   if (limit !== undefined && !/^[1-9][0-9]{0,3}$/.test(limit) || Number(limit) > 1000) {
@@ -99577,7 +99772,7 @@ var TOKEN_PAGE_BODY_CAP_BYTES = 32 * 1024;
 var TOKEN_PAGE_SECTIONS = ["thesis", "tokenomics", "lore"];
 var FLAG_REASONS = ["spam", "scam", "abuse", "misleading", "unsafe_link", "other"];
 var FLAG_DETAIL_LIMIT = 500;
-var USAGE11 = {
+var USAGE12 = {
   about: "Usage: candle token about <address> [--chain solana|hood] [--capabilities]",
   claim: "Usage: candle token claim <address> [--chain solana|hood] [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--idempotency-key <key>]",
   section: `Usage: candle token section set <address> <thesis|tokenomics|lore> --file <path> --base-revision <n> [--clear] [--chain solana|hood] [--idempotency-key <key>]
@@ -99771,11 +99966,11 @@ function signatureFor(chain2, given) {
     return;
   }
 }
-function factValue(fact) {
-  if (fact.raw === undefined)
-    return fact.status;
-  const value = fact.decimals ? rawUnits2(fact.raw, fact.decimals) : fact.raw;
-  return `${value}${fact.unit === "token" ? "" : ` ${fact.unit}`} (${fact.status}, ${fact.coverage}, ${terminalText(fact.source)}${fact.measuredAt ? `, ${fact.measuredAt}` : ""})`;
+function factValue(fact2) {
+  if (fact2.raw === undefined)
+    return fact2.status;
+  const value = fact2.decimals ? rawUnits2(fact2.raw, fact2.decimals) : fact2.raw;
+  return `${value}${fact2.unit === "token" ? "" : ` ${fact2.unit}`} (${fact2.status}, ${fact2.coverage}, ${terminalText(fact2.source)}${fact2.measuredAt ? `, ${fact2.measuredAt}` : ""})`;
 }
 function rawUnits2(raw, decimals) {
   if (!/^\d+$/.test(raw))
@@ -99834,7 +100029,7 @@ function terminalTextKeepingLines(text3) {
 `);
 }
 async function tokenAbout(args, ctx) {
-  const usage11 = usageFor(ctx, USAGE11.about);
+  const usage11 = usageFor(ctx, USAGE12.about);
   const parsed = parseArgs(args, { valueFlags: ["--chain"], booleanFlags: ["--capabilities"] });
   if ("error" in parsed)
     return usage11(parsed.error);
@@ -99880,7 +100075,7 @@ async function tokenAbout(args, ctx) {
   return 0;
 }
 async function tokenClaim(args, ctx) {
-  const usage11 = usageFor(ctx, USAGE11.claim);
+  const usage11 = usageFor(ctx, USAGE12.claim);
   const parsed = parseArgs(args, {
     valueFlags: ["--chain", "--challenge-id", "--signature", "--message-out", "--idempotency-key"],
     booleanFlags: ["--creator", "--challenge"],
@@ -100007,7 +100202,7 @@ var SECTION_FLAGS = {
   restore: { valueFlags: ["--chain", "--version-id", "--base-revision", "--idempotency-key"], booleanFlags: [] }
 };
 async function tokenSection(args, ctx) {
-  const usage11 = usageFor(ctx, USAGE11.section);
+  const usage11 = usageFor(ctx, USAGE12.section);
   const action2 = args[0];
   if (action2 !== "set" && action2 !== "restore")
     return usage11();
@@ -100100,7 +100295,7 @@ async function tokenSection(args, ctx) {
   return 0;
 }
 async function tokenHistory(args, ctx) {
-  const usage11 = usageFor(ctx, USAGE11.history);
+  const usage11 = usageFor(ctx, USAGE12.history);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
   if ("error" in parsed)
     return usage11(parsed.error);
@@ -100155,7 +100350,7 @@ More: --cursor ${data.nextCursor}
   return 0;
 }
 async function tokenFlag(args, ctx) {
-  const usage11 = usageFor(ctx, USAGE11.flag);
+  const usage11 = usageFor(ctx, USAGE12.flag);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--content", "--reason", "--detail", "--idempotency-key"] });
   if ("error" in parsed)
     return usage11(parsed.error);
@@ -100230,7 +100425,7 @@ class X402DecodeError extends Error {
   }
 }
 var BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
-var isObject2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var isString = (value) => typeof value === "string";
 function encodeHeader(value) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
@@ -100245,12 +100440,12 @@ function decodeHeader(value) {
   } catch {
     throw new X402DecodeError("not JSON");
   }
-  if (!isObject2(parsed))
+  if (!isObject3(parsed))
     throw new X402DecodeError("not a JSON object");
   return parsed;
 }
 function parseRequirements(value) {
-  if (!isObject2(value))
+  if (!isObject3(value))
     throw new X402DecodeError("requirements are not an object");
   const { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, extra } = value;
   if (!isString(scheme) || !isString(network2) || !isString(amount) || !isString(asset) || !isString(payTo)) {
@@ -100259,7 +100454,7 @@ function parseRequirements(value) {
   if (typeof maxTimeoutSeconds !== "number" || !Number.isInteger(maxTimeoutSeconds)) {
     throw new X402DecodeError("maxTimeoutSeconds is not an integer");
   }
-  if (extra !== undefined && !isObject2(extra))
+  if (extra !== undefined && !isObject3(extra))
     throw new X402DecodeError("extra is not an object");
   return { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, ...extra ? { extra } : {} };
 }
@@ -100268,7 +100463,7 @@ function decodePaymentRequired(header) {
   if (object4.x402Version !== X402_VERSION)
     throw new X402DecodeError("x402Version is not 2");
   const resource = object4.resource;
-  if (!isObject2(resource) || !isString(resource.url))
+  if (!isObject3(resource) || !isString(resource.url))
     throw new X402DecodeError("resource is missing");
   if (!Array.isArray(object4.accepts))
     throw new X402DecodeError("accepts is not an array");
@@ -100283,7 +100478,7 @@ function decodePaymentRequired(header) {
       ...isString(resource.mimeType) ? { mimeType: resource.mimeType } : {}
     },
     accepts: object4.accepts.map(parseRequirements),
-    ...isObject2(object4.extensions) ? { extensions: object4.extensions } : {}
+    ...isObject3(object4.extensions) ? { extensions: object4.extensions } : {}
   };
 }
 function paymentRequiredOf(headers2) {
@@ -100329,14 +100524,14 @@ function encodePaymentPayload(args) {
 // src/x402/siwx.ts
 init_esm();
 var SIWX_EXTENSION = "sign-in-with-x";
-var isObject3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 function spendChallengeOf(extensions, apiHost, network2) {
   const extension = extensions?.[SIWX_EXTENSION];
-  if (!isObject3(extension) || !isObject3(extension.info))
+  if (!isObject4(extension) || !isObject4(extension.info))
     return null;
   const info3 = extension.info;
   const chains = Array.isArray(extension.supportedChains) ? extension.supportedChains : [];
-  const chain2 = chains.find((c) => isObject3(c) && c.chainId === network2 && c.type === "ed25519");
+  const chain2 = chains.find((c) => isObject4(c) && c.chainId === network2 && c.type === "ed25519");
   if (!chain2)
     return null;
   const { domain, uri, version, nonce, issuedAt, expirationTime } = info3;
@@ -100898,7 +101093,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE12 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE13 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -100961,9 +101156,9 @@ function describeDestination(destination) {
       return `address ${destination.address} (not one of this account's linked wallets; Candle decides whether it is allowed)`;
   }
 }
-function writePreview(ctx, title, rows, note) {
+function writePreview(ctx, title2, rows, note) {
   const style = terminalStyle(ctx.deps, "stderr");
-  ctx.deps.stderr.write(`${heading(title, style)}
+  ctx.deps.stderr.write(`${heading(title2, style)}
 
 ${fields(rows, style).join(`
 `)}
@@ -100994,7 +101189,7 @@ async function transfer(args, ctx) {
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok) {
-    writeUsageFailure(ctx.deps, USAGE12, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE13, ctx.json);
     return 2;
   }
   const to = flags2["--to"];
@@ -107705,15 +107900,15 @@ function parseCounts(count3, teeCount, externalCount, rpcUrl, evmCount, evmTeeCo
   if (typeof evmTeeParsed === "object" && evmTeeParsed !== null)
     return evmTeeParsed;
   const allOmitted = vaultCount === undefined && teeParsed === undefined && externalParsed === undefined;
-  const scan = rpcUrl !== undefined;
+  const scan2 = rpcUrl !== undefined;
   const resolve6 = (value) => {
     if (value !== undefined)
       return value;
-    return scan ? undefined : 1;
+    return scan2 ? undefined : 1;
   };
-  const solanaVault = allOmitted && !scan ? 1 : resolve6(vaultCount);
-  const solanaTee = allOmitted && !scan ? 1 : resolve6(teeParsed);
-  const solanaExternal = allOmitted && !scan ? 1 : resolve6(externalParsed);
+  const solanaVault = allOmitted && !scan2 ? 1 : resolve6(vaultCount);
+  const solanaTee = allOmitted && !scan2 ? 1 : resolve6(teeParsed);
+  const solanaExternal = allOmitted && !scan2 ? 1 : resolve6(externalParsed);
   return {
     solanaVault,
     solanaTee,
@@ -108756,7 +108951,7 @@ init_human_output();
 init_release();
 import { dirname as dirname11, join as join15 } from "node:path";
 init_key_output();
-var USAGE13 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE14 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -108788,19 +108983,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE13}`, json);
+${USAGE14}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeScreenUsageFailure(deps, `verify takes exactly one file.
-${USAGE13}`, json);
+${USAGE14}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeScreenUsageFailure(deps, `--bundle is required.
-${USAGE13}`, json);
+${USAGE14}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -108814,7 +109009,7 @@ ${USAGE13}`, json);
   }
   if (resolved.kind === "absent") {
     writeScreenUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE13}`, json);
+${USAGE14}`, json);
     return 2;
   }
   const identity4 = resolved.uri;
@@ -109063,7 +109258,7 @@ init_solana_lite();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID12 } from "node:crypto";
-var USAGE14 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE15 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -109326,7 +109521,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE14}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE15}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -109337,7 +109532,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID12()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE14, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE15, ctx.json);
     return 2;
   }
   const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
@@ -109753,6 +109948,7 @@ var COMMANDS = {
       flag: tokenFlag
     }
   },
+  scan: { bare: scan },
   spend: {
     bare: spendShow,
     subcommands: {
@@ -109914,6 +110110,7 @@ var NEVER_GUARDED = new Set([
   "verify",
   "plans",
   "token",
+  "scan",
   "spend",
   "update",
   "help",

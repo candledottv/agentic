@@ -700,6 +700,18 @@ export const HELP: Record<string, Topic> = {
     env: ENV_API,
   },
 
+  scan: {
+    group: "Trade",
+    summary: "The token card for one contract: market, all-time high, safety facts, tracked wallets",
+    intro: "The token card for one pasted contract",
+    description:
+      "Prints the token card a Quant group gets when a contract is pasted, from the public card route (GET /api/v1/tokens/:chain/:mint/card): ticker, name, chain and launchpad, then price, market cap, the all-time high since launch, 5 minute change, liquidity, volume and buys and sells, the bundles, snipers, insiders, fresh-wallet and wallet-age facts, tracked wallets and signals in the last hour, the same-name token that leads, whether Candle's forensics covers it, and the Candle page. Facts only: there is no score and no verdict. A field with no source prints a dash, never a guess, and a Sources block names where each figure came from. The chain is read from the address (0x is Hood, base58 is Solana); --chain overrides it, and any other address is refused before a request. Free for every plan: needs no key and sends none. Off on a deployment until TOKEN_CARD_ENABLED is on; until then the command answers TOKEN_CARD_DISABLED.",
+    usage: ["candle scan <contract address> [--chain solana|hood] [--json]"],
+    rows: [],
+    flags: [{ invocation: "--chain <chain>", description: "solana or hood; read from the address when omitted" }],
+    examples: ["candle scan <mint>", "candle scan 0x<token> --json"],
+    env: ["CANDLE_API_URL"],
+  },
   portfolio: {
     group: "Account",
     intro: "Holdings, prices and value of every wallet",

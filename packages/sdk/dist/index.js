@@ -4981,6 +4981,11 @@ class CandleClient {
       nextCursor: body.nextCursor
     };
   }
+  async getTokenCard(chain, mint, opts = {}) {
+    const query = opts.tag !== undefined ? `?${new URLSearchParams({ cst: opts.tag }).toString()}` : "";
+    const body = await this.requestJson("GET", `/api/v1/tokens/${chain}/${encodeURIComponent(mint)}/card${query}`);
+    return body.card;
+  }
   async verify(chain, mint) {
     return this.requestJson("GET", `/api/v1/verify/${chain}/${encodeURIComponent(mint)}`);
   }
@@ -6624,7 +6629,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.9";
+var SDK_VERSION = "0.6.10";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
