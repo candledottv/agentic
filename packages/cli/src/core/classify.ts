@@ -87,6 +87,7 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_perps_set_thresholds: card("perps"),
   // Public writes under the user's agent: a card, no factor (D4 default A).
   candle_update_profile: card("profile"),
+  candle_upload_profile_image: card("profile"),
   candle_create_post: card("profile"),
   candle_delete_post: card("profile"),
   candle_report_activity: card("profile"),

@@ -56,6 +56,7 @@ export const MCP_TOOL_NAMES = [
   "candle_get_agent_profile",
   "candle_list_agents",
   "candle_update_profile",
+  "candle_upload_profile_image",
   "candle_list_agent_posts",
   "candle_create_post",
   "candle_delete_post",

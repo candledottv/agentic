@@ -44,15 +44,15 @@ test("local discovery only offers the tool when the server allows acting edits; 
   expect(names).toEqual([...PROFILE_EDIT_TOOL_NAMES])
   canEdit = false
   expect(await registerEligibleProfileTool(server, env, fetcher)).toBe(false)
-  expect(enabled()).toEqual([false, false, false])
+  expect(enabled()).toEqual([false, false, false, false])
   canEdit = true
   expect(await registerEligibleProfileTool(server, env, fetcher)).toBe(true)
-  expect(enabled()).toEqual([true, true, true])
-  expect(names).toHaveLength(3)
+  expect(enabled()).toEqual([true, true, true, true])
+  expect(names).toHaveLength(4)
   expect(await registerEligibleProfileTool(server, { ...env, CANDLE_MCP_TOOLS: "candle_get_market" }, fetcher)).toBe(
     false,
   )
-  expect(enabled()).toEqual([false, false, false])
+  expect(enabled()).toEqual([false, false, false, false])
 })
 
 test("anonymous, denied, and old/offline API discovery fail closed", async () => {
@@ -105,6 +105,54 @@ test("MCP rejects mixed patches containing owner-only fields before sending a wr
       (await client.callTool({ name: "candle_update_profile", arguments: { publicThesis: "Allowed bio" } })).isError,
     ).not.toBe(true)
     expect(writes).toBe(1)
+  } finally {
+    await client.close()
+    await server.close()
+  }
+})
+
+test("profile image tool builds a keyed JSON upload, not a profile PATCH", () => {
+  const input = { kind: "banner", imageUrl: "https://cdn.example/banner.webp" }
+  const request = buildRequest("candle_upload_profile_image", input, {
+    apiUrl: "https://api.test",
+    apiKey: "fixture-key",
+  })
+  expect(request.url).toBe("https://api.test/api/v1/uploads/agent-profile-image")
+  expect(request.init.method).toBe("POST")
+  expect(new Headers(request.init.headers).get("x-api-key")).toBe("fixture-key")
+  expect(JSON.parse(String(request.init.body))).toEqual(input)
+  expect(() => buildRequest("candle_upload_profile_image", input, { apiUrl: "https://api.test" })).toThrow(/key/i)
+})
+
+test("profile image tool relays upstream refusals and rejects extra fields", async () => {
+  const server = new McpServer({ name: "profile-image-fixture", version: "1" })
+  const writes: unknown[] = []
+  await registerEligibleProfileTool(
+    server,
+    { CANDLE_API_URL: "https://api.test", CANDLE_AGENT_API_KEY: "fixture-key" },
+    async (_url, init) => {
+      if (init?.method !== "POST") return Response.json({ success: true, canEdit: true })
+      writes.push(JSON.parse(String(init.body)))
+      return Response.json(
+        { success: false, error: { code: "BANNER_WRONG_SHAPE", message: "Use the wide original" } },
+        { status: 400 },
+      )
+    },
+  )
+  const client = new Client({ name: "fixture", version: "1" })
+  const [caller, receiver] = InMemoryTransport.createLinkedPair()
+  await server.connect(receiver)
+  await client.connect(caller)
+  try {
+    const input = { kind: "banner", imageUrl: "https://cdn.example/banner.png" }
+    const refused = await client.callTool({ name: "candle_upload_profile_image", arguments: input })
+    expect(refused.isError).toBe(true)
+    expect(JSON.stringify(refused)).toContain("BANNER_WRONG_SHAPE")
+    expect(
+      (await client.callTool({ name: "candle_upload_profile_image", arguments: { ...input, profileId: "other" } }))
+        .isError,
+    ).toBe(true)
+    expect(writes).toEqual([input])
   } finally {
     await client.close()
     await server.close()

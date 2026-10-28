@@ -52,6 +52,8 @@ export interface ApiRequestOptions {
    * refusal and the credential headers stay in one place.
    */
   raw?: { bytes: Uint8Array; contentType: string }
+  /** Multipart uploads; fetch supplies the boundary and content type. */
+  form?: FormData
   auth: "device" | "key" | "none"
   credentials: { deviceToken?: string; apiKey?: string }
   apiUrl: string
@@ -410,11 +412,14 @@ export async function apiRequest(path: string, opts: ApiRequestOptions): Promise
     return { ok: false, status: 0, code: "INSECURE_API_URL", message: insecure, raw: undefined }
   }
   const headers = buildHeaders(opts)
+  if (opts.form) delete headers["content-type"]
   // Stringified outside the network try/catch below on purpose: a body that can't be serialized
   // (circular references, a BigInt without a toJSON) is a programmer error in the caller, not a
   // network failure, and should throw as itself rather than being reported as "Could not reach
   // <url>" with status 0, which would contradict this module's own header comment.
-  const body = opts.raw ? (opts.raw.bytes as BodyInit) : opts.body === undefined ? undefined : JSON.stringify(opts.body)
+  const body =
+    opts.form ??
+    (opts.raw ? (opts.raw.bytes as BodyInit) : opts.body === undefined ? undefined : JSON.stringify(opts.body))
   const doFetch = opts.fetch ?? fetch
 
   const init: RequestInit = { method: opts.method ?? "GET", headers, body }

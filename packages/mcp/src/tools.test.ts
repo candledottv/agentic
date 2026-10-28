@@ -73,6 +73,7 @@ test("all registered tools are listed", () => {
     "candle_transfer",
     "candle_unstake",
     "candle_update_profile",
+    "candle_upload_profile_image",
     "candle_vamp_candidates",
   ])
 })
