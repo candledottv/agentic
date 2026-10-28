@@ -15,7 +15,7 @@
  *   payload (`getQuotePairs`, `getPresets`, `getMarket`, `getLaunchJob`, `getAgentProfile`)
  *   return the useful inner object; methods whose top-level body IS the useful object
  *   (`launch`, `dryRunLaunch`, `getQuote`, `getFeed`, `verify`) return the parsed body.
- * - `x-api-key` is attached to EVERY request when the client has a key. The write/keyed
+ * - `x-api-key` is attached when the client has a key, except on public tokenPages reads. The write/keyed
  *   endpoints (launch, dry run, jobs, activity, uploads) refuse to fetch at all without one,
  *   throwing a plain `Error` that names the missing option, so a misconfigured agent fails
  *   fast and locally instead of with a server 401.
@@ -142,6 +142,7 @@ import {
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans"
 import type { SecretStore } from "./secret-store"
 import type { CandleStaking, StakingPositions, StakingResult, StakingRewardClaim } from "./staking"
+import { createTokenPagesClient } from "./token-pages"
 import { encryptWalletKeyForImport, type WalletChain } from "./wallet-import"
 
 export type Chain = "solana" | "hood"
@@ -3629,6 +3630,18 @@ export function keyedRedirectGuard(doFetch: typeof fetch): typeof fetch {
 }
 
 export class CandleClient {
+  /** About reads and scoped writes. No implicit signing, claiming or conflict resolution. */
+  readonly tokenPages = createTokenPagesClient({
+    fetch: (input, init) => this.fetchImpl(input, init),
+    apiUrl: () => this.apiUrl,
+    headers: (authenticated) => {
+      if (authenticated) this.requireKey("tokenPages")
+      const headers = this.headers()
+      if (!authenticated) delete headers["x-api-key"]
+      return headers
+    },
+  })
+
   private readonly apiUrl: string
   private readonly apiKey?: string
   private readonly fetchImpl: typeof fetch

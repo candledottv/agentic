@@ -4389,6 +4389,114 @@ async function readPerpsHistoryPage(req) {
   return kind === "fills" ? { ...envelope, fills: page } : { ...envelope, funding: page };
 }
 
+// src/token-pages.ts
+class TokenPageError extends CandleApiError {
+  idempotencyKey;
+  latest;
+  retryAfterHeader;
+  constructor(error, options = {}) {
+    super(error);
+    this.name = "TokenPageError";
+    this.idempotencyKey = options.idempotencyKey;
+    this.latest = options.latest;
+    this.retryAfterHeader = options.retryAfterHeader ?? null;
+  }
+}
+function createTokenPagesClient(io) {
+  function path(token, suffix = "") {
+    return `/api/v1/token-pages/${encodeURIComponent(token.chain)}/${encodeURIComponent(token.address)}${suffix}`;
+  }
+  function query(options = {}) {
+    const params = new URLSearchParams;
+    if (options.limit !== undefined)
+      params.set("limit", String(options.limit));
+    if (options.cursor !== undefined)
+      params.set("cursor", options.cursor);
+    return params.size ? `?${params}` : "";
+  }
+  async function request(method, url, authenticated, body, idempotencyKey) {
+    const headers = io.headers(authenticated);
+    if (body !== undefined)
+      headers["content-type"] = "application/json";
+    if (idempotencyKey !== undefined)
+      headers["Idempotency-Key"] = idempotencyKey;
+    const init = {
+      method,
+      headers,
+      redirect: "error",
+      cache: "no-store",
+      ...body !== undefined ? { body: JSON.stringify(body) } : {}
+    };
+    const attempts = idempotencyKey === undefined ? 1 : 2;
+    for (let attempt = 0;attempt < attempts; attempt++) {
+      let response;
+      let text;
+      try {
+        response = await io.fetch(`${io.apiUrl()}${url}`, init);
+        text = await response.text();
+      } catch {
+        if (attempt + 1 < attempts)
+          continue;
+        throw new TokenPageError(new CandleApiError({
+          code: idempotencyKey ? "OUTCOME_UNKNOWN" : "NETWORK_ERROR",
+          status: 0,
+          message: idempotencyKey ? "No complete answer; replay the same body with this idempotency key." : "No complete answer from Candle.",
+          retryable: true
+        }), { idempotencyKey });
+      }
+      if (!response.ok) {
+        let refusal = {};
+        try {
+          refusal = JSON.parse(text);
+        } catch {}
+        const error = refusal?.success === false && typeof refusal.error === "string" ? new CandleApiError({
+          code: refusal.error,
+          message: `Token page request refused (${refusal.error}).`,
+          status: response.status,
+          retryable: false
+        }) : candleApiErrorFromResponse(response.status, text);
+        throw new TokenPageError(error, {
+          idempotencyKey,
+          latest: refusal?.latest,
+          retryAfterHeader: response.headers.get("retry-after")
+        });
+      }
+      try {
+        const envelope = JSON.parse(text);
+        if (envelope?.success !== true || !("data" in envelope))
+          throw new Error;
+        return envelope.data;
+      } catch {
+        throw new TokenPageError(new CandleApiError({
+          code: idempotencyKey ? "OUTCOME_UNKNOWN" : "BAD_RESPONSE",
+          message: "Candle returned an invalid response.",
+          status: response.status,
+          retryable: false
+        }), { idempotencyKey });
+      }
+    }
+    throw new Error("Unreachable");
+  }
+  async function write(method, url, body, options = {}) {
+    const idempotencyKey = options.idempotencyKey ?? crypto.randomUUID();
+    if (!idempotencyKey.length || idempotencyKey.length > 128)
+      throw new Error("idempotencyKey must be 1 to 128 characters");
+    return { data: await request(method, url, true, body, idempotencyKey), idempotencyKey };
+  }
+  const sectionPath = (section) => `/sections/${encodeURIComponent(section)}`;
+  return {
+    about: (token) => request("GET", path(token), false),
+    capabilities: (token) => request("GET", path(token, "/capabilities"), true),
+    burns: (token, options) => request("GET", path(token, `/burns${query(options)}`), false),
+    history: (token, section, options) => request("GET", path(token, `${sectionPath(section)}/history${query(options)}`), false),
+    creatorChallenge: (token) => request("POST", path(token, "/creator-challenges"), true, {}),
+    claim: (token, body, options) => write("POST", path(token, "/claims"), body, options),
+    setSection: (token, section, body, options) => write("PUT", path(token, sectionPath(section)), body, options),
+    restoreSection: (token, section, body, options) => write("POST", path(token, `${sectionPath(section)}/restore`), body, options),
+    flag: (token, body, options) => write("POST", path(token, "/flags"), body, options)
+  };
+}
+
 // src/wallet-import.ts
 import { Chacha20Poly1305 } from "@hpke/chacha20poly1305";
 import { CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
@@ -4696,6 +4804,18 @@ function keyedRedirectGuard(doFetch) {
 }
 
 class CandleClient {
+  tokenPages = createTokenPagesClient({
+    fetch: (input, init) => this.fetchImpl(input, init),
+    apiUrl: () => this.apiUrl,
+    headers: (authenticated) => {
+      if (authenticated)
+        this.requireKey("tokenPages");
+      const headers = this.headers();
+      if (!authenticated)
+        delete headers["x-api-key"];
+      return headers;
+    }
+  });
   apiUrl;
   apiKey;
   fetchImpl;
@@ -7086,6 +7206,7 @@ export {
   TradeLegOutcomeError,
   TradeLandedUnconfirmedError,
   TradeLandedFeeLegError,
+  TokenPageError,
   SelfLaunchOutcomeError,
   QUANT_POLL_TIMEOUT_MS,
   QUANT_DEFAULT_MAX_TEXT_CHARS,

@@ -49,9 +49,70 @@ const request = candle.expandPreset(presets, "solana-open-sol", {
 })
 ```
 
-The API key is attached as `x-api-key` on every request when configured. The keyed methods
+The API key is attached as `x-api-key` when configured, except on public `tokenPages` reads. The keyed methods
 (`launch`, `launchAsync`, `dryRunLaunch`, `getLaunchJob`, `reportActivity`, `uploadImage`)
 refuse to fetch without one and throw a plain `Error` locally instead of a server 401.
+
+## Token page About (unreleased source)
+
+`candle.tokenPages` reads About and immutable section history, and submits claims, section edits,
+restores and flags. These methods need a human-owned SDK release before they are available in the
+published package. Token page switches default off; a server can return `404` or `feature_off`.
+
+| Method | Access | Result |
+| --- | --- | --- |
+| `about(token)` | Public, no key sent | `TokenAbout`, with public feature switches |
+| `burns(token, { cursor, limit })` | Public, CNDL only | `AboutBurnHistory` |
+| `history(token, section, { cursor, limit })` | Public, no key sent | `AboutHistory`, including tombstones |
+| `capabilities(token)` | `token-pages:read` | Private `AboutCapabilities` |
+| `creatorChallenge(token)` | `token-pages:write` | Exact message, challenge ID and expiry |
+| `claim(token, body, options)` | `token-pages:write` | Claim result and idempotency key |
+| `setSection(token, section, body, options)` | `token-pages:write` | New version ID/revision and idempotency key |
+| `restoreSection(token, section, body, options)` | `token-pages:write` | New version ID/revision and idempotency key |
+| `flag(token, body, options)` | `token-pages:write` | Flag result and idempotency key |
+
+The token is `{ chain: "solana" | "hood", address: string }`; sections are `thesis`, `tokenomics`
+and `lore`. History and burn pagination accepts a returned opaque cursor and a limit from 1 to 50.
+Revisions and raw amounts remain strings. Reads bypass caches; capabilities are never folded into
+public About. Hidden/removed history bodies stay null. The API validates strict bodies, text limits,
+fresh eligibility and restrictions on every write. Existing keys gain no scope automatically.
+Claim/edit/restore require 0.5% of current supply; any positive eligible balance can flag.
+
+```ts
+const token = { chain: "solana" as const, address: mint }
+const about = await candle.tokenPages.about(token)
+const capabilities = await candle.tokenPages.capabilities(token)
+// Persist this key and the draft before sending; a rerun must reuse both.
+const idempotencyKey = crypto.randomUUID()
+if (about.features.edit && capabilities.canEdit) {
+  const saved = await candle.tokenPages.setSection(token, "thesis", {
+    text: "Our thesis",
+    baseRevision: about.sections.thesis?.revision ?? "0",
+  }, { idempotencyKey })
+  console.log(saved.data.revision, saved.idempotencyKey)
+}
+```
+
+Claim explicitly with `{ kind: "holder" }` or `{ kind: "creator", challengeId?, signature? }`.
+A known creator may need no additional signature. Otherwise call `creatorChallenge`, sign the exact
+UTF-8 message locally and pass its challenge ID and signature in a separate creator claim. Solana
+signatures use base64; Hood uses the 65-byte `0x` message signature. No method signs, creates a
+transaction, requests a private key, implicitly claims or automatically restores on conflict.
+Challenges are attempted once and expire after five minutes.
+
+Restore takes `{ versionId, baseRevision }` and appends a new version; it never rewrites history.
+Flag takes `{ contentId, reason, detail? }` for an exact version, with reason `spam`, `scam`, `abuse`,
+`misleading`, `unsafe_link` or `other`. Restoring a removed/unsafe version is refused.
+
+Every content write sends `Idempotency-Key` from `options.idempotencyKey` or a generated UUID and
+returns `{ data, idempotencyKey }`. A connection or interrupted-body failure retries once with the
+same key and serialized body. HTTP refusals are not retried. `TokenPageError` extends `CandleApiError`:
+branch on `code` and `status`, retain `idempotencyKey`, inspect `latest` for `revision_conflict`, and
+respect `retryAfterHeader` on rate limits. Two missing answers or an invalid success produce
+`OUTCOME_UNKNOWN`; explicitly replay the same request/key to recover its result. A conflict leaves
+the caller's draft untouched. Feature-off, missing scope/auth, insufficient holding, expired/replayed
+proof, unsafe text, unavailable eligibility and old-server errors remain refusals for the caller to
+handle. Do not log content bodies, credentials or creator signatures.
 
 ## Embedded launches with built-in idempotent retries
 

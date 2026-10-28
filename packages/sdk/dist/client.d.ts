@@ -15,7 +15,7 @@
  *   payload (`getQuotePairs`, `getPresets`, `getMarket`, `getLaunchJob`, `getAgentProfile`)
  *   return the useful inner object; methods whose top-level body IS the useful object
  *   (`launch`, `dryRunLaunch`, `getQuote`, `getFeed`, `verify`) return the parsed body.
- * - `x-api-key` is attached to EVERY request when the client has a key. The write/keyed
+ * - `x-api-key` is attached when the client has a key, except on public tokenPages reads. The write/keyed
  *   endpoints (launch, dry run, jobs, activity, uploads) refuse to fetch at all without one,
  *   throwing a plain `Error` that names the missing option, so a misconfigured agent fails
  *   fast and locally instead of with a server 401.
@@ -3076,6 +3076,8 @@ export declare class CrossOriginRedirectError extends Error {
  */
 export declare function keyedRedirectGuard(doFetch: typeof fetch): typeof fetch;
 export declare class CandleClient {
+    /** About reads and scoped writes. No implicit signing, claiming or conflict resolution. */
+    readonly tokenPages: import("./token-pages").CandleTokenPages;
     private readonly apiUrl;
     private readonly apiKey?;
     private readonly fetchImpl;
