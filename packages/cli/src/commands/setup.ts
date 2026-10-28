@@ -22,7 +22,7 @@ import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
 import { accent, brandHeader, terminalStyle } from "../presentation"
-import { effectiveProfileFields, identityLine, printIdentity, resolveProfileName } from "../profiles"
+import { effectiveProfileFields, identityLine, identityStyle, printIdentity, resolveProfileName } from "../profiles"
 import { portalDeviceUrl, writeUsageFailure } from "../render"
 import { authLogin } from "./auth"
 import { doctor } from "./doctor"
@@ -122,8 +122,13 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
     const body = walletsResult.body as EmbeddedWalletsResponse
     const solana = body.wallets?.solana ?? null
     const evm = body.wallets?.evm ?? null
-    if (body.account)
-      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username)}\n`)
+    if (body.account) {
+      // The live account, then a blank line, before the funding addresses (audit 4.2).
+      // The cached line at the top of the wizard already goes through printIdentity.
+      deps.stdout.write(
+        `${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username, identityStyle(deps, "stdout"))}\n\n`,
+      )
+    }
     if (solana) deps.stdout.write(`Solana (send SOL here):    ${solana.address}\n`)
     if (evm) deps.stdout.write(`Hood    (send ETH here):    ${evm.address}\n`)
     deps.stdout.write(

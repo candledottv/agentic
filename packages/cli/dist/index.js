@@ -678,11 +678,17 @@ function brandHeader(style) {
     ""
   ];
 }
+function fullIds(deps) {
+  return deps.presentation?.full === true;
+}
 function symbols(style) {
   return style.styled ? UNICODE_SYMBOLS : ASCII_SYMBOLS;
 }
 function sgr(text, style, code) {
   return style.color && text ? `\x1B[${code}m${text}\x1B[0m` : text;
+}
+function bold(text, style) {
+  return sgr(text, style, "1");
 }
 function dim(text, style) {
   return sgr(text, style, "2");
@@ -5831,17 +5837,26 @@ function apiKeyPrefix(key) {
 function credentialEnvOverrides(env) {
   return ["CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"].filter((name) => env[name]?.trim());
 }
-function identityLine(profile, account, apiUrl, overrides, username) {
-  const shown = overrides?.length ? `unknown (${overrides.join(", ")} override)` : username && account ? `${username} (${account})` : account ?? "unknown";
-  return `Profile: ${profile ?? "none"}   Account: ${shown} at ${apiUrl}`;
+function identityLine(profile, account, apiUrl, overrides, username, options = {}) {
+  const address = account === undefined ? undefined : shortId(account, options.full);
+  const shown = overrides?.length ? `unknown (${overrides.join(", ")} override)` : username && address ? `${username} (${address})` : address ?? "unknown";
+  const name = profile ?? "none";
+  const host = apiUrl.replace(/^https:\/\//i, "").replace(/\/+$/, "");
+  const sep = options.style ? symbols(options.style).note : "·";
+  return `Profile ${options.style ? bold(name, options.style) : name} ${sep} Account ${shown} ${sep} ${host}`;
 }
 async function printIdentity(ctx) {
   if (ctx.json)
     return;
   const config = await ctx.deps.readConfig();
   const fields = effectiveProfileFields(config, ctx.profile);
-  ctx.deps.stdout.write(`${identityLine(ctx.profile, fields.account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env), fields.username)}
+  const line = identityLine(ctx.profile, fields.account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env), fields.username, identityStyle(ctx.deps, "stdout"));
+  ctx.deps.stdout.write(`${line}
+
 `);
+}
+function identityStyle(deps, stream) {
+  return { style: terminalStyle(deps, stream), full: fullIds(deps) };
 }
 function formatCacheAge(now, cachedAt) {
   if (cachedAt === undefined)
@@ -5879,6 +5894,8 @@ function profileTable(config, now) {
 }
 var PRE_PROFILE_FIELDS, API_KEY_PREFIXES, API_KEY_RANDOM_LENGTH = 43, INVALID_RPC_HOST = "invalid (fix with profile set)";
 var init_profiles = __esm(() => {
+  init_presentation();
+  init_render();
   PRE_PROFILE_FIELDS = [
     "apiUrl",
     "keyPrefix",
@@ -71334,12 +71351,14 @@ async function authStatus(args, ctx) {
   }
   const shownAccount = account ?? fields.account;
   const shownUsername = account !== undefined ? username : fields.username;
-  deps.stdout.write(`${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername)}
+  deps.stdout.write(`${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername, identityStyle(deps, "stdout"))}
 `);
   if (mismatch) {
     deps.stdout.write(`Profile ${ctx.profile} recorded ${cachedAccount}; this key belongs to ${account}. Run: candle profile use ${ctx.profile}
 `);
   }
+  deps.stdout.write(`
+`);
   deps.stdout.write(`Backend: ${deps.backend}
 `);
   deps.stdout.write(`Device token prefix: ${fields.deviceTokenPrefix ?? "not set"}
@@ -86712,7 +86731,8 @@ async function mcp(args, ctx) {
   }
   const identityConfig = await deps.readConfig();
   const identityFields = effectiveProfileFields(identityConfig, ctx.profile);
-  deps.stderr.write(`${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username)}
+  deps.stderr.write(`${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username, identityStyle(deps, "stderr"))}
+
 `);
   if (parsed.booleans.has("--print-config")) {
     const launchArgs = [
@@ -93363,6 +93383,7 @@ async function portfolio(args, ctx) {
     if (matched) {
       deps.stdout.write(matched.matched === 0 ? `No wallet matches "${terminalText(matched.filter)}". ${matched.wallets} ${matched.wallets === 1 ? "wallet" : "wallets"} on this account and vault; candle portfolio with no filter shows them.
 ` : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.
+
 `);
       if (matched.matched === 0) {
         writeListNote(deps.stdout, listNote);
@@ -93703,12 +93724,10 @@ function writeTable(ctx, groups, totals) {
     ]);
   }
   if (rows.length > 0)
-    deps.stdout.write(`
-${renderTable(["GROUP", "CHAIN", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"], rows.map((row) => row.map(terminalText)))}
+    deps.stdout.write(`${renderTable(["GROUP", "CHAIN", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"], rows.map((row) => row.map(terminalText)))}
 `);
   else
-    deps.stdout.write(`
-Nothing held in any wallet read.
+    deps.stdout.write(`Nothing held in any wallet read.
 `);
   if (lpRows.length > 0)
     deps.stdout.write(`
@@ -93981,7 +94000,7 @@ async function profileUse(args, ctx) {
     deps.stdout.write(`${JSON.stringify({ name: name2, account, apiUrl })}
 `);
   else
-    deps.stdout.write(`${identityLine(name2, account, apiUrl, undefined, username)}
+    deps.stdout.write(`${identityLine(name2, account, apiUrl, undefined, username, identityStyle(deps, "stdout"))}
 `);
   return 0;
 }
@@ -94217,9 +94236,11 @@ async function setup(args, ctx) {
     const body = walletsResult.body;
     const solana = body.wallets?.solana ?? null;
     const evm = body.wallets?.evm ?? null;
-    if (body.account)
-      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username)}
+    if (body.account) {
+      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username, identityStyle(deps, "stdout"))}
+
 `);
+    }
     if (solana)
       deps.stdout.write(`Solana (send SOL here):    ${solana.address}
 `);

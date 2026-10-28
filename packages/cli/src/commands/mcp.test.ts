@@ -291,7 +291,8 @@ describe("profiles", () => {
     )
     expect(code).toBe(0)
     expect(calls).toHaveLength(0)
-    expect(stderr.text).toContain("Profile: staging   Account: A at ")
+    expect(stderr.text).toBe("Profile staging · Account A · api.alpha.candle.tv\n\n")
+    expect(stdout.text.startsWith("{")).toBe(true)
     expect(JSON.parse(stdout.text)).toEqual({
       mcpServers: {
         candle: {
@@ -315,7 +316,7 @@ describe("profiles", () => {
     )
     expect(code).toBe(0)
     expect(calls[0]?.env.CANDLE_AGENT_API_KEY).toBe("cndl_live_from_env")
-    expect(stderr.text).toContain("Account: unknown (CANDLE_API_KEY override)")
-    expect(stderr.text).not.toContain("Account: A")
+    expect(stderr.text).toContain("Account unknown (CANDLE_API_KEY override)")
+    expect(stderr.text).not.toContain("Account A")
   })
 })

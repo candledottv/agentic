@@ -3,6 +3,7 @@
  * names, migration and the identity line, with no IO anywhere.
  */
 import { describe, expect, test } from "bun:test"
+import type { StyleDeps, TerminalStyle } from "./presentation"
 import {
   apiKeyPrefix,
   candleEnvironment,
@@ -10,6 +11,7 @@ import {
   effectiveProfileFields,
   formatCacheAge,
   identityLine,
+  identityStyle,
   isValidProfileName,
   migratedConfig,
   profileSecretRef,
@@ -191,45 +193,95 @@ describe("defaultProfileNameFor", () => {
 })
 
 describe("identityLine", () => {
-  test("names the profile, the account and the host in the spec's exact form", () => {
+  const ADDRESS = "FfU8M5kc8chjj7BRMvTGLBpTJ54SmcUU6CTy2pQu8pPD"
+  test("names the profile, the account and the host in the compact form", () => {
     expect(identityLine("hood-staging", "FaKwE2xX", "https://staging.api.candle.tv")).toBe(
-      "Profile: hood-staging   Account: FaKwE2xX at https://staging.api.candle.tv",
+      "Profile hood-staging · Account FaKwE2xX · staging.api.candle.tv",
+    )
+  })
+  test("shortens only the address and an https scheme; --full prints the address whole", () => {
+    expect(identityLine("prod", ADDRESS, "https://api.alpha.candle.tv/", undefined, "Quant-")).toBe(
+      "Profile prod · Account Quant- (FfU8…8pPD) · api.alpha.candle.tv",
+    )
+    expect(identityLine("prod", ADDRESS, "https://api.alpha.candle.tv", undefined, "Quant-", { full: true })).toBe(
+      `Profile prod · Account Quant- (${ADDRESS}) · api.alpha.candle.tv`,
+    )
+    // A plain-http API is worth noticing, so any scheme but https stays.
+    expect(identityLine("local", ADDRESS, "http://localhost:3001")).toBe(
+      "Profile local · Account FfU8…8pPD · http://localhost:3001",
+    )
+  })
+  test("the profile name is bold only where the stream allows color", () => {
+    const style = (styled: boolean, color: 0 | 16): TerminalStyle => ({
+      width: 100,
+      styled,
+      color,
+      theme: "dark",
+      motion: false,
+    })
+    expect(
+      identityLine("prod", "FaKwE2xX", "https://api.candle.tv", undefined, undefined, { style: style(true, 16) }),
+    ).toBe("Profile \x1b[1mprod\x1b[0m · Account FaKwE2xX · api.candle.tv")
+    // --no-color keeps the Unicode separator and drops the bold.
+    expect(
+      identityLine("prod", "FaKwE2xX", "https://api.candle.tv", undefined, undefined, { style: style(true, 0) }),
+    ).toBe("Profile prod · Account FaKwE2xX · api.candle.tv")
+    expect(
+      identityLine("prod", "FaKwE2xX", "https://api.candle.tv", undefined, undefined, { style: style(false, 0) }),
+    ).toBe("Profile prod - Account FaKwE2xX - api.candle.tv")
+  })
+  test("the separator follows the stream: middot when styled, hyphen for plain, a pipe and CI", () => {
+    const tty: StyleDeps = {
+      env: { TERM: "xterm-256color" },
+      isTTY: { stdin: true, stdout: true, stderr: true },
+    }
+    const line = (deps: StyleDeps, stream: "stdout" | "stderr" = "stdout") =>
+      identityLine("prod", "FaKwE2xX", "https://api.candle.tv", undefined, undefined, identityStyle(deps, stream))
+    expect(line(tty)).toBe("Profile \x1b[1mprod\x1b[0m · Account FaKwE2xX · api.candle.tv")
+    expect(line({ ...tty, presentation: { plain: true } })).toBe("Profile prod - Account FaKwE2xX - api.candle.tv")
+    expect(line({ ...tty, presentation: { noColor: true } })).toBe("Profile prod · Account FaKwE2xX · api.candle.tv")
+    expect(line({ ...tty, isTTY: { stdin: true, stdout: false, stderr: true } })).toBe(
+      "Profile prod - Account FaKwE2xX - api.candle.tv",
+    )
+    expect(line({ ...tty, env: { TERM: "xterm-256color", CI: "true" } })).toBe(
+      "Profile prod - Account FaKwE2xX - api.candle.tv",
+    )
+    // mcp writes the line to stderr, so a pipe on that stream is what drops the mark.
+    expect(line({ ...tty, isTTY: { stdin: true, stdout: true, stderr: false } }, "stderr")).toBe(
+      "Profile prod - Account FaKwE2xX - api.candle.tv",
     )
   })
   test("says what it does not know rather than omitting it", () => {
     expect(identityLine(undefined, undefined, "https://api.candle.tv")).toBe(
-      "Profile: none   Account: unknown at https://api.candle.tv",
+      "Profile none · Account unknown · api.candle.tv",
     )
   })
   test("an acting env override is named INSTEAD of the cached account, which is not what is acting", () => {
     expect(identityLine("staging", "FaKwE2xX", "https://api.candle.tv", ["CANDLE_API_KEY"])).toBe(
-      "Profile: staging   Account: unknown (CANDLE_API_KEY override) at https://api.candle.tv",
+      "Profile staging · Account unknown (CANDLE_API_KEY override) · api.candle.tv",
     )
     expect(
       identityLine("staging", "FaKwE2xX", "https://api.candle.tv", ["CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"]),
-    ).toBe(
-      "Profile: staging   Account: unknown (CANDLE_API_KEY, CANDLE_DEVICE_TOKEN override) at https://api.candle.tv",
-    )
-    expect(identityLine("staging", "FaKwE2xX", "https://api.candle.tv", [])).toContain("Account: FaKwE2xX")
+    ).toBe("Profile staging · Account unknown (CANDLE_API_KEY, CANDLE_DEVICE_TOKEN override) · api.candle.tv")
+    expect(identityLine("staging", "FaKwE2xX", "https://api.candle.tv", [])).toContain("Account FaKwE2xX")
   })
   test("shows the username beside the address when both are present, the address alone without", () => {
     expect(identityLine("hood-staging", "FaKwE2xX", "https://staging.api.candle.tv", undefined, "satoshi")).toBe(
-      "Profile: hood-staging   Account: satoshi (FaKwE2xX) at https://staging.api.candle.tv",
+      "Profile hood-staging · Account satoshi (FaKwE2xX) · staging.api.candle.tv",
     )
-    // No username: the address alone, byte for byte what it was before the parameter existed.
     expect(identityLine("hood-staging", "FaKwE2xX", "https://staging.api.candle.tv", undefined, undefined)).toBe(
-      "Profile: hood-staging   Account: FaKwE2xX at https://staging.api.candle.tv",
+      "Profile hood-staging · Account FaKwE2xX · staging.api.candle.tv",
     )
     // A username with no account cannot form the pair, so the "unknown" fallback still wins.
     expect(identityLine("hood-staging", undefined, "https://staging.api.candle.tv", undefined, "satoshi")).toBe(
-      "Profile: hood-staging   Account: unknown at https://staging.api.candle.tv",
+      "Profile hood-staging · Account unknown · staging.api.candle.tv",
     )
   })
   test("an env override stays username-free even when a username is cached", () => {
     // The override REPLACES the account entirely; a cached username describes the profile's own
     // stored key, not the credential the env var supplied, so it must not appear beside it.
     expect(identityLine("staging", "FaKwE2xX", "https://api.candle.tv", ["CANDLE_API_KEY"], "satoshi")).toBe(
-      "Profile: staging   Account: unknown (CANDLE_API_KEY override) at https://api.candle.tv",
+      "Profile staging · Account unknown (CANDLE_API_KEY override) · api.candle.tv",
     )
   })
 })

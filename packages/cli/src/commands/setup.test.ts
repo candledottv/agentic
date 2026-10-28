@@ -55,6 +55,11 @@ describe("setup", () => {
     expect(out).toContain("Skipping login")
     expect(out).toContain(SOL)
     expect(out).toContain(EVM)
+    // The live identity (section 2) is followed by a blank line. The funding addresses stay
+    // whole: they are what the operator pastes into the next command.
+    expect(out).toContain(
+      `Profile none · Account AgentWa11et · api.alpha.candle.tv\n\nSolana (send SOL here):    ${SOL}\nHood    (send ETH here):    ${EVM}\n`,
+    )
     expect(out).toContain("Tell your agent")
     expect(out).toContain("/plugin marketplace add candledottv/agentic")
     expect(out).toContain("MCP (any client), paste into the host's MCP config:")
@@ -93,6 +98,10 @@ describe("setup", () => {
       expect(stdout.text).toContain(SOL)
       expect(stdout.text).toContain(EVM)
       expect(stdout.text).toContain("Skipping login")
+      const sep = mode === "plain" || mode === "pipe" || mode === "CI" ? "-" : "·"
+      expect(stdout.text).toContain(
+        `Account AgentWa11et ${sep} api.alpha.candle.tv\n\nSolana (send SOL here):    ${SOL}\nHood    (send ETH here):    ${EVM}\n`,
+      )
     }
   })
 

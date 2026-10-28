@@ -11,6 +11,8 @@ import type { CliConfig, ProfileConfig } from "./config"
 // Type-only: deps.ts imports a value from this module, so a value import back here would form a
 // runtime cycle. A type import is erased at compile time and carries no such risk.
 import type { CommandContext } from "./deps"
+import { bold, fullIds, type StyleDeps, symbols, type TerminalStyle, terminalStyle } from "./presentation"
+import { shortId } from "./render"
 
 export type { ProfileConfig }
 
@@ -235,8 +237,17 @@ export function credentialEnvOverrides(env: Record<string, string | undefined>):
  * username belongs to the profile's own account, not to whatever the env var supplied.
  *
  * `username` is the account's Candle handle (optional). When it and an account are both known the
- * line reads `Account: <username> (<address>)`; with no username it is the address alone, exactly
- * as before this parameter existed.
+ * line reads `Account <username> (<address>)`; with no username it is the address alone.
+ *
+ * The compact form (CLI legibility audit 4.2): `Profile prod · Account Quant- (FfU8…8pPD) ·
+ * api.alpha.candle.tv`. The labels and normal weight stay, as the profiles spec's "Identity on
+ * screen" asks, and the profile name is bold when `style` allows color. Only two things shrink:
+ * the address (`shortId`; `full`, the global `--full`, prints it whole) and an `https://` scheme.
+ * Any other scheme is kept, so a plain `http://` API stays visible.
+ *
+ * The separator is the kit's note mark (`symbols(style).note`): `·` on a styled stream, `-` when
+ * that stream is plain (`--plain`, a pipe, CI, `TERM=dumb`). A caller that omits `style` gets the
+ * styled mark, which is the form the audit shows.
  */
 export function identityLine(
   profile: string | undefined,
@@ -244,25 +255,41 @@ export function identityLine(
   apiUrl: string,
   overrides?: string[],
   username?: string,
+  options: { style?: TerminalStyle; full?: boolean } = {},
 ): string {
+  const address = account === undefined ? undefined : shortId(account, options.full)
   const shown = overrides?.length
     ? `unknown (${overrides.join(", ")} override)`
-    : username && account
-      ? `${username} (${account})`
-      : (account ?? "unknown")
-  return `Profile: ${profile ?? "none"}   Account: ${shown} at ${apiUrl}`
+    : username && address
+      ? `${username} (${address})`
+      : (address ?? "unknown")
+  const name = profile ?? "none"
+  const host = apiUrl.replace(/^https:\/\//i, "").replace(/\/+$/, "")
+  const sep = options.style ? symbols(options.style).note : "·"
+  return `Profile ${options.style ? bold(name, options.style) : name} ${sep} Account ${shown} ${sep} ${host}`
 }
 
-/** Every authenticated command prints this before its own output, human mode only; --json
- * outputs carry `profile` and `account` fields instead. Cached account, no network: the live
- * comparison is the Phase 2 guard. */
+/** Every authenticated command prints this before its own output, then a blank line, human mode
+ * only; --json outputs carry `profile` and `account` fields instead. Cached account, no network:
+ * the live comparison is the Phase 2 guard. */
 export async function printIdentity(ctx: CommandContext): Promise<void> {
   if (ctx.json) return
   const config = await ctx.deps.readConfig()
   const fields = effectiveProfileFields(config, ctx.profile)
-  ctx.deps.stdout.write(
-    `${identityLine(ctx.profile, fields.account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env), fields.username)}\n`,
+  const line = identityLine(
+    ctx.profile,
+    fields.account,
+    ctx.apiUrl,
+    credentialEnvOverrides(ctx.deps.env),
+    fields.username,
+    identityStyle(ctx.deps, "stdout"),
   )
+  ctx.deps.stdout.write(`${line}\n\n`)
+}
+
+/** The `identityLine` options for a stream: its style (bold only where color is on) and `--full`. */
+export function identityStyle(deps: StyleDeps, stream: "stdout" | "stderr"): { style: TerminalStyle; full: boolean } {
+  return { style: terminalStyle(deps, stream), full: fullIds(deps) }
 }
 
 /** How old the cached account is, in the largest whole unit; a browsing command shows this

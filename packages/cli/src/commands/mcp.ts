@@ -34,7 +34,7 @@
 import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey } from "../deps"
-import { credentialEnvOverrides, effectiveProfileFields, identityLine } from "../profiles"
+import { credentialEnvOverrides, effectiveProfileFields, identityLine, identityStyle } from "../profiles"
 import { detectInstall } from "../release"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 
@@ -227,10 +227,11 @@ export async function mcp(args: string[], ctx: CommandContext): Promise<number> 
   // --print-config, to the printed JSON client block) either way, so this is the only place the
   // identity line can go without corrupting a machine-readable stream. Unlike printIdentity, it
   // is never skipped for --json -- there is no other output here that carries the same fields.
+  // The blank line is the one audit 4.2 puts after the identity. It stays on stderr with the line.
   const identityConfig = await deps.readConfig()
   const identityFields = effectiveProfileFields(identityConfig, ctx.profile)
   deps.stderr.write(
-    `${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username)}\n`,
+    `${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username, identityStyle(deps, "stderr"))}\n\n`,
   )
 
   if (parsed.booleans.has("--print-config")) {

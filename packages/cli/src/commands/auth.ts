@@ -42,6 +42,7 @@ import {
   defaultProfileNameFor,
   effectiveProfileFields,
   identityLine,
+  identityStyle,
   isValidProfileName,
   PRE_PROFILE_FIELDS,
   printIdentity,
@@ -602,7 +603,9 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // handle that belongs to a DIFFERENT account, in the very command meant to reveal a mismatch.
   const shownAccount = account ?? fields.account
   const shownUsername = account !== undefined ? username : fields.username
-  deps.stdout.write(`${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername)}\n`)
+  deps.stdout.write(
+    `${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername, identityStyle(deps, "stdout"))}\n`,
+  )
   // `profile use` is the cheapest of the three repairs (it re-caches the account from this very
   // key); the guard's own refusal names the other two, which cost a re-authentication or a skipped
   // check. This line is a report, not a refusal, so it names only the cheap one.
@@ -611,6 +614,9 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
       `Profile ${ctx.profile} recorded ${cachedAccount}; this key belongs to ${account}. Run: candle profile use ${ctx.profile}\n`,
     )
   }
+  // A blank line after the identity (and its mismatch note, which is about the identity), as
+  // printIdentity leaves one before every other command's own output.
+  deps.stdout.write("\n")
   deps.stdout.write(`Backend: ${deps.backend}\n`)
   deps.stdout.write(`Device token prefix: ${fields.deviceTokenPrefix ?? "not set"}\n`)
   deps.stdout.write(`API key prefix: ${fields.keyPrefix ?? "not set"}\n`)

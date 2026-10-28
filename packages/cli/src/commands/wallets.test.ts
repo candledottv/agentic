@@ -602,7 +602,7 @@ describe("profiles", () => {
     const stdout = createCapture()
     const code = await run(["wallets"], createTestDeps({ fetch, store, stdout, ...config }))
     expect(code).toBe(0)
-    expect(stdout.text.startsWith("Profile: staging   Account: A at ")).toBe(true)
+    expect(stdout.text.startsWith("Profile staging · Account A · ")).toBe(true)
   })
 })
 

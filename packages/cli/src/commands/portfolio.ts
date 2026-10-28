@@ -767,7 +767,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       deps.stdout.write(
         matched.matched === 0
           ? `No wallet matches "${terminalText(matched.filter)}". ${matched.wallets} ${matched.wallets === 1 ? "wallet" : "wallets"} on this account and vault; candle portfolio with no filter shows them.\n`
-          : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.\n`,
+          : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.\n\n`,
       )
       if (matched.matched === 0) {
         writeListNote(deps.stdout, listNote)
@@ -1214,12 +1214,12 @@ function writeTable(
   }
   if (rows.length > 0)
     deps.stdout.write(
-      `\n${renderTable(
+      `${renderTable(
         ["GROUP", "CHAIN", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"],
         rows.map((row) => row.map(terminalText)),
       )}\n`,
     )
-  else deps.stdout.write("\nNothing held in any wallet read.\n")
+  else deps.stdout.write("Nothing held in any wallet read.\n")
   // LP positions after the tokens (R7): share of the pool plus unclaimed fees, at the same marks.
   if (lpRows.length > 0)
     deps.stdout.write(

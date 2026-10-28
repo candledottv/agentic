@@ -244,7 +244,8 @@ describe("profile use", () => {
     expect(after.profiles?.production?.account).toBe("NEWACCT1")
     expect(after.profiles?.production?.accountCachedAt).toBe(NOW)
     expect((calls[0]?.init.headers as Record<string, string>)["x-api-key"]).toBe("ck_live_prod")
-    expect(stdout.text).toContain("Profile: production   Account: NEWACCT1 at https://api.candle.tv")
+    // The identity line is the whole human answer, so it ends the stream. No blank line follows.
+    expect(stdout.text).toBe("Profile production · Account NEWACCT1 · api.candle.tv\n")
   })
 
   // Fix wave item 5: switching to a profile that holds no credentials succeeded in silence, and
@@ -260,7 +261,7 @@ describe("profile use", () => {
     )
     expect(code).toBe(0)
     expect((await config.readConfig()).profiles?.production?.account).toBe("7o3msKCe")
-    expect(stdout.text).toContain("Account: 7o3msKCe")
+    expect(stdout.text).toContain("Account 7o3msKCe")
     expect(stderr.text).toContain("No stored credentials for production.")
     expect(stderr.text).toContain("candle auth login --profile production")
   })

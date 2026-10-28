@@ -321,14 +321,15 @@ profile deletes its two stored credentials and nothing else; imported wallet sig
 wallet, not the profile. `candle wallets` marks, per linked wallet, whether this machine holds its
 signer (`stored`, `none`, or `stale` for a revoked wallet whose signer is still here).
 
-Every authenticated command prints `Profile: <name>   Account: <account> at <api url>` before its
-own output (`--json` output is unchanged except `auth status`, `auth login` and `doctor`, which
-carry `profile` and `account`; `auth status` and `doctor` also carry `cachedAccount`, the account
-the profile recorded, whenever a profile is resolved; scripts get identity from
-`auth status --json`). The account is cached
+Every authenticated command prints `Profile <name> · Account <account> · <api host>`, then a
+blank line, before its own output. Plain mode, a pipe and CI use `-` in place of `·`. The
+address is shortened (`FfU8…8pPD`; `--full` prints it whole) and an `https://` scheme is dropped. `--json` output is unchanged except `auth status`,
+`auth login` and `doctor`, which carry `profile` and `account`; `auth status` and `doctor` also
+carry `cachedAccount`, the account the profile recorded, whenever a profile is resolved; scripts
+get identity from `auth status --json`. The account is cached
 at login from the API. Where the line is printed from that cache and `CANDLE_API_KEY` or
 `CANDLE_DEVICE_TOKEN` is overriding the stored credential, it reads
-`Account: unknown (CANDLE_API_KEY override)` rather than naming an account that credential was
+`Account unknown (CANDLE_API_KEY override)` rather than naming an account that credential was
 never checked against; `auth status` and `setup` look the account up live and print what they
 get, and `auth status` and `doctor` name the account the profile recorded beside it when the two
 differ (not under an env credential override, where the live answer is not the profile's key's).

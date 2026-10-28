@@ -7,7 +7,7 @@ import { fetchAccount } from "../account"
 import { parseArgs } from "../args"
 import { insecureApiUrlFault, resolveApiUrl } from "../client"
 import type { CommandContext } from "../deps"
-import { identityLine, isValidProfileName, profileSecretRef, profileTable, rpcHostOf } from "../profiles"
+import { identityLine, identityStyle, isValidProfileName, profileSecretRef, profileTable, rpcHostOf } from "../profiles"
 import { renderTable, writeLocalFailure, writeUsageFailure } from "../render"
 import { validateSolanaRpcUrl } from "../solana-endpoint"
 
@@ -243,8 +243,11 @@ export async function profileUse(args: string[], ctx: CommandContext): Promise<n
     // was asked for, and it happened.
     deps.stderr.write(`No stored credentials for ${name}. Run: candle auth login --profile ${name}\n`)
   }
+  // The identity line is this command's own output, so it ends the stream. A preface
+  // (printIdentity, setup's live account, mcp's stderr line) keeps a blank line after it
+  // because more output follows; nothing follows this one. Warnings stay on stderr.
   if (json) deps.stdout.write(`${JSON.stringify({ name, account, apiUrl })}\n`)
-  else deps.stdout.write(`${identityLine(name, account, apiUrl, undefined, username)}\n`)
+  else deps.stdout.write(`${identityLine(name, account, apiUrl, undefined, username, identityStyle(deps, "stdout"))}\n`)
   return 0
 }
 

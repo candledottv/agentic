@@ -802,7 +802,7 @@ describe("auth status", () => {
     const stdout = createCapture()
     const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout }))
     expect(code).toBe(0)
-    expect(stdout.text).toContain("Account: FaKwE2xX")
+    expect(stdout.text).toContain("Account FaKwE2xX")
   })
 
   test("names the account's username beside its address when the live lookup returns one", async () => {
@@ -823,7 +823,7 @@ describe("auth status", () => {
     const stdout = createCapture()
     const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout }))
     expect(code).toBe(0)
-    expect(stdout.text).toContain("Account: satoshi (FaKwE2xX)")
+    expect(stdout.text).toContain("Account satoshi (FaKwE2xX)")
   })
 
   test("pairs the shown username with the shown account: a live account with no handle never borrows the cached one", async () => {
@@ -844,7 +844,7 @@ describe("auth status", () => {
     const stdout = createCapture()
     const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))
     expect(code).toBe(0)
-    expect(stdout.text).toContain("Account: OTHER22")
+    expect(stdout.text).toContain("Account OTHER22")
     expect(stdout.text).not.toContain("bob")
   })
 
@@ -863,7 +863,7 @@ describe("auth status", () => {
     const stdout = createCapture()
     const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))
     expect(code).toBe(0)
-    expect(stdout.text).toContain("Account: OTHER22")
+    expect(stdout.text).toContain("Account OTHER22")
     expect(stdout.text).toContain("Profile staging recorded CACHED1")
     expect(stdout.text).toContain("this key belongs to OTHER22")
     expect(stdout.text).toContain("Run: candle profile use staging")
@@ -898,7 +898,7 @@ describe("auth status", () => {
     const stdout = createCapture()
     const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))
     expect(code).toBe(0)
-    expect(stdout.text).toContain("Account: CACHED1")
+    expect(stdout.text).toContain("Account CACHED1")
     expect(stdout.text).not.toContain("recorded")
     expect(stdout.text).not.toContain("candle profile use")
   })
@@ -922,7 +922,7 @@ describe("auth status", () => {
       createTestDeps({ fetch, store, stdout, env: { CANDLE_API_KEY: "ck_live_env" }, ...config }),
     )
     expect(code).toBe(0)
-    expect(stdout.text).toContain("Profile: staging   Account: OTHER22 at ")
+    expect(stdout.text).toContain("Profile staging · Account OTHER22 · ")
     expect(stdout.text).not.toContain("recorded")
     expect(stdout.text).not.toContain("candle profile use")
   })
@@ -939,7 +939,7 @@ describe("auth status", () => {
     const stdout = createCapture()
     const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout }))
     expect(code).toBe(0)
-    expect(stdout.text).toContain("Account: unknown")
+    expect(stdout.text).toContain("Account unknown")
     expect(stdout.text).not.toContain("FAIL")
   })
 
@@ -1123,7 +1123,7 @@ describe("profiles", () => {
     })
     const stdout = createCapture()
     await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))
-    expect(stdout.text.startsWith("Profile: staging   Account: FaKwE2xX at https://staging.api.candle.tv\n")).toBe(true)
+    expect(stdout.text.startsWith("Profile staging · Account FaKwE2xX · staging.api.candle.tv\n\nBackend: ")).toBe(true)
   })
 
   test("auth status reports the PROFILE's prefixes: a login-created profile has no legacy top-level fields to read", async () => {
@@ -1175,7 +1175,7 @@ describe("profiles", () => {
     const code = await run(["auth", "logout"], createTestDeps({ fetch, store, stdout, ...config }))
 
     expect(code).toBe(0)
-    expect(stdout.text.startsWith("Profile: staging   Account: FaKwE2xX at https://staging.api.candle.tv\n")).toBe(true)
+    expect(stdout.text.startsWith("Profile staging · Account FaKwE2xX · staging.api.candle.tv\n")).toBe(true)
     // And the portal pointer still comes from the profile's own recorded origin.
     expect(stdout.text.split("\n").find((line) => line.startsWith("Connected devices: "))).toBe(
       "Connected devices: https://staging.candle.tv/agents?tab=keys#connected-devices",

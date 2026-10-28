@@ -626,7 +626,9 @@ describe("profiles", () => {
       keyPrefix: "ck_live_ne",
       scopes: ["trade:write"],
     })
-    expect(stdout.text.startsWith("Profile: staging   Account: A at ")).toBe(true)
+    expect(stdout.text.startsWith("Profile staging · Account A · ")).toBe(true)
+    // The identity line stands apart: one blank line before the command's own output.
+    expect(stdout.text.split("\n").slice(1, 3)).toEqual(["", "API key: ck_live_new"])
   })
 
   test("keys list reads the PROFILE's device prefix, so a key this device minted still says 'this device'", async () => {
@@ -676,7 +678,7 @@ describe("profiles", () => {
     )
 
     expect(code).toBe(0)
-    expect(stdout.text).toContain("Account: unknown (CANDLE_API_KEY override)")
+    expect(stdout.text).toContain("Account unknown (CANDLE_API_KEY override)")
     expect(stdout.text).not.toContain("FaKwE2xX")
   })
 
