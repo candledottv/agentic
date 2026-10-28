@@ -39,6 +39,7 @@ import { keysSigner, teeSigner } from "./commands/key-signer"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysAccess } from "./commands/keys-access"
 import { keysSelf, keysUpdate } from "./commands/keys-embedded-wallet"
+import { keysLimit } from "./commands/keys-limit"
 import { keysWallets } from "./commands/keys-wallets"
 import { launch } from "./commands/launch"
 import { lpAdd, lpClaim, lpPools, lpPositions, lpRemove } from "./commands/lp"
@@ -292,6 +293,7 @@ const COMMANDS: Record<string, CommandRoute> = {
       // BE-503 (R5.11): the per-key embedded-wallet permission. `update` is the owner's (device
       // token, both directions); `self` is the key's own, and only denies.
       update: keysUpdate,
+      limit: keysLimit,
       self: keysSelf,
       revoke: keysRevoke,
       wallets: keysWallets,

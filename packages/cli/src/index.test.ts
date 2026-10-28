@@ -244,7 +244,7 @@ describe("secrecy", () => {
     const stdoutLogin = createCapture()
     const stderrLogin = createCapture()
     const loginCode = await run(
-      ["auth", "login"],
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv"],
       createTestDeps({ fetch, store, stdout: stdoutLogin, stderr: stderrLogin, ...config }),
     )
     expect(loginCode).toBe(0)
@@ -662,7 +662,7 @@ describe("the account guard at dispatch", () => {
         jsonResponse(200, {
           deviceToken: "cndl_dvc_fresh",
           tokenPrefix: "dvcprofl",
-          apiKey: { key: "ck_live_fresh", keyPrefix: "ck_livepr", scopes: ["launch:write"] },
+          apiKey: { key: "ck_live_fresh", keyPrefix: "ck_livepr", embeddedWallet: "denied", scopes: ["launch:write"] },
         }),
     })
     const secrets = store()

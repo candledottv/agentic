@@ -50,6 +50,42 @@ describe("keys wallets set: a refused widening", () => {
     expect(envelope.suggestion).toContain("candle tee rebind wal_1 --to-key B6P-TSRs")
   })
 
+  test("a missing launch:write scope names the console, not a new launch key", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys/MNWOcygL/wallets": () =>
+        jsonResponse(403, {
+          error: { code: "SCOPE_MISSING", message: "This key lacks the launch:write scope" },
+        }),
+    })
+    const stderr = createCapture()
+    const stdout = createCapture()
+    const code = await run(
+      ["keys", "wallets", "set", "MNWOcygL", "--wallets", "wal_linked"],
+      createTestDeps({ fetch, stderr, stdout, env: { CANDLE_API_KEY: "ck_live_test" } }),
+    )
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("signed-in agent console")
+    expect(stderr.text).toContain("candle tee rebind")
+    expect(stderr.text).not.toContain("keys create")
+    const jsonOut = createCapture()
+    const again = createRoutedFetch({
+      "/api/v1/agent/keys/MNWOcygL/wallets": () =>
+        jsonResponse(403, {
+          error: { code: "SCOPE_MISSING", message: "This key lacks the launch:write scope" },
+        }),
+    })
+    expect(
+      await run(
+        ["keys", "wallets", "set", "MNWOcygL", "--wallets", "wal_linked", "--json"],
+        createTestDeps({ fetch: again.fetch, stdout: jsonOut, env: { CANDLE_API_KEY: "ck_live_test" } }),
+      ),
+    ).toBe(1)
+    const envelope = JSON.parse(jsonOut.text.trim())
+    expect(envelope.code).toBe("SCOPE_MISSING")
+    expect(envelope.suggestion).toContain("tee rebind")
+    expect(envelope.suggestion).not.toContain("keys create")
+  })
+
   test("any other refusal keeps the API's own suggestion", async () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/agent/keys/B6P-TSRs/wallets": () =>

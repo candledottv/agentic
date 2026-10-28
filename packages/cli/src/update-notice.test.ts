@@ -74,6 +74,15 @@ describe("update notice", () => {
     }
   })
 
+  test("a header of 0, 0.0.0, or a partial version is not an update", async () => {
+    for (const version of ["0", "0.0.0", "0.13", "0.13.0.1"]) {
+      __resetUpdateNoticeForTest()
+      const stderr = createCapture()
+      await run(["wallets"], depsWith(walletRoutes({ "x-candle-cli-latest": version }).fetch, { stderr }))
+      expect(stderr.text).not.toContain("Update available")
+    }
+  })
+
   test("a garbage header is ignored, not trusted", async () => {
     const stderr = createCapture()
     await run(

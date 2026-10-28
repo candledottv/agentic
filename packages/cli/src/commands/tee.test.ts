@@ -425,44 +425,63 @@ describe("T27: every tee command refuses while CANDLE_KEYSTORE_PASSPHRASE is set
 })
 
 describe("tee new (T19, HW-01)", () => {
-  test("creates tee-wallets.enc with the purpose marker, verifies the round trip, prints the address, no network", async () => {
+  test("with no store, refuses and names the vault commands, and writes nothing", async () => {
     const dir = await tempDir()
     const { fetch, calls } = createRoutedFetch({})
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, PASSPHRASE])
+    const { deps, stderr } = depsFor(dir, fetch, [PASSPHRASE, PASSPHRASE])
+    const code = await run(["tee", "new", "--label", "scalper"], deps)
+    expect(code).toBe(1)
+    expect(calls).toHaveLength(0)
+    expect(stderr.text).toContain("candle vault new-key --chain solana")
+    expect(stderr.text).toContain("candle vault promote --from <label> --to-key <prefix>")
+    await expect(realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8")).rejects.toThrow()
+  })
+
+  test("--factor is refused before any prompt and writes nothing", async () => {
+    const dir = await tempDir()
+    const { fetch, calls } = createRoutedFetch({})
+    const { deps, stderr } = depsFor(dir, fetch, [])
+    const code = await run(["tee", "new", "--factor", "yubikey-a"], deps)
+    expect(code).toBe(2)
+    expect(calls).toHaveLength(0)
+    expect(stderr.text).toContain("--factor")
+    expect(stderr.text).toContain("vault new-key --chain solana")
+    await expect(realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8")).rejects.toThrow()
+  })
+
+  test("an existing store still accepts a new key", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [teeEntry()])
+    const { fetch, calls } = createRoutedFetch({})
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
     const code = await run(["tee", "new", "--label", "scalper"], deps)
     expect(code).toBe(0)
     expect(calls).toHaveLength(0)
     const path = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME)
     const raw = await realReadFile(path, "utf8")
-    expect(JSON.parse(raw).purpose).toBe("ember-tee")
     const opened = await readKeystore(raw, PASSPHRASE, { expectPurpose: "ember-tee" })
-    expect(opened.entries).toHaveLength(1)
-    const entry = opened.entries[0] as KeystoreEntry
+    expect(opened.entries).toHaveLength(2)
+    const entry = opened.entries[1] as KeystoreEntry
     expect(entry.label).toBe("scalper")
-    expect(entry.imported).toBe(false)
-    expect(entry.tee?.network).toBe("solana-mainnet")
     expect(stdout.text).toContain(entry.address)
-    expect(stdout.text).toContain("verified to restore")
-    expect(stdout.text).toContain("local-only")
-    // The secret never reaches stdout.
     expect(stdout.text).not.toContain(entry.privateKey)
   })
 
-  test("a short passphrase or a mismatched confirmation creates nothing", async () => {
+  test("a wrong passphrase leaves the existing store unchanged", async () => {
     const dir = await tempDir()
+    await seedTeeStore(dir, [teeEntry()])
+    const path = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME)
+    const before = await realReadFile(path, "utf8")
     const { fetch } = createRoutedFetch({})
-    const short = depsFor(dir, fetch, ["tooshort"])
-    expect(await run(["tee", "new"], short.deps)).toBe(1)
-    expect(short.stderr.text).toContain("at least 12")
-    const mismatch = depsFor(dir, fetch, [PASSPHRASE, "something else entirely"])
-    expect(await run(["tee", "new"], mismatch.deps)).toBe(1)
-    await expect(realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8")).rejects.toThrow()
+    const wrong = depsFor(dir, fetch, ["not-the-store-passphrase"])
+    expect(await run(["tee", "new"], wrong.deps)).toBe(1)
+    expect(await realReadFile(path, "utf8")).toBe(before)
   })
 
   test("a second `tee new` appends to the existing store under the same passphrase", async () => {
     const dir = await tempDir()
+    await seedTeeStore(dir, [teeEntry()])
     const { fetch } = createRoutedFetch({})
-    expect(await run(["tee", "new"], depsFor(dir, fetch, [PASSPHRASE, PASSPHRASE]).deps)).toBe(0)
     const second = depsFor(dir, fetch, [PASSPHRASE])
     expect(await run(["tee", "new", "--json"], second.deps)).toBe(0)
     const parsed = JSON.parse(second.stdout.text.trim())

@@ -479,10 +479,13 @@ export async function postRebind(
 }
 
 /**
- * `--to-key` (and `keys access <key>`, BE-361): an 8-character prefix is used as is. Anything else is matched as an exact label
- * against the non-revoked keys from `GET /keys` (the same device-token read `keys list` makes).
- * No match lists the labelled keys; more than one match is refused with the prefixes listed. The
- * server only ever receives a prefix.
+ * `--to-key` (and `keys access <key>`, `keys update`, `keys limit`): a token is matched against
+ * the non-revoked keys from `GET /keys` (the same device-token read `keys list` makes). An exact
+ * prefix wins. An exact label wins when it is not also some other key's prefix, including a label
+ * that happens to be 8 characters (`cov-main` is a label, not a prefix). When the list cannot be
+ * read, an 8-character token is still sent as a prefix so a list outage does not block a prefix
+ * the operator already copied. No match lists the labelled keys; more than one match is refused
+ * with the prefixes listed. The server only ever receives a prefix.
  *
  * `opts.keys` (BE-322) is the listing when the caller has already made that read; `vault promote
  * --to-key` reads it once for the target checks it makes before its unlock, and resolves through
@@ -503,11 +506,13 @@ export async function resolveTargetKey(
 ): Promise<{ ok: true; keyPrefix: string } | { ok: false; code: number }> {
   const { deps, json } = ctx
   const codePrefix = opts.codePrefix ?? "REBIND"
-  if (KEY_PREFIX_RE.test(raw)) return { ok: true, keyPrefix: raw }
+  const prefixShaped = KEY_PREFIX_RE.test(raw)
   let listed = opts.keys
   if (listed === undefined) {
     const result = await listAccountKeys(ctx, deviceToken)
     if (!result.ok) {
+      // A prefix the operator copied still works when the account list cannot be read.
+      if (prefixShaped) return { ok: true, keyPrefix: raw }
       return {
         ok: false,
         code: opts.writeListFailure ? opts.writeListFailure(result) : writeRebindFailure(ctx, result, {}),
@@ -516,6 +521,39 @@ export async function resolveTargetKey(
     listed = (result.body as { keys?: KeyRow[] } | null)?.keys ?? []
   }
   const keys = listed.filter((key) => !key.revokedAt)
+  if (prefixShaped) {
+    const byPrefix = keys.find((key) => key.keyPrefix === raw)
+    const byLabel = keys.filter((key) => key.label === raw && key.keyPrefix !== byPrefix?.keyPrefix)
+    if (byPrefix && byLabel.length > 0) {
+      const matches = [byPrefix, ...byLabel]
+      writeLocalFailure(
+        deps,
+        {
+          code: `${codePrefix}_KEY_AMBIGUOUS`,
+          message: `${JSON.stringify(raw)} is a key prefix and also the name of another key; pass the prefix you mean.`,
+          suggestion: `Matching prefixes: ${matches.map((key) => key.keyPrefix).join(", ")}`,
+        },
+        json,
+      )
+      return { ok: false, code: 1 }
+    }
+    if (byPrefix) return { ok: true, keyPrefix: byPrefix.keyPrefix }
+    if (byLabel.length === 1) return { ok: true, keyPrefix: (byLabel[0] as KeyRow).keyPrefix }
+    if (byLabel.length > 1) {
+      writeLocalFailure(
+        deps,
+        {
+          code: `${codePrefix}_KEY_AMBIGUOUS`,
+          message: `${byLabel.length} active keys are named ${JSON.stringify(raw)}; pass a prefix instead.`,
+          suggestion: `Matching prefixes: ${byLabel.map((key) => key.keyPrefix).join(", ")}`,
+        },
+        json,
+      )
+      return { ok: false, code: 1 }
+    }
+    // Not on the list. The API reports a missing prefix; a stale list must not hide a real one.
+    return { ok: true, keyPrefix: raw }
+  }
   const matches = keys.filter((key) => key.label === raw)
   if (matches.length === 1) return { ok: true, keyPrefix: (matches[0] as KeyRow).keyPrefix }
   if (matches.length === 0) {

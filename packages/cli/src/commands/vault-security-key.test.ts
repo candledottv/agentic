@@ -564,6 +564,16 @@ describe("unlocking with a security key", () => {
     expect((await readVault(v.vaultPath)).keys).toHaveLength(1)
   })
 
+  test("--factor <label> drives the envelope vault status names", async () => {
+    const v = await vaultWithKey()
+    const status = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [PIN] })
+    expect(
+      await run(["vault", "status", "--unlock", "--factor", "desk key", "--keystore", v.vaultPath], status.deps),
+    ).toBe(0)
+    expect(status.asked).toEqual([expect.stringContaining("PIN for YubiKey 5 NFC")])
+    expect(status.stdout.text).toContain("Keys (0)")
+  })
+
   test("with a passphrase and a key both drivable and no --factor, the operator is asked which", async () => {
     const v = await vaultWithKey()
     const byKey = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, lines: [v.keyId], secrets: [PIN] })

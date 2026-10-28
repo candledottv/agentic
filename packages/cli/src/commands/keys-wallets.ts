@@ -19,6 +19,7 @@ import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { printIdentity } from "../profiles"
 import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
+import { writeScreenLocalFailure } from "./key-output"
 
 const NO_API_KEY = {
   code: "NO_API_KEY",
@@ -172,6 +173,22 @@ export async function keysWalletsSet(args: string[], ctx: CommandContext): Promi
     env: deps.env,
   })
   if (!result.ok) {
+    // SCOPE_MISSING here is "this key lacks launch:write". That scope does not grant a linked
+    // wallet, and telling the operator to mint one is the wrong repair. A device token is not
+    // accepted on this route; granting a linked wallet to another key needs a signed-in session.
+    if (result.code === "SCOPE_MISSING") {
+      writeScreenLocalFailure(
+        deps,
+        {
+          code: "SCOPE_MISSING",
+          message:
+            "Granting a linked wallet to another key needs a signed-in agent console. An agent key can only narrow its own wallet set, and a device token is not accepted on this route.",
+          suggestion: "Run: candle tee rebind <wallet> --to-key <prefix>",
+        },
+        json,
+      )
+      return 1
+    }
     if (result.code !== "LOOSEN_REQUIRES_SESSION") {
       writeFailure(deps, result, { apiUrl, authType: "key" }, json)
       return 1

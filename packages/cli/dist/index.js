@@ -6136,10 +6136,6 @@ async function deriveKeystoreKey(passphrase, salt, iterations) {
   ]);
   return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
-async function createKeystore(passphrase) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
-}
 async function serializeKeystore(entries, key, salt, iterations, purpose) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
@@ -6241,7 +6237,7 @@ async function withKeystoreLock(path, clock, fn, opts = {}) {
     await rm(lockPath, { recursive: true, force: true });
   }
 }
-var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, KEYSTORE_ITERATIONS = 210000, b64 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
+var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, b64 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
 var init_wallet_keystore = __esm(() => {
   init_store();
   KeystoreLockedError = class KeystoreLockedError extends Error {
@@ -29161,10 +29157,16 @@ ${list(kind.candidates)}`, { suggestion: "Run `candle vault factor list` for the
     }
     return choiceFor(assertDrivable(kind.candidates[0], facts));
   }
-  const named = envelopes.find((envelope) => envelope.id === flag);
+  const byId = envelopes.find((envelope) => envelope.id === flag);
+  const byLabel = envelopes.filter((envelope) => envelope.label === flag && envelope.id !== byId?.id);
+  if (byId === undefined && byLabel.length > 1) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has ${byLabel.length} envelopes labelled ${JSON.stringify(flag)}; name one with --factor <id>:
+${list(byLabel)}`, { suggestion: "Run `candle vault factor list` for the ids." });
+  }
+  const named = byId ?? byLabel[0];
   if (named === undefined) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id ${flag}.`, {
-      suggestion: "Run `candle vault factor list` for the ids."
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id or label ${flag}.`, {
+      suggestion: "Run `candle vault factor list` for the ids. --factor accepts an envelope's label."
     });
   }
   if (isPassphraseEnvelope(named))
@@ -35242,6 +35244,14 @@ async function teeNew(args, ctx) {
     return usage2(ctx, parsed.error);
   if (parsed.positionals.length > 0)
     return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  if (ctx.vaultFactor !== undefined || ctx.vaultDevice !== undefined) {
+    writeLocalFailure(deps, {
+      code: "USAGE",
+      message: "--factor and --device do not apply to tee new.",
+      suggestion: "Derive a key in the vault: candle vault new-key --chain solana, then candle vault promote --from <label> --to-key <prefix>"
+    }, json);
+    return 2;
+  }
   const found = await readTeeStore(ctx, parsed);
   if ("usage" in found)
     return usage2(ctx, found.usage);
@@ -35255,21 +35265,26 @@ async function teeNew(args, ctx) {
     return 1;
   }
   const { raw } = found;
-  const passphrase = await promptPassphrase(deps, raw === null);
+  if (raw === null) {
+    writeLocalFailure(deps, {
+      code: "TEE_STORE_ABSENT",
+      message: "No TEE wallet store on this machine. New wallets are derived in the vault.",
+      suggestion: `Run: candle vault new-key --chain solana
+Then: candle vault promote --from <label> --to-key <prefix>`
+    }, json);
+    return 1;
+  }
+  const passphrase = await promptPassphrase(deps, false);
   if (!passphrase.ok) {
     writeLocalFailure(deps, { code: "TEE_STORE_PASSPHRASE", message: passphrase.message }, json);
     return 1;
   }
   let store;
-  if (raw !== null) {
-    try {
-      store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE });
-    } catch (error) {
-      writeLocalFailure(deps, { code: "TEE_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, json);
-      return 1;
-    }
-  } else {
-    store = { ...await createKeystore(passphrase.passphrase), entries: [] };
+  try {
+    store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE });
+  } catch (error) {
+    writeLocalFailure(deps, { code: "TEE_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, json);
+    return 1;
   }
   const wallet = generateWallet("solana");
   let index = -1;
@@ -37040,12 +37055,13 @@ async function postRebind(ctx, deviceToken, body) {
 async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
   const { deps, json } = ctx;
   const codePrefix = opts.codePrefix ?? "REBIND";
-  if (KEY_PREFIX_RE2.test(raw))
-    return { ok: true, keyPrefix: raw };
+  const prefixShaped = KEY_PREFIX_RE2.test(raw);
   let listed = opts.keys;
   if (listed === undefined) {
     const result = await listAccountKeys(ctx, deviceToken);
     if (!result.ok) {
+      if (prefixShaped)
+        return { ok: true, keyPrefix: raw };
       return {
         ok: false,
         code: opts.writeListFailure ? opts.writeListFailure(result) : writeRebindFailure(ctx, result, {})
@@ -37054,6 +37070,32 @@ async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
     listed = result.body?.keys ?? [];
   }
   const keys = listed.filter((key) => !key.revokedAt);
+  if (prefixShaped) {
+    const byPrefix = keys.find((key) => key.keyPrefix === raw);
+    const byLabel = keys.filter((key) => key.label === raw && key.keyPrefix !== byPrefix?.keyPrefix);
+    if (byPrefix && byLabel.length > 0) {
+      const matches2 = [byPrefix, ...byLabel];
+      writeLocalFailure(deps, {
+        code: `${codePrefix}_KEY_AMBIGUOUS`,
+        message: `${JSON.stringify(raw)} is a key prefix and also the name of another key; pass the prefix you mean.`,
+        suggestion: `Matching prefixes: ${matches2.map((key) => key.keyPrefix).join(", ")}`
+      }, json);
+      return { ok: false, code: 1 };
+    }
+    if (byPrefix)
+      return { ok: true, keyPrefix: byPrefix.keyPrefix };
+    if (byLabel.length === 1)
+      return { ok: true, keyPrefix: byLabel[0].keyPrefix };
+    if (byLabel.length > 1) {
+      writeLocalFailure(deps, {
+        code: `${codePrefix}_KEY_AMBIGUOUS`,
+        message: `${byLabel.length} active keys are named ${JSON.stringify(raw)}; pass a prefix instead.`,
+        suggestion: `Matching prefixes: ${byLabel.map((key) => key.keyPrefix).join(", ")}`
+      }, json);
+      return { ok: false, code: 1 };
+    }
+    return { ok: true, keyPrefix: raw };
+  }
   const matches = keys.filter((key) => key.label === raw);
   if (matches.length === 1)
     return { ok: true, keyPrefix: matches[0].keyPrefix };
@@ -72151,12 +72193,68 @@ init_render();
 init_secret_store();
 init_key_output();
 init_keys();
+init_keys_embedded_wallet();
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
 var DEVICE_TOKEN_PATH = "/api/v1/agent/device/token";
 var MAX_CLIENT_NAME_LENGTH = 64;
+function loginApiUrlFault(value, env) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return `It needs a scheme, such as https://${value}`;
+  }
+  if (url.host === "")
+    return `It needs a scheme, such as https://${value}`;
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    return "The scheme must be http or https.";
+  return insecureApiUrlFault(value, env);
+}
+async function resolveLoginApiUrl(ctx) {
+  const { deps, json } = ctx;
+  const config = await deps.readConfig();
+  const name = ctx.profile;
+  const exists2 = name !== undefined && config.profiles?.[name] !== undefined;
+  if (exists2)
+    return { ok: true, apiUrl: ctx.apiUrl };
+  const explicit = ctx.apiUrlFlag?.trim() || deps.env.CANDLE_API_URL?.trim();
+  if (explicit) {
+    const fault2 = loginApiUrlFault(explicit, deps.env);
+    if (fault2 !== undefined) {
+      writeScreenUsageFailure(deps, `Invalid API host: ${explicit}. ${fault2}`, json);
+      return { ok: false, code: 2 };
+    }
+    return { ok: true, apiUrl: explicit };
+  }
+  const usage3 = "A new profile needs an API host. Pass --api-url <url> (or set CANDLE_API_URL).";
+  if (!deps.isTTY.stdin) {
+    writeScreenUsageFailure(deps, usage3, json, {
+      message: "A new profile needs an API host.",
+      fixes: [{ label: "Pass", command: "candle auth login --api-url <url>" }]
+    });
+    return { ok: false, code: 2 };
+  }
+  const answer = (await deps.promptLine("API host for this profile (for example https://api.alpha.candle.tv): ")).trim();
+  if (!answer) {
+    writeScreenUsageFailure(deps, usage3, json, {
+      message: "A new profile needs an API host.",
+      fixes: [{ label: "Pass", command: "candle auth login --api-url <url>" }]
+    });
+    return { ok: false, code: 2 };
+  }
+  const fault = loginApiUrlFault(answer, deps.env);
+  if (fault !== undefined) {
+    writeScreenUsageFailure(deps, `Invalid API host: ${answer}. ${fault}`, json);
+    return { ok: false, code: 2 };
+  }
+  return { ok: true, apiUrl: answer };
+}
 async function authLogin(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--scopes", "--label"], booleanFlags: ["--no-browser"] });
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {
+    valueFlags: ["--scopes", "--label", "--embedded-wallet"],
+    booleanFlags: ["--no-browser"]
+  });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
@@ -72185,11 +72283,26 @@ async function authLogin(args, ctx) {
   }
   const label = parsed.values["--label"]?.trim();
   const noBrowser = parsed.booleans.has("--no-browser");
+  const embeddedFlag = parsed.values["--embedded-wallet"] ?? "deny";
+  const embeddedWallet = EMBEDDED_WALLET_CHOICES[embeddedFlag];
+  if (embeddedWallet === undefined) {
+    writeScreenUsageFailure(deps, "--embedded-wallet must be allow or deny.", json);
+    return 2;
+  }
   if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > MAX_CLIENT_NAME_LENGTH)) {
     writeScreenUsageFailure(deps, `--label must be 1 to ${MAX_CLIENT_NAME_LENGTH} characters.`, json);
     return 2;
   }
   const clientName = (label ?? `candle-cli/${CLI_VERSION}@${deps.hostname}`).slice(0, MAX_CLIENT_NAME_LENGTH);
+  const host = await resolveLoginApiUrl(ctx);
+  if (!host.ok)
+    return host.code;
+  const apiUrl = host.apiUrl;
+  if (embeddedWallet === "allowed") {
+    const stop = await confirmCreateAllow(ctx);
+    if (stop !== null)
+      return stop;
+  }
   const codeResult = await apiRequest(DEVICE_CODE_PATH, {
     method: "POST",
     auth: "none",
@@ -72206,6 +72319,8 @@ async function authLogin(args, ctx) {
   const code = codeResult.body;
   const progress = json ? deps.stderr : deps.stdout;
   if (json) {
+    progress.write(`API: ${apiUrl}
+`);
     progress.write(`Your device code: ${code.userCode}
 `);
     progress.write(`Open this URL to approve: ${code.verificationUriComplete}
@@ -72215,6 +72330,7 @@ async function authLogin(args, ctx) {
     progress.write(`${heading("Authorize this device", style)}
 
 ${fields([
+      ["API", apiUrl],
       ["Device code", code.userCode],
       ["Approve at", code.verificationUriComplete]
     ], style).join(`
@@ -72241,7 +72357,13 @@ ${fields([
       body: { deviceCode: code.deviceCode }
     });
     if (tokenResult.ok) {
-      return finishLogin(tokenResult.body, ctx, { scopes, label, verificationUri: code.verificationUri });
+      return finishLogin(tokenResult.body, ctx, {
+        scopes,
+        label,
+        verificationUri: code.verificationUri,
+        apiUrl,
+        embeddedWallet
+      });
     }
     if (tokenResult.rfcError === "authorization_pending")
       continue;
@@ -72278,6 +72400,43 @@ function writeLoginFailure(deps, reason) {
   const [message, suggestion] = terminalRfcMessage(reason).split(" Run: ");
   writeScreenMessage(deps, message ?? "", suggestion ? `Run: ${suggestion}` : undefined);
 }
+async function alignEmbeddedWallet(deps, apiUrl, deviceToken, keyPrefix, permission, shown) {
+  const path = `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/embedded-wallet`;
+  const call = (body) => apiRequest(path, {
+    method: "PUT",
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+    body
+  });
+  const preview = await call({ permission, dryRun: true });
+  if (!preview.ok)
+    return { ok: false, message: preview.message };
+  const from = preview.body?.from ?? shown;
+  if (from === undefined)
+    return { ok: false, message: "the current permission could not be read" };
+  const commit = await call({ permission, expect: from });
+  if (!commit.ok)
+    return { ok: false, message: commit.message };
+  return { ok: true };
+}
+async function revokeMintedKey(deps, apiUrl, deviceToken, keyPrefix) {
+  try {
+    const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}`, {
+      method: "DELETE",
+      auth: "device",
+      credentials: { deviceToken },
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env
+    });
+    return result.ok;
+  } catch {
+    return false;
+  }
+}
 function portalOriginFrom(verificationUri) {
   if (!verificationUri)
     return;
@@ -72290,21 +72449,43 @@ function portalOriginFrom(verificationUri) {
 async function finishLogin(rawBody, ctx, requested) {
   const { deps, json } = ctx;
   const body = rawBody;
+  const apiUrl = requested.apiUrl;
   const config = await deps.readConfig();
-  const profileName = ctx.profileFlag ?? ctx.profile ?? defaultProfileNameFor(ctx.apiUrl, config.profiles);
+  const profileName = ctx.profileFlag ?? ctx.profile ?? defaultProfileNameFor(apiUrl, config.profiles);
+  let reportedEmbedded = body.apiKey?.embeddedWallet;
+  let embeddedCorrectError;
+  if (body.apiKey && reportedEmbedded !== requested.embeddedWallet) {
+    const aligned = await alignEmbeddedWallet(deps, apiUrl, body.deviceToken, body.apiKey.keyPrefix, requested.embeddedWallet, reportedEmbedded);
+    if (aligned.ok)
+      reportedEmbedded = requested.embeddedWallet;
+    else
+      embeddedCorrectError = aligned.message;
+  }
+  if (body.apiKey && requested.embeddedWallet === "denied" && reportedEmbedded !== "denied") {
+    const revoked = await revokeMintedKey(deps, apiUrl, body.deviceToken, body.apiKey.keyPrefix);
+    const message = `Could not confirm the embedded wallet is denied for key ${body.apiKey.keyPrefix}${embeddedCorrectError ? ` (${embeddedCorrectError})` : ""}. Nothing was stored.`;
+    const fix = revoked ? "The key was revoked. Run: candle auth login" : `The key could NOT be revoked. Deny or revoke it: candle keys update ${body.apiKey.keyPrefix} --embedded-wallet deny`;
+    if (json) {
+      deps.stderr.write(`${JSON.stringify({ ok: false, reason: "embedded_wallet_not_denied", keyPrefix: body.apiKey.keyPrefix, keyRevoked: revoked, message })}
+`);
+    } else {
+      writeScreenMessage(deps, message, fix);
+    }
+    return 1;
+  }
   await deps.store.set(profileSecretRef(profileName, "deviceToken"), body.deviceToken);
   if (body.apiKey)
     await deps.store.set(profileSecretRef(profileName, "apiKey"), body.apiKey.key);
   let account;
   let username;
   if (body.apiKey) {
-    const lookup = await fetchAccount(deps, ctx.apiUrl, body.apiKey.key);
+    const lookup = await fetchAccount(deps, apiUrl, body.apiKey.key);
     account = lookup.account;
     username = lookup.username;
   }
   const portalOrigin = portalOriginFrom(requested.verificationUri);
   await deps.updateProfile(profileName, {
-    apiUrl: ctx.apiUrl,
+    apiUrl,
     deviceTokenPrefix: body.tokenPrefix,
     ...body.apiKey ? { keyPrefix: body.apiKey.keyPrefix, scopes: body.apiKey.scopes } : {},
     ...requested.label ? { label: requested.label } : {},
@@ -72321,7 +72502,7 @@ async function finishLogin(rawBody, ctx, requested) {
         method: "PATCH",
         auth: "device",
         credentials: { deviceToken: body.deviceToken },
-        apiUrl: ctx.apiUrl,
+        apiUrl,
         fetch: deps.fetch,
         env: deps.env,
         body: { label: requested.label }
@@ -72344,7 +72525,8 @@ async function finishLogin(rawBody, ctx, requested) {
       ...apiKeyLabel !== undefined ? { apiKeyLabel } : {},
       ...apiKeyLabelError !== undefined ? { apiKeyLabelError } : {},
       scopes: body.apiKey?.scopes,
-      ...body.apiKey?.embeddedWallet !== undefined ? { embeddedWallet: body.apiKey.embeddedWallet } : {},
+      ...reportedEmbedded !== undefined ? { embeddedWallet: reportedEmbedded } : {},
+      ...embeddedCorrectError !== undefined ? { embeddedWalletError: embeddedCorrectError } : {},
       apiKeyError: body.apiKeyError
     })}
 `);
@@ -72361,16 +72543,20 @@ ${fields([
       ["API key prefix", body.apiKey.keyPrefix],
       ...apiKeyLabel !== undefined ? [["API key name", apiKeyLabel]] : [],
       ["Access", accessCell(body.apiKey.scopes, symbols(style).missing)],
-      ...body.apiKey.embeddedWallet === "allowed" || body.apiKey.embeddedWallet === "denied" ? [["Embedded wallet", embeddedWalletSummary(body.apiKey.embeddedWallet)]] : []
+      ...reportedEmbedded === "allowed" || reportedEmbedded === "denied" ? [["Embedded wallet", embeddedWalletSummary(reportedEmbedded)]] : []
     ] : []
   ], style).join(`
 `)}
 `);
   if (body.apiKey) {
     deps.stdout.write(scopeSummary(body.apiKey.scopes, style, "Granted scopes"));
-    if (body.apiKey.embeddedWallet === "denied") {
+    if (reportedEmbedded === "denied") {
       notice(deps, "stdout", "note", `The owner can allow the embedded wallet with:
 candle keys update ${body.apiKey.keyPrefix} --embedded-wallet allow`);
+    }
+    if (embeddedCorrectError !== undefined && reportedEmbedded !== undefined) {
+      notice(deps, "stdout", "warning", `The key was minted ${reportedEmbedded}. Setting the embedded wallet to ${requested.embeddedWallet} failed: ${embeddedCorrectError}
+Run: candle keys update ${body.apiKey.keyPrefix} --embedded-wallet ${requested.embeddedWallet === "allowed" ? "allow" : "deny"}`);
     }
     if (apiKeyLabelError !== undefined) {
       notice(deps, "stdout", "warning", `Could not name the key: ${apiKeyLabelError}.${portalOrigin ? `
@@ -73467,11 +73653,11 @@ var HELP = {
   auth: {
     group: "Start here",
     summary: "Authorize this device, or show and clear its credentials",
-    description: "Device authorization: a code is printed, an approval URL is opened or printed, and the device token and API key it returns are stored in this machine's keychain. Nothing here is ever written to a plaintext dotfile.",
+    description: "Device authorization: the API host is printed, a code is printed, an approval URL is opened or printed, and the device token and API key it returns are stored in this machine's keychain. Nothing here is ever written to a plaintext dotfile. A new profile needs --api-url or a prompt; it does not inherit another profile's host or the production default. --embedded-wallet defaults to deny, the same as keys create; allow is confirmed at a terminal. transfer:bound is refused on a device login and is granted afterwards with keys access <prefix> --access withdraw.",
     usage: ["candle auth <subcommand> [flags]"],
     rows: [
       {
-        invocation: "login [--scopes <a,b,c>] [--label <name>] [--no-browser] [--profile <name>]",
+        invocation: "login [--api-url <url>] [--scopes <a,b,c>] [--label <name>] [--embedded-wallet deny|allow] [--no-browser] [--profile <name>]",
         description: "Authorize this device and mint its API key; --label names both"
       },
       { invocation: "status", description: "Show credential status" },
@@ -74095,6 +74281,10 @@ var HELP = {
         description: "Allow or deny a key the account's embedded wallet, with the device token. Allowing needs the prefix typed back at a terminal; --yes skips the prompt when denying"
       },
       {
+        invocation: "limit <prefix|label> (--tx-limit <usd> [--reset daily|weekly|monthly|never] | --clear)",
+        description: "Set or clear the USD transaction cap on an existing key, with the device token. --reset defaults to daily"
+      },
+      {
         invocation: "self embedded-wallet deny",
         description: "The profile's own key gives up the embedded wallet, with no prompt. A key can never allow itself: the owner does that with keys update"
       },
@@ -74146,7 +74336,7 @@ var HELP = {
     rows: [
       {
         invocation: "import --chain <solana|evm> [options]",
-        description: "Import a wallet you own (key via --key-file or hidden prompt)"
+        description: "Import a wallet you own (key via --key-file or hidden prompt). A fresh key, without solana-keygen: candle vault new-key --chain solana, candle vault export-key <label> --to <file>, import that file, then delete the file"
       },
       { invocation: "revoke <wallet-id>", description: "Revoke a linked wallet" },
       {
@@ -74358,7 +74548,10 @@ var HELP = {
     description: "A dedicated, capped Solana wallet for one agent. The key is generated and sealed on this machine; enable delegates it to this profile's API key with a sweep vault pinned, and sweep moves everything back to that vault, signed locally.",
     usage: ["candle tee <subcommand> [flags]"],
     rows: [
-      { invocation: "new [--label <name>]", description: "Seal a fresh dedicated Solana TEE wallet key locally" },
+      {
+        invocation: "new [--label <name>]",
+        description: "Add a Solana key to an existing tee-wallets.enc. With no store, refuses: candle vault new-key --chain solana, then candle vault promote --from <label> --to-key <prefix>. --factor does not apply"
+      },
       {
         invocation: "enable <address> --vault <address>",
         description: "Delegate a TEE wallet key; pin the sweep vault (--vault-key <label> also)"
@@ -86937,12 +87130,103 @@ async function keysAccessHistory(target, ctx) {
 // src/index.ts
 init_keys_embedded_wallet();
 
+// src/commands/keys-limit.ts
+init_args();
+init_client();
+init_deps();
+init_presentation();
+init_profiles();
+init_key_output();
+init_keys();
+init_tee_rebind();
+var USAGE6 = "Usage: candle keys limit <prefix|label> (--tx-limit <usd> [--reset daily|weekly|monthly|never] | --clear)";
+async function keysLimit(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--tx-limit", "--reset"], booleanFlags: ["--clear"] });
+  if ("error" in parsed) {
+    writeScreenUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const target = parsed.positionals[0];
+  if (!target || parsed.positionals.length !== 1) {
+    writeScreenUsageFailure(deps, USAGE6, json);
+    return 2;
+  }
+  const clear = parsed.booleans.has("--clear");
+  const usd = parsed.values["--tx-limit"];
+  const resetFlag = parsed.values["--reset"];
+  if (clear === (usd !== undefined)) {
+    writeScreenUsageFailure(deps, clear ? "Pass --tx-limit or --clear, not both." : USAGE6, json);
+    return 2;
+  }
+  if (resetFlag !== undefined && usd === undefined) {
+    writeScreenUsageFailure(deps, "--reset requires --tx-limit.", json);
+    return 2;
+  }
+  let txLimit;
+  if (usd !== undefined) {
+    const parsedUsd = parseUsdToMicros(usd);
+    if (!parsedUsd.ok) {
+      writeScreenUsageFailure(deps, parsedUsd.message, json);
+      return 2;
+    }
+    const reset = resetFlag ?? "daily";
+    if (!TX_LIMIT_RESETS.includes(reset)) {
+      writeScreenUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json);
+      return 2;
+    }
+    txLimit = { usdMicros: parsedUsd.usdMicros, reset };
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeScreenLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const resolved = await resolveTargetKey(ctx, deviceToken, target, { codePrefix: "KEY_LIMIT" });
+  if (!resolved.ok)
+    return resolved.code;
+  const body = clear ? { clearTxLimit: true } : { txLimit };
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(resolved.keyPrefix)}`, {
+    method: "PATCH",
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+    body
+  });
+  if (!result.ok) {
+    writeScreenFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ok: true, keyPrefix: resolved.keyPrefix, ...body })}
+`);
+    return 0;
+  }
+  const style = terminalStyle(deps, "stdout");
+  const rows = clear ? [["Key", resolved.keyPrefix]] : [
+    ["Key", resolved.keyPrefix],
+    ["USD limit", usd ?? ""],
+    ["Resets", txLimit?.reset ?? "daily"]
+  ];
+  deps.stdout.write(`${success(clear ? "Transaction limit cleared" : "Transaction limit updated", style)}
+
+${heading("Limit", style)}
+${fields(rows, style).join(`
+`)}
+`);
+  return 0;
+}
+
 // src/commands/keys-wallets.ts
 init_args();
 init_client();
 init_deps();
 init_profiles();
 init_render();
+init_key_output();
 var NO_API_KEY3 = {
   code: "NO_API_KEY",
   message: "No API key for this profile.",
@@ -87047,6 +87331,14 @@ async function keysWalletsSet(args, ctx) {
     env: deps.env
   });
   if (!result.ok) {
+    if (result.code === "SCOPE_MISSING") {
+      writeScreenLocalFailure(deps, {
+        code: "SCOPE_MISSING",
+        message: "Granting a linked wallet to another key needs a signed-in agent console. An agent key can only narrow its own wallet set, and a device token is not accepted on this route.",
+        suggestion: "Run: candle tee rebind <wallet> --to-key <prefix>"
+      }, json);
+      return 1;
+    }
     if (result.code !== "LOOSEN_REQUIRES_SESSION") {
       writeFailure(deps, result, { apiUrl, authType: "key" }, json);
       return 1;
@@ -87457,7 +87749,7 @@ function poolRequestFields(flags) {
 
 // src/commands/launch.ts
 init_swap();
-var USAGE6 = `Usage: ${LAUNCH_USAGE}`;
+var USAGE7 = `Usage: ${LAUNCH_USAGE}`;
 var EMBEDDED_WALLET_NAMES = new Set(LAUNCH_DEFINITION.wallet.embeddedNames);
 var LAUNCH_ARG_SPEC = {
   valueFlags: [
@@ -87567,7 +87859,7 @@ async function launch(args, ctx) {
   const dryRun = parsed.booleans.has("--dry-run");
   const check = parsed.booleans.has("--check");
   if (check && dryRun) {
-    writeUsageFailure(ctx.deps, `--check and --dry-run are two different stops; pass one. ${USAGE6}`, ctx.json);
+    writeUsageFailure(ctx.deps, `--check and --dry-run are two different stops; pass one. ${USAGE7}`, ctx.json);
     return 2;
   }
   const fieldProblem = launchFieldProblem(flags);
@@ -87577,11 +87869,11 @@ async function launch(args, ctx) {
   }
   const curveProblem = curveFlagProblem(flags);
   if (curveProblem) {
-    writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE6}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE7}`, ctx.json);
     return 2;
   }
   if (flags["--image"] !== undefined && flags["--image-url"] !== undefined) {
-    writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE6}`, ctx.json);
+    writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE7}`, ctx.json);
     return 2;
   }
   if (flags["--image-url"] !== undefined && !flags["--image-url"].startsWith("https://")) {
@@ -87594,13 +87886,13 @@ async function launch(args, ctx) {
   }
   const missingRequired = !flags["--name"] || !flags["--symbol"] || flags["--image"] === undefined && flags["--image-url"] === undefined || !flags["--wallet"];
   if (parsed.positionals.length || !check && missingRequired || !validClientId(id)) {
-    writeUsageFailure(ctx.deps, USAGE6, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE7, ctx.json);
     return 2;
   }
   try {
     poolRequestFields(flags);
   } catch (error) {
-    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE6}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE7}`, ctx.json);
     return 2;
   }
   try {
@@ -87608,7 +87900,7 @@ async function launch(args, ctx) {
       launchBuyRaw(flags["--buy"], 18);
     const hinted = flagChain(flags);
     if (!check && hinted === "hood" && flags["--dex-version"] === undefined) {
-      writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE6}`, ctx.json);
+      writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE7}`, ctx.json);
       return 2;
     }
     let image;
@@ -94168,7 +94460,7 @@ init_swap();
 init_vault_support();
 var WITHDRAW_SCOPE = "perps:withdraw";
 var ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
-var USAGE7 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
+var USAGE8 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
 var WITHDRAW_POLL_MS = 10 * 60 * 1000;
 var WITHDRAW_POLL_INTERVAL_MS = 5000;
 var TERMINAL = new Set(["settled", "refunded", "failed"]);
@@ -94211,7 +94503,7 @@ async function withdrawStatus(ctx, id) {
 async function perpsWithdraw(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !ID_RE.test(args[1]))
-      return usage9(ctx, USAGE7);
+      return usage9(ctx, USAGE8);
     try {
       return await withdrawStatus(ctx, args[1]);
     } catch (error) {
@@ -94230,7 +94522,7 @@ async function perpsWithdraw(args, ctx) {
   const [amount] = parsed.positionals;
   const to = parsed.values["--to"];
   if (parsed.positionals.length !== 1 || !amount || to !== "solana" && to !== "hood")
-    return usage9(ctx, USAGE7);
+    return usage9(ctx, USAGE8);
   const amountMicros = parseWithdrawAmount(amount);
   if (amountMicros === null)
     return usage9(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
@@ -94432,12 +94724,12 @@ function planPromotionLine2(table) {
 
 // src/commands/plans.ts
 init_render();
-var USAGE8 = "Usage: candle plans";
+var USAGE9 = "Usage: candle plans";
 async function plans(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed || parsed.positionals.length > 0) {
     writeUsageFailure(ctx.deps, "error" in parsed ? `${parsed.error}
-${USAGE8}` : USAGE8, ctx.json);
+${USAGE9}` : USAGE9, ctx.json);
     return 2;
   }
   const result = await apiRequest("/api/v1/agent/plans", {
@@ -99379,7 +99671,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE9 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE10 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -99475,7 +99767,7 @@ async function transfer(args, ctx) {
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok) {
-    writeUsageFailure(ctx.deps, USAGE9, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE10, ctx.json);
     return 2;
   }
   const to = flags2["--to"];
@@ -107163,7 +107455,7 @@ init_args();
 init_release();
 import { dirname as dirname11, join as join15 } from "node:path";
 init_render();
-var USAGE10 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE11 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -107195,19 +107487,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}
-${USAGE10}`, json);
+${USAGE11}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeUsageFailure(deps, `verify takes exactly one file.
-${USAGE10}`, json);
+${USAGE11}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeUsageFailure(deps, `--bundle is required.
-${USAGE10}`, json);
+${USAGE11}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -107221,7 +107513,7 @@ ${USAGE10}`, json);
   }
   if (resolved.kind === "absent") {
     writeUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE10}`, json);
+${USAGE11}`, json);
     return 2;
   }
   const identity3 = resolved.uri;
@@ -107444,7 +107736,7 @@ init_solana_lite();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID11 } from "node:crypto";
-var USAGE11 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE12 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -107707,7 +107999,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE11}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE12}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -107718,7 +108010,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID11()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE11, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE12, ctx.json);
     return 2;
   }
   const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
@@ -108157,6 +108449,7 @@ var COMMANDS = {
       create: keysCreate,
       access: keysAccess,
       update: keysUpdate,
+      limit: keysLimit,
       self: keysSelf,
       revoke: keysRevoke,
       wallets: keysWallets,

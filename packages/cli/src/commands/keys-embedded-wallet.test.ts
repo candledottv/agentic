@@ -112,6 +112,33 @@ describe("keys update --embedded-wallet (device token)", () => {
     expect(JSON.parse(stdout.text)).toMatchObject({ direction: "narrow", to: "denied", command: "keys update" })
   })
 
+  test("an 8-character label is resolved to the key's prefix", async () => {
+    const stored = { value: "allowed" as "allowed" | "denied" }
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/keys": () =>
+        jsonResponse(200, { keys: [{ keyPrefix: "xjxJTsc4", label: "cov-main", scopes: ["swap:write"] }] }),
+      "/api/v1/agent/keys/xjxJTsc4/embedded-wallet": (req: CapturedRequest) => {
+        const body = JSON.parse(String(req.init.body)) as { permission: string; dryRun?: boolean; expect?: string }
+        if (!body.dryRun) stored.value = "denied"
+        return jsonResponse(200, {
+          success: true,
+          dryRun: body.dryRun === true,
+          keyPrefix: "xjxJTsc4",
+          label: "cov-main",
+          direction: "narrow",
+          from: "allowed",
+          to: "denied",
+          ...(!body.dryRun ? { changeId: "chg1", at: 1 } : {}),
+        })
+      },
+    })
+    const deps = createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }) })
+    expect(await run(["keys", "update", "cov-main", "--embedded-wallet", "deny", "--yes"], deps)).toBe(0)
+    expect(calls.some((call) => call.url.includes("/keys/cov-main/"))).toBe(false)
+    expect(calls.some((call) => call.url.includes("/keys/xjxJTsc4/embedded-wallet"))).toBe(true)
+    expect(stored.value).toBe("denied")
+  })
+
   test("an unchanged value previews and stops: nothing is committed", async () => {
     const stored = { value: "denied" as "allowed" | "denied" }
     const { fetch, calls } = ownerApi(stored)

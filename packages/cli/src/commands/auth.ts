@@ -33,7 +33,7 @@ import { fetchAccount } from "../account"
 import { scopesForPreset } from "../agent-key-access"
 import { parseArgs, parseScopesList } from "../args"
 import { type CheckRow, runLiveCheck } from "../checks"
-import { apiRequest } from "../client"
+import { apiRequest, insecureApiUrlFault } from "../client"
 import { ProfileCoreOwnedError } from "../core/ownership"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
@@ -60,6 +60,7 @@ import {
   writeScreenUsageFailure,
 } from "./key-output"
 import { accessCell } from "./keys"
+import { confirmCreateAllow, EMBEDDED_WALLET_CHOICES, type EmbeddedWalletPermission } from "./keys-embedded-wallet"
 
 const DEVICE_CODE_PATH = "/api/v1/agent/device/code"
 const DEVICE_TOKEN_PATH = "/api/v1/agent/device/token"
@@ -97,9 +98,71 @@ interface DeviceTokenSuccessResponse {
   apiKeyError?: string
 }
 
+function loginApiUrlFault(value: string, env: Record<string, string | undefined>): string | undefined {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return `It needs a scheme, such as https://${value}`
+  }
+  if (url.host === "") return `It needs a scheme, such as https://${value}`
+  if (url.protocol !== "http:" && url.protocol !== "https:") return "The scheme must be http or https."
+  return insecureApiUrlFault(value, env)
+}
+
+/**
+ * A profile that does not exist yet must name its API host. `--api-url` and `CANDLE_API_URL`
+ * count. A terminal is asked. Anything else, including a leftover top-level `config.apiUrl` and
+ * the production default, is not used: that is how a new profile landed on staging.
+ * Re-authenticating a profile that already exists keeps that profile's stored host.
+ */
+async function resolveLoginApiUrl(
+  ctx: CommandContext,
+): Promise<{ ok: true; apiUrl: string } | { ok: false; code: number }> {
+  const { deps, json } = ctx
+  const config = await deps.readConfig()
+  const name = ctx.profile
+  const exists = name !== undefined && config.profiles?.[name] !== undefined
+  if (exists) return { ok: true, apiUrl: ctx.apiUrl }
+  const explicit = ctx.apiUrlFlag?.trim() || deps.env.CANDLE_API_URL?.trim()
+  if (explicit) {
+    const fault = loginApiUrlFault(explicit, deps.env)
+    if (fault !== undefined) {
+      writeScreenUsageFailure(deps, `Invalid API host: ${explicit}. ${fault}`, json)
+      return { ok: false, code: 2 }
+    }
+    return { ok: true, apiUrl: explicit }
+  }
+  const usage = "A new profile needs an API host. Pass --api-url <url> (or set CANDLE_API_URL)."
+  if (!deps.isTTY.stdin) {
+    writeScreenUsageFailure(deps, usage, json, {
+      message: "A new profile needs an API host.",
+      fixes: [{ label: "Pass", command: "candle auth login --api-url <url>" }],
+    })
+    return { ok: false, code: 2 }
+  }
+  const answer = (await deps.promptLine("API host for this profile (for example https://api.alpha.candle.tv): ")).trim()
+  if (!answer) {
+    writeScreenUsageFailure(deps, usage, json, {
+      message: "A new profile needs an API host.",
+      fixes: [{ label: "Pass", command: "candle auth login --api-url <url>" }],
+    })
+    return { ok: false, code: 2 }
+  }
+  const fault = loginApiUrlFault(answer, deps.env)
+  if (fault !== undefined) {
+    writeScreenUsageFailure(deps, `Invalid API host: ${answer}. ${fault}`, json)
+    return { ok: false, code: 2 }
+  }
+  return { ok: true, apiUrl: answer }
+}
+
 export async function authLogin(args: string[], ctx: CommandContext): Promise<number> {
-  const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, { valueFlags: ["--scopes", "--label"], booleanFlags: ["--no-browser"] })
+  const { deps, json } = ctx
+  const parsed = parseArgs(args, {
+    valueFlags: ["--scopes", "--label", "--embedded-wallet"],
+    booleanFlags: ["--no-browser"],
+  })
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json)
     return 2
@@ -146,6 +209,14 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   // (it used to reach the server and come back as the device name "Unknown client").
   const label = parsed.values["--label"]?.trim()
   const noBrowser = parsed.booleans.has("--no-browser")
+  // Same default as `keys create`: deny, and an allow is confirmed at a terminal before the
+  // device flow starts. The approval page's switch is not this default.
+  const embeddedFlag = parsed.values["--embedded-wallet"] ?? "deny"
+  const embeddedWallet = EMBEDDED_WALLET_CHOICES[embeddedFlag]
+  if (embeddedWallet === undefined) {
+    writeScreenUsageFailure(deps, "--embedded-wallet must be allow or deny.", json)
+    return 2
+  }
 
   if (
     parsed.values["--label"] !== undefined &&
@@ -158,6 +229,13 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   // See MAX_CLIENT_NAME_LENGTH: the default embeds an unbounded hostname, so it is truncated
   // rather than allowed to fail the request. `--label` is already known to fit by this point.
   const clientName = (label ?? `candle-cli/${CLI_VERSION}@${deps.hostname}`).slice(0, MAX_CLIENT_NAME_LENGTH)
+  const host = await resolveLoginApiUrl(ctx)
+  if (!host.ok) return host.code
+  const apiUrl = host.apiUrl
+  if (embeddedWallet === "allowed") {
+    const stop = await confirmCreateAllow(ctx)
+    if (stop !== null) return stop
+  }
   const codeResult = await apiRequest(DEVICE_CODE_PATH, {
     method: "POST",
     auth: "none",
@@ -179,6 +257,7 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   // go to stderr so stdout stays exactly one parseable JSON value (fix round 1, item 1).
   const progress = json ? deps.stderr : deps.stdout
   if (json) {
+    progress.write(`API: ${apiUrl}\n`)
     progress.write(`Your device code: ${code.userCode}\n`)
     progress.write(`Open this URL to approve: ${code.verificationUriComplete}\n`)
   } else {
@@ -186,6 +265,7 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
     progress.write(
       `${heading("Authorize this device", style)}\n\n${fields(
         [
+          ["API", apiUrl],
           ["Device code", code.userCode],
           ["Approve at", code.verificationUriComplete],
         ],
@@ -219,7 +299,13 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
     })
 
     if (tokenResult.ok) {
-      return finishLogin(tokenResult.body, ctx, { scopes, label, verificationUri: code.verificationUri })
+      return finishLogin(tokenResult.body, ctx, {
+        scopes,
+        label,
+        verificationUri: code.verificationUri,
+        apiUrl,
+        embeddedWallet,
+      })
     }
 
     if (tokenResult.rfcError === "authorization_pending") continue
@@ -268,6 +354,62 @@ function writeLoginFailure(
  * screen `auth logout` points at. Unparseable means the server sent something unexpected, which is
  * not worth failing a successful login over -- storing nothing just leaves logout on its fallback
  * derivation. */
+/**
+ * The approval page chooses the embedded wallet. This login's flag is the value the key must
+ * end on: deny unless `--embedded-wallet allow` was confirmed. A mismatch is corrected with the
+ * device token just issued (`PUT /keys/:prefix/embedded-wallet`). A requested deny that cannot be
+ * confirmed revokes the key and fails the login (see `finishLogin`).
+ */
+async function alignEmbeddedWallet(
+  deps: CommandContext["deps"],
+  apiUrl: string,
+  deviceToken: string,
+  keyPrefix: string,
+  permission: EmbeddedWalletPermission,
+  shown: EmbeddedWalletPermission | undefined,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const path = `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/embedded-wallet`
+  const call = (body: Record<string, unknown>) =>
+    apiRequest(path, {
+      method: "PUT",
+      auth: "device",
+      credentials: { deviceToken },
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env,
+      body,
+    })
+  const preview = await call({ permission, dryRun: true })
+  if (!preview.ok) return { ok: false, message: preview.message }
+  const from = (preview.body as { from?: EmbeddedWalletPermission } | null)?.from ?? shown
+  if (from === undefined) return { ok: false, message: "the current permission could not be read" }
+  const commit = await call({ permission, expect: from })
+  if (!commit.ok) return { ok: false, message: commit.message }
+  return { ok: true }
+}
+
+/** Revokes a key minted by this login, over the device token that minted it. */
+async function revokeMintedKey(
+  deps: CommandContext["deps"],
+  apiUrl: string,
+  deviceToken: string,
+  keyPrefix: string,
+): Promise<boolean> {
+  try {
+    const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}`, {
+      method: "DELETE",
+      auth: "device",
+      credentials: { deviceToken },
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env,
+    })
+    return result.ok
+  } catch {
+    return false
+  }
+}
+
 function portalOriginFrom(verificationUri: string | undefined): string | undefined {
   if (!verificationUri) return undefined
   try {
@@ -280,10 +422,17 @@ function portalOriginFrom(verificationUri: string | undefined): string | undefin
 async function finishLogin(
   rawBody: unknown,
   ctx: CommandContext,
-  requested: { scopes?: string[]; label?: string; verificationUri?: string },
+  requested: {
+    scopes?: string[]
+    label?: string
+    verificationUri?: string
+    apiUrl: string
+    embeddedWallet: EmbeddedWalletPermission
+  },
 ): Promise<number> {
   const { deps, json } = ctx
   const body = rawBody as DeviceTokenSuccessResponse
+  const apiUrl = requested.apiUrl
 
   // Every login names a profile: `--profile` when given, else the one this invocation already
   // resolved to (dispatch resolves leniently for login -- see index.ts), else one derived from
@@ -293,7 +442,43 @@ async function finishLogin(
   // SECRET_REFS/top-level-config shape is read-only from here on, kept only for migration and
   // rollback.
   const config = await deps.readConfig()
-  const profileName = ctx.profileFlag ?? ctx.profile ?? defaultProfileNameFor(ctx.apiUrl, config.profiles)
+  const profileName = ctx.profileFlag ?? ctx.profile ?? defaultProfileNameFor(apiUrl, config.profiles)
+
+  // Settle the embedded wallet before anything is stored. The approval page starts its switch on,
+  // so a key may be minted allowed. Deny is a security condition, not a preference: when it is
+  // requested and the key is not confirmed denied (the report omitted it and the correction
+  // failed, or the correction failed outright), the key is revoked and the login fails with
+  // nothing stored. Only a requested allow that could not be applied is kept (it is the narrower
+  // key) and reported.
+  let reportedEmbedded = body.apiKey?.embeddedWallet
+  let embeddedCorrectError: string | undefined
+  if (body.apiKey && reportedEmbedded !== requested.embeddedWallet) {
+    const aligned = await alignEmbeddedWallet(
+      deps,
+      apiUrl,
+      body.deviceToken,
+      body.apiKey.keyPrefix,
+      requested.embeddedWallet,
+      reportedEmbedded,
+    )
+    if (aligned.ok) reportedEmbedded = requested.embeddedWallet
+    else embeddedCorrectError = aligned.message
+  }
+  if (body.apiKey && requested.embeddedWallet === "denied" && reportedEmbedded !== "denied") {
+    const revoked = await revokeMintedKey(deps, apiUrl, body.deviceToken, body.apiKey.keyPrefix)
+    const message = `Could not confirm the embedded wallet is denied for key ${body.apiKey.keyPrefix}${embeddedCorrectError ? ` (${embeddedCorrectError})` : ""}. Nothing was stored.`
+    const fix = revoked
+      ? "The key was revoked. Run: candle auth login"
+      : `The key could NOT be revoked. Deny or revoke it: candle keys update ${body.apiKey.keyPrefix} --embedded-wallet deny`
+    if (json) {
+      deps.stderr.write(
+        `${JSON.stringify({ ok: false, reason: "embedded_wallet_not_denied", keyPrefix: body.apiKey.keyPrefix, keyRevoked: revoked, message })}\n`,
+      )
+    } else {
+      writeScreenMessage(deps, message, fix)
+    }
+    return 1
+  }
   await deps.store.set(profileSecretRef(profileName, "deviceToken"), body.deviceToken)
   if (body.apiKey) await deps.store.set(profileSecretRef(profileName, "apiKey"), body.apiKey.key)
 
@@ -303,7 +488,7 @@ async function finishLogin(
   let account: string | undefined
   let username: string | undefined
   if (body.apiKey) {
-    const lookup = await fetchAccount(deps, ctx.apiUrl, body.apiKey.key)
+    const lookup = await fetchAccount(deps, apiUrl, body.apiKey.key)
     account = lookup.account
     username = lookup.username
   }
@@ -315,7 +500,7 @@ async function finishLogin(
   // created (fix round 1, item 4).
   const portalOrigin = portalOriginFrom(requested.verificationUri)
   await deps.updateProfile(profileName, {
-    apiUrl: ctx.apiUrl,
+    apiUrl,
     deviceTokenPrefix: body.tokenPrefix,
     ...(body.apiKey ? { keyPrefix: body.apiKey.keyPrefix, scopes: body.apiKey.scopes } : {}),
     ...(requested.label ? { label: requested.label } : {}),
@@ -344,7 +529,7 @@ async function finishLogin(
         method: "PATCH",
         auth: "device",
         credentials: { deviceToken: body.deviceToken },
-        apiUrl: ctx.apiUrl,
+        apiUrl,
         fetch: deps.fetch,
         env: deps.env,
         body: { label: requested.label },
@@ -373,7 +558,8 @@ async function finishLogin(
         ...(apiKeyLabelError !== undefined ? { apiKeyLabelError } : {}),
         scopes: body.apiKey?.scopes,
         // Additive (BE-503): present only when the API reported it.
-        ...(body.apiKey?.embeddedWallet !== undefined ? { embeddedWallet: body.apiKey.embeddedWallet } : {}),
+        ...(reportedEmbedded !== undefined ? { embeddedWallet: reportedEmbedded } : {}),
+        ...(embeddedCorrectError !== undefined ? { embeddedWalletError: embeddedCorrectError } : {}),
         apiKeyError: body.apiKeyError,
       })}\n`,
     )
@@ -392,8 +578,8 @@ async function finishLogin(
               ["API key prefix", body.apiKey.keyPrefix] as const,
               ...(apiKeyLabel !== undefined ? [["API key name", apiKeyLabel] as const] : []),
               ["Access", accessCell(body.apiKey.scopes, symbols(style).missing)] as const,
-              ...(body.apiKey.embeddedWallet === "allowed" || body.apiKey.embeddedWallet === "denied"
-                ? [["Embedded wallet", embeddedWalletSummary(body.apiKey.embeddedWallet)] as const]
+              ...(reportedEmbedded === "allowed" || reportedEmbedded === "denied"
+                ? [["Embedded wallet", embeddedWalletSummary(reportedEmbedded)] as const]
                 : []),
             ]
           : []),
@@ -403,12 +589,20 @@ async function finishLogin(
   )
   if (body.apiKey) {
     deps.stdout.write(scopeSummary(body.apiKey.scopes, style, "Granted scopes"))
-    if (body.apiKey.embeddedWallet === "denied") {
+    if (reportedEmbedded === "denied") {
       notice(
         deps,
         "stdout",
         "note",
         `The owner can allow the embedded wallet with:\ncandle keys update ${body.apiKey.keyPrefix} --embedded-wallet allow`,
+      )
+    }
+    if (embeddedCorrectError !== undefined && reportedEmbedded !== undefined) {
+      notice(
+        deps,
+        "stdout",
+        "warning",
+        `The key was minted ${reportedEmbedded}. Setting the embedded wallet to ${requested.embeddedWallet} failed: ${embeddedCorrectError}\nRun: candle keys update ${body.apiKey.keyPrefix} --embedded-wallet ${requested.embeddedWallet === "allowed" ? "allow" : "deny"}`,
       )
     }
     if (apiKeyLabelError !== undefined) {

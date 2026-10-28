@@ -91,7 +91,7 @@ emergency procedure, rebinding, trusted wallets and API key access levels are al
 | Command | What it does |
 | --- | --- |
 | `candle setup [--no-browser]` | The onboarding wizard: authorizes this device (skipped when already authorized), prints the agent wallets as funding destinations plus the paste-into-your-agent brief, shows the skill/MCP install lines, runs the full doctor check (setup's exit code is doctor's), and links the web console. Safe to re-run. |
-| `candle auth login [--profile <name>] [--scopes <a,b,c>] [--label <name>] [--no-browser]` | Authorizes this device: prints a code, opens (or prints) an approval URL, polls until approved, then stores the resulting device token and API key. `--label` names both the device and the key. |
+| `candle auth login [--api-url <url>] [--profile <name>] [--scopes <a,b,c>] [--label <name>] [--embedded-wallet deny\|allow] [--no-browser]` | Authorizes this device: prints the API host and a code, opens (or prints) an approval URL, polls until approved, then stores the resulting device token and API key. A new profile needs `--api-url` or a prompt. `--label` names both the device and the key. `--embedded-wallet` defaults to deny. `transfer:bound` is refused here and granted afterwards with `keys access <prefix> --access withdraw`. |
 | `candle auth status` | Shows which storage backend is in use, both credential prefixes, the config file path, and a live validity check for each credential. |
 | `candle auth logout [--keep-key]` | Revokes the stored API key (skipped with `--keep-key`), clears local credentials and config, and prints the portal URL for revoking the device itself. |
 | `candle keys list [--scopes]` | Lists this account's API keys: prefix, name, Read, Write or Withdraw access, environment, timestamps, and which device minted each one. `--scopes` adds the raw scopes, sorted. |
@@ -118,7 +118,7 @@ emergency procedure, rebinding, trusted wallets and API key access levels are al
 | `candle tee signer new --key <prefix\|label> [--out <pem>] [--force]` | On the trading machine, with that key's API key: generates the key's signer here and waits for the owner to approve it with `keys signer approve`. The key's wallets then trade from this machine. `--out` also writes a plaintext PEM for an SDK process. |
 | `candle tee rebind <wallet...> --to-key <prefix\|label>`, `candle tee rebinds [wallet]` | Move TEE wallets to another key on the same account (owner only, preview then `confirm`; funds and the relay signer do not move), and list the rebind history. |
 | `candle tee rename <label\|address\|id> <new-label>`, `candle tee rename --pairs-from <file> [--dry-run]` | Rename one TEE wallet, or 1–256 from a pairs file: the label Candle holds and the vault entry when there is one (owner only; one server call, all or nothing, then one vault commit). |
-| `candle tee new\|enable` | The legacy path: `new` seals a fresh key in its own `tee-wallets.enc` and `enable <address> --vault <address>` delegates it with a pinned sweep vault. New setups use `vault promote`; `vault import-legacy --tee` migrates an existing store. |
+| `candle tee new\|enable` | `new` adds a key to an existing `tee-wallets.enc` and refuses when that store is absent (`vault new-key --chain solana`, then `vault promote --from <label> --to-key <prefix>`). `--factor` does not apply. `enable <address> --vault <address>` delegates an existing key with a pinned sweep vault. `vault import-legacy --tee` migrates an existing store. |
 | `candle swap <from> <to> --amount <n>\|--percent <n> --wallet <tee> [--to <tee>] [--wait]` | Quote, confirm and swap through the TEE wallet's bound key; the first buy after a launch is this command, unless `candle launch --buy` made it. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana). SOL or USDC to ETH or USDG, or back, is a bridge through Relay into this key's own TEE wallet on the other chain (`--to` names it when there are several); `--wait` follows it for up to ten minutes. |
 | `candle swap status <id> [--kind trade\|swap\|launch] [--wait]` | Read an operation without resending it; `--wait` follows a bridge until it ends. |
 | `candle transfer --to <address\|wallet name\|vault> --asset <SOL\|USDC\|CNDL\|ETH\|USDG>\|--mint <mint>\|--token <0x...> --amount <decimal\|max> [--wallet <tee>] [--rpc-url <url>] [--yes]` | Move funds out of a TEE wallet through its bound Withdraw key, to the wallet's own pinned vault (`--to vault`, any token, `max` allowed, one SOL transfer at most the server's backstop ceiling, 50 SOL by default) or to another of the account's wallets you linked while signed in or marked trusted (a base asset, counted against the key's caps, which must include a per-asset cap and a USD `--tx-limit`). The asset decides the chain: ETH, USDG or `--token` moves from a Hood TEE wallet. The destination and its kind are shown before you confirm; Candle builds, the relay signs, Candle broadcasts. |
@@ -304,8 +304,9 @@ The CLI picks the best available backend for your machine, in this order:
 ## Profiles
 
 One machine can hold credentials for several accounts and hosts. `auth login` creates a profile
-implicitly when none is already selected, named from `--profile <name>` or derived from the API
-host (`staging`, `production`, or the hostname, de-duplicated with a numeric suffix). Which profile a command acts as, highest
+when none is already selected, named from `--profile <name>` or derived from the API
+host (`staging`, `production`, or the hostname, de-duplicated with a numeric suffix). Creating one
+requires `--api-url`, `CANDLE_API_URL`, or a prompt; it does not inherit another host. Which profile a command acts as, highest
 wins: `--profile`, `CANDLE_PROFILE`, the `activeProfile` in `config.json`, the sole profile. With
 several profiles and none selected the CLI refuses and lists them; guessing is how a wallet
 import once landed on the wrong account.

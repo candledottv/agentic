@@ -156,7 +156,7 @@ describe("setup", () => {
         jsonResponse(200, {
           deviceToken: "cndl_dvc_setup",
           tokenPrefix: "dvcpref9",
-          apiKey: { key: NEW_KEY, keyPrefix: "ck_livenn", scopes: ["launch:write"] },
+          apiKey: { key: NEW_KEY, keyPrefix: "ck_livenn", embeddedWallet: "denied", scopes: ["launch:write"] },
         }),
       "/api/v1/agent/wallets/embedded": () =>
         jsonResponse(200, {
@@ -213,7 +213,7 @@ describe("setup", () => {
         jsonResponse(200, {
           deviceToken: "cndl_dvc_fresh",
           tokenPrefix: "dvcpref2",
-          apiKey: { key: NEW_KEY, keyPrefix: "ck_freshnn", scopes: ["launch:write"] },
+          apiKey: { key: NEW_KEY, keyPrefix: "ck_freshnn", embeddedWallet: "denied", scopes: ["launch:write"] },
         }),
       "/api/v1/agent/wallets/embedded": () =>
         jsonResponse(200, {
@@ -230,6 +230,7 @@ describe("setup", () => {
     const config = createFakeConfigStore({})
     const stdout = createCapture()
     const deps = createTestDeps({ fetch, store, stdout, ...config })
+    deps.promptLine = async () => "https://api.alpha.candle.tv"
 
     const code = await run(["setup", "--no-browser"], deps)
 
@@ -249,7 +250,10 @@ describe("setup", () => {
     })
     const stdout = createCapture()
     const stderr = createCapture()
-    const code = await run(["setup"], createTestDeps({ fetch, stdout, stderr }))
+    const code = await run(
+      ["setup"],
+      createTestDeps({ fetch, stdout, stderr, promptLine: async () => "https://api.alpha.candle.tv" }),
+    )
     expect(code).not.toBe(0)
     expect(calls.some((c) => c.url.includes("/device/code"))).toBe(true)
     expect(stderr.text).toContain("Setup stopped")

@@ -850,10 +850,21 @@ async function chooseFactor(
     }
     return choiceFor(assertDrivable(kind.candidates[0] as DrivableEnvelope, facts))
   }
-  const named = envelopes.find((envelope) => envelope.id === flag)
+  // An id wins. A label is the name `vault status` prints (`yubikey-a`), which is what an
+  // operator types; several envelopes can share one, and then only the id is unambiguous.
+  const byId = envelopes.find((envelope) => envelope.id === flag)
+  const byLabel = envelopes.filter((envelope) => envelope.label === flag && envelope.id !== byId?.id)
+  if (byId === undefined && byLabel.length > 1) {
+    throw new VaultError(
+      "VAULT_FACTOR_UNAVAILABLE",
+      `This vault has ${byLabel.length} envelopes labelled ${JSON.stringify(flag)}; name one with --factor <id>:\n${list(byLabel)}`,
+      { suggestion: "Run `candle vault factor list` for the ids." },
+    )
+  }
+  const named = byId ?? byLabel[0]
   if (named === undefined) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id ${flag}.`, {
-      suggestion: "Run `candle vault factor list` for the ids.",
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id or label ${flag}.`, {
+      suggestion: "Run `candle vault factor list` for the ids. --factor accepts an envelope's label.",
     })
   }
   if (isPassphraseEnvelope(named)) return { kind: "passphrase", envelopeId: named.id }

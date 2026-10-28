@@ -100,7 +100,6 @@ import {
 import { runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
 import { generateWallet } from "../wallet-keygen"
 import {
-  createKeystore,
   defaultTeeKeystorePath,
   type KeystoreEntry,
   KeystoreLockedError,
@@ -576,6 +575,21 @@ export async function teeNew(args: string[], ctx: CommandContext): Promise<numbe
   const parsed = parseArgs(args, { valueFlags: ["--label", "--keystore"], pathFlags: ["--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
+  // `--factor` is a global flag, so parseArgs never sees it. It opens the vault, which this
+  // command does not. Leaving it on used to ignore it and then prompt for a new store.
+  if (ctx.vaultFactor !== undefined || ctx.vaultDevice !== undefined) {
+    writeLocalFailure(
+      deps,
+      {
+        code: "USAGE",
+        message: "--factor and --device do not apply to tee new.",
+        suggestion:
+          "Derive a key in the vault: candle vault new-key --chain solana, then candle vault promote --from <label> --to-key <prefix>",
+      },
+      json,
+    )
+    return 2
+  }
 
   const found = await readTeeStore(ctx, parsed)
   if ("usage" in found) return usage(ctx, found.usage)
@@ -593,27 +607,36 @@ export async function teeNew(args: string[], ctx: CommandContext): Promise<numbe
     return 1
   }
   const { raw } = found
+  if (raw === null) {
+    writeLocalFailure(
+      deps,
+      {
+        code: "TEE_STORE_ABSENT",
+        message: "No TEE wallet store on this machine. New wallets are derived in the vault.",
+        suggestion:
+          "Run: candle vault new-key --chain solana\nThen: candle vault promote --from <label> --to-key <prefix>",
+      },
+      json,
+    )
+    return 1
+  }
 
-  const passphrase = await promptPassphrase(deps, raw === null)
+  const passphrase = await promptPassphrase(deps, false)
   if (!passphrase.ok) {
     writeLocalFailure(deps, { code: "TEE_STORE_PASSPHRASE", message: passphrase.message }, json)
     return 1
   }
 
   let store: OpenKeystore
-  if (raw !== null) {
-    try {
-      store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE })
-    } catch (error) {
-      writeLocalFailure(
-        deps,
-        { code: "TEE_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) },
-        json,
-      )
-      return 1
-    }
-  } else {
-    store = { ...(await createKeystore(passphrase.passphrase)), entries: [] }
+  try {
+    store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE })
+  } catch (error) {
+    writeLocalFailure(
+      deps,
+      { code: "TEE_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) },
+      json,
+    )
+    return 1
   }
 
   const wallet = generateWallet("solana")

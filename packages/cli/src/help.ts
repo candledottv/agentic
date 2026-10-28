@@ -228,11 +228,12 @@ export const HELP: Record<string, Topic> = {
     group: "Start here",
     summary: "Authorize this device, or show and clear its credentials",
     description:
-      "Device authorization: a code is printed, an approval URL is opened or printed, and the device token and API key it returns are stored in this machine's keychain. Nothing here is ever written to a plaintext dotfile.",
+      "Device authorization: the API host is printed, a code is printed, an approval URL is opened or printed, and the device token and API key it returns are stored in this machine's keychain. Nothing here is ever written to a plaintext dotfile. A new profile needs --api-url or a prompt; it does not inherit another profile's host or the production default. --embedded-wallet defaults to deny, the same as keys create; allow is confirmed at a terminal. transfer:bound is refused on a device login and is granted afterwards with keys access <prefix> --access withdraw.",
     usage: ["candle auth <subcommand> [flags]"],
     rows: [
       {
-        invocation: "login [--scopes <a,b,c>] [--label <name>] [--no-browser] [--profile <name>]",
+        invocation:
+          "login [--api-url <url>] [--scopes <a,b,c>] [--label <name>] [--embedded-wallet deny|allow] [--no-browser] [--profile <name>]",
         description: "Authorize this device and mint its API key; --label names both",
       },
       { invocation: "status", description: "Show credential status" },
@@ -913,6 +914,11 @@ export const HELP: Record<string, Topic> = {
           "Allow or deny a key the account's embedded wallet, with the device token. Allowing needs the prefix typed back at a terminal; --yes skips the prompt when denying",
       },
       {
+        invocation: "limit <prefix|label> (--tx-limit <usd> [--reset daily|weekly|monthly|never] | --clear)",
+        description:
+          "Set or clear the USD transaction cap on an existing key, with the device token. --reset defaults to daily",
+      },
+      {
         invocation: "self embedded-wallet deny",
         description:
           "The profile's own key gives up the embedded wallet, with no prompt. A key can never allow itself: the owner does that with keys update",
@@ -973,7 +979,8 @@ export const HELP: Record<string, Topic> = {
     rows: [
       {
         invocation: "import --chain <solana|evm> [options]",
-        description: "Import a wallet you own (key via --key-file or hidden prompt)",
+        description:
+          "Import a wallet you own (key via --key-file or hidden prompt). A fresh key, without solana-keygen: candle vault new-key --chain solana, candle vault export-key <label> --to <file>, import that file, then delete the file",
       },
       { invocation: "revoke <wallet-id>", description: "Revoke a linked wallet" },
       {
@@ -1217,7 +1224,11 @@ export const HELP: Record<string, Topic> = {
       "A dedicated, capped Solana wallet for one agent. The key is generated and sealed on this machine; enable delegates it to this profile's API key with a sweep vault pinned, and sweep moves everything back to that vault, signed locally.",
     usage: ["candle tee <subcommand> [flags]"],
     rows: [
-      { invocation: "new [--label <name>]", description: "Seal a fresh dedicated Solana TEE wallet key locally" },
+      {
+        invocation: "new [--label <name>]",
+        description:
+          "Add a Solana key to an existing tee-wallets.enc. With no store, refuses: candle vault new-key --chain solana, then candle vault promote --from <label> --to-key <prefix>. --factor does not apply",
+      },
       {
         invocation: "enable <address> --vault <address>",
         description: "Delegate a TEE wallet key; pin the sweep vault (--vault-key <label> also)",

@@ -45,7 +45,7 @@ function deviceFlowRoutes(): Record<string, RouteHandler> {
       jsonResponse(200, {
         deviceToken: DEVICE_TOKEN,
         tokenPrefix: "dvcprofl",
-        apiKey: { key: API_KEY, keyPrefix: "ck_livepr", scopes: ["launch:write"] },
+        apiKey: { key: API_KEY, keyPrefix: "ck_livepr", embeddedWallet: "denied", scopes: ["launch:write"] },
       }),
   }
 }
@@ -65,7 +65,7 @@ describe("auth login: state machine", () => {
           jsonResponse(200, {
             deviceToken: DEVICE_TOKEN,
             tokenPrefix: "dvcpref1",
-            apiKey: { key: API_KEY, keyPrefix: "ck_liveab", scopes },
+            apiKey: { key: API_KEY, keyPrefix: "ck_liveab", embeddedWallet: "denied", scopes },
           }),
       ],
     })
@@ -87,7 +87,7 @@ describe("auth login: state machine", () => {
       stdout,
     })
 
-    const code = await run(["auth", "login"], deps)
+    const code = await run(["auth", "login", "--api-url", "https://api.alpha.candle.tv"], deps)
 
     expect(code).toBe(0)
     // No --profile and no existing profiles: the name is derived from the (default) API host --
@@ -141,7 +141,7 @@ describe("auth login: state machine", () => {
       stdout: createCapture(),
     })
 
-    const code = await run(["auth", "login"], deps)
+    const code = await run(["auth", "login", "--api-url", "https://api.alpha.candle.tv"], deps)
     expect(code).toBe(0)
     const config = await configStore.readConfig()
     expect(config.profiles?.production?.account).toBe("ACC1")
@@ -155,14 +155,14 @@ describe("auth login: state machine", () => {
         jsonResponse(200, {
           deviceToken: "cndl_dvc_x",
           tokenPrefix: "dvcpref1",
-          apiKey: { key: "ck_live_x", keyPrefix: "ck_liveab", scopes: ["launch:write"] },
+          apiKey: { key: "ck_live_x", keyPrefix: "ck_liveab", embeddedWallet: "denied", scopes: ["launch:write"] },
         }),
     })
 
     const openedWithBrowser: string[] = []
     const stdoutWithBrowser = createCapture()
     await run(
-      ["auth", "login"],
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv"],
       createTestDeps({ fetch, openBrowser: (url) => openedWithBrowser.push(url), stdout: stdoutWithBrowser }),
     )
     expect(openedWithBrowser).toEqual([CODE_RESPONSE.verificationUriComplete])
@@ -171,7 +171,7 @@ describe("auth login: state machine", () => {
     const openedNoBrowser: string[] = []
     const stdoutNoBrowser = createCapture()
     await run(
-      ["auth", "login", "--no-browser"],
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--no-browser"],
       createTestDeps({ fetch, openBrowser: (url) => openedNoBrowser.push(url), stdout: stdoutNoBrowser }),
     )
     expect(openedNoBrowser).toEqual([])
@@ -190,12 +190,12 @@ describe("auth login: clientName length cap", () => {
         jsonResponse(200, {
           deviceToken: "cndl_dvc_x",
           tokenPrefix: "dvcpref1",
-          apiKey: { key: "ck_live_x", keyPrefix: "ck_liveab", scopes: ["launch:write"] },
+          apiKey: { key: "ck_live_x", keyPrefix: "ck_liveab", embeddedWallet: "denied", scopes: ["launch:write"] },
         }),
     })
     const deps = createTestDeps({ fetch, hostname: `${"very-long-host-name".repeat(5)}.internal` })
 
-    const code = await run(["auth", "login"], deps)
+    const code = await run(["auth", "login", "--api-url", "https://api.alpha.candle.tv"], deps)
 
     expect(code).toBe(0)
     const codeCall = calls.find((call) => call.url.includes("/device/code"))
@@ -211,7 +211,10 @@ describe("auth login: clientName length cap", () => {
         jsonResponse(200, { deviceToken: "cndl_dvc_x", tokenPrefix: "dvcpref1", apiKey: null, apiKeyError: "none" }),
     })
 
-    await run(["auth", "login"], createTestDeps({ fetch, hostname: "laptop" }))
+    await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv"],
+      createTestDeps({ fetch, hostname: "laptop" }),
+    )
 
     const codeCall = calls.find((call) => call.url.includes("/device/code"))
     const sent = JSON.parse(codeCall?.init.body as string) as { clientName: string }
@@ -222,7 +225,10 @@ describe("auth login: clientName length cap", () => {
     const { fetch, calls } = createRoutedFetch({})
     const stderr = createCapture()
 
-    const code = await run(["auth", "login", "--label", "x".repeat(65)], createTestDeps({ fetch, stderr }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--label", "x".repeat(65)],
+      createTestDeps({ fetch, stderr }),
+    )
 
     expect(code).toBe(2)
     expect(calls).toHaveLength(0)
@@ -238,7 +244,10 @@ describe("auth login: clientName length cap", () => {
     })
     const label = "y".repeat(64)
 
-    const code = await run(["auth", "login", "--label", label], createTestDeps({ fetch }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--label", label],
+      createTestDeps({ fetch }),
+    )
 
     expect(code).toBe(0)
     const codeCall = calls.find((call) => call.url.includes("/device/code"))
@@ -255,6 +264,7 @@ describe("auth login: --label names the key as well as the device", () => {
     apiKey: { key: string; keyPrefix: string; scopes: string[]; embeddedWallet?: string } | null = {
       key: "ck_live_LABEL_FIXTURE_KEY",
       keyPrefix: "ck_livepr",
+      embeddedWallet: "denied",
       // The device flow's stored order, so the summary's sort is visible.
       scopes: ["launch:write", "launch:read", "account:read", "activity:write", "swap:write", "transfer:write"],
     },
@@ -280,7 +290,10 @@ describe("auth login: --label names the key as well as the device", () => {
     const store = createFakeStore()
     const stdout = createCapture()
 
-    const code = await run(["auth", "login", "--label", "  vault-promote  "], createTestDeps({ fetch, store, stdout }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--label", "  vault-promote  "],
+      createTestDeps({ fetch, store, stdout }),
+    )
 
     expect(code).toBe(0)
     const patches = patchCalls(calls)
@@ -298,7 +311,7 @@ describe("auth login: --label names the key as well as the device", () => {
     )
   })
 
-  test("BE-503: the consent page's embedded-wallet choice is reported, in text and in --json", async () => {
+  test("BE-503: the key's embedded-wallet value is reported, in text and in --json", async () => {
     for (const embeddedWallet of ["denied", "allowed"] as const) {
       const apiKey = {
         key: "ck_live_LABEL_FIXTURE_KEY",
@@ -306,27 +319,42 @@ describe("auth login: --label names the key as well as the device", () => {
         scopes: ["swap:write"],
         embeddedWallet,
       }
+      // A key ends allowed only when the operator asked for it and confirmed at a terminal.
+      const flags = embeddedWallet === "allowed" ? ["--embedded-wallet", "allow"] : []
       const text = createCapture()
       const { fetch } = createRoutedFetch(labelRoutes(undefined, apiKey))
-      expect(await run(["auth", "login"], createTestDeps({ fetch, stdout: text }))).toBe(0)
+      const textDeps = createTestDeps({ fetch, stdout: text })
+      textDeps.promptLine = async () => "y"
+      expect(await run(["auth", "login", "--api-url", "https://api.alpha.candle.tv", ...flags], textDeps)).toBe(0)
       expect(text.text).toContain(`Embedded wallet      ${embeddedWallet}`)
       const json = createCapture()
       const again = createRoutedFetch(labelRoutes(undefined, apiKey))
-      expect(await run(["--json", "auth", "login"], createTestDeps({ fetch: again.fetch, stdout: json }))).toBe(0)
+      const jsonDeps = createTestDeps({ fetch: again.fetch, stdout: json })
+      jsonDeps.promptLine = async () => "y"
+      expect(
+        await run(["--json", "auth", "login", "--api-url", "https://api.alpha.candle.tv", ...flags], jsonDeps),
+      ).toBe(0)
       expect((JSON.parse(json.text) as Record<string, unknown>).embeddedWallet).toBe(embeddedWallet)
     }
-    // An API from before the choice reports nothing, and the login says nothing about it.
+    // An API that reports nothing and cannot be corrected leaves the deny unconfirmed: fail closed.
     const old = createCapture()
-    const { fetch } = createRoutedFetch(labelRoutes(undefined))
-    expect(await run(["auth", "login"], createTestDeps({ fetch, stdout: old }))).toBe(0)
-    expect(old.text).not.toContain("Embedded wallet:")
+    const { fetch } = createRoutedFetch(
+      labelRoutes(undefined, { key: "ck_live_x", keyPrefix: "ck_livepr", scopes: ["swap:write"] }),
+    )
+    expect(
+      await run(["auth", "login", "--api-url", "https://api.alpha.candle.tv"], createTestDeps({ fetch, stdout: old })),
+    ).toBe(1)
+    expect(old.text).not.toContain("Device authorized")
   })
 
   test("--json carries apiKeyLabel", async () => {
     const { fetch } = createRoutedFetch(labelRoutes(() => jsonResponse(200, { success: true })))
     const stdout = createCapture()
 
-    const code = await run(["--json", "auth", "login", "--label", "vault-promote"], createTestDeps({ fetch, stdout }))
+    const code = await run(
+      ["--json", "auth", "login", "--api-url", "https://api.alpha.candle.tv", "--label", "vault-promote"],
+      createTestDeps({ fetch, stdout }),
+    )
 
     expect(code).toBe(0)
     const out = JSON.parse(stdout.text) as Record<string, unknown>
@@ -341,7 +369,10 @@ describe("auth login: --label names the key as well as the device", () => {
     const store = createFakeStore()
     const stdout = createCapture()
 
-    const code = await run(["auth", "login", "--label", "vault-promote"], createTestDeps({ fetch, store, stdout }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--label", "vault-promote"],
+      createTestDeps({ fetch, store, stdout }),
+    )
 
     expect(code).toBe(0)
     expect(await store.get("profile:production:device_token")).toBe(LABEL_TOKEN)
@@ -358,7 +389,10 @@ describe("auth login: --label names the key as well as the device", () => {
     const { fetch } = createRoutedFetch(labelRoutes(undefined))
     const stdout = createCapture()
 
-    const code = await run(["--json", "auth", "login", "--label", "vault-promote"], createTestDeps({ fetch, stdout }))
+    const code = await run(
+      ["--json", "auth", "login", "--api-url", "https://api.alpha.candle.tv", "--label", "vault-promote"],
+      createTestDeps({ fetch, stdout }),
+    )
 
     expect(code).toBe(0)
     const out = JSON.parse(stdout.text) as Record<string, unknown>
@@ -369,7 +403,10 @@ describe("auth login: --label names the key as well as the device", () => {
   test("no key in the exchange: no PATCH", async () => {
     const { fetch, calls } = createRoutedFetch(labelRoutes(() => jsonResponse(200, { success: true }), null))
 
-    const code = await run(["auth", "login", "--label", "vault-promote"], createTestDeps({ fetch }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--label", "vault-promote"],
+      createTestDeps({ fetch }),
+    )
 
     expect(code).toBe(0)
     expect(patchCalls(calls)).toHaveLength(0)
@@ -381,7 +418,10 @@ describe("auth login: --label names the key as well as the device", () => {
     const { fetch } = createRoutedFetch(labelRoutes(undefined, null))
     const stdout = createCapture()
 
-    const code = await run(["auth", "login"], createTestDeps({ fetch, stdout }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv"],
+      createTestDeps({ fetch, stdout }),
+    )
 
     expect(code).toBe(0)
     const line = stdout.text.split("Authorized scopes (no key issued yet)\n")[1] ?? ""
@@ -394,7 +434,10 @@ describe("auth login: --label names the key as well as the device", () => {
     const { fetch, calls } = createRoutedFetch(labelRoutes(() => jsonResponse(200, { success: true })))
     const stdout = createCapture()
 
-    const code = await run(["auth", "login"], createTestDeps({ fetch, stdout }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv"],
+      createTestDeps({ fetch, stdout }),
+    )
 
     expect(code).toBe(0)
     expect(patchCalls(calls)).toHaveLength(0)
@@ -406,7 +449,10 @@ describe("auth login: --label names the key as well as the device", () => {
     const { fetch, calls } = createRoutedFetch({})
     const stderr = createCapture()
 
-    const code = await run(["auth", "login", "--label", "   "], createTestDeps({ fetch, stderr }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--label", "   "],
+      createTestDeps({ fetch, stderr }),
+    )
 
     expect(code).toBe(2)
     expect(calls).toHaveLength(0)
@@ -421,7 +467,10 @@ describe("auth login: terminal paths", () => {
       "/api/v1/agent/device/token": () => jsonResponse(400, { error: rfcError }),
     })
     const stderr = createCapture()
-    const code = await run(["auth", "login"], createTestDeps({ fetch, stderr }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv"],
+      createTestDeps({ fetch, stderr }),
+    )
     return { code, stderr: stderr.text }
   }
 
@@ -478,7 +527,7 @@ describe("auth login: provisioning failure", () => {
       stdout,
     })
 
-    const code = await run(["auth", "login"], deps)
+    const code = await run(["auth", "login", "--api-url", "https://api.alpha.candle.tv"], deps)
 
     expect(code).toBe(0)
     expect(await store.get("profile:production:device_token")).toBe(DEVICE_TOKEN)
@@ -509,14 +558,14 @@ describe("auth login: --json", () => {
         jsonResponse(200, {
           deviceToken: DEVICE_TOKEN,
           tokenPrefix: "dvcpref3",
-          apiKey: { key: API_KEY, keyPrefix: "ck_livejj", scopes },
+          apiKey: { key: API_KEY, keyPrefix: "ck_livejj", embeddedWallet: "denied", scopes },
         }),
     })
     const stdout = createCapture()
     const stderr = createCapture()
     const deps = createTestDeps({ fetch, backend: "encrypted-file", stdout, stderr })
 
-    const code = await run(["auth", "login", "--json"], deps)
+    const code = await run(["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--json"], deps)
 
     expect(code).toBe(0)
     // FIX 1: stdout must be parseable as-is -- the two progress lines ("Your device code:",
@@ -527,7 +576,7 @@ describe("auth login: --json", () => {
     expect(parsed.apiKeyPrefix).toBe("ck_livejj")
     expect(parsed.scopes).toEqual(scopes)
     expect(stderr.text).toBe(
-      `Your device code: ${CODE_RESPONSE.userCode}\nOpen this URL to approve: ${CODE_RESPONSE.verificationUriComplete}\n`,
+      `API: https://api.alpha.candle.tv\nYour device code: ${CODE_RESPONSE.userCode}\nOpen this URL to approve: ${CODE_RESPONSE.verificationUriComplete}\n`,
     )
 
     // FIX 2: reverting the redaction (JSON.stringify(rawBody)) would leak both plaintext
@@ -553,7 +602,7 @@ describe("auth login: --json", () => {
     const stderr = createCapture()
     const deps = createTestDeps({ fetch, stdout, stderr })
 
-    const code = await run(["auth", "login", "--json"], deps)
+    const code = await run(["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--json"], deps)
 
     expect(code).toBe(0)
     const parsed = JSON.parse(stdout.text)
@@ -1025,7 +1074,7 @@ describe("profiles", () => {
     const store = createFakeStore({ "profile:hood:device_token": "keep-me" })
     const config = createFakeConfigStore({ profiles: { hood: { account: "A" } }, activeProfile: "hood" })
     const code = await run(
-      ["auth", "login", "--no-browser", "--profile", "sol"],
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--no-browser", "--profile", "sol"],
       createTestDeps({ fetch, store, ...config }),
     )
     expect(code).toBe(0)
@@ -1048,7 +1097,10 @@ describe("profiles", () => {
       activeProfile: "production",
     })
 
-    const code = await run(["auth", "login", "--no-browser"], createTestDeps({ fetch, store, ...config }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--no-browser"],
+      createTestDeps({ fetch, store, ...config }),
+    )
 
     expect(code).toBe(0)
     expect(await store.get("profile:production:device_token")).toBe(DEVICE_TOKEN)
@@ -1093,7 +1145,7 @@ describe("profiles", () => {
     const config = createFakeConfigStore({ profiles: { production: {} }, activeProfile: "production" })
 
     const code = await run(
-      ["auth", "login", "--no-browser", "--profile", "new-one"],
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--no-browser", "--profile", "new-one"],
       createTestDeps({ fetch, store, ...config }),
     )
 
@@ -1108,7 +1160,7 @@ describe("profiles", () => {
   test("auth login rejects an invalid --profile before any request", async () => {
     const stderr = createCapture()
     const code = await run(
-      ["auth", "login", "--profile", "bad name"],
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--profile", "bad name"],
       createTestDeps({ fetch: unusedFetch, stderr, ...createFakeConfigStore({}) }),
     )
     expect(code).toBe(2)
@@ -1218,7 +1270,7 @@ describe("profiles", () => {
     const clock = createFakeClock(1_700_000_000_000)
     const config = createFakeConfigStore({})
     const code = await run(
-      ["auth", "login", "--no-browser"],
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--no-browser"],
       createTestDeps({ fetch, store: createFakeStore(), ...config, now: clock.now, sleep: clock.sleep }),
     )
     expect(code).toBe(0)
@@ -1240,7 +1292,15 @@ describe("auth login never requests transfer:bound", () => {
     const { fetch, calls } = createRoutedFetch({})
     const stderr = createCapture()
     const code = await run(
-      ["auth", "login", "--scopes", "transfer:write,transfer:bound", "--no-browser"],
+      [
+        "auth",
+        "login",
+        "--api-url",
+        "https://api.alpha.candle.tv",
+        "--scopes",
+        "transfer:write,transfer:bound",
+        "--no-browser",
+      ],
       createTestDeps({ fetch, stderr }),
     )
     expect(code).toBe(2)
@@ -1259,7 +1319,16 @@ describe("auth login never requests transfer:bound", () => {
     const { fetch, calls } = createRoutedFetch({})
     expect(
       await run(
-        ["auth", "login", "--scopes", "transfer:bound", "--plain", "--no-browser"],
+        [
+          "auth",
+          "login",
+          "--api-url",
+          "https://api.alpha.candle.tv",
+          "--scopes",
+          "transfer:bound",
+          "--plain",
+          "--no-browser",
+        ],
         createTestDeps({
           fetch,
           stdout: narrowOut,
@@ -1283,7 +1352,16 @@ describe("auth login never requests transfer:bound", () => {
     const stderr = createCapture()
     expect(
       await run(
-        ["auth", "login", "--scopes", "transfer:bound", "--json", "--no-browser"],
+        [
+          "auth",
+          "login",
+          "--api-url",
+          "https://api.alpha.candle.tv",
+          "--scopes",
+          "transfer:bound",
+          "--json",
+          "--no-browser",
+        ],
         createTestDeps({ fetch, stdout, stderr }),
       ),
     ).toBe(2)
@@ -1341,10 +1419,18 @@ describe("auth login never requests transfer:bound", () => {
         jsonResponse(200, {
           deviceToken: DEVICE_TOKEN,
           deviceTokenPrefix: "dvcpref1",
-          apiKey: { key: API_KEY, keyPrefix: "ck_livexx", scopes: ["launch:write", "account:read"] },
+          apiKey: {
+            key: API_KEY,
+            keyPrefix: "ck_livexx",
+            embeddedWallet: "denied",
+            scopes: ["launch:write", "account:read"],
+          },
         }),
     })
-    const code = await run(["auth", "login", "--no-browser"], createTestDeps({ fetch, stdout: createCapture() }))
+    const code = await run(
+      ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--no-browser"],
+      createTestDeps({ fetch, stdout: createCapture() }),
+    )
     expect(code).toBe(0)
     const codeCall = calls.find((call) => call.url.endsWith("/api/v1/agent/device/code"))
     expect(codeCall).toBeDefined()
@@ -1434,7 +1520,7 @@ describe("auth output kit", () => {
     const { fetch } = createRoutedFetch(deviceFlowRoutes())
     expect(
       await run(
-        ["auth", "login", "--plain", "--no-browser"],
+        ["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--plain", "--no-browser"],
         createTestDeps({ fetch, stdout, stderr, columns: { stdout: 40 } }),
       ),
     ).toBe(0)
@@ -1463,5 +1549,227 @@ describe("auth output kit", () => {
     const checks = stdout.text.split("Checks\n")[1] ?? ""
     for (const line of checks.split("\n")) expect(displayWidth(line)).toBeLessThanOrEqual(40)
     expect(stderr.text).toBe("")
+  })
+})
+
+const PROD = "https://api.alpha.candle.tv"
+
+function loginReturning(embeddedWallet: "allowed" | "denied" | undefined) {
+  const puts: Array<Record<string, unknown>> = []
+  const routed = createRoutedFetch({
+    "/api/v1/agent/device/code": () => jsonResponse(200, CODE_RESPONSE),
+    "/api/v1/agent/device/token": () =>
+      jsonResponse(200, {
+        deviceToken: DEVICE_TOKEN,
+        tokenPrefix: "dvcprofl",
+        apiKey: {
+          key: API_KEY,
+          keyPrefix: "ck_livepr",
+          scopes: ["swap:write"],
+          ...(embeddedWallet ? { embeddedWallet } : {}),
+        },
+      }),
+    "/api/v1/agent/keys/ck_livepr/embedded-wallet": (req) => {
+      const body = JSON.parse(String(req.init.body)) as Record<string, unknown>
+      puts.push(body)
+      return jsonResponse(200, {
+        success: true,
+        dryRun: body.dryRun === true,
+        keyPrefix: "ck_livepr",
+        label: null,
+        direction: "narrow",
+        from: embeddedWallet ?? "allowed",
+        to: body.permission,
+      })
+    },
+    "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "FaKwE2xX" }),
+  })
+  return { ...routed, puts }
+}
+
+describe("auth login: a new profile names its API host", () => {
+  test("a new --profile does not inherit a leftover config.apiUrl", async () => {
+    const { fetch, calls } = createRoutedFetch(deviceFlowRoutes())
+    const config = createFakeConfigStore({
+      apiUrl: "https://staging.api.candle.tv",
+      profiles: { hood: { apiUrl: "https://staging.api.candle.tv" } },
+      activeProfile: "hood",
+    })
+    const stderr = createCapture()
+    const code = await run(
+      ["auth", "login", "--no-browser", "--profile", "prod-coverage-trip"],
+      createTestDeps({
+        fetch,
+        stderr,
+        ...config,
+        isTTY: { stdin: false, stdout: true, stderr: true },
+      }),
+    )
+    expect(code).toBe(2)
+    expect(calls).toHaveLength(0)
+    expect(stderr.text).toContain("--api-url")
+    expect(stderr.text).not.toContain("staging.api.candle.tv")
+    expect((await config.readConfig()).profiles?.["prod-coverage-trip"]).toBeUndefined()
+  })
+
+  test("a prompted host is the one the device flow and the new profile use", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      ...deviceFlowRoutes(),
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "FaKwE2xX" }),
+    })
+    const config = createFakeConfigStore({ apiUrl: "https://staging.api.candle.tv" })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, stdout, ...config })
+    deps.promptLine = async () => PROD
+    const code = await run(["auth", "login", "--no-browser", "--profile", "prod"], deps)
+    expect(code).toBe(0)
+    expect(calls[0]?.url.startsWith(`${PROD}/`)).toBe(true)
+    expect(stdout.text.indexOf(PROD)).toBeLessThan(stdout.text.indexOf(CODE_RESPONSE.userCode))
+    expect((await config.readConfig()).profiles?.prod?.apiUrl).toBe(PROD)
+  })
+
+  test("CANDLE_API_URL is an explicit host for a new profile", async () => {
+    const { fetch, calls } = createRoutedFetch(deviceFlowRoutes())
+    const config = createFakeConfigStore({ apiUrl: "https://staging.api.candle.tv" })
+    const code = await run(
+      ["auth", "login", "--no-browser", "--profile", "from-env"],
+      createTestDeps({
+        fetch,
+        ...config,
+        env: { CANDLE_API_URL: PROD },
+        isTTY: { stdin: false, stdout: false, stderr: false },
+      }),
+    )
+    expect(code).toBe(0)
+    expect(calls[0]?.url.startsWith(`${PROD}/`)).toBe(true)
+    expect((await config.readConfig()).profiles?.["from-env"]?.apiUrl).toBe(PROD)
+  })
+})
+
+describe("auth login: the embedded wallet defaults to deny", () => {
+  test("an approval that allowed the wallet is put back to denied", async () => {
+    const { fetch, puts } = loginReturning("allowed")
+    const stdout = createCapture()
+    const code = await run(["auth", "login", "--no-browser", "--api-url", PROD], createTestDeps({ fetch, stdout }))
+    expect(code).toBe(0)
+    expect(puts).toEqual([
+      { permission: "denied", dryRun: true },
+      { permission: "denied", expect: "allowed" },
+    ])
+    expect(stdout.text).toContain("denied")
+    expect(stdout.text).not.toContain("Embedded wallet      allowed")
+  })
+
+  test("--embedded-wallet allow is confirmed before the flow and is not corrected when the page agrees", async () => {
+    const { fetch, calls, puts } = loginReturning("allowed")
+    const prompts: string[] = []
+    const deps = createTestDeps({ fetch })
+    deps.promptLine = async (text) => {
+      prompts.push(text)
+      return "y"
+    }
+    const code = await run(["auth", "login", "--no-browser", "--api-url", PROD, "--embedded-wallet", "allow"], deps)
+    expect(code).toBe(0)
+    expect(prompts[0]).toContain("allowed")
+    expect(puts).toEqual([])
+    expect(calls.some((call) => call.url.includes("/device/code"))).toBe(true)
+  })
+
+  function failClosedLogin(opts: {
+    reported: "allowed" | "denied" | undefined
+    preview: number
+    commit: number
+    revoke: number
+  }) {
+    const deleted: string[] = []
+    const routed = createRoutedFetch({
+      "/api/v1/agent/device/code": () => jsonResponse(200, CODE_RESPONSE),
+      "/api/v1/agent/device/token": () =>
+        jsonResponse(200, {
+          deviceToken: DEVICE_TOKEN,
+          tokenPrefix: "dvcprofl",
+          apiKey: {
+            key: API_KEY,
+            keyPrefix: "ck_livepr",
+            scopes: ["swap:write"],
+            ...(opts.reported ? { embeddedWallet: opts.reported } : {}),
+          },
+        }),
+      "/api/v1/agent/keys/ck_livepr/embedded-wallet": (req) => {
+        const body = JSON.parse(String(req.init.body)) as Record<string, unknown>
+        const status = body.dryRun === true ? opts.preview : opts.commit
+        if (status !== 200) return jsonResponse(status, { error: { code: "UNAVAILABLE", message: "down" } })
+        return jsonResponse(200, { success: true, dryRun: body.dryRun === true, from: "allowed", to: body.permission })
+      },
+      "/api/v1/agent/keys/ck_livepr": (req) => {
+        if (req.init.method === "DELETE") deleted.push("ck_livepr")
+        return jsonResponse(opts.revoke, { success: true })
+      },
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "FaKwE2xX" }),
+    })
+    return { ...routed, deleted }
+  }
+
+  for (const [name, opts] of [
+    ["the correction preview fails", { reported: "allowed", preview: 503, commit: 200, revoke: 200 }],
+    ["the correction commit fails", { reported: "allowed", preview: 200, commit: 503, revoke: 200 }],
+    [
+      "the token response omits the permission and the correction fails",
+      { reported: undefined, preview: 503, commit: 200, revoke: 200 },
+    ],
+  ] as const) {
+    test(`${name}: the key is revoked, nothing is stored, and login fails`, async () => {
+      const { fetch, deleted } = failClosedLogin(opts)
+      const store = createFakeStore()
+      const stderr = createCapture()
+      const stdout = createCapture()
+      const code = await run(
+        ["auth", "login", "--no-browser", "--api-url", PROD, "--json"],
+        createTestDeps({ fetch, store, stderr, stdout }),
+      )
+      expect(code).toBe(1)
+      expect(deleted).toEqual(["ck_livepr"])
+      expect(stdout.text).toBe("")
+      expect(stderr.text).toContain("embedded_wallet_not_denied")
+      expect(await store.get("profile:production:api_key")).toBeFalsy()
+      expect(await store.get("profile:production:device_token")).toBeFalsy()
+    })
+  }
+
+  test("an omitted permission is established as denied by the correction", async () => {
+    const { fetch, puts } = loginReturning(undefined)
+    const code = await run(["auth", "login", "--no-browser", "--api-url", PROD], createTestDeps({ fetch }))
+    expect(code).toBe(0)
+    expect(puts).toEqual([
+      { permission: "denied", dryRun: true },
+      { permission: "denied", expect: "allowed" },
+    ])
+  })
+
+  test("a failed correction whose key cannot be revoked says so and still fails", async () => {
+    const { fetch } = failClosedLogin({ reported: "allowed", preview: 503, commit: 503, revoke: 503 })
+    const stderr = createCapture()
+    const code = await run(["auth", "login", "--no-browser", "--api-url", PROD], createTestDeps({ fetch, stderr }))
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("could NOT be revoked")
+    expect(stderr.text.replace(/\s+/g, " ")).toContain("--embedded-wallet deny")
+  })
+
+  test("a requested allow that cannot be applied leaves the narrower key, unrevoked", async () => {
+    const { fetch, deleted } = failClosedLogin({ reported: "denied", preview: 503, commit: 503, revoke: 200 })
+    const deps = createTestDeps({ fetch })
+    deps.promptLine = async () => "y"
+    const code = await run(["auth", "login", "--no-browser", "--api-url", PROD, "--embedded-wallet", "allow"], deps)
+    expect(code).toBe(0)
+    expect(deleted).toEqual([])
+  })
+
+  test("a declined allow starts no device flow", async () => {
+    const { fetch, calls } = loginReturning("allowed")
+    const deps = createTestDeps({ fetch })
+    deps.promptLine = async () => "n"
+    const code = await run(["auth", "login", "--no-browser", "--api-url", PROD, "--embedded-wallet", "allow"], deps)
+    expect(code).toBe(1)
+    expect(calls).toHaveLength(0)
   })
 })
