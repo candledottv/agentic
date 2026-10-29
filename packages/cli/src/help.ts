@@ -1403,6 +1403,12 @@ export const HELP: Record<string, Topic> = {
         description:
           "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an older signer on THIS machine still owns wallets; it moves, revokes and deletes nothing",
       },
+      // Indented like `keys signer`'s move row: a second word under `tee signer`, not a second subcommand of `tee`.
+      {
+        invocation: "  signer remove --key <prefix|label>",
+        description:
+          "Remove this machine's key signer once it owns no wallets, and tell the server it is gone. Refuses while a wallet is still owned by it. The device token, or the key's own API key",
+      },
     ],
     flags: [
       KEYSTORE_FLAG,
@@ -1426,6 +1432,7 @@ export const HELP: Record<string, Topic> = {
       "candle tee rename tr-01 desk-01",
       "candle tee rename --pairs-from ./tee-names.csv --dry-run",
       "candle tee signer new --key tr-2",
+      "candle tee signer remove --key tr-2",
     ],
     env: ENV_LOCAL_SIGNING,
   },

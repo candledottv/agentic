@@ -715,6 +715,130 @@ describe("T12: doctor's key-signer rows", () => {
     expect(await keySignerDoctorRows(ctx, { apiKey: API_KEY, deviceToken: DEVICE_TOKEN })).toEqual([])
     expect(h.calls).toHaveLength(0)
   })
+
+  async function besideSignerDetail(
+    role: "owner" | "bot" | undefined,
+    withWallet: boolean,
+  ): Promise<string | undefined> {
+    const sim = new SignerSim(() => 0)
+    const p = pair()
+    const signer = sim.signer(p.publicKeyDer, "q-mine")
+    sim.addKey({ keyPrefix: PREFIX, apiKey: API_KEY, active: signer })
+    if (withWallet) sim.wallets.push(wallet("owned", { recorded: "q-mine" }))
+    const h = machine(sim, { apiKey: true, deviceToken: true })
+    await holdSigner(h, PREFIX, p, "q-mine")
+    const ctx = { deps: h.deps, json: false, apiUrl: "https://api.test", verifyAccount: false }
+    const rows = await keySignerDoctorRows(ctx, {
+      apiKey: API_KEY,
+      deviceToken: DEVICE_TOKEN,
+      ...(role !== undefined ? { role } : {}),
+    })
+    return rows.find((r) => r.check === "Device token beside signer")?.detail
+  }
+
+  test("an owner machine is told to remove an idle signer, and never to log out", async () => {
+    const idle = await besideSignerDetail("owner", false)
+    expect(idle).toContain("that owns no wallets")
+    expect(idle).toContain(`candle tee signer remove --key ${PREFIX}`)
+    expect(idle).not.toContain("auth logout")
+    const busy = await besideSignerDetail("owner", true)
+    expect(busy).toContain("rather than logging out")
+    expect(busy).toContain(`candle tee signer remove --key ${PREFIX}`)
+    expect(busy).not.toContain("that owns no wallets")
+    expect(busy).not.toContain("auth logout")
+  })
+
+  test("a bot machine names the removal when the signer is idle, and keeps the logout line otherwise", async () => {
+    const idle = await besideSignerDetail("bot", false)
+    expect(idle).toContain("that owns no wallets")
+    expect(idle).toContain("auth logout")
+    expect(await besideSignerDetail("bot", true)).toBe(DEVICE_TOKEN_BESIDE_SIGNER_LINE)
+  })
+
+  test("omitting the role keeps the historical device-token line", async () => {
+    expect(await besideSignerDetail(undefined, false)).toBe(DEVICE_TOKEN_BESIDE_SIGNER_LINE)
+  })
+})
+
+describe("tee signer remove", () => {
+  test("a device token removes an idle signer from the server and this machine", async () => {
+    const sim = new SignerSim(() => 0)
+    const p = pair()
+    const signer = sim.signer(p.publicKeyDer, "q-idle")
+    sim.addKey({ keyPrefix: PREFIX, label: "desk", active: signer })
+    const h = machine(sim, { deviceToken: true })
+    const sha = await holdSigner(h, PREFIX, p, signer.quorum)
+    expect(await run(["tee", "signer", "remove", "--key", PREFIX, "--json"], h.deps)).toBe(0)
+    expect(JSON.parse(h.stdout.text)).toMatchObject({
+      ok: true,
+      command: "tee signer remove",
+      keyPrefix: PREFIX,
+      removed: [{ fingerprint: keySignerFingerprint(sha), spkiSha256: sha, state: "retired" }],
+      kept: [],
+    })
+    expect(sim.keys.get(PREFIX)?.active).toBeNull()
+    expect(await h.store.get(keySignerRef(PREFIX, sha))).toBeNull()
+    expect(await localKeySigners(h.deps)).toEqual([])
+  })
+
+  test("refuses while a wallet is owned by the quorum, and names the move", async () => {
+    const sim = new SignerSim(() => 0)
+    const p = pair()
+    const signer = sim.signer(p.publicKeyDer, "q-held")
+    sim.addKey({ keyPrefix: PREFIX, apiKey: API_KEY, active: signer })
+    sim.wallets.push(wallet("owned", { recorded: signer.quorum }))
+    const h = machine(sim, { deviceToken: true })
+    await holdSigner(h, PREFIX, p, signer.quorum)
+    expect(await run(["tee", "signer", "remove", "--key", PREFIX, "--json"], h.deps)).toBe(1)
+    const body = JSON.parse(h.stdout.text) as { kept: { code: string; suggestion?: string }[] }
+    expect(body.kept[0]?.code).toBe("KEY_SIGNER_OWNS_WALLETS")
+    expect(body.kept[0]?.suggestion).toContain(`candle keys signer move ${PREFIX}`)
+    expect(sim.keys.get(PREFIX)?.active?.spkiSha256).toBe(signer.spkiSha256)
+    expect(await localKeySigners(h.deps)).toHaveLength(1)
+  })
+
+  test("an API key removes only its own signer", async () => {
+    const sim = new SignerSim(() => 0)
+    const p = pair()
+    const signer = sim.signer(p.publicKeyDer, "q-own")
+    sim.addKey({ keyPrefix: PREFIX, label: "desk", apiKey: API_KEY, active: signer })
+    const h = machine(sim, { apiKey: true })
+    await holdSigner(h, PREFIX, p, signer.quorum)
+    expect(await run(["tee", "signer", "remove", "--key", "desk", "--json"], h.deps)).toBe(0)
+    const sent = h.calls.find((c) => c.url.endsWith("/signer/remove"))
+    expect((sent?.init.headers as Record<string, string>)["x-api-key"]).toBe(API_KEY)
+    expect((sent?.init.headers as Record<string, string>).authorization).toBeUndefined()
+    expect(sim.keys.get(PREFIX)?.active).toBeNull()
+  })
+
+  test("a device token may name the key by its label", async () => {
+    const sim = new SignerSim(() => 0)
+    const p = pair()
+    const signer = sim.signer(p.publicKeyDer, "q-label")
+    sim.addKey({ keyPrefix: PREFIX, label: "desk", active: signer })
+    const h = machine(sim, { deviceToken: true })
+    await holdSigner(h, PREFIX, p, signer.quorum)
+    expect(await run(["tee", "signer", "remove", "--key", "desk", "--json"], h.deps)).toBe(0)
+    expect(JSON.parse(h.stdout.text).keyPrefix).toBe(PREFIX)
+    expect(sim.keys.get(PREFIX)?.active).toBeNull()
+  })
+
+  test("no local signer sends nothing", async () => {
+    const sim = new SignerSim(() => 0)
+    sim.addKey({ keyPrefix: PREFIX })
+    const h = machine(sim, { deviceToken: true })
+    expect(await run(["tee", "signer", "remove", "--key", PREFIX, "--json"], h.deps)).toBe(1)
+    expect(JSON.parse(h.stdout.text).code).toBe("KEY_SIGNER_NOT_LOCAL")
+    expect(h.calls.some((c) => c.url.endsWith("/signer/remove"))).toBe(false)
+  })
+
+  test("no credential is refused before any request", async () => {
+    const sim = new SignerSim(() => 0)
+    const h = machine(sim)
+    expect(await run(["tee", "signer", "remove", "--key", PREFIX, "--json"], h.deps)).toBe(1)
+    expect(JSON.parse(h.stdout.text).code).toBe("KEY_SIGNER_AUTH_REQUIRED")
+    expect(h.calls).toHaveLength(0)
+  })
 })
 
 describe("signer replacement notices", () => {

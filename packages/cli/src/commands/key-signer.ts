@@ -3,6 +3,8 @@
  *
  *   - `candle tee signer new --key <prefix|label> [--out <pem>] [--force]`, on the TRADING machine,
  *     with that key's API key: generate the key's signer here, request it, wait for the owner.
+ *   - `candle tee signer remove --key <prefix|label>`, on the machine holding the signer: tell the
+ *     server it is gone and delete it locally, refusing while it still owns a wallet (BE-690).
  *   - `candle keys signer approve <code> --key <prefix|label> [--reject]`, the owner's terminal
  *     form of the approval screen, over the device token.
  *   - `candle keys signer move <prefix|label> [--to-key <live>]`, on the machine holding the
@@ -40,6 +42,7 @@ import {
   readSigner,
   relayOwner,
   requestSigner,
+  retireSigner,
   type SignerAuth,
   type SignerView,
   type SignerWallet,
@@ -71,7 +74,8 @@ import {
   resolveTargetKey,
 } from "./tee-rebind"
 
-const USAGE_TEE_SIGNER = "Usage: candle tee signer new --key <prefix|label> [--out <pem>] [--force] [--json]"
+const USAGE_TEE_SIGNER =
+  "Usage: candle tee signer new --key <prefix|label> [--out <pem>] [--force] [--json] | candle tee signer remove --key <prefix|label> [--json]"
 const USAGE_KEYS_SIGNER =
   "Usage: candle keys signer approve <code> --key <prefix|label> [--reject] | candle keys signer move <prefix|label> [--to-key <prefix|label>] [--json]"
 
@@ -81,10 +85,33 @@ export const SIGNER_POLL_MS = 5_000
 /**
  * D2: a device token next to a key signer can approve its own request, which collapses the
  * owner's approval into the bot machine. Printed by `tee signer new` and `keys signer approve`,
- * and reported by `doctor`.
+ * and reported by `doctor` on a trading machine. An owner machine's doctor row says to remove the
+ * signer instead (BE-690): logging out would take the owner role off the vault machine.
  */
 export const DEVICE_TOKEN_BESIDE_SIGNER_LINE =
   "Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine."
+
+/** Doctor's device-token row. `idle` is null when the signer's wallets could not be read. */
+export function deviceTokenBesideSignerDetail(args: {
+  role: "owner" | "bot"
+  idle: boolean | null
+  prefixes: string[]
+}): string {
+  const remove =
+    args.prefixes.length === 0
+      ? "candle tee signer remove --key <prefix>"
+      : args.prefixes.map((prefix) => `candle tee signer remove --key ${prefix}`).join("; ")
+  if (args.role === "owner") {
+    if (args.idle === true) {
+      return `Warning: this machine holds a device token as well as a key signer that owns no wallets. Remove the signer: ${remove}. Do not log this machine out: that would move the owner role off the machine that holds the vault.`
+    }
+    return `Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. This machine's role is owner, so remove the signer once it owns no wallets (${remove}) rather than logging out. Logging out would move the owner role off this machine.`
+  }
+  if (args.idle === true) {
+    return `Warning: this machine holds a device token as well as a key signer that owns no wallets. Remove it: ${remove}. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine.`
+  }
+  return DEVICE_TOKEN_BESIDE_SIGNER_LINE
+}
 
 const unsupported = {
   code: "KEY_SIGNER_UNSUPPORTED",
@@ -105,6 +132,7 @@ function plural(n: number, one: string, many = `${one}s`): string {
 export async function teeSigner(args: string[], ctx: CommandContext): Promise<number> {
   const [sub, ...rest] = args
   if (sub === "new") return teeSignerNew(rest, ctx)
+  if (sub === "remove") return teeSignerRemove(rest, ctx)
   writeUsageFailure(
     ctx.deps,
     sub === undefined ? USAGE_TEE_SIGNER : `Unknown subcommand: ${sub}. ${USAGE_TEE_SIGNER}`,
@@ -1151,6 +1179,149 @@ function reportMove(
   return exit
 }
 
+// ── candle tee signer remove (BE-690) ─────────────────────────────────────────────────────────
+
+const USAGE_TEE_SIGNER_REMOVE = "Usage: candle tee signer remove --key <prefix|label> [--json]"
+
+/**
+ * Deletes a key signer stored on this machine, after the server has recorded it gone. Refuses,
+ * and deletes nothing, while a live TEE wallet is still owned by that quorum. The server is told
+ * first: a failure leaves the local key where it is, and a retry after `absent` finishes the delete.
+ */
+async function teeSignerRemove(args: string[], ctx: CommandContext): Promise<number> {
+  const { deps, json } = ctx
+  const parsed = parseArgs(args, { valueFlags: ["--key"] })
+  if ("error" in parsed) {
+    writeUsageFailure(deps, `${parsed.error}. ${USAGE_TEE_SIGNER_REMOVE}`, json)
+    return 2
+  }
+  const keyRaw = parsed.values["--key"]
+  if (!keyRaw) {
+    writeUsageFailure(deps, `--key is required. ${USAGE_TEE_SIGNER_REMOVE}`, json)
+    return 2
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}. ${USAGE_TEE_SIGNER_REMOVE}`, json)
+    return 2
+  }
+
+  await printIdentity(ctx)
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile)
+  const apiKey = deviceToken ? undefined : await resolveApiKey(deps, ctx.profile)
+  if (!deviceToken && !apiKey) {
+    writeLocalFailure(
+      deps,
+      {
+        code: "KEY_SIGNER_AUTH_REQUIRED",
+        message: "Removing a signer tells the server it is gone, which needs the device token or this key's API key.",
+        suggestion:
+          "Run candle auth login on the owner machine, or configure the key's API key on the trading machine.",
+      },
+      json,
+    )
+    return 1
+  }
+
+  let keyPrefix: string
+  let auth: SignerAuth
+  if (deviceToken) {
+    const target = await resolveTargetKey(ctx, deviceToken, keyRaw, { codePrefix: "KEY_SIGNER" })
+    if (!target.ok) return target.code
+    keyPrefix = target.keyPrefix
+    auth = { deviceToken }
+  } else {
+    const first = await readSigner(ctx, "self", { apiKey: apiKey as string })
+    if (!first.ok) return writeSignerReadFailure(ctx, first)
+    const view = first.body as SignerView
+    if (keyRaw !== view.keyPrefix && keyRaw !== view.keyLabel) {
+      writeLocalFailure(
+        deps,
+        {
+          code: "KEY_SIGNER_KEY_MISMATCH",
+          message: `This machine's API key is key ${view.keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel)})` : ""}, not ${keyRaw}.`,
+          suggestion: `Pass --key ${view.keyPrefix}, or run this on the owner machine with the device token.`,
+        },
+        json,
+      )
+      return 1
+    }
+    keyPrefix = view.keyPrefix
+    auth = { apiKey: apiKey as string }
+  }
+
+  const entries = await localKeySigners(deps, keyPrefix)
+  if (entries.length === 0) {
+    writeLocalFailure(
+      deps,
+      {
+        code: "KEY_SIGNER_NOT_LOCAL",
+        message: `This machine holds no key signer for key ${keyPrefix}.`,
+        suggestion: "Nothing was sent. A signer lives on the machine that ran candle tee signer new.",
+      },
+      json,
+    )
+    return 1
+  }
+
+  const removed: { fingerprint: string; spkiSha256: string; state: string }[] = []
+  const kept: { fingerprint: string; code: string; message: string; suggestion?: string }[] = []
+  for (const entry of entries) {
+    const result = await retireSigner(ctx, auth, keyPrefix, {
+      spkiSha256: entry.spkiSha256,
+      ...(entry.signerQuorumId ? { signerQuorumId: entry.signerQuorumId } : {}),
+    })
+    if (!result.ok) {
+      if (result.status === 404 && result.code === undefined) {
+        if (removed.length === 0 && kept.length === 0) {
+          writeLocalFailure(deps, unsupported, json)
+          return 1
+        }
+        kept.push({ fingerprint: entry.fingerprint, code: unsupported.code, message: unsupported.message })
+        continue
+      }
+      kept.push({
+        fingerprint: entry.fingerprint,
+        code: result.code ?? "REQUEST_FAILED",
+        message: result.message,
+        ...(result.code === "KEY_SIGNER_OWNS_WALLETS"
+          ? { suggestion: `Move them first: candle keys signer move ${keyPrefix}` }
+          : {}),
+      })
+      continue
+    }
+    const state = (result.body as { state?: string } | null)?.state ?? "retired"
+    try {
+      await deleteKeySignerEntry(deps, entry)
+    } catch (error) {
+      kept.push({
+        fingerprint: entry.fingerprint,
+        code: "KEY_SIGNER_LOCAL_DELETE_FAILED",
+        message: `The server no longer has this signer, but this machine could not delete it: ${error instanceof Error ? error.message : String(error)}`,
+        suggestion: `Run candle tee signer remove --key ${keyPrefix} again.`,
+      })
+      continue
+    }
+    removed.push({ fingerprint: entry.fingerprint, spkiSha256: entry.spkiSha256, state })
+  }
+
+  const exit = kept.length > 0 ? 1 : 0
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ok: exit === 0, command: "tee signer remove", keyPrefix, removed, kept })}\n`)
+    return exit
+  }
+  const lines: string[] = []
+  for (const row of removed) {
+    const where = row.state === "absent" ? "already gone on the server" : "gone on the server"
+    lines.push(`Removed signer ${row.fingerprint} for key ${keyPrefix} (${where}).`)
+  }
+  for (const row of kept) {
+    lines.push(`Kept signer ${row.fingerprint}: ${row.code} ${row.message}`)
+    if (row.suggestion) lines.push(row.suggestion)
+  }
+  deps.stdout.write(`${lines.join("\n")}\n`)
+  return exit
+}
+
 // ── doctor (5.6) ──────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -1158,11 +1329,13 @@ function reportMove(
  * indexes and every `wallet_signer_*` the current key's wallets need, each opened and checked
  * (FAIL when it cannot be); the key's active signer when its full hash matches no local slot
  * (WARN: its wallets trade from another machine); and a device token beside a key signer (WARN,
- * D2). The network read is best-effort: a failed read adds no row.
+ * D2). On an owner machine the warning says to remove the signer; when every local signer owns
+ * no wallets, it says so and names `tee signer remove` (BE-690). The network read is best-effort:
+ * a failed read adds no row and does not claim the signer is idle.
  */
 export async function keySignerDoctorReport(
   ctx: CommandContext,
-  creds: { apiKey?: string; deviceToken?: string },
+  creds: { apiKey?: string; deviceToken?: string; role?: "owner" | "bot" },
 ): Promise<{ rows: CheckRow[]; hasSigners: boolean; reachableWalletIds: string[]; locked: boolean }> {
   const { deps } = ctx
   const rows: CheckRow[] = []
@@ -1245,7 +1418,16 @@ export async function keySignerDoctorReport(
     })
   }
   if (creds.deviceToken !== undefined && entries.length > 0) {
-    rows.push({ check: "Device token beside signer", state: "WARN", detail: DEVICE_TOKEN_BESIDE_SIGNER_LINE })
+    const idle = creds.role === undefined ? null : await localSignersIdle(ctx, entries, view, creds)
+    const prefixes = [...new Set(entries.map((entry) => entry.keyPrefix))]
+    rows.push({
+      check: "Device token beside signer",
+      state: "WARN",
+      detail:
+        creds.role === undefined
+          ? DEVICE_TOKEN_BESIDE_SIGNER_LINE
+          : deviceTokenBesideSignerDetail({ role: creds.role, idle, prefixes }),
+    })
   }
   const reachableWalletIds =
     view === null
@@ -1256,9 +1438,39 @@ export async function keySignerDoctorReport(
   return { rows, hasSigners: true, reachableWalletIds, locked }
 }
 
+/** True when every local quorum was read and owns no wallet on its key. Null when a read failed. */
+async function localSignersIdle(
+  ctx: CommandContext,
+  entries: KeySignerEntry[],
+  selfView: SignerView | null,
+  creds: { deviceToken?: string },
+): Promise<boolean | null> {
+  const views = new Map<string, SignerView | null>()
+  for (const prefix of new Set(entries.map((entry) => entry.keyPrefix))) {
+    if (selfView?.keyPrefix === prefix) {
+      views.set(prefix, selfView)
+      continue
+    }
+    if (creds.deviceToken === undefined) {
+      views.set(prefix, null)
+      continue
+    }
+    const read = await readSigner(ctx, prefix, { deviceToken: creds.deviceToken }).catch(() => null)
+    views.set(prefix, read?.ok ? (read.body as SignerView) : null)
+  }
+  let idle = true
+  for (const entry of entries) {
+    if (!entry.signerQuorumId) continue
+    const loaded = views.get(entry.keyPrefix)
+    if (!loaded) return null
+    if (allSignerWallets(loaded).some((wallet) => wallet.signerQuorumId === entry.signerQuorumId)) idle = false
+  }
+  return idle
+}
+
 export async function keySignerDoctorRows(
   ctx: CommandContext,
-  creds: { apiKey?: string; deviceToken?: string },
+  creds: { apiKey?: string; deviceToken?: string; role?: "owner" | "bot" },
 ): Promise<CheckRow[]> {
   return (await keySignerDoctorReport(ctx, creds)).rows
 }

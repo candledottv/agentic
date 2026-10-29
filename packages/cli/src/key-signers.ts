@@ -311,6 +311,23 @@ export async function approveSigner(
   })
 }
 
+/** `POST /keys/:prefix/signer/remove` (BE-690). The server records this public key as gone. */
+export async function retireSigner(
+  ctx: Api,
+  auth: SignerAuth,
+  keyPrefix: string,
+  body: { spkiSha256: string; signerQuorumId?: string },
+): Promise<ApiResult> {
+  return apiRequest(`/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/signer/remove`, {
+    method: "POST",
+    body,
+    ...authOptions(auth),
+    apiUrl: ctx.apiUrl,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env,
+  })
+}
+
 export async function relayOwner(
   ctx: Api,
   walletId: string,

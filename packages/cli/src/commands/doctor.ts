@@ -410,7 +410,11 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
       rows.push({ check: API_KEY_CHECK, state: "FAIL", detail: renderError(result, { apiUrl, authType: "key" }) })
     }
   }
-  const signerReport = await keySignerDoctorReport(ctx, { apiKey, deviceToken })
+  const signerReport = await keySignerDoctorReport(ctx, {
+    apiKey,
+    deviceToken,
+    role: role === "bot" ? "bot" : "owner",
+  })
   const wallets = trading?.page ?? []
   const reachable = wallets.filter((w) => w.active && signerReport.reachableWalletIds.includes(w.id)).length
   const activeTee = wallets.some((w) => w.active)

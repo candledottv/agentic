@@ -14364,6 +14364,16 @@ async function approveSigner(ctx, deviceToken, keyPrefix, body) {
     env: ctx.deps.env
   });
 }
+async function retireSigner(ctx, auth, keyPrefix, body) {
+  return apiRequest(`/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/signer/remove`, {
+    method: "POST",
+    body,
+    ...authOptions(auth),
+    apiUrl: ctx.apiUrl,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+}
 async function relayOwner(ctx, walletId, auth, body) {
   return apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(walletId)}/owner`, {
     method: "POST",
@@ -76589,6 +76599,10 @@ var HELP = {
       {
         invocation: "signer new --key <prefix|label> [--out <pem>] [--force]",
         description: "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an older signer on THIS machine still owns wallets; it moves, revokes and deletes nothing"
+      },
+      {
+        invocation: "  signer remove --key <prefix|label>",
+        description: "Remove this machine's key signer once it owns no wallets, and tell the server it is gone. Refuses while a wallet is still owned by it. The device token, or the key's own API key"
       }
     ],
     flags: [
@@ -76611,7 +76625,8 @@ var HELP = {
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
       "candle tee rename tr-01 desk-01",
       "candle tee rename --pairs-from ./tee-names.csv --dry-run",
-      "candle tee signer new --key tr-2"
+      "candle tee signer new --key tr-2",
+      "candle tee signer remove --key tr-2"
     ],
     env: ENV_LOCAL_SIGNING
   },
@@ -83869,10 +83884,23 @@ function rebindJson(input, chain2) {
 init_key_output();
 init_keys();
 init_tee_rebind();
-var USAGE_TEE_SIGNER = "Usage: candle tee signer new --key <prefix|label> [--out <pem>] [--force] [--json]";
+var USAGE_TEE_SIGNER = "Usage: candle tee signer new --key <prefix|label> [--out <pem>] [--force] [--json] | candle tee signer remove --key <prefix|label> [--json]";
 var USAGE_KEYS_SIGNER = "Usage: candle keys signer approve <code> --key <prefix|label> [--reject] | candle keys signer move <prefix|label> [--to-key <prefix|label>] [--json]";
 var SIGNER_POLL_MS = 5000;
 var DEVICE_TOKEN_BESIDE_SIGNER_LINE = "Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine.";
+function deviceTokenBesideSignerDetail(args) {
+  const remove = args.prefixes.length === 0 ? "candle tee signer remove --key <prefix>" : args.prefixes.map((prefix) => `candle tee signer remove --key ${prefix}`).join("; ");
+  if (args.role === "owner") {
+    if (args.idle === true) {
+      return `Warning: this machine holds a device token as well as a key signer that owns no wallets. Remove the signer: ${remove}. Do not log this machine out: that would move the owner role off the machine that holds the vault.`;
+    }
+    return `Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. This machine's role is owner, so remove the signer once it owns no wallets (${remove}) rather than logging out. Logging out would move the owner role off this machine.`;
+  }
+  if (args.idle === true) {
+    return `Warning: this machine holds a device token as well as a key signer that owns no wallets. Remove it: ${remove}. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine.`;
+  }
+  return DEVICE_TOKEN_BESIDE_SIGNER_LINE;
+}
 var unsupported = {
   code: "KEY_SIGNER_UNSUPPORTED",
   message: "This Candle API does not serve key signers yet; nothing changed.",
@@ -83888,6 +83916,8 @@ async function teeSigner(args, ctx) {
   const [sub, ...rest] = args;
   if (sub === "new")
     return teeSignerNew(rest, ctx);
+  if (sub === "remove")
+    return teeSignerRemove(rest, ctx);
   writeScreenUsageFailure(ctx.deps, sub === undefined ? USAGE_TEE_SIGNER : `Unknown subcommand: ${sub}. ${USAGE_TEE_SIGNER}`, ctx.json);
   return 2;
 }
@@ -84651,6 +84681,126 @@ function reportMove(ctx, report) {
     notice(deps, "stdout", failed.length > 0 ? "warning" : "note", line);
   return exit;
 }
+var USAGE_TEE_SIGNER_REMOVE = "Usage: candle tee signer remove --key <prefix|label> [--json]";
+async function teeSignerRemove(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--key"] });
+  if ("error" in parsed) {
+    writeScreenUsageFailure(deps, `${parsed.error}. ${USAGE_TEE_SIGNER_REMOVE}`, json);
+    return 2;
+  }
+  const keyRaw = parsed.values["--key"];
+  if (!keyRaw) {
+    writeScreenUsageFailure(deps, `--key is required. ${USAGE_TEE_SIGNER_REMOVE}`, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}. ${USAGE_TEE_SIGNER_REMOVE}`, json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  const apiKey = deviceToken ? undefined : await resolveApiKey(deps, ctx.profile);
+  if (!deviceToken && !apiKey) {
+    writeScreenLocalFailure(deps, {
+      code: "KEY_SIGNER_AUTH_REQUIRED",
+      message: "Removing a signer tells the server it is gone, which needs the device token or this key's API key.",
+      suggestion: "Run candle auth login on the owner machine, or configure the key's API key on the trading machine."
+    }, json);
+    return 1;
+  }
+  let keyPrefix;
+  let auth;
+  if (deviceToken) {
+    const target = await resolveTargetKey(ctx, deviceToken, keyRaw, { codePrefix: "KEY_SIGNER" });
+    if (!target.ok)
+      return target.code;
+    keyPrefix = target.keyPrefix;
+    auth = { deviceToken };
+  } else {
+    const first = await readSigner(ctx, "self", { apiKey });
+    if (!first.ok)
+      return writeSignerReadFailure(ctx, first);
+    const view = first.body;
+    if (keyRaw !== view.keyPrefix && keyRaw !== view.keyLabel) {
+      writeScreenLocalFailure(deps, {
+        code: "KEY_SIGNER_KEY_MISMATCH",
+        message: `This machine's API key is key ${view.keyPrefix}${view.keyLabel ? ` (${labelCell(view.keyLabel)})` : ""}, not ${keyRaw}.`,
+        suggestion: `Pass --key ${view.keyPrefix}, or run this on the owner machine with the device token.`
+      }, json);
+      return 1;
+    }
+    keyPrefix = view.keyPrefix;
+    auth = { apiKey };
+  }
+  const entries = await localKeySigners(deps, keyPrefix);
+  if (entries.length === 0) {
+    writeScreenLocalFailure(deps, {
+      code: "KEY_SIGNER_NOT_LOCAL",
+      message: `This machine holds no key signer for key ${keyPrefix}.`,
+      suggestion: "Nothing was sent. A signer lives on the machine that ran candle tee signer new."
+    }, json);
+    return 1;
+  }
+  const removed = [];
+  const kept = [];
+  for (const entry of entries) {
+    const result = await retireSigner(ctx, auth, keyPrefix, {
+      spkiSha256: entry.spkiSha256,
+      ...entry.signerQuorumId ? { signerQuorumId: entry.signerQuorumId } : {}
+    });
+    if (!result.ok) {
+      if (result.status === 404 && result.code === undefined) {
+        if (removed.length === 0 && kept.length === 0) {
+          writeScreenLocalFailure(deps, unsupported, json);
+          return 1;
+        }
+        kept.push({ fingerprint: entry.fingerprint, code: unsupported.code, message: unsupported.message });
+        continue;
+      }
+      kept.push({
+        fingerprint: entry.fingerprint,
+        code: result.code ?? "REQUEST_FAILED",
+        message: result.message,
+        ...result.code === "KEY_SIGNER_OWNS_WALLETS" ? { suggestion: `Move them first: candle keys signer move ${keyPrefix}` } : {}
+      });
+      continue;
+    }
+    const state = result.body?.state ?? "retired";
+    try {
+      await deleteKeySignerEntry(deps, entry);
+    } catch (error) {
+      kept.push({
+        fingerprint: entry.fingerprint,
+        code: "KEY_SIGNER_LOCAL_DELETE_FAILED",
+        message: `The server no longer has this signer, but this machine could not delete it: ${error instanceof Error ? error.message : String(error)}`,
+        suggestion: `Run candle tee signer remove --key ${keyPrefix} again.`
+      });
+      continue;
+    }
+    removed.push({ fingerprint: entry.fingerprint, spkiSha256: entry.spkiSha256, state });
+  }
+  const exit = kept.length > 0 ? 1 : 0;
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ok: exit === 0, command: "tee signer remove", keyPrefix, removed, kept })}
+`);
+    return exit;
+  }
+  const lines = [];
+  for (const row of removed) {
+    const where = row.state === "absent" ? "already gone on the server" : "gone on the server";
+    lines.push(`Removed signer ${row.fingerprint} for key ${keyPrefix} (${where}).`);
+  }
+  for (const row of kept) {
+    lines.push(`Kept signer ${row.fingerprint}: ${row.code} ${row.message}`);
+    if (row.suggestion)
+      lines.push(row.suggestion);
+  }
+  deps.stdout.write(`${lines.join(`
+`)}
+`);
+  return exit;
+}
 async function keySignerDoctorReport(ctx, creds) {
   const { deps } = ctx;
   const rows = [];
@@ -84725,10 +84875,42 @@ async function keySignerDoctorReport(ctx, creds) {
     });
   }
   if (creds.deviceToken !== undefined && entries.length > 0) {
-    rows.push({ check: "Device token beside signer", state: "WARN", detail: DEVICE_TOKEN_BESIDE_SIGNER_LINE });
+    const idle = creds.role === undefined ? null : await localSignersIdle(ctx, entries, view, creds);
+    const prefixes = [...new Set(entries.map((entry) => entry.keyPrefix))];
+    rows.push({
+      check: "Device token beside signer",
+      state: "WARN",
+      detail: creds.role === undefined ? DEVICE_TOKEN_BESIDE_SIGNER_LINE : deviceTokenBesideSignerDetail({ role: creds.role, idle, prefixes })
+    });
   }
   const reachableWalletIds = view === null ? [] : allSignerWallets(view).filter((wallet3) => wallet3.signerQuorumId && readableQuorums.has(wallet3.signerQuorumId)).map((wallet3) => wallet3.id);
   return { rows, hasSigners: true, reachableWalletIds, locked };
+}
+async function localSignersIdle(ctx, entries, selfView, creds) {
+  const views = new Map;
+  for (const prefix of new Set(entries.map((entry) => entry.keyPrefix))) {
+    if (selfView?.keyPrefix === prefix) {
+      views.set(prefix, selfView);
+      continue;
+    }
+    if (creds.deviceToken === undefined) {
+      views.set(prefix, null);
+      continue;
+    }
+    const read = await readSigner(ctx, prefix, { deviceToken: creds.deviceToken }).catch(() => null);
+    views.set(prefix, read?.ok ? read.body : null);
+  }
+  let idle = true;
+  for (const entry of entries) {
+    if (!entry.signerQuorumId)
+      continue;
+    const loaded = views.get(entry.keyPrefix);
+    if (!loaded)
+      return null;
+    if (allSignerWallets(loaded).some((wallet3) => wallet3.signerQuorumId === entry.signerQuorumId))
+      idle = false;
+  }
+  return idle;
 }
 
 // src/commands/doctor.ts
@@ -85018,7 +85200,11 @@ async function doctor(args, ctx) {
       rows.push({ check: API_KEY_CHECK, state: "FAIL", detail: renderError(result, { apiUrl, authType: "key" }) });
     }
   }
-  const signerReport = await keySignerDoctorReport(ctx, { apiKey, deviceToken });
+  const signerReport = await keySignerDoctorReport(ctx, {
+    apiKey,
+    deviceToken,
+    role: role === "bot" ? "bot" : "owner"
+  });
   const wallets2 = trading?.page ?? [];
   const reachable = wallets2.filter((w) => w.active && signerReport.reachableWalletIds.includes(w.id)).length;
   const activeTee = wallets2.some((w) => w.active);

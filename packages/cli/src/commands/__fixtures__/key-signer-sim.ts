@@ -220,6 +220,51 @@ export class SignerSim {
         this.approvePending(key.keyPrefix)
         return jsonResponse(200, { ...this.view(key), decision: "approve", approvedVia: "device" })
       }
+      routes[`/api/v1/agent/keys/${key.keyPrefix}/signer/remove`] = (req) => {
+        const apiKey = header(req, "x-api-key")
+        const device = header(req, "authorization")?.startsWith("Bearer cndl_dvc_")
+        if (apiKey !== undefined) {
+          if (this.keyForApiKey(apiKey)?.keyPrefix !== key.keyPrefix) return refusal(403, "VALIDATION_FAILED")
+        } else if (!device) return refusal(401, "UNAUTHORIZED")
+        const body = parse(req)
+        const spki = body.spkiSha256
+        if (typeof spki !== "string" || !/^[0-9a-f]{64}$/.test(spki)) return refusal(400, "VALIDATION_FAILED")
+        const quorums = new Set<string>()
+        if (key.active?.spkiSha256 === spki) quorums.add(key.active.quorum)
+        if (typeof body.signerQuorumId === "string" && body.signerQuorumId.length > 0) quorums.add(body.signerQuorumId)
+        const owned = this.wallets.filter((w) => quorums.has(w.recorded)).length
+        if (owned > 0) return refusal(409, "KEY_SIGNER_OWNS_WALLETS", { keySigner: { walletCount: owned } })
+        if (key.active?.spkiSha256 === spki && key.active) {
+          const fingerprint = key.active.fingerprint
+          key.previous.push(key.active.quorum)
+          key.active = null
+          return jsonResponse(200, {
+            success: true,
+            keyPrefix: key.keyPrefix,
+            spkiSha256: spki,
+            state: "retired",
+            fingerprint,
+          })
+        }
+        if (key.pending?.spkiSha256 === spki && key.pending) {
+          const fingerprint = key.pending.fingerprint
+          key.pending = null
+          return jsonResponse(200, {
+            success: true,
+            keyPrefix: key.keyPrefix,
+            spkiSha256: spki,
+            state: "retired",
+            fingerprint,
+          })
+        }
+        return jsonResponse(200, {
+          success: true,
+          keyPrefix: key.keyPrefix,
+          spkiSha256: spki,
+          state: "absent",
+          fingerprint: null,
+        })
+      }
     }
     for (const wallet of this.wallets) {
       routes[`/api/v1/agent/wallets/${wallet.id}/owner`] = (req) => {
