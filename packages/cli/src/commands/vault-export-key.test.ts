@@ -6,17 +6,19 @@
  * the file appears, and nothing secret in stdout or `--json`.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { chmod, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { chmod, lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { Deps } from "../deps"
 import { run } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createTestDeps } from "../test-support"
 import { closeVault, unlockWithPassphrase } from "../vault/store"
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
 import { parseSolanaSecret } from "../wallet-import"
 import { nativeKeyFileContents } from "./vault-export-key"
 import { groupAddress } from "./vault-support"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(30_000)
 useCheapKdf()
@@ -28,7 +30,7 @@ const unreachableFetch = (async () => {
 async function harness(
   opts: { secrets?: string[]; lines?: string[]; env?: Record<string, string>; json?: boolean } = {},
 ) {
-  const dir = await mkdtemp(join(tmpdir(), "candle-vault-export-"))
+  const dir = tempDir("candle-vault-export-")
   const stdout = createCapture()
   const stderr = createCapture()
   const secrets = [...(opts.secrets ?? [])]

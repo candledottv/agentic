@@ -6,20 +6,22 @@
  */
 import { describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { readFile, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { p256 } from "@noble/curves/p256"
 import { base64, hex } from "@scure/base"
+import { tempDirs } from "../temp-dirs.test-support"
 import { eciesEncrypt } from "../vault/ecies"
 import { ENCLAVE_PROTOCOL, type EnclaveRequest, handleEnclaveLine, parseEnclaveRequest } from "./protocol"
 import { type EnclaveScript, scriptedEnclaveBackend } from "./test-backend"
+
+const tempDir = tempDirs()
 
 const DIGEST = base64.encode(new Uint8Array(32).fill(1))
 const common = { vaultId: "vault", envelopeId: "env1", digest: DIGEST }
 
 async function script(overrides: Partial<EnclaveScript> = {}): Promise<EnclaveScript> {
-  const dir = await mkdtemp(join(tmpdir(), "candle-enclave-proto-"))
+  const dir = tempDir("candle-enclave-proto-")
   return {
     version: "0.12.0",
     bundleId: "tv.candle.cli.enclave",

@@ -13,13 +13,15 @@
  * source, in both modes.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { readdir, readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { run } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createTestDeps } from "../test-support"
 import { VAULT_ERROR_CODES } from "../vault/errors"
 import { INSTALL_HELPER_SENTENCE } from "../vault/platform"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(30_000)
 
@@ -113,7 +115,7 @@ async function refuse(
   argv: string[],
   opts: { env?: Record<string, string>; json?: boolean } = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const dir = await mkdtemp(join(tmpdir(), "candle-refusal-"))
+  const dir = tempDir("candle-refusal-")
   const stdout = createCapture()
   const stderr = createCapture()
   const deps = createTestDeps({
@@ -134,7 +136,7 @@ describe("T9: VAULT_MISSING says where it looked and why", () => {
     // `homedir` became a dep. This case then passed on CI, where nothing has run `vault init`, and
     // failed on every machine that had. The temp home below is the seam: empty, so the branch
     // refuses with VAULT_MISSING whatever is in the operator's real ~/.config/candle.
-    const home = await mkdtemp(join(tmpdir(), "candle-default-"))
+    const home = tempDir("candle-default-")
     const stdout = createCapture()
     const stderr = createCapture()
     const deps = createTestDeps({
@@ -158,7 +160,7 @@ describe("T9: VAULT_MISSING says where it looked and why", () => {
   })
 
   test("--keystore: the parenthetical names the flag, and the first branch is ls", async () => {
-    const path = join(await mkdtemp(join(tmpdir(), "candle-flag-")), "elsewhere.enc")
+    const path = join(tempDir("candle-flag-"), "elsewhere.enc")
     const out = await refuse(["vault", "status", "--keystore", path])
     expect(out.code).toBe(1)
     expect(out.stderr).toContain(`No vault at ${path} (from --keystore).`)
@@ -167,20 +169,20 @@ describe("T9: VAULT_MISSING says where it looked and why", () => {
   })
 
   test("-k is the same flag, and says so the same way", async () => {
-    const path = join(await mkdtemp(join(tmpdir(), "candle-shortflag-")), "elsewhere.enc")
+    const path = join(tempDir("candle-shortflag-"), "elsewhere.enc")
     const out = await refuse(["vault", "status", "-k", path])
     expect(out.stderr).toContain(`No vault at ${path} (from --keystore).`)
   })
 
   test("CANDLE_CONFIG_DIR: the parenthetical names the variable and its value", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-env-"))
+    const dir = tempDir("candle-env-")
     const out = await refuse(["vault", "status"], { env: { CANDLE_CONFIG_DIR: dir } })
     expect(out.code).toBe(1)
     expect(out.stderr).toContain(`No vault at ${join(dir, "vault.enc")} (from CANDLE_CONFIG_DIR=${dir}).`)
   })
 
   test("--json carries details.path and details.pathSource, per source", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-json-env-"))
+    const dir = tempDir("candle-json-env-")
     const fromEnv = await refuse(["vault", "status"], { env: { CANDLE_CONFIG_DIR: dir }, json: true })
     const envBody = JSON.parse(fromEnv.stdout)
     expect(envBody.ok).toBe(false)
@@ -190,13 +192,13 @@ describe("T9: VAULT_MISSING says where it looked and why", () => {
     // suggestion is read, not laid out.
     expect(envBody.suggestion).not.toContain("\n")
 
-    const path = join(await mkdtemp(join(tmpdir(), "candle-json-flag-")), "v.enc")
+    const path = join(tempDir("candle-json-flag-"), "v.enc")
     const fromFlag = await refuse(["vault", "status", "-k", path], { json: true })
     expect(JSON.parse(fromFlag.stdout).details).toEqual({ path, pathSource: "flag" })
   })
 
   test("vault factor list refuses with the same message, from the same helper", async () => {
-    const path = join(await mkdtemp(join(tmpdir(), "candle-factorlist-")), "v.enc")
+    const path = join(tempDir("candle-factorlist-"), "v.enc")
     const out = await refuse(["vault", "factor", "list", "-k", path], { json: true })
     const body = JSON.parse(out.stdout)
     expect(body.code).toBe("VAULT_MISSING")
@@ -206,7 +208,7 @@ describe("T9: VAULT_MISSING says where it looked and why", () => {
   test("a requireVaultRaw caller (vault phrase show) refuses the same way", async () => {
     // `phrase show` has no `--json` form at all (the ceremony is interactive), so the human
     // rendering is the whole of its output -- which is the one this helper's callers see anyway.
-    const path = join(await mkdtemp(join(tmpdir(), "candle-phrase-")), "v.enc")
+    const path = join(tempDir("candle-phrase-"), "v.enc")
     const out = await refuse(["vault", "phrase", "show", "-k", path])
     expect(out.code).toBe(1)
     expect(out.stderr).toContain(`No vault at ${path} (from --keystore).`)
@@ -216,7 +218,7 @@ describe("T9: VAULT_MISSING says where it looked and why", () => {
 
 describe("T9: VAULT_EXISTS is the other half of the same sentence", () => {
   test("init on an occupied path names where it looked, and keeps its own suggestion", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-exists-"))
+    const dir = tempDir("candle-exists-")
     const path = join(dir, "vault.enc")
     await writeFile(path, "not really a vault", "utf8")
     const out = await refuse(["vault", "init"], { env: { CANDLE_CONFIG_DIR: dir } })
@@ -226,7 +228,7 @@ describe("T9: VAULT_EXISTS is the other half of the same sentence", () => {
   })
 
   test("restore on an occupied path does too, with restore's own suggestion", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-exists-restore-"))
+    const dir = tempDir("candle-exists-restore-")
     const path = join(dir, "here.enc")
     await writeFile(path, "not really a vault", "utf8")
     const out = await refuse(["vault", "restore", "--phrase", "-k", path])
@@ -236,7 +238,7 @@ describe("T9: VAULT_EXISTS is the other half of the same sentence", () => {
   })
 
   test("--json carries the same details", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-exists-json-"))
+    const dir = tempDir("candle-exists-json-")
     const path = join(dir, "vault.enc")
     await writeFile(path, "not really a vault", "utf8")
     const out = await refuse(["vault", "init", "--own-passphrase"], { env: { CANDLE_CONFIG_DIR: dir }, json: true })
@@ -255,7 +257,7 @@ describe("T9: VAULT_EXISTS is the other half of the same sentence", () => {
  */
 describe("BE-275 D8: the enrolment refusal keeps every sentence and gains one", () => {
   async function refuseEnrolment(argv: string[], execPath: string, json = false) {
-    const dir = await mkdtemp(join(tmpdir(), "candle-enrol-refusal-"))
+    const dir = tempDir("candle-enrol-refusal-")
     const stdout = createCapture()
     const stderr = createCapture()
     const deps = createTestDeps({

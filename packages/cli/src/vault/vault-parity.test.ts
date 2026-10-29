@@ -17,16 +17,18 @@
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { copyFileSync, existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { copyFileSync, existsSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { humanText } from "../human-output.test-support"
+import { tempDirs } from "../temp-dirs.test-support"
 import { addressFromSecret64 } from "./ed25519"
 import { deriveSolanaKey, phraseFromEntropy, solanaVaultPath } from "./hd"
 import { wipe } from "./hygiene"
 import { closeVault, decryptKey, decryptRoot, unlockWithPassphrase } from "./store"
 import { FIXTURE_ENTROPY, FIXTURE_PASSPHRASE, FIXTURE_PHRASE, generatedPassphraseFrom } from "./test-vault"
 import { verifyVaultIntegrity } from "./verify"
+
+const tempDir = tempDirs()
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -111,7 +113,7 @@ describe("T49: the same fixture, through the COMPILED binary, on a real terminal
    * opens and every unlock writes the sidecar beside it, and neither may touch the committed
    * bytes. The copy IS the committed bytes, which is what makes the open below a parity check.
    */
-  const workDir = mkdtempSync(join(tmpdir(), "candle-vault-parity-"))
+  const workDir = tempDir("candle-vault-parity-")
 
   /**
    * The compiled binary goes in that same private dir, NOT in `dist-bin`. The release workflow

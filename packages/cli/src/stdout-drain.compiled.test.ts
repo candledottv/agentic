@@ -16,10 +16,12 @@
  */
 
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { tempDirs } from "./temp-dirs.test-support"
 import { fakeWalletsAddress, fakeWalletsApi, pipeEnv, runPipeline, shellQuote } from "./test-support"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(120_000)
 
@@ -64,15 +66,15 @@ function candle(args: string): string {
 const SLOW_READER = "| (sleep 0.5; cat)"
 
 async function fileDocument(): Promise<Buffer> {
-  const out = join(mkdtempSync(join(tmpdir(), "candle-drain-")), "wallets.json")
-  const res = await runPipeline(`${candle("wallets --json")} > ${shellQuote(out)}`, pipeEnv())
+  const out = join(tempDir("candle-drain-"), "wallets.json")
+  const res = await runPipeline(`${candle("wallets --json")} > ${shellQuote(out)}`, pipeEnv(tempDir))
   expect(res.err).toBe("")
   expect(res.status).toBe(0)
   return readFileSync(out)
 }
 
 test("T1: wallets --json through a pipe to a slow reader arrives whole, and equals the file redirect", async () => {
-  const res = await runPipeline(`${candle("wallets --json")} ${SLOW_READER}`, pipeEnv())
+  const res = await runPipeline(`${candle("wallets --json")} ${SLOW_READER}`, pipeEnv(tempDir))
   expect(res.err).toBe("")
   expect(res.status).toBe(0)
   expect(res.out.length).toBeGreaterThan(4 * PIPE_BUFFER)
@@ -87,7 +89,10 @@ test("T1: wallets --json through a pipe to a slow reader arrives whole, and equa
 test("T2: a reader that closes early (| head) ends the output quietly with the command's own status", async () => {
   // `2>&1` so an EPIPE stack trace, if one were printed, would land in what head reads or be the
   // pipeline's stderr; the CLI's own status comes from PIPESTATUS, not from head.
-  const res = await runPipeline(`${candle("wallets --json")} 2>&1 | head -c 10; exit "\${PIPESTATUS[0]}"`, pipeEnv())
+  const res = await runPipeline(
+    `${candle("wallets --json")} 2>&1 | head -c 10; exit "\${PIPESTATUS[0]}"`,
+    pipeEnv(tempDir),
+  )
   expect(res.err).toBe("")
   expect(res.status).toBe(0)
   expect(res.out.length).toBe(10)
@@ -100,7 +105,7 @@ test("T3: the control, a file redirect, is complete", async () => {
 })
 
 test("T4: a failure's exit code reaches the pipe, and its envelope drains the same way", async () => {
-  const res = await runPipeline(`${candle("wallets --json")} ${SLOW_READER}`, pipeEnv("wrong"))
+  const res = await runPipeline(`${candle("wallets --json")} ${SLOW_READER}`, pipeEnv(tempDir, "wrong"))
   expect(res.status).toBe(1)
   const text = res.out.toString("utf8")
   expect(text.endsWith("\n")).toBe(true)
@@ -111,7 +116,7 @@ test("T4: a failure's exit code reaches the pipe, and its envelope drains the sa
 })
 
 test("T7: the human table has the same bound and arrives whole through a pipe", async () => {
-  const res = await runPipeline(`${candle("wallets")} ${SLOW_READER}`, pipeEnv())
+  const res = await runPipeline(`${candle("wallets")} ${SLOW_READER}`, pipeEnv(tempDir))
   expect(res.err).toBe("")
   expect(res.status).toBe(0)
   expect(res.out.length).toBeGreaterThan(PIPE_BUFFER)

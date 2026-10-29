@@ -7,8 +7,6 @@
  * `tee-wallet`. `verify` then checks scalar bytes and secret→address on the restored vault.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdtemp } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { mnemonicToAccount } from "viem/accounts"
 import type { Deps } from "../deps"
@@ -16,6 +14,7 @@ import { FIXTURE_EVM_0, FIXTURE_EVM_1 } from "../evm-lite.test"
 import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { SECRET_REFS } from "../secret-store"
+import { tempDirs } from "../temp-dirs.test-support"
 import {
   createCapture,
   createFakeStore,
@@ -28,6 +27,8 @@ import { closeVault, decryptKey } from "../vault/store"
 import { FIXTURE_PHRASE, generatedPassphraseFrom, reopen, useCheapKdf } from "../vault/test-vault"
 import { verifyVaultIntegrity } from "../vault/verify"
 
+const tempDir = tempDirs()
+
 setDefaultTimeout(60_000)
 useCheapKdf()
 
@@ -39,7 +40,7 @@ function row(address: string, extra: Record<string, unknown> = {}) {
 }
 
 async function harness(pages?: RouteHandler[]) {
-  const dir = await mkdtemp(join(tmpdir(), "candle-vault-restore-evm-"))
+  const dir = tempDir("candle-vault-restore-evm-")
   const stdout = createCapture()
   const stderr = createCapture()
   const routed = createRoutedFetch({

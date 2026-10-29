@@ -8,11 +8,13 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, symlinkSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync, symlinkSync } from "node:fs"
 import { join, resolve } from "node:path"
 import pkg from "../package.json"
+import { tempDirs } from "./temp-dirs.test-support"
 import { fakeWalletsApi, pipeEnv, runPipeline, shellQuote } from "./test-support"
+
+const tempDir = tempDirs()
 
 const pkgDir = resolve(import.meta.dir, "..")
 const bundle = join(pkgDir, "dist", "index.js")
@@ -34,7 +36,7 @@ describe("the built bin entry", () => {
   })
 
   test("runs when invoked through a symlink, the way bunx and npx execute a bin", () => {
-    const dir = mkdtempSync(join(tmpdir(), "candle-bin-"))
+    const dir = tempDir("candle-bin-")
     const link = join(dir, "candle")
     symlinkSync(bundle, link)
     const res = runNode(link, ["--version"])
@@ -71,7 +73,7 @@ describe("the built bin entry", () => {
   })
 
   test("through a symlink, a real command still dispatches (bunx passthrough token included)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "candle-bin-"))
+    const dir = tempDir("candle-bin-")
     const link = join(dir, "candle")
     symlinkSync(bundle, link)
     // `candle` as the first token mirrors bunx passing the bin name through; the dispatcher
@@ -107,7 +109,7 @@ describe("the built bin entry, through a real pipe", () => {
   }
 
   test("wallets --json arrives whole to a slow reader", async () => {
-    const res = await runPipeline(`${candle("wallets --json")} | (sleep 0.5; cat)`, pipeEnv())
+    const res = await runPipeline(`${candle("wallets --json")} | (sleep 0.5; cat)`, pipeEnv(tempDir))
     expect(res.err).toBe("")
     expect(res.status).toBe(0)
     expect(res.out.length).toBeGreaterThan(4 * 65_536)
@@ -119,7 +121,10 @@ describe("the built bin entry, through a real pipe", () => {
   }, 60_000)
 
   test("a reader that closes early (| head) ends the output quietly with status 0", async () => {
-    const res = await runPipeline(`${candle("wallets --json")} 2>&1 | head -c 10; exit "\${PIPESTATUS[0]}"`, pipeEnv())
+    const res = await runPipeline(
+      `${candle("wallets --json")} 2>&1 | head -c 10; exit "\${PIPESTATUS[0]}"`,
+      pipeEnv(tempDir),
+    )
     expect(res.err).toBe("")
     expect(res.out.toString("utf8")).toBe('{"embedded')
     expect(res.status).toBe(0)

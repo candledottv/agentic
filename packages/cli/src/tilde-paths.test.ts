@@ -12,13 +12,15 @@
  * a file on `vault import-legacy` and a label on `vault transfer`.
  */
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, readdir, readFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { readdir, readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { parseArgs, refuseUnexpandedTilde, SHORT_FLAGS } from "./args"
 import type { Deps } from "./deps"
 import { run } from "./index"
+import { tempDirs } from "./temp-dirs.test-support"
 import { createCapture, createTestDeps } from "./test-support"
+
+const tempDir = tempDirs()
 
 const unreachableFetch = (async () => {
   throw new Error("no test in this file should make a network call")
@@ -34,7 +36,7 @@ interface Ran {
 }
 
 async function ran(argv: string[], opts: { env?: Record<string, string> } = {}): Promise<Ran> {
-  const dir = await mkdtemp(join(tmpdir(), "candle-tilde-"))
+  const dir = tempDir("candle-tilde-")
   const stdout = createCapture()
   const stderr = createCapture()
   const reads: string[] = []
@@ -344,7 +346,7 @@ describe("T12: -k", () => {
       ["sign", ["--wallet", "w"]],
     ]
     for (const [word, rest] of families) {
-      const path = join(await mkdtemp(join(tmpdir(), `candle-k-${word}-`)), "v.enc")
+      const path = join(tempDir(`candle-k-${word}-`), "v.enc")
       const short = await ran([word, ...rest, "-k", path])
       const long = await ran([word, ...rest, "--keystore", path])
       expect(short.code, `${word} ${rest.join(" ")}`).toBe(long.code)
@@ -359,7 +361,7 @@ describe("T12: -k", () => {
       ["vault", "factor", "list"],
       ["external", "list"],
     ]) {
-      const path = join(await mkdtemp(join(tmpdir(), "candle-k-path-")), "v.enc")
+      const path = join(tempDir("candle-k-path-"), "v.enc")
       const out = await ran([...argv, "-k", path])
       expect(out.stderr, argv.join(" ")).toContain(`No vault at ${path} (from --keystore).`)
     }

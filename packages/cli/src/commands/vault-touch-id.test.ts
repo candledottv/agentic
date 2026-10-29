@@ -9,8 +9,7 @@
  * Touch ID and the keychain actually answer on a Mac) are T48's, run by hand.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { base64, base64urlnopad } from "@scure/base"
 import type { CommandContext, Deps } from "../deps"
@@ -18,6 +17,7 @@ import { ENCLAVE_BUNDLE_NAME, ENCLAVE_EXECUTABLE_RELATIVE, handleEnclaveLine } f
 import { type EnclaveLogEntry, type EnclaveScript, scriptedEnclaveBackend } from "../enclave-helper/test-backend"
 import { humanText } from "../human-output.test-support"
 import { realSpawnHelper, run } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createTestDeps } from "../test-support"
 import { pointFromSpki } from "../vault/ecies"
 import { CODESIGN_PATH, codesignRequirement, ENCLAVE_HELPER_ENV, type ReleasePolicy } from "../vault/enclave"
@@ -25,6 +25,8 @@ import { trackSecrets } from "../vault/hygiene"
 import { RELEASE_POLICY } from "../vault/release-policy"
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
 import { unlockInteractively } from "./vault-support"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(60_000)
 useCheapKdf()
@@ -71,7 +73,7 @@ interface HarnessOptions {
 }
 
 async function harness(opts: HarnessOptions = {}): Promise<Harness> {
-  const dir = opts.env?.CANDLE_CONFIG_DIR ?? (await mkdtemp(join(tmpdir(), "candle-vault-tid-")))
+  const dir = opts.env?.CANDLE_CONFIG_DIR ?? tempDir("candle-vault-tid-")
   const stdout = createCapture()
   const stderr = createCapture()
   const asked: string[] = []

@@ -8,11 +8,11 @@
  */
 import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync } from "node:fs"
-import { mkdtemp, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { sha256 } from "@noble/hashes/sha256"
 import { base64, hex } from "@scure/base"
+import { tempDirs } from "../temp-dirs.test-support"
 import { MAX_REQUEST_BYTES, readFirstLine, serveOnce, TERMINAL_REFUSAL } from "./io"
 import {
   type AssertRequest,
@@ -33,6 +33,8 @@ import {
   unwrapCborByteString,
 } from "./protocol"
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "./test-backend"
+
+const tempDir = tempDirs()
 
 const DIGEST = base64.encode(new Uint8Array(32).fill(7))
 const SALT = base64.encode(new Uint8Array(32).fill(9))
@@ -381,7 +383,7 @@ describe("the loop: one line in, one line out, and never a terminal", () => {
   })
 
   test("the scripted helper over a real pipe answers exactly one JSON line and exits by outcome", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-fido2-"))
+    const dir = tempDir("candle-fido2-")
     const script: HelperScript = {
       devices: [yubikey("/dev/hidraw3")],
       assert: { hmacSecret: SALT, authData: base64.encode(authDataFor(RP_ID, AUTHDATA_FLAG_UP | AUTHDATA_FLAG_UV)) },

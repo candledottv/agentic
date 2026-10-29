@@ -5,13 +5,13 @@
  * Fake API and fake RPC; real vault format and real HPKE seal boundary (T56 spy).
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { Keypair } from "@solana/web3.js"
 import { humanText } from "../human-output.test-support"
 import { run } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import {
   createCapture,
   createFakeStore,
@@ -36,6 +36,8 @@ import { closeVault, commitVault, decryptKey, unlockWithPassphrase } from "../va
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
 import { setSealPlaintextObserver } from "../wallet-import"
 import { groupAddress } from "./vault-support"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(90_000)
 useCheapKdf()
@@ -258,7 +260,7 @@ function importRoutes(opts: {
 
 describe("T40: vault promote --from and vault fund", () => {
   test("fresh-key promote derives on the TEE branch, writes exposure before import, fund refuses unless verified-active", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-t40-"))
+    const dir = tempDir("candle-t40-")
     const { passphrase } = await initVault(dir)
     const cold = await newKey(dir, passphrase, "cold")
     const importCalls = { n: 0 }
@@ -360,7 +362,7 @@ describe("T40: vault promote --from and vault fund", () => {
 
 describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () => {
   test("AD-8 warning prints in full before confirmations; seal plaintext is exactly the 64-byte secret", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-t56-"))
+    const dir = tempDir("candle-t56-")
     const { passphrase } = await initVault(dir)
     const subject = await newKey(dir, passphrase, "subject")
     const cold = await newKey(dir, passphrase, "cold")
@@ -456,7 +458,7 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
   })
 
   test("PROMOTE_KEY_IS_PINNED_DESTINATION refuses when another TEE wallet pins the subject", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-t56-pin-"))
+    const dir = tempDir("candle-t56-pin-")
     const { passphrase } = await initVault(dir)
     const a = await newKey(dir, passphrase, "A")
     const cold = await newKey(dir, passphrase, "cold")
@@ -533,7 +535,7 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
   })
 
   test("four reconcileGrant verdicts: granted imports zero; strand-final; unresolved; unreadable", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-t56-rec-"))
+    const dir = tempDir("candle-t56-rec-")
     const { passphrase } = await initVault(dir)
     const subject = await newKey(dir, passphrase, "subject")
     const cold = await newKey(dir, passphrase, "cold")
@@ -744,7 +746,7 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
   })
 
   test("lifecycle round-trip: five tee.lifecycle values reopen under the strict reader", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-t56-life-"))
+    const dir = tempDir("candle-t56-life-")
     const { passphrase } = await initVault(dir)
     await newKey(dir, passphrase, "cold")
     const vaultPath = join(dir, "vault.enc")
@@ -824,7 +826,7 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
 
 describe("BE-1710: vault promote --from asks confirm under the sweep vault", () => {
   test("anything but the word, the vault's old last six included, imports nothing", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-be1710-from-"))
+    const dir = tempDir("candle-be1710-from-")
     const { passphrase } = await initVault(dir)
     const cold = await newKey(dir, passphrase, "cold")
     const importCalls = { n: 0 }
@@ -877,7 +879,7 @@ describe("BE-1710: a resumed promote asks confirm for the account and the server
   // `pinned`: an import-pending entry with its destination recorded; otherwise a migrated
   // local-candidate with none, whose server destination is shown and confirmed on adoption.
   async function importPending(pinned: boolean) {
-    const dir = await mkdtemp(join(tmpdir(), "candle-be1710-resume-"))
+    const dir = tempDir("candle-be1710-resume-")
     const { passphrase } = await initVault(dir)
     const subject = await newKey(dir, passphrase, "subject")
     const cold = await newKey(dir, passphrase, "cold")
@@ -1039,7 +1041,7 @@ describe("T41: vault demote adapter basics", () => {
   }
 
   test("demote on unresolved uses adapter recovery, never the never-enabled shortcut", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-t41-"))
+    const dir = tempDir("candle-t41-")
     const { passphrase } = await initVault(dir)
     const cold = await newKey(dir, passphrase, "cold")
     const { address } = await seedImportPending(dir, passphrase, cold)
@@ -1068,7 +1070,7 @@ describe("T41: vault demote adapter basics", () => {
   })
 
   test("demote on unreadable (import-failures 404) still recovers to a pinned destination", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-t41-unreadable-"))
+    const dir = tempDir("candle-t41-unreadable-")
     const { passphrase } = await initVault(dir)
     const cold = await newKey(dir, passphrase, "cold")
     const { address } = await seedImportPending(dir, passphrase, cold)
@@ -1094,7 +1096,7 @@ describe("T41: vault demote adapter basics", () => {
   })
 
   test("strand-final demote keeps vaultDestination so adapter recovery can pin-sweep", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-t41-strand-"))
+    const dir = tempDir("candle-t41-strand-")
     const { passphrase } = await initVault(dir)
     const cold = await newKey(dir, passphrase, "cold")
     const { address } = await seedImportPending(dir, passphrase, cold)
@@ -1194,7 +1196,7 @@ describe("BE-981: vault demote unlocks once", () => {
   }
 
   async function demoteOnce(lamports: number) {
-    const dir = await mkdtemp(join(tmpdir(), "candle-be981-"))
+    const dir = tempDir("candle-be981-")
     const { passphrase } = await initVault(dir)
     const cold = await newKey(dir, passphrase, "cold")
     const address = await seedEnabled(dir, passphrase, cold)
@@ -1292,7 +1294,7 @@ describe("BE-981: vault demote unlocks once", () => {
   })
 
   test("an empty wallet with a pending sweep from an earlier run still runs the sweep", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-be981-pending-"))
+    const dir = tempDir("candle-be981-pending-")
     const { passphrase } = await initVault(dir)
     const cold = await newKey(dir, passphrase, "cold")
     const address = await seedEnabled(dir, passphrase, cold)
@@ -1401,7 +1403,7 @@ describe("BE-288 C8 to C13: vault promote reads the room, and restores on a defi
     vaultPath: string
   }
   async function setup(tag: string): Promise<Fixture> {
-    const dir = await mkdtemp(join(tmpdir(), `candle-be288-${tag}-`))
+    const dir = tempDir(`candle-be288-${tag}-`)
     const { passphrase } = await initVault(dir)
     const subject = await newKey(dir, passphrase, "subject")
     const cold = await newKey(dir, passphrase, "cold")
@@ -1663,7 +1665,7 @@ describe("BE-296: vault promote --in-place: one sentence, live block, always-on 
     vaultPath: string
   }
   async function setup(tag: string): Promise<Fixture> {
-    const dir = await mkdtemp(join(tmpdir(), `candle-be296-${tag}-`))
+    const dir = tempDir(`candle-be296-${tag}-`)
     const { passphrase } = await initVault(dir)
     const subject = await newKey(dir, passphrase, "subject")
     const cold = await newKey(dir, passphrase, "cold")

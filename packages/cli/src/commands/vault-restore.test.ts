@@ -14,14 +14,14 @@
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { mkdtemp, readFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { CliConfig } from "../config"
 import type { Deps } from "../deps"
 import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { SECRET_REFS } from "../secret-store"
+import { tempDirs } from "../temp-dirs.test-support"
 import {
   createCapture,
   createFakeConfigStore,
@@ -34,6 +34,8 @@ import {
 import { deriveSolanaKey, solanaExternalPath, solanaTeePath, solanaVaultPath } from "../vault/hd"
 import { FIXTURE_ENTROPY, FIXTURE_PHRASE, generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
 import { groupAddress } from "./vault-support"
+
+const tempDir = tempDirs()
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -71,7 +73,7 @@ interface ApiScript {
 }
 
 async function harness(script: ApiScript = {}, extra: { env?: Record<string, string>; config?: CliConfig } = {}) {
-  const dir = await mkdtemp(join(tmpdir(), "candle-vault-restore-"))
+  const dir = tempDir("candle-vault-restore-")
   const stdout = createCapture()
   const stderr = createCapture()
   const secrets: string[] = []

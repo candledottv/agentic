@@ -6,8 +6,7 @@
  * fake here behaves exactly like the real thing from a command's point of view.
  */
 
-import { mkdtempSync, symlinkSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { symlinkSync } from "node:fs"
 import { join } from "node:path"
 import type { CliConfig, ProfileConfig } from "./config"
 import type { Deps } from "./deps"
@@ -335,10 +334,14 @@ export function shellQuote(arg: string): string {
  * `security` or `secret-tool` on it, so the developer's keychain is never touched. `HOME` is the
  * same temp dir, so nothing can fall back to the real home either. Anything else the pipeline
  * runs (the node binary for the bundle) is resolved by the caller BEFORE this `PATH` applies and
- * invoked by its absolute path.
+ * invoked by its absolute path. Both folders come from the caller's `tempDirs()`
+ * (`temp-dirs.test-support.ts`), so they are removed after the calling file's last test.
  */
-export function pipeEnv(apiKey: string = FAKE_WALLETS_API_KEY): { env: Record<string, string>; bash: string } {
-  const tools = mkdtempSync(join(tmpdir(), "candle-pipe-path-"))
+export function pipeEnv(
+  tempDir: (prefix: string) => string,
+  apiKey: string = FAKE_WALLETS_API_KEY,
+): { env: Record<string, string>; bash: string } {
+  const tools = tempDir("candle-pipe-path-")
   let bash = ""
   for (const tool of ["bash", "cat", "sleep", "head"]) {
     const found = Bun.which(tool)
@@ -346,7 +349,7 @@ export function pipeEnv(apiKey: string = FAKE_WALLETS_API_KEY): { env: Record<st
     symlinkSync(found, join(tools, tool))
     if (tool === "bash") bash = found
   }
-  const configDir = mkdtempSync(join(tmpdir(), "candle-pipe-config-"))
+  const configDir = tempDir("candle-pipe-config-")
   return {
     bash,
     env: {

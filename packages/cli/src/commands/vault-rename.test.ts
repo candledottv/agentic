@@ -11,8 +11,7 @@
  * vault can already be in and `vault new-key` now refuses to produce it.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { Keypair } from "@solana/web3.js"
@@ -20,6 +19,7 @@ import type { Deps } from "../deps"
 import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { SECRET_REFS } from "../secret-store"
+import { tempDirs } from "../temp-dirs.test-support"
 import {
   createCapture,
   createFakeStore,
@@ -50,6 +50,8 @@ import {
   writeKeystoreFile,
 } from "../wallet-keystore"
 import { RENAME_USAGE, SAME_STRING_LINE } from "./vault-rename"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(60_000)
 useCheapKdf()
@@ -424,7 +426,7 @@ describe("T9: VAULT_LABEL_AMBIGUOUS uses the real count and lists every candidat
 
 describe("T10: a restored vault renames, because rename is not an allocation", () => {
   test("no VAULT_ALLOCATION_BOUNDARY_UNKNOWN: the key-<n> a restore invents can be given its real name", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-rename-restore-"))
+    const dir = tempDir("candle-rename-restore-")
     const path = join(dir, "vault.enc")
     const stdout = createCapture()
     const stderr = createCapture()

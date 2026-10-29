@@ -7,17 +7,17 @@
  * any request to Candle, and the only vault-derived thing Candle receives is a mint list.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdtemp } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import type { Deps } from "../deps"
 import { FIXTURE_EVM_0, FIXTURE_EVM_1 } from "../evm-lite.test"
 import { humanText } from "../human-output.test-support"
 import { run } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createTestDeps } from "../test-support"
 import type { IndexPlaintext, KeyEntry } from "../vault/format"
 import { closeVault, commitVault } from "../vault/store"
 import { FIXTURE_PASSPHRASE, makeVault, testClock, useCheapKdf } from "../vault/test-vault"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(60_000)
 useCheapKdf()
@@ -347,7 +347,7 @@ function harness(opts: {
 }
 
 async function emptyConfigDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "candle-portfolio-"))
+  return tempDir("candle-portfolio-")
 }
 
 /** Wrapped notices read as one line. */
@@ -372,7 +372,7 @@ describe("candle portfolio", () => {
     expect(humanText(out)).toContain(humanText("GROUP     CHAIN   WALLET"))
     expect(out).toMatch(/tee\s+solana\s+tee-1 \(TeeW…[^)]+\)\s+SOL\s+0\.5\s+\$100\.00\s+\$50\.00/)
     expect(out).toMatch(/embedded\s+solana\s+\(Embe…1111\)\s+SOL\s+2\s+\$100\.00\s+\$200\.00/)
-    expect(out).toMatch(/vault\s+–\s+no vault at /)
+    expect(out).toMatch(/vault\s+–\s+no vault at\s/)
     // No vault entry, so no request: neither the notice nor the host line was printed (invariant 4).
     expect(h.stderr.text).not.toContain("Solana RPC:")
     expect(out).toMatch(/tee\s+\$50\.00\s+2 wallets, 1 empty not shown/)
@@ -548,7 +548,7 @@ describe("candle portfolio", () => {
     expect(await run(["portfolio"], h.deps)).toBe(0)
     expect(h.asked).toEqual([])
     expect(h.rpcRequests()).toEqual([])
-    expect(h.stdout.text).toMatch(/vault\s+–\s+no vault at /)
+    expect(h.stdout.text).toMatch(/vault\s+–\s+no vault at\s/)
   })
 
   test("a vault to read without a terminal refuses before any request", async () => {

@@ -8,13 +8,15 @@
  * files.
  */
 import { describe, expect, test } from "bun:test"
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { chmod, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { run } from "../index"
 import { CREDENTIAL_SERVICE, KeychainSecretStore, resolveSecretStore, SECRETS_SERVICE } from "../keychain"
 import { defaultSecretsPath } from "../secret-store"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
+
+const tempDir = tempDirs()
 
 const unusedFetch = (() => {
   throw new Error("secrets never touch the network")
@@ -103,7 +105,7 @@ exit 44
 `
 
   test("the secrets store talks to security under its own service, distinct from the credential service", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-secrets-keychain-"))
+    const dir = tempDir("candle-secrets-keychain-")
     const stub = join(dir, "security")
     await writeFile(stub, SECURITY_STUB, "utf8")
     await chmod(stub, 0o755)
@@ -135,7 +137,7 @@ exit 44
   })
 
   test("on the encrypted-file fallback the two namespaces are two files", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-secrets-file-"))
+    const dir = tempDir("candle-secrets-file-")
     const resolved = await resolveSecretStore("freebsd", {
       service: SECRETS_SERVICE,
       filePath: defaultSecretsPath({ CANDLE_CONFIG_DIR: dir }),

@@ -12,12 +12,13 @@
  * search misses half the answers.
  */
 import { describe, expect, test } from "bun:test"
-import { mkdtemp } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Deps } from "../deps"
 import { ROUTED_SUBCOMMANDS, run } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createTestDeps } from "../test-support"
+
+const tempDir = tempDirs()
 
 const unreachableFetch = (async () => {
   throw new Error("no test in this file should make a network call")
@@ -42,7 +43,7 @@ async function ran(argv: string[], vaultPath: string): Promise<{ code: number; s
 
 /** The same invocation, spelled both ways, against the same absent vault. */
 async function bothWays(tail: string[]): Promise<[Awaited<ReturnType<typeof ran>>, Awaited<ReturnType<typeof ran>>]> {
-  const path = join(await mkdtemp(join(tmpdir(), "candle-enroll-")), "vault.enc")
+  const path = join(tempDir("candle-enroll-"), "vault.enc")
   return [await ran(["vault", "enroll", ...tail], path), await ran(["vault", "factor", "add", ...tail], path)]
 }
 
@@ -69,7 +70,7 @@ describe("T13: vault enroll", () => {
   })
 
   test("enroll with no kind prints factor add's own 'Which factor?' usage", async () => {
-    const path = join(await mkdtemp(join(tmpdir(), "candle-enroll-bare-")), "vault.enc")
+    const path = join(tempDir("candle-enroll-bare-"), "vault.enc")
     const out = await ran(["vault", "enroll"], path)
     expect(out.code).toBe(2)
     expect(out.stderr).toContain("Which factor?")
@@ -77,7 +78,7 @@ describe("T13: vault enroll", () => {
   })
 
   test("an unknown kind is refused with factor add's own wording", async () => {
-    const path = join(await mkdtemp(join(tmpdir(), "candle-enroll-bogus-")), "vault.enc")
+    const path = join(tempDir("candle-enroll-bogus-"), "vault.enc")
     const out = await ran(["vault", "enroll", "yubikey"], path)
     expect(out.code).toBe(2)
     expect(out.stderr).toContain("Unknown factor: yubikey")

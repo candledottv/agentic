@@ -22,8 +22,7 @@
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { readFileSync } from "node:fs"
-import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { chmod, mkdir, readFile, realpath, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { sha256 } from "@noble/hashes/sha256"
 import { base64 } from "@scure/base"
@@ -33,6 +32,7 @@ import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fid
 import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { formatTime } from "../render"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createTestDeps } from "../test-support"
 import {
   assertBackupDomainAllowed,
@@ -56,6 +56,8 @@ import {
 } from "./vault-backup"
 import { describeLastBackup, lastBackupLines } from "./vault-status"
 import { PASSPHRASE_ONLY_PREFIX, unlockInteractively } from "./vault-support"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(90_000)
 useCheapKdf()
@@ -120,7 +122,7 @@ interface HarnessOptions {
 }
 
 async function harness(opts: HarnessOptions = {}): Promise<Harness> {
-  const dir = opts.env?.CANDLE_CONFIG_DIR ?? (await mkdtemp(join(tmpdir(), "candle-vault-parity-")))
+  const dir = opts.env?.CANDLE_CONFIG_DIR ?? tempDir("candle-vault-parity-")
   const stdout = createCapture()
   const stderr = createCapture()
   const asked: string[] = []
@@ -277,7 +279,7 @@ async function addFixtureEnvelopes(vaultPath: string, passphrase: string, extra:
 
 /** A home of the test's own with the three sealing destinations in it. */
 async function cloudHome(): Promise<{ home: string; icloud: string; dropbox: string; unknown: string }> {
-  const home = await mkdtemp(join(tmpdir(), "candle-vault-parity-home-"))
+  const home = tempDir("candle-vault-parity-home-")
   const icloud = join(home, "Library", "Mobile Documents", "com~apple~CloudDocs")
   const dropbox = join(home, "Dropbox")
   await mkdir(icloud, { recursive: true })
@@ -709,7 +711,7 @@ describe("T4, T5, T16: verify-backup and restore with either carried factor", ()
     const liveEntries = (JSON.parse(liveStatus.stdout.text) as { unlocked: { entries: { address: string }[] } })
       .unlocked.entries
 
-    const restored = await mkdtemp(join(tmpdir(), "candle-vault-restored-"))
+    const restored = tempDir("candle-vault-restored-")
     await writeFile(join(restored, "vault.enc"), await readFile(to, "utf8"), { mode: 0o600 })
     for (const [factor, secret] of [
       ["security-key", PIN],

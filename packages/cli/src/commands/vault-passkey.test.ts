@@ -12,8 +12,7 @@
  * Developer ID helper, and whether such a helper gets associated domains at all) is T57's.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { sha256 } from "@noble/hashes/sha256"
 import { base64 } from "@scure/base"
@@ -29,6 +28,7 @@ import { AUTHDATA_FLAG_UP, AUTHDATA_FLAG_UV, handleLine, RP_ID } from "../fido2-
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
 import { humanText } from "../human-output.test-support"
 import { realSpawnHelper, run } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createTestDeps } from "../test-support"
 import { AASA_URL, CODESIGN_PATH, codesignRequirement, ENCLAVE_HELPER_ENV, type ReleasePolicy } from "../vault/enclave"
 import { HELPER_ENV } from "../vault/fido2"
@@ -38,6 +38,8 @@ import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { closeVault, unlockWithPassphrase } from "../vault/store"
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
 import { unlockInteractively } from "./vault-support"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(60_000)
 useCheapKdf()
@@ -97,7 +99,7 @@ interface HarnessOptions {
 }
 
 async function harness(opts: HarnessOptions = {}): Promise<Harness> {
-  const dir = opts.env?.CANDLE_CONFIG_DIR ?? (await mkdtemp(join(tmpdir(), "candle-vault-pk-")))
+  const dir = opts.env?.CANDLE_CONFIG_DIR ?? tempDir("candle-vault-pk-")
   const stdout = createCapture()
   const stderr = createCapture()
   const asked: string[] = []

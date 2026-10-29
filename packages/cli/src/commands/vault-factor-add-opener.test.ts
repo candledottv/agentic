@@ -19,8 +19,7 @@
  * apart only by locator, exactly the hardware Group E runs on.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { chmod, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { sha256 } from "@noble/hashes/sha256"
 import { base64 } from "@scure/base"
@@ -36,12 +35,15 @@ import {
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
 import { humanText } from "../human-output.test-support"
 import { run } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createTestDeps } from "../test-support"
 import { HELPER_ENV } from "../vault/fido2"
 import type { Envelope } from "../vault/format"
 import { closeVault, sealIndex, serializeVault, unlockWithPassphrase } from "../vault/store"
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
 import { PASSPHRASE_ONLY_PREFIX } from "./vault-support"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(90_000)
 useCheapKdf()
@@ -127,7 +129,7 @@ interface HarnessOptions {
 }
 
 async function harness(opts: HarnessOptions = {}): Promise<Harness> {
-  const dir = opts.env?.CANDLE_CONFIG_DIR ?? (await mkdtemp(join(tmpdir(), "candle-vault-opener-")))
+  const dir = opts.env?.CANDLE_CONFIG_DIR ?? tempDir("candle-vault-opener-")
   const stdout = createCapture()
   const stderr = createCapture()
   const asked: string[] = []

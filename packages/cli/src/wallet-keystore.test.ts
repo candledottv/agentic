@@ -5,9 +5,9 @@
  * written under a different iteration count is still readable after the default is raised.
  */
 import { describe, expect, test } from "bun:test"
-import { chmod, mkdir, mkdtemp, readFile, stat } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { chmod, mkdir, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
+import { tempDirs } from "./temp-dirs.test-support"
 import {
   createKeystore,
   deriveKeystoreKey,
@@ -17,6 +17,8 @@ import {
   serializeKeystore,
   writeKeystoreFile,
 } from "./wallet-keystore"
+
+const tempDir = tempDirs()
 
 const entry: KeystoreEntry = {
   index: 0,
@@ -85,7 +87,7 @@ describe("wallet keystore", () => {
   })
 
   test("writes atomically with 0600 and no leftover temp file", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-keystore-"))
+    const dir = tempDir("candle-keystore-")
     const path = join(dir, "wallets.enc")
     await writeKeystoreFile(path, await seal([entry], "pw"))
     expect(((await stat(path)).mode & 0o777).toString(8)).toBe("600")
@@ -95,7 +97,7 @@ describe("wallet keystore", () => {
   })
 
   test("a directory it creates is hardened to 0700 (BE-245)", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-keystore-"))
+    const dir = tempDir("candle-keystore-")
     const nested = join(dir, "made-by-candle")
     await writeKeystoreFile(join(nested, "wallets.enc"), await seal([entry], "pw"))
     // This one IS Candle's: it did not exist a moment ago, so tightening it is its own business.
@@ -108,7 +110,7 @@ describe("wallet keystore", () => {
     // on a file-provider root, so asking for a permission it already had killed the whole backup.
     // A pre-existing directory belongs to whoever made it; the CLI does not restyle it and does
     // not fail over it. The file mode is the control, and it is 0600 either way.
-    const dir = await mkdtemp(join(tmpdir(), "candle-keystore-"))
+    const dir = tempDir("candle-keystore-")
     const theirs = join(dir, "not-ours")
     await mkdir(theirs, { recursive: true })
     await chmod(theirs, 0o755)

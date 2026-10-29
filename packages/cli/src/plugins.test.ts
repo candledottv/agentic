@@ -10,22 +10,24 @@
  * `--secret` / `--wallet` are stripped from the argv while every other argument survives verbatim.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { chmod, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { run } from "./index"
 import { findPlugin, isPluginName, listPlugins, pluginEnvironment, splitPluginArgs } from "./plugins"
+import { tempDirs } from "./temp-dirs.test-support"
 import { createCapture, createFakeConfigStore, createFakeStore, createTestDeps } from "./test-support"
 import { deriveSolanaKey, solanaExternalPath } from "./vault/hd"
 import { closeVault } from "./vault/store"
 import { FIXTURE_ENTROPY, makeVault, useCheapKdf } from "./vault/test-vault"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(90_000)
 useCheapKdf()
 
 /** Writes `candle-envdump` into a fresh directory and returns a PATH that finds it first. */
 async function pluginDir(): Promise<{ dir: string; path: string }> {
-  const dir = await mkdtemp(join(tmpdir(), "candle-plugins-"))
+  const dir = tempDir("candle-plugins-")
   const script = join(dir, "candle-envdump")
   await writeFile(
     script,

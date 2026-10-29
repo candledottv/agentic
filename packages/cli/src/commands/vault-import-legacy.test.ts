@@ -4,13 +4,14 @@
  * reconcileGrant, and confirm tee commands read the vault while refusing to rewrite the legacy file.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { copyFile, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises"
+import { copyFile, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { Keypair } from "@solana/web3.js"
 import { humanText } from "../human-output.test-support"
 import { run } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import {
   createCapture,
   createFakeStore,
@@ -35,6 +36,8 @@ import {
   TEE_KEYSTORE_PURPOSE,
   writeKeystoreFile,
 } from "../wallet-keystore"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(60_000)
 useCheapKdf()
@@ -187,7 +190,7 @@ async function initVault(dir: string): Promise<{ passphrase: string; vaultPath: 
 
 describe("T37: CC-05 TEE store migration", () => {
   test("migrates all five Phase 1 shapes, reopens under the strict reader, adopts a failed-enable candidate, refuses legacy writes, and gates retire-legacy", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-t37-"))
+    const dir = tempDir("candle-t37-")
     const fixture = mixedFixtureEntries()
     const teePath = await seedTeeStore(dir, fixture.all)
     const originalBytes = await readFile(teePath, "utf8")
@@ -726,7 +729,7 @@ describe("T37: CC-05 TEE store migration", () => {
 
     // hot-wallets.enc migrates the same way.
     {
-      const hotDir = await mkdtemp(join(tmpdir(), "candle-t37-hot-"))
+      const hotDir = tempDir("candle-t37-hot-")
       const { passphrase: hotPass, vaultPath: hotVault } = await initVault(hotDir)
       const hotEntry = keypairEntry("hot-one", {
         imported: true,

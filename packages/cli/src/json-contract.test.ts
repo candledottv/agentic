@@ -18,13 +18,15 @@
  * before the mode is known, which is the shape of mistake this PR could have made in `vaultPathFor`.
  */
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, readdir, readFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { readdir, readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import type { Deps } from "./deps"
 import { run } from "./index"
+import { tempDirs } from "./temp-dirs.test-support"
 import { createCapture, createTestDeps } from "./test-support"
 import { VAULT_ERROR_CODES } from "./vault/errors"
+
+const tempDir = tempDirs()
 
 /**
  * Every failure `code` the CLI could put in a `--json` envelope on the baseline. `COMMAND_REMOVED`
@@ -272,7 +274,7 @@ const offlineFetch = (async () => {
 }) as unknown as typeof fetch
 
 async function jsonRun(argv: string[]): Promise<{ code: number; stdout: string }> {
-  const dir = await mkdtemp(join(tmpdir(), "candle-json-"))
+  const dir = tempDir("candle-json-")
   const stdout = createCapture()
   const stderr = createCapture()
   const deps: Deps = createTestDeps({

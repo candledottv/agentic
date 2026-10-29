@@ -8,7 +8,7 @@
  * helper wedged on a dead key.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { chmod, mkdtemp, writeFile } from "node:fs/promises"
+import { chmod, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sha256 } from "@noble/hashes/sha256"
@@ -24,6 +24,7 @@ import {
 } from "../fido2-helper/protocol"
 import type { HelperScript } from "../fido2-helper/test-backend"
 import { HELPER_WORKING_DIRECTORY, realSpawnHelper } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createTestDeps } from "../test-support"
 import { VAULT_ERROR_CODES, VaultError } from "./errors"
 import {
@@ -39,6 +40,8 @@ import {
   userIdFor,
 } from "./fido2"
 import { HIDRAW_MESSAGE } from "./platform"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(30_000)
 
@@ -135,7 +138,7 @@ describe("the typed translation table (helper protocols)", () => {
 
 describe("where the helper is looked for", () => {
   test("CANDLE_FIDO2_HELPER wins when it names an executable, and is refused by name when it does not", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-fido2-locate-"))
+    const dir = tempDir("candle-fido2-locate-")
     const helper = join(dir, "candle-fido2")
     await writeFile(helper, "#!/bin/sh\nexit 0\n")
     await chmod(helper, 0o755)
@@ -149,7 +152,7 @@ describe("where the helper is looked for", () => {
   })
 
   test("a compiled binary looks beside its real path; the npm package ships no helper and says so", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-fido2-beside-"))
+    const dir = tempDir("candle-fido2-beside-")
     const helper = join(dir, "candle-fido2")
     await writeFile(helper, "#!/bin/sh\nexit 0\n")
     await chmod(helper, 0o755)
@@ -267,7 +270,7 @@ describe("the CLI's own checks before anything is derived (ED-11)", () => {
 
 describe("running the helper over a real pipe", () => {
   async function scriptedHelper(script: HelperScript): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "candle-fido2-run-"))
+    const dir = tempDir("candle-fido2-run-")
     await writeFile(join(dir, "script.json"), JSON.stringify(script))
     const helper = join(dir, "candle-fido2")
     const scripted = join(import.meta.dir, "..", "fido2-helper", "scripted-helper.ts")
@@ -321,7 +324,7 @@ describe("running the helper over a real pipe", () => {
   // BE-198, defense in depth: whatever folder the operator ran `candle` from, the helper does not
   // start in it, so nothing planted there is on any relative path a loader could resolve.
   test("the helper starts in the root directory, never the working directory the CLI was run from", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-fido2-cwd-"))
+    const dir = tempDir("candle-fido2-cwd-")
     const helper = join(dir, "candle-fido2")
     await writeFile(helper, "#!/bin/sh\npwd >&2\nexit 0\n")
     await chmod(helper, 0o755)
@@ -339,7 +342,7 @@ describe("running the helper over a real pipe", () => {
   })
 
   test("a helper that prints no response is VAULT_UNLOCK_FAILED, never a fallback", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-fido2-silent-"))
+    const dir = tempDir("candle-fido2-silent-")
     const helper = join(dir, "candle-fido2")
     await writeFile(helper, "#!/bin/sh\necho 'something went wrong' >&2\nexit 3\n")
     await chmod(helper, 0o755)
@@ -359,7 +362,7 @@ describe("running the helper over a real pipe", () => {
   })
 
   test("a helper speaking another protocol revision is VAULT_HELPER_MISSING (a stale install)", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-fido2-stale-"))
+    const dir = tempDir("candle-fido2-stale-")
     const helper = join(dir, "candle-fido2")
     await writeFile(helper, `#!/bin/sh\necho '{"ok":true,"protocol":99,"op":"info","snapshotId":"x","devices":[]}'\n`)
     await chmod(helper, 0o755)
@@ -379,7 +382,7 @@ describe("running the helper over a real pipe", () => {
   })
 
   test("the timeout terminates a wedged helper, and the signal is reported as a cancellation", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-fido2-wedged-"))
+    const dir = tempDir("candle-fido2-wedged-")
     const helper = join(dir, "candle-fido2")
     await writeFile(helper, "#!/bin/sh\nsleep 30\n")
     await chmod(helper, 0o755)

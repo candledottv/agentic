@@ -11,12 +11,12 @@
  * `confirm` after the destination is shown grouped, and the unlock is the only secret prompt.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdtemp, readFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { Transaction } from "@solana/web3.js"
 import { run } from "../index"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
 import { VaultError } from "../vault/errors"
 import { branchOfPath, type KeyEntry, parseVaultFile } from "../vault/format"
@@ -25,6 +25,8 @@ import { closeVault, commitVault, freshKeyId, sealKeyBlob } from "../vault/store
 import { FIXTURE_ENTROPY, makeVault, reopen, testClock, useCheapKdf } from "../vault/test-vault"
 import { restoreSeedHd } from "./vault-restore"
 import { groupAddress } from "./vault-support"
+
+const tempDir = tempDirs()
 
 setDefaultTimeout(90_000)
 useCheapKdf()
@@ -113,7 +115,7 @@ describe("vault format: version 2 stays version 2 until the first external alloc
     expect(await run(["external", "list"], h.deps)).toBe(0)
     expect(h.stdout.text).toContain("No external wallets")
     // Outside the config directory, which a backup refuses as a destination.
-    const copy = join(await mkdtemp(join(tmpdir(), "candle-external-backup-")), "backup.enc")
+    const copy = join(tempDir("candle-external-backup-"), "backup.enc")
     h.deps.promptLine = async () => "yes"
     expect(await run(["vault", "backup", "--to", copy], h.deps)).toBe(0)
     expect(await h.fileVersion()).toBe(2)

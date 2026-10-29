@@ -12,13 +12,15 @@
 
 import { ptr } from "bun:ffi"
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, realpathSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { realpathSync, writeFileSync } from "node:fs"
 import { basename, isAbsolute, join, resolve } from "node:path"
 import { base64 } from "@scure/base"
+import { tempDirs } from "../temp-dirs.test-support"
 import { helperErrorForRc, type LibraryOpener, openLibfido2, probeOutcomeForRc } from "./libfido2"
 import { libraryCandidates, libraryInstallInstruction, libraryMissingMessage } from "./library-paths"
 import { type Fido2Backend, type HelperCode, HelperError, handleRequest } from "./protocol"
+
+const tempDir = tempDirs()
 
 let backend: Fido2Backend | null = null
 let missing = ""
@@ -86,7 +88,7 @@ describe("libfido2 through bun:ffi", () => {
   })
 
   test("a library planted in the working directory is never one of the paths handed to the loader", () => {
-    const planted = realpathSync(mkdtempSync(join(tmpdir(), "candle-fido2-cwd-")))
+    const planted = realpathSync(tempDir("candle-fido2-cwd-"))
     const previousCwd = process.cwd()
     const attempted: string[] = []
     try {

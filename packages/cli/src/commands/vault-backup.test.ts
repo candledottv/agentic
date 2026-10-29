@@ -19,13 +19,13 @@
  * passkey envelope, is in `vault-passkey.test.ts`.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises"
 import { join, posix, win32 } from "node:path"
 import type { Deps } from "../deps"
 import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { formatBytes } from "../progress"
+import { tempDirs } from "../temp-dirs.test-support"
 import { createCapture, createTestDeps, TEST_HOME } from "../test-support"
 import {
   accountDomainOf,
@@ -53,6 +53,8 @@ import {
 } from "./vault-backup"
 import { derivationNotice } from "./vault-support"
 
+const tempDir = tempDirs()
+
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
  * would not be testing the format anyone actually opens. Even at ED-3's bounds floor (see
@@ -70,7 +72,7 @@ const unreachableFetch = (async () => {
 }) as unknown as typeof fetch
 
 async function harness(opts: { secrets?: string[]; env?: Record<string, string> } = {}) {
-  const dir = await mkdtemp(join(tmpdir(), "candle-vault-backup-"))
+  const dir = tempDir("candle-vault-backup-")
   const stdout = createCapture()
   const stderr = createCapture()
   const secrets = [...(opts.secrets ?? [])]
@@ -447,7 +449,7 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
 describe("BE-236: the destination is classified from the real path, not its spelling", () => {
   /** A home with the Apple shape: a real CloudDocs tree and `Documents` linked into it. */
   async function appleHome() {
-    const home = await mkdtemp(join(tmpdir(), "candle-vault-links-"))
+    const home = tempDir("candle-vault-links-")
     const cloudDocs = join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "Documents")
     await mkdir(cloudDocs, { recursive: true })
     await symlink(cloudDocs, join(home, "Documents"))
@@ -479,7 +481,7 @@ describe("BE-236: the destination is classified from the real path, not its spel
   test("a link into a sync client's folder is other-cloud, not local-disk", async () => {
     // The Apple feature is not needed to reach this state: any link, alias or bind mount into a
     // synced folder does, which is why the fix is resolution rather than a longer marker list.
-    const home = await mkdtemp(join(tmpdir(), "candle-vault-links-"))
+    const home = tempDir("candle-vault-links-")
     await mkdir(join(home, "Dropbox", "secure"), { recursive: true })
     await symlink(join(home, "Dropbox", "secure"), join(home, "safe"))
     expect(await classifyDestination(join(home, "safe", "vault.enc"), { realpath: realLinks, home })).toBe(
@@ -502,7 +504,7 @@ describe("BE-236: the destination is classified from the real path, not its spel
   test("a link OUT of a cloud folder to a local one is local-disk: the rule is symmetric", async () => {
     // The fix reads where the bytes land, in both directions. A cloud-looking spelling that
     // resolves onto an ordinary disk is not sealed, because there is no account to share.
-    const home = await mkdtemp(join(tmpdir(), "candle-vault-links-"))
+    const home = tempDir("candle-vault-links-")
     const cloudDocs = join(home, "Library", "Mobile Documents", "com~apple~CloudDocs")
     await mkdir(cloudDocs, { recursive: true })
     await mkdir(join(home, "on-disk"), { recursive: true })
@@ -532,7 +534,7 @@ describe("BE-236: the destination is classified from the real path, not its spel
   test("an unresolvable home falls back to its spelling: home is not what is being placed", async () => {
     // Home failing to resolve says nothing about the destination, so it must not seal one. Only
     // the cloud markers read home, and the destination here resolves perfectly well without it.
-    const real = await mkdtemp(join(tmpdir(), "candle-vault-nohome-"))
+    const real = tempDir("candle-vault-nohome-")
     const withoutHome = await classifyDestination(join(real, "vault.enc"), {
       realpath: realLinks,
       home: "/no/such/home",
@@ -587,7 +589,7 @@ describe("BE-236: the destination is classified from the real path, not its spel
 describe("backup runs the full verifier, and records only on a full pass", () => {
   test("a verified copy reports all eight steps and records the destination class", async () => {
     const h = await vaultWithKey()
-    const to = join(h.dir, "..", `backup-${Date.now()}.enc`)
+    const to = join(tempDir("candle-vault-backup-to-"), `backup-${Date.now()}.enc`)
     const b = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "backup", "--to", to, "--keystore", h.vaultPath], b.deps)).toBe(0)
 
@@ -678,7 +680,7 @@ describe("backup runs the full verifier, and records only on a full pass", () =>
 describe("BE-236: `vault backup` through a symlink into iCloud", () => {
   /** A temp tree in macOS's "Desktop & Documents Folders in iCloud" shape. */
   async function icloudTree() {
-    const root = await mkdtemp(join(tmpdir(), "candle-vault-icloud-"))
+    const root = tempDir("candle-vault-icloud-")
     const cloudDocs = join(root, "Library", "Mobile Documents", "com~apple~CloudDocs", "Documents")
     await mkdir(cloudDocs, { recursive: true })
     await symlink(cloudDocs, join(root, "Documents"))
@@ -772,7 +774,7 @@ describe("BE-245: the iCloud shorthand, and a write failure that says why", () =
    * being the same directory is a fixture artefact rather than anything a real machine looks like.
    */
   async function icloudHome(): Promise<{ home: string; drive: string }> {
-    const home = await mkdtemp(join(tmpdir(), "candle-vault-home-"))
+    const home = tempDir("candle-vault-home-")
     const drive = join(home, "Library", "Mobile Documents", "com~apple~CloudDocs")
     await mkdir(drive, { recursive: true })
     return { home, drive }
@@ -851,7 +853,7 @@ describe("BE-245: the iCloud shorthand, and a write failure that says why", () =
 
   test("--to icloud on a machine without iCloud Drive refuses, before any prompt", async () => {
     const v = await vaultWithKey()
-    const empty = await mkdtemp(join(tmpdir(), "candle-vault-home-"))
+    const empty = tempDir("candle-vault-home-")
     const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: empty }, secrets: [] })
     // Usage, not a vault failure: nothing about the vault is wrong, and nothing was asked for.
     expect(await run(["vault", "backup", "--to", "icloud", "--keystore", v.vaultPath], b.deps)).toBe(2)
@@ -949,7 +951,7 @@ describe("BE-259: the backup says it wrote the file, and each Argon2id line says
 
   test("T1 and T4: vault backup leads with Wrote, size and mode, then Verified, and its two lines carry the purposes in order", async () => {
     const v = await vaultWithKey()
-    const to = join(await mkdtemp(join(tmpdir(), "candle-vault-wrote-")), "copy.enc")
+    const to = join(tempDir("candle-vault-wrote-"), "copy.enc")
     const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
     expect(await run(["vault", "backup", "--to", to, "--keystore", v.vaultPath], b.deps)).toBe(0)
 
@@ -974,7 +976,7 @@ describe("BE-259: the backup says it wrote the file, and each Argon2id line says
 
   test("T2: vault backup --json carries bytesWritten and mode beside every key it carried before", async () => {
     const v = await vaultWithKey()
-    const to = join(await mkdtemp(join(tmpdir(), "candle-vault-wrote-json-")), "copy.enc")
+    const to = join(tempDir("candle-vault-wrote-json-"), "copy.enc")
     const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
     expect(await run(["vault", "backup", "--to", to, "--json", "--keystore", v.vaultPath], b.deps)).toBe(0)
     const body = JSON.parse(b.stdout.text) as Record<string, unknown>
@@ -1011,7 +1013,7 @@ describe("BE-259: the backup says it wrote the file, and each Argon2id line says
 
   test("T3: verify-backup's two Argon2id lines gain their purposes; its stdout report and --json document do not move", async () => {
     const v = await vaultWithKey()
-    const to = join(await mkdtemp(join(tmpdir(), "candle-vault-verify-purpose-")), "copy.enc")
+    const to = join(tempDir("candle-vault-verify-purpose-"), "copy.enc")
     const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
     expect(await run(["vault", "backup", "--to", to, "--keystore", v.vaultPath], b.deps)).toBe(0)
 
