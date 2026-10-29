@@ -57,19 +57,11 @@ and Homebrew refuse an older Mac rather than install a binary not built for it.
 
 ### No-npm fallback
 
-The same CLI can run straight from the public repo:
+The same CLI builds from its public source repository:
 
 ```
-bunx github:candledottv/agentic candle auth login
-```
-
-That fetches the `agentic` repo, resolves the `candle` bin at its root (`packages/cli/dist/index.js`,
-a committed build), and runs it. If bun's git-dependency handling fails on your machine, clone and
-build directly:
-
-```
-git clone https://github.com/candledottv/agentic.git
-cd agentic
+git clone https://github.com/candledottv/cli.git
+cd cli
 bun install
 bun run --cwd packages/cli build
 node packages/cli/dist/index.js auth login
@@ -166,19 +158,21 @@ Every command accepts these global options:
 
 ## Verify a release
 
-Every release on https://github.com/candledottv/agentic/releases is built and signed by that
+Every release on https://github.com/candledottv/cli/releases is built and signed by that
 repository's `release.yaml` workflow, and `install.sh` and `candle update` already check this for
-you. To check a download by hand, three commands, in increasing strength:
+you. Releases up to 0.12.0 were published from https://github.com/candledottv/agentic/releases; check
+one of those against that repository's name in the commands below. To check a download by hand,
+three commands, in increasing strength:
 
 ```
-curl -fsSLO https://github.com/candledottv/agentic/releases/download/cli-v0.6.1/SHA256SUMS
-curl -fsSLO https://github.com/candledottv/agentic/releases/download/cli-v0.6.1/candle-darwin-arm64
+curl -fsSLO https://github.com/candledottv/cli/releases/download/cli-v0.13.5/SHA256SUMS
+curl -fsSLO https://github.com/candledottv/cli/releases/download/cli-v0.13.5/candle-darwin-arm64
 grep candle-darwin-arm64 SHA256SUMS | shasum -a 256 -c
 ```
 
 ```
-gh attestation verify candle-darwin-arm64 --repo candledottv/agentic \
-  --cert-identity https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v0.6.1
+gh attestation verify candle-darwin-arm64 --repo candledottv/cli \
+  --cert-identity https://github.com/candledottv/cli/.github/workflows/release.yaml@refs/tags/cli-v0.13.5
 ```
 
 `--cert-identity` is the signing certificate's subject, the workflow file and the release tag in
@@ -188,9 +182,9 @@ and the two signer flags) as mutually exclusive, and the signer-workflow flag al
 any tag's attestation.
 
 ```
-curl -fsSLO https://github.com/candledottv/agentic/releases/download/cli-v0.6.1/candle-darwin-arm64.sigstore.json
+curl -fsSLO https://github.com/candledottv/cli/releases/download/cli-v0.13.5/candle-darwin-arm64.sigstore.json
 cosign verify-blob --new-bundle-format --bundle candle-darwin-arm64.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/candledottv/agentic/\.github/workflows/release\.yaml@refs/tags/cli-v' \
+  --certificate-identity-regexp '^https://github.com/candledottv/cli/\.github/workflows/release\.yaml@refs/tags/cli-v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   candle-darwin-arm64
 ```
@@ -544,3 +538,9 @@ and `--json` for the result. Add/remove amounts are decimal CNDL/sCNDL respectiv
 MOVE REAL FUNDS. A rerun posts the saved signed TEE transaction to submit again without
 re-signing; the server reads the chain first, so it lands once. The signed transaction is kept
 in the CLI operations directory for that retry. An embedded rerun replays the saved build.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE). Third-party material, including the EFF long wordlist used for
+generated vault passphrases (CC BY 3.0 US), is listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -7,11 +7,11 @@
   "homepage": "https://docs.candle.tv/developers/mcp-server",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/candledottv/agentic.git",
+    "url": "git+https://github.com/candledottv/cli.git",
     "directory": "packages/mcp"
   },
   "bugs": {
-    "url": "https://github.com/candledottv/agentic/issues"
+    "url": "https://github.com/candledottv/cli/issues"
   },
   "keywords": [
     "mcp",

@@ -68,6 +68,7 @@ import {
 import { perpsBook, perpsCandles, perpsMarket, perpsMarkets } from "./commands/perps-markets"
 import { perpsAccount, perpsRisk, perpsThresholds, perpsWatch } from "./commands/perps-risk"
 import { perpsWithdraw } from "./commands/perps-withdraw"
+import { maybeAutoRenew, planAutoRenew, planBuy, planRenew, planStatus } from "./commands/plan"
 import { plans } from "./commands/plans"
 import { plugins, runPlugin } from "./commands/plugins"
 import { pnl } from "./commands/pnl"
@@ -131,6 +132,7 @@ import { renderTopic, renderTopLevel } from "./help"
 import { resolveSecretStore, SECRETS_SERVICE, SecretStoreLockedError, SecretStoreReadError } from "./keychain"
 import { pluginInvocation, realRunPlugin } from "./plugins"
 import { terminalStyle } from "./presentation"
+import { writeOwnerOnlyFile } from "./private-file"
 import {
   assertOrdinaryProfile,
   migratedConfig,
@@ -271,6 +273,11 @@ const COMMANDS: Record<string, CommandRoute> = {
   },
   // x402 C4 (spec 7.3): Quant's terms over the key route, which a paid Quant turn needs first.
   quant: { subcommands: { terms: quantTerms } },
+  // x402 C7 (BE-1878): Pro or Max by x402 from a vault key, the wallet-as-identity signup, and the
+  // local auto-renew flag. Plan payments are outside the per-use limits (spec 10.3).
+  plan: {
+    subcommands: { buy: planBuy, status: planStatus, renew: planRenew, "auto-renew": planAutoRenew },
+  },
   // Ember Phase 3 PR D (BE-315, R4): Meteora DAMM v2 liquidity from a TEE wallet, on the agent
   // rail under the bound key's opt-in `lp:write`. Server-built, relay-signed, never a vault key.
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
@@ -860,6 +867,10 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
     if (verdict.warning) deps.stderr.write(`${verdict.warning}\n`)
   }
 
+  // x402 C7 (spec 6.3): auto-renew, when its local flag is on and the period ends within 3 days.
+  // Reads one local file and returns at once otherwise; never fails the command.
+  if (ROUTED_COMMANDS.has(word) && routesToCommand(cmd, sub)) await maybeAutoRenew(word, ctx)
+
   return dispatch(cmd, sub, cmdArgs, tokens, ctx)
 }
 
@@ -1107,7 +1118,7 @@ export async function buildRealDeps(): Promise<Deps> {
     runPlugin: realRunPlugin,
     // 0600: the only caller is wallets import's --signer-out, and the content is a signing
     // private key.
-    writeFile: (path: string, content: string) => writeFile(path, content, { mode: 0o600 }),
+    writeFile: writeOwnerOnlyFile,
     promptSecret: promptHiddenSecret,
     promptLine: promptVisibleLine,
     isTTY: {

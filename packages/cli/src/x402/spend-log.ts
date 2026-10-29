@@ -201,14 +201,19 @@ export function utcDay(at: string | number): string {
   return new Date(at).toISOString().slice(0, 10)
 }
 
+/** The log's `kind` for a plan purchase or renewal (card C7). Logged, and outside the daily limit. */
+export const PLAN_SPEND_KIND = "plan"
+
 /**
- * What counts against `day`'s limit: every payment started that UTC day that may have moved money.
- * `pending` and `unknown` count until they are known not to have; a `credited` payment did move
- * money (it came back as credit, not USDC). Only `failed` is free.
+ * What counts against `day`'s limit: every per-use payment started that UTC day that may have moved
+ * money. `pending` and `unknown` count until they are known not to have; a `credited` payment did
+ * move money (it came back as credit, not USDC). Only `failed` is free. Plan payments are logged
+ * too and never count: 10.3 puts plan purchases and renewals outside the per-use limit.
  */
 export function spentOn(entries: SpendEntry[], day: string): bigint {
   let total = 0n
   for (const entry of entries) {
+    if (entry.kind === PLAN_SPEND_KIND) continue
     if (entry.state !== "failed" && utcDay(entry.startedAt) === day) total += entry.amountRaw
   }
   return total

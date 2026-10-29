@@ -362,6 +362,6 @@ describe("T49: the mirror's own build sees the same declarations", () => {
 
   test("the `files` list does not need to carry the fixture, because npm ships only dist", () => {
     const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")) as { files: string[] }
-    expect(pkg.files).toEqual(["dist", "README.md", "LICENSE"])
+    expect(pkg.files).toEqual(["dist", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"])
   })
 })

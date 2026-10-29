@@ -25,7 +25,7 @@ const PAY_FLAGS = ["--wallet"]
 const PAY_BOOLEANS = ["--yes"]
 
 /** A recent blockhash on the payment's network: the CLI's own RPC on mainnet, public devnet on devnet. */
-function blockhashFor(ctx: CommandContext) {
+export function blockhashFor(ctx: CommandContext) {
   return async (network: X402ClientNetwork): Promise<string> => {
     if (network === SOLANA_DEVNET) {
       return createSolanaRpc(DEVNET_RPC_URL, ctx.deps.fetch, ctx.deps.sleep).getLatestBlockhash()

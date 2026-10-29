@@ -9,7 +9,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=18"
@@ -17,12 +18,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/candledottv/agentic.git",
+    "url": "git+https://github.com/candledottv/cli.git",
     "directory": "packages/cli"
   },
   "homepage": "https://docs.candle.tv/developers",
   "bugs": {
-    "url": "https://github.com/candledottv/agentic/issues"
+    "url": "https://github.com/candledottv/cli/issues"
   },
   "publishConfig": {
     "access": "public",

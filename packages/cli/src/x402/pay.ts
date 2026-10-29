@@ -216,8 +216,8 @@ function mayHoldWalletCredit(entries: SpendEntry[], address: string, network: st
   return entries.some((e) => e.keyless && e.state === "credited" && e.payer === address && e.network === network)
 }
 
-/** How the retried request ended, for the log. */
-function outcomeOf(second: ApiResult): { state: SpendState; signature?: string; reason?: string } {
+/** How the retried request ended, for the log. The plan payment (card C7) reads it the same way. */
+export function outcomeOf(second: ApiResult): { state: SpendState; signature?: string; reason?: string } {
   const settlement = settlementOf(second.headers)
   if (settlement?.success) {
     // Settled. Served is `settled`; a handler that failed after settlement earned a credit (3.7).

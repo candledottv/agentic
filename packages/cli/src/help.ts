@@ -961,6 +961,39 @@ export const HELP: Record<string, Topic> = {
     examples: ["candle quant terms", "candle quant terms --yes --json"],
     env: ENV_API,
   },
+  plan: {
+    group: "Account",
+    intro: "Buy Pro or Max by x402; signup, renewal, auto-renew",
+    summary: "Pro or Max for 30 days, paid by x402 from a vault key; signup and auto-renew",
+    description:
+      "buy pays for 30 days of Pro or Max in USDC from a Solana vault key, where the API sells plans by x402. It shows the price (with any Pro-to-Max credit), the pay-to address and Candle's terms, and pays after a typed confirm (or --yes), which also accepts the terms; the vault unlock still prompts. With this profile's API key the plan is that key's account's. With none, the vault key is the payer and becomes the account's identity: a wallet Candle already knows buys for its account, and an unknown one signs up. A signup makes a P-256 key signer on this machine that alone owns the new account's trading wallets, stores the returned API key in the profile and the signer in the secret store, and warns before paying: the vault key is the account's root, and losing the signer loses the wallets, with nothing to replace it. A payment whose outcome is not known yet (a 202 while Candle finishes the account, a 503, no answer) stays recorded here, and running buy or renew again resends that same payment, never a second one. status shows the plan, the period end, auto-renew and the last x402 plan payment. renew pays the next 30 days now. auto-renew on makes any other command run at a terminal within 3 days before the period ends renew it, at most once every 12 hours, up to the list price last confirmed here, unless candle spend pause is on. Plan payments are logged in candle spend's log and are outside its daily limit and per-call ceiling. Where the API does not sell plans by x402, these commands say so and pay nothing.",
+    usage: [
+      "candle plan buy pro|max [--wallet <vault key>] [--yes] [--auto-renew] [--signer-out <pem>] [--json]",
+      "candle plan status [--json]",
+      "candle plan renew [--wallet <vault key>] [--yes] [--json]",
+      "candle plan auto-renew on|off [--json]",
+    ],
+    rows: [
+      { invocation: "buy pro|max", description: "Buy 30 days; signs up when this machine has no key" },
+      { invocation: "status", description: "Plan, period end, auto-renew, last x402 payment" },
+      { invocation: "renew", description: "Pay the next 30 days now" },
+      { invocation: "auto-renew on|off", description: "Renew from 3 days before the period ends" },
+    ],
+    flags: [
+      {
+        invocation: "--wallet <vault key>",
+        description: "The Solana vault key that pays, by label or address (needed when the vault has several)",
+      },
+      { invocation: "--yes", description: "Pay and accept the terms without the typed confirm" },
+      { invocation: "--auto-renew", description: "buy: turn auto-renew on once the plan is bought" },
+      {
+        invocation: "--signer-out <pem>",
+        description: "buy, signup: also write the key signer's private key here (mode 0600) as a backup",
+      },
+    ],
+    examples: ["candle plan buy pro", "candle plan status", "candle plan renew", "candle plan auto-renew on"],
+    env: ["CANDLE_API_URL", "CANDLE_X402_NETWORK", "CANDLE_X402_PAY_TO", "CANDLE_CONFIG_DIR"],
+  },
   plans: {
     group: "Account",
     intro: "API plans: prices, fees, limits and what each does",

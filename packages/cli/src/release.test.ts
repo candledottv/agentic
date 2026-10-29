@@ -118,7 +118,7 @@ describe("release identity", () => {
     const readme = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8")
     expect(readme).not.toContain("--signer-workflow")
     expect(readme).toContain(
-      "gh attestation verify candle-darwin-arm64 --repo candledottv/agentic \\\n  --cert-identity https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v",
+      "gh attestation verify candle-darwin-arm64 --repo candledottv/cli \\\n  --cert-identity https://github.com/candledottv/cli/.github/workflows/release.yaml@refs/tags/cli-v",
     )
   })
 })

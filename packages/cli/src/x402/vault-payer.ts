@@ -61,49 +61,64 @@ export function vaultPayer(ctx: CommandContext, options: VaultPayerOptions): Pay
       )
     },
     async open(offer: PaymentOffer): Promise<PaymentSigner> {
-      assertTerminal(ctx)
-      const resolved = vaultPathFor(ctx, { positionals: [], values: {}, booleans: new Set() })
-      if ("error" in resolved) throw new VaultError("VAULT_MISSING", resolved.error)
-      const raw = await requireVaultRaw(ctx, resolved)
-      const opened = await unlockInteractively(ctx, resolved.path, raw, {
+      return openVaultSigner(ctx, {
+        ...(options.wallet !== undefined ? { wallet: options.wallet } : {}),
         reason: `pay ${offer.priceText} USDC`,
-        purpose: "x402 payment",
       })
-      const vault = opened.vault
-      try {
-        const keys = vault.index.entries.filter((e) => e.role === "vault" && e.chain === "solana")
-        const named = options.wallet
-        const matches = named === undefined ? keys : keys.filter((e) => e.label === named || e.address === named)
-        if (matches.length === 0) {
-          throw new VaultError(
-            "VAULT_LABEL_NOT_FOUND",
-            named === undefined
-              ? "This vault has no Solana vault key to pay with. Nothing was paid."
-              : `No Solana vault key matches --wallet ${named}. Nothing was paid.`,
-            { suggestion: "List the keys with: candle vault list" },
-          )
-        }
-        if (matches.length > 1) {
-          throw new VaultError(
-            "VAULT_LABEL_AMBIGUOUS",
-            `This vault has ${matches.length} Solana vault keys; name the one that pays with --wallet <label>. Nothing was paid.`,
-            { suggestion: `Keys: ${matches.map((e) => e.label).join(", ")}` },
-          )
-        }
-        const entry = matches[0] as (typeof matches)[number]
-        const secret = await decryptKey(vault, entry.id)
-        return {
-          address: entry.address,
-          sign: (message) => signMessage(message, secret),
-          close: () => {
-            wipe(secret)
-            closeVault(vault)
-          },
-        }
-      } catch (error) {
-        closeVault(vault)
-        throw error
-      }
     },
+  }
+}
+
+/**
+ * Unlocks the vault at a terminal and opens the one Solana vault key that pays: `wallet` by label or
+ * address, else the only one. Shared by the per-use payer above and the plan commands (card C7),
+ * which need the payer's address before the quote. The caller closes the signer.
+ */
+export async function openVaultSigner(
+  ctx: CommandContext,
+  options: { wallet?: string; reason: string },
+): Promise<PaymentSigner> {
+  assertTerminal(ctx)
+  const resolved = vaultPathFor(ctx, { positionals: [], values: {}, booleans: new Set() })
+  if ("error" in resolved) throw new VaultError("VAULT_MISSING", resolved.error)
+  const raw = await requireVaultRaw(ctx, resolved)
+  const opened = await unlockInteractively(ctx, resolved.path, raw, {
+    reason: options.reason,
+    purpose: "x402 payment",
+  })
+  const vault = opened.vault
+  try {
+    const keys = vault.index.entries.filter((e) => e.role === "vault" && e.chain === "solana")
+    const named = options.wallet
+    const matches = named === undefined ? keys : keys.filter((e) => e.label === named || e.address === named)
+    if (matches.length === 0) {
+      throw new VaultError(
+        "VAULT_LABEL_NOT_FOUND",
+        named === undefined
+          ? "This vault has no Solana vault key to pay with. Nothing was paid."
+          : `No Solana vault key matches --wallet ${named}. Nothing was paid.`,
+        { suggestion: "List the keys with: candle vault list" },
+      )
+    }
+    if (matches.length > 1) {
+      throw new VaultError(
+        "VAULT_LABEL_AMBIGUOUS",
+        `This vault has ${matches.length} Solana vault keys; name the one that pays with --wallet <label>. Nothing was paid.`,
+        { suggestion: `Keys: ${matches.map((e) => e.label).join(", ")}` },
+      )
+    }
+    const entry = matches[0] as (typeof matches)[number]
+    const secret = await decryptKey(vault, entry.id)
+    return {
+      address: entry.address,
+      sign: (message) => signMessage(message, secret),
+      close: () => {
+        wipe(secret)
+        closeVault(vault)
+      },
+    }
+  } catch (error) {
+    closeVault(vault)
+    throw error
   }
 }
