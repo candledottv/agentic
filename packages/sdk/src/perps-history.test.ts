@@ -297,24 +297,34 @@ describe("paging", () => {
   })
 
   test("a later read that cannot leave its boundary millisecond also stops there", async () => {
+    // Every cursor read re-reads the full 2,000-fill response at t=7 and takes `limit` new fills, so
+    // draining it takes 2,000 / limit reads. At limit 10 that was 200 reads of 2,000 fills, about 0.8s
+    // locally and over the 5s timeout on a loaded hosted runner (BE-2066); 400 keeps it to a handful.
+    const limit = 400
     const rows = [fill(1, 1), ...Array.from({ length: 2100 }, (_, i) => fill(7, i + 2))]
     const v = venue(server(rows, 2000))
-    const page = (await read("fills", v.fetch, { startTime: 0, endTime: 100, limit: 10 })) as PerpsFillsPage
-    expect(page.fills).toHaveLength(10)
+    const page = (await read("fills", v.fetch, { startTime: 0, endTime: 100, limit })) as PerpsFillsPage
+    expect(page.fills).toHaveLength(limit)
     expect(page.fills[0]?.tid).toBe(1)
-    const next = (await read("fills", v.fetch, { cursor: page.nextCursor as string, limit: 10 })) as PerpsFillsPage
-    expect(next.fills).toHaveLength(10)
+    const next = (await read("fills", v.fetch, { cursor: page.nextCursor as string, limit })) as PerpsFillsPage
+    expect(next.fills).toHaveLength(limit)
     // Draining: the cursor stays on t=7 and stops at the boundary once a full read cannot advance.
+    const seen = [...page.fills, ...next.fills].map((f) => f.tid)
     let cursor = next.nextCursor
     let last = next
     let pages = 0
-    while (cursor && pages < 300) {
-      last = (await read("fills", v.fetch, { cursor, limit: 10 })) as PerpsFillsPage
+    while (cursor && pages < 20) {
+      last = (await read("fills", v.fetch, { cursor, limit })) as PerpsFillsPage
+      seen.push(...last.fills.map((f) => f.tid))
       cursor = last.nextCursor
       pages++
     }
+    expect(cursor).toBeNull()
     expect(last.truncated).toBe(true)
     expect(last.warnings.map((w) => w.code)).toContain("PERPS_HISTORY_BOUNDARY_LIMIT")
+    // Every fill the t=7 response carried arrived exactly once before the stop: t=1 plus 2,000 at t=7.
+    expect(new Set(seen).size).toBe(seen.length)
+    expect(seen).toHaveLength(2001)
     expect(v.historyCalls().every((c) => c.body.startTime === 0 || c.body.startTime === 7)).toBe(true)
   })
 
