@@ -36,8 +36,8 @@
     },
     "rate_limit": {
       "retryable": true,
-      "action": "Back off and retry after the named window: honor retry_after_seconds when the body carries it (SWAP_ROUTE_FAILING), back off exponentially otherwise. DAILY_CAP_REACHED resets on the UTC day, so do not retry it inside the same day.",
-      "codes": ["RATE_LIMITED", "DAILY_CAP_REACHED", "SWAP_ROUTE_FAILING"]
+      "action": "Back off and retry after the named window: honor retry_after_seconds when the body carries it (SWAP_ROUTE_FAILING), back off exponentially otherwise. DAILY_CAP_REACHED and ACCOUNTS_DAILY_CAP reset on the UTC day, so do not retry them inside the same day.",
+      "codes": ["RATE_LIMITED", "DAILY_CAP_REACHED", "SWAP_ROUTE_FAILING", "ACCOUNTS_DAILY_CAP"]
     },
     "payment": {
       "retryable": true,
@@ -97,7 +97,11 @@
         "REBIND_TOO_MANY",
         "KEY_SIGNER_CODE_INVALID",
         "KEY_SIGNER_FINGERPRINT_MISMATCH",
-        "CURVE_OUT_OF_RANGE"
+        "CURVE_OUT_OF_RANGE",
+        "ACCOUNTS_NAME_INVALID",
+        "SIGNER_PUBLIC_KEY_INVALID",
+        "USERNAME_INVALID",
+        "SCOPE_NOT_ALLOWED"
       ]
     },
     "market": {
@@ -154,7 +158,7 @@
     },
     "state_conflict": {
       "retryable": false,
-      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id. BRIDGE_IN_FLIGHT: a bridge into or out of this wallet is still open; read `candle swap status` and record the sweep once it closes or its two hours pass. HOLD_NOT_RELEASABLE: the trade's USD window hold stays; when error.retryable is true, call again after retryAfter (or at once for reason `changed`). FEE_NOT_CLAIMABLE: nothing was signed; error.reason says why (below_dust, wallet_not_signable, not_recipient, insufficient_gas), and only below_dust and insufficient_gas change with time or funding.",
+      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id. BRIDGE_IN_FLIGHT: a bridge into or out of this wallet is still open; read `candle swap status` and record the sweep once it closes or its two hours pass. HOLD_NOT_RELEASABLE: the trade's USD window hold stays; when error.retryable is true, call again after retryAfter (or at once for reason `changed`). FEE_NOT_CLAIMABLE: nothing was signed; error.reason says why (below_dust, wallet_not_signable, not_recipient, insufficient_gas), and only below_dust and insufficient_gas change with time or funding. ACCOUNT_EXISTS and PAYER_IN_SIGNUP: the wallet already has an account or a signup under way; do not create another. INPUT_MISMATCH and SIGNER_MISMATCH on an account signup: resume with the original inputs and signer, never new ones. TERMS_VERSION_STALE: show the version in error.data and ask again.",
       "codes": [
         "IDEMPOTENCY_CONFLICT",
         "TRADE_ALREADY_CLAIMED",
@@ -187,7 +191,12 @@
         "HOLD_NOT_RELEASABLE",
         "FEE_NOT_CLAIMABLE",
         "OPERATION_PENDING",
-        "PAYMENT_ALREADY_USED"
+        "PAYMENT_ALREADY_USED",
+        "TERMS_VERSION_STALE",
+        "INPUT_MISMATCH",
+        "ACCOUNT_EXISTS",
+        "PAYER_IN_SIGNUP",
+        "USERNAME_TAKEN"
       ]
     },
     "quota": {
@@ -203,7 +212,7 @@
     },
     "availability": {
       "retryable": true,
-      "action": "The capability is switched off or a required leg is absent in this environment. Retry later; escalate if it persists.",
+      "action": "The capability is switched off or a required leg is absent in this environment. Retry later; escalate if it persists. TEST_FLEET_PRODUCTION_DISABLED is a standing refusal on any deployment that is not staging: do not retry it there.",
       "codes": [
         "LAUNCH_DISABLED",
         "FEE_LEG_MISSING",
@@ -211,7 +220,9 @@
         "CLOSE_LEDGER_UNAVAILABLE",
         "PERPS_WITHDRAW_DISABLED",
         "TOKEN_EVENTS_DISABLED",
-        "TOKEN_CARD_DISABLED"
+        "TOKEN_CARD_DISABLED",
+        "TEST_FLEET_PRODUCTION_DISABLED",
+        "ACCOUNTS_UNAVAILABLE"
       ]
     },
     "venue_refused": {
