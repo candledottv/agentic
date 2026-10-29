@@ -74,6 +74,14 @@ export interface ProfileConfig {
    * editing this field restores no credential to the plain CLI.
    */
   coreOwned?: boolean
+  /**
+   * `candle accounts create` (cli-account-create spec 5, step 6): the NAME of the fleet keychain item
+   * holding this test account's API key (`candle-fleet-<env>-<name>-apikey`, fleet R6.10), which a
+   * reviewed owner sibling set. This is a public fleet record: ordinary CLI authentication is
+   * refused until a separate custody decision permits it (spec 6, fleet R9.3). Never the key
+   * itself, and the key is not at `profile:<name>:api_key`.
+   */
+  apiKeyItem?: string
 }
 
 /** Plain, non-secret CLI state. See this file's header comment: no credential fields belong here. */

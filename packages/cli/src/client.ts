@@ -109,7 +109,7 @@ export const ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP"
  * block counts, not just `127.0.0.1`: `127.0.0.2` and friends are equally loopback, and a dev who
  * picked one should not get a security error for it.
  */
-function isLoopbackHost(hostname: string): boolean {
+export function isLoopbackHost(hostname: string): boolean {
   const host = hostname.toLowerCase()
   if (host === "localhost" || host.endsWith(".localhost")) return true
   if (host === "::1" || host === "[::1]") return true

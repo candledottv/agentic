@@ -16,6 +16,24 @@ import { shortId } from "./render"
 
 export type { ProfileConfig }
 
+/** Section 6 confines fleet credentials to the reviewed runner. An item reference in public
+ * config does not authorize ordinary CLI access, even if another credential is exported/stored. */
+export class ProfileFleetOnlyError extends Error {
+  readonly code = "ACCOUNTS_FLEET_RUNNER_REQUIRED"
+  constructor(profile: string) {
+    super(
+      `Profile ${profile} is a public fleet record. Its credentials may be read only by the reviewed fleet runner under the runner lock and custody guards (account-create spec section 6; fleet R9.3). Ordinary CLI authentication needs a separate custody decision; do not copy the key into a profile secret slot or export it.`,
+    )
+    this.name = "ProfileFleetOnlyError"
+  }
+}
+
+export function assertOrdinaryProfile(config: CliConfig, profile?: string): void {
+  if (profile !== undefined && config.profiles?.[profile]?.apiKeyItem !== undefined) {
+    throw new ProfileFleetOnlyError(profile)
+  }
+}
+
 /** `profile:<name>:device_token` / `profile:<name>:api_key`, mirroring walletSignerRef's per-wallet
  * namespacing so the store needs no new concept. */
 export function profileSecretRef(name: string, kind: "deviceToken" | "apiKey"): string {

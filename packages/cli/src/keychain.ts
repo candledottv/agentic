@@ -195,6 +195,30 @@ export class KeychainSecretStore implements SecretStore {
 }
 
 /**
+ * `candle accounts create` (cli-account-create spec 5, step 3): a fleet item's secret, read the way
+ * `KeychainSecretStore.get` reads, with the item as the SERVICE and `account` as the account (fleet
+ * R6.6 names items `candle-fleet-<env>-<name>-<chain>`, account `candle`). Null when the item does
+ * not exist. Only the identity item `K` is read this way; the signer item is checked with
+ * {@link keychainItemExists}, which never asks for the secret.
+ */
+export async function readKeychainItem(item: string, account: string, binary = "security"): Promise<string | null> {
+  const result = await run(binary, ["find-generic-password", "-s", item, "-a", account, "-w"])
+  if (result.status === 44) return null
+  if (result.status === 128 || /interaction is not allowed/i.test(result.stderr)) throw new SecretStoreLockedError()
+  if (result.status !== 0) throw new SecretStoreReadError(result.status, result.stderr, item)
+  return result.stdout.replace(/\n$/, "")
+}
+
+/** Whether a fleet item exists: `find-generic-password` without `-w`, so no secret is printed or read. */
+export async function keychainItemExists(item: string, account: string, binary = "security"): Promise<boolean> {
+  const result = await run(binary, ["find-generic-password", "-s", item, "-a", account])
+  if (result.status === 44) return false
+  if (result.status === 128 || /interaction is not allowed/i.test(result.stderr)) throw new SecretStoreLockedError()
+  if (result.status !== 0) throw new SecretStoreReadError(result.status, result.stderr, item)
+  return true
+}
+
+/**
  * A `SecretStore` backed by the Linux Secret Service via the `secret-tool` CLI (libsecret).
  * `binary` defaults to `"secret-tool"`, resolved through `PATH`; see `KeychainSecretStore` for why
  * tests prefer the `PATH` seam over this override.

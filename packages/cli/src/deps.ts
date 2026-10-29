@@ -18,8 +18,9 @@
 import type { CliConfig, ProfileConfig } from "./config"
 import { isCoreOwned, ProfileCoreOwnedError } from "./core/ownership"
 import type { OpenTape } from "./core/signals"
+import type { AccountsHost } from "./fleet-accounts"
 import type { PresentationFlags } from "./presentation"
-import { profileSecretRef } from "./profiles"
+import { assertOrdinaryProfile, profileSecretRef } from "./profiles"
 import type { VerifyResult } from "./release-verify"
 import type { SecretStore } from "./secret-store"
 import { SECRET_REFS } from "./secret-store"
@@ -230,6 +231,13 @@ export interface Deps {
    * absent, the core uses the runtime's WebSocket; a test passes a fake so no socket is opened.
    */
   openTape?: OpenTape
+  /**
+   * `candle accounts create` (cli-account-create spec 5 and 6): the runner lock, the owner-controlled
+   * files under `/Users/a/.claude/ops`, the fleet keychain items and the reviewed API-key sibling.
+   * Optional: absent, the command uses `liveAccountsHost()`. Tests pass temp directories and fakes
+   * here, the only way the fixed owner paths move.
+   */
+  accountsHost?: AccountsHost
 }
 
 /** A `token` line of the sealed EVM record (D1): a token a landed leg on `wallet` traded. */
@@ -274,6 +282,7 @@ export interface CommandContext {
  * through here. A profile with nothing stored resolves to undefined, never to another identity.
  * A core-owned profile (BE-1665, K-11) throws `ProfileCoreOwnedError` instead. */
 export async function resolveDeviceToken(deps: Deps, profile?: string): Promise<string | undefined> {
+  if (profile !== undefined) assertOrdinaryProfile(await deps.readConfig(), profile)
   const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim()
   if (fromEnv) return fromEnv
   // BE-1665 (K-11): a core-owned profile's device token is in the core-only slot, and no plain
@@ -291,6 +300,7 @@ export async function resolveDeviceToken(deps: Deps, profile?: string): Promise<
  * For a core-owned profile (BE-1665, K-11) the profile's ref holds only its Read key: the Write
  * key is in the core-only slot. */
 export async function resolveApiKey(deps: Deps, profile?: string): Promise<string | undefined> {
+  if (profile !== undefined) assertOrdinaryProfile(await deps.readConfig(), profile)
   const fromEnv = deps.env.CANDLE_API_KEY?.trim()
   if (fromEnv) return fromEnv
   const ref = profile ? profileSecretRef(profile, "apiKey") : SECRET_REFS.apiKey

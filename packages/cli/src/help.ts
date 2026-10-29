@@ -972,6 +972,49 @@ export const HELP: Record<string, Topic> = {
     examples: ["candle plans", "candle plans --json", "candle plans --api-url https://staging.api.candle.tv"],
     env: ["CANDLE_API_URL"],
   },
+  accounts: {
+    group: "Account",
+    intro: "Create a staging test account from fleet keychain items",
+    summary: "Create a staging test member from fleet keychain items, with no browser",
+    description:
+      "create makes a complete Free test member on staging, tagged test-fleet so the KPI figures exclude it, with Solana and Hood TEE wallets and a first API key, and prints only public fields. It runs on macOS only, at a terminal (the owner runs it in their own Terminal; unattended use needs the owner's D10 approval in activation.json), and holds the fleet runner lock for the whole run. The identity key is read from the login keychain item candle-fleet-<env>-<name>-sol, made by the owner script, and signs a Candle x402 create_account proof; it is never printed and never taken from a flag, the environment or stdin. The key signer is never read: its public half comes from the owner's sealed-signer receipt, and its item candle-fleet-<env>-<name>-signer is checked for existence only; this command never makes a signer. The API key Candle returns once is handed on stdin to the hash-pinned reviewed sibling, which seals it into candle-fleet-<env>-<name>-apikey; the profile keeps that item's name, never the key. It is a public fleet record: ordinary CLI authentication, including doctor, refuses with ACCOUNTS_FLEET_RUNNER_REQUIRED. Credential reads belong to the reviewed fleet runner under R9.3; general profile use needs a separate custody decision. --use selects the record and grants no credential access. A run is refused before anything is sent when that item already exists (--yes does not override it), when the default username fleet-<env>-<name> is over 30 characters (choose one with --username), or when the sibling or the signer receipt does not check. --env staging is https://staging.api.candle.tv and ignores CANDLE_API_URL; --env local needs a loopback CANDLE_API_URL; production is refused. --scopes narrows the default scopes and never widens them. Exit codes: 0 created, 1 refused by the API, 2 refused here (nothing sent), 3 pending (run again with the same signer) or the key could not be stored.",
+    usage: [
+      "candle accounts create --env staging|local --name <fleet-name> [--key-item <item>] [--signer-item <item>] [--username <handle>] [--scopes <a,b,c>] [--profile <name>] [--use] [--yes] [--json]",
+    ],
+    rows: [
+      {
+        invocation: "create --env staging --name <fleet-name>",
+        description: "Create the test member, its TEE wallets and first key; store the key through the sibling",
+      },
+    ],
+    flags: [
+      {
+        invocation: "--env staging|local",
+        description: "staging, or a loopback API for local tests; production is refused",
+      },
+      { invocation: "--name <fleet-name>", description: "The fleet name, ^[a-z][a-z0-9-]{1,23}$" },
+      {
+        invocation: "--key-item <item>",
+        description: "The identity key's keychain item (default candle-fleet-<env>-<name>-sol)",
+      },
+      {
+        invocation: "--signer-item <item>",
+        description: "The sealed signer's item (default candle-fleet-<env>-<name>-signer)",
+      },
+      {
+        invocation: "--username <handle>",
+        description: "The username (default fleet-<env>-<name>, 30 characters at most)",
+      },
+      { invocation: "--scopes <a,b,c>", description: "Narrow the key's default scopes" },
+      { invocation: "--use", description: "Make the new profile the active one" },
+      { invocation: "--yes", description: "Accept the terms without the typed confirm; needed with --json" },
+    ],
+    examples: [
+      "candle accounts create --env staging --name free-b",
+      "candle accounts create --env staging --name long-fleet-name-17 --username fleet-long-17",
+    ],
+    env: ["CANDLE_API_URL", "CANDLE_CONFIG_DIR"],
+  },
   keys: {
     group: "Account",
     summary: "API keys, and the wallets each key may use",

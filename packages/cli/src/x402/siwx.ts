@@ -67,13 +67,21 @@ export function spendStatement(address: string): string {
   return `Candle x402 spend_credit ${address}`
 }
 
+/**
+ * `candle accounts create` (cli-account-create spec 4.2): the proof that the caller holds `K`, target
+ * `K` itself. The server's `siwxStatement("create_account", K)`.
+ */
+export function createAccountStatement(address: string): string {
+  return `Candle x402 create_account ${address}`
+}
+
 /** The SIWS message, as upstream's `formatSIWSMessage` and the server's `siwsMessage` build it. */
-export function siwsMessage(challenge: SpendChallenge, address: string): string {
+export function siwsMessage(challenge: SpendChallenge, address: string, statement = spendStatement(address)): string {
   const lines = [
     `${challenge.domain} wants you to sign in with your Solana account:`,
     address,
     "",
-    spendStatement(address),
+    statement,
     "",
     `URI: ${challenge.uri}`,
     `Version: ${challenge.version}`,
@@ -91,11 +99,29 @@ export function spendProofHeader(
   address: string,
   sign: (message: Uint8Array) => Uint8Array,
 ): string {
-  const signature = sign(new TextEncoder().encode(siwsMessage(challenge, address)))
+  return proofHeader(challenge, address, spendStatement(address), sign)
+}
+
+/** The `create_account` header `POST /api/v1/agent/accounts` verifies (cli-account-create 5, step 5). */
+export function createAccountProofHeader(
+  challenge: SpendChallenge,
+  address: string,
+  sign: (message: Uint8Array) => Uint8Array,
+): string {
+  return proofHeader(challenge, address, createAccountStatement(address), sign)
+}
+
+function proofHeader(
+  challenge: SpendChallenge,
+  address: string,
+  statement: string,
+  sign: (message: Uint8Array) => Uint8Array,
+): string {
+  const signature = sign(new TextEncoder().encode(siwsMessage(challenge, address, statement)))
   return encodeHeader({
     domain: challenge.domain,
     address,
-    statement: spendStatement(address),
+    statement,
     uri: challenge.uri,
     version: challenge.version,
     chainId: challenge.chainId,
