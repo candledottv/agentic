@@ -33,7 +33,7 @@ import type { CommandContext } from "../deps"
 import { writeFields, writeSuccess } from "../human-output"
 import { notice } from "../presentation"
 import { VaultError } from "../vault/errors"
-import type { KeyEntry } from "../vault/format"
+import { isRetiredTee, type KeyEntry } from "../vault/format"
 import { entriesWithLabel, resolveRenameTarget, validateLabel } from "../vault/labels"
 import { parseRenamePairs, planBatchRename, type RenameFinding, type RenamePair } from "../vault/rename-batch"
 import { commitVault } from "../vault/store"
@@ -111,6 +111,7 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
     if (batch) {
       const { plan, findings } = planBatchRename(vault.index, rows)
       if (findings.length > 0) return batchRefusal(ctx, findings, 1)
+      const retiredCount = plan.filter(({ entry }) => isRetiredTee(entry)).length
       const renamed = plan.map(({ entry, to }) => ({
         id: entry.id,
         address: entry.address,
@@ -139,6 +140,14 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
         writeFields(deps, "stdout", [
           ["Mode", dryRun ? "Dry run: nothing was written." : "Renamed keys in one commit."],
           ["Keys", renamed.length],
+          ...(retiredCount > 0
+            ? [
+                [
+                  "Candle",
+                  `not changed: ${retiredCount} retired TEE ${retiredCount === 1 ? "wallet was" : "wallets were"} disabled there`,
+                ] as const,
+              ]
+            : []),
         ])
         for (const row of renamed)
           writeFields(deps, "stdout", [
@@ -158,8 +167,11 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
     const entry = resolveTarget(vault.index, old, id)
 
     // D6: a TEE wallet's label also lives on the linked wallet Candle holds, so renaming the local
-    // half here would give one wallet two names. `tee rename` changes both (BE-1146).
-    if (entry.role === "tee-wallet") {
+    // half here would give one wallet two names. `tee rename` changes both (BE-1146). A retired
+    // one is the exception: its linked wallet was disabled by the demote, `tee rename` no longer
+    // resolves it, and the vault entry is the only copy of the label left to change.
+    const retired = isRetiredTee(entry)
+    if (entry.role === "tee-wallet" && !retired) {
       throw new VaultError(
         "VAULT_RENAME_ROLE_REFUSED",
         `${entry.label} is a TEE wallet. Its label was sent to Candle when it was enabled and \`candle wallets\` lists that copy, so renaming it here would give one wallet two names.`,
@@ -215,6 +227,7 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
       ["Id", entry.id],
       ["Role", entry.role],
       ["Unchanged", "address, derivation path, key blob, every envelope"],
+      ...(retired ? [["Candle", "not changed: this retired TEE wallet was disabled there"] as const] : []),
     ])
 
     return 0

@@ -215,6 +215,95 @@ const THREE_KEYS = [
   entryAt(2, { label: "", role: "tee-wallet", origin: "migrated-tee" }),
 ]
 
+/** A demoted TEE wallet whose sweep finished, as `tee.ts` leaves it: lifecycle `retired`. */
+function retiredAt(index: number, label: string): KeyEntry {
+  const entry = entryAt(index, { label, role: "tee-wallet" })
+  return {
+    ...entry,
+    tee: { lifecycle: "retired", network: "solana-mainnet", vaultDestination: fakeAddress(0) },
+  }
+}
+
+const WITH_RETIRED = [
+  entryAt(0, { label: "treasury" }),
+  entryAt(1, { label: "hot", role: "tee-wallet" }),
+  retiredAt(2, "spider-01"),
+]
+
+describe("retired TEE wallets (2026-10-29 retired-wallets spec, D2 and D3)", () => {
+  const rowsOf = (text: string) => text.split("\n").filter((line) => line.trimStart().startsWith(STEM))
+
+  test("hidden by default, counted, with a LIFECYCLE column and the --all hint", async () => {
+    const fx = await vaultWith(WITH_RETIRED)
+    const h = harness({ dir: fx.dir })
+    expect(await run(["vault", "list"], h.deps)).toBe(0)
+
+    expect(humanText(h.stdout.text)).toContain(`Vault ${fx.path} Keys 3 Matching 2`)
+    expect(h.stdout.text).toContain("LIFECYCLE")
+    const rows = rowsOf(h.stdout.text)
+    expect(rows.map((row) => row.trimStart().slice(0, 44))).toEqual([fakeAddress(0), fakeAddress(1)])
+    expect(rows[1]).toContain("local-candidate")
+    expect(h.stdout.text).not.toContain("spider-01")
+    expect(humanText(h.stdout.text)).toContain(humanText("1 retired TEE wallet hidden; add --all to show it."))
+  })
+
+  test("--all lists them with their lifecycle and prints no hint", async () => {
+    const fx = await vaultWith(WITH_RETIRED)
+    const h = harness({ dir: fx.dir })
+    expect(await run(["vault", "list", "--all"], h.deps)).toBe(0)
+
+    const rows = rowsOf(h.stdout.text)
+    expect(rows).toHaveLength(3)
+    expect(rows[2]).toContain("spider-01")
+    expect(rows[2]).toContain("retired")
+    expect(h.stdout.text).not.toContain("hidden")
+  })
+
+  test("--json leaves them out of entries and reports hiddenRetired; --all puts them back", async () => {
+    const fx = await vaultWith(WITH_RETIRED)
+    const h = harness({ dir: fx.dir })
+    expect(await run(["vault", "list", "--json"], h.deps)).toBe(0)
+    const body = JSON.parse(h.stdout.text) as {
+      total: number
+      matched: number
+      hiddenRetired: number
+      entries: { address: string }[]
+    }
+    expect(body.total).toBe(3)
+    expect(body.matched).toBe(2)
+    expect(body.hiddenRetired).toBe(1)
+    expect(body.entries.map((entry) => entry.address)).toEqual([fakeAddress(0), fakeAddress(1)])
+
+    const all = harness({ dir: fx.dir })
+    expect(await run(["vault", "list", "--all", "--json"], all.deps)).toBe(0)
+    const shown = JSON.parse(all.stdout.text) as {
+      matched: number
+      hiddenRetired: number
+      entries: { teeLifecycle?: string }[]
+    }
+    expect(shown.matched).toBe(3)
+    expect(shown.hiddenRetired).toBe(0)
+    expect(shown.entries[2]?.teeLifecycle).toBe("retired")
+  })
+
+  test("--balances never sends a hidden address", async () => {
+    const fx = await vaultWith(WITH_RETIRED)
+    const h = harness({ dir: fx.dir })
+    expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL], h.deps)).toBe(0)
+    const sent = h.calls.flatMap((call) => call.addresses)
+    expect(sent).toEqual([fakeAddress(0), fakeAddress(1)])
+  })
+
+  test("a filter that matches only retired wallets says so instead of 'no key matches'", async () => {
+    const fx = await vaultWith(WITH_RETIRED)
+    const h = harness({ dir: fx.dir })
+    expect(await run(["vault", "list", "spider"], h.deps)).toBe(0)
+    expect(humanText(h.stdout.text)).toContain(
+      humanText('No live key matches "spider". 1 retired TEE wallet hidden; add --all to show it.'),
+    )
+  })
+})
+
 describe("T4: the listing itself", () => {
   test("one line per key, four columns, in index order, with the prompt on stderr", async () => {
     const fx = await vaultWith(THREE_KEYS)

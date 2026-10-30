@@ -26,6 +26,10 @@
  * line (and, once per machine, the public-endpoint notice) before the first request, and stops
  * sending chunks after one is still rate-limited after the client's retry: those addresses read
  * `?`, exit 3, and the stderr line carries `RPC_RATE_LIMITED` and the fix.
+ *
+ * Retired TEE wallets (spec `2026-10-29-cli-retired-wallets-design.md`, D2 and D3): a LIFECYCLE
+ * column, and entries whose demote sweep finished are left out unless `--all`. They are hidden
+ * before the balance reads, so they cost no request, and the output says how many were hidden.
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
@@ -45,7 +49,7 @@ import { writeFields, writeTable } from "../human-output"
 import { notice, symbols, terminalStyle } from "../presentation"
 import { describeRpcFailure, openSolanaClient, rateLimitedReadFailure, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited } from "../solana-lite"
-import type { KeyEntry } from "../vault/format"
+import { isRetiredTee, type KeyEntry } from "../vault/format"
 import { readVaultRaw } from "../vault/store"
 import {
   describeEntry,
@@ -180,7 +184,7 @@ function evmRequestsPlanned(count: number): string {
 export async function vaultList(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--rpc-url", "--evm-rpc-url"],
-    booleanFlags: ["--balances", "--accept-older-copy"],
+    booleanFlags: ["--balances", "--accept-older-copy", "--all"],
     pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
@@ -229,7 +233,13 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
         .vault,
     )
     const all = vault.index.entries
-    const matched = filter === undefined ? all : all.filter((entry) => matches(entry, filter))
+    const filtered = filter === undefined ? all : all.filter((entry) => matches(entry, filter))
+    // D3: a retired TEE wallet is a backup of a key that no longer holds or signs anything, so it
+    // is out of the listing unless asked for, and out of the balance batch with it.
+    const showRetired = parsed.booleans.has("--all")
+    const matched = showRetired ? filtered : filtered.filter((entry) => !isRetiredTee(entry))
+    const hiddenRetired = filtered.length - matched.length
+    const hiddenLine = `${hiddenRetired} retired TEE ${hiddenRetired === 1 ? "wallet" : "wallets"} hidden; add --all to show ${hiddenRetired === 1 ? "it" : "them"}.`
 
     // The batch is the MATCHED Solana set, in index order: an address the filter did not keep is
     // never sent, which is what makes a filtered read the smaller disclosure as well as the
@@ -311,6 +321,7 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
         path,
         total: all.length,
         matched: matched.length,
+        hiddenRetired,
         ...(filter === undefined ? {} : { filter }),
         entries: matched.map((entry) => {
           const held = lamports.get(entry.address)
@@ -364,7 +375,10 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
         deps,
         "stdout",
         "note",
-        `No key matches "${filter}". ${all.length} keys in this vault; candle vault list with no filter lists them.\n`.trim(),
+        (hiddenRetired > 0
+          ? `No live key matches "${filter}". ${hiddenLine}`
+          : `No key matches "${filter}". ${all.length} keys in this vault; candle vault list with no filter lists them.`
+        ).trim(),
       )
       return 0
     }
@@ -375,7 +389,7 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
       ["Matching", matched.length],
       ["Filter", filter],
     ])
-    const headers = ["ADDRESS", "LABEL", "ROLE", "DERIVATION"]
+    const headers = ["ADDRESS", "LABEL", "ROLE", "LIFECYCLE", "DERIVATION"]
     if (balances) headers.push("SOL")
     // Phase 4a: an ETH column when an EVM row was read, named by the chain when it is not Hood so
     // ETH on another chain is not mistaken for Hood ETH (D1), and a USDG column on Hood only.
@@ -388,6 +402,8 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
         entry.address,
         entry.label || symbols(terminalStyle(deps, "stdout")).missing,
         entry.role,
+        // D2: only a TEE wallet has a lifecycle; every other role reads `-`.
+        entry.tee?.lifecycle ?? symbols(terminalStyle(deps, "stdout")).missing,
         entry.derivation?.path ?? symbols(terminalStyle(deps, "stdout")).missing,
       ]
       if (balances) {
@@ -418,9 +434,9 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
           ? { id: true }
           : i === 1
             ? { priority: 2 }
-            : i === 3
+            : i === 4
               ? { priority: 3 }
-              : i >= 4
+              : i >= 5
                 ? { align: "right" as const, priority: 1 }
                 : {},
       ),
@@ -458,6 +474,7 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
         )
       }
     }
+    if (hiddenRetired > 0) notice(deps, "stdout", "note", hiddenLine)
     // Exit 3 is the shipped meaning of "pending or partial" (`vault/errors.ts`; `wallets revoke`
     // already exits 3 with a success-shaped document on stdout). The listing succeeded; part of an
     // optional read did not, and that is not a refusal and mints no new error code.

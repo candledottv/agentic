@@ -1171,8 +1171,16 @@ export const HELP: Record<string, Topic> = {
           "Close a wallet's empty token accounts and return their rent to it, after a preview: the embedded wallet (transfer:write), or a TEE wallet bound to this key, signed by its key signer (swap:write)",
       },
     ],
+    flags: [
+      {
+        invocation: "--all",
+        description:
+          "Include disabled (revoked) linked wallets, such as demoted TEE wallets, which are hidden by default",
+      },
+    ],
     examples: [
       "candle wallet",
+      "candle wallet --all",
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
       "candle wallet trust 'tr-*' 'dest-*'",
@@ -1225,9 +1233,9 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
       {
-        invocation: "list [<filter>] [--balances] [--rpc-url <url>] [--evm-rpc-url <url>]",
+        invocation: "list [<filter>] [--all] [--balances] [--rpc-url <url>] [--evm-rpc-url <url>]",
         description:
-          "One line per key: address, label, role, derivation. Prompts for the passphrase. --balances reads SOL over your Solana RPC and ETH (plus USDG on Hood) for EVM keys over --evm-rpc-url, CANDLE_EVM_RPC_URL, or the built-in Hood RPC",
+          "One line per key: address, label, role, TEE lifecycle, derivation. Retired TEE wallets are hidden unless --all. Prompts for the passphrase. --balances reads SOL over your Solana RPC and ETH (plus USDG on Hood) for EVM keys over --evm-rpc-url, CANDLE_EVM_RPC_URL, or the built-in Hood RPC",
       },
       {
         invocation: "new-key --chain solana|evm [--label <name>] [--count <n>] [--labels-from <file>]",
@@ -1237,12 +1245,12 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "rename <label|address|id> <new-label> [--id <entry-id>]",
         description:
-          "Rename one vault or external key. New names: at most 64 characters, no edge whitespace. The address, the derivation and the key blob do not change",
+          "Rename one vault or external key, or a retired TEE wallet. New names: at most 64 characters, no edge whitespace. The address, the derivation and the key blob do not change",
       },
       {
         invocation: "  rename --pairs-from <file> [--dry-run]",
         description:
-          "Rename 1–256 vault or external keys under one unlock and one commit. All findings refuse the whole file; swaps are allowed. --dry-run prints the plan and writes nothing; --json returns the renamed rows",
+          "Rename 1–256 vault or external keys (or retired TEE wallets) under one unlock and one commit. All findings refuse the whole file; swaps are allowed. --dry-run prints the plan and writes nothing; --json returns the renamed rows",
       },
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
@@ -1323,6 +1331,10 @@ export const HELP: Record<string, Topic> = {
         invocation: "--device <id>",
         description:
           "The security key to use when more than one is attached; on factor add security-key, the key to add (the vault opens with the passphrase or another key)",
+      },
+      {
+        invocation: "--all",
+        description: "list: include retired TEE wallets (demoted and swept), which are hidden by default",
       },
       {
         invocation: "--balances",
@@ -1424,7 +1436,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "rename <label|address|id> <new-label>",
         description:
-          "Rename one TEE wallet: the label Candle holds and, when its key is in this vault, the vault entry (owner only). New names: at most 64 characters, no edge whitespace. Funds, the address and the key do not change",
+          "Rename one TEE wallet: the label Candle holds and, when its key is in this vault, the vault entry (owner only). New names: at most 64 characters, no edge whitespace. Funds, the address and the key do not change. A retired (demoted) TEE wallet is no longer on Candle: rename it with vault rename",
       },
       {
         invocation: "  rename --pairs-from <file> [--dry-run]",

@@ -416,6 +416,14 @@ export interface KeyEntry {
   tee?: VaultTeeMeta
 }
 
+/**
+ * A TEE wallet whose sweep after a demote finished: disabled on Candle, funds moved out, the entry
+ * kept as the key's backup. `vault list` hides these by default and `vault rename` may relabel them.
+ */
+export function isRetiredTee(entry: KeyEntry): boolean {
+  return entry.role === "tee-wallet" && entry.tee?.lifecycle === "retired"
+}
+
 export interface IndexPlaintext {
   hd: HdRecord
   entries: KeyEntry[]

@@ -157,6 +157,8 @@ async function readAllLinkedWallets(args: {
   apiKey: string
   apiUrl: string
   deps: Pick<Deps, "fetch" | "env">
+  /** `wallets --all`: the server's revoked rows too, which it leaves out by default. */
+  includeRevoked?: boolean
 }): Promise<LinkedWalletsRead> {
   const rows: LinkedWalletRow[] = []
   let firstPageBody: unknown
@@ -164,10 +166,11 @@ async function readAllLinkedWallets(args: {
   let cursor: string | null = null
 
   for (let pageCount = 0; pageCount < LINKED_WALLETS_PAGE_CAP; pageCount++) {
+    const revoked = args.includeRevoked ? "&includeRevoked=true" : ""
     const query =
       cursor === null
-        ? `?limit=${LINKED_WALLETS_PAGE_LIMIT}`
-        : `?limit=${LINKED_WALLETS_PAGE_LIMIT}&cursor=${encodeURIComponent(cursor)}`
+        ? `?limit=${LINKED_WALLETS_PAGE_LIMIT}${revoked}`
+        : `?limit=${LINKED_WALLETS_PAGE_LIMIT}${revoked}&cursor=${encodeURIComponent(cursor)}`
     const listed = await apiRequest(`/api/v1/agent/wallets${query}`, {
       method: "GET",
       auth: "key",
@@ -286,7 +289,7 @@ function signerCell(state: SignerState | undefined, row: LinkedWalletRow): strin
 
 export async function wallets(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, {})
+  const parsed = parseArgs(args, { booleanFlags: ["--all"] })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
     return 2
@@ -323,7 +326,8 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
   }
 
   // Every page, not the default first 20. See `readAllLinkedWallets`.
-  const linked = await readAllLinkedWallets({ apiKey, apiUrl, deps })
+  // Disabled wallets (a demoted TEE wallet among them) stay hidden unless --all, as in vault list.
+  const linked = await readAllLinkedWallets({ apiKey, apiUrl, deps, includeRevoked: parsed.booleans.has("--all") })
   if (!linked.ok) {
     writeFailure(deps, linked.response, { apiUrl, authType: "key" }, json)
     return 1

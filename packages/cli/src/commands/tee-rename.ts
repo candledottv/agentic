@@ -140,7 +140,8 @@ function serverFailure(
       {
         code: "TEE_RENAME_REFUSED",
         message: `${findings.map((finding) => finding.problem).join(" ")} Nothing was changed.`,
-        suggestion: "Run: candle wallets, to see this account's linked wallets and their labels.",
+        suggestion:
+          "Run: candle wallets, to see this account's linked wallets and their labels. A retired (demoted) TEE wallet is no longer on Candle; rename its vault entry with: candle vault rename <address> <new-label>",
       },
       json,
     )

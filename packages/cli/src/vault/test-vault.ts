@@ -153,6 +153,46 @@ export async function relabelEntries(path: string, passphrase: string, labels: R
   }
 }
 
+/**
+ * Marks TEE entries retired by address, as a finished demote sweep leaves them (`tee.ts`, the
+ * `sweptAt` branch), through the same `commitVault` path as `relabelEntries`. `destination` is the
+ * pinned vault destination a retired entry must record.
+ */
+export async function retireTeeEntries(
+  path: string,
+  passphrase: string,
+  addresses: string[],
+  destination: string,
+): Promise<void> {
+  const vault = await reopen(path, passphrase)
+  try {
+    await commitVault(
+      vault,
+      {
+        index: {
+          hd: vault.index.hd,
+          entries: vault.index.entries.map((entry) =>
+            addresses.includes(entry.address) && entry.tee !== undefined
+              ? {
+                  ...entry,
+                  tee: {
+                    ...entry.tee,
+                    lifecycle: "retired",
+                    vaultDestination: destination,
+                    sweptAt: new Date(testClock.now()).toISOString(),
+                  },
+                }
+              : entry,
+          ),
+        },
+      },
+      testClock,
+    )
+  } finally {
+    closeVault(vault)
+  }
+}
+
 /** Flips one byte inside a base64url ciphertext, leaving it decodable and its tag wrong. */
 export function flipByte(base64url: string): string {
   const bytes = Buffer.from(base64url.replace(/-/g, "+").replace(/_/g, "/"), "base64")

@@ -38,6 +38,7 @@ import {
   readVaultJson,
   relabelEntries,
   reopen,
+  retireTeeEntries,
   testClock,
   useCheapKdf,
 } from "../vault/test-vault"
@@ -347,6 +348,58 @@ describe("T8: the five refusals, each with its code, exit, message, suggestion a
     expect((await refused(fx, ["vault", "rename", "hot", "cold", "--id", migrated?.id ?? ""])).body.code).toBe(
       "VAULT_RENAME_ROLE_REFUSED",
     )
+  })
+})
+
+describe("retired TEE wallets rename in the vault (2026-10-29 retired-wallets spec, D1)", () => {
+  test("a retired TEE entry renames by label, keeps its role and lifecycle, and says Candle was not changed", async () => {
+    const fx = await fixture()
+    const cold = await newKey(fx, "cold")
+    const { keypair, entry } = legacyEntry("spider-01", 0)
+    await importLegacy(fx, [entry])
+    const address = keypair.publicKey.toBase58()
+    await retireTeeEntries(fx.path, fx.passphrase, [address], cold)
+
+    const out = await cmd(fx, ["vault", "rename", "spider-01", "retired-01"])
+    expect(out.code).toBe(0)
+    expect(humanText(out.stdout)).toContain(humanText("Renamed spider-01 to retired-01.\n"))
+    expect(humanText(out.stdout)).toContain(humanText("Candle not changed: this retired TEE wallet was disabled there"))
+    const renamed = (await entries(fx)).find((candidate) => candidate.address === address)
+    expect(renamed?.label).toBe("retired-01")
+    expect(renamed?.role).toBe("tee-wallet")
+    expect(renamed?.tee?.lifecycle).toBe("retired")
+  })
+
+  test("--pairs-from renames retired entries, and a live TEE row still refuses the whole file", async () => {
+    const fx = await fixture()
+    const cold = await newKey(fx, "cold")
+    const retired = legacyEntry("spider-01", 0)
+    const live = legacyEntry("hot", 1)
+    await importLegacy(fx, [retired.entry, live.entry])
+    const address = retired.keypair.publicKey.toBase58()
+    await retireTeeEntries(fx.path, fx.passphrase, [address], cold)
+
+    const file = join(fx.dir, "rename.csv")
+    await writeFile(file, `${address} retired-01\n`)
+    const out = await cmd(fx, ["vault", "rename", "--pairs-from", file, "--json"])
+    expect(out.code).toBe(0)
+    expect((json(out).renamed as { to: string }[]).map((row) => row.to)).toEqual(["retired-01"])
+
+    await writeFile(file, `${address} retired-00\n`)
+    const human = await cmd(fx, ["vault", "rename", "--pairs-from", file])
+    expect(human.code).toBe(0)
+    expect(humanText(human.stdout)).toContain(humanText("Candle not changed: 1 retired TEE wallet was disabled there"))
+
+    await writeFile(file, "retired-00 retired-02\nhot renamed\n")
+    const { body } = await refused(fx, ["vault", "rename", "--pairs-from", file])
+    expect(body.code).toBe("VAULT_RENAME_BATCH_REFUSED")
+    const findings = body.findings as { line: number; problem: string }[]
+    expect(findings).toEqual([
+      {
+        line: 2,
+        problem: "hot is a TEE wallet; vault rename only changes vault or external keys. Use candle tee rename.",
+      },
+    ])
   })
 })
 

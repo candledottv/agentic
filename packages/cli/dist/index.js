@@ -10741,6 +10741,9 @@ function exposedIndexesOf(hd, branch) {
 function teeNetworkFor(chain2) {
   return chain2 === "evm" ? "hood-mainnet" : "solana-mainnet";
 }
+function isRetiredTee(entry) {
+  return entry.role === "tee-wallet" && entry.tee?.lifecycle === "retired";
+}
 function canonicalHeader(file) {
   const header = {};
   for (const field of HEADER_FIELDS)
@@ -33491,7 +33494,8 @@ async function readAllLinkedWallets(args) {
   let account;
   let cursor = null;
   for (let pageCount = 0;pageCount < LINKED_WALLETS_PAGE_CAP; pageCount++) {
-    const query = cursor === null ? `?limit=${LINKED_WALLETS_PAGE_LIMIT}` : `?limit=${LINKED_WALLETS_PAGE_LIMIT}&cursor=${encodeURIComponent(cursor)}`;
+    const revoked = args.includeRevoked ? "&includeRevoked=true" : "";
+    const query = cursor === null ? `?limit=${LINKED_WALLETS_PAGE_LIMIT}${revoked}` : `?limit=${LINKED_WALLETS_PAGE_LIMIT}${revoked}&cursor=${encodeURIComponent(cursor)}`;
     const listed = await apiRequest(`/api/v1/agent/wallets${query}`, {
       method: "GET",
       auth: "key",
@@ -33550,7 +33554,7 @@ function signerCell(state, row) {
 }
 async function wallets(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
+  const parsed = parseArgs(args, { booleanFlags: ["--all"] });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
@@ -33576,7 +33580,7 @@ async function wallets(args, ctx) {
     writeScreenFailure(deps, embedded, { apiUrl, authType: "key" }, json);
     return 1;
   }
-  const linked = await readAllLinkedWallets({ apiKey, apiUrl, deps });
+  const linked = await readAllLinkedWallets({ apiKey, apiUrl, deps, includeRevoked: parsed.booleans.has("--all") });
   if (!linked.ok) {
     writeScreenFailure(deps, linked.response, { apiUrl, authType: "key" }, json);
     return 1;
@@ -76408,8 +76412,15 @@ var HELP = {
         description: "Close a wallet's empty token accounts and return their rent to it, after a preview: the embedded wallet (transfer:write), or a TEE wallet bound to this key, signed by its key signer (swap:write)"
       }
     ],
+    flags: [
+      {
+        invocation: "--all",
+        description: "Include disabled (revoked) linked wallets, such as demoted TEE wallets, which are hidden by default"
+      }
+    ],
     examples: [
       "candle wallet",
+      "candle wallet --all",
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
       "candle wallet trust 'tr-*' 'dest-*'",
@@ -76458,8 +76469,8 @@ var HELP = {
       },
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
       {
-        invocation: "list [<filter>] [--balances] [--rpc-url <url>] [--evm-rpc-url <url>]",
-        description: "One line per key: address, label, role, derivation. Prompts for the passphrase. --balances reads SOL over your Solana RPC and ETH (plus USDG on Hood) for EVM keys over --evm-rpc-url, CANDLE_EVM_RPC_URL, or the built-in Hood RPC"
+        invocation: "list [<filter>] [--all] [--balances] [--rpc-url <url>] [--evm-rpc-url <url>]",
+        description: "One line per key: address, label, role, TEE lifecycle, derivation. Retired TEE wallets are hidden unless --all. Prompts for the passphrase. --balances reads SOL over your Solana RPC and ETH (plus USDG on Hood) for EVM keys over --evm-rpc-url, CANDLE_EVM_RPC_URL, or the built-in Hood RPC"
       },
       {
         invocation: "new-key --chain solana|evm [--label <name>] [--count <n>] [--labels-from <file>]",
@@ -76467,11 +76478,11 @@ var HELP = {
       },
       {
         invocation: "rename <label|address|id> <new-label> [--id <entry-id>]",
-        description: "Rename one vault or external key. New names: at most 64 characters, no edge whitespace. The address, the derivation and the key blob do not change"
+        description: "Rename one vault or external key, or a retired TEE wallet. New names: at most 64 characters, no edge whitespace. The address, the derivation and the key blob do not change"
       },
       {
         invocation: "  rename --pairs-from <file> [--dry-run]",
-        description: "Rename 1–256 vault or external keys under one unlock and one commit. All findings refuse the whole file; swaps are allowed. --dry-run prints the plan and writes nothing; --json returns the renamed rows"
+        description: "Rename 1–256 vault or external keys (or retired TEE wallets) under one unlock and one commit. All findings refuse the whole file; swaps are allowed. --dry-run prints the plan and writes nothing; --json returns the renamed rows"
       },
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
@@ -76537,6 +76548,10 @@ var HELP = {
       {
         invocation: "--device <id>",
         description: "The security key to use when more than one is attached; on factor add security-key, the key to add (the vault opens with the passphrase or another key)"
+      },
+      {
+        invocation: "--all",
+        description: "list: include retired TEE wallets (demoted and swept), which are hidden by default"
       },
       {
         invocation: "--balances",
@@ -76627,7 +76642,7 @@ var HELP = {
       { invocation: "rebinds [wallet]", description: "List TEE wallet rebinds for this account (owner only)" },
       {
         invocation: "rename <label|address|id> <new-label>",
-        description: "Rename one TEE wallet: the label Candle holds and, when its key is in this vault, the vault entry (owner only). New names: at most 64 characters, no edge whitespace. Funds, the address and the key do not change"
+        description: "Rename one TEE wallet: the label Candle holds and, when its key is in this vault, the vault entry (owner only). New names: at most 64 characters, no edge whitespace. Funds, the address and the key do not change. A retired (demoted) TEE wallet is no longer on Candle: rename it with vault rename"
       },
       {
         invocation: "  rename --pairs-from <file> [--dry-run]",
@@ -102055,6 +102070,7 @@ function resolveRenameTarget(index, old, id) {
 }
 
 // src/vault/rename-batch.ts
+init_format();
 var MAX_RENAME_BATCH = 256;
 function csvCells(text3) {
   const cells = [];
@@ -102162,7 +102178,7 @@ function planBatchRename(index, rows) {
       findings.push({ line: row.line, problem: `Same key as line ${earlier}, named by another handle.` });
     else
       seen.set(entry.id, row.line);
-    if (entry.role !== "vault" && entry.role !== "external") {
+    if (entry.role !== "vault" && entry.role !== "external" && !isRetiredTee(entry)) {
       findings.push({
         line: row.line,
         problem: `${entry.label} is a TEE wallet; vault rename only changes vault or external keys. Use candle tee rename.`
@@ -102190,6 +102206,7 @@ init_args();
 init_human_output();
 init_presentation();
 init_errors2();
+init_format();
 init_store();
 init_vault_support();
 var RENAME_USAGE = "Usage: candle vault rename <label|address|id> <new-label> [--id <entry-id>] | --pairs-from <file> [--dry-run]";
@@ -102248,6 +102265,7 @@ async function vaultRename(args, ctx) {
       const { plan: plan2, findings } = planBatchRename(vault.index, rows);
       if (findings.length > 0)
         return batchRefusal(ctx, findings, 1);
+      const retiredCount = plan2.filter(({ entry: entry2 }) => isRetiredTee(entry2)).length;
       const renamed = plan2.map(({ entry: entry2, to }) => ({
         id: entry2.id,
         address: entry2.address,
@@ -102270,7 +102288,13 @@ async function vaultRename(args, ctx) {
       else {
         writeFields(deps, "stdout", [
           ["Mode", dryRun ? "Dry run: nothing was written." : "Renamed keys in one commit."],
-          ["Keys", renamed.length]
+          ["Keys", renamed.length],
+          ...retiredCount > 0 ? [
+            [
+              "Candle",
+              `not changed: ${retiredCount} retired TEE ${retiredCount === 1 ? "wallet was" : "wallets were"} disabled there`
+            ]
+          ] : []
         ]);
         for (const row of renamed)
           writeFields(deps, "stdout", [
@@ -102286,7 +102310,8 @@ async function vaultRename(args, ctx) {
     if (old === undefined || next === undefined)
       return usage(ctx, RENAME_USAGE);
     const entry = resolveTarget(vault.index, old, id);
-    if (entry.role === "tee-wallet") {
+    const retired = isRetiredTee(entry);
+    if (entry.role === "tee-wallet" && !retired) {
       throw new VaultError("VAULT_RENAME_ROLE_REFUSED", `${entry.label} is a TEE wallet. Its label was sent to Candle when it was enabled and \`candle wallets\` lists that copy, so renaming it here would give one wallet two names.`, {
         suggestion: `A vault key or an external wallet renames here. A TEE wallet renames on both sides with: candle tee rename ${entry.address} <new-label>`
       });
@@ -102318,7 +102343,8 @@ async function vaultRename(args, ctx) {
       ["Address", entry.address],
       ["Id", entry.id],
       ["Role", entry.role],
-      ["Unchanged", "address, derivation path, key blob, every envelope"]
+      ["Unchanged", "address, derivation path, key blob, every envelope"],
+      ...retired ? [["Candle", "not changed: this retired TEE wallet was disabled there"]] : []
     ]);
     return 0;
   });
@@ -102399,7 +102425,7 @@ function serverFailure(ctx, result, pairs, batch) {
     writeLocalFailure(deps, {
       code: "TEE_RENAME_REFUSED",
       message: `${findings.map((finding) => finding.problem).join(" ")} Nothing was changed.`,
-      suggestion: "Run: candle wallets, to see this account's linked wallets and their labels."
+      suggestion: "Run: candle wallets, to see this account's linked wallets and their labels. A retired (demoted) TEE wallet is no longer on Candle; rename its vault entry with: candle vault rename <address> <new-label>"
     }, json);
     return 1;
   }
@@ -107601,6 +107627,7 @@ init_human_output();
 init_presentation();
 init_solana_endpoint();
 init_solana_lite();
+init_format();
 init_store();
 init_vault_support();
 var CHUNK2 = 100;
@@ -107679,7 +107706,7 @@ function evmRequestsPlanned(count3) {
 async function vaultList(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--rpc-url", "--evm-rpc-url"],
-    booleanFlags: ["--balances", "--accept-older-copy"],
+    booleanFlags: ["--balances", "--accept-older-copy", "--all"],
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
@@ -107720,7 +107747,11 @@ async function vaultList(args, ctx) {
       throw missingVault(ctx, resolvedVault);
     const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const all = vault.index.entries;
-    const matched = filter === undefined ? all : all.filter((entry) => matches2(entry, filter));
+    const filtered = filter === undefined ? all : all.filter((entry) => matches2(entry, filter));
+    const showRetired = parsed.booleans.has("--all");
+    const matched = showRetired ? filtered : filtered.filter((entry) => !isRetiredTee(entry));
+    const hiddenRetired = filtered.length - matched.length;
+    const hiddenLine = `${hiddenRetired} retired TEE ${hiddenRetired === 1 ? "wallet" : "wallets"} hidden; add --all to show ${hiddenRetired === 1 ? "it" : "them"}.`;
     const solana = balances ? matched.filter((entry) => entry.chain === "solana") : [];
     const requests = Math.ceil(solana.length / CHUNK2);
     const rpcHost = solanaClient?.endpoint.host;
@@ -107764,6 +107795,7 @@ async function vaultList(args, ctx) {
         path,
         total: all.length,
         matched: matched.length,
+        hiddenRetired,
         ...filter === undefined ? {} : { filter },
         entries: matched.map((entry) => {
           const held = lamports.get(entry.address);
@@ -107798,8 +107830,7 @@ async function vaultList(args, ctx) {
       return complete ? 0 : 3;
     }
     if (matched.length === 0 && filter !== undefined) {
-      notice(deps, "stdout", "note", `No key matches "${filter}". ${all.length} keys in this vault; candle vault list with no filter lists them.
-`.trim());
+      notice(deps, "stdout", "note", (hiddenRetired > 0 ? `No live key matches "${filter}". ${hiddenLine}` : `No key matches "${filter}". ${all.length} keys in this vault; candle vault list with no filter lists them.`).trim());
       return 0;
     }
     writeFields(deps, "stdout", [
@@ -107808,7 +107839,7 @@ async function vaultList(args, ctx) {
       ["Matching", matched.length],
       ["Filter", filter]
     ]);
-    const headers2 = ["ADDRESS", "LABEL", "ROLE", "DERIVATION"];
+    const headers2 = ["ADDRESS", "LABEL", "ROLE", "LIFECYCLE", "DERIVATION"];
     if (balances)
       headers2.push("SOL");
     const evmColumns = evmRead2 !== undefined;
@@ -107822,6 +107853,7 @@ async function vaultList(args, ctx) {
         entry.address,
         entry.label || symbols(terminalStyle(deps, "stdout")).missing,
         entry.role,
+        entry.tee?.lifecycle ?? symbols(terminalStyle(deps, "stdout")).missing,
         entry.derivation?.path ?? symbols(terminalStyle(deps, "stdout")).missing
       ];
       if (balances) {
@@ -107838,7 +107870,7 @@ async function vaultList(args, ctx) {
       }
       return row;
     });
-    writeTable(deps, "stdout", headers2, rows, headers2.map((_, i) => i === 0 ? { id: true } : i === 1 ? { priority: 2 } : i === 3 ? { priority: 3 } : i >= 4 ? { align: "right", priority: 1 } : {}));
+    writeTable(deps, "stdout", headers2, rows, headers2.map((_, i) => i === 0 ? { id: true } : i === 1 ? { priority: 2 } : i === 4 ? { priority: 3 } : i >= 5 ? { align: "right", priority: 1 } : {}));
     if (balances) {
       notice(deps, "stdout", "note", (solanaComplete ? `
 total  ${formatSol3(totalLamports)} SOL across ${solana.length} keys
@@ -107858,6 +107890,8 @@ total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable6.le
 `.trim());
       }
     }
+    if (hiddenRetired > 0)
+      notice(deps, "stdout", "note", hiddenLine);
     return complete ? 0 : 3;
   });
 }

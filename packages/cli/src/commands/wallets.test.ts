@@ -47,6 +47,44 @@ describe("wallets", () => {
     expect(stdout.text).toContain("lw_listed01")
   })
 
+  test("--all asks for revoked wallets on every page; the default never does", async () => {
+    const routes = () =>
+      createRoutedFetch({
+        "/api/v1/agent/wallets/embedded": () =>
+          jsonResponse(200, { success: true, wallets: { solana: null, evm: null } }),
+        "/api/v1/agent/wallets": [
+          () =>
+            jsonResponse(200, {
+              page: [{ _id: "lw_live", address: "So1Live", chain: "solana" }],
+              isDone: false,
+              continueCursor: "c1",
+            }),
+          () =>
+            jsonResponse(200, {
+              page: [{ _id: "lw_gone", address: "So1Gone", chain: "solana", revokedAt: 1 }],
+              isDone: true,
+              continueCursor: null,
+            }),
+        ],
+      })
+    const linkedUrls = (calls: { url: string }[]) =>
+      calls.map((call) => new URL(call.url)).filter((url) => url.pathname === "/api/v1/agent/wallets")
+
+    const all = routes()
+    const stdout = createCapture()
+    const store = createFakeStore({ api_key: "ck_live_x" })
+    expect(await run(["wallets", "--all"], createTestDeps({ fetch: all.fetch, store, stdout }))).toBe(0)
+    const pages = linkedUrls(all.calls)
+    expect(pages).toHaveLength(2)
+    for (const url of pages) expect(url.searchParams.get("includeRevoked")).toBe("true")
+    expect(pages[1]?.searchParams.get("cursor")).toBe("c1")
+    expect(stdout.text).toContain("So1Gone")
+
+    const plain = routes()
+    expect(await run(["wallets"], createTestDeps({ fetch: plain.fetch, store, stdout: createCapture() }))).toBe(0)
+    for (const url of linkedUrls(plain.calls)) expect(url.searchParams.has("includeRevoked")).toBe(false)
+  })
+
   test("requires an API key; without one it fails without making a request", async () => {
     const { fetch, calls } = createRoutedFetch({})
     const stderr = createCapture()

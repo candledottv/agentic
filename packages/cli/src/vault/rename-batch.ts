@@ -1,5 +1,5 @@
 /** BE-1145: file checks before unlock, then whole-index checks before a single write. */
-import type { IndexPlaintext, KeyEntry } from "./format"
+import { type IndexPlaintext, isRetiredTee, type KeyEntry } from "./format"
 import { resolveRenameTarget, validateLabel } from "./labels"
 
 export const MAX_RENAME_BATCH = 256
@@ -129,7 +129,8 @@ export function planBatchRename(
     if (earlier !== undefined)
       findings.push({ line: row.line, problem: `Same key as line ${earlier}, named by another handle.` })
     else seen.set(entry.id, row.line)
-    if (entry.role !== "vault" && entry.role !== "external") {
+    // A retired TEE wallet renames here, as in the single form: its linked wallet is disabled.
+    if (entry.role !== "vault" && entry.role !== "external" && !isRetiredTee(entry)) {
       findings.push({
         line: row.line,
         problem: `${entry.label} is a TEE wallet; vault rename only changes vault or external keys. Use candle tee rename.`,
