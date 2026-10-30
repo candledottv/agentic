@@ -76,7 +76,7 @@ async function readCredit(ctx: CommandContext, apiKey: string | undefined): Prom
     if (typeof balance === "string" && /^-?[0-9]+$/.test(balance)) return { balanceUsdMicros: balance }
     return { unavailable: "the API's answer was unreadable" }
   }
-  if (result.status === 404) return { unavailable: "x402 is off on this API" }
+  if (result.status === 404) return { unavailable: "x402 credit is not available yet on this Candle server" }
   return { unavailable: result.message }
 }
 

@@ -366,6 +366,8 @@ async function sendPending(
   })
   const amount = usdcText(BigInt(pending.amountRaw))
   const name = planName(pending.plan)
+  const availabilityNote =
+    !result.ok && result.status === 404 ? "x402 plan payments are not available yet on this Candle server. " : ""
 
   if (outcome.kind === "pending") {
     const review = !result.ok && result.code === "PAYMENT_IN_PROGRESS" && result.retryable === false
@@ -373,11 +375,13 @@ async function sendPending(
       ctx.deps,
       {
         code: "PLAN_PAYMENT_PENDING",
-        message: outcome.settled
-          ? `Paid ${amount} USDC for Candle ${name}; Candle is still finishing ${pending.signupSpkiSha256 ? "the new account" : "the period"}.`
-          : review
-            ? `The payment of ${amount} USDC for Candle ${name} is held for review by Candle. Nothing new was paid.`
-            : `Whether the payment of ${amount} USDC for Candle ${name} settled is not known yet (${terminalText(outcome.reason)}). Nothing new was paid.`,
+        message:
+          availabilityNote +
+          (outcome.settled
+            ? `Paid ${amount} USDC for Candle ${name}; Candle is still finishing ${pending.signupSpkiSha256 ? "the new account" : "the period"}.`
+            : review
+              ? `The payment of ${amount} USDC for Candle ${name} is held for review by Candle. Nothing new was paid.`
+              : `Whether the payment of ${amount} USDC for Candle ${name} settled is not known yet (${terminalText(outcome.reason)}). Nothing new was paid.`),
         suggestion: `Run the same command again: it resends this payment and never pays twice (candle plan ${pending.renew ? "renew" : `buy ${pending.plan}`}).`,
         details: { paymentId: pending.id, reason: outcome.reason, ...(signature ? { signature } : {}) },
       },
@@ -429,7 +433,7 @@ async function sendPending(
       ctx.deps,
       {
         code: "PLAN_PAYMENT_FAILED",
-        message: `The payment of ${amount} USDC for Candle ${name} did not go through (${terminalText(outcome.reason)}); nothing moved.`,
+        message: `${availabilityNote}The payment of ${amount} USDC for Candle ${name} did not go through (${terminalText(outcome.reason)}); nothing moved.`,
         suggestion: `Run candle plan ${pending.renew ? "renew" : `buy ${pending.plan}`} again for a fresh quote.`,
         details: { paymentId: pending.id, reason: outcome.reason },
       },
@@ -669,7 +673,7 @@ async function runPlanPayment(ctx: CommandContext, run: PlanRun): Promise<number
         deps,
         {
           code: "X402_PLANS_OFF",
-          message: "This API does not sell plans by x402. Nothing was paid.",
+          message: "Buying or renewing plans by x402 is not available yet on this Candle server. Nothing was paid.",
           suggestion: "Plans are sold on the web at candle.tv, or by USDC checkout.",
         },
         json,
@@ -1054,6 +1058,7 @@ export async function planStatus(args: string[], ctx: CommandContext): Promise<n
   const state = await readPlanState(paths)
   const live = apiKey ? await serverPlan(ctx, apiKey) : null
   let lastServer: Record<string, unknown> | null = null
+  let paymentNote: string | undefined
   if (apiKey) {
     const payments = await apiRequest("/api/v1/agent/x402/payments?limit=50", {
       apiUrl: ctx.apiUrl,
@@ -1062,6 +1067,10 @@ export async function planStatus(args: string[], ctx: CommandContext): Promise<n
       env: ctx.deps.env,
       fetch: ctx.deps.fetch,
     })
+    if (!payments.ok && payments.status === 404) {
+      paymentNote =
+        "x402 payment history is not available yet on this Candle server; any payment shown is this machine's record."
+    }
     if (payments.ok && isObject(payments.body) && Array.isArray(payments.body.payments)) {
       const found = payments.body.payments.find((p) => isObject(p) && p.kind === PLAN_SPEND_KIND)
       lastServer = isObject(found) ? found : null
@@ -1115,6 +1124,7 @@ export async function planStatus(args: string[], ctx: CommandContext): Promise<n
             }
           : null,
         ...(apiKey ? {} : { note: "no API key on this profile; the plan shown is this machine's record" }),
+        ...(paymentNote ? { note: paymentNote } : {}),
       })}\n`,
     )
     return 0
@@ -1146,6 +1156,7 @@ export async function planStatus(args: string[], ctx: CommandContext): Promise<n
   }
   if (!apiKey)
     notice(ctx.deps, "stdout", "note", "No API key on this profile: the plan shown is this machine's record.")
+  if (paymentNote) notice(ctx.deps, "stdout", "note", paymentNote)
   return 0
 }
 

@@ -97801,11 +97801,12 @@ async function sendPending(ctx, paths, pending, apiKey, opts) {
   });
   const amount = usdcText(BigInt(pending.amountRaw));
   const name2 = planName(pending.plan);
+  const availabilityNote = !result.ok && result.status === 404 ? "x402 plan payments are not available yet on this Candle server. " : "";
   if (outcome.kind === "pending") {
     const review = !result.ok && result.code === "PAYMENT_IN_PROGRESS" && result.retryable === false;
     writeLocalFailure(ctx.deps, {
       code: "PLAN_PAYMENT_PENDING",
-      message: outcome.settled ? `Paid ${amount} USDC for Candle ${name2}; Candle is still finishing ${pending.signupSpkiSha256 ? "the new account" : "the period"}.` : review ? `The payment of ${amount} USDC for Candle ${name2} is held for review by Candle. Nothing new was paid.` : `Whether the payment of ${amount} USDC for Candle ${name2} settled is not known yet (${terminalText(outcome.reason)}). Nothing new was paid.`,
+      message: availabilityNote + (outcome.settled ? `Paid ${amount} USDC for Candle ${name2}; Candle is still finishing ${pending.signupSpkiSha256 ? "the new account" : "the period"}.` : review ? `The payment of ${amount} USDC for Candle ${name2} is held for review by Candle. Nothing new was paid.` : `Whether the payment of ${amount} USDC for Candle ${name2} settled is not known yet (${terminalText(outcome.reason)}). Nothing new was paid.`),
       suggestion: `Run the same command again: it resends this payment and never pays twice (candle plan ${pending.renew ? "renew" : `buy ${pending.plan}`}).`,
       details: { paymentId: pending.id, reason: outcome.reason, ...signature ? { signature } : {} }
     }, ctx.json);
@@ -97847,7 +97848,7 @@ async function sendPending(ctx, paths, pending, apiKey, opts) {
   if (outcome.kind === "failed") {
     writeLocalFailure(ctx.deps, {
       code: "PLAN_PAYMENT_FAILED",
-      message: `The payment of ${amount} USDC for Candle ${name2} did not go through (${terminalText(outcome.reason)}); nothing moved.`,
+      message: `${availabilityNote}The payment of ${amount} USDC for Candle ${name2} did not go through (${terminalText(outcome.reason)}); nothing moved.`,
       suggestion: `Run candle plan ${pending.renew ? "renew" : `buy ${pending.plan}`} again for a fresh quote.`,
       details: { paymentId: pending.id, reason: outcome.reason }
     }, ctx.json);
@@ -98027,7 +98028,7 @@ async function runPlanPayment(ctx, run2) {
     if (quote.status === 404) {
       writeLocalFailure(deps, {
         code: "X402_PLANS_OFF",
-        message: "This API does not sell plans by x402. Nothing was paid.",
+        message: "Buying or renewing plans by x402 is not available yet on this Candle server. Nothing was paid.",
         suggestion: "Plans are sold on the web at candle.tv, or by USDC checkout."
       }, json);
       return 1;
@@ -98314,6 +98315,7 @@ async function planStatus(args, ctx) {
   const state = await readPlanState(paths);
   const live = apiKey ? await serverPlan(ctx, apiKey) : null;
   let lastServer = null;
+  let paymentNote;
   if (apiKey) {
     const payments = await apiRequest("/api/v1/agent/x402/payments?limit=50", {
       apiUrl: ctx.apiUrl,
@@ -98322,6 +98324,9 @@ async function planStatus(args, ctx) {
       env: ctx.deps.env,
       fetch: ctx.deps.fetch
     });
+    if (!payments.ok && payments.status === 404) {
+      paymentNote = "x402 payment history is not available yet on this Candle server; any payment shown is this machine's record.";
+    }
     if (payments.ok && isObject6(payments.body) && Array.isArray(payments.body.payments)) {
       const found = payments.body.payments.find((p) => isObject6(p) && p.kind === PLAN_SPEND_KIND);
       lastServer = isObject6(found) ? found : null;
@@ -98359,7 +98364,8 @@ async function planStatus(args, ctx) {
         amountUsdc: usdcText(BigInt(state.pending.amountRaw)),
         at: state.pending.startedAt
       } : null,
-      ...apiKey ? {} : { note: "no API key on this profile; the plan shown is this machine's record" }
+      ...apiKey ? {} : { note: "no API key on this profile; the plan shown is this machine's record" },
+      ...paymentNote ? { note: paymentNote } : {}
     })}
 `);
     return 0;
@@ -98379,6 +98385,8 @@ async function planStatus(args, ctx) {
   }
   if (!apiKey)
     notice(ctx.deps, "stdout", "note", "No API key on this profile: the plan shown is this machine's record.");
+  if (paymentNote)
+    notice(ctx.deps, "stdout", "note", paymentNote);
   return 0;
 }
 async function maybeAutoRenew(word3, ctx) {
@@ -101604,7 +101612,7 @@ async function readCredit(ctx, apiKey) {
     return { unavailable: "the API's answer was unreadable" };
   }
   if (result.status === 404)
-    return { unavailable: "x402 is off on this API" };
+    return { unavailable: "x402 credit is not available yet on this Candle server" };
   return { unavailable: result.message };
 }
 async function spendShow(args, ctx) {
@@ -102923,8 +102931,8 @@ var USAGE13 = {
   flag: "Usage: candle token flag <address> --content <id> --reason <spam|scam|abuse|misleading|unsafe_link|other> [--detail <text>] [--chain solana|hood] [--idempotency-key <key>]"
 };
 var REFUSALS = {
-  feature_off: "This token page action is switched off on this Candle server. Nothing was written.",
-  not_found: "No such token page, item or version here, or token pages are switched off on this Candle server.",
+  feature_off: "This token page action is not available yet on this Candle server. Nothing was written.",
+  not_found: "Token pages are not available yet on this Candle server, or the requested page, item or version does not exist.",
   insufficient_holding: "This account's Candle-known wallets hold less than 0.5% of the token's current supply (any positive balance is enough to flag). Nothing was written.",
   eligibility_unavailable: "Candle could not read complete, fresh wallet and supply evidence for this account just now. Nothing was written; try again shortly.",
   restricted: "This account is restricted from writing on this token page.",
@@ -102987,7 +102995,8 @@ function writeApiFailure(ctx, result, authType) {
     writeRefusal(ctx, refusal3);
     return 1;
   }
-  writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType }, ctx.json);
+  const failure2 = result;
+  writeFailure(ctx.deps, failure2.status === 404 ? { ...failure2, message: REFUSALS.not_found } : failure2, { apiUrl: ctx.apiUrl, authType }, ctx.json);
   return 1;
 }
 function dataOf(result) {

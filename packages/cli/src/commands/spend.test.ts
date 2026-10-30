@@ -134,7 +134,12 @@ describe("candle spend (the log, spec 10.4)", () => {
     expect(f.routed.calls).toHaveLength(0)
     f = setup({ CANDLE_API_KEY: "k" }, { "/api/v1/agent/x402/credits": () => jsonResponse(404, {}) })
     expect(await run(["spend", "--json"], f.deps)).toBe(0)
-    expect(JSON.parse(f.stdout.text).credit).toEqual({ unavailable: "x402 is off on this API" })
+    expect(JSON.parse(f.stdout.text).credit).toEqual({
+      unavailable: "x402 credit is not available yet on this Candle server",
+    })
+    f.stdout.text = ""
+    expect(await run(["spend"], f.deps)).toBe(0)
+    expect(humanText(f.stdout.text)).toContain("x402 credit is not available yet on this Candle server")
   })
 
   test("a stale unknown is resolved against the server's payments before it is shown", async () => {

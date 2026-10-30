@@ -52,8 +52,10 @@ const USAGE = {
 
 /** Plain sentences for the API's token page refusal codes. The code itself is what `--json` carries. */
 const REFUSALS: Record<string, string> = {
-  feature_off: "This token page action is switched off on this Candle server. Nothing was written.",
-  not_found: "No such token page, item or version here, or token pages are switched off on this Candle server.",
+  feature_off: "This token page action is not available yet on this Candle server. Nothing was written.",
+  // The server deliberately uses the same refusal for a dark read and a missing item.
+  not_found:
+    "Token pages are not available yet on this Candle server, or the requested page, item or version does not exist.",
   insufficient_holding:
     "This account's Candle-known wallets hold less than 0.5% of the token's current supply (any positive balance is enough to flag). Nothing was written.",
   eligibility_unavailable:
@@ -130,7 +132,14 @@ function writeApiFailure(ctx: CommandContext, result: ApiResult, authType: "key"
     writeRefusal(ctx, refusal)
     return 1
   }
-  writeFailure(ctx.deps, result as Extract<ApiResult, { ok: false }>, { apiUrl: ctx.apiUrl, authType }, ctx.json)
+  const failure = result as Extract<ApiResult, { ok: false }>
+  // Older servers may not have the token-page routes or their refusal envelope yet.
+  writeFailure(
+    ctx.deps,
+    failure.status === 404 ? { ...failure, message: REFUSALS.not_found as string } : failure,
+    { apiUrl: ctx.apiUrl, authType },
+    ctx.json,
+  )
   return 1
 }
 

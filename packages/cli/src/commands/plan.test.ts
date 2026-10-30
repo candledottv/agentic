@@ -16,7 +16,7 @@ import { makeVault, useCheapKdf } from "../vault/test-vault"
 import { decodeHeader, encodeHeader } from "../x402/codec"
 import { readPlanState, signupSignerRef, updatePlanState } from "../x402/plan-state"
 import { SOLANA_DEVNET, USDC_MINTS } from "../x402/select"
-import { foldSpendLog, readSpendLog, spendPaths, spentOn, utcDay } from "../x402/spend-log"
+import { appendSpendLines, foldSpendLog, readSpendLog, spendPaths, spentOn, utcDay } from "../x402/spend-log"
 import { PLAN_TERMS_VERSION } from "./plan"
 
 useCheapKdf()
@@ -381,6 +381,49 @@ describe("candle plan buy: signup through the first plan purchase (spec 5.3 to 5
 })
 
 describe("candle plan buy with an API key, and the refusals", () => {
+  test("a first payment refused by a newly dark server explains availability and keeps its failure code", async () => {
+    const f = await withVault({ [PRO]: [quote(PRO), () => jsonResponse(404, {})] }, { CANDLE_API_KEY: "cndl_live_x" })
+    expect(await run(["plan", "buy", "pro", "--json"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      code: "PLAN_PAYMENT_FAILED",
+      details: { reason: "HTTP_404" },
+      message: expect.stringContaining("not available yet"),
+    })
+    expect((await readPlanState(f.paths())).pending).toBeUndefined()
+  })
+
+  test("a resumed payment on a dark server keeps its pending state and explains availability", async () => {
+    const sent: string[] = []
+    const capture: RouteHandler = (req) => {
+      sent.push(headerOf(req, "PAYMENT-SIGNATURE") ?? "")
+      return jsonResponse(404, { error: "Not Found" })
+    }
+    const f = await withVault(
+      {
+        [PRO]: [quote(PRO), () => jsonResponse(503, {}), capture, capture],
+      },
+      { CANDLE_API_KEY: "cndl_live_x" },
+    )
+    expect(await run(["plan", "buy", "pro", "--json"], f.deps)).toBe(3)
+    const pending = (await readPlanState(f.paths())).pending
+    expect(pending).toBeDefined()
+    for (const asJson of [false, true]) {
+      f.stdout.text = ""
+      f.stderr.text = ""
+      expect(await run(["plan", "buy", "pro", ...(asJson ? ["--json"] : [])], f.deps)).toBe(3)
+      if (asJson)
+        expect(JSON.parse(f.stdout.text)).toMatchObject({
+          code: "PLAN_PAYMENT_PENDING",
+          details: { reason: "HTTP_404" },
+          message: expect.stringContaining("not available yet"),
+        })
+      else expect(f.stderr.text.replace(/\s+/g, " ")).toContain("not available yet")
+      expect((await readPlanState(f.paths())).pending).toEqual(pending)
+    }
+    expect(sent).toEqual([pending?.paymentHeader as string, pending?.paymentHeader as string])
+    expect(f.unlocks()).toBe(1)
+  })
+
   test("the key's account buys: x-api-key sent, no signer, --auto-renew recorded, outside the per-use limits", async () => {
     const f = await withVault(
       {
@@ -408,12 +451,30 @@ describe("candle plan buy with an API key, and the refusals", () => {
 
   test("x402 plans off (404) says so, opens no vault when the payer is named, and signs nothing", async () => {
     const f = await withVault(
-      { [PRO]: () => jsonResponse(404, { error: "Not Found" }) },
+      {
+        [PRO]: () => jsonResponse(404, { error: "Not Found" }),
+        [RENEW]: () => jsonResponse(404, { error: "Not Found" }),
+      },
       { CANDLE_API_KEY: "cndl_live_x" },
     )
-    const g = await withVault({})
-    expect(await run(["plan", "buy", "pro", "--wallet", g.payer, "--json"], f.deps)).toBe(1)
-    expect(JSON.parse(f.stdout.text)).toMatchObject({ ok: false, code: "X402_PLANS_OFF" })
+    await updatePlanState(f.paths(), (s) => ({ state: { ...s, plan: "pro" }, result: null }))
+    for (const command of [
+      ["plan", "buy", "pro"],
+      ["plan", "renew"],
+    ]) {
+      for (const asJson of [false, true]) {
+        f.stdout.text = ""
+        f.stderr.text = ""
+        expect(await run([...command, "--wallet", f.payer, ...(asJson ? ["--json"] : [])], f.deps)).toBe(1)
+        if (asJson)
+          expect(JSON.parse(f.stdout.text)).toMatchObject({
+            ok: false,
+            code: "X402_PLANS_OFF",
+            message: expect.stringContaining("not available yet"),
+          })
+        else expect(f.stderr.text.replace(/\s+/g, " ")).toContain("not available yet")
+      }
+    }
     expect(f.unlocks()).toBe(0)
     expect(foldSpendLog(await readSpendLog(f.paths()))).toEqual([])
   })
@@ -561,6 +622,31 @@ describe("auto-renew (spec 6.3)", () => {
 })
 
 describe("candle plan status", () => {
+  test("a dark payment history is explained while the plan and local records remain usable", async () => {
+    const f = await withVault(
+      {
+        "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "pro" }),
+        "/api/v1/agent/x402/payments": () => jsonResponse(404, { error: "Not Found" }),
+      },
+      { CANDLE_API_KEY: "cndl_live_x" },
+    )
+    await appendSpendLines(f.paths(), [
+      { v: 1, id: "local", at: "2026-11-02T09:00:00Z", state: "pending", kind: "plan", amountRaw: "50000000" },
+      { v: 1, id: "local", at: "2026-11-02T09:00:01Z", state: "settled", signature: "local-sig" },
+    ])
+    expect(await run(["plan", "status", "--json"], f.deps)).toBe(0)
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      ok: true,
+      plan: "pro",
+      lastPayment: { source: "local", signature: "local-sig" },
+      note: expect.stringContaining("not available yet"),
+    })
+    f.stdout.text = ""
+    expect(await run(["plan", "status"], f.deps)).toBe(0)
+    expect(f.stdout.text.replace(/\s+/g, " ")).toContain("x402 payment history is not available yet")
+    expect(f.unlocks()).toBe(0)
+  })
+
   test("the server's plan and last x402 plan payment, with this machine's period end and auto-renew", async () => {
     const f = await withVault(
       {

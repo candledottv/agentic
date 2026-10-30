@@ -400,6 +400,70 @@ describe("section set and restore", () => {
 })
 
 describe("idempotent retry and refusals", () => {
+  const commands = [
+    ["token", "about", MINT],
+    ["token", "about", MINT, "--capabilities"],
+    ["token", "history", MINT, "thesis"],
+    ["token", "claim", MINT],
+    ["token", "claim", MINT, "--creator", "--challenge"],
+    ["token", "section", "set", MINT, "thesis", "--file", "/w", "--base-revision", "0"],
+    ["token", "section", "restore", MINT, "thesis", "--version-id", VERSION, "--base-revision", "0"],
+    ["token", "flag", MINT, "--content", VERSION, "--reason", "spam"],
+  ]
+
+  test("every token-page command explains dark refusals in human and JSON output without retrying", async () => {
+    for (const args of commands) {
+      for (const [status, code] of [
+        [404, "not_found"],
+        [409, "feature_off"],
+      ] as const) {
+        for (const asJson of [false, true]) {
+          const f = fixture(() => refused(status, code), file("draft"))
+          expect(await run([...args, ...(asJson ? ["--json"] : [])], f.deps)).toBe(1)
+          expect(f.calls).toHaveLength(1)
+          expect(f.written).toEqual([])
+          if (asJson) {
+            expect(json(f)).toMatchObject({
+              ok: false,
+              code,
+              status,
+              message: expect.stringContaining("not available yet"),
+            })
+            expect(f.stderr.text).toBe("")
+          } else {
+            expect(f.stderr.text).toContain("not available yet")
+            expect(f.stdout.text).toBe("")
+          }
+        }
+      }
+    }
+  })
+
+  test("older servers' plain 404s are explained without changing the HTTP error code", async () => {
+    for (const args of commands) {
+      for (const asJson of [false, true]) {
+        const f = fixture(() => new Response("404 Not Found", { status: 404 }), file("draft"))
+        expect(await run([...args, ...(asJson ? ["--json"] : [])], f.deps)).toBe(1)
+        expect(f.calls).toHaveLength(1)
+        if (asJson)
+          expect(json(f)).toMatchObject({
+            ok: false,
+            code: "HTTP_404",
+            status: 404,
+            message: expect.stringContaining("not available yet"),
+          })
+        else expect(f.stderr.text).toContain("not available yet")
+      }
+    }
+  })
+
+  test("capabilities explains a dark private read after a successful public read", async () => {
+    const f = fixture((c) => (c.path.endsWith("/capabilities") ? refused(404, "not_found") : ok(ABOUT)))
+    expect(await run(["token", "about", MINT, "--capabilities", "--json"], f.deps)).toBe(1)
+    expect(json(f)).toMatchObject({ code: "not_found", message: expect.stringContaining("not available yet") })
+    expect(f.calls).toHaveLength(2)
+  })
+
   test("no answer is retried once with the same key and body", async () => {
     let n = 0
     const f = fixture(() => {
@@ -484,7 +548,7 @@ describe("idempotent retry and refusals", () => {
     }
     const human = fixture(() => refused(409, "feature_off"))
     expect(await run(["token", "claim", MINT], human.deps)).toBe(1)
-    expect(human.stderr.text).toContain("switched off")
+    expect(human.stderr.text).toContain("not available yet")
   })
 
   test("a wrong-scope key gets the API's own error envelope, and the key is never printed", async () => {
