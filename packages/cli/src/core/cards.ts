@@ -281,8 +281,11 @@ export class CardBook {
       environment: CoreEnvironment
       profile: string
       now: () => number
-      /** Timer seam for the R-2 polls; tests drive it by hand. */
-      schedule?: (run: () => void, ms: number) => () => void
+      /**
+       * Timer seam for the R-2 polls; tests drive it by hand. `run` returns the poll's promise so a test
+       * can wait for the poll itself rather than for time (BE-2301); the real timer does not wait on it.
+       */
+      schedule?: (run: () => unknown, ms: number) => () => void
       /** S4 T-7: the chain side of transfers. Without it, a transfer card cannot execute. */
       transfers?: TransferEngine
     },
@@ -290,9 +293,9 @@ export class CardBook {
 
   private readonly watches = new Map<string, () => void>()
 
-  private schedule(run: () => void, ms: number): () => void {
+  private schedule(run: () => unknown, ms: number): () => void {
     if (this.deps.schedule) return this.deps.schedule(run, ms)
-    const timer = setTimeout(run, ms)
+    const timer = setTimeout(() => void run(), ms)
     timer.unref?.()
     return () => clearTimeout(timer)
   }
@@ -1027,12 +1030,12 @@ export class CardBook {
       }
       this.watches.set(
         op.opId,
-        this.schedule(() => void tick(), delay),
+        this.schedule(() => tick(), delay),
       )
     }
     this.watches.set(
       op.opId,
-      this.schedule(() => void tick(), 2_000),
+      this.schedule(() => tick(), 2_000),
     )
   }
 
@@ -1436,13 +1439,13 @@ export class CardBook {
       }
       this.watches.set(
         op.opId,
-        this.schedule(() => void tick(), delay),
+        this.schedule(() => tick(), delay),
       )
     }
     // A lost answer is read at once; a running one, one interval out.
     this.watches.set(
       op.opId,
-      this.schedule(() => void tick(), op.state === "pending" ? 5_000 : 0),
+      this.schedule(() => tick(), op.state === "pending" ? 5_000 : 0),
     )
   }
 

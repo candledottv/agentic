@@ -78090,7 +78090,7 @@ class CardBook {
   schedule(run2, ms) {
     if (this.deps.schedule)
       return this.deps.schedule(run2, ms);
-    const timer = setTimeout(run2, ms);
+    const timer = setTimeout(() => void run2(), ms);
     timer.unref?.();
     return () => clearTimeout(timer);
   }
@@ -78663,9 +78663,9 @@ class CardBook {
           await this.settle(op, "unknown", { reason: "watch_expired" });
         return;
       }
-      this.watches.set(op.opId, this.schedule(() => void tick(), delay));
+      this.watches.set(op.opId, this.schedule(() => tick(), delay));
     };
-    this.watches.set(op.opId, this.schedule(() => void tick(), 2000));
+    this.watches.set(op.opId, this.schedule(() => tick(), 2000));
   }
   async readTransfer(op, params) {
     const engine = this.deps.transfers;
@@ -79010,9 +79010,9 @@ class CardBook {
         op.readNeedsFactor = true;
         return;
       }
-      this.watches.set(op.opId, this.schedule(() => void tick(), delay));
+      this.watches.set(op.opId, this.schedule(() => tick(), delay));
     };
-    this.watches.set(op.opId, this.schedule(() => void tick(), op.state === "pending" ? 5000 : 0));
+    this.watches.set(op.opId, this.schedule(() => tick(), op.state === "pending" ? 5000 : 0));
   }
   cancelWatch(opId) {
     this.watches.get(opId)?.();

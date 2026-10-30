@@ -286,7 +286,7 @@ export async function startKit(options: KitOptions = {}) {
     },
   }
 
-  const scheduled: { run: () => void; ms: number; cancelled: boolean }[] = []
+  const scheduled: { run: () => unknown; ms: number; cancelled: boolean }[] = []
   const server = new CoreServer({
     socketPath: join(dir, "core.sock"),
     layoutPath: join(dir, "config.json"),
@@ -383,10 +383,10 @@ export async function startKit(options: KitOptions = {}) {
     return hello(minted.token, { harnessKind: "claude-code" })
   }
   const rows = async () => (await readJournal(journalPath)).rows
+  /** Runs every due poll and waits for each to finish: never a wait on time (BE-2301). */
   const runScheduled = async () => {
     const due = scheduled.splice(0).filter((entry) => !entry.cancelled)
-    for (const entry of due) entry.run()
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await Promise.all(due.map((entry) => entry.run()))
   }
 
   return {
