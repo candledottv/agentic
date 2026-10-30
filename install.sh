@@ -24,10 +24,9 @@ CURRENT_REPOSITORY='candledottv/cli'
 IDENTITY_REGEX='^https://github.com/candledottv/agentic/\.github/workflows/release\.yaml@refs/tags/cli-v'
 CURRENT_IDENTITY_REGEX='^https://github.com/candledottv/cli/\.github/workflows/release\.yaml@refs/tags/cli-v'
 ISSUER='https://token.actions.githubusercontent.com'
-# Where an unpinned install looks for the latest release. "legacy" until the switch (spec
-# 2026-10-23-candle-github, section 9, step 4), when it becomes "current" in the same change as the
-# tap formula and package metadata.
-DEFAULT_HOME='legacy'
+# Where an unpinned install looks for the latest release: "current" (candledottv/cli) since the
+# switch (spec 2026-10-23-candle-github, section 9, step 4). Pinned tags still route by version.
+DEFAULT_HOME='current'
 
 usage() {
   cat <<EOF

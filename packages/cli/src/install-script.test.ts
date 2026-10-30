@@ -32,8 +32,8 @@ const os = process.platform === "darwin" ? "darwin" : "linux"
 const arch = process.arch === "arm64" ? "arm64" : "x64"
 const ASSET = `candle-${os}-${arch}`
 const HELPER = `candle-fido2-${os}-${arch}`
-const FAKE_BINARY = '#!/bin/sh\necho "candle 0.9.9"\n'
-const FAKE_HELPER = '#!/bin/sh\necho "candle-fido2 0.9.9 (protocol 1)"\n'
+const FAKE_BINARY = '#!/bin/sh\necho "candle 0.13.5"\n'
+const FAKE_HELPER = '#!/bin/sh\necho "candle-fido2 0.13.5 (protocol 1)"\n'
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
 
 let server: ReturnType<typeof Bun.serve>
@@ -100,8 +100,8 @@ beforeAll(async () => {
     // line-oriented sed extraction of the manifest checksum (see install.sh's step 5 comment).
     "latest.json": JSON.stringify(
       {
-        version: "0.9.9",
-        tag: "cli-v0.9.9",
+        version: "0.13.5",
+        tag: "cli-v0.13.5",
         assets: { [`${os}-${arch}`]: { name: ASSET, sha256: sha256(FAKE_BINARY), size: FAKE_BINARY.length } },
         // The security key helper (Ember Phase 2 PR E) sits beside the assets in its own map.
         helpers: { [`${os}-${arch}`]: { name: HELPER, sha256: sha256(FAKE_HELPER), size: FAKE_HELPER.length } },
@@ -210,7 +210,7 @@ describe("install.sh", () => {
     expect(first.code).toBe(0)
     expect(requestPaths).toContain("/releases/latest/download/latest.json")
     expect(await readFile(join(first.binDir, "candle"), "utf8")).toBe(FAKE_BINARY)
-    expect(first.stdout).toContain("candle 0.9.9")
+    expect(first.stdout).toContain("candle 0.13.5")
     expect(first.stdout).toContain("Next: candle setup")
     const rc = await readFile(join(first.home, ".zshrc"), "utf8")
     expect(rc).toContain('export PATH="$HOME/.local/bin:$PATH"')
@@ -375,12 +375,12 @@ describe("install.sh", () => {
     expect(calls).toContain("--new-bundle-format")
     expect(calls).toContain("--certificate-oidc-issuer https://token.actions.githubusercontent.com")
     // Pinned to the RESOLVED version, exactly, not merely prefixed with `cli-v`. A bare prefix
-    // accepts a signature minted for any cli-v tag, which is a signed downgrade: ask for 0.9.9,
+    // accepts a signature minted for any cli-v tag, which is a signed downgrade: ask for 0.13.5,
     // be handed a legitimately signed 0.3.0, and verification passes. Exact, not a regexp: the
     // SAN is one string naming the workflow file and the tag, and an escaping step between the
     // version and a pattern is one more place to be silently wrong (BE-275 D2).
     expect(calls).toContain(
-      "--certificate-identity https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v0.9.9",
+      "--certificate-identity https://github.com/candledottv/cli/.github/workflows/release.yaml@refs/tags/cli-v0.13.5",
     )
     expect(calls).not.toContain("--certificate-identity-regexp")
     await rm(r.home, { recursive: true, force: true })
@@ -427,10 +427,10 @@ describe("install.sh", () => {
 
   test("a pinned --version fetches that tag's assets", async () => {
     requestPaths = []
-    const r = await runInstaller(["--version", "cli-v0.9.9"])
+    const r = await runInstaller(["--version", "cli-v0.13.5"])
     expect(r.code).toBe(0)
-    expect(r.stdout).toContain("candle 0.9.9")
-    expect(requestPaths).toContain("/releases/download/cli-v0.9.9/latest.json")
+    expect(r.stdout).toContain("candle 0.13.5")
+    expect(requestPaths).toContain("/releases/download/cli-v0.13.5/latest.json")
     await rm(r.home, { recursive: true, force: true })
   })
 
@@ -439,16 +439,16 @@ describe("install.sh", () => {
     // differently is the sort of thing nobody looks up twice. Both spellings work here; the usage
     // text leads with --to.
     requestPaths = []
-    const flag = await runInstaller(["--to", "cli-v0.9.9"])
+    const flag = await runInstaller(["--to", "cli-v0.13.5"])
     expect(flag.code).toBe(0)
-    expect(flag.stdout).toContain("candle 0.9.9")
-    expect(requestPaths).toContain("/releases/download/cli-v0.9.9/latest.json")
+    expect(flag.stdout).toContain("candle 0.13.5")
+    expect(requestPaths).toContain("/releases/download/cli-v0.13.5/latest.json")
     await rm(flag.home, { recursive: true, force: true })
 
     requestPaths = []
-    const equals = await runInstaller(["--to=cli-v0.9.9"])
+    const equals = await runInstaller(["--to=cli-v0.13.5"])
     expect(equals.code).toBe(0)
-    expect(requestPaths).toContain("/releases/download/cli-v0.9.9/latest.json")
+    expect(requestPaths).toContain("/releases/download/cli-v0.13.5/latest.json")
     await rm(equals.home, { recursive: true, force: true })
 
     const help = await runInstaller(["--help"])
@@ -458,7 +458,7 @@ describe("install.sh", () => {
   })
 
   test("the gh fallback pins the exact certificate identity, not just the repo", async () => {
-    // `--repo` alone accepts any attestation from candledottv/agentic, and this repo runs more
+    // `--repo` alone accepts any attestation from candledottv/cli, and this repo runs more
     // than one workflow with `id-token: write` reachable from it. The exact identity is the
     // certificate's SAN, which names the workflow FILE and the TAG in one string, so this branch
     // checks what the cosign path checks. It is the ONLY identity flag passed: gh keeps
@@ -476,10 +476,10 @@ describe("install.sh", () => {
     expect(r.code).toBe(0)
     const calls = await readFile(log, "utf8")
     expect(calls).toContain("attestation verify")
-    expect(calls).toContain("--repo candledottv/agentic")
+    expect(calls).toContain("--repo candledottv/cli")
     // The tag, so this branch is not weaker than the cosign one above.
     expect(calls).toContain(
-      "--cert-identity https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v0.9.9",
+      "--cert-identity https://github.com/candledottv/cli/.github/workflows/release.yaml@refs/tags/cli-v0.13.5",
     )
     expect(calls).not.toContain("--signer-workflow")
     expect(calls).not.toContain("--signer-repo")
@@ -492,12 +492,12 @@ describe("install.sh", () => {
   })
 
   test("a manifest whose version disagrees with the requested tag installs nothing", async () => {
-    // The fixture serves the same latest.json (version 0.9.9) under every tag, so asking for a
+    // The fixture serves the same latest.json (version 0.13.5) under every tag, so asking for a
     // different tag is exactly the mismatch: the assets you were handed do not describe the
     // version you asked for, and reconciling that quietly is how a downgrade slips through.
     const r = await runInstaller(["--version", "cli-v1.2.3"])
     expect(r.code).toBe(1)
-    expect(r.stderr).toContain("cli-v0.9.9")
+    expect(r.stderr).toContain("cli-v0.13.5")
     await expect(readFile(join(r.binDir, "candle"), "utf8")).rejects.toThrow()
     await rm(r.home, { recursive: true, force: true })
   })
@@ -526,11 +526,11 @@ describe("install.sh", () => {
       }
     }
 
-    test("an unpinned install refuses a post-bridge version from the legacy home", async () => {
-      await withManifestVersion(AFTER, async () => {
+    test("an unpinned install refuses a bridge-or-earlier version from the current home", async () => {
+      await withManifestVersion(homes.bridgeVersion, async () => {
         const r = await runInstaller([])
         expect(r.code).toBe(1)
-        expect(r.stderr).toContain(`names ${AFTER}, which is released from candledottv/cli`)
+        expect(r.stderr).toContain(`names ${homes.bridgeVersion}, which is released from candledottv/agentic`)
         await expect(readFile(join(r.binDir, "candle"), "utf8")).rejects.toThrow()
         await rm(r.home, { recursive: true, force: true })
       })
@@ -585,7 +585,7 @@ describe("install.sh", () => {
     })
 
     test("--to takes only cli-v<three numbers>", async () => {
-      for (const bad of ["0.9.9", "cli-v0.9", "cli-v0.9.9-rc1", "cli-vx|"]) {
+      for (const bad of ["0.13.5", "cli-v0.9", "cli-v0.13.5-rc1", "cli-vx|"]) {
         requestPaths = []
         const r = await runInstaller(["--to", bad])
         expect(r.code).toBe(1)
@@ -652,8 +652,8 @@ describe("install.sh", () => {
 describe("install.sh on macOS: the Secure Enclave helper and the version floor", () => {
   const DARWIN_ASSET = "candle-darwin-arm64"
   const DARWIN_HELPER = "candle-fido2-darwin-arm64"
-  const ENCLAVE_ZIP = "candle-enclave-0.9.9.app.zip"
-  const FAKE_ENCLAVE = '#!/bin/sh\necho "candle-enclave 0.9.9 (protocol 1)"\n'
+  const ENCLAVE_ZIP = "candle-enclave-0.13.5.app.zip"
+  const FAKE_ENCLAVE = '#!/bin/sh\necho "candle-enclave 0.13.5 (protocol 1)"\n'
   let zipBytes: Uint8Array
   let zipSha: string
   let darwinStub: string
@@ -718,8 +718,8 @@ describe("install.sh on macOS: the Secure Enclave helper and the version floor",
     ].join("\n")
     fixtures["latest.json"] = JSON.stringify(
       {
-        version: "0.9.9",
-        tag: "cli-v0.9.9",
+        version: "0.13.5",
+        tag: "cli-v0.13.5",
         assets: { "darwin-arm64": { name: DARWIN_ASSET, sha256: sha256(FAKE_BINARY), size: FAKE_BINARY.length } },
         helpers: { "darwin-arm64": { name: DARWIN_HELPER, sha256: sha256(FAKE_HELPER), size: FAKE_HELPER.length } },
         ...(opts.declared ? { macosHelper: { name: ENCLAVE_ZIP, sha256: zipSha, size: zipBytes.length } } : {}),
@@ -894,7 +894,7 @@ describe("install.sh on macOS: the Secure Enclave helper and the version floor",
  */
 describe("install.sh against the real gh", () => {
   const REAL_GH = Bun.which("gh")
-  const SIGNER_WORKFLOW = "candledottv/agentic/.github/workflows/release.yaml"
+  const SIGNER_WORKFLOW = "candledottv/cli/.github/workflows/release.yaml"
   /** What gh prints when a flag fails validation: the flag-group refusal, an unknown flag, or a usage dump. */
   const VALIDATION_FAILURE = /none of the others can be|unknown flag|^Usage:/m
 
@@ -1033,11 +1033,9 @@ describe("install.sh against the real gh", () => {
       const cosignIdentity = flagValue(cosignArgv, "--certificate-identity")
       const ghIdentity = flagValue(ghArgv, "--cert-identity")
       expect(ghIdentity).toBe(cosignIdentity)
-      // And it is the resolved release's identity, not a prefix: the fixture manifest says 0.9.9.
-      expect(cosignIdentity.endsWith("@refs/tags/cli-v0.9.9")).toBe(true)
-      expect(cosignIdentity.startsWith("https://github.com/candledottv/agentic/.github/workflows/release.yaml@")).toBe(
-        true,
-      )
+      // And it is the resolved release's identity, not a prefix: the fixture manifest says 0.13.5.
+      expect(cosignIdentity.endsWith("@refs/tags/cli-v0.13.5")).toBe(true)
+      expect(cosignIdentity.startsWith("https://github.com/candledottv/cli/.github/workflows/release.yaml@")).toBe(true)
     }
   })
 })
