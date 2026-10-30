@@ -1053,7 +1053,13 @@ const swapShape = {
       "Raw base units of `from`, as a positive integer string. Kept for callers that already " +
         "compute raw units; new callers should use `amount`.",
     ),
-  maxSlippageBps: z.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
+  maxSlippageBps: z
+    .number()
+    .int()
+    .min(0)
+    .max(5000)
+    .optional()
+    .describe("Slippage bound in bps, 0-5000 (50%). Server defaults to 100 (1%)"),
   clientSwapId: z
     .string()
     .optional()
@@ -1096,7 +1102,13 @@ const tradeShape = {
         "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " +
         "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement.",
     ),
-  maxSlippageBps: z.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
+  maxSlippageBps: z
+    .number()
+    .int()
+    .min(0)
+    .max(5000)
+    .optional()
+    .describe("Slippage bound in bps, 0-5000 (50%). Server defaults to 100 (1%)"),
   clientTradeId: z
     .string()
     .optional()

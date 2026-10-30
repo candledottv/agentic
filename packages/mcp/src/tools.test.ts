@@ -723,6 +723,33 @@ describe("candle_get_operation: what a 404 returns", () => {
 })
 
 // BE-1411 T7 to T10 (R6 to R9, I3, I4): the local swap always has an id.
+describe("candle_swap maxSlippageBps matches the API's 0-5000 bound", () => {
+  const { tools } = toolsWith(["candle_swap"], async () => new Response("{}"))
+  const schema = z.object(tools.get("candle_swap")?.inputSchema as z.ZodRawShape)
+  const base = { from: "SOL", to: "USDC", amount: "0.5" }
+  test("5000 is accepted, 5001 and fractions are not", () => {
+    expect(schema.safeParse({ ...base, maxSlippageBps: 5000 }).success).toBe(true)
+    expect(schema.safeParse({ ...base, maxSlippageBps: 5001 }).success).toBe(false)
+    expect(schema.safeParse({ ...base, maxSlippageBps: 10000 }).success).toBe(false)
+    expect(schema.safeParse({ ...base, maxSlippageBps: 1.5 }).success).toBe(false)
+  })
+})
+
+describe("candle_trade maxSlippageBps matches the API's 0-5000 bound", () => {
+  const { tools } = toolsWith(["candle_trade"], async () => new Response("{}"))
+  const schema = z.object(tools.get("candle_trade")?.inputSchema as z.ZodRawShape)
+  const base = { mint: "Mint", side: "buy", amount: "0.5" }
+
+  test("5000 and zero are accepted, 5001, negatives and fractions are not", () => {
+    expect(schema.safeParse(base).success).toBe(true)
+    expect(schema.safeParse({ ...base, maxSlippageBps: 0 }).success).toBe(true)
+    expect(schema.safeParse({ ...base, maxSlippageBps: 5000 }).success).toBe(true)
+    expect(schema.safeParse({ ...base, maxSlippageBps: 5001 }).success).toBe(false)
+    expect(schema.safeParse({ ...base, maxSlippageBps: -1 }).success).toBe(false)
+    expect(schema.safeParse({ ...base, maxSlippageBps: 1.5 }).success).toBe(false)
+  })
+})
+
 describe("candle_swap: the request always carries an id, and every result returns it", () => {
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
   const SWAP = { from: "SOL", to: "USDC", amount: "0.5" }

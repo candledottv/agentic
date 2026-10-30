@@ -193,6 +193,10 @@ export function printTradingResult(ctx: CommandContext, result: Json): number {
   return 0
 }
 
+/** The API's ceiling on an agent's `maxSlippageBps` (apps/api `AGENT_MAX_SLIPPAGE_BPS`). */
+const AGENT_MAX_SLIPPAGE_BPS = 5_000
+const SLIPPAGE_RANGE_MESSAGE = `maxSlippageBps must be an integer in bps, between 0 and ${AGENT_MAX_SLIPPAGE_BPS}`
+
 /**
  * BE-505 (R8.4): what a base-pair swap settled, as `/agent/swap/submit` reports it (BE-504, R8.1).
  * Only the fields the line below reads are checked; the object itself is passed through as sent.
@@ -442,13 +446,14 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
   const flags = parsed.values
   const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`
   const slippage = Number(flags["--slippage-bps"] ?? "50")
+  if (!Number.isInteger(slippage) || slippage < 0 || slippage > AGENT_MAX_SLIPPAGE_BPS) {
+    writeUsageFailure(ctx.deps, SLIPPAGE_RANGE_MESSAGE, ctx.json)
+    return 2
+  }
   if (
     parsed.positionals.length !== 2 ||
     Boolean(flags["--amount"]) === Boolean(flags["--percent"]) ||
-    !validClientId(id) ||
-    !Number.isInteger(slippage) ||
-    slippage < 0 ||
-    slippage > 10000
+    !validClientId(id)
   ) {
     writeUsageFailure(
       ctx.deps,

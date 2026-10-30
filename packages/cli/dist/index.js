@@ -17016,7 +17016,11 @@ async function swap(args, ctx) {
   const flags = parsed.values;
   const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`;
   const slippage = Number(flags["--slippage-bps"] ?? "50");
-  if (parsed.positionals.length !== 2 || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id) || !Number.isInteger(slippage) || slippage < 0 || slippage > 1e4) {
+  if (!Number.isInteger(slippage) || slippage < 0 || slippage > AGENT_MAX_SLIPPAGE_BPS) {
+    writeUsageFailure(ctx.deps, SLIPPAGE_RANGE_MESSAGE, ctx.json);
+    return 2;
+  }
+  if (parsed.positionals.length !== 2 || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id)) {
     writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.", ctx.json);
     return 2;
   }
@@ -17674,7 +17678,7 @@ async function bridgeSwap(ctx, args) {
     return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } });
   }
 }
-var settlementSchema, bridgeFactsSchema, HOOD_TRADE_LEGS, bridgeBuildSchema;
+var AGENT_MAX_SLIPPAGE_BPS = 5000, SLIPPAGE_RANGE_MESSAGE, settlementSchema, bridgeFactsSchema, HOOD_TRADE_LEGS, bridgeBuildSchema;
 var init_swap = __esm(() => {
   init_zod();
   init_args();
@@ -17689,6 +17693,7 @@ var init_swap = __esm(() => {
   init_solana_lite();
   init_solana_verify();
   init_trading();
+  SLIPPAGE_RANGE_MESSAGE = `maxSlippageBps must be an integer in bps, between 0 and ${AGENT_MAX_SLIPPAGE_BPS}`;
   settlementSchema = exports_external.object({
     state: exports_external.enum(["settled", "pending", "failed", "uncertain"]),
     settledOutRaw: exports_external.string().regex(/^\d+$/).optional()
@@ -45301,7 +45306,7 @@ var init_tools = __esm(() => {
     to: exports_external.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to receive; must differ from `from`"),
     amount: exports_external.string().optional().describe('Decimal amount of `from` to spend, e.g. "0.5". Preferred. Pass exactly one of amount or amountRaw.'),
     amountRaw: exports_external.string().optional().describe("Raw base units of `from`, as a positive integer string. Kept for callers that already " + "compute raw units; new callers should use `amount`."),
-    maxSlippageBps: exports_external.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
+    maxSlippageBps: exports_external.number().int().min(0).max(5000).optional().describe("Slippage bound in bps, 0-5000 (50%). Server defaults to 100 (1%)"),
     clientSwapId: exports_external.string().optional().describe("Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " + "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " + "signature in the message. A different body is rejected. Omit it and one is generated, " + "sent with the swap and returned in the result as `clientSwapId`: keep it, so a retry after " + "a timeout returns that stored result.")
   };
   tradeShape = {
@@ -45310,7 +45315,7 @@ var init_tools = __esm(() => {
     amount: exports_external.string().optional().describe("Decimal amount. Buys: how much of THIS TOKEN'S OWN quote asset to spend (SOL for a " + 'SOL-launched token, USDC for a USDC-quoted one, and so on: e.g. "0.5"). Sells: how many ' + "TOKENS to sell. Pass exactly one of amount or percent."),
     percent: exports_external.number().optional().describe("Sells only: sell this percent (integer 1-100) of the holding. Live trades size against the " + "embedded wallet. Paper trades (`paper: true`) size against this key's paper inventory -- " + "the position a previous paper buy credited -- because paper never moves the live wallet."),
     quoteAsset: exports_external.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Echoing the `quoteAsset` a quote (POST /api/v1/trade/agent/quote) returned is safe. On Solana it applies only ' + "to an arbitrary mint Candle never launched (a buy needs Pro or Max; a sell works on any plan) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
-    maxSlippageBps: exports_external.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
+    maxSlippageBps: exports_external.number().int().min(0).max(5000).optional().describe("Slippage bound in bps, 0-5000 (50%). Server defaults to 100 (1%)"),
     clientTradeId: exports_external.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
     paper: exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted."))
   };

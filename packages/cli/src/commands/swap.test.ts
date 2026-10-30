@@ -465,6 +465,12 @@ describe("TEE CLI trading", () => {
     expect(await run(swapArgs, f.deps)).toBe(1)
     expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
   })
+  test("--slippage-bps above the API's 5000 ceiling is refused before any request", async () => {
+    const f = await fixture({})
+    expect(await run([...swapArgs, "--slippage-bps", "5001"], f.deps)).toBe(2)
+    expect(f.stdout.text).toContain("maxSlippageBps must be an integer in bps, between 0 and 5000")
+    expect(f.calls).toHaveLength(0)
+  })
   test("lost submit response plus retry looks up the original id without another write", async () => {
     const f = await fixture({ failure: "/api/v1/agent/swap/submit" })
     expect(await run(swapArgs, f.deps)).toBe(1)
