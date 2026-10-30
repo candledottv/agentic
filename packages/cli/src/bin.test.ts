@@ -18,14 +18,33 @@ const tempDir = tempDirs()
 
 const pkgDir = resolve(import.meta.dir, "..")
 const bundle = join(pkgDir, "dist", "index.js")
+let node: string
+let nodeEnv: Record<string, string>
 
 beforeAll(() => {
   const built = spawnSync("bun", ["run", "build"], { cwd: pkgDir, encoding: "utf8" })
   if (built.status !== 0) throw new Error(`build failed: ${built.stderr}`)
+
+  const found = Bun.which("node")
+  if (!found) throw new Error("the bin test needs node on PATH")
+  node = found
+  const home = tempDir("candle-bin-home-")
+  // main() resolves both credential stores before dispatch, even for --version/--help.
+  // Inheriting PATH lets host `which`/`secret-tool` and a Secret Service probe consume the
+  // test's 5s budget. These entry/dispatch checks need no OS keychain or caller credentials.
+  // Resolve node first, then give the child an empty tool directory and a fresh home/config.
+  nodeEnv = { PATH: tempDir("candle-bin-path-"), HOME: home, CANDLE_CONFIG_DIR: home }
 })
 
 function runNode(entry: string, args: string[]) {
-  return spawnSync("node", [entry, ...args], { encoding: "utf8" })
+  return spawnSync(node, [entry, ...args], {
+    env: nodeEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    // A stuck child must be reaped before Bun's 5s test deadline.
+    timeout: 4_000,
+    killSignal: "SIGKILL",
+  })
 }
 
 describe("the built bin entry", () => {
