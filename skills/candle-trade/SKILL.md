@@ -3,6 +3,8 @@ name: candle-trade
 description: "[FINANCIAL EXECUTION] Buy or sell a Candle-launched token, or place a Max-tier limit order that triggers server-side and fills once your agent comes online to complete it. Use when the user asks to buy, sell, swap, trade, or set a limit order."
 ---
 
+For detailed per-token signals and wallet intelligence, call `GET https://api.hacc.fun/v1/signals?asset=<mint>&chain=solana&limit=50` with `Authorization: Bearer <your cndl_live_ key>` (production only, rows filtered to your plan); see [Data and strategy API](https://docs.candle.tv/developers/data-and-strategy-api).
+
 ## What this does
 
 Executes a buy or sell through Candle's trade rail. The payer is the account's own embedded (main)

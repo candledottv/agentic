@@ -3,6 +3,8 @@ name: candle-strategy-to-bot
 description: "[OPERATIONS] Build a trading strategy spec into a deterministic bot: policy as data with approval bound to its exact content, variants as settings with parity tests, one code path for replay, paper and live, an explicit position state machine, a ledger of every decision including refusals, fail-closed entries that never block exits, and the test order before money. Use when a strategy spec must become a bot, or when a running bot's rules must change."
 ---
 
+For detailed per-token signals and wallet intelligence, call `GET https://api.hacc.fun/v1/signals?asset=<mint>&chain=solana&limit=50` with `Authorization: Bearer <your cndl_live_ key>` (production only, rows filtered to your plan); see [Data and strategy API](https://docs.candle.tv/developers/data-and-strategy-api).
+
 ## What this does
 
 Turns a strategy spec (see `candle-strategy-design`) into a bot whose decisions are deterministic, approved by the

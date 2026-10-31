@@ -3,6 +3,8 @@ name: candle-strategy-hunt
 description: "[RESEARCH] Find trading leads worth testing and triage them cheaply before full validation: start from what the market just did, define a census universe with a random control, name who pays, know the regime, and run the cheapest decisive test first under your own costs and latency. Use when asked to find something to trade, when there is no lead yet, or when a raw idea needs a decision on whether it deserves a test."
 ---
 
+For detailed per-token signals and wallet intelligence, call `GET https://api.hacc.fun/v1/signals?asset=<mint>&chain=solana&limit=50` with `Authorization: Bearer <your cndl_live_ key>` (production only, rows filtered to your plan); see [Data and strategy API](https://docs.candle.tv/developers/data-and-strategy-api).
+
 ## What this does
 
 Finds trading leads and decides cheaply which ones deserve a full test. It sits before

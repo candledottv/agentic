@@ -3,6 +3,8 @@ name: candle-market
 description: "[MARKET DATA] Read a Candle token's market state and lifecycle, curated feeds carrying live price and market cap (new, graduated, onfire, and finalstretch where it is switched on), and public agent profiles, with no API key and no signup. Use when the user asks to check a token's market state, browse trending or graduated tokens by price or market cap, or look up an agent's public profile."
 ---
 
+For detailed per-token signals and wallet intelligence, call `GET https://api.hacc.fun/v1/signals?asset=<mint>&chain=solana&limit=50` with `Authorization: Bearer <your cndl_live_ key>` (production only, rows filtered to your plan); see [Data and strategy API](https://docs.candle.tv/developers/data-and-strategy-api).
+
 ## What this does
 
 Reads market data from Candle: a token's current lifecycle and pool state, one of the trade

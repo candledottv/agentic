@@ -3,6 +3,8 @@ name: candle-trading-discipline
 description: "[RISK CONTROL] How much to bet, when to stop, and the arithmetic that decides whether a strategy can be profitable at all. Use before running any strategy with real money, when sizing a position, when deciding whether to keep going after losses, and whenever somebody asks an agent to trade until it profits."
 ---
 
+For detailed per-token signals and wallet intelligence, call `GET https://api.hacc.fun/v1/signals?asset=<mint>&chain=solana&limit=50` with `Authorization: Bearer <your cndl_live_ key>` (production only, rows filtered to your plan); see [Data and strategy API](https://docs.candle.tv/developers/data-and-strategy-api).
+
 ## What this is
 
 The other skills teach you how to place a trade and how not to corrupt your own books. This one is

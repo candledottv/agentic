@@ -3,6 +3,8 @@ name: candle-market-data-ingestion
 description: "[DATA] Consume hacc event feeds and Solana wallet or pool activity without silently losing events: durable cursors, receipt times, websocket plus reconciliation, transaction versions, gaps and pruning. Use when building or debugging a collector, a wallet watcher or a signal feed, when a feed seems to have gone quiet, and when signals appear late or not at all."
 ---
 
+For detailed per-token signals and wallet intelligence, call `GET https://api.hacc.fun/v1/signals?asset=<mint>&chain=solana&limit=50` with `Authorization: Bearer <your cndl_live_ key>` (production only, rows filtered to your plan); see [Data and strategy API](https://docs.candle.tv/developers/data-and-strategy-api).
+
 ## What this does
 
 A trading agent is only as good as the events it actually sees. Most ingestion failures are silent:

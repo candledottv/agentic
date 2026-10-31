@@ -3,6 +3,8 @@ name: candle-llm-trade-judge
 description: "[RESEARCH] Test whether a language model adds anything to trading decisions before trusting it, and give it the role where that can be measured: a judge or veto over a deterministic entry rule. Use when putting a language model in a trading loop, when evaluating an agent that decides entries or exits, and when a model-driven strategy keeps converging on the same trades whatever the prompt says."
 ---
 
+For detailed per-token signals and wallet intelligence, call `GET https://api.hacc.fun/v1/signals?asset=<mint>&chain=solana&limit=50` with `Authorization: Bearer <your cndl_live_ key>` (production only, rows filtered to your plan); see [Data and strategy API](https://docs.candle.tv/developers/data-and-strategy-api).
+
 ## What this does
 
 It is tempting to hand a language model the market state and ask it whether to buy. The answer comes

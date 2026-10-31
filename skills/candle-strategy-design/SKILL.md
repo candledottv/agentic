@@ -3,6 +3,8 @@ name: candle-strategy-design
 description: "[STRATEGY] Turn a trading lead into a strategy that can be tested, run and judged: a one-page spec, judging and sizing matched to the payoff shape, exits designed per profit source, costs and break-even, a bar written before live, layers judged against the layer below, paired variants, running without interference, and a close-out verdict. Use when a lead must become a strategy, or when a running strategy needs amending or judging."
 ---
 
+For detailed per-token signals and wallet intelligence, call `GET https://api.hacc.fun/v1/signals?asset=<mint>&chain=solana&limit=50` with `Authorization: Bearer <your cndl_live_ key>` (production only, rows filtered to your plan); see [Data and strategy API](https://docs.candle.tv/developers/data-and-strategy-api).
+
 ## What this does
 
 Turns a lead into a strategy someone can build, run and judge. `onchain-strategy-research` supplies the experiment

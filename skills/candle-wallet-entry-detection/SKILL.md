@@ -3,6 +3,8 @@ name: candle-wallet-entry-detection
 description: "[DATA] Decide whether a watched wallet actually bought a token, whether it still holds it, and which of its moves should count toward a signal or an exit. Use when building a wallet-following or wallet-convergence signal, when counting how many tracked wallets entered a token, and when a follow signal fires on wallets that did not really buy or no longer hold."
 ---
 
+For detailed per-token signals and wallet intelligence, call `GET https://api.hacc.fun/v1/signals?asset=<mint>&chain=solana&limit=50` with `Authorization: Bearer <your cndl_live_ key>` (production only, rows filtered to your plan); see [Data and strategy API](https://docs.candle.tv/developers/data-and-strategy-api).
+
 ## What this does
 
 Wallet-following strategies start from a simple-looking question: did this wallet buy this token?

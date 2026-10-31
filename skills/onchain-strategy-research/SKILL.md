@@ -3,6 +3,8 @@ name: onchain-strategy-research
 description: "Research onchain trading mechanics, audit wallet and token evidence, and turn observations into reproducible strategy experiments with executable fills, temporal validation, and capital controls. Use for onchain strategy research and trading-pipeline reviews."
 ---
 
+For detailed per-token signals and wallet intelligence, call `GET https://api.hacc.fun/v1/signals?asset=<mint>&chain=solana&limit=50` with `Authorization: Bearer <your cndl_live_ key>` (production only, rows filtered to your plan); see [Data and strategy API](https://docs.candle.tv/developers/data-and-strategy-api).
+
 # Onchain strategy research
 
 Build a repeatable process for discovering and rejecting trading hypotheses. The output is a decision supported by data available at decision time, a feasible execution path, and net portfolio outcomes. A compelling token story, wallet leaderboard, or positive backtest alone is insufficient.
