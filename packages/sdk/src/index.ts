@@ -304,6 +304,24 @@ export {
 } from "./hyperliquid-withdraw"
 export { KeychainSecretStore } from "./keychain-secret-store"
 export {
+  createLabClient,
+  LAB_CALL_TIMEOUT_MS,
+  LAB_DEFAULT_URL,
+  LAB_PATH,
+  LAB_REPLAY_INTERVAL_MS,
+  LAB_REPLAY_TIMEOUT_MS,
+  type LabAnswer,
+  type LabClient,
+  type LabClientOptions,
+  type LabJobId,
+  type LabRecord,
+  type LabRefusal,
+  type LabReplayInput,
+  type LabReplayJob,
+  type LabReplayStarted,
+  type LabStatus,
+} from "./lab"
+export {
   PERPS_HISTORY_DEFAULT_LIMIT,
   PERPS_HISTORY_MAX_LIMIT,
   type PerpsFillRow,

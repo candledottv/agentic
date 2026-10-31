@@ -30,3 +30,13 @@ test("market read types and reader are exported from the SDK root", () => {
   const index = readFileSync(join(import.meta.dir, "index.ts"), "utf8")
   expect(index).toContain('export * from "./hyperliquid-markets"')
 })
+
+// BE-2040: the hacc lab client is a public export, beside the CLI and MCP copies.
+test("lab client is exported from the SDK root", () => {
+  const index = readFileSync(join(import.meta.dir, "index.ts"), "utf8")
+  const lab = readFileSync(join(import.meta.dir, "lab.ts"), "utf8")
+  const declared = [...lab.matchAll(/^export (?:interface|type|const|function) (\w+)/gm)].map((m) => m[1] as string)
+  expect(declared.length).toBeGreaterThan(0)
+  const missing = declared.filter((name) => !new RegExp(`\\b${name}\\b`).test(index)).sort()
+  expect(missing).toEqual([])
+})

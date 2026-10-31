@@ -6855,6 +6855,107 @@ class KeychainSecretStore {
     await this.exec("secret-tool", ["clear", "service", SERVICE, "account", ref]);
   }
 }
+// src/lab.ts
+var LAB_DEFAULT_URL = "https://api.hacc.fun";
+var LAB_PATH = "/v1/strategy-lab";
+var LAB_CALL_TIMEOUT_MS = 1e4;
+var LAB_REPLAY_INTERVAL_MS = 5000;
+var LAB_REPLAY_TIMEOUT_MS = 660000;
+function record(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function transportRefusal(code, message) {
+  return { ok: false, refusal: { status: 0, code, message } };
+}
+function query(values) {
+  const search = new URLSearchParams;
+  for (const [key, value] of Object.entries(values))
+    if (value !== undefined)
+      search.set(key, String(value));
+  return search.size ? `?${search}` : "";
+}
+function createLabClient(options) {
+  const base = new URL(options.apiUrl ?? LAB_DEFAULT_URL);
+  if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) {
+    throw new Error("The lab needs an HTTPS CANDLE_HACC_URL without credentials, query or fragment.");
+  }
+  const root = base.toString().replace(/\/+$/, "");
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const callMs = options.callTimeoutMs ?? LAB_CALL_TIMEOUT_MS;
+  const now = options.now ?? Date.now;
+  const sleep3 = options.sleep ?? ((ms) => new Promise((resolve2) => setTimeout(resolve2, ms)));
+  async function call(method, path, valid = () => true, body, timeoutMs = callMs) {
+    const controller = new AbortController;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      const response = await doFetch(`${root}${LAB_PATH}${path}`, {
+        method,
+        redirect: "error",
+        signal: controller.signal,
+        headers: {
+          authorization: `Bearer ${options.apiKey}`,
+          accept: "application/json",
+          ...body !== undefined ? { "content-type": "application/json" } : {}
+        },
+        ...body !== undefined ? { body: JSON.stringify(body) } : {}
+      });
+      const received = await response.json().catch(() => {
+        return;
+      });
+      if (timedOut)
+        return transportRefusal("TIMEOUT", "The lab request timed out.");
+      if (!response.ok) {
+        return {
+          ok: false,
+          refusal: {
+            status: response.status,
+            code: record(received) && typeof received.code === "string" ? received.code : `HTTP_${response.status}`,
+            message: record(received) && typeof received.error === "string" ? received.error : `Lab request failed (${response.status}).`,
+            body: received
+          }
+        };
+      }
+      if (!record(received) || !valid(received)) {
+        return transportRefusal("BAD_RESPONSE", "The lab returned an unreadable response.");
+      }
+      return { ok: true, status: response.status, body: received };
+    } catch {
+      return transportRefusal(timedOut ? "TIMEOUT" : "NETWORK_ERROR", timedOut ? "The lab request timed out." : "Could not reach the lab.");
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const jobPath = (id) => `/replay/${encodeURIComponent(String(id))}`;
+  const validId = (id) => typeof id === "string" && id.length > 0 || typeof id === "number" && Number.isSafeInteger(id) && id > 0;
+  const validJob = (body) => validId(body.job_id) && typeof body.status === "string";
+  return {
+    status: () => call("GET", "/status", (b) => typeof b.plan === "string" && typeof b.allowed === "boolean" && record(b.replays)),
+    replay: (body) => call("POST", "/replay", (b) => validId(b.job_id), body),
+    replayGet: (id) => call("GET", jobPath(id), validJob),
+    replayCancel: (id) => call("POST", `${jobPath(id)}/cancel`),
+    runners: (q = {}) => call("GET", `/runners${query(q)}`),
+    edges: (q = {}) => call("GET", `/edges${query(q)}`),
+    async waitForReplay(id, wait = {}) {
+      const intervalMs = wait.intervalMs ?? LAB_REPLAY_INTERVAL_MS;
+      const timeoutMs = wait.timeoutMs ?? LAB_REPLAY_TIMEOUT_MS;
+      if (!Number.isFinite(intervalMs) || intervalMs <= 0 || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new Error("Replay polling interval and timeout must be positive finite numbers.");
+      }
+      const deadline = now() + timeoutMs;
+      while (now() < deadline) {
+        const answer = await call("GET", jobPath(id), validJob, undefined, Math.min(callMs, deadline - now()));
+        if (!answer.ok || !["pending", "running"].includes(answer.body.status))
+          return answer;
+        await sleep3(Math.min(intervalMs, Math.max(0, deadline - now())));
+      }
+      return transportRefusal("REPLAY_TIMEOUT", `Replay ${id} is still pending or running. Read it with candle lab replay get ${id}.`);
+    }
+  };
+}
 // src/plans.ts
 var PLAN_CAPABILITY_NOTE = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs. Every plan can launch a token from its embedded wallet, with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the headless launch; the two launch rows are additional routes, not the only ones.";
 var PLAN_CAPABILITY_LABELS = {
@@ -6943,28 +7044,28 @@ function newClientTurnId() {
   return crypto.randomUUID();
 }
 function quantRefusalCode(body) {
-  const record = asRecord(body);
-  if (typeof record?.code === "string")
-    return record.code;
-  const inner = asRecord(record?.error);
+  const record2 = asRecord(body);
+  if (typeof record2?.code === "string")
+    return record2.code;
+  const inner = asRecord(record2?.error);
   return typeof inner?.code === "string" ? inner.code : undefined;
 }
 function asRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 }
 function refusalOf(status, body) {
-  const record = asRecord(body) ?? {};
-  const relayCode = typeof record.code === "string" ? record.code : undefined;
+  const record2 = asRecord(body) ?? {};
+  const relayCode = typeof record2.code === "string" ? record2.code : undefined;
   const code = quantRefusalCode(body) ?? `HTTP_${status}`;
   const refusal = { code, status, shape: relayCode !== undefined ? "relay" : "envelope" };
-  if (typeof record.retryable === "boolean")
-    refusal.retryable = record.retryable;
-  if (typeof record.resetsAt === "string" || typeof record.resetsAt === "number")
-    refusal.resetsAt = record.resetsAt;
-  if (typeof record.turnId === "string")
-    refusal.turnId = record.turnId;
-  if (typeof record.limit === "number")
-    refusal.limit = record.limit;
+  if (typeof record2.retryable === "boolean")
+    refusal.retryable = record2.retryable;
+  if (typeof record2.resetsAt === "string" || typeof record2.resetsAt === "number")
+    refusal.resetsAt = record2.resetsAt;
+  if (typeof record2.turnId === "string")
+    refusal.turnId = record2.turnId;
+  if (typeof record2.limit === "number")
+    refusal.limit = record2.limit;
   return refusal;
 }
 function parseStatus(body) {
@@ -7099,12 +7200,12 @@ function createQuantKeyClient(options) {
     }),
     cancel: (turnId) => call("POST", `${turnPath(turnId)}/cancel`, (body) => asRecord(body) ?? {}, { timeoutMs: callMs }),
     history: (input = {}) => {
-      const query = new URLSearchParams;
+      const query2 = new URLSearchParams;
       if (input.before !== undefined)
-        query.set("before", input.before);
+        query2.set("before", input.before);
       if (input.limit !== undefined)
-        query.set("limit", String(input.limit));
-      const encoded = query.toString();
+        query2.set("limit", String(input.limit));
+      const encoded = query2.toString();
       const suffix = encoded ? `?${encoded}` : "";
       return call("GET", `/history${suffix}`, parseHistory, { timeoutMs: callMs });
     }
@@ -7309,6 +7410,7 @@ export {
   encryptWalletKeyForImport,
   effectivePerpsRisk,
   createQuantKeyClient,
+  createLabClient,
   TradeLegOutcomeError,
   TradeLandedUnconfirmedError,
   TradeLandedFeeLegError,
@@ -7330,6 +7432,11 @@ export {
   PERPS_FUNDING_HISTORY_MAX_MS,
   PERPS_FLATTEN_MAX_STEPS,
   PERPS_CANDLE_INTERVALS,
+  LAB_REPLAY_TIMEOUT_MS,
+  LAB_REPLAY_INTERVAL_MS,
+  LAB_PATH,
+  LAB_DEFAULT_URL,
+  LAB_CALL_TIMEOUT_MS,
   KeychainSecretStore,
   JsonRpcError,
   InMemorySecretStore,
