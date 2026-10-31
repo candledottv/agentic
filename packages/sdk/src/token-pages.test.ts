@@ -20,6 +20,26 @@ function fixture(answer: (call: { url: URL; init: RequestInit }, n: number) => R
 }
 const ok = (data: unknown) => Response.json({ success: true, data })
 
+test("update/list/delete/seen retain the public/private boundary and idempotency", async () => {
+  const { client, calls } = fixture(() => ok({ id: versionId, sequence: "9007199254740993", items: [] }))
+  await client.tokenPages.updates(token, { limit: 20, cursor: "cursor&x" })
+  await client.tokenPages.postUpdate(token, { text: "hello" }, { idempotencyKey: "post-1" })
+  await client.tokenPages.deletePost(token, versionId, { idempotencyKey: "delete-1" })
+  await client.tokenPages.seen(token)
+  await client.tokenPages.markSeen(token, "9007199254740993", { idempotencyKey: "seen-1" })
+  expect(calls.map((c) => [c.url.pathname, c.init.method])).toEqual([
+    [`${base}/updates`, "GET"],
+    [`${base}/updates`, "POST"],
+    [`${base}/posts/${versionId}`, "DELETE"],
+    [`${base}/seen`, "GET"],
+    [`${base}/seen`, "POST"],
+  ])
+  expect(new Headers(calls[0]?.init.headers).has("x-api-key")).toBe(false)
+  for (const call of calls.slice(1)) expect(new Headers(call.init.headers).get("x-api-key")).toBe(key)
+  expect(new Headers(calls[4]?.init.headers).get("Idempotency-Key")).toBe("seen-1")
+  expect(JSON.parse(String(calls[4]?.init.body))).toEqual({ visibleUpdateSequence: "9007199254740993" })
+})
+
 test("public reads are keyless, private capabilities are separate, cursors and large strings are preserved", async () => {
   const data = {
     revision: "9007199254740993",

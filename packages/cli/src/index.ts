@@ -88,7 +88,15 @@ import { teeRebind, teeRebinds } from "./commands/tee-rebind"
 import { teeRename } from "./commands/tee-rename"
 import { tokenClusters } from "./commands/token-clusters"
 import { tokenEvents } from "./commands/token-events"
-import { tokenAbout, tokenClaim, tokenFlag, tokenHistory, tokenSection } from "./commands/token-pages"
+import {
+  tokenAbout,
+  tokenClaim,
+  tokenFlag,
+  tokenHistory,
+  tokenPost,
+  tokenSection,
+  tokenUpdate,
+} from "./commands/token-pages"
 import { tokenForensics, tokenVampCandidates } from "./commands/token-paid"
 import { transfer } from "./commands/transfer"
 import { tui } from "./commands/tui"
@@ -258,6 +266,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       section: tokenSection,
       history: tokenHistory,
       flag: tokenFlag,
+      update: tokenUpdate,
+      post: tokenPost,
     },
   },
   // BE-2119 (Quant in groups 6.8): the token card for one pasted contract. Public and keyless.

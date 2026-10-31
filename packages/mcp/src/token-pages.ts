@@ -12,6 +12,11 @@ const write = {
   idempotencyKey: z.string().min(1).max(128).describe("Persist one key and body before sending; reuse both on retry"),
 }
 export const tokenPageShapes = {
+  candle_token_page_updates: { ...token, ...pagination },
+  candle_token_page_update: { ...token, ...write, text: z.string() },
+  candle_token_page_post_delete: { ...token, ...write, id: z.string().uuid() },
+  candle_token_page_seen: token,
+  candle_token_page_mark_seen: { ...token, ...write, visibleUpdateSequence: revision },
   candle_token_page_about: token,
   candle_token_page_capabilities: token,
   candle_token_page_burns: { ...token, ...pagination },
@@ -47,12 +52,20 @@ export function isTokenPageTool(name: string): name is TokenPageToolName {
 
 /** Only route parameters and client options are removed; the strict schemas own the wire DTO. */
 export function buildTokenPageRequest(name: TokenPageToolName, args: Record<string, unknown>, cfg: RequestConfig) {
-  const { chain, address, section: sectionName, cursor, limit, idempotencyKey, ...body } = args
+  const { chain, address, id, section: sectionName, cursor, limit, idempotencyKey, ...body } = args
   const publicRead =
-    name === "candle_token_page_about" || name === "candle_token_page_burns" || name === "candle_token_page_history"
+    name === "candle_token_page_updates" ||
+    name === "candle_token_page_about" ||
+    name === "candle_token_page_burns" ||
+    name === "candle_token_page_history"
   if (!publicRead && !cfg.apiKey)
     throw new Error("CANDLE_AGENT_API_KEY with token-pages scopes is required for this tool.")
   const suffix: Record<TokenPageToolName, string> = {
+    candle_token_page_updates: "/updates",
+    candle_token_page_update: "/updates",
+    candle_token_page_post_delete: `/posts/${encodeURIComponent(String(id))}`,
+    candle_token_page_seen: "/seen",
+    candle_token_page_mark_seen: "/seen",
     candle_token_page_about: "",
     candle_token_page_capabilities: "/capabilities",
     candle_token_page_burns: "/burns",
@@ -63,7 +76,7 @@ export function buildTokenPageRequest(name: TokenPageToolName, args: Record<stri
     candle_token_page_section_restore: `/sections/${encodeURIComponent(String(sectionName))}/restore`,
     candle_token_page_flag: "/flags",
   }
-  const read = publicRead || name === "candle_token_page_capabilities"
+  const read = name === "candle_token_page_seen" || publicRead || name === "candle_token_page_capabilities"
   const headers: Record<string, string> = { "Content-Type": "application/json" }
   if (!publicRead && cfg.apiKey) headers["x-api-key"] = cfg.apiKey
   if (idempotencyKey !== undefined) headers["Idempotency-Key"] = String(idempotencyKey)
@@ -73,7 +86,14 @@ export function buildTokenPageRequest(name: TokenPageToolName, args: Record<stri
   return {
     url: `${cfg.apiUrl.replace(/\/$/, "")}/api/v1/token-pages/${encodeURIComponent(String(chain))}/${encodeURIComponent(String(address))}${suffix[name]}${query.size ? `?${query}` : ""}`,
     init: {
-      method: read ? "GET" : name === "candle_token_page_section_set" ? "PUT" : "POST",
+      method:
+        name === "candle_token_page_post_delete"
+          ? "DELETE"
+          : read
+            ? "GET"
+            : name === "candle_token_page_section_set"
+              ? "PUT"
+              : "POST",
       headers,
       cache: "no-store",
       ...(read ? {} : { body: JSON.stringify(body) }),

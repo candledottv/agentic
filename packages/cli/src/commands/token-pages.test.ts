@@ -68,6 +68,41 @@ const file = (text: string | Uint8Array) => ({
 })
 const json = (f: { stdout: { text: string } }) => JSON.parse(f.stdout.text)
 
+test("update file and author delete use explicit scopes, stable retry identity and strict local limits", async () => {
+  const f = fixture(() => ok({ id: VERSION, sequence: "9007199254740993" }), file("hello\r\n😀"))
+  expect(
+    await run(["token", "update", MINT, "--file", "draft.txt", "--idempotency-key", "update-1", "--json"], f.deps),
+  ).toBe(0)
+  expect(f.calls[0]).toMatchObject({ method: "POST", path: `${PAGE}/updates`, body: { text: "hello\n😀" } })
+  expect(f.calls[0]?.headers.get("Idempotency-Key")).toBe("update-1")
+  expect(json(f).data.sequence).toBe("9007199254740993")
+  expect(await run(["token", "post", "delete", MINT, VERSION, "--idempotency-key", "delete-1", "--json"], f.deps)).toBe(
+    0,
+  )
+  expect(f.calls[1]).toMatchObject({ method: "DELETE", path: `${PAGE}/posts/${VERSION}`, body: {} })
+  for (const text of ["", "😀".repeat(1001), "bad\u0000text"]) {
+    const invalid = fixture(() => {
+      throw new Error("must not send")
+    }, file(text))
+    expect(await run(["token", "update", MINT, "--file", "draft.txt", "--json"], invalid.deps)).toBe(2)
+    expect(invalid.calls).toHaveLength(0)
+  }
+})
+test("update retries a lost answer byte-for-byte; feature-off does not retry", async () => {
+  let n = 0
+  const f = fixture(() => {
+    if (n++ === 0) throw new Error("lost answer")
+    return ok({ id: VERSION, sequence: "1" })
+  }, file("update"))
+  expect(await run(["token", "update", MINT, "--file", "draft", "--json"], f.deps)).toBe(0)
+  expect(f.calls).toHaveLength(2)
+  expect(f.calls[0]?.body).toEqual(f.calls[1]?.body)
+  expect(f.calls[0]?.headers.get("Idempotency-Key")).toBe(f.calls[1]?.headers.get("Idempotency-Key"))
+  const off = fixture(() => refused(409, "feature_off"), file("update"))
+  expect(await run(["token", "update", MINT, "--file", "draft", "--json"], off.deps)).toBe(1)
+  expect(off.calls).toHaveLength(1)
+})
+
 const ABOUT = {
   token: { chain: "solana", address: MINT },
   revision: "7",

@@ -851,6 +851,8 @@ export const HELP: Record<string, Topic> = {
       "candle token claim <address> [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--json]",
       "candle token section set|restore <address> <thesis|tokenomics|lore> --file <path>|--version-id <id> --base-revision <n> [--json]",
       "candle token history <address> <thesis|tokenomics|lore> [--limit <n>] [--cursor <c>] [--json]",
+      "candle token update <address> --file <path> [--chain solana|hood] [--idempotency-key <key>] [--json]",
+      "candle token post delete <address> <post-id> [--chain solana|hood] [--idempotency-key <key>] [--json]",
       "candle token flag <address> --content <id> --reason <reason> [--detail <text>] [--json]",
     ],
     rows: [
@@ -877,6 +879,8 @@ export const HELP: Record<string, Topic> = {
         invocation: "section set|restore <address> <section>",
         description: "Write a section from --file, or restore an earlier --version-id, at --base-revision",
       },
+      { invocation: "update <address>", description: "Post an immutable holder update from --file (1000 characters)" },
+      { invocation: "post delete <address> <post-id>", description: "Delete your own post, including after selling" },
       { invocation: "history <address> <section>", description: "A section's versions, newest first" },
       { invocation: "flag <address>", description: "Report one exact version to Candle's review queue" },
     ],

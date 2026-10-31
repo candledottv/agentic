@@ -5761,6 +5761,11 @@ var write = {
   idempotencyKey: z6.string().min(1).max(128).describe("Persist one key and body before sending; reuse both on retry")
 };
 var tokenPageShapes = {
+  candle_token_page_updates: { ...token, ...pagination },
+  candle_token_page_update: { ...token, ...write, text: z6.string() },
+  candle_token_page_post_delete: { ...token, ...write, id: z6.string().uuid() },
+  candle_token_page_seen: token,
+  candle_token_page_mark_seen: { ...token, ...write, visibleUpdateSequence: revision },
   candle_token_page_about: token,
   candle_token_page_capabilities: token,
   candle_token_page_burns: { ...token, ...pagination },
@@ -5793,11 +5798,16 @@ function isTokenPageTool(name) {
   return Object.hasOwn(tokenPageShapes, name);
 }
 function buildTokenPageRequest(name, args, cfg) {
-  const { chain, address, section: sectionName, cursor, limit, idempotencyKey, ...body } = args;
-  const publicRead = name === "candle_token_page_about" || name === "candle_token_page_burns" || name === "candle_token_page_history";
+  const { chain, address, id, section: sectionName, cursor, limit, idempotencyKey, ...body } = args;
+  const publicRead = name === "candle_token_page_updates" || name === "candle_token_page_about" || name === "candle_token_page_burns" || name === "candle_token_page_history";
   if (!publicRead && !cfg.apiKey)
     throw new Error("CANDLE_AGENT_API_KEY with token-pages scopes is required for this tool.");
   const suffix = {
+    candle_token_page_updates: "/updates",
+    candle_token_page_update: "/updates",
+    candle_token_page_post_delete: `/posts/${encodeURIComponent(String(id))}`,
+    candle_token_page_seen: "/seen",
+    candle_token_page_mark_seen: "/seen",
     candle_token_page_about: "",
     candle_token_page_capabilities: "/capabilities",
     candle_token_page_burns: "/burns",
@@ -5808,7 +5818,7 @@ function buildTokenPageRequest(name, args, cfg) {
     candle_token_page_section_restore: `/sections/${encodeURIComponent(String(sectionName))}/restore`,
     candle_token_page_flag: "/flags"
   };
-  const read = publicRead || name === "candle_token_page_capabilities";
+  const read = name === "candle_token_page_seen" || publicRead || name === "candle_token_page_capabilities";
   const headers2 = { "Content-Type": "application/json" };
   if (!publicRead && cfg.apiKey)
     headers2["x-api-key"] = cfg.apiKey;
@@ -5822,7 +5832,7 @@ function buildTokenPageRequest(name, args, cfg) {
   return {
     url: `${cfg.apiUrl.replace(/\/$/, "")}/api/v1/token-pages/${encodeURIComponent(String(chain))}/${encodeURIComponent(String(address))}${suffix[name]}${query.size ? `?${query}` : ""}`,
     init: {
-      method: read ? "GET" : name === "candle_token_page_section_set" ? "PUT" : "POST",
+      method: name === "candle_token_page_post_delete" ? "DELETE" : read ? "GET" : name === "candle_token_page_section_set" ? "PUT" : "POST",
       headers: headers2,
       cache: "no-store",
       ...read ? {} : { body: JSON.stringify(body) }
@@ -5928,6 +5938,11 @@ var TOOL_NAMES = [
   "candle_token_page_section_set",
   "candle_token_page_section_restore",
   "candle_token_page_flag",
+  "candle_token_page_updates",
+  "candle_token_page_update",
+  "candle_token_page_post_delete",
+  "candle_token_page_seen",
+  "candle_token_page_mark_seen",
   "candle_token_forensics",
   "candle_token_clusters",
   "candle_report_activity",
@@ -6629,6 +6644,36 @@ function registerToolSubset(server, options) {
     inputSchema: tokenPageShapes.candle_token_page_section_restore,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
   }, (args) => tokenPageRelay("candle_token_page_section_restore", args, getConfig(), doFetch));
+  register("candle_token_page_updates", {
+    title: "Token page updates",
+    description: "READ: list updates or own unread state. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+    inputSchema: tokenPageShapes.candle_token_page_updates,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, (args) => tokenPageRelay("candle_token_page_updates", args, getConfig(), doFetch));
+  register("candle_token_page_update", {
+    title: "Token page update",
+    description: "MUTATION: append an immutable update with fresh 0.5% eligibility. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+    inputSchema: tokenPageShapes.candle_token_page_update,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
+  }, (args) => tokenPageRelay("candle_token_page_update", args, getConfig(), doFetch));
+  register("candle_token_page_post_delete", {
+    title: "Token page post delete",
+    description: "MUTATION: delete your own post, including after selling. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+    inputSchema: tokenPageShapes.candle_token_page_post_delete,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
+  }, (args) => tokenPageRelay("candle_token_page_post_delete", args, getConfig(), doFetch));
+  register("candle_token_page_seen", {
+    title: "Token page seen",
+    description: "READ: list updates or own unread state. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+    inputSchema: tokenPageShapes.candle_token_page_seen,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, (args) => tokenPageRelay("candle_token_page_seen", args, getConfig(), doFetch));
+  register("candle_token_page_mark_seen", {
+    title: "Token page mark seen",
+    description: "MUTATION: mark only an actually rendered visible update seen. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+    inputSchema: tokenPageShapes.candle_token_page_mark_seen,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
+  }, (args) => tokenPageRelay("candle_token_page_mark_seen", args, getConfig(), doFetch));
   register("candle_token_page_flag", {
     title: "Flag token page content",
     description: "MUTATION: report the exact contentId, not a section name. Requires token-pages:write and any fresh positive holding; server deduplicates by account/content. Supply a durable idempotencyKey and reuse the same key and body after a lost answer. A transport failure retries once with identical bytes. HTTP refusals are not retried. All token page switches default off.",

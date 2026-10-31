@@ -141,6 +141,11 @@ export const TOOL_NAMES = [
   "candle_token_page_section_set",
   "candle_token_page_section_restore",
   "candle_token_page_flag",
+  "candle_token_page_updates",
+  "candle_token_page_update",
+  "candle_token_page_post_delete",
+  "candle_token_page_seen",
+  "candle_token_page_mark_seen",
 
   "candle_token_forensics",
   // BE-2006: the optional third-party cluster read, keyless. Unavailable is a result, never an error.
@@ -1412,6 +1417,61 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     (args) => tokenPageRelay("candle_token_page_section_restore", args, getConfig(), doFetch),
   )
 
+  register(
+    "candle_token_page_updates",
+    {
+      title: "Token page updates",
+      description:
+        "READ: list updates or own unread state. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+      inputSchema: tokenPageShapes.candle_token_page_updates,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    (args) => tokenPageRelay("candle_token_page_updates", args, getConfig(), doFetch),
+  )
+  register(
+    "candle_token_page_update",
+    {
+      title: "Token page update",
+      description:
+        "MUTATION: append an immutable update with fresh 0.5% eligibility. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+      inputSchema: tokenPageShapes.candle_token_page_update,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    (args) => tokenPageRelay("candle_token_page_update", args, getConfig(), doFetch),
+  )
+  register(
+    "candle_token_page_post_delete",
+    {
+      title: "Token page post delete",
+      description:
+        "MUTATION: delete your own post, including after selling. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+      inputSchema: tokenPageShapes.candle_token_page_post_delete,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    (args) => tokenPageRelay("candle_token_page_post_delete", args, getConfig(), doFetch),
+  )
+  register(
+    "candle_token_page_seen",
+    {
+      title: "Token page seen",
+      description:
+        "READ: list updates or own unread state. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+      inputSchema: tokenPageShapes.candle_token_page_seen,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    (args) => tokenPageRelay("candle_token_page_seen", args, getConfig(), doFetch),
+  )
+  register(
+    "candle_token_page_mark_seen",
+    {
+      title: "Token page mark seen",
+      description:
+        "MUTATION: mark only an actually rendered visible update seen. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+      inputSchema: tokenPageShapes.candle_token_page_mark_seen,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    (args) => tokenPageRelay("candle_token_page_mark_seen", args, getConfig(), doFetch),
+  )
   register(
     "candle_token_page_flag",
     {

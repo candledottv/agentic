@@ -4,10 +4,21 @@
  * card, which is the point: the core refuses an unclassified tool rather than guess.
  */
 import { describe, expect, test } from "bun:test"
-import { TOOL_NAMES } from "../../../mcp/src/tools"
+import { TOOL_NAMES as ALL_TOOL_NAMES } from "../../../mcp/src/tools"
+import { TOKEN_PAGE_CORE_DEFERRED } from "../commands/mcp"
 import { CORE_LOCAL_TOOLS, classificationDrift, classifyCall, TOOL_CLASSES } from "./classify"
 import { offeredTools } from "./tools-face"
 
+// Hold preservation only: do not add runtime classifications or core/TUI capabilities here.
+const TOOL_NAMES = ALL_TOOL_NAMES.filter((name) => !TOKEN_PAGE_CORE_DEFERRED.includes(name))
+test("BE-1834 keeps token update tools outside the core while ordinary MCP ships", () => {
+  const offered = new Set(offeredTools().map((t) => t.name))
+  for (const name of TOKEN_PAGE_CORE_DEFERRED) {
+    expect(ALL_TOOL_NAMES as readonly string[]).toContain(name)
+    expect(classifyCall(name, {})).toEqual({ class: "unclassified" })
+    expect(offered.has(name)).toBe(false)
+  }
+})
 describe("T-1: the card table matches TOOL_NAMES", () => {
   test("both directions", () => {
     const classified = Object.keys(TOOL_CLASSES).sort()

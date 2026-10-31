@@ -4,7 +4,9 @@ import type {
   AboutCapabilities,
   AboutHistory,
   AboutSection,
+  AboutSeen,
   AboutToken,
+  AboutUpdates,
   ClaimResult,
   CreatorChallenge,
   FlagReason,
@@ -45,6 +47,23 @@ export class TokenPageError extends CandleApiError {
 
 /** The API remains the authoritative validator, including strict bodies and fresh eligibility. */
 export interface CandleTokenPages {
+  updates(token: AboutToken, options?: TokenPagePagination): Promise<AboutUpdates>
+  postUpdate(
+    token: AboutToken,
+    body: { text: string },
+    options?: TokenPageWriteOptions,
+  ): Promise<TokenPageWriteResult<{ id: string; sequence: string }>>
+  deletePost(
+    token: AboutToken,
+    id: string,
+    options?: TokenPageWriteOptions,
+  ): Promise<TokenPageWriteResult<{ id: string; deleted: true }>>
+  seen(token: AboutToken): Promise<AboutSeen>
+  markSeen(
+    token: AboutToken,
+    visibleUpdateSequence: string,
+    options?: TokenPageWriteOptions,
+  ): Promise<TokenPageWriteResult<AboutSeen>>
   about(token: AboutToken): Promise<TokenAbout>
   capabilities(token: AboutToken): Promise<AboutCapabilities>
   burns(token: AboutToken, options?: TokenPagePagination): Promise<AboutBurnHistory>
@@ -184,6 +203,12 @@ export function createTokenPagesClient(io: {
   }
   const sectionPath = (section: AboutSection) => `/sections/${encodeURIComponent(section)}`
   return {
+    updates: (token, options) => request("GET", path(token, `/updates${query(options)}`), false),
+    postUpdate: (token, body, options) => write("POST", path(token, "/updates"), body, options),
+    deletePost: (token, id, options) => write("DELETE", path(token, `/posts/${encodeURIComponent(id)}`), {}, options),
+    seen: (token) => request("GET", path(token, "/seen"), true),
+    markSeen: (token, visibleUpdateSequence, options) =>
+      write("POST", path(token, "/seen"), { visibleUpdateSequence }, options),
     about: (token) => request("GET", path(token), false),
     capabilities: (token) => request("GET", path(token, "/capabilities"), true),
     burns: (token, options) => request("GET", path(token, `/burns${query(options)}`), false),

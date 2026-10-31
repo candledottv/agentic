@@ -4567,6 +4567,11 @@ function createTokenPagesClient(io) {
   }
   const sectionPath = (section) => `/sections/${encodeURIComponent(section)}`;
   return {
+    updates: (token, options) => request("GET", path(token, `/updates${query(options)}`), false),
+    postUpdate: (token, body, options) => write("POST", path(token, "/updates"), body, options),
+    deletePost: (token, id, options) => write("DELETE", path(token, `/posts/${encodeURIComponent(id)}`), {}, options),
+    seen: (token) => request("GET", path(token, "/seen"), true),
+    markSeen: (token, visibleUpdateSequence, options) => write("POST", path(token, "/seen"), { visibleUpdateSequence }, options),
     about: (token) => request("GET", path(token), false),
     capabilities: (token) => request("GET", path(token, "/capabilities"), true),
     burns: (token, options) => request("GET", path(token, `/burns${query(options)}`), false),

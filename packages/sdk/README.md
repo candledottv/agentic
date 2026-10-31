@@ -57,7 +57,7 @@ refuse to fetch without one and throw a plain `Error` locally instead of a serve
 ## Token page About (unreleased source)
 
 `candle.tokenPages` reads About and immutable section history, and submits claims, section edits,
-restores and flags. These methods need a human-owned SDK release before they are available in the
+restores, flags and immutable updates. These methods need a human-owned SDK release before they are available in the
 published package. Token page switches default off; a server can return `404` or `feature_off`.
 
 | Method | Access | Result |
@@ -70,6 +70,11 @@ published package. Token page switches default off; a server can return `404` or
 | `claim(token, body, options)` | `token-pages:write` | Claim result and idempotency key |
 | `setSection(token, section, body, options)` | `token-pages:write` | New version ID/revision and idempotency key |
 | `restoreSection(token, section, body, options)` | `token-pages:write` | New version ID/revision and idempotency key |
+| `updates(token, { cursor, limit })` | Public, no key sent | `AboutUpdates`, newest first with tombstones |
+| `postUpdate(token, { text }, options)` | `token-pages:write`, current 0.5% | Immutable post ID/sequence and idempotency key |
+| `deletePost(token, id, options)` | `token-pages:write`, author account | Soft delete, including after selling |
+| `seen(token)` | `token-pages:read` | Own `AboutSeen` unread position |
+| `markSeen(token, visibleUpdateSequence, options)` | `token-pages:write` | Monotonic seen result and idempotency key; call after rendering visible updates |
 | `flag(token, body, options)` | `token-pages:write` | Flag result and idempotency key |
 
 The token is `{ chain: "solana" | "hood", address: string }`; sections are `thesis`, `tokenomics`

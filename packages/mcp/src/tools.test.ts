@@ -79,8 +79,13 @@ test("all registered tools are listed", () => {
     "candle_token_page_creator_challenge",
     "candle_token_page_flag",
     "candle_token_page_history",
+    "candle_token_page_mark_seen",
+    "candle_token_page_post_delete",
     "candle_token_page_section_restore",
     "candle_token_page_section_set",
+    "candle_token_page_seen",
+    "candle_token_page_update",
+    "candle_token_page_updates",
 
     "candle_trade",
     "candle_transfer",

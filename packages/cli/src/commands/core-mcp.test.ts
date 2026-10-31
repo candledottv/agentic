@@ -32,6 +32,7 @@ import { closeVault } from "../vault/store"
 import { makeVault, useCheapKdf } from "../vault/test-vault"
 import { coreServe } from "./core"
 import { buildCoreMcpServer, CORE_MCP_INSTRUCTIONS, coreMcp } from "./core-mcp"
+import { TOKEN_PAGE_CORE_DEFERRED } from "./mcp"
 
 beforeAll(() => useCheapKdf())
 
@@ -199,7 +200,9 @@ describe("the core MCP face (A-5)", () => {
     // S5 G-2: plus the core's own read, candle_get_signals.
     expect(names).toEqual(
       [
-        ...TOOL_NAMES.filter((name) => name !== "candle_transfer" && name !== "candle_sweep"),
+        ...TOOL_NAMES.filter(
+          (name) => name !== "candle_transfer" && name !== "candle_sweep" && !TOKEN_PAGE_CORE_DEFERRED.includes(name),
+        ),
         "candle_get_signals",
       ].sort(),
     )

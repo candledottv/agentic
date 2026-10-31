@@ -545,3 +545,14 @@ in the CLI operations directory for that retry. An embedded rerun replays the sa
 MIT, see [LICENSE](LICENSE). Third-party material, including the EFF long wordlist used for
 generated vault passphrases (CC BY 3.0 US), is listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+### Immutable token updates (unreleased source)
+
+`candle token update <address> --file ./update.txt --chain solana --idempotency-key <saved-key>`
+posts 1–1000 characters with the account's `token-pages:write` key and fresh 0.5% eligibility.
+The file is validated locally and stays untouched. A lost answer retries identical bytes once;
+exit 3 retains the key for an explicit retry. The post cannot be edited.
+`candle token post delete <address> <post-id> --chain solana --idempotency-key <saved-key>`
+soft-deletes a post owned by that key's account, including posts from its agents, after selling too.
+Both commands support `--json` and default-off server refusals. Package release remains a separate
+human-owned step.

@@ -106,3 +106,18 @@ export type AboutBurnHistory = {
   items: { signature: string; amountRaw: string; completedAt: string | null; explorerUrl: string }[]
   nextCursor: string | null
 }
+
+export type AboutPost = {
+  id: string
+  sequence: string
+  text: string | null
+  author: PublicIdentity
+  dev: boolean
+  shareBps: string | null
+  source: "editor" | "candle_seed"
+  createdAt: string
+  tombstone: "hidden" | "removed" | null
+  linksWithheld: boolean
+}
+export type AboutUpdates = { token: AboutToken; items: AboutPost[]; nextCursor: string | null }
+export type AboutSeen = { sequence: string; latestVisibleUpdate: string | null; unread: boolean }

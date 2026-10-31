@@ -67,23 +67,27 @@ test("public About/burn/history are keyless and uncached; capabilities are a sep
     answer(() => ok(data))
     for (const [suffix, args] of [
       ["about", {}],
+      ["updates", { limit: 50, cursor: "opaque:/?&" }],
       ["burns", { limit: 5 }],
       ["history", { section: "lore", cursor: "opaque:/?&", limit: 50 }],
       ["capabilities", {}],
+      ["seen", {}],
     ] as const) {
       expect(blocks(await call(client, suffix, args))[0]).toEqual({ success: true, data })
     }
     expect(calls.map((c) => new URL(c.url).pathname)).toEqual([
       new URL(base).pathname,
+      `${new URL(base).pathname}/updates`,
       `${new URL(base).pathname}/burns`,
       `${new URL(base).pathname}/sections/lore/history`,
       `${new URL(base).pathname}/capabilities`,
+      `${new URL(base).pathname}/seen`,
     ])
-    expect(new URL(calls[2]?.url ?? "https://api.test/").searchParams.get("cursor")).toBe("opaque:/?&")
+    expect(new URL(calls[3]?.url ?? "https://api.test/").searchParams.get("cursor")).toBe("opaque:/?&")
     calls.forEach((c, i) => {
       expect(c.init?.method).toBe("GET")
       expect(c.init?.cache).toBe("no-store")
-      expect(new Headers(c.init?.headers).get("x-api-key")).toBe(i === 3 ? cfg.apiKey : null)
+      expect(new Headers(c.init?.headers).get("x-api-key")).toBe(i >= 4 ? cfg.apiKey : null)
     })
   })
 })
@@ -106,6 +110,9 @@ test("content writes send the same API DTO and Idempotency-Key, and return the s
         "POST",
         "/sections/lore/restore",
       ],
+      ["update", { text: "update body" }, "POST", "/updates"],
+      ["post_delete", { id: versionId }, "DELETE", `/posts/${versionId}`],
+      ["mark_seen", { visibleUpdateSequence: "9007199254740993" }, "POST", "/seen"],
       ["flag", { contentId: versionId, reason: "unsafe_link", detail: "review this item" }, "POST", "/flags"],
     ] as const
     for (const [suffix, args, method, path] of cases) {
@@ -119,18 +126,23 @@ test("content writes send the same API DTO and Idempotency-Key, and return the s
       if (!sent) throw new Error("No request recorded")
       expect(sent.url).toBe(`${base}${path}`)
       expect(sent.init?.method).toBe(method)
-      const { section: _section, ...body } = args as Record<string, unknown>
+      const { section: _section, id: _id, ...body } = args as Record<string, unknown>
       expect(JSON.parse(String(sent.init?.body))).toEqual(body)
       expect(new Headers(sent.init?.headers).get("Idempotency-Key")).toBe(options.idempotencyKey)
       expect(new Headers(sent.init?.headers).get("x-api-key")).toBe(cfg.apiKey)
     }
-    expect(calls).toHaveLength(4)
+    expect(calls).toHaveLength(cases.length)
   })
 })
 
 test("strict protocol schemas reject unknown/owner fields, invalid revisions, pagination and missing replay keys before fetch", async () => {
   await fixture(async ({ client, calls }) => {
     for (const [suffix, args] of [
+      ["update", { text: "x", ...options, account: "foreign" }],
+      ["update", { text: "x" }],
+      ["post_delete", { id: "bad-id", ...options }],
+      ["mark_seen", { visibleUpdateSequence: "9007199254740993" }],
+      ["mark_seen", { visibleUpdateSequence: 42, ...options }],
       ["claim", { kind: "holder", ...options, account: "someone-else" }],
       ["claim", { kind: "holder" }],
       ["claim", { kind: "admin", ...options }],
@@ -278,12 +290,12 @@ test("unknown outcomes keep the replay key and never echo transport secrets; cha
   })
 })
 
-test("schema list marks four reads and every state-changing call as mutations", async () => {
+test("schema list marks reads and every state-changing call as mutations", async () => {
   await fixture(async ({ client }) => {
     const tools = (await client.listTools()).tools
-    expect(tools).toHaveLength(9)
+    expect(tools).toHaveLength(14)
     for (const tool of tools) {
-      const read = ["about", "capabilities", "burns", "history"].some((s) => tool.name === name(s))
+      const read = ["about", "capabilities", "burns", "history", "updates", "seen"].some((s) => tool.name === name(s))
       expect(tool.annotations?.readOnlyHint).toBe(read)
       expect(tool.annotations?.destructiveHint).toBe(!read)
       expect(tool.annotations?.idempotentHint).toBe(tool.name !== name("creator_challenge"))

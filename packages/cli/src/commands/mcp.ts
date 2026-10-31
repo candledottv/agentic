@@ -63,6 +63,11 @@ export const MCP_TOOL_NAMES = [
   "candle_token_page_section_set",
   "candle_token_page_section_restore",
   "candle_token_page_flag",
+  "candle_token_page_updates",
+  "candle_token_page_update",
+  "candle_token_page_post_delete",
+  "candle_token_page_seen",
+  "candle_token_page_mark_seen",
 
   "candle_token_forensics",
   "candle_token_clusters",
@@ -126,6 +131,15 @@ export const MCP_TOOL_NAMES = [
  * nothing, but they read the account and need a key, so pinning the server to them would hand
  * back a `--read-only` server that fails on every call without one.
  */
+/** BE-1834: these ordinary MCP tools stay unclassified/unoffered by the held core/TUI. */
+export const TOKEN_PAGE_CORE_DEFERRED: readonly string[] = [
+  "candle_token_page_updates",
+  "candle_token_page_update",
+  "candle_token_page_post_delete",
+  "candle_token_page_seen",
+  "candle_token_page_mark_seen",
+]
+
 export const READ_ONLY_TOOL_NAMES = [
   "candle_get_market",
   "candle_get_feed",
@@ -134,6 +148,7 @@ export const READ_ONLY_TOOL_NAMES = [
   "candle_token_page_about",
   "candle_token_page_burns",
   "candle_token_page_history",
+  "candle_token_page_updates",
 
   "candle_token_forensics",
   "candle_token_clusters",

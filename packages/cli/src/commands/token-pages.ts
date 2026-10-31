@@ -178,7 +178,7 @@ async function requireKey(ctx: CommandContext): Promise<string | undefined> {
  */
 async function write(
   ctx: CommandContext,
-  input: { method: "POST" | "PUT"; path: string; body: unknown; apiKey: string; idempotencyKey: string },
+  input: { method: "POST" | "PUT" | "DELETE"; path: string; body: unknown; apiKey: string; idempotencyKey: string },
 ): Promise<ApiResult | "unknown"> {
   // A body that disconnects after the headers arrive makes apiRequest reject; that is still "no
   // answer", so it takes the same retry-then-unknown path as a refused connection.
@@ -256,7 +256,7 @@ function identity(who: Identity | null | undefined): string | undefined {
  * other than newline and tab, and the section's code-point limit after CRLF normalization. The
  * same rules the API applies, so a refusal here is one the server would also give.
  */
-export function sectionText(bytes: Uint8Array, section: Section): { text: string } | { error: string } {
+export function sectionText(bytes: Uint8Array, section: Section | "update"): { text: string } | { error: string } {
   if (bytes.length > TOKEN_PAGE_BODY_CAP_BYTES) return { error: `The file is over ${TOKEN_PAGE_BODY_CAP_BYTES} bytes.` }
   let decoded: string
   try {
@@ -808,5 +808,82 @@ export async function tokenFlag(args: string[], ctx: CommandContext): Promise<nu
       ],
       "Reported",
     )
+  return 0
+}
+
+/** Immutable update, using the same file validation and idempotent transport as section writes. */
+export async function tokenUpdate(args: string[], ctx: CommandContext): Promise<number> {
+  const usage = usageFor(
+    ctx,
+    "Usage: candle token update <address> --file <path> [--chain solana|hood] [--idempotency-key <key>]",
+  )
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] })
+  if ("error" in parsed) return usage(parsed.error)
+  const chain = chainOf(parsed.values),
+    address = parsed.positionals[0],
+    file = parsed.values["--file"]
+  if (!chain || !address || !file || parsed.positionals.length !== 1) return usage()
+  let bytes: Uint8Array
+  try {
+    bytes = await ctx.deps.readBytes(file)
+  } catch {
+    return usage("The update file could not be read.")
+  }
+  const checked = sectionText(bytes, "update")
+  if ("error" in checked || !checked.text.trim()) return usage("The update must contain 1–1000 valid characters.")
+  const idempotencyKey = idempotencyKeyOf(parsed.values, usage)
+  if (typeof idempotencyKey === "number") return idempotencyKey
+  const apiKey = await requireKey(ctx)
+  if (!apiKey) return 1
+  const result = await write(ctx, {
+    method: "POST",
+    path: pagePath(chain, address, "/updates"),
+    body: { text: checked.text },
+    apiKey,
+    idempotencyKey,
+  })
+  if (result === "unknown") return writeUnknown(ctx, idempotencyKey)
+  if (!result.ok) return writeApiFailure(ctx, result, "key")
+  const data = dataOf(result)
+  if (ctx.json) ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}\n`)
+  else
+    writeFields(
+      ctx.deps,
+      "stdout",
+      [
+        ["Post", (data as { id: string }).id],
+        ["Retry key", idempotencyKey],
+      ],
+      "Update posted",
+    )
+  return 0
+}
+export async function tokenPost(args: string[], ctx: CommandContext): Promise<number> {
+  const usage = usageFor(
+    ctx,
+    "Usage: candle token post delete <address> <post-id> [--chain solana|hood] [--idempotency-key <key>]",
+  )
+  if (args[0] !== "delete") return usage()
+  const parsed = parseArgs(args.slice(1), { valueFlags: ["--chain", "--idempotency-key"] })
+  if ("error" in parsed) return usage(parsed.error)
+  const chain = chainOf(parsed.values),
+    [address, id] = parsed.positionals
+  if (!chain || !address || !id || !UUID.test(id) || parsed.positionals.length !== 2) return usage()
+  const idempotencyKey = idempotencyKeyOf(parsed.values, usage)
+  if (typeof idempotencyKey === "number") return idempotencyKey
+  const apiKey = await requireKey(ctx)
+  if (!apiKey) return 1
+  const result = await write(ctx, {
+    method: "DELETE",
+    path: pagePath(chain, address, `/posts/${id}`),
+    body: {},
+    apiKey,
+    idempotencyKey,
+  })
+  if (result === "unknown") return writeUnknown(ctx, idempotencyKey)
+  if (!result.ok) return writeApiFailure(ctx, result, "key")
+  const data = dataOf(result)
+  if (ctx.json) ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}\n`)
+  else writeFields(ctx.deps, "stdout", [["Post", id]], "Post deleted")
   return 0
 }
