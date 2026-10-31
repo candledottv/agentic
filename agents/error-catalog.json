@@ -240,6 +240,11 @@
       "retryable": false,
       "action": "An account owner paused this profile deliberately. This is not a fault and not a limit the profile reached on its own -- nothing about the request will change it and waiting will not clear it. Stop trading on this key and say plainly that only the owner can resume it, from the agent console.",
       "codes": ["PROFILE_PAUSED"]
+    },
+    "account_blocked": {
+      "retryable": false,
+      "action": "Candle blocked this account. Every key it held is revoked and new keys are refused. Nothing the agent or the owner does from the console clears it. Stop, and tell the owner to contact Candle support.",
+      "codes": ["ACCOUNT_BLOCKED"]
     }
   }
 }
