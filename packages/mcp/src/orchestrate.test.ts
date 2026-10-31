@@ -57,6 +57,7 @@ describe("executeTrade: buys", () => {
       mint: "M1nt",
       side: "buy",
       amountRaw: "500000000",
+      amountDecimals: 9,
       payer: { type: "main" },
     })
     const parsed = JSON.parse(result.text)

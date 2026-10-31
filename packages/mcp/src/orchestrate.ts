@@ -438,6 +438,9 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       mint: args.mint,
       side: args.side,
       ...(amountRaw !== undefined ? { amountRaw } : { percent: args.percent }),
+      ...(typeof resolved.decimals === "number" && amountRaw !== undefined
+        ? { amountDecimals: resolved.decimals }
+        : {}),
       payer: { type: "main" },
       ...(args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {}),
       ...(args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {}),
