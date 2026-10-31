@@ -1,10 +1,11 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-seventy-two tools over stdio, plus four Hyperliquid market reads (seventy-six in all), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+seventy-seven tools over stdio, plus four Hyperliquid market reads (eighty-one in all), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
-and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity, and
-check an agent profile without hand-rolling HTTP calls.
+and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
+check an agent profile, and backtest a strategy in hacc's strategy lab without hand-rolling HTTP calls. The five
+strategy lab tools are unreleased source.
 
 ## Try it without a key
 
@@ -34,7 +35,7 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all seventy-two. An unknown name fails startup with the valid names in the message, rather
+Unset means all seventy-seven. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -104,6 +105,8 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
   to `testnet` to trade testnet.
 - `CANDLE_API_KEY` -- alias for `CANDLE_AGENT_API_KEY`, the same variable name the Candle CLI uses
   for this credential. Set either one; if both are set, `CANDLE_AGENT_API_KEY` takes precedence.
+- `CANDLE_HACC_URL` -- the strategy lab tools only: overrides hacc's lab, `https://api.hacc.fun`. HTTPS only,
+  without credentials, query or fragment; anything else is refused before the key is sent.
 
 ## Tools
 
@@ -181,6 +184,11 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_perps_set_thresholds` | Tighten the key's own risk thresholds (never loosen) | `PUT /api/v1/agent/keys/self/perps-risk` | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_fills` | One page of the wallet's perp fills, read directly from Hyperliquid | Hyperliquid `/info` (`userFillsByTime`); Candle only lists the key's wallets | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_funding` | One page of the wallet's funding payments, read directly from Hyperliquid | Hyperliquid `/info` (`userFunding`); Candle only lists the key's wallets | `CANDLE_AGENT_API_KEY` |
+| `candle_lab_status` | Strategy lab access: plan, allowed, replays used of today's cap, reset time, active job | hacc `GET /v1/strategy-lab/status` | `CANDLE_AGENT_API_KEY` (production) |
+| `candle_lab_replay` | Submit a strategy replay; returns the job id at once and never waits. Spends one of today's replays | hacc `POST /v1/strategy-lab/replay`; without a fee, `GET /api/v1/agent/tier` first for the plan fee | `CANDLE_AGENT_API_KEY` (production) |
+| `candle_lab_replay_result` | Read one replay job: status, and when done the result with its lead card first | hacc `GET /v1/strategy-lab/replay/:id` | `CANDLE_AGENT_API_KEY` (production) |
+| `candle_lab_runners` | The lab's runners table | hacc `GET /v1/strategy-lab/runners` | `CANDLE_AGENT_API_KEY` (production) |
+| `candle_lab_edges` | The lab's edges table, net of the round-trip cost it states | hacc `GET /v1/strategy-lab/edges` | `CANDLE_AGENT_API_KEY` (production) |
 
 ### Launching with an image file
 
@@ -226,7 +234,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-seventy-two tools:
+seventy-seven tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.

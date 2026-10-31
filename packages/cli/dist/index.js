@@ -38762,6 +38762,211 @@ var init_image = __esm(() => {
   nodeFs = { realpath, lstat, open: open5 };
 });
 
+// ../mcp/src/lab.ts
+function record2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function transportRefusal(code, message) {
+  return { ok: false, refusal: { status: 0, code, message } };
+}
+function query(values) {
+  const search = new URLSearchParams;
+  for (const [key, value] of Object.entries(values))
+    if (value !== undefined)
+      search.set(key, String(value));
+  return search.size ? `?${search}` : "";
+}
+function createLabClient(options) {
+  const base = new URL(options.apiUrl ?? LAB_DEFAULT_URL);
+  if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) {
+    throw new Error("The lab needs an HTTPS CANDLE_HACC_URL without credentials, query or fragment.");
+  }
+  const root = base.toString().replace(/\/+$/, "");
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const callMs = options.callTimeoutMs ?? LAB_CALL_TIMEOUT_MS;
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  async function call(method, path, valid = () => true, body, timeoutMs = callMs) {
+    const controller = new AbortController;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      const response = await doFetch(`${root}${LAB_PATH}${path}`, {
+        method,
+        redirect: "error",
+        signal: controller.signal,
+        headers: {
+          authorization: `Bearer ${options.apiKey}`,
+          accept: "application/json",
+          ...body !== undefined ? { "content-type": "application/json" } : {}
+        },
+        ...body !== undefined ? { body: JSON.stringify(body) } : {}
+      });
+      const received = await response.json().catch(() => {
+        return;
+      });
+      if (timedOut)
+        return transportRefusal("TIMEOUT", "The lab request timed out.");
+      if (!response.ok) {
+        return {
+          ok: false,
+          refusal: {
+            status: response.status,
+            code: record2(received) && typeof received.code === "string" ? received.code : `HTTP_${response.status}`,
+            message: record2(received) && typeof received.error === "string" ? received.error : `Lab request failed (${response.status}).`,
+            body: received
+          }
+        };
+      }
+      if (!record2(received) || !valid(received)) {
+        return transportRefusal("BAD_RESPONSE", "The lab returned an unreadable response.");
+      }
+      return { ok: true, status: response.status, body: received };
+    } catch {
+      return transportRefusal(timedOut ? "TIMEOUT" : "NETWORK_ERROR", timedOut ? "The lab request timed out." : "Could not reach the lab.");
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const jobPath2 = (id) => `/replay/${encodeURIComponent(String(id))}`;
+  const validId = (id) => typeof id === "string" && id.length > 0 || typeof id === "number" && Number.isSafeInteger(id) && id > 0;
+  const validJob = (body) => validId(body.job_id) && typeof body.status === "string";
+  return {
+    status: () => call("GET", "/status", (b) => typeof b.plan === "string" && typeof b.allowed === "boolean" && record2(b.replays)),
+    replay: (body) => call("POST", "/replay", (b) => validId(b.job_id), body),
+    replayGet: (id) => call("GET", jobPath2(id), validJob),
+    replayCancel: (id) => call("POST", `${jobPath2(id)}/cancel`),
+    runners: (q = {}) => call("GET", `/runners${query(q)}`),
+    edges: (q = {}) => call("GET", `/edges${query(q)}`),
+    async waitForReplay(id, wait = {}) {
+      const intervalMs = wait.intervalMs ?? LAB_REPLAY_INTERVAL_MS;
+      const timeoutMs = wait.timeoutMs ?? LAB_REPLAY_TIMEOUT_MS;
+      if (!Number.isFinite(intervalMs) || intervalMs <= 0 || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new Error("Replay polling interval and timeout must be positive finite numbers.");
+      }
+      const deadline = now() + timeoutMs;
+      while (now() < deadline) {
+        const answer2 = await call("GET", jobPath2(id), validJob, undefined, Math.min(callMs, deadline - now()));
+        if (!answer2.ok || !["pending", "running"].includes(answer2.body.status))
+          return answer2;
+        await sleep(Math.min(intervalMs, Math.max(0, deadline - now())));
+      }
+      return transportRefusal("REPLAY_TIMEOUT", `Replay ${id} is still pending or running. Read it with candle lab replay get ${id}.`);
+    }
+  };
+}
+var LAB_DEFAULT_URL = "https://api.hacc.fun", LAB_PATH = "/v1/strategy-lab", LAB_CALL_TIMEOUT_MS = 1e4, LAB_REPLAY_INTERVAL_MS = 5000, LAB_REPLAY_TIMEOUT_MS = 660000;
+
+// ../mcp/src/lab-tools.ts
+function refusal(code, error) {
+  return { text: JSON.stringify({ error, code }), isError: true };
+}
+function answerText(answer2, statusRoute = false) {
+  if (answer2.ok)
+    return { text: JSON.stringify(answer2.body), isError: false };
+  const { status, code, message, body } = answer2.refusal;
+  const error = statusRoute && status === 404 ? "The lab on this server predates candle_lab_status." : message;
+  return { text: JSON.stringify({ error, code, status, ...body !== undefined ? { body } : {} }), isError: true };
+}
+async function memberFeeBps(cfg, apiKey, doFetch) {
+  try {
+    const res = await doFetch(`${cfg.apiUrl.replace(/\/$/, "")}/api/v1/agent/tier`, {
+      method: "GET",
+      headers: { "x-api-key": apiKey },
+      signal: AbortSignal.timeout(1e4)
+    });
+    if (!res.ok)
+      return;
+    const fee = JSON.parse(await res.text())?.feeBps;
+    return typeof fee === "number" && Number.isInteger(fee) && fee >= 0 && fee <= 1000 ? fee : undefined;
+  } catch {
+    return;
+  }
+}
+async function executeLabTool(name, args, cfg, env, doFetch) {
+  const apiKey = cfg.apiKey;
+  if (!apiKey?.startsWith("cndl_live_"))
+    return refusal("LAB_PRODUCTION_KEY_REQUIRED", LAB_PRODUCTION_KEY_MESSAGE);
+  let lab;
+  try {
+    lab = createLabClient({
+      apiKey,
+      apiUrl: env.CANDLE_HACC_URL?.trim() || undefined,
+      fetch: doFetch
+    });
+  } catch {
+    return refusal("LAB_URL_INVALID", "The lab needs a valid HTTPS CANDLE_HACC_URL without credentials, query or fragment.");
+  }
+  switch (name) {
+    case "candle_lab_status":
+      return answerText(await lab.status(), true);
+    case "candle_lab_replay": {
+      const a = args;
+      const fee = a.fee_bps_per_side ?? await memberFeeBps(cfg, apiKey, doFetch);
+      const cost = {
+        ...fee !== undefined ? { fee_bps_per_side: fee } : {},
+        ...a.slippage_bps_per_side !== undefined ? { slippage_bps_per_side: a.slippage_bps_per_side } : {}
+      };
+      const body = {
+        definition: a.definition,
+        from: a.from,
+        to: a.to,
+        ...a.asset_ids ? { asset_ids: a.asset_ids } : {},
+        ...Object.keys(cost).length ? { cost } : {}
+      };
+      return answerText(await lab.replay(body));
+    }
+    case "candle_lab_replay_result":
+      return answerText(await lab.replayGet(args.job_id));
+    case "candle_lab_runners": {
+      const { hours, min_wallets } = args;
+      return answerText(await lab.runners({ hours, min_wallets }));
+    }
+    case "candle_lab_edges": {
+      const { days, min_n } = args;
+      return answerText(await lab.edges({ days, min_n }));
+    }
+  }
+}
+var LAB_PRODUCTION_KEY_MESSAGE = "The lab needs a production agent key. Create one with `candle keys create`.", LAB_DISCLOSURE = "Backtests are a model of the past. The lab never trades.", LAB_KEY, costBps, labShapes, LAB_DESCRIPTIONS;
+var init_lab_tools = __esm(() => {
+  init_zod();
+  LAB_KEY = " Needs a production agent key (cndl_live_); hacc decides from the key's plan whether the lab is open to it and " + "refuses with code lab_plan when it is not. Optional CANDLE_HACC_URL overrides https://api.hacc.fun (https only).";
+  costBps = exports_external.number().int().min(0).max(1000);
+  labShapes = {
+    candle_lab_status: {},
+    candle_lab_replay: {
+      definition: exports_external.record(exports_external.unknown()).describe("The strategy definition as a JSON object, the same one `candle lab replay --definition` reads"),
+      from: exports_external.string().min(1).describe("Window start, ISO 8601 with a zone, e.g. 2026-10-20T00:00:00Z"),
+      to: exports_external.string().min(1).describe("Window end, ISO 8601 with a zone, after from; at most 14 days after it"),
+      asset_ids: exports_external.array(exports_external.number().int().positive()).min(1).max(50).optional().describe("Up to 50 asset ids to overlay on the replay"),
+      fee_bps_per_side: costBps.optional().describe("Assumed fee in bps a side for the lead card's net. Omitted: your Candle plan fee, else hacc's default"),
+      slippage_bps_per_side: costBps.optional().describe("Assumed slippage in bps a side for the lead card's net. Omitted: hacc's default")
+    },
+    candle_lab_replay_result: {
+      job_id: exports_external.union([exports_external.string().min(1).max(128), exports_external.number().int().positive()]).describe("The job_id candle_lab_replay returned")
+    },
+    candle_lab_runners: {
+      hours: exports_external.number().int().min(1).max(48).optional().describe("Look-back in hours"),
+      min_wallets: exports_external.number().int().min(1).max(50).optional().describe("Fewest tracked wallets a runner needs")
+    },
+    candle_lab_edges: {
+      days: exports_external.number().int().min(1).max(30).optional().describe("Look-back in days"),
+      min_n: exports_external.number().int().min(1).max(1000).optional().describe("Fewest samples a row needs")
+    }
+  };
+  LAB_DESCRIPTIONS = {
+    candle_lab_status: "Your strategy lab access: plan, allowed, replays used of today's cap and when it resets (00:00 UTC), the " + "active job, the longest window. Call it first. allowed false means this key's plan does not include the " + `lab (yet); that is the answer, not a fault.${LAB_KEY}`,
+    candle_lab_replay: "Submit a strategy replay (backtest) over a window of at most 14 days and return its job_id at once; it " + "never waits. A replay runs up to ten minutes: read it with candle_lab_replay_result, no more often than " + "every 5 seconds. Every submission counts against today's cap whatever becomes of it, and one job runs at a " + "time (lab_active names it). lab_quota carries resets_at; lab_busy carries retry_after_s. " + `${LAB_DISCLOSURE} Nothing is promoted to paper or live.${LAB_KEY}`,
+    candle_lab_replay_result: "Read one replay job once: status pending, running, done or failed, and when done the result. Read " + "result.lead_card first when present: did the strategy beat the random-entry control arms, then is " + "break_even.cost_bps_per_side above your real cost a side, then the regime label (context only). Report its " + "evidence_limitations with any figure. An older result has no lead card; read the summary. " + `${LAB_DISCLOSURE}${LAB_KEY}`,
+    candle_lab_runners: `The lab's runners table: tokens tracked wallets bought that ran, with peak and current gain.${LAB_KEY}`,
+    candle_lab_edges: "The lab's edges table: entry patterns with sample counts and median returns, already net of the round-trip " + `cost the table states (cost_pct).${LAB_KEY}`
+  };
+});
+
 // ../mcp/src/launch-definition.ts
 var LAUNCH_DEFINITION2;
 var init_launch_definition = __esm(() => {
@@ -40374,8 +40579,8 @@ function canonical(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(canonical).join(",")}]`;
-  const record2 = value;
-  return `{${Object.keys(record2).sort().map((key) => `${JSON.stringify(key)}:${canonical(record2[key])}`).join(",")}}`;
+  const record3 = value;
+  return `{${Object.keys(record3).sort().map((key) => `${JSON.stringify(key)}:${canonical(record3[key])}`).join(",")}}`;
 }
 function sameValue(a, b) {
   return canonical(a) === canonical(b);
@@ -40853,9 +41058,9 @@ function verifyPerpsBuild(build, opts) {
       if (shapeRefusal)
         return { ok: false, reason: shapeRefusal };
       if (type === "order") {
-        const refusal = checkBuilderField(action, opts.builder);
-        if (refusal)
-          return { ok: false, reason: refusal };
+        const refusal2 = checkBuilderField(action, opts.builder);
+        if (refusal2)
+          return { ok: false, reason: refusal2 };
       } else if ("builder" in action) {
         return { ok: false, reason: `a ${type} action carries no builder` };
       }
@@ -42223,8 +42428,8 @@ function canonical2(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(canonical2).join(",")}]`;
-  const record2 = value;
-  return `{${Object.keys(record2).sort().map((key) => `${JSON.stringify(key)}:${canonical2(record2[key])}`).join(",")}}`;
+  const record3 = value;
+  return `{${Object.keys(record3).sort().map((key) => `${JSON.stringify(key)}:${canonical2(record3[key])}`).join(",")}}`;
 }
 function isDecimalString(value) {
   return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
@@ -42481,12 +42686,12 @@ function perpsRiskProblem(t) {
   return null;
 }
 function perpsRiskFromLimits(body) {
-  const record2 = isRecord2(body) ? body : {};
-  const reported = "perpsRisk" in record2 || "perpsRiskEffective" in record2;
-  const stored = isRecord2(record2.perpsRisk) ? pickSettings(record2.perpsRisk) : null;
+  const record3 = isRecord2(body) ? body : {};
+  const reported = "perpsRisk" in record3 || "perpsRiskEffective" in record3;
+  const stored = isRecord2(record3.perpsRisk) ? pickSettings(record3.perpsRisk) : null;
   if (!reported)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" }, stored };
-  const effective = isRecord2(record2.perpsRiskEffective) ? effectivePerpsRisk(pickSettings(record2.perpsRiskEffective)) : effectivePerpsRisk(stored);
+  const effective = isRecord2(record3.perpsRiskEffective) ? effectivePerpsRisk(pickSettings(record3.perpsRiskEffective)) : effectivePerpsRisk(stored);
   if (perpsRiskProblem(effective) !== null)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" }, stored };
   const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
@@ -43214,10 +43419,10 @@ async function executePerps(tool, args, cfg, env, fetch2) {
   try {
     if (tool === "candle_perps_orders" || tool === "candle_perps_positions") {
       const { row: row2 } = await walletFor(cfg, fetch2, name);
-      const query = new URLSearchParams({ walletId: row2.id });
+      const query2 = new URLSearchParams({ walletId: row2.id });
       if (typeof args.limit === "number")
-        query.set("limit", String(args.limit));
-      const result = await call(cfg, fetch2, "GET", `${PATHS[tool]}?${query}`);
+        query2.set("limit", String(args.limit));
+      const result = await call(cfg, fetch2, "GET", `${PATHS[tool]}?${query2}`);
       if (tool === "candle_perps_positions")
         return { text: JSON.stringify({ ...result, ...await positionsAdditions(cfg, fetch2, env, row2) }) };
       return { text: JSON.stringify(result) };
@@ -44007,13 +44212,13 @@ function buildTokenPageRequest(name, args, cfg) {
     headers2["x-api-key"] = cfg.apiKey;
   if (idempotencyKey !== undefined)
     headers2["Idempotency-Key"] = String(idempotencyKey);
-  const query = new URLSearchParams;
+  const query2 = new URLSearchParams;
   if (cursor !== undefined)
-    query.set("cursor", String(cursor));
+    query2.set("cursor", String(cursor));
   if (limit !== undefined)
-    query.set("limit", String(limit));
+    query2.set("limit", String(limit));
   return {
-    url: `${cfg.apiUrl.replace(/\/$/, "")}/api/v1/token-pages/${encodeURIComponent(String(chain2))}/${encodeURIComponent(String(address))}${suffix[name]}${query.size ? `?${query}` : ""}`,
+    url: `${cfg.apiUrl.replace(/\/$/, "")}/api/v1/token-pages/${encodeURIComponent(String(chain2))}/${encodeURIComponent(String(address))}${suffix[name]}${query2.size ? `?${query2}` : ""}`,
     init: {
       method: name === "candle_token_page_post_delete" ? "DELETE" : read ? "GET" : name === "candle_token_page_section_set" ? "PUT" : "POST",
       headers: headers2,
@@ -44157,7 +44362,8 @@ __export(exports_tools, {
   STAKING_DISCLOSURE: () => STAKING_DISCLOSURE,
   PROFILE_PNL_HYPERLIQUID: () => PROFILE_PNL_HYPERLIQUID,
   PROFILE_EDIT_TOOL_NAMES: () => PROFILE_EDIT_TOOL_NAMES,
-  OPERATION_NOT_FOUND_RULE: () => OPERATION_NOT_FOUND_RULE
+  OPERATION_NOT_FOUND_RULE: () => OPERATION_NOT_FOUND_RULE,
+  LAB_TOOL_NAMES: () => LAB_TOOL_NAMES
 });
 import { randomUUID as randomUUID4 } from "node:crypto";
 function resolveToolAllowlist(env) {
@@ -44264,9 +44470,9 @@ function buildRequest(name, args, cfg) {
     }
     case "candle_token_card": {
       const { chain: chain2, mint, tag } = args;
-      const query = tag !== undefined && tag !== "" ? `?${new URLSearchParams({ cst: tag })}` : "";
+      const query2 = tag !== undefined && tag !== "" ? `?${new URLSearchParams({ cst: tag })}` : "";
       return {
-        url: `${base2}/api/v1/tokens/${encodeURIComponent(chain2)}/${encodeURIComponent(mint)}/card${query}`,
+        url: `${base2}/api/v1/tokens/${encodeURIComponent(chain2)}/${encodeURIComponent(mint)}/card${query2}`,
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
@@ -44279,7 +44485,7 @@ function buildRequest(name, args, cfg) {
     }
     case "candle_get_feed": {
       const { bucket, chain: chain2, where, sort, fields: fields2, limit } = args;
-      const query = new URLSearchParams({
+      const query2 = new URLSearchParams({
         bucket,
         ...chain2 ? { chain: chain2 } : {},
         ...where ? { where } : {},
@@ -44288,7 +44494,7 @@ function buildRequest(name, args, cfg) {
         ...limit !== undefined && limit !== "" ? { limit: String(limit) } : {}
       });
       return {
-        url: `${base2}/api/v1/markets/feed?${query.toString()}`,
+        url: `${base2}/api/v1/markets/feed?${query2.toString()}`,
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
@@ -44318,7 +44524,7 @@ function buildRequest(name, args, cfg) {
       const { idOrWallet } = args;
       return {
         url: `${base2}/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`,
-        init: { method: "GET", headers: jsonHeaders() }
+        init: { method: "GET", headers: jsonHeaders(cfg.apiKey) }
       };
     }
     case "candle_update_profile": {
@@ -44479,9 +44685,9 @@ function buildRequest(name, args, cfg) {
     case "candle_get_profile_trades": {
       const apiKey = requireApiKey2(cfg);
       const { keyPrefix, limit } = args;
-      const query = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
+      const query2 = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
       return {
-        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query}`,
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query2}`,
         init: { method: "GET", headers: jsonHeaders(apiKey) }
       };
     }
@@ -44759,7 +44965,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_report_activity", args, getConfig(), doFetch));
   register("candle_get_agent_profile", {
     title: "Get an agent profile",
-    description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts.",
+    description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts. The billing tier is private: it is included only when this server's own key belongs to the profile asked about.",
     inputSchema: getAgentProfileShape
   }, async (args) => callAndRelay("candle_get_agent_profile", args, getConfig(), doFetch));
   register("candle_update_profile", {
@@ -45106,6 +45312,46 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     const result = await executePerpsDeposit(args, getConfig(), env, doFetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
+  const labTool = (tool) => async (args) => {
+    const result = await executeLabTool(tool, args, getConfig(), env, doFetch);
+    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+  };
+  const labRead = {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true
+  };
+  register("candle_lab_status", {
+    title: "Strategy lab status",
+    description: LAB_DESCRIPTIONS.candle_lab_status,
+    inputSchema: labShapes.candle_lab_status,
+    annotations: labRead
+  }, labTool("candle_lab_status"));
+  register("candle_lab_replay", {
+    title: "Start a strategy lab replay",
+    description: LAB_DESCRIPTIONS.candle_lab_replay,
+    inputSchema: labShapes.candle_lab_replay,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  }, labTool("candle_lab_replay"));
+  register("candle_lab_replay_result", {
+    title: "Read a strategy lab replay",
+    description: LAB_DESCRIPTIONS.candle_lab_replay_result,
+    inputSchema: labShapes.candle_lab_replay_result,
+    annotations: labRead
+  }, labTool("candle_lab_replay_result"));
+  register("candle_lab_runners", {
+    title: "Strategy lab runners",
+    description: LAB_DESCRIPTIONS.candle_lab_runners,
+    inputSchema: labShapes.candle_lab_runners,
+    annotations: labRead
+  }, labTool("candle_lab_runners"));
+  register("candle_lab_edges", {
+    title: "Strategy lab edges",
+    description: LAB_DESCRIPTIONS.candle_lab_edges,
+    inputSchema: labShapes.candle_lab_edges,
+    annotations: labRead
+  }, labTool("candle_lab_edges"));
 }
 async function registerEligibleProfileTool(server, env = process.env, doFetch = fetch) {
   const cfg = resolveConfig(env);
@@ -45136,13 +45382,14 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, getMarketShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, vampCandidatesShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, getMarketShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, vampCandidatesShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
 var init_tools = __esm(() => {
   init_zod();
   init_client2();
   init_cluster_read();
   init_convert();
   init_image();
+  init_lab_tools();
   init_launch_schema();
   init_market_disclosure();
   init_orchestrate();
@@ -45233,7 +45480,19 @@ var init_tools = __esm(() => {
     "candle_perps_account",
     "candle_perps_risk",
     "candle_perps_thresholds",
-    "candle_perps_set_thresholds"
+    "candle_perps_set_thresholds",
+    "candle_lab_status",
+    "candle_lab_replay",
+    "candle_lab_replay_result",
+    "candle_lab_runners",
+    "candle_lab_edges"
+  ];
+  LAB_TOOL_NAMES = [
+    "candle_lab_status",
+    "candle_lab_replay",
+    "candle_lab_replay_result",
+    "candle_lab_runners",
+    "candle_lab_edges"
   ];
   PROFILE_EDIT_TOOL_NAMES = [
     "candle_update_profile",
@@ -49712,9 +49971,9 @@ var require_schemes = __commonJS((exports, module) => {
       wsComponent.secure = undefined;
     }
     if (wsComponent.resourceName) {
-      const [path, query] = wsComponent.resourceName.split("?");
+      const [path, query2] = wsComponent.resourceName.split("?");
       wsComponent.path = path && path !== "/" ? path : undefined;
-      wsComponent.query = query;
+      wsComponent.query = query2;
       wsComponent.resourceName = undefined;
     }
     wsComponent.fragment = undefined;
@@ -68894,7 +69153,7 @@ function intersection2(left, right) {
     right
   });
 }
-function record5(keyType, valueType, params) {
+function record6(keyType, valueType, params) {
   return new ZodRecord3({
     type: "record",
     keyType,
@@ -69640,7 +69899,7 @@ var init_types4 = __esm(() => {
   });
   FormElicitationCapabilitySchema = intersection2(object6({
     applyDefaults: boolean3().optional()
-  }), record5(string3(), unknown2()));
+  }), record6(string3(), unknown2()));
   ElicitationCapabilitySchema = preprocess((value) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       if (Object.keys(value).length === 0) {
@@ -69651,7 +69910,7 @@ var init_types4 = __esm(() => {
   }, intersection2(object6({
     form: FormElicitationCapabilitySchema.optional(),
     url: AssertObjectSchema2.optional()
-  }), record5(string3(), unknown2()).optional()));
+  }), record6(string3(), unknown2()).optional()));
   ClientTasksCapabilitySchema = looseObject({
     list: AssertObjectSchema2.optional(),
     cancel: AssertObjectSchema2.optional(),
@@ -69674,7 +69933,7 @@ var init_types4 = __esm(() => {
     }).optional()
   });
   ClientCapabilitiesSchema2 = object6({
-    experimental: record5(string3(), AssertObjectSchema2).optional(),
+    experimental: record6(string3(), AssertObjectSchema2).optional(),
     sampling: object6({
       context: AssertObjectSchema2.optional(),
       tools: AssertObjectSchema2.optional()
@@ -69695,7 +69954,7 @@ var init_types4 = __esm(() => {
     params: InitializeRequestParamsSchema2
   });
   ServerCapabilitiesSchema2 = object6({
-    experimental: record5(string3(), AssertObjectSchema2).optional(),
+    experimental: record6(string3(), AssertObjectSchema2).optional(),
     logging: AssertObjectSchema2.optional(),
     completions: AssertObjectSchema2.optional(),
     prompts: object6({
@@ -69795,7 +70054,7 @@ var init_types4 = __esm(() => {
   ResourceContentsSchema2 = object6({
     uri: string3(),
     mimeType: optional2(string3()),
-    _meta: record5(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown2()).optional()
   });
   TextResourceContentsSchema2 = ResourceContentsSchema2.extend({
     text: string3()
@@ -69899,7 +70158,7 @@ var init_types4 = __esm(() => {
   });
   GetPromptRequestParamsSchema2 = BaseRequestParamsSchema2.extend({
     name: string3(),
-    arguments: record5(string3(), string3()).optional()
+    arguments: record6(string3(), string3()).optional()
   });
   GetPromptRequestSchema2 = RequestSchema2.extend({
     method: literal2("prompts/get"),
@@ -69909,34 +70168,34 @@ var init_types4 = __esm(() => {
     type: literal2("text"),
     text: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record5(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown2()).optional()
   });
   ImageContentSchema2 = object6({
     type: literal2("image"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record5(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown2()).optional()
   });
   AudioContentSchema2 = object6({
     type: literal2("audio"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record5(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown2()).optional()
   });
   ToolUseContentSchema = object6({
     type: literal2("tool_use"),
     name: string3(),
     id: string3(),
-    input: record5(string3(), unknown2()),
-    _meta: record5(string3(), unknown2()).optional()
+    input: record6(string3(), unknown2()),
+    _meta: record6(string3(), unknown2()).optional()
   });
   EmbeddedResourceSchema2 = object6({
     type: literal2("resource"),
     resource: union2([TextResourceContentsSchema2, BlobResourceContentsSchema2]),
     annotations: AnnotationsSchema.optional(),
-    _meta: record5(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown2()).optional()
   });
   ResourceLinkSchema2 = ResourceSchema2.extend({
     type: literal2("resource_link")
@@ -69976,17 +70235,17 @@ var init_types4 = __esm(() => {
     description: string3().optional(),
     inputSchema: object6({
       type: literal2("object"),
-      properties: record5(string3(), AssertObjectSchema2).optional(),
+      properties: record6(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
     }).catchall(unknown2()),
     outputSchema: object6({
       type: literal2("object"),
-      properties: record5(string3(), AssertObjectSchema2).optional(),
+      properties: record6(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
     }).catchall(unknown2()).optional(),
     annotations: ToolAnnotationsSchema2.optional(),
     execution: ToolExecutionSchema.optional(),
-    _meta: record5(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown2()).optional()
   });
   ListToolsRequestSchema2 = PaginatedRequestSchema2.extend({
     method: literal2("tools/list")
@@ -69996,7 +70255,7 @@ var init_types4 = __esm(() => {
   });
   CallToolResultSchema2 = ResultSchema2.extend({
     content: array2(ContentBlockSchema2).default([]),
-    structuredContent: record5(string3(), unknown2()).optional(),
+    structuredContent: record6(string3(), unknown2()).optional(),
     isError: boolean3().optional()
   });
   CompatibilityCallToolResultSchema2 = CallToolResultSchema2.or(ResultSchema2.extend({
@@ -70004,7 +70263,7 @@ var init_types4 = __esm(() => {
   }));
   CallToolRequestParamsSchema2 = TaskAugmentedRequestParamsSchema.extend({
     name: string3(),
-    arguments: record5(string3(), unknown2()).optional()
+    arguments: record6(string3(), unknown2()).optional()
   });
   CallToolRequestSchema2 = RequestSchema2.extend({
     method: literal2("tools/call"),
@@ -70053,7 +70312,7 @@ var init_types4 = __esm(() => {
     content: array2(ContentBlockSchema2).default([]),
     structuredContent: object6({}).loose().optional(),
     isError: boolean3().optional(),
-    _meta: record5(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown2()).optional()
   });
   SamplingContentSchema = discriminatedUnion("type", [TextContentSchema2, ImageContentSchema2, AudioContentSchema2]);
   SamplingMessageContentBlockSchema = discriminatedUnion("type", [
@@ -70066,7 +70325,7 @@ var init_types4 = __esm(() => {
   SamplingMessageSchema2 = object6({
     role: RoleSchema,
     content: union2([SamplingMessageContentBlockSchema, array2(SamplingMessageContentBlockSchema)]),
-    _meta: record5(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown2()).optional()
   });
   CreateMessageRequestParamsSchema2 = TaskAugmentedRequestParamsSchema.extend({
     messages: array2(SamplingMessageSchema2),
@@ -70179,7 +70438,7 @@ var init_types4 = __esm(() => {
     message: string3(),
     requestedSchema: object6({
       type: literal2("object"),
-      properties: record5(string3(), PrimitiveSchemaDefinitionSchema2),
+      properties: record6(string3(), PrimitiveSchemaDefinitionSchema2),
       required: array2(string3()).optional()
     })
   });
@@ -70203,7 +70462,7 @@ var init_types4 = __esm(() => {
   });
   ElicitResultSchema2 = ResultSchema2.extend({
     action: _enum(["accept", "decline", "cancel"]),
-    content: preprocess((val) => val === null ? undefined : val, record5(string3(), union2([string3(), number3(), boolean3(), array2(string3())])).optional())
+    content: preprocess((val) => val === null ? undefined : val, record6(string3(), union2([string3(), number3(), boolean3(), array2(string3())])).optional())
   });
   ResourceTemplateReferenceSchema2 = object6({
     type: literal2("ref/resource"),
@@ -70220,7 +70479,7 @@ var init_types4 = __esm(() => {
       value: string3()
     }),
     context: object6({
-      arguments: record5(string3(), string3()).optional()
+      arguments: record6(string3(), string3()).optional()
     }).optional()
   });
   CompleteRequestSchema2 = RequestSchema2.extend({
@@ -70237,7 +70496,7 @@ var init_types4 = __esm(() => {
   RootSchema2 = object6({
     uri: string3().startsWith("file://"),
     name: string3().optional(),
-    _meta: record5(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown2()).optional()
   });
   ListRootsRequestSchema2 = RequestSchema2.extend({
     method: literal2("roots/list"),
@@ -72693,6 +72952,8 @@ coverage note on every forensics measurement: "unavailable" is NOT "clean" — s
 reporting a token as safe.
 
 LAUNCHING A COPY: candle_vamp_candidates (a key with account:read) lists Solana tickers being copied near graduation, each with a launch draft for candle_launch_token or candle_launch_and_seed. Supply any draft field that is null (draftNotes says why), and launch with dryRun: true first. Where the deployment has not switched it on it answers 404.
+
+STRATEGY LAB (a production key, cndl_live_): candle_lab_status first, then candle_lab_replay returns a job_id at once and candle_lab_replay_result reads it (no more often than every 5 seconds; a replay runs up to ten minutes); candle_lab_runners and candle_lab_edges read its tables. The key's plan decides access and hacc refuses with code lab_plan, lab_quota, lab_active or lab_busy. Backtests are a model of the past; the lab never trades.
 
 WRITING (trade, launch, transfer, sweep, swap) needs a key. If a call returns an auth error, the fix is on the human's side: they run \`candle auth login\`, which authorizes a device in the browser and stores the credentials. Do not ask them to paste a key into a config file, and do not retry the call until they confirm.
 
@@ -77342,6 +77603,11 @@ var TOOL_CLASSES = {
   candle_token_page_history: READ,
   candle_token_forensics: READ,
   candle_token_clusters: READ,
+  candle_lab_status: READ,
+  candle_lab_replay: READ,
+  candle_lab_replay_result: READ,
+  candle_lab_runners: READ,
+  candle_lab_edges: READ,
   candle_get_agent_profile: READ,
   candle_list_agents: READ,
   candle_list_agent_posts: READ,
@@ -79764,9 +80030,9 @@ function outcomeOf(result, serverErrorStatus, tool) {
   let body;
   try {
     const parsed = JSON.parse(text2);
-    body = record2(parsed);
+    body = record3(parsed);
   } catch {}
-  const payload = body && Object.hasOwn(body, "api") ? record2(body.api) : body && Object.hasOwn(body, "launch") ? record2(body.launch) : body;
+  const payload = body && Object.hasOwn(body, "api") ? record3(body.api) : body && Object.hasOwn(body, "launch") ? record3(body.launch) : body;
   if (result.isError !== true) {
     if (payload === undefined)
       return {
@@ -79774,10 +80040,10 @@ function outcomeOf(result, serverErrorStatus, tool) {
         error: { code: "UNREADABLE_RESULT", message: "The tool answered with something that is not JSON." },
         transient: true
       };
-    const job = record2(payload.job);
+    const job = record3(payload.job);
     const status = String(payload.status ?? job?.status ?? "").toLowerCase();
     if (status === "failed" && tool !== "candle_get_operation") {
-      const error2 = record2(payload.error) ?? record2(job?.error);
+      const error2 = record3(payload.error) ?? record3(job?.error);
       return {
         state: "failed",
         error: {
@@ -79800,7 +80066,7 @@ function outcomeOf(result, serverErrorStatus, tool) {
   }
   return isRefusal(code, tool) ? { state: "refused", error: { code, message }, result: body } : { state: "unknown", error: { code, message }, result: body };
 }
-function record2(value) {
+function record3(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 }
 
@@ -80127,29 +80393,29 @@ function quantCodePoints(text2) {
   return n;
 }
 function quantRefusalCode(body) {
-  const record3 = asRecord(body);
-  if (typeof record3?.code === "string")
-    return record3.code;
-  const inner = asRecord(record3?.error);
+  const record4 = asRecord(body);
+  if (typeof record4?.code === "string")
+    return record4.code;
+  const inner = asRecord(record4?.error);
   return typeof inner?.code === "string" ? inner.code : undefined;
 }
 function asRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 }
 function refusalOf(status, body) {
-  const record3 = asRecord(body) ?? {};
-  const relayCode = typeof record3.code === "string" ? record3.code : undefined;
+  const record4 = asRecord(body) ?? {};
+  const relayCode = typeof record4.code === "string" ? record4.code : undefined;
   const code = quantRefusalCode(body) ?? `HTTP_${status}`;
-  const refusal = { code, status, shape: relayCode !== undefined ? "relay" : "envelope" };
-  if (typeof record3.retryable === "boolean")
-    refusal.retryable = record3.retryable;
-  if (typeof record3.resetsAt === "string" || typeof record3.resetsAt === "number")
-    refusal.resetsAt = record3.resetsAt;
-  if (typeof record3.turnId === "string")
-    refusal.turnId = record3.turnId;
-  if (typeof record3.limit === "number")
-    refusal.limit = record3.limit;
-  return refusal;
+  const refusal2 = { code, status, shape: relayCode !== undefined ? "relay" : "envelope" };
+  if (typeof record4.retryable === "boolean")
+    refusal2.retryable = record4.retryable;
+  if (typeof record4.resetsAt === "string" || typeof record4.resetsAt === "number")
+    refusal2.resetsAt = record4.resetsAt;
+  if (typeof record4.turnId === "string")
+    refusal2.turnId = record4.turnId;
+  if (typeof record4.limit === "number")
+    refusal2.limit = record4.limit;
+  return refusal2;
 }
 function parseStatus(body) {
   const b = asRecord(body);
@@ -80283,12 +80549,12 @@ function createQuantKeyClient(options) {
     }),
     cancel: (turnId) => call2("POST", `${turnPath(turnId)}/cancel`, (body) => asRecord(body) ?? {}, { timeoutMs: callMs }),
     history: (input = {}) => {
-      const query = new URLSearchParams;
+      const query2 = new URLSearchParams;
       if (input.before !== undefined)
-        query.set("before", input.before);
+        query2.set("before", input.before);
       if (input.limit !== undefined)
-        query.set("limit", String(input.limit));
-      const encoded = query.toString();
+        query2.set("limit", String(input.limit));
+      const encoded = query2.toString();
       const suffix = encoded ? `?${encoded}` : "";
       return call2("GET", `/history${suffix}`, parseHistory, { timeoutMs: callMs });
     }
@@ -80328,17 +80594,17 @@ var defaultSleep = (ms) => new Promise((resolve2) => {
   const timer = setTimeout(resolve2, ms);
   timer.unref?.();
 });
-function refusalError(refusal) {
-  const details = { status: refusal.status, shape: refusal.shape };
-  if (refusal.retryable !== undefined)
-    details.retryable = refusal.retryable;
-  if (refusal.resetsAt !== undefined)
-    details.resetsAt = refusal.resetsAt;
-  if (refusal.turnId !== undefined)
-    details.turnId = refusal.turnId;
-  if (refusal.limit !== undefined)
-    details.limit = refusal.limit;
-  return refused(refusal.code, `Quant refused: ${refusal.code}.`, details);
+function refusalError(refusal2) {
+  const details = { status: refusal2.status, shape: refusal2.shape };
+  if (refusal2.retryable !== undefined)
+    details.retryable = refusal2.retryable;
+  if (refusal2.resetsAt !== undefined)
+    details.resetsAt = refusal2.resetsAt;
+  if (refusal2.turnId !== undefined)
+    details.turnId = refusal2.turnId;
+  if (refusal2.limit !== undefined)
+    details.limit = refusal2.limit;
+  return refused(refusal2.code, `Quant refused: ${refusal2.code}.`, details);
 }
 
 class QuantService {
@@ -80541,8 +80807,8 @@ ${text2}` : text2;
           break;
         continue;
       }
-      const refusal = answer2.refusal;
-      if (refusal.code === "too_many_polls") {
+      const refusal2 = answer2.refusal;
+      if (refusal2.code === "too_many_polls") {
         tooMany++;
         if (tooMany > TOO_MANY_POLLS_RETRIES) {
           failure2 = "too_many_polls";
@@ -80551,7 +80817,7 @@ ${text2}` : text2;
         await sleep(TOO_MANY_POLLS_WAIT_MS);
         continue;
       }
-      if (refusal.shape === "transport") {
+      if (refusal2.shape === "transport") {
         lost++;
         if (lost > LOST_POLL_RETRIES) {
           failure2 = "QUANT_UNREACHABLE";
@@ -80560,7 +80826,7 @@ ${text2}` : text2;
         await sleep(Math.min(1000 * lost, 5000));
         continue;
       }
-      failure2 = refusal.code;
+      failure2 = refusal2.code;
       break;
     }
     if (this.poll !== poll)
@@ -80862,22 +81128,22 @@ class TokenBook {
     if (!token2.startsWith(HARNESS_PREFIX))
       return;
     const tokenId = token2.slice(HARNESS_PREFIX.length, HARNESS_PREFIX.length + 12);
-    const record3 = this.records.find((r) => r.tokenId === tokenId && r.revokedAt === undefined);
-    if (record3 === undefined || !sameHex(sha256Hex2(token2), record3.hash))
+    const record4 = this.records.find((r) => r.tokenId === tokenId && r.revokedAt === undefined);
+    if (record4 === undefined || !sameHex(sha256Hex2(token2), record4.hash))
       return;
-    return { role: "harness", tokenId: record3.tokenId, name: record3.name };
+    return { role: "harness", tokenId: record4.tokenId, name: record4.name };
   }
   async mintHarness(name) {
     const tokenId = freshTokenId();
     const token2 = `${HARNESS_PREFIX}${tokenId}_${b64u2(randomBytes7(32))}`;
-    const record3 = {
+    const record4 = {
       tokenId,
       name,
       hash: sha256Hex2(token2),
       createdAt: new Date(this.now()).toISOString()
     };
-    await this.persist([...this.records, record3]);
-    return { token: token2, info: infoOf(record3) };
+    await this.persist([...this.records, record4]);
+    return { token: token2, info: infoOf(record4) };
   }
   async revoke(tokenId) {
     const index = this.records.findIndex((r) => r.tokenId === tokenId && r.revokedAt === undefined);
@@ -80900,8 +81166,8 @@ class TokenBook {
     this.records = records;
   }
 }
-function infoOf(record3) {
-  const { hash: _hash, ...info2 } = record3;
+function infoOf(record4) {
+  const { hash: _hash, ...info2 } = record4;
   return info2;
 }
 
@@ -81586,7 +81852,7 @@ var text2 = (body, isError = false) => ({
   content: [{ type: "text", text: JSON.stringify(body) }],
   ...isError ? { isError: true } : {}
 });
-var refusal = (code, message, extra = {}) => text2({ success: false, error: { code, message }, ...extra }, true);
+var refusal2 = (code, message, extra = {}) => text2({ success: false, error: { code, message }, ...extra }, true);
 var NEXT_PENDING = (kind, idKey) => `The user must approve this in the Candle TUI. Read the outcome with candle_get_operation using this id (kind: ${kind}). Never send it again under a new id; to retry, send the same request with the same ${idKey}.`;
 var NEXT_FINAL = "Final. Do not propose this again unless the user asks.";
 var NEXT_UNKNOWN = "Do not propose this again; the user is resolving it in the Candle TUI.";
@@ -81659,8 +81925,8 @@ function relay(answer2) {
   if (answer2.kind === "result")
     return answer2.result;
   if (answer2.kind === "refused")
-    return refusal(answer2.code, answer2.message);
-  return refusal("CORE_CALL_FAILED", answer2.message);
+    return refusal2(answer2.code, answer2.message);
+  return refusal2("CORE_CALL_FAILED", answer2.message);
 }
 function registerToolFace(server, deps) {
   server.handle("tools.list", async () => ({ tools: offeredTools() }));
@@ -81686,7 +81952,7 @@ function registerToolFace(server, deps) {
         tool: name,
         code: "TOOL_NOT_CLASSIFIED"
       });
-      return refusal("TOOL_NOT_CLASSIFIED", `${name} is not a tool this core has classified, so it is refused.`);
+      return refusal2("TOOL_NOT_CLASSIFIED", `${name} is not a tool this core has classified, so it is refused.`);
     }
     if (verdict.class === "card" && verdict.kind === "transfer") {
       await deps.journal.append({
@@ -81695,11 +81961,11 @@ function registerToolFace(server, deps) {
         tool: name,
         code: "TRANSFER_USER_ONLY"
       });
-      return refusal("TRANSFER_USER_ONLY", "Only you can start a transfer, from the Candle TUI.");
+      return refusal2("TRANSFER_USER_ONLY", "Only you can start a transfer, from the Candle TUI.");
     }
     if (isCoreLocalTool(name)) {
       if (deps.coreLocal === undefined)
-        return refusal("METHOD_NOT_AVAILABLE", `${name} is not in this build of the core.`);
+        return refusal2("METHOD_NOT_AVAILABLE", `${name} is not in this build of the core.`);
       return deps.coreLocal(name, callArgs);
     }
     if (name === "candle_get_operation")
@@ -81707,7 +81973,7 @@ function registerToolFace(server, deps) {
     if (verdict.class === "read") {
       const readKey2 = deps.readKey();
       if (readKey2 === undefined)
-        return refusal("NO_READ_KEY", "The core holds no Read key for this profile. Sign in with candle auth login.");
+        return refusal2("NO_READ_KEY", "The core holds no Read key for this profile. Sign in with candle auth login.");
       return relay(await deps.executor.call(name, callArgs, readKey2));
     }
     if (verdict.class === "paper" || verdict.class === "dry_run") {
@@ -81733,7 +81999,7 @@ function registerToolFace(server, deps) {
           tool: name,
           code: error.code
         });
-        return refusal(error.code, error.message);
+        return refusal2(error.code, error.message);
       }
     }
     const heldId = verdict.idKey === "coreOpId" ? undefined : callArgs[verdict.idKey];
@@ -81746,7 +82012,7 @@ function registerToolFace(server, deps) {
           tool: name,
           code: "OP_ID_CONFLICT"
         });
-        return refusal("OP_ID_CONFLICT", "That operation id is held for a different request. Never reuse an id for new parameters.", {
+        return refusal2("OP_ID_CONFLICT", "That operation id is held for a different request. Never reuse an id for new parameters.", {
           opId: heldId
         });
       }
@@ -81759,14 +82025,14 @@ function registerToolFace(server, deps) {
         tool: name,
         code: "NO_VIEW_ATTACHED"
       });
-      return refusal("NO_VIEW_ATTACHED", "No Candle TUI view is attached, so no card can be shown. Nothing was queued.");
+      return refusal2("NO_VIEW_ATTACHED", "No Candle TUI view is attached, so no card can be shown. Nothing was queued.");
     }
     try {
       return cardAnswer(await deps.cards.propose({ tool: name, params: callArgs }, origin));
     } catch (error) {
       if (!(error instanceof RpcError))
         throw error;
-      return refusal(error.code, error.message, error.details);
+      return refusal2(error.code, error.message, error.details);
     }
   });
 }
@@ -81774,9 +82040,9 @@ async function getOperation2(args, deps) {
   const clientId2 = args.clientId;
   const kind = args.kind;
   if (typeof clientId2 !== "string" || clientId2.length === 0)
-    return refusal("MCP_VALIDATION", "clientId must be a string.");
+    return refusal2("MCP_VALIDATION", "clientId must be a string.");
   if (typeof kind !== "string" || !CORE_OPERATION_KINDS.includes(kind)) {
-    return refusal("MCP_VALIDATION", `kind is one of ${CORE_OPERATION_KINDS.join(", ")}.`);
+    return refusal2("MCP_VALIDATION", `kind is one of ${CORE_OPERATION_KINDS.join(", ")}.`);
   }
   const held = deps.cards.held(clientId2);
   if (held !== undefined)
@@ -81784,10 +82050,10 @@ async function getOperation2(args, deps) {
   if (kind === "trade" || kind === "launch") {
     const readKey2 = deps.readKey();
     if (readKey2 === undefined)
-      return refusal("NO_READ_KEY", "The core holds no Read key for this profile.");
+      return refusal2("NO_READ_KEY", "The core holds no Read key for this profile.");
     return relay(await deps.executor.call("candle_get_operation", { clientId: clientId2, kind }, readKey2));
   }
-  return refusal("OPERATION_NOT_HELD", `The core issued no ${kind} operation under this id. A swap the core did not issue is read by replaying it with its clientSwapId.`);
+  return refusal2("OPERATION_NOT_HELD", `The core issued no ${kind} operation under this id. A swap the core did not issue is read by replaying it with its clientSwapId.`);
 }
 
 // src/core/transfer-chain.ts
@@ -83786,9 +84052,9 @@ async function preflightToKey(ctx, raw, opts) {
     return { ok: false, exit: resolved.code };
   const keyPrefix = resolved.keyPrefix;
   const row = keys.find((key) => key.keyPrefix === keyPrefix);
-  const refusal2 = targetKeyRefusal(row, keyPrefix, deps.now());
-  if (refusal2 !== null)
-    return refuse3(refusal2);
+  const refusal3 = targetKeyRefusal(row, keyPrefix, deps.now());
+  if (refusal3 !== null)
+    return refuse3(refusal3);
   const target = row;
   const walletScope = target.walletScope === "selected" ? "selected" : "all";
   if (walletScope === "selected") {
@@ -89531,32 +89797,32 @@ init_deps();
 init_human_output();
 
 // src/lab.ts
-var LAB_DEFAULT_URL = "https://api.hacc.fun";
-var LAB_PATH = "/v1/strategy-lab";
-var LAB_CALL_TIMEOUT_MS = 1e4;
-var LAB_REPLAY_INTERVAL_MS = 5000;
-var LAB_REPLAY_TIMEOUT_MS = 660000;
-function record4(value) {
+var LAB_DEFAULT_URL2 = "https://api.hacc.fun";
+var LAB_PATH2 = "/v1/strategy-lab";
+var LAB_CALL_TIMEOUT_MS2 = 1e4;
+var LAB_REPLAY_INTERVAL_MS2 = 5000;
+var LAB_REPLAY_TIMEOUT_MS2 = 660000;
+function record5(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-function transportRefusal(code, message) {
+function transportRefusal2(code, message) {
   return { ok: false, refusal: { status: 0, code, message } };
 }
-function query(values) {
+function query2(values) {
   const search = new URLSearchParams;
   for (const [key, value] of Object.entries(values))
     if (value !== undefined)
       search.set(key, String(value));
   return search.size ? `?${search}` : "";
 }
-function createLabClient(options) {
-  const base2 = new URL(options.apiUrl ?? LAB_DEFAULT_URL);
+function createLabClient2(options) {
+  const base2 = new URL(options.apiUrl ?? LAB_DEFAULT_URL2);
   if (base2.protocol !== "https:" || base2.username || base2.password || base2.search || base2.hash) {
     throw new Error("The lab needs an HTTPS CANDLE_HACC_URL without credentials, query or fragment.");
   }
   const root = base2.toString().replace(/\/+$/, "");
   const doFetch = options.fetch ?? globalThis.fetch;
-  const callMs = options.callTimeoutMs ?? LAB_CALL_TIMEOUT_MS;
+  const callMs = options.callTimeoutMs ?? LAB_CALL_TIMEOUT_MS2;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms) => new Promise((resolve3) => setTimeout(resolve3, ms)));
   async function call2(method, path, valid = () => true, body, timeoutMs = callMs) {
@@ -89567,7 +89833,7 @@ function createLabClient(options) {
       controller.abort();
     }, timeoutMs);
     try {
-      const response = await doFetch(`${root}${LAB_PATH}${path}`, {
+      const response = await doFetch(`${root}${LAB_PATH2}${path}`, {
         method,
         redirect: "error",
         signal: controller.signal,
@@ -89582,24 +89848,24 @@ function createLabClient(options) {
         return;
       });
       if (timedOut)
-        return transportRefusal("TIMEOUT", "The lab request timed out.");
+        return transportRefusal2("TIMEOUT", "The lab request timed out.");
       if (!response.ok) {
         return {
           ok: false,
           refusal: {
             status: response.status,
-            code: record4(received) && typeof received.code === "string" ? received.code : `HTTP_${response.status}`,
-            message: record4(received) && typeof received.error === "string" ? received.error : `Lab request failed (${response.status}).`,
+            code: record5(received) && typeof received.code === "string" ? received.code : `HTTP_${response.status}`,
+            message: record5(received) && typeof received.error === "string" ? received.error : `Lab request failed (${response.status}).`,
             body: received
           }
         };
       }
-      if (!record4(received) || !valid(received)) {
-        return transportRefusal("BAD_RESPONSE", "The lab returned an unreadable response.");
+      if (!record5(received) || !valid(received)) {
+        return transportRefusal2("BAD_RESPONSE", "The lab returned an unreadable response.");
       }
       return { ok: true, status: response.status, body: received };
     } catch {
-      return transportRefusal(timedOut ? "TIMEOUT" : "NETWORK_ERROR", timedOut ? "The lab request timed out." : "Could not reach the lab.");
+      return transportRefusal2(timedOut ? "TIMEOUT" : "NETWORK_ERROR", timedOut ? "The lab request timed out." : "Could not reach the lab.");
     } finally {
       clearTimeout(timer);
     }
@@ -89608,15 +89874,15 @@ function createLabClient(options) {
   const validId = (id) => typeof id === "string" && id.length > 0 || typeof id === "number" && Number.isSafeInteger(id) && id > 0;
   const validJob = (body) => validId(body.job_id) && typeof body.status === "string";
   return {
-    status: () => call2("GET", "/status", (b) => typeof b.plan === "string" && typeof b.allowed === "boolean" && record4(b.replays)),
+    status: () => call2("GET", "/status", (b) => typeof b.plan === "string" && typeof b.allowed === "boolean" && record5(b.replays)),
     replay: (body) => call2("POST", "/replay", (b) => validId(b.job_id), body),
     replayGet: (id) => call2("GET", jobPath2(id), validJob),
     replayCancel: (id) => call2("POST", `${jobPath2(id)}/cancel`),
-    runners: (q = {}) => call2("GET", `/runners${query(q)}`),
-    edges: (q = {}) => call2("GET", `/edges${query(q)}`),
+    runners: (q = {}) => call2("GET", `/runners${query2(q)}`),
+    edges: (q = {}) => call2("GET", `/edges${query2(q)}`),
     async waitForReplay(id, wait = {}) {
-      const intervalMs = wait.intervalMs ?? LAB_REPLAY_INTERVAL_MS;
-      const timeoutMs = wait.timeoutMs ?? LAB_REPLAY_TIMEOUT_MS;
+      const intervalMs = wait.intervalMs ?? LAB_REPLAY_INTERVAL_MS2;
+      const timeoutMs = wait.timeoutMs ?? LAB_REPLAY_TIMEOUT_MS2;
       if (!Number.isFinite(intervalMs) || intervalMs <= 0 || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
         throw new Error("Replay polling interval and timeout must be positive finite numbers.");
       }
@@ -89627,7 +89893,7 @@ function createLabClient(options) {
           return answer2;
         await sleep(Math.min(intervalMs, Math.max(0, deadline - now())));
       }
-      return transportRefusal("REPLAY_TIMEOUT", `Replay ${id} is still pending or running. Read it with candle lab replay get ${id}.`);
+      return transportRefusal2("REPLAY_TIMEOUT", `Replay ${id} is still pending or running. Read it with candle lab replay get ${id}.`);
     }
   };
 }
@@ -89656,7 +89922,7 @@ async function client(ctx) {
   try {
     return {
       apiKey,
-      lab: createLabClient({
+      lab: createLabClient2({
         apiKey,
         apiUrl: ctx.deps.env.CANDLE_HACC_URL?.trim() || undefined,
         fetch: ctx.deps.fetch,
@@ -89672,14 +89938,14 @@ async function client(ctx) {
   }
 }
 function failure2(answer2, ctx, statusRoute = false) {
-  const { refusal: refusal2 } = answer2;
-  if (ctx.json && refusal2.body !== undefined)
-    ctx.deps.stdout.write(`${JSON.stringify(refusal2.body)}
+  const { refusal: refusal3 } = answer2;
+  if (ctx.json && refusal3.body !== undefined)
+    ctx.deps.stdout.write(`${JSON.stringify(refusal3.body)}
 `);
   else {
-    const body = object3(refusal2.body);
-    const message = statusRoute && refusal2.status === 404 ? "the lab on this server predates `candle lab status`" : `${refusal2.message}${refusal2.status === 429 && body.resets_at ? ` Resets at ${text3(body.resets_at)}.` : ""}`;
-    writeLocalFailure(ctx.deps, { code: refusal2.code, message: terminalText(message) }, ctx.json);
+    const body = object3(refusal3.body);
+    const message = statusRoute && refusal3.status === 404 ? "the lab on this server predates `candle lab status`" : `${refusal3.message}${refusal3.status === 429 && body.resets_at ? ` Resets at ${text3(body.resets_at)}.` : ""}`;
+    writeLocalFailure(ctx.deps, { code: refusal3.code, message: terminalText(message) }, ctx.json);
   }
   return 1;
 }
@@ -91694,7 +91960,12 @@ var MCP_TOOL_NAMES = [
   "candle_perps_account",
   "candle_perps_risk",
   "candle_perps_thresholds",
-  "candle_perps_set_thresholds"
+  "candle_perps_set_thresholds",
+  "candle_lab_status",
+  "candle_lab_replay",
+  "candle_lab_replay_result",
+  "candle_lab_runners",
+  "candle_lab_edges"
 ];
 var READ_ONLY_TOOL_NAMES = [
   "candle_get_market",
@@ -92013,8 +92284,8 @@ function canonical3(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(canonical3).join(",")}]`;
-  const record5 = value;
-  return `{${Object.keys(record5).sort().map((key) => `${JSON.stringify(key)}:${canonical3(record5[key])}`).join(",")}}`;
+  const record6 = value;
+  return `{${Object.keys(record6).sort().map((key) => `${JSON.stringify(key)}:${canonical3(record6[key])}`).join(",")}}`;
 }
 function sameValue2(a, b) {
   return canonical3(a) === canonical3(b);
@@ -92506,9 +92777,9 @@ function verifyPerpsBuild2(build, opts) {
       if (shapeRefusal)
         return { ok: false, reason: shapeRefusal };
       if (type === "order") {
-        const refusal2 = checkBuilderField2(action, opts.builder);
-        if (refusal2)
-          return { ok: false, reason: refusal2 };
+        const refusal3 = checkBuilderField2(action, opts.builder);
+        if (refusal3)
+          return { ok: false, reason: refusal3 };
       } else if ("builder" in action) {
         return { ok: false, reason: `a ${type} action carries no builder` };
       }
@@ -93415,8 +93686,8 @@ function canonical4(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(canonical4).join(",")}]`;
-  const record5 = value;
-  return `{${Object.keys(record5).sort().map((key) => `${JSON.stringify(key)}:${canonical4(record5[key])}`).join(",")}}`;
+  const record6 = value;
+  return `{${Object.keys(record6).sort().map((key) => `${JSON.stringify(key)}:${canonical4(record6[key])}`).join(",")}}`;
 }
 function isDecimalString2(value) {
   return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
@@ -93723,12 +93994,12 @@ function perpsRiskProblem2(t) {
   return null;
 }
 function perpsRiskFromLimits2(body) {
-  const record5 = isRecord3(body) ? body : {};
-  const reported = "perpsRisk" in record5 || "perpsRiskEffective" in record5;
-  const stored = isRecord3(record5.perpsRisk) ? pickSettings2(record5.perpsRisk) : null;
+  const record6 = isRecord3(body) ? body : {};
+  const reported = "perpsRisk" in record6 || "perpsRiskEffective" in record6;
+  const stored = isRecord3(record6.perpsRisk) ? pickSettings2(record6.perpsRisk) : null;
   if (!reported)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
-  const effective = isRecord3(record5.perpsRiskEffective) ? effectivePerpsRisk2(pickSettings2(record5.perpsRiskEffective)) : effectivePerpsRisk2(stored);
+  const effective = isRecord3(record6.perpsRiskEffective) ? effectivePerpsRisk2(pickSettings2(record6.perpsRiskEffective)) : effectivePerpsRisk2(stored);
   if (perpsRiskProblem2(effective) !== null)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
   const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
@@ -95560,10 +95831,10 @@ async function perpsOrders(args, ctx) {
   try {
     const key = await tradingKey(ctx);
     const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
-    const query2 = new URLSearchParams({ walletId: row.id });
+    const query3 = new URLSearchParams({ walletId: row.id });
     if (limit !== undefined)
-      query2.set("limit", limit);
-    const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/orders?${query2}`);
+      query3.set("limit", limit);
+    const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/orders?${query3}`);
     if (ctx.json)
       return printTradingResult(ctx, result);
     const open8 = result.open ?? [];
@@ -97229,9 +97500,9 @@ async function perpsWithdraw(args, ctx) {
       clientWithdrawalId: id,
       exchangeResponse: exchange
     }).catch(() => null);
-    const refusal2 = venueRefusal(exchange);
-    if (refusal2)
-      throw new TradingError("PERPS_VENUE_REFUSED", refusal2, { details: { clientWithdrawalId: id, exchange } });
+    const refusal3 = venueRefusal(exchange);
+    if (refusal3)
+      throw new TradingError("PERPS_VENUE_REFUSED", refusal3, { details: { clientWithdrawalId: id, exchange } });
     notice(ctx.deps, "stderr", "note", `Submitted to Hyperliquid; following Relay's fill.
 `.trim());
     const deadline = ctx.deps.now() + WITHDRAW_POLL_MS;
@@ -97880,10 +98151,10 @@ async function paidRequest(input) {
   let required = paymentRequiredOf(first.headers);
   if (!required)
     return plain(first);
-  const refused2 = (result, refusal2) => ({
+  const refused2 = (result, refusal3) => ({
     result,
     payment: null,
-    refusal: refusal2,
+    refusal: refusal3,
     servedFromCredit: false
   });
   const network2 = networkConfig(input.env);
@@ -98107,14 +98378,14 @@ async function tokenVampCandidates(args, ctx) {
     writeUsageFailure(ctx.deps, usageLine, ctx.json);
     return 2;
   }
-  const query2 = new URLSearchParams;
+  const query3 = new URLSearchParams;
   if (limit !== undefined)
-    query2.set("limit", limit);
+    query3.set("limit", limit);
   if (minCopies !== undefined)
-    query2.set("minCopies24h", minCopies);
+    query3.set("minCopies24h", minCopies);
   if (stage !== undefined)
-    query2.set("stage", stage);
-  const search = query2.toString();
+    query3.set("stage", stage);
+  const search = query3.toString();
   return runPaidRead(ctx, {
     path: `/api/v1/markets/vamp-candidates${search ? `?${search}` : ""}`,
     kind: "vamp",
@@ -102880,7 +103151,7 @@ function rerunFile(rows) {
     return rows.map((row) => `${row.from} ${row.to}`);
   return ["from,to", ...rows.map((row) => `${row.from},"${row.to.replaceAll('"', '""')}"`)];
 }
-function refusal2(ctx, findings, exit) {
+function refusal3(ctx, findings, exit) {
   const message = "TEE rename refused. Nothing was changed.";
   if (ctx.json)
     writeJson(ctx.deps, { ok: false, code: "TEE_RENAME_BATCH_REFUSED", message, findings });
@@ -102911,7 +103182,7 @@ function serverFailure(ctx, result, pairs, batch) {
       };
     });
     if (batch)
-      return refusal2(ctx, findings, 1);
+      return refusal3(ctx, findings, 1);
     writeLocalFailure(deps, {
       code: "TEE_RENAME_REFUSED",
       message: `${findings.map((finding) => finding.problem).join(" ")} Nothing was changed.`,
@@ -102974,7 +103245,7 @@ async function teeRename(args, ctx) {
     }
     const parsedFile = parseRenamePairs(contents);
     if (parsedFile.findings.length > 0)
-      return refusal2(ctx, parsedFile.findings, 2);
+      return refusal3(ctx, parsedFile.findings, 2);
     pairs = parsedFile.rows;
   } else {
     const invalid3 = validateLabel(next);
@@ -103054,7 +103325,7 @@ async function teeRename(args, ctx) {
     }
     if (findings.length > 0) {
       if (batch)
-        return refusal2(ctx, findings, 1);
+        return refusal3(ctx, findings, 1);
       writeLocalFailure(deps, {
         code: twice ? "VAULT_LABEL_AMBIGUOUS" : "VAULT_LABEL_TAKEN",
         message: `${findings.map((finding) => finding.problem).join(" ")} Nothing was changed.`,
@@ -103366,14 +103637,14 @@ async function tokenEvents(args, ctx) {
     return 2;
   }
   const mint = parsed.positionals[0];
-  const query2 = new URLSearchParams;
+  const query3 = new URLSearchParams;
   if (limit !== undefined)
-    query2.set("limit", limit);
+    query3.set("limit", limit);
   if (since !== undefined)
-    query2.set("since", since);
+    query3.set("since", since);
   if (before !== undefined)
-    query2.set("before", before);
-  const search = query2.toString();
+    query3.set("before", before);
+  const search = query3.toString();
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   const result = await apiRequest(`/api/v1/tokens/${chain2}/${encodeURIComponent(mint)}/events${search ? `?${search}` : ""}`, {
     apiUrl: ctx.apiUrl,
@@ -103500,10 +103771,10 @@ function refusalOf2(result) {
     return null;
   return { status: result.status, code: error, extra };
 }
-function writeRefusal(ctx, refusal3, suggestion) {
-  const message = REFUSALS[refusal3.code] ?? `Candle refused the request (${refusal3.code}).`;
+function writeRefusal(ctx, refusal4, suggestion) {
+  const message = REFUSALS[refusal4.code] ?? `Candle refused the request (${refusal4.code}).`;
   if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: false, code: refusal3.code, status: refusal3.status, message, ...refusal3.extra, ...suggestion ? { suggestion } : {} })}
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: false, code: refusal4.code, status: refusal4.status, message, ...refusal4.extra, ...suggestion ? { suggestion } : {} })}
 `);
     return;
   }
@@ -103511,9 +103782,9 @@ function writeRefusal(ctx, refusal3, suggestion) {
 `);
 }
 function writeApiFailure(ctx, result, authType) {
-  const refusal3 = refusalOf2(result);
-  if (refusal3) {
-    writeRefusal(ctx, refusal3);
+  const refusal4 = refusalOf2(result);
+  if (refusal4) {
+    writeRefusal(ctx, refusal4);
     return 1;
   }
   const failure3 = result;
@@ -103801,9 +104072,9 @@ async function tokenClaim(args, ctx) {
   if (result === "unknown")
     return writeUnknown(ctx, idempotencyKey);
   if (!result.ok) {
-    const refusal3 = refusalOf2(result);
-    if (refusal3?.code === "invalid_signature" && creator && !challengeId) {
-      writeRefusal(ctx, refusal3, `This account's known wallets do not include the verified creator, so the claim needs a signed challenge: candle token claim ${address} --chain ${chain2} --creator --challenge`);
+    const refusal4 = refusalOf2(result);
+    if (refusal4?.code === "invalid_signature" && creator && !challengeId) {
+      writeRefusal(ctx, refusal4, `This account's known wallets do not include the verified creator, so the claim needs a signed challenge: candle token claim ${address} --chain ${chain2} --creator --challenge`);
       return 1;
     }
     return writeApiFailure(ctx, result, "key");
@@ -103947,10 +104218,10 @@ async function tokenSection(args, ctx) {
   if (result === "unknown")
     return writeUnknown(ctx, idempotencyKey);
   if (!result.ok) {
-    const refusal3 = refusalOf2(result);
-    if (refusal3?.code === "revision_conflict") {
-      const latest = refusal3.extra.latest;
-      writeRefusal(ctx, refusal3, `${latest?.revision !== undefined ? `The latest is revision ${latest.revision}. ` : ""}${action2 === "set" ? SECTION_SUGGESTION : "Rerun with --base-revision set to the latest revision."}`);
+    const refusal4 = refusalOf2(result);
+    if (refusal4?.code === "revision_conflict") {
+      const latest = refusal4.extra.latest;
+      writeRefusal(ctx, refusal4, `${latest?.revision !== undefined ? `The latest is revision ${latest.revision}. ` : ""}${action2 === "set" ? SECTION_SUGGESTION : "Rerun with --base-revision set to the latest revision."}`);
       return EXIT_REVISION_CONFLICT;
     }
     return writeApiFailure(ctx, result, "key");
@@ -103984,11 +104255,11 @@ async function tokenHistory(args, ctx) {
   const limit = values["--limit"];
   if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50))
     return usage12("--limit is a whole number from 1 to 50.");
-  const query2 = new URLSearchParams({
+  const query3 = new URLSearchParams({
     ...limit !== undefined ? { limit } : {},
     ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
   });
-  const result = await read2(ctx, pagePath(chain2, address, `/sections/${section3}/history${query2.size ? `?${query2}` : ""}`));
+  const result = await read2(ctx, pagePath(chain2, address, `/sections/${section3}/history${query3.size ? `?${query3}` : ""}`));
   if (!result.ok)
     return writeApiFailure(ctx, result, "none");
   const data = dataOf(result);
@@ -104169,8 +104440,8 @@ async function readLinkedWallets(ctx, key) {
   let cursor = null;
   const seen = new Set;
   for (let page = 0;page < 25; page++) {
-    const query2 = cursor === null ? "?limit=100" : `?limit=100&cursor=${encodeURIComponent(cursor)}`;
-    const body = await request(ctx, key, `/api/v1/agent/wallets${query2}`);
+    const query3 = cursor === null ? "?limit=100" : `?limit=100&cursor=${encodeURIComponent(cursor)}`;
+    const body = await request(ctx, key, `/api/v1/agent/wallets${query3}`);
     if (!Array.isArray(body.page))
       throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not return a page.");
     rows.push(...body.page);
@@ -105434,7 +105705,7 @@ async function vaultBackup(args, ctx) {
     }
     const recordCopy = live.file.version === EVM_TEE_VAULT_VERSION ? await copyEvmRecordForBackup(live, copyRecordPath, deps) : undefined;
     const written = await stat5(destination);
-    const { report: report2, copyHeader, record: record5 } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
+    const { report: report2, copyHeader, record: record6 } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
     assertFloorCarried(copyHeader, live.file);
     const verifiedAt = new Date(deps.now()).toISOString();
     const copyEnvelopeIds = copyHeader.envelopes.map((envelope) => envelope.id);
@@ -105464,7 +105735,7 @@ async function vaultBackup(args, ctx) {
         sharedDomainAccepted: verdict.sharedDomainAccepted,
         sharedDomain: verdict.sharedDomain,
         verified: true,
-        ...reportJson(report2, live, record5),
+        ...reportJson(report2, live, record6),
         ...recordCopy !== undefined ? {
           evmRecordCopy: {
             path: recordCopy.copyPath,
@@ -105489,7 +105760,7 @@ async function vaultBackup(args, ctx) {
       notice(deps, "stdout", "note", `${recordCopyLine(recordCopy)}
 `.trim());
     writeVerifiedReport(ctx, destination, verdict, report2, live, {
-      record: record5,
+      record: record6,
       copyEnvelopes,
       leftOut,
       verifiedWith: verifiedWithLine(wordFor(live.envelope), live.envelope.id, "the copy was re-opened with it", carriedClause(live.file.envelopes.filter(isPassphraseEnvelope).map((envelope) => envelope.id)))
@@ -105646,12 +105917,12 @@ async function vaultVerifyBackup(args, ctx) {
     const live = hold(opened.vault);
     const openedInCopy = carried.some((envelope) => envelope.id === opened.factor.envelopeId);
     let report2;
-    let record5;
+    let record6;
     let copyOpened;
     if (openedInCopy) {
       const verified = await verifyCopy(ctx, target, opened.reopen, live, "opening the copy");
       report2 = verified.report;
-      record5 = verified.record;
+      record6 = verified.record;
       copyOpened = {
         word: wordFor(live.envelope),
         envelopeId: opened.factor.envelopeId,
@@ -105668,7 +105939,7 @@ async function vaultVerifyBackup(args, ctx) {
         passphraseOnlyEvenIfSole: true
       })).vault);
       report2 = await verifyVaultIntegrity(copy, { live });
-      record5 = await verifyEvmRecordCopy(copy, evmRecordPath(target));
+      record6 = await verifyEvmRecordCopy(copy, evmRecordPath(target));
       copyOpened = {
         word: "passphrase",
         envelopeId: copy.envelope.id,
@@ -105693,7 +105964,7 @@ async function vaultVerifyBackup(args, ctx) {
         ok: true,
         verified: target,
         sealed,
-        ...reportJson(report2, live, record5),
+        ...reportJson(report2, live, record6),
         openedWith: { factor: copyOpened.factor, envelopeId: copyOpened.envelopeId },
         envelopesInCopy: copyHeader.envelopes.map((envelope) => envelope.id),
         passphraseExercised,
@@ -105702,7 +105973,7 @@ async function vaultVerifyBackup(args, ctx) {
       return 0;
     }
     writeVerifiedReport(ctx, target, sealed ? { sealed: true } : undefined, report2, live, {
-      record: record5,
+      record: record6,
       copyEnvelopes: copyHeader.envelopes,
       leftOut: [],
       verifiedWith: verifiedWithLine(copyOpened.word, copyOpened.envelopeId, copyOpened.how, floorClause)
@@ -105727,8 +105998,8 @@ async function verifyCopy(_ctx, copyPath, reopen, live, purpose) {
   const copy = await reopen(copyPath, raw, purpose);
   try {
     const report2 = await verifyVaultIntegrity(copy, { live });
-    const record5 = await verifyEvmRecordCopy(copy, evmRecordPath(copyPath));
-    return { report: report2, copyHeader: copy.file, record: record5 };
+    const record6 = await verifyEvmRecordCopy(copy, evmRecordPath(copyPath));
+    return { report: report2, copyHeader: copy.file, record: record6 };
   } finally {
     closeVault(copy);
   }
@@ -105757,11 +106028,11 @@ async function exists2(path) {
     return false;
   }
 }
-function reportJson(report2, live, record5) {
-  const ninth = record5 !== undefined && !record5.notApplicable;
+function reportJson(report2, live, record6) {
+  const ninth = record6 !== undefined && !record6.notApplicable;
   return {
     steps: ninth ? 9 : 8,
-    ...ninth ? { evmRecord: { path: record5.path, absent: record5.absent, lines: record5.lines } } : {},
+    ...ninth ? { evmRecord: { path: record6.path, absent: record6.absent, lines: record6.lines } } : {},
     addressChecked: report2.addressChecked.length,
     rederived: report2.rederived.length,
     notRederived: report2.notRederived.length,
@@ -109153,9 +109424,9 @@ async function refuseWithoutRoom(ctx) {
     notice(ctx.deps, "stderr", "note", unreadableRoomLine(read3.reason).trim());
     return;
   }
-  const refusal3 = singleRoomRefusal(read3.room);
-  if (refusal3 !== null)
-    throw refusal3;
+  const refusal4 = singleRoomRefusal(read3.room);
+  if (refusal4 !== null)
+    throw refusal4;
 }
 async function reopenFromDisk(path, reopen, previous) {
   closeVault(previous);
@@ -109937,15 +110208,15 @@ function annotate(error, row, classified, pinnedBy, promotedBy) {
 var CONTINUATION_SENTENCE = (total) => `Each row was checked against the vault as it will be when the rows above it have run, so this is
 ` + `every row that fails on that basis. Fix these rows and run again; the next run re-checks all ${total}
 ` + `from scratch.`;
-function writeBatchRefusal(deps, json, refusal3) {
-  const n = refusal3.rows.length;
+function writeBatchRefusal(deps, json, refusal4) {
+  const n = refusal4.rows.length;
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       ok: false,
       code: "PROMOTE_BATCH_REFUSED",
-      message: `${n} of ${refusal3.total} rows cannot run; nothing was written.`,
+      message: `${n} of ${refusal4.total} rows cannot run; nothing was written.`,
       suggestion: "Fix the rows below and run again; the next run re-checks every row from scratch.",
-      rows: refusal3.rows.map((row) => ({
+      rows: refusal4.rows.map((row) => ({
         line: row.line,
         label: row.label,
         destination: row.destination,
@@ -109957,18 +110228,18 @@ function writeBatchRefusal(deps, json, refusal3) {
 `);
     return;
   }
-  const table = renderTable(["line", "label", "destination", "code", "why"], refusal3.rows.map((row) => [
+  const table = renderTable(["line", "label", "destination", "code", "why"], refusal4.rows.map((row) => [
     String(row.line),
     row.label,
     row.destination,
     row.code,
     row.why !== undefined ? `${row.message} ${row.why}` : row.message
   ]));
-  deps.stderr.write(`This batch was refused and NOTHING was written. ${n} of ${refusal3.total} rows cannot run:
+  deps.stderr.write(`This batch was refused and NOTHING was written. ${n} of ${refusal4.total} rows cannot run:
 
 ${table}
 
-${CONTINUATION_SENTENCE(refusal3.total)}
+${CONTINUATION_SENTENCE(refusal4.total)}
 `);
 }
 function parseValueUsdCell(raw) {

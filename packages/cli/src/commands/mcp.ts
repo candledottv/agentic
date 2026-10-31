@@ -121,6 +121,12 @@ export const MCP_TOOL_NAMES = [
   "candle_perps_risk",
   "candle_perps_thresholds",
   "candle_perps_set_thresholds",
+  // BE-2039: the strategy lab over a production key, so --read-only leaves them out too.
+  "candle_lab_status",
+  "candle_lab_replay",
+  "candle_lab_replay_result",
+  "candle_lab_runners",
+  "candle_lab_edges",
 ] as const
 
 /**

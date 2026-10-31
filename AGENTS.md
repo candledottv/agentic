@@ -55,7 +55,7 @@ for parameters and limits.
 
 ## The tool surface
 
-Seventy-six tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The fourteen token-page tools and `candle_token_clusters` await a human-owned release. Public page editing and posts are released. Fifteen source tools need no key at all, so a client can be pointed at the server and used before
+Eighty-one tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The fourteen token-page tools, `candle_token_clusters` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Fifteen source tools need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -163,6 +163,8 @@ anyone signs up for anything.
 | `candle_perps_market` | yes, any scope | one Hyperliquid market in detail; read-only, no signer, local server only |
 | `candle_perps_book` | yes, any scope | one market's order book; read-only, no signer, local server only |
 | `candle_perps_candles` | yes, any scope | one market's candles; read-only, no signer, local server only |
+
+**Strategy lab (hacc), local server only, a production key:** `candle_lab_status` first; `candle_lab_replay` returns a job id at once and `candle_lab_replay_result` reads it (no more often than every 5 seconds; read the lead card first); `candle_lab_runners` and `candle_lab_edges` read its tables. The plan decides access, and a refusal's `code` (`lab_plan`, `lab_quota`, `lab_active`, `lab_busy`) says why. Backtests are a model of the past; the lab never trades.
 
 ## Which CLI command do I need?
 

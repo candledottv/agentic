@@ -80,7 +80,7 @@ Ask an agent to call `candle_get_feed` with `{ "bucket": "new" }` and it works b
 
 ## The tool surface
 
-Seventy-six tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The fourteen token-page tools and `candle_token_clusters` await a human-owned release. Public page editing and posts are released. Fifteen source tools need no key, so a client can be pointed at the server and used before anyone
+Eighty-one tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The fourteen token-page tools, `candle_token_clusters` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Fifteen source tools need no key, so a client can be pointed at the server and used before anyone
 signs up.
 
 | | Tool | Key | What it does |
@@ -161,6 +161,11 @@ signs up.
 | | `candle_perps_market` | yes, any scope | one Hyperliquid market in detail; read-only, no signer, local server only |
 | | `candle_perps_book` | yes, any scope | one market's order book; read-only, no signer, local server only |
 | | `candle_perps_candles` | yes, any scope | one market's candles; read-only, no signer, local server only |
+| **Strategy lab (hacc)** | `candle_lab_status` | yes, production | your lab access: plan, allowed, replays used of today's cap, reset time, active job; the plan decides access (`lab_plan` when it does not include it) |
+| | `candle_lab_replay` | yes, production | submit a backtest; returns the job id at once, never waits, and spends one of today's replays |
+| | `candle_lab_replay_result` | yes, production | read one replay job; read the lead card first. Backtests are a model of the past; the lab never trades |
+| | `candle_lab_runners` | yes, production | the lab's runners table |
+| | `candle_lab_edges` | yes, production | the lab's edges table, net of the round-trip cost it states |
 
 ### A whole job
 

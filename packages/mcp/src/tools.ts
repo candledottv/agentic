@@ -60,6 +60,7 @@ import {
   UPLOADED_BANNER_NOTE,
   UPLOADED_IMAGE_NOTE,
 } from "./image"
+import { executeLabTool, LAB_DESCRIPTIONS, type LabToolName, labShapes } from "./lab-tools"
 import {
   LAUNCH_SHARED_SENTENCES,
   launchAndSeedShape,
@@ -211,9 +212,25 @@ export const TOOL_NAMES = [
   "candle_perps_risk",
   "candle_perps_thresholds",
   "candle_perps_set_thresholds",
+  // BE-2039 (strategy lab spec R25): hacc's lab over a production agent key, stdio only. Never
+  // registered on the hosted server (apps/api/src/mcp/hosted.ts).
+  "candle_lab_status",
+  "candle_lab_replay",
+  "candle_lab_replay_result",
+  "candle_lab_runners",
+  "candle_lab_edges",
 ] as const
 
 export type ToolName = (typeof TOOL_NAMES)[number]
+
+/** The strategy lab tools (BE-2039). Local only: the hosted test asserts none of them is offered. */
+export const LAB_TOOL_NAMES = [
+  "candle_lab_status",
+  "candle_lab_replay",
+  "candle_lab_replay_result",
+  "candle_lab_runners",
+  "candle_lab_edges",
+] as const satisfies readonly (ToolName & LabToolName)[]
 
 /**
  * The tools that write the agent's own public page. Never registered up front: a server offers
@@ -270,6 +287,7 @@ type RestToolName = Exclude<
   | PerpsToolName
   | PerpsMarketToolName
   | "candle_perps_deposit"
+  | LabToolName
 >
 
 /**
@@ -2538,6 +2556,75 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       const result = await executePerpsDeposit(args as Record<string, unknown>, getConfig(), env, doFetch)
       return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
+  )
+
+  // BE-2039 (strategy lab spec R25): hacc's strategy lab, called from this machine with the
+  // configured key (lab-tools.ts). None moves funds; the replay submits a job and never waits.
+  const labTool = (tool: LabToolName) => async (args: Record<string, unknown>) => {
+    const result = await executeLabTool(tool, args, getConfig(), env, doFetch)
+    return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
+  }
+  const labRead: ToolAnnotations = {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: true,
+  }
+
+  register(
+    "candle_lab_status",
+    {
+      title: "Strategy lab status",
+      description: LAB_DESCRIPTIONS.candle_lab_status,
+      inputSchema: labShapes.candle_lab_status,
+      annotations: labRead,
+    },
+    labTool("candle_lab_status"),
+  )
+
+  register(
+    "candle_lab_replay",
+    {
+      title: "Start a strategy lab replay",
+      description: LAB_DESCRIPTIONS.candle_lab_replay,
+      inputSchema: labShapes.candle_lab_replay,
+      // Moves nothing, but each call queues a job and spends one of today's replays.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    labTool("candle_lab_replay"),
+  )
+
+  register(
+    "candle_lab_replay_result",
+    {
+      title: "Read a strategy lab replay",
+      description: LAB_DESCRIPTIONS.candle_lab_replay_result,
+      inputSchema: labShapes.candle_lab_replay_result,
+      annotations: labRead,
+    },
+    labTool("candle_lab_replay_result"),
+  )
+
+  register(
+    "candle_lab_runners",
+    {
+      title: "Strategy lab runners",
+      description: LAB_DESCRIPTIONS.candle_lab_runners,
+      inputSchema: labShapes.candle_lab_runners,
+      annotations: labRead,
+    },
+    labTool("candle_lab_runners"),
+  )
+
+  register(
+    "candle_lab_edges",
+    {
+      title: "Strategy lab edges",
+      description: LAB_DESCRIPTIONS.candle_lab_edges,
+      inputSchema: labShapes.candle_lab_edges,
+      annotations: labRead,
+    },
+    labTool("candle_lab_edges"),
   )
 }
 

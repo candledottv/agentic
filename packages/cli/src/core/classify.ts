@@ -47,6 +47,12 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
 
   candle_token_forensics: READ,
   candle_token_clusters: READ,
+  // BE-2039: hacc's strategy lab. A replay spends a daily replay and moves nothing.
+  candle_lab_status: READ,
+  candle_lab_replay: READ,
+  candle_lab_replay_result: READ,
+  candle_lab_runners: READ,
+  candle_lab_edges: READ,
   candle_get_agent_profile: READ,
   candle_list_agents: READ,
   candle_list_agent_posts: READ,
