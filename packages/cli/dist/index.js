@@ -55579,11 +55579,11 @@ var require_envelope = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Signature = exports.Envelope = undefined;
   exports.Envelope = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        payload: isSet(object4.payload) ? Buffer.from(bytesFromBase64(object4.payload)) : Buffer.alloc(0),
-        payloadType: isSet(object4.payloadType) ? globalThis.String(object4.payloadType) : "",
-        signatures: globalThis.Array.isArray(object4?.signatures) ? object4.signatures.map((e) => exports.Signature.fromJSON(e)) : []
+        payload: isSet(object5.payload) ? Buffer.from(bytesFromBase64(object5.payload)) : Buffer.alloc(0),
+        payloadType: isSet(object5.payloadType) ? globalThis.String(object5.payloadType) : "",
+        signatures: globalThis.Array.isArray(object5?.signatures) ? object5.signatures.map((e) => exports.Signature.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -55601,10 +55601,10 @@ var require_envelope = __commonJS((exports) => {
     }
   };
   exports.Signature = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        sig: isSet(object4.sig) ? Buffer.from(bytesFromBase64(object4.sig)) : Buffer.alloc(0),
-        keyid: isSet(object4.keyid) ? globalThis.String(object4.keyid) : ""
+        sig: isSet(object5.sig) ? Buffer.from(bytesFromBase64(object5.sig)) : Buffer.alloc(0),
+        keyid: isSet(object5.keyid) ? globalThis.String(object5.keyid) : ""
       };
     },
     toJSON(message) {
@@ -55634,10 +55634,10 @@ var require_timestamp = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Timestamp = undefined;
   exports.Timestamp = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        seconds: isSet(object4.seconds) ? globalThis.String(object4.seconds) : "0",
-        nanos: isSet(object4.nanos) ? globalThis.Number(object4.nanos) : 0
+        seconds: isSet(object5.seconds) ? globalThis.String(object5.seconds) : "0",
+        nanos: isSet(object5.nanos) ? globalThis.Number(object5.nanos) : 0
       };
     },
     toJSON(message) {
@@ -55676,8 +55676,8 @@ var require_sigstore_common = __commonJS((exports) => {
     HashAlgorithm2[HashAlgorithm2["SHA3_256"] = 4] = "SHA3_256";
     HashAlgorithm2[HashAlgorithm2["SHA3_384"] = 5] = "SHA3_384";
   })(HashAlgorithm || (exports.HashAlgorithm = HashAlgorithm = {}));
-  function hashAlgorithmFromJSON(object4) {
-    switch (object4) {
+  function hashAlgorithmFromJSON(object5) {
+    switch (object5) {
       case 0:
       case "HASH_ALGORITHM_UNSPECIFIED":
         return HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED;
@@ -55697,11 +55697,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "SHA3_384":
         return HashAlgorithm.SHA3_384;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object4 + " for enum HashAlgorithm");
+        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum HashAlgorithm");
     }
   }
-  function hashAlgorithmToJSON(object4) {
-    switch (object4) {
+  function hashAlgorithmToJSON(object5) {
+    switch (object5) {
       case HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED:
         return "HASH_ALGORITHM_UNSPECIFIED";
       case HashAlgorithm.SHA2_256:
@@ -55715,7 +55715,7 @@ var require_sigstore_common = __commonJS((exports) => {
       case HashAlgorithm.SHA3_384:
         return "SHA3_384";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object4 + " for enum HashAlgorithm");
+        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum HashAlgorithm");
     }
   }
   var PublicKeyDetails;
@@ -55745,8 +55745,8 @@ var require_sigstore_common = __commonJS((exports) => {
     PublicKeyDetails2[PublicKeyDetails2["ML_DSA_65"] = 21] = "ML_DSA_65";
     PublicKeyDetails2[PublicKeyDetails2["ML_DSA_87"] = 22] = "ML_DSA_87";
   })(PublicKeyDetails || (exports.PublicKeyDetails = PublicKeyDetails = {}));
-  function publicKeyDetailsFromJSON(object4) {
-    switch (object4) {
+  function publicKeyDetailsFromJSON(object5) {
+    switch (object5) {
       case 0:
       case "PUBLIC_KEY_DETAILS_UNSPECIFIED":
         return PublicKeyDetails.PUBLIC_KEY_DETAILS_UNSPECIFIED;
@@ -55820,11 +55820,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "ML_DSA_87":
         return PublicKeyDetails.ML_DSA_87;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object4 + " for enum PublicKeyDetails");
+        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum PublicKeyDetails");
     }
   }
-  function publicKeyDetailsToJSON(object4) {
-    switch (object4) {
+  function publicKeyDetailsToJSON(object5) {
+    switch (object5) {
       case PublicKeyDetails.PUBLIC_KEY_DETAILS_UNSPECIFIED:
         return "PUBLIC_KEY_DETAILS_UNSPECIFIED";
       case PublicKeyDetails.PKCS1_RSA_PKCS1V5:
@@ -55874,7 +55874,7 @@ var require_sigstore_common = __commonJS((exports) => {
       case PublicKeyDetails.ML_DSA_87:
         return "ML_DSA_87";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object4 + " for enum PublicKeyDetails");
+        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum PublicKeyDetails");
     }
   }
   var SubjectAlternativeNameType;
@@ -55884,8 +55884,8 @@ var require_sigstore_common = __commonJS((exports) => {
     SubjectAlternativeNameType2[SubjectAlternativeNameType2["URI"] = 2] = "URI";
     SubjectAlternativeNameType2[SubjectAlternativeNameType2["OTHER_NAME"] = 3] = "OTHER_NAME";
   })(SubjectAlternativeNameType || (exports.SubjectAlternativeNameType = SubjectAlternativeNameType = {}));
-  function subjectAlternativeNameTypeFromJSON(object4) {
-    switch (object4) {
+  function subjectAlternativeNameTypeFromJSON(object5) {
+    switch (object5) {
       case 0:
       case "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED":
         return SubjectAlternativeNameType.SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED;
@@ -55899,11 +55899,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "OTHER_NAME":
         return SubjectAlternativeNameType.OTHER_NAME;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object4 + " for enum SubjectAlternativeNameType");
+        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum SubjectAlternativeNameType");
     }
   }
-  function subjectAlternativeNameTypeToJSON(object4) {
-    switch (object4) {
+  function subjectAlternativeNameTypeToJSON(object5) {
+    switch (object5) {
       case SubjectAlternativeNameType.SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED:
         return "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED";
       case SubjectAlternativeNameType.EMAIL:
@@ -55913,14 +55913,14 @@ var require_sigstore_common = __commonJS((exports) => {
       case SubjectAlternativeNameType.OTHER_NAME:
         return "OTHER_NAME";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object4 + " for enum SubjectAlternativeNameType");
+        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum SubjectAlternativeNameType");
     }
   }
   exports.HashOutput = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        algorithm: isSet(object4.algorithm) ? hashAlgorithmFromJSON(object4.algorithm) : 0,
-        digest: isSet(object4.digest) ? Buffer.from(bytesFromBase64(object4.digest)) : Buffer.alloc(0)
+        algorithm: isSet(object5.algorithm) ? hashAlgorithmFromJSON(object5.algorithm) : 0,
+        digest: isSet(object5.digest) ? Buffer.from(bytesFromBase64(object5.digest)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -55935,10 +55935,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.MessageSignature = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        messageDigest: isSet(object4.messageDigest) ? exports.HashOutput.fromJSON(object4.messageDigest) : undefined,
-        signature: isSet(object4.signature) ? Buffer.from(bytesFromBase64(object4.signature)) : Buffer.alloc(0)
+        messageDigest: isSet(object5.messageDigest) ? exports.HashOutput.fromJSON(object5.messageDigest) : undefined,
+        signature: isSet(object5.signature) ? Buffer.from(bytesFromBase64(object5.signature)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -55953,8 +55953,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.LogId = {
-    fromJSON(object4) {
-      return { keyId: isSet(object4.keyId) ? Buffer.from(bytesFromBase64(object4.keyId)) : Buffer.alloc(0) };
+    fromJSON(object5) {
+      return { keyId: isSet(object5.keyId) ? Buffer.from(bytesFromBase64(object5.keyId)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -55965,9 +55965,9 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.RFC3161SignedTimestamp = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        signedTimestamp: isSet(object4.signedTimestamp) ? Buffer.from(bytesFromBase64(object4.signedTimestamp)) : Buffer.alloc(0)
+        signedTimestamp: isSet(object5.signedTimestamp) ? Buffer.from(bytesFromBase64(object5.signedTimestamp)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -55979,11 +55979,11 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.PublicKey = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        rawBytes: isSet(object4.rawBytes) ? Buffer.from(bytesFromBase64(object4.rawBytes)) : undefined,
-        keyDetails: isSet(object4.keyDetails) ? publicKeyDetailsFromJSON(object4.keyDetails) : 0,
-        validFor: isSet(object4.validFor) ? exports.TimeRange.fromJSON(object4.validFor) : undefined
+        rawBytes: isSet(object5.rawBytes) ? Buffer.from(bytesFromBase64(object5.rawBytes)) : undefined,
+        keyDetails: isSet(object5.keyDetails) ? publicKeyDetailsFromJSON(object5.keyDetails) : 0,
+        validFor: isSet(object5.validFor) ? exports.TimeRange.fromJSON(object5.validFor) : undefined
       };
     },
     toJSON(message) {
@@ -56001,8 +56001,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.PublicKeyIdentifier = {
-    fromJSON(object4) {
-      return { hint: isSet(object4.hint) ? globalThis.String(object4.hint) : "" };
+    fromJSON(object5) {
+      return { hint: isSet(object5.hint) ? globalThis.String(object5.hint) : "" };
     },
     toJSON(message) {
       const obj = {};
@@ -56013,8 +56013,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.ObjectIdentifier = {
-    fromJSON(object4) {
-      return { id: globalThis.Array.isArray(object4?.id) ? object4.id.map((e) => globalThis.Number(e)) : [] };
+    fromJSON(object5) {
+      return { id: globalThis.Array.isArray(object5?.id) ? object5.id.map((e) => globalThis.Number(e)) : [] };
     },
     toJSON(message) {
       const obj = {};
@@ -56025,10 +56025,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.ObjectIdentifierValuePair = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        oid: isSet(object4.oid) ? exports.ObjectIdentifier.fromJSON(object4.oid) : undefined,
-        value: isSet(object4.value) ? Buffer.from(bytesFromBase64(object4.value)) : Buffer.alloc(0)
+        oid: isSet(object5.oid) ? exports.ObjectIdentifier.fromJSON(object5.oid) : undefined,
+        value: isSet(object5.value) ? Buffer.from(bytesFromBase64(object5.value)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -56043,10 +56043,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.DistinguishedName = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        organization: isSet(object4.organization) ? globalThis.String(object4.organization) : "",
-        commonName: isSet(object4.commonName) ? globalThis.String(object4.commonName) : ""
+        organization: isSet(object5.organization) ? globalThis.String(object5.organization) : "",
+        commonName: isSet(object5.commonName) ? globalThis.String(object5.commonName) : ""
       };
     },
     toJSON(message) {
@@ -56061,8 +56061,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.X509Certificate = {
-    fromJSON(object4) {
-      return { rawBytes: isSet(object4.rawBytes) ? Buffer.from(bytesFromBase64(object4.rawBytes)) : Buffer.alloc(0) };
+    fromJSON(object5) {
+      return { rawBytes: isSet(object5.rawBytes) ? Buffer.from(bytesFromBase64(object5.rawBytes)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -56073,10 +56073,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.SubjectAlternativeName = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        type: isSet(object4.type) ? subjectAlternativeNameTypeFromJSON(object4.type) : 0,
-        identity: isSet(object4.regexp) ? { $case: "regexp", regexp: globalThis.String(object4.regexp) } : isSet(object4.value) ? { $case: "value", value: globalThis.String(object4.value) } : undefined
+        type: isSet(object5.type) ? subjectAlternativeNameTypeFromJSON(object5.type) : 0,
+        identity: isSet(object5.regexp) ? { $case: "regexp", regexp: globalThis.String(object5.regexp) } : isSet(object5.value) ? { $case: "value", value: globalThis.String(object5.value) } : undefined
       };
     },
     toJSON(message) {
@@ -56093,9 +56093,9 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.X509CertificateChain = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        certificates: globalThis.Array.isArray(object4?.certificates) ? object4.certificates.map((e) => exports.X509Certificate.fromJSON(e)) : []
+        certificates: globalThis.Array.isArray(object5?.certificates) ? object5.certificates.map((e) => exports.X509Certificate.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -56107,10 +56107,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.TimeRange = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        start: isSet(object4.start) ? fromJsonTimestamp(object4.start) : undefined,
-        end: isSet(object4.end) ? fromJsonTimestamp(object4.end) : undefined
+        start: isSet(object5.start) ? fromJsonTimestamp(object5.start) : undefined,
+        end: isSet(object5.end) ? fromJsonTimestamp(object5.end) : undefined
       };
     },
     toJSON(message) {
@@ -56155,10 +56155,10 @@ var require_sigstore_rekor = __commonJS((exports) => {
   exports.TransparencyLogEntry = exports.InclusionPromise = exports.InclusionProof = exports.Checkpoint = exports.KindVersion = undefined;
   var sigstore_common_1 = require_sigstore_common();
   exports.KindVersion = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        kind: isSet(object4.kind) ? globalThis.String(object4.kind) : "",
-        version: isSet(object4.version) ? globalThis.String(object4.version) : ""
+        kind: isSet(object5.kind) ? globalThis.String(object5.kind) : "",
+        version: isSet(object5.version) ? globalThis.String(object5.version) : ""
       };
     },
     toJSON(message) {
@@ -56173,8 +56173,8 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.Checkpoint = {
-    fromJSON(object4) {
-      return { envelope: isSet(object4.envelope) ? globalThis.String(object4.envelope) : "" };
+    fromJSON(object5) {
+      return { envelope: isSet(object5.envelope) ? globalThis.String(object5.envelope) : "" };
     },
     toJSON(message) {
       const obj = {};
@@ -56185,13 +56185,13 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.InclusionProof = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        logIndex: isSet(object4.logIndex) ? globalThis.String(object4.logIndex) : "0",
-        rootHash: isSet(object4.rootHash) ? Buffer.from(bytesFromBase64(object4.rootHash)) : Buffer.alloc(0),
-        treeSize: isSet(object4.treeSize) ? globalThis.String(object4.treeSize) : "0",
-        hashes: globalThis.Array.isArray(object4?.hashes) ? object4.hashes.map((e) => Buffer.from(bytesFromBase64(e))) : [],
-        checkpoint: isSet(object4.checkpoint) ? exports.Checkpoint.fromJSON(object4.checkpoint) : undefined
+        logIndex: isSet(object5.logIndex) ? globalThis.String(object5.logIndex) : "0",
+        rootHash: isSet(object5.rootHash) ? Buffer.from(bytesFromBase64(object5.rootHash)) : Buffer.alloc(0),
+        treeSize: isSet(object5.treeSize) ? globalThis.String(object5.treeSize) : "0",
+        hashes: globalThis.Array.isArray(object5?.hashes) ? object5.hashes.map((e) => Buffer.from(bytesFromBase64(e))) : [],
+        checkpoint: isSet(object5.checkpoint) ? exports.Checkpoint.fromJSON(object5.checkpoint) : undefined
       };
     },
     toJSON(message) {
@@ -56215,9 +56215,9 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.InclusionPromise = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        signedEntryTimestamp: isSet(object4.signedEntryTimestamp) ? Buffer.from(bytesFromBase64(object4.signedEntryTimestamp)) : Buffer.alloc(0)
+        signedEntryTimestamp: isSet(object5.signedEntryTimestamp) ? Buffer.from(bytesFromBase64(object5.signedEntryTimestamp)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -56229,15 +56229,15 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.TransparencyLogEntry = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        logIndex: isSet(object4.logIndex) ? globalThis.String(object4.logIndex) : "0",
-        logId: isSet(object4.logId) ? sigstore_common_1.LogId.fromJSON(object4.logId) : undefined,
-        kindVersion: isSet(object4.kindVersion) ? exports.KindVersion.fromJSON(object4.kindVersion) : undefined,
-        integratedTime: isSet(object4.integratedTime) ? globalThis.String(object4.integratedTime) : "0",
-        inclusionPromise: isSet(object4.inclusionPromise) ? exports.InclusionPromise.fromJSON(object4.inclusionPromise) : undefined,
-        inclusionProof: isSet(object4.inclusionProof) ? exports.InclusionProof.fromJSON(object4.inclusionProof) : undefined,
-        canonicalizedBody: isSet(object4.canonicalizedBody) ? Buffer.from(bytesFromBase64(object4.canonicalizedBody)) : Buffer.alloc(0)
+        logIndex: isSet(object5.logIndex) ? globalThis.String(object5.logIndex) : "0",
+        logId: isSet(object5.logId) ? sigstore_common_1.LogId.fromJSON(object5.logId) : undefined,
+        kindVersion: isSet(object5.kindVersion) ? exports.KindVersion.fromJSON(object5.kindVersion) : undefined,
+        integratedTime: isSet(object5.integratedTime) ? globalThis.String(object5.integratedTime) : "0",
+        inclusionPromise: isSet(object5.inclusionPromise) ? exports.InclusionPromise.fromJSON(object5.inclusionPromise) : undefined,
+        inclusionProof: isSet(object5.inclusionProof) ? exports.InclusionProof.fromJSON(object5.inclusionProof) : undefined,
+        canonicalizedBody: isSet(object5.canonicalizedBody) ? Buffer.from(bytesFromBase64(object5.canonicalizedBody)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -56285,9 +56285,9 @@ var require_sigstore_bundle = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var sigstore_rekor_1 = require_sigstore_rekor();
   exports.TimestampVerificationData = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        rfc3161Timestamps: globalThis.Array.isArray(object4?.rfc3161Timestamps) ? object4.rfc3161Timestamps.map((e) => sigstore_common_1.RFC3161SignedTimestamp.fromJSON(e)) : []
+        rfc3161Timestamps: globalThis.Array.isArray(object5?.rfc3161Timestamps) ? object5.rfc3161Timestamps.map((e) => sigstore_common_1.RFC3161SignedTimestamp.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -56299,14 +56299,14 @@ var require_sigstore_bundle = __commonJS((exports) => {
     }
   };
   exports.VerificationMaterial = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        content: isSet(object4.publicKey) ? { $case: "publicKey", publicKey: sigstore_common_1.PublicKeyIdentifier.fromJSON(object4.publicKey) } : isSet(object4.x509CertificateChain) ? {
+        content: isSet(object5.publicKey) ? { $case: "publicKey", publicKey: sigstore_common_1.PublicKeyIdentifier.fromJSON(object5.publicKey) } : isSet(object5.x509CertificateChain) ? {
           $case: "x509CertificateChain",
-          x509CertificateChain: sigstore_common_1.X509CertificateChain.fromJSON(object4.x509CertificateChain)
-        } : isSet(object4.certificate) ? { $case: "certificate", certificate: sigstore_common_1.X509Certificate.fromJSON(object4.certificate) } : undefined,
-        tlogEntries: globalThis.Array.isArray(object4?.tlogEntries) ? object4.tlogEntries.map((e) => sigstore_rekor_1.TransparencyLogEntry.fromJSON(e)) : [],
-        timestampVerificationData: isSet(object4.timestampVerificationData) ? exports.TimestampVerificationData.fromJSON(object4.timestampVerificationData) : undefined
+          x509CertificateChain: sigstore_common_1.X509CertificateChain.fromJSON(object5.x509CertificateChain)
+        } : isSet(object5.certificate) ? { $case: "certificate", certificate: sigstore_common_1.X509Certificate.fromJSON(object5.certificate) } : undefined,
+        tlogEntries: globalThis.Array.isArray(object5?.tlogEntries) ? object5.tlogEntries.map((e) => sigstore_rekor_1.TransparencyLogEntry.fromJSON(e)) : [],
+        timestampVerificationData: isSet(object5.timestampVerificationData) ? exports.TimestampVerificationData.fromJSON(object5.timestampVerificationData) : undefined
       };
     },
     toJSON(message) {
@@ -56328,11 +56328,11 @@ var require_sigstore_bundle = __commonJS((exports) => {
     }
   };
   exports.Bundle = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        mediaType: isSet(object4.mediaType) ? globalThis.String(object4.mediaType) : "",
-        verificationMaterial: isSet(object4.verificationMaterial) ? exports.VerificationMaterial.fromJSON(object4.verificationMaterial) : undefined,
-        content: isSet(object4.messageSignature) ? { $case: "messageSignature", messageSignature: sigstore_common_1.MessageSignature.fromJSON(object4.messageSignature) } : isSet(object4.dsseEnvelope) ? { $case: "dsseEnvelope", dsseEnvelope: envelope_1.Envelope.fromJSON(object4.dsseEnvelope) } : undefined
+        mediaType: isSet(object5.mediaType) ? globalThis.String(object5.mediaType) : "",
+        verificationMaterial: isSet(object5.verificationMaterial) ? exports.VerificationMaterial.fromJSON(object5.verificationMaterial) : undefined,
+        content: isSet(object5.messageSignature) ? { $case: "messageSignature", messageSignature: sigstore_common_1.MessageSignature.fromJSON(object5.messageSignature) } : isSet(object5.dsseEnvelope) ? { $case: "dsseEnvelope", dsseEnvelope: envelope_1.Envelope.fromJSON(object5.dsseEnvelope) } : undefined
       };
     },
     toJSON(message) {
@@ -56370,8 +56370,8 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     ServiceSelector2[ServiceSelector2["ANY"] = 2] = "ANY";
     ServiceSelector2[ServiceSelector2["EXACT"] = 3] = "EXACT";
   })(ServiceSelector || (exports.ServiceSelector = ServiceSelector = {}));
-  function serviceSelectorFromJSON(object4) {
-    switch (object4) {
+  function serviceSelectorFromJSON(object5) {
+    switch (object5) {
       case 0:
       case "SERVICE_SELECTOR_UNDEFINED":
         return ServiceSelector.SERVICE_SELECTOR_UNDEFINED;
@@ -56385,11 +56385,11 @@ var require_sigstore_trustroot = __commonJS((exports) => {
       case "EXACT":
         return ServiceSelector.EXACT;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object4 + " for enum ServiceSelector");
+        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum ServiceSelector");
     }
   }
-  function serviceSelectorToJSON(object4) {
-    switch (object4) {
+  function serviceSelectorToJSON(object5) {
+    switch (object5) {
       case ServiceSelector.SERVICE_SELECTOR_UNDEFINED:
         return "SERVICE_SELECTOR_UNDEFINED";
       case ServiceSelector.ALL:
@@ -56399,18 +56399,18 @@ var require_sigstore_trustroot = __commonJS((exports) => {
       case ServiceSelector.EXACT:
         return "EXACT";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object4 + " for enum ServiceSelector");
+        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum ServiceSelector");
     }
   }
   exports.TransparencyLogInstance = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        baseUrl: isSet(object4.baseUrl) ? globalThis.String(object4.baseUrl) : "",
-        hashAlgorithm: isSet(object4.hashAlgorithm) ? (0, sigstore_common_1.hashAlgorithmFromJSON)(object4.hashAlgorithm) : 0,
-        publicKey: isSet(object4.publicKey) ? sigstore_common_1.PublicKey.fromJSON(object4.publicKey) : undefined,
-        logId: isSet(object4.logId) ? sigstore_common_1.LogId.fromJSON(object4.logId) : undefined,
-        checkpointKeyId: isSet(object4.checkpointKeyId) ? sigstore_common_1.LogId.fromJSON(object4.checkpointKeyId) : undefined,
-        operator: isSet(object4.operator) ? globalThis.String(object4.operator) : ""
+        baseUrl: isSet(object5.baseUrl) ? globalThis.String(object5.baseUrl) : "",
+        hashAlgorithm: isSet(object5.hashAlgorithm) ? (0, sigstore_common_1.hashAlgorithmFromJSON)(object5.hashAlgorithm) : 0,
+        publicKey: isSet(object5.publicKey) ? sigstore_common_1.PublicKey.fromJSON(object5.publicKey) : undefined,
+        logId: isSet(object5.logId) ? sigstore_common_1.LogId.fromJSON(object5.logId) : undefined,
+        checkpointKeyId: isSet(object5.checkpointKeyId) ? sigstore_common_1.LogId.fromJSON(object5.checkpointKeyId) : undefined,
+        operator: isSet(object5.operator) ? globalThis.String(object5.operator) : ""
       };
     },
     toJSON(message) {
@@ -56437,13 +56437,13 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.CertificateAuthority = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        subject: isSet(object4.subject) ? sigstore_common_1.DistinguishedName.fromJSON(object4.subject) : undefined,
-        uri: isSet(object4.uri) ? globalThis.String(object4.uri) : "",
-        certChain: isSet(object4.certChain) ? sigstore_common_1.X509CertificateChain.fromJSON(object4.certChain) : undefined,
-        validFor: isSet(object4.validFor) ? sigstore_common_1.TimeRange.fromJSON(object4.validFor) : undefined,
-        operator: isSet(object4.operator) ? globalThis.String(object4.operator) : ""
+        subject: isSet(object5.subject) ? sigstore_common_1.DistinguishedName.fromJSON(object5.subject) : undefined,
+        uri: isSet(object5.uri) ? globalThis.String(object5.uri) : "",
+        certChain: isSet(object5.certChain) ? sigstore_common_1.X509CertificateChain.fromJSON(object5.certChain) : undefined,
+        validFor: isSet(object5.validFor) ? sigstore_common_1.TimeRange.fromJSON(object5.validFor) : undefined,
+        operator: isSet(object5.operator) ? globalThis.String(object5.operator) : ""
       };
     },
     toJSON(message) {
@@ -56467,13 +56467,13 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.TrustedRoot = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        mediaType: isSet(object4.mediaType) ? globalThis.String(object4.mediaType) : "",
-        tlogs: globalThis.Array.isArray(object4?.tlogs) ? object4.tlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
-        certificateAuthorities: globalThis.Array.isArray(object4?.certificateAuthorities) ? object4.certificateAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : [],
-        ctlogs: globalThis.Array.isArray(object4?.ctlogs) ? object4.ctlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
-        timestampAuthorities: globalThis.Array.isArray(object4?.timestampAuthorities) ? object4.timestampAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : []
+        mediaType: isSet(object5.mediaType) ? globalThis.String(object5.mediaType) : "",
+        tlogs: globalThis.Array.isArray(object5?.tlogs) ? object5.tlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
+        certificateAuthorities: globalThis.Array.isArray(object5?.certificateAuthorities) ? object5.certificateAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : [],
+        ctlogs: globalThis.Array.isArray(object5?.ctlogs) ? object5.ctlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
+        timestampAuthorities: globalThis.Array.isArray(object5?.timestampAuthorities) ? object5.timestampAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -56497,15 +56497,15 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.SigningConfig = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        mediaType: isSet(object4.mediaType) ? globalThis.String(object4.mediaType) : "",
-        caUrls: globalThis.Array.isArray(object4?.caUrls) ? object4.caUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        oidcUrls: globalThis.Array.isArray(object4?.oidcUrls) ? object4.oidcUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        rekorTlogUrls: globalThis.Array.isArray(object4?.rekorTlogUrls) ? object4.rekorTlogUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        rekorTlogConfig: isSet(object4.rekorTlogConfig) ? exports.ServiceConfiguration.fromJSON(object4.rekorTlogConfig) : undefined,
-        tsaUrls: globalThis.Array.isArray(object4?.tsaUrls) ? object4.tsaUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        tsaConfig: isSet(object4.tsaConfig) ? exports.ServiceConfiguration.fromJSON(object4.tsaConfig) : undefined
+        mediaType: isSet(object5.mediaType) ? globalThis.String(object5.mediaType) : "",
+        caUrls: globalThis.Array.isArray(object5?.caUrls) ? object5.caUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        oidcUrls: globalThis.Array.isArray(object5?.oidcUrls) ? object5.oidcUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        rekorTlogUrls: globalThis.Array.isArray(object5?.rekorTlogUrls) ? object5.rekorTlogUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        rekorTlogConfig: isSet(object5.rekorTlogConfig) ? exports.ServiceConfiguration.fromJSON(object5.rekorTlogConfig) : undefined,
+        tsaUrls: globalThis.Array.isArray(object5?.tsaUrls) ? object5.tsaUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        tsaConfig: isSet(object5.tsaConfig) ? exports.ServiceConfiguration.fromJSON(object5.tsaConfig) : undefined
       };
     },
     toJSON(message) {
@@ -56535,12 +56535,12 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.Service = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        url: isSet(object4.url) ? globalThis.String(object4.url) : "",
-        majorApiVersion: isSet(object4.majorApiVersion) ? globalThis.Number(object4.majorApiVersion) : 0,
-        validFor: isSet(object4.validFor) ? sigstore_common_1.TimeRange.fromJSON(object4.validFor) : undefined,
-        operator: isSet(object4.operator) ? globalThis.String(object4.operator) : ""
+        url: isSet(object5.url) ? globalThis.String(object5.url) : "",
+        majorApiVersion: isSet(object5.majorApiVersion) ? globalThis.Number(object5.majorApiVersion) : 0,
+        validFor: isSet(object5.validFor) ? sigstore_common_1.TimeRange.fromJSON(object5.validFor) : undefined,
+        operator: isSet(object5.operator) ? globalThis.String(object5.operator) : ""
       };
     },
     toJSON(message) {
@@ -56561,10 +56561,10 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.ServiceConfiguration = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        selector: isSet(object4.selector) ? serviceSelectorFromJSON(object4.selector) : 0,
-        count: isSet(object4.count) ? globalThis.Number(object4.count) : 0
+        selector: isSet(object5.selector) ? serviceSelectorFromJSON(object5.selector) : 0,
+        count: isSet(object5.count) ? globalThis.Number(object5.count) : 0
       };
     },
     toJSON(message) {
@@ -56579,11 +56579,11 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.ClientTrustConfig = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        mediaType: isSet(object4.mediaType) ? globalThis.String(object4.mediaType) : "",
-        trustedRoot: isSet(object4.trustedRoot) ? exports.TrustedRoot.fromJSON(object4.trustedRoot) : undefined,
-        signingConfig: isSet(object4.signingConfig) ? exports.SigningConfig.fromJSON(object4.signingConfig) : undefined
+        mediaType: isSet(object5.mediaType) ? globalThis.String(object5.mediaType) : "",
+        trustedRoot: isSet(object5.trustedRoot) ? exports.TrustedRoot.fromJSON(object5.trustedRoot) : undefined,
+        signingConfig: isSet(object5.signingConfig) ? exports.SigningConfig.fromJSON(object5.signingConfig) : undefined
       };
     },
     toJSON(message) {
@@ -56613,11 +56613,11 @@ var require_sigstore_verification = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var sigstore_trustroot_1 = require_sigstore_trustroot();
   exports.CertificateIdentity = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        issuer: isSet(object4.issuer) ? globalThis.String(object4.issuer) : "",
-        san: isSet(object4.san) ? sigstore_common_1.SubjectAlternativeName.fromJSON(object4.san) : undefined,
-        oids: globalThis.Array.isArray(object4?.oids) ? object4.oids.map((e) => sigstore_common_1.ObjectIdentifierValuePair.fromJSON(e)) : []
+        issuer: isSet(object5.issuer) ? globalThis.String(object5.issuer) : "",
+        san: isSet(object5.san) ? sigstore_common_1.SubjectAlternativeName.fromJSON(object5.san) : undefined,
+        oids: globalThis.Array.isArray(object5?.oids) ? object5.oids.map((e) => sigstore_common_1.ObjectIdentifierValuePair.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -56635,9 +56635,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.CertificateIdentities = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        identities: globalThis.Array.isArray(object4?.identities) ? object4.identities.map((e) => exports.CertificateIdentity.fromJSON(e)) : []
+        identities: globalThis.Array.isArray(object5?.identities) ? object5.identities.map((e) => exports.CertificateIdentity.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -56649,9 +56649,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.PublicKeyIdentities = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        publicKeys: globalThis.Array.isArray(object4?.publicKeys) ? object4.publicKeys.map((e) => sigstore_common_1.PublicKey.fromJSON(e)) : []
+        publicKeys: globalThis.Array.isArray(object5?.publicKeys) ? object5.publicKeys.map((e) => sigstore_common_1.PublicKey.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -56663,17 +56663,17 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        signers: isSet(object4.certificateIdentities) ? {
+        signers: isSet(object5.certificateIdentities) ? {
           $case: "certificateIdentities",
-          certificateIdentities: exports.CertificateIdentities.fromJSON(object4.certificateIdentities)
-        } : isSet(object4.publicKeys) ? { $case: "publicKeys", publicKeys: exports.PublicKeyIdentities.fromJSON(object4.publicKeys) } : undefined,
-        tlogOptions: isSet(object4.tlogOptions) ? exports.ArtifactVerificationOptions_TlogOptions.fromJSON(object4.tlogOptions) : undefined,
-        ctlogOptions: isSet(object4.ctlogOptions) ? exports.ArtifactVerificationOptions_CtlogOptions.fromJSON(object4.ctlogOptions) : undefined,
-        tsaOptions: isSet(object4.tsaOptions) ? exports.ArtifactVerificationOptions_TimestampAuthorityOptions.fromJSON(object4.tsaOptions) : undefined,
-        integratedTsOptions: isSet(object4.integratedTsOptions) ? exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions.fromJSON(object4.integratedTsOptions) : undefined,
-        observerOptions: isSet(object4.observerOptions) ? exports.ArtifactVerificationOptions_ObserverTimestampOptions.fromJSON(object4.observerOptions) : undefined
+          certificateIdentities: exports.CertificateIdentities.fromJSON(object5.certificateIdentities)
+        } : isSet(object5.publicKeys) ? { $case: "publicKeys", publicKeys: exports.PublicKeyIdentities.fromJSON(object5.publicKeys) } : undefined,
+        tlogOptions: isSet(object5.tlogOptions) ? exports.ArtifactVerificationOptions_TlogOptions.fromJSON(object5.tlogOptions) : undefined,
+        ctlogOptions: isSet(object5.ctlogOptions) ? exports.ArtifactVerificationOptions_CtlogOptions.fromJSON(object5.ctlogOptions) : undefined,
+        tsaOptions: isSet(object5.tsaOptions) ? exports.ArtifactVerificationOptions_TimestampAuthorityOptions.fromJSON(object5.tsaOptions) : undefined,
+        integratedTsOptions: isSet(object5.integratedTsOptions) ? exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions.fromJSON(object5.integratedTsOptions) : undefined,
+        observerOptions: isSet(object5.observerOptions) ? exports.ArtifactVerificationOptions_ObserverTimestampOptions.fromJSON(object5.observerOptions) : undefined
       };
     },
     toJSON(message) {
@@ -56702,11 +56702,11 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TlogOptions = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        threshold: isSet(object4.threshold) ? globalThis.Number(object4.threshold) : 0,
-        performOnlineVerification: isSet(object4.performOnlineVerification) ? globalThis.Boolean(object4.performOnlineVerification) : false,
-        disable: isSet(object4.disable) ? globalThis.Boolean(object4.disable) : false
+        threshold: isSet(object5.threshold) ? globalThis.Number(object5.threshold) : 0,
+        performOnlineVerification: isSet(object5.performOnlineVerification) ? globalThis.Boolean(object5.performOnlineVerification) : false,
+        disable: isSet(object5.disable) ? globalThis.Boolean(object5.disable) : false
       };
     },
     toJSON(message) {
@@ -56724,10 +56724,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_CtlogOptions = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        threshold: isSet(object4.threshold) ? globalThis.Number(object4.threshold) : 0,
-        disable: isSet(object4.disable) ? globalThis.Boolean(object4.disable) : false
+        threshold: isSet(object5.threshold) ? globalThis.Number(object5.threshold) : 0,
+        disable: isSet(object5.disable) ? globalThis.Boolean(object5.disable) : false
       };
     },
     toJSON(message) {
@@ -56742,10 +56742,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TimestampAuthorityOptions = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        threshold: isSet(object4.threshold) ? globalThis.Number(object4.threshold) : 0,
-        disable: isSet(object4.disable) ? globalThis.Boolean(object4.disable) : false
+        threshold: isSet(object5.threshold) ? globalThis.Number(object5.threshold) : 0,
+        disable: isSet(object5.disable) ? globalThis.Boolean(object5.disable) : false
       };
     },
     toJSON(message) {
@@ -56760,10 +56760,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        threshold: isSet(object4.threshold) ? globalThis.Number(object4.threshold) : 0,
-        disable: isSet(object4.disable) ? globalThis.Boolean(object4.disable) : false
+        threshold: isSet(object5.threshold) ? globalThis.Number(object5.threshold) : 0,
+        disable: isSet(object5.disable) ? globalThis.Boolean(object5.disable) : false
       };
     },
     toJSON(message) {
@@ -56778,10 +56778,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_ObserverTimestampOptions = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        threshold: isSet(object4.threshold) ? globalThis.Number(object4.threshold) : 0,
-        disable: isSet(object4.disable) ? globalThis.Boolean(object4.disable) : false
+        threshold: isSet(object5.threshold) ? globalThis.Number(object5.threshold) : 0,
+        disable: isSet(object5.disable) ? globalThis.Boolean(object5.disable) : false
       };
     },
     toJSON(message) {
@@ -56796,9 +56796,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.Artifact = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        data: isSet(object4.artifactUri) ? { $case: "artifactUri", artifactUri: globalThis.String(object4.artifactUri) } : isSet(object4.artifact) ? { $case: "artifact", artifact: Buffer.from(bytesFromBase64(object4.artifact)) } : isSet(object4.artifactDigest) ? { $case: "artifactDigest", artifactDigest: sigstore_common_1.HashOutput.fromJSON(object4.artifactDigest) } : undefined
+        data: isSet(object5.artifactUri) ? { $case: "artifactUri", artifactUri: globalThis.String(object5.artifactUri) } : isSet(object5.artifact) ? { $case: "artifact", artifact: Buffer.from(bytesFromBase64(object5.artifact)) } : isSet(object5.artifactDigest) ? { $case: "artifactDigest", artifactDigest: sigstore_common_1.HashOutput.fromJSON(object5.artifactDigest) } : undefined
       };
     },
     toJSON(message) {
@@ -56814,12 +56814,12 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.Input = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        artifactTrustRoot: isSet(object4.artifactTrustRoot) ? sigstore_trustroot_1.TrustedRoot.fromJSON(object4.artifactTrustRoot) : undefined,
-        artifactVerificationOptions: isSet(object4.artifactVerificationOptions) ? exports.ArtifactVerificationOptions.fromJSON(object4.artifactVerificationOptions) : undefined,
-        bundle: isSet(object4.bundle) ? sigstore_bundle_1.Bundle.fromJSON(object4.bundle) : undefined,
-        artifact: isSet(object4.artifact) ? exports.Artifact.fromJSON(object4.artifact) : undefined
+        artifactTrustRoot: isSet(object5.artifactTrustRoot) ? sigstore_trustroot_1.TrustedRoot.fromJSON(object5.artifactTrustRoot) : undefined,
+        artifactVerificationOptions: isSet(object5.artifactVerificationOptions) ? exports.ArtifactVerificationOptions.fromJSON(object5.artifactVerificationOptions) : undefined,
+        bundle: isSet(object5.bundle) ? sigstore_bundle_1.Bundle.fromJSON(object5.bundle) : undefined,
+        artifact: isSet(object5.artifact) ? exports.Artifact.fromJSON(object5.artifact) : undefined
       };
     },
     toJSON(message) {
@@ -57812,14 +57812,14 @@ var require_encoding = __commonJS((exports) => {
 var require_json = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.canonicalize = canonicalize;
-  function canonicalize(object4) {
+  function canonicalize(object5) {
     let buffer = "";
-    if (object4 === null || typeof object4 !== "object" || object4.toJSON != null) {
-      buffer += JSON.stringify(object4);
-    } else if (Array.isArray(object4)) {
+    if (object5 === null || typeof object5 !== "object" || object5.toJSON != null) {
+      buffer += JSON.stringify(object5);
+    } else if (Array.isArray(object5)) {
       buffer += "[";
       let first = true;
-      object4.forEach((element) => {
+      object5.forEach((element) => {
         if (!first) {
           buffer += ",";
         }
@@ -57830,14 +57830,14 @@ var require_json = __commonJS((exports) => {
     } else {
       buffer += "{";
       let first = true;
-      Object.keys(object4).sort().forEach((property) => {
+      Object.keys(object5).sort().forEach((property) => {
         if (!first) {
           buffer += ",";
         }
         first = false;
         buffer += JSON.stringify(property);
         buffer += ":";
-        buffer += canonicalize(object4[property]);
+        buffer += canonicalize(object5[property]);
       });
       buffer += "}";
     }
@@ -59401,8 +59401,8 @@ var require_verifier = __commonJS((exports) => {
   exports.Signature = exports.Verifier = exports.PublicKey = undefined;
   var sigstore_common_1 = require_sigstore_common();
   exports.PublicKey = {
-    fromJSON(object4) {
-      return { rawBytes: isSet(object4.rawBytes) ? Buffer.from(bytesFromBase64(object4.rawBytes)) : Buffer.alloc(0) };
+    fromJSON(object5) {
+      return { rawBytes: isSet(object5.rawBytes) ? Buffer.from(bytesFromBase64(object5.rawBytes)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -59413,10 +59413,10 @@ var require_verifier = __commonJS((exports) => {
     }
   };
   exports.Verifier = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        verifier: isSet(object4.publicKey) ? { $case: "publicKey", publicKey: exports.PublicKey.fromJSON(object4.publicKey) } : isSet(object4.x509Certificate) ? { $case: "x509Certificate", x509Certificate: sigstore_common_1.X509Certificate.fromJSON(object4.x509Certificate) } : undefined,
-        keyDetails: isSet(object4.keyDetails) ? (0, sigstore_common_1.publicKeyDetailsFromJSON)(object4.keyDetails) : 0
+        verifier: isSet(object5.publicKey) ? { $case: "publicKey", publicKey: exports.PublicKey.fromJSON(object5.publicKey) } : isSet(object5.x509Certificate) ? { $case: "x509Certificate", x509Certificate: sigstore_common_1.X509Certificate.fromJSON(object5.x509Certificate) } : undefined,
+        keyDetails: isSet(object5.keyDetails) ? (0, sigstore_common_1.publicKeyDetailsFromJSON)(object5.keyDetails) : 0
       };
     },
     toJSON(message) {
@@ -59433,10 +59433,10 @@ var require_verifier = __commonJS((exports) => {
     }
   };
   exports.Signature = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        content: isSet(object4.content) ? Buffer.from(bytesFromBase64(object4.content)) : Buffer.alloc(0),
-        verifier: isSet(object4.verifier) ? exports.Verifier.fromJSON(object4.verifier) : undefined
+        content: isSet(object5.content) ? Buffer.from(bytesFromBase64(object5.content)) : Buffer.alloc(0),
+        verifier: isSet(object5.verifier) ? exports.Verifier.fromJSON(object5.verifier) : undefined
       };
     },
     toJSON(message) {
@@ -59469,10 +59469,10 @@ var require_dsse3 = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var verifier_1 = require_verifier();
   exports.DSSERequestV002 = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        envelope: isSet(object4.envelope) ? envelope_1.Envelope.fromJSON(object4.envelope) : undefined,
-        verifiers: globalThis.Array.isArray(object4?.verifiers) ? object4.verifiers.map((e) => verifier_1.Verifier.fromJSON(e)) : []
+        envelope: isSet(object5.envelope) ? envelope_1.Envelope.fromJSON(object5.envelope) : undefined,
+        verifiers: globalThis.Array.isArray(object5?.verifiers) ? object5.verifiers.map((e) => verifier_1.Verifier.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -59487,10 +59487,10 @@ var require_dsse3 = __commonJS((exports) => {
     }
   };
   exports.DSSELogEntryV002 = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        payloadHash: isSet(object4.payloadHash) ? sigstore_common_1.HashOutput.fromJSON(object4.payloadHash) : undefined,
-        signatures: globalThis.Array.isArray(object4?.signatures) ? object4.signatures.map((e) => verifier_1.Signature.fromJSON(e)) : []
+        payloadHash: isSet(object5.payloadHash) ? sigstore_common_1.HashOutput.fromJSON(object5.payloadHash) : undefined,
+        signatures: globalThis.Array.isArray(object5?.signatures) ? object5.signatures.map((e) => verifier_1.Signature.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -59516,10 +59516,10 @@ var require_hashedrekord = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var verifier_1 = require_verifier();
   exports.HashedRekordRequestV002 = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        digest: isSet(object4.digest) ? Buffer.from(bytesFromBase64(object4.digest)) : Buffer.alloc(0),
-        signature: isSet(object4.signature) ? verifier_1.Signature.fromJSON(object4.signature) : undefined
+        digest: isSet(object5.digest) ? Buffer.from(bytesFromBase64(object5.digest)) : Buffer.alloc(0),
+        signature: isSet(object5.signature) ? verifier_1.Signature.fromJSON(object5.signature) : undefined
       };
     },
     toJSON(message) {
@@ -59534,10 +59534,10 @@ var require_hashedrekord = __commonJS((exports) => {
     }
   };
   exports.HashedRekordLogEntryV002 = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        data: isSet(object4.data) ? sigstore_common_1.HashOutput.fromJSON(object4.data) : undefined,
-        signature: isSet(object4.signature) ? verifier_1.Signature.fromJSON(object4.signature) : undefined
+        data: isSet(object5.data) ? sigstore_common_1.HashOutput.fromJSON(object5.data) : undefined,
+        signature: isSet(object5.signature) ? verifier_1.Signature.fromJSON(object5.signature) : undefined
       };
     },
     toJSON(message) {
@@ -59569,11 +59569,11 @@ var require_entry = __commonJS((exports) => {
   var dsse_1 = require_dsse3();
   var hashedrekord_1 = require_hashedrekord();
   exports.Entry = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        kind: isSet(object4.kind) ? globalThis.String(object4.kind) : "",
-        apiVersion: isSet(object4.apiVersion) ? globalThis.String(object4.apiVersion) : "",
-        spec: isSet(object4.spec) ? exports.Spec.fromJSON(object4.spec) : undefined
+        kind: isSet(object5.kind) ? globalThis.String(object5.kind) : "",
+        apiVersion: isSet(object5.apiVersion) ? globalThis.String(object5.apiVersion) : "",
+        spec: isSet(object5.spec) ? exports.Spec.fromJSON(object5.spec) : undefined
       };
     },
     toJSON(message) {
@@ -59591,9 +59591,9 @@ var require_entry = __commonJS((exports) => {
     }
   };
   exports.Spec = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        spec: isSet(object4.hashedRekordV002) ? { $case: "hashedRekordV002", hashedRekordV002: hashedrekord_1.HashedRekordLogEntryV002.fromJSON(object4.hashedRekordV002) } : isSet(object4.dsseV002) ? { $case: "dsseV002", dsseV002: dsse_1.DSSELogEntryV002.fromJSON(object4.dsseV002) } : undefined
+        spec: isSet(object5.hashedRekordV002) ? { $case: "hashedRekordV002", hashedRekordV002: hashedrekord_1.HashedRekordLogEntryV002.fromJSON(object5.hashedRekordV002) } : isSet(object5.dsseV002) ? { $case: "dsseV002", dsseV002: dsse_1.DSSELogEntryV002.fromJSON(object5.dsseV002) } : undefined
       };
     },
     toJSON(message) {
@@ -59607,12 +59607,12 @@ var require_entry = __commonJS((exports) => {
     }
   };
   exports.CreateEntryRequest = {
-    fromJSON(object4) {
+    fromJSON(object5) {
       return {
-        spec: isSet(object4.hashedRekordRequestV002) ? {
+        spec: isSet(object5.hashedRekordRequestV002) ? {
           $case: "hashedRekordRequestV002",
-          hashedRekordRequestV002: hashedrekord_1.HashedRekordRequestV002.fromJSON(object4.hashedRekordRequestV002)
-        } : isSet(object4.dsseRequestV002) ? { $case: "dsseRequestV002", dsseRequestV002: dsse_1.DSSERequestV002.fromJSON(object4.dsseRequestV002) } : undefined
+          hashedRekordRequestV002: hashedrekord_1.HashedRekordRequestV002.fromJSON(object5.hashedRekordRequestV002)
+        } : isSet(object5.dsseRequestV002) ? { $case: "dsseRequestV002", dsseRequestV002: dsse_1.DSSERequestV002.fromJSON(object5.dsseRequestV002) } : undefined
       };
     },
     toJSON(message) {
@@ -60402,10 +60402,10 @@ var init_util2 = __esm(() => {
         return obj[e];
       });
     };
-    util4.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object4) => {
+    util4.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object5) => {
       const keys = [];
-      for (const key in object4) {
-        if (Object.prototype.hasOwnProperty.call(object4, key)) {
+      for (const key in object5) {
+        if (Object.prototype.hasOwnProperty.call(object5, key)) {
           keys.push(key);
         }
       }
@@ -64343,9 +64343,9 @@ function floatSafeRemainder3(val, step) {
   const stepInt = Number.parseInt(step.toFixed(decCount).replace(".", ""));
   return valInt % stepInt / 10 ** decCount;
 }
-function defineLazy(object4, key, getter) {
+function defineLazy(object5, key, getter) {
   let value = undefined;
-  Object.defineProperty(object4, key, {
+  Object.defineProperty(object5, key, {
     get() {
       if (value === EVALUATING) {
         return;
@@ -64357,7 +64357,7 @@ function defineLazy(object4, key, getter) {
       return value;
     },
     set(v) {
-      Object.defineProperty(object4, key, {
+      Object.defineProperty(object5, key, {
         value: v
       });
     },
@@ -68454,7 +68454,7 @@ var init_parse2 = __esm(() => {
 });
 
 // ../../node_modules/@modelcontextprotocol/sdk/node_modules/zod/v4/mini/schemas.js
-function object4(shape, params) {
+function object5(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -68536,11 +68536,11 @@ function isZ4Schema(s) {
 function objectFromShape(shape) {
   const values = Object.values(shape);
   if (values.length === 0)
-    return object4({});
+    return object5({});
   const allV4 = values.every(isZ4Schema);
   const allV3 = values.every((s) => !isZ4Schema(s));
   if (allV4)
-    return object4(shape);
+    return object5(shape);
   if (allV3)
     return objectType2(shape);
   throw new Error("Mixed Zod versions detected in object shape.");
@@ -68811,7 +68811,7 @@ function never2(params) {
 function array2(element, params) {
   return _array(ZodArray3, element, params);
 }
-function object5(shape, params) {
+function object6(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -68849,7 +68849,7 @@ function intersection2(left, right) {
     right
   });
 }
-function record4(keyType, valueType, params) {
+function record5(keyType, valueType, params) {
   return new ZodRecord3({
     type: "record",
     keyType,
@@ -69493,30 +69493,30 @@ var init_types4 = __esm(() => {
     ttl: union2([number3(), _null3()]).optional(),
     pollInterval: number3().optional()
   });
-  TaskMetadataSchema = object5({
+  TaskMetadataSchema = object6({
     ttl: number3().optional()
   });
-  RelatedTaskMetadataSchema = object5({
+  RelatedTaskMetadataSchema = object6({
     taskId: string3()
   });
   RequestMetaSchema2 = looseObject({
     progressToken: ProgressTokenSchema2.optional(),
     [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
   });
-  BaseRequestParamsSchema2 = object5({
+  BaseRequestParamsSchema2 = object6({
     _meta: RequestMetaSchema2.optional()
   });
   TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema2.extend({
     task: TaskMetadataSchema.optional()
   });
-  RequestSchema2 = object5({
+  RequestSchema2 = object6({
     method: string3(),
     params: BaseRequestParamsSchema2.loose().optional()
   });
-  NotificationsParamsSchema2 = object5({
+  NotificationsParamsSchema2 = object6({
     _meta: RequestMetaSchema2.optional()
   });
-  NotificationSchema2 = object5({
+  NotificationSchema2 = object6({
     method: string3(),
     params: NotificationsParamsSchema2.loose().optional()
   });
@@ -69524,16 +69524,16 @@ var init_types4 = __esm(() => {
     _meta: RequestMetaSchema2.optional()
   });
   RequestIdSchema2 = union2([string3(), number3().int()]);
-  JSONRPCRequestSchema2 = object5({
+  JSONRPCRequestSchema2 = object6({
     jsonrpc: literal2(JSONRPC_VERSION2),
     id: RequestIdSchema2,
     ...RequestSchema2.shape
   }).strict();
-  JSONRPCNotificationSchema2 = object5({
+  JSONRPCNotificationSchema2 = object6({
     jsonrpc: literal2(JSONRPC_VERSION2),
     ...NotificationSchema2.shape
   }).strict();
-  JSONRPCResultResponseSchema = object5({
+  JSONRPCResultResponseSchema = object6({
     jsonrpc: literal2(JSONRPC_VERSION2),
     id: RequestIdSchema2,
     result: ResultSchema2
@@ -69548,10 +69548,10 @@ var init_types4 = __esm(() => {
     ErrorCode3[ErrorCode3["InternalError"] = -32603] = "InternalError";
     ErrorCode3[ErrorCode3["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
   })(ErrorCode2 || (ErrorCode2 = {}));
-  JSONRPCErrorResponseSchema = object5({
+  JSONRPCErrorResponseSchema = object6({
     jsonrpc: literal2(JSONRPC_VERSION2),
     id: RequestIdSchema2.optional(),
-    error: object5({
+    error: object6({
       code: number3().int(),
       message: string3(),
       data: unknown2().optional()
@@ -69573,16 +69573,16 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/cancelled"),
     params: CancelledNotificationParamsSchema2
   });
-  IconSchema2 = object5({
+  IconSchema2 = object6({
     src: string3(),
     mimeType: string3().optional(),
     sizes: array2(string3()).optional(),
     theme: _enum(["light", "dark"]).optional()
   });
-  IconsSchema2 = object5({
+  IconsSchema2 = object6({
     icons: array2(IconSchema2).optional()
   });
-  BaseMetadataSchema2 = object5({
+  BaseMetadataSchema2 = object6({
     name: string3(),
     title: string3().optional()
   });
@@ -69593,9 +69593,9 @@ var init_types4 = __esm(() => {
     websiteUrl: string3().optional(),
     description: string3().optional()
   });
-  FormElicitationCapabilitySchema = intersection2(object5({
+  FormElicitationCapabilitySchema = intersection2(object6({
     applyDefaults: boolean3().optional()
-  }), record4(string3(), unknown2()));
+  }), record5(string3(), unknown2()));
   ElicitationCapabilitySchema = preprocess((value) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       if (Object.keys(value).length === 0) {
@@ -69603,10 +69603,10 @@ var init_types4 = __esm(() => {
       }
     }
     return value;
-  }, intersection2(object5({
+  }, intersection2(object6({
     form: FormElicitationCapabilitySchema.optional(),
     url: AssertObjectSchema2.optional()
-  }), record4(string3(), unknown2()).optional()));
+  }), record5(string3(), unknown2()).optional()));
   ClientTasksCapabilitySchema = looseObject({
     list: AssertObjectSchema2.optional(),
     cancel: AssertObjectSchema2.optional(),
@@ -69628,14 +69628,14 @@ var init_types4 = __esm(() => {
       }).optional()
     }).optional()
   });
-  ClientCapabilitiesSchema2 = object5({
-    experimental: record4(string3(), AssertObjectSchema2).optional(),
-    sampling: object5({
+  ClientCapabilitiesSchema2 = object6({
+    experimental: record5(string3(), AssertObjectSchema2).optional(),
+    sampling: object6({
       context: AssertObjectSchema2.optional(),
       tools: AssertObjectSchema2.optional()
     }).optional(),
     elicitation: ElicitationCapabilitySchema.optional(),
-    roots: object5({
+    roots: object6({
       listChanged: boolean3().optional()
     }).optional(),
     tasks: ClientTasksCapabilitySchema.optional()
@@ -69649,18 +69649,18 @@ var init_types4 = __esm(() => {
     method: literal2("initialize"),
     params: InitializeRequestParamsSchema2
   });
-  ServerCapabilitiesSchema2 = object5({
-    experimental: record4(string3(), AssertObjectSchema2).optional(),
+  ServerCapabilitiesSchema2 = object6({
+    experimental: record5(string3(), AssertObjectSchema2).optional(),
     logging: AssertObjectSchema2.optional(),
     completions: AssertObjectSchema2.optional(),
-    prompts: object5({
+    prompts: object6({
       listChanged: boolean3().optional()
     }).optional(),
-    resources: object5({
+    resources: object6({
       subscribe: boolean3().optional(),
       listChanged: boolean3().optional()
     }).optional(),
-    tools: object5({
+    tools: object6({
       listChanged: boolean3().optional()
     }).optional(),
     tasks: ServerTasksCapabilitySchema.optional()
@@ -69679,12 +69679,12 @@ var init_types4 = __esm(() => {
     method: literal2("ping"),
     params: BaseRequestParamsSchema2.optional()
   });
-  ProgressSchema2 = object5({
+  ProgressSchema2 = object6({
     progress: number3(),
     total: optional2(number3()),
     message: optional2(string3())
   });
-  ProgressNotificationParamsSchema2 = object5({
+  ProgressNotificationParamsSchema2 = object6({
     ...NotificationsParamsSchema2.shape,
     ...ProgressSchema2.shape,
     progressToken: ProgressTokenSchema2
@@ -69703,7 +69703,7 @@ var init_types4 = __esm(() => {
     nextCursor: CursorSchema2.optional()
   });
   TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-  TaskSchema = object5({
+  TaskSchema = object6({
     taskId: string3(),
     status: TaskStatusSchema,
     ttl: union2([number3(), _null3()]),
@@ -69747,10 +69747,10 @@ var init_types4 = __esm(() => {
     })
   });
   CancelTaskResultSchema = ResultSchema2.merge(TaskSchema);
-  ResourceContentsSchema2 = object5({
+  ResourceContentsSchema2 = object6({
     uri: string3(),
     mimeType: optional2(string3()),
-    _meta: record4(string3(), unknown2()).optional()
+    _meta: record5(string3(), unknown2()).optional()
   });
   TextResourceContentsSchema2 = ResourceContentsSchema2.extend({
     text: string3()
@@ -69767,12 +69767,12 @@ var init_types4 = __esm(() => {
     blob: Base64Schema2
   });
   RoleSchema = _enum(["user", "assistant"]);
-  AnnotationsSchema = object5({
+  AnnotationsSchema = object6({
     audience: array2(RoleSchema).optional(),
     priority: number3().min(0).max(1).optional(),
     lastModified: exports_iso2.datetime({ offset: true }).optional()
   });
-  ResourceSchema2 = object5({
+  ResourceSchema2 = object6({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     uri: string3(),
@@ -69781,7 +69781,7 @@ var init_types4 = __esm(() => {
     annotations: AnnotationsSchema.optional(),
     _meta: optional2(looseObject({}))
   });
-  ResourceTemplateSchema2 = object5({
+  ResourceTemplateSchema2 = object6({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     uriTemplate: string3(),
@@ -69834,12 +69834,12 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/resources/updated"),
     params: ResourceUpdatedNotificationParamsSchema2
   });
-  PromptArgumentSchema2 = object5({
+  PromptArgumentSchema2 = object6({
     name: string3(),
     description: optional2(string3()),
     required: optional2(boolean3())
   });
-  PromptSchema2 = object5({
+  PromptSchema2 = object6({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     description: optional2(string3()),
@@ -69854,44 +69854,44 @@ var init_types4 = __esm(() => {
   });
   GetPromptRequestParamsSchema2 = BaseRequestParamsSchema2.extend({
     name: string3(),
-    arguments: record4(string3(), string3()).optional()
+    arguments: record5(string3(), string3()).optional()
   });
   GetPromptRequestSchema2 = RequestSchema2.extend({
     method: literal2("prompts/get"),
     params: GetPromptRequestParamsSchema2
   });
-  TextContentSchema2 = object5({
+  TextContentSchema2 = object6({
     type: literal2("text"),
     text: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record4(string3(), unknown2()).optional()
+    _meta: record5(string3(), unknown2()).optional()
   });
-  ImageContentSchema2 = object5({
+  ImageContentSchema2 = object6({
     type: literal2("image"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record4(string3(), unknown2()).optional()
+    _meta: record5(string3(), unknown2()).optional()
   });
-  AudioContentSchema2 = object5({
+  AudioContentSchema2 = object6({
     type: literal2("audio"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record4(string3(), unknown2()).optional()
+    _meta: record5(string3(), unknown2()).optional()
   });
-  ToolUseContentSchema = object5({
+  ToolUseContentSchema = object6({
     type: literal2("tool_use"),
     name: string3(),
     id: string3(),
-    input: record4(string3(), unknown2()),
-    _meta: record4(string3(), unknown2()).optional()
+    input: record5(string3(), unknown2()),
+    _meta: record5(string3(), unknown2()).optional()
   });
-  EmbeddedResourceSchema2 = object5({
+  EmbeddedResourceSchema2 = object6({
     type: literal2("resource"),
     resource: union2([TextResourceContentsSchema2, BlobResourceContentsSchema2]),
     annotations: AnnotationsSchema.optional(),
-    _meta: record4(string3(), unknown2()).optional()
+    _meta: record5(string3(), unknown2()).optional()
   });
   ResourceLinkSchema2 = ResourceSchema2.extend({
     type: literal2("resource_link")
@@ -69903,7 +69903,7 @@ var init_types4 = __esm(() => {
     ResourceLinkSchema2,
     EmbeddedResourceSchema2
   ]);
-  PromptMessageSchema2 = object5({
+  PromptMessageSchema2 = object6({
     role: RoleSchema,
     content: ContentBlockSchema2
   });
@@ -69915,33 +69915,33 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/prompts/list_changed"),
     params: NotificationsParamsSchema2.optional()
   });
-  ToolAnnotationsSchema2 = object5({
+  ToolAnnotationsSchema2 = object6({
     title: string3().optional(),
     readOnlyHint: boolean3().optional(),
     destructiveHint: boolean3().optional(),
     idempotentHint: boolean3().optional(),
     openWorldHint: boolean3().optional()
   });
-  ToolExecutionSchema = object5({
+  ToolExecutionSchema = object6({
     taskSupport: _enum(["required", "optional", "forbidden"]).optional()
   });
-  ToolSchema2 = object5({
+  ToolSchema2 = object6({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     description: string3().optional(),
-    inputSchema: object5({
+    inputSchema: object6({
       type: literal2("object"),
-      properties: record4(string3(), AssertObjectSchema2).optional(),
+      properties: record5(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
     }).catchall(unknown2()),
-    outputSchema: object5({
+    outputSchema: object6({
       type: literal2("object"),
-      properties: record4(string3(), AssertObjectSchema2).optional(),
+      properties: record5(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
     }).catchall(unknown2()).optional(),
     annotations: ToolAnnotationsSchema2.optional(),
     execution: ToolExecutionSchema.optional(),
-    _meta: record4(string3(), unknown2()).optional()
+    _meta: record5(string3(), unknown2()).optional()
   });
   ListToolsRequestSchema2 = PaginatedRequestSchema2.extend({
     method: literal2("tools/list")
@@ -69951,7 +69951,7 @@ var init_types4 = __esm(() => {
   });
   CallToolResultSchema2 = ResultSchema2.extend({
     content: array2(ContentBlockSchema2).default([]),
-    structuredContent: record4(string3(), unknown2()).optional(),
+    structuredContent: record5(string3(), unknown2()).optional(),
     isError: boolean3().optional()
   });
   CompatibilityCallToolResultSchema2 = CallToolResultSchema2.or(ResultSchema2.extend({
@@ -69959,7 +69959,7 @@ var init_types4 = __esm(() => {
   }));
   CallToolRequestParamsSchema2 = TaskAugmentedRequestParamsSchema.extend({
     name: string3(),
-    arguments: record4(string3(), unknown2()).optional()
+    arguments: record5(string3(), unknown2()).optional()
   });
   CallToolRequestSchema2 = RequestSchema2.extend({
     method: literal2("tools/call"),
@@ -69969,7 +69969,7 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/tools/list_changed"),
     params: NotificationsParamsSchema2.optional()
   });
-  ListChangedOptionsBaseSchema = object5({
+  ListChangedOptionsBaseSchema = object6({
     autoRefresh: boolean3().default(true),
     debounceMs: number3().int().nonnegative().default(300)
   });
@@ -69990,25 +69990,25 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/message"),
     params: LoggingMessageNotificationParamsSchema2
   });
-  ModelHintSchema2 = object5({
+  ModelHintSchema2 = object6({
     name: string3().optional()
   });
-  ModelPreferencesSchema2 = object5({
+  ModelPreferencesSchema2 = object6({
     hints: array2(ModelHintSchema2).optional(),
     costPriority: number3().min(0).max(1).optional(),
     speedPriority: number3().min(0).max(1).optional(),
     intelligencePriority: number3().min(0).max(1).optional()
   });
-  ToolChoiceSchema = object5({
+  ToolChoiceSchema = object6({
     mode: _enum(["auto", "required", "none"]).optional()
   });
-  ToolResultContentSchema = object5({
+  ToolResultContentSchema = object6({
     type: literal2("tool_result"),
     toolUseId: string3().describe("The unique identifier for the corresponding tool call."),
     content: array2(ContentBlockSchema2).default([]),
-    structuredContent: object5({}).loose().optional(),
+    structuredContent: object6({}).loose().optional(),
     isError: boolean3().optional(),
-    _meta: record4(string3(), unknown2()).optional()
+    _meta: record5(string3(), unknown2()).optional()
   });
   SamplingContentSchema = discriminatedUnion("type", [TextContentSchema2, ImageContentSchema2, AudioContentSchema2]);
   SamplingMessageContentBlockSchema = discriminatedUnion("type", [
@@ -70018,10 +70018,10 @@ var init_types4 = __esm(() => {
     ToolUseContentSchema,
     ToolResultContentSchema
   ]);
-  SamplingMessageSchema2 = object5({
+  SamplingMessageSchema2 = object6({
     role: RoleSchema,
     content: union2([SamplingMessageContentBlockSchema, array2(SamplingMessageContentBlockSchema)]),
-    _meta: record4(string3(), unknown2()).optional()
+    _meta: record5(string3(), unknown2()).optional()
   });
   CreateMessageRequestParamsSchema2 = TaskAugmentedRequestParamsSchema.extend({
     messages: array2(SamplingMessageSchema2),
@@ -70051,13 +70051,13 @@ var init_types4 = __esm(() => {
     role: RoleSchema,
     content: union2([SamplingMessageContentBlockSchema, array2(SamplingMessageContentBlockSchema)])
   });
-  BooleanSchemaSchema2 = object5({
+  BooleanSchemaSchema2 = object6({
     type: literal2("boolean"),
     title: string3().optional(),
     description: string3().optional(),
     default: boolean3().optional()
   });
-  StringSchemaSchema2 = object5({
+  StringSchemaSchema2 = object6({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
@@ -70066,7 +70066,7 @@ var init_types4 = __esm(() => {
     format: _enum(["email", "uri", "date", "date-time"]).optional(),
     default: string3().optional()
   });
-  NumberSchemaSchema2 = object5({
+  NumberSchemaSchema2 = object6({
     type: _enum(["number", "integer"]),
     title: string3().optional(),
     description: string3().optional(),
@@ -70074,24 +70074,24 @@ var init_types4 = __esm(() => {
     maximum: number3().optional(),
     default: number3().optional()
   });
-  UntitledSingleSelectEnumSchemaSchema2 = object5({
+  UntitledSingleSelectEnumSchemaSchema2 = object6({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
     enum: array2(string3()),
     default: string3().optional()
   });
-  TitledSingleSelectEnumSchemaSchema2 = object5({
+  TitledSingleSelectEnumSchemaSchema2 = object6({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
-    oneOf: array2(object5({
+    oneOf: array2(object6({
       const: string3(),
       title: string3()
     })),
     default: string3().optional()
   });
-  LegacyTitledEnumSchemaSchema2 = object5({
+  LegacyTitledEnumSchemaSchema2 = object6({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
@@ -70100,26 +70100,26 @@ var init_types4 = __esm(() => {
     default: string3().optional()
   });
   SingleSelectEnumSchemaSchema2 = union2([UntitledSingleSelectEnumSchemaSchema2, TitledSingleSelectEnumSchemaSchema2]);
-  UntitledMultiSelectEnumSchemaSchema2 = object5({
+  UntitledMultiSelectEnumSchemaSchema2 = object6({
     type: literal2("array"),
     title: string3().optional(),
     description: string3().optional(),
     minItems: number3().optional(),
     maxItems: number3().optional(),
-    items: object5({
+    items: object6({
       type: literal2("string"),
       enum: array2(string3())
     }),
     default: array2(string3()).optional()
   });
-  TitledMultiSelectEnumSchemaSchema2 = object5({
+  TitledMultiSelectEnumSchemaSchema2 = object6({
     type: literal2("array"),
     title: string3().optional(),
     description: string3().optional(),
     minItems: number3().optional(),
     maxItems: number3().optional(),
-    items: object5({
-      anyOf: array2(object5({
+    items: object6({
+      anyOf: array2(object6({
         const: string3(),
         title: string3()
       }))
@@ -70132,9 +70132,9 @@ var init_types4 = __esm(() => {
   ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
     mode: literal2("form").optional(),
     message: string3(),
-    requestedSchema: object5({
+    requestedSchema: object6({
       type: literal2("object"),
-      properties: record4(string3(), PrimitiveSchemaDefinitionSchema2),
+      properties: record5(string3(), PrimitiveSchemaDefinitionSchema2),
       required: array2(string3()).optional()
     })
   });
@@ -70158,24 +70158,24 @@ var init_types4 = __esm(() => {
   });
   ElicitResultSchema2 = ResultSchema2.extend({
     action: _enum(["accept", "decline", "cancel"]),
-    content: preprocess((val) => val === null ? undefined : val, record4(string3(), union2([string3(), number3(), boolean3(), array2(string3())])).optional())
+    content: preprocess((val) => val === null ? undefined : val, record5(string3(), union2([string3(), number3(), boolean3(), array2(string3())])).optional())
   });
-  ResourceTemplateReferenceSchema2 = object5({
+  ResourceTemplateReferenceSchema2 = object6({
     type: literal2("ref/resource"),
     uri: string3()
   });
-  PromptReferenceSchema2 = object5({
+  PromptReferenceSchema2 = object6({
     type: literal2("ref/prompt"),
     name: string3()
   });
   CompleteRequestParamsSchema2 = BaseRequestParamsSchema2.extend({
     ref: union2([PromptReferenceSchema2, ResourceTemplateReferenceSchema2]),
-    argument: object5({
+    argument: object6({
       name: string3(),
       value: string3()
     }),
-    context: object5({
-      arguments: record4(string3(), string3()).optional()
+    context: object6({
+      arguments: record5(string3(), string3()).optional()
     }).optional()
   });
   CompleteRequestSchema2 = RequestSchema2.extend({
@@ -70189,10 +70189,10 @@ var init_types4 = __esm(() => {
       hasMore: optional2(boolean3())
     })
   });
-  RootSchema2 = object5({
+  RootSchema2 = object6({
     uri: string3().startsWith("file://"),
     name: string3().optional(),
-    _meta: record4(string3(), unknown2()).optional()
+    _meta: record5(string3(), unknown2()).optional()
   });
   ListRootsRequestSchema2 = RequestSchema2.extend({
     method: literal2("roots/list"),
@@ -75452,6 +75452,7 @@ var ENVIRONMENT = [
   },
   { name: "CANDLE_PROFILE", description: "The profile to act as, when --profile is not given" },
   { name: "CANDLE_API_URL", description: "API base URL, when --api-url is not given" },
+  { name: "CANDLE_HACC_URL", description: "Strategy lab base URL (default https://api.hacc.fun); HTTPS only" },
   {
     name: "CANDLE_X402_NETWORK",
     description: "The network per-use x402 payments are made on: mainnet (default) or devnet, for tests"
@@ -76224,6 +76225,46 @@ var HELP = {
     ],
     examples: ["candle quant terms", "candle quant terms --yes --json"],
     env: ENV_API
+  },
+  lab: {
+    group: "Account",
+    intro: "Strategy replays, runners and edges",
+    summary: "Strategy lab: replay a definition and read measured runners and edges",
+    description: "The hacc strategy lab, using this profile's production agent key. Access and daily caps come from the server; Pro access depends on admission. Replays wait by default, polling every 5 seconds for up to 11 minutes. The lead card compares random controls within the definition's priceable candidates, break-even cost and regime context. Its tick-mark limitations are printed with the card. Backtests are a model of the past. The lab never trades. --json preserves the server's body. A device token or test key cannot use the lab.",
+    usage: ["candle lab <status|replay|runners|edges> [flags]"],
+    rows: [
+      { invocation: "status", description: "Plan, admission, replay cap and usage, reset time and active job" },
+      {
+        invocation: "replay --definition <file|-> --from <iso> --to <iso>",
+        description: "Submit and wait for a replay; replay get <job-id> reads it; replay cancel <job-id> cancels it"
+      },
+      { invocation: "runners [--hours n] [--min-wallets n]", description: "Measured runners in the window" },
+      {
+        invocation: "edges [--days n] [--min-n n]",
+        description: "Signal edges net of the cost already used by the table"
+      }
+    ],
+    flags: [
+      { invocation: "--definition <file|->", description: "Strategy definition as a JSON object; - reads stdin" },
+      { invocation: "--from <iso>", description: "Replay window start as an ISO timestamp" },
+      { invocation: "--to <iso>", description: "Replay window end as an ISO timestamp" },
+      { invocation: "--asset-ids <a,b>", description: "Up to 50 positive asset ids" },
+      {
+        invocation: "--fee-bps <n>",
+        description: "Fee per side, 0–1000 bps; otherwise read your fee from Candle's tier endpoint, or use hacc's default if that read fails"
+      },
+      { invocation: "--slippage-bps <n>", description: "Slippage per side, 0–1000 bps; used when a fee is available" },
+      { invocation: "--no-wait", description: "Print the submitted job id immediately" }
+    ],
+    examples: [
+      "candle lab status",
+      "candle lab replay --definition ./strategy.json --from 2026-10-25T00:00:00Z --to 2026-10-26T00:00:00Z",
+      "candle lab replay get <job-id> --json",
+      "candle lab replay cancel <job-id>",
+      "candle lab runners --hours 24",
+      "candle lab edges --days 7 --min-n 15"
+    ],
+    env: [...ENV_API, "CANDLE_HACC_URL"]
   },
   plan: {
     group: "Account",
@@ -89434,6 +89475,400 @@ async function keysWallets(args, ctx) {
   return keysWalletsList(args, ctx);
 }
 
+// src/commands/lab.ts
+init_args();
+init_client();
+init_deps();
+init_human_output();
+
+// src/lab.ts
+var LAB_DEFAULT_URL = "https://api.hacc.fun";
+var LAB_PATH = "/v1/strategy-lab";
+var LAB_CALL_TIMEOUT_MS = 1e4;
+var LAB_REPLAY_INTERVAL_MS = 5000;
+var LAB_REPLAY_TIMEOUT_MS = 660000;
+function record4(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function transportRefusal(code, message) {
+  return { ok: false, refusal: { status: 0, code, message } };
+}
+function query(values) {
+  const search = new URLSearchParams;
+  for (const [key, value] of Object.entries(values))
+    if (value !== undefined)
+      search.set(key, String(value));
+  return search.size ? `?${search}` : "";
+}
+function createLabClient(options) {
+  const base2 = new URL(options.apiUrl ?? LAB_DEFAULT_URL);
+  if (base2.protocol !== "https:" || base2.username || base2.password || base2.search || base2.hash) {
+    throw new Error("The lab needs an HTTPS CANDLE_HACC_URL without credentials, query or fragment.");
+  }
+  const root = base2.toString().replace(/\/+$/, "");
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const callMs = options.callTimeoutMs ?? LAB_CALL_TIMEOUT_MS;
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve3) => setTimeout(resolve3, ms)));
+  async function call2(method, path, valid = () => true, body, timeoutMs = callMs) {
+    const controller = new AbortController;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      const response = await doFetch(`${root}${LAB_PATH}${path}`, {
+        method,
+        redirect: "error",
+        signal: controller.signal,
+        headers: {
+          authorization: `Bearer ${options.apiKey}`,
+          accept: "application/json",
+          ...body !== undefined ? { "content-type": "application/json" } : {}
+        },
+        ...body !== undefined ? { body: JSON.stringify(body) } : {}
+      });
+      const received = await response.json().catch(() => {
+        return;
+      });
+      if (timedOut)
+        return transportRefusal("TIMEOUT", "The lab request timed out.");
+      if (!response.ok) {
+        return {
+          ok: false,
+          refusal: {
+            status: response.status,
+            code: record4(received) && typeof received.code === "string" ? received.code : `HTTP_${response.status}`,
+            message: record4(received) && typeof received.error === "string" ? received.error : `Lab request failed (${response.status}).`,
+            body: received
+          }
+        };
+      }
+      if (!record4(received) || !valid(received)) {
+        return transportRefusal("BAD_RESPONSE", "The lab returned an unreadable response.");
+      }
+      return { ok: true, status: response.status, body: received };
+    } catch {
+      return transportRefusal(timedOut ? "TIMEOUT" : "NETWORK_ERROR", timedOut ? "The lab request timed out." : "Could not reach the lab.");
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const jobPath2 = (id) => `/replay/${encodeURIComponent(String(id))}`;
+  const validId = (id) => typeof id === "string" && id.length > 0 || typeof id === "number" && Number.isSafeInteger(id) && id > 0;
+  const validJob = (body) => validId(body.job_id) && typeof body.status === "string";
+  return {
+    status: () => call2("GET", "/status", (b) => typeof b.plan === "string" && typeof b.allowed === "boolean" && record4(b.replays)),
+    replay: (body) => call2("POST", "/replay", (b) => validId(b.job_id), body),
+    replayGet: (id) => call2("GET", jobPath2(id), validJob),
+    replayCancel: (id) => call2("POST", `${jobPath2(id)}/cancel`),
+    runners: (q = {}) => call2("GET", `/runners${query(q)}`),
+    edges: (q = {}) => call2("GET", `/edges${query(q)}`),
+    async waitForReplay(id, wait = {}) {
+      const intervalMs = wait.intervalMs ?? LAB_REPLAY_INTERVAL_MS;
+      const timeoutMs = wait.timeoutMs ?? LAB_REPLAY_TIMEOUT_MS;
+      if (!Number.isFinite(intervalMs) || intervalMs <= 0 || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new Error("Replay polling interval and timeout must be positive finite numbers.");
+      }
+      const deadline = now() + timeoutMs;
+      while (now() < deadline) {
+        const answer2 = await call2("GET", jobPath2(id), validJob, undefined, Math.min(callMs, deadline - now()));
+        if (!answer2.ok || !["pending", "running"].includes(answer2.body.status))
+          return answer2;
+        await sleep(Math.min(intervalMs, Math.max(0, deadline - now())));
+      }
+      return transportRefusal("REPLAY_TIMEOUT", `Replay ${id} is still pending or running. Read it with candle lab replay get ${id}.`);
+    }
+  };
+}
+
+// src/commands/lab.ts
+init_presentation();
+init_render();
+var PRODUCTION_KEY_MESSAGE = "The lab needs a production agent key. Create one with `candle keys create`.";
+var REPLAY_USAGE = "Usage: candle lab replay --definition <file|-> --from <iso> --to <iso> [--asset-ids a,b] [--fee-bps n] [--slippage-bps n] [--no-wait]";
+function object3(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function text3(value) {
+  return value === undefined || value === null ? "—" : terminalText(String(value));
+}
+function usage4(ctx, message) {
+  writeUsageFailure(ctx.deps, message, ctx.json);
+  return 2;
+}
+async function client(ctx) {
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (!apiKey?.startsWith("cndl_live_")) {
+    writeLocalFailure(ctx.deps, { code: "LAB_PRODUCTION_KEY_REQUIRED", message: PRODUCTION_KEY_MESSAGE }, ctx.json);
+    return;
+  }
+  try {
+    return {
+      apiKey,
+      lab: createLabClient({
+        apiKey,
+        apiUrl: ctx.deps.env.CANDLE_HACC_URL?.trim() || undefined,
+        fetch: ctx.deps.fetch,
+        now: ctx.deps.now,
+        sleep: ctx.deps.sleep
+      })
+    };
+  } catch {
+    writeLocalFailure(ctx.deps, {
+      code: "LAB_URL_INVALID",
+      message: "The lab needs a valid HTTPS CANDLE_HACC_URL without credentials, query or fragment."
+    }, ctx.json);
+  }
+}
+function failure2(answer2, ctx, statusRoute = false) {
+  const { refusal: refusal2 } = answer2;
+  if (ctx.json && refusal2.body !== undefined)
+    ctx.deps.stdout.write(`${JSON.stringify(refusal2.body)}
+`);
+  else {
+    const body = object3(refusal2.body);
+    const message = statusRoute && refusal2.status === 404 ? "the lab on this server predates `candle lab status`" : `${refusal2.message}${refusal2.status === 429 && body.resets_at ? ` Resets at ${text3(body.resets_at)}.` : ""}`;
+    writeLocalFailure(ctx.deps, { code: refusal2.code, message: terminalText(message) }, ctx.json);
+  }
+  return 1;
+}
+function replayOutput(body, ctx) {
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify(body)}
+`);
+  else {
+    const result = object3(body.result);
+    const lead = object3(result.lead_card);
+    if (Object.keys(lead).length) {
+      const control = object3(lead.control);
+      const breakEven = object3(lead.break_even);
+      writeFields(ctx.deps, "stdout", [
+        [
+          "Control",
+          control.unavailable ? text3(control.unavailable) : `Beat ${text3(control.strategy_beats_arms)} of ${text3(control.arms)} random arms`
+        ],
+        [
+          "Break-even",
+          `${text3(breakEven.cost_bps_per_side)} bps per side; ${text3(breakEven.round_trip_pct)}% round trip`
+        ],
+        ["Regime", text3(object3(lead.regime).label)],
+        ["Summary", text3(lead.summary)]
+      ], "Lead card");
+      if (lead.insufficient === true)
+        ctx.deps.stdout.write(`Insufficient evidence: fewer than five trades.
+`);
+      for (const line of Array.isArray(lead.evidence_limitations) ? lead.evidence_limitations : []) {
+        ctx.deps.stdout.write(`${text3(line)}
+`);
+      }
+      notice(ctx.deps, "stdout", "note", "Backtests are a model of the past. The lab never trades.");
+      ctx.deps.stdout.write(`
+`);
+    }
+    writeFields(ctx.deps, "stdout", [
+      ["Job", text3(body.job_id)],
+      ["Status", text3(body.status)],
+      ...body.error ? [["Error", text3(body.error)]] : [],
+      ...Object.keys(result).length ? [
+        ["Verdict", text3(result.verdict)],
+        ["Trades", text3(result.trade_count)],
+        ["PnL USD", text3(result.pnl_usd)],
+        ["Max drawdown %", text3(result.max_drawdown_pct)]
+      ] : []
+    ], "Replay");
+  }
+  return ["failed", "cancelled", "timed_out"].includes(String(body.status)) ? 1 : 0;
+}
+async function labStatus(args, ctx) {
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed || parsed.positionals.length)
+    return usage4(ctx, "Usage: candle lab status");
+  const connected = await client(ctx);
+  if (!connected)
+    return 1;
+  const answer2 = await connected.lab.status();
+  if (!answer2.ok)
+    return failure2(answer2, ctx, true);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify(answer2.body)}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [
+      ["Plan", text3(answer2.body.plan)],
+      ["Allowed", answer2.body.allowed ? "yes" : "no"],
+      ["Replays", `${text3(answer2.body.replays.used)} of ${text3(answer2.body.replays.cap)}`],
+      ["Resets at", text3(answer2.body.replays.resets_at)],
+      ["Active job", text3(answer2.body.active_job_id)]
+    ], "Lab status");
+  return 0;
+}
+function numberFlag(value, min, max, integer2 = false) {
+  if (value === undefined)
+    return;
+  const n = value.trim() === "" ? Number.NaN : Number(value);
+  if (!Number.isFinite(n) || n < min || n > max || integer2 && !Number.isInteger(n))
+    throw new Error("Invalid number");
+  return n;
+}
+async function memberFee(ctx, apiKey) {
+  const answer2 = await apiRequest("/api/v1/agent/tier", {
+    apiUrl: ctx.apiUrl,
+    auth: "key",
+    credentials: { apiKey },
+    env: ctx.deps.env,
+    fetch: (input, init) => ctx.deps.fetch(input, { ...init, signal: AbortSignal.timeout(1e4) })
+  });
+  const fee = answer2.ok ? object3(answer2.body).feeBps : undefined;
+  return typeof fee === "number" && Number.isInteger(fee) && fee >= 0 && fee <= 1000 ? fee : undefined;
+}
+async function labReplay(args, ctx) {
+  if (args[0] === "get" || args[0] === "cancel") {
+    const action = args[0];
+    const parsed2 = parseArgs(args.slice(1), {});
+    if ("error" in parsed2 || parsed2.positionals.length !== 1)
+      return usage4(ctx, `Usage: candle lab replay ${action} <job-id>`);
+    const connected2 = await client(ctx);
+    if (!connected2)
+      return 1;
+    const id = parsed2.positionals[0];
+    const answer2 = action === "get" ? await connected2.lab.replayGet(id) : await connected2.lab.replayCancel(id);
+    if (!answer2.ok)
+      return failure2(answer2, ctx);
+    if (action === "get")
+      return replayOutput(answer2.body, ctx);
+    if (ctx.json)
+      ctx.deps.stdout.write(`${JSON.stringify(answer2.body)}
+`);
+    else
+      writeFields(ctx.deps, "stdout", [
+        ["Job", text3(id)],
+        ["Cancelled", text3(answer2.body.cancelled)]
+      ]);
+    return 0;
+  }
+  const stdin = args[args.lastIndexOf("--definition") + 1] === "-";
+  const parsed = parseArgs(args.map((arg, i) => arg === "-" && args[i - 1] === "--definition" ? "<stdin>" : arg), {
+    valueFlags: ["--definition", "--from", "--to", "--asset-ids", "--fee-bps", "--slippage-bps"],
+    booleanFlags: ["--no-wait"],
+    pathFlags: ["--definition"]
+  });
+  if ("error" in parsed)
+    return usage4(ctx, `${parsed.error}
+${REPLAY_USAGE}`);
+  const v = parsed.values;
+  const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+  if (parsed.positionals.length || !v["--definition"] || !v["--from"] || !v["--to"] || !iso.test(v["--from"]) || !iso.test(v["--to"]) || !Number.isFinite(Date.parse(v["--from"])) || !Number.isFinite(Date.parse(v["--to"])) || Date.parse(v["--to"]) <= Date.parse(v["--from"]))
+    return usage4(ctx, REPLAY_USAGE);
+  let fee;
+  let slippage;
+  let assetIds;
+  try {
+    fee = numberFlag(v["--fee-bps"], 0, 1000, true);
+    slippage = numberFlag(v["--slippage-bps"], 0, 1000, true);
+    if (v["--asset-ids"] !== undefined) {
+      const ids = v["--asset-ids"].split(",");
+      if (!ids.length || ids.length > 50)
+        throw new Error("Invalid asset ids");
+      assetIds = ids.map((id) => numberFlag(id, 1, Number.MAX_SAFE_INTEGER, true));
+    }
+  } catch {
+    return usage4(ctx, `Costs must be integers from 0 to 1000 bps; asset ids must be 1–50 positive integers.
+${REPLAY_USAGE}`);
+  }
+  let definition;
+  try {
+    const source = stdin ? new TextDecoder().decode(await ctx.deps.readStdin()) : await ctx.deps.readFile(v["--definition"]);
+    const value = JSON.parse(source);
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      throw new Error("Invalid definition");
+    definition = value;
+  } catch {
+    return usage4(ctx, "--definition must name a readable JSON object file, or - for JSON on stdin.");
+  }
+  const connected = await client(ctx);
+  if (!connected)
+    return 1;
+  if (fee === undefined)
+    fee = await memberFee(ctx, connected.apiKey);
+  const body = {
+    definition,
+    from: v["--from"],
+    to: v["--to"],
+    ...assetIds ? { asset_ids: assetIds } : {},
+    ...fee !== undefined ? { cost: { fee_bps_per_side: fee, ...slippage !== undefined ? { slippage_bps_per_side: slippage } : {} } } : {}
+  };
+  const started = await connected.lab.replay(body);
+  if (!started.ok)
+    return failure2(started, ctx);
+  if (parsed.booleans.has("--no-wait")) {
+    if (ctx.json)
+      ctx.deps.stdout.write(`${JSON.stringify(started.body)}
+`);
+    else
+      writeFields(ctx.deps, "stdout", [["Job", text3(started.body.job_id)]]);
+    return 0;
+  }
+  const result = await connected.lab.waitForReplay(started.body.job_id);
+  return result.ok ? replayOutput(result.body, ctx) : failure2(result, ctx);
+}
+async function report(args, ctx, kind) {
+  const flags = kind === "runners" ? ["--hours", "--min-wallets"] : ["--days", "--min-n"];
+  const parsed = parseArgs(args, { valueFlags: flags });
+  const help2 = `Usage: candle lab ${kind} ${kind === "runners" ? "[--hours n] [--min-wallets n]" : "[--days n] [--min-n n]"}`;
+  if ("error" in parsed || parsed.positionals.length)
+    return usage4(ctx, help2);
+  let q;
+  try {
+    q = kind === "runners" ? {
+      hours: numberFlag(parsed.values["--hours"], 1, 48, true),
+      min_wallets: numberFlag(parsed.values["--min-wallets"], 1, 50, true)
+    } : {
+      days: numberFlag(parsed.values["--days"], 1, 30, true),
+      min_n: numberFlag(parsed.values["--min-n"], 1, 1000, true)
+    };
+  } catch {
+    return usage4(ctx, help2);
+  }
+  const connected = await client(ctx);
+  if (!connected)
+    return 1;
+  const answer2 = kind === "runners" ? await connected.lab.runners(q) : await connected.lab.edges(q);
+  if (!answer2.ok)
+    return failure2(answer2, ctx);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify(answer2.body)}
+`);
+  else {
+    const body = answer2.body;
+    const list = kind === "runners" ? body.leaderboard : body.edges;
+    const columns = kind === "runners" ? ["asset_id", "symbol", "peak_gain_pct", "now_gain_pct", "wallets"] : [
+      "pattern",
+      "group_name",
+      "age_bucket",
+      "mcap_bucket",
+      "held_bucket",
+      "n",
+      "net_med_1h_pct",
+      "net_med_24h_pct"
+    ];
+    const labels = kind === "runners" ? ["Asset", "Symbol", "Peak gain %", "Current gain %", "Wallets"] : ["Pattern", "Group", "Age", "Market cap", "Held", "Samples", "Net median 1h %", "Net median 24h %"];
+    if (kind === "edges")
+      ctx.deps.stdout.write(`Edges net of ${text3(body.cost_pct)}% round-trip cost (server's table).
+`);
+    const rows = Array.isArray(list) ? list.map((row) => columns.map((column) => text3(object3(row)[column]))) : [];
+    if (!rows.length)
+      ctx.deps.stdout.write(`No ${kind} in this window.
+`);
+    else
+      writeTable(ctx.deps, "stdout", labels, rows, columns.map(() => ({})));
+  }
+  return 0;
+}
+var labRunners = (args, ctx) => report(args, ctx, "runners");
+var labEdges = (args, ctx) => report(args, ctx, "edges");
+
 // src/commands/launch.ts
 init_zod();
 init_args();
@@ -90775,7 +91210,7 @@ function poolToken(value) {
 function matchesWallet(row, name2) {
   return row.id === name2 || row.address === name2 || row.label === name2;
 }
-function usage4(ctx, line) {
+function usage5(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
@@ -90787,9 +91222,9 @@ async function lpPools(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--page"] });
   const page = Number(parsed && !("error" in parsed) ? parsed.values["--page"] ?? "1" : "1");
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage5(ctx, parsed.error);
   if (parsed.positionals.length !== 1 || !Number.isSafeInteger(page) || page < 1)
-    return usage4(ctx, "Usage: candle lp pools <token> [--page <n>]");
+    return usage5(ctx, "Usage: candle lp pools <token> [--page <n>]");
   try {
     const token2 = poolToken(parsed.positionals[0]);
     const key = await tradingKey(ctx);
@@ -90826,9 +91261,9 @@ async function lpPools(args, ctx) {
 async function lpPositions(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage5(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage4(ctx, "Usage: candle lp positions [--wallet <tee>]");
+    return usage5(ctx, "Usage: candle lp positions [--wallet <tee>]");
   try {
     const key = await tradingKey(ctx);
     const { rows } = await listTradingWallets(ctx, key);
@@ -90836,10 +91271,10 @@ async function lpPositions(args, ctx) {
     const wallets2 = rows.filter((row) => row.chain === "solana" && (name2 === undefined || matchesWallet(row, name2)));
     if (name2 !== undefined && wallets2.length === 0)
       throw new TradingError("TEE_WALLET_REQUIRED", `No TEE wallet on this key is called "${name2}".`);
-    const report = [];
+    const report2 = [];
     for (const row of wallets2) {
       const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row.id)}`));
-      report.push({
+      report2.push({
         id: row.id,
         address: row.address,
         ...row.label ? { label: row.label } : {},
@@ -90847,15 +91282,15 @@ async function lpPositions(args, ctx) {
       });
     }
     if (ctx.json)
-      return printTradingResult(ctx, { success: true, wallets: report });
+      return printTradingResult(ctx, { success: true, wallets: report2 });
     const out = ctx.deps.stdout;
-    const total = report.reduce((n, wallet3) => n + wallet3.positions.length, 0);
+    const total = report2.reduce((n, wallet3) => n + wallet3.positions.length, 0);
     if (total === 0) {
-      out.write(`No DAMM v2 positions across ${report.length} TEE wallet(s).
+      out.write(`No DAMM v2 positions across ${report2.length} TEE wallet(s).
 `);
       return 0;
     }
-    for (const wallet3 of report) {
+    for (const wallet3 of report2) {
       if (wallet3.positions.length === 0)
         continue;
       writeFields(ctx.deps, "stdout", [
@@ -91038,11 +91473,11 @@ async function lpAdd(args, ctx) {
     booleanFlags: ["--yes"]
   });
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage5(ctx, parsed.error);
   const flags = parsed.values;
   const id = flags["--client-trade-id"] ?? `lp-${randomUUID6()}`;
   if (parsed.positionals.length !== 2 || !flags["--amount"] || !flags["--wallet"] || !validClientId(id))
-    return usage4(ctx, "Usage: candle lp add <pool> --amount <decimal> <token> --wallet <tee> [--position <nft-mint>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
+    return usage5(ctx, "Usage: candle lp add <pool> --amount <decimal> <token> --wallet <tee> [--position <nft-mint>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
   try {
     const pool = solanaAddress(parsed.positionals[0], "The pool");
     const token2 = poolToken(parsed.positionals[1]);
@@ -91074,12 +91509,12 @@ async function lpRemove(args, ctx) {
     booleanFlags: ["--yes"]
   });
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage5(ctx, parsed.error);
   const flags = parsed.values;
   const id = flags["--client-trade-id"] ?? `lp-${randomUUID6()}`;
   const percent2 = Number(flags["--percent"]);
   if (parsed.positionals.length !== 1 || !flags["--percent"] || !/^\d+(\.\d{1,2})?$/.test(flags["--percent"]) || !(percent2 > 0 && percent2 <= 100) || !validClientId(id))
-    return usage4(ctx, "Usage: candle lp remove <position> --percent <0.01-100> [--wallet <tee>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
+    return usage5(ctx, "Usage: candle lp remove <position> --percent <0.01-100> [--wallet <tee>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
   try {
     const position = solanaAddress(parsed.positionals[0], "The position");
     const slippageBps = slippageOf(flags["--slippage-bps"]);
@@ -91106,11 +91541,11 @@ async function lpClaim(args, ctx) {
     booleanFlags: ["--yes"]
   });
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage5(ctx, parsed.error);
   const flags = parsed.values;
   const id = flags["--client-trade-id"] ?? `lp-${randomUUID6()}`;
   if (parsed.positionals.length !== 1 || !validClientId(id))
-    return usage4(ctx, "Usage: candle lp claim <position> [--wallet <tee>] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
+    return usage5(ctx, "Usage: candle lp claim <position> [--wallet <tee>] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
   try {
     const position = solanaAddress(parsed.positionals[0], "The position");
     const solana = await tradingSolanaClient(ctx, flags["--rpc-url"]);
@@ -91523,8 +91958,8 @@ function canonical3(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(canonical3).join(",")}]`;
-  const record4 = value;
-  return `{${Object.keys(record4).sort().map((key) => `${JSON.stringify(key)}:${canonical3(record4[key])}`).join(",")}}`;
+  const record5 = value;
+  return `{${Object.keys(record5).sort().map((key) => `${JSON.stringify(key)}:${canonical3(record5[key])}`).join(",")}}`;
 }
 function sameValue2(a, b) {
   return canonical3(a) === canonical3(b);
@@ -92320,10 +92755,10 @@ class PerpsMarketError2 extends Error {
 function unavailable4() {
   throw new PerpsMarketError2("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
 }
-function usage5(message) {
+function usage6(message) {
   throw new PerpsMarketError2("PERPS_USAGE", message);
 }
-function object3(value) {
+function object4(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function decimal5(value) {
@@ -92359,10 +92794,10 @@ function parseMarkets2(value) {
   if (!Array.isArray(value) || value.length !== 2)
     return unavailable4();
   const [meta, ctxs] = value;
-  if (!object3(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
+  if (!object4(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
     return unavailable4();
   for (const row of meta.universe) {
-    if (!object3(row) || typeof row.name !== "string" || !integer2(row.szDecimals) || row.szDecimals > 6 || !integer2(row.maxLeverage))
+    if (!object4(row) || typeof row.name !== "string" || !integer2(row.szDecimals) || row.szDecimals > 6 || !integer2(row.maxLeverage))
       return unavailable4();
     for (const key of ["isDelisted", "onlyIsolated"])
       if (row[key] !== undefined && typeof row[key] !== "boolean")
@@ -92371,7 +92806,7 @@ function parseMarkets2(value) {
       return unavailable4();
   }
   for (const ctx of ctxs) {
-    if (!object3(ctx))
+    if (!object4(ctx))
       return unavailable4();
     for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
       if (ctx[key] !== undefined && ctx[key] !== null && !decimal5(ctx[key]))
@@ -92385,11 +92820,11 @@ function parseMarkets2(value) {
     if (!Array.isArray(meta.marginTables))
       return unavailable4();
     for (const entry of meta.marginTables) {
-      if (!Array.isArray(entry) || !integer2(entry[0]) || !object3(entry[1]) || !Array.isArray(entry[1].marginTiers))
+      if (!Array.isArray(entry) || !integer2(entry[0]) || !object4(entry[1]) || !Array.isArray(entry[1].marginTiers))
         return unavailable4();
       const tiers = [];
       for (const tier of entry[1].marginTiers) {
-        if (!object3(tier) || nonnegative2(tier.lowerBound) === null || !integer2(tier.maxLeverage))
+        if (!object4(tier) || nonnegative2(tier.lowerBound) === null || !integer2(tier.maxLeverage))
           return unavailable4();
         tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
       }
@@ -92480,13 +92915,13 @@ function perpsCandleWindow2(opts, now) {
   const interval = opts.interval ?? "1h";
   const index = PERPS_CANDLE_INTERVALS2.indexOf(interval);
   if (index < 0)
-    return usage5(`interval must be one of ${PERPS_CANDLE_INTERVALS2.join(" ")}.`);
+    return usage6(`interval must be one of ${PERPS_CANDLE_INTERVALS2.join(" ")}.`);
   const count2 = bounded2(opts.count, 100, 1, 5000, "count");
   const raw = opts.end;
   const endTime = raw === undefined ? now : epoch2(raw);
   const startTime = endTime - count2 * at2(INTERVAL_MS2, index);
   if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
-    return usage5("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+    return usage6("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
   return { interval, count: count2, startTime, endTime };
 }
 function epoch2(raw) {
@@ -92497,18 +92932,18 @@ var PERPS_FUNDING_HISTORY_MAX_ROWS2 = 500;
 function perpsFundingWindow2(opts, now) {
   const endTime = opts.end === undefined ? now : epoch2(opts.end);
   if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
-    return usage5("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+    return usage6("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
   const startTime = opts.start === undefined ? endTime - 86400000 : epoch2(opts.start);
   if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
-    return usage5("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
+    return usage6("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
   if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS2)
-    return usage5("start must be at most 30 days before end.");
+    return usage6("start must be at most 30 days before end.");
   return { startTime, endTime };
 }
 function bounded2(value, fallback, min, max, name2) {
   const n = value ?? fallback;
   if (!Number.isInteger(n) || n < min || n > max)
-    return usage5(`${name2} must be an integer from ${min} to ${max}.`);
+    return usage6(`${name2} must be an integer from ${min} to ${max}.`);
   return n;
 }
 function parsePerpsFundingHistory2(value, coin, window) {
@@ -92516,7 +92951,7 @@ function parsePerpsFundingHistory2(value, coin, window) {
     return unavailable4();
   const funding = [];
   for (const row of value) {
-    if (!object3(row) || row.coin !== coin || !integer2(row.time) || !decimal5(row.fundingRate) || !decimal5(row.premium))
+    if (!object4(row) || row.coin !== coin || !integer2(row.time) || !decimal5(row.fundingRate) || !decimal5(row.premium))
       return unavailable4();
     if (row.time >= window.startTime && row.time <= window.endTime)
       funding.push({
@@ -92554,7 +92989,7 @@ class PerpsMarketReader2 {
     this.configPromise ??= (async () => {
       try {
         const value = await this.opts.readConfig();
-        if (!object3(value) || !object3(value.limits) || !integer2(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
+        if (!object4(value) || !object4(value.limits) || !integer2(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
           throw new Error("config shape");
         return {
           minOpenInterestUsd: value.limits.minOpenInterestUsd,
@@ -92602,7 +93037,7 @@ class PerpsMarketReader2 {
               if (!Array.isArray(venue) || typeof venue[0] !== "string")
                 return unavailable4();
               if (venue[0] === "HlPerp" && venue[1] !== null) {
-                if (!object3(venue[1]) || !decimal5(venue[1].fundingRate) || !integer2(venue[1].nextFundingTime))
+                if (!object4(venue[1]) || !decimal5(venue[1].fundingRate) || !integer2(venue[1].nextFundingTime))
                   return unavailable4();
                 map2.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
               }
@@ -92677,7 +93112,7 @@ class PerpsMarketReader2 {
     this.key();
     const sort = opts.sort ?? "volume";
     if (!["volume", "oi", "funding", "change", "name"].includes(sort))
-      return usage5("sort must be volume, oi, funding, change or name.");
+      return usage6("sort must be volume, oi, funding, change or name.");
     const limit = opts.limit === undefined ? undefined : bounded2(opts.limit, 500, 1, 500, "limit");
     const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
     const rows = core.universe.map((_, asset) => this.row(core, extras, config, asset)).filter((row) => opts.all || row.candle.tradeable !== false);
@@ -92743,7 +93178,7 @@ class PerpsMarketReader2 {
       coin: canonical4,
       ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
     });
-    if (!object3(value) || value.coin !== canonical4 || !integer2(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
+    if (!object4(value) || value.coin !== canonical4 || !integer2(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
       return unavailable4();
     const sides = [];
     for (const side of value.levels) {
@@ -92751,7 +93186,7 @@ class PerpsMarketReader2 {
         return unavailable4();
       const levels = [];
       for (const level of side) {
-        if (!object3(level) || nonnegative2(level.px) === null || nonnegative2(level.sz) === null || !integer2(level.n))
+        if (!object4(level) || nonnegative2(level.px) === null || nonnegative2(level.sz) === null || !integer2(level.n))
           return unavailable4();
         levels.push({ px: level.px, sz: level.sz, n: level.n });
       }
@@ -92787,7 +93222,7 @@ class PerpsMarketReader2 {
       return unavailable4();
     const candles = [];
     for (const c of value) {
-      if (!object3(c) || !integer2(c.t) || !integer2(c.T) || !integer2(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative2(v) !== null) || c.s !== canonical4 || c.i !== window.interval)
+      if (!object4(c) || !integer2(c.t) || !integer2(c.T) || !integer2(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative2(v) !== null) || c.s !== canonical4 || c.i !== window.interval)
         return unavailable4();
       if (c.t <= window.endTime && c.T >= window.startTime)
         candles.push({
@@ -92886,17 +93321,17 @@ function unavailable5(message, retryAfterMs2) {
     ...retryAfterMs2 !== undefined ? { retryAfterMs: retryAfterMs2 } : {}
   });
 }
-function base64UrlEncode2(text3) {
-  const bytes = new TextEncoder().encode(text3);
+function base64UrlEncode2(text4) {
+  const bytes = new TextEncoder().encode(text4);
   let binary = "";
   for (const b of bytes)
     binary += String.fromCharCode(b);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-function base64UrlDecode2(text3) {
-  if (!/^[A-Za-z0-9_-]*$/.test(text3))
+function base64UrlDecode2(text4) {
+  if (!/^[A-Za-z0-9_-]*$/.test(text4))
     throw new Error("not base64url");
-  const padded = text3.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - text3.length % 4) % 4);
+  const padded = text4.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - text4.length % 4) % 4);
   const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0;i < binary.length; i++)
@@ -92925,8 +93360,8 @@ function canonical4(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(canonical4).join(",")}]`;
-  const record4 = value;
-  return `{${Object.keys(record4).sort().map((key) => `${JSON.stringify(key)}:${canonical4(record4[key])}`).join(",")}}`;
+  const record5 = value;
+  return `{${Object.keys(record5).sort().map((key) => `${JSON.stringify(key)}:${canonical4(record5[key])}`).join(",")}}`;
 }
 function isDecimalString2(value) {
   return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
@@ -93138,8 +93573,8 @@ function perpsHistoryMoney(value) {
   let cents = BigInt(whole) * 100n + BigInt(frac.padEnd(2, "0").slice(0, 2));
   if ((frac[2] ?? "0") >= "5")
     cents += 1n;
-  const text3 = `${cents / 100n}.${(cents % 100n).toString().padStart(2, "0")}`;
-  return negative && cents !== 0n ? `-${text3}` : text3;
+  const text4 = `${cents / 100n}.${(cents % 100n).toString().padStart(2, "0")}`;
+  return negative && cents !== 0n ? `-${text4}` : text4;
 }
 function perpsHistoryLines(page, nextHint) {
   const iso = (ms) => new Date(ms).toISOString().replace(".000Z", "Z");
@@ -93233,12 +93668,12 @@ function perpsRiskProblem2(t) {
   return null;
 }
 function perpsRiskFromLimits2(body) {
-  const record4 = isRecord3(body) ? body : {};
-  const reported = "perpsRisk" in record4 || "perpsRiskEffective" in record4;
-  const stored = isRecord3(record4.perpsRisk) ? pickSettings2(record4.perpsRisk) : null;
+  const record5 = isRecord3(body) ? body : {};
+  const reported = "perpsRisk" in record5 || "perpsRiskEffective" in record5;
+  const stored = isRecord3(record5.perpsRisk) ? pickSettings2(record5.perpsRisk) : null;
   if (!reported)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
-  const effective = isRecord3(record4.perpsRiskEffective) ? effectivePerpsRisk2(pickSettings2(record4.perpsRiskEffective)) : effectivePerpsRisk2(stored);
+  const effective = isRecord3(record5.perpsRiskEffective) ? effectivePerpsRisk2(pickSettings2(record5.perpsRiskEffective)) : effectivePerpsRisk2(stored);
   if (perpsRiskProblem2(effective) !== null)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
   const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
@@ -93269,7 +93704,7 @@ async function hyperliquidInfo2(fetcher, network2, body, opts = {}) {
     const controller = new AbortController;
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? INFO_TIMEOUT_MS2);
     let res;
-    let text3;
+    let text4;
     try {
       res = await fetcher(HYPERLIQUID_RISK_INFO_URLS2[network2], {
         method: "POST",
@@ -93277,7 +93712,7 @@ async function hyperliquidInfo2(fetcher, network2, body, opts = {}) {
         body: JSON.stringify(body),
         signal: controller.signal
       });
-      text3 = res.ok ? await res.text() : "";
+      text4 = res.ok ? await res.text() : "";
     } catch {
       throw new HyperliquidReadError2(`Hyperliquid ${String(body.type)} read failed or timed out`);
     } finally {
@@ -93293,7 +93728,7 @@ async function hyperliquidInfo2(fetcher, network2, body, opts = {}) {
     if (!res.ok)
       throw new HyperliquidReadError2(`Hyperliquid ${String(body.type)} answered HTTP ${res.status ?? "?"}`);
     try {
-      return JSON.parse(text3);
+      return JSON.parse(text4);
     } catch {
       throw new HyperliquidReadError2(`Hyperliquid ${String(body.type)} answered with something other than JSON`);
     }
@@ -93641,28 +94076,28 @@ function summarizePerpsRecent2(fills, funding, window) {
     truncated: fills.length >= PERPS_FILLS_RESPONSE_CAP2 || funding.length >= PERPS_FUNDING_RESPONSE_CAP2
   };
 }
-function perpsAccountReport2(report, recent) {
-  const { mode: _mode, level: _level, ...line } = report.account ?? {};
+function perpsAccountReport2(report2, recent) {
+  const { mode: _mode, level: _level, ...line } = report2.account ?? {};
   return {
     schema: "candle.perps.account/1",
-    walletId: report.walletId,
-    address: report.address,
-    network: report.network,
-    mode: report.mode,
-    readAt: report.readAt,
+    walletId: report2.walletId,
+    address: report2.address,
+    network: report2.network,
+    mode: report2.mode,
+    readAt: report2.readAt,
     ...line,
     recent,
-    risk: { level: report.level, reason: report.reason, drivers: report.drivers }
+    risk: { level: report2.level, reason: report2.reason, drivers: report2.drivers }
   };
 }
-function perpsRiskClears(report, leaving) {
-  const t = report.thresholds;
-  const account = report.account;
+function perpsRiskClears(report2, leaving) {
+  const t = report2.thresholds;
+  const account = report2.account;
   if (!account)
     return false;
   const distanceBps = (leaving === "warn" ? t.warnDistanceBps : t.criticalDistanceBps) + t.clearBandBps;
   const ratioBps = (leaving === "warn" ? t.warnMarginRatioBps : t.criticalMarginRatioBps) - t.clearBandBps;
-  for (const p of report.positions) {
+  for (const p of report2.positions) {
     if (p.markPx === null) {
       if (leaving === "warn")
         return false;
@@ -93675,7 +94110,7 @@ function perpsRiskClears(report, leaving) {
       return false;
   }
   const maint = dec2(account.crossMaintenanceMarginUsedUsd);
-  if (report.positions.length > 0 && maint > 0n) {
+  if (report2.positions.length > 0 && maint > 0n) {
     const crossValue = dec2(account.crossAccountValueUsd);
     if (crossValue <= 0n)
       return false;
@@ -93684,15 +94119,15 @@ function perpsRiskClears(report, leaving) {
   }
   return true;
 }
-function perpsRiskStep(previous, report) {
-  const rule = report.level;
+function perpsRiskStep(previous, report2) {
+  const rule = report2.level;
   if (rule === "unknown" || previous === "unknown")
     return rule;
   if (RANK2[rule] >= RANK2[previous])
     return rule;
-  if (rule === "ok" && perpsRiskClears(report, "warn"))
+  if (rule === "ok" && perpsRiskClears(report2, "warn"))
     return "ok";
-  if (previous === "critical" && perpsRiskClears(report, "critical"))
+  if (previous === "critical" && perpsRiskClears(report2, "critical"))
     return "warn";
   return previous;
 }
@@ -93744,13 +94179,13 @@ async function watchPerpsRisk(opts) {
         thresholds2 = await opts.thresholds();
       } catch {}
     }
-    let report = null;
+    let report2 = null;
     try {
       if (mode === undefined || opts.now() - modeAt >= PERPS_WATCH_REFRESH_MS) {
         mode = await readHyperliquidAccountMode2(opts.fetcher, opts.network, opts.address, info3);
         modeAt = opts.now();
       }
-      report = await readPerpsRisk2({ ...identity3, fetcher: opts.fetcher, thresholds: thresholds2, now: opts.now, mode, ...info3 });
+      report2 = await readPerpsRisk2({ ...identity3, fetcher: opts.fetcher, thresholds: thresholds2, now: opts.now, mode, ...info3 });
       interval = baseInterval;
     } catch (error) {
       const rateLimited = error instanceof HyperliquidReadError2 && error.rateLimited;
@@ -93773,10 +94208,10 @@ async function watchPerpsRisk(opts) {
           return { level };
       }
     }
-    if (report) {
+    if (report2) {
       const previous = level;
-      const next = perpsRiskStep(previous, report);
-      if (report.level !== "unknown") {
+      const next = perpsRiskStep(previous, report2);
+      if (report2.level !== "unknown") {
         lastGoodAt = opts.now();
         staleReported = false;
       }
@@ -93784,10 +94219,10 @@ async function watchPerpsRisk(opts) {
         level = next;
         const cleared = next === "ok" && (previous === "warn" || previous === "critical");
         await opts.onEvent({
-          ...report,
+          ...report2,
           event: "level",
           level: next,
-          ruleLevel: report.level,
+          ruleLevel: report2.level,
           previous,
           ...cleared ? { cleared: true } : {}
         });
@@ -93800,7 +94235,7 @@ async function watchPerpsRisk(opts) {
       }
       if (heartbeatMs > 0 && opts.now() - lastHeartbeat >= heartbeatMs) {
         lastHeartbeat = opts.now();
-        await opts.onEvent({ ...report, event: "heartbeat", level, ruleLevel: report.level });
+        await opts.onEvent({ ...report2, event: "heartbeat", level, ruleLevel: report2.level });
       }
     }
     if (opts.signal?.aborted)
@@ -93847,15 +94282,15 @@ async function perpsPortfolioSection2(fetcher, network2, wallets2, opts = {}) {
       const wallet3 = considered[at3];
       try {
         const state = await readHyperliquidClearinghouse2(fetcher, network2, wallet3.address, opts);
-        const report = hyperliquidRiskReport2(state, markets, "default", thresholds2, now());
+        const report2 = hyperliquidRiskReport2(state, markets, "default", thresholds2, now());
         results[at3] = {
           address: wallet3.address,
           ...wallet3.label !== undefined ? { label: wallet3.label } : {},
           ...wallet3.walletId !== undefined ? { walletId: wallet3.walletId } : {},
-          accountValueUsd: report.account?.accountValueUsd ?? "0",
-          unrealizedPnlUsd: report.account?.unrealizedPnlUsd ?? "0",
-          positionCount: report.positions.length,
-          level: report.level
+          accountValueUsd: report2.account?.accountValueUsd ?? "0",
+          unrealizedPnlUsd: report2.account?.unrealizedPnlUsd ?? "0",
+          positionCount: report2.positions.length,
+          level: report2.level
         };
       } catch (error) {
         failures[at3] = error instanceof Error ? error.message : "read failed";
@@ -93911,8 +94346,8 @@ function formatDec2(value) {
   const abs = negative ? -value : value;
   const whole = abs / ONE4;
   const fraction = (abs % ONE4).toString().padStart(SCALE2, "0").replace(/0+$/, "");
-  const text3 = fraction ? `${whole}.${fraction}` : `${whole}`;
-  return negative && text3 !== "0" ? `-${text3}` : text3;
+  const text4 = fraction ? `${whole}.${fraction}` : `${whole}`;
+  return negative && text4 !== "0" ? `-${text4}` : text4;
 }
 function distanceParts2(markPx, liquidationPx) {
   const mark = dec2(markPx);
@@ -93946,7 +94381,7 @@ init_trading();
 init_keys();
 init_swap();
 init_tee_rebind();
-function usage6(ctx, line) {
+function usage7(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
@@ -93976,9 +94411,9 @@ function readFailure(error) {
     return new TradingError("PERPS_READ_FAILED", `${error.message}. No level was computed.`);
   return error;
 }
-function unknownFailure(report) {
-  const message = report.reason === "PERPS_ACCOUNT_MODE" ? `Hyperliquid reports this account in ${safeText(report.mode)} mode, whose perps margin clearinghouseState does not describe. No level was computed.` : report.reason === "PERPS_READ_STALE" ? "The Hyperliquid reads completed more than 30 s apart. No level was computed; run it again." : "Hyperliquid could not be read. No level was computed.";
-  return new TradingError(report.reason ?? "PERPS_READ_FAILED", message, { details: { report } });
+function unknownFailure(report2) {
+  const message = report2.reason === "PERPS_ACCOUNT_MODE" ? `Hyperliquid reports this account in ${safeText(report2.mode)} mode, whose perps margin clearinghouseState does not describe. No level was computed.` : report2.reason === "PERPS_READ_STALE" ? "The Hyperliquid reads completed more than 30 s apart. No level was computed; run it again." : "Hyperliquid could not be read. No level was computed.";
+  return new TradingError(report2.reason ?? "PERPS_READ_FAILED", message, { details: { report: report2 } });
 }
 var pct = (fraction) => fraction === null ? "-" : `${(fraction * 100).toFixed(1)}%`;
 function signedPct(fraction, missing) {
@@ -94001,12 +94436,12 @@ function describeDriver(d) {
     return "cross margin in use with no cross equity";
   return `margin ratio ${d.marginRatio === null ? "-" : d.marginRatio.toFixed(2)}, ${d.level === "ok" ? "warn" : d.level} above ${d.threshold === null ? "-" : d.threshold.toFixed(2)}`;
 }
-function riskLine(report) {
-  if (report.level === "unknown")
-    return `Risk: UNKNOWN (${safeText(report.reason ?? "not read")})`;
-  const lead = report.drivers[0] ?? report.closest;
-  const more = report.drivers.length > 1 ? `; ${report.drivers.length - 1} more` : "";
-  return `Risk: ${report.level.toUpperCase()}${lead ? ` (${report.level === "ok" ? "closest: " : ""}${describeDriver(lead)}${more})` : ""}`;
+function riskLine(report2) {
+  if (report2.level === "unknown")
+    return `Risk: UNKNOWN (${safeText(report2.reason ?? "not read")})`;
+  const lead = report2.drivers[0] ?? report2.closest;
+  const more = report2.drivers.length > 1 ? `; ${report2.drivers.length - 1} more` : "";
+  return `Risk: ${report2.level.toUpperCase()}${lead ? ` (${report2.level === "ok" ? "closest: " : ""}${describeDriver(lead)}${more})` : ""}`;
 }
 function levelCell(row) {
   if (row.level !== "none")
@@ -94107,15 +94542,15 @@ function writeThresholds(ctx, t) {
   ], "Thresholds");
 }
 var NO_MONITOR = "Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch.";
-function writeRiskText(ctx, report) {
+function writeRiskText(ctx, report2) {
   const style = terminalStyle(ctx.deps, "stdout");
   const sym = symbols(style);
-  const level = report.level.toUpperCase();
-  const painted = report.level === "critical" ? failure(level, style) : report.level === "warn" ? accent(`${sym.warning} ${level}`, style, "warning") : success(level, style);
-  const lead = report.drivers[0] ?? report.closest;
-  const also = report.drivers.slice(1).map((driver) => describeDriver(driver));
-  const account = report.account;
-  const thresholds2 = report.thresholds;
+  const level = report2.level.toUpperCase();
+  const painted = report2.level === "critical" ? failure(level, style) : report2.level === "warn" ? accent(`${sym.warning} ${level}`, style, "warning") : success(level, style);
+  const lead = report2.drivers[0] ?? report2.closest;
+  const also = report2.drivers.slice(1).map((driver) => describeDriver(driver));
+  const account = report2.account;
+  const thresholds2 = report2.thresholds;
   const lines = [
     painted,
     "",
@@ -94141,7 +94576,7 @@ function writeRiskText(ctx, report) {
       ["Mode", safeText(account.mode)]
     ], style) : [`${" ".repeat(2)}No account figures.`],
     "",
-    riskPositionsTable(report.positions, style),
+    riskPositionsTable(report2.positions, style),
     "",
     heading("Thresholds", style),
     "",
@@ -94166,14 +94601,14 @@ function writeRiskText(ctx, report) {
 async function perpsRisk(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
   if ("error" in parsed)
-    return usage6(ctx, parsed.error);
+    return usage7(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage6(ctx, "Usage: candle perps risk [--wallet <tee>] [--json]");
+    return usage7(ctx, "Usage: candle perps risk [--wallet <tee>] [--json]");
   try {
     const key = await tradingKey(ctx);
     const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
     const thresholds2 = await perpsThresholdsFor(ctx, key);
-    const report = await readPerpsRisk2({
+    const report2 = await readPerpsRisk2({
       fetcher: fetcherOf2(ctx),
       network: perpsNetwork(ctx),
       walletId: row.id,
@@ -94184,14 +94619,14 @@ async function perpsRisk(args, ctx) {
     }).catch((error) => {
       throw readFailure(error);
     });
-    if (report.level === "unknown")
-      throw unknownFailure(report);
+    if (report2.level === "unknown")
+      throw unknownFailure(report2);
     if (ctx.json)
-      ctx.deps.stdout.write(`${JSON.stringify(report)}
+      ctx.deps.stdout.write(`${JSON.stringify(report2)}
 `);
     else
-      writeRiskText(ctx, report);
-    return perpsRiskExitCode(report.level);
+      writeRiskText(ctx, report2);
+    return perpsRiskExitCode(report2.level);
   } catch (error) {
     return tradingFailure(ctx, error);
   }
@@ -94217,19 +94652,19 @@ function parseSince(value, now) {
 async function perpsAccount(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet", "--since"] });
   if ("error" in parsed)
-    return usage6(ctx, parsed.error);
+    return usage7(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage6(ctx, "Usage: candle perps account [--wallet <tee>] [--since <30m|24h|7d|ISO>] [--json]");
+    return usage7(ctx, "Usage: candle perps account [--wallet <tee>] [--since <30m|24h|7d|ISO>] [--json]");
   const now = ctx.deps.now();
   const startTime = parseSince(parsed.values["--since"] ?? "24h", now);
   if (typeof startTime === "string")
-    return usage6(ctx, startTime);
+    return usage7(ctx, startTime);
   try {
     const key = await tradingKey(ctx);
     const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
     const thresholds2 = await perpsThresholdsFor(ctx, key);
     const network2 = perpsNetwork(ctx);
-    const [report, recent] = await Promise.all([
+    const [report2, recent] = await Promise.all([
       readPerpsRisk2({
         fetcher: fetcherOf2(ctx),
         network: network2,
@@ -94243,28 +94678,28 @@ async function perpsAccount(args, ctx) {
     ]).catch((error) => {
       throw readFailure(error);
     });
-    const account = perpsAccountReport2(report, recent);
+    const account = perpsAccountReport2(report2, recent);
     if (ctx.json) {
       ctx.deps.stdout.write(`${JSON.stringify(account)}
 `);
       return 0;
     }
-    writeAccountText(ctx, account, report);
+    writeAccountText(ctx, account, report2);
     return 0;
   } catch (error) {
     return tradingFailure(ctx, error);
   }
 }
-function writeAccountText(ctx, account, report) {
+function writeAccountText(ctx, account, report2) {
   writeFields(ctx.deps, "stdout", [
     ["Address", safeText(account.address)],
     ["Hyperliquid network", account.network],
     ["Read at", formatTime(account.readAt)]
   ]);
-  if (report.account)
-    writeAccountFields(ctx, report.account);
+  if (report2.account)
+    writeAccountFields(ctx, report2.account);
   else
-    notice(ctx.deps, "stdout", "warning", `No account figures: ${safeText(report.reason)}.
+    notice(ctx.deps, "stdout", "warning", `No account figures: ${safeText(report2.reason)}.
 `.trim());
   const r = account.recent;
   const hours = Math.round((r.endTime - r.startTime) / 3600000);
@@ -94278,15 +94713,15 @@ function writeAccountText(ctx, account, report) {
   ]);
   if (r.truncated)
     notice(ctx.deps, "stdout", "warning", "Hyperliquid's response cap was hit, so these are partial.");
-  notice(ctx.deps, "stdout", "note", `${riskLine(report)}
+  notice(ctx.deps, "stdout", "note", `${riskLine(report2)}
 `.trim());
 }
 async function positionsAdditions2(ctx, key, row) {
   const thresholds2 = await perpsThresholdsFor(ctx, key);
   const identity3 = { walletId: row.id, address: row.address, network: perpsNetwork(ctx) };
-  let report;
+  let report2;
   try {
-    report = await readPerpsRisk2({
+    report2 = await readPerpsRisk2({
       ...identity3,
       fetcher: fetcherOf2(ctx),
       thresholds: thresholds2,
@@ -94294,7 +94729,7 @@ async function positionsAdditions2(ctx, key, row) {
       ...infoOpts(ctx)
     });
   } catch {
-    report = {
+    report2 = {
       schema: "candle.perps.risk/1",
       ...identity3,
       mode: null,
@@ -94309,8 +94744,8 @@ async function positionsAdditions2(ctx, key, row) {
       note: NO_MONITOR
     };
   }
-  const { positions, ...risk } = report;
-  return { rows: positions, accountLine: report.account, risk };
+  const { positions, ...risk } = report2;
+  return { rows: positions, accountLine: report2.account, risk };
 }
 function writePositionsText(ctx, additions) {
   ctx.deps.stdout.write(`${riskPositionsTable(additions.rows, terminalStyle(ctx.deps, "stdout"))}
@@ -94329,15 +94764,15 @@ async function perpsWatch(args, ctx) {
     booleanFlags: ["--once-level-change"]
   });
   if ("error" in parsed)
-    return usage6(ctx, parsed.error);
+    return usage7(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage6(ctx, WATCH_USAGE);
+    return usage7(ctx, WATCH_USAGE);
   const interval = Number(parsed.values["--interval"] ?? "10");
   if (!Number.isInteger(interval) || interval * 1000 < PERPS_WATCH_MIN_INTERVAL_MS || interval * 1000 > PERPS_WATCH_MAX_INTERVAL_MS)
-    return usage6(ctx, "--interval is a whole number of seconds from 5 to 300.");
+    return usage7(ctx, "--interval is a whole number of seconds from 5 to 300.");
   const heartbeat = Number(parsed.values["--heartbeat"] ?? String(PERPS_WATCH_DEFAULT_HEARTBEAT_MS / 1000));
   if (!Number.isInteger(heartbeat) || heartbeat < 0 || heartbeat > 86400)
-    return usage6(ctx, "--heartbeat is a whole number of seconds (0 turns heartbeats off).");
+    return usage7(ctx, "--heartbeat is a whole number of seconds (0 turns heartbeats off).");
   const onWarn = parsed.values["--on-warn"];
   const onCritical = parsed.values["--on-critical"];
   const out = ctx.deps.stdout;
@@ -94406,11 +94841,11 @@ var SET_FLAGS = {
   "--clear-band": { field: "clearBandBps", kind: "pct" }
 };
 function thresholdBps(value, kind) {
-  const text3 = kind === "pct" ? value.replace(/%$/, "") : value;
+  const text4 = kind === "pct" ? value.replace(/%$/, "") : value;
   const re = kind === "pct" ? /^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$/ : /^(0|[1-9][0-9]*)(\.[0-9]{1,4})?$/;
-  if (!re.test(text3))
+  if (!re.test(text4))
     return null;
-  const [whole = "0", fraction = ""] = text3.split(".");
+  const [whole = "0", fraction = ""] = text4.split(".");
   const digits = kind === "pct" ? 2 : 4;
   return Number(whole) * 10 ** digits + Number(fraction.padEnd(digits, "0"));
 }
@@ -94420,9 +94855,9 @@ async function perpsThresholds(args, ctx) {
     return thresholdsWrite(verb, rest, ctx);
   const parsed = parseArgs(args, { valueFlags: [] });
   if ("error" in parsed)
-    return usage6(ctx, parsed.error);
+    return usage7(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage6(ctx, THRESHOLDS_USAGE);
+    return usage7(ctx, THRESHOLDS_USAGE);
   try {
     const key = await tradingKey(ctx);
     const result = await apiRequest("/api/v1/agent/keys/self/limits", {
@@ -94456,9 +94891,9 @@ async function perpsThresholds(args, ctx) {
 async function thresholdsWrite(verb, args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--key", ...verb === "set" ? Object.keys(SET_FLAGS) : []] });
   if ("error" in parsed)
-    return usage6(ctx, parsed.error);
+    return usage7(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage6(ctx, THRESHOLDS_USAGE);
+    return usage7(ctx, THRESHOLDS_USAGE);
   let body;
   if (verb === "clear")
     body = { perpsRisk: null };
@@ -94470,11 +94905,11 @@ async function thresholdsWrite(verb, args, ctx) {
         continue;
       const bps2 = thresholdBps(raw, spec.kind);
       if (bps2 === null)
-        return usage6(ctx, `${flag} takes ${spec.kind === "pct" ? "a percentage such as 17 or 17.5" : "a ratio such as 0.6"}, not ${raw}.`);
+        return usage7(ctx, `${flag} takes ${spec.kind === "pct" ? "a percentage such as 17 or 17.5" : "a ratio such as 0.6"}, not ${raw}.`);
       fields2[spec.field] = bps2;
     }
     if (Object.keys(fields2).length === 0)
-      return usage6(ctx, `Name at least one threshold. ${THRESHOLDS_USAGE}`);
+      return usage7(ctx, `Name at least one threshold. ${THRESHOLDS_USAGE}`);
     body = { perpsRisk: fields2 };
   }
   const target = parsed.values["--key"] ?? "self";
@@ -94553,7 +94988,7 @@ init_swap();
 var PERPS_SCOPE = "perps:write";
 var DEC_RE3 = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
 var CLOID_RE2 = /^0x[0-9a-fA-F]{32}$/;
-function usage7(ctx, line) {
+function usage8(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
@@ -94772,10 +95207,10 @@ async function runPerpsWrite(ctx, opts) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(exchangeBody)
     });
-    const text3 = await res.text();
+    const text4 = await res.text();
     if (!res.ok)
       throw new Error(`HTTP ${res.status}`);
-    exchange = JSON.parse(text3);
+    exchange = JSON.parse(text4);
   } catch (error) {
     throw new TradingError("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). The signed action is in details.exchangeBody; nothing was lost.`, { exitCode: 3, details: { perpOrderId: build.perpOrderId, exchangeBody } });
   }
@@ -94866,9 +95301,9 @@ async function afterConfirmed(ctx, key, net, wallet3, build, method, body, excha
 async function perpsSetup(args, ctx) {
   const parsed = parseArgs(args, WRITE_FLAGS);
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage7(ctx, "Usage: candle perps setup [--wallet <tee>] [--yes]");
+    return usage8(ctx, "Usage: candle perps setup [--wallet <tee>] [--yes]");
   try {
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/setup",
@@ -94893,31 +95328,31 @@ async function perpsOpen(args, ctx) {
     booleanFlags: ["--yes", "--no-submit", "--sign-only"]
   });
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   const [coin, side, size] = parsed.positionals;
   if (parsed.positionals.length !== 3 || !coin || !side || !size)
-    return usage7(ctx, OPEN_USAGE);
+    return usage8(ctx, OPEN_USAGE);
   if (side !== "long" && side !== "short")
-    return usage7(ctx, OPEN_USAGE);
+    return usage8(ctx, OPEN_USAGE);
   if (!DEC_RE3.test(size))
-    return usage7(ctx, "The size must be a plain decimal, e.g. 0.01.");
+    return usage8(ctx, "The size must be a plain decimal, e.g. 0.01.");
   const { values } = parsed;
   for (const flag of ["--price", "--tp", "--sl"]) {
     const value = values[flag];
     if (value !== undefined && !DEC_RE3.test(value))
-      return usage7(ctx, `${flag} must be a plain decimal.`);
+      return usage8(ctx, `${flag} must be a plain decimal.`);
   }
   const tif = values["--tif"];
   if (tif !== undefined && !["Gtc", "Alo", "Ioc"].includes(tif))
-    return usage7(ctx, "--tif must be Gtc, Alo or Ioc.");
+    return usage8(ctx, "--tif must be Gtc, Alo or Ioc.");
   if (tif !== undefined && tif !== "Ioc" && values["--price"] === undefined)
-    return usage7(ctx, "--tif Gtc or Alo needs --price.");
+    return usage8(ctx, "--tif Gtc or Alo needs --price.");
   const slippageBps = slippage(values["--slippage-bps"]);
   if (slippageBps === null)
-    return usage7(ctx, "--slippage-bps must be a whole number of at least 1.");
+    return usage8(ctx, "--slippage-bps must be a whole number of at least 1.");
   const clientId2 = clientIdFlag(values["--client-id"]);
   if (clientId2 === null)
-    return usage7(ctx, CLIENT_ID_USAGE);
+    return usage8(ctx, CLIENT_ID_USAGE);
   const body = {
     coin,
     side,
@@ -94942,24 +95377,24 @@ async function perpsClose(args, ctx) {
     booleanFlags: ["--yes", "--no-submit", "--sign-only"]
   });
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   const [coin] = parsed.positionals;
   if (parsed.positionals.length !== 1 || !coin)
-    return usage7(ctx, "Usage: candle perps close <coin> [--size <n> | --pct <1-100>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee>] [--yes]");
+    return usage8(ctx, "Usage: candle perps close <coin> [--size <n> | --pct <1-100>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee>] [--yes]");
   const size = parsed.values["--size"];
   if (size !== undefined && !DEC_RE3.test(size))
-    return usage7(ctx, "--size must be a plain decimal.");
+    return usage8(ctx, "--size must be a plain decimal.");
   const pct2 = parsed.values["--pct"];
   if (pct2 !== undefined && hyperliquidClosePct2(pct2) === null)
-    return usage7(ctx, "--pct must be above 0 and at most 100, with at most 4 decimals.");
+    return usage8(ctx, "--pct must be above 0 and at most 100, with at most 4 decimals.");
   if (pct2 !== undefined && size !== undefined)
-    return usage7(ctx, "Give --size or --pct, not both.");
+    return usage8(ctx, "Give --size or --pct, not both.");
   const slippageBps = slippage(parsed.values["--slippage-bps"]);
   if (slippageBps === null)
-    return usage7(ctx, "--slippage-bps must be a whole number of at least 1.");
+    return usage8(ctx, "--slippage-bps must be a whole number of at least 1.");
   const clientId2 = clientIdFlag(parsed.values["--client-id"]);
   if (clientId2 === null)
-    return usage7(ctx, CLIENT_ID_USAGE);
+    return usage8(ctx, CLIENT_ID_USAGE);
   const body = {
     coin,
     ...clientId2 !== undefined ? { clientId: clientId2 } : {},
@@ -94980,10 +95415,10 @@ async function perpsClose(args, ctx) {
 async function perpsCancel(args, ctx) {
   const parsed = parseArgs(args, WRITE_FLAGS);
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   const [cloid] = parsed.positionals;
   if (parsed.positionals.length !== 1 || !cloid || !CLOID_RE2.test(cloid))
-    return usage7(ctx, "Usage: candle perps cancel <cloid> [--wallet <tee>] [--yes]  (cloid: 0x + 32 hex)");
+    return usage8(ctx, "Usage: candle perps cancel <cloid> [--wallet <tee>] [--yes]  (cloid: 0x + 32 hex)");
   try {
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/cancel",
@@ -95000,11 +95435,11 @@ async function perpsLeverage(args, ctx) {
     booleanFlags: ["--yes", "--no-submit", "--sign-only", "--isolated"]
   });
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   const [coin, leverage] = parsed.positionals;
   const n = Number(leverage);
   if (parsed.positionals.length !== 2 || !coin || !Number.isInteger(n) || n < 1)
-    return usage7(ctx, "Usage: candle perps leverage <coin> <x> [--isolated] [--wallet <tee>] [--yes]");
+    return usage8(ctx, "Usage: candle perps leverage <coin> <x> [--isolated] [--wallet <tee>] [--yes]");
   try {
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/leverage",
@@ -95025,9 +95460,9 @@ function formatUsdcMicros(value) {
 async function perpsPositions(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage7(ctx, "Usage: candle perps positions [--wallet <tee>]");
+    return usage8(ctx, "Usage: candle perps positions [--wallet <tee>]");
   try {
     const key = await tradingKey(ctx);
     const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
@@ -95063,17 +95498,17 @@ async function perpsPositions(args, ctx) {
 async function perpsOrders(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet", "--limit"] });
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   const limit = parsed.values["--limit"];
   if (parsed.positionals.length !== 0 || limit !== undefined && !/^[1-9][0-9]{0,2}$/.test(limit))
-    return usage7(ctx, "Usage: candle perps orders [--wallet <tee>] [--limit <n>]");
+    return usage8(ctx, "Usage: candle perps orders [--wallet <tee>] [--limit <n>]");
   try {
     const key = await tradingKey(ctx);
     const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
-    const query = new URLSearchParams({ walletId: row.id });
+    const query2 = new URLSearchParams({ walletId: row.id });
     if (limit !== undefined)
-      query.set("limit", limit);
-    const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/orders?${query}`);
+      query2.set("limit", limit);
+    const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/orders?${query2}`);
     if (ctx.json)
       return printTradingResult(ctx, result);
     const open8 = result.open ?? [];
@@ -95119,21 +95554,21 @@ async function perpsHistory(kind, args, ctx) {
   const usageLine = `Usage: candle perps ${kind} [--wallet <tee>] [--start-time <ms>] [--end-time <ms>] [--limit <n>] [--cursor <cursor>]`;
   const parsed = parseArgs(args, HISTORY_FLAGS);
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage7(ctx, usageLine);
+    return usage8(ctx, usageLine);
   const { values } = parsed;
   const startTime = epochMs2(values["--start-time"]);
   const endTime = epochMs2(values["--end-time"]);
   if (startTime === null || endTime === null)
-    return usage7(ctx, "--start-time and --end-time are epoch milliseconds, e.g. 1790000000000.");
+    return usage8(ctx, "--start-time and --end-time are epoch milliseconds, e.g. 1790000000000.");
   const max = PERPS_HISTORY_MAX_LIMIT2[kind];
   const limitRaw = values["--limit"];
   const limit = limitRaw === undefined ? undefined : Number(limitRaw);
   if (limit !== undefined && (!/^[0-9]{1,4}$/.test(limitRaw) || limit < 1 || limit > max))
-    return usage7(ctx, `--limit must be a whole number from 1 to ${max}.`);
+    return usage8(ctx, `--limit must be a whole number from 1 to ${max}.`);
   if (startTime !== undefined && endTime !== undefined && startTime > endTime)
-    return usage7(ctx, "--start-time must not be after --end-time.");
+    return usage8(ctx, "--start-time must not be after --end-time.");
   const cursor = values["--cursor"];
   try {
     const key = await tradingKey(ctx);
@@ -95162,7 +95597,7 @@ async function perpsHistory(kind, args, ctx) {
   } catch (error) {
     if (error instanceof PerpsHistoryError2) {
       if (error.code === "VALIDATION_FAILED")
-        return usage7(ctx, error.message);
+        return usage8(ctx, error.message);
       return tradingFailure(ctx, new TradingError(error.code, error.message, {
         suggestion: error.extra.retryAfterMs !== undefined ? `Retry after ${Math.ceil(error.extra.retryAfterMs / 1000)}s with the same command${cursor ? " and --cursor" : ""}.` : `Retry shortly with the same command${cursor ? " and --cursor" : ""}.`
       }));
@@ -95228,7 +95663,7 @@ async function perpsDepositStatus(ctx, id) {
 async function perpsDeposit(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !DEPOSIT_ID_RE.test(args[1]))
-      return usage7(ctx, DEPOSIT_USAGE);
+      return usage8(ctx, DEPOSIT_USAGE);
     try {
       return await perpsDepositStatus(ctx, args[1]);
     } catch (error) {
@@ -95240,17 +95675,17 @@ async function perpsDeposit(args, ctx) {
     booleanFlags: ["--yes", "--no-submit"]
   });
   if ("error" in parsed)
-    return usage7(ctx, parsed.error);
+    return usage8(ctx, parsed.error);
   const [amount, asset] = parsed.positionals;
   if (parsed.positionals.length !== 2 || !amount || !DEC_RE3.test(amount) || !isDepositAsset(asset))
-    return usage7(ctx, DEPOSIT_USAGE);
+    return usage8(ctx, DEPOSIT_USAGE);
   const { values } = parsed;
   const id = values["--id"] ?? `deposit-${randomUUID7()}`;
   if (!DEPOSIT_ID_RE.test(id))
-    return usage7(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
+    return usage8(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
   const slippageBps = Number(values["--slippage-bps"] ?? "100");
   if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 1000)
-    return usage7(ctx, "--slippage-bps must be a whole number from 1 to 1000.");
+    return usage8(ctx, "--slippage-bps must be a whole number from 1 to 1000.");
   const origin = BRIDGE_ASSETS[asset].chain;
   try {
     const key = await tradingKey(ctx);
@@ -95499,10 +95934,10 @@ async function runStep2(io, step, path, body, intent) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(exchangeBody)
     });
-    const text3 = await res.text();
+    const text4 = await res.text();
     if (!res.ok)
       throw new Error(`HTTP ${res.status ?? "error"}${res.status === 429 ? " (rate limited)" : ""}`);
-    exchange = JSON.parse(text3);
+    exchange = JSON.parse(text4);
   } catch (err) {
     step.status = "unknown";
     step.detail = `Signed, but the submit to Hyperliquid did not answer (${errorText2(err)}). Reconcile before acting again.`;
@@ -95885,7 +96320,7 @@ init_tee_rebind();
 var DEC_RE4 = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
 var USD_RE = /^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$/;
 var WRITE_BOOLEANS = ["--yes", "--no-submit", "--sign-only"];
-function usage8(ctx, line) {
+function usage9(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
@@ -95896,19 +96331,19 @@ async function perpsModify(args, ctx) {
     booleanFlags: WRITE_BOOLEANS
   });
   if ("error" in parsed)
-    return usage8(ctx, parsed.error);
+    return usage9(ctx, parsed.error);
   const { values } = parsed;
   const cloid = values["--cloid"]?.toLowerCase();
   if (parsed.positionals.length !== 0 || cloid === undefined || !HYPERLIQUID_CLOID_RE2.test(cloid))
-    return usage8(ctx, MODIFY_USAGE);
+    return usage9(ctx, MODIFY_USAGE);
   if (values["--price"] === undefined && values["--size"] === undefined)
-    return usage8(ctx, "Give --price, --size, or both.");
+    return usage9(ctx, "Give --price, --size, or both.");
   for (const flag of ["--price", "--size"])
     if (values[flag] !== undefined && !DEC_RE4.test(values[flag]))
-      return usage8(ctx, `${flag} must be a plain decimal.`);
+      return usage9(ctx, `${flag} must be a plain decimal.`);
   const slippageBps = slippage(values["--slippage-bps"]);
   if (slippageBps === null)
-    return usage8(ctx, "--slippage-bps must be a whole number of at least 1.");
+    return usage9(ctx, "--slippage-bps must be a whole number of at least 1.");
   const body = {
     cloid,
     ...values["--price"] !== undefined ? { price: values["--price"] } : {},
@@ -95933,21 +96368,21 @@ async function perpsMargin(args, ctx) {
     booleanFlags: WRITE_BOOLEANS
   });
   if ("error" in parsed)
-    return usage8(ctx, parsed.error);
+    return usage9(ctx, parsed.error);
   const [coin] = parsed.positionals;
   const { values } = parsed;
   if (parsed.positionals.length !== 1 || !coin)
-    return usage8(ctx, MARGIN_USAGE);
+    return usage9(ctx, MARGIN_USAGE);
   const amount = values["--amount"];
   const mode = values["--mode"];
   if (amount === undefined === (mode === undefined))
-    return usage8(ctx, `Give --amount or --mode, not both. ${MARGIN_USAGE}`);
+    return usage9(ctx, `Give --amount or --mode, not both. ${MARGIN_USAGE}`);
   try {
     if (amount !== undefined) {
       if (values["--leverage"] !== undefined)
-        return usage8(ctx, "--leverage goes with --mode.");
+        return usage9(ctx, "--leverage goes with --mode.");
       if (!USD_RE.test(amount) || /^0+(\.0+)?$/.test(amount))
-        return usage8(ctx, "--amount must be a positive USD amount with at most 6 decimals.");
+        return usage9(ctx, "--amount must be a positive USD amount with at most 6 decimals.");
       return await runPerpsWrite(ctx, {
         path: "/api/v1/agent/perps/margin",
         body: { coin, amount },
@@ -95956,11 +96391,11 @@ async function perpsMargin(args, ctx) {
       });
     }
     if (mode !== "cross" && mode !== "isolated")
-      return usage8(ctx, "--mode must be cross or isolated.");
+      return usage9(ctx, "--mode must be cross or isolated.");
     const raw = values["--leverage"];
     const leverage = raw === undefined ? undefined : Number(raw);
     if (leverage !== undefined && (!/^[1-9][0-9]{0,2}$/.test(raw) || !Number.isInteger(leverage)))
-      return usage8(ctx, "--leverage must be a whole number of at least 1.");
+      return usage9(ctx, "--leverage must be a whole number of at least 1.");
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/leverage",
       body: { coin, mode, ...leverage !== undefined ? { leverage } : {} },
@@ -95975,13 +96410,13 @@ var SCHEDULE_USAGE = "Usage: candle perps schedule-cancel <seconds> | candle per
 async function perpsScheduleCancel(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet"], booleanFlags: [...WRITE_BOOLEANS, "--clear"] });
   if ("error" in parsed)
-    return usage8(ctx, parsed.error);
+    return usage9(ctx, parsed.error);
   const clear = parsed.booleans.has("--clear");
   const [seconds] = parsed.positionals;
   if (clear ? parsed.positionals.length !== 0 : parsed.positionals.length !== 1)
-    return usage8(ctx, SCHEDULE_USAGE);
+    return usage9(ctx, SCHEDULE_USAGE);
   if (!clear && (!/^[0-9]{1,9}$/.test(seconds) || Number(seconds) < 5))
-    return usage8(ctx, "<seconds> must be a whole number of at least 5.");
+    return usage9(ctx, "<seconds> must be a whole number of at least 5.");
   try {
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/schedule-cancel",
@@ -96086,10 +96521,10 @@ async function perpsTpsl(args, ctx) {
     booleanFlags: [...WRITE_BOOLEANS, "--remove-tp", "--remove-sl"]
   });
   if ("error" in parsed)
-    return usage8(ctx, parsed.error);
+    return usage9(ctx, parsed.error);
   const [coin] = parsed.positionals;
   if (parsed.positionals.length !== 1 || !coin)
-    return usage8(ctx, TPSL_USAGE);
+    return usage9(ctx, TPSL_USAGE);
   const { values, booleans } = parsed;
   const params = {
     coin,
@@ -96102,7 +96537,7 @@ async function perpsTpsl(args, ctx) {
   };
   const problem = perpsTpslParamsProblem2(params);
   if (problem)
-    return usage8(ctx, `${problem}. ${TPSL_USAGE}`);
+    return usage9(ctx, `${problem}. ${TPSL_USAGE}`);
   try {
     const shared = sharedWrite(values, booleans);
     const io = await workflowIo(ctx, shared);
@@ -96114,9 +96549,9 @@ async function perpsTpsl(args, ctx) {
 async function perpsFlatten(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--wallet"], booleanFlags: WRITE_BOOLEANS });
   if ("error" in parsed)
-    return usage8(ctx, parsed.error);
+    return usage9(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage8(ctx, "Usage: candle perps flatten [--wallet <tee>] [--yes]");
+    return usage9(ctx, "Usage: candle perps flatten [--wallet <tee>] [--yes]");
   try {
     const io = await workflowIo(ctx, sharedWrite(parsed.values, parsed.booleans));
     return workflowExit(ctx, await runPerpsFlatten2(io), io.mode);
@@ -96128,16 +96563,16 @@ var REDUCE_ONLY_USAGE = "Usage: candle perps reduce-only [on|off] [--key <self|p
 async function perpsReduceOnly(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--key"] });
   if ("error" in parsed)
-    return usage8(ctx, parsed.error);
+    return usage9(ctx, parsed.error);
   const [verb] = parsed.positionals;
   if (parsed.positionals.length > 1 || verb !== undefined && verb !== "on" && verb !== "off")
-    return usage8(ctx, REDUCE_ONLY_USAGE);
+    return usage9(ctx, REDUCE_ONLY_USAGE);
   const target = parsed.values["--key"] ?? "self";
   const self = target === "self";
   try {
     if (verb === undefined) {
       if (!self)
-        return usage8(ctx, "Reading names this key only: drop --key, or use candle keys show for another.");
+        return usage9(ctx, "Reading names this key only: drop --key, or use candle keys show for another.");
       const key = await tradingKey(ctx);
       const answer3 = await perpsRequest(ctx, key, "/api/v1/agent/keys/self/perps-reduce-only");
       if (ctx.json)
@@ -96384,8 +96819,8 @@ async function read(ctx, argv, command) {
         writeUsageFailure(ctx.deps, error.message, ctx.json);
         return 2;
       }
-      const failure2 = { code: error.code, message: error.message, retryable: error.retryable };
-      writeLocalFailure(ctx.deps, failure2, ctx.json);
+      const failure3 = { code: error.code, message: error.message, retryable: error.retryable };
+      writeLocalFailure(ctx.deps, failure3, ctx.json);
       return 1;
     }
     return tradingFailure(ctx, error);
@@ -96573,7 +97008,7 @@ var USAGE9 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <
 var WITHDRAW_POLL_MS = 10 * 60 * 1000;
 var WITHDRAW_POLL_INTERVAL_MS = 5000;
 var TERMINAL = new Set(["settled", "refunded", "failed"]);
-function usage9(ctx, line) {
+function usage10(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
@@ -96620,7 +97055,7 @@ async function withdrawStatus(ctx, id) {
 async function perpsWithdraw(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !ID_RE.test(args[1]))
-      return usage9(ctx, USAGE9);
+      return usage10(ctx, USAGE9);
     try {
       return await withdrawStatus(ctx, args[1]);
     } catch (error) {
@@ -96628,31 +97063,31 @@ async function perpsWithdraw(args, ctx) {
     }
   }
   if (args.includes("--yes") || args.includes("-y")) {
-    return usage9(ctx, "candle perps withdraw has no --yes: every withdrawal is confirmed at the terminal.");
+    return usage10(ctx, "candle perps withdraw has no --yes: every withdrawal is confirmed at the terminal.");
   }
   const parsed = parseArgs(args, {
     valueFlags: ["--to", "--wallet", "--id", "--keystore"],
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
-    return usage9(ctx, parsed.error);
+    return usage10(ctx, parsed.error);
   const [amount] = parsed.positionals;
   const to = parsed.values["--to"];
   if (parsed.positionals.length !== 1 || !amount || to !== "solana" && to !== "hood")
-    return usage9(ctx, USAGE9);
+    return usage10(ctx, USAGE9);
   const amountMicros = parseWithdrawAmount(amount);
   if (amountMicros === null)
-    return usage9(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
+    return usage10(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
   const id = parsed.values["--id"] ?? `withdraw-${randomUUID8()}`;
   if (!ID_RE.test(id))
-    return usage9(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
+    return usage10(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "perps withdraw"))
     return 1;
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
-    return usage9(ctx, resolvedVault.error);
+    return usage10(ctx, resolvedVault.error);
   try {
     const pins = withdrawPins(ctx.deps.env);
     if (pins === null) {
@@ -96728,10 +97163,10 @@ async function perpsWithdraw(args, ctx) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(exchangeBody)
       });
-      const text3 = await res.text();
+      const text4 = await res.text();
       if (!res.ok)
         throw new Error(`HTTP ${res.status}`);
-      exchange = JSON.parse(text3);
+      exchange = JSON.parse(text4);
     } catch (error) {
       throw new TradingError("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). The signed transfer is in details.exchangeBody and stays valid for two days; check candle perps withdraw status ${id} before resubmitting.`, { exitCode: 3, details: { clientWithdrawalId: id, exchangeBody } });
     }
@@ -96832,12 +97267,12 @@ function parseSigner(value) {
   }
   return { spkiSha256, publicKeyDer, fingerprint, payer, createdAt };
 }
-function parsePlanState(text3) {
-  if (text3 === null)
+function parsePlanState(text4) {
+  if (text4 === null)
     return { autoRenew: false };
   let raw;
   try {
-    raw = JSON.parse(text3);
+    raw = JSON.parse(text4);
   } catch {
     return { autoRenew: false };
   }
@@ -97071,11 +97506,11 @@ async function readIfPresent2(path) {
 }
 var micros = (value, fallback) => typeof value === "string" && /^[0-9]{1,15}$/.test(value) ? BigInt(value) : fallback;
 async function readLimits(paths) {
-  const text3 = await readIfPresent2(paths.limits);
+  const text4 = await readIfPresent2(paths.limits);
   let raw = {};
-  if (text3 !== null) {
+  if (text4 !== null) {
     try {
-      const parsed = JSON.parse(text3);
+      const parsed = JSON.parse(text4);
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
         raw = parsed;
     } catch {}
@@ -97099,10 +97534,10 @@ async function writeLimits(paths, limits) {
   await writeFile12(temp, body, { encoding: "utf8", mode: 384 });
   await rename14(temp, paths.limits);
 }
-function parseLine(text3) {
+function parseLine(text4) {
   let parsed;
   try {
-    parsed = JSON.parse(text3);
+    parsed = JSON.parse(text4);
   } catch {
     return null;
   }
@@ -97116,10 +97551,10 @@ function parseLine(text3) {
   return line;
 }
 async function readSpendLog(paths) {
-  const text3 = await readIfPresent2(paths.log);
-  if (text3 === null)
+  const text4 = await readIfPresent2(paths.log);
+  if (text4 === null)
     return [];
-  return text3.split(`
+  return text4.split(`
 `).map((line) => line.trim() === "" ? null : parseLine(line)).filter((line) => line !== null);
 }
 async function appendSpendLines(paths, lines) {
@@ -97617,14 +98052,14 @@ async function tokenVampCandidates(args, ctx) {
     writeUsageFailure(ctx.deps, usageLine, ctx.json);
     return 2;
   }
-  const query = new URLSearchParams;
+  const query2 = new URLSearchParams;
   if (limit !== undefined)
-    query.set("limit", limit);
+    query2.set("limit", limit);
   if (minCopies !== undefined)
-    query.set("minCopies24h", minCopies);
+    query2.set("minCopies24h", minCopies);
   if (stage !== undefined)
-    query.set("stage", stage);
-  const search = query.toString();
+    query2.set("stage", stage);
+  const search = query2.toString();
   return runPaidRead(ctx, {
     path: `/api/v1/markets/vamp-candidates${search ? `?${search}` : ""}`,
     kind: "vamp",
@@ -98773,20 +99208,20 @@ async function writeSecretNames(deps, profile, names) {
   else
     await deps.updateProfile(profile, { secretNames: sorted });
 }
-function usage10(ctx, line) {
+function usage11(ctx, line) {
   writeScreenUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
 async function secretsSet(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage10(ctx, parsed.error);
+    return usage11(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage10(ctx, "Usage: candle secrets set <name>");
+    return usage11(ctx, "Usage: candle secrets set <name>");
   const name2 = canonicalSecretName(raw);
   if (name2 === undefined) {
-    return usage10(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage11(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
     writeScreenLocalFailure(ctx.deps, {
@@ -98798,7 +99233,7 @@ async function secretsSet(args, ctx) {
   }
   const value = await ctx.deps.promptSecret(`Value for ${name2} (input hidden): `);
   if (value.length === 0)
-    return usage10(ctx, "An empty value was typed; nothing was stored.");
+    return usage11(ctx, "An empty value was typed; nothing was stored.");
   try {
     await ctx.deps.secretsStore.set(secretRef(ctx.profile, name2), value);
   } catch (error) {
@@ -98822,9 +99257,9 @@ async function secretsSet(args, ctx) {
 async function secretsList(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage10(ctx, parsed.error);
+    return usage11(ctx, parsed.error);
   if (parsed.positionals.length > 0)
-    return usage10(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+    return usage11(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   const names = await storedSecretNames(ctx.deps, ctx.profile);
   if (ctx.json) {
     ctx.deps.stdout.write(`${JSON.stringify({ ok: true, names, backend: ctx.deps.backend })}
@@ -98842,13 +99277,13 @@ candle secrets set <name>`);
 async function secretsRemove(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage10(ctx, parsed.error);
+    return usage11(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage10(ctx, "Usage: candle secrets remove <name>");
+    return usage11(ctx, "Usage: candle secrets remove <name>");
   const name2 = canonicalSecretName(raw);
   if (name2 === undefined) {
-    return usage10(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage11(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   await ctx.deps.secretsStore.delete(secretRef(ctx.profile, name2));
   const names = await storedSecretNames(ctx.deps, ctx.profile);
@@ -98981,12 +99416,12 @@ function financialId(ctx, value) {
 function financialToken(ctx, symbol, mint) {
   return symbol?.trim() ? `${symbol.trim()}${fullIds(ctx.deps) ? ` (${financialId(ctx, mint)})` : ""}` : financialId(ctx, mint);
 }
-function financialHeading(text3, style) {
-  return wrapText(terminalText(text3), proseWidth(style)).map((line) => heading(line, style)).join(`
+function financialHeading(text4, style) {
+  return wrapText(terminalText(text4), proseWidth(style)).map((line) => heading(line, style)).join(`
 `);
 }
-function signed(text3, style) {
-  return /^\+/.test(text3) ? accent(text3, style, "positive") : /^[-−]/.test(text3) ? accent(text3, style, "negative") : text3;
+function signed(text4, style) {
+  return /^\+/.test(text4) ? accent(text4, style, "positive") : /^[-−]/.test(text4) ? accent(text4, style, "negative") : text4;
 }
 function financialTable(ctx, headers2, rows, columns) {
   const style = terminalStyle(ctx.deps, "stdout");
@@ -99321,7 +99756,7 @@ function writeNotes(ctx, notes) {
     return;
   const style = terminalStyle(ctx.deps, "stdout");
   ctx.deps.stdout.write(`
-${notes.map(([level, text3]) => renderNotice(level, text3, style).join(`
+${notes.map(([level, text4]) => renderNotice(level, text4, style).join(`
 `)).join(`
 `)}
 `);
@@ -100036,7 +100471,7 @@ function writeNotes2(ctx, texts, level = "warning") {
     return;
   const style = terminalStyle(ctx.deps, "stdout");
   ctx.deps.stdout.write(`
-${texts.map((text3) => renderNotice(level, text3, style).join(`
+${texts.map((text4) => renderNotice(level, text4, style).join(`
 `)).join(`
 `)}
 `);
@@ -100060,12 +100495,12 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
   try {
     chainId = await rpc.chainId();
   } catch (error) {
-    const failure2 = message(error);
+    const failure3 = message(error);
     return {
       balances: async () => ({
         byAddress: new Map(unique.map((address) => [address, { wei: null, usdg: null }])),
         unavailable: unique,
-        failure: failure2
+        failure: failure3
       })
     };
   }
@@ -100077,7 +100512,7 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
   return {
     balances: async () => {
       const byAddress = new Map;
-      let failure2;
+      let failure3;
       let next = 0;
       await Promise.all(Array.from({ length: Math.min(EVM_READS_IN_FLIGHT, unique.length) }, async () => {
         while (next < unique.length) {
@@ -100086,7 +100521,7 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
             try {
               return await call2();
             } catch (error) {
-              failure2 ??= message(error);
+              failure3 ??= message(error);
               return null;
             }
           };
@@ -100099,7 +100534,7 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
         const read2 = byAddress.get(address);
         return read2 === undefined || read2.wei === null || read2.usdg === null;
       });
-      return { byAddress, unavailable: unavailable6, ...failure2 === undefined ? {} : { failure: failure2 } };
+      return { byAddress, unavailable: unavailable6, ...failure3 === undefined ? {} : { failure: failure3 } };
     }
   };
 }
@@ -100108,13 +100543,13 @@ async function readOwnRpc(addresses, solana, ctx) {
   const unique = [...new Set(addresses)];
   const lamports = new Map;
   let rateLimited = false;
-  let failure2;
+  let failure3;
   const noteFailure = (error) => {
     if (isRateLimited(error)) {
       rateLimited = true;
-      failure2 ??= rateLimitedReadFailure(ctx, error);
+      failure3 ??= rateLimitedReadFailure(ctx, error);
     } else
-      failure2 ??= describeRpcFailure(error);
+      failure3 ??= describeRpcFailure(error);
   };
   for (let at3 = 0;at3 < unique.length; at3 += CHUNK) {
     const chunk = unique.slice(at3, at3 + CHUNK);
@@ -100176,7 +100611,7 @@ async function readOwnRpc(addresses, solana, ctx) {
     if (sol === null || held === null)
       unavailable6.push(address);
   }
-  return { byAddress, unavailable: unavailable6, ...failure2 === undefined ? {} : { failure: failure2 } };
+  return { byAddress, unavailable: unavailable6, ...failure3 === undefined ? {} : { failure: failure3 } };
 }
 function solanaHoldings(read2, prices) {
   if (read2 === undefined || read2.lamports === null && read2.tokens === null)
@@ -100603,17 +101038,17 @@ async function profileUse(args, ctx) {
   let account = profile.account;
   let username = profile.username;
   if (apiKey) {
-    const { account: live, username: liveUsername, failure: failure2 } = await fetchAccount(deps, apiUrl, apiKey);
+    const { account: live, username: liveUsername, failure: failure3 } = await fetchAccount(deps, apiUrl, apiKey);
     if (live) {
       account = live;
       username = liveUsername;
       await deps.updateProfile(name2, { account: live, username: liveUsername, accountCachedAt: deps.now() });
     } else {
       if (json)
-        notice(deps, "stderr", "warning", `Could not refresh the account for ${name2} (${failure2}); keeping the cached value.
+        notice(deps, "stderr", "warning", `Could not refresh the account for ${name2} (${failure3}); keeping the cached value.
 `.trim());
       else
-        notice(deps, "stderr", "warning", `Could not refresh the account for ${name2} (${failure2}); keeping the cached value.`);
+        notice(deps, "stderr", "warning", `Could not refresh the account for ${name2} (${failure3}); keeping the cached value.`);
     }
   } else {
     if (json)
@@ -100975,7 +101410,7 @@ ${USAGE11}`, ctx.json);
     ["Candle page", card2.links.token]
   ];
   writeFields(ctx.deps, "stdout", rows, title(card2));
-  const sources2 = Object.entries(card2.sources).filter(([, text3]) => typeof text3 === "string");
+  const sources2 = Object.entries(card2.sources).filter(([, text4]) => typeof text4 === "string");
   if (sources2.length > 0) {
     ctx.deps.stdout.write(`
 `);
@@ -101415,20 +101850,20 @@ ${changes.map((change) => `  ${describeControlChange(change)}`).join(`
   });
 }
 function renderableAsText(bytes) {
-  let text3;
+  let text4;
   try {
-    text3 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    text4 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     return;
   }
-  for (const char of text3) {
+  for (const char of text4) {
     const code = char.codePointAt(0) ?? 0;
     if (code === 10)
       continue;
     if (code <= 31 || code >= 127 && code <= 159)
       return;
   }
-  return text3;
+  return text4;
 }
 function hex3(bytes) {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -101483,13 +101918,13 @@ async function signMessage2(args, ctx) {
       return usage(ctx, `No external wallet in this vault matches --wallet ${requested}.`);
     }
     const digest = hex3(sha2562(bytes));
-    const text3 = renderableAsText(bytes);
+    const text4 = renderableAsText(bytes);
     const lines = [
       `wallet      ${entry.label} (${entry.address})`,
       `bytes       ${bytes.length}`,
       `sha256      ${digest}`,
-      text3 === undefined ? `form        not renderable as text (not UTF-8, or a control character other than newline); shown as hex` : `form        UTF-8 text with no control characters other than newline`,
-      text3 === undefined ? `hex         ${hex3(bytes)}` : `text        ${text3.split(`
+      text4 === undefined ? `form        not renderable as text (not UTF-8, or a control character other than newline); shown as hex` : `form        UTF-8 text with no control characters other than newline`,
+      text4 === undefined ? `hex         ${hex3(bytes)}` : `text        ${text4.split(`
 `).join(`
             `)}`
     ];
@@ -101516,7 +101951,7 @@ async function signMessage2(args, ctx) {
         publicKey: entry.address,
         byteLength: bytes.length,
         sha256: digest,
-        renderedAs: text3 === undefined ? "hex" : "text",
+        renderedAs: text4 === undefined ? "hex" : "text",
         signature: signatureBase58,
         signatureBase64: toBase642(signature)
       });
@@ -101839,7 +102274,7 @@ async function runStake(action, args, ctx) {
     valueFlags: ["--wallet", "--client-stake-id"],
     booleanFlags: ["--yes", ...action === "claim" ? ["--all"] : []]
   });
-  const usage11 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
+  const usage12 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
@@ -101848,7 +102283,7 @@ async function runStake(action, args, ctx) {
   const id = values["--client-stake-id"] ?? `stake-${randomUUID11()}`;
   const all = booleans.has("--all");
   if (!validClientId(id) || id.length > 128 || (action === "positions" ? positionals.length !== 0 : action === "finish" ? positionals.length > 1 : action === "claim" ? all ? positionals.length !== 0 : positionals.length !== 1 : positionals.length !== 1)) {
-    writeUsageFailure(ctx.deps, usage11, ctx.json);
+    writeUsageFailure(ctx.deps, usage12, ctx.json);
     return 2;
   }
   try {
@@ -102072,16 +102507,16 @@ function resolveRenameTarget(index, old, id) {
 // src/vault/rename-batch.ts
 init_format();
 var MAX_RENAME_BATCH = 256;
-function csvCells(text3) {
+function csvCells(text4) {
   const cells = [];
   let cell = "";
   let quoted = false;
   let closed = false;
-  for (let i = 0;i < text3.length; i++) {
-    const char = text3[i];
+  for (let i = 0;i < text4.length; i++) {
+    const char = text4[i];
     if (quoted) {
       if (char === '"') {
-        if (text3[i + 1] === '"') {
+        if (text4[i + 1] === '"') {
           cell += '"';
           i++;
         } else {
@@ -102107,7 +102542,7 @@ function csvCells(text3) {
   return cells;
 }
 function parseRenamePairs(contents) {
-  const lines = contents.split(/\r?\n/).map((text3, at3) => ({ text: text3, line: at3 + 1 })).filter(({ text: text3 }) => text3.trim() !== "" && !/^\s*#/.test(text3));
+  const lines = contents.split(/\r?\n/).map((text4, at3) => ({ text: text4, line: at3 + 1 })).filter(({ text: text4 }) => text4.trim() !== "" && !/^\s*#/.test(text4));
   const rows = [];
   const findings = [];
   const header = csvCells(lines[0]?.text ?? "")?.map((cell) => cell.trim()) ?? [];
@@ -102122,11 +102557,11 @@ function parseRenamePairs(contents) {
   if (data.length < 1 || data.length > MAX_RENAME_BATCH) {
     findings.push({ line: 0, problem: `A rename file must hold 1 to ${MAX_RENAME_BATCH} rows; found ${data.length}.` });
   }
-  for (const { text: text3, line } of data) {
+  for (const { text: text4, line } of data) {
     let from;
     let to;
     if (csv) {
-      const cells = csvCells(text3);
+      const cells = csvCells(text4);
       if (cells === undefined || cells.length !== header.length) {
         findings.push({ line, problem: "Malformed CSV row or field count does not match the header." });
         continue;
@@ -102134,7 +102569,7 @@ function parseRenamePairs(contents) {
       from = cells[header.indexOf("from")];
       to = cells[header.indexOf("to")];
     } else {
-      const match = /^(\S+)[ \t]+(\S+)([ \t]*)$/.exec(text3);
+      const match = /^(\S+)[ \t]+(\S+)([ \t]*)$/.exec(text4);
       if (match !== null)
         [from, to] = [match[1], `${match[2]}${match[3]}`];
     }
@@ -102876,14 +103311,14 @@ async function tokenEvents(args, ctx) {
     return 2;
   }
   const mint = parsed.positionals[0];
-  const query = new URLSearchParams;
+  const query2 = new URLSearchParams;
   if (limit !== undefined)
-    query.set("limit", limit);
+    query2.set("limit", limit);
   if (since !== undefined)
-    query.set("since", since);
+    query2.set("since", since);
   if (before !== undefined)
-    query.set("before", before);
-  const search = query.toString();
+    query2.set("before", before);
+  const search = query2.toString();
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   const result = await apiRequest(`/api/v1/tokens/${chain2}/${encodeURIComponent(mint)}/events${search ? `?${search}` : ""}`, {
     apiUrl: ctx.apiUrl,
@@ -103026,8 +103461,8 @@ function writeApiFailure(ctx, result, authType) {
     writeRefusal(ctx, refusal3);
     return 1;
   }
-  const failure2 = result;
-  writeFailure(ctx.deps, failure2.status === 404 ? { ...failure2, message: REFUSALS.not_found } : failure2, { apiUrl: ctx.apiUrl, authType }, ctx.json);
+  const failure3 = result;
+  writeFailure(ctx.deps, failure3.status === 404 ? { ...failure3, message: REFUSALS.not_found } : failure3, { apiUrl: ctx.apiUrl, authType }, ctx.json);
   return 1;
 }
 function dataOf(result) {
@@ -103087,12 +103522,12 @@ function writeUnknown(ctx, idempotencyKey) {
   }, ctx.json);
   return EXIT_OUTCOME_UNKNOWN;
 }
-function idempotencyKeyOf(values, usage11) {
+function idempotencyKeyOf(values, usage12) {
   const given = values["--idempotency-key"];
   if (given === undefined)
     return randomUUID12();
   if (given.length < 1 || given.length > 128)
-    return usage11("--idempotency-key must be 1 to 128 characters.");
+    return usage12("--idempotency-key must be 1 to 128 characters.");
   return given;
 }
 function sectionOf(value) {
@@ -103124,18 +103559,18 @@ function sectionText(bytes, section3) {
   } catch {
     return { error: "The file is not valid UTF-8." };
   }
-  const text3 = decoded.replace(/\r\n?/g, `
+  const text4 = decoded.replace(/\r\n?/g, `
 `);
-  for (const char of text3) {
+  for (const char of text4) {
     const c = char.codePointAt(0) ?? 0;
     if (c < 32 && c !== 10 && c !== 9 || c === 127 || c >= 128 && c < 160 || c >= 55296 && c <= 57343)
       return { error: `The file holds a control character (U+${c.toString(16).toUpperCase().padStart(4, "0")}).` };
   }
-  const length = [...text3].length;
+  const length = [...text4].length;
   const limit = TOKEN_PAGE_LIMITS[section3];
   if (length > limit)
     return { error: `${section3} is at most ${limit} characters; the file has ${length}.` };
-  return { text: text3 };
+  return { text: text4 };
 }
 function signatureFor(chain2, given) {
   const value = given.trim();
@@ -103205,22 +103640,22 @@ ${terminalTextKeepingLines(v.text)}
   else
     writeFields(ctx.deps, "stdout", facts.map((f) => [terminalText(f.metric), factValue(f)]));
 }
-function terminalTextKeepingLines(text3) {
-  return text3.split(`
+function terminalTextKeepingLines(text4) {
+  return text4.split(`
 `).map((line) => terminalText(line.replace(/\t/g, "    "))).join(`
 `);
 }
 async function tokenAbout(args, ctx) {
-  const usage11 = usageFor(ctx, USAGE13.about);
+  const usage12 = usageFor(ctx, USAGE13.about);
   const parsed = parseArgs(args, { valueFlags: ["--chain"], booleanFlags: ["--capabilities"] });
   if ("error" in parsed)
-    return usage11(parsed.error);
+    return usage12(parsed.error);
   const chain2 = chainOf(parsed.values);
   const address = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || !address)
-    return usage11();
+    return usage12();
   if (!chain2)
-    return usage11("--chain must be solana or hood.");
+    return usage12("--chain must be solana or hood.");
   const withCapabilities = parsed.booleans.has("--capabilities");
   const apiKey = withCapabilities ? await requireKey(ctx) : undefined;
   if (withCapabilities && !apiKey)
@@ -103257,42 +103692,42 @@ async function tokenAbout(args, ctx) {
   return 0;
 }
 async function tokenClaim(args, ctx) {
-  const usage11 = usageFor(ctx, USAGE13.claim);
+  const usage12 = usageFor(ctx, USAGE13.claim);
   const parsed = parseArgs(args, {
     valueFlags: ["--chain", "--challenge-id", "--signature", "--message-out", "--idempotency-key"],
     booleanFlags: ["--creator", "--challenge"],
     pathFlags: ["--message-out"]
   });
   if ("error" in parsed)
-    return usage11(parsed.error);
+    return usage12(parsed.error);
   const { values, booleans } = parsed;
   const chain2 = chainOf(values);
   const address = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || !address)
-    return usage11();
+    return usage12();
   if (!chain2)
-    return usage11("--chain must be solana or hood.");
+    return usage12("--chain must be solana or hood.");
   const creator = booleans.has("--creator");
   const challenge = booleans.has("--challenge");
   const challengeId = values["--challenge-id"];
   const given = values["--signature"];
   if ((challenge || challengeId !== undefined || given !== undefined) && !creator)
-    return usage11("--challenge, --challenge-id and --signature are for --creator.");
+    return usage12("--challenge, --challenge-id and --signature are for --creator.");
   if (challenge && (challengeId !== undefined || given !== undefined))
-    return usage11("--challenge asks for a new challenge; send the signature in a second run.");
+    return usage12("--challenge asks for a new challenge; send the signature in a second run.");
   if (challengeId === undefined !== (given === undefined))
-    return usage11("--challenge-id and --signature go together.");
+    return usage12("--challenge-id and --signature go together.");
   if (values["--message-out"] !== undefined && !challenge)
-    return usage11("--message-out goes with --challenge.");
+    return usage12("--message-out goes with --challenge.");
   if (challengeId !== undefined && !UUID2.test(challengeId))
-    return usage11("--challenge-id is the id the challenge printed.");
+    return usage12("--challenge-id is the id the challenge printed.");
   let signature;
   if (given !== undefined) {
     signature = signatureFor(chain2, given);
     if (!signature)
-      return usage11(chain2 === "hood" ? "--signature must be the 0x-hex message signature (65 bytes)." : "--signature must be the 64-byte Ed25519 signature, base58 or base64.");
+      return usage12(chain2 === "hood" ? "--signature must be the 0x-hex message signature (65 bytes)." : "--signature must be the 64-byte Ed25519 signature, base58 or base64.");
   }
-  const idempotencyKey = idempotencyKeyOf(values, usage11);
+  const idempotencyKey = idempotencyKeyOf(values, usage12);
   if (typeof idempotencyKey === "number")
     return idempotencyKey;
   const apiKey = await requireKey(ctx);
@@ -103384,10 +103819,10 @@ var SECTION_FLAGS = {
   restore: { valueFlags: ["--chain", "--version-id", "--base-revision", "--idempotency-key"], booleanFlags: [] }
 };
 async function tokenSection(args, ctx) {
-  const usage11 = usageFor(ctx, USAGE13.section);
+  const usage12 = usageFor(ctx, USAGE13.section);
   const action2 = args[0];
   if (action2 !== "set" && action2 !== "restore")
-    return usage11();
+    return usage12();
   const spec = SECTION_FLAGS[action2];
   const parsed = parseArgs(args.slice(1), {
     valueFlags: [...spec.valueFlags],
@@ -103395,21 +103830,21 @@ async function tokenSection(args, ctx) {
     ...action2 === "set" ? { pathFlags: ["--file"] } : {}
   });
   if ("error" in parsed)
-    return usage11(parsed.error);
+    return usage12(parsed.error);
   const { values } = parsed;
   const chain2 = chainOf(values);
   const [address, sectionName] = parsed.positionals;
   if (parsed.positionals.length !== 2 || !address)
-    return usage11();
+    return usage12();
   if (!chain2)
-    return usage11("--chain must be solana or hood.");
+    return usage12("--chain must be solana or hood.");
   const section3 = sectionOf(sectionName);
   if (!section3)
-    return usage11("The section is thesis, tokenomics or lore.");
+    return usage12("The section is thesis, tokenomics or lore.");
   const base2 = values["--base-revision"];
   if (base2 === undefined || !REVISION.test(base2))
-    return usage11("--base-revision is the section's current revision (0 for a first write), from candle token about.");
-  const idempotencyKey = idempotencyKeyOf(values, usage11);
+    return usage12("--base-revision is the section's current revision (0 for a first write), from candle token about.");
+  const idempotencyKey = idempotencyKeyOf(values, usage12);
   if (typeof idempotencyKey === "number")
     return idempotencyKey;
   let body;
@@ -103418,7 +103853,7 @@ async function tokenSection(args, ctx) {
   if (action2 === "set") {
     const file = values["--file"];
     if (file === undefined)
-      return usage11("--file is required: the section text comes from a file.");
+      return usage12("--file is required: the section text comes from a file.");
     let bytes;
     try {
       bytes = await ctx.deps.readBytes(file);
@@ -103436,16 +103871,16 @@ async function tokenSection(args, ctx) {
     }
     const empty = checked.text.trim().length === 0;
     if (empty && !parsed.booleans.has("--clear"))
-      return usage11("The file is empty. An empty write clears the section; pass --clear to mean that.");
+      return usage12("The file is empty. An empty write clears the section; pass --clear to mean that.");
     if (!empty && parsed.booleans.has("--clear"))
-      return usage11("--clear is for an empty file.");
+      return usage12("--clear is for an empty file.");
     body = { text: checked.text, baseRevision: base2 };
     path = pagePath(chain2, address, `/sections/${section3}`);
     method = "PUT";
   } else {
     const versionId = values["--version-id"];
     if (versionId === undefined || !UUID2.test(versionId))
-      return usage11("--version-id is a version id from candle token history.");
+      return usage12("--version-id is a version id from candle token history.");
     body = { versionId, baseRevision: base2 };
     path = pagePath(chain2, address, `/sections/${section3}/restore`);
     method = "POST";
@@ -103477,28 +103912,28 @@ async function tokenSection(args, ctx) {
   return 0;
 }
 async function tokenHistory(args, ctx) {
-  const usage11 = usageFor(ctx, USAGE13.history);
+  const usage12 = usageFor(ctx, USAGE13.history);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
   if ("error" in parsed)
-    return usage11(parsed.error);
+    return usage12(parsed.error);
   const { values } = parsed;
   const chain2 = chainOf(values);
   const [address, sectionName] = parsed.positionals;
   if (parsed.positionals.length !== 2 || !address)
-    return usage11();
+    return usage12();
   if (!chain2)
-    return usage11("--chain must be solana or hood.");
+    return usage12("--chain must be solana or hood.");
   const section3 = sectionOf(sectionName);
   if (!section3)
-    return usage11("The section is thesis, tokenomics or lore.");
+    return usage12("The section is thesis, tokenomics or lore.");
   const limit = values["--limit"];
   if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50))
-    return usage11("--limit is a whole number from 1 to 50.");
-  const query = new URLSearchParams({
+    return usage12("--limit is a whole number from 1 to 50.");
+  const query2 = new URLSearchParams({
     ...limit !== undefined ? { limit } : {},
     ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
   });
-  const result = await read2(ctx, pagePath(chain2, address, `/sections/${section3}/history${query.size ? `?${query}` : ""}`));
+  const result = await read2(ctx, pagePath(chain2, address, `/sections/${section3}/history${query2.size ? `?${query2}` : ""}`));
   if (!result.ok)
     return writeApiFailure(ctx, result, "none");
   const data = dataOf(result);
@@ -103532,27 +103967,27 @@ More: --cursor ${data.nextCursor}
   return 0;
 }
 async function tokenFlag(args, ctx) {
-  const usage11 = usageFor(ctx, USAGE13.flag);
+  const usage12 = usageFor(ctx, USAGE13.flag);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--content", "--reason", "--detail", "--idempotency-key"] });
   if ("error" in parsed)
-    return usage11(parsed.error);
+    return usage12(parsed.error);
   const { values } = parsed;
   const chain2 = chainOf(values);
   const address = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || !address)
-    return usage11();
+    return usage12();
   if (!chain2)
-    return usage11("--chain must be solana or hood.");
+    return usage12("--chain must be solana or hood.");
   const contentId = values["--content"];
   if (contentId === undefined || !UUID2.test(contentId))
-    return usage11("--content is the exact version id being reported (candle token about or history).");
+    return usage12("--content is the exact version id being reported (candle token about or history).");
   const reason = values["--reason"];
   if (!reason || !FLAG_REASONS.includes(reason))
-    return usage11(`--reason is one of ${FLAG_REASONS.join(", ")}.`);
+    return usage12(`--reason is one of ${FLAG_REASONS.join(", ")}.`);
   const detail = values["--detail"];
   if (detail !== undefined && [...detail].length > FLAG_DETAIL_LIMIT)
-    return usage11(`--detail is at most ${FLAG_DETAIL_LIMIT} characters.`);
-  const idempotencyKey = idempotencyKeyOf(values, usage11);
+    return usage12(`--detail is at most ${FLAG_DETAIL_LIMIT} characters.`);
+  const idempotencyKey = idempotencyKeyOf(values, usage12);
   if (typeof idempotencyKey === "number")
     return idempotencyKey;
   const apiKey = await requireKey(ctx);
@@ -103599,8 +104034,8 @@ async function readLinkedWallets(ctx, key) {
   let cursor = null;
   const seen = new Set;
   for (let page = 0;page < 25; page++) {
-    const query = cursor === null ? "?limit=100" : `?limit=100&cursor=${encodeURIComponent(cursor)}`;
-    const body = await request(ctx, key, `/api/v1/agent/wallets${query}`);
+    const query2 = cursor === null ? "?limit=100" : `?limit=100&cursor=${encodeURIComponent(cursor)}`;
+    const body = await request(ctx, key, `/api/v1/agent/wallets${query2}`);
     if (!Array.isArray(body.page))
       throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not return a page.");
     rows.push(...body.page);
@@ -104004,7 +104439,7 @@ function stepReporter(write3, tty, ascii = false) {
 }
 function commandSteps(ctx) {
   const style = terminalStyle(ctx.deps, "stderr", ctx.json);
-  const reporter = stepReporter(ctx.json ? () => {} : (text3) => ctx.deps.stderr.write(text3), style.motion, !style.styled);
+  const reporter = stepReporter(ctx.json ? () => {} : (text4) => ctx.deps.stderr.write(text4), style.motion, !style.styled);
   return { ...reporter, [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: () => reporter.stop() };
 }
 function formatBytes(n) {
@@ -104538,10 +104973,10 @@ candle update`);
       } catch (error) {
         steps.fail("installing");
         await discard(deps, helper.tmpPath);
-        const failure2 = notWritable(dir, error);
+        const failure3 = notWritable(dir, error);
         writeScreenLocalFailure(deps, {
-          ...failure2,
-          message: `${failure2.message} candle ${target.version} was installed to ${realExec}, but its security key helper could not be renamed to ${helper.target}.`
+          ...failure3,
+          message: `${failure3.message} candle ${target.version} was installed to ${realExec}, but its security key helper could not be renamed to ${helper.target}.`
         }, json);
         return 1;
       }
@@ -104676,7 +105111,7 @@ async function verifyVaultIntegrity(copy, opts = {}) {
   }
   observer?.onStep?.(4);
   const root = await decryptRoot(copy);
-  const report = { addressChecked: [], rederived: [], notRederived: [], comparedAgainstLive: false };
+  const report2 = { addressChecked: [], rederived: [], notRederived: [], comparedAgainstLive: false };
   try {
     if (root.length !== ROOT_ENTROPY_BYTES) {
       fail3(4, `the root blob holds ${root.length} bytes, expected ${ROOT_ENTROPY_BYTES}`);
@@ -104686,7 +105121,7 @@ async function verifyVaultIntegrity(copy, opts = {}) {
     }
     observer?.onStep?.(5);
     for (const entry of copy.index.entries) {
-      await verifyEntry(copy, entry, root, report, observer);
+      await verifyEntry(copy, entry, root, report2, observer);
     }
   } finally {
     wipe(root);
@@ -104707,7 +105142,7 @@ async function verifyVaultIntegrity(copy, opts = {}) {
   }
   if (opts.live) {
     observer?.onStep?.(8);
-    report.comparedAgainstLive = true;
+    report2.comparedAgainstLive = true;
     const copyAddresses = new Set(copy.index.entries.map((entry) => entry.address));
     const liveAddresses = new Set(opts.live.index.entries.map((entry) => entry.address));
     const missing = [...liveAddresses].filter((address) => !copyAddresses.has(address));
@@ -104716,9 +105151,9 @@ async function verifyVaultIntegrity(copy, opts = {}) {
       fail3(8, `this copy's address set does not match the live vault (${missing.length} address(es) in the vault and not in the copy, ${extra.length} the other way). It may be a stale copy, or a copy of a different vault`);
     }
   }
-  return report;
+  return report2;
 }
-async function verifyEntry(copy, entry, root, report, observer) {
+async function verifyEntry(copy, entry, root, report2, observer) {
   const secret = await decryptKey(copy, entry.id);
   observer?.onLeafLive?.(1);
   try {
@@ -104733,9 +105168,9 @@ async function verifyEntry(copy, entry, root, report, observer) {
     } else if (!sameEvmAddress(evmAddressFromSecret(secret), entry.address)) {
       fail3(5, "its stored secret does not produce the address the index records", entry.id);
     }
-    report.addressChecked.push(entry.id);
+    report2.addressChecked.push(entry.id);
     if (entry.origin !== "derived" || entry.derivation === undefined) {
-      report.notRederived.push(entry.id);
+      report2.notRederived.push(entry.id);
       return;
     }
     if (entry.derivation.scheme === "bip32-secp256k1") {
@@ -104750,7 +105185,7 @@ async function verifyEntry(copy, entry, root, report, observer) {
         if (!bytesEqual(derivedEvm.secret, secret)) {
           fail3(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id);
         }
-        report.rederived.push(entry.id);
+        report2.rederived.push(entry.id);
       } finally {
         wipe(derivedEvm.secret);
         observer?.onLeafLive?.(1);
@@ -104758,7 +105193,7 @@ async function verifyEntry(copy, entry, root, report, observer) {
       return;
     }
     if (entry.derivation.scheme !== "slip10-ed25519") {
-      report.notRederived.push(entry.id);
+      report2.notRederived.push(entry.id);
       return;
     }
     const derived = await deriveSolanaKey(root, entry.derivation.path);
@@ -104767,7 +105202,7 @@ async function verifyEntry(copy, entry, root, report, observer) {
       if (!bytesEqual(derived.secret64, secret)) {
         fail3(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id);
       }
-      report.rederived.push(entry.id);
+      report2.rederived.push(entry.id);
     } finally {
       wipe(derived.secret64);
       observer?.onLeafLive?.(1);
@@ -104864,7 +105299,7 @@ async function vaultBackup(args, ctx) {
     }
     const recordCopy = live.file.version === EVM_TEE_VAULT_VERSION ? await copyEvmRecordForBackup(live, copyRecordPath, deps) : undefined;
     const written = await stat5(destination);
-    const { report, copyHeader, record: record4 } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
+    const { report: report2, copyHeader, record: record5 } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
     assertFloorCarried(copyHeader, live.file);
     const verifiedAt = new Date(deps.now()).toISOString();
     const copyEnvelopeIds = copyHeader.envelopes.map((envelope) => envelope.id);
@@ -104894,7 +105329,7 @@ async function vaultBackup(args, ctx) {
         sharedDomainAccepted: verdict.sharedDomainAccepted,
         sharedDomain: verdict.sharedDomain,
         verified: true,
-        ...reportJson(report, live, record4),
+        ...reportJson(report2, live, record5),
         ...recordCopy !== undefined ? {
           evmRecordCopy: {
             path: recordCopy.copyPath,
@@ -104918,8 +105353,8 @@ async function vaultBackup(args, ctx) {
     if (recordCopy !== undefined)
       notice(deps, "stdout", "note", `${recordCopyLine(recordCopy)}
 `.trim());
-    writeVerifiedReport(ctx, destination, verdict, report, live, {
-      record: record4,
+    writeVerifiedReport(ctx, destination, verdict, report2, live, {
+      record: record5,
       copyEnvelopes,
       leftOut,
       verifiedWith: verifiedWithLine(wordFor(live.envelope), live.envelope.id, "the copy was re-opened with it", carriedClause(live.file.envelopes.filter(isPassphraseEnvelope).map((envelope) => envelope.id)))
@@ -105075,13 +105510,13 @@ async function vaultVerifyBackup(args, ctx) {
     });
     const live = hold(opened.vault);
     const openedInCopy = carried.some((envelope) => envelope.id === opened.factor.envelopeId);
-    let report;
-    let record4;
+    let report2;
+    let record5;
     let copyOpened;
     if (openedInCopy) {
       const verified = await verifyCopy(ctx, target, opened.reopen, live, "opening the copy");
-      report = verified.report;
-      record4 = verified.record;
+      report2 = verified.report;
+      record5 = verified.record;
       copyOpened = {
         word: wordFor(live.envelope),
         envelopeId: opened.factor.envelopeId,
@@ -105097,8 +105532,8 @@ async function vaultVerifyBackup(args, ctx) {
         passphraseOnlyBecause: copyPassphraseReason(target, keyUsable),
         passphraseOnlyEvenIfSole: true
       })).vault);
-      report = await verifyVaultIntegrity(copy, { live });
-      record4 = await verifyEvmRecordCopy(copy, evmRecordPath(target));
+      report2 = await verifyVaultIntegrity(copy, { live });
+      record5 = await verifyEvmRecordCopy(copy, evmRecordPath(target));
       copyOpened = {
         word: "passphrase",
         envelopeId: copy.envelope.id,
@@ -105123,7 +105558,7 @@ async function vaultVerifyBackup(args, ctx) {
         ok: true,
         verified: target,
         sealed,
-        ...reportJson(report, live, record4),
+        ...reportJson(report2, live, record5),
         openedWith: { factor: copyOpened.factor, envelopeId: copyOpened.envelopeId },
         envelopesInCopy: copyHeader.envelopes.map((envelope) => envelope.id),
         passphraseExercised,
@@ -105131,8 +105566,8 @@ async function vaultVerifyBackup(args, ctx) {
       });
       return 0;
     }
-    writeVerifiedReport(ctx, target, sealed ? { sealed: true } : undefined, report, live, {
-      record: record4,
+    writeVerifiedReport(ctx, target, sealed ? { sealed: true } : undefined, report2, live, {
+      record: record5,
       copyEnvelopes: copyHeader.envelopes,
       leftOut: [],
       verifiedWith: verifiedWithLine(copyOpened.word, copyOpened.envelopeId, copyOpened.how, floorClause)
@@ -105156,9 +105591,9 @@ async function verifyCopy(_ctx, copyPath, reopen, live, purpose) {
     });
   const copy = await reopen(copyPath, raw, purpose);
   try {
-    const report = await verifyVaultIntegrity(copy, { live });
-    const record4 = await verifyEvmRecordCopy(copy, evmRecordPath(copyPath));
-    return { report, copyHeader: copy.file, record: record4 };
+    const report2 = await verifyVaultIntegrity(copy, { live });
+    const record5 = await verifyEvmRecordCopy(copy, evmRecordPath(copyPath));
+    return { report: report2, copyHeader: copy.file, record: record5 };
   } finally {
     closeVault(copy);
   }
@@ -105187,15 +105622,15 @@ async function exists2(path) {
     return false;
   }
 }
-function reportJson(report, live, record4) {
-  const ninth = record4 !== undefined && !record4.notApplicable;
+function reportJson(report2, live, record5) {
+  const ninth = record5 !== undefined && !record5.notApplicable;
   return {
     steps: ninth ? 9 : 8,
-    ...ninth ? { evmRecord: { path: record4.path, absent: record4.absent, lines: record4.lines } } : {},
-    addressChecked: report.addressChecked.length,
-    rederived: report.rederived.length,
-    notRederived: report.notRederived.length,
-    comparedAgainstLive: report.comparedAgainstLive,
+    ...ninth ? { evmRecord: { path: record5.path, absent: record5.absent, lines: record5.lines } } : {},
+    addressChecked: report2.addressChecked.length,
+    rederived: report2.rederived.length,
+    notRederived: report2.notRederived.length,
+    comparedAgainstLive: report2.comparedAgainstLive,
     nextIndex: live.index.hd.nextIndex,
     phraseRestoresDerivedKeysOnly: true
   };
@@ -105221,7 +105656,7 @@ function sharedDomainLine(verdict) {
   }
   return `  shared domain this unsealed copy carries every envelope into a cloud account; you accepted that.`;
 }
-function writeVerifiedReport(ctx, target, verdict, report, live, opts) {
+function writeVerifiedReport(ctx, target, verdict, report2, live, opts) {
   const { deps } = ctx;
   const ninth = opts.record !== undefined && !opts.record.notApplicable;
   const kept = opts.copyEnvelopes.map(labelEnvelope);
@@ -105246,14 +105681,14 @@ function writeVerifiedReport(ctx, target, verdict, report, live, opts) {
 `).trim());
   }
   writeFields(deps, "stdout", [
-    ["Keys checked", `${report.addressChecked.length} (each secret produces the address the index records)`],
-    ["Re-derived", `${report.rederived.length} from the root along their recorded paths`],
+    ["Keys checked", `${report2.addressChecked.length} (each secret produces the address the index records)`],
+    ["Re-derived", `${report2.rederived.length} from the root along their recorded paths`],
     [
       "Independent keys",
-      `${report.notRederived.length}: address and length checks are the strongest available for them`
+      `${report2.notRederived.length}: address and length checks are the strongest available for them`
     ]
   ]);
-  if (report.comparedAgainstLive)
+  if (report2.comparedAgainstLive)
     notice(deps, "stdout", "note", `  address set   matches the live vault
 `.trim());
   if (verdict?.sharedDomainAccepted)
@@ -107190,9 +107625,9 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
   if (parsed.values["--from"] !== undefined) {
     return usage(ctx, "--from applies to an external wallet only; a TEE wallet is funded from its pinned vault key.");
   }
-  const client = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
-  if ("error" in client)
-    return usage(ctx, client.error);
+  const client2 = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in client2)
+    return usage(ctx, client2.error);
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "vault fund"))
@@ -107230,15 +107665,15 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
       throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${teeEntry.address} has no pinned EVM vault key in this vault to fund from.`, { suggestion: "Nothing was signed. candle vault status lists this vault's keys and their pins." });
     }
     assertVaultSigner(fromEntry);
-    ctx.deps.stderr.write(`${hoodHostLine(client, "the chain id")}
+    ctx.deps.stderr.write(`${hoodHostLine(client2, "the chain id")}
 `);
-    await assertHoodChain(client);
+    await assertHoodChain(client2);
     notice(ctx.deps, "stdout", "note", `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
 `.trim());
     return runEvmTransfer({
       ctx,
-      rpcUrl: client.url,
-      builtIn: client.builtIn,
+      rpcUrl: client2.url,
+      builtIn: client2.builtIn,
       pinHoodChain: true,
       from: fromEntry,
       to: teeEntry.address,
@@ -107248,7 +107683,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
       decryptSecret: () => decryptKey(vault, fromEntry.id),
       usage: (line) => usage(ctx, line),
       writeJson: (value) => writeJson(ctx.deps, { ...value, tee: teeEntry.address })
-    }, client.rpc);
+    }, client2.rpc);
   });
 }
 
@@ -107641,7 +108076,7 @@ async function readLamports(addresses, solana, ctx) {
   const { rpc } = solana;
   const lamports = new Map;
   const unavailable6 = [];
-  let failure2;
+  let failure3;
   let rateLimited = false;
   for (let at3 = 0;at3 < addresses.length; at3 += CHUNK2) {
     const chunk = addresses.slice(at3, at3 + CHUNK2);
@@ -107657,12 +108092,12 @@ async function readLamports(addresses, solana, ctx) {
       unavailable6.push(...chunk);
       if (isRateLimited(error)) {
         rateLimited = true;
-        failure2 ??= rateLimitedReadFailure(ctx, error);
+        failure3 ??= rateLimitedReadFailure(ctx, error);
       } else
-        failure2 ??= describeRpcFailure(error);
+        failure3 ??= describeRpcFailure(error);
     }
   }
-  return { lamports, unavailable: unavailable6, ...failure2 === undefined ? {} : { failure: failure2 } };
+  return { lamports, unavailable: unavailable6, ...failure3 === undefined ? {} : { failure: failure3 } };
 }
 async function readEvmBalances(addresses, rpcUrl, fetchFn) {
   const rpc = createEvmRpc(rpcUrl, fetchFn);
@@ -107762,17 +108197,17 @@ async function vaultList(args, ctx) {
     }
     let lamports = new Map;
     let unavailable6 = [];
-    let failure2;
+    let failure3;
     if (balances && solana.length > 0 && solanaClient !== undefined) {
       const outcome = await readLamports(solana.map((entry) => entry.address), solanaClient, ctx);
       lamports = outcome.lamports;
       unavailable6 = outcome.unavailable;
-      failure2 = outcome.failure;
+      failure3 = outcome.failure;
     }
     const solanaComplete = unavailable6.length === 0;
     const totalLamports = [...lamports.values()].reduce((sum, value) => sum + value, 0n);
     if (!solanaComplete) {
-      notice(deps, "stderr", "warning", `${unavailable6.length} ${unavailable6.length === 1 ? "address" : "addresses"} could not be read: ${failure2 ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
+      notice(deps, "stderr", "warning", `${unavailable6.length} ${unavailable6.length === 1 ? "address" : "addresses"} could not be read: ${failure3 ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
 `.trim());
     }
     const evm = balances ? matched.filter((entry) => entry.chain === "evm") : [];
@@ -108004,8 +108439,8 @@ function unreadableRoomLine(reason) {
 `;
 }
 var RESTORED_SENTENCE = "The vault entry is back as it was: nothing left this machine.";
-function restoresPreImportEntry(failure2) {
-  return failure2.stage === "init" && failure2.status !== undefined && failure2.status !== 0;
+function restoresPreImportEntry(failure3) {
+  return failure3.stage === "init" && failure3.status !== undefined && failure3.status !== 0;
 }
 function restoreRefusedFailure(init, error) {
   if (error instanceof VaultError && error.code === "VAULT_CHANGED") {
@@ -108045,16 +108480,16 @@ init_promote_support();
 init_store();
 init_vault_support();
 function hoodClientFor(ctx, parsed) {
-  const client = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
-  if ("error" in client)
-    return { exit: usage(ctx, client.error) };
-  return client;
+  const client2 = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in client2)
+    return { exit: usage(ctx, client2.error) };
+  return client2;
 }
-async function promoteHeight(ctx, client) {
-  notice(ctx.deps, "stderr", "note", `${hoodHostLine(client, "the chain id and the current Hood height")}
+async function promoteHeight(ctx, client2) {
+  notice(ctx.deps, "stderr", "note", `${hoodHostLine(client2, "the chain id and the current Hood height")}
 `.trim());
-  await assertHoodChain(client);
-  return client.rpc.blockNumber();
+  await assertHoodChain(client2);
+  return client2.rpc.blockNumber();
 }
 function importKeyHex(secret) {
   return bytesToHex2(secret);
@@ -108073,11 +108508,11 @@ async function promoteEvmFresh(input, fromLabel) {
     acceptUnknownExposure: acceptUnknown,
     chain: "evm"
   });
-  const client = hoodClientFor(ctx, parsed);
-  if ("exit" in client)
-    return client.exit;
+  const client2 = hoodClientFor(ctx, parsed);
+  if ("exit" in client2)
+    return client2.exit;
   await refuseWithoutRoom(ctx);
-  const height = await promoteHeight(ctx, client);
+  const height = await promoteHeight(ctx, client2);
   const teeIndex = nextAllocatableIndex(nextIndexOf(vault.index.hd, "evmTee"), exposedIndexesOf(vault.index.hd, "evmTee"));
   const derivationPath = evmTeePath(teeIndex);
   const root = await decryptRoot(vault);
@@ -108210,9 +108645,9 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
   const { ctx, parsed, opened, hold, resolvedVault, toKey } = input;
   let vault = hold(opened.vault);
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
-  const client = hoodClientFor(ctx, parsed);
-  if ("exit" in client)
-    return client.exit;
+  const client2 = hoodClientFor(ctx, parsed);
+  if ("exit" in client2)
+    return client2.exit;
   const first = assertEvmInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
     acceptUnknownExposure: acceptUnknown
   });
@@ -108226,8 +108661,8 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
     warnings: [...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")],
     ...toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}
   });
-  const height = await promoteHeight(ctx, client);
-  const holdings2 = await readEvmHoldings(client.rpc, first.subject.address);
+  const height = await promoteHeight(ctx, client2);
+  const holdings2 = await readEvmHoldings(client2.rpc, first.subject.address);
   for (const line of holdingsLines(first.subject.address, holdings2, new Date(ctx.deps.now()).toISOString())) {
     notice(ctx.deps, "stdout", "note", `${line}
 `.trim());
@@ -108283,7 +108718,7 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
   });
   const code = imported.exit;
   if (imported.failure !== undefined) {
-    let failure2 = {
+    let failure3 = {
       code: imported.failure.code,
       message: imported.failure.message,
       ...imported.failure.suggestion !== undefined ? { suggestion: imported.failure.suggestion } : {}
@@ -108291,12 +108726,12 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
     if (restoresPreImportEntry(imported.failure)) {
       try {
         vault = hold(await commitVault(vault, { index: preImportIndex }, ctx.deps));
-        failure2 = { ...failure2, message: `${failure2.message} ${RESTORED_SENTENCE}` };
+        failure3 = { ...failure3, message: `${failure3.message} ${RESTORED_SENTENCE}` };
       } catch (error) {
-        failure2 = restoreRefusedFailure(failure2, error);
+        failure3 = restoreRefusedFailure(failure3, error);
       }
     }
-    writeLocalFailure(ctx.deps, failure2, ctx.json);
+    writeLocalFailure(ctx.deps, failure3, ctx.json);
     return code;
   }
   let rebound;
@@ -108407,9 +108842,9 @@ async function rebindAfterImport(ctx, toKey, wallet3, callingKeyPrefix, chain2) 
   ] : [];
   const run2 = rebindable.length > 0 ? await rebindPromoted(ctx, toKey.deviceToken, toKey.target.keyPrefix, rebindable, toKey.keySigner?.spkiSha256) : undefined;
   const input = { target: toKey.target, callingKeyPrefix, wallets: rebindable, run: run2, notRebindable };
-  const report = renderRebindReport(input);
-  if (report.length > 0)
-    notice(ctx.deps, "stderr", "note", `${report}
+  const report2 = renderRebindReport(input);
+  if (report2.length > 0)
+    notice(ctx.deps, "stderr", "note", `${report2}
 `.trim());
   const id = wallet3.linkedWalletId;
   return {
@@ -108742,7 +109177,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     });
     const code = imported.exit;
     if (imported.failure !== undefined) {
-      let failure2 = {
+      let failure3 = {
         code: imported.failure.code,
         message: imported.failure.message,
         ...imported.failure.suggestion !== undefined ? { suggestion: imported.failure.suggestion } : {}
@@ -108750,12 +109185,12 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
       if (restoresPreImportEntry(imported.failure)) {
         try {
           vault = hold(await commitVault(vault, { index: preImportIndex }, ctx.deps));
-          failure2 = { ...failure2, message: `${failure2.message} ${RESTORED_SENTENCE}` };
+          failure3 = { ...failure3, message: `${failure3.message} ${RESTORED_SENTENCE}` };
         } catch (error) {
-          failure2 = restoreRefusedFailure(failure2, error);
+          failure3 = restoreRefusedFailure(failure3, error);
         }
       }
-      writeLocalFailure(ctx.deps, failure2, ctx.json);
+      writeLocalFailure(ctx.deps, failure3, ctx.json);
       return code;
     }
     let rebound;
@@ -108796,11 +109231,11 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
 }
 async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmations) {
   const announceGrant = confirmations.announceGrant ?? true;
-  const report = confirmations.report ?? "write";
-  const fail4 = (failure2, exit) => {
-    if (report === "write")
-      writeLocalFailure(ctx.deps, failure2, ctx.json);
-    return { exit, ...report === "return" ? { failure: failure2 } : {} };
+  const report2 = confirmations.report ?? "write";
+  const fail4 = (failure3, exit) => {
+    if (report2 === "write")
+      writeLocalFailure(ctx.deps, failure3, ctx.json);
+    return { exit, ...report2 === "return" ? { failure: failure3 } : {} };
   };
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
@@ -108860,7 +109295,7 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
     }, ctx.deps);
     hold(next2);
     const stranded = `${entry.address} is stranded; it is never re-promotable.`;
-    if (report === "return") {
+    if (report2 === "return") {
       return { exit: 1, failure: { code: "PROMOTE_ALREADY_TEE_WALLET", message: stranded }, vault: next2 };
     }
     if (ctx.json)
@@ -108899,7 +109334,7 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
     linkedWalletId: adoption.patch.linkedWalletId ?? entry.linkedWalletId,
     remoteAuthority: adoption.patch.tee?.remoteAuthority ?? entry.tee?.remoteAuthority
   };
-  if (report === "return") {
+  if (report2 === "return") {
     return { exit: 0, adopted, vault: next };
   }
   if (ctx.json) {
@@ -108942,14 +109377,14 @@ async function displayHoldings(ctx, rpc, address) {
 `.trim());
 }
 async function runTeeImport(ctx, opts) {
-  const report = opts.report ?? "write";
+  const report2 = opts.report ?? "write";
   const closeReopened = opts.closeReopened ?? true;
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
-    const failure2 = { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" };
-    if (report === "write")
-      writeLocalFailure(ctx.deps, failure2, ctx.json);
-    return { exit: 1, ...report === "return" ? { failure: failure2 } : {} };
+    const failure3 = { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" };
+    if (report2 === "write")
+      writeLocalFailure(ctx.deps, failure3, ctx.json);
+    return { exit: 1, ...report2 === "return" ? { failure: failure3 } : {} };
   }
   opts.onImport?.();
   const flow = await runImportFlow({
@@ -108965,33 +109400,33 @@ async function runTeeImport(ctx, opts) {
     ...opts.keySigner !== undefined ? { keySigner: opts.keySigner } : {}
   });
   if (!flow.ok) {
-    const failure2 = flow.failure;
-    if (failure2.kind === "api") {
+    const failure3 = flow.failure;
+    if (failure3.kind === "api") {
       const render = { apiUrl: ctx.apiUrl, authType: "key" };
-      if (report === "write") {
-        writeFailure(ctx.deps, failure2.response, render, ctx.json);
+      if (report2 === "write") {
+        writeFailure(ctx.deps, failure3.response, render, ctx.json);
         return { exit: 1 };
       }
-      const suggestion = suggestionFor(failure2.response, render);
+      const suggestion = suggestionFor(failure3.response, render);
       return {
         exit: 1,
         failure: {
-          code: errorEnvelope(failure2.response, render).code,
-          message: renderError(failure2.response, render),
+          code: errorEnvelope(failure3.response, render).code,
+          message: renderError(failure3.response, render),
           ...suggestion ? { suggestion } : {},
-          stage: failure2.stage,
-          status: failure2.response.status
+          stage: failure3.stage,
+          status: failure3.response.status
         }
       };
     }
     const local = {
-      code: failure2.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
-      message: `${opts.address}: ${failure2.error instanceof Error ? failure2.error.message : String(failure2.error)}`,
+      code: failure3.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
+      message: `${opts.address}: ${failure3.error instanceof Error ? failure3.error.message : String(failure3.error)}`,
       suggestion: "The vault entry is import-pending. Fix the error and re-run promote to resume."
     };
-    if (report === "write")
+    if (report2 === "write")
       writeLocalFailure(ctx.deps, local, ctx.json);
-    return { exit: 1, ...report === "return" ? { failure: local } : {} };
+    return { exit: 1, ...report2 === "return" ? { failure: local } : {} };
   }
   const submitted = flow.submitted;
   const config = await ctx.deps.readConfig();
@@ -109102,8 +109537,8 @@ function parsePairsFile(contents, opts) {
     const orderAt = at3("order");
     const valueAt = at3("value_usd");
     hasValueUsd = valueAt !== -1;
-    for (const { line, text: text3 } of meaningful.slice(1)) {
-      const cells = text3.split(",").map((cell) => cell.trim());
+    for (const { line, text: text4 } of meaningful.slice(1)) {
+      const cells = text4.split(",").map((cell) => cell.trim());
       if (cells.length !== headerCells.length) {
         findings.push({
           line,
@@ -109136,8 +109571,8 @@ function parsePairsFile(contents, opts) {
       ]
     };
   } else {
-    for (const { line, text: text3 } of meaningful) {
-      const fields2 = text3.trim().split(/\s+/);
+    for (const { line, text: text4 } of meaningful) {
+      const fields2 = text4.trim().split(/\s+/);
       if (fields2.length !== 2) {
         findings.push({
           line,
@@ -109250,15 +109685,15 @@ async function preflightBatch(index, rows, opts) {
   const failures = [];
   const pinnedBy = new Map;
   const promotedBy = new Map;
-  const refuse3 = (row, failure2) => {
+  const refuse3 = (row, failure3) => {
     failures.push({
       line: row.line,
       label: row.label,
       destination: row.destination,
-      code: failure2.code,
-      message: failure2.message,
-      ...failure2.suggestion !== undefined ? { suggestion: failure2.suggestion } : {},
-      ...failure2.why !== undefined ? { why: failure2.why } : {}
+      code: failure3.code,
+      message: failure3.message,
+      ...failure3.suggestion !== undefined ? { suggestion: failure3.suggestion } : {},
+      ...failure3.why !== undefined ? { why: failure3.why } : {}
     });
   };
   const refuseWith = (row, error, why) => {
@@ -109810,24 +110245,24 @@ ${renderControlledBy(controlledBy, acting.length)}
             keySigner: keySignerImport(rebindPhase?.toKey)
           });
           if (imported.failure !== undefined || imported.submitted === undefined) {
-            let failure2 = imported.failure ?? {
+            let failure3 = imported.failure ?? {
               code: "VAULT_WRITE_FAILED",
               message: "The import did not complete."
             };
-            if (restoresPreImportEntry(failure2)) {
+            if (restoresPreImportEntry(failure3)) {
               try {
                 current = hold(await commitVault(current, { index: preImportIndex }, deps));
-                failure2 = { ...failure2, message: `${failure2.message} ${RESTORED_SENTENCE}` };
+                failure3 = { ...failure3, message: `${failure3.message} ${RESTORED_SENTENCE}` };
               } catch (error) {
-                failure2 = restoreRefusedFailure(failure2, error);
+                failure3 = restoreRefusedFailure(failure3, error);
               }
             }
             stopped = {
               line: row2.line,
               exit: imported.exit,
-              code: failure2.code,
-              message: failure2.message,
-              ...failure2.suggestion !== undefined ? { suggestion: failure2.suggestion } : {}
+              code: failure3.code,
+              message: failure3.message,
+              ...failure3.suggestion !== undefined ? { suggestion: failure3.suggestion } : {}
             };
             break;
           }
@@ -109914,9 +110349,9 @@ ${renderControlledBy(controlledBy, acting.length)}
           wallets: wallets2,
           notRebindable
         };
-        const report = renderRebindReport(notReached);
-        if (report.length > 0)
-          notice(deps, "stderr", "note", `${report}
+        const report2 = renderRebindReport(notReached);
+        if (report2.length > 0)
+          notice(deps, "stderr", "note", `${report2}
 `.trim());
       }
       if (ctx.json) {
@@ -109970,9 +110405,9 @@ async function runRebindPhase(ctx, phase, results) {
     run: run2,
     notRebindable
   };
-  const report = renderRebindReport(input);
-  if (report.length > 0)
-    notice(ctx.deps, "stderr", "note", `${report}
+  const report2 = renderRebindReport(input);
+  if (report2.length > 0)
+    notice(ctx.deps, "stderr", "note", `${report2}
 `.trim());
   const keySigner = phase.toKey.keySigner;
   if (keySigner !== undefined && results.some((row) => phase.importedTo.get(row.address) === phase.toKey.target.keyPrefix)) {
@@ -109996,7 +110431,7 @@ async function verifySubjectSecret(vault, subject) {
 }
 async function reconcileForPreflight(ctx, row, subject, resolved) {
   const { onDisk } = resolved;
-  const refuse3 = (failure2) => ({ ok: false, failure: failure2 });
+  const refuse3 = (failure3) => ({ ok: false, failure: failure3 });
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
     return refuse3({
@@ -111379,9 +111814,9 @@ async function vaultTransfer(args, ctx) {
               note2("Not reported to Candle's history: the transfer is not yet confirmed.");
               return { activityReport: "not-finalized" };
             }
-            const report = await reportTransferActivity(ctx, apiKey2, hash, "hood");
-            note2(report.line);
-            return { activityReport: report.outcome };
+            const report2 = await reportTransferActivity(ctx, apiKey2, hash, "hood");
+            note2(report2.line);
+            return { activityReport: report2.outcome };
           }
         } : {}
       }, rpc);
@@ -111420,9 +111855,9 @@ async function vaultTransfer(args, ctx) {
       const result = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan: plan2 });
       let activityReport;
       if (promoted && result.finalized) {
-        const report = await reportTransferActivity(ctx, apiKey, result.signature);
-        activityReport = report.outcome;
-        note(report.line);
+        const report2 = await reportTransferActivity(ctx, apiKey, result.signature);
+        activityReport = report2.outcome;
+        note(report2.line);
       } else if (promoted) {
         activityReport = "not-finalized";
         note("Not reported to Candle's history: finality is not yet confirmed.");
@@ -111643,7 +112078,7 @@ function writeFailure2(ctx, result) {
 }
 async function setAllowLaunch(args, ctx, enabled) {
   const { deps, apiUrl, json } = ctx;
-  const usage11 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
+  const usage12 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
   const command = enabled ? "wallets allow-launch" : "wallets disallow-launch";
   const parsed = parseArgs(args, enabled ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -111651,7 +112086,7 @@ async function setAllowLaunch(args, ctx, enabled) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage11}`, json);
+    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage12}`, json);
     return 2;
   }
   const skipConfirm = !enabled && parsed.booleans.has("--yes");
@@ -111707,9 +112142,9 @@ async function setAllowLaunch(args, ctx, enabled) {
   else {
     deps.stderr.write(`${screen[0]}
 `);
-    for (const text3 of screen.slice(1))
-      if (text3)
-        notice(deps, "stderr", "warning", text3);
+    for (const text4 of screen.slice(1))
+      if (text4)
+        notice(deps, "stderr", "warning", text4);
   }
   if (!skipConfirm) {
     const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to ${enabled ? "allow" : "stop"} launches from ${n === 1 ? "this wallet" : `these ${n} wallets`}: `);
@@ -111743,8 +112178,8 @@ async function setAllowLaunch(args, ctx, enabled) {
   }
   const verb = enabled ? "Allowed launches from" : "Stopped launches from";
   writeSuccess(deps, "stdout", `${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.`);
-  for (const failure2 of failed) {
-    notice(deps, "stderr", "danger", `Not changed: ${failure2.id}: ${failure2.message}${failure2.code ? ` (${failure2.code})` : ""}.`);
+  for (const failure3 of failed) {
+    notice(deps, "stderr", "danger", `Not changed: ${failure3.id}: ${failure3.message}${failure3.code ? ` (${failure3.code})` : ""}.`);
   }
   return failed.length > 0 ? 1 : 0;
 }
@@ -112139,7 +112574,7 @@ function trustTable(rows, style) {
 }
 async function setTrust(args, ctx, trusted) {
   const { deps, apiUrl, json } = ctx;
-  const usage11 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
+  const usage12 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
   const command = trusted ? "wallets trust" : "wallets untrust";
   const parsed = parseArgs(args, trusted ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -112147,7 +112582,7 @@ async function setTrust(args, ctx, trusted) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage11}`, json);
+    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage12}`, json);
     return 2;
   }
   const skipConfirm = !trusted && parsed.booleans.has("--yes");
@@ -112206,9 +112641,9 @@ async function setTrust(args, ctx, trusted) {
   else {
     deps.stderr.write(`${screen[0]}
 `);
-    for (const text3 of screen.slice(1))
-      if (text3)
-        notice(deps, "stderr", "warning", text3);
+    for (const text4 of screen.slice(1))
+      if (text4)
+        notice(deps, "stderr", "warning", text4);
   }
   if (!skipConfirm) {
     const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to ${trusted ? "trust" : "untrust"} ${n === 1 ? "this wallet" : `these ${n} wallets`}: `);
@@ -112306,11 +112741,11 @@ async function verifyProfileAccount(ctx, config) {
   const apiKey = await deps.store.get(profileSecretRef(profile, "apiKey"));
   if (!apiKey)
     return { ok: true, skipped: "no stored key" };
-  const { account: live, failure: failure2 } = await fetchAccount(deps, ctx.apiUrl, apiKey);
+  const { account: live, failure: failure3 } = await fetchAccount(deps, ctx.apiUrl, apiKey);
   if (!live) {
     return {
       ok: true,
-      warning: `Could not verify the account for ${profile} (${failure2}); proceeding on the cached value ${cached}.`
+      warning: `Could not verify the account for ${profile} (${failure3}); proceeding on the cached value ${cached}.`
     };
   }
   if (live !== cached) {
@@ -112475,6 +112910,7 @@ var COMMANDS = {
     }
   },
   quant: { subcommands: { terms: quantTerms } },
+  lab: { subcommands: { status: labStatus, replay: labReplay, runners: labRunners, edges: labEdges } },
   plan: {
     subcommands: { buy: planBuy, status: planStatus, renew: planRenew, "auto-renew": planAutoRenew }
   },

@@ -86,6 +86,7 @@ export const ENVIRONMENT: EnvVar[] = [
   },
   { name: "CANDLE_PROFILE", description: "The profile to act as, when --profile is not given" },
   { name: "CANDLE_API_URL", description: "API base URL, when --api-url is not given" },
+  { name: "CANDLE_HACC_URL", description: "Strategy lab base URL (default https://api.hacc.fun); HTTPS only" },
   {
     name: "CANDLE_X402_NETWORK",
     description: "The network per-use x402 payments are made on: mainnet (default) or devnet, for tests",
@@ -960,6 +961,48 @@ export const HELP: Record<string, Topic> = {
     ],
     examples: ["candle quant terms", "candle quant terms --yes --json"],
     env: ENV_API,
+  },
+  lab: {
+    group: "Account",
+    intro: "Strategy replays, runners and edges",
+    summary: "Strategy lab: replay a definition and read measured runners and edges",
+    description:
+      "The hacc strategy lab, using this profile's production agent key. Access and daily caps come from the server; Pro access depends on admission. Replays wait by default, polling every 5 seconds for up to 11 minutes. The lead card compares random controls within the definition's priceable candidates, break-even cost and regime context. Its tick-mark limitations are printed with the card. Backtests are a model of the past. The lab never trades. --json preserves the server's body. A device token or test key cannot use the lab.",
+    usage: ["candle lab <status|replay|runners|edges> [flags]"],
+    rows: [
+      { invocation: "status", description: "Plan, admission, replay cap and usage, reset time and active job" },
+      {
+        invocation: "replay --definition <file|-> --from <iso> --to <iso>",
+        description: "Submit and wait for a replay; replay get <job-id> reads it; replay cancel <job-id> cancels it",
+      },
+      { invocation: "runners [--hours n] [--min-wallets n]", description: "Measured runners in the window" },
+      {
+        invocation: "edges [--days n] [--min-n n]",
+        description: "Signal edges net of the cost already used by the table",
+      },
+    ],
+    flags: [
+      { invocation: "--definition <file|->", description: "Strategy definition as a JSON object; - reads stdin" },
+      { invocation: "--from <iso>", description: "Replay window start as an ISO timestamp" },
+      { invocation: "--to <iso>", description: "Replay window end as an ISO timestamp" },
+      { invocation: "--asset-ids <a,b>", description: "Up to 50 positive asset ids" },
+      {
+        invocation: "--fee-bps <n>",
+        description:
+          "Fee per side, 0–1000 bps; otherwise read your fee from Candle's tier endpoint, or use hacc's default if that read fails",
+      },
+      { invocation: "--slippage-bps <n>", description: "Slippage per side, 0–1000 bps; used when a fee is available" },
+      { invocation: "--no-wait", description: "Print the submitted job id immediately" },
+    ],
+    examples: [
+      "candle lab status",
+      "candle lab replay --definition ./strategy.json --from 2026-10-25T00:00:00Z --to 2026-10-26T00:00:00Z",
+      "candle lab replay get <job-id> --json",
+      "candle lab replay cancel <job-id>",
+      "candle lab runners --hours 24",
+      "candle lab edges --days 7 --min-n 15",
+    ],
+    env: [...ENV_API, "CANDLE_HACC_URL"],
   },
   plan: {
     group: "Account",

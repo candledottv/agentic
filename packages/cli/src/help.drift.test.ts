@@ -24,6 +24,31 @@ import { ALIASES, NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, routesToCo
 const sorted = (words: readonly string[]) => [...words].sort()
 
 describe("the help data stays in step with dispatch", () => {
+  test("lab help and completion expose the four routed operations and hacc override", () => {
+    const topic = HELP.lab as Topic
+    expect(documentedSubcommands(topic)).toEqual(["status", "replay", "runners", "edges"])
+    expect(topic.examples).toContain("candle lab replay get <job-id> --json")
+    expect(topic.examples).toContain("candle lab replay cancel <job-id>")
+    expect(documentedFlags(topic)).toEqual(
+      expect.arrayContaining([
+        "--definition",
+        "--from",
+        "--to",
+        "--asset-ids",
+        "--fee-bps",
+        "--slippage-bps",
+        "--no-wait",
+        "--hours",
+        "--min-wallets",
+        "--days",
+        "--min-n",
+      ]),
+    )
+    expect(topic.env).toContain("CANDLE_HACC_URL")
+    expect(ENVIRONMENT.find((e) => e.name === "CANDLE_HACC_URL")?.description).toContain("HTTPS only")
+    expect(topic.description).toContain("The lab never trades")
+  })
+
   test("T1: every routed word has a topic, and every topic routes", () => {
     const documented = Object.keys(HELP).map((word) => ALIASES[word] ?? word)
     expect(sorted(documented)).toEqual(sorted([...ROUTED_COMMANDS]))

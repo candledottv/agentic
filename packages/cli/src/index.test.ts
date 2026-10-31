@@ -24,6 +24,47 @@ import { VAULT_ERROR_CODES } from "./vault/errors"
 import { CLI_VERSION } from "./version"
 
 describe("dispatch", () => {
+  test("lab routes status, replay submit/get/cancel, runners and edges", async () => {
+    expect(ROUTED_COMMANDS.has("lab")).toBe(true)
+    expect(ROUTED_SUBCOMMANDS.lab).toEqual(["status", "replay", "runners", "edges"])
+    for (const [args, path, body] of [
+      [["status"], "/status", { plan: "max", allowed: true, replays: {}, active_job_id: null }],
+      [
+        [
+          "replay",
+          "--definition",
+          "x.json",
+          "--from",
+          "2026-10-25T00:00:00Z",
+          "--to",
+          "2026-10-26T00:00:00Z",
+          "--fee-bps",
+          "50",
+          "--no-wait",
+        ],
+        "/replay",
+        { job_id: 42 },
+      ],
+      [["replay", "get", "42"], "/replay/42", { job_id: 42, status: "running", result: null }],
+      [["replay", "cancel", "42"], "/replay/42/cancel", { cancelled: true }],
+      [["runners"], "/runners", { leaderboard: [] }],
+      [["edges"], "/edges", { edges: [] }],
+    ] as const) {
+      const stdout = createCapture()
+      const network = createRoutedFetch({ [`/v1/strategy-lab${path}`]: () => jsonResponse(200, body) })
+      const deps = createTestDeps({
+        fetch: network.fetch,
+        stdout,
+        env: { CANDLE_API_KEY: "cndl_live_lab_fixture" },
+        readFile: async () => "{}",
+      })
+      expect(await run(["lab", ...args, "--json"], deps)).toBe(0)
+      expect(JSON.parse(stdout.text)).toEqual(body)
+      expect(network.unmatched).toEqual([])
+      expect(network.calls).toHaveLength(1)
+    }
+  })
+
   test("an unknown top-level command names the offending token, then prints help, and exits 1", async () => {
     const stderr = createCapture()
     const code = await run(["frobnicate"], createTestDeps({ fetch: unusedFetch, stderr }))

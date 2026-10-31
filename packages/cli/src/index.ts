@@ -42,6 +42,7 @@ import { keysAccess } from "./commands/keys-access"
 import { keysSelf, keysUpdate } from "./commands/keys-embedded-wallet"
 import { keysLimit } from "./commands/keys-limit"
 import { keysWallets } from "./commands/keys-wallets"
+import { labEdges, labReplay, labRunners, labStatus } from "./commands/lab"
 import { launch } from "./commands/launch"
 import { lpAdd, lpClaim, lpPools, lpPositions, lpRemove } from "./commands/lp"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
@@ -273,6 +274,7 @@ const COMMANDS: Record<string, CommandRoute> = {
   },
   // x402 C4 (spec 7.3): Quant's terms over the key route, which a paid Quant turn needs first.
   quant: { subcommands: { terms: quantTerms } },
+  lab: { subcommands: { status: labStatus, replay: labReplay, runners: labRunners, edges: labEdges } },
   // x402 C7 (BE-1878): Pro or Max by x402 from a vault key, the wallet-as-identity signup, and the
   // local auto-renew flag. Plan payments are outside the per-use limits (spec 10.3).
   plan: {
