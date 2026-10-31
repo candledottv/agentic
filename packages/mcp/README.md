@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-seventy-seven tools over stdio, plus four Hyperliquid market reads (eighty-one in all), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+seventy-nine tools over stdio, plus four Hyperliquid market reads (eighty-three in all), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, and backtest a strategy in hacc's strategy lab without hand-rolling HTTP calls. The five
@@ -9,12 +9,12 @@ strategy lab tools are unreleased source.
 
 ## Try it without a key
 
-Fifteen tools are read-only and need nothing but `CANDLE_API_URL` (which already defaults to
-production): `candle_get_market`, `candle_get_feed`, `candle_token_events`, `candle_token_card`,
+Sixteen tools are read-only and need nothing but `CANDLE_API_URL` (which already defaults to
+production): `candle_get_market`, `candle_get_feed`, `candle_token_events`, `candle_token_card`, `candle_token_history`,
 `candle_token_page_about`, `candle_token_page_burns`, `candle_token_page_history`, `candle_token_page_updates`, `candle_token_forensics`, `candle_token_clusters`,
 `candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_resolve_token` and `candle_get_plans`.
-The three token-page reads and `candle_token_clusters` are unreleased source; published 0.10.25 has the original ten.
-With a source build and token-page reads enabled on the deployment, those fifteen work immediately without a key.
+The four token-page reads, `candle_token_clusters` and `candle_token_history` are unreleased source; published 0.10.25 has the original ten.
+With a source build and token-page reads enabled on the deployment, those sixteen work immediately without a key.
 Install the released server with no `env` block at all and its ten public reads work immediately:
 
 ```json
@@ -35,7 +35,7 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all seventy-seven. An unknown name fails startup with the valid names in the message, rather
+Unset means all seventy-nine. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -85,9 +85,9 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
   non-loopback host. For a trusted local endpoint that is not loopback, such as a devcontainer
   reaching its host; not for anything that leaves the machine.
 - `CANDLE_AGENT_API_KEY` -- an agent API key (`cndl_live_...` / `cndl_test_...`), issued from a
-  Candle account's agent settings page. Required by every tool except the fifteen read-only ones
+  Candle account's agent settings page. Required by every tool except the sixteen read-only ones
   listed above, which includes the account-scoped reads (`candle_get_wallets`,
-  `candle_execution_status`, `candle_get_operation`) as well as the writes; those fifteen
+  `candle_execution_status`, `candle_get_operation`) as well as the writes; those sixteen
   work without it, so the server is useful the moment it is installed and only asks for a key when
   you try to write. `candle_trade` additionally needs the key's `swap:write` scope server-side,
   which is opt-in only and never granted by omission, see
@@ -115,6 +115,8 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_launch_token` | Launch a token on Candle | `POST /api/v1/launch/headless` (or `/dry-run` when `dryRun: true`); with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
 | `candle_get_market` | Get market state | `GET /api/v1/markets/:chain/:mint` | none |
 | `candle_get_feed` | Get a token feed | `GET /api/v1/markets/feed?bucket=...` | none |
+| `candle_token_edit` | As the token's creator, set Candle's copy of its description and links; an unknown `socials` key is refused locally. Needs a `launch:write` key from the launching account; reuse `idempotencyKey` to retry. Off until the deployment switches it on (503 `METADATA_EDIT_DISABLED`) | `PATCH /api/v1/tokens/:chain/:mint/metadata` | `x-api-key` |
+| `candle_token_history` | A token's metadata edits, newest first, with the previous values | `GET /api/v1/tokens/:chain/:mint/metadata/history?limit=...&cursor=...` | none |
 | `candle_token_events` | One token's signals, callouts and tracked-wallet trades, newest first; `kind` filters the returned page, `nextCursor`/`before` pages it. Off until the deployment switches it on (503 `TOKEN_EVENTS_DISABLED`) | `GET /api/v1/tokens/:chain/:mint/events?since=...&limit=...&before=...` | none |
 | `candle_token_card` | The data behind a token card for one token: market, all-time high since launch, forensics coverage, safety and same-name facts, tracked wallets in the last hour, each block with its source; a null field has no source. Off until the deployment switches it on (503 `TOKEN_CARD_DISABLED`) | `GET /api/v1/tokens/:chain/:mint/card?cst=...` | none |
 | `candle_token_page_about` | Public About summary; feature switches, no personalized capabilities | `GET /api/v1/token-pages/:chain/:address` | none |
@@ -234,7 +236,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-seventy-seven tools:
+seventy-nine tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.

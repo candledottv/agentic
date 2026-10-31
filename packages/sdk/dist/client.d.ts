@@ -621,6 +621,59 @@ export interface TokenCardFacts {
  * caller and every plan. Facts only, never a score. A field with no source is `null` (show an en
  * dash), and `sources` names where each block came from.
  */
+/**
+ * Creator metadata edit (BE-2140): the four links Candle keeps for a token. In an edit, a string
+ * sets a link and `""` or `null` removes it; a key left out is unchanged.
+ */
+export type TokenMetadataSocialKey = "website" | "twitter" | "telegram" | "discord";
+export type TokenMetadataSocials = Partial<Record<TokenMetadataSocialKey, string>>;
+export interface EditTokenMetadataRequest {
+    chain: Chain;
+    mint: string;
+    /** Replaces the description; `""` clears it. At most 500 characters, safe for on-chain JSON. */
+    description?: string;
+    /** Any subset of the four links; each at most 200 characters, an absolute http(s) URL. */
+    socials?: Partial<Record<TokenMetadataSocialKey, string | null>>;
+}
+/** `PATCH /api/v1/tokens/:chain/:mint/metadata`'s payload: the token's state after the edit. */
+export interface TokenMetadataEditResult {
+    chain: Chain;
+    mint: string;
+    /** False when the edit re-sent the current values; no version was added. */
+    changed: boolean;
+    /** The newest edit version, or null when the token has never been edited. */
+    version: number | null;
+    description: string;
+    socials: TokenMetadataSocials;
+    /** Always `candle` today: the edit is Candle's copy, nothing is written on chain. */
+    chainState: "candle" | "onchain" | "pending" | "failed" | "superseded";
+    chainTx: string | null;
+}
+export interface TokenMetadataHistoryItem {
+    version: number;
+    createdAt: string;
+    /** `description` and `socials.<key>`. */
+    changedFields: string[];
+    description: string;
+    socials: TokenMetadataSocials;
+    prevDescription: string;
+    prevSocials: TokenMetadataSocials;
+    chainState: TokenMetadataEditResult["chainState"];
+    chainTx: string | null;
+    /** The published agent's name, or null for the neutral "Agent". Never an account or key. */
+    author: {
+        kind: "agent";
+        name: string | null;
+    };
+}
+export interface TokenMetadataHistory {
+    chain: Chain;
+    mint: string;
+    /** Newest first. */
+    items: TokenMetadataHistoryItem[];
+    /** Pass as `cursor` for the next page; null on the last. */
+    nextCursor: string | null;
+}
 export interface TokenCard {
     chain: Chain;
     mint: string;
@@ -3300,6 +3353,27 @@ export declare class CandleClient {
     getTokenCard(chain: Chain, mint: string, opts?: {
         tag?: string;
     }): Promise<TokenCard>;
+    /**
+     * Edit Candle's copy of a token's description and links, as the token's creator
+     * (`PATCH /api/v1/tokens/:chain/:mint/metadata`, BE-2140). Needs a key with `launch:write` whose
+     * account launched the token. Name, symbol and image cannot be changed, and nothing is written
+     * on chain: Candle's page and API change, wallets reading on-chain metadata do not. A Hood token
+     * that carries its metadata on chain is refused (`ONCHAIN_METADATA_TOKEN`), as is a TEE-launched
+     * Hood token (`TEE_LAUNCHED_HOOD_TOKEN`). Every call sends an Idempotency-Key (a fresh one unless
+     * `idempotencyKey` is given); retrying with the same key and request returns the first result and
+     * never edits twice. Off until the deployment sets `TOKEN_METADATA_EDIT_ENABLED`; off it answers
+     * 503 `METADATA_EDIT_DISABLED`.
+     */
+    editTokenMetadata(request: EditTokenMetadataRequest, opts?: {
+        idempotencyKey?: string;
+    }): Promise<TokenMetadataEditResult>;
+    /** A token's metadata edits, newest first (`GET .../metadata/history`). Public; no key is needed. */
+    tokenMetadataHistory(params: {
+        chain: Chain;
+        mint: string;
+        cursor?: string;
+        limit?: number;
+    }): Promise<TokenMetadataHistory>;
     verify(chain: Chain, mint: string): Promise<VerifyResult>;
     /**
      * BE-2006: optional third-party cluster analysis for a Solana token. Resolves the same

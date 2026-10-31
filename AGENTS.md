@@ -11,7 +11,7 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 ## Start here, in this order
 
-1. **Read without credentials.** `candle_get_market`, `candle_get_feed`, `candle_token_events`, `candle_token_card`,
+1. **Read without credentials.** `candle_get_market`, `candle_get_feed`, `candle_token_events`, `candle_token_card`, `candle_token_history`,
    `candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_token_forensics`, `candle_token_clusters`, `candle_resolve_token` and
    `candle_get_plans` need no API key. Use them to confirm the server is wired before asking anyone for a credential.
 2. **Get a key** when you need to write or read Hacc intelligence (below). Install the Candle CLI
@@ -55,7 +55,7 @@ for parameters and limits.
 
 ## The tool surface
 
-Eighty-one tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The fourteen token-page tools, `candle_token_clusters` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Fifteen source tools need no key at all, so a client can be pointed at the server and used before
+Eighty-three tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The fourteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Sixteen source tools need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -83,6 +83,8 @@ anyone signs up for anything.
 | `candle_get_feed` | no | curated feeds carrying price and market cap |
 | `candle_token_events` | no | one token's signals, callouts and tracked-wallet trades, newest first, W or L on sells; `kind` filters the page on this server and `nextCursor`/`before` pages it. Off until the deployment switches it on (503 TOKEN_EVENTS_DISABLED) |
 | `candle_token_card` | no | one token's card data: market, all-time high since launch, forensics coverage, safety and same-name facts, tracked wallets in the last hour, each with its source; null means no source. Off until the deployment switches it on (503 TOKEN_CARD_DISABLED) |
+| `candle_token_edit` | yes | as the token's creator, set Candle's copy of its description and links (not name, symbol or image; nothing on chain); reuse idempotencyKey to retry. Off until the deployment switches it on (503 METADATA_EDIT_DISABLED) |
+| `candle_token_history` | no | a token's metadata edits, newest first, with the previous values |
 | `candle_token_page_about` | no | Public About summary with feature switches (unreleased local source) |
 | `candle_token_page_capabilities` | yes (`token-pages:read`) | Private fresh own eligibility; no write (unreleased local source) |
 | `candle_token_page_burns` | no | Completed CNDL burn history (unreleased local source) |

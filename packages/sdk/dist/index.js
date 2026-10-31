@@ -5074,6 +5074,27 @@ class CandleClient {
     const body = await this.requestJson("GET", `/api/v1/tokens/${chain}/${encodeURIComponent(mint)}/card${query}`);
     return body.card;
   }
+  async editTokenMetadata(request, opts = {}) {
+    this.requireKey("editTokenMetadata()");
+    const body = {
+      ...request.description !== undefined ? { description: request.description } : {},
+      ...request.socials !== undefined ? { socials: request.socials } : {}
+    };
+    const res = await this.fetchImpl(`${this.apiUrl}/api/v1/tokens/${request.chain}/${encodeURIComponent(request.mint)}/metadata`, {
+      method: "PATCH",
+      headers: { ...this.headers({ json: true }), "Idempotency-Key": opts.idempotencyKey ?? crypto.randomUUID() },
+      body: JSON.stringify(body)
+    });
+    return (await this.parseResponse(res)).payload;
+  }
+  async tokenMetadataHistory(params) {
+    const query = new URLSearchParams({
+      ...params.limit !== undefined ? { limit: String(params.limit) } : {},
+      ...params.cursor !== undefined ? { cursor: params.cursor } : {}
+    }).toString();
+    const body = await this.requestJson("GET", `/api/v1/tokens/${params.chain}/${encodeURIComponent(params.mint)}/metadata/history${query ? `?${query}` : ""}`);
+    return body.payload;
+  }
   async verify(chain, mint) {
     return this.requestJson("GET", `/api/v1/verify/${chain}/${encodeURIComponent(mint)}`);
   }

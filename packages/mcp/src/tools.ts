@@ -87,6 +87,15 @@ import {
 } from "./perps-markets"
 import { perpsRiskShapes, withPortfolioSection } from "./perps-risk"
 import { PLAN_CAPABILITY_NOTE, type PlanTable, planPromotionLine, planTableMarkdown } from "./plans"
+import {
+  TOKEN_EDIT_DESCRIPTION,
+  TOKEN_HISTORY_DESCRIPTION,
+  tokenEditBody,
+  tokenEditRequest,
+  tokenEditShape,
+  tokenHistoryRequest,
+  tokenHistoryShape,
+} from "./token-metadata"
 import { buildTokenPageRequest, isTokenPageTool, tokenPageRelay, tokenPageShapes } from "./token-pages"
 import { noteVersionHeaders } from "./update-notice"
 
@@ -133,6 +142,9 @@ export const TOOL_NAMES = [
   // BE-2119: the token card's data for one token, over the public card route. Keyless and the
   // same for every caller.
   "candle_token_card",
+  // BE-2140: the creator metadata edit (keyed, launch:write) and its public history (keyless).
+  "candle_token_edit",
+  "candle_token_history",
   "candle_token_page_about",
   "candle_token_page_capabilities",
   "candle_token_page_burns",
@@ -426,6 +438,17 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
         init: { method: "GET", headers: jsonHeaders() },
       }
     }
+
+    case "candle_token_edit": {
+      const apiKey = requireApiKey(cfg)
+      const built = tokenEditBody(args)
+      if ("refusal" in built) throw new Error(built.refusal.message)
+      return tokenEditRequest(base, apiKey, args, built.body)
+    }
+
+    case "candle_token_history":
+      // Keyless: the history is public, so no key is sent even when one is configured.
+      return tokenHistoryRequest(base, args)
 
     case "candle_token_forensics": {
       const { chain, mint } = args as { chain: string; mint: string }
@@ -1587,6 +1610,35 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: tokenCardShape,
     },
     async (args) => callAndRelay("candle_token_card", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_token_edit",
+    {
+      title: "Edit token metadata",
+      description: TOKEN_EDIT_DESCRIPTION,
+      inputSchema: tokenEditShape,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (args) => {
+      // An unknown socials key or a non-URL link is refused here, before any request.
+      const built = tokenEditBody(args)
+      if ("refusal" in built) {
+        return { content: [{ type: "text", text: imageRefusalBody(built.refusal) }], isError: true }
+      }
+      return await callAndRelay("candle_token_edit", args, getConfig(), doFetch)
+    },
+  )
+
+  register(
+    "candle_token_history",
+    {
+      title: "Token metadata history",
+      description: TOKEN_HISTORY_DESCRIPTION,
+      inputSchema: tokenHistoryShape,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (args) => callAndRelay("candle_token_history", args, getConfig(), doFetch),
   )
 
   register(

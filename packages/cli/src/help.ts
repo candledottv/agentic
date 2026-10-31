@@ -838,10 +838,10 @@ export const HELP: Record<string, Topic> = {
   },
   token: {
     group: "Account",
-    summary: "Token About pages, events, cluster analysis, forensics and the vamp finder",
+    summary: "Token About pages, creator metadata edits, events, cluster analysis, forensics and the vamp finder",
     intro: "Token About pages, events, clusters, forensics, vamp finder",
     description:
-      "about, claim, section, history and flag are the token's About page: three shared sections (thesis, tokenomics, lore) any eligible holder may edit, with full history. about and history are public and send no key. about --capabilities reads this account's own eligibility (token-pages:read). claim, section set, section restore and flag act as the key's account and need token-pages:write; neither scope is in any preset, so grant them with keys create --scopes token-pages:read,token-pages:write. Candle checks on every write that the account's Candle-known wallets hold at least 0.5% of the token's current supply (any positive balance to flag); the scope is never a holding. A creator proof is a message, never a transaction: claim --creator --challenge prints the exact bytes to sign (and --message-out writes them to a file), you sign them on your own machine, for example with candle sign message, and claim --creator --challenge-id <id> --signature <sig> sends the signature; a creator wallet already among the account's known wallets needs no signature. Section text comes from --file and is checked here first (valid UTF-8, at most 32 KiB, no control characters but newline and tab, thesis 280 characters, tokenomics and lore 5,000); the file is only read. Every write sends an Idempotency-Key and retries once on no answer with the same key. Exit codes: 0 done, 1 refused (the code is in --json), 2 usage or local input refused (nothing sent), 3 no answer so the outcome is unknown (rerun with the printed --idempotency-key), 4 revision conflict (your file is untouched; read history, merge, rerun with the latest --base-revision). Token page switches ship off; a switched-off server answers feature_off or not_found. events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
+      "edit sets Candle's copy of a token's description and its four links (website, X, Telegram, Discord) as the token's creator: the key's account must be the one that launched it, and the key needs launch:write. Name, symbol and image cannot be changed. A flag sets a field; --clear <field> removes it (repeatable); fields not named keep their value. A description is at most 500 characters and safe for on-chain JSON, and a link is an absolute http(s) URL of at most 200 characters. The chain is read from the address (0x is Hood) unless --chain says otherwise. Candle's token page and API change at once; wallets and terminals that read the on-chain metadata do not, since this edit writes nothing on chain. A Hood token that carries its metadata on chain is refused (ONCHAIN_METADATA_TOKEN) and is edited with Candle's on-chain edit instead, and a TEE-launched Hood token is refused (TEE_LAUNCHED_HOOD_TOKEN). Re-sending the current values changes nothing and is not counted as an edit. Each edit sends an Idempotency-Key and retries once on no answer with the same key; exit 3 means the outcome is unknown (rerun with the printed --idempotency-key). Off on a deployment until TOKEN_METADATA_EDIT_ENABLED is on; until then edit answers METADATA_EDIT_DISABLED. history <mint> with no section lists the token's edits, newest first, with what each changed from and to; it is public and sends no key. about, claim, section, history and flag are the token's About page: three shared sections (thesis, tokenomics, lore) any eligible holder may edit, with full history. about and history are public and send no key. about --capabilities reads this account's own eligibility (token-pages:read). claim, section set, section restore and flag act as the key's account and need token-pages:write; neither scope is in any preset, so grant them with keys create --scopes token-pages:read,token-pages:write. Candle checks on every write that the account's Candle-known wallets hold at least 0.5% of the token's current supply (any positive balance to flag); the scope is never a holding. A creator proof is a message, never a transaction: claim --creator --challenge prints the exact bytes to sign (and --message-out writes them to a file), you sign them on your own machine, for example with candle sign message, and claim --creator --challenge-id <id> --signature <sig> sends the signature; a creator wallet already among the account's known wallets needs no signature. Section text comes from --file and is checked here first (valid UTF-8, at most 32 KiB, no control characters but newline and tab, thesis 280 characters, tokenomics and lore 5,000); the file is only read. Every write sends an Idempotency-Key and retries once on no answer with the same key. Exit codes: 0 done, 1 refused (the code is in --json), 2 usage or local input refused (nothing sent), 3 no answer so the outcome is unknown (rerun with the printed --idempotency-key), 4 revision conflict (your file is untouched; read history, merge, rerun with the latest --base-revision). Token page switches ship off; a switched-off server answers feature_off or not_found. events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
     usage: [
       "candle token clusters <mint> [--chain solana|hood] [--json]",
       "candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]",
@@ -850,12 +850,18 @@ export const HELP: Record<string, Topic> = {
       "candle token about <address> [--chain solana|hood] [--capabilities] [--json]",
       "candle token claim <address> [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--json]",
       "candle token section set|restore <address> <thesis|tokenomics|lore> --file <path>|--version-id <id> --base-revision <n> [--json]",
+      "candle token edit <mint> [--chain solana|hood] [--description <text>] [--website <url>] [--x <url>] [--telegram <url>] [--discord <url>] [--clear <field>]... [--idempotency-key <key>] [--json]",
+      "candle token history <mint> [--chain solana|hood] [--limit <n>] [--cursor <c>] [--json]",
       "candle token history <address> <thesis|tokenomics|lore> [--limit <n>] [--cursor <c>] [--json]",
       "candle token update <address> --file <path> [--chain solana|hood] [--idempotency-key <key>] [--json]",
       "candle token post delete <address> <post-id> [--chain solana|hood] [--idempotency-key <key>] [--json]",
       "candle token flag <address> --content <id> --reason <reason> [--detail <text>] [--json]",
     ],
     rows: [
+      {
+        invocation: "edit <mint>",
+        description: "As the token's creator, set or --clear its description and links (not name, symbol or image)",
+      },
       { invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" },
       {
         invocation: "events <mint>",
@@ -879,9 +885,12 @@ export const HELP: Record<string, Topic> = {
         invocation: "section set|restore <address> <section>",
         description: "Write a section from --file, or restore an earlier --version-id, at --base-revision",
       },
+      {
+        invocation: "history <address> [<section>]",
+        description: "The token's metadata edits, newest first; with a section, that section's versions",
+      },
       { invocation: "update <address>", description: "Post an immutable holder update from --file (1000 characters)" },
       { invocation: "post delete <address> <post-id>", description: "Delete your own post, including after selling" },
-      { invocation: "history <address> <section>", description: "A section's versions, newest first" },
       { invocation: "flag <address>", description: "Report one exact version to Candle's review queue" },
     ],
     flags: [
@@ -914,9 +923,20 @@ export const HELP: Record<string, Topic> = {
         invocation: "--reason <reason>",
         description: "flag: spam, scam, abuse, misleading, unsafe_link or other; --detail adds up to 500 characters",
       },
+      // The five edit flags and their help are the launch definition's own (BE-2140).
+      ...launchFlagRows
+        .filter((row) => /^--(description|website|x|telegram|discord) /.test(row.invocation))
+        .map((row) => ({ invocation: row.invocation, description: `edit: ${row.description}` })),
+      {
+        invocation: "--clear <field>",
+        description: "edit: remove website, x, telegram, discord or description; repeatable",
+      },
       { invocation: "--idempotency-key <key>", description: "Writes: reuse a key to retry without writing twice" },
     ],
     examples: [
+      "candle token edit <mint> --x https://x.com/<handle> --website https://<site>",
+      "candle token edit <mint> --clear discord --json",
+      "candle token history <mint>",
       "candle token about <mint> --capabilities",
       "candle token section set <mint> thesis --file ./thesis.txt --base-revision 3",
       "candle token claim <mint> --creator --challenge --message-out ./proof.txt",

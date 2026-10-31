@@ -40116,6 +40116,7 @@ async function executeTrade(args, cfg, doFetch) {
     mint: args.mint,
     side: args.side,
     ...amountRaw !== undefined ? { amountRaw } : { percent: args.percent },
+    ...typeof resolved.decimals === "number" && amountRaw !== undefined ? { amountDecimals: resolved.decimals } : {},
     payer: { type: "main" },
     ...args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {},
     ...args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {},
@@ -44181,6 +44182,98 @@ var init_plans = __esm(() => {
   PLAN_LABELS = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
 });
 
+// ../mcp/src/token-metadata.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
+function editSocialsSchema() {
+  const shape = {};
+  for (const key of SOCIAL_KEYS) {
+    shape[key] = exports_external.string().nullable().optional().describe(`${launchFieldHelp(`socials.${key}`)} "" or null removes it.`);
+  }
+  return exports_external.object(shape).passthrough().optional().describe(`Any of ${SOCIAL_KEYS.join(", ")}; a key left out keeps its link.`);
+}
+function tokenEditBody(args) {
+  const body = {};
+  if (args.description !== undefined)
+    body.description = args.description;
+  if (args.socials !== undefined) {
+    const socials = args.socials;
+    if (!socials || typeof socials !== "object" || Array.isArray(socials)) {
+      return {
+        refusal: { code: "VALIDATION_FAILED", message: "socials must be an object of links.", field: "socials" }
+      };
+    }
+    for (const [key, value] of Object.entries(socials)) {
+      if (!SOCIAL_KEYS.includes(key)) {
+        return {
+          refusal: {
+            code: "VALIDATION_FAILED",
+            message: `socials accepts only ${SOCIAL_KEYS.join(", ")}.`,
+            field: `socials.${key}`
+          }
+        };
+      }
+      if (value === null || value === undefined || value === "")
+        continue;
+      let ok = false;
+      try {
+        ok = typeof value === "string" && ["http:", "https:"].includes(new URL(value.trim()).protocol);
+      } catch {
+        ok = false;
+      }
+      if (!ok) {
+        return {
+          refusal: { code: "VALIDATION_FAILED", message: `${key} must be an http(s) URL.`, field: `socials.${key}` }
+        };
+      }
+    }
+    body.socials = socials;
+  }
+  if (body.description === undefined && body.socials === undefined) {
+    return { refusal: { code: "VALIDATION_FAILED", message: "Send description, socials, or both.", field: "body" } };
+  }
+  return { body };
+}
+function tokenEditRequest(base2, apiKey, args, body) {
+  const key = typeof args.idempotencyKey === "string" && args.idempotencyKey ? args.idempotencyKey : randomUUID4();
+  return {
+    url: `${base2}/api/v1/tokens/${encodeURIComponent(String(args.chain))}/${encodeURIComponent(String(args.mint))}/metadata`,
+    init: {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "Idempotency-Key": key },
+      body: JSON.stringify(body)
+    }
+  };
+}
+function tokenHistoryRequest(base2, args) {
+  const params = new URLSearchParams;
+  if (args.limit !== undefined)
+    params.set("limit", String(args.limit));
+  if (typeof args.cursor === "string" && args.cursor)
+    params.set("cursor", args.cursor);
+  return {
+    url: `${base2}/api/v1/tokens/${encodeURIComponent(String(args.chain))}/${encodeURIComponent(String(args.mint))}/metadata/history${params.size ? `?${params}` : ""}`,
+    init: { method: "GET", headers: { "Content-Type": "application/json" } }
+  };
+}
+var METADATA_EDIT_DESCRIPTION_MAX_CHARS = 500, tokenEditShape, tokenHistoryShape, TOKEN_EDIT_DESCRIPTION = `Edit Candle's copy of a token's description and links (website, twitter for X, telegram, discord), as the token's creator. Needs CANDLE_AGENT_API_KEY with launch:write from the account that launched the token; any other account is refused NOT_TOKEN_CREATOR. Name, symbol and image cannot be changed. A field left out keeps its value; a link set to "" or null is removed. Nothing is written on chain: Candle's token page and API change at once, wallets reading on-chain metadata do not. A Hood token that carries its metadata on chain is refused ONCHAIN_METADATA_TOKEN (edit it on chain instead), and a TEE-launched Hood token TEE_LAUNCHED_HOOD_TOKEN. Re-sending the current values returns changed:false and adds no version. Retry with the SAME idempotencyKey after no answer or a retryable UNKNOWN: it returns the first result and never edits twice. Off on a deployment until it switches TOKEN_METADATA_EDIT on: off, the call answers 503 METADATA_EDIT_DISABLED (retryable: false), the server's answer, not a broken tool.`, TOKEN_HISTORY_DESCRIPTION = "A token's metadata edits, newest first: each version's description and links, what they were before, which fields changed, when, and the author as a published agent name or the neutral Agent (never an account or key). Public; no key needed and none is sent. An empty list means the token was never edited. Page with nextCursor until it is null.";
+var init_token_metadata = __esm(() => {
+  init_zod();
+  init_launch_schema();
+  tokenEditShape = {
+    chain: exports_external.enum(["solana", "hood"]).describe('"solana" or "hood"'),
+    mint: exports_external.string().describe("Token mint (solana) or contract address (hood)"),
+    description: exports_external.string().optional().describe(`${launchFieldHelp("description")} At most ${METADATA_EDIT_DESCRIPTION_MAX_CHARS} characters; "" clears it.`),
+    socials: editSocialsSchema(),
+    idempotencyKey: exports_external.string().min(1).max(128).optional().describe("Reuse the same key and body to retry without editing twice; a fresh one is sent when absent")
+  };
+  tokenHistoryShape = {
+    chain: exports_external.enum(["solana", "hood"]).describe('"solana" or "hood"'),
+    mint: exports_external.string().describe("Token mint (solana) or contract address (hood)"),
+    cursor: exports_external.string().optional().describe("nextCursor from an earlier page"),
+    limit: exports_external.number().int().min(1).max(50).optional().describe("How many edits, 1 to 50 (default 20)")
+  };
+});
+
 // ../mcp/src/token-pages.ts
 function isTokenPageTool(name) {
   return Object.hasOwn(tokenPageShapes, name);
@@ -44365,7 +44458,7 @@ __export(exports_tools, {
   OPERATION_NOT_FOUND_RULE: () => OPERATION_NOT_FOUND_RULE,
   LAB_TOOL_NAMES: () => LAB_TOOL_NAMES
 });
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 function resolveToolAllowlist(env) {
   const raw = env.CANDLE_MCP_TOOLS?.trim();
   if (!raw)
@@ -44476,6 +44569,15 @@ function buildRequest(name, args, cfg) {
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
+    case "candle_token_edit": {
+      const apiKey = requireApiKey2(cfg);
+      const built = tokenEditBody(args);
+      if ("refusal" in built)
+        throw new Error(built.refusal.message);
+      return tokenEditRequest(base2, apiKey, args, built.body);
+    }
+    case "candle_token_history":
+      return tokenHistoryRequest(base2, args);
     case "candle_token_forensics": {
       const { chain: chain2, mint } = args;
       return {
@@ -44753,7 +44855,7 @@ async function getOperation(args, cfg, doFetch) {
   };
 }
 async function swap2(args, cfg, doFetch) {
-  const clientSwapId = typeof args.clientSwapId === "string" && args.clientSwapId.length > 0 ? args.clientSwapId : randomUUID4();
+  const clientSwapId = typeof args.clientSwapId === "string" && args.clientSwapId.length > 0 ? args.clientSwapId : randomUUID5();
   const { url, init } = buildRequest("candle_swap", { ...args, clientSwapId }, cfg);
   let ok;
   let body;
@@ -44937,6 +45039,24 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     description: "The data behind a Quant token card for one token, in one read: identity (name, ticker, launchpad), market (price, market cap, liquidity, 5 minute change, volume, buys and sells), the all-time high since launch (daily high times current supply, FDV basis; null when no source covers it), forensics (the report, or not_covered with its coverage, or unavailable), the last hour's tracked-wallet buys and sells, signals and callouts, hacc's card facts (bundles, snipers, insiders, fresh 1d/7d, mean wallet age, each with source, as_of and basis) and same-name block (which same-name token leads on live market cap, and whether this one trails), sources naming where each block came from, and links.token (Candle's token page). Facts only, never a score or a verdict. A null field has no source: show it as an en dash, never guess it, and not_covered or unknown is not clean. Free and the same for every caller and plan; no key needed and none is sent even when one is configured. Off on a deployment until it switches TOKEN_CARD on: off, the call answers 503 TOKEN_CARD_DISABLED (retryable: false) and that is the server's answer, not a broken tool.",
     inputSchema: tokenCardShape
   }, async (args) => callAndRelay("candle_token_card", args, getConfig(), doFetch));
+  register("candle_token_edit", {
+    title: "Edit token metadata",
+    description: TOKEN_EDIT_DESCRIPTION,
+    inputSchema: tokenEditShape,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async (args) => {
+    const built = tokenEditBody(args);
+    if ("refusal" in built) {
+      return { content: [{ type: "text", text: imageRefusalBody(built.refusal) }], isError: true };
+    }
+    return await callAndRelay("candle_token_edit", args, getConfig(), doFetch);
+  });
+  register("candle_token_history", {
+    title: "Token metadata history",
+    description: TOKEN_HISTORY_DESCRIPTION,
+    inputSchema: tokenHistoryShape,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async (args) => callAndRelay("candle_token_history", args, getConfig(), doFetch));
   register("candle_token_events", {
     title: "Token events",
     description: `One token's event list, newest first: every signal (pattern and summary, new_ticker included), every callout, and every tracked-wallet trade (buys and sells, W or L on a sell whose outcome is known), plus trades Candle's own agents and users made. Each wallet carries its display name or short address, its kind (dev, kol, smart, agent, tracked) and its public group names. No key needed; none is sent even when one is configured, so group names follow the public tier. Off on a deployment until it switches TOKEN_EVENTS on: off, the call answers 503 TOKEN_EVENTS_DISABLED (retryable: false) and that is the server's answer, not a broken tool.
@@ -45397,6 +45517,7 @@ var init_tools = __esm(() => {
   init_perps_markets();
   init_perps_risk();
   init_plans();
+  init_token_metadata();
   init_token_pages();
   init_update_notice();
   VAMP_CANDIDATES_DESCRIPTION = "Lists Solana tokens that are close to graduating or graduated in the last 6 hours whose ticker other tokens " + "are copying, most-copied in the last 24 hours first. Each entry carries a launch draft (name, ticker, image URL) " + "for `candle_launch_token` or `candle_launch_and_seed`; draft notes identify fields you must supply or adjust. " + "Upload your own image through the agent image upload when the image is unavailable. Use `dryRun: true` first. " + "Counts exclude the candidate itself and cover both Solana and Hood launches at the venues returned in " + "`coverage`, not Candle's own. `coverage.since` is the returned Solana coverage date; Hood history may differ.";
@@ -45414,6 +45535,8 @@ var init_tools = __esm(() => {
     "candle_vamp_candidates",
     "candle_token_events",
     "candle_token_card",
+    "candle_token_edit",
+    "candle_token_history",
     "candle_token_page_about",
     "candle_token_page_capabilities",
     "candle_token_page_burns",
@@ -76412,9 +76535,9 @@ var HELP = {
   },
   token: {
     group: "Account",
-    summary: "Token About pages, events, cluster analysis, forensics and the vamp finder",
+    summary: "Token About pages, creator metadata edits, events, cluster analysis, forensics and the vamp finder",
     intro: "Token About pages, events, clusters, forensics, vamp finder",
-    description: "about, claim, section, history and flag are the token's About page: three shared sections (thesis, tokenomics, lore) any eligible holder may edit, with full history. about and history are public and send no key. about --capabilities reads this account's own eligibility (token-pages:read). claim, section set, section restore and flag act as the key's account and need token-pages:write; neither scope is in any preset, so grant them with keys create --scopes token-pages:read,token-pages:write. Candle checks on every write that the account's Candle-known wallets hold at least 0.5% of the token's current supply (any positive balance to flag); the scope is never a holding. A creator proof is a message, never a transaction: claim --creator --challenge prints the exact bytes to sign (and --message-out writes them to a file), you sign them on your own machine, for example with candle sign message, and claim --creator --challenge-id <id> --signature <sig> sends the signature; a creator wallet already among the account's known wallets needs no signature. Section text comes from --file and is checked here first (valid UTF-8, at most 32 KiB, no control characters but newline and tab, thesis 280 characters, tokenomics and lore 5,000); the file is only read. Every write sends an Idempotency-Key and retries once on no answer with the same key. Exit codes: 0 done, 1 refused (the code is in --json), 2 usage or local input refused (nothing sent), 3 no answer so the outcome is unknown (rerun with the printed --idempotency-key), 4 revision conflict (your file is untouched; read history, merge, rerun with the latest --base-revision). Token page switches ship off; a switched-off server answers feature_off or not_found. events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
+    description: "edit sets Candle's copy of a token's description and its four links (website, X, Telegram, Discord) as the token's creator: the key's account must be the one that launched it, and the key needs launch:write. Name, symbol and image cannot be changed. A flag sets a field; --clear <field> removes it (repeatable); fields not named keep their value. A description is at most 500 characters and safe for on-chain JSON, and a link is an absolute http(s) URL of at most 200 characters. The chain is read from the address (0x is Hood) unless --chain says otherwise. Candle's token page and API change at once; wallets and terminals that read the on-chain metadata do not, since this edit writes nothing on chain. A Hood token that carries its metadata on chain is refused (ONCHAIN_METADATA_TOKEN) and is edited with Candle's on-chain edit instead, and a TEE-launched Hood token is refused (TEE_LAUNCHED_HOOD_TOKEN). Re-sending the current values changes nothing and is not counted as an edit. Each edit sends an Idempotency-Key and retries once on no answer with the same key; exit 3 means the outcome is unknown (rerun with the printed --idempotency-key). Off on a deployment until TOKEN_METADATA_EDIT_ENABLED is on; until then edit answers METADATA_EDIT_DISABLED. history <mint> with no section lists the token's edits, newest first, with what each changed from and to; it is public and sends no key. about, claim, section, history and flag are the token's About page: three shared sections (thesis, tokenomics, lore) any eligible holder may edit, with full history. about and history are public and send no key. about --capabilities reads this account's own eligibility (token-pages:read). claim, section set, section restore and flag act as the key's account and need token-pages:write; neither scope is in any preset, so grant them with keys create --scopes token-pages:read,token-pages:write. Candle checks on every write that the account's Candle-known wallets hold at least 0.5% of the token's current supply (any positive balance to flag); the scope is never a holding. A creator proof is a message, never a transaction: claim --creator --challenge prints the exact bytes to sign (and --message-out writes them to a file), you sign them on your own machine, for example with candle sign message, and claim --creator --challenge-id <id> --signature <sig> sends the signature; a creator wallet already among the account's known wallets needs no signature. Section text comes from --file and is checked here first (valid UTF-8, at most 32 KiB, no control characters but newline and tab, thesis 280 characters, tokenomics and lore 5,000); the file is only read. Every write sends an Idempotency-Key and retries once on no answer with the same key. Exit codes: 0 done, 1 refused (the code is in --json), 2 usage or local input refused (nothing sent), 3 no answer so the outcome is unknown (rerun with the printed --idempotency-key), 4 revision conflict (your file is untouched; read history, merge, rerun with the latest --base-revision). Token page switches ship off; a switched-off server answers feature_off or not_found. events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
     usage: [
       "candle token clusters <mint> [--chain solana|hood] [--json]",
       "candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]",
@@ -76423,12 +76546,18 @@ var HELP = {
       "candle token about <address> [--chain solana|hood] [--capabilities] [--json]",
       "candle token claim <address> [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--json]",
       "candle token section set|restore <address> <thesis|tokenomics|lore> --file <path>|--version-id <id> --base-revision <n> [--json]",
+      "candle token edit <mint> [--chain solana|hood] [--description <text>] [--website <url>] [--x <url>] [--telegram <url>] [--discord <url>] [--clear <field>]... [--idempotency-key <key>] [--json]",
+      "candle token history <mint> [--chain solana|hood] [--limit <n>] [--cursor <c>] [--json]",
       "candle token history <address> <thesis|tokenomics|lore> [--limit <n>] [--cursor <c>] [--json]",
       "candle token update <address> --file <path> [--chain solana|hood] [--idempotency-key <key>] [--json]",
       "candle token post delete <address> <post-id> [--chain solana|hood] [--idempotency-key <key>] [--json]",
       "candle token flag <address> --content <id> --reason <reason> [--detail <text>] [--json]"
     ],
     rows: [
+      {
+        invocation: "edit <mint>",
+        description: "As the token's creator, set or --clear its description and links (not name, symbol or image)"
+      },
       { invocation: "clusters <mint>", description: "Read cluster analysis, or its unavailable reason" },
       {
         invocation: "events <mint>",
@@ -76451,9 +76580,12 @@ var HELP = {
         invocation: "section set|restore <address> <section>",
         description: "Write a section from --file, or restore an earlier --version-id, at --base-revision"
       },
+      {
+        invocation: "history <address> [<section>]",
+        description: "The token's metadata edits, newest first; with a section, that section's versions"
+      },
       { invocation: "update <address>", description: "Post an immutable holder update from --file (1000 characters)" },
       { invocation: "post delete <address> <post-id>", description: "Delete your own post, including after selling" },
-      { invocation: "history <address> <section>", description: "A section's versions, newest first" },
       { invocation: "flag <address>", description: "Report one exact version to Candle's review queue" }
     ],
     flags: [
@@ -76486,9 +76618,17 @@ var HELP = {
         invocation: "--reason <reason>",
         description: "flag: spam, scam, abuse, misleading, unsafe_link or other; --detail adds up to 500 characters"
       },
+      ...launchFlagRows.filter((row) => /^--(description|website|x|telegram|discord) /.test(row.invocation)).map((row) => ({ invocation: row.invocation, description: `edit: ${row.description}` })),
+      {
+        invocation: "--clear <field>",
+        description: "edit: remove website, x, telegram, discord or description; repeatable"
+      },
       { invocation: "--idempotency-key <key>", description: "Writes: reuse a key to retry without writing twice" }
     ],
     examples: [
+      "candle token edit <mint> --x https://x.com/<handle> --website https://<site>",
+      "candle token edit <mint> --clear discord --json",
+      "candle token history <mint>",
       "candle token about <mint> --capabilities",
       "candle token section set <mint> thesis --file ./thesis.txt --base-revision 3",
       "candle token claim <mint> --creator --challenge --message-out ./proof.txt",
@@ -77597,6 +77737,7 @@ var TOOL_CLASSES = {
   candle_vamp_candidates: READ,
   candle_token_events: READ,
   candle_token_card: READ,
+  candle_token_history: READ,
   candle_token_page_about: READ,
   candle_token_page_capabilities: READ,
   candle_token_page_burns: READ,
@@ -77663,6 +77804,7 @@ var TOOL_CLASSES = {
   candle_token_page_creator_challenge: card("profile"),
   candle_token_page_claim: card("profile", "idempotencyKey"),
   candle_token_page_section_set: card("profile", "idempotencyKey"),
+  candle_token_edit: card("profile", "idempotencyKey"),
   candle_token_page_section_restore: card("profile", "idempotencyKey"),
   candle_token_page_flag: card("profile", "idempotencyKey"),
   candle_set_profile_wallets: card("keyaccess"),
@@ -90191,7 +90333,7 @@ init_client();
 init_evm_lite();
 init_hood_legs();
 init_human_output();
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 
 // src/launch-bundle.ts
 init_solana_alt();
@@ -90629,7 +90771,7 @@ async function launch(args, ctx) {
   const flags = parsed.values;
   if (flags["--quote-asset"])
     flags["--quote-asset"] = flags["--quote-asset"].toLowerCase();
-  const id = flags["--client-trade-id"] ?? `launch-${randomUUID5()}`;
+  const id = flags["--client-trade-id"] ?? `launch-${randomUUID6()}`;
   const embedded = EMBEDDED_WALLET_NAMES.has(flags["--wallet"] ?? "");
   const dryRun = parsed.booleans.has("--dry-run");
   const check = parsed.booleans.has("--check");
@@ -91439,7 +91581,7 @@ init_render();
 init_solana_endpoint();
 init_solana_lite();
 init_trading();
-import { randomUUID as randomUUID6 } from "node:crypto";
+import { randomUUID as randomUUID7 } from "node:crypto";
 
 // src/usd.ts
 init_render();
@@ -91790,7 +91932,7 @@ async function lpAdd(args, ctx) {
   if ("error" in parsed)
     return usage5(ctx, parsed.error);
   const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `lp-${randomUUID6()}`;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID7()}`;
   if (parsed.positionals.length !== 2 || !flags["--amount"] || !flags["--wallet"] || !validClientId(id))
     return usage5(ctx, "Usage: candle lp add <pool> --amount <decimal> <token> --wallet <tee> [--position <nft-mint>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
   try {
@@ -91826,7 +91968,7 @@ async function lpRemove(args, ctx) {
   if ("error" in parsed)
     return usage5(ctx, parsed.error);
   const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `lp-${randomUUID6()}`;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID7()}`;
   const percent2 = Number(flags["--percent"]);
   if (parsed.positionals.length !== 1 || !flags["--percent"] || !/^\d+(\.\d{1,2})?$/.test(flags["--percent"]) || !(percent2 > 0 && percent2 <= 100) || !validClientId(id))
     return usage5(ctx, "Usage: candle lp remove <position> --percent <0.01-100> [--wallet <tee>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
@@ -91858,7 +92000,7 @@ async function lpClaim(args, ctx) {
   if ("error" in parsed)
     return usage5(ctx, parsed.error);
   const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `lp-${randomUUID6()}`;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID7()}`;
   if (parsed.positionals.length !== 1 || !validClientId(id))
     return usage5(ctx, "Usage: candle lp claim <position> [--wallet <tee>] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
   try {
@@ -91896,6 +92038,8 @@ var MCP_TOOL_NAMES = [
   "candle_vamp_candidates",
   "candle_token_events",
   "candle_token_card",
+  "candle_token_edit",
+  "candle_token_history",
   "candle_token_page_about",
   "candle_token_page_capabilities",
   "candle_token_page_burns",
@@ -91972,6 +92116,7 @@ var READ_ONLY_TOOL_NAMES = [
   "candle_get_feed",
   "candle_token_events",
   "candle_token_card",
+  "candle_token_history",
   "candle_token_page_about",
   "candle_token_page_burns",
   "candle_token_page_history",
@@ -92093,7 +92238,7 @@ init_bridge();
 init_client();
 init_evm_lite();
 init_human_output();
-import { randomUUID as randomUUID7, sign as sign4 } from "node:crypto";
+import { randomUUID as randomUUID8, sign as sign4 } from "node:crypto";
 
 // src/hyperliquid.ts
 init_sha3();
@@ -96006,7 +96151,7 @@ async function perpsDeposit(args, ctx) {
   if (parsed.positionals.length !== 2 || !amount || !DEC_RE3.test(amount) || !isDepositAsset(asset))
     return usage8(ctx, DEPOSIT_USAGE);
   const { values } = parsed;
-  const id = values["--id"] ?? `deposit-${randomUUID7()}`;
+  const id = values["--id"] ?? `deposit-${randomUUID8()}`;
   if (!DEPOSIT_ID_RE.test(id))
     return usage8(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
   const slippageBps = Number(values["--slippage-bps"] ?? "100");
@@ -97160,7 +97305,7 @@ var perpsCandles = (argv, ctx) => read(ctx, argv, "candles");
 // src/commands/perps-withdraw.ts
 init_args();
 init_human_output();
-import { randomUUID as randomUUID8 } from "node:crypto";
+import { randomUUID as randomUUID9 } from "node:crypto";
 
 // src/hyperliquid-withdraw.ts
 var CANDLE_PERPS_WITHDRAW_PINS = {
@@ -97404,7 +97549,7 @@ async function perpsWithdraw(args, ctx) {
   const amountMicros = parseWithdrawAmount(amount);
   if (amountMicros === null)
     return usage10(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
-  const id = parsed.values["--id"] ?? `withdraw-${randomUUID8()}`;
+  const id = parsed.values["--id"] ?? `withdraw-${randomUUID9()}`;
   if (!ID_RE.test(id))
     return usage10(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
   if (!refuseEnvPassphrase(ctx))
@@ -97541,7 +97686,7 @@ init_render();
 init_secret_store();
 init_solana_lite();
 init_errors2();
-import { generateKeyPairSync as generateKeyPairSync3, randomUUID as randomUUID10 } from "node:crypto";
+import { generateKeyPairSync as generateKeyPairSync3, randomUUID as randomUUID11 } from "node:crypto";
 
 // src/x402/plan-state.ts
 init_file_lock();
@@ -98041,7 +98186,7 @@ init_deps();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
-import { randomUUID as randomUUID9 } from "node:crypto";
+import { randomUUID as randomUUID10 } from "node:crypto";
 
 // src/x402/pay.ts
 init_client();
@@ -98308,7 +98453,7 @@ async function runPaidRead(ctx, input) {
       blockhash: blockhashFor(ctx),
       env: ctx.deps.env,
       now: ctx.deps.now,
-      newId: randomUUID9
+      newId: randomUUID10
     });
     const line = paymentLine(paid);
     if (line && !ctx.json)
@@ -98919,7 +99064,7 @@ async function runPlanPayment(ctx, run2) {
     const transaction = serializePartiallySigned(transfer, signer.sign(transfer.message));
     const at3 = new Date(deps.now()).toISOString();
     const pending = {
-      id: randomUUID10(),
+      id: randomUUID11(),
       plan: run2.plan,
       renew,
       path,
@@ -102551,7 +102696,7 @@ init_presentation();
 init_render();
 init_trading();
 init_swap();
-import { randomUUID as randomUUID11 } from "node:crypto";
+import { randomUUID as randomUUID12 } from "node:crypto";
 var withdrawal = exports_external.object({ withdrawal: exports_external.string(), amountRaw: exports_external.string(), endTime: exports_external.string(), claimable: exports_external.boolean() }).passthrough();
 var positionsSchema = exports_external.object({
   success: exports_external.literal(true),
@@ -102606,7 +102751,7 @@ async function runStake(action, args, ctx) {
     return 2;
   }
   const { values, positionals, booleans } = parsed;
-  const id = values["--client-stake-id"] ?? `stake-${randomUUID11()}`;
+  const id = values["--client-stake-id"] ?? `stake-${randomUUID12()}`;
   const all = booleans.has("--all");
   if (!validClientId(id) || id.length > 128 || (action === "positions" ? positionals.length !== 0 : action === "finish" ? positionals.length > 1 : action === "claim" ? all ? positionals.length !== 0 : positionals.length !== 1 : positionals.length !== 1)) {
     writeUsageFailure(ctx.deps, usage12, ctx.json);
@@ -103698,6 +103843,14 @@ async function tokenEvents(args, ctx) {
   return 0;
 }
 
+// src/commands/token-metadata.ts
+init_args();
+init_client();
+init_deps();
+init_human_output();
+import { randomUUID as randomUUID14 } from "node:crypto";
+init_render();
+
 // src/commands/token-pages.ts
 init_esm();
 init_args();
@@ -103706,7 +103859,7 @@ init_deps();
 init_human_output();
 init_presentation();
 init_render();
-import { createHash as createHash6, randomUUID as randomUUID12 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID13 } from "node:crypto";
 var EXIT_OUTCOME_UNKNOWN = 3;
 var EXIT_REVISION_CONFLICT = 4;
 var TOKEN_PAGE_LIMITS = { thesis: 280, tokenomics: 5000, lore: 5000, update: 1000, comment: 500 };
@@ -103851,7 +104004,7 @@ function writeUnknown(ctx, idempotencyKey) {
 function idempotencyKeyOf(values, usage12) {
   const given = values["--idempotency-key"];
   if (given === undefined)
-    return randomUUID12();
+    return randomUUID13();
   if (given.length < 1 || given.length > 128)
     return usage12("--idempotency-key must be 1 to 128 characters.");
   return given;
@@ -104420,6 +104573,257 @@ async function tokenPost(args, ctx) {
 `);
   else
     writeFields(ctx.deps, "stdout", [["Post", id]], "Post deleted");
+  return 0;
+}
+
+// src/commands/token-metadata.ts
+var EXIT_OUTCOME_UNKNOWN2 = 3;
+var EDIT_FIELDS = launchFlagFields.filter((field) => field.key === "description" || field.key.startsWith("socials."));
+var CLEAR_NAMES = new Map(EDIT_FIELDS.map((field) => [field.cli.flag.slice(2), field.key]));
+var EDIT_USAGE = `Usage: candle token edit <mint> [--chain solana|hood] ${EDIT_FIELDS.map((field) => `[${field.cli.flag} ${"value" in field.cli ? field.cli.value : "<value>"}]`).join(" ")} [--clear <${[...CLEAR_NAMES.keys()].join("|")}>]... [--idempotency-key <key>] [--json]`;
+var HISTORY_USAGE = "Usage: candle token history <mint> [--chain solana|hood] [--limit <n>] [--cursor <c>] [--json]";
+function usageFor2(ctx, line) {
+  return (message) => {
+    writeUsageFailure(ctx.deps, message ? `${message}
+${line}` : line, ctx.json);
+    return 2;
+  };
+}
+function chainFor(mint, given) {
+  const chain2 = given ?? (mint.startsWith("0x") ? "hood" : "solana");
+  return chain2 === "solana" || chain2 === "hood" ? chain2 : undefined;
+}
+function metadataPath(chain2, mint, rest = "") {
+  return `/api/v1/tokens/${chain2}/${encodeURIComponent(mint)}/metadata${rest}`;
+}
+function splitClears(args) {
+  const rest = [];
+  const clears = [];
+  for (let i = 0;i < args.length; i++) {
+    if (args[i] !== "--clear") {
+      rest.push(args[i]);
+      continue;
+    }
+    const name2 = args[i + 1];
+    if (name2 === undefined || name2.startsWith("--"))
+      return { error: "--clear needs a field name." };
+    clears.push(name2);
+    i++;
+  }
+  return { rest, clears };
+}
+function editBodyOf(values, clears) {
+  const body = {};
+  const socials = {};
+  const set2 = (key, value) => {
+    if (key === "description")
+      body.description = value;
+    else
+      socials[key.slice("socials.".length)] = value;
+  };
+  for (const field of EDIT_FIELDS) {
+    const value = values[field.cli.flag];
+    if (value !== undefined)
+      set2(field.key, value);
+  }
+  for (const name2 of clears) {
+    const key = CLEAR_NAMES.get(name2);
+    if (!key)
+      return { error: `--clear takes ${[...CLEAR_NAMES.keys()].join(", ")}.` };
+    const flag = `--${name2}`;
+    if (values[flag] !== undefined)
+      return { error: `${flag} and --clear ${name2} cannot both be given.` };
+    set2(key, "");
+  }
+  if (Object.keys(socials).length)
+    body.socials = socials;
+  if (body.description === undefined && body.socials === undefined) {
+    return { error: "Name at least one field to change." };
+  }
+  return body;
+}
+function payloadOf(result) {
+  const body = result.ok ? result.body : null;
+  return body && typeof body === "object" && "payload" in body ? body.payload : undefined;
+}
+var LINK_LABELS = {
+  website: "Website",
+  twitter: "X",
+  telegram: "Telegram",
+  discord: "Discord"
+};
+function linkRows(socials) {
+  return Object.keys(LINK_LABELS).map((key) => [LINK_LABELS[key], socials[key] ?? "-"]);
+}
+async function patchOnce(ctx, path, body, apiKey, idempotencyKey) {
+  try {
+    return await apiRequest(path, {
+      apiUrl: ctx.apiUrl,
+      method: "PATCH",
+      body,
+      auth: "key",
+      credentials: { apiKey },
+      headers: { "Idempotency-Key": idempotencyKey },
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+  } catch {
+    return { ok: false, status: 0, message: "The response was cut off before it finished.", raw: undefined };
+  }
+}
+function mayHaveCommitted(result) {
+  if (result.ok)
+    return false;
+  if (result.status === 0 && !result.code)
+    return true;
+  return result.retryable === true || result.status >= 500 && result.retryable !== false;
+}
+async function tokenEdit(args, ctx) {
+  const usage12 = usageFor2(ctx, EDIT_USAGE);
+  const split2 = splitClears(args);
+  if ("error" in split2)
+    return usage12(split2.error);
+  const parsed = parseArgs(split2.rest, {
+    valueFlags: ["--chain", "--idempotency-key", ...EDIT_FIELDS.map((field) => field.cli.flag)]
+  });
+  if ("error" in parsed)
+    return usage12(parsed.error);
+  const [mint] = parsed.positionals;
+  if (parsed.positionals.length !== 1 || !mint)
+    return usage12();
+  const chain2 = chainFor(mint, parsed.values["--chain"]);
+  if (!chain2)
+    return usage12("--chain must be solana or hood.");
+  const body = editBodyOf(parsed.values, split2.clears);
+  if ("error" in body)
+    return usage12(body.error);
+  const given = parsed.values["--idempotency-key"];
+  if (given !== undefined && (given.length < 1 || given.length > 128)) {
+    return usage12("--idempotency-key must be 1 to 128 characters.");
+  }
+  const idempotencyKey = given ?? randomUUID14();
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(ctx.deps, {
+      code: "API_KEY_REQUIRED",
+      message: "Editing a token's metadata needs an API key with launch:write, from the account that launched it.",
+      suggestion: "Log in with: candle login"
+    }, ctx.json);
+    return 1;
+  }
+  const path = metadataPath(chain2, mint);
+  let result = await patchOnce(ctx, path, body, apiKey, idempotencyKey);
+  const unsettledCommit = mayHaveCommitted(result);
+  if (unsettledCommit)
+    result = await patchOnce(ctx, path, body, apiKey, idempotencyKey);
+  if (!result.ok && result.status === 0 && !result.code) {
+    writeLocalFailure(ctx.deps, {
+      code: "OUTCOME_UNKNOWN",
+      message: "Candle did not answer, twice, so whether this edit landed is not known.",
+      suggestion: `Rerun the same command with --idempotency-key ${idempotencyKey}: Candle returns the first result instead of editing twice.`,
+      details: { idempotencyKey }
+    }, ctx.json);
+    return EXIT_OUTCOME_UNKNOWN2;
+  }
+  if (!result.ok) {
+    const failure3 = { apiUrl: ctx.apiUrl, authType: "key" };
+    if (!unsettledCommit && !mayHaveCommitted(result)) {
+      writeFailure(ctx.deps, result, failure3, ctx.json);
+      return 1;
+    }
+    const retry = `Rerun the same command with --idempotency-key ${idempotencyKey}: Candle returns the first result instead of editing twice.`;
+    if (ctx.json) {
+      ctx.deps.stdout.write(`${JSON.stringify({ ...errorEnvelope(result, failure3), idempotencyKey, details: { idempotencyKey }, retryCommand: retry })}
+`);
+    } else {
+      writeFailure(ctx.deps, result, failure3, false);
+      ctx.deps.stderr.write(`Idempotency key: ${idempotencyKey}
+${retry}
+`);
+    }
+    return 1;
+  }
+  const payload = payloadOf(result);
+  if (!payload || typeof payload.changed !== "boolean") {
+    writeLocalFailure(ctx.deps, { code: "BAD_RESPONSE", message: "Candle's answer was not an edit result." }, ctx.json);
+    return 1;
+  }
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data: payload })}
+`);
+    return 0;
+  }
+  writeFields(ctx.deps, "stdout", [
+    ["Result", payload.changed ? "edited" : "nothing changed"],
+    ["Version", payload.version === null ? "-" : String(payload.version)],
+    ...payload.changed ? [["Changed", changedOf(body)]] : [],
+    ["Description", payload.description ? terminalText(payload.description) : "-"],
+    ...linkRows(payload.socials)
+  ]);
+  return 0;
+}
+function changedOf(body) {
+  const named = EDIT_FIELDS.filter((field) => field.key === "description" ? body.description !== undefined : body.socials?.[field.key.slice("socials.".length)] !== undefined);
+  return named.map((field) => field.cli.flag.slice(2)).join(", ");
+}
+async function tokenHistory2(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
+  if ("error" in parsed || parsed.positionals.length !== 1)
+    return tokenHistory(args, ctx);
+  const usage12 = usageFor2(ctx, HISTORY_USAGE);
+  const mint = parsed.positionals[0];
+  const chain2 = chainFor(mint, parsed.values["--chain"]);
+  if (!chain2)
+    return usage12("--chain must be solana or hood.");
+  const limit = parsed.values["--limit"];
+  if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50)) {
+    return usage12("--limit is a whole number from 1 to 50.");
+  }
+  const query3 = new URLSearchParams({
+    ...limit !== undefined ? { limit } : {},
+    ...parsed.values["--cursor"] !== undefined ? { cursor: parsed.values["--cursor"] } : {}
+  });
+  const result = await apiRequest(metadataPath(chain2, mint, `/history${query3.size ? `?${query3}` : ""}`), {
+    apiUrl: ctx.apiUrl,
+    auth: "none",
+    credentials: {},
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok) {
+    writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json);
+    return 1;
+  }
+  const data = payloadOf(result);
+  if (!data || !Array.isArray(data.items)) {
+    writeLocalFailure(ctx.deps, { code: "BAD_RESPONSE", message: "Candle's answer was not an edit history." }, ctx.json);
+    return 1;
+  }
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data })}
+`);
+    return 0;
+  }
+  if (!data.items.length)
+    ctx.deps.stdout.write(`No edits.
+`);
+  for (const item of data.items) {
+    writeHeading(ctx.deps, "stdout", `version ${item.version}`);
+    writeFields(ctx.deps, "stdout", [
+      ["At", item.createdAt],
+      ["By", item.author?.name ? terminalText(item.author.name) : "Agent"],
+      ["Changed", item.changedFields.join(", ")],
+      ...item.changedFields.map((field) => {
+        const now = field === "description" ? item.description : item.socials[field.slice("socials.".length)];
+        const was = field === "description" ? item.prevDescription : item.prevSocials[field.slice("socials.".length)];
+        return [field, `${was ? terminalText(was) : "-"} -> ${now ? terminalText(now) : "-"}`];
+      })
+    ]);
+  }
+  if (data.nextCursor)
+    ctx.deps.stdout.write(`
+More: --cursor ${data.nextCursor}
+`);
   return 0;
 }
 
@@ -112604,7 +113008,7 @@ init_solana_alt();
 init_solana_lite();
 init_trading();
 init_swap();
-import { randomUUID as randomUUID13 } from "node:crypto";
+import { randomUUID as randomUUID15 } from "node:crypto";
 var USAGE16 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
@@ -112877,7 +113281,7 @@ async function walletsCloseEmpty(args, ctx) {
     return 2;
   }
   const named = parsed.values["--client-trade-id"];
-  const id = named ?? `close-${randomUUID13()}`;
+  const id = named ?? `close-${randomUUID15()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
     writeUsageFailure(ctx.deps, USAGE16, ctx.json);
     return 2;
@@ -113301,8 +113705,9 @@ var COMMANDS = {
       about: tokenAbout,
       claim: tokenClaim,
       section: tokenSection,
-      history: tokenHistory,
+      history: tokenHistory2,
       flag: tokenFlag,
+      edit: tokenEdit,
       update: tokenUpdate,
       post: tokenPost
     }
@@ -113639,7 +114044,7 @@ async function runCommand(argv, deps) {
   const publicPerpsRead = word3 === "perps" && ["markets", "market", "book", "candles"].includes(sub ?? "");
   const coreFace = word3 === "core" && sub === "mcp";
   const actsAsIdentity = !publicPerpsRead && !coreFace && (word3 !== "mcp" || mcpActsAsIdentity(tokens.slice(1)));
-  const tokenPageActs = word3 === "token" && (["claim", "section", "flag"].includes(sub ?? "") || sub === "about" && tokens.includes("--capabilities"));
+  const tokenPageActs = word3 === "token" && (["claim", "section", "flag", "edit"].includes(sub ?? "") || sub === "about" && tokens.includes("--capabilities"));
   if (ROUTED_COMMANDS.has(word3) && (!NEVER_GUARDED.has(word3) || tokenPageActs) && routesToCommand(cmd, sub) && actsAsIdentity) {
     const verdict = await verifyProfileAccount(ctx, config2);
     if (!verdict.ok) {

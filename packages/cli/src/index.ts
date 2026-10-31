@@ -88,15 +88,8 @@ import { teeRebind, teeRebinds } from "./commands/tee-rebind"
 import { teeRename } from "./commands/tee-rename"
 import { tokenClusters } from "./commands/token-clusters"
 import { tokenEvents } from "./commands/token-events"
-import {
-  tokenAbout,
-  tokenClaim,
-  tokenFlag,
-  tokenHistory,
-  tokenPost,
-  tokenSection,
-  tokenUpdate,
-} from "./commands/token-pages"
+import { tokenEdit, tokenHistory } from "./commands/token-metadata"
+import { tokenAbout, tokenClaim, tokenFlag, tokenPost, tokenSection, tokenUpdate } from "./commands/token-pages"
 import { tokenForensics, tokenVampCandidates } from "./commands/token-paid"
 import { transfer } from "./commands/transfer"
 import { tui } from "./commands/tui"
@@ -255,6 +248,8 @@ const COMMANDS: Record<string, CommandRoute> = {
   // key inside the local spending rules (src/x402/), or shown and not paid.
   // Token page About (BE-1959, token pages spec 7): `about` and `history` are public reads;
   // `claim`, `section set|restore` and `flag` act as the key's account under `token-pages:write`.
+  // BE-2140: `edit` sets the creator's description and links (launch:write, as the key's account);
+  // `history <mint>` without a section is that edit history, with one the About section history.
   token: {
     subcommands: {
       clusters: tokenClusters,
@@ -266,6 +261,7 @@ const COMMANDS: Record<string, CommandRoute> = {
       section: tokenSection,
       history: tokenHistory,
       flag: tokenFlag,
+      edit: tokenEdit,
       update: tokenUpdate,
       post: tokenPost,
     },
@@ -855,10 +851,11 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   const coreFace = word === "core" && sub === "mcp"
   const actsAsIdentity = !publicPerpsRead && !coreFace && (word !== "mcp" || mcpActsAsIdentity(tokens.slice(1)))
   // BE-1959: `token` is unguarded for its reads, but a token page write (and the private
-  // capabilities read) acts as the key's account, so it pays for the same check.
+  // capabilities read) acts as the key's account, so it pays for the same check. BE-2140: so does
+  // `token edit`, the creator metadata write.
   const tokenPageActs =
     word === "token" &&
-    (["claim", "section", "flag"].includes(sub ?? "") || (sub === "about" && tokens.includes("--capabilities")))
+    (["claim", "section", "flag", "edit"].includes(sub ?? "") || (sub === "about" && tokens.includes("--capabilities")))
   if (
     ROUTED_COMMANDS.has(word) &&
     (!NEVER_GUARDED.has(word) || tokenPageActs) &&

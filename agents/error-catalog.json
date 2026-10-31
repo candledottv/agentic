@@ -140,7 +140,7 @@
     },
     "transient": {
       "retryable": true,
-      "action": "Honor explicit error.retryable before this default. Back off only when retryable, reusing the SAME idempotency id. hood_market_unavailable is a twice-failed address and remains retryable:false; wait for a changed condition, never spin or pause all Hood tokens. Do not reuse the id when `stage` is `executed`, or when `stage` is `unconfirmed` and `retryable` is false. An unconfirmed approval that did not send the trade has `retryable: true` and may reuse the id.",
+      "action": "Honor explicit error.retryable before this default. Back off only when retryable, reusing the SAME idempotency id. hood_market_unavailable is a twice-failed address and remains retryable:false; wait for a changed condition, never spin or pause all Hood tokens. Do not reuse the id when `stage` is `executed`, or when `stage` is `unconfirmed` and `retryable` is false. An unconfirmed approval that did not send the trade has `retryable: true` and may reuse the id. UNKNOWN on a token metadata edit: retry with the SAME Idempotency-Key; the edit may already be recorded, and the retry finishes it without a second version.",
       "codes": [
         "BUILD_TIMEOUT",
         "LAUNCH_FAILED",
@@ -153,12 +153,13 @@
         "TRANSFER_FAILED",
         "FEE_CLAIM_FAILED",
         "WALLET_IMPORT_FAILED",
-        "REBIND_RECONCILE_INCOMPLETE"
+        "REBIND_RECONCILE_INCOMPLETE",
+        "UNKNOWN"
       ]
     },
     "state_conflict": {
       "retryable": false,
-      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id. BRIDGE_IN_FLIGHT: a bridge into or out of this wallet is still open; read `candle swap status` and record the sweep once it closes or its two hours pass. HOLD_NOT_RELEASABLE: the trade's USD window hold stays; when error.retryable is true, call again after retryAfter (or at once for reason `changed`). FEE_NOT_CLAIMABLE: nothing was signed; error.reason says why (below_dust, wallet_not_signable, not_recipient, insufficient_gas), and only below_dust and insufficient_gas change with time or funding. ACCOUNT_EXISTS and PAYER_IN_SIGNUP: the wallet already has an account or a signup under way; do not create another. INPUT_MISMATCH and SIGNER_MISMATCH on an account signup: resume with the original inputs and signer, never new ones. TERMS_VERSION_STALE: show the version in error.data and ask again.",
+      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id. BRIDGE_IN_FLIGHT: a bridge into or out of this wallet is still open; read `candle swap status` and record the sweep once it closes or its two hours pass. HOLD_NOT_RELEASABLE: the trade's USD window hold stays; when error.retryable is true, call again after retryAfter (or at once for reason `changed`). FEE_NOT_CLAIMABLE: nothing was signed; error.reason says why (below_dust, wallet_not_signable, not_recipient, insufficient_gas), and only below_dust and insufficient_gas change with time or funding. ACCOUNT_EXISTS and PAYER_IN_SIGNUP: the wallet already has an account or a signup under way; do not create another. INPUT_MISMATCH and SIGNER_MISMATCH on an account signup: resume with the original inputs and signer, never new ones. TERMS_VERSION_STALE: show the version in error.data and ask again. NOT_TOKEN_CREATOR, TOKEN_NOT_FOUND, TOKEN_NOT_LIVE, ONCHAIN_METADATA_TOKEN and TEE_LAUNCHED_HOOD_TOKEN refuse a token metadata edit and wrote nothing: only the launching account may edit, the token must be a confirmed Candle token, and a post-cutover Hood token is edited on chain with POST /api/v1/hood/metadata/edit instead.",
       "codes": [
         "IDEMPOTENCY_CONFLICT",
         "TRADE_ALREADY_CLAIMED",
@@ -197,7 +198,12 @@
         "INPUT_MISMATCH",
         "ACCOUNT_EXISTS",
         "PAYER_IN_SIGNUP",
-        "USERNAME_TAKEN"
+        "USERNAME_TAKEN",
+        "TOKEN_NOT_FOUND",
+        "NOT_TOKEN_CREATOR",
+        "TOKEN_NOT_LIVE",
+        "ONCHAIN_METADATA_TOKEN",
+        "TEE_LAUNCHED_HOOD_TOKEN"
       ]
     },
     "quota": {
@@ -223,7 +229,8 @@
         "TOKEN_EVENTS_DISABLED",
         "TOKEN_CARD_DISABLED",
         "TEST_FLEET_PRODUCTION_DISABLED",
-        "ACCOUNTS_UNAVAILABLE"
+        "ACCOUNTS_UNAVAILABLE",
+        "METADATA_EDIT_DISABLED"
       ]
     },
     "venue_refused": {
