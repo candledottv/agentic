@@ -308,6 +308,14 @@ describe("buildRequest", () => {
 
     const profile = buildRequest("candle_get_agent_profile", { idOrWallet: "a/b?c" }, { apiUrl: "https://api.test" })
     expect(profile.url).toBe("https://api.test/api/v1/users/a%2Fb%3Fc/agent")
+    expect(profile.init.headers).not.toHaveProperty("x-api-key")
+    // Tier is private: a configured key is sent so the account's own profile carries it.
+    const keyed = buildRequest(
+      "candle_get_agent_profile",
+      { idOrWallet: "x" },
+      { apiUrl: "https://api.test", apiKey: "cndl_live_k" },
+    )
+    expect(keyed.init.headers).toHaveProperty("x-api-key", "cndl_live_k")
   })
   test("get_portfolio is a keyed GET of /api/v1/agent/portfolio with no body", () => {
     const r = buildRequest("candle_get_portfolio", {}, { apiUrl: "https://api.test", apiKey: "cndl_live_k" })

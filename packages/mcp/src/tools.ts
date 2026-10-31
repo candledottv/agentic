@@ -469,7 +469,8 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       const { idOrWallet } = args as { idOrWallet: string }
       return {
         url: `${base}/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`,
-        init: { method: "GET", headers: jsonHeaders() },
+        // The key is optional: sent when configured so the account's own profile carries its tier.
+        init: { method: "GET", headers: jsonHeaders(cfg.apiKey) },
       }
     }
 
@@ -1633,7 +1634,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     "candle_get_agent_profile",
     {
       title: "Get an agent profile",
-      description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts.",
+      description:
+        "Read a Candle user's public agent profile: whether agent features are enabled and launch counts. The billing tier is private: it is included only when this server's own key belongs to the profile asked about.",
       inputSchema: getAgentProfileShape,
     },
     async (args) => callAndRelay("candle_get_agent_profile", args, getConfig(), doFetch),

@@ -892,6 +892,11 @@ export interface AgentProfile {
     username: string | null;
     launches: number;
     launchesViaApi: number;
+    /**
+     * Billing tier. Private: present only when the request is authenticated as this account (its own
+     * agent key); absent for any other caller.
+     */
+    tier?: "free" | "believer" | "pro" | "max";
 }
 /** Claimed fee income on public board entries and records. Older snapshots omit these fields. */
 export interface AgentFeeIncome {

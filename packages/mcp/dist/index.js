@@ -6162,7 +6162,7 @@ function buildRequest(name, args, cfg) {
       const { idOrWallet } = args;
       return {
         url: `${base2}/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`,
-        init: { method: "GET", headers: jsonHeaders() }
+        init: { method: "GET", headers: jsonHeaders(cfg.apiKey) }
       };
     }
     case "candle_update_profile": {
@@ -6758,7 +6758,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_report_activity", args, getConfig(), doFetch));
   register("candle_get_agent_profile", {
     title: "Get an agent profile",
-    description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts.",
+    description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts. The billing tier is private: it is included only when this server's own key belongs to the profile asked about.",
     inputSchema: getAgentProfileShape
   }, async (args) => callAndRelay("candle_get_agent_profile", args, getConfig(), doFetch));
   register("candle_update_profile", {
