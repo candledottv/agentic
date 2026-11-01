@@ -63,8 +63,8 @@
  *   realized net, from the server's `closed` summary.
  * - **Account scope** adds the "By agent" table (`byAgent`: every key, then Manual, with an
  *   account total that matches the rows), and the counts of `costUnknown` and `movedOutUntracked`.
- * - **Key scope** is the key's share of the account (PNL-ED-6): realized on the sales it made, and
- *   the open positions that belong to it (the wallet's bound key, else the key whose buy opened
+ * - **Key scope** is the key's share of the account (PNL-ED-6): realized on the sales it made and on
+ *   positions its buy opened that closed by hand in the web app or outside Candle, and the open positions that belong to it (the wallet's bound key, else the key whose buy opened
  *   them). The by-wallet rows sum to the total, and the history bound is the account's activity
  *   rows, not 500 of the key's trades. An older API (no `totalUsd` on `pnl`) keeps the old wording,
  *   because its figures still mean the old thing.

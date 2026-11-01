@@ -2017,7 +2017,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "is the launching account. `feesUsd` is fees paid; `creatorFeesUsd` is fees earned. Check feeClaimsPartial " +
         "and feeClaimsUnvalued. `board` is absent on an older backend or a failed board read; it does not change " +
         "ledger pnl.totalUsd. Staking rewards are held at zero cost; claim value is informational, never added again. " +
-        "This profile's share of the account's P&L: realized profit on the sales it made, the Candle fees " +
+        "This profile's share of the account's P&L: realized profit on the sales it made and on positions its buy opened that closed through a sale made by hand in the web app or an exit outside Candle (the fee and trade count stay under Manual), the Candle fees " +
         "charged against it, and the positions that belong to it (the wallet's bound key, else the key " +
         "whose buy opened them) with their cost basis, each MARKED at Candle's current price where one " +
         "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " +
