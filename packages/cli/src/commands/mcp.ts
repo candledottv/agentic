@@ -82,6 +82,7 @@ export const MCP_TOOL_NAMES = [
   "candle_list_agent_posts",
   "candle_create_post",
   "candle_delete_post",
+  "candle_get_agent_positions",
   "candle_get_plans",
   "candle_report_activity",
   "candle_trade",
@@ -169,6 +170,7 @@ export const READ_ONLY_TOOL_NAMES = [
   "candle_get_agent_profile",
   "candle_list_agents",
   "candle_list_agent_posts",
+  "candle_get_agent_positions",
   "candle_resolve_token",
   "candle_get_plans",
 ] as const

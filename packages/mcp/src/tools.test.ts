@@ -22,6 +22,7 @@ test("all registered tools are listed", () => {
     "candle_delete_post",
     "candle_execution_status",
     "candle_finish_unstake",
+    "candle_get_agent_positions",
     "candle_get_agent_profile",
     "candle_get_feed",
     "candle_get_fees",

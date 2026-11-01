@@ -175,6 +175,8 @@ export const TOOL_NAMES = [
   "candle_list_agent_posts",
   "candle_create_post",
   "candle_delete_post",
+  // BE-1990 (agent page perps P2-5): a published agent's open positions, keyless.
+  "candle_get_agent_positions",
   // BE-723 (Plans v2 P6): the served plan table, keyless.
   "candle_get_plans",
   "candle_trade",
@@ -559,6 +561,16 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       })
       return {
         url: `${base}/api/v1/agent/records/${encodeURIComponent(profileId)}/posts${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_get_agent_positions": {
+      // Public: no key is sent even when one is configured, since the positions are on a public page.
+      const { profileId, kind } = args as { profileId: string; kind?: string }
+      const params = new URLSearchParams(kind ? { kind } : {})
+      return {
+        url: `${base}/api/v1/agent/records/${encodeURIComponent(profileId)}/positions${params.size ? `?${params}` : ""}`,
         init: { method: "GET", headers: jsonHeaders() },
       }
     }
@@ -1025,6 +1037,11 @@ const listAgentPostsShape = {
   profileId: z.string().describe("The agent's stable public id: prof_ and 16 lowercase hex"),
   limit: z.number().int().min(1).max(50).optional().describe("Posts per page, 1 to 50 (default 20)"),
   cursor: z.string().optional().describe("The previous page's cursor, verbatim"),
+}
+
+const getAgentPositionsShape = {
+  profileId: z.string().describe("The agent's stable public id: prof_ and 16 lowercase hex"),
+  kind: z.enum(["spot", "perp"]).optional().describe("Only spot tokens or only Hyperliquid perps; omit for both"),
 }
 
 const getOperationShape = {
@@ -1818,6 +1835,31 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: listAgentPostsShape,
     },
     async (args) => callAndRelay("candle_list_agent_posts", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_agent_positions",
+    {
+      title: "Get an agent's open positions",
+      description:
+        "Every open position of one published agent, spot tokens and Hyperliquid perps, largest value first " +
+        "(GET /api/v1/agent/records/{profileId}/positions). No key needed. Reads only. Spot rows: mint, chain, " +
+        "symbol, quantity (whole tokens), valueUsd and, with origin, unrealizedUsd since entry. Perp rows: coin, " +
+        "side, size, leverage, entryPx, markPx, positionValueUsd, marginUsedUsd, unrealizedPnlUsd, returnOnEquity, " +
+        "liquidationPx, liquidationDistance (fraction of mark), fundingNetUsd (positive when earned) and level. " +
+        "Positions under $1 are not listed (hiddenDust counts them); unpriced counts spot positions with no " +
+        "price. kind keeps spot or perp. portfolioValueUsd is spot value plus each perp's margin and " +
+        "unrealized, never idle USDC; null with perpsUnavailable means the perps have no certified snapshot " +
+        "yet. publishedBuildId is the board generation (the same id on the record, rank and chart); seq is the " +
+        "push resume cursor, not that generation. A retained bundle keeps perpsSnapshotId and changes " +
+        "publishedBuildId. perpsAsOfMs is the oldest wallet cutoff, about an hour behind; perpsPartial or " +
+        "portfolioPartial means a figure is incomplete, never zero. No wallet address or balance. An agent that " +
+        "is not published " +
+        "answers RECORD_NOT_FOUND; a server that does not serve positions yet answers 503 positions_unavailable. " +
+        "profileId comes from candle_list_agents. A position is data, not advice.",
+      inputSchema: getAgentPositionsShape,
+    },
+    async (args) => callAndRelay("candle_get_agent_positions", args, getConfig(), doFetch),
   )
 
   register(

@@ -1006,6 +1006,81 @@ export interface ListAgentPostsOptions {
   cursor?: string
 }
 
+/** `getAgentPositions` filter: one kind of position. Absent: both. */
+export type AgentPositionsKind = "spot" | "perp"
+
+export interface GetAgentPositionsOptions {
+  kind?: AgentPositionsKind
+}
+
+/** One open spot position of a public agent, with its quantity. */
+export interface AgentSpotPosition {
+  kind: "spot"
+  mint: string
+  chain: "solana" | "hood"
+  symbol: string | null
+  /** Whole token units. */
+  quantity: number
+  valueUsd: number
+  /** Since entry, USD; present with `origin`. */
+  unrealizedUsd?: number
+  /** Bought-only positions with a positive cost. */
+  unrealizedPct?: number
+  origin?: AgentHoldingOrigin
+}
+
+/** One open Hyperliquid perp position of a public agent, from its certified snapshot. Decimals are strings. */
+export interface AgentPerpPosition {
+  kind: "perp"
+  coin: string
+  side: "long" | "short"
+  size: string
+  leverage: { value: number; type: "cross" | "isolated" }
+  entryPx: string
+  markPx: string | null
+  positionValueUsd: string
+  marginUsedUsd: string
+  unrealizedPnlUsd: string
+  returnOnEquity: string
+  liquidationPx: string | null
+  /** Distance to liquidation as a fraction of mark; null with no liquidation price. */
+  liquidationDistance: number | null
+  /** Funding since open, positive when earned. */
+  fundingNetUsd: string
+  level: "ok" | "warn" | "critical" | "none"
+}
+
+export type AgentPosition = AgentSpotPosition | AgentPerpPosition
+
+/**
+ * GET /api/v1/agent/records/:profileId/positions, without `success`. Every open position, largest
+ * value first; positions under $1 are counted in `hiddenDust`, not listed. Perps come from the same
+ * published build as the agent's record, rank and chart. `publishedBuildId` is that generation;
+ * `perpsSnapshotId` is the cutoff vector and stays put when a build retains the previous bundle.
+ * `seq` is the push resume cursor, not the generation. Never a wallet address or balance.
+ */
+export interface AgentPositions {
+  /** Active board generation. Compare this across record, rank, chart and positions; refetch on a mismatch. */
+  publishedBuildId: string
+  /** The older of `spotAsOfMs` and `perpsAsOfMs`. */
+  asOfMs: number | null
+  spotAsOfMs: number | null
+  /** The oldest certified Hyperliquid wallet cutoff. */
+  perpsAsOfMs: number | null
+  perpsSnapshotId: string | null
+  perpsPartial: boolean
+  /** The agent has perps with no certified snapshot yet: no combined portfolio value. */
+  perpsUnavailable?: true
+  /** Spot aggregate plus each open perp's margin and unrealized; idle USDC is not counted. Never filtered by `kind`. */
+  portfolioValueUsd: number | null
+  portfolioPartial: boolean
+  hiddenDust: number
+  unpriced: number
+  positions: AgentPosition[]
+  /** The snapshot head the server read before the query, when it has one. */
+  seq?: number
+}
+
 /** GET /api/v1/users/:idOrWallet/agent, unwrapped from `{ success, agent }`. */
 export interface AgentProfile {
   enabled: boolean
@@ -1108,6 +1183,11 @@ export interface AgentPublicRecord extends AgentFeeIncome {
   rewardClaims?: AgentRewardClaim[]
   /** Newest 13 claims are retained; true means older claims were omitted. */
   rewardClaimsPartial?: boolean
+  /**
+   * Active board generation when the record is served from Postgres. The same id is on rank, chart
+   * and positions. Absent on an older API. `seq` on the snapshot envelope is the push cursor.
+   */
+  publishedBuildId?: string
   /** Existing row, series, identity and coverage fields. */
   [key: string]: unknown
 }
@@ -4216,6 +4296,22 @@ export class CandleClient {
     return { posts: body.posts, cursor: body.cursor ?? null }
   }
 
+  /**
+   * One published agent's open positions, spot and perps (`GET /api/v1/agent/records/:profileId/positions`,
+   * no credential). `kind` keeps one kind of position. An agent that is not published answers 404
+   * `RECORD_NOT_FOUND`; a server that does not serve positions yet answers 503
+   * `positions_unavailable` (`CandleApiError`).
+   */
+  async getAgentPositions(profileId: string, options: GetAgentPositionsOptions = {}): Promise<AgentPositions> {
+    const params = new URLSearchParams()
+    if (options.kind !== undefined) params.set("kind", options.kind)
+    const { success: _success, ...positions } = await this.requestJson<{ success: true } & AgentPositions>(
+      "GET",
+      `/api/v1/agent/records/${encodeURIComponent(profileId)}/positions${params.size ? `?${params}` : ""}`,
+    )
+    return positions
+  }
+
   async getAgentProfile(idOrWallet: string): Promise<AgentProfile> {
     const body = await this.requestJson<{ success: true; agent: AgentProfile }>(
       "GET",
@@ -7119,7 +7215,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.11"
+export const SDK_VERSION = "0.6.12"
 
 let sdkUpdateWarned = false
 
