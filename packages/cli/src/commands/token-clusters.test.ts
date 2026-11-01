@@ -31,11 +31,16 @@ describe("candle token clusters", () => {
       expect(f.stderr.text).toBe("")
     }
   })
-  test("human unavailable reason is normal stdout; invalid mint and Hood remain normal", async () => {
-    const f = setup({ success: true, data: clusterUnavailable(mint, "unsupported_chain") })
-    expect(await run(["token", "clusters", mint, "--chain", "hood"], f.deps)).toBe(0)
-    expect(humanText(f.stdout.text)).toContain(humanText("Reason unsupported_chain"))
-    expect(f.stderr.text).toBe("")
+  test("spec 10.2: human output shows nothing when unavailable, --json keeps the reason; invalid mint and Hood remain normal", async () => {
+    for (const reason of CLUSTER_REASONS) {
+      const f = setup({ success: true, data: clusterUnavailable(mint, reason) })
+      expect(await run(["token", "clusters", mint], f.deps)).toBe(0)
+      expect(f.stdout.text).toBe("")
+      expect(f.stderr.text).toBe("")
+      const j = setup({ success: true, data: clusterUnavailable(mint, reason) })
+      expect(await run(["token", "clusters", mint, "--json"], j.deps)).toBe(0)
+      expect(JSON.parse(j.stdout.text).reason).toBe(reason)
+    }
     const invalid = setup({ success: true, data: clusterUnavailable("bad!", "invalid_mint") })
     expect(await run(["token", "clusters", "bad!", "--json"], invalid.deps)).toBe(0)
   })
@@ -55,7 +60,8 @@ describe("candle token clusters", () => {
       throw Error("private secret")
     }) as unknown as typeof fetch
     expect(await run(["token", "clusters", mint], f.deps)).toBe(0)
-    expect(humanText(f.stdout.text)).toContain(humanText("Reason transport_error"))
+    expect(f.stdout.text).toBe("")
+    expect(f.stderr.text).toBe("")
     expect(f.stdout.text).not.toContain("secret")
   })
   test("real analysis human and JSON include times and caveat; terminal controls are sanitized", async () => {

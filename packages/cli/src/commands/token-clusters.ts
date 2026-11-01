@@ -37,12 +37,10 @@ export async function tokenClusters(args: string[], ctx: CommandContext): Promis
   }
   const out = ctx.deps.stdout
   if (ctx.json) out.write(`${JSON.stringify(result)}\n`)
-  else if (result.status === "unavailable")
-    writeFields(ctx.deps, "stdout", [
-      ["Status", result.message],
-      ["Reason", result.reason],
-    ])
-  else {
+  else if (result.status === "unavailable") {
+    // Spec section 10.2: a person sees nothing when there is no analysis (outside the covered band, or any provider
+    // outcome). `--json` keeps the typed reason for agents.
+  } else {
     writeFields(
       ctx.deps,
       "stdout",

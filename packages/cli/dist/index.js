@@ -3476,7 +3476,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.6";
+var CLI_VERSION = "0.13.7";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -103715,12 +103715,7 @@ async function tokenClusters(args, ctx) {
   if (ctx.json)
     out.write(`${JSON.stringify(result)}
 `);
-  else if (result.status === "unavailable")
-    writeFields(ctx.deps, "stdout", [
-      ["Status", result.message],
-      ["Reason", result.reason]
-    ]);
-  else {
+  else if (result.status === "unavailable") {} else {
     writeFields(ctx.deps, "stdout", [
       ["Fetched", formatTime(result.fetchedAt)],
       ["Cluster supply", `${result.analysis.clusterSupplyPct}%`]
