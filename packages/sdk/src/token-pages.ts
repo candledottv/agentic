@@ -2,6 +2,7 @@ import { CandleApiError, candleApiErrorFromResponse } from "./errors"
 import type {
   AboutBurnHistory,
   AboutCapabilities,
+  AboutComments,
   AboutHistory,
   AboutSection,
   AboutSeen,
@@ -58,6 +59,14 @@ export interface CandleTokenPages {
     id: string,
     options?: TokenPageWriteOptions,
   ): Promise<TokenPageWriteResult<{ id: string; deleted: true }>>
+  /** Public newest-first comments with tombstones; sends no key. */
+  comments(token: AboutToken, options?: TokenPagePagination): Promise<AboutComments>
+  /** An immutable comment under the 0.5% editing gate. Never pushed; delete it with `deletePost`. */
+  postComment(
+    token: AboutToken,
+    body: { text: string },
+    options?: TokenPageWriteOptions,
+  ): Promise<TokenPageWriteResult<{ id: string }>>
   seen(token: AboutToken): Promise<AboutSeen>
   markSeen(
     token: AboutToken,
@@ -206,6 +215,8 @@ export function createTokenPagesClient(io: {
     updates: (token, options) => request("GET", path(token, `/updates${query(options)}`), false),
     postUpdate: (token, body, options) => write("POST", path(token, "/updates"), body, options),
     deletePost: (token, id, options) => write("DELETE", path(token, `/posts/${encodeURIComponent(id)}`), {}, options),
+    comments: (token, options) => request("GET", path(token, `/comments${query(options)}`), false),
+    postComment: (token, body, options) => write("POST", path(token, "/comments"), body, options),
     seen: (token) => request("GET", path(token, "/seen"), true),
     markSeen: (token, visibleUpdateSequence, options) =>
       write("POST", path(token, "/seen"), { visibleUpdateSequence }, options),

@@ -48,6 +48,8 @@ const USAGE = {
   history:
     "Usage: candle token history <address> <thesis|tokenomics|lore> [--chain solana|hood] [--limit <n>] [--cursor <c>]",
   flag: "Usage: candle token flag <address> --content <id> --reason <spam|scam|abuse|misleading|unsafe_link|other> [--detail <text>] [--chain solana|hood] [--idempotency-key <key>]",
+  comment: "Usage: candle token comment <address> --file <path> [--chain solana|hood] [--idempotency-key <key>]",
+  comments: "Usage: candle token comments <address> [--chain solana|hood] [--limit <n>] [--cursor <c>]",
 } as const
 
 /** Plain sentences for the API's token page refusal codes. The code itself is what `--json` carries. */
@@ -256,7 +258,10 @@ function identity(who: Identity | null | undefined): string | undefined {
  * other than newline and tab, and the section's code-point limit after CRLF normalization. The
  * same rules the API applies, so a refusal here is one the server would also give.
  */
-export function sectionText(bytes: Uint8Array, section: Section | "update"): { text: string } | { error: string } {
+export function sectionText(
+  bytes: Uint8Array,
+  section: Section | "update" | "comment",
+): { text: string } | { error: string } {
   if (bytes.length > TOKEN_PAGE_BODY_CAP_BYTES) return { error: `The file is over ${TOKEN_PAGE_BODY_CAP_BYTES} bytes.` }
   let decoded: string
   try {
@@ -774,7 +779,9 @@ export async function tokenFlag(args: string[], ctx: CommandContext): Promise<nu
   if (!chain) return usage("--chain must be solana or hood.")
   const contentId = values["--content"]
   if (contentId === undefined || !UUID.test(contentId))
-    return usage("--content is the exact version id being reported (candle token about or history).")
+    return usage(
+      "--content is the exact version, update or comment id being reported (candle token about, history or comments).",
+    )
   const reason = values["--reason"]
   if (!reason || !(FLAG_REASONS as readonly string[]).includes(reason))
     return usage(`--reason is one of ${FLAG_REASONS.join(", ")}.`)
@@ -856,6 +863,105 @@ export async function tokenUpdate(args: string[], ctx: CommandContext): Promise<
       ],
       "Update posted",
     )
+  return 0
+}
+/**
+ * An immutable comment, under the same 0.5% gate and file checks as a section write. It is never
+ * pushed to holders; `token post delete` removes it.
+ */
+export async function tokenComment(args: string[], ctx: CommandContext): Promise<number> {
+  const usage = usageFor(ctx, USAGE.comment)
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] })
+  if ("error" in parsed) return usage(parsed.error)
+  const chain = chainOf(parsed.values),
+    address = parsed.positionals[0],
+    file = parsed.values["--file"]
+  if (!chain || !address || !file || parsed.positionals.length !== 1) return usage()
+  let bytes: Uint8Array
+  try {
+    bytes = await ctx.deps.readBytes(file)
+  } catch {
+    return usage("The comment file could not be read.")
+  }
+  const checked = sectionText(bytes, "comment")
+  if ("error" in checked || !checked.text.trim())
+    return usage(`The comment must contain 1–${TOKEN_PAGE_LIMITS.comment} valid characters.`)
+  const idempotencyKey = idempotencyKeyOf(parsed.values, usage)
+  if (typeof idempotencyKey === "number") return idempotencyKey
+  const apiKey = await requireKey(ctx)
+  if (!apiKey) return 1
+  const result = await write(ctx, {
+    method: "POST",
+    path: pagePath(chain, address, "/comments"),
+    body: { text: checked.text },
+    apiKey,
+    idempotencyKey,
+  })
+  if (result === "unknown") return writeUnknown(ctx, idempotencyKey)
+  if (!result.ok) return writeApiFailure(ctx, result, "key")
+  const data = dataOf(result) as { id: string }
+  if (ctx.json) ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}\n`)
+  else
+    writeFields(
+      ctx.deps,
+      "stdout",
+      [
+        ["Comment", data.id],
+        ["Retry key", idempotencyKey],
+      ],
+      "Comment posted",
+    )
+  return 0
+}
+
+type CommentItem = {
+  id: string
+  text: string | null
+  author: Identity
+  dev: boolean
+  shareBps: string | null
+  createdAt: string
+  tombstone: "hidden" | "removed" | null
+  linksWithheld: boolean
+}
+
+/** Public newest-first comments with tombstones; sends no key. */
+export async function tokenComments(args: string[], ctx: CommandContext): Promise<number> {
+  const usage = usageFor(ctx, USAGE.comments)
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] })
+  if ("error" in parsed) return usage(parsed.error)
+  const { values } = parsed
+  const chain = chainOf(values)
+  const address = parsed.positionals[0]
+  if (parsed.positionals.length !== 1 || !address) return usage()
+  if (!chain) return usage("--chain must be solana or hood.")
+  const limit = values["--limit"]
+  if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50))
+    return usage("--limit is a whole number from 1 to 50.")
+  const query = new URLSearchParams({
+    ...(limit !== undefined ? { limit } : {}),
+    ...(values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}),
+  })
+  const result = await read(ctx, pagePath(chain, address, `/comments${query.size ? `?${query}` : ""}`))
+  if (!result.ok) return writeApiFailure(ctx, result, "none")
+  const data = dataOf(result) as { items: CommentItem[]; nextCursor: string | null }
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data })}\n`)
+    return 0
+  }
+  if (!data.items.length) ctx.deps.stdout.write("No comments.\n")
+  for (const item of data.items) {
+    writeHeading(ctx.deps, "stdout", item.createdAt)
+    writeFields(ctx.deps, "stdout", [
+      ["Comment", item.id],
+      ["Written by", `${identity(item.author)}${item.dev ? " (dev)" : ""}`],
+      ["Share then", bpsPercent(item.shareBps)],
+      ["State", item.tombstone ?? "visible"],
+      ["Links", item.linksWithheld ? "withheld pending review" : undefined],
+    ])
+    if (item.text !== null) ctx.deps.stdout.write(`\n${terminalTextKeepingLines(item.text)}\n`)
+  }
+  if (data.nextCursor) ctx.deps.stdout.write(`\nMore: --cursor ${data.nextCursor}\n`)
   return 0
 }
 export async function tokenPost(args: string[], ctx: CommandContext): Promise<number> {

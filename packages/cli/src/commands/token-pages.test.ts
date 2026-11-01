@@ -103,6 +103,127 @@ test("update retries a lost answer byte-for-byte; feature-off does not retry", a
   expect(off.calls).toHaveLength(1)
 })
 
+test("comment file uses the write scope, a stable retry identity and the 500 code-point local limit", async () => {
+  const f = fixture(() => ok({ id: VERSION }, 201), file("gm\r\n😀"))
+  expect(
+    await run(["token", "comment", MINT, "--file", "c.txt", "--idempotency-key", "comment-1", "--json"], f.deps),
+  ).toBe(0)
+  expect(f.calls[0]).toMatchObject({ method: "POST", path: `${PAGE}/comments`, body: { text: "gm\n😀" } })
+  expect(f.calls[0]?.headers.get("Idempotency-Key")).toBe("comment-1")
+  expect(f.calls[0]?.headers.get("x-api-key")).toBe(KEY)
+  expect(json(f)).toEqual({ ok: true, data: { id: VERSION }, idempotencyKey: "comment-1" })
+  expect(
+    await run(
+      ["token", "comment", MINT, "--file", "c.txt", "--chain", "hood", "--json"],
+      fixture(() => ok({ id: VERSION }), file("x")).deps,
+    ),
+  ).toBe(0)
+  const accepted = fixture(() => ok({ id: VERSION }, 201), file("😀".repeat(500)))
+  expect(await run(["token", "comment", MINT, "--file", "c.txt", "--json"], accepted.deps)).toBe(0)
+  for (const text of ["", " \n ", "😀".repeat(501), "bad\u0000text", new Uint8Array([0xff, 0xfe])]) {
+    const invalid = fixture(() => {
+      throw new Error("must not send")
+    }, file(text))
+    expect(await run(["token", "comment", MINT, "--file", "c.txt", "--json"], invalid.deps)).toBe(2)
+    expect(invalid.calls).toHaveLength(0)
+  }
+  const unread = fixture(
+    () => {
+      throw new Error("must not send")
+    },
+    {
+      readBytes: async () => {
+        throw new Error("ENOENT")
+      },
+    },
+  )
+  expect(await run(["token", "comment", MINT, "--file", "missing.txt", "--json"], unread.deps)).toBe(2)
+  expect(unread.calls).toHaveLength(0)
+})
+test("comment retries a lost answer byte-for-byte; refusals keep their code and are not retried", async () => {
+  let n = 0
+  const f = fixture(() => {
+    if (n++ === 0) throw new Error("lost answer")
+    return ok({ id: VERSION }, 201)
+  }, file("comment"))
+  expect(await run(["token", "comment", MINT, "--file", "c", "--json"], f.deps)).toBe(0)
+  expect(f.calls).toHaveLength(2)
+  expect(f.calls[0]?.body).toEqual(f.calls[1]?.body)
+  expect(f.calls[0]?.headers.get("Idempotency-Key")).toBe(f.calls[1]?.headers.get("Idempotency-Key"))
+  const lost = fixture(() => {
+    throw new Error("lost answer")
+  }, file("comment"))
+  expect(
+    await run(["token", "comment", MINT, "--file", "c", "--idempotency-key", "keep-me", "--json"], lost.deps),
+  ).toBe(3)
+  expect(lost.calls).toHaveLength(2)
+  expect(lost.stdout.text + lost.stderr.text).toContain("keep-me")
+  for (const [status, code] of [
+    [409, "feature_off"],
+    [403, "insufficient_holding"],
+    [403, "restricted"],
+    [422, "invalid_text"],
+    [503, "eligibility_unavailable"],
+  ] as const) {
+    const refusedOnce = fixture(() => refused(status, code), file("comment"))
+    expect(await run(["token", "comment", MINT, "--file", "c", "--json"], refusedOnce.deps)).toBe(1)
+    expect(refusedOnce.calls).toHaveLength(1)
+    expect(refusedOnce.stdout.text + refusedOnce.stderr.text).toContain(code)
+  }
+})
+test("comments list is public, sends no key, validates paging and renders tombstones", async () => {
+  const page = {
+    token: { chain: "solana", address: MINT },
+    items: [
+      {
+        id: VERSION,
+        text: "first line\nsecond\u0007",
+        author: { kind: "agent", name: null },
+        dev: true,
+        shareBps: "62",
+        createdAt: "2026-11-01T06:00:00.000Z",
+        tombstone: null,
+        linksWithheld: true,
+      },
+      {
+        id: CHALLENGE,
+        text: null,
+        author: { kind: "account", name: "maker", account: "acct" },
+        dev: false,
+        shareBps: "50",
+        createdAt: "2026-11-01T05:00:00.000Z",
+        tombstone: "removed",
+        linksWithheld: false,
+      },
+    ],
+    nextCursor: "next-page",
+  }
+  const f = fixture(() => ok(page))
+  expect(await run(["token", "comments", MINT, "--limit", "2", "--cursor", "abc"], f.deps)).toBe(0)
+  expect(f.calls[0]).toMatchObject({ method: "GET", path: `${PAGE}/comments`, search: "?limit=2&cursor=abc" })
+  expect(f.calls[0]?.headers.get("x-api-key")).toBeNull()
+  expect(f.stdout.text).toContain("first line\nsecond")
+  expect(f.stdout.text).not.toContain("\u0007")
+  expect(f.stdout.text).toContain("removed")
+  expect(f.stdout.text).toContain("withheld pending review")
+  expect(f.stdout.text).toContain("--cursor next-page")
+  const j = fixture(() => ok(page))
+  expect(await run(["token", "comments", MINT, "--json"], j.deps)).toBe(0)
+  expect(json(j)).toEqual({ ok: true, data: page })
+  for (const bad of [["--limit", "0"], ["--limit", "51"], ["--limit", "x"], ["extra"], ["--chain", "eth"]]) {
+    const none = fixture(() => {
+      throw new Error("must not send")
+    })
+    expect(await run(["token", "comments", MINT, ...bad, "--json"], none.deps)).toBe(2)
+    expect(none.calls).toHaveLength(0)
+  }
+  const off = fixture(() => refused(409, "feature_off"))
+  expect(await run(["token", "comments", MINT, "--json"], off.deps)).toBe(1)
+  const empty = fixture(() => ok({ ...page, items: [], nextCursor: null }))
+  expect(await run(["token", "comments", MINT], empty.deps)).toBe(0)
+  expect(empty.stdout.text).toContain("No comments.")
+})
+
 const ABOUT = {
   token: { chain: "solana", address: MINT },
   revision: "7",

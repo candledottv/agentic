@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { CandleApiError, CandleClient, TokenPageError } from "./index"
+import { type AboutComments, CandleApiError, CandleClient, TokenPageError } from "./index"
 
 const token = { chain: "solana" as const, address: "So11111111111111111111111111111111111111112" }
 const base = `/api/v1/token-pages/solana/${token.address}`
@@ -38,6 +38,60 @@ test("update/list/delete/seen retain the public/private boundary and idempotency
   for (const call of calls.slice(1)) expect(new Headers(call.init.headers).get("x-api-key")).toBe(key)
   expect(new Headers(calls[4]?.init.headers).get("Idempotency-Key")).toBe("seen-1")
   expect(JSON.parse(String(calls[4]?.init.body))).toEqual({ visibleUpdateSequence: "9007199254740993" })
+})
+
+test("comments: keyless newest-first list, keyed immutable post, shared author delete and refusal codes", async () => {
+  const page: AboutComments = {
+    token,
+    items: [
+      {
+        id: versionId,
+        text: null,
+        author: { kind: "agent", name: null },
+        dev: false,
+        shareBps: "50",
+        createdAt: "2026-11-01T06:00:00.000Z",
+        tombstone: "removed",
+        linksWithheld: false,
+      },
+    ],
+    nextCursor: "opaque:/?&",
+  }
+  const { client, calls } = fixture((call) => (call.init.method === "GET" ? ok(page) : ok({ id: versionId })))
+  expect(await client.tokenPages.comments(token, { limit: 50, cursor: "opaque:/?&" })).toEqual(page)
+  const posted = await client.tokenPages.postComment(token, { text: "gm" }, { idempotencyKey: "comment-1" })
+  expect(posted).toEqual({ data: { id: versionId }, idempotencyKey: "comment-1" })
+  await client.tokenPages.deletePost(token, versionId, { idempotencyKey: "delete-1" })
+  expect(calls.map((c) => [c.url.pathname, c.init.method])).toEqual([
+    [`${base}/comments`, "GET"],
+    [`${base}/comments`, "POST"],
+    [`${base}/posts/${versionId}`, "DELETE"],
+  ])
+  expect(calls[0]?.url.searchParams.get("cursor")).toBe("opaque:/?&")
+  expect(calls[0]?.url.searchParams.get("limit")).toBe("50")
+  expect(new Headers(calls[0]?.init.headers).has("x-api-key")).toBe(false)
+  expect(new Headers(calls[1]?.init.headers).get("x-api-key")).toBe(key)
+  expect(new Headers(calls[1]?.init.headers).get("Idempotency-Key")).toBe("comment-1")
+  expect(JSON.parse(String(calls[1]?.init.body))).toEqual({ text: "gm" })
+
+  const generated = fixture(() => ok({ id: versionId }))
+  const result = await generated.client.tokenPages.postComment(token, { text: "gm" })
+  expect(result.idempotencyKey).toBeTruthy()
+  expect(new Headers(generated.calls[0]?.init.headers).get("Idempotency-Key")).toBe(result.idempotencyKey)
+
+  for (const [status, code] of [
+    [409, "feature_off"],
+    [403, "insufficient_holding"],
+    [403, "not_author"],
+  ] as const) {
+    const refused = fixture(() => Response.json({ success: false, error: code }, { status }))
+    const error = await refused.client.tokenPages
+      .postComment(token, { text: "gm" }, { idempotencyKey: "k" })
+      .catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(TokenPageError)
+    expect(error).toMatchObject({ code, status })
+    expect(refused.calls).toHaveLength(1)
+  }
 })
 
 test("public reads are keyless, private capabilities are separate, cursors and large strings are preserved", async () => {

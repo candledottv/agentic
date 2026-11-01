@@ -83,6 +83,8 @@ test("all registered tools are listed", () => {
     "candle_token_page_burns",
     "candle_token_page_capabilities",
     "candle_token_page_claim",
+    "candle_token_page_comment",
+    "candle_token_page_comments",
     "candle_token_page_creator_challenge",
     "candle_token_page_flag",
     "candle_token_page_history",

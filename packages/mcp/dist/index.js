@@ -6066,6 +6066,8 @@ var tokenPageShapes = {
   candle_token_page_updates: { ...token, ...pagination },
   candle_token_page_update: { ...token, ...write, text: z8.string() },
   candle_token_page_post_delete: { ...token, ...write, id: z8.string().uuid() },
+  candle_token_page_comments: { ...token, ...pagination },
+  candle_token_page_comment: { ...token, ...write, text: z8.string() },
   candle_token_page_seen: token,
   candle_token_page_mark_seen: { ...token, ...write, visibleUpdateSequence: revision },
   candle_token_page_about: token,
@@ -6101,13 +6103,15 @@ function isTokenPageTool(name) {
 }
 function buildTokenPageRequest(name, args, cfg) {
   const { chain, address, id, section: sectionName, cursor, limit, idempotencyKey, ...body } = args;
-  const publicRead = name === "candle_token_page_updates" || name === "candle_token_page_about" || name === "candle_token_page_burns" || name === "candle_token_page_history";
+  const publicRead = name === "candle_token_page_updates" || name === "candle_token_page_comments" || name === "candle_token_page_about" || name === "candle_token_page_burns" || name === "candle_token_page_history";
   if (!publicRead && !cfg.apiKey)
     throw new Error("CANDLE_AGENT_API_KEY with token-pages scopes is required for this tool.");
   const suffix = {
     candle_token_page_updates: "/updates",
     candle_token_page_update: "/updates",
     candle_token_page_post_delete: `/posts/${encodeURIComponent(String(id))}`,
+    candle_token_page_comments: "/comments",
+    candle_token_page_comment: "/comments",
     candle_token_page_seen: "/seen",
     candle_token_page_mark_seen: "/seen",
     candle_token_page_about: "",
@@ -6245,6 +6249,8 @@ var TOOL_NAMES = [
   "candle_token_page_updates",
   "candle_token_page_update",
   "candle_token_page_post_delete",
+  "candle_token_page_comments",
+  "candle_token_page_comment",
   "candle_token_page_seen",
   "candle_token_page_mark_seen",
   "candle_token_forensics",
@@ -6976,10 +6982,22 @@ function registerToolSubset(server, options) {
   }, (args) => tokenPageRelay("candle_token_page_update", args, getConfig(), doFetch));
   register("candle_token_page_post_delete", {
     title: "Token page post delete",
-    description: "MUTATION: delete your own post, including after selling. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+    description: "MUTATION: delete your own update or comment, including after selling. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
     inputSchema: tokenPageShapes.candle_token_page_post_delete,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
   }, (args) => tokenPageRelay("candle_token_page_post_delete", args, getConfig(), doFetch));
+  register("candle_token_page_comments", {
+    title: "Token page comments",
+    description: "READ: list a token page's comments, newest first, with tombstones for hidden, removed or deleted ones. Public and keyless; use cursor/limit (1-50). Requires effective server switches. All switches default off.",
+    inputSchema: tokenPageShapes.candle_token_page_comments,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, (args) => tokenPageRelay("candle_token_page_comments", args, getConfig(), doFetch));
+  register("candle_token_page_comment", {
+    title: "Token page comment",
+    description: "MUTATION: append an immutable comment, up to 500 characters, with fresh 0.5% eligibility. Requires token-pages:write. Comments are never pushed to holders and cannot be edited; delete with candle_token_page_post_delete. Supply a durable idempotencyKey and reuse the same key and body after a lost answer. A transport failure retries once with identical bytes. HTTP refusals are not retried. All token page switches default off.",
+    inputSchema: tokenPageShapes.candle_token_page_comment,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
+  }, (args) => tokenPageRelay("candle_token_page_comment", args, getConfig(), doFetch));
   register("candle_token_page_seen", {
     title: "Token page seen",
     description: "READ: list updates or own unread state. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",

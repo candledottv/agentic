@@ -1,5 +1,5 @@
 import { CandleApiError } from "./errors";
-import type { AboutBurnHistory, AboutCapabilities, AboutHistory, AboutSection, AboutSeen, AboutToken, AboutUpdates, ClaimResult, CreatorChallenge, FlagReason, FlagResult, TokenAbout } from "./token-pages.types";
+import type { AboutBurnHistory, AboutCapabilities, AboutComments, AboutHistory, AboutSection, AboutSeen, AboutToken, AboutUpdates, ClaimResult, CreatorChallenge, FlagReason, FlagResult, TokenAbout } from "./token-pages.types";
 export type TokenPageClaim = {
     kind: "holder" | "creator";
     challengeId?: string;
@@ -62,6 +62,14 @@ export interface CandleTokenPages {
     deletePost(token: AboutToken, id: string, options?: TokenPageWriteOptions): Promise<TokenPageWriteResult<{
         id: string;
         deleted: true;
+    }>>;
+    /** Public newest-first comments with tombstones; sends no key. */
+    comments(token: AboutToken, options?: TokenPagePagination): Promise<AboutComments>;
+    /** An immutable comment under the 0.5% editing gate. Never pushed; delete it with `deletePost`. */
+    postComment(token: AboutToken, body: {
+        text: string;
+    }, options?: TokenPageWriteOptions): Promise<TokenPageWriteResult<{
+        id: string;
     }>>;
     seen(token: AboutToken): Promise<AboutSeen>;
     markSeen(token: AboutToken, visibleUpdateSequence: string, options?: TokenPageWriteOptions): Promise<TokenPageWriteResult<AboutSeen>>;

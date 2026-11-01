@@ -70,6 +70,7 @@ test("public About/burn/history are keyless and uncached; capabilities are a sep
       ["updates", { limit: 50, cursor: "opaque:/?&" }],
       ["burns", { limit: 5 }],
       ["history", { section: "lore", cursor: "opaque:/?&", limit: 50 }],
+      ["comments", { limit: 50, cursor: "opaque:/?&" }],
       ["capabilities", {}],
       ["seen", {}],
     ] as const) {
@@ -80,14 +81,16 @@ test("public About/burn/history are keyless and uncached; capabilities are a sep
       `${new URL(base).pathname}/updates`,
       `${new URL(base).pathname}/burns`,
       `${new URL(base).pathname}/sections/lore/history`,
+      `${new URL(base).pathname}/comments`,
       `${new URL(base).pathname}/capabilities`,
       `${new URL(base).pathname}/seen`,
     ])
+    expect(new URL(calls[4]?.url ?? "https://api.test/").searchParams.get("cursor")).toBe("opaque:/?&")
     expect(new URL(calls[3]?.url ?? "https://api.test/").searchParams.get("cursor")).toBe("opaque:/?&")
     calls.forEach((c, i) => {
       expect(c.init?.method).toBe("GET")
       expect(c.init?.cache).toBe("no-store")
-      expect(new Headers(c.init?.headers).get("x-api-key")).toBe(i >= 4 ? cfg.apiKey : null)
+      expect(new Headers(c.init?.headers).get("x-api-key")).toBe(i >= 5 ? cfg.apiKey : null)
     })
   })
 })
@@ -111,6 +114,7 @@ test("content writes send the same API DTO and Idempotency-Key, and return the s
         "/sections/lore/restore",
       ],
       ["update", { text: "update body" }, "POST", "/updates"],
+      ["comment", { text: "comment\r\n🕯️ body" }, "POST", "/comments"],
       ["post_delete", { id: versionId }, "DELETE", `/posts/${versionId}`],
       ["mark_seen", { visibleUpdateSequence: "9007199254740993" }, "POST", "/seen"],
       ["flag", { contentId: versionId, reason: "unsafe_link", detail: "review this item" }, "POST", "/flags"],
@@ -140,6 +144,11 @@ test("strict protocol schemas reject unknown/owner fields, invalid revisions, pa
     for (const [suffix, args] of [
       ["update", { text: "x", ...options, account: "foreign" }],
       ["update", { text: "x" }],
+      ["comment", { text: "x", ...options, account: "foreign" }],
+      ["comment", { text: "x" }],
+      ["comment", { text: 5, ...options }],
+      ["comments", { limit: 51 }],
+      ["comments", { limit: 0 }],
       ["post_delete", { id: "bad-id", ...options }],
       ["mark_seen", { visibleUpdateSequence: "9007199254740993" }],
       ["mark_seen", { visibleUpdateSequence: 42, ...options }],
@@ -169,11 +178,13 @@ test("all private calls need a key; public reads work without one", async () => 
       ["section_set", { section: "thesis", text: "draft", baseRevision: "0", ...options }],
       ["section_restore", { section: "lore", versionId, baseRevision: "1", ...options }],
       ["flag", { contentId: versionId, reason: "spam", ...options }],
+      ["comment", { text: "draft", ...options }],
     ] as const)
       expect(blocks(await call(client, suffix, args))[0]).toMatchObject({ error: "API_KEY_REQUIRED" })
     expect(calls).toEqual([])
     await call(client, "about")
-    expect(calls).toHaveLength(1)
+    await call(client, "comments")
+    expect(calls).toHaveLength(2)
   }, "")
 })
 
@@ -293,9 +304,11 @@ test("unknown outcomes keep the replay key and never echo transport secrets; cha
 test("schema list marks reads and every state-changing call as mutations", async () => {
   await fixture(async ({ client }) => {
     const tools = (await client.listTools()).tools
-    expect(tools).toHaveLength(14)
+    expect(tools).toHaveLength(16)
     for (const tool of tools) {
-      const read = ["about", "capabilities", "burns", "history", "updates", "seen"].some((s) => tool.name === name(s))
+      const read = ["about", "capabilities", "burns", "history", "updates", "comments", "seen"].some(
+        (s) => tool.name === name(s),
+      )
       expect(tool.annotations?.readOnlyHint).toBe(read)
       expect(tool.annotations?.destructiveHint).toBe(!read)
       expect(tool.annotations?.idempotentHint).toBe(tool.name !== name("creator_challenge"))

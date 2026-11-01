@@ -55,7 +55,7 @@ for parameters and limits.
 
 ## The tool surface
 
-Eighty-three tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The fourteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Sixteen source tools need no key at all, so a client can be pointed at the server and used before
+Eighty-five tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Seventeen source tools need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -91,7 +91,9 @@ anyone signs up for anything.
 | `candle_token_page_history` | no | Immutable section history with tombstoned hidden bodies (unreleased local source) |
 | `candle_token_page_updates` | no | Public newest-first updates with tombstones and cursor/limit (unreleased local source) |
 | `candle_token_page_update` | yes (`token-pages:write`) | Append an immutable update with durable idempotencyKey (unreleased local source) |
-| `candle_token_page_post_delete` | yes (`token-pages:write`) | Soft-delete own post, including after selling (unreleased local source) |
+| `candle_token_page_post_delete` | yes (`token-pages:write`) | Soft-delete own update or comment, including after selling (unreleased local source) |
+| `candle_token_page_comments` | no | Public newest-first comments with tombstones and cursor/limit (unreleased local source) |
+| `candle_token_page_comment` | yes (`token-pages:write`) | Append an immutable comment with durable idempotencyKey; never pushed (unreleased local source) |
 | `candle_token_page_seen` | yes (`token-pages:read`) | Private own unread position (unreleased local source) |
 | `candle_token_page_mark_seen` | yes (`token-pages:write`) | Advance own seen position after rendering a visible update (unreleased local source) |
 | `candle_token_page_creator_challenge` | yes (`token-pages:write`) | Request exact message bytes for local signing; no implicit claim (unreleased local source) |

@@ -121,3 +121,15 @@ export type AboutPost = {
 }
 export type AboutUpdates = { token: AboutToken; items: AboutPost[]; nextCursor: string | null }
 export type AboutSeen = { sequence: string; latestVisibleUpdate: string | null; unread: boolean }
+/** A comment has no stream sequence and is never Candle-curated; the body is immutable. */
+export type AboutComment = {
+  id: string
+  text: string | null
+  author: PublicIdentity
+  dev: boolean
+  shareBps: string | null
+  createdAt: string
+  tombstone: "hidden" | "removed" | null
+  linksWithheld: boolean
+}
+export type AboutComments = { token: AboutToken; items: AboutComment[]; nextCursor: string | null }

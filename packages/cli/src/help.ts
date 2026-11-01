@@ -854,6 +854,8 @@ export const HELP: Record<string, Topic> = {
       "candle token history <mint> [--chain solana|hood] [--limit <n>] [--cursor <c>] [--json]",
       "candle token history <address> <thesis|tokenomics|lore> [--limit <n>] [--cursor <c>] [--json]",
       "candle token update <address> --file <path> [--chain solana|hood] [--idempotency-key <key>] [--json]",
+      "candle token comment <address> --file <path> [--chain solana|hood] [--idempotency-key <key>] [--json]",
+      "candle token comments <address> [--chain solana|hood] [--limit <n>] [--cursor <c>] [--json]",
       "candle token post delete <address> <post-id> [--chain solana|hood] [--idempotency-key <key>] [--json]",
       "candle token flag <address> --content <id> --reason <reason> [--detail <text>] [--json]",
     ],
@@ -890,8 +892,19 @@ export const HELP: Record<string, Topic> = {
         description: "The token's metadata edits, newest first; with a section, that section's versions",
       },
       { invocation: "update <address>", description: "Post an immutable holder update from --file (1000 characters)" },
-      { invocation: "post delete <address> <post-id>", description: "Delete your own post, including after selling" },
-      { invocation: "flag <address>", description: "Report one exact version to Candle's review queue" },
+      {
+        invocation: "comment <address>",
+        description: "Post an immutable comment from --file (500 characters); never pushed to holders",
+      },
+      { invocation: "comments <address>", description: "The token's comments, newest first, with tombstones" },
+      {
+        invocation: "post delete <address> <post-id>",
+        description: "Delete your own update or comment, including after selling",
+      },
+      {
+        invocation: "flag <address>",
+        description: "Report one exact version, update or comment to Candle's review queue",
+      },
     ],
     flags: [
       { invocation: "--chain <chain>", description: "solana (default) or hood; Hood cluster analysis is unavailable" },
@@ -901,7 +914,8 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation: "--limit <n>",
-        description: "events, history or vamp-candidates: how many to read (events 1 to 1000, history 1 to 50)",
+        description:
+          "events, history, comments or vamp-candidates: how many to read (events 1 to 1000, history and comments 1 to 50)",
       },
       { invocation: "--min-copies <n>", description: "vamp-candidates: copies in the last 24h, at least" },
       { invocation: "--since <iso-8601>", description: "events: list only events at or after this time" },
@@ -912,13 +926,16 @@ export const HELP: Record<string, Topic> = {
         description: "The Solana vault key that pays, by label or address (needed when the vault has several)",
       },
       { invocation: "--yes", description: "Pay without the typed confirm (the vault unlock still prompts)" },
-      { invocation: "--file <path>", description: "section set: the section text, UTF-8; an empty file needs --clear" },
+      {
+        invocation: "--file <path>",
+        description: "section set, update or comment: the text, UTF-8; an empty section file needs --clear",
+      },
       {
         invocation: "--base-revision <n>",
         description: "section set|restore: the revision you started from (0 first)",
       },
       { invocation: "--version-id <id>", description: "section restore: the earlier version to copy into a new one" },
-      { invocation: "--content <id>", description: "flag: the exact version id being reported" },
+      { invocation: "--content <id>", description: "flag: the exact version, update or comment id being reported" },
       {
         invocation: "--reason <reason>",
         description: "flag: spam, scam, abuse, misleading, unsafe_link or other; --detail adds up to 500 characters",

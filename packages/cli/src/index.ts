@@ -89,7 +89,16 @@ import { teeRename } from "./commands/tee-rename"
 import { tokenClusters } from "./commands/token-clusters"
 import { tokenEvents } from "./commands/token-events"
 import { tokenEdit, tokenHistory } from "./commands/token-metadata"
-import { tokenAbout, tokenClaim, tokenFlag, tokenPost, tokenSection, tokenUpdate } from "./commands/token-pages"
+import {
+  tokenAbout,
+  tokenClaim,
+  tokenComment,
+  tokenComments,
+  tokenFlag,
+  tokenPost,
+  tokenSection,
+  tokenUpdate,
+} from "./commands/token-pages"
 import { tokenForensics, tokenVampCandidates } from "./commands/token-paid"
 import { transfer } from "./commands/transfer"
 import { tui } from "./commands/tui"
@@ -248,6 +257,8 @@ const COMMANDS: Record<string, CommandRoute> = {
   // key inside the local spending rules (src/x402/), or shown and not paid.
   // Token page About (BE-1959, token pages spec 7): `about` and `history` are public reads;
   // `claim`, `section set|restore` and `flag` act as the key's account under `token-pages:write`.
+  // BE-1963 (row 4A): `comment` posts under the same gate, `comments` is a public read, and
+  // `post delete` removes the key's own update or comment.
   // BE-2140: `edit` sets the creator's description and links (launch:write, as the key's account);
   // `history <mint>` without a section is that edit history, with one the About section history.
   token: {
@@ -263,6 +274,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       flag: tokenFlag,
       edit: tokenEdit,
       update: tokenUpdate,
+      comment: tokenComment,
+      comments: tokenComments,
       post: tokenPost,
     },
   },

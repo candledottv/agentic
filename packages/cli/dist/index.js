@@ -44280,13 +44280,15 @@ function isTokenPageTool(name) {
 }
 function buildTokenPageRequest(name, args, cfg) {
   const { chain: chain2, address, id, section: sectionName, cursor, limit, idempotencyKey, ...body } = args;
-  const publicRead = name === "candle_token_page_updates" || name === "candle_token_page_about" || name === "candle_token_page_burns" || name === "candle_token_page_history";
+  const publicRead = name === "candle_token_page_updates" || name === "candle_token_page_comments" || name === "candle_token_page_about" || name === "candle_token_page_burns" || name === "candle_token_page_history";
   if (!publicRead && !cfg.apiKey)
     throw new Error("CANDLE_AGENT_API_KEY with token-pages scopes is required for this tool.");
   const suffix = {
     candle_token_page_updates: "/updates",
     candle_token_page_update: "/updates",
     candle_token_page_post_delete: `/posts/${encodeURIComponent(String(id))}`,
+    candle_token_page_comments: "/comments",
+    candle_token_page_comment: "/comments",
     candle_token_page_seen: "/seen",
     candle_token_page_mark_seen: "/seen",
     candle_token_page_about: "",
@@ -44407,6 +44409,8 @@ var init_token_pages = __esm(() => {
     candle_token_page_updates: { ...token, ...pagination },
     candle_token_page_update: { ...token, ...write, text: exports_external.string() },
     candle_token_page_post_delete: { ...token, ...write, id: exports_external.string().uuid() },
+    candle_token_page_comments: { ...token, ...pagination },
+    candle_token_page_comment: { ...token, ...write, text: exports_external.string() },
     candle_token_page_seen: token,
     candle_token_page_mark_seen: { ...token, ...write, visibleUpdateSequence: revision },
     candle_token_page_about: token,
@@ -44967,10 +44971,22 @@ function registerToolSubset(server, options) {
   }, (args) => tokenPageRelay("candle_token_page_update", args, getConfig(), doFetch));
   register("candle_token_page_post_delete", {
     title: "Token page post delete",
-    description: "MUTATION: delete your own post, including after selling. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
+    description: "MUTATION: delete your own update or comment, including after selling. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
     inputSchema: tokenPageShapes.candle_token_page_post_delete,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
   }, (args) => tokenPageRelay("candle_token_page_post_delete", args, getConfig(), doFetch));
+  register("candle_token_page_comments", {
+    title: "Token page comments",
+    description: "READ: list a token page's comments, newest first, with tombstones for hidden, removed or deleted ones. Public and keyless; use cursor/limit (1-50). Requires effective server switches. All switches default off.",
+    inputSchema: tokenPageShapes.candle_token_page_comments,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, (args) => tokenPageRelay("candle_token_page_comments", args, getConfig(), doFetch));
+  register("candle_token_page_comment", {
+    title: "Token page comment",
+    description: "MUTATION: append an immutable comment, up to 500 characters, with fresh 0.5% eligibility. Requires token-pages:write. Comments are never pushed to holders and cannot be edited; delete with candle_token_page_post_delete. Supply a durable idempotencyKey and reuse the same key and body after a lost answer. A transport failure retries once with identical bytes. HTTP refusals are not retried. All token page switches default off.",
+    inputSchema: tokenPageShapes.candle_token_page_comment,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
+  }, (args) => tokenPageRelay("candle_token_page_comment", args, getConfig(), doFetch));
   register("candle_token_page_seen", {
     title: "Token page seen",
     description: "READ: list updates or own unread state. Requires effective server switches; private calls require explicit token-pages scopes. All switches default off.",
@@ -45549,6 +45565,8 @@ var init_tools = __esm(() => {
     "candle_token_page_updates",
     "candle_token_page_update",
     "candle_token_page_post_delete",
+    "candle_token_page_comments",
+    "candle_token_page_comment",
     "candle_token_page_seen",
     "candle_token_page_mark_seen",
     "candle_token_forensics",
@@ -76550,6 +76568,8 @@ var HELP = {
       "candle token history <mint> [--chain solana|hood] [--limit <n>] [--cursor <c>] [--json]",
       "candle token history <address> <thesis|tokenomics|lore> [--limit <n>] [--cursor <c>] [--json]",
       "candle token update <address> --file <path> [--chain solana|hood] [--idempotency-key <key>] [--json]",
+      "candle token comment <address> --file <path> [--chain solana|hood] [--idempotency-key <key>] [--json]",
+      "candle token comments <address> [--chain solana|hood] [--limit <n>] [--cursor <c>] [--json]",
       "candle token post delete <address> <post-id> [--chain solana|hood] [--idempotency-key <key>] [--json]",
       "candle token flag <address> --content <id> --reason <reason> [--detail <text>] [--json]"
     ],
@@ -76585,8 +76605,19 @@ var HELP = {
         description: "The token's metadata edits, newest first; with a section, that section's versions"
       },
       { invocation: "update <address>", description: "Post an immutable holder update from --file (1000 characters)" },
-      { invocation: "post delete <address> <post-id>", description: "Delete your own post, including after selling" },
-      { invocation: "flag <address>", description: "Report one exact version to Candle's review queue" }
+      {
+        invocation: "comment <address>",
+        description: "Post an immutable comment from --file (500 characters); never pushed to holders"
+      },
+      { invocation: "comments <address>", description: "The token's comments, newest first, with tombstones" },
+      {
+        invocation: "post delete <address> <post-id>",
+        description: "Delete your own update or comment, including after selling"
+      },
+      {
+        invocation: "flag <address>",
+        description: "Report one exact version, update or comment to Candle's review queue"
+      }
     ],
     flags: [
       { invocation: "--chain <chain>", description: "solana (default) or hood; Hood cluster analysis is unavailable" },
@@ -76596,7 +76627,7 @@ var HELP = {
       },
       {
         invocation: "--limit <n>",
-        description: "events, history or vamp-candidates: how many to read (events 1 to 1000, history 1 to 50)"
+        description: "events, history, comments or vamp-candidates: how many to read (events 1 to 1000, history and comments 1 to 50)"
       },
       { invocation: "--min-copies <n>", description: "vamp-candidates: copies in the last 24h, at least" },
       { invocation: "--since <iso-8601>", description: "events: list only events at or after this time" },
@@ -76607,13 +76638,16 @@ var HELP = {
         description: "The Solana vault key that pays, by label or address (needed when the vault has several)"
       },
       { invocation: "--yes", description: "Pay without the typed confirm (the vault unlock still prompts)" },
-      { invocation: "--file <path>", description: "section set: the section text, UTF-8; an empty file needs --clear" },
+      {
+        invocation: "--file <path>",
+        description: "section set, update or comment: the text, UTF-8; an empty section file needs --clear"
+      },
       {
         invocation: "--base-revision <n>",
         description: "section set|restore: the revision you started from (0 first)"
       },
       { invocation: "--version-id <id>", description: "section restore: the earlier version to copy into a new one" },
-      { invocation: "--content <id>", description: "flag: the exact version id being reported" },
+      { invocation: "--content <id>", description: "flag: the exact version, update or comment id being reported" },
       {
         invocation: "--reason <reason>",
         description: "flag: spam, scam, abuse, misleading, unsafe_link or other; --detail adds up to 500 characters"
@@ -92052,6 +92086,8 @@ var MCP_TOOL_NAMES = [
   "candle_token_page_updates",
   "candle_token_page_update",
   "candle_token_page_post_delete",
+  "candle_token_page_comments",
+  "candle_token_page_comment",
   "candle_token_page_seen",
   "candle_token_page_mark_seen",
   "candle_token_forensics",
@@ -92121,6 +92157,7 @@ var READ_ONLY_TOOL_NAMES = [
   "candle_token_page_burns",
   "candle_token_page_history",
   "candle_token_page_updates",
+  "candle_token_page_comments",
   "candle_token_forensics",
   "candle_token_clusters",
   "candle_get_agent_profile",
@@ -103873,7 +103910,9 @@ var USAGE13 = {
   section: `Usage: candle token section set <address> <thesis|tokenomics|lore> --file <path> --base-revision <n> [--clear] [--chain solana|hood] [--idempotency-key <key>]
        candle token section restore <address> <thesis|tokenomics|lore> --version-id <id> --base-revision <n> [--chain solana|hood] [--idempotency-key <key>]`,
   history: "Usage: candle token history <address> <thesis|tokenomics|lore> [--chain solana|hood] [--limit <n>] [--cursor <c>]",
-  flag: "Usage: candle token flag <address> --content <id> --reason <spam|scam|abuse|misleading|unsafe_link|other> [--detail <text>] [--chain solana|hood] [--idempotency-key <key>]"
+  flag: "Usage: candle token flag <address> --content <id> --reason <spam|scam|abuse|misleading|unsafe_link|other> [--detail <text>] [--chain solana|hood] [--idempotency-key <key>]",
+  comment: "Usage: candle token comment <address> --file <path> [--chain solana|hood] [--idempotency-key <key>]",
+  comments: "Usage: candle token comments <address> [--chain solana|hood] [--limit <n>] [--cursor <c>]"
 };
 var REFUSALS = {
   feature_off: "This token page action is not available yet on this Candle server. Nothing was written.",
@@ -104459,7 +104498,7 @@ async function tokenFlag(args, ctx) {
     return usage12("--chain must be solana or hood.");
   const contentId = values["--content"];
   if (contentId === undefined || !UUID2.test(contentId))
-    return usage12("--content is the exact version id being reported (candle token about or history).");
+    return usage12("--content is the exact version, update or comment id being reported (candle token about, history or comments).");
   const reason = values["--reason"];
   if (!reason || !FLAG_REASONS.includes(reason))
     return usage12(`--reason is one of ${FLAG_REASONS.join(", ")}.`);
@@ -104538,6 +104577,102 @@ async function tokenUpdate(args, ctx) {
       ["Post", data.id],
       ["Retry key", idempotencyKey]
     ], "Update posted");
+  return 0;
+}
+async function tokenComment(args, ctx) {
+  const usage12 = usageFor(ctx, USAGE13.comment);
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] });
+  if ("error" in parsed)
+    return usage12(parsed.error);
+  const chain2 = chainOf(parsed.values), address = parsed.positionals[0], file = parsed.values["--file"];
+  if (!chain2 || !address || !file || parsed.positionals.length !== 1)
+    return usage12();
+  let bytes;
+  try {
+    bytes = await ctx.deps.readBytes(file);
+  } catch {
+    return usage12("The comment file could not be read.");
+  }
+  const checked = sectionText(bytes, "comment");
+  if ("error" in checked || !checked.text.trim())
+    return usage12(`The comment must contain 1–${TOKEN_PAGE_LIMITS.comment} valid characters.`);
+  const idempotencyKey = idempotencyKeyOf(parsed.values, usage12);
+  if (typeof idempotencyKey === "number")
+    return idempotencyKey;
+  const apiKey = await requireKey(ctx);
+  if (!apiKey)
+    return 1;
+  const result = await write2(ctx, {
+    method: "POST",
+    path: pagePath(chain2, address, "/comments"),
+    body: { text: checked.text },
+    apiKey,
+    idempotencyKey
+  });
+  if (result === "unknown")
+    return writeUnknown(ctx, idempotencyKey);
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "key");
+  const data = dataOf(result);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [
+      ["Comment", data.id],
+      ["Retry key", idempotencyKey]
+    ], "Comment posted");
+  return 0;
+}
+async function tokenComments(args, ctx) {
+  const usage12 = usageFor(ctx, USAGE13.comments);
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
+  if ("error" in parsed)
+    return usage12(parsed.error);
+  const { values } = parsed;
+  const chain2 = chainOf(values);
+  const address = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address)
+    return usage12();
+  if (!chain2)
+    return usage12("--chain must be solana or hood.");
+  const limit = values["--limit"];
+  if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50))
+    return usage12("--limit is a whole number from 1 to 50.");
+  const query3 = new URLSearchParams({
+    ...limit !== undefined ? { limit } : {},
+    ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
+  });
+  const result = await read2(ctx, pagePath(chain2, address, `/comments${query3.size ? `?${query3}` : ""}`));
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "none");
+  const data = dataOf(result);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data })}
+`);
+    return 0;
+  }
+  if (!data.items.length)
+    ctx.deps.stdout.write(`No comments.
+`);
+  for (const item of data.items) {
+    writeHeading(ctx.deps, "stdout", item.createdAt);
+    writeFields(ctx.deps, "stdout", [
+      ["Comment", item.id],
+      ["Written by", `${identity3(item.author)}${item.dev ? " (dev)" : ""}`],
+      ["Share then", bpsPercent(item.shareBps)],
+      ["State", item.tombstone ?? "visible"],
+      ["Links", item.linksWithheld ? "withheld pending review" : undefined]
+    ]);
+    if (item.text !== null)
+      ctx.deps.stdout.write(`
+${terminalTextKeepingLines(item.text)}
+`);
+  }
+  if (data.nextCursor)
+    ctx.deps.stdout.write(`
+More: --cursor ${data.nextCursor}
+`);
   return 0;
 }
 async function tokenPost(args, ctx) {
@@ -113709,6 +113844,8 @@ var COMMANDS = {
       flag: tokenFlag,
       edit: tokenEdit,
       update: tokenUpdate,
+      comment: tokenComment,
+      comments: tokenComments,
       post: tokenPost
     }
   },

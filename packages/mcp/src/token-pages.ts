@@ -15,6 +15,8 @@ export const tokenPageShapes = {
   candle_token_page_updates: { ...token, ...pagination },
   candle_token_page_update: { ...token, ...write, text: z.string() },
   candle_token_page_post_delete: { ...token, ...write, id: z.string().uuid() },
+  candle_token_page_comments: { ...token, ...pagination },
+  candle_token_page_comment: { ...token, ...write, text: z.string() },
   candle_token_page_seen: token,
   candle_token_page_mark_seen: { ...token, ...write, visibleUpdateSequence: revision },
   candle_token_page_about: token,
@@ -55,6 +57,7 @@ export function buildTokenPageRequest(name: TokenPageToolName, args: Record<stri
   const { chain, address, id, section: sectionName, cursor, limit, idempotencyKey, ...body } = args
   const publicRead =
     name === "candle_token_page_updates" ||
+    name === "candle_token_page_comments" ||
     name === "candle_token_page_about" ||
     name === "candle_token_page_burns" ||
     name === "candle_token_page_history"
@@ -64,6 +67,8 @@ export function buildTokenPageRequest(name: TokenPageToolName, args: Record<stri
     candle_token_page_updates: "/updates",
     candle_token_page_update: "/updates",
     candle_token_page_post_delete: `/posts/${encodeURIComponent(String(id))}`,
+    candle_token_page_comments: "/comments",
+    candle_token_page_comment: "/comments",
     candle_token_page_seen: "/seen",
     candle_token_page_mark_seen: "/seen",
     candle_token_page_about: "",

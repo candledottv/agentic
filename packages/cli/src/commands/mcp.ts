@@ -68,6 +68,8 @@ export const MCP_TOOL_NAMES = [
   "candle_token_page_updates",
   "candle_token_page_update",
   "candle_token_page_post_delete",
+  "candle_token_page_comments",
+  "candle_token_page_comment",
   "candle_token_page_seen",
   "candle_token_page_mark_seen",
 
@@ -144,6 +146,8 @@ export const TOKEN_PAGE_CORE_DEFERRED: readonly string[] = [
   "candle_token_page_updates",
   "candle_token_page_update",
   "candle_token_page_post_delete",
+  "candle_token_page_comments",
+  "candle_token_page_comment",
   "candle_token_page_seen",
   "candle_token_page_mark_seen",
 ]
@@ -158,6 +162,7 @@ export const READ_ONLY_TOOL_NAMES = [
   "candle_token_page_burns",
   "candle_token_page_history",
   "candle_token_page_updates",
+  "candle_token_page_comments",
 
   "candle_token_forensics",
   "candle_token_clusters",
