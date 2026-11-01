@@ -9,6 +9,21 @@ import {
 } from "./errors"
 
 describe("Release A structured failures", () => {
+  test.each([true, false])("BE-2470 quote refusal preserves retryable:%s and the existing stop hint", (retryable) => {
+    const error = {
+      code: "MARKET_NOT_TRADABLE",
+      message: retryable
+        ? "No routable market."
+        : "No routable market. Stop retrying it, and ask again after 900s at the earliest.",
+      retryable,
+      routing: { reason: "no_candidates", adaptersAttempted: ["uniswap"], kyberAttempt: "skipped" },
+    }
+    const parsed = candleApiErrorFromResponse(409, JSON.stringify({ success: false, error }))
+    expect(parsed).toBeInstanceOf(CandleApiError)
+    expect(parsed).toMatchObject({ ...error, status: 409 })
+    expect(parsed).not.toHaveProperty("retry_after_seconds")
+  })
+
   test.each([
     ["MARKET_NOT_FOUND", 404, "not_candle_market", false],
     ["MARKET_NOT_FOUND", 404, "hood_market_unavailable", false],

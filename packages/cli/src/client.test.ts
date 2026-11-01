@@ -38,6 +38,27 @@ afterEach(() => {
 })
 
 describe("apiRequest: error envelope classification", () => {
+  test.each([true, false])("BE-2470 quote refusal preserves retryable:%s and its stop hint", async (retryable) => {
+    const error = {
+      code: "MARKET_NOT_TRADABLE",
+      message: retryable
+        ? "No routable market."
+        : "No routable market. Stop retrying it, and ask again after 900s at the earliest.",
+      retryable,
+      routing: { reason: "no_candidates", adaptersAttempted: ["uniswap"], kyberAttempt: "skipped" },
+    }
+    const body = { success: false, error }
+    stubFetch(() => jsonResponse(409, body))
+    const result = await apiRequest("/api/v1/trade/agent/quote", {
+      method: "POST",
+      body: { mint: "0x81297b93f8d661D5015cE66A15bb24dAA045615E", side: "sell", amountRaw: "1" },
+      auth: "key",
+      credentials: { apiKey: "test-key" },
+      apiUrl: "http://localhost:3001",
+    })
+    expect(result).toMatchObject({ ok: false, status: 409, ...error, raw: body })
+  })
+
   test("a Candle-shaped error envelope yields ok:false with code and message", async () => {
     stubFetch(() =>
       jsonResponse(403, { success: false, error: { code: "TIER_REQUIRED", message: "Upgrade your tier to do this" } }),
