@@ -570,6 +570,64 @@ export declare const LAUNCH_DEFINITION: {
             };
         };
     }, {
+        readonly key: "feeWallet";
+        readonly type: "string";
+        readonly help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the account wallet.";
+        readonly chains: readonly ["solana"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--fee-wallet";
+                readonly value: "<address>";
+            };
+            readonly mcp: {
+                readonly key: "feeWallet";
+            };
+            readonly sdk: {
+                readonly key: "feeWallet";
+            };
+        };
+    }, {
+        readonly key: "feeWalletMultisig.address";
+        readonly type: "string";
+        readonly help: "The Squads v4 multisig behind an off-curve --fee-wallet vault; takes --fee-wallet-multisig-vault-index.";
+        readonly chains: readonly ["solana"];
+        readonly requires: readonly ["feeWallet"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--fee-wallet-multisig";
+                readonly value: "<address>";
+            };
+            readonly mcp: {
+                readonly key: "feeWalletMultisig.address";
+            };
+            readonly sdk: {
+                readonly key: "feeWalletMultisig.address";
+            };
+        };
+    }, {
+        readonly key: "feeWalletMultisig.vaultIndex";
+        readonly type: "integer";
+        readonly help: "The Squads vault index, 0 to 255, that with the multisig derives an off-curve --fee-wallet.";
+        readonly chains: readonly ["solana"];
+        readonly range: {
+            readonly min: "0";
+            readonly max: "255";
+            readonly unit: "vault index";
+        };
+        readonly requires: readonly ["feeWalletMultisig.address"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--fee-wallet-multisig-vault-index";
+                readonly value: "<n>";
+            };
+            readonly mcp: {
+                readonly key: "feeWalletMultisig.vaultIndex";
+            };
+            readonly sdk: {
+                readonly key: "feeWalletMultisig.vaultIndex";
+            };
+        };
+    }, {
         readonly key: "buy";
         readonly type: "decimal";
         readonly help: "An optional first buy in whole quote units; zero or empty means no buy, and the server applies dev-buy ceilings and TEE_LAUNCH_BUYS_ENABLED for TEE buys.";
@@ -642,6 +700,11 @@ export interface GeneratedLaunchFields {
     expPoolShape?: "floor" | "full_range";
     dexVersion?: "v3" | "v4";
     visibility?: "production" | "test" | "local" | "hidden";
+    feeWallet?: string;
+    feeWalletMultisig?: {
+        address?: string;
+        vaultIndex?: number;
+    };
     buy?: string;
     dryRun?: boolean;
 }

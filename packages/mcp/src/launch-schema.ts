@@ -8,7 +8,9 @@
 import { z } from "zod"
 import { LAUNCH_DEFINITION } from "./launch-definition"
 
-const M2_TOP_KEYS = new Set(["wallet", "buy"])
+// `feeWallet` and `feeWalletMultisig` (BE-2519) ship on the CLI first; the MCP surface waits for
+// its own card, exactly like wallet and buy wait for M2.
+const M2_TOP_KEYS = new Set(["wallet", "buy", "feeWallet", "feeWalletMultisig"])
 const GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee"])
 
 type LaunchField = (typeof LAUNCH_DEFINITION.fields)[number]

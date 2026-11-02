@@ -27,6 +27,8 @@ const requestKeys = {
   expPoolShape: true,
   dexVersion: true,
   visibility: true,
+  feeWallet: true,
+  feeWalletMultisig: true,
   buy: true,
   buyAmount: true,
 } satisfies Record<keyof LaunchRequest, true>

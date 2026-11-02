@@ -9,6 +9,8 @@
  */
 import { z } from "zod"
 import type { CommandContext } from "./deps"
+import type { FeeWalletSelection } from "./fee-wallet"
+import { feeWalletLines } from "./fee-wallet"
 import { LAUNCH_DEFINITION } from "./launch-definition"
 import { chainName, type Json, request, rowChain, type TradeChain, TradingError } from "./trading"
 
@@ -177,6 +179,7 @@ export async function launchCheck(
   key: string,
   walletFlag: string | undefined,
   requestedChain?: TradeChain,
+  feeWallet: FeeWalletSelection | undefined = undefined,
 ): Promise<number> {
   const answer = checkSchema.parse(await request(ctx, key, "/api/v1/launch/preflight"))
   const embeddedOnly = walletFlag !== undefined && EMBEDDED_NAMES.has(walletFlag)
@@ -196,6 +199,8 @@ export async function launchCheck(
   const shownWallets = walletFlag === undefined ? answer.wallets : named
   const lines: string[] = [`Launch paths for key ${answer.key.keyPrefix} (tier ${answer.key.tier}):`]
   if (requestedChain) lines.push(`Requested launch chain: ${chainName(requestedChain)}.`)
+  // BE-2519: the fee wallet the launch would use, chosen or defaulted, before anything is sent.
+  if (!requestedChain || requestedChain === "solana") lines.push(...feeWalletLines(feeWallet))
   if (walletFlag === undefined || embeddedOnly) lines.push(...embeddedLines(answer, requestedChain))
   for (const row of shownWallets) lines.push(...walletLines(answer, row, requestedChain))
   const works =
@@ -213,6 +218,9 @@ export async function launchCheck(
     ...(requestedChain ? { requestedChain } : {}),
     key: answer.key,
     switches: answer.switches,
+    ...(feeWallet
+      ? { feeWallet: { ...feeWallet, set: true } }
+      : { feeWallet: { default: "account wallet", set: false } }),
     ...(answer.embedded ? { embedded: answer.embedded } : {}),
     wallets: shownWallets.map((row) => ({
       ...row,

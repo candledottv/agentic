@@ -402,6 +402,17 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     expect(f.paths()).not.toContain("/api/v1/launch/atomic/build")
   })
 
+  test("BE-2519: --fee-wallet rides the atomic build and the confirm quote shows it", async () => {
+    const f = await fixture()
+    const feeWallet = Keypair.generate().publicKey.toBase58()
+    expect(await run([...buyArgs, "--fee-wallet", feeWallet], f.deps)).toBe(0)
+    expect(f.calls.find((call) => call.path === "/api/v1/launch/self/build")?.body).toMatchObject({ feeWallet })
+    expect(f.stderr.text).toContain(`Fee wallet: ${feeWallet}`)
+    const plain = await fixture()
+    expect(await run(buyArgs, plain.deps)).toBe(0)
+    expect(plain.stderr.text).toContain("Fee wallet: defaults to the account wallet")
+  })
+
   test("R2: the quote shows the fee and the most the wallet can lose, read off the legs, and the bundle notice", async () => {
     const f = await fixture()
     expect(await run(buyArgs, f.deps)).toBe(0)

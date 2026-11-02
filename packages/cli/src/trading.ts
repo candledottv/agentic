@@ -201,6 +201,8 @@ export interface QuoteDisplay {
   estimatedTime?: string
   /** BE-1721: an atomic TEE launch's ceiling on what the wallet spends across every leg, SOL plus the quote asset. */
   maxLoss?: string
+  /** BE-2519: a Solana launch's fee wallet, chosen or defaulted, said in one line before the confirm. */
+  feeWallet?: string
 }
 export const BASES: Record<string, { mint: string; decimals: number }> = {
   SOL: { mint: "So11111111111111111111111111111111111111112", decimals: 9 },
@@ -1223,6 +1225,7 @@ export async function confirmQuote(ctx: CommandContext, quote: QuoteDisplay, yes
   if (quote.estimatedTime) output.write(`Estimated time: ${safeText(quote.estimatedTime)}\n`)
   if (quote.maxDebitLamports) output.write(`Maximum launch debit: ${safeText(quote.maxDebitLamports)} lamports\n`)
   if (quote.maxLoss) output.write(`Most this wallet can lose: ${safeText(quote.maxLoss)}\n`)
+  if (quote.feeWallet) output.write(`Fee wallet: ${safeText(quote.feeWallet)}\n`)
   if (quote.legs) output.write(`Legs, signed one at a time: ${quote.legs.map(safeText).join(", ")}\n`)
   if (quote.gas) output.write(`Gas: ${safeText(quote.gas)}\n`)
   if (quote.reserve) output.write(`Gas reserve: ${safeText(quote.reserve)}\n`)

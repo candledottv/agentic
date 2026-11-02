@@ -189,7 +189,7 @@ function readClusterResult(value, mint) {
 }
 
 // src/version.ts
-var SERVER_VERSION = "0.10.27";
+var SERVER_VERSION = "0.10.28";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -1443,6 +1443,77 @@ var LAUNCH_DEFINITION = {
       }
     },
     {
+      key: "feeWallet",
+      type: "string",
+      help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the account wallet.",
+      chains: [
+        "solana"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--fee-wallet",
+          value: "<address>"
+        },
+        mcp: {
+          key: "feeWallet"
+        },
+        sdk: {
+          key: "feeWallet"
+        }
+      }
+    },
+    {
+      key: "feeWalletMultisig.address",
+      type: "string",
+      help: "The Squads v4 multisig behind an off-curve --fee-wallet vault; takes --fee-wallet-multisig-vault-index.",
+      chains: [
+        "solana"
+      ],
+      requires: [
+        "feeWallet"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--fee-wallet-multisig",
+          value: "<address>"
+        },
+        mcp: {
+          key: "feeWalletMultisig.address"
+        },
+        sdk: {
+          key: "feeWalletMultisig.address"
+        }
+      }
+    },
+    {
+      key: "feeWalletMultisig.vaultIndex",
+      type: "integer",
+      help: "The Squads vault index, 0 to 255, that with the multisig derives an off-curve --fee-wallet.",
+      chains: [
+        "solana"
+      ],
+      range: {
+        min: "0",
+        max: "255",
+        unit: "vault index"
+      },
+      requires: [
+        "feeWalletMultisig.address"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--fee-wallet-multisig-vault-index",
+          value: "<n>"
+        },
+        mcp: {
+          key: "feeWalletMultisig.vaultIndex"
+        },
+        sdk: {
+          key: "feeWalletMultisig.vaultIndex"
+        }
+      }
+    },
+    {
       key: "buy",
       type: "decimal",
       help: "An optional first buy in whole quote units; zero or empty means no buy, and the server applies dev-buy ceilings and TEE_LAUNCH_BUYS_ENABLED for TEE buys.",
@@ -1486,7 +1557,7 @@ var LAUNCH_DEFINITION = {
 };
 
 // src/launch-schema.ts
-var M2_TOP_KEYS = new Set(["wallet", "buy"]);
+var M2_TOP_KEYS = new Set(["wallet", "buy", "feeWallet", "feeWalletMultisig"]);
 var GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee"]);
 function mcpKey(field) {
   const surface = field.surfaces.mcp;

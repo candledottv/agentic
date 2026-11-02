@@ -682,6 +682,77 @@ export const LAUNCH_DEFINITION = {
       }
     },
     {
+      "key": "feeWallet",
+      "type": "string",
+      "help": "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the account wallet.",
+      "chains": [
+        "solana"
+      ],
+      "surfaces": {
+        "cli": {
+          "flag": "--fee-wallet",
+          "value": "<address>"
+        },
+        "mcp": {
+          "key": "feeWallet"
+        },
+        "sdk": {
+          "key": "feeWallet"
+        }
+      }
+    },
+    {
+      "key": "feeWalletMultisig.address",
+      "type": "string",
+      "help": "The Squads v4 multisig behind an off-curve --fee-wallet vault; takes --fee-wallet-multisig-vault-index.",
+      "chains": [
+        "solana"
+      ],
+      "requires": [
+        "feeWallet"
+      ],
+      "surfaces": {
+        "cli": {
+          "flag": "--fee-wallet-multisig",
+          "value": "<address>"
+        },
+        "mcp": {
+          "key": "feeWalletMultisig.address"
+        },
+        "sdk": {
+          "key": "feeWalletMultisig.address"
+        }
+      }
+    },
+    {
+      "key": "feeWalletMultisig.vaultIndex",
+      "type": "integer",
+      "help": "The Squads vault index, 0 to 255, that with the multisig derives an off-curve --fee-wallet.",
+      "chains": [
+        "solana"
+      ],
+      "range": {
+        "min": "0",
+        "max": "255",
+        "unit": "vault index"
+      },
+      "requires": [
+        "feeWalletMultisig.address"
+      ],
+      "surfaces": {
+        "cli": {
+          "flag": "--fee-wallet-multisig-vault-index",
+          "value": "<n>"
+        },
+        "mcp": {
+          "key": "feeWalletMultisig.vaultIndex"
+        },
+        "sdk": {
+          "key": "feeWalletMultisig.vaultIndex"
+        }
+      }
+    },
+    {
       "key": "buy",
       "type": "decimal",
       "help": "An optional first buy in whole quote units; zero or empty means no buy, and the server applies dev-buy ceilings and TEE_LAUNCH_BUYS_ENABLED for TEE buys.",
@@ -757,6 +828,11 @@ export interface GeneratedLaunchFields {
   expPoolShape?: "floor" | "full_range"
   dexVersion?: "v3" | "v4"
   visibility?: "production" | "test" | "local" | "hidden"
+  feeWallet?: string
+  feeWalletMultisig?: {
+    address?: string
+    vaultIndex?: number
+  }
   buy?: string
   dryRun?: boolean
 }

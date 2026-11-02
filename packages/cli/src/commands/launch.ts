@@ -12,6 +12,14 @@ import {
   toChecksumAddress,
 } from "../evm-lite"
 import {
+  type FeeWalletSelection,
+  feeWalletGiven,
+  feeWalletLines,
+  feeWalletQuoteLine,
+  feeWalletRequestFields,
+  feeWalletSelection,
+} from "../fee-wallet"
+import {
   createCurveLegOk,
   curveCreatedBy,
   feeLegOk,
@@ -292,10 +300,24 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     writeUsageFailure(ctx.deps, `${(error as Error).message}. ${USAGE}`, ctx.json)
     return 2
   }
+  // BE-2519: the fee-wallet flags are validated here, mirroring the API's parseFeeWallet, so a bad
+  // address or a bad multisig pair is refused before any request -- under --check included.
+  let feeWallet: FeeWalletSelection | undefined
+  try {
+    feeWallet = feeWalletSelection(flags)
+  } catch (error) {
+    writeUsageFailure(ctx.deps, `${(error as Error).message}. ${USAGE}`, ctx.json)
+    return 2
+  }
   try {
     // Before any request, as `candle swap` checks `--amount`; the quote asset's decimals come later.
     if (flags["--buy"]?.trim() && !/^0+(\.0+)?$/.test(flags["--buy"])) launchBuyRaw(flags["--buy"], 18)
     const hinted = flagChain(flags)
+    // BE-2519: the fee wallet is Solana only, as the API's parseFeeWallet refuses it on Hood.
+    if (hinted === "hood" && feeWalletGiven(flags)) {
+      writeUsageFailure(ctx.deps, `--fee-wallet is Solana only; a Hood launch cannot take it. ${USAGE}`, ctx.json)
+      return 2
+    }
     if (!check && hinted === "hood" && flags["--dex-version"] === undefined) {
       writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE}`, ctx.json)
       return 2
@@ -316,7 +338,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     }
     const key = await tradingKey(ctx)
     // BE-2139 (surfaces item B): the one preflight call, before any upload, build or id claim.
-    if (check) return await launchCheck(ctx, key, flags["--wallet"], hinted)
+    if (check) return await launchCheck(ctx, key, flags["--wallet"], hinted, feeWallet)
     // A dry run reads no operation and resumes none: it records nothing under the id.
     const prior = dryRun ? null : await lookupOperation(ctx, key, id, "launch")
     /** BE-1721 (R4): a same-id re-run of an atomic launch whose bundle did not land, and the image it was built with. */
@@ -372,8 +394,10 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     if (chain === "hood" && flags["--dex-version"] === undefined)
       throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`)
     const buy = launchBuy(flags, chain)
-    if (chain === "hood" && Object.keys(poolRequestFields(flags)).length)
-      throw new TradingUsage("Pool fee and pool shape choices are Solana only; a Hood launch cannot take them.")
+    if (chain === "hood" && (Object.keys(poolRequestFields(flags)).length || feeWalletGiven(flags)))
+      throw new TradingUsage(
+        "Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.",
+      )
     // BE-1721 (D1): a Solana TEE launch with a first buy is an atomic launch, the buy its own leg.
     // Its local refusals come here, before the upload and before the id is claimed.
     const atomic = chain === "solana" && buy !== undefined
@@ -439,6 +463,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       fee: built.fee ?? { bps: 0, feeRaw: "0" },
       minimumReceived: buy ? "not quoted (the first buy on the new curve)" : "0 tokens (no first buy)",
       maxDebitLamports: built.maxDebitLamports,
+      feeWallet: feeWalletQuoteLine(feeWallet),
       tokenRisks: [],
     }
     notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim())
@@ -593,6 +618,8 @@ function solanaSelfBody(args: LaunchBodyArgs): Json {
     buyAmount: args.buy ? args.buy.raw : 0,
     linkedWalletId: args.wallet.id,
     ...(quoteAsset ? { quoteAsset } : {}),
+    // BE-2519: the fee wallet this launch's fees earn to, validated before any request.
+    ...feeWalletRequestFields(args.flags),
   }
 }
 
@@ -635,6 +662,8 @@ const previewSchema = z
       .passthrough()
       .optional(),
     devBuyMax: z.string().nullable().optional(),
+    // BE-2519: the resolved fee wallet the dry run and the build echo.
+    feeWallet: z.string().optional(),
     fills: z
       .array(z.object({ index: z.number(), amountRaw: z.string(), supplyPct: z.number() }).passthrough())
       .optional(),
@@ -644,10 +673,10 @@ const previewSchema = z
 const percent = (value: number) => `${Number(value.toFixed(4))}%`
 
 /** The dry run's preview in a few lines for stderr; --json reads the whole answer on stdout. Absent fields print nothing. */
-function previewLines(answer: Json, chain: TradeChain): string {
+function previewLines(answer: Json, chain: TradeChain, feeWallet: FeeWalletSelection | undefined = undefined): string {
   const parsed = previewSchema.safeParse(answer)
   if (!parsed.success) return ""
-  const { resolved, curveTerms: terms, devBuyMax, fills } = parsed.data
+  const { resolved, curveTerms: terms, devBuyMax, feeWallet: echo, fills } = parsed.data
   const quote = (resolved?.quoteAsset ?? LAUNCH_DEFINITION.defaultQuote[chain]).toUpperCase()
   const decimals = (chain === "hood" ? HOOD_BASES[quote] : BASES[quote])?.decimals
   const whole = (raw: string) => (decimals === undefined ? `${raw} raw` : `${shortAmount(raw, decimals)} ${quote}`)
@@ -672,6 +701,8 @@ function previewLines(answer: Json, chain: TradeChain): string {
   for (const fill of fills ?? [])
     lines.push(`First buy ${fill.index}: ${whole(fill.amountRaw)} takes ${percent(fill.supplyPct)} of the supply.`)
   if (devBuyMax) lines.push(`Dev-buy ceiling: ${whole(devBuyMax)}.`)
+  // BE-2519: the fee wallet, chosen or defaulted, with the server's echo naming the default.
+  if (chain === "solana") lines.push(...feeWalletLines(feeWallet, echo))
   return lines.length ? `${lines.join("\n")}\n` : ""
 }
 
@@ -694,7 +725,7 @@ async function dryRunLaunch(
     throw buyRefusal(error)
   })
   ctx.deps.stderr.write(
-    `Dry run: nothing was built, signed or recorded, and launch id ${args.id} is unused.\n${previewLines(answer, chain)}`,
+    `Dry run: nothing was built, signed or recorded, and launch id ${args.id} is unused.\n${previewLines(answer, chain, feeWalletSelection(args.flags))}`,
   )
   return printTradingResult(ctx, { ...answer, clientTradeId: args.id, kind: "launch", ...args.used })
 }
@@ -878,6 +909,7 @@ async function atomicLaunch(
       minOut !== undefined ? `${minOut} raw units of the new token (the first buy's floor)` : "not quoted",
     maxLoss:
       quoteAsset === "SOL" ? sol : `${sol} and ${decimalAmount(reading.quoteRaw.toString(), decimals)} ${quoteAsset}`,
+    feeWallet: feeWalletQuoteLine(feeWalletSelection(flags)),
     tokenRisks: [],
     bundleId: built.bundleId,
   }
@@ -1110,8 +1142,10 @@ async function embeddedLaunch(
   const chain = flagChain(flags) ?? "solana"
   const buy = launchBuy(flags, chain)
   if (buy && chain === "solana") firstBuyCeiling(ctx, flags, buy)
-  if (chain === "hood" && Object.keys(poolRequestFields(flags)).length)
-    throw new TradingUsage("Pool fee and pool shape choices are Solana only; a Hood launch cannot take them.")
+  if (chain === "hood" && (Object.keys(poolRequestFields(flags)).length || feeWalletGiven(flags)))
+    throw new TradingUsage(
+      "Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.",
+    )
   const wallet = await embeddedLaunchWallet(ctx, key, chain)
   const uploaded = await uploadLaunchImages(ctx, key, args)
   if (typeof uploaded === "number") return uploaded
@@ -1130,6 +1164,8 @@ async function embeddedLaunch(
     ...launchCurveFields(flags),
     ...launchMetadataFields(flags),
     ...poolRequestFields(flags),
+    // BE-2519: the headless route takes the same Solana fee-wallet fields as the self build.
+    ...feeWalletRequestFields(flags),
     ...(buy
       ? { buyAmount: chain === "hood" || BigInt(buy.raw) > BigInt(Number.MAX_SAFE_INTEGER) ? buy.raw : Number(buy.raw) }
       : {}),
@@ -1141,6 +1177,7 @@ async function embeddedLaunch(
     venue: "curve launch (signed by Candle)",
     priceImpactPct: null,
     minimumReceived: "0 tokens (no first buy)",
+    ...(chain === "solana" ? { feeWallet: feeWalletQuoteLine(feeWalletSelection(flags)) } : {}),
     tokenRisks: [],
   }
   if (buy && chain === "solana") {
@@ -1183,7 +1220,7 @@ async function embeddedLaunch(
     previewSchema.parse(answer)
     if (buy) quote.minimumReceived = "not quoted (best-effort first buy after creation)"
   }
-  ctx.deps.stderr.write(previewLines(answer, chain))
+  ctx.deps.stderr.write(previewLines(answer, chain, feeWalletSelection(flags)))
   if (args.dryRun) {
     ctx.deps.stderr.write(`Dry run: nothing was built, signed or recorded, and launch id ${id} is unused.\n`)
     return printTradingResult(ctx, { ...answer, clientTradeId: id, kind: "launch", quote, ...used })
