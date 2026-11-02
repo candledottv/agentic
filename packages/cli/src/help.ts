@@ -1536,9 +1536,14 @@ export const HELP: Record<string, Topic> = {
           "Rename 1–256 TEE wallets with one server call, all or nothing, then one vault commit. Every finding refuses the whole file. The vault is unlocked once, only when a named TEE wallet may be in it. --dry-run prints the plan and changes nothing; if the vault write fails after the server accepted, it prints address-keyed rows to re-run",
       },
       {
-        invocation: "signer new --key <prefix|label> [--out <pem>] [--force]",
+        invocation: "signer new --key <prefix|label> [--out <pem>] [--force] [--no-wait]",
         description:
-          "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an older signer on THIS machine still owns wallets; it moves, revokes and deletes nothing",
+          "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext P-256 authorization key for Privy wallet RPC; it cannot sign Solana transactions (the TEE signs them). --no-wait exits 0 once pending. --json emits newline-delimited JSON: a pending event with userCode, verificationUriComplete, expiresAt and fingerprint immediately, then an active result or error if waiting. Retrying re-attaches to the same live request;  --force adds a signer while an older signer on THIS machine still owns wallets; it moves, revokes and deletes nothing",
+      },
+      {
+        invocation: "  signer status --key <prefix|label>",
+        description:
+          "Read the server signer state once without generating a pair or requesting approval. --json prints one value; on the requesting machine it includes the cached code and URL while that request is live",
       },
       // Indented like `keys signer`'s move row: a second word under `tee signer`, not a second subcommand of `tee`.
       {

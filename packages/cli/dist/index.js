@@ -77496,8 +77496,12 @@ var HELP = {
         description: "Rename 1–256 TEE wallets with one server call, all or nothing, then one vault commit. Every finding refuses the whole file. The vault is unlocked once, only when a named TEE wallet may be in it. --dry-run prints the plan and changes nothing; if the vault write fails after the server accepted, it prints address-keyed rows to re-run"
       },
       {
-        invocation: "signer new --key <prefix|label> [--out <pem>] [--force]",
-        description: "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an older signer on THIS machine still owns wallets; it moves, revokes and deletes nothing"
+        invocation: "signer new --key <prefix|label> [--out <pem>] [--force] [--no-wait]",
+        description: "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext P-256 authorization key for Privy wallet RPC; it cannot sign Solana transactions (the TEE signs them). --no-wait exits 0 once pending. --json emits newline-delimited JSON: a pending event with userCode, verificationUriComplete, expiresAt and fingerprint immediately, then an active result or error if waiting. Retrying re-attaches to the same live request;  --force adds a signer while an older signer on THIS machine still owns wallets; it moves, revokes and deletes nothing"
+      },
+      {
+        invocation: "  signer status --key <prefix|label>",
+        description: "Read the server signer state once without generating a pair or requesting approval. --json prints one value; on the requesting machine it includes the cached code and URL while that request is live"
       },
       {
         invocation: "  signer remove --key <prefix|label>",
@@ -84791,7 +84795,7 @@ function rebindJson(input, chain2) {
 init_key_output();
 init_keys();
 init_tee_rebind();
-var USAGE_TEE_SIGNER = "Usage: candle tee signer new --key <prefix|label> [--out <pem>] [--force] [--json] | candle tee signer remove --key <prefix|label> [--json]";
+var USAGE_TEE_SIGNER = "Usage: candle tee signer new --key <prefix|label> [--out <pem>] [--force] [--no-wait] [--json] | candle tee signer status --key <prefix|label> [--json] | candle tee signer remove --key <prefix|label> [--json]";
 var USAGE_KEYS_SIGNER = "Usage: candle keys signer approve <code> --key <prefix|label> [--reject] | candle keys signer move <prefix|label> [--to-key <prefix|label>] [--json]";
 var SIGNER_POLL_MS = 5000;
 var DEVICE_TOKEN_BESIDE_SIGNER_LINE = "Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine.";
@@ -84825,6 +84829,8 @@ async function teeSigner(args, ctx) {
     return teeSignerNew(rest, ctx);
   if (sub === "remove")
     return teeSignerRemove(rest, ctx);
+  if (sub === "status")
+    return teeSignerStatus(rest, ctx);
   writeScreenUsageFailure(ctx.deps, sub === undefined ? USAGE_TEE_SIGNER : `Unknown subcommand: ${sub}. ${USAGE_TEE_SIGNER}`, ctx.json);
   return 2;
 }
@@ -84837,7 +84843,11 @@ function generatePair() {
 }
 async function teeSignerNew(args, ctx) {
   const { deps, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--key", "--out"], booleanFlags: ["--force"], pathFlags: ["--out"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--key", "--out"],
+    booleanFlags: ["--force", "--no-wait"],
+    pathFlags: ["--out"]
+  });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}. ${USAGE_TEE_SIGNER}`, json);
     return 2;
@@ -84853,6 +84863,7 @@ async function teeSignerNew(args, ctx) {
   }
   const out = parsed.values["--out"];
   const force = parsed.booleans.has("--force");
+  const noWait = parsed.booleans.has("--no-wait");
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
@@ -84891,7 +84902,7 @@ async function teeSignerNew(args, ctx) {
     entry = undefined;
   }
   if (entry !== undefined && active !== null && active.spkiSha256 === entry.spkiSha256) {
-    const recorded = { ...entry, signerQuorumId: active.signerQuorumId };
+    const recorded = { ...entry, signerQuorumId: active.signerQuorumId, pendingRequest: undefined };
     await saveKeySignerEntry(deps, recorded);
     await writeOut(ctx, out, recorded);
     return reportApproved(ctx, view, recorded, { resumed: true, requested: false });
@@ -84940,12 +84951,17 @@ async function teeSignerNew(args, ctx) {
     resumed = false;
   }
   await writeOut(ctx, out, entry);
-  const requested = await requestSigner(ctx, apiKey, entry.publicKeyDer);
+  const cached = matchingPendingRequest(ctx, view, entry);
+  const requested = cached ? {
+    ok: true,
+    status: 200,
+    body: { ...cached, spkiSha256: entry.spkiSha256, fingerprint: entry.fingerprint }
+  } : await requestSigner(ctx, apiKey, entry.publicKeyDer);
   if (!requested.ok) {
     if (requested.code === "KEY_SIGNER_ALREADY_ACTIVE") {
       const quorum = errorDetails(requested).keySigner?.signerQuorumId;
       if (typeof quorum === "string") {
-        const recorded = { ...entry, signerQuorumId: quorum };
+        const recorded = { ...entry, signerQuorumId: quorum, pendingRequest: undefined };
         await saveKeySignerEntry(deps, recorded);
         const reread = await readSigner(ctx, "self", { apiKey });
         return reportApproved(ctx, reread.ok ? reread.body : view, recorded, {
@@ -84982,6 +84998,27 @@ async function teeSignerNew(args, ctx) {
     }, json);
     return 1;
   }
+  entry = {
+    ...entry,
+    pendingRequest: {
+      apiUrl: ctx.apiUrl,
+      userCode: body.userCode,
+      verificationUri: body.verificationUri,
+      verificationUriComplete: body.verificationUriComplete,
+      expiresAt: body.expiresAt
+    }
+  };
+  await saveKeySignerEntry(deps, entry);
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({
+      state: "pending",
+      userCode: body.userCode,
+      verificationUriComplete: body.verificationUriComplete,
+      expiresAt: body.expiresAt,
+      fingerprint: body.fingerprint
+    })}
+`);
+  }
   if (json) {
     writeFields(deps, "stderr", [
       ["Key", keyPrefix],
@@ -84992,7 +85029,7 @@ async function teeSignerNew(args, ctx) {
       ["Approve on owner machine", `candle keys signer approve ${body.userCode} --key ${keyPrefix}`],
       ["Expires", formatTime(body.expiresAt)]
     ], "Key signer request");
-    notice(deps, "stderr", "note", "The account owner approves it, typing this full fingerprint. Waiting for approval...");
+    notice(deps, "stderr", "note", `The account owner approves it, typing this full fingerprint.${noWait ? "" : " Waiting for approval..."}`);
   } else {
     writeFields(deps, "stderr", [
       ["Key", keyPrefix],
@@ -85004,9 +85041,11 @@ async function teeSignerNew(args, ctx) {
     ], "Key signer request");
     notice(deps, "stderr", "warning", "The account owner approves it, typing this full fingerprint.");
     notice(deps, "stderr", "note", `Or, on the owner's machine:
-candle keys signer approve ${body.userCode} --key ${keyPrefix}
-Waiting for approval...`);
+candle keys signer approve ${body.userCode} --key ${keyPrefix}${noWait ? "" : `
+Waiting for approval...`}`);
   }
+  if (noWait)
+    return 0;
   while (deps.now() < body.expiresAt) {
     await deps.sleep(SIGNER_POLL_MS);
     const read = await readSigner(ctx, "self", { apiKey });
@@ -85015,9 +85054,9 @@ Waiting for approval...`);
     view = read.body;
     const now = activeSigner(view);
     if (now !== null && now.spkiSha256 === entry.spkiSha256) {
-      const recorded = { ...entry, signerQuorumId: now.signerQuorumId };
+      const recorded = { ...entry, signerQuorumId: now.signerQuorumId, pendingRequest: undefined };
       await saveKeySignerEntry(deps, recorded);
-      return reportApproved(ctx, view, recorded, { resumed, requested: true, replaces });
+      return reportApproved(ctx, view, recorded, { resumed, requested: cached === undefined, replaces });
     }
     if (view.pending === null || view.pending.spkiSha256 !== entry.spkiSha256) {
       writeScreenLocalFailure(deps, {
@@ -85036,6 +85075,58 @@ Waiting for approval...`);
     details: { keyPrefix, fingerprint: entry.fingerprint, spkiSha256: entry.spkiSha256, state: "pending" }
   }, json);
   return 1;
+}
+function matchingPendingRequest(ctx, view, entry) {
+  const pending = entry.pendingRequest;
+  return pending?.apiUrl === ctx.apiUrl && pending.expiresAt > ctx.deps.now() && view.pending?.spkiSha256 === entry.spkiSha256 && view.pending.expiresAt === pending.expiresAt ? pending : undefined;
+}
+async function teeSignerStatus(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--key"] });
+  if ("error" in parsed || !parsed.values["--key"] || parsed.positionals.length > 0) {
+    writeScreenUsageFailure(deps, USAGE_TEE_SIGNER, json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeScreenLocalFailure(deps, { code: "NO_API_KEY", message: "tee signer status needs this key's API key." }, json);
+    return 1;
+  }
+  const read = await readSigner(ctx, "self", { apiKey });
+  if (!read.ok)
+    return writeSignerReadFailure(ctx, read);
+  const view = read.body;
+  const keyRaw = parsed.values["--key"];
+  if (keyRaw !== view.keyPrefix && keyRaw !== view.keyLabel) {
+    writeScreenLocalFailure(deps, { code: "KEY_SIGNER_KEY_MISMATCH", message: `This API key is ${view.keyPrefix}, not ${keyRaw}.` }, json);
+    return 1;
+  }
+  const locals = await localKeySigners(deps, view.keyPrefix);
+  const entry = locals.find((local) => local.spkiSha256 === view.pending?.spkiSha256);
+  const pending = entry ? matchingPendingRequest(ctx, view, entry) : undefined;
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({
+      ok: true,
+      command: "tee signer status",
+      ...view,
+      ...pending ? {
+        userCode: pending.userCode,
+        verificationUriComplete: pending.verificationUriComplete,
+        expiresAt: pending.expiresAt
+      } : {}
+    })}
+`);
+  } else {
+    writeFields(deps, "stdout", [
+      ["Key", view.keyPrefix],
+      ["State", view.state],
+      ["Fingerprint", view.pending?.fingerprint ?? view.fingerprint],
+      ["Approve at", pending?.verificationUriComplete],
+      ["Expires", view.pending?.expiresAt ? formatTime(view.pending.expiresAt, { now: deps.now() }) : undefined]
+    ], "Key signer status");
+  }
+  return 0;
 }
 async function writeOut(ctx, out, entry) {
   if (out === undefined)

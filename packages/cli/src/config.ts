@@ -25,6 +25,14 @@ export interface KeySignerEntry {
   publicKeyDer: string
   /** The Privy quorum, once approval returned it. Absent: the pair is still pending. */
   signerQuorumId?: string
+  /** Public approval facts, bound to the API that issued them, for a read-only resume. */
+  pendingRequest?: {
+    apiUrl: string
+    userCode: string
+    verificationUri: string
+    verificationUriComplete: string
+    expiresAt: number
+  }
   createdAt: number
 }
 

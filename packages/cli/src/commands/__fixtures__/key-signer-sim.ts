@@ -181,6 +181,20 @@ export class SignerSim {
           keySigner: { fingerprint: key.active.fingerprint, spkiSha256, signerQuorumId: key.active.quorum },
         })
       }
+      if (key.pending && key.pending.expiresAt <= this.now()) key.pending = null
+      if (key.pending?.spkiSha256 === spkiSha256) {
+        return jsonResponse(200, {
+          success: true,
+          keyPrefix: key.keyPrefix,
+          fingerprint: key.pending.fingerprint,
+          spkiSha256,
+          userCode: key.pending.userCode,
+          verificationUri: "https://staging.candle.tv/dev/agent/device",
+          verificationUriComplete: `https://staging.candle.tv/dev/agent/device?signer=${key.keyPrefix}&code=${key.pending.userCode}`,
+          expiresAt: key.pending.expiresAt,
+          supersededPending: false,
+        })
+      }
       const userCode = `CODE-${this.requests.length + 1}`
       this.requests.push({ keyPrefix: key.keyPrefix, publicKeyDer, userCode })
       this.readsSinceRequest = 0

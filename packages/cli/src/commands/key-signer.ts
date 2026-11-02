@@ -75,7 +75,7 @@ import {
 } from "./tee-rebind"
 
 const USAGE_TEE_SIGNER =
-  "Usage: candle tee signer new --key <prefix|label> [--out <pem>] [--force] [--json] | candle tee signer remove --key <prefix|label> [--json]"
+  "Usage: candle tee signer new --key <prefix|label> [--out <pem>] [--force] [--no-wait] [--json] | candle tee signer status --key <prefix|label> [--json] | candle tee signer remove --key <prefix|label> [--json]"
 const USAGE_KEYS_SIGNER =
   "Usage: candle keys signer approve <code> --key <prefix|label> [--reject] | candle keys signer move <prefix|label> [--to-key <prefix|label>] [--json]"
 
@@ -133,6 +133,7 @@ export async function teeSigner(args: string[], ctx: CommandContext): Promise<nu
   const [sub, ...rest] = args
   if (sub === "new") return teeSignerNew(rest, ctx)
   if (sub === "remove") return teeSignerRemove(rest, ctx)
+  if (sub === "status") return teeSignerStatus(rest, ctx)
   writeUsageFailure(
     ctx.deps,
     sub === undefined ? USAGE_TEE_SIGNER : `Unknown subcommand: ${sub}. ${USAGE_TEE_SIGNER}`,
@@ -152,7 +153,11 @@ function generatePair(): { pem: string; publicKeyDer: string } {
 
 async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
-  const parsed = parseArgs(args, { valueFlags: ["--key", "--out"], booleanFlags: ["--force"], pathFlags: ["--out"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--key", "--out"],
+    booleanFlags: ["--force", "--no-wait"],
+    pathFlags: ["--out"],
+  })
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}. ${USAGE_TEE_SIGNER}`, json)
     return 2
@@ -168,6 +173,7 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
   }
   const out = parsed.values["--out"]
   const force = parsed.booleans.has("--force")
+  const noWait = parsed.booleans.has("--no-wait")
 
   await printIdentity(ctx)
   const apiKey = await resolveApiKey(deps, ctx.profile)
@@ -222,7 +228,7 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
 
   // The lost approval response: the server already shows this pair active. Record and stop.
   if (entry !== undefined && active !== null && active.spkiSha256 === entry.spkiSha256) {
-    const recorded: KeySignerEntry = { ...entry, signerQuorumId: active.signerQuorumId }
+    const recorded: KeySignerEntry = { ...entry, signerQuorumId: active.signerQuorumId, pendingRequest: undefined }
     await saveKeySignerEntry(deps, recorded)
     await writeOut(ctx, out, recorded)
     return reportApproved(ctx, view, recorded, { resumed: true, requested: false })
@@ -296,12 +302,20 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
   }
   await writeOut(ctx, out, entry)
 
-  const requested = await requestSigner(ctx, apiKey, entry.publicKeyDer)
+  // Re-attach using public request facts only when this API still reports the same live pair.
+  const cached = matchingPendingRequest(ctx, view, entry)
+  const requested = cached
+    ? {
+        ok: true as const,
+        status: 200,
+        body: { ...cached, spkiSha256: entry.spkiSha256, fingerprint: entry.fingerprint },
+      }
+    : await requestSigner(ctx, apiKey, entry.publicKeyDer)
   if (!requested.ok) {
     if (requested.code === "KEY_SIGNER_ALREADY_ACTIVE") {
       const quorum = (errorDetails(requested).keySigner as { signerQuorumId?: unknown } | undefined)?.signerQuorumId
       if (typeof quorum === "string") {
-        const recorded: KeySignerEntry = { ...entry, signerQuorumId: quorum }
+        const recorded: KeySignerEntry = { ...entry, signerQuorumId: quorum, pendingRequest: undefined }
         await saveKeySignerEntry(deps, recorded)
         const reread = await readSigner(ctx, "self", { apiKey })
         return reportApproved(ctx, reread.ok ? (reread.body as SignerView) : view, recorded, {
@@ -358,6 +372,29 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     return 1
   }
 
+  entry = {
+    ...entry,
+    pendingRequest: {
+      apiUrl: ctx.apiUrl,
+      userCode: body.userCode,
+      verificationUri: body.verificationUri,
+      verificationUriComplete: body.verificationUriComplete,
+      expiresAt: body.expiresAt,
+    },
+  }
+  await saveKeySignerEntry(deps, entry)
+  if (json) {
+    deps.stdout.write(
+      `${JSON.stringify({
+        state: "pending",
+        userCode: body.userCode,
+        verificationUriComplete: body.verificationUriComplete,
+        expiresAt: body.expiresAt,
+        fingerprint: body.fingerprint,
+      })}\n`,
+    )
+  }
+
   if (json) {
     writeFields(
       deps,
@@ -377,7 +414,7 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
       deps,
       "stderr",
       "note",
-      "The account owner approves it, typing this full fingerprint. Waiting for approval...",
+      `The account owner approves it, typing this full fingerprint.${noWait ? "" : " Waiting for approval..."}`,
     )
   } else {
     writeFields(
@@ -398,9 +435,11 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
       deps,
       "stderr",
       "note",
-      `Or, on the owner's machine:\ncandle keys signer approve ${body.userCode} --key ${keyPrefix}\nWaiting for approval...`,
+      `Or, on the owner's machine:\ncandle keys signer approve ${body.userCode} --key ${keyPrefix}${noWait ? "" : "\nWaiting for approval..."}`,
     )
   }
+
+  if (noWait) return 0
 
   // Like `candle login`: read until the owner approves, the request is superseded or it expires.
   while (deps.now() < body.expiresAt) {
@@ -410,9 +449,9 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     view = read.body as SignerView
     const now = activeSigner(view)
     if (now !== null && now.spkiSha256 === entry.spkiSha256) {
-      const recorded: KeySignerEntry = { ...entry, signerQuorumId: now.signerQuorumId }
+      const recorded: KeySignerEntry = { ...entry, signerQuorumId: now.signerQuorumId, pendingRequest: undefined }
       await saveKeySignerEntry(deps, recorded)
-      return reportApproved(ctx, view, recorded, { resumed, requested: true, replaces })
+      return reportApproved(ctx, view, recorded, { resumed, requested: cached === undefined, replaces })
     }
     if (view.pending === null || view.pending.spkiSha256 !== entry.spkiSha256) {
       writeLocalFailure(
@@ -441,7 +480,79 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
   return 1
 }
 
-/** `--out` (5.1): an opt-in mode-0600 plaintext PEM for an SDK process. The store copy stays. */
+/** A cached code is usable only while the server still names this pair and deadline. */
+function matchingPendingRequest(ctx: CommandContext, view: SignerView, entry: KeySignerEntry) {
+  const pending = entry.pendingRequest
+  return pending?.apiUrl === ctx.apiUrl &&
+    pending.expiresAt > ctx.deps.now() &&
+    view.pending?.spkiSha256 === entry.spkiSha256 &&
+    view.pending.expiresAt === pending.expiresAt
+    ? pending
+    : undefined
+}
+
+/** One server read; never generates a pair, requests a code or waits for approval. */
+async function teeSignerStatus(args: string[], ctx: CommandContext): Promise<number> {
+  const { deps, json } = ctx
+  const parsed = parseArgs(args, { valueFlags: ["--key"] })
+  if ("error" in parsed || !parsed.values["--key"] || parsed.positionals.length > 0) {
+    writeUsageFailure(deps, USAGE_TEE_SIGNER, json)
+    return 2
+  }
+  await printIdentity(ctx)
+  const apiKey = await resolveApiKey(deps, ctx.profile)
+  if (!apiKey) {
+    writeLocalFailure(deps, { code: "NO_API_KEY", message: "tee signer status needs this key's API key." }, json)
+    return 1
+  }
+  const read = await readSigner(ctx, "self", { apiKey })
+  if (!read.ok) return writeSignerReadFailure(ctx, read)
+  const view = read.body as SignerView
+  const keyRaw = parsed.values["--key"]
+  if (keyRaw !== view.keyPrefix && keyRaw !== view.keyLabel) {
+    writeLocalFailure(
+      deps,
+      { code: "KEY_SIGNER_KEY_MISMATCH", message: `This API key is ${view.keyPrefix}, not ${keyRaw}.` },
+      json,
+    )
+    return 1
+  }
+  const locals = await localKeySigners(deps, view.keyPrefix)
+  const entry = locals.find((local) => local.spkiSha256 === view.pending?.spkiSha256)
+  const pending = entry ? matchingPendingRequest(ctx, view, entry) : undefined
+  if (json) {
+    deps.stdout.write(
+      `${JSON.stringify({
+        ok: true,
+        command: "tee signer status",
+        ...view,
+        ...(pending
+          ? {
+              userCode: pending.userCode,
+              verificationUriComplete: pending.verificationUriComplete,
+              expiresAt: pending.expiresAt,
+            }
+          : {}),
+      })}\n`,
+    )
+  } else {
+    writeFields(
+      deps,
+      "stdout",
+      [
+        ["Key", view.keyPrefix],
+        ["State", view.state],
+        ["Fingerprint", view.pending?.fingerprint ?? view.fingerprint],
+        ["Approve at", pending?.verificationUriComplete],
+        ["Expires", view.pending?.expiresAt ? formatTime(view.pending.expiresAt, { now: deps.now() }) : undefined],
+      ],
+      "Key signer status",
+    )
+  }
+  return 0
+}
+
+/** `--out` (5.1): an opt-in mode-0600 plaintext Privy authorization key. The store copy stays. */
 async function writeOut(ctx: CommandContext, out: string | undefined, entry: KeySignerEntry): Promise<void> {
   if (out === undefined) return
   const stored = await ctx.deps.store.get(keySignerRef(entry.keyPrefix, entry.spkiSha256))

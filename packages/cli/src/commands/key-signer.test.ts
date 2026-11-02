@@ -137,6 +137,12 @@ async function holdSigner(h: Harness, keyPrefix: string, p: { pem: string; publi
   return spkiSha256
 }
 
+const jsonLines = (text: string) =>
+  text
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+
 const requestCalls = (h: Harness) => h.calls.filter((c) => c.url.endsWith("/signer/request"))
 
 // ── T1: tee signer new ─────────────────────────────────────────────────────────────────────────
@@ -175,7 +181,7 @@ describe("T1: candle tee signer new", () => {
     sim.addKey({ keyPrefix: PREFIX, label: "tr-2", apiKey: API_KEY })
     const h = machine(sim, { apiKey: true, clock })
     expect(await run(["tee", "signer", "new", "--key", PREFIX, "--json"], h.deps)).toBe(1)
-    expect(JSON.parse(h.stdout.text).code).toBe("KEY_SIGNER_NOT_APPROVED")
+    expect(jsonLines(h.stdout.text).at(-1).code).toBe("KEY_SIGNER_NOT_APPROVED")
     const [pending] = await localKeySigners(h.deps, PREFIX)
     expect(pending?.signerQuorumId).toBeUndefined()
     // The server row expired (the simulator drops it past expiresAt); it is not revived.
@@ -189,6 +195,110 @@ describe("T1: candle tee signer new", () => {
     const entries = await localKeySigners(h.deps, PREFIX)
     expect(entries).toHaveLength(1)
     expect(entries[0]?.signerQuorumId).toBe(sim.keys.get(PREFIX)?.active?.quorum as string)
+  })
+
+  test("--no-wait returns pending JSON; retry re-attaches with the same code and no new request", async () => {
+    const clock = createFakeClock(1_000)
+    const sim = new SignerSim(clock.now)
+    sim.addKey({ keyPrefix: PREFIX, apiKey: API_KEY })
+    const h = machine(sim, { apiKey: true, clock })
+    h.deps.sleep = async () => {
+      throw new Error("--no-wait must not sleep")
+    }
+    const args = ["tee", "signer", "new", "--key", PREFIX, "--no-wait", "--json"]
+    expect(await run(args, h.deps)).toBe(0)
+    const [pending] = jsonLines(h.stdout.text)
+    expect(pending).toEqual({
+      state: "pending",
+      userCode: sim.requests[0]?.userCode,
+      verificationUriComplete: expect.stringContaining(`code=${sim.requests[0]?.userCode}`),
+      expiresAt: 601_000,
+      fingerprint: sim.keys.get(PREFIX)?.pending?.fingerprint,
+    })
+    expect(h.stderr.text).not.toContain("Waiting for approval")
+    expect(await run(args, h.deps)).toBe(0)
+    expect(jsonLines(h.stdout.text)).toEqual([pending, pending])
+    expect(requestCalls(h)).toHaveLength(1)
+    expect(sim.requests).toHaveLength(1)
+    expect(await localKeySigners(h.deps, PREFIX)).toHaveLength(1)
+  })
+
+  test("a lost request response recovers the original pending code through the idempotent server", async () => {
+    const clock = createFakeClock(1_000)
+    const sim = new SignerSim(clock.now)
+    sim.addKey({ keyPrefix: PREFIX, apiKey: API_KEY })
+    const h = machine(sim, { apiKey: true, clock })
+    const args = ["tee", "signer", "new", "--key", PREFIX, "--no-wait", "--json"]
+    expect(await run(args, h.deps)).toBe(0)
+    const entry = (await localKeySigners(h.deps, PREFIX))[0]
+    if (!entry) throw new Error("missing local pair")
+    await saveKeySignerEntry(h.deps, { ...entry, pendingRequest: undefined })
+    expect(await run(args, h.deps)).toBe(0)
+    const [first, second] = jsonLines(h.stdout.text)
+    expect(second).toEqual(first)
+    expect(requestCalls(h)).toHaveLength(2)
+    expect(sim.requests).toHaveLength(1)
+  })
+
+  test("a rejected request does not reuse the cached code", async () => {
+    const clock = createFakeClock(1_000)
+    const sim = new SignerSim(clock.now)
+    const key = sim.addKey({ keyPrefix: PREFIX, apiKey: API_KEY })
+    const h = machine(sim, { apiKey: true, clock })
+    const args = ["tee", "signer", "new", "--key", PREFIX, "--no-wait", "--json"]
+    expect(await run(args, h.deps)).toBe(0)
+    key.pending = null
+    expect(await run(args, h.deps)).toBe(0)
+    expect(jsonLines(h.stdout.text).map((event) => event.userCode)).toEqual(["CODE-1", "CODE-2"])
+    expect(sim.requests[0]?.publicKeyDer).toBe(sim.requests[1]?.publicKeyDer)
+  })
+
+  test("pending JSON is on stdout before the first approval poll; active is a separate JSON line", async () => {
+    const clock = createFakeClock(1_000)
+    const sim = new SignerSim(clock.now)
+    sim.addKey({ keyPrefix: PREFIX, apiKey: API_KEY })
+    const h = machine(sim, { apiKey: true, clock })
+    h.deps.sleep = async (ms) => {
+      expect(jsonLines(h.stdout.text)).toEqual([expect.objectContaining({ state: "pending", userCode: "CODE-1" })])
+      sim.approvePending(PREFIX)
+      await clock.sleep(ms)
+    }
+    expect(await run(["tee", "signer", "new", "--key", PREFIX, "--json"], h.deps)).toBe(0)
+    expect(jsonLines(h.stdout.text).map((line) => line.state)).toEqual(["pending", "active"])
+  })
+
+  test("status reads none, pending and active without requesting or changing local signer facts", async () => {
+    const clock = createFakeClock(1_000)
+    const sim = new SignerSim(clock.now)
+    sim.addKey({ keyPrefix: PREFIX, label: "desk", apiKey: API_KEY })
+    const h = machine(sim, { apiKey: true, clock })
+    const status = ["tee", "signer", "status", "--key", "desk", "--json"]
+    expect(await run(status, h.deps)).toBe(0)
+    expect(jsonLines(h.stdout.text).at(-1).state).toBe("none")
+    expect(await localKeySigners(h.deps)).toEqual([])
+    expect(await run(["tee", "signer", "new", "--key", PREFIX, "--no-wait", "--json"], h.deps)).toBe(0)
+    const before = await localKeySigners(h.deps)
+    expect(await run(status, h.deps)).toBe(0)
+    expect(jsonLines(h.stdout.text).at(-1)).toMatchObject({ state: "pending", userCode: "CODE-1" })
+    sim.approvePending(PREFIX)
+    expect(await run(status, h.deps)).toBe(0)
+    expect(jsonLines(h.stdout.text).at(-1)).toMatchObject({ state: "active" })
+    expect(jsonLines(h.stdout.text).at(-1).userCode).toBeUndefined()
+    expect(requestCalls(h)).toHaveLength(1)
+    expect(await localKeySigners(h.deps)).toEqual(before)
+  })
+
+  test("status refuses absent credentials and a different key without requesting a code", async () => {
+    const sim = new SignerSim(() => 1_000)
+    sim.addKey({ keyPrefix: PREFIX, apiKey: API_KEY })
+    const h = machine(sim)
+    expect(await run(["tee", "signer", "status", "--key", PREFIX, "--json"], h.deps)).toBe(1)
+    expect(JSON.parse(h.stdout.text).code).toBe("NO_API_KEY")
+    expect(h.calls).toHaveLength(0)
+    const other = machine(sim, { apiKey: true })
+    expect(await run(["tee", "signer", "status", "--key", "OtherKey", "--json"], other.deps)).toBe(1)
+    expect(JSON.parse(other.stdout.text).code).toBe("KEY_SIGNER_KEY_MISMATCH")
+    expect(requestCalls(other)).toHaveLength(0)
   })
 
   test("a lost approval: GET first; the active spkiSha256 is the local pair, so the quorum is written from it and nothing is requested", async () => {
@@ -853,7 +963,7 @@ describe("signer replacement notices", () => {
       sim.approveOnRead = 2
       const h = machine(sim, { apiKey: true, clock })
       expect(await run(["tee", "signer", "new", "--key", PREFIX, "--json"], h.deps)).toBe(0)
-      expect(JSON.parse(h.stdout.text).replaces).toEqual({ fingerprint: signer.fingerprint, wallets: count })
+      expect(jsonLines(h.stdout.text).at(-1).replaces).toEqual({ fingerprint: signer.fingerprint, wallets: count })
       expect(humanText(h.stderr.text)).toContain(humanText("Approving this request replaces it"))
       expect(humanText(h.stderr.text)).toContain(
         humanText(count ? `candle keys signer move ${PREFIX}` : "It owns no wallets, so nothing has to move"),
@@ -867,7 +977,7 @@ describe("signer replacement notices", () => {
     sim.approveOnRead = 2
     const h = machine(sim, { apiKey: true, clock })
     expect(await run(["tee", "signer", "new", "--key", PREFIX, "--json"], h.deps)).toBe(0)
-    expect(JSON.parse(h.stdout.text).replaces).toBeNull()
+    expect(jsonLines(h.stdout.text).at(-1).replaces).toBeNull()
     expect(h.stderr.text).not.toContain("Approving this request replaces it")
   })
   test("keys signer approve prints the replace line when active signer owns no wallets", async () => {
