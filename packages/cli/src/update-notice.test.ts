@@ -4,7 +4,7 @@
  * changing a command's outcome. `wallets list` is the vehicle: an ordinary command whose one
  * API call carries -- or does not carry -- the x-candle-cli-latest header.
  */
-import { beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { run } from "./index"
 import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "./test-support"
 import { __resetUpdateNoticeForTest } from "./update-notice"
@@ -31,6 +31,10 @@ function depsWith(fetch: typeof globalThis.fetch, extra: Record<string, unknown>
   } as Parameters<typeof createTestDeps>[0])
 }
 
+afterEach(() => {
+  __resetUpdateNoticeForTest()
+})
+
 beforeEach(() => {
   __resetUpdateNoticeForTest()
 })
@@ -41,7 +45,9 @@ describe("update notice", () => {
     const deps = depsWith(walletRoutes({ "x-candle-cli-latest": NEWER }).fetch, { stderr })
     const code = await run(["wallets"], deps)
     expect(code).toBe(0)
-    expect(stderr.text).toContain(`Update available: candle ${CLI_VERSION} -> ${NEWER}. Run: candle update`)
+    expect(stderr.text).toContain(
+      `Update available: candle ${CLI_VERSION} -> ${NEWER}. Run: npm i -g @candledottv/cli@latest`,
+    )
   })
 
   test("shown once per day, not once per command", async () => {
@@ -106,5 +112,58 @@ describe("update notice", () => {
     const stderr = createCapture()
     await run(["wallets"], depsWith(walletRoutes({}).fetch, { stderr }))
     expect(stderr.text).not.toContain("Update available")
+  })
+
+  describe("install path (BE-2518)", () => {
+    const FEED = "/candledottv/cli/releases/latest/download/latest.json"
+    function binaryDeps(feedVersion: string | null, execPath = "/usr/local/bin/candle", stderr = createCapture()) {
+      const routes = createRoutedFetch({
+        "/api/v1/agent/wallets/embedded": () =>
+          jsonResponse(200, { success: true, wallets: { solana: null, evm: null } }, { "x-candle-cli-latest": NEWER }),
+        "/api/v1/agent/wallets": () =>
+          jsonResponse(
+            200,
+            { success: true, page: [], isDone: true, continueCursor: null },
+            { "x-candle-cli-latest": NEWER },
+          ),
+        [FEED]: () =>
+          feedVersion === null
+            ? jsonResponse(404, {})
+            : jsonResponse(200, { version: feedVersion, tag: `cli-v${feedVersion}`, assets: {} }),
+      })
+      return { deps: depsWith(routes.fetch, { stderr, execPath }), stderr }
+    }
+
+    test("a binary install is not told to update to a version the feed lacks", async () => {
+      const { deps, stderr } = binaryDeps(CLI_VERSION)
+      await run(["wallets"], deps)
+      expect(stderr.text).not.toContain("Update available")
+    })
+
+    test("a binary install with the feed unreachable prints nothing", async () => {
+      const { deps, stderr } = binaryDeps(null)
+      expect(await run(["wallets"], deps)).toBe(0)
+      expect(stderr.text).not.toContain("Update available")
+    })
+
+    test("a binary install is told the feed's version, not npm's", async () => {
+      const { deps, stderr } = binaryDeps("99.0.1")
+      await run(["wallets"], deps)
+      expect(stderr.text).toContain(`candle ${CLI_VERSION} -> 99.0.1. Run: candle update`)
+      expect(stderr.text).not.toContain(NEWER)
+    })
+
+    test("a Homebrew install is pointed at brew", async () => {
+      const { deps, stderr } = binaryDeps("99.0.1", "/opt/homebrew/Cellar/candle/1/bin/candle")
+      await run(["wallets"], deps)
+      expect(stderr.text).toContain("Run: brew upgrade candle")
+    })
+
+    test("an npm install gets the npm command without asking the feed", async () => {
+      const stderr = createCapture()
+      await run(["wallets"], depsWith(walletRoutes({ "x-candle-cli-latest": NEWER }).fetch, { stderr }))
+      expect(stderr.text).toContain(`-> ${NEWER}. Run: npm i -g @candledottv/cli@latest`)
+      expect(stderr.text).not.toContain("Run: candle update")
+    })
   })
 })

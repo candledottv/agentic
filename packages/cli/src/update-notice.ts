@@ -3,6 +3,10 @@
  * newer version for free, tell the user at most once a day, name the exact command, never block
  * or slow the command that discovered it.
  *
+ * What it says to run follows the install: npm installs get the npm command, binary and Homebrew
+ * installs are checked against the release feed `candle update` reads (the one network call, made
+ * only once the header has shown a newer npm version).
+ *
  * "For free" is the header ride-along: the API stamps x-candle-cli-latest on every response
  * (apps/api/src/lib/client-versions.ts), apiRequest notes it in module state as responses
  * arrive, and `run` prints at exit from what was noted. No registry call, no background
@@ -16,7 +20,7 @@
 import { __resetLatestCliVersionForTest, latestCliVersionFromApi } from "./client"
 import type { Deps } from "./deps"
 import { terminalStyle } from "./presentation"
-import { compareVersions, isPlainVersion } from "./release"
+import { compareVersions, detectInstall, fetchLatest, isPlainVersion, releaseBaseUrl, updateHomeFor } from "./release"
 import { CLI_VERSION } from "./version"
 
 export function __resetUpdateNoticeForTest(): void {
@@ -37,15 +41,31 @@ export async function maybeWriteUpdateNotice(
   try {
     if (deps.env.CANDLE_NO_UPDATE_NOTIFIER) return
     if (opts.command === "update" || opts.command === "doctor") return
-    const latest = latestCliVersionFromApi()
-    if (!latest || !isPlainVersion(latest) || compareVersions(latest, CLI_VERSION) <= 0) return
+    const seen = latestCliVersionFromApi()
+    if (!seen || !isPlainVersion(seen) || compareVersions(seen, CLI_VERSION) <= 0) return
+
+    // The API reports the npm registry's latest. Never advertise a version the install path cannot
+    // deliver (BE-2518): an npm/script install is told the npm command; a binary or Homebrew
+    // install is told about the release feed's version, which `candle update` installs from, and
+    // nothing at all while the feed is behind npm or unreachable.
+    const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath)
+    const method = detectInstall(deps.execPath, realExec)
+    let latest = seen
+    let command = "npm i -g @candledottv/cli@latest"
+    if (method !== "script") {
+      command = method === "homebrew" ? "brew upgrade candle" : "candle update"
+      const feed = await fetchLatest(deps, releaseBaseUrl(deps.env, updateHomeFor(CLI_VERSION)))
+      if (!feed.ok || !isPlainVersion(feed.manifest.version)) return
+      latest = feed.manifest.version
+      if (compareVersions(latest, CLI_VERSION) <= 0) return
+    }
 
     const config = await deps.readConfig()
     const prior = config.updateNotice
     if (prior && prior.version === latest && deps.now() - prior.shownAt < DAY_MS) return
 
     // Dim on a TTY, plain everywhere else; one line, the exact command, nothing to dismiss.
-    const line = `Update available: candle ${CLI_VERSION} -> ${latest}. Run: candle update`
+    const line = `Update available: candle ${CLI_VERSION} -> ${latest}. Run: ${command}`
     const tty = terminalStyle(deps, "stderr", opts.json).color !== 0
     deps.stderr.write(tty ? `\x1b[2m${line}\x1b[0m\n` : `${line}\n`)
     await deps.writeConfig({ updateNotice: { version: latest, shownAt: deps.now() } })

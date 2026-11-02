@@ -114101,14 +114101,27 @@ async function maybeWriteUpdateNotice(deps, opts = {}) {
       return;
     if (opts.command === "update" || opts.command === "doctor")
       return;
-    const latest = latestCliVersionFromApi();
-    if (!latest || !isPlainVersion(latest) || compareVersions(latest, CLI_VERSION) <= 0)
+    const seen = latestCliVersionFromApi();
+    if (!seen || !isPlainVersion(seen) || compareVersions(seen, CLI_VERSION) <= 0)
       return;
+    const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath);
+    const method = detectInstall(deps.execPath, realExec);
+    let latest = seen;
+    let command = "npm i -g @candledottv/cli@latest";
+    if (method !== "script") {
+      command = method === "homebrew" ? "brew upgrade candle" : "candle update";
+      const feed = await fetchLatest(deps, releaseBaseUrl(deps.env, updateHomeFor(CLI_VERSION)));
+      if (!feed.ok || !isPlainVersion(feed.manifest.version))
+        return;
+      latest = feed.manifest.version;
+      if (compareVersions(latest, CLI_VERSION) <= 0)
+        return;
+    }
     const config = await deps.readConfig();
     const prior = config.updateNotice;
     if (prior && prior.version === latest && deps.now() - prior.shownAt < DAY_MS2)
       return;
-    const line = `Update available: candle ${CLI_VERSION} -> ${latest}. Run: candle update`;
+    const line = `Update available: candle ${CLI_VERSION} -> ${latest}. Run: ${command}`;
     const tty = terminalStyle(deps, "stderr", opts.json).color !== 0;
     deps.stderr.write(tty ? `\x1B[2m${line}\x1B[0m
 ` : `${line}
