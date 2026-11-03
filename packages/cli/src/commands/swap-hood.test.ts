@@ -155,6 +155,7 @@ interface FixtureOptions {
   readiness?: unknown
   /** BE-505: `settlement` on the swap rail's `completed` payload. Absent by default, as an older API answers. */
   settlement?: unknown
+  feeSignature?: string
 }
 
 async function fixture(opts: FixtureOptions = {}) {
@@ -262,7 +263,7 @@ async function fixture(opts: FixtureOptions = {}) {
       })
     if (path === "/api/v1/trade/agent/execute")
       return built
-        ? ok({ success: true, status: "executed", signature: "0xexecuted" })
+        ? ok({ success: true, status: "executed", signature: "0xexecuted", feeSignature: opts.feeSignature })
         : Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
     if (path === "/api/v1/trade/agent/build") {
       built = true
@@ -760,6 +761,37 @@ describe("H8: the sequenced leg loop", () => {
     expect(lastJson(f.stdout.text).status).toBe("confirmed")
   })
 
+  test("W2: USDG to ETH reports the trade hash first after approval then trade", async () => {
+    const amount = 10_000n // 0.01 USDG, whose base-asset decimals are six.
+    const f = await fixture({
+      legs: [
+        { kind: "approval", leg: leg(7, HOOD_USDG_ADDRESS, approveData(HOOD_KYBER_ROUTER, amount)) },
+        {
+          kind: "trade",
+          leg: leg(8, HOOD_KYBER_ROUTER, kyberSwap({ srcToken: HOOD_USDG_ADDRESS, dstReceiver: hoodTee, amount })),
+        },
+      ],
+    })
+    const exit = await run(
+      ["swap", "USDG", "ETH", "--amount", "0.01", "--client-trade-id", "hood-2", "--yes", "--json"],
+      f.deps,
+    )
+    expect(exit, f.stdout.text).toBe(0)
+    expect(f.stdout.text.trimEnd().split("\n")).toHaveLength(1)
+    const out = lastJson(f.stdout.text)
+    const approval = `0x${"1".repeat(64)}`
+    const trade = `0x${"2".repeat(64)}`
+    expect(out.signature).toBe(trade)
+    expect(out.signatures).toEqual([trade, approval])
+    expect(out.raw).toMatchObject({
+      hashes: [approval, trade],
+      landedLegs: [
+        { kind: "approval", hash: approval },
+        { kind: "trade", hash: trade },
+      ],
+    })
+  })
+
   test("BE-505 (R8.4): a completed ETH to USDG swap prints the settled USDG and passes settlement through", async () => {
     const settlement = {
       state: "settled",
@@ -819,10 +851,17 @@ describe("H8: the sequenced leg loop", () => {
   })
 
   test("the embedded Hood wallet trades a token through the deferred build, never the leg loop", async () => {
-    const f = await fixture({ rows: [], embedded: { evm: hoodEmbedded } })
+    const f = await fixture({ rows: [], embedded: { evm: hoodEmbedded }, feeSignature: "0xfee" })
     expect(await run(sellArgs(), f.deps)).toBe(0)
     expect(builds(f.calls)[0]?.body).toMatchObject({ payer: { type: "main" }, deferExecution: true })
     expect(f.calls.some((call) => call.path.endsWith("/sign") || call.path.endsWith("/submit"))).toBe(false)
+    expect(f.stdout.text.trimEnd().split("\n")).toHaveLength(1)
+    expect(lastJson(f.stdout.text)).toMatchObject({
+      signature: "0xexecuted",
+      signatures: ["0xexecuted", "0xfee"],
+      feeSignature: "0xfee",
+      raw: { signature: "0xexecuted", feeSignature: "0xfee" },
+    })
   })
 
   test("a skipped record append never fails a landed leg; it prints a notice", async () => {

@@ -184,12 +184,71 @@ function describeSwapEvidence(ctx: CommandContext, details: Json, terminal: bool
     )
 }
 
+const isText = (value: unknown): value is string => typeof value === "string" && value.length > 0
+const textsOf = (value: unknown): string[] => (Array.isArray(value) ? value.filter(isText) : [])
+
+/**
+ * W2 (BE-2569): every transaction signature a swap or trade result names, whichever path produced
+ * it: a top-level `signature`/`signatures`/`hashes`, the submit `payload.hashes`, a stored job's
+ * `hashes`/`signature`/`feeSignature`, or Hood leg metadata. Explicit primary signatures win;
+ * otherwise prefer the trade (or bridge deposit) leg to chronological approval hashes. Put the
+ * primary first, then every companion hash in first-seen order, without repeats.
+ */
+export function tradeSignatures(result: Json): string[] {
+  const nested = (name: string) => (result[name] && typeof result[name] === "object" ? (result[name] as Json) : {})
+  const payload = nested("payload")
+  const job = nested("job")
+  const sources = [result, payload, job]
+  const operation = job.operation && typeof job.operation === "object" ? (job.operation as Json) : {}
+  const legs = [...sources.map((source) => source.landedLegs), operation.legs].flatMap((value) =>
+    Array.isArray(value) ? value.filter((leg): leg is Json => leg !== null && typeof leg === "object") : [],
+  )
+  const primary =
+    sources.map((source) => source.signature).find(isText) ??
+    legs.find((leg) => (leg.kind === "trade" || leg.kind === "bridgeDeposit") && isText(leg.hash))?.hash
+  return [
+    ...new Set([
+      ...(isText(primary) ? [primary] : []),
+      ...sources.flatMap((source) => [
+        ...(isText(source.signature) ? [source.signature] : []),
+        ...textsOf(source.signatures),
+        ...textsOf(source.hashes),
+        ...(isText(source.feeSignature) ? [source.feeSignature] : []),
+      ]),
+      ...legs.map((leg) => leg.hash).filter(isText),
+    ]),
+  ]
+}
+
+/**
+ * W2 (BE-2569): the `--json` contract for `swap` and `trade`. Every path prints one value with
+ * `kind`, `status`, `clientTradeId`, `signature` (the primary transaction, or null when none
+ * landed), `signatures[]`, and the original response under `raw`. Additive: the keys the paths
+ * printed before stay where they were (the --json freeze, json-contract.test.ts).
+ */
+export function swapJsonResult(result: Json): Json {
+  const signatures = tradeSignatures(result)
+  const inner = (name: string) =>
+    result[name] && typeof result[name] === "object" ? (result[name] as Json).status : undefined
+  const status = [result.status, inner("job"), inner("payload")].find(isText) ?? null
+  return {
+    ...result,
+    kind: result.kind,
+    status,
+    clientTradeId: result.clientTradeId ?? null,
+    signature: signatures[0] ?? null,
+    signatures,
+    raw: result,
+  }
+}
+
 export function printTradingResult(ctx: CommandContext, result: Json): number {
   if (result.kind === "swap" && result.job && typeof result.job === "object") {
     const job = result.job as Json
     describeSwapEvidence(ctx, job, job.status === "failed")
   }
-  ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}\n` : `${JSON.stringify(result, null, 2)}\n`)
+  const printed = ctx.json && (result.kind === "swap" || result.kind === "trade") ? swapJsonResult(result) : result
+  ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(printed)}\n` : `${JSON.stringify(result, null, 2)}\n`)
   return 0
 }
 

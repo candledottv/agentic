@@ -16872,12 +16872,48 @@ function describeSwapEvidence(ctx, details, terminal) {
     notice(ctx.deps, "stderr", "warning", `The trade landed${typeof details.signature === "string" ? ` (${safeText(details.signature)})` : ""} and a later step failed. Do not retry or use a new id.
 `.trim());
 }
+function tradeSignatures(result) {
+  const nested = (name) => result[name] && typeof result[name] === "object" ? result[name] : {};
+  const payload = nested("payload");
+  const job = nested("job");
+  const sources = [result, payload, job];
+  const operation = job.operation && typeof job.operation === "object" ? job.operation : {};
+  const legs = [...sources.map((source) => source.landedLegs), operation.legs].flatMap((value) => Array.isArray(value) ? value.filter((leg) => leg !== null && typeof leg === "object") : []);
+  const primary = sources.map((source) => source.signature).find(isText) ?? legs.find((leg) => (leg.kind === "trade" || leg.kind === "bridgeDeposit") && isText(leg.hash))?.hash;
+  return [
+    ...new Set([
+      ...isText(primary) ? [primary] : [],
+      ...sources.flatMap((source) => [
+        ...isText(source.signature) ? [source.signature] : [],
+        ...textsOf(source.signatures),
+        ...textsOf(source.hashes),
+        ...isText(source.feeSignature) ? [source.feeSignature] : []
+      ]),
+      ...legs.map((leg) => leg.hash).filter(isText)
+    ])
+  ];
+}
+function swapJsonResult(result) {
+  const signatures = tradeSignatures(result);
+  const inner = (name) => result[name] && typeof result[name] === "object" ? result[name].status : undefined;
+  const status = [result.status, inner("job"), inner("payload")].find(isText) ?? null;
+  return {
+    ...result,
+    kind: result.kind,
+    status,
+    clientTradeId: result.clientTradeId ?? null,
+    signature: signatures[0] ?? null,
+    signatures,
+    raw: result
+  };
+}
 function printTradingResult(ctx, result) {
   if (result.kind === "swap" && result.job && typeof result.job === "object") {
     const job = result.job;
     describeSwapEvidence(ctx, job, job.status === "failed");
   }
-  ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}
+  const printed = ctx.json && (result.kind === "swap" || result.kind === "trade") ? swapJsonResult(result) : result;
+  ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(printed)}
 ` : `${JSON.stringify(result, null, 2)}
 `);
   return 0;
@@ -17684,7 +17720,7 @@ async function bridgeSwap(ctx, args) {
     return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } });
   }
 }
-var AGENT_MAX_SLIPPAGE_BPS = 5000, SLIPPAGE_RANGE_MESSAGE, settlementSchema, bridgeFactsSchema, HOOD_TRADE_LEGS, bridgeBuildSchema;
+var isText = (value) => typeof value === "string" && value.length > 0, textsOf = (value) => Array.isArray(value) ? value.filter(isText) : [], AGENT_MAX_SLIPPAGE_BPS = 5000, SLIPPAGE_RANGE_MESSAGE, settlementSchema, bridgeFactsSchema, HOOD_TRADE_LEGS, bridgeBuildSchema;
 var init_swap = __esm(() => {
   init_zod();
   init_args();
@@ -76344,7 +76380,7 @@ var HELP = {
     group: "Trade",
     intro: "Quote, swap and bridge on Solana or Hood; read an operation",
     summary: "Quote, confirm and swap on Solana or Hood, bridge between them; read an operation by id",
-    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent. The first buy after a launch is this command, unless the launch carried it with candle launch --buy. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and sell a token it holds that was not launched on Candle; buying such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force.",
+    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent. The first buy after a launch is this command, unless the launch carried it with candle launch --buy. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and sell a token it holds that was not launched on Candle; buying such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force. With --json, stdout is one JSON value for every swap, trade, replay and status read: kind, status, clientTradeId, signature (the primary transaction, or null), signatures (a list) and raw (the original response); every human line is on stderr. The keys older versions printed stay beside them.",
     usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
     rows: [
       {

@@ -12,6 +12,7 @@ import { pemToStoredSigner } from "../secret-store"
 import { type SolanaScenario, scenarioRpcResult, swapScenario, tokenApprove } from "../solana-verify.fixtures"
 import { createCapture, createFakeConfigStore, createFakeStore, createTestDeps } from "../test-support"
 import { authorizationSignature, BASES, rawAmount } from "../trading"
+import { swapJsonResult } from "./swap"
 
 type SwapBuild = Parameters<typeof swapScenario>[0]
 /** A build's asset as the verifier names it: SOL, or a mint. */
@@ -1155,3 +1156,179 @@ for (const key of ["cndl_live_Abcd1234" + "x".repeat(35), "unrecognized-key"]) {
     expect(report.suggestion).toContain("swap jobs only by the key that placed them")
   })
 }
+
+describe("BE-2569 (W2): one --json result shape for swap and trade", () => {
+  const tokenArgs = [
+    "swap",
+    "SOL",
+    mint,
+    "--amount",
+    "0.25",
+    "--wallet",
+    "tee",
+    "--client-trade-id",
+    "test-1",
+    "--yes",
+    "--json",
+  ]
+  const embeddedArgs = [
+    "swap",
+    "SOL",
+    mint,
+    "--amount",
+    "1",
+    "--wallet",
+    embedded,
+    "--client-trade-id",
+    "test-1",
+    "--yes",
+    "--json",
+  ]
+
+  /** stdout is one JSON value (a single line), and none of the human lines are on it. */
+  const only = (f: { stdout: { text: string } }) => {
+    expect(f.stdout.text.trimEnd().split("\n")).toHaveLength(1)
+    return JSON.parse(f.stdout.text)
+  }
+
+  test("base swap: signature and signatures come from payload.hashes, the response sits under raw", async () => {
+    const f = await fixture({ swapSubmit: { success: true, payload: { hashes: [signature, "second"] } } })
+    expect(await run(swapArgs, f.deps)).toBe(0)
+    const out = only(f)
+    expect(out).toMatchObject({ kind: "swap", clientTradeId: "test-1", signature, signatures: [signature, "second"] })
+    expect(out).toHaveProperty("status")
+    expect(out.raw.payload.hashes).toEqual([signature, "second"])
+    expect(out.raw.quote.venue).toBe("jupiter")
+    expect(f.stdout.text).not.toContain("Operation")
+    expect(f.stderr.text).toContain("Operation")
+  })
+
+  test("token trade: the top-level signature is the primary one", async () => {
+    const f = await fixture()
+    expect(await run(tokenArgs, f.deps)).toBe(0)
+    const out = only(f)
+    expect(out).toMatchObject({
+      kind: "trade",
+      status: "executed",
+      clientTradeId: "test-1",
+      signature,
+      signatures: [signature],
+    })
+    expect(out.raw.signature).toBe(signature)
+    expect(f.stderr.text).toContain("Operation")
+  })
+
+  test("inline embedded execution has the same shape", async () => {
+    const f = await fixture()
+    expect(await run(embeddedArgs, f.deps)).toBe(0)
+    const out = only(f)
+    expect(out).toMatchObject({
+      kind: "trade",
+      status: "executed",
+      clientTradeId: "test-1",
+      signature,
+      signatures: [signature],
+    })
+    expect(out.raw.wallet).toEqual(expect.any(String))
+    expect(f.stderr.text).toContain("Operation")
+  })
+
+  test("replaying a stored job reports its hashes in the same shape", async () => {
+    const f = await fixture({ swapJob: { status: "submitted", hashes: [signature] } })
+    expect(await run(swapArgs, f.deps)).toBe(0)
+    const out = only(f)
+    expect(out).toMatchObject({
+      kind: "swap",
+      status: expect.any(String),
+      clientTradeId: "test-1",
+      signature,
+      signatures: [signature],
+    })
+    expect(out.raw.job.hashes).toEqual([signature])
+  })
+
+  for (const action of ["replay", "status"]) {
+    for (const primaryKind of ["trade", "bridgeDeposit"]) {
+      test(`${action}: Hood operation metadata selects ${primaryKind} before approval hashes`, async () => {
+        // GET /agent/swap/jobs returns operation.legs, not the submit's landedLegs.
+        const job = {
+          status: "confirmed",
+          hashes: ["approval", "primary", "fee"],
+          operation: {
+            operationId: "op-1",
+            status: "completed",
+            legs: [
+              { kind: "approval", status: "confirmed", hash: "approval" },
+              { kind: primaryKind, status: "confirmed", hash: "primary" },
+              { kind: "feeTransfer", status: "confirmed", hash: "fee" },
+            ],
+          },
+        }
+        const f = await fixture({ swapJob: job })
+        expect(await run(action === "replay" ? swapArgs : ["swap", "status", "test-1", "--json"], f.deps)).toBe(0)
+        const out = only(f)
+        expect(out.signature).toBe("primary")
+        expect(out.signatures).toEqual(["primary", "approval", "fee"])
+        expect(out.raw.job).toEqual(job)
+        expect(f.calls.every((call) => !call.path.endsWith("/build") && !call.path.endsWith("/submit"))).toBe(true)
+      })
+    }
+
+    test(`${action}: a job's explicit primary and companion fee signatures survive`, async () => {
+      const job = { status: "confirmed", signature: "trade", feeSignature: "fee", hashes: ["approval", "trade"] }
+      const f = await fixture({ swapJob: job })
+      expect(await run(action === "replay" ? swapArgs : ["swap", "status", "test-1", "--json"], f.deps)).toBe(0)
+      const out = only(f)
+      expect(out.signature).toBe("trade")
+      expect(out.signatures).toEqual(["trade", "approval", "fee"])
+      expect(out.raw.job).toEqual(job)
+    })
+  }
+
+  for (const location of ["result", "payload", "job"]) {
+    test(`${location}: explicit signature wins over chronological hashes and leg metadata, with fee deduplicated`, () => {
+      const source = {
+        signature: "explicit",
+        feeSignature: "fee",
+        signatures: ["approval", "fee", "explicit"],
+        hashes: ["approval", "trade"],
+        landedLegs: [{ kind: "trade", hash: "trade" }],
+      }
+      const input = { kind: "swap", ...(location === "result" ? source : { [location]: source }) }
+      const out = swapJsonResult(input)
+      expect(out.signature).toBe("explicit")
+      expect(out.signatures).toEqual(["explicit", "approval", "fee", "trade"])
+      expect(out.raw).toBe(input)
+    })
+
+    test(`${location}: chronological submit hashes yield to the trade leg`, () => {
+      const source = {
+        hashes: ["approval", "trade"],
+        landedLegs: [
+          { kind: "approval", hash: "approval" },
+          { kind: "trade", hash: "trade" },
+        ],
+      }
+      const out = swapJsonResult({ kind: "swap", ...(location === "result" ? source : { [location]: source }) })
+      expect(out.signature).toBe("trade")
+      expect(out.signatures).toEqual(["trade", "approval"])
+    })
+  }
+
+  test("swap status uses the shape, and a job with no hash reports signature null and an empty list", async () => {
+    const f = await fixture({ swapJob: { status: "built" } })
+    expect(await run(["swap", "status", "test-1", "--json"], f.deps)).toBe(0)
+    expect(only(f)).toMatchObject({ kind: "swap", clientTradeId: "test-1", signature: null, signatures: [] })
+  })
+
+  test("a declined quote still prints the shape", async () => {
+    const f = await fixture({ prompt: "n" })
+    expect(
+      await run(
+        swapArgs.filter((arg) => arg !== "--yes"),
+        f.deps,
+      ),
+    ).toBe(0)
+    expect(only(f)).toMatchObject({ kind: "swap", status: "cancelled", signature: null, signatures: [] })
+  })
+})

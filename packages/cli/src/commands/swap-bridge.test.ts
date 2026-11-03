@@ -558,6 +558,8 @@ describe("Hood origin (4c-ED-6, 4c-ED-7)", () => {
       { kind: "approval", hash: `0x${"1".repeat(64)}` },
       { kind: "bridgeDeposit", hash: `0x${"2".repeat(64)}` },
     ])
+    expect(out.signature).toBe(`0x${"2".repeat(64)}`)
+    expect(out.signatures).toEqual([`0x${"2".repeat(64)}`, `0x${"1".repeat(64)}`])
     expect(f.stderr.text).toContain("Legs, signed one at a time: approve, bridge deposit")
   })
 
