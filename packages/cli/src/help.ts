@@ -610,19 +610,20 @@ export const HELP: Record<string, Topic> = {
     intro: "Move funds out of a TEE wallet to your wallets or its vault",
     summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
     description:
-      "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Withdraw key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and the asset must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
+      "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Withdraw key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted, and, where the server has TEE_WITHDRAWALS_ENABLED on, an address on the account's withdrawal allowlist (named by its label, id or address). To a linked wallet or an approved address only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and the asset must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
     usage: [
-      "candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]",
+      "candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]",
     ],
     rows: [],
     flags: [
       {
-        invocation: "--to <address|wallet name|vault>",
-        description: "Where the funds go: vault is the wallet's own pin",
+        invocation: "--to <address|wallet name|allowlist label|vault>",
+        description:
+          "Where the funds go: vault is the wallet's own pin; a linked wallet's name wins over an allowlist label",
       },
       {
         invocation: "--asset <SOL|USDC|CNDL|ETH|USDG>",
-        description: "A base asset (required for a linked-wallet destination)",
+        description: "A base asset (required for a linked-wallet or approved-address destination)",
       },
       { invocation: "--mint <mint>", description: "Any Solana mint, instead of --asset (vault destinations only)" },
       { invocation: "--token <0x...>", description: "Any Hood ERC-20, instead of --asset (vault destinations only)" },

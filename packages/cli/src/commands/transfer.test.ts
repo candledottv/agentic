@@ -52,6 +52,8 @@ async function fixture(
     teeWallets?: number
     /** The linked wallets GET /wallets lists besides the TEE wallet itself. */
     linked?: { _id: string; address: string; label?: string; chain?: string; revokedAt?: number }[]
+    /** BE-2601: what GET /withdrawal-addresses lists; empty by default. */
+    approved?: { id: string; address: string; label?: string; chain?: string; revokedAt?: number }[]
     /** What /transfer/build answers; a `{ error }` answers that Candle error. */
     build?: Record<string, unknown> | { error: { code: string; message: string } }
     /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded; absent as an older API answers. */
@@ -102,6 +104,8 @@ async function fixture(
         ],
         isDone: true,
       })
+    if (path === "/api/v1/agent/withdrawal-addresses")
+      return ok({ success: true, addresses: (opts.approved ?? []).map((row) => ({ chain: "solana", ...row })) })
     if (path === "/api/v1/agent/wallets/wallet/lifecycle")
       return ok({
         state: "enabled",
@@ -124,8 +128,9 @@ async function fixture(
         walletId: "wallet",
         payerAddress: TEE,
         amountRaw,
-        destinationClass: "own",
-        destinationKind: body?.to === VAULT ? "vault" : "linked",
+        ...((opts.approved ?? []).some((row) => row.address === body?.to)
+          ? { destinationClass: "approved" }
+          : { destinationClass: "own", destinationKind: body?.to === VAULT ? "vault" : "linked" }),
         unsignedTransactionsBase64: [scenario.transaction],
         expiresAt: 10_000,
         ...(opts.build ?? {}),
@@ -489,5 +494,79 @@ describe("candle transfer (R19)", () => {
     const code = await run([...base, "--to", "vault", "--asset", "SOL", "--amount", "1", "--json"], f.deps)
     expect(code).toBe(1)
     expect(JSON.parse(f.stdout.text).code).toBe("API_KEY_REQUIRED")
+  })
+})
+
+describe("BE-2601: candle transfer to an approved withdrawal address", () => {
+  const COLD = { id: "wa-cold", address: STRANGER, label: "cold" }
+
+  test("by its allowlist label: confirm names the approved address, the build goes to it, the preview says approved", async () => {
+    const f = await fixture({ approved: [COLD] })
+    const code = await run([...base, "--to", "cold", "--asset", "SOL", "--amount", "0.5", "--json"], f.deps)
+    expect(code).toBe(0)
+    expect(f.stderr.text).toContain(`to approved withdrawal address cold (wa-cold, ${STRANGER})`)
+    expect(f.stderr.text).toContain("Destination: an address on this account's withdrawal allowlist")
+    expect(f.stderr.text).toContain("an approved withdrawal address")
+    const build = f.calls.find((call) => call.path === "/api/v1/agent/transfer/build")
+    expect(build?.body).toEqual({
+      walletId: "wallet",
+      chain: "solana",
+      asset: "SOL",
+      amountRaw: "500000000",
+      to: STRANGER,
+    })
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({
+      destination: { kind: "approved", address: STRANGER, id: "wa-cold", label: "cold" },
+    })
+  })
+
+  test("by its address or id: the same approved destination", async () => {
+    for (const to of [STRANGER, "wa-cold"]) {
+      const f = await fixture({ approved: [COLD] })
+      expect(await run([...base, "--to", to, "--asset", "SOL", "--amount", "1"], f.deps)).toBe(0)
+      expect(f.stdout.text).toContain(`to approved withdrawal address cold (wa-cold, ${STRANGER})`)
+    }
+  })
+
+  test("a linked wallet's label wins, and the allowlist is not read", async () => {
+    const f = await fixture({ approved: [{ ...COLD, label: "treasury" }] })
+    expect(await run([...base, "--to", "treasury", "--asset", "SOL", "--amount", "1"], f.deps)).toBe(0)
+    expect(f.stdout.text).toContain(`to linked wallet treasury (lw-treasury, ${TREASURY})`)
+    expect(f.paths()).not.toContain("/api/v1/agent/withdrawal-addresses")
+  })
+
+  test("a revoked row or another chain's row is not a name; a label on two rows is ambiguous", async () => {
+    let f = await fixture({
+      approved: [
+        { ...COLD, revokedAt: 5 },
+        { id: "wa-hood", address: "0x9999999999999999999999999999999999999999", label: "cold", chain: "hood" },
+      ],
+    })
+    expect(await run([...base, "--to", "cold", "--asset", "SOL", "--amount", "1", "--json"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text).code).toBe("DESTINATION_UNKNOWN")
+    f = await fixture({ approved: [COLD, { id: "wa-2", address: EMBEDDED, label: "cold" }] })
+    expect(await run([...base, "--to", "cold", "--asset", "SOL", "--amount", "1", "--json"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text).code).toBe("DESTINATION_AMBIGUOUS")
+    expect(f.paths()).not.toContain("/api/v1/agent/transfer/build")
+  })
+
+  test("an unknown name lists the approved addresses too", async () => {
+    const f = await fixture({ approved: [COLD] })
+    expect(await run([...base, "--to", "nobody", "--asset", "SOL", "--amount", "1", "--json"], f.deps)).toBe(1)
+    const unknown = JSON.parse(f.stdout.text)
+    expect(unknown.code).toBe("DESTINATION_UNKNOWN")
+    expect(unknown.message).toContain(`Approved withdrawal addresses: cold (wa-cold, ${STRANGER})`)
+  })
+
+  test("Candle's refusal (switch off, or the address not approved) passes through and nothing is signed", async () => {
+    const f = await fixture({
+      approved: [COLD],
+      build: {
+        error: { code: "TRANSFER_DESTINATION_NOT_APPROVED", message: "From this wallet, funds can only go to ..." },
+      },
+    })
+    expect(await run([...base, "--to", "cold", "--asset", "SOL", "--amount", "1", "--json"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text).code).toBe("TRANSFER_DESTINATION_NOT_APPROVED")
+    expect(f.paths().some((p) => p.endsWith("/sign"))).toBe(false)
   })
 })

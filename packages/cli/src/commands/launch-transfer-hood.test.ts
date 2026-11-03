@@ -116,6 +116,8 @@ interface FixtureOptions {
   /** What the launch jobs read answers once a build exists. */
   job?: Record<string, unknown>
   vaultDestination?: string
+  /** BE-2601: what GET /withdrawal-addresses lists; empty by default. */
+  approved?: { id: string; chain: string; address: string; label?: string; revokedAt?: number }[]
   appendEvmRecord?: (entry: EvmRecordTokenEntry) => Promise<EvmRecordAppendOutcome>
   /** Overrides on the Hood launch build body. */
   launchBuild?: Record<string, unknown>
@@ -278,6 +280,7 @@ async function fixture(opts: FixtureOptions = {}) {
       })
     if (path === "/api/v1/agent/wallets/hood-tee/lifecycle")
       return ok({ state: "enabled", vaultDestination: opts.vaultDestination ?? vault.toLowerCase() })
+    if (path === "/api/v1/agent/withdrawal-addresses") return ok({ success: true, addresses: opts.approved ?? [] })
     if (path === "/api/v1/launch/self/build") {
       if (opts.buildError) return candleError(opts.buildError, 403)
       built = true
@@ -328,8 +331,12 @@ async function fixture(opts: FixtureOptions = {}) {
         chain: "hood",
         asset: body.asset ?? body.mint,
         amountRaw,
-        destinationClass: "own",
-        destinationKind: String(body.to).toLowerCase() === vault.toLowerCase() ? "vault" : "linked",
+        ...((opts.approved ?? []).some((row) => row.address.toLowerCase() === String(body.to).toLowerCase())
+          ? { destinationClass: "approved" }
+          : {
+              destinationClass: "own",
+              destinationKind: String(body.to).toLowerCase() === vault.toLowerCase() ? "vault" : "linked",
+            }),
         ...sequenced(0),
       })
     }
@@ -1156,6 +1163,25 @@ describe("H11: candle transfer from a Hood TEE wallet", () => {
     const relay = signs(f.calls)[0]?.body as { body: { params: { transaction: Record<string, unknown> } } }
     expect(relay.body.params.transaction).toMatchObject({ to: token, value: "0x0" })
     expect(f.stderr.text).toContain("Reading from hood.test")
+  })
+
+  test("BE-2601: to an approved withdrawal address by its allowlist label: the checksummed address, kind approved", async () => {
+    const approvedHood = "0x9999999999999999999999999999999999999999"
+    const f = await fixture({
+      approved: [
+        { id: "wa-sol", chain: "solana", address: "4Nd1mYvM6HqS8VqLFPzWx5W2sTQeXKZbLqBTdrBGTsGa", label: "payout" },
+        { id: "wa-old", chain: "hood", address: trusted, label: "payout", revokedAt: 5 },
+        { id: "wa-hood", chain: "hood", address: approvedHood, label: "payout" },
+      ],
+    })
+    expect(await run(transferArgs(["--to", "payout", "--asset", "USDG", "--amount", "250"]), f.deps)).toBe(0)
+    const checksummed = toChecksumAddress(approvedHood)
+    expect(builds(f.calls)[0]?.body).toMatchObject({ asset: "USDG", amountRaw: "250000000", to: checksummed })
+    expect(f.stderr.text).toContain(`approved withdrawal address payout (wa-hood, ${checksummed})`)
+    expect(f.stderr.text).toContain("an approved withdrawal address")
+    expect(lastJson(f.stdout.text)).toMatchObject({
+      destination: { kind: "approved", address: checksummed, id: "wa-hood", label: "payout" },
+    })
   })
 
   test("to a trusted linked wallet by label: USDG at its six decimals, to that wallet's address", async () => {

@@ -13,9 +13,11 @@
  * the confirmed asset to the destination it resolved, and to no one else.
  *
  * Where the funds may go is Candle's decision, not this command's: from a TEE wallet, only that
- * wallet's own pinned vault or another of the account's wallets the owner linked while signed in
- * or marked trusted (the bound key must hold `transfer:bound`). The confirmation names the
- * destination and which of those it is, so the operator reads what they are approving.
+ * wallet's own pinned vault, another of the account's wallets the owner linked while signed in
+ * or marked trusted, or (BE-2601, where Candle has `TEE_WITHDRAWALS_ENABLED` on) an address on the
+ * account's withdrawal allowlist (the bound key must hold `transfer:bound`). `--to` names an
+ * allowlisted address by its label, id or address. The confirmation names the destination and
+ * which of those it is, so the operator reads what they are approving.
  *
  * `--json` is unchanged. A cancelled confirm is `{ success, status: "cancelled", walletId,
  * destination }` (Hood adds `chain`). A submitted transfer is the server receipt plus `transferId`,
@@ -66,7 +68,7 @@ import {
 } from "./swap"
 
 const USAGE =
-  "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]"
+  "Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]"
 
 /** The base assets a linked-origin transfer may name by key; anything else is a `--mint` (Solana) or `--token` (Hood). */
 const TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)]
@@ -82,10 +84,20 @@ interface LinkedWalletRow {
   revokedAt?: number
 }
 
+/** The rows `GET /withdrawal-addresses` returns, the fields `--to <allowlist label>` resolves by. */
+interface WithdrawalAddressRow {
+  id: string
+  chain: string
+  address: string
+  label?: string
+  revokedAt?: number
+}
+
 /** Where the funds go, as this command resolved it. Candle classifies it again at build. */
 export type TransferDestination =
   | { kind: "vault"; address: string }
   | { kind: "linked"; address: string; id: string; label?: string }
+  | { kind: "approved"; address: string; id: string; label?: string }
   | { kind: "address"; address: string }
 
 /** Every page of the account's linked wallets, the same walk `candle wallets` makes. */
@@ -105,12 +117,22 @@ async function readLinkedWallets(ctx: CommandContext, key: string): Promise<Link
   return rows
 }
 
+/** The account's withdrawal allowlist (BE-2601). Any key may read it; revoked rows are not listed. */
+async function readWithdrawalAddresses(ctx: CommandContext, key: string): Promise<WithdrawalAddressRow[]> {
+  const body = await request(ctx, key, "/api/v1/agent/withdrawal-addresses")
+  if (!Array.isArray(body.addresses))
+    throw new TradingError("INVALID_RESPONSE", "The withdrawal allowlist read did not return a list.")
+  return body.addresses as WithdrawalAddressRow[]
+}
+
 /**
  * `--to`, resolved in this order: the literal word `vault` is the source wallet's own pinned
  * `vaultDestination` (read from its lifecycle); a value naming one of the account's active linked
- * wallets on the source's chain by label, id or address is that wallet; an address on that chain
- * that names none is sent as an address for Candle to classify; anything else is refused here,
- * before any build. On Hood (Phase 4b-2) addresses compare case-blind and go out checksummed.
+ * wallets on the source's chain by label, id or address is that wallet; then (BE-2601) one naming
+ * an active row of the account's withdrawal allowlist on that chain by label, id or address is that
+ * approved address; an address on that chain that names none is sent as an address for Candle to
+ * classify; anything else is refused here, before any build. Linked wallets come first, as Candle
+ * classifies them first. On Hood (Phase 4b-2) addresses compare case-blind and go out checksummed.
  */
 export async function resolveDestination(
   ctx: CommandContext,
@@ -156,15 +178,49 @@ export async function resolveDestination(
       "DESTINATION_IS_SOURCE",
       "--to names the wallet the funds would leave. Name a different destination.",
     )
+  const allowlist = (await readWithdrawalAddresses(ctx, key)).filter(
+    (row) => row.chain === chain && row.revokedAt === undefined && !same(row.address, source.address),
+  )
+  const approved = allowlist.filter((row) => row.label === to || row.id === to || same(row.address, to))
+  if (approved.length > 1)
+    throw new TradingError(
+      "DESTINATION_AMBIGUOUS",
+      `"${to}" names ${approved.length} approved withdrawal addresses: ${approved.map((row) => `${row.label ?? ""} (${row.id}, ${row.address})`.trim()).join("; ")}. Name one by id or address.`,
+    )
+  const listed = approved[0]
+  if (listed) {
+    const address = hood ? checkEvmAddress(listed.address) : undefined
+    if (address !== undefined && !address.ok)
+      throw new TradingError(
+        "INVALID_RESPONSE",
+        "Candle listed an approved Hood withdrawal address that is not an EVM address; nothing was built.",
+      )
+    return {
+      kind: "approved",
+      address: address?.ok ? address.address : listed.address,
+      id: listed.id,
+      ...(listed.label ? { label: listed.label } : {}),
+    }
+  }
   if (!hood && BASE58_ADDRESS.test(to)) return { kind: "address", address: to }
   const evm = hood ? checkEvmAddress(to) : undefined
   if (evm?.ok) return { kind: "address", address: evm.address }
   const name = hood ? "Hood" : "Solana"
+  const known = [
+    ...(rows.length > 0
+      ? [`Linked wallets: ${rows.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}.`]
+      : []),
+    ...(allowlist.length > 0
+      ? [
+          `Approved withdrawal addresses: ${allowlist.map((row) => `${row.label ?? ""} (${row.id}, ${row.address})`.trim()).join("; ")}.`,
+        ]
+      : []),
+  ]
   throw new TradingError(
     "DESTINATION_UNKNOWN",
-    rows.length === 0
-      ? `"${to}" is not vault, a ${name} address, or a linked wallet on this account (it has no other active ${name} linked wallets).`
-      : `"${to}" is not vault, a ${name} address, or a linked wallet on this account. Linked wallets: ${rows.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}.`,
+    known.length === 0
+      ? `"${to}" is not vault, a ${name} address, a linked wallet or an approved withdrawal address on this account (it has no other active ${name} linked wallets or approved addresses).`
+      : `"${to}" is not vault, a ${name} address, a linked wallet or an approved withdrawal address on this account. ${known.join(" ")}`,
   )
 }
 
@@ -175,9 +231,33 @@ export function describeDestination(destination: TransferDestination): string {
       return `this wallet's pinned vault ${destination.address}`
     case "linked":
       return `linked wallet ${destination.label ? `${destination.label} ` : ""}(${destination.id}, ${destination.address})`
+    case "approved":
+      return `approved withdrawal address ${destination.label ? `${destination.label} ` : ""}(${destination.id}, ${destination.address})`
     case "address":
-      return `address ${destination.address} (not one of this account's linked wallets; Candle decides whether it is allowed)`
+      return `address ${destination.address} (not one of this account's linked wallets or approved withdrawal addresses; Candle decides whether it is allowed)`
   }
+}
+
+/** The confirmation's second line: what Candle will allow for this kind of destination. */
+function destinationNote(destination: TransferDestination, hood: boolean): string {
+  switch (destination.kind) {
+    case "vault":
+      return "Destination: this wallet's own vault, pinned when it was imported."
+    case "linked":
+      return `Destination: a linked wallet on this account. Candle allows it only if you linked it while signed in or marked it trusted,${hood ? " only for ETH or USDG," : ""} and the amount counts against this key's spend caps.`
+    case "approved":
+      return `Destination: an address on this account's withdrawal allowlist, approved while signed in. Candle allows it from a TEE wallet only where TEE withdrawals are switched on,${hood ? " only for ETH or USDG," : " for base assets only,"} and the amount counts against this key's spend caps.`
+    case "address":
+      return "Destination: an address Candle will classify at build; from a TEE wallet only its vault, a trusted linked wallet or an approved withdrawal address is allowed."
+  }
+}
+
+/** The preview's To row, from the build's own classification. */
+function builtDestination(built: Json): ReadonlyArray<readonly [string, string]> {
+  if (built.destinationClass === "approved") return [["To", "an approved withdrawal address"]]
+  if (typeof built.destinationKind === "string")
+    return [["To", built.destinationKind === "vault" ? "the vault" : "a linked wallet"]]
+  return []
 }
 
 /**
@@ -275,11 +355,7 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
       ctx,
       [
         `Transfer ${amountText} from ${wallet.address} (${wallet.id}) to ${describeDestination(destination)}`,
-        destination.kind === "vault"
-          ? "Destination: this wallet's own vault, pinned when it was imported."
-          : destination.kind === "linked"
-            ? "Destination: a linked wallet on this account. Candle allows it only if you linked it while signed in or marked it trusted, and the amount counts against this key's spend caps."
-            : "Destination: an address Candle will classify at build; from a TEE wallet only its vault or a trusted linked wallet is allowed.",
+        destinationNote(destination, false),
       ],
       parsed.booleans.has("--yes"),
     )
@@ -320,13 +396,7 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
     const amountShown = asset
       ? `${decimalAmount(builtAmount, BASES[asset]?.decimals ?? 0)} ${asset}`
       : `${builtAmount} raw units of ${label}`
-    writePreview(ctx, "Built", [
-      ["Transfer", transferId],
-      ["Amount", amountShown],
-      ...(typeof built.destinationKind === "string"
-        ? [["To", built.destinationKind === "vault" ? "the vault" : "a linked wallet"] as const]
-        : []),
-    ])
+    writePreview(ctx, "Built", [["Transfer", transferId], ["Amount", amountShown], ...builtDestination(built)])
     // SEC-003: decode and simulate before the relay signs. The wallet must pay the fee, send
     // exactly that amount of that asset, and nothing it moves may land anywhere but the wallet and
     // the destination this command resolved; no account of the wallet's may change hands.
@@ -432,11 +502,7 @@ async function hoodTransfer(
     ctx,
     [
       `Transfer ${amountText} on Hood from ${wallet.address} (${wallet.id}) to ${describeDestination(destination)}`,
-      destination.kind === "vault"
-        ? "Destination: this wallet's own vault, pinned when it was imported."
-        : destination.kind === "linked"
-          ? "Destination: a linked wallet on this account. Candle allows it only if you linked it while signed in or marked it trusted, only for ETH or USDG, and the amount counts against this key's spend caps."
-          : "Destination: an address Candle will classify at build; from a TEE wallet only its vault or a trusted linked wallet is allowed.",
+      destinationNote(destination, true),
       ...(asset === "ETH"
         ? [
             "ETH keeps this send's gas and the sweep-home gas reserve in the wallet; Candle refuses an amount that would spend them.",
@@ -495,9 +561,7 @@ async function hoodTransfer(
   writePreview(ctx, "Built", [
     ["Transfer", safeText(transferId)],
     ["Amount", `${decimalAmount(amountRaw, decimals)} ${safeText(label)}`],
-    ...(typeof built.destinationKind === "string"
-      ? [["To", built.destinationKind === "vault" ? "the vault" : "a linked wallet"] as const]
-      : []),
+    ...builtDestination(built),
     [
       "Gas",
       `up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei)`,
