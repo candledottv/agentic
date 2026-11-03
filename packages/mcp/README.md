@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-eighty-two tools over stdio, plus four Hyperliquid market reads (eighty-six in all), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+eighty-three tools over stdio, plus four Hyperliquid market reads (eighty-seven in all), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, and backtest a strategy in hacc's strategy lab without hand-rolling HTTP calls. The five
@@ -35,7 +35,7 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all eighty-two. An unknown name fails startup with the valid names in the message, rather
+Unset means all eighty-three. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -163,6 +163,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_execution_status` | One call before trading: wallets to spend from, tier, and whether trading is possible | Composes the wallet and tier reads | `CANDLE_AGENT_API_KEY` |
 | `candle_get_operation` | Look up a trade or launch by the id its write used, and whether it landed | `GET /api/v1/trade/agent/jobs/:clientId` or `/api/v1/launch/headless/jobs/:clientId` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_fees` | The creator fees the account's launched tokens can pay: raw amounts from chain reads, and the reason a token cannot be claimed | `GET /api/v1/agent/fees` | `CANDLE_AGENT_API_KEY` (`account:read`) |
+| `candle_atomic_launch_dry_run` | Check a Solana launch with first buys and price each buy on the curve it would deploy; builds, reserves and writes nothing | `POST /api/v1/launch/atomic/dry-run` | `CANDLE_AGENT_API_KEY` (`launch:write`, `swap:write`, Pro or Max) |
 | `candle_claim_fees` | Collect one token's creator fees to the wallet fixed at launch (no destination argument); `dryRun` sends nothing | `POST /api/v1/agent/fees/:mint/claim` | `CANDLE_AGENT_API_KEY` (`launch:write`) |
 | `candle_get_staking` | Read CNDL/sCNDL, withdrawals, rewards, pool wait and wallet eligibility notes | `GET /api/v1/agent/staking` |
 | `candle_stake` | Stake raw CNDL; stable clientStakeId, dryRun first | `POST /api/v1/agent/staking/stake/build` |
@@ -239,7 +240,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-eighty-two tools:
+eighty-three tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.

@@ -99,6 +99,7 @@ export const MCP_TOOL_NAMES = [
   "candle_execution_status",
   "candle_get_operation",
   "candle_get_fees",
+  "candle_atomic_launch_dry_run",
   "candle_claim_fees",
   "candle_get_staking",
   "candle_stake",

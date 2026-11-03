@@ -69,6 +69,7 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_execution_status: READ,
   candle_get_operation: READ,
   candle_get_fees: READ,
+  candle_atomic_launch_dry_run: READ,
   candle_get_staking: READ,
   candle_perps_markets: READ,
   candle_perps_market: READ,

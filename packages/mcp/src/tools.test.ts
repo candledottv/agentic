@@ -16,6 +16,7 @@ import {
 
 test("all registered tools are listed", () => {
   expect([...TOOL_NAMES].sort()).toEqual([
+    "candle_atomic_launch_dry_run",
     "candle_claim_fees",
     "candle_claim_staking_reward",
     "candle_create_post",
@@ -152,6 +153,24 @@ describe("buildRequest: creator fees (FE-438)", () => {
     const r = buildRequest("candle_get_fees", { cursor: "c1", limit: 5 }, cfg)
     expect(r.url).toBe("https://api.test/api/v1/agent/fees?cursor=c1&limit=5")
     expect(r.init.method).toBe("GET")
+  })
+
+  test("candle_atomic_launch_dry_run posts to the atomic dry run, main-paid and solana", () => {
+    const body = {
+      name: "T",
+      symbol: "T",
+      imageUrl: "https://x/y.png",
+      firstBuys: [{ payer: { type: "main" }, amountRaw: "5" }],
+    }
+    const r = buildRequest("candle_atomic_launch_dry_run", { ...body, chain: "hood", buyAmount: "1" }, cfg)
+    expect(r.url).toBe("https://api.test/api/v1/launch/atomic/dry-run")
+    expect(r.init.method).toBe("POST")
+    expect(JSON.parse(String(r.init.body))).toEqual({ ...body, chain: "solana", payer: { type: "main" } })
+    const linked = { type: "linked", linkedWalletId: "w1" }
+    expect(
+      JSON.parse(String(buildRequest("candle_atomic_launch_dry_run", { ...body, payer: linked }, cfg).init.body)).payer,
+    ).toEqual(linked)
+    expect(() => buildRequest("candle_atomic_launch_dry_run", body, { apiUrl: "https://api.test" })).toThrow()
   })
 
   test("candle_claim_fees posts the dry-run flag and nothing else, mint in the path", () => {
