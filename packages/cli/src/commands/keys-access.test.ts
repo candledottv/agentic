@@ -101,7 +101,9 @@ function accessApi(direction: Direction, opts: { commit?: RouteHandler; keyPrefi
   return { handlers, bodies }
 }
 
-function keysList(keys: Array<{ keyPrefix: string; label?: string; revokedAt?: number }>): RouteHandler {
+function keysList(
+  keys: Array<{ keyPrefix: string; label?: string; revokedAt?: number; embeddedWallet?: "allowed" | "denied" }>,
+): RouteHandler {
   return () =>
     jsonResponse(200, {
       keys: keys.map((k) => ({ scopes: RW, environment: "live", createdAt: 1, ...k })),
@@ -327,6 +329,48 @@ describe("T-B4: the typed prefix", () => {
     expect(await run(["keys", "access", PREFIX, "--access", "read-write-transfer"], deps)).toBe(1)
     expect(stderr.text).toContain("KEY_ACCESS_STALE: This key's scopes changed since the preview")
     expect(stderr.text).toContain("Run the command again")
+  })
+})
+
+describe("BE-2600: Withdraw needs the embedded wallet allowed", () => {
+  const widenWith = async (embeddedWallet: "allowed" | "denied" | undefined, target = PREFIX) => {
+    const { handlers, bodies } = accessApi("widen")
+    const { fetch } = createRoutedFetch({
+      [KEYS_PATH]: keysList([{ keyPrefix: PREFIX, label: "cndl", ...(embeddedWallet ? { embeddedWallet } : {}) }]),
+      [ACCESS_PATH]: handlers,
+    })
+    const { deps, stderr } = depsFor(fetch, { answers: [PREFIX] })
+    const code = await run(["keys", "access", target, "--access", "withdraw"], deps)
+    return { code, stderr, bodies }
+  }
+
+  test("a key with the embedded wallet denied is warned before the confirmation, with the fix", async () => {
+    const { code, stderr, bodies } = await widenWith("denied")
+    expect(code).toBe(0)
+    expect(stderr.text).toContain("Withdrawals to your approved addresses leave from the embedded wallet")
+    expect(stderr.text).toContain(`candle keys update ${PREFIX} --embedded-wallet allow`)
+    expect(bodies).toHaveLength(2)
+  })
+
+  test("the same warning when the key is named by label", async () => {
+    const { stderr } = await widenWith("denied", "cndl")
+    expect(stderr.text).toContain(`candle keys update ${PREFIX} --embedded-wallet allow`)
+  })
+
+  test("no warning for an allowed key, or a row that predates the setting", async () => {
+    expect((await widenWith("allowed")).stderr.text).not.toContain("Withdrawals to your approved addresses")
+    expect((await widenWith(undefined)).stderr.text).not.toContain("Withdrawals to your approved addresses")
+  })
+
+  test("no warning for a denied key moving to a level other than Withdraw", async () => {
+    const { handlers } = accessApi("narrow")
+    const { fetch } = createRoutedFetch({
+      [KEYS_PATH]: keysList([{ keyPrefix: PREFIX, embeddedWallet: "denied" }]),
+      [ACCESS_PATH]: handlers,
+    })
+    const { deps, stderr } = depsFor(fetch, { answers: ["y"] })
+    expect(await run(["keys", "access", PREFIX, "--access", "write"], deps)).toBe(0)
+    expect(stderr.text).not.toContain("Withdrawals to your approved addresses")
   })
 })
 

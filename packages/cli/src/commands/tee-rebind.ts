@@ -505,7 +505,7 @@ export async function resolveTargetKey(
     /** How a failed `GET /keys` is written; the rebind envelope unless the caller names another. */
     writeListFailure?: (result: Extract<ApiResult, { ok: false }>) => number
   } = {},
-): Promise<{ ok: true; keyPrefix: string } | { ok: false; code: number }> {
+): Promise<{ ok: true; keyPrefix: string; embeddedWallet?: KeyRow["embeddedWallet"] } | { ok: false; code: number }> {
   const { deps, json } = ctx
   const codePrefix = opts.codePrefix ?? "REBIND"
   const prefixShaped = KEY_PREFIX_RE.test(raw)
@@ -539,8 +539,11 @@ export async function resolveTargetKey(
       )
       return { ok: false, code: 1 }
     }
-    if (byPrefix) return { ok: true, keyPrefix: byPrefix.keyPrefix }
-    if (byLabel.length === 1) return { ok: true, keyPrefix: (byLabel[0] as KeyRow).keyPrefix }
+    if (byPrefix) return { ok: true, keyPrefix: byPrefix.keyPrefix, embeddedWallet: byPrefix.embeddedWallet }
+    if (byLabel.length === 1) {
+      const only = byLabel[0] as KeyRow
+      return { ok: true, keyPrefix: only.keyPrefix, embeddedWallet: only.embeddedWallet }
+    }
     if (byLabel.length > 1) {
       writeLocalFailure(
         deps,
@@ -557,7 +560,10 @@ export async function resolveTargetKey(
     return { ok: true, keyPrefix: raw }
   }
   const matches = keys.filter((key) => key.label === raw)
-  if (matches.length === 1) return { ok: true, keyPrefix: (matches[0] as KeyRow).keyPrefix }
+  if (matches.length === 1) {
+    const only = matches[0] as KeyRow
+    return { ok: true, keyPrefix: only.keyPrefix, embeddedWallet: only.embeddedWallet }
+  }
   if (matches.length === 0) {
     const labelled = keys.filter((key) => key.label).map((key) => `${key.keyPrefix} ${labelCell(key.label)}`)
     writeLocalFailure(

@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { scopesForPreset } from "../agent-key-access"
 import { run } from "../index"
 import { displayWidth } from "../presentation"
 import { SECRET_REFS } from "../secret-store"
@@ -504,6 +505,75 @@ describe("keys create: name, expiry, and transaction limit (portal parity)", () 
     expect(envelope.ok).toBe(false)
     expect(envelope.code).toBe("USAGE")
     expect(envelope.message).toContain("--tx-limit")
+  })
+})
+
+describe("keys create --access withdraw with the embedded wallet denied (BE-2600)", () => {
+  const routes = (scopes: string[]) =>
+    createRoutedFetch({
+      "/api/v1/agent/keys": (req) => {
+        const sent = JSON.parse(String(req.init.body ?? "{}")) as { embeddedWallet?: string }
+        return jsonResponse(200, {
+          success: true,
+          key: "cndl_live_plain",
+          keyPrefix: "ck_liveaa",
+          scopes,
+          environment: "production",
+          embeddedWallet: sent.embeddedWallet,
+        })
+      },
+    })
+  const store = () => createFakeStore({ device_token: "cndl_dvc_x" })
+
+  test("warns on stderr that allowlist withdrawals need the embedded wallet, and names both fixes", async () => {
+    const { fetch } = routes(scopesForPreset("readwritetransfer"))
+    const stderr = createCapture()
+    const code = await run(
+      ["keys", "create", "--access", "withdraw"],
+      createTestDeps({ fetch, store: store(), stderr }),
+    )
+    expect(code).toBe(0)
+    expect(stderr.text).toContain("Withdrawals to your approved addresses leave from the embedded wallet")
+    expect(stderr.text).toContain("candle keys update ck_liveaa --embedded-wallet allow")
+    expect(stderr.text).toContain("candle keys create --access withdraw --embedded-wallet allow")
+  })
+
+  test("--json keeps stdout one document and still warns on stderr", async () => {
+    const { fetch } = routes(scopesForPreset("readwritetransfer"))
+    const stdout = createCapture()
+    const stderr = createCapture()
+    expect(
+      await run(
+        ["keys", "create", "--access", "withdraw", "--json"],
+        createTestDeps({ fetch, store: store(), stdout, stderr }),
+      ),
+    ).toBe(0)
+    expect(JSON.parse(stdout.text).embeddedWallet).toBe("denied")
+    expect(stderr.text).toContain("embedded wallet")
+  })
+
+  test("no warning when the embedded wallet is allowed, or for another preset", async () => {
+    const allowed = routes(scopesForPreset("readwritetransfer"))
+    const stderrA = createCapture()
+    const depsA = createTestDeps({
+      fetch: allowed.fetch,
+      store: store(),
+      stderr: stderrA,
+      isTTY: { stdin: true, stdout: true, stderr: true },
+      promptLine: async () => "y",
+    })
+    expect(await run(["keys", "create", "--access", "withdraw", "--embedded-wallet", "allow"], depsA)).toBe(0)
+    expect(stderrA.text).not.toContain("Withdrawals to your approved addresses")
+
+    const write = routes(scopesForPreset("readwrite"))
+    const stderrW = createCapture()
+    expect(
+      await run(
+        ["keys", "create", "--access", "write"],
+        createTestDeps({ fetch: write.fetch, store: store(), stderr: stderrW }),
+      ),
+    ).toBe(0)
+    expect(stderrW.text).not.toContain("Withdrawals to your approved addresses")
   })
 })
 

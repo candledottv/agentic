@@ -8,6 +8,7 @@ import {
   type AgentKeyPreset,
   agentKeyAccess,
   agentKeyAccessWords,
+  presetForScopes,
   scopesForPreset,
   sortAgentKeyScopes,
 } from "../agent-key-access"
@@ -34,7 +35,12 @@ import {
   writeScreenLocalFailure,
   writeScreenUsageFailure,
 } from "./key-output"
-import { confirmCreateAllow, EMBEDDED_WALLET_CHOICES, effectiveEmbeddedWallet } from "./keys-embedded-wallet"
+import {
+  confirmCreateAllow,
+  EMBEDDED_WALLET_CHOICES,
+  effectiveEmbeddedWallet,
+  withdrawNeedsEmbeddedWalletLine,
+} from "./keys-embedded-wallet"
 
 const KEYS_PATH = "/api/v1/agent/keys"
 
@@ -409,6 +415,17 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
     }
   } catch (error) {
     storeError = error instanceof Error ? error.message : String(error)
+  }
+
+  // BE-2600: a Withdraw key with the embedded wallet denied cannot withdraw to the allowlist. On
+  // stderr, so `--json` stdout stays one document.
+  if (presetForScopes(body.scopes) === "readwritetransfer" && body.embeddedWallet === "denied") {
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      `${withdrawNeedsEmbeddedWalletLine(body.keyPrefix)}\nOr mint it that way: candle keys create --access withdraw --embedded-wallet allow`,
+    )
   }
 
   if (json) {

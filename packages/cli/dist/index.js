@@ -3476,7 +3476,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.9";
+var CLI_VERSION = "0.13.10";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -37303,9 +37303,11 @@ async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
       return { ok: false, code: 1 };
     }
     if (byPrefix)
-      return { ok: true, keyPrefix: byPrefix.keyPrefix };
-    if (byLabel.length === 1)
-      return { ok: true, keyPrefix: byLabel[0].keyPrefix };
+      return { ok: true, keyPrefix: byPrefix.keyPrefix, embeddedWallet: byPrefix.embeddedWallet };
+    if (byLabel.length === 1) {
+      const only = byLabel[0];
+      return { ok: true, keyPrefix: only.keyPrefix, embeddedWallet: only.embeddedWallet };
+    }
     if (byLabel.length > 1) {
       writeLocalFailure(deps, {
         code: `${codePrefix}_KEY_AMBIGUOUS`,
@@ -37317,8 +37319,10 @@ async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
     return { ok: true, keyPrefix: raw };
   }
   const matches = keys.filter((key) => key.label === raw);
-  if (matches.length === 1)
-    return { ok: true, keyPrefix: matches[0].keyPrefix };
+  if (matches.length === 1) {
+    const only = matches[0];
+    return { ok: true, keyPrefix: only.keyPrefix, embeddedWallet: only.embeddedWallet };
+  }
   if (matches.length === 0) {
     const labelled = keys.filter((key) => key.label).map((key) => `${key.keyPrefix} ${labelCell(key.label)}`);
     writeLocalFailure(deps, {
@@ -37632,6 +37636,11 @@ var init_tee_rebind = __esm(() => {
 // src/commands/keys-embedded-wallet.ts
 function effectiveEmbeddedWallet(value) {
   return value === "denied" ? "denied" : "allowed";
+}
+function withdrawNeedsEmbeddedWalletLine(keyPrefix) {
+  return `Withdrawals to your approved addresses leave from the embedded wallet, so a Withdraw key needs the embedded wallet allowed; it is denied on this key, and those withdrawals will be refused.
+` + `Allow it with: candle keys update ${keyPrefix} --embedded-wallet allow
+` + "Transfers out of the key's own TEE wallets do not need it.";
 }
 function keyName(keyPrefix, label) {
   const cleaned = labelCell(label ?? undefined);
@@ -38145,6 +38154,10 @@ async function keysCreate(args, ctx) {
     }
   } catch (error) {
     storeError = error instanceof Error ? error.message : String(error);
+  }
+  if (presetForScopes(body.scopes) === "readwritetransfer" && body.embeddedWallet === "denied") {
+    notice(deps, "stderr", "warning", `${withdrawNeedsEmbeddedWalletLine(body.keyPrefix)}
+Or mint it that way: candle keys create --access withdraw --embedded-wallet allow`);
   }
   if (json) {
     deps.stdout.write(`${JSON.stringify({ ...body, stored, ...storeError ? { storeError } : {} })}
@@ -89956,6 +89969,7 @@ init_render();
 init_promote_support();
 init_key_output();
 init_keys();
+init_keys_embedded_wallet();
 init_tee_rebind();
 var KEYS_PATH4 = "/api/v1/agent/keys";
 var USAGE_ACCESS = `Usage: candle keys access <prefix|label|self> --access <read|write|withdraw> [--yes] [--json]
@@ -90119,6 +90133,7 @@ async function keysAccess(args, ctx) {
   let path;
   let auth;
   let credentials;
+  let embeddedWallet;
   if (self) {
     const apiKey = await resolveApiKey(deps, ctx.profile);
     if (!apiKey) {
@@ -90140,6 +90155,7 @@ async function keysAccess(args, ctx) {
     });
     if (!resolved.ok)
       return resolved.code;
+    embeddedWallet = resolved.embeddedWallet;
     path = `${KEYS_PATH4}/${encodeURIComponent(resolved.keyPrefix)}/access`;
     auth = "device";
     credentials = { deviceToken };
@@ -90178,6 +90194,9 @@ async function keysAccess(args, ctx) {
   const account = fields2.account ? shortAddress2(fields2.account) : json ? "unknown" : symbols(terminalStyle(deps, "stderr")).missing;
   deps.stderr.write(`${accessScreen(shown, { account: fields2.username ? `${fields2.username}  (${account})` : account, apiUrl }, json ? undefined : terminalStyle(deps, "stderr"))}
 `);
+  if (shown.to.access === "readwritetransfer" && embeddedWallet === "denied") {
+    notice(deps, "stderr", "warning", withdrawNeedsEmbeddedWalletLine(shown.keyPrefix));
+  }
   if (widen) {
     const typed = await deps.promptLine(`Type the key prefix ${shown.keyPrefix} to widen it: `);
     if (typed.trim() !== shown.keyPrefix) {

@@ -42,6 +42,7 @@ import {
   writeScreenUsageFailure as writeUsageFailure,
 } from "./key-output"
 import { ACCESS_LEVELS, accessCell, labelCell, NO_DEVICE_TOKEN } from "./keys"
+import { withdrawNeedsEmbeddedWalletLine } from "./keys-embedded-wallet"
 import { PORTAL_REVOKE_LINE, resolveTargetKey } from "./tee-rebind"
 
 const KEYS_PATH = "/api/v1/agent/keys"
@@ -294,6 +295,7 @@ export async function keysAccess(args: string[], ctx: CommandContext): Promise<n
   let path: string
   let auth: "device" | "key"
   let credentials: { deviceToken?: string; apiKey?: string }
+  let embeddedWallet: "allowed" | "denied" | undefined
   if (self) {
     const apiKey = await resolveApiKey(deps, ctx.profile)
     if (!apiKey) {
@@ -314,6 +316,7 @@ export async function keysAccess(args: string[], ctx: CommandContext): Promise<n
       writeListFailure: (result) => writeAccessFailure(ctx, result, { self: false }),
     })
     if (!resolved.ok) return resolved.code
+    embeddedWallet = resolved.embeddedWallet
     path = `${KEYS_PATH}/${encodeURIComponent(resolved.keyPrefix)}/access`
     auth = "device"
     credentials = { deviceToken }
@@ -364,6 +367,11 @@ export async function keysAccess(args: string[], ctx: CommandContext): Promise<n
   deps.stderr.write(
     `${accessScreen(shown, { account: fields.username ? `${fields.username}  (${account})` : account, apiUrl }, json ? undefined : terminalStyle(deps, "stderr"))}\n`,
   )
+
+  // BE-2600: Withdraw sends to the allowlist from the embedded wallet; say so before the confirmation.
+  if (shown.to.access === "readwritetransfer" && embeddedWallet === "denied") {
+    notice(deps, "stderr", "warning", withdrawNeedsEmbeddedWalletLine(shown.keyPrefix))
+  }
 
   if (widen) {
     const typed = await deps.promptLine(`Type the key prefix ${shown.keyPrefix} to widen it: `)

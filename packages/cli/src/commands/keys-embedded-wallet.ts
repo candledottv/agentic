@@ -56,6 +56,20 @@ export function embeddedWalletLine(permission: EmbeddedWalletPermission, keyPref
     : `Embedded wallet: denied. This key cannot spend the account's embedded wallet; the owner can allow it with: candle keys update ${keyPrefix} --embedded-wallet allow`
 }
 
+/**
+ * BE-2600: the Withdraw preset (`transfer:write` + `transfer:bound`) sends funds to the owner's
+ * approved addresses only through `POST /agent/transfer`, which always spends the embedded wallet
+ * and so needs it allowed (BE-501). A Withdraw key whose embedded wallet is denied fails there, so
+ * `keys create` and `keys access` say so, with the command that fixes it.
+ */
+export function withdrawNeedsEmbeddedWalletLine(keyPrefix: string): string {
+  return (
+    "Withdrawals to your approved addresses leave from the embedded wallet, so a Withdraw key needs the embedded wallet allowed; it is denied on this key, and those withdrawals will be refused.\n" +
+    `Allow it with: candle keys update ${keyPrefix} --embedded-wallet allow\n` +
+    "Transfers out of the key's own TEE wallets do not need it."
+  )
+}
+
 const ALLOW_REQUIRES_TTY = {
   code: "EMBEDDED_WALLET_REQUIRES_TTY",
   message:
