@@ -1,7 +1,9 @@
 /** `candle fees` and `candle fees claim` (FE-438), driven through `run()` against a stub server. */
 import { describe, expect, test } from "bun:test"
+import { generateKeyPairSync, verify } from "node:crypto"
 import { run } from "../index"
-import { createCapture, createTestDeps } from "../test-support"
+import { pemToStoredSigner } from "../secret-store"
+import { createCapture, createFakeStore, createTestDeps } from "../test-support"
 
 const SOL = { symbol: "SOL", mint: "So11111111111111111111111111111111111111112", decimals: 9, amountRaw: "1500000000" }
 
@@ -92,7 +94,7 @@ describe("candle fees claim (FE-438)", () => {
         }),
     })
     expect(await run(["fees", "claim", "MintA", "--dry-run"], f.deps)).toBe(0)
-    expect(f.calls[0]).toEqual({ path: PATH, method: "POST", body: { dryRun: true } })
+    expect(f.calls[0]).toEqual({ path: PATH, method: "POST", body: { dryRun: true, teeSigning: true } })
     expect(f.stdout.text).toContain("Dry run")
     expect(f.stdout.text).toContain("1.5 SOL")
     expect(f.stdout.text).toContain("W1")
@@ -114,7 +116,7 @@ describe("candle fees claim (FE-438)", () => {
         }),
     })
     expect(await run(["fees", "claim", "MintA"], f.deps)).toBe(0)
-    expect(f.calls[0]?.body).toEqual({ dryRun: false })
+    expect(f.calls[0]?.body).toEqual({ dryRun: false, teeSigning: true })
     expect(f.stdout.text).toContain("Claimed")
     expect(f.stdout.text).toContain("1.5 SOL")
     expect(f.stdout.text).toContain("W1")
@@ -137,5 +139,84 @@ describe("candle fees claim (FE-438)", () => {
     expect(await run(["fees", "claim"], f.deps)).toBe(2)
     expect(await run(["fees", "claim", "MintA", "--to", "Elsewhere"], f.deps)).toBe(2)
     expect(f.calls).toEqual([])
+  })
+})
+
+describe("BE-2579 CLI fee claim signing", () => {
+  const pair = generateKeyPairSync("ec", { namedCurve: "P-256" })
+  const pem = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString()
+  const rpc = { method: "signTransaction", params: { encoding: "base64", transaction: "dHg=" } }
+  function teeFixture(altered = false) {
+    const PATH = "/api/v1/agent/fees/MintA/claim"
+    const f = fixture({
+      [PATH]: () =>
+        Response.json({
+          success: true,
+          claimed: [],
+          signing: [
+            { walletId: "tee", wallet: "TeeAddress", leg: "streamer", body: altered ? { ...rpc, extra: true } : rpc },
+          ],
+        }),
+      "/api/v1/agent/wallets/trading": () =>
+        Response.json({
+          scopes: ["launch:write"],
+          privyAppId: "app",
+          page: [
+            {
+              id: "tee",
+              address: "TeeAddress",
+              chain: "solana",
+              active: true,
+              allowLaunch: false,
+              privyWalletId: "privy",
+            },
+          ],
+          isDone: true,
+        }),
+      "/api/v1/agent/wallets/tee/sign": () =>
+        Response.json({ success: true, signedTransaction: "c2lnbmVk", encoding: "base64" }),
+      [`${PATH}/submit`]: () =>
+        Response.json({
+          success: true,
+          recipient: "TeeAddress",
+          claimed: [{ ...SOL, txHash: "TeeSig" }],
+          remaining: [],
+          warnings: [],
+        }),
+    })
+    f.deps.store = createFakeStore({ wallet_signer_tee: pemToStoredSigner(pem) })
+    return f
+  }
+  test("claim authorizes the exact RPC body locally, relays and submits without requiring allowLaunch", async () => {
+    const f = teeFixture()
+    expect(await run(["fees", "claim", "MintA", "--json"], f.deps)).toBe(0)
+    const signed = f.calls.find((call) => call.path.endsWith("/sign"))?.body
+    expect(signed?.body).toEqual(rpc)
+    expect(signed?.feeClaim).toBe(true)
+    const canonical = JSON.stringify({
+      body: rpc,
+      headers: { "privy-app-id": "app" },
+      method: "POST",
+      url: "https://api.privy.io/v1/wallets/privy/rpc",
+      version: 1,
+    })
+    expect(
+      verify(
+        "sha256",
+        Buffer.from(canonical),
+        pair.publicKey,
+        Buffer.from(String(signed?.authorizationSignature), "base64"),
+      ),
+    ).toBe(true)
+    expect(f.calls.at(-1)?.body).toEqual({
+      signedClaims: [{ walletId: "tee", leg: "streamer", signedTransaction: "c2lnbmVk" }],
+    })
+    expect(JSON.parse(f.stdout.text).claimed[0].txHash).toBe("TeeSig")
+    expect(f.stdout.text).not.toContain("PRIVATE KEY")
+  })
+  test("an altered RPC body never reaches relay sign or submit", async () => {
+    const f = teeFixture(true)
+    expect(await run(["fees", "claim", "MintA", "--json"], f.deps)).toBe(1)
+    expect(f.calls.some((call) => call.path.endsWith("/sign") || call.path.endsWith("/submit"))).toBe(false)
   })
 })

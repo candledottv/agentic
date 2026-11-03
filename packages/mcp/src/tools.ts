@@ -2018,7 +2018,9 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       description:
         "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " +
         "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " +
-        "pays the network fee. Needs launch:write. " +
+        "pays the network fee. A fee recipient that is a TEE wallet is refused here: claim it with the candle CLI " +
+        "(`candle fees claim`). The dry run reports the same refusal (`claimable: false`, `reason: " +
+        "wallet_not_signable`) and counts only what this tool could claim. Needs launch:write. " +
         "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " +
         "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " +
         "before claiming again.",

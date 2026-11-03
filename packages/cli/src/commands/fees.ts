@@ -6,9 +6,9 @@
  *   POST /agent/fees/{mint}/claim  -> collects and pays the creator's share to the recipient
  *
  * The request carries a mint and a dry-run flag, nothing else: the money goes to the recipient
- * fixed at launch, and this machine signs nothing (Candle signs with the embedded wallet, which
- * pays the network fee). Amounts are shown in each asset's own units from the raw figure the
- * server read off chain.
+ * fixed at launch. Candle signs embedded claims. A TEE claim returns a checked build; this
+ * machine authorizes its exact RPC body locally, relays the sign, then submits the signed claim.
+ * Amounts are shown in each asset's own units from the raw figure the server read off chain.
  *
  * `--json` is the server body as sent, which is also what `candle_get_fees` and
  * `candle_claim_fees` relay. List is `{ success, page, isDone, continueCursor }`. Claim, including
@@ -19,7 +19,17 @@ import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { bold, failure, fields, heading, notice, symbols, terminalStyle } from "../presentation"
 import { renderTable, writeUsageFailure } from "../render"
-import { decimalAmount, type Json, request, safeText, tradingKey } from "../trading"
+import {
+  authorizationSignature,
+  completeTradingWallet,
+  decimalAmount,
+  type Json,
+  listTradingWallets,
+  request,
+  safeText,
+  TradingError,
+  tradingKey,
+} from "../trading"
 import { printTradingResult, tradingFailure } from "./swap"
 
 const LIST_USAGE = "Usage: candle fees [--cursor <cursor>] [--limit <1-50>] [--json]"
@@ -129,7 +139,54 @@ export async function feesClaim(args: string[], ctx: CommandContext): Promise<nu
   const dryRun = parsed.booleans.has("--dry-run")
   try {
     const key = await tradingKey(ctx)
-    const body = await request(ctx, key, `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`, { dryRun })
+    let body = await request(ctx, key, `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`, {
+      dryRun,
+      teeSigning: true,
+    })
+    if (!dryRun && Array.isArray(body.signing) && body.signing.length > 0) {
+      if (body.signing.length > 2) throw new TradingError("INVALID_RESPONSE", "Too many fee claims to sign")
+      const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, "launch:write")
+      const signedClaims: Json[] = []
+      for (const signing of body.signing as Json[]) {
+        const row = rows.find((row) => row.id === signing.walletId && row.address === signing.wallet)
+        if (!row || row.chain !== "solana")
+          throw new TradingError("TEE_WALLET_REQUIRED", "The claim's wallet is not bound to this key")
+        // Claiming earnings does not require the owner's allowLaunch setting. The listing above
+        // enforces launch:write; this resolver supplies the wallet's existing local signer only.
+        const wallet = await completeTradingWallet(ctx, row, appId, "account:read", "solana", {
+          apiKey: key,
+          keyPrefix,
+        })
+        const rpc = signing.body as { params?: { transaction?: unknown } } | undefined
+        const transaction = rpc?.params?.transaction
+        if (typeof transaction !== "string" || !["streamer", "creator"].includes(String(signing.leg)))
+          throw new TradingError("INVALID_RESPONSE", "The fee claim has no Solana transaction to sign")
+        const approval = authorizationSignature(wallet, transaction)
+        if (JSON.stringify(approval.body) !== JSON.stringify(signing.body))
+          throw new TradingError("INVALID_RESPONSE", "The fee claim's RPC body is not the exact Solana sign request")
+        const signed = await request(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet.id)}/sign`, {
+          ...approval,
+          feeClaim: true,
+        })
+        if (typeof signed.signedTransaction !== "string" || signed.encoding !== "base64")
+          throw new TradingError("INVALID_RESPONSE", "The relay returned no base64 signed fee claim")
+        signedClaims.push({ walletId: wallet.id, leg: signing.leg, signedTransaction: signed.signedTransaction })
+      }
+      const submitted = await request(ctx, key, `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim/submit`, {
+        signedClaims,
+      })
+      body = {
+        ...submitted,
+        claimed: [
+          ...(Array.isArray(body.claimed) ? body.claimed : []),
+          ...(Array.isArray(submitted.claimed) ? submitted.claimed : []),
+        ],
+        warnings: [
+          ...(Array.isArray(body.warnings) ? body.warnings : []),
+          ...(Array.isArray(submitted.warnings) ? submitted.warnings : []),
+        ],
+      }
+    }
     if (ctx.json) return printTradingResult(ctx, body)
     const style = terminalStyle(ctx.deps, "stdout")
     const missing = symbols(style).missing

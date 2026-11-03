@@ -7308,7 +7308,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_get_fees", args, getConfig(), doFetch));
   register("candle_claim_fees", {
     title: "Claim a token's creator fees",
-    description: "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " + "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " + "pays the network fee. Needs launch:write. " + "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " + "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " + "before claiming again.",
+    description: "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " + "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " + "pays the network fee. A fee recipient that is a TEE wallet is refused here: claim it with the candle CLI " + "(`candle fees claim`). The dry run reports the same refusal (`claimable: false`, `reason: " + "wallet_not_signable`) and counts only what this tool could claim. Needs launch:write. " + "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " + "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " + "before claiming again.",
     inputSchema: claimFeesShape
   }, async (args) => callAndRelay("candle_claim_fees", args, getConfig(), doFetch));
   register("candle_get_wallets", {

@@ -45347,7 +45347,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_get_fees", args, getConfig(), doFetch));
   register("candle_claim_fees", {
     title: "Claim a token's creator fees",
-    description: "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " + "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " + "pays the network fee. Needs launch:write. " + "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " + "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " + "before claiming again.",
+    description: "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " + "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " + "pays the network fee. A fee recipient that is a TEE wallet is refused here: claim it with the candle CLI " + "(`candle fees claim`). The dry run reports the same refusal (`claimable: false`, `reason: " + "wallet_not_signable`) and counts only what this tool could claim. Needs launch:write. " + "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " + "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " + "before claiming again.",
     inputSchema: claimFeesShape
   }, async (args) => callAndRelay("candle_claim_fees", args, getConfig(), doFetch));
   register("candle_get_wallets", {
@@ -89833,7 +89833,53 @@ async function feesClaim(args, ctx) {
   const dryRun = parsed.booleans.has("--dry-run");
   try {
     const key = await tradingKey(ctx);
-    const body = await request(ctx, key, `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`, { dryRun });
+    let body = await request(ctx, key, `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`, {
+      dryRun,
+      teeSigning: true
+    });
+    if (!dryRun && Array.isArray(body.signing) && body.signing.length > 0) {
+      if (body.signing.length > 2)
+        throw new TradingError("INVALID_RESPONSE", "Too many fee claims to sign");
+      const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, "launch:write");
+      const signedClaims = [];
+      for (const signing of body.signing) {
+        const row = rows.find((row2) => row2.id === signing.walletId && row2.address === signing.wallet);
+        if (!row || row.chain !== "solana")
+          throw new TradingError("TEE_WALLET_REQUIRED", "The claim's wallet is not bound to this key");
+        const wallet3 = await completeTradingWallet(ctx, row, appId, "account:read", "solana", {
+          apiKey: key,
+          keyPrefix
+        });
+        const rpc = signing.body;
+        const transaction = rpc?.params?.transaction;
+        if (typeof transaction !== "string" || !["streamer", "creator"].includes(String(signing.leg)))
+          throw new TradingError("INVALID_RESPONSE", "The fee claim has no Solana transaction to sign");
+        const approval = authorizationSignature(wallet3, transaction);
+        if (JSON.stringify(approval.body) !== JSON.stringify(signing.body))
+          throw new TradingError("INVALID_RESPONSE", "The fee claim's RPC body is not the exact Solana sign request");
+        const signed = await request(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet3.id)}/sign`, {
+          ...approval,
+          feeClaim: true
+        });
+        if (typeof signed.signedTransaction !== "string" || signed.encoding !== "base64")
+          throw new TradingError("INVALID_RESPONSE", "The relay returned no base64 signed fee claim");
+        signedClaims.push({ walletId: wallet3.id, leg: signing.leg, signedTransaction: signed.signedTransaction });
+      }
+      const submitted = await request(ctx, key, `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim/submit`, {
+        signedClaims
+      });
+      body = {
+        ...submitted,
+        claimed: [
+          ...Array.isArray(body.claimed) ? body.claimed : [],
+          ...Array.isArray(submitted.claimed) ? submitted.claimed : []
+        ],
+        warnings: [
+          ...Array.isArray(body.warnings) ? body.warnings : [],
+          ...Array.isArray(submitted.warnings) ? submitted.warnings : []
+        ]
+      };
+    }
     if (ctx.json)
       return printTradingResult(ctx, body);
     const style = terminalStyle(ctx.deps, "stdout");
