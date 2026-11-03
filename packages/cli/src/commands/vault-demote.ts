@@ -22,9 +22,12 @@ import {
 } from "../vault/tee-resolve"
 import { type DemoteStep, nothingLeftToSweep, teeDisable, teeSweep } from "./tee"
 import { namesEvmWallet, vaultDemoteEvm } from "./tee-evm"
+import { isBatchDemote, vaultDemoteBatch } from "./vault-demote-batch"
 import { assertNotOlderCopy, refuseEnvPassphrase, requireTty, usage, vaultPathFor } from "./vault-support"
 
 export async function vaultDemote(args: string[], ctx: CommandContext): Promise<number> {
+  // BE-2597: several addresses, or `--all --empty`, demote one wallet at a time under one unlock.
+  if (ctx.heldUnlock === undefined && isBatchDemote(args)) return vaultDemoteBatch(args, ctx)
   // Phase 4b (BE-391, D1): a Hood TEE wallet is demoted by `tee-evm.ts` (disable, then sweep).
   if (namesEvmWallet(args)) return vaultDemoteEvm(args, ctx)
   const parsed = parseArgs(args, {

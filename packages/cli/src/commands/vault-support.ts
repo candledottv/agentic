@@ -6,7 +6,7 @@
  * function here: refuse while `CANDLE_KEYSTORE_PASSPHRASE` is set; hidden prompt only; refuse
  * without a TTY when a secret has to be collected; `--json` output never contains a secret.
  */
-import { dirname } from "node:path"
+import { dirname, resolve as resolvePath } from "node:path"
 import { isUsageError, type ParsedArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
 import { notice as outputNotice } from "../presentation"
@@ -438,6 +438,16 @@ export interface OpenedVault {
   confirm: (what: string) => Promise<void>
 }
 
+/**
+ * BE-2597: a vault one command unlocked for several steps (`vault demote <a> <b> ...`). A step's
+ * `unlockInteractively` against `path` answers `open(raw)` instead of prompting; any other path
+ * still prompts.
+ */
+export interface HeldUnlock {
+  path: string
+  open: (raw: string) => Promise<OpenedVault>
+}
+
 /** A restricted envelope this machine cannot drive, as `among.because` receives it (D7, row B2). */
 export interface UnusableEnvelope {
   id: string
@@ -492,6 +502,10 @@ export async function unlockInteractively(
   opts: UnlockOptions = {},
 ): Promise<OpenedVault> {
   await assertNotOlderCopy(ctx, path, raw, opts.acceptOlderCopy ?? false)
+  // BE-2597: inside a batch that already unlocked this vault, each step opens the file's current
+  // bytes with the held key instead of presenting the factor again.
+  const held = ctx.heldUnlock
+  if (held !== undefined && resolvePath(held.path) === resolvePath(path)) return held.open(raw)
   const { deps } = ctx
   const file = parseVaultFile(raw)
   assertVaultHelperIdentities(deps, file.envelopes)

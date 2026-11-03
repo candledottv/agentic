@@ -14140,6 +14140,7 @@ __export(exports_store, {
   serializeVault: () => serializeVault,
   sealKeyBlob: () => sealKeyBlob,
   sealIndex: () => sealIndex,
+  reopenWithHeldDek: () => reopenWithHeldDek,
   readVaultRaw: () => readVaultRaw,
   ownSecret: () => ownSecret,
   legacyWalletsPath: () => legacyWalletsPath,
@@ -14203,6 +14204,17 @@ async function unlockVault(path, raw, request, opts = {}) {
     wipe(dek);
     throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
   }
+  return openWithDek(path, raw, file, envelope, dek);
+}
+async function reopenWithHeldDek(path, raw, held) {
+  const file = parseVaultFile(raw);
+  if (file.vaultId !== held.file.vaultId) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `${path} is not the vault this command unlocked.`);
+  }
+  const envelope = file.envelopes.find((candidate) => candidate.id === held.envelope.id) ?? held.envelope;
+  return openWithDek(path, raw, file, envelope, new Uint8Array(held.dek));
+}
+async function openWithDek(path, raw, file, envelope, dek) {
   try {
     const payloadKey = await derivePayloadKey(dek, unb64u(file.vaultId, "vaultId"));
     const indexBytes = await open2(payloadKey, file.index, canonicalHeader(file), {
@@ -28909,7 +28921,7 @@ __export(exports_vault_support, {
   askForOwnPassphrase: () => askForOwnPassphrase,
   PASSPHRASE_ONLY_PREFIX: () => PASSPHRASE_ONLY_PREFIX
 });
-import { dirname as dirname6 } from "node:path";
+import { dirname as dirname6, resolve as resolvePath } from "node:path";
 function refuseEnvPassphrase(ctx) {
   if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined)
     return true;
@@ -29039,6 +29051,9 @@ function assertVaultHelperIdentities(deps, envelopes) {
 }
 async function unlockInteractively(ctx, path, raw, opts = {}) {
   await assertNotOlderCopy(ctx, path, raw, opts.acceptOlderCopy ?? false);
+  const held = ctx.heldUnlock;
+  if (held !== undefined && resolvePath(held.path) === resolvePath(path))
+    return held.open(raw);
   const { deps } = ctx;
   const file = parseVaultFile(raw);
   assertVaultHelperIdentities(deps, file.envelopes);
@@ -77425,8 +77440,8 @@ var HELP = {
         description: "Fund a TEE or external wallet from a vault key. A Hood TEE wallet takes ETH or USDG from its pinned EVM vault key. One verification: the unlock names the send; after the decoded display you type confirm. No --yes"
       },
       {
-        invocation: "demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>] [--token <0x...>] [--from-block <n>]",
-        description: "Disable then sweep a TEE wallet back to its pin. A Hood wallet takes tee sweep's --token and --from-block"
+        invocation: "demote <tee-address>... | --all --empty [--rpc-url <url>] [--emergency] [--sweep-to <label>] [--yes] [--token <0x...>] [--from-block <n>]",
+        description: "Disable then sweep a TEE wallet back to its pin. A Hood wallet takes tee sweep's --token and --from-block (one wallet only). Several addresses, or --all --empty, demote one at a time under one unlock: every wallet and its sweep destination is listed, then you type confirm once (--yes skips it; it stands in for each sweep's confirm). A failure does not stop the rest; each wallet gets a result line and a summary counts done, incomplete, failed and skipped with reasons. --json writes one document: wallets[] and summary"
       },
       {
         invocation: "export-key <label> --to <new-file>",
@@ -77445,7 +77460,15 @@ var HELP = {
       },
       {
         invocation: "--all",
-        description: "list: include retired TEE wallets (demoted and swept), which are hidden by default"
+        description: "list: include retired TEE wallets (demoted and swept), which are hidden by default. demote: every TEE wallet in the vault that is not retired, with a filter (--empty)"
+      },
+      {
+        invocation: "--empty",
+        description: "demote --all: only Solana TEE wallets with nothing left to sweep (0 SOL, no token accounts, no unsettled sweep); the rest are listed as skipped"
+      },
+      {
+        invocation: "--yes",
+        description: "demote with several wallets: skip the one typed confirmation for the listed set"
       },
       {
         invocation: "--balances",
@@ -77483,6 +77506,7 @@ var HELP = {
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault promote-batch --pairs-from ./promote-plan.csv",
       "candle vault promote-batch --pairs-from ./promote-plan.csv --to-key tr-01",
+      "candle vault demote --all --empty",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "candle vault backup --to icloud",
@@ -107330,8 +107354,332 @@ init_reconcile_grant();
 init_tee_resolve();
 init_tee();
 init_tee_evm();
+
+// src/commands/vault-demote-batch.ts
+init_args();
+init_human_output();
+init_presentation();
+init_solana_endpoint();
+init_errors2();
+init_promote_support();
+init_store();
+init_tee();
+init_vault_support();
+var BATCH_USAGE = "Usage: candle vault demote <tee-address> <tee-address>... | --all --empty [--rpc-url <url>] [--emergency] [--sweep-to <label>] [--yes]";
+var VALUE_FLAGS = new Set(["--rpc-url", "--keystore", "-k", "--sweep-to", "--from-block", "--token"]);
+var BATCH_FLAGS = new Set(["--all", "--empty", "--yes"]);
+var SINGLE_ONLY_FLAGS = ["--token", "--from-block", "--accept-unknown-exposure"];
+function isBatchDemote(args) {
+  let addresses = 0;
+  for (let i = 0;i < args.length; i++) {
+    const arg = args[i];
+    if (VALUE_FLAGS.has(arg)) {
+      i += 1;
+      continue;
+    }
+    if (BATCH_FLAGS.has(arg))
+      return true;
+    if (!arg.startsWith("-"))
+      addresses += 1;
+  }
+  return addresses > 1;
+}
+var isEvmAddress = (value) => /^0x[0-9a-fA-F]{40}$/.test(value);
+var sameAddress5 = (chain2, a, b) => chain2 === "evm" ? a.toLowerCase() === b.toLowerCase() : a === b;
+async function vaultDemoteBatch(args, ctx) {
+  const single = SINGLE_ONLY_FLAGS.find((flag) => args.includes(flag));
+  if (single !== undefined) {
+    return usage(ctx, `${single} names one Hood wallet's sweep; pass it to a single demote: candle vault demote <0x address> ${single} ...`);
+  }
+  const parsed = parseArgs(args, {
+    valueFlags: ["--rpc-url", "--sweep-to", "--keystore"],
+    booleanFlags: ["--emergency", "--accept-older-copy", "--all", "--empty", "--yes"],
+    pathFlags: ["--keystore"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const all = parsed.booleans.has("--all");
+  const empty = parsed.booleans.has("--empty");
+  const yes = parsed.booleans.has("--yes");
+  if (all && parsed.positionals.length > 0)
+    return usage(ctx, `--all takes no addresses. ${BATCH_USAGE}`);
+  if (all && !empty) {
+    return usage(ctx, `--all needs a filter: --empty (wallets with nothing left to sweep). ${BATCH_USAGE}`);
+  }
+  if (empty && !all)
+    return usage(ctx, `--empty filters --all. ${BATCH_USAGE}`);
+  if (!all && parsed.positionals.length === 0)
+    return usage(ctx, BATCH_USAGE);
+  const rpcUrl = parsed.values["--rpc-url"];
+  const sweepTo = parsed.values["--sweep-to"];
+  const named = parsed.positionals;
+  if (rpcUrl !== undefined && named.some(isEvmAddress) && named.some((a) => !isEvmAddress(a))) {
+    return usage(ctx, "--rpc-url names one chain's node; demote Solana and Hood wallets in separate batches.");
+  }
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault demote"))
+    return 1;
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  let solana;
+  if (empty) {
+    const opened = await openSolanaClient(ctx, rpcUrl);
+    if ("error" in opened)
+      return usage(ctx, opened.error);
+    solana = opened;
+  }
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const held = hold(opened.vault);
+    const outcomes = [];
+    const planned = [];
+    const plan2 = (entry) => {
+      const chain2 = entry.chain === "evm" ? "evm" : "solana";
+      const row = { address: entry.address, label: entry.label, chain: chain2, destination: null };
+      const pinned = entry.tee?.vaultDestination;
+      if (pinned !== undefined)
+        row.destination = pinned;
+      else if (sweepTo === undefined)
+        row.destinationNote = "no pinned destination; pass --sweep-to";
+      else {
+        try {
+          row.destination = assertColdVaultDestination(held.index, sweepTo, {
+            chain: chain2,
+            subjectAddress: entry.address
+          }).address;
+        } catch (error) {
+          if (!isVaultError(error))
+            throw error;
+          row.destinationNote = `--sweep-to ${sweepTo}: ${error.message}`;
+        }
+      }
+      planned.push(row);
+    };
+    const tees = held.index.entries.filter((entry) => entry.role === "tee-wallet");
+    if (all) {
+      for (const entry of tees) {
+        if (entry.tee?.lifecycle === "retired")
+          continue;
+        const base2 = {
+          address: entry.address,
+          label: entry.label,
+          chain: entry.chain === "evm" ? "evm" : "solana"
+        };
+        if (entry.chain === "evm") {
+          outcomes.push({
+            ...base2,
+            status: "skipped",
+            reason: "--empty reads Solana balances only; demote a Hood wallet by its address"
+          });
+          continue;
+        }
+        if (!await nothingLeftToSweep(solana, entry)) {
+          outcomes.push({
+            ...base2,
+            status: "skipped",
+            reason: "not empty: it holds SOL or token accounts, or an earlier sweep is unsettled"
+          });
+          continue;
+        }
+        plan2(entry);
+      }
+    } else {
+      const seen = [];
+      for (const address of named) {
+        const chain2 = isEvmAddress(address) ? "evm" : "solana";
+        if (seen.some((other) => sameAddress5(chain2, other, address))) {
+          outcomes.push({ address, label: null, chain: chain2, status: "skipped", reason: "listed more than once" });
+          continue;
+        }
+        seen.push(address);
+        const entry = tees.find((candidate) => sameAddress5(chain2, candidate.address, address));
+        if (entry === undefined) {
+          outcomes.push({
+            address,
+            label: null,
+            chain: chain2,
+            status: "failed",
+            code: "TEE_WALLET_UNKNOWN",
+            reason: `${address} is not a TEE wallet in the vault`
+          });
+          continue;
+        }
+        if (entry.tee?.lifecycle === "retired") {
+          outcomes.push({
+            address,
+            label: entry.label,
+            chain: chain2,
+            status: "skipped",
+            reason: "already retired (demoted and swept)"
+          });
+          continue;
+        }
+        plan2(entry);
+      }
+    }
+    if (rpcUrl !== undefined && new Set(planned.map((row) => row.chain)).size > 1) {
+      return usage(ctx, "--rpc-url names one chain's node; demote Solana and Hood wallets in separate batches.");
+    }
+    if (planned.length > 0) {
+      const display = ctx.json ? "stderr" : "stdout";
+      ctx.deps[display].write(`Demote ${planned.length} TEE wallet${planned.length === 1 ? "" : "s"}, one at a time: disable, then sweep to the destination shown.
+`);
+      writeTable(ctx.deps, display, ["#", "TEE wallet", "Label", "Sweeps to"], planned.map((row, i) => [
+        String(i + 1),
+        row.address,
+        row.label,
+        row.destination ?? `none (${row.destinationNote})`
+      ]), []);
+      for (const skipped of outcomes) {
+        ctx.deps[display].write(`Not demoted: ${skipped.address}: ${skipped.reason}
+`);
+      }
+      if (!yes) {
+        const typed = await ctx.deps.promptLine(`Type confirm to demote these ${planned.length} wallets: `);
+        if (typed.trim().toLowerCase() !== "confirm") {
+          throw new VaultError("DESTINATION_NOT_CONFIRMED", "The batch was not confirmed; nothing was done.", {
+            suggestion: "Nothing was disabled or swept. Run it again and type confirm at the prompt."
+          });
+        }
+      }
+    }
+    const session = { path: held.path, open: (bytes) => openHeld(opened, held, bytes) };
+    const width = String(planned.length).length;
+    for (const [i, row] of planned.entries()) {
+      if (!ctx.json) {
+        notice(ctx.deps, "stdout", "note", `[${String(i + 1).padStart(width)}/${planned.length}] Demoting ${row.address} (${row.label})`);
+      }
+      const outcome = await demoteOne(ctx, session, row, parsed.values, parsed.booleans);
+      outcomes.push(outcome);
+      if (!ctx.json)
+        writeResultLine(ctx.deps, outcome);
+    }
+    const count3 = (status) => outcomes.filter((o) => o.status === status).length;
+    const summary = {
+      total: outcomes.length,
+      done: count3("done"),
+      incomplete: count3("incomplete"),
+      failed: count3("failed"),
+      skipped: count3("skipped")
+    };
+    const exit = summary.failed > 0 ? 1 : summary.incomplete > 0 ? 3 : 0;
+    if (ctx.json) {
+      writeJson(ctx.deps, { ok: exit === 0, wallets: outcomes, summary });
+      return exit;
+    }
+    ctx.deps.stdout.write(`
+Summary: ${summary.done} done, ${summary.incomplete} incomplete, ${summary.failed} failed, ${summary.skipped} skipped (of ${summary.total}).
+`);
+    for (const outcome of outcomes) {
+      if (outcome.status === "done")
+        continue;
+      ctx.deps.stdout.write(`  ${outcome.status.padEnd(10)} ${outcome.address}${outcome.reason ? `: ${outcome.reason}` : ""}
+`);
+    }
+    return exit;
+  });
+}
+async function openHeld(opened, held, raw) {
+  const vault = await reopenWithHeldDek(held.path, raw, held);
+  return {
+    vault,
+    factor: opened.factor,
+    reopen: (path, bytes) => reopenWithHeldDek(path, bytes, held),
+    confirm: opened.confirm
+  };
+}
+async function demoteOne(ctx, session, row, values, booleans) {
+  const base2 = { address: row.address, label: row.label, chain: row.chain };
+  const args = [row.address];
+  for (const flag of ["--rpc-url", "--sweep-to", "--keystore"]) {
+    const value = values[flag];
+    if (value !== undefined)
+      args.push(flag, value);
+  }
+  for (const flag of ["--emergency", "--accept-older-copy"])
+    if (booleans.has(flag))
+      args.push(flag);
+  const covered = row.destination === null ? null : `Type confirm to sweep everything to ${row.destination}: `;
+  const promptLine = async (text4) => text4 === covered ? "confirm" : ctx.deps.promptLine(text4);
+  const captured = [];
+  const errLines = [];
+  const stdout = ctx.json ? { write: (chunk) => void captured.push(chunk) } : ctx.deps.stdout;
+  const stderr = {
+    write: (chunk) => {
+      errLines.push(chunk);
+      ctx.deps.stderr.write(chunk);
+    }
+  };
+  const deps = { ...ctx.deps, stdout, stderr, promptLine };
+  const step = { ...ctx, deps, heldUnlock: session };
+  let exitCode;
+  let thrown;
+  try {
+    exitCode = await vaultDemote(args, step);
+  } catch (error) {
+    exitCode = 1;
+    thrown = error instanceof Error ? error.message : String(error);
+  }
+  const outcome = {
+    ...base2,
+    status: exitCode === 0 ? "done" : exitCode === 3 ? "incomplete" : "failed",
+    exitCode
+  };
+  if (ctx.json) {
+    const results = [];
+    for (const line of captured.join("").split(`
+`)) {
+      if (line.trim() === "")
+        continue;
+      try {
+        results.push(JSON.parse(line));
+      } catch {
+        ctx.deps.stderr.write(`${line}
+`);
+      }
+    }
+    outcome.results = results;
+    const failure3 = [...results].reverse().find((doc) => typeof doc === "object" && doc !== null && doc.ok === false);
+    if (failure3 !== undefined && exitCode !== 0) {
+      if (typeof failure3.code === "string")
+        outcome.code = failure3.code;
+      if (typeof failure3.message === "string")
+        outcome.reason = failure3.message;
+    }
+  }
+  if (thrown !== undefined)
+    outcome.reason = thrown;
+  if (outcome.reason === undefined && exitCode === 3) {
+    outcome.reason = "the disable is not verified or funds remain; remote authority may still be open";
+  } else if (outcome.reason === undefined && exitCode !== 0) {
+    const first = errLines.find((chunk) => chunk.trim() !== "" && !chunk.includes("vault.state.json"));
+    outcome.reason = firstSentence(first ?? "") ?? `exit ${exitCode}`;
+  }
+  return outcome;
+}
+function firstSentence(chunk) {
+  const text4 = chunk.replace(/\s+/g, " ").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+  if (text4 === "")
+    return;
+  const end = text4.search(/\.(\s|$)/);
+  return end < 0 ? text4 : text4.slice(0, end + 1);
+}
+function writeResultLine(deps, outcome) {
+  const word3 = { done: "done", incomplete: "incomplete", failed: "FAILED", skipped: "skipped" }[outcome.status];
+  deps.stdout.write(`Result ${outcome.address}: ${word3} (exit ${outcome.exitCode})${outcome.reason && outcome.status !== "done" ? `: ${outcome.reason}` : ""}
+`);
+}
+
+// src/commands/vault-demote.ts
 init_vault_support();
 async function vaultDemote(args, ctx) {
+  if (ctx.heldUnlock === undefined && isBatchDemote(args))
+    return vaultDemoteBatch(args, ctx);
   if (namesEvmWallet(args))
     return vaultDemoteEvm(args, ctx);
   const parsed = parseArgs(args, {

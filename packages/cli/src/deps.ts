@@ -15,6 +15,7 @@
  * to no flag at all).
  */
 
+import type { HeldUnlock } from "./commands/vault-support"
 import type { CliConfig, ProfileConfig } from "./config"
 import { isCoreOwned, ProfileCoreOwnedError } from "./core/ownership"
 import type { OpenTape } from "./core/signals"
@@ -275,6 +276,8 @@ export interface CommandContext {
   vaultFactor?: string
   /** `--device <id>` (BE-140): the security key an operation names, from `candle vault factor list`'s ids. */
   vaultDevice?: string
+  /** BE-2597: set by a batch command that unlocked the vault once; see `HeldUnlock`. */
+  heldUnlock?: HeldUnlock
 }
 
 /** Resolves the device token: `CANDLE_DEVICE_TOKEN` env override first, then the named profile's

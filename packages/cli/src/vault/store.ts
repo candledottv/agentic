@@ -184,7 +184,33 @@ export async function unlockVault(
     wipe(dek)
     throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.")
   }
+  return openWithDek(path, raw, file, envelope, dek)
+}
 
+/**
+ * BE-2597: opens the file's CURRENT bytes with a DEK this process already holds, so a batch that
+ * unlocked once (`vault demote <a> <b> ...`) can hand each wallet its own vault without presenting
+ * the factor again. The DEK is copied: the copy is the caller's to close, and closing it leaves
+ * `held` intact for the next wallet. The header and index are authenticated exactly as an unlock
+ * authenticates them, so a file that changed under the batch outside this CLI is refused here.
+ */
+export async function reopenWithHeldDek(path: string, raw: string, held: UnlockedVault): Promise<UnlockedVault> {
+  const file = parseVaultFile(raw)
+  if (file.vaultId !== held.file.vaultId) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `${path} is not the vault this command unlocked.`)
+  }
+  const envelope = file.envelopes.find((candidate) => candidate.id === held.envelope.id) ?? held.envelope
+  return openWithDek(path, raw, file, envelope, new Uint8Array(held.dek))
+}
+
+/** The half of an unlock after the DEK is in hand. Takes ownership of `dek`: wiped on failure. */
+async function openWithDek(
+  path: string,
+  raw: string,
+  file: VaultFile,
+  envelope: Envelope,
+  dek: Uint8Array,
+): Promise<UnlockedVault> {
   try {
     const payloadKey = await derivePayloadKey(dek, unb64u(file.vaultId, "vaultId"))
     // ED-1: THIS is the header authentication. Nothing below has looked at a key blob yet.

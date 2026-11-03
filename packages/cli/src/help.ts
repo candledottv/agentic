@@ -1415,9 +1415,9 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation:
-          "demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>] [--token <0x...>] [--from-block <n>]",
+          "demote <tee-address>... | --all --empty [--rpc-url <url>] [--emergency] [--sweep-to <label>] [--yes] [--token <0x...>] [--from-block <n>]",
         description:
-          "Disable then sweep a TEE wallet back to its pin. A Hood wallet takes tee sweep's --token and --from-block",
+          "Disable then sweep a TEE wallet back to its pin. A Hood wallet takes tee sweep's --token and --from-block (one wallet only). Several addresses, or --all --empty, demote one at a time under one unlock: every wallet and its sweep destination is listed, then you type confirm once (--yes skips it; it stands in for each sweep's confirm). A failure does not stop the rest; each wallet gets a result line and a summary counts done, incomplete, failed and skipped with reasons. --json writes one document: wallets[] and summary",
       },
       {
         invocation: "export-key <label> --to <new-file>",
@@ -1438,7 +1438,17 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation: "--all",
-        description: "list: include retired TEE wallets (demoted and swept), which are hidden by default",
+        description:
+          "list: include retired TEE wallets (demoted and swept), which are hidden by default. demote: every TEE wallet in the vault that is not retired, with a filter (--empty)",
+      },
+      {
+        invocation: "--empty",
+        description:
+          "demote --all: only Solana TEE wallets with nothing left to sweep (0 SOL, no token accounts, no unsettled sweep); the rest are listed as skipped",
+      },
+      {
+        invocation: "--yes",
+        description: "demote with several wallets: skip the one typed confirmation for the listed set",
       },
       {
         invocation: "--balances",
@@ -1481,6 +1491,7 @@ export const HELP: Record<string, Topic> = {
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault promote-batch --pairs-from ./promote-plan.csv",
       "candle vault promote-batch --pairs-from ./promote-plan.csv --to-key tr-01",
+      "candle vault demote --all --empty",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "candle vault backup --to icloud",
