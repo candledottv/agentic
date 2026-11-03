@@ -1394,7 +1394,7 @@ export const HELP: Record<string, Topic> = {
         invocation:
           "transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]",
         description:
-          "Sign a transfer locally from a vault key or a promoted TEE wallet (Solana, or Hood: refused while a sequenced trade holds the wallet's nonce, and when that cannot be read). From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint. One verification: the unlock names the send; after the decoded display you type confirm. No --yes",
+          "Sign a transfer locally from a vault key or a promoted TEE wallet (Solana, or Hood: refused while a sequenced trade holds the wallet's nonce, and when that cannot be read). From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint. Max sends SOL minus the quoted fee (zero source reserve when emptied), or the whole token balance; EVM native max deducts the fee cap. SOL max refreshes before signing; a changed amount or fee requires a fresh confirm. One verification: the unlock names the send; after the decoded display you type confirm. No --yes",
       },
       {
         invocation:

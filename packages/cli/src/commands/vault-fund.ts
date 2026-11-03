@@ -168,6 +168,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
   const amount = parsed.values["--amount"]
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase()
   if (!amount) return usage(ctx, "--amount <n> is required.")
+  if (amount.toLowerCase() === "max") return usage(ctx, "--amount must be a number; funding a wallet takes no max.")
   if (asset !== "SOL" && asset !== "USDC") return usage(ctx, "--asset must be SOL or USDC.")
   // BE-355 (D1): resolved and validated before the unlock; no request is made until the vault is
   // open and the receipts are reconciled.

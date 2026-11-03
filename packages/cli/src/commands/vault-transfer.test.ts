@@ -10,7 +10,7 @@
  */
 import { describe, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { ExtensionType, getAccountLen, getAssociatedTokenAddressSync } from "@solana/spl-token"
-import { PublicKey } from "@solana/web3.js"
+import { PublicKey, SystemInstruction, Transaction } from "@solana/web3.js"
 import { run } from "../index"
 import { publicRpcNoticeLines, rpcFixLines } from "../solana-endpoint"
 import * as solanaLite from "../solana-lite"
@@ -40,6 +40,11 @@ async function fixture(
     rateLimit?: Record<string, number>
     profile?: boolean
     balance?: number
+    amount?: string
+    fee?: number | null
+    fees?: number[]
+    sourceOwner?: string
+    sourceData?: Uint8Array
     status?: "finalized" | "never"
     token?: { program: string; mintData: Uint8Array }
   } = {},
@@ -49,6 +54,9 @@ async function fixture(
   const stdout = createCapture()
   const stderr = createCapture()
   const methods: string[] = []
+  const wires: string[] = []
+  const quotes: string[] = []
+  const chain = { balance: opts.balance ?? 10_000_000_000, fee: opts.fee === undefined ? 5000 : opts.fee }
   const limited = new Map<string, number>()
   const rentSizes: number[] = []
   let from = ""
@@ -67,12 +75,20 @@ async function fixture(
         case "getLatestBlockhash":
           return reply({ value: { blockhash: BLOCKHASH } })
         case "getFeeForMessage":
-          return reply({ value: 5000 })
+          quotes.push(params[0])
+          return reply({ value: opts.fees?.[quotes.length - 1] ?? chain.fee })
         case "getBalance":
-          return reply({ value: opts.balance ?? 10_000_000_000 })
+          return reply({ value: chain.balance })
         case "getAccountInfo": {
           const token = opts.token
-          if (!token) throw new Error("unexpected token account read")
+          if (!token)
+            return reply({
+              value: {
+                owner: opts.sourceOwner ?? solanaLite.SYSTEM_PROGRAM_ID,
+                lamports: chain.balance,
+                data: [Buffer.from(opts.sourceData ?? []).toString("base64"), "base64"],
+              },
+            })
           const source = getAssociatedTokenAddressSync(
             new PublicKey(MINT),
             new PublicKey(from),
@@ -100,6 +116,7 @@ async function fixture(
         case "getEpochInfo":
           return reply({ epoch: 100 })
         case "sendTransaction":
+          wires.push(params[0])
           return reply(String(params[0]).slice(0, 8))
         case "getSignatureStatuses":
           return reply({ value: [opts.status === "never" ? null : { confirmationStatus: "finalized", err: null }] })
@@ -131,14 +148,14 @@ async function fixture(
         "--from",
         "cold",
         "--amount",
-        opts.token ? "1" : "0.1",
+        opts.amount ?? (opts.token ? "1" : "0.1"),
         "--asset",
         opts.token ? MINT : "SOL",
         "--json",
       ],
       deps,
     )
-  return { deps, stdout, stderr, methods, rentSizes, transfer }
+  return { deps, stdout, stderr, methods, rentSizes, transfer, chain, wires, quotes }
 }
 
 /** Mint TLV fixtures; SPL's account sizing is the independent oracle, never the code under test. */
@@ -157,6 +174,159 @@ function tokenMint(extensions: Array<{ type: ExtensionType; body: Uint8Array }>)
   }
   return data
 }
+
+describe("BE-2596: SOL max", () => {
+  function sentLamports(f: Awaited<ReturnType<typeof fixture>>): bigint {
+    const tx = Transaction.from(Buffer.from(f.wires[0] ?? "", "base64"))
+    expect(tx.verifySignatures()).toBe(true)
+    expect(tx.serializeMessage().toString("base64")).toBe(f.quotes.at(-1) ?? "")
+    const instruction = tx.instructions[0]
+    if (!instruction) throw new Error("missing transfer instruction")
+    const transfer = SystemInstruction.decodeTransfer(instruction)
+    expect(transfer.toPubkey.toBase58()).toBe(DESTINATION)
+    return BigInt(transfer.lamports)
+  }
+
+  test("sends balance minus the exact quoted fee, empties the system wallet with zero rent reserve, and signs that message once", async () => {
+    const f = await fixture({ amount: "max", balance: 1_000_000_000, fee: 12_345 })
+    expect(await f.transfer()).toBe(0)
+    expect(sentLamports(f)).toBe(999_987_655n)
+    expect(f.wires).toHaveLength(1)
+    expect(lastJson(f.stdout.text)).toMatchObject({ amount: "0.999987655", amountRaw: "999987655" })
+    expect(f.stdout.text).toContain("source reserve 0 lamports (source emptied)")
+    expect(f.methods).not.toContain("getMinimumBalanceForRentExemption")
+    const sendIndex = f.methods.indexOf("sendTransaction")
+    expect(f.methods[sendIndex - 1]).toBe("getFeeForMessage")
+  })
+
+  for (const balance of [0, 4_999, 5_000]) {
+    test(`${balance} lamports cannot cover the fee and a positive send; no confirmation or signature`, async () => {
+      const f = await fixture({ amount: "max", balance })
+      let confirms = 0
+      f.deps.promptLine = async () => {
+        confirms++
+        return "confirm"
+      }
+      const signing = spyOn(solanaLite, "signMessage")
+      try {
+        expect(await f.transfer()).toBe(1)
+        expect(lastJson(f.stdout.text)).toMatchObject({ code: "TRANSFER_INSUFFICIENT_FUNDS" })
+        expect(f.stdout.text).toContain("max leaves nothing to send")
+        expect(confirms).toBe(0)
+        expect(signing).not.toHaveBeenCalled()
+        expect(f.wires).toHaveLength(0)
+      } finally {
+        signing.mockRestore()
+      }
+    })
+  }
+
+  test("an unavailable fee refuses instead of guessing a fee buffer", async () => {
+    const f = await fixture({ amount: "max", fee: null })
+    expect(await f.transfer()).toBe(1)
+    expect(f.stdout.text).toContain("could not quote the SOL max fee")
+    expect(f.wires).toHaveLength(0)
+  })
+
+  test("a fee change while quoting is resolved before confirmation", async () => {
+    const f = await fixture({ amount: "max", fees: [5_000, 6_000, 6_000], fee: 6_000 })
+    expect(await f.transfer()).toBe(0)
+    expect(sentLamports(f)).toBe(BigInt(f.chain.balance - 6_000))
+  })
+
+  test("an unstable fee quote has a bounded refusal without signing", async () => {
+    const f = await fixture({ amount: "max", fees: [5_000, 6_000, 7_000] })
+    expect(await f.transfer()).toBe(1)
+    expect(f.quotes).toHaveLength(3)
+    expect(f.stdout.text).toContain("fee quote kept changing")
+    expect(f.wires).toHaveLength(0)
+  })
+
+  for (const change of ["fee", "balance"] as const) {
+    test(`a ${change} change during confirmation refetches and reconfirms the exact new amount`, async () => {
+      const f = await fixture({ amount: "max" })
+      let confirms = 0
+      f.deps.promptLine = async () => {
+        confirms++
+        if (confirms === 1) {
+          if (change === "fee") f.chain.fee = (f.chain.fee ?? 0) + 7_000
+          else f.chain.balance += 7_000
+        }
+        return "confirm"
+      }
+      expect(await f.transfer()).toBe(0)
+      expect(confirms).toBe(2)
+      expect(sentLamports(f)).toBe(BigInt(f.chain.balance - (f.chain.fee ?? 0)))
+      expect(lastJson(f.stdout.text).amountRaw).toBe(String(f.chain.balance - (f.chain.fee ?? 0)))
+      expect(f.stderr.text).toContain("review and confirm the refreshed amount")
+      expect(f.wires).toHaveLength(1)
+    })
+  }
+
+  test("a wallet that keeps changing is refused after three confirmations without a signature", async () => {
+    const f = await fixture({ amount: "max" })
+    let confirms = 0
+    f.deps.promptLine = async () => {
+      confirms++
+      f.chain.balance += 1
+      return "confirm"
+    }
+    expect(await f.transfer()).toBe(1)
+    expect(confirms).toBe(3)
+    expect(f.stdout.text).toContain("kept changing during confirmation")
+    expect(f.wires).toHaveLength(0)
+  })
+
+  test("declining a changed amount never broadcasts the old or new amount", async () => {
+    const f = await fixture({ amount: "max" })
+    let confirms = 0
+    f.deps.promptLine = async () => {
+      confirms++
+      f.chain.balance += 1
+      return confirms === 1 ? "confirm" : "no"
+    }
+    expect(await f.transfer()).toBe(1)
+    expect(lastJson(f.stdout.text)).toMatchObject({ code: "DESTINATION_NOT_CONFIRMED" })
+    expect(f.wires).toHaveLength(0)
+  })
+
+  for (const source of [{ sourceData: new Uint8Array(80) }, { sourceOwner: solanaLite.TOKEN_PROGRAM_ID }]) {
+    test(`an unsupported source (${Object.keys(source)[0]}) cannot be swept by a plain system transfer`, async () => {
+      const f = await fixture({ amount: "max", ...source })
+      expect(await f.transfer()).toBe(1)
+      expect(f.stdout.text).toContain("requires a system wallet with no account data")
+      expect(f.wires).toHaveLength(0)
+    })
+  }
+
+  test("SOL max still broadcasts at most once when the send is rate limited", async () => {
+    const f = await fixture({ amount: "max", rateLimit: { sendTransaction: 1 } })
+    expect(await f.transfer()).toBe(3)
+    expect(f.methods.filter((method) => method === "sendTransaction")).toHaveLength(1)
+    expect(f.stderr.text).toContain("rate-limited this CLI after the transaction was signed")
+  })
+
+  for (const program of [solanaLite.TOKEN_PROGRAM_ID, solanaLite.TOKEN_2022_PROGRAM_ID]) {
+    test(`token max transfers the entire raw balance under ${program}`, async () => {
+      const f = await fixture({ amount: "max", token: { program, mintData: tokenMint([]) } })
+      expect(await f.transfer()).toBe(0)
+      const tx = Transaction.from(Buffer.from(f.wires[0] ?? "", "base64"))
+      const transfer = tx.instructions.at(-1)
+      if (!transfer) throw new Error("missing token transfer instruction")
+      expect(transfer.programId.toBase58()).toBe(program)
+      expect(transfer.data[0]).toBe(12) // TransferChecked
+      expect(transfer.data.readBigUInt64LE(1)).toBe(2_000_000n)
+      expect(lastJson(f.stdout.text)).toMatchObject({ amount: "2", amountRaw: "2000000" })
+    })
+  }
+
+  test("vault fund retains its decimal-only amount contract", async () => {
+    const f = await fixture()
+    expect(await run(["vault", "fund", DESTINATION, "--amount", "max", "--asset", "SOL", "--json"], f.deps)).toBe(2)
+    expect(f.stdout.text).toContain("funding a wallet takes no max")
+    expect(f.methods).toHaveLength(0)
+  })
+})
 
 describe("BE-1551 review: account rent gates the command before confirmation and signing", () => {
   const fee = { type: ExtensionType.TransferFeeConfig, body: new Uint8Array(108) }

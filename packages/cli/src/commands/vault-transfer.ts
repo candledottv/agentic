@@ -37,6 +37,7 @@ import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { createEvmRpc, EVM_RPC_URL_ENV, resolveEvmRpcUrl, rpcHostOf } from "../evm-lite"
 import { resolveSolanaEndpoint, solanaClientFor } from "../solana-endpoint"
+import { VaultError } from "../vault/errors"
 import { assertHoodChain, assertWalletLockFree, readHoodTeeServer } from "../vault/evm-tee"
 import { assertSolanaDestination, runEvmTransfer } from "../vault/evm-transfer"
 import { reconcileFundingReceipts } from "../vault/funding-receipts"
@@ -90,7 +91,7 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
   const asset = parsed.values["--asset"]
   const fromLabel = parsed.values["--from"]
   const rpcUrlFlag = parsed.values["--rpc-url"]
-  if (!amount) return usage(ctx, "--amount <n> is required.")
+  if (!amount) return usage(ctx, "--amount <n|max> is required.")
   if (!asset) return usage(ctx, "--asset SOL|<mint>|ETH|USDG|<0x token> is required.")
   if (!fromLabel) return usage(ctx, "--from <label> is required.")
   // The flag is checked before unlock, as it always was, by the shared Solana rule (BE-355, D1),
@@ -198,25 +199,45 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
     const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, to], solana.rpc, ctx)
     if (reconciled !== null) return reconciled
 
-    const plan = await solana.read(() =>
-      planTransfer({
-        from: fromEntry.address,
-        to,
-        amount,
-        asset,
-        rpc: solana.rpc,
-      }),
-    )
-    const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
+    const buildPlan = () =>
+      solana.read(() =>
+        planTransfer({
+          from: fromEntry.address,
+          to,
+          amount,
+          asset,
+          rpc: solana.rpc,
+        }),
+      )
+    let plan = await buildPlan()
+    let feeQuote =
+      plan.solMax?.fee ?? (await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions)))
     displayTransferPlan(ctx, plan, feeQuote)
-    // BE-1551 (A8): a key that cannot pay refuses here, before the confirmation, with nothing signed.
     await assertTransferAffordable(solana, plan, feeQuote)
     if (promoted) {
       const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey))
       if (notice !== undefined) note(notice)
     }
-    // The one typed confirmation; anything but `confirm` refuses with nothing signed.
-    await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: to })
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: to })
+      if (!plan.solMax) break
+      // Re-read after the human's prompt. Sign the refreshed quote's exact blockhash, and never
+      // silently replace a confirmed amount. No retry is allowed after a broadcast.
+      const refreshed = await buildPlan()
+      const unchanged = refreshed.amountRaw === plan.amountRaw && refreshed.solMax?.fee === plan.solMax.fee
+      plan = refreshed
+      feeQuote = refreshed.solMax?.fee ?? null
+      if (unchanged) break
+      if (attempt === 2) {
+        throw new VaultError(
+          "VAULT_UNREADABLE",
+          "The SOL max balance or fee kept changing during confirmation. Nothing was signed or sent; retry when the wallet and RPC are stable.",
+        )
+      }
+      note("SOL max balance or fee changed; review and confirm the refreshed amount.")
+      displayTransferPlan(ctx, plan, feeQuote)
+      await assertTransferAffordable(solana, plan, feeQuote)
+    }
 
     const secret = await decryptKey(vault, fromEntry.id)
     try {

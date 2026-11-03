@@ -20,6 +20,7 @@ import {
   isRateLimited,
   pubkeyFromSecret,
   type SolanaRpc,
+  SYSTEM_PROGRAM_ID,
   serializeSignedTransaction,
   signMessage,
   systemTransfer,
@@ -90,6 +91,8 @@ export interface TransferPlan {
   sourceTokenAccount?: string
   /** BE-1551: rent the fee payer pays to create the destination's token account, when it is missing. */
   accountRent?: bigint
+  /** SOL max is quoted and signed with this same blockhash; an emptied system account keeps no rent. */
+  solMax?: { blockhash: string; fee: bigint; reserve: bigint }
   /**
    * What a failed send needs to earn one of R5's four names. Present for every token move, so that
    * a classic mint answers `undefined` from one code path rather than two.
@@ -124,6 +127,73 @@ async function tokenAccountFrozen(rpc: SolanaRpc, address: string): Promise<{ ex
   return { exists: true, frozen: account.data[TOKEN_ACCOUNT_STATE_OFFSET] === TOKEN_ACCOUNT_STATE_FROZEN }
 }
 
+function rawToDecimal(raw: bigint, decimals: number): string {
+  if (decimals === 0) return raw.toString()
+  const digits = raw.toString().padStart(decimals + 1, "0")
+  return `${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`.replace(/\.?0+$/, "")
+}
+
+/** Only a plain system wallet can use the admitted SystemProgram.transfer shape. */
+async function planSolMax(rpc: SolanaRpc, from: string, to: string): Promise<TransferPlan> {
+  if (from === to) throw new VaultError("VAULT_INDEX_INVALID", "SOL max needs a destination different from the source.")
+  const account = await rpc.getAccountInfo(from)
+  if (account && (account.owner !== SYSTEM_PROGRAM_ID || account.data.length !== 0)) {
+    throw new VaultError(
+      "VAULT_INDEX_INVALID",
+      "SOL max requires a system wallet with no account data; nonce and program accounts cannot use this transfer shape. Nothing was signed or sent.",
+    )
+  }
+  const balance = account?.lamports ?? 0n
+  // This transfer empties the source. There is no persistent account whose rent must be retained.
+  const reserve = 0n
+  const blockhash = await rpc.getLatestBlockhash()
+  let raw = balance
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const instructions = [systemTransfer(decodePubkey(from), decodePubkey(to), raw)]
+    const message = compileLegacyMessage({ feePayer: decodePubkey(from), recentBlockhash: blockhash, instructions })
+    const fee = await rpc.getFeeForMessage(toBase64(message))
+    if (fee === null) {
+      throw new VaultError(
+        "VAULT_UNREADABLE",
+        "The RPC could not quote the SOL max fee. Nothing was signed or sent; retry with a fresh RPC quote.",
+      )
+    }
+    const available = balance - fee - reserve
+    if (available <= 0n) {
+      throw new VaultError(
+        "TRANSFER_INSUFFICIENT_FUNDS",
+        `${from} holds ${balance} lamports, not above the ${fee} lamport fee; max leaves nothing to send. Nothing was signed or sent.`,
+        { suggestion: "Fund the key with SOL first." },
+      )
+    }
+    if (raw === available) {
+      const amount = rawToDecimal(raw, 9)
+      return {
+        asset: "SOL",
+        amount,
+        amountRaw: raw,
+        decimals: 9,
+        from,
+        to,
+        instructions,
+        solMax: { blockhash, fee, reserve },
+        displayLines: [
+          `fee payer   ${from}`,
+          `destination ${to}`,
+          `amount      ${amount} SOL = ${raw} lamports (max)`,
+          "mint        (native SOL)",
+          `source reserve ${reserve} lamports (source emptied)`,
+        ],
+      }
+    }
+    raw = available
+  }
+  throw new VaultError(
+    "VAULT_UNREADABLE",
+    "The SOL max fee quote kept changing. Nothing was signed or sent; retry when the RPC is stable.",
+  )
+}
+
 /**
  * Builds the plan over the caller's client (BE-355: one client per command, built with `sleep`,
  * so every read here is retried once on a rate limit). A rate limit that survives the retry is
@@ -139,10 +209,15 @@ export async function planTransfer(input: {
   const asset = input.asset.toUpperCase()
   const fromKey = decodePubkey(input.from)
   const toKey = decodePubkey(input.to)
+  const max = input.amount.toLowerCase() === "max"
   if (asset === "SOL") {
+    if (max) return planSolMax(input.rpc, input.from, input.to)
     const raw = decimalToRaw(input.amount, 9)
     if (raw === null || raw === 0n) {
-      throw new VaultError("VAULT_INDEX_INVALID", "--amount must be a positive SOL decimal with at most 9 places.")
+      throw new VaultError(
+        "VAULT_INDEX_INVALID",
+        "--amount must be max or a positive SOL decimal with at most 9 places.",
+      )
     }
     return {
       asset: "SOL",
@@ -175,16 +250,24 @@ export async function planTransfer(input: {
     throw new VaultError("VAULT_UNREADABLE", `Could not read mint ${mintAddress}: ${asMessage(error)}`)
   }
   const decimals = profile.decimals
-  const raw = decimalToRaw(input.amount, decimals)
+  const source = ataFor(profile, fromKey)
+  const raw = max
+    ? tokenAccountAmount((await rpc.getAccountInfo(encodePubkey(source)))?.data ?? new Uint8Array())
+    : decimalToRaw(input.amount, decimals)
+  if (max && raw === 0n) {
+    throw new VaultError(
+      "TRANSFER_INSUFFICIENT_FUNDS",
+      `${input.from} holds no ${input.asset} in its source token account; max leaves nothing to send. Nothing was signed or sent.`,
+    )
+  }
   if (raw === null || raw === 0n) {
     throw new VaultError(
       "VAULT_INDEX_INVALID",
-      `--amount must be a positive decimal with at most ${decimals} decimal places.`,
+      `--amount must be max or a positive decimal with at most ${decimals} decimal places.`,
     )
   }
   const mint = decodePubkey(mintAddress)
   const tokenProgram = decodePubkey(profile.tokenProgram)
-  const source = ataFor(profile, fromKey)
   const destination = ataFor(profile, toKey)
   const instructions: Instruction[] = []
   const accountCreationLines: string[] = []
@@ -234,7 +317,7 @@ export async function planTransfer(input: {
   )
   return {
     asset: asset === "USDC" ? "USDC" : mintAddress,
-    amount: input.amount,
+    amount: max ? rawToDecimal(raw, decimals) : input.amount,
     amountRaw: raw,
     decimals,
     mint: mintAddress,
@@ -251,7 +334,7 @@ export async function planTransfer(input: {
     displayLines: [
       `fee payer   ${input.from}`,
       `destination ${input.to}`,
-      `amount      ${input.amount} (${raw} raw, ${decimals} dp)`,
+      `amount      ${max ? rawToDecimal(raw, decimals) : input.amount} (${raw} raw, ${decimals} dp)${max ? " (max)" : ""}`,
       `mint        ${mintAddress}`,
       `program     ${profile.tokenProgram}${profile.token2022 ? " (Token-2022)" : ""}`,
       ...accountCreationLines,
@@ -371,7 +454,7 @@ export async function signAndBroadcastTransfer(input: {
   if (encodePubkey(feePayer) !== input.plan.from) {
     throw new VaultError("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned fee payer.")
   }
-  const blockhash = await input.solana.read(() => rpc.getLatestBlockhash())
+  const blockhash = input.plan.solMax?.blockhash ?? (await input.solana.read(() => rpc.getLatestBlockhash()))
   const message = compileLegacyMessage({
     feePayer,
     recentBlockhash: blockhash,

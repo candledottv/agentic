@@ -378,7 +378,7 @@ describe("T6: nothing is printed before a refusal", () => {
   test("vault transfer with a missing --amount and no endpoint: no notice, no host line, no write, zero fetches", async () => {
     const h = await vaultHarness({ config: withWork() })
     expect(await run(["vault", "transfer", DESTINATION, "--asset", "SOL", "--from", "cold"], h.deps)).toBe(2)
-    expect(h.stderr.text).toContain("--amount <n> is required.")
+    expect(h.stderr.text).toContain("--amount <n|max> is required.")
     expect(h.stderr.text).not.toContain(NOTICE_FIRST_LINE)
     expect(h.stderr.text).not.toContain("Solana RPC:")
     expect((await h.deps.readConfig()).publicRpcNotice).toBeUndefined()

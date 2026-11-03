@@ -77410,7 +77410,7 @@ var HELP = {
       },
       {
         invocation: "transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]",
-        description: "Sign a transfer locally from a vault key or a promoted TEE wallet (Solana, or Hood: refused while a sequenced trade holds the wallet's nonce, and when that cannot be read). From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint. One verification: the unlock names the send; after the decoded display you type confirm. No --yes"
+        description: "Sign a transfer locally from a vault key or a promoted TEE wallet (Solana, or Hood: refused while a sequenced trade holds the wallet's nonce, and when that cannot be read). From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint. Max sends SOL minus the quoted fee (zero source reserve when emptied), or the whole token balance; EVM native max deducts the fee cap. SOL max refreshes before signing; a changed amount or fee requires a fresh confirm. One verification: the unlock names the send; after the decoded display you type confirm. No --yes"
       },
       {
         invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>] [--to-key <prefix|label>]",
@@ -82661,14 +82661,69 @@ async function tokenAccountFrozen(rpc, address) {
     return { exists: false, frozen: false };
   return { exists: true, frozen: account.data[TOKEN_ACCOUNT_STATE_OFFSET2] === TOKEN_ACCOUNT_STATE_FROZEN2 };
 }
+function rawToDecimal2(raw, decimals) {
+  if (decimals === 0)
+    return raw.toString();
+  const digits = raw.toString().padStart(decimals + 1, "0");
+  return `${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`.replace(/\.?0+$/, "");
+}
+async function planSolMax(rpc, from, to) {
+  if (from === to)
+    throw new VaultError("VAULT_INDEX_INVALID", "SOL max needs a destination different from the source.");
+  const account = await rpc.getAccountInfo(from);
+  if (account && (account.owner !== SYSTEM_PROGRAM_ID || account.data.length !== 0)) {
+    throw new VaultError("VAULT_INDEX_INVALID", "SOL max requires a system wallet with no account data; nonce and program accounts cannot use this transfer shape. Nothing was signed or sent.");
+  }
+  const balance = account?.lamports ?? 0n;
+  const reserve = 0n;
+  const blockhash = await rpc.getLatestBlockhash();
+  let raw = balance;
+  for (let attempt = 0;attempt < 3; attempt++) {
+    const instructions = [systemTransfer(decodePubkey(from), decodePubkey(to), raw)];
+    const message = compileLegacyMessage({ feePayer: decodePubkey(from), recentBlockhash: blockhash, instructions });
+    const fee = await rpc.getFeeForMessage(toBase642(message));
+    if (fee === null) {
+      throw new VaultError("VAULT_UNREADABLE", "The RPC could not quote the SOL max fee. Nothing was signed or sent; retry with a fresh RPC quote.");
+    }
+    const available = balance - fee - reserve;
+    if (available <= 0n) {
+      throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${from} holds ${balance} lamports, not above the ${fee} lamport fee; max leaves nothing to send. Nothing was signed or sent.`, { suggestion: "Fund the key with SOL first." });
+    }
+    if (raw === available) {
+      const amount = rawToDecimal2(raw, 9);
+      return {
+        asset: "SOL",
+        amount,
+        amountRaw: raw,
+        decimals: 9,
+        from,
+        to,
+        instructions,
+        solMax: { blockhash, fee, reserve },
+        displayLines: [
+          `fee payer   ${from}`,
+          `destination ${to}`,
+          `amount      ${amount} SOL = ${raw} lamports (max)`,
+          "mint        (native SOL)",
+          `source reserve ${reserve} lamports (source emptied)`
+        ]
+      };
+    }
+    raw = available;
+  }
+  throw new VaultError("VAULT_UNREADABLE", "The SOL max fee quote kept changing. Nothing was signed or sent; retry when the RPC is stable.");
+}
 async function planTransfer(input) {
   const asset = input.asset.toUpperCase();
   const fromKey = decodePubkey(input.from);
   const toKey = decodePubkey(input.to);
+  const max = input.amount.toLowerCase() === "max";
   if (asset === "SOL") {
+    if (max)
+      return planSolMax(input.rpc, input.from, input.to);
     const raw2 = decimalToRaw4(input.amount, 9);
     if (raw2 === null || raw2 === 0n) {
-      throw new VaultError("VAULT_INDEX_INVALID", "--amount must be a positive SOL decimal with at most 9 places.");
+      throw new VaultError("VAULT_INDEX_INVALID", "--amount must be max or a positive SOL decimal with at most 9 places.");
     }
     return {
       asset: "SOL",
@@ -82699,13 +82754,16 @@ async function planTransfer(input) {
     throw new VaultError("VAULT_UNREADABLE", `Could not read mint ${mintAddress}: ${asMessage(error)}`);
   }
   const decimals = profile.decimals;
-  const raw = decimalToRaw4(input.amount, decimals);
+  const source = ataFor(profile, fromKey);
+  const raw = max ? tokenAccountAmount((await rpc.getAccountInfo(encodePubkey(source)))?.data ?? new Uint8Array) : decimalToRaw4(input.amount, decimals);
+  if (max && raw === 0n) {
+    throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${input.from} holds no ${input.asset} in its source token account; max leaves nothing to send. Nothing was signed or sent.`);
+  }
   if (raw === null || raw === 0n) {
-    throw new VaultError("VAULT_INDEX_INVALID", `--amount must be a positive decimal with at most ${decimals} decimal places.`);
+    throw new VaultError("VAULT_INDEX_INVALID", `--amount must be max or a positive decimal with at most ${decimals} decimal places.`);
   }
   const mint = decodePubkey(mintAddress);
   const tokenProgram = decodePubkey(profile.tokenProgram);
-  const source = ataFor(profile, fromKey);
   const destination = ataFor(profile, toKey);
   const instructions = [];
   const accountCreationLines = [];
@@ -82742,7 +82800,7 @@ async function planTransfer(input) {
   }));
   return {
     asset: asset === "USDC" ? "USDC" : mintAddress,
-    amount: input.amount,
+    amount: max ? rawToDecimal2(raw, decimals) : input.amount,
     amountRaw: raw,
     decimals,
     mint: mintAddress,
@@ -82759,7 +82817,7 @@ async function planTransfer(input) {
     displayLines: [
       `fee payer   ${input.from}`,
       `destination ${input.to}`,
-      `amount      ${input.amount} (${raw} raw, ${decimals} dp)`,
+      `amount      ${max ? rawToDecimal2(raw, decimals) : input.amount} (${raw} raw, ${decimals} dp)${max ? " (max)" : ""}`,
       `mint        ${mintAddress}`,
       `program     ${profile.tokenProgram}${profile.token2022 ? " (Token-2022)" : ""}`,
       ...accountCreationLines,
@@ -82839,7 +82897,7 @@ async function signAndBroadcastTransfer(input) {
   if (encodePubkey(feePayer) !== input.plan.from) {
     throw new VaultError("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned fee payer.");
   }
-  const blockhash = await input.solana.read(() => rpc.getLatestBlockhash());
+  const blockhash = input.plan.solMax?.blockhash ?? await input.solana.read(() => rpc.getLatestBlockhash());
   const message = compileLegacyMessage({
     feePayer,
     recentBlockhash: blockhash,
@@ -109039,6 +109097,8 @@ async function vaultFund(args, ctx) {
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase();
   if (!amount)
     return usage(ctx, "--amount <n> is required.");
+  if (amount.toLowerCase() === "max")
+    return usage(ctx, "--amount must be a number; funding a wallet takes no max.");
   if (asset !== "SOL" && asset !== "USDC")
     return usage(ctx, "--asset must be SOL or USDC.");
   const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
@@ -113262,6 +113322,7 @@ init_args();
 init_deps();
 init_evm_lite();
 init_solana_endpoint();
+init_errors2();
 init_evm_tee();
 init_evm_transfer();
 init_promote_support();
@@ -113284,7 +113345,7 @@ async function vaultTransfer(args, ctx) {
   const fromLabel = parsed.values["--from"];
   const rpcUrlFlag = parsed.values["--rpc-url"];
   if (!amount)
-    return usage(ctx, "--amount <n> is required.");
+    return usage(ctx, "--amount <n|max> is required.");
   if (!asset)
     return usage(ctx, "--asset SOL|<mint>|ETH|USDG|<0x token> is required.");
   if (!fromLabel)
@@ -113380,14 +113441,15 @@ async function vaultTransfer(args, ctx) {
     const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, to], solana.rpc, ctx);
     if (reconciled !== null)
       return reconciled;
-    const plan2 = await solana.read(() => planTransfer({
+    const buildPlan = () => solana.read(() => planTransfer({
       from: fromEntry.address,
       to,
       amount,
       asset,
       rpc: solana.rpc
     }));
-    const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan2.from, plan2.instructions));
+    let plan2 = await buildPlan();
+    let feeQuote = plan2.solMax?.fee ?? await solana.read(() => quoteTransferFee(solana.rpc, plan2.from, plan2.instructions));
     displayTransferPlan(ctx, plan2, feeQuote);
     await assertTransferAffordable(solana, plan2, feeQuote);
     if (promoted) {
@@ -113395,7 +113457,23 @@ async function vaultTransfer(args, ctx) {
       if (notice2 !== undefined)
         note(notice2);
     }
-    await confirmSend(ctx, { amount: plan2.amount, asset: plan2.asset, address: to });
+    for (let attempt = 0;attempt < 3; attempt++) {
+      await confirmSend(ctx, { amount: plan2.amount, asset: plan2.asset, address: to });
+      if (!plan2.solMax)
+        break;
+      const refreshed = await buildPlan();
+      const unchanged = refreshed.amountRaw === plan2.amountRaw && refreshed.solMax?.fee === plan2.solMax.fee;
+      plan2 = refreshed;
+      feeQuote = refreshed.solMax?.fee ?? null;
+      if (unchanged)
+        break;
+      if (attempt === 2) {
+        throw new VaultError("VAULT_UNREADABLE", "The SOL max balance or fee kept changing during confirmation. Nothing was signed or sent; retry when the wallet and RPC are stable.");
+      }
+      note("SOL max balance or fee changed; review and confirm the refreshed amount.");
+      displayTransferPlan(ctx, plan2, feeQuote);
+      await assertTransferAffordable(solana, plan2, feeQuote);
+    }
     const secret = await decryptKey(vault, fromEntry.id);
     try {
       const result = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan: plan2 });
