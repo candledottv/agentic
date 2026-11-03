@@ -64,6 +64,8 @@ const REASON_WORDS: Record<string, string> = {
   embedded_wallet_not_permitted: "this key may not use the embedded wallet",
   not_recipient: "the fees go to someone else, or the token has no fee vault",
   fee_wallet_designated: "the fees go to this launch's designated fee wallet, which claims them itself",
+  claimable_by_key: "claimable by this key",
+  claimable_via_web_session: "the fees go to this account's web wallet; a signed-in session claims them",
   insufficient_gas: "the recipient wallet cannot cover the network fee",
 }
 
@@ -99,7 +101,7 @@ export async function feesList(args: string[], ctx: CommandContext): Promise<num
         const status = row.unreadable
           ? "could not be read"
           : row.claimable
-            ? `claimable: ${amountsText(row.claimableAmounts, missing)}`
+            ? `${row.reason === "claimable_by_key" ? "claimable by this key" : "claimable"}: ${amountsText(row.claimableAmounts, missing)}`
             : `not claimable: ${reasonText(row.reason, missing)}`
         return [
           safeText(String(row.symbol ?? row.name ?? row.mint)),

@@ -40,6 +40,7 @@ describe("candle fees (FE-438)", () => {
               recipient: "W1",
               claimableAmounts: [SOL],
               claimable: true,
+              reason: "claimable_by_key",
             },
             {
               mint: "MintB",
@@ -50,6 +51,16 @@ describe("candle fees (FE-438)", () => {
               claimable: false,
               reason: "below_dust",
             },
+            {
+              mint: "MintC",
+              chain: "solana",
+              symbol: "CCC",
+              recipient: "W3",
+              claimableAmounts: [SOL],
+              claimable: false,
+              reason: "claimable_via_web_session",
+              note: "a signed-in web session claims them",
+            },
           ],
           isDone: false,
           continueCursor: "next1",
@@ -57,8 +68,9 @@ describe("candle fees (FE-438)", () => {
     })
     expect(await run(["fees", "--limit", "2"], f.deps)).toBe(0)
     expect(f.calls[0]).toMatchObject({ path: "/api/v1/agent/fees?limit=2", method: "GET" })
-    expect(f.stdout.text).toContain("claimable: 1.5 SOL")
+    expect(f.stdout.text).toContain("claimable by this key: 1.5 SOL")
     expect(f.stdout.text).toContain("not claimable: under the dust floor")
+    expect(f.stdout.text).toContain("not claimable: the fees go to this account's web wallet")
     expect(f.stdout.text).toContain("More: candle fees --cursor next1")
   })
 

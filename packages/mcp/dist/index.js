@@ -7303,7 +7303,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_claim_staking_reward", args, getConfig(), doFetch));
   register("candle_get_fees", {
     title: "Read the creator fees this account's tokens can pay",
-    description: "The tokens launched by the account's own wallets, with what each could pay now in creator fees " + "(raw units from direct chain reads) and `claimable: true` or the `reason` it is not. Reads only; " + "moves nothing. It returns no earned or paid-out totals. An unreadable token is marked, never " + "shown as zero. Paged: pass `continueCursor` back as `cursor`.",
+    description: "The tokens launched by the account's own wallets, with what each could pay now in creator fees " + "(raw units from direct chain reads) and a `reason` saying who can claim: `claimable_by_key` on a " + "claimable Solana row, and otherwise why this key cannot (including `claimable_via_web_session` " + "and `fee_wallet_designated`, which name whose authority collects). Reads only; " + "moves nothing. It returns no earned or paid-out totals. An unreadable token is marked, never " + "shown as zero. Paged: pass `continueCursor` back as `cursor`.",
     inputSchema: getFeesShape
   }, async (args) => callAndRelay("candle_get_fees", args, getConfig(), doFetch));
   register("candle_claim_fees", {

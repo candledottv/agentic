@@ -45355,7 +45355,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_claim_staking_reward", args, getConfig(), doFetch));
   register("candle_get_fees", {
     title: "Read the creator fees this account's tokens can pay",
-    description: "The tokens launched by the account's own wallets, with what each could pay now in creator fees " + "(raw units from direct chain reads) and `claimable: true` or the `reason` it is not. Reads only; " + "moves nothing. It returns no earned or paid-out totals. An unreadable token is marked, never " + "shown as zero. Paged: pass `continueCursor` back as `cursor`.",
+    description: "The tokens launched by the account's own wallets, with what each could pay now in creator fees " + "(raw units from direct chain reads) and a `reason` saying who can claim: `claimable_by_key` on a " + "claimable Solana row, and otherwise why this key cannot (including `claimable_via_web_session` " + "and `fee_wallet_designated`, which name whose authority collects). Reads only; " + "moves nothing. It returns no earned or paid-out totals. An unreadable token is marked, never " + "shown as zero. Paged: pass `continueCursor` back as `cursor`.",
     inputSchema: getFeesShape
   }, async (args) => callAndRelay("candle_get_fees", args, getConfig(), doFetch));
   register("candle_claim_fees", {
@@ -89775,6 +89775,8 @@ var REASON_WORDS = {
   embedded_wallet_not_permitted: "this key may not use the embedded wallet",
   not_recipient: "the fees go to someone else, or the token has no fee vault",
   fee_wallet_designated: "the fees go to this launch's designated fee wallet, which claims them itself",
+  claimable_by_key: "claimable by this key",
+  claimable_via_web_session: "the fees go to this account's web wallet; a signed-in session claims them",
   insufficient_gas: "the recipient wallet cannot cover the network fee"
 };
 function reasonText(reason, missing) {
@@ -89809,7 +89811,7 @@ async function feesList(args, ctx) {
       notice(ctx.deps, "stdout", "note", "No launched tokens on this account.");
     else {
       const rows = page.map((row) => {
-        const status = row.unreadable ? "could not be read" : row.claimable ? `claimable: ${amountsText(row.claimableAmounts, missing)}` : `not claimable: ${reasonText(row.reason, missing)}`;
+        const status = row.unreadable ? "could not be read" : row.claimable ? `${row.reason === "claimable_by_key" ? "claimable by this key" : "claimable"}: ${amountsText(row.claimableAmounts, missing)}` : `not claimable: ${reasonText(row.reason, missing)}`;
         return [
           safeText(String(row.symbol ?? row.name ?? row.mint)),
           safeText(String(row.chain)),

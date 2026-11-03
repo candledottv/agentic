@@ -2892,8 +2892,12 @@ export interface CandleWallets {
      */
     selfBalances(opts?: SelfBalancesOptions): Promise<SelfBalancesResult>;
 }
-/** Why a token's creator fees are not claimable by this key (FE-438; `GET /agent/fees`). */
-export type AgentFeeReason = "below_dust" | "wallet_not_signable" | "delegation_off" | "embedded_wallet_not_permitted" | "not_recipient" | "fee_wallet_designated" | "insufficient_gas";
+/**
+ * Who can claim a token's creator fees (FE-438; `GET /agent/fees`). On a claimable row the
+ * reason is `claimable_by_key` (custody, BE-2598); every other value says why this key cannot
+ * claim and, where custody decides, who can.
+ */
+export type AgentFeeReason = "below_dust" | "wallet_not_signable" | "delegation_off" | "embedded_wallet_not_permitted" | "not_recipient" | "fee_wallet_designated" | "claimable_by_key" | "claimable_via_web_session" | "insufficient_gas";
 /** One asset's raw amount, from direct chain reads. `symbol` is empty when nothing names the asset. */
 export interface AgentFeeAmount {
     symbol: string;
@@ -2911,7 +2915,10 @@ export interface AgentFeeToken {
     recipient: string | null;
     claimableAmounts: AgentFeeAmount[];
     claimable: boolean;
+    /** Who can claim: `claimable_by_key` on a claimable Solana row, the refusal reason otherwise. */
     reason?: AgentFeeReason;
+    /** Plain-words custody note beside `fee_wallet_designated` and `claimable_via_web_session`. */
+    note?: string;
     /** The chain read for this token failed; its amounts are unknown, not zero. */
     unreadable?: true;
 }

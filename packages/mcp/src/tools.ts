@@ -2003,7 +2003,9 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       title: "Read the creator fees this account's tokens can pay",
       description:
         "The tokens launched by the account's own wallets, with what each could pay now in creator fees " +
-        "(raw units from direct chain reads) and `claimable: true` or the `reason` it is not. Reads only; " +
+        "(raw units from direct chain reads) and a `reason` saying who can claim: `claimable_by_key` on a " +
+        "claimable Solana row, and otherwise why this key cannot (including `claimable_via_web_session` " +
+        "and `fee_wallet_designated`, which name whose authority collects). Reads only; " +
         "moves nothing. It returns no earned or paid-out totals. An unreadable token is marked, never " +
         "shown as zero. Paged: pass `continueCursor` back as `cursor`.",
       inputSchema: getFeesShape,
