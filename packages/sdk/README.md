@@ -54,11 +54,11 @@ The API key is attached as `x-api-key` when configured, except on public `tokenP
 (`launch`, `launchAsync`, `dryRunLaunch`, `getLaunchJob`, `reportActivity`, `uploadImage`)
 refuse to fetch without one and throw a plain `Error` locally instead of a server 401.
 
-## Token page About (unreleased source)
+## Token page About
 
 `candle.tokenPages` reads About and immutable section history, and submits claims, section edits,
-restores, flags and immutable updates. These methods need a human-owned SDK release before they are available in the
-published package. Token page switches default off; a server can return `404` or `feature_off`.
+restores, flags, immutable updates and comments. These methods are in the published package (0.6.14).
+Token page switches default off; a server can return `404` or `feature_off`.
 
 | Method | Access | Result |
 | --- | --- | --- |

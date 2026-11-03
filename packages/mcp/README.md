@@ -13,8 +13,8 @@ Eighteen tools are read-only and need nothing but `CANDLE_API_URL` (which alread
 production): `candle_get_market`, `candle_get_feed`, `candle_token_events`, `candle_token_card`, `candle_token_history`,
 `candle_token_page_about`, `candle_token_page_burns`, `candle_token_page_history`, `candle_token_page_updates`, `candle_token_page_comments`, `candle_token_forensics`, `candle_token_clusters`,
 `candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_get_agent_positions`, `candle_resolve_token` and `candle_get_plans`.
-The five token-page reads, `candle_token_clusters` and `candle_token_history` are unreleased source; published 0.10.25 has the original ten, and `candle_get_agent_positions` is new in 0.10.27.
-With a source build and token-page reads enabled on the deployment, those eighteen work immediately without a key.
+All of them are in the published 0.10.29; `candle_get_agent_positions` is new since 0.10.27.
+With token-page reads enabled on the deployment, those eighteen work immediately without a key.
 Install the released server with no `env` block at all and its ten public reads work immediately:
 
 ```json
@@ -410,10 +410,9 @@ Every JSON result carries `network`, epoch-ms `readAt`, `gate: { minOpenInterest
 
 SDK and local MCP cache market reads for five seconds; book and candle snapshots are never cached. CLI/MCP select testnet with `CANDLE_HYPERLIQUID_NETWORK=testnet`; SDK uses `hyperliquidNetwork: "testnet"`. These four tools are local-only and are absent from hosted MCP tool sets. MCP uses the existing `CANDLE_API_KEY` or `CANDLE_AGENT_API_KEY` configuration, with no signer PEM required. No signing, relay or `/exchange` request occurs.
 
-## Token page tools (unreleased local source)
+## Token page tools (local clients)
 
-The sixteen `candle_token_page_*` tools below are available in local MCP source and the bundled
-`candle mcp` source. They require a human-owned package release before npm installs receive them.
+The sixteen `candle_token_page_*` tools below are in the published 0.10.29 and the bundled `candle mcp`.
 They are not offered by the hosted OAuth connector. Existing OAuth consent and key grants are
 unchanged; local keys need explicit `token-pages:read` or `token-pages:write` scopes. All token-page
 switches default off: `404`/`feature_off` is a refusal, not an empty page or permission grant.
@@ -448,7 +447,7 @@ removed or unsafe versions cannot be restored. The four reads have read-only MCP
 and content mutations have mutation hints and approval classifications; content approvals retain
 `idempotencyKey` as their operation ID. The server never enables a deployment switch.
 
-Token update tools in unreleased source:
+Token update tools:
 
 | Tool | Behavior |
 | --- | --- |
@@ -462,7 +461,7 @@ All three mutations require `token-pages:write` and a durable `idempotencyKey`.
 Update bodies cannot be edited. Reporting and moderation apply to their exact post IDs.
 These tools grant no notification delivery or activation permission.
 
-Token comment tools in unreleased source:
+Token comment tools:
 
 | Tool | Behavior |
 | --- | --- |
