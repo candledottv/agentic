@@ -12,6 +12,7 @@ import {
   toChecksumAddress,
 } from "../evm-lite"
 import {
+  FEE_WALLET_DEFAULT_WARNING,
   type FeeWalletSelection,
   feeWalletGiven,
   feeWalletLines,
@@ -93,6 +94,7 @@ export const LAUNCH_ARG_SPEC: ArgSpec = {
     ...launchFlagFields.filter((field) => field.type === "boolean").map((field) => field.cli.flag),
     "--check",
     "--yes",
+    "--require-fee-wallet",
   ],
   pathFlags: ["--image", "--banner"],
 }
@@ -309,6 +311,16 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     writeUsageFailure(ctx.deps, `${(error as Error).message}. ${USAGE}`, ctx.json)
     return 2
   }
+  // BE-2572 (W6): the opt-in strict flag refuses a launch whose fee wallet would default, before
+  // any request -- under --check and --dry-run included.
+  if (parsed.booleans.has("--require-fee-wallet") && !feeWallet) {
+    writeUsageFailure(
+      ctx.deps,
+      `--require-fee-wallet needs --fee-wallet <address>: pass the wallet this launch's fees earn to. ${USAGE}`,
+      ctx.json,
+    )
+    return 2
+  }
   try {
     // Before any request, as `candle swap` checks `--amount`; the quote asset's decimals come later.
     if (flags["--buy"]?.trim() && !/^0+(\.0+)?$/.test(flags["--buy"])) launchBuyRaw(flags["--buy"], 18)
@@ -393,6 +405,9 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     const chain: TradeChain = wallet.chain === "evm" ? "hood" : "solana"
     if (chain === "hood" && flags["--dex-version"] === undefined)
       throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`)
+    // BE-2572 (W6): a live Solana launch with no fee wallet warns on stderr before anything is
+    // sent. A dry run keeps the preview's ordinary info line; Hood has no fee wallet.
+    if (chain === "solana" && !dryRun && !feeWallet) notice(ctx.deps, "stderr", "warning", FEE_WALLET_DEFAULT_WARNING)
     const buy = launchBuy(flags, chain)
     if (chain === "hood" && (Object.keys(poolRequestFields(flags)).length || feeWalletGiven(flags)))
       throw new TradingUsage(
@@ -1146,6 +1161,10 @@ async function embeddedLaunch(
     throw new TradingUsage(
       "Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.",
     )
+  // BE-2572 (W6): a live Solana launch with no fee wallet warns on stderr before anything is
+  // sent. A dry run keeps the preview's ordinary info line; Hood has no fee wallet.
+  if (chain === "solana" && !args.dryRun && !feeWalletGiven(flags))
+    notice(ctx.deps, "stderr", "warning", FEE_WALLET_DEFAULT_WARNING)
   const wallet = await embeddedLaunchWallet(ctx, key, chain)
   const uploaded = await uploadLaunchImages(ctx, key, args)
   if (typeof uploaded === "number") return uploaded

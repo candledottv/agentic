@@ -31,9 +31,11 @@ describe("CLI launch definition conformance in both directions", () => {
     const dataDriven = launchFlagFields
       .filter((field) => field.key.startsWith("socials."))
       .map((field) => field.cli.flag)
-    // --dry-run, --yes and --check are boolean controls read through `parsed.booleans`, so they
-    // have no `flags[...]` handler to find in the source.
-    expect(sorted([...handled, ...dataDriven, "--dry-run", "--yes", "--check"])).toEqual(expected)
+    // --dry-run, --yes, --check and --require-fee-wallet are boolean controls read through
+    // `parsed.booleans`, so they have no `flags[...]` handler to find in the source.
+    expect(sorted([...handled, ...dataDriven, "--dry-run", "--yes", "--check", "--require-fee-wallet"])).toEqual(
+      expected,
+    )
   })
   test("usage and help list every definition flag and its exact help sentence", () => {
     const topic = HELP.launch

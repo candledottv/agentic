@@ -231,4 +231,37 @@ describe("BE-2519: candle launch --fee-wallet", () => {
       humanText("Fee wallet: defaults to the account wallet (pass --fee-wallet <address> to change it)."),
     )
   })
+
+  // BE-2572 (W6): a real warning on a live launch, and the opt-in refusal.
+  test("a live launch warns on stderr when the fee wallet defaults, and a chosen one does not", async () => {
+    const defaulted = await fixture()
+    await run(launchArgs, defaulted.deps)
+    expect(humanText(defaulted.stderr.text)).toContain(
+      humanText(
+        "No --fee-wallet given: this launch's curve and pool fees earn to the account wallet. Pass --fee-wallet <address> to send them to another wallet.",
+      ),
+    )
+    const chosen = await fixture()
+    await run([...launchArgs, "--fee-wallet", FEE_WALLET], chosen.deps)
+    expect(humanText(chosen.stderr.text)).not.toContain("No --fee-wallet given")
+    // A dry run is not a live launch: the preview's ordinary info line says the default, loudly not.
+    const dry = await fixture()
+    expect(await run([...launchArgs, "--dry-run"], dry.deps)).toBe(0)
+    expect(humanText(dry.stderr.text)).not.toContain("No --fee-wallet given")
+  })
+
+  test("--require-fee-wallet refuses a launch without --fee-wallet, before any request", async () => {
+    for (const extra of [["--dry-run"], [], ["--check"]] as string[][]) {
+      const f = await fixture()
+      expect(await run([...launchArgs.slice(0, -1), "--require-fee-wallet", ...extra], f.deps)).toBe(2)
+      expect(f.paths()).toEqual([])
+      expect(humanText(f.stderr.text)).toContain("--require-fee-wallet needs --fee-wallet")
+    }
+    // With a fee wallet given, the strict flag changes nothing: the build is reached as today.
+    const ok = await fixture()
+    await run([...launchArgs, "--fee-wallet", FEE_WALLET, "--require-fee-wallet"], ok.deps)
+    expect(ok.calls.find((c) => c.path === "/api/v1/launch/self/build")?.body).toMatchObject({
+      feeWallet: FEE_WALLET,
+    })
+  })
 })

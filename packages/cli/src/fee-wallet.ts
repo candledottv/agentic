@@ -97,6 +97,13 @@ export function feeWalletLines(selection: FeeWalletSelection | undefined, echo?:
   ]
 }
 
+/**
+ * BE-2572 (W6): the stderr warning a live Solana launch prints when no fee wallet was given and
+ * the fees default to the account wallet. Dry runs and `--check` keep the ordinary info lines.
+ */
+export const FEE_WALLET_DEFAULT_WARNING =
+  "No --fee-wallet given: this launch's curve and pool fees earn to the account wallet. Pass --fee-wallet <address> to send them to another wallet."
+
 /** One line for a quote: the selection, or the default said plainly. */
 export function feeWalletQuoteLine(selection: FeeWalletSelection | undefined): string {
   if (!selection) return "defaults to the account wallet"

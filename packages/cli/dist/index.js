@@ -76195,7 +76195,7 @@ var LAUNCH_USAGE = `candle launch ${launchFlagFields.map((field) => {
   if (field.key === "imageUrl")
     return `--image <path>|${invocation}`;
   return "required" in field && field.required ? invocation : `[${invocation}]`;
-}).join(" ")} [--check] [--yes] [--rpc-url <url>] [--json]`;
+}).join(" ")} [--check] [--yes] [--require-fee-wallet] [--rpc-url <url>] [--json]`;
 function launchFieldProblem(flags) {
   for (const field of launchFlagFields) {
     const value = flags[field.cli.flag];
@@ -76727,7 +76727,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the account wallet, which the preview, the confirm and --check all say. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works.",
+    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the account wallet, which the preview, the confirm and --check all say; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works.",
     usage: [LAUNCH_USAGE],
     rows: [],
     flags: [
@@ -76741,6 +76741,10 @@ var HELP = {
         description: "Answer which launch path works (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, before any image upload; nothing is sent. Exits 1 when no path works."
       },
       { invocation: "--yes", description: "Confirm the launch without an interactive prompt." },
+      {
+        invocation: "--require-fee-wallet",
+        description: "Refuse the launch when no --fee-wallet is given, rather than letting the fees earn to the account wallet."
+      },
       {
         invocation: "--rpc-url <url>",
         description: "The Solana RPC for a TEE launch with no first buy, or the Hood RPC for receipt reads."
@@ -90882,6 +90886,7 @@ function feeWalletLines(selection, echo) {
     echo ? `Fee wallet: ${echo} (defaults to the account wallet; pass --fee-wallet <address> to change it)` : "Fee wallet: defaults to the account wallet (pass --fee-wallet <address> to change it)."
   ];
 }
+var FEE_WALLET_DEFAULT_WARNING = "No --fee-wallet given: this launch's curve and pool fees earn to the account wallet. Pass --fee-wallet <address> to send them to another wallet.";
 function feeWalletQuoteLine(selection) {
   if (!selection)
     return "defaults to the account wallet";
@@ -91237,7 +91242,8 @@ var LAUNCH_ARG_SPEC = {
   booleanFlags: [
     ...launchFlagFields.filter((field) => field.type === "boolean").map((field) => field.cli.flag),
     "--check",
-    "--yes"
+    "--yes",
+    "--require-fee-wallet"
   ],
   pathFlags: ["--image", "--banner"]
 };
@@ -91379,6 +91385,10 @@ async function launch(args, ctx) {
     writeUsageFailure(ctx.deps, `${error.message}. ${USAGE9}`, ctx.json);
     return 2;
   }
+  if (parsed.booleans.has("--require-fee-wallet") && !feeWallet) {
+    writeUsageFailure(ctx.deps, `--require-fee-wallet needs --fee-wallet <address>: pass the wallet this launch's fees earn to. ${USAGE9}`, ctx.json);
+    return 2;
+  }
   try {
     if (flags["--buy"]?.trim() && !/^0+(\.0+)?$/.test(flags["--buy"]))
       launchBuyRaw(flags["--buy"], 18);
@@ -91446,6 +91456,8 @@ async function launch(args, ctx) {
     const chain2 = wallet3.chain === "evm" ? "hood" : "solana";
     if (chain2 === "hood" && flags["--dex-version"] === undefined)
       throw new TradingUsage(`${wallet3.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`);
+    if (chain2 === "solana" && !dryRun && !feeWallet)
+      notice(ctx.deps, "stderr", "warning", FEE_WALLET_DEFAULT_WARNING);
     const buy = launchBuy(flags, chain2);
     if (chain2 === "hood" && (Object.keys(poolRequestFields(flags)).length || feeWalletGiven(flags)))
       throw new TradingUsage("Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.");
@@ -91895,6 +91907,8 @@ async function embeddedLaunch(ctx, key, args) {
     firstBuyCeiling(ctx, flags, buy);
   if (chain2 === "hood" && (Object.keys(poolRequestFields(flags)).length || feeWalletGiven(flags)))
     throw new TradingUsage("Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.");
+  if (chain2 === "solana" && !args.dryRun && !feeWalletGiven(flags))
+    notice(ctx.deps, "stderr", "warning", FEE_WALLET_DEFAULT_WARNING);
   const wallet3 = await embeddedLaunchWallet(ctx, key, chain2);
   const uploaded = await uploadLaunchImages(ctx, key, args);
   if (typeof uploaded === "number")

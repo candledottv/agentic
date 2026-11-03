@@ -3,6 +3,7 @@ import { readdirSync } from "node:fs"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 
@@ -334,5 +335,19 @@ describe("embedded launch through headless, with an optional first buy", () => {
     expect(await run(buyArgs, f.deps)).toBe(3)
     expect(f.paths().slice(before)).toEqual(["/api/v1/launch/headless/jobs/launch-1"])
     expect(f.calls.filter((call) => call.path === "/api/v1/launch/headless")).toHaveLength(1)
+  })
+
+  // BE-2572 (W6): a live embedded Solana launch warns on stderr when the fee wallet defaults;
+  // a chosen one and a Hood launch (no fee wallet) stay quiet.
+  test("a live embedded launch warns when the fee wallet defaults", async () => {
+    const f = await fixture()
+    expect(await run([...launchArgs, "--yes"], f.deps)).toBe(0)
+    expect(humanText(f.stderr.text)).toContain("No --fee-wallet given")
+    const chosen = await fixture()
+    expect(await run([...launchArgs, "--fee-wallet", EMBEDDED, "--yes"], chosen.deps)).toBe(0)
+    expect(humanText(chosen.stderr.text)).not.toContain("No --fee-wallet given")
+    const hood = await fixture()
+    expect(await run([...launchArgs, "--quote-asset", "eth", "--dex-version", "v4", "--yes"], hood.deps)).toBe(0)
+    expect(humanText(hood.stderr.text)).not.toContain("No --fee-wallet given")
   })
 })
