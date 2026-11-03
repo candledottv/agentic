@@ -2893,7 +2893,7 @@ export interface CandleWallets {
     selfBalances(opts?: SelfBalancesOptions): Promise<SelfBalancesResult>;
 }
 /** Why a token's creator fees are not claimable by this key (FE-438; `GET /agent/fees`). */
-export type AgentFeeReason = "below_dust" | "wallet_not_signable" | "delegation_off" | "embedded_wallet_not_permitted" | "not_recipient" | "insufficient_gas";
+export type AgentFeeReason = "below_dust" | "wallet_not_signable" | "delegation_off" | "embedded_wallet_not_permitted" | "not_recipient" | "fee_wallet_designated" | "insufficient_gas";
 /** One asset's raw amount, from direct chain reads. `symbol` is empty when nothing names the asset. */
 export interface AgentFeeAmount {
     symbol: string;

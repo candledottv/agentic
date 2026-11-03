@@ -3102,6 +3102,7 @@ export type AgentFeeReason =
   | "delegation_off"
   | "embedded_wallet_not_permitted"
   | "not_recipient"
+  | "fee_wallet_designated"
   | "insufficient_gas"
 
 /** One asset's raw amount, from direct chain reads. `symbol` is empty when nothing names the asset. */

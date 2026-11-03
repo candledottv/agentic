@@ -53,6 +53,7 @@ const REASON_WORDS: Record<string, string> = {
   delegation_off: "the embedded wallet is not delegated for agent access",
   embedded_wallet_not_permitted: "this key may not use the embedded wallet",
   not_recipient: "the fees go to someone else, or the token has no fee vault",
+  fee_wallet_designated: "the fees go to this launch's designated fee wallet, which claims them itself",
   insufficient_gas: "the recipient wallet cannot cover the network fee",
 }
 
