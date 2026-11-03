@@ -81,6 +81,9 @@ export const launchBuildSchema = z.object({
   maxDebitLamports: z.string().regex(/^\d+$/),
   expiresAt: z.number().finite(),
   fee: feeSchema.optional(),
+  // BE-2599: the fee wallet the build recorded, and why; the quote names it.
+  feeWallet: z.string().optional(),
+  feeWalletSource: z.string().optional(),
 })
 const walletSchema = z.object({
   id: z.string(),

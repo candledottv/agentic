@@ -13,6 +13,7 @@ import {
 } from "../evm-lite"
 import {
   FEE_WALLET_DEFAULT_WARNING,
+  type FeeWalletEcho,
   type FeeWalletSelection,
   feeWalletGiven,
   feeWalletLines,
@@ -478,7 +479,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       fee: built.fee ?? { bps: 0, feeRaw: "0" },
       minimumReceived: buy ? "not quoted (the first buy on the new curve)" : "0 tokens (no first buy)",
       maxDebitLamports: built.maxDebitLamports,
-      feeWallet: feeWalletQuoteLine(feeWallet),
+      feeWallet: feeWalletQuoteLine(feeWallet, built),
       tokenRisks: [],
     }
     notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim())
@@ -677,8 +678,9 @@ const previewSchema = z
       .passthrough()
       .optional(),
     devBuyMax: z.string().nullable().optional(),
-    // BE-2519: the resolved fee wallet the dry run and the build echo.
+    // BE-2519: the resolved fee wallet the dry run and the build echo; BE-2599: and why.
     feeWallet: z.string().optional(),
+    feeWalletSource: z.string().optional(),
     fills: z
       .array(z.object({ index: z.number(), amountRaw: z.string(), supplyPct: z.number() }).passthrough())
       .optional(),
@@ -687,11 +689,19 @@ const previewSchema = z
 
 const percent = (value: number) => `${Number(value.toFixed(4))}%`
 
+/** BE-2599: the fee wallet a dry run or build answer names, and why, for the quote. Nothing when it names none. */
+function feeWalletEchoOf(answer: unknown): FeeWalletEcho | undefined {
+  const parsed = z
+    .object({ feeWallet: z.string().optional(), feeWalletSource: z.string().optional() })
+    .safeParse(answer)
+  return parsed.success ? parsed.data : undefined
+}
+
 /** The dry run's preview in a few lines for stderr; --json reads the whole answer on stdout. Absent fields print nothing. */
 function previewLines(answer: Json, chain: TradeChain, feeWallet: FeeWalletSelection | undefined = undefined): string {
   const parsed = previewSchema.safeParse(answer)
   if (!parsed.success) return ""
-  const { resolved, curveTerms: terms, devBuyMax, feeWallet: echo, fills } = parsed.data
+  const { resolved, curveTerms: terms, devBuyMax, feeWallet: echo, feeWalletSource, fills } = parsed.data
   const quote = (resolved?.quoteAsset ?? LAUNCH_DEFINITION.defaultQuote[chain]).toUpperCase()
   const decimals = (chain === "hood" ? HOOD_BASES[quote] : BASES[quote])?.decimals
   const whole = (raw: string) => (decimals === undefined ? `${raw} raw` : `${shortAmount(raw, decimals)} ${quote}`)
@@ -717,7 +727,7 @@ function previewLines(answer: Json, chain: TradeChain, feeWallet: FeeWalletSelec
     lines.push(`First buy ${fill.index}: ${whole(fill.amountRaw)} takes ${percent(fill.supplyPct)} of the supply.`)
   if (devBuyMax) lines.push(`Dev-buy ceiling: ${whole(devBuyMax)}.`)
   // BE-2519: the fee wallet, chosen or defaulted, with the server's echo naming the default.
-  if (chain === "solana") lines.push(...feeWalletLines(feeWallet, echo))
+  if (chain === "solana") lines.push(...feeWalletLines(feeWallet, { feeWallet: echo, feeWalletSource }))
   return lines.length ? `${lines.join("\n")}\n` : ""
 }
 
@@ -835,6 +845,9 @@ const atomicBuildSchema = z.object({
   bundleId: z.string().min(1),
   legs: z.array(atomicLegSchema),
   expiresAt: z.number().finite(),
+  // BE-2599: the fee wallet the build recorded, and why; the quote names it.
+  feeWallet: z.string().optional(),
+  feeWalletSource: z.string().optional(),
 })
 /** `/launch/atomic/submit`'s three outcomes: `landed` is the 200 body, `failed` and `timeout` the 502 one. */
 const atomicOutcomeSchema = z.discriminatedUnion("status", [
@@ -924,7 +937,7 @@ async function atomicLaunch(
       minOut !== undefined ? `${minOut} raw units of the new token (the first buy's floor)` : "not quoted",
     maxLoss:
       quoteAsset === "SOL" ? sol : `${sol} and ${decimalAmount(reading.quoteRaw.toString(), decimals)} ${quoteAsset}`,
-    feeWallet: feeWalletQuoteLine(feeWalletSelection(flags)),
+    feeWallet: feeWalletQuoteLine(feeWalletSelection(flags), built),
     tokenRisks: [],
     bundleId: built.bundleId,
   }
@@ -1196,7 +1209,9 @@ async function embeddedLaunch(
     venue: "curve launch (signed by Candle)",
     priceImpactPct: null,
     minimumReceived: "0 tokens (no first buy)",
-    ...(chain === "solana" ? { feeWallet: feeWalletQuoteLine(feeWalletSelection(flags)) } : {}),
+    ...(chain === "solana"
+      ? { feeWallet: feeWalletQuoteLine(feeWalletSelection(flags), feeWalletEchoOf(answer)) }
+      : {}),
     tokenRisks: [],
   }
   if (buy && chain === "solana") {

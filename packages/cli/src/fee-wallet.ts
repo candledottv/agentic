@@ -76,11 +76,29 @@ function decodeAddress(value: string, flag: string): Uint8Array {
 }
 
 /**
- * The fee wallet on screen (the preview, the quote and `--check`): what was chosen, clearly
- * labelled, and what the default is. `echo` is the wallet the server's answer names, when it
- * answers one; it is what the default resolved to.
+ * What the server's answer says about the fee wallet (BE-2599): the wallet it names and, from a server that
+ * records it, `launching_wallet` when that wallet is the default because it launched the token. Absent from an
+ * older server, and on a default the server leaves to the account wallet.
  */
-export function feeWalletLines(selection: FeeWalletSelection | undefined, echo?: string): string[] {
+export interface FeeWalletEcho {
+  feeWallet?: string
+  feeWalletSource?: string
+}
+
+const fromLauncher = (echo: FeeWalletEcho | undefined): echo is { feeWallet: string } =>
+  echo?.feeWalletSource === "launching_wallet" && typeof echo.feeWallet === "string"
+
+/**
+ * The fee wallet on screen (the preview, the quote and `--check`): what was chosen, clearly
+ * labelled, and what the default is. `echo` is what the server's answer names, when it answers one:
+ * the launching wallet when it says so (BE-2599), otherwise the account-wallet default it resolved to.
+ * `--check` sends no build, so it passes `launcherDefault` from the server's switches instead.
+ */
+export function feeWalletLines(
+  selection: FeeWalletSelection | undefined,
+  echo?: FeeWalletEcho,
+  launcherDefault = false,
+): string[] {
   if (selection)
     return [
       `Fee wallet: ${selection.feeWallet} (earns this launch's fees; set by --fee-wallet)`,
@@ -90,22 +108,33 @@ export function feeWalletLines(selection: FeeWalletSelection | undefined, echo?:
           ]
         : []),
     ]
+  if (fromLauncher(echo))
+    return [
+      `Fee wallet: ${echo.feeWallet} (defaults to the launching wallet; pass --fee-wallet <address> to change it)`,
+    ]
+  if (launcherDefault)
+    return ["Fee wallet: defaults to the launching wallet (pass --fee-wallet <address> to change it)."]
   return [
-    echo
-      ? `Fee wallet: ${echo} (defaults to the account wallet; pass --fee-wallet <address> to change it)`
+    echo?.feeWallet
+      ? `Fee wallet: ${echo.feeWallet} (defaults to the account wallet; pass --fee-wallet <address> to change it)`
       : "Fee wallet: defaults to the account wallet (pass --fee-wallet <address> to change it).",
   ]
 }
 
 /**
- * BE-2572 (W6): the stderr warning a live Solana launch prints when no fee wallet was given and
- * the fees default to the account wallet. Dry runs and `--check` keep the ordinary info lines.
+ * BE-2572 (W6): the stderr warning a live Solana launch prints when no fee wallet was given. It is
+ * printed before any request, so it cannot know whether this server records the launching wallet
+ * (BE-2599, LAUNCH_FEE_WALLET_FROM_LAUNCHER) or leaves the fees on the account wallet: it says both, and
+ * the confirmation names the wallet the server chose. Dry runs and `--check` keep the ordinary info lines.
  */
 export const FEE_WALLET_DEFAULT_WARNING =
-  "No --fee-wallet given: this launch's curve and pool fees earn to the account wallet. Pass --fee-wallet <address> to send them to another wallet."
+  "No --fee-wallet given: this launch's curve and pool fees earn to the launching wallet, or to the account wallet on a server that does not record the launching wallet; the confirmation names which. Pass --fee-wallet <address> to send them to another wallet."
 
-/** One line for a quote: the selection, or the default said plainly. */
-export function feeWalletQuoteLine(selection: FeeWalletSelection | undefined): string {
-  if (!selection) return "defaults to the account wallet"
+/** One line for a quote: the selection, or the default said plainly, named from the server's answer when it has one. */
+export function feeWalletQuoteLine(selection: FeeWalletSelection | undefined, echo?: FeeWalletEcho): string {
+  if (!selection)
+    return fromLauncher(echo)
+      ? `${echo.feeWallet} (the launching wallet, by default)`
+      : "defaults to the account wallet"
   return `${selection.feeWallet}${selection.feeWalletMultisig ? ` (Squads vault of ${selection.feeWalletMultisig.address}, vault ${selection.feeWalletMultisig.vaultIndex})` : ""}`
 }

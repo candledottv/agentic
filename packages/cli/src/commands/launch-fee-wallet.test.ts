@@ -33,7 +33,7 @@ afterEach(async () => {
 })
 
 /** The preflight facts `--check` reads, as launch-check.test.ts serves them. */
-function preflightBody() {
+function preflightBody(feeWalletFromLauncher?: boolean) {
   return {
     success: true,
     key: {
@@ -44,7 +44,12 @@ function preflightBody() {
       selfLaunch: true,
       embeddedWalletPermission: "allowed",
     },
-    switches: { headlessLaunch: true, agentTrading: true, teeLaunchBuys: false },
+    switches: {
+      headlessLaunch: true,
+      agentTrading: true,
+      teeLaunchBuys: false,
+      ...(feeWalletFromLauncher !== undefined ? { feeWalletFromLauncher } : {}),
+    },
     embedded: { solana: { address: WALLET, delegated: true }, evm: null },
     wallets: [{ id: "wallet", address: WALLET, chain: "solana", label: "tee", allowLaunch: true, active: true }],
   }
@@ -54,7 +59,7 @@ function preflightBody() {
  * The self-route surface the fee wallet rides: the trading wallets, the dry run (echoing the fee
  * wallet as the API does), a build that records its body, the job read, and the --check preflight.
  */
-async function fixture() {
+async function fixture(server: { feeWalletSource?: string; feeWalletFromLauncher?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "candle-fee-wallet-"))
   folders.push(dir)
   const calls: { path: string; body: Record<string, unknown> | undefined }[] = []
@@ -87,11 +92,13 @@ async function fixture() {
         launchWallet: WALLET,
         // The API echoes the resolved fee wallet (feeWalletEcho); the default is the account's.
         feeWallet: body.feeWallet ?? WALLET,
+        // BE-2599: a server that records the launching wallet says why.
+        ...(server.feeWalletSource && !body.feeWallet ? { feeWalletSource: server.feeWalletSource } : {}),
       })
     if (path === "/api/v1/launch/self/build") return ok({ success: true, built: true })
     if (path.startsWith("/api/v1/launch/headless/jobs/"))
       return ok({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, 404)
-    if (path === "/api/v1/launch/preflight") return ok(preflightBody())
+    if (path === "/api/v1/launch/preflight") return ok(preflightBody(server.feeWalletFromLauncher))
     throw new Error(`Unexpected ${path}`)
   }) as typeof fetch
   const stdout = createCapture()
@@ -232,13 +239,41 @@ describe("BE-2519: candle launch --fee-wallet", () => {
     )
   })
 
+  // BE-2599: a server that records the launching wallet is named as such; an older one keeps the old words.
+  test("the preview and --check name the launching wallet when the server records it", async () => {
+    const launcher = await fixture({ feeWalletSource: "launching_wallet" })
+    expect(await run([...launchArgs, "--dry-run"], launcher.deps)).toBe(0)
+    expect(humanText(launcher.stderr.text)).toContain(
+      humanText(`Fee wallet: ${WALLET} (defaults to the launching wallet; pass --fee-wallet <address> to change it)`),
+    )
+    const checked = await fixture({ feeWalletFromLauncher: true })
+    expect(await run(["launch", "--check"], checked.deps)).toBe(0)
+    expect(humanText(checked.stdout.text)).toContain(
+      humanText("Fee wallet: defaults to the launching wallet (pass --fee-wallet <address> to change it)."),
+    )
+    const json = await fixture({ feeWalletFromLauncher: true })
+    expect(await run(["launch", "--check", "--json"], json.deps)).toBe(0)
+    expect(JSON.parse(json.stdout.text.trimEnd().split("\n").at(-1) ?? "").feeWallet).toEqual({
+      default: "launching wallet",
+      set: false,
+    })
+    // Switch reported off, or absent from an older server: the account-wallet words, as before.
+    for (const feeWalletFromLauncher of [false, undefined]) {
+      const off = await fixture({ feeWalletFromLauncher })
+      expect(await run(["launch", "--check"], off.deps)).toBe(0)
+      expect(humanText(off.stdout.text)).toContain(
+        humanText("Fee wallet: defaults to the account wallet (pass --fee-wallet <address> to change it)."),
+      )
+    }
+  })
+
   // BE-2572 (W6): a real warning on a live launch, and the opt-in refusal.
   test("a live launch warns on stderr when the fee wallet defaults, and a chosen one does not", async () => {
     const defaulted = await fixture()
     await run(launchArgs, defaulted.deps)
     expect(humanText(defaulted.stderr.text)).toContain(
       humanText(
-        "No --fee-wallet given: this launch's curve and pool fees earn to the account wallet. Pass --fee-wallet <address> to send them to another wallet.",
+        "No --fee-wallet given: this launch's curve and pool fees earn to the launching wallet, or to the account wallet on a server that does not record the launching wallet; the confirmation names which. Pass --fee-wallet <address> to send them to another wallet.",
       ),
     )
     const chosen = await fixture()

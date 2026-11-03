@@ -572,7 +572,7 @@ export declare const LAUNCH_DEFINITION: {
     }, {
         readonly key: "feeWallet";
         readonly type: "string";
-        readonly help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the account wallet.";
+        readonly help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the wallet that launches the token (the account wallet on a server without LAUNCH_FEE_WALLET_FROM_LAUNCHER, except an embedded launch).";
         readonly chains: readonly ["solana"];
         readonly surfaces: {
             readonly cli: {

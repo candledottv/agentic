@@ -28,6 +28,8 @@ const checkSchema = z
       headlessLaunch: z.boolean(),
       agentTrading: z.boolean(),
       teeLaunchBuys: z.boolean(),
+      // BE-2599: LAUNCH_FEE_WALLET_FROM_LAUNCHER. Absent from an older server: the account-wallet default.
+      feeWalletFromLauncher: z.boolean().optional(),
     }),
     embedded: z
       .object({
@@ -200,7 +202,9 @@ export async function launchCheck(
   const lines: string[] = [`Launch paths for key ${answer.key.keyPrefix} (tier ${answer.key.tier}):`]
   if (requestedChain) lines.push(`Requested launch chain: ${chainName(requestedChain)}.`)
   // BE-2519: the fee wallet the launch would use, chosen or defaulted, before anything is sent.
-  if (!requestedChain || requestedChain === "solana") lines.push(...feeWalletLines(feeWallet))
+  const launcherDefault = answer.switches.feeWalletFromLauncher === true
+  if (!requestedChain || requestedChain === "solana")
+    lines.push(...feeWalletLines(feeWallet, undefined, launcherDefault))
   if (walletFlag === undefined || embeddedOnly) lines.push(...embeddedLines(answer, requestedChain))
   for (const row of shownWallets) lines.push(...walletLines(answer, row, requestedChain))
   const works =
@@ -220,7 +224,7 @@ export async function launchCheck(
     switches: answer.switches,
     ...(feeWallet
       ? { feeWallet: { ...feeWallet, set: true } }
-      : { feeWallet: { default: "account wallet", set: false } }),
+      : { feeWallet: { default: launcherDefault ? "launching wallet" : "account wallet", set: false } }),
     ...(answer.embedded ? { embedded: answer.embedded } : {}),
     wallets: shownWallets.map((row) => ({
       ...row,

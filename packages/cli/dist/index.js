@@ -15771,7 +15771,9 @@ var init_trading = __esm(() => {
     transaction: exports_external.string().min(1),
     maxDebitLamports: exports_external.string().regex(/^\d+$/),
     expiresAt: exports_external.number().finite(),
-    fee: feeSchema.optional()
+    fee: feeSchema.optional(),
+    feeWallet: exports_external.string().optional(),
+    feeWalletSource: exports_external.string().optional()
   });
   walletSchema = exports_external.object({
     id: exports_external.string(),
@@ -39722,7 +39724,7 @@ var init_launch_definition = __esm(() => {
       {
         key: "feeWallet",
         type: "string",
-        help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the account wallet.",
+        help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the wallet that launches the token (the account wallet on a server without LAUNCH_FEE_WALLET_FROM_LAUNCHER, except an embedded launch).",
         chains: [
           "solana"
         ],
@@ -76100,7 +76102,7 @@ var LAUNCH_DEFINITION = {
     {
       key: "feeWallet",
       type: "string",
-      help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the account wallet.",
+      help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the wallet that launches the token (the account wallet on a server without LAUNCH_FEE_WALLET_FROM_LAUNCHER, except an embedded launch).",
       chains: [
         "solana"
       ],
@@ -76756,7 +76758,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the account wallet, which the preview, the confirm and --check all say; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass.",
+    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass.",
     usage: [LAUNCH_USAGE, "candle launch status <mint-or-client-launch-id> [--wait]"],
     rows: [
       {
@@ -91030,7 +91032,8 @@ function decodeAddress(value, flag) {
     throw new Error(`${flag} takes a Solana address.`);
   }
 }
-function feeWalletLines(selection, echo) {
+var fromLauncher = (echo) => echo?.feeWalletSource === "launching_wallet" && typeof echo.feeWallet === "string";
+function feeWalletLines(selection, echo, launcherDefault = false) {
   if (selection)
     return [
       `Fee wallet: ${selection.feeWallet} (earns this launch's fees; set by --fee-wallet)`,
@@ -91038,14 +91041,20 @@ function feeWalletLines(selection, echo) {
         `Fee wallet multisig: ${selection.feeWalletMultisig.address}, vault ${selection.feeWalletMultisig.vaultIndex} (the Squads v4 multisig behind the fee wallet)`
       ] : []
     ];
+  if (fromLauncher(echo))
+    return [
+      `Fee wallet: ${echo.feeWallet} (defaults to the launching wallet; pass --fee-wallet <address> to change it)`
+    ];
+  if (launcherDefault)
+    return ["Fee wallet: defaults to the launching wallet (pass --fee-wallet <address> to change it)."];
   return [
-    echo ? `Fee wallet: ${echo} (defaults to the account wallet; pass --fee-wallet <address> to change it)` : "Fee wallet: defaults to the account wallet (pass --fee-wallet <address> to change it)."
+    echo?.feeWallet ? `Fee wallet: ${echo.feeWallet} (defaults to the account wallet; pass --fee-wallet <address> to change it)` : "Fee wallet: defaults to the account wallet (pass --fee-wallet <address> to change it)."
   ];
 }
-var FEE_WALLET_DEFAULT_WARNING = "No --fee-wallet given: this launch's curve and pool fees earn to the account wallet. Pass --fee-wallet <address> to send them to another wallet.";
-function feeWalletQuoteLine(selection) {
+var FEE_WALLET_DEFAULT_WARNING = "No --fee-wallet given: this launch's curve and pool fees earn to the launching wallet, or to the account wallet on a server that does not record the launching wallet; the confirmation names which. Pass --fee-wallet <address> to send them to another wallet.";
+function feeWalletQuoteLine(selection, echo) {
   if (!selection)
-    return "defaults to the account wallet";
+    return fromLauncher(echo) ? `${echo.feeWallet} (the launching wallet, by default)` : "defaults to the account wallet";
   return `${selection.feeWallet}${selection.feeWalletMultisig ? ` (Squads vault of ${selection.feeWalletMultisig.address}, vault ${selection.feeWalletMultisig.vaultIndex})` : ""}`;
 }
 
@@ -91192,7 +91201,8 @@ var checkSchema = exports_external.object({
   switches: exports_external.object({
     headlessLaunch: exports_external.boolean(),
     agentTrading: exports_external.boolean(),
-    teeLaunchBuys: exports_external.boolean()
+    teeLaunchBuys: exports_external.boolean(),
+    feeWalletFromLauncher: exports_external.boolean().optional()
   }),
   embedded: exports_external.object({
     solana: exports_external.object({ address: exports_external.string(), delegated: exports_external.boolean().optional() }).nullable().optional(),
@@ -91304,8 +91314,9 @@ async function launchCheck(ctx, key, walletFlag, requestedChain, feeWallet = und
   const lines = [`Launch paths for key ${answer2.key.keyPrefix} (tier ${answer2.key.tier}):`];
   if (requestedChain)
     lines.push(`Requested launch chain: ${chainName(requestedChain)}.`);
+  const launcherDefault = answer2.switches.feeWalletFromLauncher === true;
   if (!requestedChain || requestedChain === "solana")
-    lines.push(...feeWalletLines(feeWallet));
+    lines.push(...feeWalletLines(feeWallet, undefined, launcherDefault));
   if (walletFlag === undefined || embeddedOnly)
     lines.push(...embeddedLines(answer2, requestedChain));
   for (const row of shownWallets)
@@ -91319,7 +91330,7 @@ async function launchCheck(ctx, key, walletFlag, requestedChain, feeWallet = und
     ...requestedChain ? { requestedChain } : {},
     key: answer2.key,
     switches: answer2.switches,
-    ...feeWallet ? { feeWallet: { ...feeWallet, set: true } } : { feeWallet: { default: "account wallet", set: false } },
+    ...feeWallet ? { feeWallet: { ...feeWallet, set: true } } : { feeWallet: { default: launcherDefault ? "launching wallet" : "account wallet", set: false } },
     ...answer2.embedded ? { embedded: answer2.embedded } : {},
     wallets: shownWallets.map((row) => ({
       ...row,
@@ -91666,7 +91677,7 @@ async function launch(args, ctx) {
       fee: built.fee ?? { bps: 0, feeRaw: "0" },
       minimumReceived: buy ? "not quoted (the first buy on the new curve)" : "0 tokens (no first buy)",
       maxDebitLamports: built.maxDebitLamports,
-      feeWallet: feeWalletQuoteLine(feeWallet),
+      feeWallet: feeWalletQuoteLine(feeWallet, built),
       tokenRisks: []
     };
     notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim());
@@ -91796,14 +91807,19 @@ var previewSchema = exports_external.object({
   }).passthrough().optional(),
   devBuyMax: exports_external.string().nullable().optional(),
   feeWallet: exports_external.string().optional(),
+  feeWalletSource: exports_external.string().optional(),
   fills: exports_external.array(exports_external.object({ index: exports_external.number(), amountRaw: exports_external.string(), supplyPct: exports_external.number() }).passthrough()).optional()
 }).passthrough();
 var percent = (value) => `${Number(value.toFixed(4))}%`;
+function feeWalletEchoOf(answer2) {
+  const parsed = exports_external.object({ feeWallet: exports_external.string().optional(), feeWalletSource: exports_external.string().optional() }).safeParse(answer2);
+  return parsed.success ? parsed.data : undefined;
+}
 function previewLines(answer2, chain2, feeWallet = undefined) {
   const parsed = previewSchema.safeParse(answer2);
   if (!parsed.success)
     return "";
-  const { resolved, curveTerms: terms, devBuyMax, feeWallet: echo, fills } = parsed.data;
+  const { resolved, curveTerms: terms, devBuyMax, feeWallet: echo, feeWalletSource, fills } = parsed.data;
   const quote = (resolved?.quoteAsset ?? LAUNCH_DEFINITION.defaultQuote[chain2]).toUpperCase();
   const decimals = (chain2 === "hood" ? HOOD_BASES[quote] : BASES[quote])?.decimals;
   const whole = (raw) => decimals === undefined ? `${raw} raw` : `${shortAmount(raw, decimals)} ${quote}`;
@@ -91822,7 +91838,7 @@ function previewLines(answer2, chain2, feeWallet = undefined) {
   if (devBuyMax)
     lines.push(`Dev-buy ceiling: ${whole(devBuyMax)}.`);
   if (chain2 === "solana")
-    lines.push(...feeWalletLines(feeWallet, echo));
+    lines.push(...feeWalletLines(feeWallet, { feeWallet: echo, feeWalletSource }));
   return lines.length ? `${lines.join(`
 `)}
 ` : "";
@@ -91888,7 +91904,9 @@ var atomicLegSchema = exports_external.object({
 var atomicBuildSchema = exports_external.object({
   bundleId: exports_external.string().min(1),
   legs: exports_external.array(atomicLegSchema),
-  expiresAt: exports_external.number().finite()
+  expiresAt: exports_external.number().finite(),
+  feeWallet: exports_external.string().optional(),
+  feeWalletSource: exports_external.string().optional()
 });
 var atomicOutcomeSchema = exports_external.discriminatedUnion("status", [
   exports_external.object({ status: exports_external.literal("landed"), bundleId: exports_external.string(), mint: exports_external.string(), signatures: exports_external.array(exports_external.string()) }).passthrough(),
@@ -91932,7 +91950,7 @@ async function atomicLaunch(ctx, key, args) {
     candleFee: reading.feeRaw > 0n ? `${decimalAmount(reading.feeRaw.toString(), decimals)} ${quoteAsset} (the tier fee on the first buy, in its leg)` : "none on this first buy",
     minimumReceived: minOut !== undefined ? `${minOut} raw units of the new token (the first buy's floor)` : "not quoted",
     maxLoss: quoteAsset === "SOL" ? sol : `${sol} and ${decimalAmount(reading.quoteRaw.toString(), decimals)} ${quoteAsset}`,
-    feeWallet: feeWalletQuoteLine(feeWalletSelection(flags)),
+    feeWallet: feeWalletQuoteLine(feeWalletSelection(flags), built),
     tokenRisks: [],
     bundleId: built.bundleId
   };
@@ -92094,7 +92112,7 @@ async function embeddedLaunch(ctx, key, args) {
     venue: "curve launch (signed by Candle)",
     priceImpactPct: null,
     minimumReceived: "0 tokens (no first buy)",
-    ...chain2 === "solana" ? { feeWallet: feeWalletQuoteLine(feeWalletSelection(flags)) } : {},
+    ...chain2 === "solana" ? { feeWallet: feeWalletQuoteLine(feeWalletSelection(flags), feeWalletEchoOf(answer2)) } : {},
     tokenRisks: []
   };
   if (buy && chain2 === "solana") {

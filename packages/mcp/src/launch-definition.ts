@@ -684,7 +684,7 @@ export const LAUNCH_DEFINITION = {
     {
       "key": "feeWallet",
       "type": "string",
-      "help": "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the account wallet.",
+      "help": "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the wallet that launches the token (the account wallet on a server without LAUNCH_FEE_WALLET_FROM_LAUNCHER, except an embedded launch).",
       "chains": [
         "solana"
       ],
