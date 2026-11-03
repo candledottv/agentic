@@ -646,9 +646,15 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
     description:
-      "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the account wallet, which the preview, the confirm and --check all say; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works.",
-    usage: [LAUNCH_USAGE],
-    rows: [],
+      "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the account wallet, which the preview, the confirm and --check all say; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass.",
+    usage: [LAUNCH_USAGE, "candle launch status <mint-or-client-launch-id> [--wait]"],
+    rows: [
+      {
+        invocation: "status <mint-or-client-launch-id> [--wait]",
+        description:
+          "One state for a mint or a clientLaunchId: build, signed, confirmed, trading, bonded, migrated. Uses the market's lifecycle and migration fields. --wait follows until the token is trading, the launch has failed, or ten minutes pass. Reads only.",
+      },
+    ],
     flags: [
       ...launchFlagRows,
       {
@@ -681,6 +687,7 @@ export const HELP: Record<string, Topic> = {
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --buy 0.1",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet embedded --buy 0.1 --dry-run",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --mode exp-custom --curve-v 4 --curve-g 20 --creator-fee-bps 100 --dry-run",
+      "candle launch status <mint-or-id> --wait",
     ],
     env: ENV_API,
   },

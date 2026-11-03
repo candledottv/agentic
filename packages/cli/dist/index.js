@@ -14548,6 +14548,7 @@ var init_ownership = __esm(() => {
     "token clusters",
     "wallets",
     "swap status",
+    "launch status",
     "fees",
     "lp pools",
     "lp positions",
@@ -76727,9 +76728,14 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the account wallet, which the preview, the confirm and --check all say; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works.",
-    usage: [LAUNCH_USAGE],
-    rows: [],
+    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the account wallet, which the preview, the confirm and --check all say; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass.",
+    usage: [LAUNCH_USAGE, "candle launch status <mint-or-client-launch-id> [--wait]"],
+    rows: [
+      {
+        invocation: "status <mint-or-client-launch-id> [--wait]",
+        description: "One state for a mint or a clientLaunchId: build, signed, confirmed, trading, bonded, migrated. Uses the market's lifecycle and migration fields. --wait follows until the token is trading, the launch has failed, or ten minutes pass. Reads only."
+      }
+    ],
     flags: [
       ...launchFlagRows,
       {
@@ -76758,7 +76764,8 @@ var HELP = {
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet HoodAgent --dex-version v4",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --buy 0.1",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet embedded --buy 0.1 --dry-run",
-      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --mode exp-custom --curve-v 4 --curve-g 20 --creator-fee-bps 100 --dry-run"
+      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --mode exp-custom --curve-v 4 --curve-g 20 --creator-fee-bps 100 --dry-run",
+      "candle launch status <mint-or-id> --wait"
     ],
     env: ENV_API
   },
@@ -92165,6 +92172,92 @@ async function resumeHoodLaunch(ctx, key, id, operationId, prior) {
   return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", chain: "hood", operationId });
 }
 
+// src/commands/launch-status.ts
+init_args();
+init_presentation();
+init_render();
+init_trading();
+init_swap();
+var USAGE10 = "Usage: candle launch status <mint-or-client-launch-id> [--wait]";
+var LAUNCH_WAIT_MS = 10 * 60 * 1000;
+var LAUNCH_WAIT_POLL_MS = 1e4;
+var LIVE = new Set(["trading", "bonded", "migrated"]);
+function statusOf(body) {
+  const status = body.status;
+  return status !== null && typeof status === "object" && !Array.isArray(status) ? status : null;
+}
+function isFinal(status) {
+  if (!status)
+    return false;
+  if (status.failed === true)
+    return true;
+  return typeof status.state === "string" && LIVE.has(status.state);
+}
+function humanLines(status) {
+  const lines = [`state: ${safeText(String(status.state ?? ""))}`];
+  if (status.failed === true)
+    lines.push("failed: true");
+  if (typeof status.errorCode === "string")
+    lines.push(`error: ${safeText(status.errorCode)}`);
+  if (typeof status.chain === "string")
+    lines.push(`chain: ${safeText(status.chain)}`);
+  if (typeof status.mint === "string")
+    lines.push(`mint: ${safeText(status.mint)}`);
+  if (typeof status.clientLaunchId === "string")
+    lines.push(`clientLaunchId: ${safeText(status.clientLaunchId)}`);
+  if (typeof status.lifecycle === "string")
+    lines.push(`lifecycle: ${safeText(status.lifecycle)}`);
+  const migration = status.migration;
+  if (migration !== null && typeof migration === "object" && !Array.isArray(migration)) {
+    const block2 = migration;
+    const progress = typeof block2.progressBps === "number" ? ` ${String(block2.progressBps)} bps` : "";
+    if (typeof block2.status === "string")
+      lines.push(`migration: ${safeText(block2.status)}${progress}`);
+  }
+  if (typeof status.signature === "string")
+    lines.push(`signature: ${safeText(status.signature)}`);
+  return lines;
+}
+async function readStatus(ctx, key, id) {
+  return request(ctx, key, `/api/v1/launch/status/${encodeURIComponent(id)}`);
+}
+async function launchStatus(args, ctx) {
+  const parsed = parseArgs(args, { booleanFlags: ["--wait"] });
+  if ("error" in parsed || parsed.positionals.length !== 1 || !validClientId(parsed.positionals[0] ?? "")) {
+    writeUsageFailure(ctx.deps, USAGE10, ctx.json);
+    return 2;
+  }
+  const id = parsed.positionals[0];
+  const wait = parsed.booleans.has("--wait");
+  try {
+    const key = await tradingKey(ctx);
+    let body = await readStatus(ctx, key, id);
+    if (wait) {
+      const deadline = ctx.deps.now() + LAUNCH_WAIT_MS;
+      while (!isFinal(statusOf(body)) && ctx.deps.now() < deadline) {
+        await ctx.deps.sleep(LAUNCH_WAIT_POLL_MS);
+        body = await readStatus(ctx, key, id);
+      }
+      const final = isFinal(statusOf(body));
+      if (!final) {
+        notice(ctx.deps, "stderr", "note", `Still not trading after ten minutes. Re-check with candle launch status ${safeText(id)} --wait.`);
+      }
+      body = { ...body, waited: { final } };
+    }
+    if (ctx.json)
+      return printTradingResult(ctx, body);
+    const status = statusOf(body);
+    if (!status)
+      return printTradingResult(ctx, body);
+    ctx.deps.stdout.write(`${humanLines(status).join(`
+`)}
+`);
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+
 // src/commands/lp.ts
 init_args();
 init_client();
@@ -98025,7 +98118,7 @@ init_swap();
 init_vault_support();
 var WITHDRAW_SCOPE = "perps:withdraw";
 var ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
-var USAGE10 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
+var USAGE11 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
 var WITHDRAW_POLL_MS = 10 * 60 * 1000;
 var WITHDRAW_POLL_INTERVAL_MS = 5000;
 var TERMINAL = new Set(["settled", "refunded", "failed"]);
@@ -98076,7 +98169,7 @@ async function withdrawStatus(ctx, id) {
 async function perpsWithdraw(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !ID_RE.test(args[1]))
-      return usage10(ctx, USAGE10);
+      return usage10(ctx, USAGE11);
     try {
       return await withdrawStatus(ctx, args[1]);
     } catch (error) {
@@ -98095,7 +98188,7 @@ async function perpsWithdraw(args, ctx) {
   const [amount] = parsed.positionals;
   const to = parsed.values["--to"];
   if (parsed.positionals.length !== 1 || !amount || to !== "solana" && to !== "hood")
-    return usage10(ctx, USAGE10);
+    return usage10(ctx, USAGE11);
   const amountMicros = parseWithdrawAmount(amount);
   if (amountMicros === null)
     return usage10(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
@@ -99983,12 +100076,12 @@ function planPromotionLine2(table) {
 init_presentation();
 init_render();
 init_key_output();
-var USAGE11 = "Usage: candle plans";
+var USAGE12 = "Usage: candle plans";
 async function plans(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed || parsed.positionals.length > 0) {
     writeScreenUsageFailure(ctx.deps, "error" in parsed ? `${parsed.error}
-${USAGE11}` : USAGE11, ctx.json);
+${USAGE12}` : USAGE12, ctx.json);
     return 2;
   }
   const result = await apiRequest("/api/v1/agent/plans", {
@@ -102262,7 +102355,7 @@ init_client();
 init_human_output();
 init_presentation();
 init_render();
-var USAGE12 = "Usage: candle scan <contract address> [--chain solana|hood] [--json]";
+var USAGE13 = "Usage: candle scan <contract address> [--chain solana|hood] [--json]";
 var OTHER_CHAIN = "Candle trades Solana and Hood today; that is not a Solana or Hood contract address.";
 var HOOD_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 var SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -102362,20 +102455,20 @@ async function scan(args, ctx) {
   }
   const named = parsed.values["--chain"];
   if (parsed.positionals.length !== 1 || named !== undefined && named !== "solana" && named !== "hood") {
-    writeUsageFailure(ctx.deps, USAGE12, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE13, ctx.json);
     return 2;
   }
   const address = parsed.positionals[0].trim();
   const found = chainOfAddress(address);
   if (found === null) {
     writeUsageFailure(ctx.deps, `${OTHER_CHAIN}
-${USAGE12}`, ctx.json);
+${USAGE13}`, ctx.json);
     return 2;
   }
   if (named !== undefined && named !== found) {
     const label = (c) => c === "hood" ? "Hood" : "Solana";
     writeUsageFailure(ctx.deps, `That address is a ${label(found)} contract, not a ${label(named)} one. Candle trades Solana and Hood today.
-${USAGE12}`, ctx.json);
+${USAGE13}`, ctx.json);
     return 2;
   }
   const chain2 = found;
@@ -104253,7 +104346,7 @@ init_deps();
 init_human_output();
 init_render();
 var KINDS = ["trade", "signal", "callout"];
-var USAGE13 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
+var USAGE14 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
 function readEventsBody(body) {
   if (body === null || typeof body !== "object" || !Array.isArray(body.events))
     return null;
@@ -104311,11 +104404,11 @@ async function tokenEvents(args, ctx) {
   const since = parsed.values["--since"];
   const before = parsed.values["--before"];
   if (parsed.positionals.length !== 1 || chain2 !== "solana" && chain2 !== "hood") {
-    writeUsageFailure(ctx.deps, USAGE13, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE14, ctx.json);
     return 2;
   }
   if (kind !== undefined && !KINDS.includes(kind)) {
-    writeUsageFailure(ctx.deps, USAGE13, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE14, ctx.json);
     return 2;
   }
   if (limit !== undefined && !/^[1-9][0-9]{0,3}$/.test(limit) || Number(limit) > 1000) {
@@ -104412,7 +104505,7 @@ var TOKEN_PAGE_BODY_CAP_BYTES = 32 * 1024;
 var TOKEN_PAGE_SECTIONS = ["thesis", "tokenomics", "lore"];
 var FLAG_REASONS = ["spam", "scam", "abuse", "misleading", "unsafe_link", "other"];
 var FLAG_DETAIL_LIMIT = 500;
-var USAGE14 = {
+var USAGE15 = {
   about: "Usage: candle token about <address> [--chain solana|hood] [--capabilities]",
   claim: "Usage: candle token claim <address> [--chain solana|hood] [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--idempotency-key <key>]",
   section: `Usage: candle token section set <address> <thesis|tokenomics|lore> --file <path> --base-revision <n> [--clear] [--chain solana|hood] [--idempotency-key <key>]
@@ -104672,7 +104765,7 @@ function terminalTextKeepingLines(text4) {
 `);
 }
 async function tokenAbout(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.about);
+  const usage12 = usageFor(ctx, USAGE15.about);
   const parsed = parseArgs(args, { valueFlags: ["--chain"], booleanFlags: ["--capabilities"] });
   if ("error" in parsed)
     return usage12(parsed.error);
@@ -104718,7 +104811,7 @@ async function tokenAbout(args, ctx) {
   return 0;
 }
 async function tokenClaim(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.claim);
+  const usage12 = usageFor(ctx, USAGE15.claim);
   const parsed = parseArgs(args, {
     valueFlags: ["--chain", "--challenge-id", "--signature", "--message-out", "--idempotency-key"],
     booleanFlags: ["--creator", "--challenge"],
@@ -104845,7 +104938,7 @@ var SECTION_FLAGS = {
   restore: { valueFlags: ["--chain", "--version-id", "--base-revision", "--idempotency-key"], booleanFlags: [] }
 };
 async function tokenSection(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.section);
+  const usage12 = usageFor(ctx, USAGE15.section);
   const action2 = args[0];
   if (action2 !== "set" && action2 !== "restore")
     return usage12();
@@ -104938,7 +105031,7 @@ async function tokenSection(args, ctx) {
   return 0;
 }
 async function tokenHistory(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.history);
+  const usage12 = usageFor(ctx, USAGE15.history);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
   if ("error" in parsed)
     return usage12(parsed.error);
@@ -104993,7 +105086,7 @@ More: --cursor ${data.nextCursor}
   return 0;
 }
 async function tokenFlag(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.flag);
+  const usage12 = usageFor(ctx, USAGE15.flag);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--content", "--reason", "--detail", "--idempotency-key"] });
   if ("error" in parsed)
     return usage12(parsed.error);
@@ -105088,7 +105181,7 @@ async function tokenUpdate(args, ctx) {
   return 0;
 }
 async function tokenComment(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.comment);
+  const usage12 = usageFor(ctx, USAGE15.comment);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] });
   if ("error" in parsed)
     return usage12(parsed.error);
@@ -105133,7 +105226,7 @@ async function tokenComment(args, ctx) {
   return 0;
 }
 async function tokenComments(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.comments);
+  const usage12 = usageFor(ctx, USAGE15.comments);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
   if ("error" in parsed)
     return usage12(parsed.error);
@@ -105479,7 +105572,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE15 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE16 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -105575,7 +105668,7 @@ async function transfer(args, ctx) {
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok) {
-    writeUsageFailure(ctx.deps, USAGE15, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE16, ctx.json);
     return 2;
   }
   const to = flags2["--to"];
@@ -113345,7 +113438,7 @@ init_human_output();
 init_release();
 import { dirname as dirname11, join as join15 } from "node:path";
 init_key_output();
-var USAGE16 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE17 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -113377,19 +113470,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE16}`, json);
+${USAGE17}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeScreenUsageFailure(deps, `verify takes exactly one file.
-${USAGE16}`, json);
+${USAGE17}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeScreenUsageFailure(deps, `--bundle is required.
-${USAGE16}`, json);
+${USAGE17}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -113403,7 +113496,7 @@ ${USAGE16}`, json);
   }
   if (resolved.kind === "absent") {
     writeScreenUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE16}`, json);
+${USAGE17}`, json);
     return 2;
   }
   const identity4 = resolved.uri;
@@ -113652,7 +113745,7 @@ init_solana_lite();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID15 } from "node:crypto";
-var USAGE17 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE18 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -113915,7 +114008,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE17}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE18}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -113926,7 +114019,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID15()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE17, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE18, ctx.json);
     return 2;
   }
   const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
@@ -114344,7 +114437,7 @@ var COMMANDS = {
   stake: { bare: stake, subcommands: { add: stakeAdd, remove: stakeRemove, finish: stakeFinish, claim: stakeClaim } },
   swap: { bare: swap, subcommands: { status: swapStatus } },
   transfer: { bare: transfer },
-  launch: { bare: launch },
+  launch: { bare: launch, subcommands: { status: launchStatus } },
   image: { subcommands: { upload: imageUpload } },
   pnl: { bare: pnl },
   portfolio: { bare: portfolio },

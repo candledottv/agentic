@@ -45,6 +45,7 @@ import { keysLimit } from "./commands/keys-limit"
 import { keysWallets } from "./commands/keys-wallets"
 import { labEdges, labReplay, labRunners, labStatus } from "./commands/lab"
 import { launch } from "./commands/launch"
+import { launchStatus } from "./commands/launch-status"
 import { lpAdd, lpClaim, lpPools, lpPositions, lpRemove } from "./commands/lp"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import {
@@ -238,7 +239,7 @@ const COMMANDS: Record<string, CommandRoute> = {
   // Transfer (BE-332 PR C): move funds out of a TEE wallet through its bound key, to
   // the account's own wallets or the wallet's vault. Server-built, relay-signed, never a vault key.
   transfer: { bare: transfer },
-  launch: { bare: launch },
+  launch: { bare: launch, subcommands: { status: launchStatus } },
   // BE-1283: host an image file from this machine and print its URL. `launch --image` uploads
   // through the same code; this is the upload alone, for a launch made somewhere else.
   image: { subcommands: { upload: imageUpload } },
