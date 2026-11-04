@@ -158,6 +158,22 @@ try {
 }
 ```
 
+Headless execution errors expose `CandleApiError.stage` (older servers and early
+refusals may omit it):
+
+| `stage` | Meaning and recovery |
+| --- | --- |
+| `not_broadcast` | The launch transaction was not broadcast. Fix the cause indicated by `code`/`field` and follow `retryable`; keep the same `clientLaunchId` for an unchanged request. A Hood attempt may still have paid for a fee splitter. |
+| `unconfirmed` | The launch may be on chain. Read `getLaunchJob(clientLaunchId)` and check the original `signature`/`mint` when known; do not start a new launch. |
+| `reverted` | The chain proved the launch failed. A same-id retry can start a clean attempt; network fees may have been spent. |
+| `executed` | The launch landed, but registration/recording did not finish. Retry the same id to resume recording; never use a new id to launch again. |
+
+`unconfirmed` and `executed` carry `retryable: false`. Preserve the original id
+and any `signature`/`mint` for recovery. `recorded: false` only means recovery
+evidence could not be stored; it does not mean the launch failed on chain. A
+missing stage or lost response also does not prove that nothing was broadcast.
+See [launch execution stages](https://docs.candle.tv/developers/headless-launch#launch-execution-stages).
+
 Prefer not to block? `launchAsync()` sends `async: true`, returns the 202 body, and
 `waitForLaunch()` polls the jobs endpoint until the attempt is terminal:
 
