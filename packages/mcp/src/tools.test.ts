@@ -620,9 +620,11 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
       expect(d).toContain("It never executes a second time")
       expect(d).toContain("is an answer about the resend, not about the write")
       expect(d).toContain("read candle_get_operation again before reporting an outcome")
-      expect(d).toContain("a new id is a second trade or launch")
+      expect(d).toContain("a new id is a second trade, swap or launch")
       expect(d).toContain("Check `kind`")
       expect(d).toContain("`clientSwapId`")
+      // BE-2656 (R5): a swap id IS read now, under kind swap.
+      expect(d).not.toContain("a swap id is not read")
     }
     expect(describeOf("candle_get_operation")).not.toContain("This is a definite answer")
   })
@@ -723,7 +725,7 @@ describe("candle_get_operation: what a 404 returns", () => {
       urls.push(url)
       return answer(404, JSON.stringify(NOT_FOUND))
     })
-    for (const kind of ["trade", "launch"] as const) {
+    for (const kind of ["trade", "swap", "launch"] as const) {
       const { result, text } = await call("candle_get_operation", { clientId: "op-1", kind })
       expect(result.isError).toBe(true)
       const body = JSON.parse(text)
@@ -737,14 +739,37 @@ describe("candle_get_operation: what a 404 returns", () => {
       expect(body.next).toContain("is an answer about the resend, not about the write")
       expect(body.next).toContain("read candle_get_operation again before reporting an outcome")
       expect(body.next).toContain(`a new id is a second ${kind}`)
-      expect(body.next).toContain("clientSwapId")
+      expect(body.next).not.toContain(`a ${kind} id has no record there`)
+      expect(body.next).not.toContain("not read by this tool")
       expect(body.next.toLowerCase()).not.toContain("nothing moved")
       expect(body.next.toLowerCase()).not.toContain("never reached")
     }
     expect(urls).toEqual([
       "https://api.test/api/v1/trade/agent/jobs/op-1",
+      "https://api.test/api/v1/agent/swap/by-client-id/op-1",
       "https://api.test/api/v1/launch/headless/jobs/op-1",
     ])
+  })
+
+  // BE-2656 (R5): candle_swap's own row, by the clientSwapId it echoed, and never /swap/jobs.
+  test("kind swap reads the one-shot swap's row by clientSwapId, encoded, and relays a 200 unchanged", async () => {
+    const urls: string[] = []
+    const sent = JSON.stringify({
+      success: true,
+      job: { clientSwapId: "s/1 ?", kind: "swap", status: "submitted", outcome: "partial", hashes: ["Leg1"] },
+    })
+    const { call, tools } = toolsWith(["candle_get_operation"], async (url, init) => {
+      urls.push(url)
+      expect(init?.method).toBe("GET")
+      return answer(200, sent)
+    })
+    const { result, text } = await call("candle_get_operation", { clientId: "s/1 ?", kind: "swap" })
+    expect(text).toBe(sent)
+    expect(result.isError).toBeUndefined()
+    expect(urls).toEqual(["https://api.test/api/v1/agent/swap/by-client-id/s%2F1%20%3F"])
+    const schema = z.object(tools.get("candle_get_operation")?.inputSchema as z.ZodRawShape)
+    expect(schema.safeParse({ clientId: "s-1", kind: "swap" }).success).toBe(true)
+    expect(schema.safeParse({ clientId: "s-1", kind: "perp" }).success).toBe(false)
   })
 
   test("a 200, a 401, a 404 with another code and a 404 that is not JSON are relayed unchanged", async () => {

@@ -135,7 +135,7 @@ signs up.
 | | `candle_launch_and_seed` | yes | launch from the embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), on every plan |
 | | `candle_atomic_launch_dry_run` | yes | check a Solana launch with first buys and price each buy; builds and writes nothing (needs `launch:write`, `swap:write`, Pro or Max) |
 | | `candle_report_activity` | yes | report agent activity for verification |
-| **What happened?** | `candle_get_operation` | yes | look up a trade or launch by the id its write used |
+| **What happened?** | `candle_get_operation` | yes | look up a trade, swap or launch by the id its write used |
 | **Creator fees** | `candle_get_fees` | yes | the creator fees your launched tokens can pay, and why one cannot be claimed (needs `account:read`) |
 | | `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch; no destination argument, `dryRun` first (needs `launch:write`; always on) |
 | **Staking** | `candle_get_staking` | yes | read eligible Solana wallets' CNDL/sCNDL, withdrawals, rewards, pool wait and eligibility notes |

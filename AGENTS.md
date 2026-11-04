@@ -127,7 +127,7 @@ anyone signs up for anything.
 
 | Tool | Key | What it does |
 | --- | --- | --- |
-| `candle_get_operation` | yes | look up a trade or launch by the id its write used. Call this after a timeout instead of writing again |
+| `candle_get_operation` | yes | look up a trade, swap or launch by the id its write used. Call this after a timeout instead of writing again |
 
 **Creator fees**
 
@@ -261,12 +261,13 @@ After a timeout the better move is `candle_get_operation`, which tells you wheth
 before you decide. A 404 there means no record under that id yet. That does not prove the write
 did not run: a write that is still starting has no record yet. Send the same request again with
 the same id. It returns the stored outcome or reports the one still running, and it never executes
-a second time. Never send it under a new id, which is a second trade or launch. A refusal of that
-resend (a conflict or a limit) is an answer about the resend, not about the write: read
-`candle_get_operation` again before reporting an outcome. A swap id is not read there at all:
-replay the swap with its `clientSwapId`.
+a second time. Never send it under a new id, which is a second trade, swap or launch. A refusal of
+that resend (a conflict or a limit) is an answer about the resend, not about the write: read
+`candle_get_operation` again before reporting an outcome. A swap is read there with
+`kind: "swap"` and the `clientSwapId` `candle_swap` returned.
 
-**A swap timeout is unknown, not failed.** Pass a `clientSwapId` and retry the same request,
+**A swap timeout is unknown, not failed.** Pass a `clientSwapId`. Read the outcome with
+`candle_get_operation { kind: "swap", clientId: "<that id>" }`, or retry the same request,
 including the same slippage. The replay returns the stored result: the original success, or a
 stored error. An indeterminate first leg comes back as `SWAP_FAILED`, retryable false, with the
 signature in the message -- verify that on-chain before a new id. A swap that is still running,

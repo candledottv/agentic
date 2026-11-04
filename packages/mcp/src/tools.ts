@@ -639,14 +639,19 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
 
     case "candle_get_operation": {
       const apiKey = requireApiKey(cfg)
-      // Two rails, two ledgers, one tool. The path is chosen by `kind` rather than sniffed from
-      // the id: clientTradeId and clientLaunchId are both caller-chosen strings, so there is
-      // nothing in an id to dispatch on, and guessing wrong returns a 404 for the wrong rail.
-      const { clientId, kind } = args as { clientId: string; kind: "trade" | "launch" }
+      // Three rails, three ledgers, one tool. The path is chosen by `kind` rather than sniffed
+      // from the id: clientTradeId, clientSwapId and clientLaunchId are all caller-chosen strings,
+      // so there is nothing in an id to dispatch on, and guessing wrong returns a 404 for the
+      // wrong rail. A swap is the one-shot candle_swap's `agentSwaps` row (BE-2656), not
+      // /agent/swap/jobs, which reads the build/submit rail and has no row for it.
+      const { clientId, kind } = args as { clientId: string; kind: OperationKind }
+      const id = encodeURIComponent(clientId)
       const path =
         kind === "launch"
-          ? `/api/v1/launch/headless/jobs/${encodeURIComponent(clientId)}`
-          : `/api/v1/trade/agent/jobs/${encodeURIComponent(clientId)}`
+          ? `/api/v1/launch/headless/jobs/${id}`
+          : kind === "swap"
+            ? `/api/v1/agent/swap/by-client-id/${id}`
+            : `/api/v1/trade/agent/jobs/${id}`
       return { url: `${base}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } }
     }
 
@@ -805,12 +810,16 @@ export const OPERATION_NOT_FOUND_RULE =
   "send the SAME request again with the SAME id. It returns the stored outcome, or reports the one " +
   "still running. It never executes a second time. A refusal of that resend (a conflict or a " +
   "limit) is an answer about the resend, not about the write: read candle_get_operation again " +
-  "before reporting an outcome. Never send it under a new id: a new id is a second trade or " +
-  "launch. Check `kind`: a swap id is not read here, so replay the swap with its `clientSwapId`."
+  "before reporting an outcome. Never send it under a new id: a new id is a second trade, swap or " +
+  "launch. Check `kind`: an id read under the wrong kind has no record there. A swap sent without " +
+  "a `clientSwapId` has no record at all."
+
+/** The rails candle_get_operation reads, one ledger each. */
+export type OperationKind = "trade" | "swap" | "launch"
 
 /** The same four points on the result, naming the id and the kind that were asked. */
-export function operationNotFoundNext(clientId: string, kind: "trade" | "launch"): string {
-  const other = kind === "launch" ? "trade" : "launch"
+export function operationNotFoundNext(clientId: string, kind: OperationKind): string {
+  const others = (["trade", "swap", "launch"] as const).filter((k) => k !== kind).join(" or ")
   return (
     `No ${kind} record under id "${clientId}" yet. That does not prove the write did not run: a ` +
     "write that is still starting has no record yet. If a write was sent with this id, send the " +
@@ -818,8 +827,7 @@ export function operationNotFoundNext(clientId: string, kind: "trade" | "launch"
     "the one still running. It never executes a second time. A refusal of that resend (a conflict " +
     "or a limit) is an answer about the resend, not about the write: read candle_get_operation " +
     `again before reporting an outcome. Never send it under a new id: a new id is a second ${kind}. ` +
-    `This read asked kind "${kind}": a ${other} id has no record there, and a swap id is not read by ` +
-    "this tool at all, so replay the swap with its clientSwapId."
+    `This read asked kind "${kind}": a ${others} id has no record there.`
   )
 }
 
@@ -842,8 +850,8 @@ async function getOperation(args: Record<string, unknown>, cfg: RequestConfig, d
     }
     const code = (body as { error?: { code?: unknown } } | null)?.error?.code
     if (code === "JOB_NOT_FOUND") {
-      const { clientId, kind } = args as { clientId: string; kind?: "trade" | "launch" }
-      const next = operationNotFoundNext(clientId, kind === "launch" ? "launch" : "trade")
+      const { clientId, kind } = args as { clientId: string; kind?: OperationKind }
+      const next = operationNotFoundNext(clientId, kind === "launch" || kind === "swap" ? kind : "trade")
       text = JSON.stringify({ ...(body as Record<string, unknown>), outcome: "unknown", next })
     }
   }
@@ -856,7 +864,7 @@ async function getOperation(args: Record<string, unknown>, cfg: RequestConfig, d
 /**
  * candle_swap. The swap always has an id: a caller's own is used unchanged, and one is generated
  * when it is absent or empty, before the request is built. Without one a swap that fails in
- * transit can neither be replayed nor asked about, since candle_get_operation reads no swap.
+ * transit can neither be replayed nor read back with candle_get_operation's kind "swap".
  *
  * A refusal made before anything is sent (both or neither amount, an unknown asset, a missing
  * key) still throws out of `buildRequest`, with no id, as it always did. Once the request is in
@@ -1064,9 +1072,9 @@ const getAgentPositionsShape = {
 const getOperationShape = {
   clientId: z
     .string()
-    .describe("The clientTradeId or clientLaunchId the write used, or that the tool echoed back to you"),
+    .describe("The clientTradeId, clientSwapId or clientLaunchId the write used, or that the tool echoed back to you"),
   kind: z
-    .enum(["trade", "launch"])
+    .enum(["trade", "swap", "launch"])
     .describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on"),
 }
 
@@ -1966,14 +1974,19 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "What happened to a write",
       description:
-        "Look up a trade or launch by the id its write used, and find out whether it landed. " +
+        "Look up a trade, swap or launch by the id its write used, and find out whether it landed. " +
         "Reads only; moves nothing.\n\n" +
         "Call this after a timeout, after a restart, or any time you hold an id and do not know " +
         "the outcome. Do NOT re-send the write to find out.\n\n" +
-        "Four answers, four different next moves:\n" +
+        "The answers, and the next move for each:\n" +
         "- `confirmed`/`failed`: it is over. `signature` proves the first, `errorCode` explains " +
         "the second.\n" +
         "- `built`/`submitted`: still in flight. Wait and ask again.\n" +
+        "- kind `swap` (candle_swap's `clientSwapId`) answers `job.outcome` instead: `in_flight` " +
+        "(ask again), `confirmed` (`job.hashes`), `failed` (refused before any broadcast; the SAME " +
+        "request with the SAME id starts over), `partial` (`hashes[0]` landed, " +
+        "a later leg did not) or `indeterminate` (broadcast, outcome unknown; check " +
+        "`error.message`). `partial` and `indeterminate` are final for that id.\n" +
         `- 404 (\`JOB_NOT_FOUND\`): unknown, not an outcome. ${OPERATION_NOT_FOUND_RULE} The result ` +
         'says the same in `outcome: "unknown"` and `next`.\n\n' +
         "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " +
