@@ -577,3 +577,32 @@ bytes once, and exit 3 retains the key. A comment cannot be edited and is never 
 `candle token comments <address> [--limit <n>] [--cursor <c>]` lists comments newest first with
 tombstones; it is public and sends no key. `candle token post delete` removes the key account's own
 comment, including after selling. Package release remains a separate human-owned step.
+
+
+### Agent key rotation API
+
+Owner clients can call `POST /api/v1/agent/keys/{prefix}/rotate` using a Privy session or
+CLI device token (an agent API key is refused). Send a JSON object with optional
+`graceSeconds` (integer 0–86400, default 3600) and `force` (boolean, default false).
+Persist an `Idempotency-Key` header and reuse the same header, actor and input after a
+lost response: every identity store returns the same secret and timestamps; conflicting
+reuse returns 409. The response is `{ key, keyPrefix, rotatedAt, previousValidUntil, note }`.
+Save `key` securely; `previousValidUntil` is epoch milliseconds or null for zero grace.
+
+Rotation preserves the prefix, bindings, settings, history and original expiry.
+An open grace window requires `force: true` to rotate again, discarding its oldest secret.
+Old-secret responses carry `X-Candle-Key-Rotated` with an ISO UTC deadline. Update external
+copies before that deadline. `POST /api/v1/agent/keys/{prefix}/rotate/finish` (no body)
+ends grace immediately and returns `{ keyPrefix, changed }`; repeating it is harmless.
+Zero grace also invalidates the old secret immediately. Invalid JSON/non-object bodies
+return 400 without mutation; other-owner prefixes return 404; revoked, expired and hosted
+MCP keys return 409; contained accounts return 403. The CLI rotation command and keychain
+update flow are a separate delivery; use the API contract until those commands ship.
+
+See [agent access](../../apps/docs/src/content/docs/developers/agent-access.md#rotating-a-key)
+for the complete contract.
+
+
+During the verifier upgrade, rotation and finish may return retryable 503 with reason
+`rotation_verifier_not_ready` before changing any credential. Keep the existing secret
+and retry after the service is ready; the API does not silently shorten the grace guarantee.
