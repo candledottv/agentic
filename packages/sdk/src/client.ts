@@ -2203,6 +2203,19 @@ export interface ExecutedTradeResult {
     actualOutRaw?: string
   }
   /**
+   * Solana only: what the confirmed transaction cost the wallet, read off the chain. `walletSolChangeLamports`
+   * is the wallet's whole SOL change (network fee, priority fee, rent and WSOL movement included).
+   * `emptyTokenAccounts` are the wallet's token accounts the trade left at zero, each still holding rent;
+   * `hint` names the command that reclaims it. Absent on Hood and on a replay of an earlier answer.
+   */
+  settlement?: {
+    networkFeeLamports?: string
+    walletSolChangeLamports?: string
+    emptyTokenAccounts: Array<{ account: string; mint: string; rentLamports: string }>
+    emptyTokenAccountRentLamports: string
+    hint?: string
+  }
+  /**
    * The route the fill actually took, on a Hood DEX trade.
    *
    * A main payer never sees `artifacts`, so without this a typed client could not tell which
@@ -7225,7 +7238,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.14"
+export const SDK_VERSION = "0.6.15"
 
 let sdkUpdateWarned = false
 

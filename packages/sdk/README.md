@@ -247,7 +247,10 @@ const fill = await candle.trade({ mint: "9dXSV8...CNDL", side: "buy", amountRaw:
 - `trade()` buys or sells a token in one call, from the account's embedded wallet (executed inline)
   or from a linked wallet the caller signs for. Amounts are raw units. On Solana,
   `amounts.actualOutRaw` is the delivered amount, decoded from the payer's balance change; book
-  positions from it rather than from `expectedOutRaw`. It is absent on Hood.
+  positions from it rather than from `expectedOutRaw`. It is absent on Hood. On Solana the answer
+  also carries `settlement`: `networkFeeLamports`, the wallet's whole SOL change
+  (`walletSolChangeLamports`) and any `emptyTokenAccounts` the route left behind with the rent they
+  hold; `candle wallet close-empty` reclaims it.
 - `getTradeJob(clientTradeId)` reads one trade from the idempotency ledger without sending
   anything: the read to make after a `trade()` that threw or timed out. Needs `swap:write`.
 - `swap()` converts base assets (`SOL`, `USDC`, `CNDL`, `ETH`, `USDG`); a pair that spans Solana
