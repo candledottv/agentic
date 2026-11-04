@@ -41,8 +41,11 @@ at least one reading is unknown; do not treat that as clearance. Read every flag
 summary is incomplete: a hacc outage leaves that summary incomplete while feed liquidity can
 still be flagged. `not_applicable` has no flags and applies to base assets only.
 
-`launch.deployerLaunches` is informational: the inclusive number of launches from this deployer,
-including this mint. Do not subtract one, turn it into a warning, or use it as a flag.
+`launch.deployer` is the wallet that sent the launch, also reported as `deployer.launcher`. It can
+be a launch tool's signer rather than the developer, who is `deployer.address` (the pump.fun curve
+creator). Judge the developer from `deployer.record`, never from the launcher.
+`launch.deployerLaunches` is informational: the inclusive number of launches from that launching
+wallet, including this mint. Do not subtract one, turn it into a warning, or use it as a flag.
 `haccVerdicts` carries the runner's recorded sentences, kinds and times.
 
 ### Read coverage alongside the findings

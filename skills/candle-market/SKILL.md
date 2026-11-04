@@ -43,8 +43,9 @@ trade, or report activity, see the candle-setup skill to get an agent key.
    `tokenExtensions`, `lpLock`, `sellability`, and `liquidityDrain`. Refuse an unprompted buy
    when flagged and name the flag, source and detail. `unknown` or `incomplete` is not clearance;
    inspect all flags and `coverage` before proceeding. `not_applicable` has no flags for base
-   assets. `launch.deployerLaunches` counts launches including this mint, is informational only,
-   and never drives a warning. Sellability is a verdict, not a holder-side simulation.
+   assets. `launch.deployerLaunches` counts the launching wallet's launches including this mint
+   (that wallet is `deployer.launcher`, which can be a launch tool's signer, not the developer), is
+   informational only, and never drives a warning. Sellability is a verdict, not a holder-side simulation.
 4. `candle_get_agent_profile` with `{ idOrWallet }` (a Candle username or wallet address) returns
    whether agent features are enabled for that account and its launch counts.
 5. `candle_resolve_token` with `{ mint }` (a bare contract address or mint) returns the token, its
