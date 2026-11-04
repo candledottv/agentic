@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store"
 
 const SAMPLE_PEM =
@@ -59,6 +59,21 @@ describe("EncryptedFileSecretStore", () => {
     // proving the round trip goes through the file, not an in-memory cache.
     const reopened = new EncryptedFileSecretStore(path, "correct horse battery staple")
     expect(await reopened.get("wallet-1")).toBe(SAMPLE_PEM)
+  })
+
+  // BE-2712 (D2): a caller-chosen path whose directory does not exist yet. The lock's open used to
+  // fail with ENOENT before `writeFile`'s own `mkdir` could run.
+  test("set on a path whose directory does not exist yet makes the directory 0700 and the file 0600", async () => {
+    const parent = await tempPath()
+    const stateDir = join(dirname(parent), "state", "signers")
+    const path = join(stateDir, "signer.enc")
+    const store = new EncryptedFileSecretStore(path, "correct horse battery staple")
+    await store.set("wallet-1", SAMPLE_PEM)
+
+    expect(await new EncryptedFileSecretStore(path, "correct horse battery staple").get("wallet-1")).toBe(SAMPLE_PEM)
+    expect((await stat(stateDir)).mode & 0o777).toBe(0o700)
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+    expect(await readdir(stateDir)).toEqual(["signer.enc"])
   })
 
   test("the ciphertext file and its directory are owner-only, and no temp file is left behind", async () => {

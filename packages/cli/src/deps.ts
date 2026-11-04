@@ -25,6 +25,7 @@ import type { VerifyResult } from "./release-verify"
 import type { SecretStore } from "./secret-store"
 import { SECRET_REFS } from "./secret-store"
 import type { ReleasePolicy } from "./vault/enclave"
+import type { ConfigDirInspection } from "./vault/store"
 
 export interface Writer {
   write(chunk: string): void
@@ -74,6 +75,14 @@ export interface Deps {
    * so that branch is the same branch everywhere.
    */
   homedir: () => string
+  /**
+   * Whether the config directory exists and can be written, or could be created (BE-2712, D4), for
+   * `doctor`'s `Config directory` row. `index.ts` binds the real `inspectConfigDir` from
+   * `vault/store.ts`. `createTestDeps` defaults it to "present and writable": its `homedir` is a
+   * path that cannot exist, and the real probe against it would fail the row in every doctor test
+   * that is not about this row.
+   */
+  inspectConfigDir: (path: string) => Promise<ConfigDirInspection>
   /** This machine's hostname, which `auth login` puts in the default `clientName` shown on the
    * approval screen. Injected for the same reason `nodeVersion` is: the interesting branch is a
    * hostname long enough to push the default name past the API's 64-character cap, and that is

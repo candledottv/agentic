@@ -4,7 +4,7 @@ import { isUsageError, parseArgs } from "../args"
 import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
 import { ProfileCoreOwnedError } from "../core/ownership"
-import type { CommandContext } from "../deps"
+import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
 import { SecretStoreLockedError } from "../keychain"
 import {
@@ -155,6 +155,33 @@ function displayMarkWidth(state: CheckRow["state"], sym: ReturnType<typeof symbo
   return { PASS: sym.ok, WARN: sym.warning, FAIL: sym.danger, SKIP: sym.missing }[state].length
 }
 
+/**
+ * BE-2712 (D4): the config directory as it is on disk, not only the path it resolves to. Doctor
+ * never creates it. A missing directory is a WARN, not a FAIL: the first credential or signer write
+ * creates it, but on a box that should already hold a signer it is the wrong-user or
+ * wrong-`CANDLE_CONFIG_DIR` mistake, and this row is where that shows before `Signer slot` fails.
+ */
+async function configDirRow(deps: Deps, configDir: string): Promise<CheckRow> {
+  const shown = deps.env[CONFIG_DIR_ENV]?.trim()
+    ? `${configDir} (from ${CONFIG_DIR_ENV})`
+    : `${configDir} (the default)`
+  const found = await deps.inspectConfigDir(configDir)
+  if (found.state === "present") return { check: "Config directory", state: "PASS", detail: shown }
+  if (found.state === "missing") {
+    return {
+      check: "Config directory",
+      state: "WARN",
+      detail: `${shown} does not exist yet. The first credential or signer write creates it (mode 0700). If this machine should already hold credentials or signers, check the user and ${CONFIG_DIR_ENV}.`,
+    }
+  }
+  const parent = found.ancestor === undefined ? "" : `; nearest existing parent: ${found.ancestor}`
+  return {
+    check: "Config directory",
+    state: "FAIL",
+    detail: `${shown} cannot be written (${found.errno}${parent}). Fix: as the user that runs candle, run mkdir -m 700 ${configDir}, or set ${CONFIG_DIR_ENV} to a directory that user can write.`,
+  }
+}
+
 export async function doctor(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, { valueFlags: ["--role"] })
@@ -206,11 +233,6 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
   let configDir: string | undefined
   try {
     configDir = candleConfigDir(deps.env, deps.homedir())
-    rows.push({
-      check: "Config directory",
-      state: "PASS",
-      detail: deps.env[CONFIG_DIR_ENV]?.trim() ? `${configDir} (from ${CONFIG_DIR_ENV})` : `${configDir} (the default)`,
-    })
   } catch (error) {
     rows.push({
       check: "Config directory",
@@ -221,6 +243,7 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
   if (configDir === undefined) {
     rows.push({ check: "Vault", state: "SKIP", detail: `${CONFIG_DIR_ENV} is not usable, so no path to check` })
   } else {
+    rows.push(await configDirRow(deps, configDir))
     const vaultPath = defaultVaultPath(deps.env, deps.homedir())
     hasVault = await fileExists(vaultPath)
     rows.push(

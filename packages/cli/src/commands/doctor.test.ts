@@ -6,12 +6,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { run } from "../index"
 import type { TerminalStyle } from "../presentation"
 import { homeRepository, updateHomeFor } from "../release"
+import { tempDirs } from "../temp-dirs.test-support"
 import {
   createCapture,
   createFakeConfigStore,
@@ -21,6 +22,7 @@ import {
   jsonResponse,
   type RouteHandler,
 } from "../test-support"
+import { inspectConfigDir } from "../vault/store"
 import { CLI_VERSION } from "../version"
 import { renderDoctorReport } from "./doctor"
 
@@ -633,5 +635,81 @@ describe("doctor report layout", () => {
 
   test("no warning row, no warning block", () => {
     expect(renderDoctorReport(rows.slice(0, 2), "owner", styled)).not.toContain("approve its own signer request")
+  })
+})
+
+/**
+ * BE-2712 (D4): the `Config directory` row reads the directory, with the real `inspectConfigDir`
+ * in place of `createTestDeps`' "present and writable" stub. Doctor never creates it.
+ */
+describe("BE-2712: the Config directory row checks the directory on disk", () => {
+  const tempDir = tempDirs()
+  const asRoot = process.getuid?.() === 0
+  const routes = {
+    ...HEALTHY_ROUTES,
+    "/releases/latest/download/latest.json": () =>
+      jsonResponse(200, { version: CLI_VERSION, tag: `cli-v${CLI_VERSION}`, assets: {} }),
+  }
+
+  async function doctorAt(configDir: string) {
+    const { fetch } = createRoutedFetch(routes)
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      stdout,
+      execPath: "/usr/local/bin/node",
+      env: { CANDLE_RELEASE_BASE_URL: "https://example.test", CANDLE_CONFIG_DIR: configDir },
+      inspectConfigDir,
+      ...healthyStores(),
+    })
+    const code = await run(["doctor", "--json"], deps)
+    const body = JSON.parse(stdout.text) as { rows: { id: string; check: string; state: string; detail: string }[] }
+    const row = body.rows.find((r) => r.check === "Config directory")
+    return { code, row, body }
+  }
+
+  test("an existing writable directory is PASS, with the (from CANDLE_CONFIG_DIR) prefix", async () => {
+    const dir = tempDir("candle-doctor-config-")
+    const { code, row } = await doctorAt(dir)
+    expect(row).toMatchObject({ id: "config_dir", state: "PASS", detail: `${dir} (from CANDLE_CONFIG_DIR)` })
+    expect(code).toBe(0)
+  })
+
+  test("a missing path under a writable directory is WARN, and doctor does not create it", async () => {
+    const dir = join(tempDir("candle-doctor-config-"), "candle")
+    const { code, row } = await doctorAt(dir)
+    expect(row?.state).toBe("WARN")
+    expect(row?.detail).toBe(
+      `${dir} (from CANDLE_CONFIG_DIR) does not exist yet. The first credential or signer write creates it (mode 0700). If this machine should already hold credentials or signers, check the user and CANDLE_CONFIG_DIR.`,
+    )
+    expect(code).toBe(0)
+    await expect(stat(dir)).rejects.toThrow()
+  })
+
+  test.skipIf(asRoot)(
+    "a missing path under a 0500 parent is FAIL with the errno, the nearest parent and the fix; exit 1",
+    async () => {
+      const parent = join(tempDir("candle-doctor-config-"), "locked")
+      await mkdir(parent)
+      await chmod(parent, 0o500)
+      const dir = join(parent, "candle")
+      const { code, row } = await doctorAt(dir)
+      expect(row?.state).toBe("FAIL")
+      expect(row?.detail).toBe(
+        `${dir} (from CANDLE_CONFIG_DIR) cannot be written (EACCES; nearest existing parent: ${parent}). Fix: as the user that runs candle, run mkdir -m 700 ${dir}, or set CANDLE_CONFIG_DIR to a directory that user can write.`,
+      )
+      expect(code).toBe(1)
+    },
+  )
+
+  test("a regular file at the path is FAIL", async () => {
+    const dir = join(tempDir("candle-doctor-config-"), "candle")
+    await writeFile(dir, "not a directory")
+    const { code, row } = await doctorAt(dir)
+    expect(row?.state).toBe("FAIL")
+    expect(row?.detail).toBe(
+      `${dir} (from CANDLE_CONFIG_DIR) cannot be written (ENOTDIR). Fix: as the user that runs candle, run mkdir -m 700 ${dir}, or set CANDLE_CONFIG_DIR to a directory that user can write.`,
+    )
+    expect(code).toBe(1)
   })
 })

@@ -7,10 +7,11 @@ import { promptHiddenSecret } from "./secret-store"
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { EncryptedFileSecretStore, pemToStoredSigner, SECRET_REFS, storedSignerToPem } from "./secret-store"
+import { tempDirs } from "./temp-dirs.test-support"
 
 const ORIGINAL_PASSPHRASE_ENV = process.env.CANDLE_KEYRING_PASSPHRASE
 const ORIGINAL_IS_TTY = process.stdin.isTTY
@@ -196,4 +197,65 @@ test("promptHiddenSecret without TTY no longer mentions --key-file", async () =>
     expect((error as Error).message).toBe("No TTY available for hidden input; run this in a terminal.")
     expect((error as Error).message).not.toContain("--key-file")
   }
+})
+
+// BE-2712 (D1, D5): the first write on a fresh box. Before, the lock's open failed with ENOENT
+// because nothing had created the directory yet, and the command died as `Unexpected error`.
+describe("EncryptedFileSecretStore on a machine where the config directory does not exist yet", () => {
+  const tempDir = tempDirs()
+  const previous = process.env.CANDLE_KEYRING_PASSPHRASE
+  beforeEach(() => {
+    process.env.CANDLE_KEYRING_PASSPHRASE = "correct horse battery staple"
+  })
+  afterEach(() => {
+    if (previous === undefined) delete process.env.CANDLE_KEYRING_PASSPHRASE
+    else process.env.CANDLE_KEYRING_PASSPHRASE = previous
+  })
+
+  test("with a fresh HOME and no CANDLE_CONFIG_DIR, set makes ~/.config/candle at 0700 and credentials.enc at 0600", async () => {
+    // A child process, because the default path is read from `homedir()`, which Bun resolves once
+    // per process: setting HOME here would not move it.
+    const home = tempDir("candle-fresh-home-")
+    const script = [
+      `import { EncryptedFileSecretStore } from ${JSON.stringify(join(import.meta.dir, "secret-store.ts"))}`,
+      "const store = new EncryptedFileSecretStore()",
+      'await store.set("device_token", "dtok_fresh_box")',
+      'console.log(await store.get("device_token"))',
+    ].join("\n")
+    const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: home }
+    env.CANDLE_KEYRING_PASSPHRASE = "correct horse battery staple"
+    const child = Bun.spawnSync([process.execPath, "-e", script], { env, stdout: "pipe", stderr: "pipe" })
+    expect(child.stderr.toString()).toBe("")
+    expect(child.exitCode).toBe(0)
+    expect(child.stdout.toString().trim()).toBe("dtok_fresh_box")
+    const dir = join(home, ".config", "candle")
+    expect((await stat(dir)).mode & 0o777).toBe(0o700)
+    expect((await stat(join(dir, "credentials.enc"))).mode & 0o777).toBe(0o600)
+    await expect(stat(join(dir, "credentials.enc.lock"))).rejects.toThrow()
+  })
+
+  test("a nested CANDLE_CONFIG_DIR that does not exist yet is created the same way", async () => {
+    const previousDir = process.env.CANDLE_CONFIG_DIR
+    const dir = join(tempDir("candle-nested-config-"), "a", "b", "candle")
+    process.env.CANDLE_CONFIG_DIR = dir
+    try {
+      const store = new EncryptedFileSecretStore()
+      await store.set("api_key", "ck_nested")
+      expect(await new EncryptedFileSecretStore().get("api_key")).toBe("ck_nested")
+      expect((await stat(dir)).mode & 0o777).toBe(0o700)
+      expect((await stat(join(dir, "credentials.enc"))).mode & 0o777).toBe(0o600)
+      await expect(stat(join(dir, "credentials.enc.lock"))).rejects.toThrow()
+    } finally {
+      if (previousDir === undefined) delete process.env.CANDLE_CONFIG_DIR
+      else process.env.CANDLE_CONFIG_DIR = previousDir
+    }
+  })
+
+  test("delete on a missing directory resolves and leaves an empty 0700 directory", async () => {
+    const dir = join(tempDir("candle-delete-missing-"), "candle")
+    const store = new EncryptedFileSecretStore({ path: join(dir, "credentials.enc") })
+    await store.delete("device_token")
+    expect((await stat(dir)).mode & 0o777).toBe(0o700)
+    expect(await readdir(dir)).toEqual([])
+  })
 })

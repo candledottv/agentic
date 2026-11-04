@@ -6831,7 +6831,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.17";
+var SDK_VERSION = "0.6.18";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
@@ -7317,7 +7317,12 @@ var STALE_MS = 30000;
 var RETRY_MS = 25;
 var TIMEOUT_MS = 1e4;
 async function withFileLock(target, fn) {
-  const { open, rm, stat } = await import("node:fs/promises");
+  const { chmod, mkdir, open, rm, stat } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+  const dir = dirname(target);
+  const created = await mkdir(dir, { recursive: true });
+  if (created !== undefined)
+    await chmod(dir, 448);
   const lockPath = `${target}.lock`;
   const deadline = Date.now() + TIMEOUT_MS;
   for (;; ) {

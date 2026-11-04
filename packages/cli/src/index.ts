@@ -140,6 +140,7 @@ import {
   profileNamesTouched,
 } from "./core/ownership"
 import type { CommandContext, Deps } from "./deps"
+import { ConfigDirUnwritableError } from "./file-lock"
 import { verifyProfileAccount } from "./guard"
 import { renderTopic, renderTopLevel } from "./help"
 import { resolveSecretStore, SECRETS_SERVICE, SecretStoreLockedError, SecretStoreReadError } from "./keychain"
@@ -161,6 +162,7 @@ import { maybeWriteUpdateNotice } from "./update-notice"
 import { appendEvmRecordForTrade } from "./vault/evm-tee"
 import type { HelperRun } from "./vault/fido2"
 import { RELEASE_POLICY } from "./vault/release-policy"
+import { inspectConfigDir } from "./vault/store"
 import { CLI_VERSION } from "./version"
 
 interface GlobalFlags {
@@ -612,6 +614,21 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
       writeLocalFailure(
         deps,
         { code: PROFILE_CORE_OWNED, message: error.message, suggestion: CORE_OWNED_SUGGESTION },
+        !("error" in parsed) && parsed.flags.json,
+      )
+      return 1
+    }
+    if (error instanceof ConfigDirUnwritableError) {
+      // BE-2712 (D3): a credential write that cannot create or write the config directory.
+      const parsed = extractGlobalFlags(argv)
+      writeLocalFailure(
+        deps,
+        {
+          code: error.code,
+          message: error.message,
+          suggestion: error.suggestion,
+          details: { path: error.path, errno: error.errno },
+        },
         !("error" in parsed) && parsed.flags.json,
       )
       return 1
@@ -1114,6 +1131,7 @@ export async function buildRealDeps(): Promise<Deps> {
     // The real home, so every default path is the path this CLI has always built (BE-274, D1).
     // Only `createTestDeps` injects anything else.
     homedir,
+    inspectConfigDir,
     // Imported lazily so the MCP server and its transport are only pulled in when `candle mcp`
     // actually runs. The module is bundled into this binary either way, but `./server` connects a
     // transport the moment it is asked to run, and every other command should stay untouched by

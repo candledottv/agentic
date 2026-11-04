@@ -526,7 +526,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.13";
+var CLI_VERSION = "0.13.14";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -13886,6 +13886,7 @@ __export(exports_store, {
   readVaultRaw: () => readVaultRaw,
   ownSecret: () => ownSecret,
   legacyWalletsPath: () => legacyWalletsPath,
+  inspectConfigDir: () => inspectConfigDir,
   freshVaultId: () => freshVaultId,
   freshKeyId: () => freshKeyId,
   freshEnvelopeId: () => freshEnvelopeId,
@@ -13900,8 +13901,8 @@ __export(exports_store, {
   candleConfigDir: () => candleConfigDir,
   CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
 });
-import { chmod as chmod3, mkdir as mkdir3, readFile as readFile4, stat as stat2 } from "node:fs/promises";
-import { join as join3 } from "node:path";
+import { access, chmod as chmod3, constants, mkdir as mkdir3, readFile as readFile4, stat as stat2 } from "node:fs/promises";
+import { dirname as dirname3, join as join3 } from "node:path";
 function candleConfigDir(env, home) {
   const configured = env.CANDLE_CONFIG_DIR?.trim();
   if (configured) {
@@ -13933,6 +13934,48 @@ async function fileExists(path) {
     return true;
   } catch {
     return false;
+  }
+}
+function errnoOf(error) {
+  return error?.code ?? "UNKNOWN";
+}
+async function writableDir(path) {
+  try {
+    await access(path, constants.W_OK | constants.X_OK);
+    return;
+  } catch (error) {
+    return errnoOf(error);
+  }
+}
+async function inspectConfigDir(path) {
+  try {
+    const stats = await stat2(path);
+    if (!stats.isDirectory())
+      return { state: "unwritable", errno: "ENOTDIR" };
+    const errno = await writableDir(path);
+    return errno === undefined ? { state: "present" } : { state: "unwritable", errno };
+  } catch (error) {
+    const code = errnoOf(error);
+    if (code !== "ENOENT" && code !== "ENOTDIR")
+      return { state: "unwritable", errno: code };
+  }
+  let ancestor = path;
+  for (;; ) {
+    const parent = dirname3(ancestor);
+    if (parent === ancestor)
+      return { state: "unwritable", errno: "ENOENT", ancestor };
+    ancestor = parent;
+    try {
+      const stats = await stat2(ancestor);
+      if (!stats.isDirectory())
+        return { state: "unwritable", errno: "ENOTDIR", ancestor };
+      const errno = await writableDir(ancestor);
+      return errno === undefined ? { state: "missing", ancestor } : { state: "unwritable", errno, ancestor };
+    } catch (error) {
+      const code = errnoOf(error);
+      if (code !== "ENOENT" && code !== "ENOTDIR")
+        return { state: "unwritable", errno: code };
+    }
   }
 }
 function closeVault(vault) {
@@ -14336,8 +14379,20 @@ var init_ownership = __esm(() => {
 });
 
 // src/file-lock.ts
-import { open as open2, rm as rm2, stat as stat4 } from "node:fs/promises";
+import { chmod as chmod5, mkdir as mkdir5, open as open2, rm as rm2, stat as stat4 } from "node:fs/promises";
+import { dirname as dirname4 } from "node:path";
+function unwritable(dir, error) {
+  return new ConfigDirUnwritableError(dir, error?.code ?? "UNKNOWN", error);
+}
 async function withFileLock(target, fn) {
+  const dir = dirname4(target);
+  try {
+    const created = await mkdir5(dir, { recursive: true });
+    if (created !== undefined)
+      await chmod5(dir, 448);
+  } catch (error) {
+    throw unwritable(dir, error);
+  }
   const lockPath = `${target}.lock`;
   const deadline = Date.now() + TIMEOUT_MS;
   for (;; ) {
@@ -14346,7 +14401,7 @@ async function withFileLock(target, fn) {
       break;
     } catch (error) {
       if (error.code !== "EEXIST")
-        throw error;
+        throw unwritable(dir, error);
       const age = await stat4(lockPath).then((s) => Date.now() - s.mtimeMs).catch(() => 0);
       if (age > STALE_MS) {
         await rm2(lockPath, { force: true });
@@ -14364,13 +14419,27 @@ async function withFileLock(target, fn) {
     await rm2(lockPath, { force: true });
   }
 }
-var STALE_MS = 30000, RETRY_MS = 25, TIMEOUT_MS = 1e4;
-var init_file_lock = () => {};
+var STALE_MS = 30000, RETRY_MS = 25, TIMEOUT_MS = 1e4, CONFIG_DIR_UNWRITABLE = "CONFIG_DIR_UNWRITABLE", ConfigDirUnwritableError;
+var init_file_lock = __esm(() => {
+  ConfigDirUnwritableError = class ConfigDirUnwritableError extends Error {
+    path;
+    errno;
+    code = CONFIG_DIR_UNWRITABLE;
+    suggestion;
+    constructor(path, errno, cause) {
+      super(errno === "ENOTDIR" || errno === "EEXIST" ? `${path} or one of its parents is not a directory (${errno}).` : `Cannot write the Candle config directory ${path} (${errno}).`, { cause });
+      this.path = path;
+      this.errno = errno;
+      this.name = "ConfigDirUnwritableError";
+      this.suggestion = `Fix: as the user that runs candle, run mkdir -m 700 ${path}, or set CANDLE_CONFIG_DIR to a directory that user can write.`;
+    }
+  };
+});
 
 // src/secret-store.ts
-import { chmod as chmod5, mkdir as mkdir5, readFile as readFile5, rename as rename3, writeFile as writeFile3 } from "node:fs/promises";
+import { chmod as chmod6, mkdir as mkdir6, readFile as readFile5, rename as rename3, writeFile as writeFile3 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname as dirname3, join as join5 } from "node:path";
+import { dirname as dirname5, join as join5 } from "node:path";
 function walletSignerRef(walletId) {
   return `wallet_signer_${walletId}`;
 }
@@ -14488,12 +14557,12 @@ class EncryptedFileSecretStore {
     }
   }
   async writeContents(contents) {
-    const dir = dirname3(this.path);
-    await mkdir5(dir, { recursive: true });
-    await chmod5(dir, 448);
+    const dir = dirname5(this.path);
+    await mkdir6(dir, { recursive: true });
+    await chmod6(dir, 448);
     const tmpPath = `${this.path}.${crypto.randomUUID()}.tmp`;
     await writeFile3(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 384 });
-    await chmod5(tmpPath, 384);
+    await chmod6(tmpPath, 384);
     await rename3(tmpPath, this.path);
   }
 }
@@ -15075,7 +15144,7 @@ var init_solana_endpoint = __esm(() => {
 
 // src/trading.ts
 import { createHash as createHash2, sign as sign2 } from "node:crypto";
-import { mkdir as mkdir6, open as open3, readFile as readFile6, rename as rename4, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir7, open as open3, readFile as readFile6, rename as rename4, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir2 } from "node:os";
 import { join as join6 } from "node:path";
 function baseAsset(value) {
@@ -15537,7 +15606,7 @@ async function savedOperation(ctx, key, id) {
 }
 async function claimOperation(ctx, key, id, kind) {
   const path = operationPath(ctx, key, id);
-  await mkdir6(join6(path, ".."), { recursive: true, mode: 448 });
+  await mkdir7(join6(path, ".."), { recursive: true, mode: 448 });
   let file;
   try {
     file = await open3(path, "wx", 384);
@@ -19767,8 +19836,8 @@ var init_ecies = __esm(() => {
 });
 
 // src/vault/enclave.ts
-import { access, constants } from "node:fs/promises";
-import { dirname as dirname4, join as join7 } from "node:path";
+import { access as access2, constants as constants2 } from "node:fs/promises";
+import { dirname as dirname6, join as join7 } from "node:path";
 function parseReleasePolicy(value) {
   const bad = (detail) => {
     throw new Error(`release-policy.json is malformed: ${detail}`);
@@ -19795,7 +19864,7 @@ function parseReleasePolicy(value) {
 }
 async function isExecutable(path) {
   try {
-    await access(path, constants.X_OK);
+    await access2(path, constants2.X_OK);
     return true;
   } catch {
     return false;
@@ -19824,10 +19893,10 @@ async function locateEnclaveHelper(deps) {
       reason: `this CLI is running from the npm package (or a source checkout), which ships no ${ENCLAVE_BUNDLE_NAME}`
     };
   }
-  const beside = await asBundle(join7(dirname4(realExec), ENCLAVE_BUNDLE_NAME));
+  const beside = await asBundle(join7(dirname6(realExec), ENCLAVE_BUNDLE_NAME));
   if (beside)
     return { state: "ready", ...beside, source: "beside-binary" };
-  const libexec = await asBundle(join7(dirname4(dirname4(realExec)), "libexec", ENCLAVE_BUNDLE_NAME));
+  const libexec = await asBundle(join7(dirname6(dirname6(realExec)), "libexec", ENCLAVE_BUNDLE_NAME));
   if (libexec)
     return { state: "ready", ...libexec, source: "libexec" };
   return { state: "absent", reason: `no ${ENCLAVE_BUNDLE_NAME} beside ${realExec} or in its libexec` };
@@ -20352,11 +20421,11 @@ var init_platform = __esm(() => {
 });
 
 // src/vault/fido2.ts
-import { access as access2, constants as constants2 } from "node:fs/promises";
-import { dirname as dirname5, join as join8 } from "node:path";
+import { access as access3, constants as constants3 } from "node:fs/promises";
+import { dirname as dirname7, join as join8 } from "node:path";
 async function isExecutable2(path) {
   try {
-    await access2(path, constants2.X_OK);
+    await access3(path, constants3.X_OK);
     return true;
   } catch {
     return false;
@@ -20381,7 +20450,7 @@ async function locateFido2Helper(deps) {
       installable: false
     };
   }
-  const beside = join8(dirname5(realExec), HELPER_NAME);
+  const beside = join8(dirname7(realExec), HELPER_NAME);
   if (await isExecutable2(beside))
     return { state: "ready", path: beside, source: "beside-binary" };
   return { state: "absent", reason: `no ${HELPER_NAME} executable beside ${realExec}`, installable: true };
@@ -28923,7 +28992,7 @@ __export(exports_vault_support, {
   askForOwnPassphrase: () => askForOwnPassphrase,
   PASSPHRASE_ONLY_PREFIX: () => PASSPHRASE_ONLY_PREFIX
 });
-import { dirname as dirname6, resolve as resolvePath } from "node:path";
+import { dirname as dirname8, resolve as resolvePath } from "node:path";
 function refuseEnvPassphrase(ctx) {
   if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined)
     return true;
@@ -29012,7 +29081,7 @@ function nonDefaultVaultFooter(resolved) {
   if (resolved.source !== "flag")
     return;
   return `
-This vault is at ${resolved.path}, not the default location. Every vault command needs -k ${resolved.path}, or set it once: export ${CONFIG_DIR_ENV}=${dirname6(resolved.path)}
+This vault is at ${resolved.path}, not the default location. Every vault command needs -k ${resolved.path}, or set it once: export ${CONFIG_DIR_ENV}=${dirname8(resolved.path)}
 `;
 }
 async function requireVaultRaw(ctx, resolved) {
@@ -29933,7 +30002,7 @@ var init_tee_lookup = __esm(() => {
 });
 
 // src/vault/tee-resolve.ts
-async function resolveTeeAddress(ctx, _parsed, address, openLegacy, access3 = "read") {
+async function resolveTeeAddress(ctx, _parsed, address, openLegacy, access4 = "read") {
   try {
     const hit = await findTeeInVault(ctx, address);
     if (hit.hit) {
@@ -29949,7 +30018,7 @@ async function resolveTeeAddress(ctx, _parsed, address, openLegacy, access3 = "r
             closeVault(hit.vault);
             return { ok: false, code: 1 };
           }
-          if (access3 === "sign")
+          if (access4 === "sign")
             privateKeyBase58 = base58.encode(secret);
         } finally {
           wipe(secret);
@@ -35331,8 +35400,8 @@ async function commitActiveTee(active, mutate) {
     };
   }
 }
-async function openActiveTee(ctx, parsed, address, access3) {
-  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed), access3);
+async function openActiveTee(ctx, parsed, address, access4) {
+  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed), access4);
   if (!resolved.ok)
     return { ok: false, code: resolved.code };
   if (resolved.resolved.source === "vault")
@@ -37935,10 +38004,10 @@ function labelCell(label) {
   return cleaned.replace(/\s+/g, " ").trim();
 }
 function accessCell(scopes, missing = "â€“") {
-  const access3 = agentKeyAccess(scopes);
-  if (access3.kind === "preset")
-    return access3.label;
-  const words = agentKeyAccessWords(access3);
+  const access4 = agentKeyAccess(scopes);
+  if (access4.kind === "preset")
+    return access4.label;
+  const words = agentKeyAccessWords(access4);
   return words.length > 0 ? words.join(", ") : missing;
 }
 async function keysList(args, ctx) {
@@ -38575,9 +38644,9 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/image.ts
-import { constants as constants3 } from "node:fs";
+import { constants as constants4 } from "node:fs";
 import { lstat, open as open5, realpath } from "node:fs/promises";
-import { dirname as dirname7, isAbsolute, relative, sep } from "node:path";
+import { dirname as dirname9, isAbsolute, relative, sep } from "node:path";
 function configuredImageDir(env) {
   return env.CANDLE_IMAGE_DIR?.trim() || undefined;
 }
@@ -38606,7 +38675,7 @@ async function realImageDir(imageDir, fs) {
     throw invalid();
   try {
     const real = await fs.realpath(imageDir);
-    if (dirname7(real) === real || !(await fs.lstat(real, { bigint: true })).isDirectory())
+    if (dirname9(real) === real || !(await fs.lstat(real, { bigint: true })).isDirectory())
       throw invalid();
     return real;
   } catch {
@@ -38623,7 +38692,7 @@ async function missingInside(dirReal, path, fs) {
       if (!absent(error))
         return false;
     }
-    const parent = dirname7(current);
+    const parent = dirname9(current);
     if (parent === current)
       return false;
     try {
@@ -38653,7 +38722,7 @@ async function readImageInDir(imageDir, imagePath, fs = nodeFs, field = "imagePa
     throw outside();
   let handle;
   try {
-    handle = await fs.open(fileReal, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0) | (constants3.O_NONBLOCK ?? 0));
+    handle = await fs.open(fileReal, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0) | (constants4.O_NONBLOCK ?? 0));
   } catch (error) {
     throw errno(error) === "ELOOP" ? outside() : unreadable2("it could not be opened");
   }
@@ -47312,11 +47381,11 @@ var require_codegen = __commonJS((exports) => {
       const rhs = this.rhs === undefined ? "" : ` = ${this.rhs}`;
       return `${varKind} ${this.name}${rhs};` + _n;
     }
-    optimizeNames(names, constants4) {
+    optimizeNames(names, constants5) {
       if (!names[this.name.str])
         return;
       if (this.rhs)
-        this.rhs = optimizeExpr(this.rhs, names, constants4);
+        this.rhs = optimizeExpr(this.rhs, names, constants5);
       return this;
     }
     get names() {
@@ -47334,10 +47403,10 @@ var require_codegen = __commonJS((exports) => {
     render({ _n }) {
       return `${this.lhs} = ${this.rhs};` + _n;
     }
-    optimizeNames(names, constants4) {
+    optimizeNames(names, constants5) {
       if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
         return;
-      this.rhs = optimizeExpr(this.rhs, names, constants4);
+      this.rhs = optimizeExpr(this.rhs, names, constants5);
       return this;
     }
     get names() {
@@ -47403,8 +47472,8 @@ var require_codegen = __commonJS((exports) => {
     optimizeNodes() {
       return `${this.code}` ? this : undefined;
     }
-    optimizeNames(names, constants4) {
-      this.code = optimizeExpr(this.code, names, constants4);
+    optimizeNames(names, constants5) {
+      this.code = optimizeExpr(this.code, names, constants5);
       return this;
     }
     get names() {
@@ -47434,12 +47503,12 @@ var require_codegen = __commonJS((exports) => {
       }
       return nodes.length > 0 ? this : undefined;
     }
-    optimizeNames(names, constants4) {
+    optimizeNames(names, constants5) {
       const { nodes } = this;
       let i = nodes.length;
       while (i--) {
         const n = nodes[i];
-        if (n.optimizeNames(names, constants4))
+        if (n.optimizeNames(names, constants5))
           continue;
         subtractNames(names, n.names);
         nodes.splice(i, 1);
@@ -47496,12 +47565,12 @@ var require_codegen = __commonJS((exports) => {
         return;
       return this;
     }
-    optimizeNames(names, constants4) {
+    optimizeNames(names, constants5) {
       var _a;
-      this.else = (_a = this.else) === null || _a === undefined ? undefined : _a.optimizeNames(names, constants4);
-      if (!(super.optimizeNames(names, constants4) || this.else))
+      this.else = (_a = this.else) === null || _a === undefined ? undefined : _a.optimizeNames(names, constants5);
+      if (!(super.optimizeNames(names, constants5) || this.else))
         return;
-      this.condition = optimizeExpr(this.condition, names, constants4);
+      this.condition = optimizeExpr(this.condition, names, constants5);
       return this;
     }
     get names() {
@@ -47526,10 +47595,10 @@ var require_codegen = __commonJS((exports) => {
     render(opts) {
       return `for(${this.iteration})` + super.render(opts);
     }
-    optimizeNames(names, constants4) {
-      if (!super.optimizeNames(names, constants4))
+    optimizeNames(names, constants5) {
+      if (!super.optimizeNames(names, constants5))
         return;
-      this.iteration = optimizeExpr(this.iteration, names, constants4);
+      this.iteration = optimizeExpr(this.iteration, names, constants5);
       return this;
     }
     get names() {
@@ -47567,10 +47636,10 @@ var require_codegen = __commonJS((exports) => {
     render(opts) {
       return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
     }
-    optimizeNames(names, constants4) {
-      if (!super.optimizeNames(names, constants4))
+    optimizeNames(names, constants5) {
+      if (!super.optimizeNames(names, constants5))
         return;
-      this.iterable = optimizeExpr(this.iterable, names, constants4);
+      this.iterable = optimizeExpr(this.iterable, names, constants5);
       return this;
     }
     get names() {
@@ -47615,11 +47684,11 @@ var require_codegen = __commonJS((exports) => {
       (_b = this.finally) === null || _b === undefined || _b.optimizeNodes();
       return this;
     }
-    optimizeNames(names, constants4) {
+    optimizeNames(names, constants5) {
       var _a, _b;
-      super.optimizeNames(names, constants4);
-      (_a = this.catch) === null || _a === undefined || _a.optimizeNames(names, constants4);
-      (_b = this.finally) === null || _b === undefined || _b.optimizeNames(names, constants4);
+      super.optimizeNames(names, constants5);
+      (_a = this.catch) === null || _a === undefined || _a.optimizeNames(names, constants5);
+      (_b = this.finally) === null || _b === undefined || _b.optimizeNames(names, constants5);
       return this;
     }
     get names() {
@@ -47893,7 +47962,7 @@ var require_codegen = __commonJS((exports) => {
   function addExprNames(names, from) {
     return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
   }
-  function optimizeExpr(expr, names, constants4) {
+  function optimizeExpr(expr, names, constants5) {
     if (expr instanceof code_1.Name)
       return replaceName(expr);
     if (!canOptimize(expr))
@@ -47908,14 +47977,14 @@ var require_codegen = __commonJS((exports) => {
       return items;
     }, []));
     function replaceName(n) {
-      const c = constants4[n.str];
+      const c = constants5[n.str];
       if (c === undefined || names[n.str] !== 1)
         return n;
       delete names[n.str];
       return c;
     }
     function canOptimize(e) {
-      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants4[c.str] !== undefined);
+      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants5[c.str] !== undefined);
     }
   }
   function subtractNames(names, from) {
@@ -73303,7 +73372,7 @@ Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv â
 init_client();
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod16, readFile as readFile20, realpath as realpath2, rename as rename16, unlink, writeFile as writeFile16 } from "node:fs/promises";
+import { chmod as chmod17, readFile as readFile20, realpath as realpath2, rename as rename16, unlink, writeFile as writeFile16 } from "node:fs/promises";
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -79742,7 +79811,7 @@ async function acquireInstanceLock(input) {
 }
 
 // src/core/journal.ts
-import { chmod as chmod6, open as open7, readFile as readFile11 } from "node:fs/promises";
+import { chmod as chmod7, open as open7, readFile as readFile11 } from "node:fs/promises";
 var RESERVED = new Set(["seq", "at", "environment", "profile"]);
 
 class Journal {
@@ -79769,7 +79838,7 @@ class Journal {
       throw new JournalIdentityError(`This journal holds rows for profile "${foreign.profile}" on ${foreign.environment}; this core is profile "${input.profile}" on ${input.environment}.`);
     }
     const handle = await open7(input.path, "a", 384);
-    await chmod6(input.path, 384);
+    await chmod7(input.path, 384);
     const journal = new Journal(handle, input.redactor, { environment: input.environment, profile: input.profile }, input.now, history2);
     if (history2.tornTail) {
       await journal.raw(`
@@ -80488,7 +80557,7 @@ function withoutFactorValue(factor) {
 // src/core/server.ts
 init_render();
 import { randomBytes as randomBytes8 } from "node:crypto";
-import { chmod as chmod8, readFile as readFile13, rename as rename9, rm as rm4, writeFile as writeFile8 } from "node:fs/promises";
+import { chmod as chmod9, readFile as readFile13, rename as rename9, rm as rm4, writeFile as writeFile8 } from "node:fs/promises";
 import { createServer } from "node:net";
 
 // src/core/events.ts
@@ -80607,7 +80676,7 @@ class EventHub {
 // src/core/tokens.ts
 init_render();
 import { createHash as createHash4, randomBytes as randomBytes7, timingSafeEqual } from "node:crypto";
-import { chmod as chmod7, readFile as readFile12, rename as rename8, writeFile as writeFile7 } from "node:fs/promises";
+import { chmod as chmod8, readFile as readFile12, rename as rename8, writeFile as writeFile7 } from "node:fs/promises";
 var HARNESS_PREFIX = "cht_";
 var TOKEN_ID = /^[A-Za-z0-9]{12}$/;
 function b64u2(bytes) {
@@ -80702,7 +80771,7 @@ class TokenBook {
     const temp = `${this.path}.tmp-${b64u2(randomBytes7(6))}`;
     await writeFile7(temp, `${JSON.stringify({ version: 1, harness: records }, null, 2)}
 `, { mode: 384, flag: "wx" });
-    await chmod7(temp, 384);
+    await chmod8(temp, 384);
     await rename8(temp, this.path);
     this.records = records;
   }
@@ -80812,7 +80881,7 @@ class CoreServer {
         resolve2();
       });
     });
-    await chmod8(path, 384);
+    await chmod9(path, 384);
     this.server = server;
   }
   async close() {
@@ -80954,10 +81023,10 @@ class CoreServer {
     const roles = Object.hasOwn(METHOD_ROLES, method) ? METHOD_ROLES[method] : undefined;
     if (roles === undefined)
       throw new RpcError(RPC_METHOD_NOT_FOUND2, "METHOD_NOT_FOUND", `No method ${terminalText(method).slice(0, 64)}.`);
-    const access3 = roles[client.role];
+    const access4 = roles[client.role];
     client.lastCall = method;
     client.lastCallAt = new Date(this.options.now()).toISOString();
-    if (access3 === "no") {
+    if (access4 === "no") {
       await this.options.journal.append({
         type: "call.forbidden",
         clientId: client.clientId,
@@ -80978,7 +81047,7 @@ class CoreServer {
     const handler = this.handlers.get(method);
     if (handler === undefined)
       throw refused("METHOD_NOT_AVAILABLE", `${method} is not in this build of the core yet.`);
-    return handler(params, { client, access: access3, server: this });
+    return handler(params, { client, access: access4, server: this });
   }
   async detach(clientId2, reason) {
     const connection = this.connections.get(clientId2);
@@ -81603,7 +81672,7 @@ init_evm_lite();
 init_solana_lite();
 init_token_2022();
 init_evm_transfer();
-import { chmod as chmod9, mkdir as mkdir7, readFile as readFile15, rename as rename11, rm as rm6, writeFile as writeFile9 } from "node:fs/promises";
+import { chmod as chmod10, mkdir as mkdir8, readFile as readFile15, rename as rename11, rm as rm6, writeFile as writeFile9 } from "node:fs/promises";
 import { join as join10 } from "node:path";
 
 // src/vault/vault-transfer-sign.ts
@@ -82179,8 +82248,8 @@ function createTransferChain(chainDeps) {
       }
     },
     async keepPending(opId, signed) {
-      await mkdir7(deps.pendingDir, { recursive: true, mode: 448 });
-      await chmod9(deps.pendingDir, 448);
+      await mkdir8(deps.pendingDir, { recursive: true, mode: 448 });
+      await chmod10(deps.pendingDir, 448);
       const path = pendingPath(opId);
       const temp = `${path}.tmp`;
       await writeFile9(temp, `${JSON.stringify(signed)}
@@ -83021,17 +83090,17 @@ Socket: ${paths.socket}
   }
 }
 function registerCardHandlers(server, cards, trading, journal, agents) {
-  const own = (access3) => access3 === "own";
+  const own = (access4) => access4 === "own";
   server.handle("cards.propose", async (params, { client }) => cards.propose(params, {
     clientId: client.clientId,
     role: client.role,
     clientName: client.clientName,
     ...client.harnessKind !== undefined ? { harnessKind: client.harnessKind } : {}
   }));
-  server.handle("cards.list", async (_params, { client, access: access3 }) => ({
-    cards: cards.list(client.clientId, own(access3))
+  server.handle("cards.list", async (_params, { client, access: access4 }) => ({
+    cards: cards.list(client.clientId, own(access4))
   }));
-  server.handle("cards.get", async (params, { client, access: access3 }) => cards.get(params.cardId, client.clientId, own(access3)));
+  server.handle("cards.get", async (params, { client, access: access4 }) => cards.get(params.cardId, client.clientId, own(access4)));
   server.handle("cards.approve", async (params, { client }) => cards.approve({
     cardId: params.cardId,
     cardHash: params.cardHash,
@@ -83040,10 +83109,10 @@ function registerCardHandlers(server, cards, trading, journal, agents) {
   }, client.clientId));
   server.handle("cards.reject", async (params, { client }) => cards.reject(params.cardId, client.clientId));
   server.handle("cards.withdraw", async (params, { client }) => cards.withdraw(params.cardId, client.clientId));
-  server.handle("operations.list", async (_params, { client, access: access3 }) => ({
-    operations: cards.operationsFor(client.clientId, own(access3))
+  server.handle("operations.list", async (_params, { client, access: access4 }) => ({
+    operations: cards.operationsFor(client.clientId, own(access4))
   }));
-  server.handle("operations.get", async (params, { client, access: access3 }) => cards.operation(params.opId, client.clientId, own(access3)));
+  server.handle("operations.get", async (params, { client, access: access4 }) => cards.operation(params.opId, client.clientId, own(access4)));
   server.handle("operations.resolve", async (params, { client }) => cards.resolve({ opId: params.opId, action: params.action, factor: parseFactor(params.factor) }, client.clientId));
   const agentSettings = () => agents ? { agents: agents.list(), ...agents.refusedWith ? { agentsRefused: agents.refusedWith } : {} } : {};
   server.handle("settings.get", async () => ({
@@ -85276,6 +85345,25 @@ function renderDoctorReport(rows, role, style) {
 function displayMarkWidth(state, sym) {
   return { PASS: sym.ok, WARN: sym.warning, FAIL: sym.danger, SKIP: sym.missing }[state].length;
 }
+async function configDirRow(deps, configDir2) {
+  const shown = deps.env[CONFIG_DIR_ENV]?.trim() ? `${configDir2} (from ${CONFIG_DIR_ENV})` : `${configDir2} (the default)`;
+  const found = await deps.inspectConfigDir(configDir2);
+  if (found.state === "present")
+    return { check: "Config directory", state: "PASS", detail: shown };
+  if (found.state === "missing") {
+    return {
+      check: "Config directory",
+      state: "WARN",
+      detail: `${shown} does not exist yet. The first credential or signer write creates it (mode 0700). If this machine should already hold credentials or signers, check the user and ${CONFIG_DIR_ENV}.`
+    };
+  }
+  const parent = found.ancestor === undefined ? "" : `; nearest existing parent: ${found.ancestor}`;
+  return {
+    check: "Config directory",
+    state: "FAIL",
+    detail: `${shown} cannot be written (${found.errno}${parent}). Fix: as the user that runs candle, run mkdir -m 700 ${configDir2}, or set ${CONFIG_DIR_ENV} to a directory that user can write.`
+  };
+}
 async function doctor(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--role"] });
@@ -85306,11 +85394,6 @@ async function doctor(args, ctx) {
   let configDir2;
   try {
     configDir2 = candleConfigDir(deps.env, deps.homedir());
-    rows.push({
-      check: "Config directory",
-      state: "PASS",
-      detail: deps.env[CONFIG_DIR_ENV]?.trim() ? `${configDir2} (from ${CONFIG_DIR_ENV})` : `${configDir2} (the default)`
-    });
   } catch (error) {
     rows.push({
       check: "Config directory",
@@ -85321,6 +85404,7 @@ async function doctor(args, ctx) {
   if (configDir2 === undefined) {
     rows.push({ check: "Vault", state: "SKIP", detail: `${CONFIG_DIR_ENV} is not usable, so no path to check` });
   } else {
+    rows.push(await configDirRow(deps, configDir2));
     const vaultPath = defaultVaultPath(deps.env, deps.homedir());
     hasVault = await fileExists(vaultPath);
     rows.push(hasVault ? { check: "Vault", state: "PASS", detail: vaultPath } : {
@@ -85631,7 +85715,7 @@ init_solana_endpoint();
 // src/vault/domains.ts
 init_errors2();
 import { homedir as homedir4 } from "node:os";
-import { basename as basename2, dirname as dirname8, isAbsolute as isAbsolute2, join as join12, resolve as resolve2, sep as sep2 } from "node:path";
+import { basename as basename2, dirname as dirname10, isAbsolute as isAbsolute2, join as join12, resolve as resolve2, sep as sep2 } from "node:path";
 var ICLOUD_DRIVE_SEGMENTS = ["Library", "Mobile Documents", "com~apple~CloudDocs"];
 var ICLOUD_SHORTHAND = "icloud";
 var ICLOUD_BACKUP_FOLDER = "Candle";
@@ -85690,7 +85774,7 @@ async function classifyDestination(path, opts) {
   }
   let parent;
   try {
-    parent = await opts.realpath(dirname8(absolute));
+    parent = await opts.realpath(dirname10(absolute));
   } catch {
     return "unknown";
   }
@@ -97787,7 +97871,7 @@ function encodePaymentPayload(args) {
 
 // src/x402/plan-state.ts
 init_file_lock();
-import { chmod as chmod10, mkdir as mkdir8, readFile as readFile16, rename as rename13, writeFile as writeFile11 } from "node:fs/promises";
+import { chmod as chmod11, mkdir as mkdir9, readFile as readFile16, rename as rename13, writeFile as writeFile11 } from "node:fs/promises";
 function signupSignerRef(spkiSha256) {
   return `x402_signup_signer_${spkiSha256}`;
 }
@@ -97879,11 +97963,11 @@ async function writePlanState(paths, state) {
   await writeFile11(temp, `${JSON.stringify({ v: 1, ...state })}
 `, { encoding: "utf8", mode: 384 });
   await rename13(temp, path);
-  await chmod10(path, 384).catch(() => {});
+  await chmod11(path, 384).catch(() => {});
 }
 async function updatePlanState(paths, change) {
-  await mkdir8(paths.dir, { recursive: true, mode: 448 });
-  await chmod10(paths.dir, 448).catch(() => {});
+  await mkdir9(paths.dir, { recursive: true, mode: 448 });
+  await chmod11(paths.dir, 448).catch(() => {});
   const path = planStatePath(paths);
   return withFileLock(path, async () => {
     const { state, result } = change(parsePlanState(await readText(path)));
@@ -98048,7 +98132,7 @@ function serializePartiallySigned(transfer, payerSignature2) {
 // src/x402/spend-log.ts
 init_file_lock();
 init_store();
-import { appendFile as appendFile2, chmod as chmod11, mkdir as mkdir9, readFile as readFile17, rename as rename14, writeFile as writeFile12 } from "node:fs/promises";
+import { appendFile as appendFile2, chmod as chmod12, mkdir as mkdir10, readFile as readFile17, rename as rename14, writeFile as writeFile12 } from "node:fs/promises";
 import { join as join13 } from "node:path";
 var DEFAULT_DAILY_LIMIT_USD_MICROS = 5000000n;
 var DEFAULT_MAX_PER_CALL_USD_MICROS = 1000000n;
@@ -98060,8 +98144,8 @@ function spendPaths(env, home, profile) {
   return { dir, log: join13(dir, `${name2}.jsonl`), limits: join13(dir, `${name2}.limits.json`) };
 }
 async function ensureDir(dir) {
-  await mkdir9(dir, { recursive: true, mode: 448 });
-  await chmod11(dir, 448).catch(() => {});
+  await mkdir10(dir, { recursive: true, mode: 448 });
+  await chmod12(dir, 448).catch(() => {});
 }
 async function readIfPresent2(path) {
   try {
@@ -98132,7 +98216,7 @@ async function appendSpendLines(paths, lines) {
     encoding: "utf8",
     mode: 384
   });
-  await chmod11(paths.log, 384).catch(() => {});
+  await chmod12(paths.log, 384).catch(() => {});
 }
 function foldSpendLog(lines) {
   const entries = new Map;
@@ -99667,7 +99751,7 @@ init_human_output();
 
 // src/plugins.ts
 import { spawn as spawn2 } from "node:child_process";
-import { accessSync, constants as constants4, readdirSync, statSync } from "node:fs";
+import { accessSync, constants as constants5, readdirSync, statSync } from "node:fs";
 import { delimiter, join as join14 } from "node:path";
 var PLUGIN_PREFIX = "candle-";
 var RESERVED_HELPER_NAMES = ["fido2", "enclave"];
@@ -99678,7 +99762,7 @@ function executableAt(path) {
   try {
     if (!statSync(path).isFile())
       return false;
-    accessSync(path, constants4.X_OK);
+    accessSync(path, constants5.X_OK);
     return true;
   } catch {
     return false;
@@ -106193,8 +106277,8 @@ async function discard(deps, path) {
 init_args();
 init_human_output();
 init_presentation();
-import { chmod as chmod12, copyFile, mkdir as mkdir10, stat as stat5 } from "node:fs/promises";
-import nodePath, { dirname as dirname9, resolve as resolve4 } from "node:path";
+import { chmod as chmod13, copyFile, mkdir as mkdir11, stat as stat5 } from "node:fs/promises";
+import nodePath, { dirname as dirname11, resolve as resolve4 } from "node:path";
 init_crypto();
 init_errors2();
 init_evm_record();
@@ -106378,11 +106462,11 @@ async function vaultBackup(args, ctx) {
     assertOutsideConfigDir(destination, deps.env, deps.homedir());
     const file = parseVaultFile(raw);
     if (target.requires !== undefined) {
-      const folder = dirname9(destination);
+      const folder = dirname11(destination);
       try {
-        const created = await mkdir10(folder, { recursive: true });
+        const created = await mkdir11(folder, { recursive: true });
         if (created !== undefined)
-          await chmod12(folder, 448).catch(() => {});
+          await chmod13(folder, 448).catch(() => {});
       } catch (error) {
         throw copyWriteFailed(destination, error, "copy");
       }
@@ -107307,8 +107391,8 @@ init_errors2();
 init_promote_support();
 init_store();
 init_vault_support();
-import { access as access3, chmod as chmod13, constants as constants5, lstat as lstat2, writeFile as writeFile13 } from "node:fs/promises";
-import { dirname as dirname10, resolve as resolve5 } from "node:path";
+import { access as access4, chmod as chmod14, constants as constants6, lstat as lstat2, writeFile as writeFile13 } from "node:fs/promises";
+import { dirname as dirname12, resolve as resolve5 } from "node:path";
 async function vaultExportKey(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--to"],
@@ -107420,7 +107504,7 @@ async function assertExportTargetWritable(destination) {
     if (error.code !== "ENOENT")
       throw error;
   }
-  const parent = dirname10(destination);
+  const parent = dirname12(destination);
   try {
     const parentInfo = await lstat2(parent);
     if (parentInfo.isSymbolicLink()) {
@@ -107442,7 +107526,7 @@ async function assertExportTargetWritable(destination) {
     throw error;
   }
   try {
-    await access3(parent, constants5.W_OK);
+    await access4(parent, constants6.W_OK);
   } catch {
     throw new VaultError("VAULT_WRITE_FAILED", `${parent} is not writable.`, {
       suggestion: "Choose a directory you can write to, or fix its permissions, then retry."
@@ -107452,7 +107536,7 @@ async function assertExportTargetWritable(destination) {
 async function writeExportFile(destination, body) {
   try {
     await writeFile13(destination, body, { encoding: "utf8", flag: "wx", mode: 384 });
-    await chmod13(destination, 384);
+    await chmod14(destination, 384);
   } catch (error) {
     const code = error.code;
     if (code === "EEXIST") {
@@ -113361,7 +113445,7 @@ async function vaultTransfer(args, ctx) {
 init_args();
 init_human_output();
 init_release();
-import { dirname as dirname11, join as join15 } from "node:path";
+import { dirname as dirname13, join as join15 } from "node:path";
 init_key_output();
 var USAGE16 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
@@ -113369,7 +113453,7 @@ async function resolveIdentity(deps, bundlePath, flag) {
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join15(dirname11(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join15(dirname13(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -114161,7 +114245,7 @@ function walletsUntrust(args, ctx) {
 }
 
 // src/config.ts
-import { chmod as chmod14, mkdir as mkdir11, readFile as readFile19, rm as rm8, writeFile as writeFile14 } from "node:fs/promises";
+import { chmod as chmod15, mkdir as mkdir12, readFile as readFile19, rm as rm8, writeFile as writeFile14 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
 import { join as join16 } from "node:path";
 function configDir2() {
@@ -114184,8 +114268,8 @@ async function writeConfig(patch) {
   const current = await readConfig();
   const next = { ...current, ...patch };
   const dir = configDir2();
-  await mkdir11(dir, { recursive: true });
-  await chmod14(dir, 448);
+  await mkdir12(dir, { recursive: true });
+  await chmod15(dir, 448);
   await writeFile14(configFilePath(), JSON.stringify(next, null, 2), "utf8");
 }
 async function updateProfile(name2, patch) {
@@ -114205,6 +114289,7 @@ async function clearConfig() {
 
 // src/index.ts
 init_ownership();
+init_file_lock();
 
 // src/guard.ts
 init_profiles();
@@ -114248,10 +114333,10 @@ async function verifyProfileAccount(ctx, config) {
 init_presentation();
 
 // src/private-file.ts
-import { chmod as chmod15, writeFile as writeFile15 } from "node:fs/promises";
+import { chmod as chmod16, writeFile as writeFile15 } from "node:fs/promises";
 async function writeOwnerOnlyFile(path, content) {
   await writeFile15(path, content, { mode: 384 });
-  await chmod15(path, 384);
+  await chmod16(path, 384);
 }
 
 // src/index.ts
@@ -114316,6 +114401,7 @@ init_enclave();
 var RELEASE_POLICY = parseReleasePolicy(release_policy_default);
 
 // src/index.ts
+init_store();
 function extractGlobalFlags(argv) {
   const rest = [];
   const flags2 = { json: false, help: false, version: false, noVerifyAccount: false };
@@ -114602,6 +114688,16 @@ async function run2(argv, deps) {
       writeLocalFailure(deps, { code: PROFILE_CORE_OWNED, message: error2.message, suggestion: CORE_OWNED_SUGGESTION }, !("error" in parsed2) && parsed2.flags.json);
       return 1;
     }
+    if (error2 instanceof ConfigDirUnwritableError) {
+      const parsed2 = extractGlobalFlags(argv);
+      writeLocalFailure(deps, {
+        code: error2.code,
+        message: error2.message,
+        suggestion: error2.suggestion,
+        details: { path: error2.path, errno: error2.errno }
+      }, !("error" in parsed2) && parsed2.flags.json);
+      return 1;
+    }
     if (!(error2 instanceof SecretStoreLockedError) && !(error2 instanceof SecretStoreReadError))
       throw error2;
     const parsed = extractGlobalFlags(argv);
@@ -114877,6 +114973,7 @@ async function buildRealDeps() {
     nodeVersion: process.versions.node,
     hostname: hostname(),
     homedir: homedir6,
+    inspectConfigDir,
     appendEvmRecord: appendEvmRecordForTrade,
     runMcpServer: async (env) => {
       const { runStdioServer: runStdioServer2 } = await Promise.resolve().then(() => (init_server3(), exports_server));
@@ -114911,7 +115008,7 @@ async function buildRealDeps() {
     releasePolicy: RELEASE_POLICY,
     writeBytes: async (path, bytes) => {
       await writeFile16(path, bytes, { flag: "wx", mode: 493 });
-      await chmod16(path, 493);
+      await chmod17(path, 493);
     },
     rename: (from, to) => rename16(from, to),
     unlink: (path) => unlink(path),

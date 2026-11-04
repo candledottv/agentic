@@ -213,6 +213,9 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     nodeVersion: process.versions.node,
     hostname: "test-host",
     homedir: () => TEST_HOME,
+    // BE-2712 (D4): present and writable, so doctor's `Config directory` row stays PASS for every
+    // test that is not about it. Those tests pass the real `inspectConfigDir` instead.
+    inspectConfigDir: async () => ({ state: "present" }),
     // Throwing defaults, like fetch's must-be-supplied rule but softer: only tests that
     // exercise wallets import's file/prompt paths need these, and a test that hits one
     // unexpectedly should fail loud, not silently read something.

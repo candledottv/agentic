@@ -19,8 +19,8 @@
  * underneath it has no safe merge (the other writer may have added an envelope this one's index
  * does not authenticate), so it refuses with `VAULT_CHANGED` and writes nothing.
  */
-import { chmod, mkdir, readFile, stat } from "node:fs/promises"
-import { join } from "node:path"
+import { access, chmod, constants, mkdir, readFile, stat } from "node:fs/promises"
+import { dirname, join } from "node:path"
 import { refuseUnexpandedTilde, UsageError } from "../args"
 import type { Deps } from "../deps"
 import { KeystoreLockedError, withKeystoreLock, writeKeystoreFile } from "../wallet-keystore"
@@ -123,6 +123,63 @@ export async function fileExists(path: string): Promise<boolean> {
     return true
   } catch {
     return false
+  }
+}
+
+/**
+ * What `doctor` can say about the config directory without writing anything (BE-2712, D4).
+ * `missing` means the nearest existing parent is a directory this user can write, so the first
+ * credential write creates it. `unwritable` carries the errno, and the nearest existing parent
+ * only when the directory itself is missing.
+ */
+export type ConfigDirInspection =
+  | { state: "present" }
+  | { state: "missing"; ancestor: string }
+  | { state: "unwritable"; errno: string; ancestor?: string }
+
+function errnoOf(error: unknown): string {
+  return (error as NodeJS.ErrnoException | undefined)?.code ?? "UNKNOWN"
+}
+
+async function writableDir(path: string): Promise<string | undefined> {
+  try {
+    await access(path, constants.W_OK | constants.X_OK)
+    return undefined
+  } catch (error) {
+    return errnoOf(error)
+  }
+}
+
+/**
+ * Reads the real filesystem, as `fileExists` does; injected into commands as
+ * `deps.inspectConfigDir` so tests choose between this and a stub. Never creates anything.
+ */
+export async function inspectConfigDir(path: string): Promise<ConfigDirInspection> {
+  try {
+    const stats = await stat(path)
+    if (!stats.isDirectory()) return { state: "unwritable", errno: "ENOTDIR" }
+    const errno = await writableDir(path)
+    return errno === undefined ? { state: "present" } : { state: "unwritable", errno }
+  } catch (error) {
+    const code = errnoOf(error)
+    // ENOTDIR as well as ENOENT: a file somewhere above the path also means it does not exist, and
+    // the walk below names which parent is in the way.
+    if (code !== "ENOENT" && code !== "ENOTDIR") return { state: "unwritable", errno: code }
+  }
+  let ancestor = path
+  for (;;) {
+    const parent = dirname(ancestor)
+    if (parent === ancestor) return { state: "unwritable", errno: "ENOENT", ancestor }
+    ancestor = parent
+    try {
+      const stats = await stat(ancestor)
+      if (!stats.isDirectory()) return { state: "unwritable", errno: "ENOTDIR", ancestor }
+      const errno = await writableDir(ancestor)
+      return errno === undefined ? { state: "missing", ancestor } : { state: "unwritable", errno, ancestor }
+    } catch (error) {
+      const code = errnoOf(error)
+      if (code !== "ENOENT" && code !== "ENOTDIR") return { state: "unwritable", errno: code }
+    }
   }
 }
 

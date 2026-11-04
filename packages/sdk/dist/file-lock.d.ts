@@ -14,6 +14,12 @@
  *
  * node:fs is imported lazily inside the function, matching secret-store.ts: importing this module
  * must not drag a filesystem dependency into a bundle that only wanted InMemorySecretStore.
+ *
+ * The lock file lives in the target's directory, so the lock creates that directory first: a
+ * caller-chosen path such as `./state/signer.enc` whose directory did not exist yet failed with
+ * ENOENT on the lock's open, before `writeFile`'s own `mkdir` could run. A directory this creates
+ * is set to 0700, the mode `writeFile` gives it; an existing one is left exactly as it is. Any
+ * other filesystem error reaches the caller as the Node errno error, unchanged.
  */
 export declare function withFileLock<T>(target: string, fn: () => Promise<T>): Promise<T>;
 //# sourceMappingURL=file-lock.d.ts.map
