@@ -266,7 +266,6 @@ const JSON_ANSWERING: { name: string; argv: string[] }[] = [
   { name: "verify", argv: ["verify"] },
   { name: "update --check", argv: ["update", "--check"] },
   // BE-2184: without --env and --name it is a usage envelope, before any read.
-  { name: "accounts create", argv: ["accounts", "create"] },
 ]
 
 const offlineFetch = (async () => {

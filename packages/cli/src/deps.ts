@@ -19,7 +19,6 @@ import type { HeldUnlock } from "./commands/vault-support"
 import type { CliConfig, ProfileConfig } from "./config"
 import { isCoreOwned, ProfileCoreOwnedError } from "./core/ownership"
 import type { OpenTape } from "./core/signals"
-import type { AccountsHost } from "./fleet-accounts"
 import type { PresentationFlags } from "./presentation"
 import { assertOrdinaryProfile, profileSecretRef } from "./profiles"
 import type { VerifyResult } from "./release-verify"
@@ -232,13 +231,6 @@ export interface Deps {
    * absent, the core uses the runtime's WebSocket; a test passes a fake so no socket is opened.
    */
   openTape?: OpenTape
-  /**
-   * `candle accounts create` (cli-account-create spec 5 and 6): the runner lock, the owner-controlled
-   * files under `/Users/a/.claude/ops`, the fleet keychain items and the reviewed API-key sibling.
-   * Optional: absent, the command uses `liveAccountsHost()`. Tests pass temp directories and fakes
-   * here, the only way the fixed owner paths move.
-   */
-  accountsHost?: AccountsHost
 }
 
 /** A `token` line of the sealed EVM record (D1): a token a landed leg on `wallet` traded. */

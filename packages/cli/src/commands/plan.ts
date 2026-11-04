@@ -68,13 +68,14 @@ import {
   spendPaths,
 } from "../x402/spend-log"
 import { openVaultSigner } from "../x402/vault-payer"
-import { CANDLE_TERMS_URL } from "./accounts"
 import { blockhashFor } from "./token-paid"
 import { confirmAddress, runVaultCommand } from "./vault-support"
 
+const CANDLE_TERMS_URL = "https://docs.candle.tv/terms"
+
 /**
  * The terms version a plan payment accepts (5.6): `CURRENT_TERMS_VERSION` in `@candle/shared`, the
- * version the web app and `accounts create` send. Copied because the CLI has no cross-package
+ * version the web app sends. Copied because the CLI has no cross-package
  * import; `plan.drift.test.ts` pins the two together.
  */
 export const PLAN_TERMS_VERSION = "2026-10-25"

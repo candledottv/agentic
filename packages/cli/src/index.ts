@@ -24,7 +24,6 @@ import { chmod, readFile, realpath, rename, unlink, writeFile } from "node:fs/pr
 import { homedir, hostname } from "node:os"
 import { pathToFileURL } from "node:url"
 import { browserUrl, resolveApiUrl } from "./client"
-import { accountsCreate } from "./commands/accounts"
 import { agentPositions } from "./commands/agent-positions"
 import { agentPost } from "./commands/agent-post"
 import { agentProfile } from "./commands/agent-profile"
@@ -255,8 +254,6 @@ const COMMANDS: Record<string, CommandRoute> = {
   fees: { bare: feesList, subcommands: { claim: feesClaim } },
   // BE-723 (Plans v2 P6): the served plan table. Public, so it reads and sends no credential.
   plans: { bare: plans },
-  // BE-2184 (cli-account-create spec 5): a staging test member from fleet keychain items, no browser.
-  accounts: { subcommands: { create: accountsCreate } },
   // x402 C4 (BE-1875): forensics and the vamp finder may answer a per-use 402, paid from a vault
   // key inside the local spending rules (src/x402/), or shown and not paid.
   // Token page About (BE-1959, token pages spec 7): `about` and `history` are public reads;
@@ -567,8 +564,6 @@ export const NEVER_GUARDED = new Set([
   "verify",
   // BE-723: `GET /agent/plans` is public; the command acts as no identity.
   "plans",
-  // BE-2184: `accounts create` makes a new account and its profile; there is no identity yet to guard.
-  "accounts",
   "token",
   // BE-2119: the token card route is public and reads no key; `scan` acts as no identity.
   "scan",
@@ -779,12 +774,9 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   // (list, add, and -- Tasks 3 and 4 -- use/rename/remove), and `profile use` is the way OUT of
   // resolveProfileName's "several profiles, none selected" refusal, so it cannot be gated by it.
   const isProfileCommand = cmd === "profile"
-  // `accounts create` makes the profile it names (`--profile`, default `<env>-<name>`) and acts as no
-  // stored identity, so it resolves none: the raw flag reaches it as `profileFlag`.
-  const isAccountsCreate = cmd === "accounts" && sub === "create"
   const resolution = isAuthLogin
     ? resolveProfileNameForLogin(config, { flag: flags.profile, env: deps.env })
-    : isProfileCommand || isAccountsCreate
+    : isProfileCommand
       ? ({ ok: true, name: undefined } as const)
       : resolveProfileName(config, { flag: flags.profile, env: deps.env })
   if (!resolution.ok) {
