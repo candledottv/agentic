@@ -29,17 +29,19 @@ So: a `null` is never a zero. An `unavailable` coverage is never a pass.
 `candle_token_forensics` with `{ chain, mint }` returns deployer history, deploy-window buyers,
 same-funder insiders and cluster, plus `safety.summary` and six flags: `mintAuthority`,
 `freezeAuthority`, `tokenExtensions`, `lpLock`, `sellability`, and `liquidityDrain`.
-Each flag carries `status` (`flagged`, `clear`, or `unknown`), `value`, `source`, `checkedAt`,
-and `detail`. Preserve detail even on a clear authority: revocation can follow a recorded freeze.
+Each flag carries `status` (`flagged`, `clear`, `unknown`, or `not_applicable`), `value`,
+`source`, `checkedAt`, and `detail`. A `not_applicable` flag is a check that does not apply to
+this token, neither a pass nor a warning: `liquidityDrain` answers it on a token past its 30-day
+launch window, where the feed's retained peak and today's reading need not count the same pools. Preserve detail even on a clear authority: revocation can follow a recorded freeze.
 Sellability is a verdict from runner evidence or Jupiter Shield, not a holder-side simulation.
 A routable `safety.sellProbe` is not clearance: an unknown `sellability` stays unknown, and a
 refused probe is not a flag.
 
 **Refuse an unprompted buy when `safety.summary` is `flagged`, and name the flag and its detail.**
-`clear` means all six flags are clear, not that a trade is guaranteed safe. `incomplete` means
+`clear` means all six flags are clear or not applicable, not that a trade is guaranteed safe. `incomplete` means
 at least one reading is unknown; do not treat that as clearance. Read every flag even when the
 summary is incomplete: a hacc outage leaves that summary incomplete while feed liquidity can
-still be flagged. `not_applicable` has no flags and applies to base assets only.
+still be flagged. A `not_applicable` summary has no flags and applies to base assets only.
 
 `launch.deployerLaunches` is informational: the inclusive number of launches from this deployer,
 including this mint. Do not subtract one, turn it into a warning, or use it as a flag.
