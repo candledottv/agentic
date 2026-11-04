@@ -3476,7 +3476,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.11";
+var CLI_VERSION = "0.13.12";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -74890,6 +74890,9 @@ init_keys_embedded_wallet();
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
 var DEVICE_TOKEN_PATH = "/api/v1/agent/device/token";
 var MAX_CLIENT_NAME_LENGTH = 64;
+function expiresInWords(seconds) {
+  return seconds % 60 === 0 ? `${seconds / 60}m` : `${seconds}s`;
+}
 function loginApiUrlFault(value, env) {
   let url;
   try {
@@ -75012,11 +75015,14 @@ async function authLogin(args, ctx) {
   const code = codeResult.body;
   const progress = json ? deps.stderr : deps.stdout;
   if (json) {
-    progress.write(`API: ${apiUrl}
-`);
-    progress.write(`Your device code: ${code.userCode}
-`);
-    progress.write(`Open this URL to approve: ${code.verificationUriComplete}
+    progress.write(`${JSON.stringify({
+      stage: "device_code",
+      apiUrl,
+      userCode: code.userCode,
+      verificationUri: code.verificationUri,
+      verificationUriComplete: code.verificationUriComplete,
+      expiresIn: code.expiresIn
+    })}
 `);
   } else {
     const style = terminalStyle(deps, "stdout");
@@ -75025,7 +75031,8 @@ async function authLogin(args, ctx) {
 ${fields([
       ["API", apiUrl],
       ["Device code", code.userCode],
-      ["Approve at", code.verificationUriComplete]
+      ["Approve at", code.verificationUriComplete],
+      ["Code expires in", expiresInWords(code.expiresIn)]
     ], style).join(`
 `)}
 

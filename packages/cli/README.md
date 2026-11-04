@@ -85,7 +85,7 @@ emergency procedure, rebinding, trusted wallets and API key access levels are al
 | Command | What it does |
 | --- | --- |
 | `candle setup [--no-browser]` | The onboarding wizard: authorizes this device (skipped when already authorized), prints the agent wallets as funding destinations plus the paste-into-your-agent brief, shows the skill/MCP install lines, runs the full doctor check (setup's exit code is doctor's), and links the web console. Safe to re-run. |
-| `candle auth login [--api-url <url>] [--profile <name>] [--scopes <a,b,c>] [--label <name>] [--embedded-wallet deny\|allow] [--no-browser]` | Authorizes this device: prints the API host and a code, opens (or prints) an approval URL, polls until approved, then stores the resulting device token and API key. A new profile needs `--api-url` or a prompt. `--label` names both the device and the key. `--embedded-wallet` defaults to deny. `transfer:bound` is refused here and granted afterwards with `keys access <prefix> --access withdraw`. |
+| `candle auth login [--api-url <url>] [--profile <name>] [--scopes <a,b,c>] [--label <name>] [--embedded-wallet deny\|allow] [--no-browser]` | Authorizes this device: prints the API host, a code and its expiry, opens (or prints) an approval URL, polls until approved, then stores the resulting device token and API key. A new profile needs `--api-url` or a prompt. `--label` names both the device and the key. `--embedded-wallet` defaults to deny. `transfer:bound` is refused here and granted afterwards with `keys access <prefix> --access withdraw`. |
 | `candle auth status` | Shows which storage backend is in use, both credential prefixes, the config file path, and a live validity check for each credential. |
 | `candle auth logout [--keep-key]` | Revokes the stored API key (skipped with `--keep-key`), clears local credentials and config, and prints the portal URL for revoking the device itself. |
 | `candle keys list [--scopes]` | Lists this account's API keys: prefix, name, Read, Write or Withdraw access, environment, timestamps, and which device minted each one. `--scopes` adds the raw scopes, sorted. |
@@ -162,7 +162,7 @@ Every command accepts these global options:
 | `--device <id>` | Vault commands: the security key to use, by id. |
 | `--no-verify-account` | Skips the check that the stored key belongs to the profile's account. |
 | `--full` | Prints ids in full where a table would shorten them (`9EAq…9Hd7`). |
-| `--json` | Machine-readable output instead of a formatted table or summary, generally the underlying API response. One exception: `auth login`'s JSON output still omits the plaintext device token and API key, matching its human-readable summary, since login never displays either value in any mode. |
+| `--json` | Machine-readable output instead of a formatted table or summary, generally the underlying API response. Two exceptions: `auth login`'s JSON result still omits the plaintext device token and API key, matching its human-readable summary, since login never displays either value in any mode; and its device-code progress (code, approval URL, expiry) is printed to stderr as one JSON object with `"stage":"device_code"`, keeping stdout a single parseable JSON value. |
 | `--help`, `-h` | Prints usage. |
 | `--version`, `-v` | Prints the CLI version. |
 

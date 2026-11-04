@@ -6,9 +6,9 @@
  *      server's 64 characters (see MAX_CLIENT_NAME_LENGTH), scopes omitted unless --scopes was
  *      given (omitted = the server's all-four default).
  *   2. Print the user code and verificationUriComplete; unless --no-browser, best-effort open the
- *      browser; the URL is ALWAYS printed too, for SSH sessions. In `--json` mode these two
- *      progress lines go to stderr instead of stdout, so stdout stays exactly one parseable JSON
- *      value (fix round 1, item 1).
+ *      browser; the URL is ALWAYS printed too, for SSH sessions. In `--json` mode this progress
+ *      goes to stderr as one JSON object (R60) instead of plain lines, so stdout stays exactly
+ *      one parseable JSON value (fix round 1, item 1). Both modes show the code's expiry.
  *   3. Poll POST /device/token every `interval` seconds. authorization_pending keeps going;
  *      slow_down bumps the interval by 5s and keeps going; access_denied / expired_token /
  *      invalid_grant each end the flow with a distinct message and exit 1. Stops at expiresIn
@@ -97,6 +97,12 @@ interface DeviceTokenSuccessResponse {
     embeddedWallet?: "allowed" | "denied"
   } | null
   apiKeyError?: string
+}
+
+/** The device code's lifetime in the human screen's words: whole minutes as `10m`, anything
+ * else in seconds, so an unusual server value never renders as a misleading round number. */
+function expiresInWords(seconds: number): string {
+  return seconds % 60 === 0 ? `${seconds / 60}m` : `${seconds}s`
 }
 
 function loginApiUrlFault(value: string, env: Record<string, string | undefined>): string | undefined {
@@ -258,9 +264,20 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   // go to stderr so stdout stays exactly one parseable JSON value (fix round 1, item 1).
   const progress = json ? deps.stderr : deps.stdout
   if (json) {
-    progress.write(`API: ${apiUrl}\n`)
-    progress.write(`Your device code: ${code.userCode}\n`)
-    progress.write(`Open this URL to approve: ${code.verificationUriComplete}\n`)
+    // R60: the device-code progress is itself machine-readable -- one JSON object on stderr
+    // (stdout stays exactly one parseable JSON value, the login result), carrying the code, the
+    // approval URLs, and the expiry the human screen also shows now. `stage` distinguishes this
+    // progress event from the final result object on stdout.
+    progress.write(
+      `${JSON.stringify({
+        stage: "device_code",
+        apiUrl,
+        userCode: code.userCode,
+        verificationUri: code.verificationUri,
+        verificationUriComplete: code.verificationUriComplete,
+        expiresIn: code.expiresIn,
+      })}\n`,
+    )
   } else {
     const style = terminalStyle(deps, "stdout")
     progress.write(
@@ -269,6 +286,7 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
           ["API", apiUrl],
           ["Device code", code.userCode],
           ["Approve at", code.verificationUriComplete],
+          ["Code expires in", expiresInWords(code.expiresIn)],
         ],
         style,
       ).join("\n")}\n\n`,

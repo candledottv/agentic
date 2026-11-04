@@ -568,15 +568,23 @@ describe("auth login: --json", () => {
     const code = await run(["auth", "login", "--api-url", "https://api.alpha.candle.tv", "--json"], deps)
 
     expect(code).toBe(0)
-    // FIX 1: stdout must be parseable as-is -- the two progress lines ("Your device code:",
-    // "Open this URL to approve:") must have gone to stderr instead, not been mixed into stdout.
+    // FIX 1 + R60: stdout must be parseable as-is, and the device-code progress must itself be
+    // one JSON object on stderr (not plain "Your device code:" lines), carrying the code, the
+    // approval URLs and the expiry.
     const parsed = JSON.parse(stdout.text)
     expect(parsed.backend).toBe("encrypted-file")
     expect(parsed.deviceTokenPrefix).toBe("dvcpref3")
     expect(parsed.apiKeyPrefix).toBe("ck_livejj")
     expect(parsed.scopes).toEqual(scopes)
     expect(stderr.text).toBe(
-      `API: https://api.alpha.candle.tv\nYour device code: ${CODE_RESPONSE.userCode}\nOpen this URL to approve: ${CODE_RESPONSE.verificationUriComplete}\n`,
+      `${JSON.stringify({
+        stage: "device_code",
+        apiUrl: "https://api.alpha.candle.tv",
+        userCode: CODE_RESPONSE.userCode,
+        verificationUri: CODE_RESPONSE.verificationUri,
+        verificationUriComplete: CODE_RESPONSE.verificationUriComplete,
+        expiresIn: CODE_RESPONSE.expiresIn,
+      })}\n`,
     )
 
     // FIX 2: reverting the redaction (JSON.stringify(rawBody)) would leak both plaintext
@@ -1527,6 +1535,8 @@ describe("auth output kit", () => {
     expect(stdout.text).toContain("Authorize this device")
     expect(stdout.text).toContain(CODE_RESPONSE.userCode)
     expect(stdout.text).toContain(CODE_RESPONSE.verificationUriComplete)
+    expect(stdout.text).toContain("Code expires in")
+    expect(stdout.text).toContain("10m")
     expect(stdout.text).toContain("ok Device authorized")
     expect(stdout.text).toContain("dvcprofl")
     expect(stdout.text).toContain("ck_livepr")
