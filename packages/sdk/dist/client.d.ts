@@ -1236,7 +1236,7 @@ export interface AgentTierInfo {
         feeRawSum: string;
         count: number;
     }>;
-    /** The live tier's cap floors. Absent from an older server. */
+    /** The live tier's caps; `rateLimitPerMin` is the limit enforced for a key on this plan (Free 30). Absent from an older server. */
     tierCaps?: {
         rateLimitPerMin: number;
         dailyLaunchCap: number;

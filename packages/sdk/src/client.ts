@@ -1306,7 +1306,7 @@ export interface AgentTierInfo {
   /** The account's resolved platform fee, in bps, on API-built value-moving transactions. */
   feeBps: number
   feeTotals: Array<{ chain: Chain; quoteAsset: string; feeRawSum: string; count: number }>
-  /** The live tier's cap floors. Absent from an older server. */
+  /** The live tier's caps; `rateLimitPerMin` is the limit enforced for a key on this plan (Free 30). Absent from an older server. */
   tierCaps?: { rateLimitPerMin: number; dailyLaunchCap: number; uploadsPerMin: number; linkedWallets: number }
   /** When the tier was evaluated (ms), so a caller can say how fresh it is. Absent from an older server. */
   checkedAt?: number

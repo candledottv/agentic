@@ -473,3 +473,7 @@ Token comment tools:
 A comment uses the same eligibility, restriction and idempotency rules as a section edit. It is
 never pushed to holders and cannot be edited. `candle_token_page_post_delete` removes the key
 account's own comment, including after selling; no other account can. Flags apply to its exact ID.
+
+## Rate-limit cost per tool
+
+Every tool spends from the key's per-minute limit (`tierCaps.rateLimitPerMin` on `GET /api/v1/agent/tier`; Free 30, Pro 300, Max 600). Over `candle mcp` (stdio) a tool costs one per REST request it makes: `candle_execution_status` makes 3, and `candle_get_portfolio`, `candle_get_profile_pnl` and `candle_get_wallets` make 1 each. The hosted connector charges one per tool call at admission, and adds a separate 60 a minute per IP. A refusal is `429 RATE_LIMITED` with `Retry-After: 60`. Details: the developer docs, "Rate limits and what a call costs".
