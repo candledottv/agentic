@@ -42,6 +42,7 @@ import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysAccess } from "./commands/keys-access"
 import { keysSelf, keysUpdate } from "./commands/keys-embedded-wallet"
 import { keysLimit } from "./commands/keys-limit"
+import { keysResume, keysStop } from "./commands/keys-stop"
 import { keysWallets } from "./commands/keys-wallets"
 import { labEdges, labReplay, labRunners, labStatus } from "./commands/lab"
 import { launch } from "./commands/launch"
@@ -354,6 +355,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       limit: keysLimit,
       self: keysSelf,
       revoke: keysRevoke,
+      stop: keysStop,
+      resume: keysResume,
       wallets: keysWallets,
       // Key signers K3: `keys signer approve|move`, a second word of their own (like vault factor).
       signer: keysSigner,

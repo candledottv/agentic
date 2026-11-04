@@ -1191,7 +1191,9 @@ export const HELP: Record<string, Topic> = {
         description:
           "The profile's own key gives up the embedded wallet, with no prompt. A key can never allow itself: the owner does that with keys update",
       },
-      { invocation: "revoke <prefix>", description: "Revoke an API key" },
+      { invocation: "stop <prefix>", description: "Pause one key with the device token; reversible with keys resume" },
+      { invocation: "resume <prefix>", description: "Resume a stopped key with the device token" },
+      { invocation: "revoke <prefix>", description: "Revoke an API key permanently" },
       {
         invocation: "signer approve <code> --key <prefix|label> [--reject]",
         description:
@@ -1234,6 +1236,8 @@ export const HELP: Record<string, Topic> = {
       "candle keys signer approve ABCD-EFGH --key tr-2",
       "candle keys signer move tr-2",
       "candle keys revoke ck_live_ab12",
+      "candle keys stop ck_live_ab12",
+      "candle keys resume ck_live_ab12",
     ],
     env: ENV_API,
   },

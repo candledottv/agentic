@@ -77298,7 +77298,9 @@ var HELP = {
         invocation: "self embedded-wallet deny",
         description: "The profile's own key gives up the embedded wallet, with no prompt. A key can never allow itself: the owner does that with keys update"
       },
-      { invocation: "revoke <prefix>", description: "Revoke an API key" },
+      { invocation: "stop <prefix>", description: "Pause one key with the device token; reversible with keys resume" },
+      { invocation: "resume <prefix>", description: "Resume a stopped key with the device token" },
+      { invocation: "revoke <prefix>", description: "Revoke an API key permanently" },
       {
         invocation: "signer approve <code> --key <prefix|label> [--reject]",
         description: "Approve (or reject) a key's signer request with the device token; type the full fingerprint the trading machine printed"
@@ -77333,7 +77335,9 @@ var HELP = {
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
       "candle keys signer approve ABCD-EFGH --key tr-2",
       "candle keys signer move tr-2",
-      "candle keys revoke ck_live_ab12"
+      "candle keys revoke ck_live_ab12",
+      "candle keys stop ck_live_ab12",
+      "candle keys resume ck_live_ab12"
     ],
     env: ENV_API
   },
@@ -90424,6 +90428,63 @@ async function keysLimit(args, ctx) {
 ${heading("Limit", style)}
 ${fields(rows, style).join(`
 `)}
+`);
+  return 0;
+}
+
+// src/commands/keys-stop.ts
+init_args();
+init_client();
+init_deps();
+init_presentation();
+init_profiles();
+init_key_output();
+init_keys();
+function keysStop(args, ctx) {
+  return setKeyPaused(args, ctx, true);
+}
+function keysResume(args, ctx) {
+  return setKeyPaused(args, ctx, false);
+}
+async function setKeyPaused(args, ctx, paused) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeScreenUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  if (!prefix?.trim() || parsed.positionals.length !== 1) {
+    writeScreenUsageFailure(deps, `Usage: candle keys ${paused ? "stop" : "resume"} <prefix>`, json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeScreenLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/stop`, {
+    method: "POST",
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+    body: { paused }
+  });
+  if (!result.ok) {
+    writeScreenFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  const body = result.body;
+  const state = body.paused ? "stopped" : "resumed";
+  deps.stdout.write(`${success(`Key ${prefix} ${body.changed ? "" : "already "}${state}.`, terminalStyle(deps, "stdout"))}
 `);
   return 0;
 }
@@ -115111,6 +115172,8 @@ var COMMANDS = {
       limit: keysLimit,
       self: keysSelf,
       revoke: keysRevoke,
+      stop: keysStop,
+      resume: keysResume,
       wallets: keysWallets,
       signer: keysSigner
     }
