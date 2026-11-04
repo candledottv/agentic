@@ -2204,12 +2204,19 @@ export interface ExecutedTradeResult {
   }
   /**
    * Solana only: what the confirmed transaction cost the wallet, read off the chain. `walletSolChangeLamports`
-   * is the wallet's whole SOL change (network fee, priority fee, rent and WSOL movement included).
+   * is the wallet's whole SOL change, split into `networkFeeLamports` (5,000 per signature),
+   * `priorityFeeLamports`, `rentLamports` (accounts created, less rent returned by closes),
+   * `candleFeeLamports` (when the fee was in SOL) and `swapLamports`, the rest. On a buy the change is
+   * swap - network - priority - rent - Candle fee; on a sell the fee was withheld from `swapLamports`.
    * `emptyTokenAccounts` are the wallet's token accounts the trade left at zero, each still holding rent;
    * `hint` names the command that reclaims it. Absent on Hood and on a replay of an earlier answer.
    */
   settlement?: {
     networkFeeLamports?: string
+    priorityFeeLamports?: string
+    rentLamports?: string
+    candleFeeLamports?: string
+    swapLamports?: string
     walletSolChangeLamports?: string
     emptyTokenAccounts: Array<{ account: string; mint: string; rentLamports: string }>
     emptyTokenAccountRentLamports: string
@@ -7238,7 +7245,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.15"
+export const SDK_VERSION = "0.6.16"
 
 let sdkUpdateWarned = false
 
