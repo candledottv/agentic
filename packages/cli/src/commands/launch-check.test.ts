@@ -22,6 +22,7 @@ function preflightBody(opts: {
   headlessLaunch?: boolean
   agentTrading?: boolean
   teeLaunchBuys?: boolean
+  teeLaunchByScope?: boolean
   wallets?: Array<{
     id: string
     address: string
@@ -46,6 +47,7 @@ function preflightBody(opts: {
       headlessLaunch: opts.headlessLaunch ?? true,
       agentTrading: opts.agentTrading ?? true,
       teeLaunchBuys: opts.teeLaunchBuys ?? false,
+      ...(opts.teeLaunchByScope === undefined ? {} : { teeLaunchByScope: opts.teeLaunchByScope }),
     },
     embedded: {
       solana:
@@ -103,6 +105,23 @@ describe("candle launch --check", () => {
     expect(screen).toContain("A first buy from spider-01 is off on this server")
     expect(screen).toContain("The embedded wallet is denied on this key.")
     expect(screen).toContain("Nothing was uploaded, built or sent")
+  })
+
+  test("teeLaunchByScope is printed and passed through; an older server's answer prints no such line (BE-2724)", async () => {
+    const on = await fixture(preflightBody({ teeLaunchByScope: true }))
+    expect(await run(["launch", "--check"], on.deps)).toBe(0)
+    expect(on.stdout.text).toContain("TEE_LAUNCH_BY_SCOPE_ENABLED is on")
+    expect(on.stdout.text).toContain("This key can launch from spider-01 with no first buy.")
+    const onJson = await fixture(preflightBody({ teeLaunchByScope: true }))
+    expect(await run(["launch", "--check", "--json"], onJson.deps)).toBe(0)
+    expect(json(onJson.stdout.text).switches.teeLaunchByScope).toBe(true)
+
+    const off = await fixture(preflightBody({ teeLaunchByScope: false }))
+    expect(await run(["launch", "--check"], off.deps)).toBe(0)
+    expect(off.stdout.text).not.toContain("TEE_LAUNCH_BY_SCOPE_ENABLED")
+    const older = await fixture(preflightBody({}))
+    expect(await run(["launch", "--check"], older.deps)).toBe(0)
+    expect(older.stdout.text).not.toContain("TEE_LAUNCH_BY_SCOPE_ENABLED")
   })
 
   test("no name, symbol, image or wallet is required, and a nonexistent --image is never read", async () => {

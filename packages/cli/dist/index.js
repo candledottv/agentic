@@ -526,7 +526,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.12";
+var CLI_VERSION = "0.13.13";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -37083,10 +37083,10 @@ function rebindCapWarnings(toKey, rows) {
 function launchWarning(keyPrefix, toKey, rows) {
   if (toKey.launchScope)
     return null;
-  const launchers = rows.filter((row) => row.allowLaunch).map((row) => row.label ?? shortAddress2(row.address));
-  if (launchers.length === 0)
+  if (rows.length === 0)
     return null;
-  return `Warning: key ${keyPrefix} lacks launch:write; ${launchers.join(", ")} ${launchers.length === 1 ? "has" : "have"} allowLaunch but cannot launch under it.`;
+  const wallets2 = rows.map((row) => row.label ?? shortAddress2(row.address));
+  return `Warning: key ${keyPrefix} lacks launch:write, so it cannot launch from ${wallets2.join(", ")}.`;
 }
 async function ownerLines(ctx, deviceToken, rows) {
   const lines = [];
@@ -75747,7 +75747,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, allowLaunch, a bound key and verified authority. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass.",
+    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, launch:write, a bound key and verified authority; a server with TEE_LAUNCH_BY_SCOPE_ENABLED off also asks for the owner's allowLaunch (deprecated), and with it on a TEE first buy also needs swap:write. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass.",
     usage: [LAUNCH_USAGE, "candle launch status <mint-or-client-launch-id> [--wait]"],
     rows: [
       {
@@ -76276,11 +76276,11 @@ var HELP = {
       },
       {
         invocation: "allow-launch <label|address|id|prefix*>...",
-        description: "Let TEE wallets pay for a launch (candle launch), after a screen of label, address and bound key (owner only; typed confirm)"
+        description: "Deprecated: a key's launch:write decides TEE launches where the server has TEE_LAUNCH_BY_SCOPE_ENABLED on. Otherwise lets TEE wallets pay for a launch (candle launch), after a screen of label, address and bound key (owner only; typed confirm)"
       },
       {
         invocation: "disallow-launch <label|address|id|prefix*>... [--yes]",
-        description: "Stop TEE wallets paying for a launch; trading is unchanged (owner only)"
+        description: "Deprecated: where the server has TEE_LAUNCH_BY_SCOPE_ENABLED on it saves the value but cannot stop a launch, and exits 1 with the server's message; pause the key (candle keys stop) instead. Otherwise stops TEE wallets paying for a launch; trading is unchanged (owner only)"
       },
       {
         invocation: "close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes]",
@@ -90375,7 +90375,8 @@ var checkSchema = exports_external.object({
     headlessLaunch: exports_external.boolean(),
     agentTrading: exports_external.boolean(),
     teeLaunchBuys: exports_external.boolean(),
-    feeWalletFromLauncher: exports_external.boolean().optional()
+    feeWalletFromLauncher: exports_external.boolean().optional(),
+    teeLaunchByScope: exports_external.boolean().optional()
   }),
   embedded: exports_external.object({
     solana: exports_external.object({ address: exports_external.string(), delegated: exports_external.boolean().optional() }).nullable().optional(),
@@ -90487,6 +90488,8 @@ async function launchCheck(ctx, key, walletFlag, requestedChain, feeWallet = und
   const lines = [`Launch paths for key ${answer2.key.keyPrefix} (tier ${answer2.key.tier}):`];
   if (requestedChain)
     lines.push(`Requested launch chain: ${chainName(requestedChain)}.`);
+  if (answer2.switches.teeLaunchByScope === true)
+    lines.push("This server lets the key's launch:write decide a TEE launch (TEE_LAUNCH_BY_SCOPE_ENABLED is on); allowLaunch is deprecated, and a first buy also needs swap:write.");
   const launcherDefault = answer2.switches.feeWalletFromLauncher === true;
   if (!requestedChain || requestedChain === "solana")
     lines.push(...feeWalletLines(feeWallet, undefined, launcherDefault));
@@ -113486,6 +113489,7 @@ var DEVICE_TOKEN_REQUIRED3 = {
   message: "Changing whether a TEE wallet may launch needs the device token, the owner's credential; an API key cannot do it.",
   suggestion: "Run: candle auth login"
 };
+var NOT_ENFORCED_LINE = "this server does not enforce allowLaunch; a key's launch:write decides; the value is saved for when it does";
 var nameOf = (row) => row.label ?? row.address;
 function allowLaunchTable(rows, style) {
   return renderTable(["line", "label", "wallet", "address", "bound key"], rows.map((row, i) => [
@@ -113585,6 +113589,8 @@ async function setAllowLaunch(args, ctx, enabled) {
   if (!preview.ok)
     return writeFailure2(ctx, preview);
   const shown = preview.body;
+  if (shown.enforced === false)
+    notice(deps, "stderr", "note", NOT_ENFORCED_LINE);
   const changing = shown.changed;
   if (changing.length === 0) {
     if (json)
@@ -113627,11 +113633,14 @@ async function setAllowLaunch(args, ctx, enabled) {
   }
   const done = [];
   const failed = [];
+  const notEnforced = [];
   for (const row of changing) {
     const result = await request2(capabilityPath(row.id), "PUT", { capability: "allowLaunch", enabled });
     if (result.ok)
       done.push({ ...row, allowLaunch: enabled });
-    else {
+    else if (result.status === 409 && result.code === "ALLOW_LAUNCH_NOT_ENFORCED") {
+      notEnforced.push({ id: row.id, code: result.code, message: result.message });
+    } else {
       failed.push({
         id: row.id,
         code: result.status === 404 ? "WALLET_NOT_FOUND" : result.code ?? null,
@@ -113640,16 +113649,20 @@ async function setAllowLaunch(args, ctx, enabled) {
     }
   }
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ success: failed.length === 0, command, enabled, changed: done, unchanged: shown.unchanged, notTee: shown.notTee, failed })}
+    deps.stdout.write(`${JSON.stringify({ success: failed.length === 0 && notEnforced.length === 0, command, enabled, changed: done, unchanged: shown.unchanged, notTee: shown.notTee, failed, ...notEnforced.length > 0 ? { notEnforced } : {} })}
 `);
-    return failed.length > 0 ? 1 : 0;
+    return failed.length > 0 || notEnforced.length > 0 ? 1 : 0;
   }
   const verb = enabled ? "Allowed launches from" : "Stopped launches from";
-  writeSuccess(deps, "stdout", `${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.`);
+  if (done.length > 0)
+    writeSuccess(deps, "stdout", `${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.`);
+  for (const message of new Set(notEnforced.map((item) => item.message))) {
+    notice(deps, "stderr", "danger", `${message} (ALLOW_LAUNCH_NOT_ENFORCED)`);
+  }
   for (const failure3 of failed) {
     notice(deps, "stderr", "danger", `Not changed: ${failure3.id}: ${failure3.message}${failure3.code ? ` (${failure3.code})` : ""}.`);
   }
-  return failed.length > 0 ? 1 : 0;
+  return failed.length > 0 || notEnforced.length > 0 ? 1 : 0;
 }
 function walletsAllowLaunch(args, ctx) {
   return setAllowLaunch(args, ctx, true);

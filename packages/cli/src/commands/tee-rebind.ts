@@ -153,16 +153,19 @@ export function rebindCapWarnings(toKey: RebindResponse["toKey"], rows: RebindPr
   ]
 }
 
-/** The launch warning: the target lacks `launch:write`, and a moved wallet carries `allowLaunch` (D7). */
+/**
+ * The launch warning: the target lacks `launch:write`, so no moved wallet can launch under it (D5).
+ * `allowLaunch` no longer matters, so every moved TEE wallet is named.
+ */
 export function launchWarning(
   keyPrefix: string,
   toKey: RebindResponse["toKey"],
   rows: RebindPreviewRow[],
 ): string | null {
   if (toKey.launchScope) return null
-  const launchers = rows.filter((row) => row.allowLaunch).map((row) => row.label ?? shortAddress(row.address))
-  if (launchers.length === 0) return null
-  return `Warning: key ${keyPrefix} lacks launch:write; ${launchers.join(", ")} ${launchers.length === 1 ? "has" : "have"} allowLaunch but cannot launch under it.`
+  if (rows.length === 0) return null
+  const wallets = rows.map((row) => row.label ?? shortAddress(row.address))
+  return `Warning: key ${keyPrefix} lacks launch:write, so it cannot launch from ${wallets.join(", ")}.`
 }
 
 /** The pin refusal's "what did not happen" sentence for an owner-changing rebind (D3). */

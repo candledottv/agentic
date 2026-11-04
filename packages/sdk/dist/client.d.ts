@@ -1320,9 +1320,11 @@ export interface LinkedWalletRow {
      */
     profile?: "ember-tee" | "ember-hot";
     /**
-     * TEE wallets only: whether the account owner has allowed this wallet to pay for a launch.
-     * Absent reads as false. Only the owner can change it (`PUT /api/v1/agent/wallets/:id/capabilities`
-     * with a device token or session; the CLI's `candle wallets allow-launch`).
+     * Deprecated. `true` on every TEE wallet where the server no longer requires an owner grant to
+     * launch: the bound key's `launch:write` decides. A server that still asks for the grant serves the
+     * owner's stored value (absent reads as false), which only the owner can change
+     * (`PUT /api/v1/agent/wallets/:id/capabilities` with a device token or session; the CLI's
+     * `candle wallets allow-launch`).
      */
     allowLaunch?: boolean;
 }
@@ -4521,7 +4523,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.16";
+export declare const SDK_VERSION = "0.6.17";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

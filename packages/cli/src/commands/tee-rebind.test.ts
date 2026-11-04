@@ -17,6 +17,7 @@ import {
   jsonResponse,
   type RouteHandler,
 } from "../test-support"
+import { launchWarning } from "./tee-rebind"
 
 const TO = "Ab3dEf9h"
 const FROM = "B6P-TSRs"
@@ -273,7 +274,7 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
     )
     expect(screen).not.toContain("cannot trade SOL-quoted swaps")
     expect(humanText(screen)).toContain(
-      humanText(`Warning: key ${TO} lacks launch:write; tr-02 has allowLaunch but cannot launch under it.`),
+      humanText(`Warning: key ${TO} lacks launch:write, so it cannot launch from tr-01, tr-02.`),
     )
     expect(humanText(screen)).toContain(
       humanText("The relay signer does not move: trade these wallets from the machine that promoted them."),
@@ -301,6 +302,18 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
     )
     expect(stderr.text).not.toContain("can trade")
     expect(stderr.text).not.toContain("txLimit")
+  })
+
+  test("D5: the launch warning names every moved wallet when the target lacks launch:write, and is silent when it has it", () => {
+    const rows = [
+      { id: "k57", address: ADDR_1, label: "tr-01", fromKeyPrefix: FROM, allowLaunch: false },
+      { id: "k58", address: ADDR_2, label: "tr-02", fromKeyPrefix: FROM, allowLaunch: true },
+    ]
+    expect(launchWarning(TO, { ...readyKey, launchScope: false }, rows)).toBe(
+      `Warning: key ${TO} lacks launch:write, so it cannot launch from tr-01, tr-02.`,
+    )
+    expect(launchWarning(TO, { ...readyKey, launchScope: true }, rows)).toBeNull()
+    expect(launchWarning(TO, { ...readyKey, launchScope: false }, [])).toBeNull()
   })
 
   describe("L5: the quote pair follows each moving wallet's chain", () => {

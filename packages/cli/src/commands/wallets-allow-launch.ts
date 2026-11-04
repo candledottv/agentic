@@ -1,6 +1,9 @@
 /**
  * `candle wallets allow-launch` and `candle wallets disallow-launch` (BE-850): the owner lets a TEE
- * wallet pay for a launch, or takes that back. `candle launch` refuses a TEE wallet until its
+ * wallet pay for a launch, or takes that back. Deprecated (BE-2724): a server with
+ * TEE_LAUNCH_BY_SCOPE_ENABLED on does not enforce allowLaunch, and the bound key's `launch:write`
+ * decides. Such a server says so with `enforced: false` in the preview; the commands go on as before
+ * and the stored value is kept for when the server turns the switch off. `candle launch` refuses a TEE wallet until its
  * `allowLaunch` is on, and before these commands the only way to turn it on was to hand-build
  * `PUT /api/v1/agent/wallets/<id>/capabilities`.
  *
@@ -57,10 +60,15 @@ interface PreviewResponse {
   success: true
   dryRun: true
   enabled: boolean
+  /** `false` when the server does not enforce allowLaunch (BE-2724). Absent from an older server. */
+  enforced?: boolean
   changed: AllowLaunchRow[]
   unchanged: AllowLaunchRow[]
   notTee: AllowLaunchRow[]
 }
+
+export const NOT_ENFORCED_LINE =
+  "this server does not enforce allowLaunch; a key's launch:write decides; the value is saved for when it does"
 
 const nameOf = (row: AllowLaunchRow) => row.label ?? row.address
 
@@ -180,6 +188,7 @@ async function setAllowLaunch(args: string[], ctx: CommandContext, enabled: bool
   const preview = await request(PREVIEW_PATH, "POST", { wallets: parsed.positionals, enabled })
   if (!preview.ok) return writeFailure(ctx, preview)
   const shown = preview.body as PreviewResponse
+  if (shown.enforced === false) notice(deps, "stderr", "note", NOT_ENFORCED_LINE)
   const changing = shown.changed
   if (changing.length === 0) {
     if (json) deps.stdout.write(`${JSON.stringify({ ...shown, command })}\n`)
@@ -230,10 +239,14 @@ async function setAllowLaunch(args: string[], ctx: CommandContext, enabled: bool
   // stop the rest; it is reported by id, and running the command again is safe (the PUT is idempotent).
   const done: AllowLaunchRow[] = []
   const failed: Array<{ id: string; code: string | null; message: string }> = []
+  // The server saved `allowLaunch: false` but does not enforce it, so launches are not stopped (D4).
+  const notEnforced: Array<{ id: string; code: string; message: string }> = []
   for (const row of changing) {
     const result = await request(capabilityPath(row.id), "PUT", { capability: "allowLaunch", enabled })
     if (result.ok) done.push({ ...row, allowLaunch: enabled })
-    else {
+    else if (result.status === 409 && result.code === "ALLOW_LAUNCH_NOT_ENFORCED") {
+      notEnforced.push({ id: row.id, code: result.code, message: result.message })
+    } else {
       failed.push({
         id: row.id,
         code: result.status === 404 ? "WALLET_NOT_FOUND" : (result.code ?? null),
@@ -243,12 +256,16 @@ async function setAllowLaunch(args: string[], ctx: CommandContext, enabled: bool
   }
   if (json) {
     deps.stdout.write(
-      `${JSON.stringify({ success: failed.length === 0, command, enabled, changed: done, unchanged: shown.unchanged, notTee: shown.notTee, failed })}\n`,
+      `${JSON.stringify({ success: failed.length === 0 && notEnforced.length === 0, command, enabled, changed: done, unchanged: shown.unchanged, notTee: shown.notTee, failed, ...(notEnforced.length > 0 ? { notEnforced } : {}) })}\n`,
     )
-    return failed.length > 0 ? 1 : 0
+    return failed.length > 0 || notEnforced.length > 0 ? 1 : 0
   }
   const verb = enabled ? "Allowed launches from" : "Stopped launches from"
-  writeSuccess(deps, "stdout", `${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.`)
+  if (done.length > 0) writeSuccess(deps, "stdout", `${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.`)
+  // The server's own message, once per distinct text: it says what was saved and how to stop a key now.
+  for (const message of new Set(notEnforced.map((item) => item.message))) {
+    notice(deps, "stderr", "danger", `${message} (ALLOW_LAUNCH_NOT_ENFORCED)`)
+  }
   for (const failure of failed) {
     notice(
       deps,
@@ -257,7 +274,7 @@ async function setAllowLaunch(args: string[], ctx: CommandContext, enabled: bool
       `Not changed: ${failure.id}: ${failure.message}${failure.code ? ` (${failure.code})` : ""}.`,
     )
   }
-  return failed.length > 0 ? 1 : 0
+  return failed.length > 0 || notEnforced.length > 0 ? 1 : 0
 }
 
 export function walletsAllowLaunch(args: string[], ctx: CommandContext): Promise<number> {

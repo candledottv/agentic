@@ -225,8 +225,7 @@ validates ranges and eligibility.
 Embedded launches use `/launch/headless` with or without a buy. TEE launches use `/launch/self/build`
 and the existing sign/broadcast/confirm flow; a Solana TEE buy signs the returned bundle and sends
 it to `/launch/atomic/submit`. Dry runs use the selected family's `/dry-run`. Existing server
-gates still apply: embedded-wallet allowance, launch availability, and TEE tier, `allowLaunch`
-and first-buy switches. No server switch is enabled by this SDK release. `launchAsync()` remains
+gates still apply: embedded-wallet allowance, launch availability, and TEE tier and first-buy switches. No server switch is enabled by this SDK release. `launchAsync()` remains
 embedded-only.
 
 Migration for this release: replace `selfLaunch({ linkedWalletId, privyWalletId, ...fields })`

@@ -5,6 +5,7 @@
  * the commit sends exactly the previewed ids to `PUT /wallets/:id/capabilities`, one each.
  */
 import { describe, expect, test } from "bun:test"
+import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import {
   type CapturedRequest,
@@ -47,7 +48,15 @@ function previewBody(enabled = true, extra: Record<string, unknown> = {}) {
 const parse = (req: CapturedRequest) => JSON.parse(String(req.init.body ?? "{}")) as Record<string, unknown>
 
 /** The preview route and one PUT per id, recording every body, method and credential. */
-function api(opts: { preview?: unknown; previewStatus?: number; putStatus?: Record<string, number> } = {}) {
+function api(
+  opts: {
+    preview?: unknown
+    previewStatus?: number
+    putStatus?: Record<string, number>
+    /** A full response for one id's PUT, e.g. the 409 a server with TEE_LAUNCH_BY_SCOPE_ENABLED on sends. */
+    putResponse?: Record<string, { status: number; body: unknown }>
+  } = {},
+) {
   const sent: Array<{ path: string; method: string; body: Record<string, unknown>; auth: string | null }> = []
   const record = (req: CapturedRequest) =>
     sent.push({
@@ -65,6 +74,8 @@ function api(opts: { preview?: unknown; previewStatus?: number; putStatus?: Reco
   for (const id of ["k1", "k2", "k3"]) {
     routes[put(id)] = (req) => {
       record(req)
+      const custom = opts.putResponse?.[id]
+      if (custom) return jsonResponse(custom.status, custom.body)
       const status = opts.putStatus?.[id] ?? 200
       const body = parse(req)
       return status === 200
@@ -276,5 +287,71 @@ describe("preview, confirm, commit", () => {
     expect(await run(["wallets", "allow-launch", "nope", "--json"], d.deps)).toBe(1)
     expect(JSON.parse(d.stdout.text).suggestion).toContain("candle wallets")
     expect(fake.sent).toHaveLength(1)
+  })
+
+  describe("a server that does not enforce allowLaunch (BE-2724)", () => {
+    const NOT_ENFORCED_MESSAGE =
+      "Saved allowLaunch off for this wallet, but this server does not enforce allowLaunch: a key with launch:write still launches from the TEE wallets bound to it."
+    const notEnforced = {
+      status: 409,
+      body: {
+        success: false,
+        error: { code: "ALLOW_LAUNCH_NOT_ENFORCED", message: NOT_ENFORCED_MESSAGE, stored: false },
+      },
+    }
+
+    test("enforced: false prints one stderr line; allow-launch still PUTs and exits 0", async () => {
+      const fake = api({ preview: previewBody(true, { enforced: false }) })
+      const { fetch } = createRoutedFetch(fake.routes)
+      const { deps, stdout, stderr } = depsFor(fetch)
+      expect(await run(["wallets", "allow-launch", "launcher-*"], deps)).toBe(0)
+      expect(stderr.text.match(/does not enforce allowLaunch/g)).toHaveLength(1)
+      expect(stderr.text).toContain("a key's launch:write decides")
+      expect(fake.sent.filter((s) => s.method === "PUT").map((s) => s.body)).toEqual([
+        { capability: "allowLaunch", enabled: true },
+        { capability: "allowLaunch", enabled: true },
+      ])
+      expect(stdout.text).toContain("Allowed launches from 2 wallets.")
+    })
+
+    test("an enforcing server's preview (no enforced field) prints no such line", async () => {
+      const fake = api()
+      const { fetch } = createRoutedFetch(fake.routes)
+      const { deps, stderr } = depsFor(fetch)
+      expect(await run(["wallets", "allow-launch", "launcher-*"], deps)).toBe(0)
+      expect(stderr.text).not.toContain("does not enforce")
+    })
+
+    test("disallow-launch: the 409 exits 1 with the server's message, after the PUTs were sent", async () => {
+      const fake = api({
+        preview: previewBody(false, { enforced: false }),
+        putResponse: { k1: notEnforced, k2: notEnforced },
+      })
+      const { fetch } = createRoutedFetch(fake.routes)
+      const { deps, stdout, stderr } = depsFor(fetch)
+      expect(await run(["wallets", "disallow-launch", "launcher-*", "--yes"], deps)).toBe(1)
+      expect(fake.sent.filter((s) => s.method === "PUT")).toHaveLength(2)
+      expect(humanText(stderr.text)).toContain(humanText(NOT_ENFORCED_MESSAGE))
+      expect(stderr.text).toContain("ALLOW_LAUNCH_NOT_ENFORCED")
+      expect(stderr.text).not.toContain("Not changed")
+      expect(stdout.text).not.toContain("Stopped launches")
+    })
+
+    test("disallow-launch --json: success false, the 409 is reported under notEnforced, exit 1", async () => {
+      const fake = api({
+        preview: previewBody(false, { enforced: false }),
+        putResponse: { k1: notEnforced, k2: notEnforced },
+      })
+      const { fetch } = createRoutedFetch(fake.routes)
+      const { deps, stdout } = depsFor(fetch)
+      expect(await run(["wallets", "disallow-launch", "launcher-*", "--yes", "--json"], deps)).toBe(1)
+      const doc = JSON.parse(stdout.text)
+      expect(doc.success).toBe(false)
+      expect(doc.failed).toEqual([])
+      expect(doc.notEnforced.map((n: { id: string; code: string }) => [n.id, n.code])).toEqual([
+        ["k1", "ALLOW_LAUNCH_NOT_ENFORCED"],
+        ["k2", "ALLOW_LAUNCH_NOT_ENFORCED"],
+      ])
+    })
   })
 })

@@ -1390,9 +1390,11 @@ export interface LinkedWalletRow {
    */
   profile?: "ember-tee" | "ember-hot"
   /**
-   * TEE wallets only: whether the account owner has allowed this wallet to pay for a launch.
-   * Absent reads as false. Only the owner can change it (`PUT /api/v1/agent/wallets/:id/capabilities`
-   * with a device token or session; the CLI's `candle wallets allow-launch`).
+   * Deprecated. `true` on every TEE wallet where the server no longer requires an owner grant to
+   * launch: the bound key's `launch:write` decides. A server that still asks for the grant serves the
+   * owner's stored value (absent reads as false), which only the owner can change
+   * (`PUT /api/v1/agent/wallets/:id/capabilities` with a device token or session; the CLI's
+   * `candle wallets allow-launch`).
    */
   allowLaunch?: boolean
 }
@@ -7245,7 +7247,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.16"
+export const SDK_VERSION = "0.6.17"
 
 let sdkUpdateWarned = false
 
