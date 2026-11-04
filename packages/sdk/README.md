@@ -7,6 +7,7 @@ swaps, market state, quotes, feeds, verification, presets, plans, P&L, agent pro
 uploads), ships the webhook signature verifier, and drives the client-side HPKE seal behind
 linked-wallet import, so an agent integrates against typed methods instead of hand-rolled HTTP.
 The full guide is [TypeScript SDK](https://docs.candle.tv/developers/sdk).
+Not sure this is the right tool? [How to choose: SDK, MCP or CLI](https://docs.candle.tv/developers/choose-a-surface).
 
 Built on the global `fetch`; runs on Bun and Node 18+. Six runtime dependencies:
 `@hpke/core`, `@hpke/chacha20poly1305` and `@scure/base` power `importWallet()`'s client-side

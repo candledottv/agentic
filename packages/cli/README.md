@@ -7,6 +7,7 @@ one self-contained `dist/index.js` that runs under plain Node.
 
 The full custody guide is [CLI custody](https://docs.candle.tv/developers/cli-custody), and every
 command and flag is in the [Candle CLI reference](https://docs.candle.tv/developers/cli).
+Not sure this is the right tool? [How to choose: SDK, MCP or CLI](https://docs.candle.tv/developers/choose-a-surface).
 
 `candle vault rename --pairs-from <file> [--dry-run]` renames 1–256 vault or external keys under
 one unlock and one commit. Use `<label|address|id> <new-label>` lines or CSV columns `from,to`

@@ -7,6 +7,8 @@ and feed data, read one token's signals and tracked-wallet trades and its card d
 check an agent profile, and backtest a strategy in hacc's strategy lab without hand-rolling HTTP calls. The five
 strategy lab tools are unreleased source.
 
+Not sure this is the right tool? [How to choose: SDK, MCP or CLI](https://docs.candle.tv/developers/choose-a-surface).
+
 ## Try it without a key
 
 Eighteen tools are read-only and need nothing but `CANDLE_API_URL` (which already defaults to
