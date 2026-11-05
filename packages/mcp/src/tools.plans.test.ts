@@ -89,9 +89,9 @@ describe("candle_get_plans", () => {
     expect(d).toContain("never from memory")
   })
 
-  test("the trade and perps descriptions point at the served fees and the sell-on-any-plan rule", () => {
+  test("the trade and perps descriptions point at the served fees and the any-plan trade rule", () => {
     const tools = registered({})
-    expect(tools.candle_trade?.description).toContain("SELL a token it holds")
+    expect(tools.candle_trade?.description).toContain("every plan can buy and sell")
     expect(tools.candle_perps_open?.description).toContain("candle_get_plans")
     expect(tools.candle_perps_open?.description).not.toContain("Believer")
   })

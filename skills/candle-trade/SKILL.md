@@ -80,10 +80,10 @@ Two things to hold onto about a paper fill:
      `decimals`. Or pass `percent` (an integer 1-100) to sell a slice of the wallet's
      current holding; the MCP resolves the balance for you.
    - `quoteAsset` only matters for an arbitrary Solana mint Candle never launched, the path traded
-     through Jupiter (buying needs Pro or Max; selling works on any plan). It changes nothing for a Candle-launched token.
+     through Jupiter (buying and selling work on any plan). It changes nothing for a Candle-launched token.
    - Swapping the base assets themselves (SOL, USDC, and CNDL on Solana) against one another is
-     open to EVERY tier, a separate rule from the Candle-launched-token one: the Pro/Max gate
-     applies only to BUYING arbitrary mints Candle never launched, never to a base pair.
+     open to EVERY tier, a separate rule from the Candle-launched-token one: a base pair
+     pays no fee, while an arbitrary mint Candle never launched pays the plan's trade fee.
    - `maxSlippageBps` overrides the API's default slippage tolerance.
 2. Every call carries a `clientTradeId`, auto-generated and echoed back when omitted.
    **Retry a timed-out or uncertain call with the SAME id and the same body**: it replays the

@@ -1217,7 +1217,7 @@ const tradeShape = {
     .describe(
       'What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' +
         '"eth" or "usdg" on Hood. Echoing the `quoteAsset` a quote (POST /api/v1/trade/agent/quote) returned is safe. On Solana it applies only ' +
-        "to an arbitrary mint Candle never launched (a buy needs Pro or Max; a sell works on any plan) and is ignored for a Candle token, " +
+        "to an arbitrary mint Candle never launched (a buy or sell works on any plan) and is ignored for a Candle token, " +
         "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " +
         "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " +
         "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement.",
@@ -2356,8 +2356,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " +
         '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' +
         "position.\n\n" +
-        "Plans: every plan can buy and sell Candle-launched tokens and base assets, and SELL a token it holds that " +
-        "Candle did not launch. BUYING such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the " +
+        "Plans: every plan can buy and sell Candle-launched tokens, base assets, and a token " +
+        "Candle did not launch. Each trade pays the " +
         "plan's agent fee on top (feeBps in candle_get_plans).\n\n" +
         "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " +
         "nothing broadcasts and no funds move. A paper buy credits this key's paper inventory, " +

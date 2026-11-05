@@ -54,8 +54,8 @@ Both take decimal amounts, never raw base units, and resolve the scale themselve
 - A `candle_trade` **buy** is denominated in the token's OWN quote asset, whatever it was launched
   against (SOL for a SOL-launched token, USDC or CNDL for those quote pairs). The tool reads the
   market first and converts against its `quoteDecimals`; the `quoteAsset` field applies only to a
-  mint Candle never launched, the path traded through Jupiter (buying needs Pro or Max; selling
-  works on any plan). A
+  mint Candle never launched, the path traded through Jupiter (buying and selling work on any
+  plan). A
   **sell** is denominated in tokens and converts against the market's own `decimals`.
 - A `candle_launch_and_seed` `devBuy` is denominated in the quote asset that launch selects, since
   there the caller genuinely picks the new token's quote pair: `quoteAsset` if given, otherwise
