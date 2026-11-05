@@ -33765,6 +33765,9 @@ async function wallets(args, ctx) {
     ]
   ], { ...tableOptions, columns: [{ priority: 3 }, { id: true }, { priority: 2 }, { priority: 1 }] })}
 `);
+  if ([embeddedBody.wallets.solana, embeddedBody.wallets.evm].some((wallet) => wallet && !wallet.delegated)) {
+    notice(deps, "stdout", "note", "To delegate, run: candle wallets authorize (grants agent access in your browser).");
+  }
   deps.stdout.write(`
 ${heading(`Linked wallets (${linkedRows.length})`, style)}
 
@@ -76334,6 +76337,10 @@ var HELP = {
         invocation: "import --chain <solana|evm> [options]",
         description: "Import a wallet you own (key via --key-file or hidden prompt). A fresh key, without solana-keygen: candle vault new-key --chain solana, candle vault export-key <label> --to <file>, import that file, then delete the file"
       },
+      {
+        invocation: "authorize [--no-browser] [--no-wait] [--timeout <seconds>]",
+        description: "Give agents access to the account's embedded wallets: opens the Agents page's grant step in your browser (no key is created) and, with an API key, waits until it lands"
+      },
       { invocation: "revoke <wallet-id>", description: "Revoke a linked wallet" },
       {
         invocation: "trust <label|address|id|prefix*>...",
@@ -76365,6 +76372,7 @@ var HELP = {
     examples: [
       "candle wallet",
       "candle wallet --all",
+      "candle wallet authorize",
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
       "candle wallet trust 'tr-*' 'dest-*'",
@@ -85607,7 +85615,7 @@ async function doctor(args, ctx) {
       } : delegated ? { check: embeddedLabel, state: "PASS", detail: "delegated" } : {
         check: embeddedLabel,
         state: role === "bot" ? activeTee ? "SKIP" : "WARN" : "FAIL",
-        detail: role === "bot" ? activeTee ? "not used by this key" : "No usable payer: no delegated embedded wallet or active TEE wallet." : "No launch wallet is delegated. Fix: delegate one in the portal."
+        detail: role === "bot" ? activeTee ? "not used by this key" : "No usable payer: no delegated embedded wallet or active TEE wallet." : "No launch wallet is delegated. Fix: candle wallets authorize (grants it in your browser)."
       });
     }
   }
@@ -90536,7 +90544,7 @@ function embeddedLines(answer2, requestedChain) {
     if (!wallet3)
       continue;
     if (wallet3.delegated === false) {
-      lines.push(`The account's ${chainName(chain2)} embedded wallet is not delegated for agent access.`);
+      lines.push(`The account's ${chainName(chain2)} embedded wallet is not delegated for agent access. Run: candle wallets authorize`);
       continue;
     }
     lines.push(`This key can launch from the ${chainName(chain2)} embedded wallet with no first buy.`);
@@ -113755,6 +113763,150 @@ function walletsDisallowLaunch(args, ctx) {
   return setAllowLaunch(args, ctx, false);
 }
 
+// src/commands/wallets-authorize.ts
+init_args();
+init_client();
+init_deps();
+init_human_output();
+init_presentation();
+init_profiles();
+init_render();
+init_key_output();
+var USAGE17 = "Usage: candle wallets authorize [--no-browser] [--no-wait] [--timeout <seconds>] [--json]";
+var AUTHORIZE_WAIT_DEFAULT_SECONDS = 600;
+var AUTHORIZE_POLL_MS = 3000;
+function authorizeUrl(apiUrl, portalOrigin) {
+  return `${portalDeviceUrl(apiUrl, portalOrigin)}?authorize=1`;
+}
+function allDelegated(body) {
+  const present = [body.wallets?.solana, body.wallets?.evm].filter((w) => w != null);
+  return present.length > 0 && present.every((w) => w.delegated);
+}
+function walletRows(body) {
+  const rows = [];
+  if (body.wallets?.solana)
+    rows.push(["Solana", body.wallets.solana.address]);
+  if (body.wallets?.evm)
+    rows.push(["Hood", body.wallets.evm.address]);
+  return rows;
+}
+async function walletsAuthorize(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { booleanFlags: ["--no-browser", "--no-wait"], valueFlags: ["--timeout"] });
+  if ("error" in parsed) {
+    writeScreenUsageFailure(deps, `${parsed.error}
+${USAGE17}`, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}
+${USAGE17}`, json);
+    return 2;
+  }
+  let timeoutSeconds = AUTHORIZE_WAIT_DEFAULT_SECONDS;
+  const rawTimeout = parsed.values["--timeout"];
+  if (rawTimeout !== undefined) {
+    const n = Number(rawTimeout);
+    if (!Number.isInteger(n) || n <= 0) {
+      writeScreenUsageFailure(deps, `--timeout must be a whole number of seconds above 0, got ${rawTimeout}
+${USAGE17}`, json);
+      return 2;
+    }
+    timeoutSeconds = n;
+  }
+  await printIdentity(ctx);
+  const config = await deps.readConfig();
+  const url = authorizeUrl(apiUrl, effectiveProfileFields(config, ctx.profile).portalOrigin);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  const readWallets = () => apiRequest("/api/v1/agent/wallets/embedded", {
+    auth: "key",
+    credentials: { apiKey: apiKey ?? "" },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (apiKey) {
+    const before = await readWallets();
+    if (!before.ok) {
+      writeScreenFailure(deps, before, { apiUrl, authType: "key" }, json);
+      return 1;
+    }
+    const body = before.body;
+    if (allDelegated(body)) {
+      if (json) {
+        deps.stdout.write(`${JSON.stringify({ success: true, status: "already_authorized", wallets: body.wallets })}
+`);
+      } else {
+        writeSuccess(deps, "stdout", "Agent access is already on for this account's embedded wallets.");
+        deps.stdout.write(`${fields(walletRows(body), terminalStyle(deps, "stdout")).join(`
+`)}
+`);
+      }
+      return 0;
+    }
+  }
+  const progress = json ? deps.stderr : deps.stdout;
+  if (json) {
+    progress.write(`Open this URL to authorize: ${url}
+`);
+  } else {
+    const style = terminalStyle(deps, "stdout");
+    progress.write(`${heading("Authorize agent access", style)}
+
+${fields([["Open", url]], style).join(`
+`)}
+
+`);
+    notice(deps, "stdout", "note", "Sign in as this account, press Authorize, and approve in Privy. No API key is created.");
+  }
+  if (!parsed.booleans.has("--no-browser")) {
+    try {
+      deps.openBrowser(url);
+    } catch {}
+  }
+  if (!apiKey || parsed.booleans.has("--no-wait")) {
+    const next = apiKey ? "When the page says Agent access is on, run: candle wallets" : "When the page says Agent access is on, run: candle auth login";
+    if (json)
+      deps.stdout.write(`${JSON.stringify({ success: true, status: "opened", url, confirmed: false })}
+`);
+    else
+      deps.stdout.write(`${next}
+`);
+    return 0;
+  }
+  if (!json)
+    deps.stdout.write(`Waiting for the grant... (Ctrl-C to stop; the page keeps working)
+`);
+  const deadline = deps.now() + timeoutSeconds * 1000;
+  while (deps.now() < deadline) {
+    await deps.sleep(AUTHORIZE_POLL_MS);
+    const after = await readWallets();
+    if (!after.ok) {
+      writeScreenFailure(deps, after, { apiUrl, authType: "key" }, json);
+      return 1;
+    }
+    const body = after.body;
+    if (allDelegated(body)) {
+      if (json) {
+        deps.stdout.write(`${JSON.stringify({ success: true, status: "authorized", url, wallets: body.wallets })}
+`);
+      } else {
+        writeSuccess(deps, "stdout", "Agent access is on.");
+        deps.stdout.write(`${fields(walletRows(body), terminalStyle(deps, "stdout")).join(`
+`)}
+`);
+      }
+      return 0;
+    }
+  }
+  writeScreenLocalFailure(deps, {
+    code: "AUTHORIZE_TIMEOUT",
+    message: `The embedded wallets were not authorized within ${timeoutSeconds} seconds. Nothing changed on this machine.`,
+    suggestion: `Open ${url} and press Authorize, then run: candle wallets`
+  }, json);
+  return 1;
+}
+
 // src/commands/wallets-close-empty.ts
 init_args();
 init_presentation();
@@ -113764,7 +113916,7 @@ init_solana_lite();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID15 } from "node:crypto";
-var USAGE17 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE18 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -114027,7 +114179,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE17}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE18}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -114038,7 +114190,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID15()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE17, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE18, ctx.json);
     return 2;
   }
   const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
@@ -114552,7 +114704,8 @@ var COMMANDS = {
       untrust: walletsUntrust,
       "allow-launch": walletsAllowLaunch,
       "disallow-launch": walletsDisallowLaunch,
-      "close-empty": walletsCloseEmpty
+      "close-empty": walletsCloseEmpty,
+      authorize: walletsAuthorize
     },
     bare: wallets
   },

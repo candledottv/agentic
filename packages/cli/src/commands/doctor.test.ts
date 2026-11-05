@@ -84,6 +84,8 @@ describe("doctor", () => {
     expect(stdout.text).toContain("✓ ")
     expect(stdout.text).toContain("✗ ")
     expect(stdout.text).toContain("candle auth login")
+    // BE-2698: the undelegated row names the command that opens the grant.
+    expect(stdout.text).toContain("candle wallets authorize")
     expect(unmatched).toHaveLength(0)
   })
 

@@ -1212,6 +1212,11 @@ export const HELP: Record<string, Topic> = {
         description:
           "Import a wallet you own (key via --key-file or hidden prompt). A fresh key, without solana-keygen: candle vault new-key --chain solana, candle vault export-key <label> --to <file>, import that file, then delete the file",
       },
+      {
+        invocation: "authorize [--no-browser] [--no-wait] [--timeout <seconds>]",
+        description:
+          "Give agents access to the account's embedded wallets: opens the Agents page's grant step in your browser (no key is created) and, with an API key, waits until it lands",
+      },
       { invocation: "revoke <wallet-id>", description: "Revoke a linked wallet" },
       {
         invocation: "trust <label|address|id|prefix*>...",
@@ -1248,6 +1253,7 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle wallet",
       "candle wallet --all",
+      "candle wallet authorize",
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
       "candle wallet trust 'tr-*' 'dest-*'",

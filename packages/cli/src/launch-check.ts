@@ -123,7 +123,9 @@ function embeddedLines(answer: CheckAnswer, requestedChain?: TradeChain): string
   for (const { chain, wallet } of paths) {
     if (!wallet) continue
     if (wallet.delegated === false) {
-      lines.push(`The account's ${chainName(chain)} embedded wallet is not delegated for agent access.`)
+      lines.push(
+        `The account's ${chainName(chain)} embedded wallet is not delegated for agent access. Run: candle wallets authorize`,
+      )
       continue
     }
     lines.push(`This key can launch from the ${chainName(chain)} embedded wallet with no first buy.`)

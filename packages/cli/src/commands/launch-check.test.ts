@@ -264,7 +264,7 @@ describe("candle launch --check", () => {
       expect(f.stdout.text).toContain(
         `This key can launch from the ${usableChain === "hood" ? "Hood" : "Solana"} embedded wallet`,
       )
-      expect(f.stdout.text).toContain("is not delegated for agent access.")
+      expect(f.stdout.text).toContain("is not delegated for agent access. Run: candle wallets authorize")
     }
   })
 

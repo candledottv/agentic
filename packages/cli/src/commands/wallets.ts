@@ -406,6 +406,11 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
       { ...tableOptions, columns: [{ priority: 3 }, { id: true }, { priority: 2 }, { priority: 1 }] },
     )}\n`,
   )
+  // An embedded wallet without Candle's signer cannot be used by any key; the grant is the member's
+  // browser, and this names the command that opens it (BE-2698).
+  if ([embeddedBody.wallets.solana, embeddedBody.wallets.evm].some((wallet) => wallet && !wallet.delegated)) {
+    notice(deps, "stdout", "note", "To delegate, run: candle wallets authorize (grants agent access in your browser).")
+  }
 
   // The count is on the heading because the old failure was invisible: 20 rows looked exactly
   // like an account with 20 wallets. A number the operator can check against what they expect is

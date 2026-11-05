@@ -126,6 +126,7 @@ import { vaultTransfer } from "./commands/vault-transfer"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
 import { walletsAllowLaunch, walletsDisallowLaunch } from "./commands/wallets-allow-launch"
+import { walletsAuthorize } from "./commands/wallets-authorize"
 import { walletsCloseEmpty } from "./commands/wallets-close-empty"
 import { walletsTrust, walletsUntrust } from "./commands/wallets-trust"
 import type { CliConfig } from "./config"
@@ -379,6 +380,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       "allow-launch": walletsAllowLaunch,
       "disallow-launch": walletsDisallowLaunch,
       "close-empty": walletsCloseEmpty,
+      // BE-2698: opens the console's grant-only step; the grant itself is the member's browser.
+      authorize: walletsAuthorize,
     },
     bare: wallets,
   },

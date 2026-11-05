@@ -47,6 +47,32 @@ describe("wallets", () => {
     expect(stdout.text).toContain("lw_listed01")
   })
 
+  // BE-2698: an undelegated embedded wallet names the command that opens the browser grant; a
+  // fully delegated account does not see the line (the case above).
+  test("an undelegated embedded wallet points at candle wallets authorize", async () => {
+    const listing = (solanaDelegated: boolean) =>
+      createRoutedFetch({
+        "/api/v1/agent/wallets/embedded": () =>
+          jsonResponse(200, {
+            success: true,
+            wallets: { solana: { address: "So1anaAddr", delegated: solanaDelegated }, evm: null },
+          }),
+        "/api/v1/agent/wallets": () =>
+          jsonResponse(200, { success: true, page: [], isDone: true, continueCursor: null }),
+      }).fetch
+    const undelegated = createCapture()
+    const delegated = createCapture()
+    const store = () => createFakeStore({ api_key: "ck_live_x" })
+
+    expect(await run(["wallets"], createTestDeps({ fetch: listing(false), store: store(), stdout: undelegated }))).toBe(
+      0,
+    )
+    expect(await run(["wallets"], createTestDeps({ fetch: listing(true), store: store(), stdout: delegated }))).toBe(0)
+
+    expect(undelegated.text).toContain("candle wallets authorize")
+    expect(delegated.text).not.toContain("candle wallets authorize")
+  })
+
   test("--all asks for revoked wallets on every page; the default never does", async () => {
     const routes = () =>
       createRoutedFetch({

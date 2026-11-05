@@ -532,7 +532,7 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
                     ? activeTee
                       ? "not used by this key"
                       : "No usable payer: no delegated embedded wallet or active TEE wallet."
-                    : "No launch wallet is delegated. Fix: delegate one in the portal.",
+                    : "No launch wallet is delegated. Fix: candle wallets authorize (grants it in your browser).",
               },
       )
     }
