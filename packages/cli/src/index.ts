@@ -41,6 +41,7 @@ import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysAccess } from "./commands/keys-access"
 import { keysSelf, keysUpdate } from "./commands/keys-embedded-wallet"
 import { keysLimit } from "./commands/keys-limit"
+import { keysRotate } from "./commands/keys-rotate"
 import { keysResume, keysStop } from "./commands/keys-stop"
 import { keysWallets } from "./commands/keys-wallets"
 import { labEdges, labReplay, labRunners, labStatus } from "./commands/lab"
@@ -354,6 +355,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       update: keysUpdate,
       limit: keysLimit,
       self: keysSelf,
+      // BE-2648: a new secret for the same key; --finish ends the old secret's grace window.
+      rotate: keysRotate,
       revoke: keysRevoke,
       stop: keysStop,
       resume: keysResume,

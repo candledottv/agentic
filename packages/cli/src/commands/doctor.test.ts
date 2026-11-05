@@ -50,6 +50,43 @@ const rowOf = (text: string, label: string): string | undefined =>
   flat(text).match(new RegExp(`[✓✗–!] ${label} .*?(?= [✓✗–!] [A-Z]| \\d+ passed|$)`))?.[0]
 
 describe("doctor", () => {
+  test("BE-2648: an API key in a rotation's grace window WARNs with the end and the fix, and doctor still passes", async () => {
+    const { fetch } = createRoutedFetch({
+      ...HEALTHY_ROUTES,
+      "/api/v1/agent/wallets/trading": () =>
+        jsonResponse(200, { success: true }, { "X-Candle-Key-Rotated": "2026-11-04T01:00:00.000Z" }),
+    })
+    const stdout = createCapture()
+    const code = await run(["doctor"], createTestDeps({ fetch, ...healthyStores(), stdout, env: {} }))
+    expect(code).toBe(0)
+    const row = rowOf(stdout.text, "Key rotation")
+    expect(row).toContain("old secret stops at Nov 4 01:00Z")
+    expect(row).toContain("candle auth login")
+  })
+
+  test("BE-2648: a key read from CANDLE_API_KEY is told to update that variable; no header, no row", async () => {
+    const rotated = createRoutedFetch({
+      ...HEALTHY_ROUTES,
+      "/api/v1/agent/wallets/trading": () =>
+        jsonResponse(200, { success: true }, { "X-Candle-Key-Rotated": "2026-11-04T01:00:00.000Z" }),
+    })
+    const stdout = createCapture()
+    await run(
+      ["doctor"],
+      createTestDeps({
+        fetch: rotated.fetch,
+        store: createFakeStore({ device_token: "cndl_dvc_x" }),
+        stdout,
+        env: { CANDLE_API_KEY: "ck_live_x" },
+      }),
+    )
+    expect(rowOf(stdout.text, "Key rotation")).toContain("update CANDLE_API_KEY")
+    const plain = createRoutedFetch(HEALTHY_ROUTES)
+    const quiet = createCapture()
+    await run(["doctor"], createTestDeps({ fetch: plain.fetch, ...healthyStores(), stdout: quiet, env: {} }))
+    expect(rowOf(quiet.text, "Key rotation")).toBeUndefined()
+  })
+
   test("renders a PASS/FAIL/SKIP table and exits 1 when any check FAILs; the FAIL line names its fix", async () => {
     const { fetch, unmatched } = createRoutedFetch({
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),

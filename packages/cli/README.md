@@ -95,6 +95,7 @@ emergency procedure, rebinding, trusted wallets and API key access levels are al
 | `candle keys signer approve <code> --key <prefix\|label> [--reject]`, `candle keys signer move <prefix\|label> [--to-key <prefix\|label>]` | Key signers for bots on a different machine from the vault. `approve` accepts (or rejects) a key's signer request with the device token, after you type the full fingerprint the trading machine printed. `move`, on the machine holding a wallet's current signer, moves every wallet on the key onto its active signer; `--to-key` moves a revoked key's wallets to a live key. |
 | `candle keys stop <prefix>` | Pause one key using the device token. Its requests are refused with `PROFILE_PAUSED` until resumed; the key and its local credential are kept. Repeating the command succeeds. |
 | `candle keys resume <prefix>` | Resume a stopped key using the device token. Repeating the command succeeds. An API key cannot stop or resume itself; a revoked key cannot be resumed. |
+| `candle keys rotate <prefix\|label> ([--grace <duration> \| --now] [--force] [--yes] [--idempotency-key <key>] \| --finish)` | Gives a key a new secret and keeps its prefix, label, access, limits, wallets and history. The old secret keeps working through `--grace` (default `1h`, at most `24h`) or stops at once with `--now`; `--finish` ends an open window early. When the key is the CLI's own, the new secret replaces it in the keychain. A copy in `CANDLE_API_KEY` or anywhere else must be updated by hand before the window ends; `candle doctor` warns while the old secret is in use. Each run sends an `Idempotency-Key` and retries a dropped connection once; if there is still no answer, rerun with the printed `--idempotency-key` to recover the first secret. |
 | `candle keys revoke <prefix>` | Revokes an API key by prefix. Revoking the CLI's own stored key also clears it locally. |
 | `candle keys wallets <prefix>`, `keys wallets set <prefix> --wallets <id,id>`, `keys wallets scope <prefix> --scope all\|selected` | Each key is an agent profile with its own wallet set: list it, replace it, or limit the profile to its assigned wallets. |
 | `candle wallets` (alias `candle wallet`) | Shows the account's embedded (launch) wallets and any linked wallets, using the API key, with a `Signer` column saying whether this machine holds each linked wallet's signing key and a `Trusted` column saying whether it is yours (linked while signed in, or marked with `trust`). It links and revokes; it never generates or prints a key, which the vault now derives. |
@@ -597,8 +598,8 @@ copies before that deadline. `POST /api/v1/agent/keys/{prefix}/rotate/finish` (n
 ends grace immediately and returns `{ keyPrefix, changed }`; repeating it is harmless.
 Zero grace also invalidates the old secret immediately. Invalid JSON/non-object bodies
 return 400 without mutation; other-owner prefixes return 404; revoked, expired and hosted
-MCP keys return 409; contained accounts return 403. The CLI rotation command and keychain
-update flow are a separate delivery; use the API contract until those commands ship.
+MCP keys return 409; contained accounts return 403. `candle keys rotate` (see the commands
+table) drives this route and updates the CLI's own keychain slot.
 
 See [agent access](../../apps/docs/src/content/docs/developers/agent-access.md#rotating-a-key)
 for the complete contract.

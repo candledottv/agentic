@@ -21,7 +21,7 @@ import {
 } from "../presentation"
 import { apiKeyPrefix, credentialEnvOverrides, effectiveProfileFields, printIdentity } from "../profiles"
 import { compareVersions, detectInstall, fetchLatest, helperAssetName, releaseBaseUrl, updateHomeFor } from "../release"
-import { renderError, writeUsageFailure } from "../render"
+import { formatTime, renderError, writeUsageFailure } from "../render"
 import { parseTeeReadiness, TEE_CHAIN_ASSETS } from "../tee-readiness"
 import { HELPER_ENV, HELPER_NAME, locateFido2Helper } from "../vault/fido2"
 import { CONFIG_DIR_ENV, candleConfigDir, defaultVaultPath, fileExists } from "../vault/store"
@@ -60,9 +60,23 @@ export const DOCTOR_ROW_IDS = {
   "API URL": "api_url_provenance",
   "API key": "api_key_provenance",
   "Device token": "device_token_provenance",
+  "Key rotation": "key_rotation",
 } as const
 
 const API_KEY_CHECK = "API key valid"
+
+/** BE-2648: the WARN row for an API key in a rotation's grace window. `source` is where the key came from. */
+export function keyRotationRow(until: string, source: string): CheckRow {
+  const fix =
+    source === "CANDLE_API_KEY"
+      ? "update CANDLE_API_KEY where this key is deployed to the new secret"
+      : "store the new secret with candle auth login, or rotate from this profile with candle keys rotate"
+  return {
+    check: "Key rotation",
+    state: "WARN",
+    detail: `this API key's secret was rotated; the old secret stops at ${formatTime(until)}. Fix: ${fix}.`,
+  }
+}
 
 async function teeLimitsRow(ctx: CommandContext, apiKey: string, wallets: { chain?: string }[]): Promise<CheckRow> {
   const result = await apiRequest("/api/v1/agent/keys/self/limits", {
@@ -393,6 +407,10 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
       env: deps.env,
     })
     if (result.ok) trading = result.body as TradingPage
+    // BE-2648: the API answered this key with the rotation header, so this is the secret a rotation
+    // replaced. It works until the window ends; whatever holds it has to be updated before then.
+    const rotatedUntil = result.headers?.["x-candle-key-rotated"]
+    if (rotatedUntil) rows.push(keyRotationRow(rotatedUntil, provenance.apiKey.source))
     if (trading && Array.isArray(trading.scopes)) {
       scopes = trading.scopes
       rows.push({

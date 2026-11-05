@@ -406,6 +406,7 @@ test("R2.9 doctor row ids are stable across role-dependent labels", async () => 
       "install",
       "security_key_helper",
       "update",
+      "key_rotation",
       "key_signers",
       "signer_slot",
       "trade_path",

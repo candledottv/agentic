@@ -76284,6 +76284,10 @@ var HELP = {
       },
       { invocation: "stop <prefix>", description: "Pause one key with the device token; reversible with keys resume" },
       { invocation: "resume <prefix>", description: "Resume a stopped key with the device token" },
+      {
+        invocation: "rotate <prefix|label> ([--grace <duration> | --now] [--force] [--yes] | --finish)",
+        description: "Give a key a new secret, keeping its prefix, label, access, limits, wallets and history. The old secret works through --grace (default 1h, at most 24h) or stops at once with --now; --finish ends an open window early. The profile's own key is replaced in the keychain; update CANDLE_API_KEY and other copies yourself. --force rotates again while a window is open"
+      },
       { invocation: "revoke <prefix>", description: "Revoke an API key permanently" },
       {
         invocation: "signer approve <code> --key <prefix|label> [--reject]",
@@ -76319,6 +76323,9 @@ var HELP = {
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
       "candle keys signer approve ABCD-EFGH --key tr-2",
       "candle keys signer move tr-2",
+      "candle keys rotate agent-one --grace 30m",
+      "candle keys rotate agent-one --now --idempotency-key rotate-2026-11",
+      "candle keys rotate agent-one --finish",
       "candle keys revoke ck_live_ab12",
       "candle keys stop ck_live_ab12",
       "candle keys resume ck_live_ab12"
@@ -85275,9 +85282,18 @@ var DOCTOR_ROW_IDS = {
   "Project .env": "project_env",
   "API URL": "api_url_provenance",
   "API key": "api_key_provenance",
-  "Device token": "device_token_provenance"
+  "Device token": "device_token_provenance",
+  "Key rotation": "key_rotation"
 };
 var API_KEY_CHECK = "API key valid";
+function keyRotationRow(until, source) {
+  const fix = source === "CANDLE_API_KEY" ? "update CANDLE_API_KEY where this key is deployed to the new secret" : "store the new secret with candle auth login, or rotate from this profile with candle keys rotate";
+  return {
+    check: "Key rotation",
+    state: "WARN",
+    detail: `this API key's secret was rotated; the old secret stops at ${formatTime(until)}. Fix: ${fix}.`
+  };
+}
 async function teeLimitsRow(ctx, apiKey, wallets2) {
   const result = await apiRequest("/api/v1/agent/keys/self/limits", {
     auth: "key",
@@ -85515,6 +85531,9 @@ async function doctor(args, ctx) {
     });
     if (result.ok)
       trading = result.body;
+    const rotatedUntil = result.headers?.["x-candle-key-rotated"];
+    if (rotatedUntil)
+      rows.push(keyRotationRow(rotatedUntil, provenance.apiKey.source));
     if (trading && Array.isArray(trading.scopes)) {
       scopes = trading.scopes;
       rows.push({
@@ -89600,6 +89619,1057 @@ ${fields(rows, style).join(`
   return 0;
 }
 
+// src/commands/keys-rotate.ts
+init_args();
+init_client();
+init_deps();
+init_presentation();
+init_profiles();
+init_render();
+init_secret_store();
+init_key_output();
+init_keys();
+init_tee_rebind();
+import { randomUUID as randomUUID7 } from "node:crypto";
+
+// src/commands/token-pages.ts
+init_esm();
+init_args();
+init_client();
+init_deps();
+init_human_output();
+init_presentation();
+init_render();
+import { createHash as createHash5, randomUUID as randomUUID6 } from "node:crypto";
+var EXIT_OUTCOME_UNKNOWN = 3;
+var EXIT_REVISION_CONFLICT = 4;
+var TOKEN_PAGE_LIMITS = { thesis: 280, tokenomics: 5000, lore: 5000, update: 1000, comment: 500 };
+var TOKEN_PAGE_BODY_CAP_BYTES = 32 * 1024;
+var TOKEN_PAGE_SECTIONS = ["thesis", "tokenomics", "lore"];
+var FLAG_REASONS = ["spam", "scam", "abuse", "misleading", "unsafe_link", "other"];
+var FLAG_DETAIL_LIMIT = 500;
+var USAGE8 = {
+  about: "Usage: candle token about <address> [--chain solana|hood] [--capabilities]",
+  claim: "Usage: candle token claim <address> [--chain solana|hood] [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--idempotency-key <key>]",
+  section: `Usage: candle token section set <address> <thesis|tokenomics|lore> --file <path> --base-revision <n> [--clear] [--chain solana|hood] [--idempotency-key <key>]
+       candle token section restore <address> <thesis|tokenomics|lore> --version-id <id> --base-revision <n> [--chain solana|hood] [--idempotency-key <key>]`,
+  history: "Usage: candle token history <address> <thesis|tokenomics|lore> [--chain solana|hood] [--limit <n>] [--cursor <c>]",
+  flag: "Usage: candle token flag <address> --content <id> --reason <spam|scam|abuse|misleading|unsafe_link|other> [--detail <text>] [--chain solana|hood] [--idempotency-key <key>]",
+  comment: "Usage: candle token comment <address> --file <path> [--chain solana|hood] [--idempotency-key <key>]",
+  comments: "Usage: candle token comments <address> [--chain solana|hood] [--limit <n>] [--cursor <c>]"
+};
+var REFUSALS = {
+  feature_off: "This token page action is not available yet on this Candle server. Nothing was written.",
+  not_found: "Token pages are not available yet on this Candle server, or the requested page, item or version does not exist.",
+  insufficient_holding: "This account's Candle-known wallets hold less than 0.5% of the token's current supply (any positive balance is enough to flag). Nothing was written.",
+  eligibility_unavailable: "Candle could not read complete, fresh wallet and supply evidence for this account just now. Nothing was written; try again shortly.",
+  restricted: "This account is restricted from writing on this token page.",
+  revision_conflict: "The section changed since the base revision you gave.",
+  idempotency_conflict: "This idempotency key was already used for a different request. Nothing was written.",
+  idempotency_key_required: "The request carried no usable Idempotency-Key.",
+  challenge_used: "That creator challenge was already used, or the creator evidence changed. Request a new one.",
+  invalid_signature: "The signature does not verify for that challenge, or the challenge expired (5 minutes). Request a new one.",
+  creator_unknown: "Candle has no verified creator for this token, so there is nothing to prove.",
+  creator_proof_unsupported: "The verified creator cannot sign a message (a contract or multisig), so creator proof is not available.",
+  invalid_text: "Candle refused the text: too long, empty, or holding invalid Unicode or control characters.",
+  invalid_body: "Candle refused the request body.",
+  invalid_token: "That is not a valid address on that chain.",
+  invalid_section: "Sections are thesis, tokenomics and lore.",
+  invalid_query: "Candle refused the query (limit is 1-50; the cursor must come from this list).",
+  no_identity_wallet: "This key's account has no wallet Candle can use as its identity.",
+  rate_limited: "Too many token page requests; wait a minute and try again.",
+  unavailable: "Token pages are unavailable on this Candle server just now.",
+  measurements_unavailable: "Measurements are unavailable just now; try again shortly."
+};
+var SECTION_SUGGESTION = "Your file was not changed. Read the newer text with candle token history, merge, then rerun with --base-revision set to the latest revision.";
+function usageFor(ctx, line) {
+  return (message) => {
+    writeUsageFailure(ctx.deps, message ? `${message}
+${line}` : line, ctx.json);
+    return 2;
+  };
+}
+function chainOf(values) {
+  const chain2 = values["--chain"] ?? "solana";
+  return chain2 === "solana" || chain2 === "hood" ? chain2 : undefined;
+}
+function pagePath(chain2, address, rest = "") {
+  return `/api/v1/token-pages/${chain2}/${encodeURIComponent(address)}${rest}`;
+}
+function refusalOf2(result) {
+  if (result.ok)
+    return null;
+  const raw = result.raw;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return null;
+  const { success: success2, error, ...extra } = raw;
+  if (success2 !== false || typeof error !== "string")
+    return null;
+  return { status: result.status, code: error, extra };
+}
+function writeRefusal(ctx, refusal3, suggestion) {
+  const message = REFUSALS[refusal3.code] ?? `Candle refused the request (${refusal3.code}).`;
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: false, code: refusal3.code, status: refusal3.status, message, ...refusal3.extra, ...suggestion ? { suggestion } : {} })}
+`);
+    return;
+  }
+  ctx.deps.stderr.write(`${suggestion ? `${message} ${suggestion}` : message}
+`);
+}
+function writeApiFailure(ctx, result, authType) {
+  const refusal3 = refusalOf2(result);
+  if (refusal3) {
+    writeRefusal(ctx, refusal3);
+    return 1;
+  }
+  const failure2 = result;
+  writeFailure(ctx.deps, failure2.status === 404 ? { ...failure2, message: REFUSALS.not_found } : failure2, { apiUrl: ctx.apiUrl, authType }, ctx.json);
+  return 1;
+}
+function dataOf(result) {
+  const body = result.ok ? result.body : null;
+  return body && typeof body === "object" && "data" in body ? body.data : body;
+}
+async function read(ctx, path, apiKey) {
+  return apiRequest(path, {
+    apiUrl: ctx.apiUrl,
+    ...apiKey ? { auth: "key", credentials: { apiKey } } : { auth: "none", credentials: {} },
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+}
+async function requireKey(ctx) {
+  const key = await resolveApiKey(ctx.deps, ctx.profile);
+  if (key)
+    return key;
+  writeLocalFailure(ctx.deps, {
+    code: "API_KEY_REQUIRED",
+    message: "This needs an API key with the token-pages scopes.",
+    suggestion: "Create one with: candle keys create --scopes token-pages:read,token-pages:write"
+  }, ctx.json);
+  return;
+}
+async function write2(ctx, input) {
+  const send = async () => {
+    try {
+      return await apiRequest(input.path, {
+        apiUrl: ctx.apiUrl,
+        method: input.method,
+        body: input.body,
+        auth: "key",
+        credentials: { apiKey: input.apiKey },
+        headers: { "Idempotency-Key": input.idempotencyKey },
+        fetch: ctx.deps.fetch,
+        env: ctx.deps.env
+      });
+    } catch {
+      return { ok: false, status: 0, message: "The response was cut off before it finished.", raw: undefined };
+    }
+  };
+  const first = await send();
+  if (first.ok || first.status !== 0 || first.code)
+    return first;
+  const second = await send();
+  if (second.ok || second.status !== 0 || second.code)
+    return second;
+  return "unknown";
+}
+function writeUnknown(ctx, idempotencyKey) {
+  writeLocalFailure(ctx.deps, {
+    code: "OUTCOME_UNKNOWN",
+    message: "Candle did not answer, twice, so whether this write landed is not known.",
+    suggestion: `Rerun the same command with --idempotency-key ${idempotencyKey}: Candle returns the first result instead of writing twice.`,
+    details: { idempotencyKey }
+  }, ctx.json);
+  return EXIT_OUTCOME_UNKNOWN;
+}
+function idempotencyKeyOf(values, usage4) {
+  const given = values["--idempotency-key"];
+  if (given === undefined)
+    return randomUUID6();
+  if (given.length < 1 || given.length > 128)
+    return usage4("--idempotency-key must be 1 to 128 characters.");
+  return given;
+}
+function sectionOf(value) {
+  return TOKEN_PAGE_SECTIONS.includes(value ?? "") ? value : undefined;
+}
+var REVISION = /^(0|[1-9][0-9]{0,18})$/;
+var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function bpsPercent(bps2) {
+  if (bps2 === null || bps2 === undefined || !/^\d+$/.test(bps2))
+    return;
+  const n = BigInt(bps2);
+  return `${n / 100n}.${(n % 100n).toString().padStart(2, "0")}%`;
+}
+function identity2(who) {
+  if (!who)
+    return;
+  if (who.kind === "candle")
+    return "Candle";
+  if (who.kind === "agent")
+    return terminalText(who.name ?? "Agent");
+  return terminalText(who.name ?? who.account);
+}
+function sectionText(bytes, section2) {
+  if (bytes.length > TOKEN_PAGE_BODY_CAP_BYTES)
+    return { error: `The file is over ${TOKEN_PAGE_BODY_CAP_BYTES} bytes.` };
+  let decoded;
+  try {
+    decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return { error: "The file is not valid UTF-8." };
+  }
+  const text3 = decoded.replace(/\r\n?/g, `
+`);
+  for (const char of text3) {
+    const c = char.codePointAt(0) ?? 0;
+    if (c < 32 && c !== 10 && c !== 9 || c === 127 || c >= 128 && c < 160 || c >= 55296 && c <= 57343)
+      return { error: `The file holds a control character (U+${c.toString(16).toUpperCase().padStart(4, "0")}).` };
+  }
+  const length = [...text3].length;
+  const limit = TOKEN_PAGE_LIMITS[section2];
+  if (length > limit)
+    return { error: `${section2} is at most ${limit} characters; the file has ${length}.` };
+  return { text: text3 };
+}
+function signatureFor(chain2, given) {
+  const value = given.trim();
+  if (chain2 === "hood")
+    return /^0x[0-9a-fA-F]{130}$/.test(value) ? value : undefined;
+  try {
+    const bytes = value.endsWith("=") || /[+/]/.test(value) ? base64.decode(value) : base58.decode(value);
+    return bytes.length === 64 ? base64.encode(bytes) : undefined;
+  } catch {
+    return;
+  }
+}
+function factValue(fact) {
+  if (fact.raw === undefined)
+    return fact.status;
+  const value = fact.decimals ? rawUnits2(fact.raw, fact.decimals) : fact.raw;
+  return `${value}${fact.unit === "token" ? "" : ` ${fact.unit}`} (${fact.status}, ${fact.coverage}, ${terminalText(fact.source)}${fact.measuredAt ? `, ${fact.measuredAt}` : ""})`;
+}
+function rawUnits2(raw, decimals) {
+  if (!/^\d+$/.test(raw))
+    return raw;
+  const padded = raw.padStart(decimals + 1, "0");
+  const whole = padded.slice(0, padded.length - decimals);
+  const fraction = padded.slice(padded.length - decimals).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+function writeAbout(ctx, about) {
+  const claim = about.claim;
+  writeFields(ctx.deps, "stdout", [
+    ["Token", `${about.token.chain} ${about.token.address}`],
+    ["Revision", about.revision],
+    [
+      "Claim",
+      claim.state === "unclaimed" ? "unclaimed" : `claimed by ${claim.state === "dev" ? "dev" : "community"}`
+    ],
+    ["Lead", identity2(claim.lead) ?? "no current eligible lead"],
+    ["Eligible", claim.eligibleAccounts === null ? "refreshing" : String(claim.eligibleAccounts)],
+    [
+      "Switches",
+      Object.entries(about.features).map(([name2, on]) => `${name2} ${on ? "on" : "off"}`).join(", ")
+    ]
+  ], "About");
+  for (const section2 of TOKEN_PAGE_SECTIONS) {
+    const v = about.sections[section2];
+    if (!v)
+      continue;
+    writeHeading(ctx.deps, "stdout", `${section2} (revision ${v.revision})`);
+    writeFields(ctx.deps, "stdout", [
+      ["Written by", `${identity2(v.author)}${v.dev ? " (dev)" : ""}`],
+      ["Share then", bpsPercent(v.shareBps)],
+      ["At", v.createdAt],
+      ["Version", v.id]
+    ]);
+    if (v.newerAwaitingReview)
+      notice(ctx.deps, "stdout", "note", "A newer version is hidden pending review.");
+    if (v.linksWithheld)
+      notice(ctx.deps, "stdout", "note", "Links are withheld pending review.");
+    ctx.deps.stdout.write(`
+${terminalTextKeepingLines(v.text)}
+`);
+  }
+  writeHeading(ctx.deps, "stdout", "Supply, measured by Candle");
+  const facts = about.facts.filter((f) => f.status === "known" || f.status === "stale");
+  if (!facts.length)
+    ctx.deps.stdout.write(`  Measurements unavailable
+`);
+  else
+    writeFields(ctx.deps, "stdout", facts.map((f) => [terminalText(f.metric), factValue(f)]));
+}
+function terminalTextKeepingLines(text3) {
+  return text3.split(`
+`).map((line) => terminalText(line.replace(/\t/g, "    "))).join(`
+`);
+}
+async function tokenAbout(args, ctx) {
+  const usage4 = usageFor(ctx, USAGE8.about);
+  const parsed = parseArgs(args, { valueFlags: ["--chain"], booleanFlags: ["--capabilities"] });
+  if ("error" in parsed)
+    return usage4(parsed.error);
+  const chain2 = chainOf(parsed.values);
+  const address = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address)
+    return usage4();
+  if (!chain2)
+    return usage4("--chain must be solana or hood.");
+  const withCapabilities = parsed.booleans.has("--capabilities");
+  const apiKey = withCapabilities ? await requireKey(ctx) : undefined;
+  if (withCapabilities && !apiKey)
+    return 1;
+  const summary = await read(ctx, pagePath(chain2, address));
+  if (!summary.ok)
+    return writeApiFailure(ctx, summary, "none");
+  let capabilities;
+  if (apiKey) {
+    const own = await read(ctx, pagePath(chain2, address, "/capabilities"), apiKey);
+    if (!own.ok)
+      return writeApiFailure(ctx, own, "key");
+    capabilities = dataOf(own);
+  }
+  const about = dataOf(summary);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data: about, ...apiKey ? { capabilities } : {} })}
+`);
+    return 0;
+  }
+  writeAbout(ctx, about);
+  if (apiKey) {
+    const c = capabilities;
+    writeFields(ctx.deps, "stdout", [
+      ["Can claim", c.canClaim ? "yes" : "no"],
+      ["Can edit", c.canEdit ? "yes" : "no"],
+      ["Can flag", c.canFlag ? "yes" : "no"],
+      ["Creator", c.creatorProven ? "proven" : "not proven"],
+      ["Share now", bpsPercent(c.shareBps)],
+      ["Observed", c.observedAt],
+      ["Why not", c.refusal ? REFUSALS[c.refusal] ?? c.refusal : undefined]
+    ], "This account");
+  }
+  return 0;
+}
+async function tokenClaim(args, ctx) {
+  const usage4 = usageFor(ctx, USAGE8.claim);
+  const parsed = parseArgs(args, {
+    valueFlags: ["--chain", "--challenge-id", "--signature", "--message-out", "--idempotency-key"],
+    booleanFlags: ["--creator", "--challenge"],
+    pathFlags: ["--message-out"]
+  });
+  if ("error" in parsed)
+    return usage4(parsed.error);
+  const { values, booleans } = parsed;
+  const chain2 = chainOf(values);
+  const address = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address)
+    return usage4();
+  if (!chain2)
+    return usage4("--chain must be solana or hood.");
+  const creator = booleans.has("--creator");
+  const challenge = booleans.has("--challenge");
+  const challengeId = values["--challenge-id"];
+  const given = values["--signature"];
+  if ((challenge || challengeId !== undefined || given !== undefined) && !creator)
+    return usage4("--challenge, --challenge-id and --signature are for --creator.");
+  if (challenge && (challengeId !== undefined || given !== undefined))
+    return usage4("--challenge asks for a new challenge; send the signature in a second run.");
+  if (challengeId === undefined !== (given === undefined))
+    return usage4("--challenge-id and --signature go together.");
+  if (values["--message-out"] !== undefined && !challenge)
+    return usage4("--message-out goes with --challenge.");
+  if (challengeId !== undefined && !UUID2.test(challengeId))
+    return usage4("--challenge-id is the id the challenge printed.");
+  let signature;
+  if (given !== undefined) {
+    signature = signatureFor(chain2, given);
+    if (!signature)
+      return usage4(chain2 === "hood" ? "--signature must be the 0x-hex message signature (65 bytes)." : "--signature must be the 64-byte Ed25519 signature, base58 or base64.");
+  }
+  const idempotencyKey = idempotencyKeyOf(values, usage4);
+  if (typeof idempotencyKey === "number")
+    return idempotencyKey;
+  const apiKey = await requireKey(ctx);
+  if (!apiKey)
+    return 1;
+  if (challenge)
+    return creatorChallenge(ctx, chain2, address, apiKey, values["--message-out"]);
+  const body = { kind: creator ? "creator" : "holder", ...challengeId ? { challengeId, signature } : {} };
+  const result = await write2(ctx, {
+    method: "POST",
+    path: pagePath(chain2, address, "/claims"),
+    body,
+    apiKey,
+    idempotencyKey
+  });
+  if (result === "unknown")
+    return writeUnknown(ctx, idempotencyKey);
+  if (!result.ok) {
+    const refusal3 = refusalOf2(result);
+    if (refusal3?.code === "invalid_signature" && creator && !challengeId) {
+      writeRefusal(ctx, refusal3, `This account's known wallets do not include the verified creator, so the claim needs a signed challenge: candle token claim ${address} --chain ${chain2} --creator --challenge`);
+      return 1;
+    }
+    return writeApiFailure(ctx, result, "key");
+  }
+  const data = dataOf(result);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [
+      ["Kind", data.kind],
+      ["Creator", data.creatorProven ? "proven" : "not proven"],
+      ["Revision", data.revision]
+    ], "Claimed");
+  return 0;
+}
+async function creatorChallenge(ctx, chain2, address, apiKey, messageOut) {
+  const result = await apiRequest(pagePath(chain2, address, "/creator-challenges"), {
+    apiUrl: ctx.apiUrl,
+    method: "POST",
+    body: {},
+    auth: "key",
+    credentials: { apiKey },
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "key");
+  const data = dataOf(result);
+  const bytes = new TextEncoder().encode(data.message);
+  const sha2564 = createHash5("sha256").update(bytes).digest("hex");
+  if (messageOut !== undefined) {
+    try {
+      await ctx.deps.writeFile(messageOut, data.message);
+    } catch (error) {
+      writeLocalFailure(ctx.deps, {
+        code: "MESSAGE_OUT_FAILED",
+        message: `The challenge could not be written to ${messageOut}: ${error instanceof Error ? error.message : error}.`,
+        details: { challengeId: data.challengeId }
+      }, ctx.json);
+      return 1;
+    }
+  }
+  const next = `candle token claim ${address} --chain ${chain2} --creator --challenge-id ${data.challengeId} --signature <signature>`;
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, byteLength: bytes.length, sha256: sha2564, ...messageOut ? { messageOut } : {}, next })}
+`);
+    return 0;
+  }
+  writeFields(ctx.deps, "stdout", [
+    ["Challenge", data.challengeId],
+    ["Expires", data.expiresAt],
+    ["Bytes", String(bytes.length)],
+    ["sha256", sha2564],
+    ["Written to", messageOut]
+  ], "Creator challenge (a message, not a transaction)");
+  ctx.deps.stdout.write(`
+Sign exactly these UTF-8 bytes (between the lines, no trailing newline) with the creator wallet:
+-----
+${data.message}
+-----
+`);
+  notice(ctx.deps, "stdout", "note", `Sign it on your own machine, for example candle sign message --wallet <external> --file ${messageOut ?? "<file holding exactly these bytes>"}, then run: ${next}`);
+  return 0;
+}
+var SECTION_FLAGS = {
+  set: { valueFlags: ["--chain", "--file", "--base-revision", "--idempotency-key"], booleanFlags: ["--clear"] },
+  restore: { valueFlags: ["--chain", "--version-id", "--base-revision", "--idempotency-key"], booleanFlags: [] }
+};
+async function tokenSection(args, ctx) {
+  const usage4 = usageFor(ctx, USAGE8.section);
+  const action = args[0];
+  if (action !== "set" && action !== "restore")
+    return usage4();
+  const spec = SECTION_FLAGS[action];
+  const parsed = parseArgs(args.slice(1), {
+    valueFlags: [...spec.valueFlags],
+    booleanFlags: [...spec.booleanFlags],
+    ...action === "set" ? { pathFlags: ["--file"] } : {}
+  });
+  if ("error" in parsed)
+    return usage4(parsed.error);
+  const { values } = parsed;
+  const chain2 = chainOf(values);
+  const [address, sectionName] = parsed.positionals;
+  if (parsed.positionals.length !== 2 || !address)
+    return usage4();
+  if (!chain2)
+    return usage4("--chain must be solana or hood.");
+  const section2 = sectionOf(sectionName);
+  if (!section2)
+    return usage4("The section is thesis, tokenomics or lore.");
+  const base2 = values["--base-revision"];
+  if (base2 === undefined || !REVISION.test(base2))
+    return usage4("--base-revision is the section's current revision (0 for a first write), from candle token about.");
+  const idempotencyKey = idempotencyKeyOf(values, usage4);
+  if (typeof idempotencyKey === "number")
+    return idempotencyKey;
+  let body;
+  let path;
+  let method;
+  if (action === "set") {
+    const file = values["--file"];
+    if (file === undefined)
+      return usage4("--file is required: the section text comes from a file.");
+    let bytes;
+    try {
+      bytes = await ctx.deps.readBytes(file);
+    } catch (error) {
+      writeLocalFailure(ctx.deps, {
+        code: "FILE_UNREADABLE",
+        message: `${file} could not be read: ${error instanceof Error ? error.message : error}.`
+      }, ctx.json);
+      return 2;
+    }
+    const checked = sectionText(bytes, section2);
+    if ("error" in checked) {
+      writeLocalFailure(ctx.deps, { code: "TEXT_REFUSED", message: `${checked.error} Nothing was sent.` }, ctx.json);
+      return 2;
+    }
+    const empty = checked.text.trim().length === 0;
+    if (empty && !parsed.booleans.has("--clear"))
+      return usage4("The file is empty. An empty write clears the section; pass --clear to mean that.");
+    if (!empty && parsed.booleans.has("--clear"))
+      return usage4("--clear is for an empty file.");
+    body = { text: checked.text, baseRevision: base2 };
+    path = pagePath(chain2, address, `/sections/${section2}`);
+    method = "PUT";
+  } else {
+    const versionId = values["--version-id"];
+    if (versionId === undefined || !UUID2.test(versionId))
+      return usage4("--version-id is a version id from candle token history.");
+    body = { versionId, baseRevision: base2 };
+    path = pagePath(chain2, address, `/sections/${section2}/restore`);
+    method = "POST";
+  }
+  const apiKey = await requireKey(ctx);
+  if (!apiKey)
+    return 1;
+  const result = await write2(ctx, { method, path, body, apiKey, idempotencyKey });
+  if (result === "unknown")
+    return writeUnknown(ctx, idempotencyKey);
+  if (!result.ok) {
+    const refusal3 = refusalOf2(result);
+    if (refusal3?.code === "revision_conflict") {
+      const latest = refusal3.extra.latest;
+      writeRefusal(ctx, refusal3, `${latest?.revision !== undefined ? `The latest is revision ${latest.revision}. ` : ""}${action === "set" ? SECTION_SUGGESTION : "Rerun with --base-revision set to the latest revision."}`);
+      return EXIT_REVISION_CONFLICT;
+    }
+    return writeApiFailure(ctx, result, "key");
+  }
+  const data = dataOf(result);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [
+      ["Revision", data.revision],
+      ["Version", data.id]
+    ], action === "set" ? `${section2} saved` : `${section2} restored as a new version`);
+  return 0;
+}
+async function tokenHistory(args, ctx) {
+  const usage4 = usageFor(ctx, USAGE8.history);
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
+  if ("error" in parsed)
+    return usage4(parsed.error);
+  const { values } = parsed;
+  const chain2 = chainOf(values);
+  const [address, sectionName] = parsed.positionals;
+  if (parsed.positionals.length !== 2 || !address)
+    return usage4();
+  if (!chain2)
+    return usage4("--chain must be solana or hood.");
+  const section2 = sectionOf(sectionName);
+  if (!section2)
+    return usage4("The section is thesis, tokenomics or lore.");
+  const limit = values["--limit"];
+  if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50))
+    return usage4("--limit is a whole number from 1 to 50.");
+  const query2 = new URLSearchParams({
+    ...limit !== undefined ? { limit } : {},
+    ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
+  });
+  const result = await read(ctx, pagePath(chain2, address, `/sections/${section2}/history${query2.size ? `?${query2}` : ""}`));
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "none");
+  const data = dataOf(result);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data })}
+`);
+    return 0;
+  }
+  if (!data.items.length)
+    ctx.deps.stdout.write(`No ${section2} versions.
+`);
+  for (const item of data.items) {
+    writeHeading(ctx.deps, "stdout", `revision ${item.revision}`);
+    writeFields(ctx.deps, "stdout", [
+      ["Version", item.id],
+      ["Written by", `${identity2(item.author)}${item.dev ? " (dev)" : ""}`],
+      ["Share then", bpsPercent(item.shareBps)],
+      ["At", item.createdAt],
+      ["Restored from", item.restoredFrom ?? undefined],
+      ["State", item.tombstone ?? "visible"]
+    ]);
+    if (item.text !== null)
+      ctx.deps.stdout.write(`
+${terminalTextKeepingLines(item.text)}
+`);
+  }
+  if (data.nextCursor)
+    ctx.deps.stdout.write(`
+More: --cursor ${data.nextCursor}
+`);
+  return 0;
+}
+async function tokenFlag(args, ctx) {
+  const usage4 = usageFor(ctx, USAGE8.flag);
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--content", "--reason", "--detail", "--idempotency-key"] });
+  if ("error" in parsed)
+    return usage4(parsed.error);
+  const { values } = parsed;
+  const chain2 = chainOf(values);
+  const address = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address)
+    return usage4();
+  if (!chain2)
+    return usage4("--chain must be solana or hood.");
+  const contentId = values["--content"];
+  if (contentId === undefined || !UUID2.test(contentId))
+    return usage4("--content is the exact version, update or comment id being reported (candle token about, history or comments).");
+  const reason = values["--reason"];
+  if (!reason || !FLAG_REASONS.includes(reason))
+    return usage4(`--reason is one of ${FLAG_REASONS.join(", ")}.`);
+  const detail = values["--detail"];
+  if (detail !== undefined && [...detail].length > FLAG_DETAIL_LIMIT)
+    return usage4(`--detail is at most ${FLAG_DETAIL_LIMIT} characters.`);
+  const idempotencyKey = idempotencyKeyOf(values, usage4);
+  if (typeof idempotencyKey === "number")
+    return idempotencyKey;
+  const apiKey = await requireKey(ctx);
+  if (!apiKey)
+    return 1;
+  const body = { contentId, reason, ...detail !== undefined ? { detail } : {} };
+  const result = await write2(ctx, {
+    method: "POST",
+    path: pagePath(chain2, address, "/flags"),
+    body,
+    apiKey,
+    idempotencyKey
+  });
+  if (result === "unknown")
+    return writeUnknown(ctx, idempotencyKey);
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "key");
+  const data = dataOf(result);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [
+      ["Content", data.contentId],
+      ["Hidden", data.hidden ? "yes, pending Candle review" : "no"]
+    ], "Reported");
+  return 0;
+}
+async function tokenUpdate(args, ctx) {
+  const usage4 = usageFor(ctx, "Usage: candle token update <address> --file <path> [--chain solana|hood] [--idempotency-key <key>]");
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] });
+  if ("error" in parsed)
+    return usage4(parsed.error);
+  const chain2 = chainOf(parsed.values), address = parsed.positionals[0], file = parsed.values["--file"];
+  if (!chain2 || !address || !file || parsed.positionals.length !== 1)
+    return usage4();
+  let bytes;
+  try {
+    bytes = await ctx.deps.readBytes(file);
+  } catch {
+    return usage4("The update file could not be read.");
+  }
+  const checked = sectionText(bytes, "update");
+  if ("error" in checked || !checked.text.trim())
+    return usage4("The update must contain 1–1000 valid characters.");
+  const idempotencyKey = idempotencyKeyOf(parsed.values, usage4);
+  if (typeof idempotencyKey === "number")
+    return idempotencyKey;
+  const apiKey = await requireKey(ctx);
+  if (!apiKey)
+    return 1;
+  const result = await write2(ctx, {
+    method: "POST",
+    path: pagePath(chain2, address, "/updates"),
+    body: { text: checked.text },
+    apiKey,
+    idempotencyKey
+  });
+  if (result === "unknown")
+    return writeUnknown(ctx, idempotencyKey);
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "key");
+  const data = dataOf(result);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [
+      ["Post", data.id],
+      ["Retry key", idempotencyKey]
+    ], "Update posted");
+  return 0;
+}
+async function tokenComment(args, ctx) {
+  const usage4 = usageFor(ctx, USAGE8.comment);
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] });
+  if ("error" in parsed)
+    return usage4(parsed.error);
+  const chain2 = chainOf(parsed.values), address = parsed.positionals[0], file = parsed.values["--file"];
+  if (!chain2 || !address || !file || parsed.positionals.length !== 1)
+    return usage4();
+  let bytes;
+  try {
+    bytes = await ctx.deps.readBytes(file);
+  } catch {
+    return usage4("The comment file could not be read.");
+  }
+  const checked = sectionText(bytes, "comment");
+  if ("error" in checked || !checked.text.trim())
+    return usage4(`The comment must contain 1–${TOKEN_PAGE_LIMITS.comment} valid characters.`);
+  const idempotencyKey = idempotencyKeyOf(parsed.values, usage4);
+  if (typeof idempotencyKey === "number")
+    return idempotencyKey;
+  const apiKey = await requireKey(ctx);
+  if (!apiKey)
+    return 1;
+  const result = await write2(ctx, {
+    method: "POST",
+    path: pagePath(chain2, address, "/comments"),
+    body: { text: checked.text },
+    apiKey,
+    idempotencyKey
+  });
+  if (result === "unknown")
+    return writeUnknown(ctx, idempotencyKey);
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "key");
+  const data = dataOf(result);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [
+      ["Comment", data.id],
+      ["Retry key", idempotencyKey]
+    ], "Comment posted");
+  return 0;
+}
+async function tokenComments(args, ctx) {
+  const usage4 = usageFor(ctx, USAGE8.comments);
+  const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
+  if ("error" in parsed)
+    return usage4(parsed.error);
+  const { values } = parsed;
+  const chain2 = chainOf(values);
+  const address = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address)
+    return usage4();
+  if (!chain2)
+    return usage4("--chain must be solana or hood.");
+  const limit = values["--limit"];
+  if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50))
+    return usage4("--limit is a whole number from 1 to 50.");
+  const query2 = new URLSearchParams({
+    ...limit !== undefined ? { limit } : {},
+    ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
+  });
+  const result = await read(ctx, pagePath(chain2, address, `/comments${query2.size ? `?${query2}` : ""}`));
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "none");
+  const data = dataOf(result);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data })}
+`);
+    return 0;
+  }
+  if (!data.items.length)
+    ctx.deps.stdout.write(`No comments.
+`);
+  for (const item of data.items) {
+    writeHeading(ctx.deps, "stdout", item.createdAt);
+    writeFields(ctx.deps, "stdout", [
+      ["Comment", item.id],
+      ["Written by", `${identity2(item.author)}${item.dev ? " (dev)" : ""}`],
+      ["Share then", bpsPercent(item.shareBps)],
+      ["State", item.tombstone ?? "visible"],
+      ["Links", item.linksWithheld ? "withheld pending review" : undefined]
+    ]);
+    if (item.text !== null)
+      ctx.deps.stdout.write(`
+${terminalTextKeepingLines(item.text)}
+`);
+  }
+  if (data.nextCursor)
+    ctx.deps.stdout.write(`
+More: --cursor ${data.nextCursor}
+`);
+  return 0;
+}
+async function tokenPost(args, ctx) {
+  const usage4 = usageFor(ctx, "Usage: candle token post delete <address> <post-id> [--chain solana|hood] [--idempotency-key <key>]");
+  if (args[0] !== "delete")
+    return usage4();
+  const parsed = parseArgs(args.slice(1), { valueFlags: ["--chain", "--idempotency-key"] });
+  if ("error" in parsed)
+    return usage4(parsed.error);
+  const chain2 = chainOf(parsed.values), [address, id] = parsed.positionals;
+  if (!chain2 || !address || !id || !UUID2.test(id) || parsed.positionals.length !== 2)
+    return usage4();
+  const idempotencyKey = idempotencyKeyOf(parsed.values, usage4);
+  if (typeof idempotencyKey === "number")
+    return idempotencyKey;
+  const apiKey = await requireKey(ctx);
+  if (!apiKey)
+    return 1;
+  const result = await write2(ctx, {
+    method: "DELETE",
+    path: pagePath(chain2, address, `/posts/${id}`),
+    body: {},
+    apiKey,
+    idempotencyKey
+  });
+  if (result === "unknown")
+    return writeUnknown(ctx, idempotencyKey);
+  if (!result.ok)
+    return writeApiFailure(ctx, result, "key");
+  const data = dataOf(result);
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
+`);
+  else
+    writeFields(ctx.deps, "stdout", [["Post", id]], "Post deleted");
+  return 0;
+}
+
+// src/commands/keys-rotate.ts
+var USAGE9 = `Usage: candle keys rotate <prefix|label> [--grace <duration> | --now] [--force] [--yes] [--idempotency-key <key>]
+       candle keys rotate <prefix|label> --finish`;
+var MAX_GRACE_SECONDS = 86400;
+var DEFAULT_GRACE_SECONDS = 3600;
+function parseGrace(raw) {
+  const match = raw.trim().match(/^(\d+)(s|m|h)?$/);
+  const bad = { ok: false, message: "--grace must be a duration such as 0, 90s, 30m or 24h (at most 24h)." };
+  if (!match)
+    return bad;
+  const unit = match[2] === "h" ? 3600 : match[2] === "m" ? 60 : 1;
+  const seconds = Number(match[1]) * unit;
+  if (!Number.isSafeInteger(seconds) || seconds > MAX_GRACE_SECONDS)
+    return bad;
+  return { ok: true, seconds };
+}
+async function keysRotate(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {
+    valueFlags: ["--grace", "--idempotency-key"],
+    booleanFlags: ["--now", "--finish", "--force", "--yes"]
+  });
+  if ("error" in parsed) {
+    writeScreenUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const target = parsed.positionals[0];
+  if (!target || parsed.positionals.length !== 1) {
+    writeScreenUsageFailure(deps, USAGE9, json);
+    return 2;
+  }
+  const finish = parsed.booleans.has("--finish");
+  const now = parsed.booleans.has("--now");
+  const force = parsed.booleans.has("--force");
+  const graceFlag = parsed.values["--grace"];
+  const keyFlag = parsed.values["--idempotency-key"];
+  if (finish && (now || force || graceFlag !== undefined || keyFlag !== undefined)) {
+    writeScreenUsageFailure(deps, "--finish takes no other rotation flag.", json);
+    return 2;
+  }
+  if (now && graceFlag !== undefined) {
+    writeScreenUsageFailure(deps, "Pass --grace or --now, not both.", json);
+    return 2;
+  }
+  if (keyFlag !== undefined && (keyFlag.length < 1 || keyFlag.length > 128)) {
+    writeScreenUsageFailure(deps, "--idempotency-key must be 1 to 128 characters.", json);
+    return 2;
+  }
+  const idempotencyKey = keyFlag ?? randomUUID7();
+  let graceSeconds = now ? 0 : DEFAULT_GRACE_SECONDS;
+  if (graceFlag !== undefined) {
+    const grace = parseGrace(graceFlag);
+    if (!grace.ok) {
+      writeScreenUsageFailure(deps, grace.message, json);
+      return 2;
+    }
+    graceSeconds = grace.seconds;
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeScreenLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const send = async (url, body2, key) => {
+    const attempt = async () => {
+      try {
+        return await apiRequest(url, {
+          method: "POST",
+          auth: "device",
+          credentials: { deviceToken },
+          apiUrl,
+          fetch: deps.fetch,
+          env: deps.env,
+          body: body2,
+          ...key ? { headers: { "Idempotency-Key": key } } : {}
+        });
+      } catch {
+        return { ok: false, status: 0, message: "The response was cut off before it finished.", raw: undefined };
+      }
+    };
+    const first = await attempt();
+    if (first.ok || first.status !== 0 || first.code)
+      return first;
+    const second = await attempt();
+    return second.ok || second.status !== 0 || second.code ? second : "unknown";
+  };
+  const writeRefusal2 = (result2) => {
+    if (result2.status === 503) {
+      writeScreenLocalFailure(deps, {
+        code: "IDENTITY_UNAVAILABLE",
+        message: "Candle could not rotate keys right now. The old secret is unchanged.",
+        suggestion: `Retry in about 30 seconds: candle keys rotate ${keyPrefix}${finish ? " --finish" : ""}`
+      }, json);
+      return 1;
+    }
+    writeScreenFailure(deps, result2, { apiUrl, authType: "device" }, json);
+    return 1;
+  };
+  const resolved = await resolveTargetKey(ctx, deviceToken, target, { codePrefix: "KEY_ROTATE" });
+  if (!resolved.ok)
+    return resolved.code;
+  const keyPrefix = resolved.keyPrefix;
+  const path = `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/rotate`;
+  if (finish) {
+    const result2 = await send(`${path}/finish`, {});
+    if (result2 === "unknown") {
+      writeScreenLocalFailure(deps, {
+        code: "OUTCOME_UNKNOWN",
+        message: "Candle did not answer, twice, so whether the rotation was finished is not known.",
+        suggestion: `Rerun: candle keys rotate ${keyPrefix} --finish`
+      }, json);
+      return EXIT_OUTCOME_UNKNOWN;
+    }
+    if (!result2.ok)
+      return writeRefusal2(result2);
+    const changed = result2.body?.changed === true;
+    if (json) {
+      deps.stdout.write(`${JSON.stringify({ ok: true, keyPrefix, changed })}
+`);
+      return 0;
+    }
+    const style2 = terminalStyle(deps, "stdout");
+    deps.stdout.write(`${success(changed ? "Rotation finished: the old secret has stopped working" : "No rotation was open", style2)}
+`);
+    return 0;
+  }
+  if (!parsed.booleans.has("--yes")) {
+    if (!deps.isTTY.stdin) {
+      writeScreenUsageFailure(deps, "Rotating a key needs confirmation. Run it at a terminal, or pass --yes.", json);
+      return 2;
+    }
+    const window = graceSeconds === 0 ? "at once" : `in ${graceLabel(graceSeconds)}`;
+    const answer2 = await deps.promptLine(`Rotate ${keyPrefix}? The old secret stops working ${window}. Type the prefix to confirm: `);
+    if (answer2.trim() !== keyPrefix) {
+      writeScreenLocalFailure(deps, { code: "KEY_ROTATE_CANCELLED", message: "Not rotated." }, json);
+      return 1;
+    }
+  }
+  const result = await send(path, { graceSeconds, ...force ? { force: true } : {} }, idempotencyKey);
+  if (result === "unknown") {
+    writeScreenLocalFailure(deps, {
+      code: "OUTCOME_UNKNOWN",
+      message: "Candle did not answer, twice, so whether the key was rotated is not known.",
+      suggestion: `Rerun the same command with --idempotency-key ${idempotencyKey}: Candle returns the first secret instead of rotating again.`,
+      details: { idempotencyKey }
+    }, json);
+    return EXIT_OUTCOME_UNKNOWN;
+  }
+  if (!result.ok)
+    return writeRefusal2(result);
+  const body = result.body;
+  const config = await deps.readConfig();
+  const ownKey = effectiveProfileFields(config, ctx.profile).keyPrefix === keyPrefix;
+  let stored = false;
+  let storeError;
+  if (ownKey) {
+    try {
+      await deps.store.set(ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey, body.key);
+      stored = true;
+    } catch (error) {
+      storeError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  const envKey = deps.env.CANDLE_API_KEY?.trim();
+  const envNamesKey = envKey !== undefined && envKey !== "" && apiKeyPrefix(envKey) === keyPrefix;
+  const until = body.previousValidUntil;
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({
+      ...body,
+      stored,
+      ...storeError ? { storeError } : {},
+      ...envNamesKey ? { candleApiKeyStale: true } : {}
+    })}
+`);
+    return storeError ? 1 : 0;
+  }
+  const style = terminalStyle(deps, "stdout");
+  deps.stdout.write(`${success("API key rotated", style)}
+
+  ${bold(body.key, style)}
+`);
+  notice(deps, "stdout", "warning", "Shown once. Store it now.");
+  deps.stdout.write(`${fields([
+    ["Prefix", keyPrefix],
+    ["Old secret", until === null ? "stopped" : `works until ${formatTime(until)}`],
+    [
+      "Stored",
+      storeError !== undefined ? "no (store failed)" : stored ? `${deps.backend}, replacing this CLI's working key` : "no (not this CLI's working key)"
+    ]
+  ], style).join(`
+`)}
+`);
+  const deadline = until === null ? "now" : `before ${formatTime(until)}`;
+  if (envNamesKey) {
+    notice(deps, "stderr", "warning", `CANDLE_API_KEY holds the old secret, and this CLI cannot change it. Update CANDLE_API_KEY where this key is deployed ${deadline}.`);
+  }
+  if (!stored) {
+    notice(deps, "stdout", "note", `Update every other place this key is stored (env files, MCP client configs) ${deadline}.${until === null ? "" : `
+End the old secret early with: candle keys rotate ${keyPrefix} --finish`}`);
+  }
+  if (storeError !== undefined) {
+    notice(deps, "stderr", "warning", `The new secret was NOT stored in the ${deps.backend} store: ${storeError}
+Save it now: the key is rotated on your account.`);
+  }
+  return storeError === undefined ? 0 : 1;
+}
+function graceLabel(seconds) {
+  if (seconds % 3600 === 0)
+    return `${seconds / 3600}h`;
+  if (seconds % 60 === 0)
+    return `${seconds / 60} min`;
+  return `${seconds}s`;
+}
+
 // src/commands/keys-stop.ts
 init_args();
 init_client();
@@ -90243,7 +91313,7 @@ init_zod();
 init_args();
 init_client();
 init_evm_lite();
-import { randomUUID as randomUUID6 } from "node:crypto";
+import { randomUUID as randomUUID8 } from "node:crypto";
 
 // src/fee-wallet.ts
 init_solana_lite();
@@ -90666,7 +91736,7 @@ function poolRequestFields(flags) {
 
 // src/commands/launch.ts
 init_swap();
-var USAGE8 = `Usage: ${LAUNCH_USAGE}`;
+var USAGE10 = `Usage: ${LAUNCH_USAGE}`;
 var EMBEDDED_WALLET_NAMES = new Set(LAUNCH_DEFINITION.wallet.embeddedNames);
 var LAUNCH_ARG_SPEC = {
   valueFlags: [
@@ -90772,12 +91842,12 @@ async function launch(args, ctx) {
   const flags = parsed.values;
   if (flags["--quote-asset"])
     flags["--quote-asset"] = flags["--quote-asset"].toLowerCase();
-  const id = flags["--client-trade-id"] ?? `launch-${randomUUID6()}`;
+  const id = flags["--client-trade-id"] ?? `launch-${randomUUID8()}`;
   const embedded = EMBEDDED_WALLET_NAMES.has(flags["--wallet"] ?? "");
   const dryRun = parsed.booleans.has("--dry-run");
   const check = parsed.booleans.has("--check");
   if (check && dryRun) {
-    writeUsageFailure(ctx.deps, `--check and --dry-run are two different stops; pass one. ${USAGE8}`, ctx.json);
+    writeUsageFailure(ctx.deps, `--check and --dry-run are two different stops; pass one. ${USAGE10}`, ctx.json);
     return 2;
   }
   const fieldProblem = launchFieldProblem(flags);
@@ -90787,11 +91857,11 @@ async function launch(args, ctx) {
   }
   const curveProblem = curveFlagProblem(flags);
   if (curveProblem) {
-    writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE8}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE10}`, ctx.json);
     return 2;
   }
   if (flags["--image"] !== undefined && flags["--image-url"] !== undefined) {
-    writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE8}`, ctx.json);
+    writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE10}`, ctx.json);
     return 2;
   }
   if (flags["--image-url"] !== undefined && !flags["--image-url"].startsWith("https://")) {
@@ -90804,24 +91874,24 @@ async function launch(args, ctx) {
   }
   const missingRequired = !flags["--name"] || !flags["--symbol"] || flags["--image"] === undefined && flags["--image-url"] === undefined || !flags["--wallet"];
   if (parsed.positionals.length || !check && missingRequired || !validClientId(id)) {
-    writeUsageFailure(ctx.deps, USAGE8, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE10, ctx.json);
     return 2;
   }
   try {
     poolRequestFields(flags);
   } catch (error) {
-    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE8}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE10}`, ctx.json);
     return 2;
   }
   let feeWallet;
   try {
     feeWallet = feeWalletSelection(flags);
   } catch (error) {
-    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE8}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE10}`, ctx.json);
     return 2;
   }
   if (parsed.booleans.has("--require-fee-wallet") && !feeWallet) {
-    writeUsageFailure(ctx.deps, `--require-fee-wallet needs --fee-wallet <address>: pass the wallet this launch's fees earn to. ${USAGE8}`, ctx.json);
+    writeUsageFailure(ctx.deps, `--require-fee-wallet needs --fee-wallet <address>: pass the wallet this launch's fees earn to. ${USAGE10}`, ctx.json);
     return 2;
   }
   try {
@@ -90829,11 +91899,11 @@ async function launch(args, ctx) {
       launchBuyRaw(flags["--buy"], 18);
     const hinted = flagChain(flags);
     if (hinted === "hood" && feeWalletGiven(flags)) {
-      writeUsageFailure(ctx.deps, `--fee-wallet is Solana only; a Hood launch cannot take it. ${USAGE8}`, ctx.json);
+      writeUsageFailure(ctx.deps, `--fee-wallet is Solana only; a Hood launch cannot take it. ${USAGE10}`, ctx.json);
       return 2;
     }
     if (!check && hinted === "hood" && flags["--dex-version"] === undefined) {
-      writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE8}`, ctx.json);
+      writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE10}`, ctx.json);
       return 2;
     }
     let image;
@@ -91613,7 +92683,7 @@ init_presentation();
 init_render();
 init_trading();
 init_swap();
-var USAGE9 = "Usage: candle launch status <mint-or-client-launch-id> [--wait]";
+var USAGE11 = "Usage: candle launch status <mint-or-client-launch-id> [--wait]";
 var LAUNCH_WAIT_MS = 10 * 60 * 1000;
 var LAUNCH_WAIT_POLL_MS = 1e4;
 var LIVE = new Set(["trading", "bonded", "migrated"]);
@@ -91659,7 +92729,7 @@ async function readStatus(ctx, key, id) {
 async function launchStatus(args, ctx) {
   const parsed = parseArgs(args, { booleanFlags: ["--wait"] });
   if ("error" in parsed || parsed.positionals.length !== 1 || !validClientId(parsed.positionals[0] ?? "")) {
-    writeUsageFailure(ctx.deps, USAGE9, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE11, ctx.json);
     return 2;
   }
   const id = parsed.positionals[0];
@@ -91702,7 +92772,7 @@ init_render();
 init_solana_endpoint();
 init_solana_lite();
 init_trading();
-import { randomUUID as randomUUID7 } from "node:crypto";
+import { randomUUID as randomUUID9 } from "node:crypto";
 init_swap();
 var LP_SCOPE = "lp:write";
 var CONFIRM_POLL_MS3 = 2000;
@@ -92005,7 +93075,7 @@ async function lpAdd(args, ctx) {
   if ("error" in parsed)
     return usage5(ctx, parsed.error);
   const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `lp-${randomUUID7()}`;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID9()}`;
   if (parsed.positionals.length !== 2 || !flags["--amount"] || !flags["--wallet"] || !validClientId(id))
     return usage5(ctx, "Usage: candle lp add <pool> --amount <decimal> <token> --wallet <tee> [--position <nft-mint>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
   try {
@@ -92041,7 +93111,7 @@ async function lpRemove(args, ctx) {
   if ("error" in parsed)
     return usage5(ctx, parsed.error);
   const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `lp-${randomUUID7()}`;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID9()}`;
   const percent2 = Number(flags["--percent"]);
   if (parsed.positionals.length !== 1 || !flags["--percent"] || !/^\d+(\.\d{1,2})?$/.test(flags["--percent"]) || !(percent2 > 0 && percent2 <= 100) || !validClientId(id))
     return usage5(ctx, "Usage: candle lp remove <position> --percent <0.01-100> [--wallet <tee>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
@@ -92073,7 +93143,7 @@ async function lpClaim(args, ctx) {
   if ("error" in parsed)
     return usage5(ctx, parsed.error);
   const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `lp-${randomUUID7()}`;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID9()}`;
   if (parsed.positionals.length !== 1 || !validClientId(id))
     return usage5(ctx, "Usage: candle lp claim <position> [--wallet <tee>] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
   try {
@@ -92317,7 +93387,7 @@ init_bridge();
 init_client();
 init_evm_lite();
 init_human_output();
-import { randomUUID as randomUUID8, sign as sign4 } from "node:crypto";
+import { randomUUID as randomUUID10, sign as sign4 } from "node:crypto";
 
 // src/hyperliquid.ts
 init_sha3();
@@ -92835,7 +93905,7 @@ function formatScaled2(value) {
   return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
 }
 async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
-  const read = async (body) => {
+  const read2 = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS2[network2], {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -92845,7 +93915,7 @@ async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
       throw new Error("Cannot read the close position from Hyperliquid");
     return JSON.parse(await res.text());
   };
-  const [meta, state] = await Promise.all([read({ type: "meta" }), read({ type: "clearinghouseState", user: address })]);
+  const [meta, state] = await Promise.all([read2({ type: "meta" }), read2({ type: "clearinghouseState", user: address })]);
   const coin = String(params.coin).toUpperCase();
   const universe = meta.universe;
   const asset = universe.findIndex((m) => m.name.toUpperCase() === coin);
@@ -92879,7 +93949,7 @@ var HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2 = 100;
 var HYPERLIQUID_MID_DRIFT_BPS2 = 100;
 var HYPERLIQUID_TPSL_SLIPPAGE_BPS2 = 500;
 async function hyperliquidOrderMarket2(fetcher, network2, address, method, params) {
-  const read = async (body) => {
+  const read2 = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS2[network2], {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -92892,7 +93962,7 @@ async function hyperliquidOrderMarket2(fetcher, network2, address, method, param
   let coin = String(params.coin ?? "").toUpperCase();
   let order;
   if (method === "modify") {
-    const status = await read({ type: "orderStatus", user: address, oid: params.cloid });
+    const status = await read2({ type: "orderStatus", user: address, oid: params.cloid });
     const resting = status?.order?.order ?? null;
     if (!resting || typeof resting.coin !== "string" || decimal4(resting.limitPx) === null)
       throw new Error("No resting order with this cloid on Hyperliquid");
@@ -92909,7 +93979,7 @@ async function hyperliquidOrderMarket2(fetcher, network2, address, method, param
       ...Number.isSafeInteger(resting.oid) ? { oid: resting.oid } : {}
     };
   }
-  const [meta, contexts] = await read({ type: "metaAndAssetCtxs" });
+  const [meta, contexts] = await read2({ type: "metaAndAssetCtxs" });
   const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin);
   if (asset < 0 || asset >= 1e4)
     throw new Error("No main-universe market for this coin on Hyperliquid");
@@ -93929,7 +94999,7 @@ function asFunding2(raw) {
     throw unavailable5("Hyperliquid returned a funding payment this client cannot read");
   return row;
 }
-function identity2(kind, row) {
+function identity3(kind, row) {
   if (kind === "fills") {
     const fill = row;
     return `${fill.coin}|${fill.tid}|${fill.oid}`;
@@ -94065,7 +95135,7 @@ async function readPerpsHistoryPage2(req) {
       if (!Array.isArray(raw))
         throw unavailable5(`Hyperliquid returned an unreadable ${kind} response`);
       const rows = raw.map((r) => kind === "fills" ? asFill2(r) : asFunding2(r));
-      const keyed = rows.map((row) => ({ row, id: identity2(kind, row) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const keyed = rows.map((row) => ({ row, id: identity3(kind, row) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const full = rows.length >= max;
       const startedAt = t;
       let previousId = null;
@@ -94379,12 +95449,12 @@ var RANK2 = { ok: 0, warn: 1, critical: 2 };
 function worse2(a, b) {
   return RANK2[a] >= RANK2[b] ? a : b;
 }
-function hyperliquidRiskReport2(state, market, mode, thresholds2, now, identity3 = { walletId: "", address: "", network: "mainnet" }) {
+function hyperliquidRiskReport2(state, market, mode, thresholds2, now, identity4 = { walletId: "", address: "", network: "mainnet" }) {
   const base2 = {
     schema: "candle.perps.risk/1",
-    walletId: identity3.walletId,
-    address: identity3.address,
-    network: identity3.network,
+    walletId: identity4.walletId,
+    address: identity4.address,
+    network: identity4.network,
     mode,
     readAt: new Date(now).toISOString(),
     thresholds: thresholds2,
@@ -94529,10 +95599,10 @@ function hyperliquidRiskReport2(state, market, mode, thresholds2, now, identity3
     positions
   };
 }
-function unknownRiskReport2(identity3, thresholds2, reason, now, mode = null) {
+function unknownRiskReport2(identity4, thresholds2, reason, now, mode = null) {
   return {
     schema: "candle.perps.risk/1",
-    ...identity3,
+    ...identity4,
     mode,
     readAt: new Date(now).toISOString(),
     level: "unknown",
@@ -94547,9 +95617,9 @@ function unknownRiskReport2(identity3, thresholds2, reason, now, mode = null) {
 }
 var PERPS_RISK_STALE_MS2 = 30000;
 async function readPerpsRisk2(opts) {
-  const identity3 = { walletId: opts.walletId, address: opts.address, network: opts.network };
-  const timed = async (read) => {
-    const value = await read;
+  const identity4 = { walletId: opts.walletId, address: opts.address, network: opts.network };
+  const timed = async (read2) => {
+    const value = await read2;
     return { value, at: opts.now() };
   };
   const [state, market, mode] = await Promise.all([
@@ -94560,8 +95630,8 @@ async function readPerpsRisk2(opts) {
   const times = [state.at, market.at, mode.at].filter((at3) => !Number.isNaN(at3));
   const earliest = Math.min(...times);
   if (Math.max(...times) - earliest > PERPS_RISK_STALE_MS2)
-    return unknownRiskReport2(identity3, opts.thresholds, "PERPS_READ_STALE", earliest, mode.value);
-  return hyperliquidRiskReport2(state.value, market.value, mode.value, opts.thresholds, earliest, identity3);
+    return unknownRiskReport2(identity4, opts.thresholds, "PERPS_READ_STALE", earliest, mode.value);
+  return hyperliquidRiskReport2(state.value, market.value, mode.value, opts.thresholds, earliest, identity4);
 }
 function perpsRiskExitCode(level) {
   return level === "ok" ? 0 : level === "warn" ? 10 : level === "critical" ? 11 : 1;
@@ -94695,7 +95765,7 @@ function perpsWatchWeightPerMinute(intervalMs) {
 async function watchPerpsRisk(opts) {
   const baseInterval = opts.intervalMs ?? PERPS_WATCH_DEFAULT_INTERVAL_MS;
   const heartbeatMs = opts.heartbeatMs ?? PERPS_WATCH_DEFAULT_HEARTBEAT_MS;
-  const identity3 = { walletId: opts.walletId, address: opts.address, network: opts.network };
+  const identity4 = { walletId: opts.walletId, address: opts.address, network: opts.network };
   const sleep = (ms) => abortableSleep(opts.sleep, ms, opts.signal);
   const info3 = { sleep: opts.sleep };
   let thresholds2;
@@ -94715,7 +95785,7 @@ async function watchPerpsRisk(opts) {
   let established = false;
   await opts.onEvent({
     event: "start",
-    ...identity3,
+    ...identity4,
     at: new Date(opts.now()).toISOString(),
     intervalSeconds: baseInterval / 1000,
     heartbeatSeconds: heartbeatMs / 1000,
@@ -94735,7 +95805,7 @@ async function watchPerpsRisk(opts) {
         mode = await readHyperliquidAccountMode2(opts.fetcher, opts.network, opts.address, info3);
         modeAt = opts.now();
       }
-      report2 = await readPerpsRisk2({ ...identity3, fetcher: opts.fetcher, thresholds: thresholds2, now: opts.now, mode, ...info3 });
+      report2 = await readPerpsRisk2({ ...identity4, fetcher: opts.fetcher, thresholds: thresholds2, now: opts.now, mode, ...info3 });
       interval = baseInterval;
     } catch (error) {
       const rateLimited = error instanceof HyperliquidReadError2 && error.rateLimited;
@@ -94752,7 +95822,7 @@ async function watchPerpsRisk(opts) {
         const previous = level;
         level = "unknown";
         staleReported = true;
-        const stale = unknownRiskReport2(identity3, thresholds2, "PERPS_READ_STALE", opts.now(), mode ?? null);
+        const stale = unknownRiskReport2(identity4, thresholds2, "PERPS_READ_STALE", opts.now(), mode ?? null);
         await opts.onEvent({ ...stale, event: "level", level, ruleLevel: "unknown", previous });
         if (opts.onceLevelChange && established)
           return { level };
@@ -95268,11 +96338,11 @@ function writeAccountText(ctx, account, report2) {
 }
 async function positionsAdditions2(ctx, key, row) {
   const thresholds2 = await perpsThresholdsFor(ctx, key);
-  const identity3 = { walletId: row.id, address: row.address, network: perpsNetwork(ctx) };
+  const identity4 = { walletId: row.id, address: row.address, network: perpsNetwork(ctx) };
   let report2;
   try {
     report2 = await readPerpsRisk2({
-      ...identity3,
+      ...identity4,
       fetcher: fetcherOf2(ctx),
       thresholds: thresholds2,
       now: ctx.deps.now,
@@ -95281,7 +96351,7 @@ async function positionsAdditions2(ctx, key, row) {
   } catch {
     report2 = {
       schema: "candle.perps.risk/1",
-      ...identity3,
+      ...identity4,
       mode: null,
       readAt: new Date(ctx.deps.now()).toISOString(),
       level: "unknown",
@@ -96230,7 +97300,7 @@ async function perpsDeposit(args, ctx) {
   if (parsed.positionals.length !== 2 || !amount || !DEC_RE3.test(amount) || !isDepositAsset(asset))
     return usage8(ctx, DEPOSIT_USAGE);
   const { values } = parsed;
-  const id = values["--id"] ?? `deposit-${randomUUID8()}`;
+  const id = values["--id"] ?? `deposit-${randomUUID10()}`;
   if (!DEPOSIT_ID_RE.test(id))
     return usage8(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
   const slippageBps = Number(values["--slippage-bps"] ?? "100");
@@ -97298,7 +98368,7 @@ var flags = {
   book: ["--depth", "--sig-figs"],
   candles: ["--interval", "--count", "--end"]
 };
-async function read(ctx, argv, command) {
+async function read2(ctx, argv, command) {
   const parsed = parseArgs(argv, { valueFlags: flags[command], booleanFlags: command === "markets" ? ["--all"] : [] });
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
@@ -97376,15 +98446,15 @@ async function read(ctx, argv, command) {
     return tradingFailure(ctx, error);
   }
 }
-var perpsMarkets = (argv, ctx) => read(ctx, argv, "markets");
-var perpsMarket = (argv, ctx) => read(ctx, argv, "market");
-var perpsBook = (argv, ctx) => read(ctx, argv, "book");
-var perpsCandles = (argv, ctx) => read(ctx, argv, "candles");
+var perpsMarkets = (argv, ctx) => read2(ctx, argv, "markets");
+var perpsMarket = (argv, ctx) => read2(ctx, argv, "market");
+var perpsBook = (argv, ctx) => read2(ctx, argv, "book");
+var perpsCandles = (argv, ctx) => read2(ctx, argv, "candles");
 
 // src/commands/perps-withdraw.ts
 init_args();
 init_human_output();
-import { randomUUID as randomUUID9 } from "node:crypto";
+import { randomUUID as randomUUID11 } from "node:crypto";
 
 // src/hyperliquid-withdraw.ts
 var CANDLE_PERPS_WITHDRAW_PINS = {
@@ -97554,7 +98624,7 @@ init_swap();
 init_vault_support();
 var WITHDRAW_SCOPE = "perps:withdraw";
 var ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
-var USAGE10 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
+var USAGE12 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
 var WITHDRAW_POLL_MS = 10 * 60 * 1000;
 var WITHDRAW_POLL_INTERVAL_MS = 5000;
 var TERMINAL = new Set(["settled", "refunded", "failed"]);
@@ -97605,7 +98675,7 @@ async function withdrawStatus(ctx, id) {
 async function perpsWithdraw(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !ID_RE.test(args[1]))
-      return usage10(ctx, USAGE10);
+      return usage10(ctx, USAGE12);
     try {
       return await withdrawStatus(ctx, args[1]);
     } catch (error) {
@@ -97624,11 +98694,11 @@ async function perpsWithdraw(args, ctx) {
   const [amount] = parsed.positionals;
   const to = parsed.values["--to"];
   if (parsed.positionals.length !== 1 || !amount || to !== "solana" && to !== "hood")
-    return usage10(ctx, USAGE10);
+    return usage10(ctx, USAGE12);
   const amountMicros = parseWithdrawAmount(amount);
   if (amountMicros === null)
     return usage10(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
-  const id = parsed.values["--id"] ?? `withdraw-${randomUUID9()}`;
+  const id = parsed.values["--id"] ?? `withdraw-${randomUUID11()}`;
   if (!ID_RE.test(id))
     return usage10(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
   if (!refuseEnvPassphrase(ctx))
@@ -97765,7 +98835,7 @@ init_render();
 init_secret_store();
 init_solana_lite();
 init_errors2();
-import { generateKeyPairSync as generateKeyPairSync3, randomUUID as randomUUID11 } from "node:crypto";
+import { generateKeyPairSync as generateKeyPairSync3, randomUUID as randomUUID13 } from "node:crypto";
 
 // src/x402/codec.ts
 var PAYMENT_REQUIRED_HEADER = "PAYMENT-REQUIRED";
@@ -98375,7 +99445,7 @@ init_deps();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
-import { randomUUID as randomUUID10 } from "node:crypto";
+import { randomUUID as randomUUID12 } from "node:crypto";
 
 // src/x402/pay.ts
 init_client();
@@ -98723,7 +99793,7 @@ async function runPaidRead(ctx, input) {
       blockhash: blockhashFor(ctx),
       env: ctx.deps.env,
       now: ctx.deps.now,
-      newId: randomUUID10
+      newId: randomUUID12
     });
     const line = paymentLine(paid);
     if (line && !ctx.json)
@@ -99335,7 +100405,7 @@ async function runPlanPayment(ctx, run2) {
     const transaction = serializePartiallySigned(transfer, signer.sign(transfer.message));
     const at3 = new Date(deps.now()).toISOString();
     const pending = {
-      id: randomUUID11(),
+      id: randomUUID13(),
       plan: run2.plan,
       renew,
       path,
@@ -99704,12 +100774,12 @@ function planPromotionLine2(table) {
 init_presentation();
 init_render();
 init_key_output();
-var USAGE11 = "Usage: candle plans";
+var USAGE13 = "Usage: candle plans";
 async function plans(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed || parsed.positionals.length > 0) {
     writeScreenUsageFailure(ctx.deps, "error" in parsed ? `${parsed.error}
-${USAGE11}` : USAGE11, ctx.json);
+${USAGE13}` : USAGE13, ctx.json);
     return 2;
   }
   const result = await apiRequest("/api/v1/agent/plans", {
@@ -100992,19 +102062,19 @@ async function portfolio(args, ctx) {
       lpOf(position.wallet).positions.push(lpRow(position, prices));
     for (const unread of lpSection?.unreadable ?? [])
       lpOf(unread.wallet).unread.push(unread.position);
-    const wallet3 = (chain2, address, read2, extra) => {
+    const wallet3 = (chain2, address, read3, extra) => {
       const lp2 = chain2 === "solana" && lpSection ? lpOf(address) : undefined;
       return {
         chain: chain2,
         address,
         ...extra,
-        holdings: read2.holdings,
-        ...read2.unread.length > 0 ? { unread: read2.unread } : {},
-        ...read2.truncated ? { truncated: true } : {},
+        holdings: read3.holdings,
+        ...read3.unread.length > 0 ? { unread: read3.unread } : {},
+        ...read3.truncated ? { truncated: true } : {},
         ...lp2 ? { lpPositions: lp2.positions } : {},
         ...lp2 && lp2.unread.length > 0 ? { lpUnread: lp2.unread } : {},
-        valueUsd: (read2.holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0) + (lp2?.positions ?? []).reduce((sum, p) => sum + (p.valueUsd ?? 0), 0),
-        unpriced: (read2.holdings ?? []).filter((h) => h.priceUsd === null).length + (lp2?.positions ?? []).filter((p) => p.valueUsd === null).length
+        valueUsd: (read3.holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0) + (lp2?.positions ?? []).reduce((sum, p) => sum + (p.valueUsd ?? 0), 0),
+        unpriced: (read3.holdings ?? []).filter((h) => h.priceUsd === null).length + (lp2?.positions ?? []).filter((p) => p.valueUsd === null).length
       };
     };
     const subtotals = (wallets2) => Object.fromEntries(chains.map((chain2) => {
@@ -101017,9 +102087,9 @@ async function portfolio(args, ctx) {
         }
       ];
     }));
-    const group = (name2, wallets2, read2, reason) => ({
+    const group = (name2, wallets2, read3, reason) => ({
       group: name2,
-      read: read2,
+      read: read3,
       ...reason !== undefined ? { reason } : {},
       wallets: wallets2,
       valueUsd: wallets2.reduce((sum, w) => sum + w.valueUsd, 0),
@@ -101034,13 +102104,13 @@ async function portfolio(args, ctx) {
           role: entry.role
         })),
         ...(evmEntries ?? []).map((entry) => {
-          const read2 = evmBalances?.byAddress.get(entry.address);
-          return wallet3("hood", entry.address, hoodHoldings(read2 && {
-            wei: read2.wei === null ? null : read2.wei.toString(),
-            tokens: read2.usdg === null ? null : read2.usdg > 0n ? [
+          const read3 = evmBalances?.byAddress.get(entry.address);
+          return wallet3("hood", entry.address, hoodHoldings(read3 && {
+            wei: read3.wei === null ? null : read3.wei.toString(),
+            tokens: read3.usdg === null ? null : read3.usdg > 0n ? [
               {
                 mint: HOOD_USDG,
-                amountRaw: read2.usdg.toString(),
+                amountRaw: read3.usdg.toString(),
                 decimals: HOOD_USDG_DECIMALS,
                 symbol: "USDG"
               }
@@ -101259,7 +102329,7 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
       await Promise.all(Array.from({ length: Math.min(EVM_READS_IN_FLIGHT, unique.length) }, async () => {
         while (next < unique.length) {
           const address = unique[next++];
-          const read2 = async (call2) => {
+          const read3 = async (call2) => {
             try {
               return await call2();
             } catch (error) {
@@ -101267,14 +102337,14 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
               return null;
             }
           };
-          const wei = await read2(() => rpc.getBalance(address));
-          const usdg = await read2(() => rpc.erc20BalanceOf(HOOD_USDG, address));
+          const wei = await read3(() => rpc.getBalance(address));
+          const usdg = await read3(() => rpc.erc20BalanceOf(HOOD_USDG, address));
           byAddress.set(address, { wei, usdg });
         }
       }));
       const unavailable6 = unique.filter((address) => {
-        const read2 = byAddress.get(address);
-        return read2 === undefined || read2.wei === null || read2.usdg === null;
+        const read3 = byAddress.get(address);
+        return read3 === undefined || read3.wei === null || read3.usdg === null;
       });
       return { byAddress, unavailable: unavailable6, ...failure3 === undefined ? {} : { failure: failure3 } };
     }
@@ -101355,20 +102425,20 @@ async function readOwnRpc(addresses, solana, ctx) {
   }
   return { byAddress, unavailable: unavailable6, ...failure3 === undefined ? {} : { failure: failure3 } };
 }
-function solanaHoldings(read2, prices) {
-  if (read2 === undefined || read2.lamports === null && read2.tokens === null)
+function solanaHoldings(read3, prices) {
+  if (read3 === undefined || read3.lamports === null && read3.tokens === null)
     return { holdings: null, unread: [] };
   return {
-    holdings: valueHoldings(read2, prices),
-    unread: [...read2.lamports === null ? ["sol"] : [], ...read2.tokens === null ? ["tokens"] : []]
+    holdings: valueHoldings(read3, prices),
+    unread: [...read3.lamports === null ? ["sol"] : [], ...read3.tokens === null ? ["tokens"] : []]
   };
 }
-function valueHoldings(read2, prices) {
+function valueHoldings(read3, prices) {
   const raw = [];
-  if (read2.lamports !== null && BigInt(read2.lamports) > 0n) {
-    raw.push({ mint: SOL_MINT, amountRaw: read2.lamports, decimals: 9, program: "native" });
+  if (read3.lamports !== null && BigInt(read3.lamports) > 0n) {
+    raw.push({ mint: SOL_MINT, amountRaw: read3.lamports, decimals: 9, program: "native" });
   }
-  for (const token2 of read2.tokens ?? [])
+  for (const token2 of read3.tokens ?? [])
     raw.push(token2);
   return raw.map((h) => {
     const price = prices[h.mint];
@@ -101385,14 +102455,14 @@ function valueHoldings(read2, prices) {
     };
   });
 }
-function hoodHoldings(read2, prices, tokensPart) {
-  if (read2 === undefined || read2.wei === null && read2.tokens === null)
+function hoodHoldings(read3, prices, tokensPart) {
+  if (read3 === undefined || read3.wei === null && read3.tokens === null)
     return { holdings: null, unread: [] };
   const raw = [];
-  if (read2.wei !== null && BigInt(read2.wei) > 0n) {
-    raw.push({ mint: HOOD_NATIVE, amountRaw: read2.wei, decimals: NATIVE_DECIMALS, program: "native", symbol: "ETH" });
+  if (read3.wei !== null && BigInt(read3.wei) > 0n) {
+    raw.push({ mint: HOOD_NATIVE, amountRaw: read3.wei, decimals: NATIVE_DECIMALS, program: "native", symbol: "ETH" });
   }
-  for (const token2 of read2.tokens ?? []) {
+  for (const token2 of read3.tokens ?? []) {
     if (!/^\d+$/.test(token2.amountRaw) || BigInt(token2.amountRaw) === 0n)
       continue;
     raw.push({
@@ -101421,8 +102491,8 @@ function hoodHoldings(read2, prices, tokensPart) {
   });
   return {
     holdings: holdings2,
-    unread: [...read2.wei === null ? ["eth"] : [], ...read2.tokens === null ? [tokensPart] : []],
-    ...read2.truncated ? { truncated: true } : {}
+    unread: [...read3.wei === null ? ["eth"] : [], ...read3.tokens === null ? [tokensPart] : []],
+    ...read3.truncated ? { truncated: true } : {}
   };
 }
 function lpRow(position, prices) {
@@ -101983,7 +103053,7 @@ init_client();
 init_human_output();
 init_presentation();
 init_render();
-var USAGE12 = "Usage: candle scan <contract address> [--chain solana|hood] [--json]";
+var USAGE14 = "Usage: candle scan <contract address> [--chain solana|hood] [--json]";
 var OTHER_CHAIN = "Candle trades Solana and Hood today; that is not a Solana or Hood contract address.";
 var HOOD_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 var SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -102083,20 +103153,20 @@ async function scan(args, ctx) {
   }
   const named = parsed.values["--chain"];
   if (parsed.positionals.length !== 1 || named !== undefined && named !== "solana" && named !== "hood") {
-    writeUsageFailure(ctx.deps, USAGE12, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE14, ctx.json);
     return 2;
   }
   const address = parsed.positionals[0].trim();
   const found = chainOfAddress(address);
   if (found === null) {
     writeUsageFailure(ctx.deps, `${OTHER_CHAIN}
-${USAGE12}`, ctx.json);
+${USAGE14}`, ctx.json);
     return 2;
   }
   if (named !== undefined && named !== found) {
     const label = (c) => c === "hood" ? "Hood" : "Solana";
     writeUsageFailure(ctx.deps, `That address is a ${label(found)} contract, not a ${label(named)} one. Candle trades Solana and Hood today.
-${USAGE12}`, ctx.json);
+${USAGE14}`, ctx.json);
     return 2;
   }
   const chain2 = found;
@@ -102967,7 +104037,7 @@ init_presentation();
 init_render();
 init_trading();
 init_swap();
-import { randomUUID as randomUUID12 } from "node:crypto";
+import { randomUUID as randomUUID14 } from "node:crypto";
 var withdrawal = exports_external.object({ withdrawal: exports_external.string(), amountRaw: exports_external.string(), endTime: exports_external.string(), claimable: exports_external.boolean() }).passthrough();
 var positionsSchema = exports_external.object({
   success: exports_external.literal(true),
@@ -103022,7 +104092,7 @@ async function runStake(action, args, ctx) {
     return 2;
   }
   const { values, positionals, booleans } = parsed;
-  const id = values["--client-stake-id"] ?? `stake-${randomUUID12()}`;
+  const id = values["--client-stake-id"] ?? `stake-${randomUUID14()}`;
   const all = booleans.has("--all");
   if (!validClientId(id) || id.length > 128 || (action === "positions" ? positionals.length !== 0 : action === "finish" ? positionals.length > 1 : action === "claim" ? all ? positionals.length !== 0 : positionals.length !== 1 : positionals.length !== 1)) {
     writeUsageFailure(ctx.deps, usage12, ctx.json);
@@ -103974,7 +105044,7 @@ init_deps();
 init_human_output();
 init_render();
 var KINDS = ["trade", "signal", "callout"];
-var USAGE13 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
+var USAGE15 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
 function readEventsBody(body) {
   if (body === null || typeof body !== "object" || !Array.isArray(body.events))
     return null;
@@ -104032,11 +105102,11 @@ async function tokenEvents(args, ctx) {
   const since = parsed.values["--since"];
   const before = parsed.values["--before"];
   if (parsed.positionals.length !== 1 || chain2 !== "solana" && chain2 !== "hood") {
-    writeUsageFailure(ctx.deps, USAGE13, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE15, ctx.json);
     return 2;
   }
   if (kind !== undefined && !KINDS.includes(kind)) {
-    writeUsageFailure(ctx.deps, USAGE13, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE15, ctx.json);
     return 2;
   }
   if (limit !== undefined && !/^[1-9][0-9]{0,3}$/.test(limit) || Number(limit) > 1000) {
@@ -104114,833 +105184,8 @@ init_args();
 init_client();
 init_deps();
 init_human_output();
-import { randomUUID as randomUUID14 } from "node:crypto";
+import { randomUUID as randomUUID15 } from "node:crypto";
 init_render();
-
-// src/commands/token-pages.ts
-init_esm();
-init_args();
-init_client();
-init_deps();
-init_human_output();
-init_presentation();
-init_render();
-import { createHash as createHash5, randomUUID as randomUUID13 } from "node:crypto";
-var EXIT_OUTCOME_UNKNOWN = 3;
-var EXIT_REVISION_CONFLICT = 4;
-var TOKEN_PAGE_LIMITS = { thesis: 280, tokenomics: 5000, lore: 5000, update: 1000, comment: 500 };
-var TOKEN_PAGE_BODY_CAP_BYTES = 32 * 1024;
-var TOKEN_PAGE_SECTIONS = ["thesis", "tokenomics", "lore"];
-var FLAG_REASONS = ["spam", "scam", "abuse", "misleading", "unsafe_link", "other"];
-var FLAG_DETAIL_LIMIT = 500;
-var USAGE14 = {
-  about: "Usage: candle token about <address> [--chain solana|hood] [--capabilities]",
-  claim: "Usage: candle token claim <address> [--chain solana|hood] [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--idempotency-key <key>]",
-  section: `Usage: candle token section set <address> <thesis|tokenomics|lore> --file <path> --base-revision <n> [--clear] [--chain solana|hood] [--idempotency-key <key>]
-       candle token section restore <address> <thesis|tokenomics|lore> --version-id <id> --base-revision <n> [--chain solana|hood] [--idempotency-key <key>]`,
-  history: "Usage: candle token history <address> <thesis|tokenomics|lore> [--chain solana|hood] [--limit <n>] [--cursor <c>]",
-  flag: "Usage: candle token flag <address> --content <id> --reason <spam|scam|abuse|misleading|unsafe_link|other> [--detail <text>] [--chain solana|hood] [--idempotency-key <key>]",
-  comment: "Usage: candle token comment <address> --file <path> [--chain solana|hood] [--idempotency-key <key>]",
-  comments: "Usage: candle token comments <address> [--chain solana|hood] [--limit <n>] [--cursor <c>]"
-};
-var REFUSALS = {
-  feature_off: "This token page action is not available yet on this Candle server. Nothing was written.",
-  not_found: "Token pages are not available yet on this Candle server, or the requested page, item or version does not exist.",
-  insufficient_holding: "This account's Candle-known wallets hold less than 0.5% of the token's current supply (any positive balance is enough to flag). Nothing was written.",
-  eligibility_unavailable: "Candle could not read complete, fresh wallet and supply evidence for this account just now. Nothing was written; try again shortly.",
-  restricted: "This account is restricted from writing on this token page.",
-  revision_conflict: "The section changed since the base revision you gave.",
-  idempotency_conflict: "This idempotency key was already used for a different request. Nothing was written.",
-  idempotency_key_required: "The request carried no usable Idempotency-Key.",
-  challenge_used: "That creator challenge was already used, or the creator evidence changed. Request a new one.",
-  invalid_signature: "The signature does not verify for that challenge, or the challenge expired (5 minutes). Request a new one.",
-  creator_unknown: "Candle has no verified creator for this token, so there is nothing to prove.",
-  creator_proof_unsupported: "The verified creator cannot sign a message (a contract or multisig), so creator proof is not available.",
-  invalid_text: "Candle refused the text: too long, empty, or holding invalid Unicode or control characters.",
-  invalid_body: "Candle refused the request body.",
-  invalid_token: "That is not a valid address on that chain.",
-  invalid_section: "Sections are thesis, tokenomics and lore.",
-  invalid_query: "Candle refused the query (limit is 1-50; the cursor must come from this list).",
-  no_identity_wallet: "This key's account has no wallet Candle can use as its identity.",
-  rate_limited: "Too many token page requests; wait a minute and try again.",
-  unavailable: "Token pages are unavailable on this Candle server just now.",
-  measurements_unavailable: "Measurements are unavailable just now; try again shortly."
-};
-var SECTION_SUGGESTION = "Your file was not changed. Read the newer text with candle token history, merge, then rerun with --base-revision set to the latest revision.";
-function usageFor(ctx, line) {
-  return (message) => {
-    writeUsageFailure(ctx.deps, message ? `${message}
-${line}` : line, ctx.json);
-    return 2;
-  };
-}
-function chainOf(values) {
-  const chain2 = values["--chain"] ?? "solana";
-  return chain2 === "solana" || chain2 === "hood" ? chain2 : undefined;
-}
-function pagePath(chain2, address, rest = "") {
-  return `/api/v1/token-pages/${chain2}/${encodeURIComponent(address)}${rest}`;
-}
-function refusalOf2(result) {
-  if (result.ok)
-    return null;
-  const raw = result.raw;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw))
-    return null;
-  const { success: success2, error, ...extra } = raw;
-  if (success2 !== false || typeof error !== "string")
-    return null;
-  return { status: result.status, code: error, extra };
-}
-function writeRefusal(ctx, refusal4, suggestion) {
-  const message = REFUSALS[refusal4.code] ?? `Candle refused the request (${refusal4.code}).`;
-  if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: false, code: refusal4.code, status: refusal4.status, message, ...refusal4.extra, ...suggestion ? { suggestion } : {} })}
-`);
-    return;
-  }
-  ctx.deps.stderr.write(`${suggestion ? `${message} ${suggestion}` : message}
-`);
-}
-function writeApiFailure(ctx, result, authType) {
-  const refusal4 = refusalOf2(result);
-  if (refusal4) {
-    writeRefusal(ctx, refusal4);
-    return 1;
-  }
-  const failure3 = result;
-  writeFailure(ctx.deps, failure3.status === 404 ? { ...failure3, message: REFUSALS.not_found } : failure3, { apiUrl: ctx.apiUrl, authType }, ctx.json);
-  return 1;
-}
-function dataOf(result) {
-  const body = result.ok ? result.body : null;
-  return body && typeof body === "object" && "data" in body ? body.data : body;
-}
-async function read2(ctx, path, apiKey) {
-  return apiRequest(path, {
-    apiUrl: ctx.apiUrl,
-    ...apiKey ? { auth: "key", credentials: { apiKey } } : { auth: "none", credentials: {} },
-    fetch: ctx.deps.fetch,
-    env: ctx.deps.env
-  });
-}
-async function requireKey(ctx) {
-  const key = await resolveApiKey(ctx.deps, ctx.profile);
-  if (key)
-    return key;
-  writeLocalFailure(ctx.deps, {
-    code: "API_KEY_REQUIRED",
-    message: "This needs an API key with the token-pages scopes.",
-    suggestion: "Create one with: candle keys create --scopes token-pages:read,token-pages:write"
-  }, ctx.json);
-  return;
-}
-async function write2(ctx, input) {
-  const send = async () => {
-    try {
-      return await apiRequest(input.path, {
-        apiUrl: ctx.apiUrl,
-        method: input.method,
-        body: input.body,
-        auth: "key",
-        credentials: { apiKey: input.apiKey },
-        headers: { "Idempotency-Key": input.idempotencyKey },
-        fetch: ctx.deps.fetch,
-        env: ctx.deps.env
-      });
-    } catch {
-      return { ok: false, status: 0, message: "The response was cut off before it finished.", raw: undefined };
-    }
-  };
-  const first = await send();
-  if (first.ok || first.status !== 0 || first.code)
-    return first;
-  const second = await send();
-  if (second.ok || second.status !== 0 || second.code)
-    return second;
-  return "unknown";
-}
-function writeUnknown(ctx, idempotencyKey) {
-  writeLocalFailure(ctx.deps, {
-    code: "OUTCOME_UNKNOWN",
-    message: "Candle did not answer, twice, so whether this write landed is not known.",
-    suggestion: `Rerun the same command with --idempotency-key ${idempotencyKey}: Candle returns the first result instead of writing twice.`,
-    details: { idempotencyKey }
-  }, ctx.json);
-  return EXIT_OUTCOME_UNKNOWN;
-}
-function idempotencyKeyOf(values, usage12) {
-  const given = values["--idempotency-key"];
-  if (given === undefined)
-    return randomUUID13();
-  if (given.length < 1 || given.length > 128)
-    return usage12("--idempotency-key must be 1 to 128 characters.");
-  return given;
-}
-function sectionOf(value) {
-  return TOKEN_PAGE_SECTIONS.includes(value ?? "") ? value : undefined;
-}
-var REVISION = /^(0|[1-9][0-9]{0,18})$/;
-var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function bpsPercent(bps2) {
-  if (bps2 === null || bps2 === undefined || !/^\d+$/.test(bps2))
-    return;
-  const n = BigInt(bps2);
-  return `${n / 100n}.${(n % 100n).toString().padStart(2, "0")}%`;
-}
-function identity3(who2) {
-  if (!who2)
-    return;
-  if (who2.kind === "candle")
-    return "Candle";
-  if (who2.kind === "agent")
-    return terminalText(who2.name ?? "Agent");
-  return terminalText(who2.name ?? who2.account);
-}
-function sectionText(bytes, section3) {
-  if (bytes.length > TOKEN_PAGE_BODY_CAP_BYTES)
-    return { error: `The file is over ${TOKEN_PAGE_BODY_CAP_BYTES} bytes.` };
-  let decoded;
-  try {
-    decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    return { error: "The file is not valid UTF-8." };
-  }
-  const text4 = decoded.replace(/\r\n?/g, `
-`);
-  for (const char of text4) {
-    const c = char.codePointAt(0) ?? 0;
-    if (c < 32 && c !== 10 && c !== 9 || c === 127 || c >= 128 && c < 160 || c >= 55296 && c <= 57343)
-      return { error: `The file holds a control character (U+${c.toString(16).toUpperCase().padStart(4, "0")}).` };
-  }
-  const length = [...text4].length;
-  const limit = TOKEN_PAGE_LIMITS[section3];
-  if (length > limit)
-    return { error: `${section3} is at most ${limit} characters; the file has ${length}.` };
-  return { text: text4 };
-}
-function signatureFor(chain2, given) {
-  const value = given.trim();
-  if (chain2 === "hood")
-    return /^0x[0-9a-fA-F]{130}$/.test(value) ? value : undefined;
-  try {
-    const bytes = value.endsWith("=") || /[+/]/.test(value) ? base64.decode(value) : base58.decode(value);
-    return bytes.length === 64 ? base64.encode(bytes) : undefined;
-  } catch {
-    return;
-  }
-}
-function factValue(fact2) {
-  if (fact2.raw === undefined)
-    return fact2.status;
-  const value = fact2.decimals ? rawUnits2(fact2.raw, fact2.decimals) : fact2.raw;
-  return `${value}${fact2.unit === "token" ? "" : ` ${fact2.unit}`} (${fact2.status}, ${fact2.coverage}, ${terminalText(fact2.source)}${fact2.measuredAt ? `, ${fact2.measuredAt}` : ""})`;
-}
-function rawUnits2(raw, decimals) {
-  if (!/^\d+$/.test(raw))
-    return raw;
-  const padded = raw.padStart(decimals + 1, "0");
-  const whole = padded.slice(0, padded.length - decimals);
-  const fraction = padded.slice(padded.length - decimals).replace(/0+$/, "");
-  return fraction ? `${whole}.${fraction}` : whole;
-}
-function writeAbout(ctx, about) {
-  const claim = about.claim;
-  writeFields(ctx.deps, "stdout", [
-    ["Token", `${about.token.chain} ${about.token.address}`],
-    ["Revision", about.revision],
-    [
-      "Claim",
-      claim.state === "unclaimed" ? "unclaimed" : `claimed by ${claim.state === "dev" ? "dev" : "community"}`
-    ],
-    ["Lead", identity3(claim.lead) ?? "no current eligible lead"],
-    ["Eligible", claim.eligibleAccounts === null ? "refreshing" : String(claim.eligibleAccounts)],
-    [
-      "Switches",
-      Object.entries(about.features).map(([name2, on]) => `${name2} ${on ? "on" : "off"}`).join(", ")
-    ]
-  ], "About");
-  for (const section3 of TOKEN_PAGE_SECTIONS) {
-    const v = about.sections[section3];
-    if (!v)
-      continue;
-    writeHeading(ctx.deps, "stdout", `${section3} (revision ${v.revision})`);
-    writeFields(ctx.deps, "stdout", [
-      ["Written by", `${identity3(v.author)}${v.dev ? " (dev)" : ""}`],
-      ["Share then", bpsPercent(v.shareBps)],
-      ["At", v.createdAt],
-      ["Version", v.id]
-    ]);
-    if (v.newerAwaitingReview)
-      notice(ctx.deps, "stdout", "note", "A newer version is hidden pending review.");
-    if (v.linksWithheld)
-      notice(ctx.deps, "stdout", "note", "Links are withheld pending review.");
-    ctx.deps.stdout.write(`
-${terminalTextKeepingLines(v.text)}
-`);
-  }
-  writeHeading(ctx.deps, "stdout", "Supply, measured by Candle");
-  const facts = about.facts.filter((f) => f.status === "known" || f.status === "stale");
-  if (!facts.length)
-    ctx.deps.stdout.write(`  Measurements unavailable
-`);
-  else
-    writeFields(ctx.deps, "stdout", facts.map((f) => [terminalText(f.metric), factValue(f)]));
-}
-function terminalTextKeepingLines(text4) {
-  return text4.split(`
-`).map((line) => terminalText(line.replace(/\t/g, "    "))).join(`
-`);
-}
-async function tokenAbout(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.about);
-  const parsed = parseArgs(args, { valueFlags: ["--chain"], booleanFlags: ["--capabilities"] });
-  if ("error" in parsed)
-    return usage12(parsed.error);
-  const chain2 = chainOf(parsed.values);
-  const address = parsed.positionals[0];
-  if (parsed.positionals.length !== 1 || !address)
-    return usage12();
-  if (!chain2)
-    return usage12("--chain must be solana or hood.");
-  const withCapabilities = parsed.booleans.has("--capabilities");
-  const apiKey = withCapabilities ? await requireKey(ctx) : undefined;
-  if (withCapabilities && !apiKey)
-    return 1;
-  const summary = await read2(ctx, pagePath(chain2, address));
-  if (!summary.ok)
-    return writeApiFailure(ctx, summary, "none");
-  let capabilities;
-  if (apiKey) {
-    const own = await read2(ctx, pagePath(chain2, address, "/capabilities"), apiKey);
-    if (!own.ok)
-      return writeApiFailure(ctx, own, "key");
-    capabilities = dataOf(own);
-  }
-  const about = dataOf(summary);
-  if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data: about, ...apiKey ? { capabilities } : {} })}
-`);
-    return 0;
-  }
-  writeAbout(ctx, about);
-  if (apiKey) {
-    const c = capabilities;
-    writeFields(ctx.deps, "stdout", [
-      ["Can claim", c.canClaim ? "yes" : "no"],
-      ["Can edit", c.canEdit ? "yes" : "no"],
-      ["Can flag", c.canFlag ? "yes" : "no"],
-      ["Creator", c.creatorProven ? "proven" : "not proven"],
-      ["Share now", bpsPercent(c.shareBps)],
-      ["Observed", c.observedAt],
-      ["Why not", c.refusal ? REFUSALS[c.refusal] ?? c.refusal : undefined]
-    ], "This account");
-  }
-  return 0;
-}
-async function tokenClaim(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.claim);
-  const parsed = parseArgs(args, {
-    valueFlags: ["--chain", "--challenge-id", "--signature", "--message-out", "--idempotency-key"],
-    booleanFlags: ["--creator", "--challenge"],
-    pathFlags: ["--message-out"]
-  });
-  if ("error" in parsed)
-    return usage12(parsed.error);
-  const { values, booleans } = parsed;
-  const chain2 = chainOf(values);
-  const address = parsed.positionals[0];
-  if (parsed.positionals.length !== 1 || !address)
-    return usage12();
-  if (!chain2)
-    return usage12("--chain must be solana or hood.");
-  const creator = booleans.has("--creator");
-  const challenge = booleans.has("--challenge");
-  const challengeId = values["--challenge-id"];
-  const given = values["--signature"];
-  if ((challenge || challengeId !== undefined || given !== undefined) && !creator)
-    return usage12("--challenge, --challenge-id and --signature are for --creator.");
-  if (challenge && (challengeId !== undefined || given !== undefined))
-    return usage12("--challenge asks for a new challenge; send the signature in a second run.");
-  if (challengeId === undefined !== (given === undefined))
-    return usage12("--challenge-id and --signature go together.");
-  if (values["--message-out"] !== undefined && !challenge)
-    return usage12("--message-out goes with --challenge.");
-  if (challengeId !== undefined && !UUID2.test(challengeId))
-    return usage12("--challenge-id is the id the challenge printed.");
-  let signature;
-  if (given !== undefined) {
-    signature = signatureFor(chain2, given);
-    if (!signature)
-      return usage12(chain2 === "hood" ? "--signature must be the 0x-hex message signature (65 bytes)." : "--signature must be the 64-byte Ed25519 signature, base58 or base64.");
-  }
-  const idempotencyKey = idempotencyKeyOf(values, usage12);
-  if (typeof idempotencyKey === "number")
-    return idempotencyKey;
-  const apiKey = await requireKey(ctx);
-  if (!apiKey)
-    return 1;
-  if (challenge)
-    return creatorChallenge(ctx, chain2, address, apiKey, values["--message-out"]);
-  const body = { kind: creator ? "creator" : "holder", ...challengeId ? { challengeId, signature } : {} };
-  const result = await write2(ctx, {
-    method: "POST",
-    path: pagePath(chain2, address, "/claims"),
-    body,
-    apiKey,
-    idempotencyKey
-  });
-  if (result === "unknown")
-    return writeUnknown(ctx, idempotencyKey);
-  if (!result.ok) {
-    const refusal4 = refusalOf2(result);
-    if (refusal4?.code === "invalid_signature" && creator && !challengeId) {
-      writeRefusal(ctx, refusal4, `This account's known wallets do not include the verified creator, so the claim needs a signed challenge: candle token claim ${address} --chain ${chain2} --creator --challenge`);
-      return 1;
-    }
-    return writeApiFailure(ctx, result, "key");
-  }
-  const data = dataOf(result);
-  if (ctx.json)
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
-`);
-  else
-    writeFields(ctx.deps, "stdout", [
-      ["Kind", data.kind],
-      ["Creator", data.creatorProven ? "proven" : "not proven"],
-      ["Revision", data.revision]
-    ], "Claimed");
-  return 0;
-}
-async function creatorChallenge(ctx, chain2, address, apiKey, messageOut) {
-  const result = await apiRequest(pagePath(chain2, address, "/creator-challenges"), {
-    apiUrl: ctx.apiUrl,
-    method: "POST",
-    body: {},
-    auth: "key",
-    credentials: { apiKey },
-    fetch: ctx.deps.fetch,
-    env: ctx.deps.env
-  });
-  if (!result.ok)
-    return writeApiFailure(ctx, result, "key");
-  const data = dataOf(result);
-  const bytes = new TextEncoder().encode(data.message);
-  const sha2564 = createHash5("sha256").update(bytes).digest("hex");
-  if (messageOut !== undefined) {
-    try {
-      await ctx.deps.writeFile(messageOut, data.message);
-    } catch (error) {
-      writeLocalFailure(ctx.deps, {
-        code: "MESSAGE_OUT_FAILED",
-        message: `The challenge could not be written to ${messageOut}: ${error instanceof Error ? error.message : error}.`,
-        details: { challengeId: data.challengeId }
-      }, ctx.json);
-      return 1;
-    }
-  }
-  const next = `candle token claim ${address} --chain ${chain2} --creator --challenge-id ${data.challengeId} --signature <signature>`;
-  if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, byteLength: bytes.length, sha256: sha2564, ...messageOut ? { messageOut } : {}, next })}
-`);
-    return 0;
-  }
-  writeFields(ctx.deps, "stdout", [
-    ["Challenge", data.challengeId],
-    ["Expires", data.expiresAt],
-    ["Bytes", String(bytes.length)],
-    ["sha256", sha2564],
-    ["Written to", messageOut]
-  ], "Creator challenge (a message, not a transaction)");
-  ctx.deps.stdout.write(`
-Sign exactly these UTF-8 bytes (between the lines, no trailing newline) with the creator wallet:
------
-${data.message}
------
-`);
-  notice(ctx.deps, "stdout", "note", `Sign it on your own machine, for example candle sign message --wallet <external> --file ${messageOut ?? "<file holding exactly these bytes>"}, then run: ${next}`);
-  return 0;
-}
-var SECTION_FLAGS = {
-  set: { valueFlags: ["--chain", "--file", "--base-revision", "--idempotency-key"], booleanFlags: ["--clear"] },
-  restore: { valueFlags: ["--chain", "--version-id", "--base-revision", "--idempotency-key"], booleanFlags: [] }
-};
-async function tokenSection(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.section);
-  const action2 = args[0];
-  if (action2 !== "set" && action2 !== "restore")
-    return usage12();
-  const spec = SECTION_FLAGS[action2];
-  const parsed = parseArgs(args.slice(1), {
-    valueFlags: [...spec.valueFlags],
-    booleanFlags: [...spec.booleanFlags],
-    ...action2 === "set" ? { pathFlags: ["--file"] } : {}
-  });
-  if ("error" in parsed)
-    return usage12(parsed.error);
-  const { values } = parsed;
-  const chain2 = chainOf(values);
-  const [address, sectionName] = parsed.positionals;
-  if (parsed.positionals.length !== 2 || !address)
-    return usage12();
-  if (!chain2)
-    return usage12("--chain must be solana or hood.");
-  const section3 = sectionOf(sectionName);
-  if (!section3)
-    return usage12("The section is thesis, tokenomics or lore.");
-  const base2 = values["--base-revision"];
-  if (base2 === undefined || !REVISION.test(base2))
-    return usage12("--base-revision is the section's current revision (0 for a first write), from candle token about.");
-  const idempotencyKey = idempotencyKeyOf(values, usage12);
-  if (typeof idempotencyKey === "number")
-    return idempotencyKey;
-  let body;
-  let path;
-  let method;
-  if (action2 === "set") {
-    const file = values["--file"];
-    if (file === undefined)
-      return usage12("--file is required: the section text comes from a file.");
-    let bytes;
-    try {
-      bytes = await ctx.deps.readBytes(file);
-    } catch (error) {
-      writeLocalFailure(ctx.deps, {
-        code: "FILE_UNREADABLE",
-        message: `${file} could not be read: ${error instanceof Error ? error.message : error}.`
-      }, ctx.json);
-      return 2;
-    }
-    const checked = sectionText(bytes, section3);
-    if ("error" in checked) {
-      writeLocalFailure(ctx.deps, { code: "TEXT_REFUSED", message: `${checked.error} Nothing was sent.` }, ctx.json);
-      return 2;
-    }
-    const empty = checked.text.trim().length === 0;
-    if (empty && !parsed.booleans.has("--clear"))
-      return usage12("The file is empty. An empty write clears the section; pass --clear to mean that.");
-    if (!empty && parsed.booleans.has("--clear"))
-      return usage12("--clear is for an empty file.");
-    body = { text: checked.text, baseRevision: base2 };
-    path = pagePath(chain2, address, `/sections/${section3}`);
-    method = "PUT";
-  } else {
-    const versionId = values["--version-id"];
-    if (versionId === undefined || !UUID2.test(versionId))
-      return usage12("--version-id is a version id from candle token history.");
-    body = { versionId, baseRevision: base2 };
-    path = pagePath(chain2, address, `/sections/${section3}/restore`);
-    method = "POST";
-  }
-  const apiKey = await requireKey(ctx);
-  if (!apiKey)
-    return 1;
-  const result = await write2(ctx, { method, path, body, apiKey, idempotencyKey });
-  if (result === "unknown")
-    return writeUnknown(ctx, idempotencyKey);
-  if (!result.ok) {
-    const refusal4 = refusalOf2(result);
-    if (refusal4?.code === "revision_conflict") {
-      const latest = refusal4.extra.latest;
-      writeRefusal(ctx, refusal4, `${latest?.revision !== undefined ? `The latest is revision ${latest.revision}. ` : ""}${action2 === "set" ? SECTION_SUGGESTION : "Rerun with --base-revision set to the latest revision."}`);
-      return EXIT_REVISION_CONFLICT;
-    }
-    return writeApiFailure(ctx, result, "key");
-  }
-  const data = dataOf(result);
-  if (ctx.json)
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
-`);
-  else
-    writeFields(ctx.deps, "stdout", [
-      ["Revision", data.revision],
-      ["Version", data.id]
-    ], action2 === "set" ? `${section3} saved` : `${section3} restored as a new version`);
-  return 0;
-}
-async function tokenHistory(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.history);
-  const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
-  if ("error" in parsed)
-    return usage12(parsed.error);
-  const { values } = parsed;
-  const chain2 = chainOf(values);
-  const [address, sectionName] = parsed.positionals;
-  if (parsed.positionals.length !== 2 || !address)
-    return usage12();
-  if (!chain2)
-    return usage12("--chain must be solana or hood.");
-  const section3 = sectionOf(sectionName);
-  if (!section3)
-    return usage12("The section is thesis, tokenomics or lore.");
-  const limit = values["--limit"];
-  if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50))
-    return usage12("--limit is a whole number from 1 to 50.");
-  const query3 = new URLSearchParams({
-    ...limit !== undefined ? { limit } : {},
-    ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
-  });
-  const result = await read2(ctx, pagePath(chain2, address, `/sections/${section3}/history${query3.size ? `?${query3}` : ""}`));
-  if (!result.ok)
-    return writeApiFailure(ctx, result, "none");
-  const data = dataOf(result);
-  if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data })}
-`);
-    return 0;
-  }
-  if (!data.items.length)
-    ctx.deps.stdout.write(`No ${section3} versions.
-`);
-  for (const item of data.items) {
-    writeHeading(ctx.deps, "stdout", `revision ${item.revision}`);
-    writeFields(ctx.deps, "stdout", [
-      ["Version", item.id],
-      ["Written by", `${identity3(item.author)}${item.dev ? " (dev)" : ""}`],
-      ["Share then", bpsPercent(item.shareBps)],
-      ["At", item.createdAt],
-      ["Restored from", item.restoredFrom ?? undefined],
-      ["State", item.tombstone ?? "visible"]
-    ]);
-    if (item.text !== null)
-      ctx.deps.stdout.write(`
-${terminalTextKeepingLines(item.text)}
-`);
-  }
-  if (data.nextCursor)
-    ctx.deps.stdout.write(`
-More: --cursor ${data.nextCursor}
-`);
-  return 0;
-}
-async function tokenFlag(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.flag);
-  const parsed = parseArgs(args, { valueFlags: ["--chain", "--content", "--reason", "--detail", "--idempotency-key"] });
-  if ("error" in parsed)
-    return usage12(parsed.error);
-  const { values } = parsed;
-  const chain2 = chainOf(values);
-  const address = parsed.positionals[0];
-  if (parsed.positionals.length !== 1 || !address)
-    return usage12();
-  if (!chain2)
-    return usage12("--chain must be solana or hood.");
-  const contentId = values["--content"];
-  if (contentId === undefined || !UUID2.test(contentId))
-    return usage12("--content is the exact version, update or comment id being reported (candle token about, history or comments).");
-  const reason = values["--reason"];
-  if (!reason || !FLAG_REASONS.includes(reason))
-    return usage12(`--reason is one of ${FLAG_REASONS.join(", ")}.`);
-  const detail = values["--detail"];
-  if (detail !== undefined && [...detail].length > FLAG_DETAIL_LIMIT)
-    return usage12(`--detail is at most ${FLAG_DETAIL_LIMIT} characters.`);
-  const idempotencyKey = idempotencyKeyOf(values, usage12);
-  if (typeof idempotencyKey === "number")
-    return idempotencyKey;
-  const apiKey = await requireKey(ctx);
-  if (!apiKey)
-    return 1;
-  const body = { contentId, reason, ...detail !== undefined ? { detail } : {} };
-  const result = await write2(ctx, {
-    method: "POST",
-    path: pagePath(chain2, address, "/flags"),
-    body,
-    apiKey,
-    idempotencyKey
-  });
-  if (result === "unknown")
-    return writeUnknown(ctx, idempotencyKey);
-  if (!result.ok)
-    return writeApiFailure(ctx, result, "key");
-  const data = dataOf(result);
-  if (ctx.json)
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
-`);
-  else
-    writeFields(ctx.deps, "stdout", [
-      ["Content", data.contentId],
-      ["Hidden", data.hidden ? "yes, pending Candle review" : "no"]
-    ], "Reported");
-  return 0;
-}
-async function tokenUpdate(args, ctx) {
-  const usage12 = usageFor(ctx, "Usage: candle token update <address> --file <path> [--chain solana|hood] [--idempotency-key <key>]");
-  const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] });
-  if ("error" in parsed)
-    return usage12(parsed.error);
-  const chain2 = chainOf(parsed.values), address = parsed.positionals[0], file = parsed.values["--file"];
-  if (!chain2 || !address || !file || parsed.positionals.length !== 1)
-    return usage12();
-  let bytes;
-  try {
-    bytes = await ctx.deps.readBytes(file);
-  } catch {
-    return usage12("The update file could not be read.");
-  }
-  const checked = sectionText(bytes, "update");
-  if ("error" in checked || !checked.text.trim())
-    return usage12("The update must contain 1–1000 valid characters.");
-  const idempotencyKey = idempotencyKeyOf(parsed.values, usage12);
-  if (typeof idempotencyKey === "number")
-    return idempotencyKey;
-  const apiKey = await requireKey(ctx);
-  if (!apiKey)
-    return 1;
-  const result = await write2(ctx, {
-    method: "POST",
-    path: pagePath(chain2, address, "/updates"),
-    body: { text: checked.text },
-    apiKey,
-    idempotencyKey
-  });
-  if (result === "unknown")
-    return writeUnknown(ctx, idempotencyKey);
-  if (!result.ok)
-    return writeApiFailure(ctx, result, "key");
-  const data = dataOf(result);
-  if (ctx.json)
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
-`);
-  else
-    writeFields(ctx.deps, "stdout", [
-      ["Post", data.id],
-      ["Retry key", idempotencyKey]
-    ], "Update posted");
-  return 0;
-}
-async function tokenComment(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.comment);
-  const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] });
-  if ("error" in parsed)
-    return usage12(parsed.error);
-  const chain2 = chainOf(parsed.values), address = parsed.positionals[0], file = parsed.values["--file"];
-  if (!chain2 || !address || !file || parsed.positionals.length !== 1)
-    return usage12();
-  let bytes;
-  try {
-    bytes = await ctx.deps.readBytes(file);
-  } catch {
-    return usage12("The comment file could not be read.");
-  }
-  const checked = sectionText(bytes, "comment");
-  if ("error" in checked || !checked.text.trim())
-    return usage12(`The comment must contain 1–${TOKEN_PAGE_LIMITS.comment} valid characters.`);
-  const idempotencyKey = idempotencyKeyOf(parsed.values, usage12);
-  if (typeof idempotencyKey === "number")
-    return idempotencyKey;
-  const apiKey = await requireKey(ctx);
-  if (!apiKey)
-    return 1;
-  const result = await write2(ctx, {
-    method: "POST",
-    path: pagePath(chain2, address, "/comments"),
-    body: { text: checked.text },
-    apiKey,
-    idempotencyKey
-  });
-  if (result === "unknown")
-    return writeUnknown(ctx, idempotencyKey);
-  if (!result.ok)
-    return writeApiFailure(ctx, result, "key");
-  const data = dataOf(result);
-  if (ctx.json)
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
-`);
-  else
-    writeFields(ctx.deps, "stdout", [
-      ["Comment", data.id],
-      ["Retry key", idempotencyKey]
-    ], "Comment posted");
-  return 0;
-}
-async function tokenComments(args, ctx) {
-  const usage12 = usageFor(ctx, USAGE14.comments);
-  const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
-  if ("error" in parsed)
-    return usage12(parsed.error);
-  const { values } = parsed;
-  const chain2 = chainOf(values);
-  const address = parsed.positionals[0];
-  if (parsed.positionals.length !== 1 || !address)
-    return usage12();
-  if (!chain2)
-    return usage12("--chain must be solana or hood.");
-  const limit = values["--limit"];
-  if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50))
-    return usage12("--limit is a whole number from 1 to 50.");
-  const query3 = new URLSearchParams({
-    ...limit !== undefined ? { limit } : {},
-    ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
-  });
-  const result = await read2(ctx, pagePath(chain2, address, `/comments${query3.size ? `?${query3}` : ""}`));
-  if (!result.ok)
-    return writeApiFailure(ctx, result, "none");
-  const data = dataOf(result);
-  if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data })}
-`);
-    return 0;
-  }
-  if (!data.items.length)
-    ctx.deps.stdout.write(`No comments.
-`);
-  for (const item of data.items) {
-    writeHeading(ctx.deps, "stdout", item.createdAt);
-    writeFields(ctx.deps, "stdout", [
-      ["Comment", item.id],
-      ["Written by", `${identity3(item.author)}${item.dev ? " (dev)" : ""}`],
-      ["Share then", bpsPercent(item.shareBps)],
-      ["State", item.tombstone ?? "visible"],
-      ["Links", item.linksWithheld ? "withheld pending review" : undefined]
-    ]);
-    if (item.text !== null)
-      ctx.deps.stdout.write(`
-${terminalTextKeepingLines(item.text)}
-`);
-  }
-  if (data.nextCursor)
-    ctx.deps.stdout.write(`
-More: --cursor ${data.nextCursor}
-`);
-  return 0;
-}
-async function tokenPost(args, ctx) {
-  const usage12 = usageFor(ctx, "Usage: candle token post delete <address> <post-id> [--chain solana|hood] [--idempotency-key <key>]");
-  if (args[0] !== "delete")
-    return usage12();
-  const parsed = parseArgs(args.slice(1), { valueFlags: ["--chain", "--idempotency-key"] });
-  if ("error" in parsed)
-    return usage12(parsed.error);
-  const chain2 = chainOf(parsed.values), [address, id] = parsed.positionals;
-  if (!chain2 || !address || !id || !UUID2.test(id) || parsed.positionals.length !== 2)
-    return usage12();
-  const idempotencyKey = idempotencyKeyOf(parsed.values, usage12);
-  if (typeof idempotencyKey === "number")
-    return idempotencyKey;
-  const apiKey = await requireKey(ctx);
-  if (!apiKey)
-    return 1;
-  const result = await write2(ctx, {
-    method: "DELETE",
-    path: pagePath(chain2, address, `/posts/${id}`),
-    body: {},
-    apiKey,
-    idempotencyKey
-  });
-  if (result === "unknown")
-    return writeUnknown(ctx, idempotencyKey);
-  if (!result.ok)
-    return writeApiFailure(ctx, result, "key");
-  const data = dataOf(result);
-  if (ctx.json)
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, idempotencyKey })}
-`);
-  else
-    writeFields(ctx.deps, "stdout", [["Post", id]], "Post deleted");
-  return 0;
-}
-
-// src/commands/token-metadata.ts
 var EXIT_OUTCOME_UNKNOWN2 = 3;
 var EDIT_FIELDS = launchFlagFields.filter((field) => field.key === "description" || field.key.startsWith("socials."));
 var CLEAR_NAMES = new Map(EDIT_FIELDS.map((field) => [field.cli.flag.slice(2), field.key]));
@@ -105065,7 +105310,7 @@ async function tokenEdit(args, ctx) {
   if (given !== undefined && (given.length < 1 || given.length > 128)) {
     return usage12("--idempotency-key must be 1 to 128 characters.");
   }
-  const idempotencyKey = given ?? randomUUID14();
+  const idempotencyKey = given ?? randomUUID15();
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
     writeLocalFailure(ctx.deps, {
@@ -105200,7 +105445,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE15 = "Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE16 = "Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -105345,7 +105590,7 @@ async function transfer(args, ctx) {
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok) {
-    writeUsageFailure(ctx.deps, USAGE15, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE16, ctx.json);
     return 2;
   }
   const to = flags2["--to"];
@@ -113455,7 +113700,7 @@ init_human_output();
 init_release();
 import { dirname as dirname13, join as join15 } from "node:path";
 init_key_output();
-var USAGE16 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE17 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -113487,19 +113732,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE16}`, json);
+${USAGE17}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeScreenUsageFailure(deps, `verify takes exactly one file.
-${USAGE16}`, json);
+${USAGE17}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeScreenUsageFailure(deps, `--bundle is required.
-${USAGE16}`, json);
+${USAGE17}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -113513,7 +113758,7 @@ ${USAGE16}`, json);
   }
   if (resolved.kind === "absent") {
     writeScreenUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE16}`, json);
+${USAGE17}`, json);
     return 2;
   }
   const identity4 = resolved.uri;
@@ -113772,7 +114017,7 @@ init_presentation();
 init_profiles();
 init_render();
 init_key_output();
-var USAGE17 = "Usage: candle wallets authorize [--no-browser] [--no-wait] [--timeout <seconds>] [--json]";
+var USAGE18 = "Usage: candle wallets authorize [--no-browser] [--no-wait] [--timeout <seconds>] [--json]";
 var AUTHORIZE_WAIT_DEFAULT_SECONDS = 600;
 var AUTHORIZE_POLL_MS = 3000;
 function authorizeUrl(apiUrl, portalOrigin) {
@@ -113795,12 +114040,12 @@ async function walletsAuthorize(args, ctx) {
   const parsed = parseArgs(args, { booleanFlags: ["--no-browser", "--no-wait"], valueFlags: ["--timeout"] });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE17}`, json);
+${USAGE18}`, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
     writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}
-${USAGE17}`, json);
+${USAGE18}`, json);
     return 2;
   }
   let timeoutSeconds = AUTHORIZE_WAIT_DEFAULT_SECONDS;
@@ -113809,7 +114054,7 @@ ${USAGE17}`, json);
     const n = Number(rawTimeout);
     if (!Number.isInteger(n) || n <= 0) {
       writeScreenUsageFailure(deps, `--timeout must be a whole number of seconds above 0, got ${rawTimeout}
-${USAGE17}`, json);
+${USAGE18}`, json);
       return 2;
     }
     timeoutSeconds = n;
@@ -113915,8 +114160,8 @@ init_solana_alt();
 init_solana_lite();
 init_trading();
 init_swap();
-import { randomUUID as randomUUID15 } from "node:crypto";
-var USAGE18 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+import { randomUUID as randomUUID16 } from "node:crypto";
+var USAGE19 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -114179,7 +114424,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE18}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE19}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -114188,9 +114433,9 @@ async function walletsCloseEmpty(args, ctx) {
     return 2;
   }
   const named = parsed.values["--client-trade-id"];
-  const id = named ?? `close-${randomUUID15()}`;
+  const id = named ?? `close-${randomUUID16()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE18, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE19, ctx.json);
     return 2;
   }
   const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
@@ -114689,6 +114934,7 @@ var COMMANDS = {
       update: keysUpdate,
       limit: keysLimit,
       self: keysSelf,
+      rotate: keysRotate,
       revoke: keysRevoke,
       stop: keysStop,
       resume: keysResume,

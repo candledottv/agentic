@@ -1150,6 +1150,11 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "stop <prefix>", description: "Pause one key with the device token; reversible with keys resume" },
       { invocation: "resume <prefix>", description: "Resume a stopped key with the device token" },
+      {
+        invocation: "rotate <prefix|label> ([--grace <duration> | --now] [--force] [--yes] | --finish)",
+        description:
+          "Give a key a new secret, keeping its prefix, label, access, limits, wallets and history. The old secret works through --grace (default 1h, at most 24h) or stops at once with --now; --finish ends an open window early. The profile's own key is replaced in the keychain; update CANDLE_API_KEY and other copies yourself. --force rotates again while a window is open",
+      },
       { invocation: "revoke <prefix>", description: "Revoke an API key permanently" },
       {
         invocation: "signer approve <code> --key <prefix|label> [--reject]",
@@ -1192,6 +1197,9 @@ export const HELP: Record<string, Topic> = {
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
       "candle keys signer approve ABCD-EFGH --key tr-2",
       "candle keys signer move tr-2",
+      "candle keys rotate agent-one --grace 30m",
+      "candle keys rotate agent-one --now --idempotency-key rotate-2026-11",
+      "candle keys rotate agent-one --finish",
       "candle keys revoke ck_live_ab12",
       "candle keys stop ck_live_ab12",
       "candle keys resume ck_live_ab12",
