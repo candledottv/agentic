@@ -497,7 +497,7 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
 
 export async function keysRevoke(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, {})
+  const parsed = parseArgs(args, { keyPrefixPositional: true })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
     return 2

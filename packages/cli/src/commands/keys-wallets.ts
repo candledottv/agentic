@@ -72,7 +72,7 @@ interface ProfileWalletsResponse {
 /** `candle keys wallets <prefix>` */
 export async function keysWalletsList(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, {})
+  const parsed = parseArgs(args, { keyPrefixPositional: true })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
     return 2
@@ -147,7 +147,7 @@ export async function keysWalletsList(args: string[], ctx: CommandContext): Prom
 /** `candle keys wallets set <prefix> --wallets <id,id>` (or `--wallets ""` to clear) */
 export async function keysWalletsSet(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, { valueFlags: ["--wallets"] })
+  const parsed = parseArgs(args, { valueFlags: ["--wallets"], keyPrefixPositional: true })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
     return 2
@@ -231,7 +231,7 @@ export async function keysWalletsSet(args: string[], ctx: CommandContext): Promi
 /** `candle keys wallets scope <prefix> --scope <all|selected>` */
 export async function keysWalletsScope(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, { valueFlags: ["--scope"] })
+  const parsed = parseArgs(args, { valueFlags: ["--scope"], keyPrefixPositional: true })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
     return 2

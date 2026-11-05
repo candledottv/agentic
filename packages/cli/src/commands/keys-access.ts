@@ -250,7 +250,11 @@ function writeAccessFailure(
 
 export async function keysAccess(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, { valueFlags: ["--access"], booleanFlags: ["--yes", "--history"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--access"],
+    keyPrefixPositional: true,
+    booleanFlags: ["--yes", "--history"],
+  })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
     return 2

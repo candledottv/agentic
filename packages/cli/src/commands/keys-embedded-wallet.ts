@@ -194,7 +194,11 @@ export async function confirmCreateAllow(ctx: CommandContext): Promise<number | 
 /** `candle keys update <prefix|label> --embedded-wallet allow|deny [--yes]`. Device token only. */
 export async function keysUpdate(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, { valueFlags: ["--embedded-wallet"], booleanFlags: ["--yes"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--embedded-wallet"],
+    booleanFlags: ["--yes"],
+    keyPrefixPositional: true,
+  })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
     return 2

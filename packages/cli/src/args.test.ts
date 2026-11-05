@@ -46,6 +46,33 @@ describe("parseArgs", () => {
     expect(result).toEqual({ error: "Unknown flag: --bogus" })
   })
 
+  test("`--` ends the options: everything after it is positional, even a '-'-prefixed token", () => {
+    const result = parseArgs(["--json", "--", "-QVeHyie", "--bogus"], { booleanFlags: ["--json"] })
+    if ("error" in result) throw new Error("expected success")
+    expect(result.booleans.has("--json")).toBe(true)
+    expect(result.positionals).toEqual(["-QVeHyie", "--bogus"])
+  })
+
+  test("keyPrefixPositional accepts an 8-character '-'-prefixed key prefix, and only that shape", () => {
+    const spec = { keyPrefixPositional: true, booleanFlags: ["--yes"] }
+    const ok = parseArgs(["-QVeHyie"], spec)
+    if ("error" in ok) throw new Error("expected success")
+    expect(ok.positionals).toEqual(["-QVeHyie"])
+    expect(parseArgs(["--yes"], spec)).toEqual({ values: {}, booleans: new Set(["--yes"]), positionals: [] })
+    expect(parseArgs(["-bogus"], spec)).toEqual({ error: "Unknown flag: -bogus" })
+    expect(parseArgs(["-QVeHyie"], {})).toEqual({ error: "Unknown flag: -QVeHyie" })
+  })
+
+  test("keyPrefixValueFlags lets a value flag take a '-'-prefixed key prefix, but not another flag", () => {
+    const spec = { valueFlags: ["--to-key"], booleanFlags: ["--yes"], keyPrefixValueFlags: ["--to-key"] }
+    const ok = parseArgs(["--to-key", "-QVeHyie"], spec)
+    if ("error" in ok) throw new Error("expected success")
+    expect(ok.values["--to-key"]).toBe("-QVeHyie")
+    expect(parseArgs(["--to-key", "--yes"], spec)).toEqual({ error: "--to-key requires a value" })
+    // 8 characters, so it fits the prefix grammar, but it is a known flag and must win.
+    expect(parseArgs(["--to-key", "--to-key"], spec)).toEqual({ error: "--to-key requires a value" })
+  })
+
   test("an empty args array with an empty spec parses to no flags and no positionals", () => {
     const result = parseArgs([], {})
     if ("error" in result) throw new Error("expected success")

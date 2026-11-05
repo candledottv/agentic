@@ -187,6 +187,12 @@ function extractGlobalFlags(argv: string[]): { rest: string[]; flags: GlobalFlag
   const flags: GlobalFlags = { json: false, help: false, version: false, noVerifyAccount: false }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
+    // `--` ends the options: keep it and everything after it verbatim for the command's parser,
+    // so `keys revoke -- --help` passes "--help" as a positional instead of asking for help.
+    if (arg === "--") {
+      rest.push(...argv.slice(i))
+      break
+    }
     if (arg === "--json") flags.json = true
     else if (arg === "--plain") flags.plain = true
     else if (arg === "--no-color") flags.noColor = true

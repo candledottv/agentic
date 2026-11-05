@@ -858,7 +858,7 @@ interface MoveOutcome {
  */
 async function keysSignerMove(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
-  const parsed = parseArgs(args, { valueFlags: ["--to-key"] })
+  const parsed = parseArgs(args, { valueFlags: ["--to-key"], keyPrefixValueFlags: ["--to-key"] })
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}. ${USAGE_KEYS_SIGNER}`, json)
     return 2

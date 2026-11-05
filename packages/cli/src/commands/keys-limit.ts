@@ -19,7 +19,11 @@ const USAGE =
 
 export async function keysLimit(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, { valueFlags: ["--tx-limit", "--reset"], booleanFlags: ["--clear"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--tx-limit", "--reset"],
+    booleanFlags: ["--clear"],
+    keyPrefixPositional: true,
+  })
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json)
     return 2

@@ -598,7 +598,7 @@ export async function resolveTargetKey(
 export async function teeRebind(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
-  const parsed = parseArgs(args, { valueFlags: ["--to-key", "--label-prefix"] })
+  const parsed = parseArgs(args, { valueFlags: ["--to-key", "--label-prefix"], keyPrefixValueFlags: ["--to-key"] })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
     return 2

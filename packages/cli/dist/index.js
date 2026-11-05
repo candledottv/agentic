@@ -326,16 +326,21 @@ function parseArgs(args, spec) {
     const typed = args[i];
     if (typed === undefined)
       continue;
+    if (typed === "--") {
+      positionals.push(...args.slice(i + 1));
+      break;
+    }
     const long = SHORT_FLAGS[typed];
     const arg = long !== undefined && valueFlags.has(long) ? long : typed;
     if (valueFlags.has(arg)) {
       const value = args[++i];
-      if (!value || value.startsWith("-"))
+      const dashPrefixOk = value !== undefined && spec.keyPrefixValueFlags?.includes(arg) === true && DASH_KEY_PREFIX_RE.test(value) && !valueFlags.has(value) && !booleanFlags.has(value);
+      if (!value || value.startsWith("-") && !dashPrefixOk)
         return { error: `${typed} requires a value` };
       values[arg] = value;
     } else if (booleanFlags.has(arg)) {
       booleans.add(arg);
-    } else if (typed.startsWith("-")) {
+    } else if (typed.startsWith("-") && !(spec.keyPrefixPositional === true && DASH_KEY_PREFIX_RE.test(typed))) {
       return { error: `Unknown flag: ${typed}` };
     } else {
       positionals.push(typed);
@@ -381,7 +386,7 @@ function parseExpiresInDays(raw) {
   }
   return { ok: true, days };
 }
-var SHORT_FLAGS, TILDE_TAIL = 'begins with a literal "~", which the shell did not expand and candle will not guess at. Use an absolute path, or set CANDLE_CONFIG_DIR. Nothing was read or written.', UsageError, TX_LIMIT_RESETS;
+var SHORT_FLAGS, TILDE_TAIL = 'begins with a literal "~", which the shell did not expand and candle will not guess at. Use an absolute path, or set CANDLE_CONFIG_DIR. Nothing was read or written.', UsageError, DASH_KEY_PREFIX_RE, TX_LIMIT_RESETS;
 var init_args = __esm(() => {
   SHORT_FLAGS = { "-k": "--keystore" };
   UsageError = class UsageError extends Error {
@@ -390,6 +395,7 @@ var init_args = __esm(() => {
       this.name = "UsageError";
     }
   };
+  DASH_KEY_PREFIX_RE = /^-[A-Za-z0-9_-]{7}$/;
   TX_LIMIT_RESETS = ["daily", "weekly", "monthly", "never"];
 });
 
@@ -37419,7 +37425,7 @@ async function teeRebind(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   if (!refuseEnvPassphrase2(ctx))
     return 1;
-  const parsed = parseArgs(args, { valueFlags: ["--to-key", "--label-prefix"] });
+  const parsed = parseArgs(args, { valueFlags: ["--to-key", "--label-prefix"], keyPrefixValueFlags: ["--to-key"] });
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json);
     return 2;
@@ -37773,7 +37779,11 @@ A key that only trades its own TEE wallets does not need it.`);
 }
 async function keysUpdate(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--embedded-wallet"], booleanFlags: ["--yes"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--embedded-wallet"],
+    booleanFlags: ["--yes"],
+    keyPrefixPositional: true
+  });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
@@ -38278,7 +38288,7 @@ candle keys revoke ${body.keyPrefix}`);
 }
 async function keysRevoke(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
+  const parsed = parseArgs(args, { keyPrefixPositional: true });
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json);
     return 2;
@@ -84676,7 +84686,7 @@ async function keysSignerApprove(args, ctx) {
 }
 async function keysSignerMove(args, ctx) {
   const { deps, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--to-key"] });
+  const parsed = parseArgs(args, { valueFlags: ["--to-key"], keyPrefixValueFlags: ["--to-key"] });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}. ${USAGE_KEYS_SIGNER}`, json);
     return 2;
@@ -89326,7 +89336,11 @@ function writeAccessFailure(ctx, result, context) {
 }
 async function keysAccess(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--access"], booleanFlags: ["--yes", "--history"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--access"],
+    keyPrefixPositional: true,
+    booleanFlags: ["--yes", "--history"]
+  });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
@@ -89541,7 +89555,11 @@ init_tee_rebind();
 var USAGE7 = "Usage: candle keys limit <prefix|label> (--tx-limit <usd> [--reset daily|weekly|monthly|never] | --clear)";
 async function keysLimit(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--tx-limit", "--reset"], booleanFlags: ["--clear"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--tx-limit", "--reset"],
+    booleanFlags: ["--clear"],
+    keyPrefixPositional: true
+  });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
@@ -90747,7 +90765,7 @@ function widenRefusedHint(prefix, walletIds) {
 }
 async function keysWalletsList(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
+  const parsed = parseArgs(args, { keyPrefixPositional: true });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
@@ -90807,7 +90825,7 @@ async function keysWalletsList(args, ctx) {
 }
 async function keysWalletsSet(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--wallets"] });
+  const parsed = parseArgs(args, { valueFlags: ["--wallets"], keyPrefixPositional: true });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
@@ -90867,7 +90885,7 @@ async function keysWalletsSet(args, ctx) {
 }
 async function keysWalletsScope(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--scope"] });
+  const parsed = parseArgs(args, { valueFlags: ["--scope"], keyPrefixPositional: true });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json);
     return 2;
@@ -114804,6 +114822,10 @@ function extractGlobalFlags(argv) {
   const flags2 = { json: false, help: false, version: false, noVerifyAccount: false };
   for (let i = 0;i < argv.length; i++) {
     const arg = argv[i];
+    if (arg === "--") {
+      rest.push(...argv.slice(i));
+      break;
+    }
     if (arg === "--json")
       flags2.json = true;
     else if (arg === "--plain")

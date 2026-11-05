@@ -27,6 +27,14 @@ export interface ArgSpec {
    * positional is not a path.
    */
   pathPositionals?: string[]
+  /**
+   * The command takes a key prefix positional. Key prefixes are 8 base64url characters, so about
+   * 1 in 32 start with "-"; an unrecognized token that fits the prefix grammar is a positional,
+   * not an unknown flag. `--` (everything after it is positional) works on every command.
+   */
+  keyPrefixPositional?: boolean
+  /** Value flags whose value may be a key prefix starting with "-" (`tee rebind --to-key`). */
+  keyPrefixValueFlags?: string[]
 }
 
 export interface ParsedArgs {
@@ -94,6 +102,8 @@ export function isUsageError(error: unknown): error is UsageError {
  * error (missing value). Everything else is a positional argument -- the caller validates how
  * many it expects (most commands expect none; `keys revoke` expects exactly one).
  */
+const DASH_KEY_PREFIX_RE = /^-[A-Za-z0-9_-]{7}$/
+
 export function parseArgs(args: string[], spec: ArgSpec): ParsedArgs | { error: string } {
   const valueFlags = new Set(spec.valueFlags ?? [])
   const booleanFlags = new Set(spec.booleanFlags ?? [])
@@ -104,6 +114,11 @@ export function parseArgs(args: string[], spec: ArgSpec): ParsedArgs | { error: 
   for (let i = 0; i < args.length; i++) {
     const typed = args[i]
     if (typed === undefined) continue
+    // `--` ends the options: everything after it is positional, even a token starting with "-".
+    if (typed === "--") {
+      positionals.push(...args.slice(i + 1))
+      break
+    }
     // The token as the operator typed it is what every error message names ("-k requires a
     // value", not "--keystore requires a value"); `arg` is what the parsed result is keyed by.
     const long = SHORT_FLAGS[typed]
@@ -113,11 +128,18 @@ export function parseArgs(args: string[], spec: ArgSpec): ParsedArgs | { error: 
       // A missing value, or the next token itself looking like a flag (starts with "-"), is a
       // usage error rather than silently consuming that next flag as this one's value -- e.g.
       // `auth login --scopes --no-browser` must not swallow --no-browser as a scope string.
-      if (!value || value.startsWith("-")) return { error: `${typed} requires a value` }
+      // A known flag always wins: `--to-key --to-key` is a missing value, not a prefix "--to-key".
+      const dashPrefixOk =
+        value !== undefined &&
+        spec.keyPrefixValueFlags?.includes(arg) === true &&
+        DASH_KEY_PREFIX_RE.test(value) &&
+        !valueFlags.has(value) &&
+        !booleanFlags.has(value)
+      if (!value || (value.startsWith("-") && !dashPrefixOk)) return { error: `${typed} requires a value` }
       values[arg] = value
     } else if (booleanFlags.has(arg)) {
       booleans.add(arg)
-    } else if (typed.startsWith("-")) {
+    } else if (typed.startsWith("-") && !(spec.keyPrefixPositional === true && DASH_KEY_PREFIX_RE.test(typed))) {
       return { error: `Unknown flag: ${typed}` }
     } else {
       positionals.push(typed)

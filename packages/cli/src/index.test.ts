@@ -73,6 +73,27 @@ describe("dispatch", () => {
     expect(stderr.text.toLowerCase()).toContain("usage")
   })
 
+  test("`--` stops global flag extraction: help and value-taking globals after it stay positionals", async () => {
+    // `keys revoke -- --help` must reach keys revoke as the positional "--help", not print help.
+    const help = createCapture()
+    const helpErr = createCapture()
+    const helpCode = await run(
+      ["keys", "revoke", "--", "--help"],
+      createTestDeps({ fetch: unusedFetch, stdout: help, stderr: helpErr }),
+    )
+    expect(helpCode).not.toBe(0)
+    expect(help.text + helpErr.text).not.toContain("Usage: candle keys revoke <prefix>")
+
+    // `--profile ghost` after `--` is two positionals (a usage error), not a profile selection.
+    const profile = createCapture()
+    const code = await run(
+      ["keys", "revoke", "--", "--profile", "ghost"],
+      createTestDeps({ fetch: unusedFetch, stderr: profile }),
+    )
+    expect(code).toBe(2)
+    expect(profile.text).toContain("Usage: candle keys revoke <prefix>")
+  })
+
   // The dispatch table and each command's subcommand map are plain objects, so a bare index
   // lookup finds Object.prototype's members: "toString" would route as a command word, and "keys
   // toString" would find a "handler" that is not one and call it. Every one of these is an
