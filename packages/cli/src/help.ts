@@ -1011,17 +1011,32 @@ export const HELP: Record<string, Topic> = {
   },
   quant: {
     group: "Account",
-    intro: "Quant's terms, accepted before per-use answers",
-    summary: "Quant's terms, which per-use Quant answers need accepted first",
+    intro: "Ask Quant from the terminal; accept its terms",
+    summary: "Quant over an API key: ask a question, accept the terms per-use answers need",
     description:
-      "terms shows Quant's terms and Privacy Policy and records this account's acceptance through its API key. Quant accepts only its current version; the default is the version this release was built with, and --terms-version sends another. A paid Quant answer past the daily limit is refused until the terms are accepted, before any payment is asked for.",
-    usage: ["candle quant terms [--terms-version <YYYY-MM-DD>] [--yes] [--json]"],
-    rows: [{ invocation: "terms", description: "Show Quant's terms and record acceptance" }],
-    flags: [
-      { invocation: "--terms-version <date>", description: "The terms version to accept, YYYY-MM-DD" },
-      { invocation: "--yes", description: "Accept without the typed confirm" },
+      "ask sends one question to Quant through this profile's API key (or CANDLE_API_KEY; a Read key is enough, account:read or launch:write), follows the turn until it ends and prints the answer. --json prints {turnId, answer, remaining?, resetsAt?}, remaining being today's answers left. A refusal is a plain sentence and exit 1, and --json carries the route's code: limit_reached with resetsAt, turn_in_progress with turnId, text_too_long with limit, RATE_LIMITED, VALIDATION_FAILED, NO_IDENTITY_WALLET, TERMS_REQUIRED, and QUANT_AGENT_OFF when Quant for agent keys is off on the API. Past the daily limit an API with per-use payments answers with an offer: ask prints the price as PAYMENT_REQUIRED and stops, and pays nothing. Ctrl-C, or --timeout passing (default 300 s), cancels the turn. terms shows Quant's terms and Privacy Policy and records this account's acceptance through its API key. Quant accepts only its current version; the default is the version this release was built with, and --terms-version sends another. A paid Quant answer past the daily limit is refused until the terms are accepted, before any payment is asked for.",
+    usage: [
+      'candle quant ask "<text>" [--timeout <s>] [--json]',
+      "candle quant terms [--terms-version <YYYY-MM-DD>] [--yes] [--json]",
     ],
-    examples: ["candle quant terms", "candle quant terms --yes --json"],
+    rows: [
+      { invocation: 'ask "<text>"', description: "Ask Quant one question and print the answer" },
+      { invocation: "terms", description: "Show Quant's terms and record acceptance" },
+    ],
+    flags: [
+      {
+        invocation: "--timeout <s>",
+        description: "ask: stop waiting and cancel the turn after s seconds (default 300)",
+      },
+      { invocation: "--terms-version <date>", description: "terms: the terms version to accept, YYYY-MM-DD" },
+      { invocation: "--yes", description: "terms: accept without the typed confirm" },
+    ],
+    examples: [
+      'candle quant ask "What moved SOL today?"',
+      'candle quant ask "Summarize my open positions" --json',
+      "candle quant terms",
+      "candle quant terms --yes --json",
+    ],
     env: ENV_API,
   },
   lab: {

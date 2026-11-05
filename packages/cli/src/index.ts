@@ -78,6 +78,7 @@ import { plugins, runPlugin } from "./commands/plugins"
 import { pnl } from "./commands/pnl"
 import { portfolio } from "./commands/portfolio"
 import { profileAdd, profileList, profileRemove, profileRename, profileSet, profileUse } from "./commands/profile"
+import { quantAsk } from "./commands/quant-ask"
 import { quantTerms } from "./commands/quant-terms"
 import { scan } from "./commands/scan"
 import { secretsList, secretsRemove, secretsSet } from "./commands/secrets"
@@ -303,7 +304,7 @@ const COMMANDS: Record<string, CommandRoute> = {
     },
   },
   // x402 C4 (spec 7.3): Quant's terms over the key route, which a paid Quant turn needs first.
-  quant: { subcommands: { terms: quantTerms } },
+  quant: { subcommands: { ask: quantAsk, terms: quantTerms } },
   lab: { subcommands: { status: labStatus, replay: labReplay, runners: labRunners, edges: labEdges } },
   // x402 C7 (BE-1878): Pro or Max by x402 from a vault key, the wallet-as-identity signup, and the
   // local auto-renew flag. Plan payments are outside the per-use limits (spec 10.3).

@@ -532,7 +532,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.14";
+var CLI_VERSION = "0.13.15";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -76168,16 +76168,31 @@ var HELP = {
   },
   quant: {
     group: "Account",
-    intro: "Quant's terms, accepted before per-use answers",
-    summary: "Quant's terms, which per-use Quant answers need accepted first",
-    description: "terms shows Quant's terms and Privacy Policy and records this account's acceptance through its API key. Quant accepts only its current version; the default is the version this release was built with, and --terms-version sends another. A paid Quant answer past the daily limit is refused until the terms are accepted, before any payment is asked for.",
-    usage: ["candle quant terms [--terms-version <YYYY-MM-DD>] [--yes] [--json]"],
-    rows: [{ invocation: "terms", description: "Show Quant's terms and record acceptance" }],
-    flags: [
-      { invocation: "--terms-version <date>", description: "The terms version to accept, YYYY-MM-DD" },
-      { invocation: "--yes", description: "Accept without the typed confirm" }
+    intro: "Ask Quant from the terminal; accept its terms",
+    summary: "Quant over an API key: ask a question, accept the terms per-use answers need",
+    description: "ask sends one question to Quant through this profile's API key (or CANDLE_API_KEY; a Read key is enough, account:read or launch:write), follows the turn until it ends and prints the answer. --json prints {turnId, answer, remaining?, resetsAt?}, remaining being today's answers left. A refusal is a plain sentence and exit 1, and --json carries the route's code: limit_reached with resetsAt, turn_in_progress with turnId, text_too_long with limit, RATE_LIMITED, VALIDATION_FAILED, NO_IDENTITY_WALLET, TERMS_REQUIRED, and QUANT_AGENT_OFF when Quant for agent keys is off on the API. Past the daily limit an API with per-use payments answers with an offer: ask prints the price as PAYMENT_REQUIRED and stops, and pays nothing. Ctrl-C, or --timeout passing (default 300 s), cancels the turn. terms shows Quant's terms and Privacy Policy and records this account's acceptance through its API key. Quant accepts only its current version; the default is the version this release was built with, and --terms-version sends another. A paid Quant answer past the daily limit is refused until the terms are accepted, before any payment is asked for.",
+    usage: [
+      'candle quant ask "<text>" [--timeout <s>] [--json]',
+      "candle quant terms [--terms-version <YYYY-MM-DD>] [--yes] [--json]"
     ],
-    examples: ["candle quant terms", "candle quant terms --yes --json"],
+    rows: [
+      { invocation: 'ask "<text>"', description: "Ask Quant one question and print the answer" },
+      { invocation: "terms", description: "Show Quant's terms and record acceptance" }
+    ],
+    flags: [
+      {
+        invocation: "--timeout <s>",
+        description: "ask: stop waiting and cancel the turn after s seconds (default 300)"
+      },
+      { invocation: "--terms-version <date>", description: "terms: the terms version to accept, YYYY-MM-DD" },
+      { invocation: "--yes", description: "terms: accept without the typed confirm" }
+    ],
+    examples: [
+      'candle quant ask "What moved SOL today?"',
+      'candle quant ask "Summarize my open positions" --json',
+      "candle quant terms",
+      "candle quant terms --yes --json"
+    ],
     env: ENV_API
   },
   lab: {
@@ -80026,6 +80041,9 @@ function quantCodePoints(text2) {
   for (const _ of text2)
     n++;
   return n;
+}
+function newClientTurnId() {
+  return crypto.randomUUID();
 }
 function quantRefusalCode(body) {
   const record4 = asRecord(body);
@@ -102981,6 +102999,298 @@ candle profile use <name>`);
   return 0;
 }
 
+// src/commands/quant-ask.ts
+init_args();
+init_deps();
+init_key_output();
+var USAGE14 = 'Usage: candle quant ask "<text>" [--timeout <s>] [--json]';
+var QUANT_ASK_DEFAULT_TIMEOUT_S = 300;
+var QUANT_ASK_MAX_TIMEOUT_S = 3600;
+var QUANT_ASK_SEND_TRIES = 3;
+var TOO_MANY_POLLS_WAIT_MS2 = 2000;
+var TOO_MANY_POLLS_RETRIES2 = 5;
+var LOST_POLL_RETRIES2 = 10;
+var isLive = (status) => status === "queued" || status === "running";
+function offerFailure(status, headers2, body) {
+  const header = headers2?.get(PAYMENT_REQUIRED_HEADER);
+  let details = { status };
+  let message = "Quant asked for a payment for this answer. This command pays nothing; nothing was paid.";
+  if (header) {
+    try {
+      const required = decodePaymentRequired(header);
+      const offer = required.accepts[0];
+      const price = offer && /^\d+$/.test(offer.amount) ? usdcText(BigInt(offer.amount)) : undefined;
+      details = {
+        ...details,
+        ...price ? { priceUsdc: price } : {},
+        ...offer ? { network: offer.network, payTo: offer.payTo } : {},
+        ...required.resource.description ? { description: required.resource.description } : {},
+        resource: required.resource.url
+      };
+      message = `${price ? `This Quant answer costs ${price} USDC` : "This Quant answer needs a payment"}. This command pays nothing; nothing was paid.`;
+    } catch {}
+  } else {
+    const text4 = body?.error?.message;
+    if (typeof text4 === "string" && text4)
+      message = `${text4} This command pays nothing; nothing was paid.`;
+  }
+  return { code: "PAYMENT_REQUIRED", message, details };
+}
+function turnRefusal(refusal3) {
+  const details = { status: refusal3.status };
+  if (refusal3.retryable !== undefined)
+    details.retryable = refusal3.retryable;
+  switch (refusal3.code) {
+    case "limit_reached":
+      return {
+        code: refusal3.code,
+        message: refusal3.resetsAt !== undefined ? `This account has used today's Quant answers. They reset at ${refusal3.resetsAt}.` : "This account has used today's Quant answers.",
+        details: { ...details, ...refusal3.resetsAt !== undefined ? { resetsAt: refusal3.resetsAt } : {} }
+      };
+    case "turn_in_progress":
+      return {
+        code: refusal3.code,
+        message: `Quant is already answering another question on this account${refusal3.turnId ? ` (turn ${refusal3.turnId})` : ""}. Try again when it ends.`,
+        details: { ...details, ...refusal3.turnId ? { turnId: refusal3.turnId } : {} }
+      };
+    case "text_too_long":
+      return {
+        code: refusal3.code,
+        message: refusal3.limit !== undefined ? `Too long: Quant takes up to ${refusal3.limit} characters.` : "Too long for Quant.",
+        details: { ...details, ...refusal3.limit !== undefined ? { limit: refusal3.limit } : {} }
+      };
+    case "RATE_LIMITED":
+      return { code: refusal3.code, message: "Too many requests just now. Wait a minute and ask again.", details };
+    case "VALIDATION_FAILED":
+      return { code: refusal3.code, message: "The API refused the question as malformed.", details };
+    case "NO_IDENTITY_WALLET":
+      return {
+        code: refusal3.code,
+        message: "This key's account has no identity wallet, and Quant answers per identity wallet.",
+        details
+      };
+    case "TERMS_REQUIRED":
+      return {
+        code: refusal3.code,
+        message: "Quant's terms are not accepted on this account yet.",
+        suggestion: "Run: candle quant terms",
+        details
+      };
+    case "TIMEOUT":
+    case "NETWORK_ERROR":
+      return {
+        code: "QUANT_UNREACHABLE",
+        message: `No answer from the API after ${QUANT_ASK_SEND_TRIES} tries.`,
+        details: { ...details, cause: refusal3.code }
+      };
+  }
+  if (refusal3.status === 404)
+    return offFailure();
+  return {
+    code: refusal3.code,
+    message: `Quant refused the question: ${refusal3.code} (HTTP ${refusal3.status}).`,
+    details
+  };
+}
+function offFailure() {
+  return { code: "QUANT_AGENT_OFF", message: "Quant for agent keys is off on this API." };
+}
+async function follow(client2, ctx, turnId, signal) {
+  const paragraphs = [];
+  let next = 0;
+  let tooMany = 0;
+  let lost = 0;
+  while (!signal.aborted) {
+    const answer2 = await client2.events(turnId, next, { signal });
+    if (signal.aborted)
+      break;
+    if (!answer2.ok) {
+      const refusal3 = answer2.refusal;
+      if (refusal3.code === "too_many_polls" && ++tooMany <= TOO_MANY_POLLS_RETRIES2) {
+        await ctx.deps.sleep(TOO_MANY_POLLS_WAIT_MS2);
+        continue;
+      }
+      if (refusal3.shape === "transport" && ++lost <= LOST_POLL_RETRIES2) {
+        await ctx.deps.sleep(Math.min(1000 * lost, 5000));
+        continue;
+      }
+      if (refusal3.status === 404 && refusal3.code === "HTTP_404")
+        return { ok: false, failure: offFailure() };
+      return {
+        ok: false,
+        failure: {
+          code: refusal3.code === "TIMEOUT" || refusal3.code === "NETWORK_ERROR" ? "QUANT_UNREACHABLE" : refusal3.code,
+          message: `Lost Quant's answer while it was being written: ${refusal3.code}.`,
+          details: { turnId, status: refusal3.status }
+        }
+      };
+    }
+    tooMany = 0;
+    lost = 0;
+    for (const event of answer2.body.events) {
+      if (event.seq <= next)
+        continue;
+      next = event.seq;
+      if (event.kind === "text" && typeof event.data.text === "string" && event.data.text) {
+        paragraphs.push(event.data.text);
+      } else if (event.kind === "done") {
+        return { ok: true, paragraphs, done: event.data };
+      } else if (event.kind === "error") {
+        const code = typeof event.data.code === "string" ? event.data.code : "error";
+        return {
+          ok: false,
+          failure: {
+            code,
+            message: code === "cancelled" ? "Quant's turn was cancelled." : `Quant could not answer: ${code}.`,
+            details: {
+              turnId,
+              ...typeof event.data.retryable === "boolean" ? { retryable: event.data.retryable } : {}
+            }
+          }
+        };
+      }
+    }
+    next = Math.max(next, answer2.body.next);
+    if (!isLive(answer2.body.status)) {
+      if (answer2.body.status === "done")
+        return { ok: true, paragraphs, done: {} };
+      return {
+        ok: false,
+        failure: {
+          code: "QUANT_TURN_ENDED",
+          message: `Quant's turn ended without an answer (${answer2.body.status}).`,
+          details: { turnId, turnStatus: answer2.body.status }
+        }
+      };
+    }
+  }
+  return { ok: false, failure: { code: "ABORTED", message: "Stopped waiting." } };
+}
+async function quantAsk(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--timeout"] });
+  const timeoutRaw = "error" in parsed ? undefined : parsed.values["--timeout"];
+  const timeoutS = timeoutRaw === undefined ? QUANT_ASK_DEFAULT_TIMEOUT_S : Number(timeoutRaw);
+  const text4 = "error" in parsed ? "" : parsed.positionals[0] ?? "";
+  if ("error" in parsed || parsed.positionals.length !== 1 || !text4.trim() || !Number.isInteger(timeoutS) || timeoutS < 1 || timeoutS > QUANT_ASK_MAX_TIMEOUT_S) {
+    writeScreenUsageFailure(ctx.deps, USAGE14, ctx.json);
+    return 2;
+  }
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (!apiKey) {
+    writeScreenLocalFailure(ctx.deps, {
+      code: "NO_API_KEY",
+      message: "Quant over the CLI asks through an API key, and this profile has none.",
+      suggestion: "Run: candle auth login"
+    }, ctx.json);
+    return 1;
+  }
+  let offer;
+  const fetchFn = async (input, init) => {
+    const response = await ctx.deps.fetch(input, init);
+    if (response.status === 402) {
+      offer = {
+        status: 402,
+        headers: response.headers,
+        body: await response.clone().json().catch(() => null)
+      };
+    }
+    return response;
+  };
+  let client2;
+  try {
+    client2 = createQuantKeyClient({ apiUrl: ctx.apiUrl, apiKey, fetch: fetchFn });
+  } catch (err) {
+    writeScreenLocalFailure(ctx.deps, { code: "INSECURE_API_URL", message: err instanceof Error ? err.message : String(err) }, ctx.json);
+    return 1;
+  }
+  const stop = new AbortController;
+  let reason;
+  const timer = setTimeout(() => {
+    reason ??= "timeout";
+    stop.abort();
+  }, timeoutS * 1000);
+  const unsubscribe = ctx.deps.onTerminate?.(() => {
+    reason ??= "interrupted";
+    stop.abort();
+  }) ?? (() => {});
+  try {
+    const clientTurnId = newClientTurnId();
+    let turnId;
+    let refusal3;
+    for (let attempt = 1;attempt <= QUANT_ASK_SEND_TRIES; attempt++) {
+      const sent = await client2.sendTurn({ text: text4, clientTurnId });
+      if (sent.ok) {
+        turnId = sent.body.turnId;
+        break;
+      }
+      refusal3 = sent.refusal;
+      if (refusal3.shape !== "transport" || stop.signal.aborted)
+        break;
+    }
+    if (turnId === undefined) {
+      if (reason === "interrupted")
+        return await stopped(ctx, client2, undefined, reason, timeoutS);
+      const failure3 = refusal3?.status === 402 && offer ? offerFailure(offer.status, offer.headers, offer.body) : turnRefusal(refusal3 ?? { code: "BAD_RESPONSE", status: 0, shape: "transport" });
+      writeScreenLocalFailure(ctx.deps, failure3, ctx.json);
+      return 1;
+    }
+    if (stop.signal.aborted) {
+      return await stopped(ctx, client2, turnId, reason, timeoutS);
+    }
+    const result = await follow(client2, ctx, turnId, stop.signal);
+    if (stop.signal.aborted) {
+      return await stopped(ctx, client2, turnId, reason, timeoutS);
+    }
+    if (!result.ok) {
+      writeScreenLocalFailure(ctx.deps, result.failure, ctx.json);
+      return 1;
+    }
+    const answer2 = result.paragraphs.join(`
+
+`);
+    if (!answer2.trim()) {
+      writeScreenLocalFailure(ctx.deps, { code: "QUANT_EMPTY_ANSWER", message: "Quant ended the turn without an answer.", details: { turnId } }, ctx.json);
+      return 1;
+    }
+    const remaining = typeof result.done.messagesLeft === "number" ? result.done.messagesLeft : undefined;
+    const resetsAt = typeof result.done.resetsAt === "string" || typeof result.done.resetsAt === "number" ? result.done.resetsAt : undefined;
+    if (ctx.json) {
+      ctx.deps.stdout.write(`${JSON.stringify({
+        turnId,
+        answer: answer2,
+        ...remaining !== undefined ? { remaining } : {},
+        ...resetsAt !== undefined ? { resetsAt } : {}
+      })}
+`);
+    } else {
+      ctx.deps.stdout.write(`${answer2}
+`);
+      if (remaining !== undefined) {
+        ctx.deps.stderr.write(`${remaining} Quant answer${remaining === 1 ? "" : "s"} left today${resetsAt !== undefined ? `, resets at ${resetsAt}` : ""}.
+`);
+      }
+    }
+    return 0;
+  } finally {
+    clearTimeout(timer);
+    unsubscribe();
+  }
+}
+async function stopped(ctx, client2, turnId, reason, timeoutS) {
+  const cancellation = turnId ? await client2.cancel(turnId) : undefined;
+  const cancelRefusal = cancellation && !cancellation.ok ? cancellation.refusal : undefined;
+  const interrupted = reason === "interrupted";
+  const prefix = interrupted ? "Interrupted" : `No answer within ${timeoutS} s`;
+  const message = !turnId ? "Interrupted before Quant took the question." : cancelRefusal ? `${prefix}; cancellation could not be confirmed and Quant's turn may still run.` : `${prefix}; Quant's turn was cancelled.`;
+  writeScreenLocalFailure(ctx.deps, {
+    code: interrupted ? "INTERRUPTED" : "QUANT_TIMEOUT",
+    message,
+    ...!interrupted && !cancelRefusal ? { suggestion: "Ask again with a longer --timeout <s>." } : {},
+    ...turnId ? { details: { turnId, ...cancelRefusal ? { cancelRefusal } : {} } } : {}
+  }, ctx.json);
+  return interrupted ? 130 : 1;
+}
+
 // src/commands/quant-terms.ts
 init_args();
 init_client();
@@ -103071,7 +103381,7 @@ init_client();
 init_human_output();
 init_presentation();
 init_render();
-var USAGE14 = "Usage: candle scan <contract address> [--chain solana|hood] [--json]";
+var USAGE15 = "Usage: candle scan <contract address> [--chain solana|hood] [--json]";
 var OTHER_CHAIN = "Candle trades Solana and Hood today; that is not a Solana or Hood contract address.";
 var HOOD_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 var SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -103171,20 +103481,20 @@ async function scan(args, ctx) {
   }
   const named = parsed.values["--chain"];
   if (parsed.positionals.length !== 1 || named !== undefined && named !== "solana" && named !== "hood") {
-    writeUsageFailure(ctx.deps, USAGE14, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE15, ctx.json);
     return 2;
   }
   const address = parsed.positionals[0].trim();
   const found = chainOfAddress(address);
   if (found === null) {
     writeUsageFailure(ctx.deps, `${OTHER_CHAIN}
-${USAGE14}`, ctx.json);
+${USAGE15}`, ctx.json);
     return 2;
   }
   if (named !== undefined && named !== found) {
     const label = (c) => c === "hood" ? "Hood" : "Solana";
     writeUsageFailure(ctx.deps, `That address is a ${label(found)} contract, not a ${label(named)} one. Candle trades Solana and Hood today.
-${USAGE14}`, ctx.json);
+${USAGE15}`, ctx.json);
     return 2;
   }
   const chain2 = found;
@@ -105062,7 +105372,7 @@ init_deps();
 init_human_output();
 init_render();
 var KINDS = ["trade", "signal", "callout"];
-var USAGE15 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
+var USAGE16 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
 function readEventsBody(body) {
   if (body === null || typeof body !== "object" || !Array.isArray(body.events))
     return null;
@@ -105120,11 +105430,11 @@ async function tokenEvents(args, ctx) {
   const since = parsed.values["--since"];
   const before = parsed.values["--before"];
   if (parsed.positionals.length !== 1 || chain2 !== "solana" && chain2 !== "hood") {
-    writeUsageFailure(ctx.deps, USAGE15, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE16, ctx.json);
     return 2;
   }
   if (kind !== undefined && !KINDS.includes(kind)) {
-    writeUsageFailure(ctx.deps, USAGE15, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE16, ctx.json);
     return 2;
   }
   if (limit !== undefined && !/^[1-9][0-9]{0,3}$/.test(limit) || Number(limit) > 1000) {
@@ -105463,7 +105773,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE16 = "Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE17 = "Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -105608,7 +105918,7 @@ async function transfer(args, ctx) {
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok) {
-    writeUsageFailure(ctx.deps, USAGE16, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE17, ctx.json);
     return 2;
   }
   const to = flags2["--to"];
@@ -112005,7 +112315,7 @@ ${renderControlledBy(controlledBy, acting.length)}
     await confirmPromotion(ctx, acting.length);
     const now = new Date(deps.now()).toISOString();
     const results = [];
-    let stopped;
+    let stopped2;
     let last;
     let worst = 0;
     const width = String(acting.length).length;
@@ -112065,7 +112375,7 @@ ${renderControlledBy(controlledBy, acting.length)}
                 failure3 = restoreRefusedFailure(failure3, error);
               }
             }
-            stopped = {
+            stopped2 = {
               line: row2.line,
               exit: imported.exit,
               code: failure3.code,
@@ -112108,7 +112418,7 @@ ${renderControlledBy(controlledBy, acting.length)}
           report: "return"
         });
         if (resumed.failure !== undefined || resumed.exit !== 0) {
-          stopped = {
+          stopped2 = {
             line: row.line,
             exit: resumed.exit,
             ...resumed.failure ?? { code: "PROMOTE_OUTCOME_UNRESOLVED", message: "The resume did not complete." }
@@ -112136,7 +112446,7 @@ ${renderControlledBy(controlledBy, acting.length)}
 `.trim());
       }
     } catch (error) {
-      stopped = {
+      stopped2 = {
         line: acting[done]?.row.line ?? 0,
         exit: isVaultError(error) ? error.exitCode : 1,
         code: isVaultError(error) ? error.code : "VAULT_UNREADABLE",
@@ -112144,8 +112454,8 @@ ${renderControlledBy(controlledBy, acting.length)}
         ...isVaultError(error) && error.suggestion ? { suggestion: error.suggestion } : {}
       };
     }
-    if (stopped !== undefined) {
-      reportPartial(ctx, { landed: done, acting: acting.length, failure: stopped });
+    if (stopped2 !== undefined) {
+      reportPartial(ctx, { landed: done, acting: acting.length, failure: stopped2 });
       let notReached;
       if (rebindPhase !== undefined) {
         const split2 = splitRebindable(results);
@@ -112173,19 +112483,19 @@ ${renderControlledBy(controlledBy, acting.length)}
           skipped: results.filter((r) => r.state === "skipped").length,
           destinations: destinations2.map(({ label, address, keys }) => ({ label, address, keys })),
           keys: rebindPhase === undefined ? results : keysWithRebind(results, rebindPhase, undefined),
-          failedLine: stopped.line,
-          code: stopped.code,
-          message: stopped.message,
-          ...stopped.suggestion !== undefined ? { suggestion: stopped.suggestion } : {},
+          failedLine: stopped2.line,
+          code: stopped2.code,
+          message: stopped2.message,
+          ...stopped2.suggestion !== undefined ? { suggestion: stopped2.suggestion } : {},
           controlledBy: controlledByJson(controlledBy),
           authorities: authoritiesJson(checked),
           ...notReached !== undefined ? rebindJson(notReached, chain2) : {}
         });
       } else {
-        notice(deps, "stderr", "note", `${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}
+        notice(deps, "stderr", "note", `${stopped2.message}${stopped2.suggestion ? ` ${stopped2.suggestion}` : ""}
 `.trim());
       }
-      return stopped.exit;
+      return stopped2.exit;
     }
     if (last !== undefined)
       await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx, chain2);
@@ -113718,7 +114028,7 @@ init_human_output();
 init_release();
 import { dirname as dirname13, join as join15 } from "node:path";
 init_key_output();
-var USAGE17 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE18 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -113750,19 +114060,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE17}`, json);
+${USAGE18}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeScreenUsageFailure(deps, `verify takes exactly one file.
-${USAGE17}`, json);
+${USAGE18}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeScreenUsageFailure(deps, `--bundle is required.
-${USAGE17}`, json);
+${USAGE18}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -113776,7 +114086,7 @@ ${USAGE17}`, json);
   }
   if (resolved.kind === "absent") {
     writeScreenUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE17}`, json);
+${USAGE18}`, json);
     return 2;
   }
   const identity4 = resolved.uri;
@@ -114035,7 +114345,7 @@ init_presentation();
 init_profiles();
 init_render();
 init_key_output();
-var USAGE18 = "Usage: candle wallets authorize [--no-browser] [--no-wait] [--timeout <seconds>] [--json]";
+var USAGE19 = "Usage: candle wallets authorize [--no-browser] [--no-wait] [--timeout <seconds>] [--json]";
 var AUTHORIZE_WAIT_DEFAULT_SECONDS = 600;
 var AUTHORIZE_POLL_MS = 3000;
 function authorizeUrl(apiUrl, portalOrigin) {
@@ -114058,12 +114368,12 @@ async function walletsAuthorize(args, ctx) {
   const parsed = parseArgs(args, { booleanFlags: ["--no-browser", "--no-wait"], valueFlags: ["--timeout"] });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE18}`, json);
+${USAGE19}`, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
     writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}
-${USAGE18}`, json);
+${USAGE19}`, json);
     return 2;
   }
   let timeoutSeconds = AUTHORIZE_WAIT_DEFAULT_SECONDS;
@@ -114072,7 +114382,7 @@ ${USAGE18}`, json);
     const n = Number(rawTimeout);
     if (!Number.isInteger(n) || n <= 0) {
       writeScreenUsageFailure(deps, `--timeout must be a whole number of seconds above 0, got ${rawTimeout}
-${USAGE18}`, json);
+${USAGE19}`, json);
       return 2;
     }
     timeoutSeconds = n;
@@ -114179,7 +114489,7 @@ init_solana_lite();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID16 } from "node:crypto";
-var USAGE19 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE20 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -114442,7 +114752,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE19}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE20}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -114453,7 +114763,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID16()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE19, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE20, ctx.json);
     return 2;
   }
   const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
@@ -114912,7 +115222,7 @@ var COMMANDS = {
       resume: spendResume
     }
   },
-  quant: { subcommands: { terms: quantTerms } },
+  quant: { subcommands: { ask: quantAsk, terms: quantTerms } },
   lab: { subcommands: { status: labStatus, replay: labReplay, runners: labRunners, edges: labEdges } },
   plan: {
     subcommands: { buy: planBuy, status: planStatus, renew: planRenew, "auto-renew": planAutoRenew }
