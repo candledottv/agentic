@@ -151,6 +151,8 @@ emergency procedure, rebinding, trusted wallets and API key access levels are al
 
 `candle vault transfer <to> --amount max --asset SOL --from <label>` sends the source wallet’s SOL balance minus the exact quoted transaction fee. The plain system wallet is emptied, so its source rent reserve is zero. The balance and fee are refreshed after confirmation; a changed amount or fee is displayed and must be confirmed again (at most three confirmations). An unavailable or unstable fee quote, or a balance that cannot cover the fee and a positive send, refuses before signing. Nonce and program accounts cannot use this plain transfer shape. SPL and Token-2022 `max` send the source associated token account’s full raw balance (mint fees may reduce what arrives); SOL must still cover fees and any destination token account rent. Hood native `max` deducts the fee cap; ERC-20 `max` sends the whole token balance.
 
+`candle transfer --asset SOL --amount max` (including `--to vault` from a TEE wallet) sends the balance minus 10,000 lamports of fee headroom and the RPC-reported rent-exempt minimum for a zero-byte system account. It keeps the payer rent-exempt. If no positive amount remains, Candle refuses before signing with `TRANSFER_AMOUNT_UNAVAILABLE`; the message reports the spendable lamports, fee headroom and rent minimum. The returned `amountRaw` is the amount the transaction moves.
+
 The documented `--access` values are `read`, `write` and `withdraw`. The older `read-write`, `transfer` and `read-write-transfer` values remain accepted as silent, permanent aliases.
 
 Every command accepts these global options:
