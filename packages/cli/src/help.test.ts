@@ -13,6 +13,15 @@ const styleAt = (width: number) =>
   terminalStyle(createTestDeps({ fetch: unusedFetch, columns: { stdout: width } }), "stdout", false)
 
 describe("release B help", () => {
+  test("tui help names Candle Harness and explains installation and the legacy fallback", () => {
+    const screen = normalize(renderTopic("tui", styleAt(100), true) ?? "")
+    expect(screen).toContain("Candle Harness")
+    expect(screen).toContain("candle-harness first, then candle-tui")
+    expect(screen).toContain("https://github.com/candledottv/harness/releases")
+    expect(screen).toContain("candle tui [--profile <name>]")
+    expect(screen).not.toContain("not released yet")
+  })
+
   test("every short intro fits three lines at reading widths; all full rules remain local", () => {
     for (const width of [40, 60, 80, 100, 118, 160]) {
       for (const [word, topic] of Object.entries(HELP)) {

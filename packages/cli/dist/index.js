@@ -75399,7 +75399,7 @@ var ENVIRONMENT = [
   },
   {
     name: "CANDLE_CORE_TOKEN",
-    description: "A harness token for candle core mcp, when --token is not given; minted in the Candle TUI"
+    description: "A harness token for candle core mcp, when --token is not given; minted in Candle Harness"
   }
 ];
 var ENV_API = [
@@ -76764,9 +76764,9 @@ var HELP = {
   },
   tui: {
     group: "Start here",
-    intro: "The Candle TUI: holdings, feed, agents, approvals (preview)",
-    summary: "The Candle TUI: holdings, the feed, your agents and approval cards, in the terminal (preview)",
-    description: "Starts the Candle TUI (candle-tui), which starts the local core for the profile when it is not running. Every live money action an agent proposes becomes an approval card you approve there with your vault factor. Preview: the TUI is not released yet.",
+    intro: "Candle Harness: holdings, feed, agents, approvals",
+    summary: "Candle Harness: holdings, the feed, your agents and approval cards, in the terminal",
+    description: "Starts Candle Harness (candle-harness first, then candle-tui), which starts the local core for the profile when it is not running. Every live money action an agent proposes becomes an approval card you approve there with your vault factor. Install it from https://github.com/candledottv/harness/releases.",
     usage: ["candle tui [--profile <name>]"],
     rows: [],
     examples: ["candle tui", "candle tui --profile staging"],
@@ -76774,8 +76774,8 @@ var HELP = {
   },
   core: {
     group: "Maintain",
-    summary: "Run the local Candle core the Candle TUI attaches to (preview)",
-    description: "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Views and harnesses attach to it on a local socket; every live money action becomes an approval card you approve in the TUI with your vault factor. Preview.",
+    summary: "Run the local Candle core for Candle Harness (preview)",
+    description: "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in Candle Harness. Views and harnesses attach to it on a local socket; every live money action becomes an approval card you approve in the TUI with your vault factor. Preview.",
     usage: ["candle core serve [--profile <name>] [--view-token-fd <n>]", "candle core mcp [--token <harness token>]"],
     rows: [
       { invocation: "serve", description: "Start the core for the profile in play; one per profile" },
@@ -106135,17 +106135,17 @@ Usage: candle tui [--profile <name>]`, json);
   if (json || !deps.isTTY.stdin || !deps.isTTY.stdout || deps.env.TERM === "dumb" || deps.presentation?.plain || deps.env.CANDLE_PLAIN === "1") {
     writeLocalFailure(deps, {
       code: "TUI_REQUIRES_TERMINAL",
-      message: "The Candle TUI needs an interactive terminal.",
+      message: "Candle Harness needs an interactive terminal.",
       suggestion: "Use candle portfolio or candle help for command-line output."
     }, json);
     return 1;
   }
-  const path = findPlugin("tui", deps.env.PATH);
+  const path = findPlugin("harness", deps.env.PATH) ?? findPlugin("tui", deps.env.PATH);
   if (path === undefined) {
     writeLocalFailure(deps, {
       code: "TUI_NOT_INSTALLED",
-      message: "The Candle TUI (candle-tui) is not on PATH.",
-      suggestion: "It is a preview and not released yet; from a checkout, run bun packages/tui/src/bin.tsx --candle <this candle>."
+      message: "Candle Harness (candle-harness or candle-tui) is not on PATH.",
+      suggestion: "Install Candle Harness from https://github.com/candledottv/harness/releases and add candle-harness to PATH."
     }, json);
     return 1;
   }

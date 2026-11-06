@@ -1,8 +1,9 @@
 /**
- * `candle tui` (BE-1665, spec C-1): the thin entry that starts the Candle TUI, `candle-tui`, on this
- * terminal. The TUI starts the core (`candle core serve`, this binary) when it is not running and
- * launches the views. It ships in its own package (`@candledottv/tui`) so the views and the bundled
- * Pi agent stay out of this binary, and that package never imports the keychain or the vault.
+ * `candle tui` (BE-1665, spec C-1): the thin entry that starts Candle Harness on this
+ * terminal, preferring `candle-harness` on PATH with `candle-tui` as a legacy fallback. Harness
+ * starts the core (`candle core serve`, this binary) when it is not running and launches the views.
+ * It ships separately so the views and bundled Pi agent stay out of this binary, and never imports
+ * the keychain or the vault.
  *
  * The TUI gets an environment built from empty: where the config lives, which profile, the
  * terminal, and the encrypted-file store's passphrase when one is set, so the core it starts can
@@ -50,22 +51,22 @@ export async function tui(args: string[], ctx: CommandContext): Promise<number> 
       deps,
       {
         code: "TUI_REQUIRES_TERMINAL",
-        message: "The Candle TUI needs an interactive terminal.",
+        message: "Candle Harness needs an interactive terminal.",
         suggestion: "Use candle portfolio or candle help for command-line output.",
       },
       json,
     )
     return 1
   }
-  const path = findPlugin("tui", deps.env.PATH)
+  const path = findPlugin("harness", deps.env.PATH) ?? findPlugin("tui", deps.env.PATH)
   if (path === undefined) {
     writeLocalFailure(
       deps,
       {
         code: "TUI_NOT_INSTALLED",
-        message: "The Candle TUI (candle-tui) is not on PATH.",
+        message: "Candle Harness (candle-harness or candle-tui) is not on PATH.",
         suggestion:
-          "It is a preview and not released yet; from a checkout, run bun packages/tui/src/bin.tsx --candle <this candle>.",
+          "Install Candle Harness from https://github.com/candledottv/harness/releases and add candle-harness to PATH.",
       },
       json,
     )

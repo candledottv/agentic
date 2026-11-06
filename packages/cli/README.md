@@ -34,6 +34,11 @@ after the server accepted, the command prints address-keyed rows (`<address> <ne
 under `--json`) to run again: the old label no longer resolves on the server, and a re-run leaves
 the server label alone and finishes the vault.
 
+`candle tui [--profile <name>]` opens Candle Harness in an interactive terminal. Install it
+from the [Candle Harness releases](https://github.com/candledottv/harness/releases) and add
+`candle-harness` to PATH. The CLI looks for `candle-harness` first, then falls back to
+`candle-tui` for older installs; if neither is found, it prints the release link.
+
 ## Quick start
 
 ```

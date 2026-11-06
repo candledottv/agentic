@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 import type { CommandContext } from "../deps"
 import { createCapture, createTestDeps } from "../test-support"
 import { tui } from "./tui"
@@ -14,12 +14,12 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true })
 })
 
-async function setup(installed: boolean) {
+async function setup(installed: string[]) {
   const bin = await mkdtemp(join(tmpdir(), "candle-tui-bin-"))
   dirs.push(bin)
-  if (installed) {
-    await writeFile(join(bin, "candle-tui"), "#!/bin/sh\nexit 0\n")
-    await chmod(join(bin, "candle-tui"), 0o755)
+  for (const name of installed) {
+    await writeFile(join(bin, name), "#!/bin/sh\nexit 0\n")
+    await chmod(join(bin, name), 0o755)
   }
   const runs: { path: string; args: string[]; env: Record<string, string> }[] = []
   const deps = createTestDeps({
@@ -49,27 +49,44 @@ async function setup(installed: boolean) {
 }
 
 describe("candle tui", () => {
-  test("runs candle-tui from PATH with the profile and this candle, and no credential variable", async () => {
-    const s = await setup(true)
+  test("runs candle-harness from PATH with the profile and this candle, and no credential variable", async () => {
+    const s = await setup(["candle-harness"])
     expect(await tui([], s.ctx)).toBe(0)
     expect(s.runs).toEqual([
       {
-        path: join(s.bin, "candle-tui"),
+        path: join(s.bin, "candle-harness"),
         args: ["--profile", "staging", "--candle", "/opt/candle/bin/candle"],
         env: { PATH: s.bin, HOME: "/home/x", CANDLE_CONFIG_DIR: "/cfg" },
       },
     ])
   })
 
-  test("says so when the TUI is not installed", async () => {
-    const s = await setup(false)
+  test("prefers candle-harness even when candle-tui is earlier on PATH", async () => {
+    const legacy = await setup(["candle-tui"])
+    const s = await setup(["candle-harness"])
+    s.deps.env.PATH = [legacy.bin, s.bin].join(delimiter)
+    expect(await tui([], s.ctx)).toBe(0)
+    expect(s.runs[0]?.path).toBe(join(s.bin, "candle-harness"))
+  })
+
+  test("falls back to candle-tui for an older install", async () => {
+    const s = await setup(["candle-tui"])
+    expect(await tui([], s.ctx)).toBe(0)
+    expect(s.runs[0]?.path).toBe(join(s.bin, "candle-tui"))
+  })
+
+  test("names Candle Harness and its releases when neither binary is installed", async () => {
+    const s = await setup([])
     expect(await tui([], s.ctx)).toBe(1)
-    expect((s.deps.stderr as unknown as { text: string }).text).toContain("candle-tui")
+    const output = (s.deps.stderr as ReturnType<typeof createCapture>).text
+    expect(output).toContain("Candle Harness")
+    expect(output).toContain("https://github.com/candledottv/harness/releases")
+    expect(s.runs).toHaveLength(0)
     expect(await tui(["extra"], s.ctx)).toBe(2)
   })
   test("non-TTY, plain and JSON invocations refuse before starting a screen", async () => {
     for (const mode of ["pipe", "plain", "json", "dumb"]) {
-      const s = await setup(true)
+      const s = await setup(["candle-harness"])
       if (mode === "pipe") s.deps.isTTY.stdout = false
       if (mode === "plain") s.deps.presentation = { plain: true }
       if (mode === "json") s.ctx.json = true
@@ -81,7 +98,7 @@ describe("candle tui", () => {
     }
   })
   test("--no-color reaches the TUI as NO_COLOR", async () => {
-    const s = await setup(true)
+    const s = await setup(["candle-harness"])
     s.deps.presentation = { noColor: true }
     expect(await tui([], s.ctx)).toBe(0)
     expect(s.runs[0]?.env.NO_COLOR).toBe("1")

@@ -137,7 +137,7 @@ export const ENVIRONMENT: EnvVar[] = [
   },
   {
     name: "CANDLE_CORE_TOKEN",
-    description: "A harness token for candle core mcp, when --token is not given; minted in the Candle TUI",
+    description: "A harness token for candle core mcp, when --token is not given; minted in Candle Harness",
   },
 ]
 
@@ -1686,10 +1686,10 @@ export const HELP: Record<string, Topic> = {
   },
   tui: {
     group: "Start here",
-    intro: "The Candle TUI: holdings, feed, agents, approvals (preview)",
-    summary: "The Candle TUI: holdings, the feed, your agents and approval cards, in the terminal (preview)",
+    intro: "Candle Harness: holdings, feed, agents, approvals",
+    summary: "Candle Harness: holdings, the feed, your agents and approval cards, in the terminal",
     description:
-      "Starts the Candle TUI (candle-tui), which starts the local core for the profile when it is not running. Every live money action an agent proposes becomes an approval card you approve there with your vault factor. Preview: the TUI is not released yet.",
+      "Starts Candle Harness (candle-harness first, then candle-tui), which starts the local core for the profile when it is not running. Every live money action an agent proposes becomes an approval card you approve there with your vault factor. Install it from https://github.com/candledottv/harness/releases.",
     usage: ["candle tui [--profile <name>]"],
     rows: [],
     examples: ["candle tui", "candle tui --profile staging"],
@@ -1697,9 +1697,9 @@ export const HELP: Record<string, Topic> = {
   },
   core: {
     group: "Maintain",
-    summary: "Run the local Candle core the Candle TUI attaches to (preview)",
+    summary: "Run the local Candle core for Candle Harness (preview)",
     description:
-      "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in the Candle TUI. Views and harnesses attach to it on a local socket; every live money action becomes an approval card you approve in the TUI with your vault factor. Preview.",
+      "The local core: one process per profile, and the only thing on this machine that holds the profile's trading credentials once trading is on in Candle Harness. Views and harnesses attach to it on a local socket; every live money action becomes an approval card you approve in the TUI with your vault factor. Preview.",
     usage: ["candle core serve [--profile <name>] [--view-token-fd <n>]", "candle core mcp [--token <harness token>]"],
     rows: [
       { invocation: "serve", description: "Start the core for the profile in play; one per profile" },
