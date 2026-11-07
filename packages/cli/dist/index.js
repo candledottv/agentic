@@ -532,7 +532,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.15";
+var CLI_VERSION = "0.13.16";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -45230,9 +45230,10 @@ function buildRequest(name, args, cfg) {
     }
     case "candle_get_profile_pnl": {
       const apiKey = requireApiKey2(cfg);
-      const { keyPrefix } = args;
+      const { keyPrefix, sinceMs } = args;
+      const query2 = sinceMs !== undefined ? `?sinceMs=${encodeURIComponent(String(sinceMs))}` : "";
       return {
-        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl`,
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl${query2}`,
         init: { method: "GET", headers: jsonHeaders(apiKey) }
       };
     }
@@ -45691,7 +45692,7 @@ function registerToolSubset(server, options) {
   }, async (args) => callAndRelay("candle_set_profile_wallets", args, getConfig(), doFetch));
   register("candle_get_profile_pnl", {
     title: "Read an agent profile's P&L",
-    description: "Optional `board` beside `pnl` carries profileId, creatorFeesUsd, feeClaimsUnvalued, feeClaimsPartial and " + "totalPnlUsd (absent before a board entry exists): the all-time public board total, including fee claims " + "at their value when claimed, credited to the agent that launched the token when the claiming account " + "is the launching account. `feesUsd` is fees paid; `creatorFeesUsd` is fees earned. Check feeClaimsPartial " + "and feeClaimsUnvalued. `board` is absent on an older backend or a failed board read; it does not change " + "ledger pnl.totalUsd. Staking rewards are held at zero cost; claim value is informational, never added again. " + "This profile's share of the account's P&L: realized profit on the sales it made and on positions its buy opened that closed through a sale made by hand in the web app or an exit outside Candle (the fee and trade count stay under Manual), the Candle fees " + "charged against it, and the positions that belong to it (the wallet's bound key, else the key " + "whose buy opened them) with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits and withdrawals are " + "excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before quoting the " + "number; they mean the total is partial. The figures come from the account's one P&L read, the " + "same as the console's, to the cent: `pnl.totalUsd` (realized net plus unrealized) is the " + "console's P&L, plus the Hyperliquid net when `perpsInTotal` is true. Positions live in wallets: each wallet is its own average-cost pool, the total " + "is the sum of `pnl.byWallet` (one row per wallet, main or linked, with the linked wallet's " + "label; `unknown:solana` or `unknown:hood` is the row for fills no record places in a wallet), " + "and one token held in two wallets is two positions, each with its `wallet`. A recorded move " + "between the account's wallets carries its cost and realizes nothing. Moved-in positions and " + "`closedPositions` carry additive `transferredIn`, `basisSource` and `basisComplete`; " + "`basisSource` says whether cost comes from Candle history, on-chain trades or the arrival price; " + "`zero-cost` (with `zeroCostQuantity`) is Solana CNDL with no purchase found, carried at $0. " + "Public `realizedFromTransfersUsd` and `unrealizedFromTransfersUsd` are shares already included in " + "total P&L and rank; do not add them again. Moved-in closes count toward W/L and eligibility. Each position carries " + "`agent` (the key it belongs to) and `dust` when it is worth under one cent; dust stays listed " + "and counted, and `openPositionsExDust` leaves it out. `closed` gives the closed positions as " + "`madeUsd` + `lostUsd` + `partialSellsUsd` = `realizedNetUsd`, with `wins` and `losses`. " + "`lookback` and `truncated` are the account's activity bound, and `tradesConsidered` counts this " + "key's ledger fills. Since 2026-10-02 the total is the sum of wallets rather than one pool across " + "them, so realized figures can differ from earlier reads; a server that predates it omits " + "`totalUsd`, `closed`, `openPositionsExDust`, `wallet`, `agent` and `dust`. " + "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " + "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " + "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " + "`chain`). The two chains sum to the total. A " + "server that predates per-chain P&L omits `chain` and `byChain`. " + PROFILE_PNL_HYPERLIQUID + " Reads only.",
+    description: "Optional `board` beside `pnl` carries profileId, creatorFeesUsd, feeClaimsUnvalued, feeClaimsPartial and " + "totalPnlUsd (absent before a board entry exists): the all-time public board total, including fee claims " + "at their value when claimed, credited to the agent that launched the token when the claiming account " + "is the launching account. `feesUsd` is fees paid; `creatorFeesUsd` is fees earned. Check feeClaimsPartial " + "and feeClaimsUnvalued. `board` is absent on an older backend or a failed board read; it does not change " + "ledger pnl.totalUsd. Staking rewards are held at zero cost; claim value is informational, never added again. " + "This profile's share of the account's P&L: realized profit on the sales it made and on positions its buy opened that closed through a sale made by hand in the web app or an exit outside Candle (the fee and trade count stay under Manual), the Candle fees " + "charged against it, and the positions that belong to it (the wallet's bound key, else the key " + "whose buy opened them) with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits and withdrawals are " + "excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before quoting the " + "number; they mean the total is partial. The figures come from the account's one P&L read, the " + "same as the console's, to the cent: `pnl.totalUsd` (realized net plus unrealized) is the " + "console's P&L, plus the Hyperliquid net when `perpsInTotal` is true. Positions live in wallets: each wallet is its own average-cost pool, the total " + "is the sum of `pnl.byWallet` (one row per wallet, main or linked, with the linked wallet's " + "label; `unknown:solana` or `unknown:hood` is the row for fills no record places in a wallet), " + "and one token held in two wallets is two positions, each with its `wallet`. A recorded move " + "between the account's wallets carries its cost and realizes nothing. Moved-in positions and " + "`closedPositions` carry additive `transferredIn`, `basisSource` and `basisComplete`; " + "`basisSource` says whether cost comes from Candle history, on-chain trades or the arrival price; " + "`zero-cost` (with `zeroCostQuantity`) is Solana CNDL with no purchase found, carried at $0. " + "Public `realizedFromTransfersUsd` and `unrealizedFromTransfersUsd` are shares already included in " + "total P&L and rank; do not add them again. Moved-in closes count toward W/L and eligibility. Each position carries " + "`agent` (the key it belongs to) and `dust` when it is worth under one cent; dust stays listed " + "and counted, and `openPositionsExDust` leaves it out. `closed` gives the closed positions as " + "`madeUsd` + `lostUsd` + `partialSellsUsd` = `realizedNetUsd`, with `wins` and `losses`. " + "`lookback` and `truncated` are the account's activity bound, and `tradesConsidered` counts this " + "key's ledger fills. Since 2026-10-02 the total is the sum of wallets rather than one pool across " + "them, so realized figures can differ from earlier reads; a server that predates it omits " + "`totalUsd`, `closed`, `openPositionsExDust`, `wallet`, `agent` and `dust`. " + "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " + "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " + "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " + "`chain`). The two chains sum to the total. A " + "server that predates per-chain P&L omits `chain` and `byChain`. " + PROFILE_PNL_HYPERLIQUID + " Pass `sinceMs` for a `window` block beside all-time `pnl`: existing holdings start at the last " + "completed historical minute candle's close, returned in `boundary.marks` with its timestamp. " + "Sales and open positions use that window basis, with later buys at trade cost. `feesUsd` includes " + "both buy and sell fees once, separately from basis. `windowedUsd` is " + "realizedNetUsd plus unrealizedUsd. Missing boundary/current marks or incomplete history return " + "complete:false, incompleteReasons and windowedUsd:null; component sums are partial then. " + "This is spot trading P&L; LP, perps and fee income remain separate. Reads only.",
     inputSchema: profilePnlShape
   }, async (args) => callAndRelay("candle_get_profile_pnl", args, getConfig(), doFetch));
   register("candle_get_profile_trades", {
@@ -46239,7 +46240,8 @@ var init_tools = __esm(() => {
     keyPrefix: exports_external.string().describe("The profile's API key prefix, as listed by candle keys list or in the dashboard")
   };
   profilePnlShape = {
-    keyPrefix: exports_external.string().describe("The profile's API key prefix")
+    keyPrefix: exports_external.string().describe("The profile's API key prefix"),
+    sinceMs: exports_external.number().int().nonnegative().optional().describe("Unix time in milliseconds. Adds a `window` block: realized and open mark changes since then, including older holdings. Buy and sell fees are charged once. Read complete and incompleteReasons; windowedUsd is null when incomplete. The all-time `pnl` is unchanged.")
   };
   profileTradesShape = {
     keyPrefix: exports_external.string().describe("The profile's API key prefix"),
@@ -76996,8 +76998,8 @@ var HELP = {
         description: "Deprecated: where the server has TEE_LAUNCH_BY_SCOPE_ENABLED on it saves the value but cannot stop a launch, and exits 1 with the server's message; pause the key (candle keys stop) instead. Otherwise stops TEE wallets paying for a launch; trading is unchanged (owner only)"
       },
       {
-        invocation: "close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes]",
-        description: "Close a wallet's empty token accounts and return their rent to it, after a preview: the embedded wallet (transfer:write), or a TEE wallet bound to this key, signed by its key signer (swap:write)"
+        invocation: "close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes]",
+        description: "Close a wallet's empty token accounts and return their rent to it, after a preview: the embedded wallet (transfer:write), or a TEE wallet bound to this key, signed by its key signer (swap:write). --preview prints what would close (one JSON document on stdout under --json) and closes nothing"
       }
     ],
     flags: [
@@ -115157,7 +115159,7 @@ init_solana_lite();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID16 } from "node:crypto";
-var USAGE20 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE20 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -115209,7 +115211,7 @@ function previewLines3(preview, walletName2) {
   }
   return lines;
 }
-async function confirmClose(ctx, lines, yes) {
+async function confirmClose(ctx, preview, lines, yes) {
   const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
   for (const line of lines)
     output.write(`${line}
@@ -115217,10 +115219,22 @@ async function confirmClose(ctx, lines, yes) {
   if (yes)
     return true;
   if (!ctx.deps.isTTY.stdin)
-    throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes to close without a prompt.");
+    throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, use --yes to close without a prompt, or --preview to print what would close.", { details: { preview } });
   return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
 }
-async function previewAndConfirm(ctx, preview, walletName2, yes) {
+async function previewAndConfirm(ctx, preview, walletName2, run2) {
+  if (run2.preview) {
+    const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+    for (const line of previewLines3(preview, walletName2))
+      output.write(`${line}
+`);
+    return printTradingResult(ctx, {
+      success: true,
+      status: "preview",
+      wallet: preview.wallet,
+      preview
+    });
+  }
   if (preview.accounts.length === 0) {
     const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
     output.write(`No empty token accounts to close on the ${walletName2}.
@@ -115235,7 +115249,7 @@ async function previewAndConfirm(ctx, preview, walletName2, yes) {
       preview
     });
   }
-  if (!await confirmClose(ctx, previewLines3(preview, walletName2), yes))
+  if (!await confirmClose(ctx, preview, previewLines3(preview, walletName2), run2.yes))
     return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
@@ -115251,7 +115265,7 @@ async function embeddedAddress2(ctx, key) {
 }
 async function closeEmbedded(ctx, key, run2) {
   const { id, keep } = run2;
-  if (run2.named) {
+  if (run2.named && !run2.preview) {
     try {
       const prior = await request(ctx, key, `/api/v1/agent/wallets/embedded/close-empty/jobs/${encodeURIComponent(id)}`);
       return printTradingResult(ctx, { ...prior, clientTradeId: id });
@@ -115268,7 +115282,7 @@ async function closeEmbedded(ctx, key, run2) {
   });
   if (!Array.isArray(preview.accounts) || preview.wallet !== wallet3)
     throw new TradingError("INVALID_RESPONSE", "Candle's preview does not name the embedded wallet; nothing was closed.");
-  const accounts = await previewAndConfirm(ctx, preview, `embedded wallet ${safeText(wallet3)}`, run2.yes);
+  const accounts = await previewAndConfirm(ctx, preview, `embedded wallet ${safeText(wallet3)}`, run2);
   if (typeof accounts === "number")
     return accounts;
   ctx.deps.stderr.write(`Operation: ${id}
@@ -115382,7 +115396,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
   const { id, keep } = run2;
   const base2 = `/api/v1/agent/wallets/${encodeURIComponent(wallet3.id)}/close-empty`;
   const jobPath2 = `${base2}/jobs/${encodeURIComponent(id)}`;
-  if (run2.named) {
+  if (run2.named && !run2.preview) {
     try {
       return printTeeJob(ctx, await request(ctx, key, jobPath2), id, wallet3.address);
     } catch (error) {
@@ -115394,7 +115408,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
   if (!Array.isArray(preview.accounts) || preview.wallet !== wallet3.address || preview.linkedWalletId !== undefined && preview.linkedWalletId !== wallet3.id)
     throw new TradingError("INVALID_RESPONSE", "Candle's preview does not name the TEE wallet; nothing was closed.");
   const label = safeText(name2 === wallet3.address ? wallet3.address : `${name2} (${wallet3.address})`);
-  const accounts = await previewAndConfirm(ctx, preview, `TEE wallet ${label}`, run2.yes);
+  const accounts = await previewAndConfirm(ctx, preview, `TEE wallet ${label}`, run2);
   if (typeof accounts === "number")
     return accounts;
   ctx.deps.stderr.write(`Operation: ${id}
@@ -115423,7 +115437,10 @@ async function walletsCloseEmpty(args, ctx) {
     writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE20}`, ctx.json);
     return 2;
   }
-  const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
+  const parsed = parseArgs(lifted.rest, {
+    valueFlags: ["--wallet", "--client-trade-id"],
+    booleanFlags: ["--yes", "--preview"]
+  });
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
@@ -115434,7 +115451,13 @@ async function walletsCloseEmpty(args, ctx) {
     writeUsageFailure(ctx.deps, USAGE20, ctx.json);
     return 2;
   }
-  const run2 = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") };
+  const run2 = {
+    id,
+    named: named !== undefined,
+    keep: lifted.keep,
+    yes: parsed.booleans.has("--yes"),
+    preview: parsed.booleans.has("--preview")
+  };
   const walletName2 = parsed.values["--wallet"];
   try {
     const key = await tradingKey(ctx);

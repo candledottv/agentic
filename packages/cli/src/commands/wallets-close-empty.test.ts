@@ -87,12 +87,12 @@ async function fixture(
         keep: body?.keep ?? [],
         accounts,
         accountCount: accounts.length,
-        totalLamports: "4113360",
-        totalSol: "0.00411336",
+        totalLamports: accounts.length ? "4113360" : "0",
+        totalSol: accounts.length ? "0.00411336" : "0",
         transactions: accounts.length ? 1 : 0,
         estimatedFeeLamports: accounts.length ? "5000" : "0",
-        netLamports: "4108360",
-        netSol: "0.00410836",
+        netLamports: accounts.length ? "4108360" : "0",
+        netSol: accounts.length ? "0.00410836" : "0",
         skipped: [
           { account: "Kept", mint: KEEP, tokenProgram: "spl-token", lamports: "2039280", reason: "kept" },
           {
@@ -186,8 +186,100 @@ describe("candle wallet close-empty (BE-418)", () => {
     const code = await run(["wallet", "close-empty", "--json"], f.deps)
     expect(code).toBe(1)
     expect(f.paths()).not.toContain(EXECUTE)
-    expect(JSON.parse(f.stdout.text).code).toBe("CONFIRMATION_REQUIRED")
+    // BE-2694 (R59): the refusal carries the preview, so a script learns what would close.
+    const error = JSON.parse(f.stdout.text)
+    expect(error.code).toBe("CONFIRMATION_REQUIRED")
+    expect(error.message).toContain("--preview")
+    expect(error.details.preview).toMatchObject({ wallet: EMBEDDED, accountCount: 2, totalSol: "0.00411336" })
   })
+
+  test("--preview prints the preview as JSON on stdout and closes nothing (BE-2694, R59)", async () => {
+    const f = await fixture({ tty: false })
+    const code = await run(["wallet", "close-empty", "--keep", KEEP, "--preview", "--json"], f.deps)
+    expect(code).toBe(0)
+    expect(f.paths().filter((p) => p.includes("close-empty"))).toEqual([PREVIEW])
+    // Under --json the human lines go to stderr; stdout is one JSON line with the whole preview.
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(`Close 2 empty token accounts on the embedded wallet ${EMBEDDED}`),
+    )
+    expect(f.stdout.text.trim().split("\n")).toHaveLength(1)
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      success: true,
+      status: "preview",
+      wallet: EMBEDDED,
+      preview: { accountCount: 2, totalSol: "0.00411336", accounts: ACCOUNTS, wallet: EMBEDDED },
+    })
+  })
+
+  test("--preview works without a terminal, without --yes, and without --json", async () => {
+    const f = await fixture({ tty: false })
+    const code = await run(["wallet", "close-empty", "--preview"], f.deps)
+    expect(code).toBe(0)
+    expect(f.paths()).not.toContain(EXECUTE)
+    expect(humanText(f.stdout.text)).toContain(
+      humanText(`Close 2 empty token accounts on the embedded wallet ${EMBEDDED}`),
+    )
+    expect(f.stdout.text).toContain('"status": "preview"')
+  })
+
+  test("--preview does not read a named id's job", async () => {
+    const f = await fixture({ job: { clientTradeId: "close-1", kind: "close-empty", status: "completed" } })
+    const code = await run(["wallet", "close-empty", "--client-trade-id", "close-1", "--preview", "--json"], f.deps)
+    expect(code).toBe(0)
+    expect(f.paths().filter((p) => p.includes("close-empty"))).toEqual([PREVIEW])
+    expect(JSON.parse(f.stdout.text)).toMatchObject({ status: "preview" })
+  })
+
+  for (const tty of [false, true]) {
+    test(`--preview --json preserves the full empty preview without prompting or executing (tty: ${tty})`, async () => {
+      const f = await fixture({ accounts: [], tty })
+      let prompts = 0
+      f.deps.promptLine = async () => {
+        prompts++
+        return "y"
+      }
+      const code = await run(
+        ["wallet", "close-empty", "--keep", KEEP, "--client-trade-id", "close-empty-preview", "--preview", "--json"],
+        f.deps,
+      )
+      expect(code).toBe(0)
+      expect(prompts).toBe(0)
+      // Only discovery and preview: no execution, signing, or named-job lookup.
+      expect(f.paths()).toEqual(["/api/v1/agent/wallets/embedded", PREVIEW])
+      expect(f.stdout.text.trim().split("\n")).toHaveLength(1)
+      expect(JSON.parse(f.stdout.text)).toEqual({
+        success: true,
+        status: "preview",
+        wallet: EMBEDDED,
+        preview: {
+          success: true,
+          wallet: EMBEDDED,
+          keep: [KEEP],
+          accounts: [],
+          accountCount: 0,
+          totalLamports: "0",
+          totalSol: "0",
+          transactions: 0,
+          estimatedFeeLamports: "0",
+          netLamports: "0",
+          netSol: "0",
+          skipped: [
+            { account: "Kept", mint: KEEP, tokenProgram: "spl-token", lamports: "2039280", reason: "kept" },
+            {
+              account: "Wsol",
+              mint: "So11111111111111111111111111111111111111112",
+              tokenProgram: "spl-token",
+              lamports: "2039280",
+              reason: "wrapped_sol",
+            },
+          ],
+          undecodable: [],
+          closesPerTransaction: 20,
+          maxAccountsPerCall: 200,
+        },
+      })
+    })
+  }
 
   test("--yes skips the prompt; repeated and comma-separated --keep all reach the preview", async () => {
     const f = await fixture({ tty: false })
@@ -208,6 +300,18 @@ describe("candle wallet close-empty (BE-418)", () => {
       humanText(`No empty token accounts to close on the embedded wallet ${EMBEDDED}.`),
     )
     expect(f.paths()).not.toContain(EXECUTE)
+  })
+
+  test("ordinary empty-account JSON execution still reports nothing_to_close", async () => {
+    const f = await fixture({ accounts: [], tty: false })
+    expect(await run(["wallet", "close-empty", "--json"], f.deps)).toBe(0)
+    expect(f.paths()).toEqual(["/api/v1/agent/wallets/embedded", PREVIEW])
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      success: true,
+      status: "nothing_to_close",
+      wallet: EMBEDDED,
+      preview: { accounts: [], accountCount: 0 },
+    })
   })
 
   test("a named id that already ran prints its stored report and sends nothing", async () => {
@@ -496,6 +600,19 @@ describe("candle wallet close-empty --wallet <TEE wallet> (BE-1687)", () => {
       status: "completed",
       clientTradeId: build.clientTradeId,
       signatures: ["CloseSig0", "CloseSig1"],
+    })
+  })
+
+  test("--preview prints the TEE wallet's preview and neither builds, signs nor submits (BE-2694, R59)", async () => {
+    const f = await teeFixture()
+    const code = await run(["wallet", "close-empty", "--wallet", "agent-one", "--preview", "--json"], f.deps)
+    expect(code).toBe(0)
+    expect(closePaths(f.paths())).toEqual([TEE_PREVIEW])
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      success: true,
+      status: "preview",
+      wallet: TEE,
+      preview: { accountCount: 3, totalSol: "0.00615264", wallet: TEE },
     })
   })
 

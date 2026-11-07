@@ -24,6 +24,10 @@
  * for the next run. `--keep` leaves a mint's account open, for the pair token a held holder-reward
  * coin pays into.
  *
+ * `--preview` (BE-2694, R59) prints what would close — the whole preview as one JSON document on
+ * stdout under `--json` — and closes, signs and reads nothing: no prompt, and a named
+ * `--client-trade-id` is not looked up.
+ *
  * The run is keyed by a clientTradeId, durable on Candle: re-running with the same
  * `--client-trade-id` prints the stored report instead of closing again. A TEE close the chain has
  * not settled yet answers `recovering` (exit 3); that same re-run reads it again and sends nothing.
@@ -48,7 +52,7 @@ import {
 import { printCancelledResult, printTradingResult, tradingFailure, validClientId } from "./swap"
 
 const USAGE =
-  "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]"
+  "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes] [--json]"
 
 const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/
 /** Rows printed before the list is summarized; the full list is always in the --json output. */
@@ -83,6 +87,8 @@ interface Run {
   named: boolean
   keep: string[]
   yes: boolean
+  /** `--preview` (BE-2694, R59): print the preview and close nothing, with no prompt. */
+  preview: boolean
 }
 
 /**
@@ -142,28 +148,42 @@ function previewLines(preview: Preview, walletName: string): string[] {
   return lines
 }
 
-async function confirmClose(ctx: CommandContext, lines: string[], yes: boolean): Promise<boolean> {
+async function confirmClose(ctx: CommandContext, preview: Preview, lines: string[], yes: boolean): Promise<boolean> {
   const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
   for (const line of lines) output.write(`${line}\n`)
   if (yes) return true
   if (!ctx.deps.isTTY.stdin)
+    // BE-2694 (R59): the refusal carries the preview itself, so a script learns what would close.
     throw new TradingError(
       "CONFIRMATION_REQUIRED",
-      "Run interactively to confirm, or use --yes to close without a prompt.",
+      "Run interactively to confirm, use --yes to close without a prompt, or --preview to print what would close.",
+      { details: { preview: preview as unknown as Json } },
     )
   return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y"
 }
 
 /**
- * The preview, shown and confirmed. A number when the run ends here (nothing to close, or the
- * prompt was declined); otherwise the accounts to close, exactly as shown.
+ * The preview, shown and confirmed. A number when the run ends here (a preview print, nothing to
+ * close, or the prompt was declined); otherwise the accounts to close, exactly as shown.
  */
 async function previewAndConfirm(
   ctx: CommandContext,
   preview: Preview,
   walletName: string,
-  yes: boolean,
+  run: Pick<Run, "yes" | "preview">,
 ): Promise<number | string[]> {
+  // `--preview` keeps its documented status even when no accounts qualify.
+  // Nothing is confirmed, closed or signed, and a named id is not read.
+  if (run.preview) {
+    const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
+    for (const line of previewLines(preview, walletName)) output.write(`${line}\n`)
+    return printTradingResult(ctx, {
+      success: true,
+      status: "preview",
+      wallet: preview.wallet,
+      preview: preview as unknown as Json,
+    })
+  }
   if (preview.accounts.length === 0) {
     const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
     output.write(`No empty token accounts to close on the ${walletName}.\n`)
@@ -175,7 +195,7 @@ async function previewAndConfirm(
       preview: preview as unknown as Json,
     })
   }
-  if (!(await confirmClose(ctx, previewLines(preview, walletName), yes)))
+  if (!(await confirmClose(ctx, preview, previewLines(preview, walletName), run.yes)))
     return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
@@ -196,8 +216,9 @@ async function embeddedAddress(ctx: CommandContext, key: string): Promise<string
 
 async function closeEmbedded(ctx: CommandContext, key: string, run: Run): Promise<number> {
   const { id, keep } = run
-  // A named id may already have run. Its stored report is the answer; nothing is resent.
-  if (run.named) {
+  // A named id may already have run. Its stored report is the answer; nothing is resent. A preview
+  // run closes nothing, so it never reads a job: it shows what would close now.
+  if (run.named && !run.preview) {
     try {
       const prior = await request(ctx, key, `/api/v1/agent/wallets/embedded/close-empty/jobs/${encodeURIComponent(id)}`)
       return printTradingResult(ctx, { ...prior, clientTradeId: id })
@@ -219,7 +240,7 @@ async function closeEmbedded(ctx: CommandContext, key: string, run: Run): Promis
       "INVALID_RESPONSE",
       "Candle's preview does not name the embedded wallet; nothing was closed.",
     )
-  const accounts = await previewAndConfirm(ctx, preview, `embedded wallet ${safeText(wallet)}`, run.yes)
+  const accounts = await previewAndConfirm(ctx, preview, `embedded wallet ${safeText(wallet)}`, run)
   if (typeof accounts === "number") return accounts
   ctx.deps.stderr.write(`Operation: ${id}\n`)
   const result = await request(ctx, key, "/api/v1/agent/wallets/embedded/close-empty", {
@@ -367,8 +388,9 @@ async function closeTee(
   const { id, keep } = run
   const base = `/api/v1/agent/wallets/${encodeURIComponent(wallet.id)}/close-empty`
   const jobPath = `${base}/jobs/${encodeURIComponent(id)}`
-  // A named id may already have run. Its stored report is the answer; nothing is resent.
-  if (run.named) {
+  // A named id may already have run. Its stored report is the answer; nothing is resent. A preview
+  // run closes nothing, so it never reads a job: it shows what would close now.
+  if (run.named && !run.preview) {
     try {
       return printTeeJob(ctx, await request(ctx, key, jobPath), id, wallet.address)
     } catch (error) {
@@ -383,7 +405,7 @@ async function closeTee(
   )
     throw new TradingError("INVALID_RESPONSE", "Candle's preview does not name the TEE wallet; nothing was closed.")
   const label = safeText(name === wallet.address ? wallet.address : `${name} (${wallet.address})`)
-  const accounts = await previewAndConfirm(ctx, preview, `TEE wallet ${label}`, run.yes)
+  const accounts = await previewAndConfirm(ctx, preview, `TEE wallet ${label}`, run)
   if (typeof accounts === "number") return accounts
   ctx.deps.stderr.write(`Operation: ${id}\n`)
   const build = await request(ctx, key, `${base}/build`, { clientTradeId: id, keep, accounts })
@@ -413,7 +435,10 @@ export async function walletsCloseEmpty(args: string[], ctx: CommandContext): Pr
     writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE}`, ctx.json)
     return 2
   }
-  const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] })
+  const parsed = parseArgs(lifted.rest, {
+    valueFlags: ["--wallet", "--client-trade-id"],
+    booleanFlags: ["--yes", "--preview"],
+  })
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
     return 2
@@ -424,7 +449,13 @@ export async function walletsCloseEmpty(args: string[], ctx: CommandContext): Pr
     writeUsageFailure(ctx.deps, USAGE, ctx.json)
     return 2
   }
-  const run: Run = { id, named: named !== undefined, keep: lifted.keep, yes: parsed.booleans.has("--yes") }
+  const run: Run = {
+    id,
+    named: named !== undefined,
+    keep: lifted.keep,
+    yes: parsed.booleans.has("--yes"),
+    preview: parsed.booleans.has("--preview"),
+  }
   const walletName = parsed.values["--wallet"]
   try {
     const key = await tradingKey(ctx)
