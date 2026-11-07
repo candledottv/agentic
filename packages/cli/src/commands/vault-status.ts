@@ -54,7 +54,10 @@ export const LIST_POINTER = "One line per key, with an optional SOL balance: can
  * the iCloud Drive shorthand for the Macs where the literal path is why nobody bothers.
  */
 export const NO_VERIFIED_BACKUP_NOTE =
-  "No backup of this vault has ever been verified from this machine. If this file is lost, only the 24-word recovery phrase can rebuild it, and it rebuilds derived keys only. Take one now:\ncandle vault backup --to <path>\non a Mac with iCloud Drive: candle vault backup --to icloud"
+  "No backup of this vault has ever been verified from this machine. If this file is lost, only the 24-word recovery phrase can rebuild it, and it rebuilds derived keys only. Take one now:\ncandle vault backup --to <path>"
+
+/** The iCloud shorthand, appended to the note above on macOS only. */
+export const ICLOUD_BACKUP_LINE = "on a Mac with iCloud Drive: candle vault backup --to icloud"
 
 export async function vaultStatus(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
@@ -244,7 +247,13 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
     // the day it matters. The sidecar already carried the fact and only ever printed it when there
     // was something to print, so the one state worth shouting about was the one state that said
     // nothing. Both shapes of "never" land here: a sidecar without the field, and no sidecar at all.
-    if (sidecar?.lastVerifiedBackupAt === undefined) notice(deps, "stdout", "warning", NO_VERIFIED_BACKUP_NOTE)
+    if (sidecar?.lastVerifiedBackupAt === undefined)
+      notice(
+        deps,
+        "stdout",
+        "warning",
+        deps.platform === "darwin" ? `${NO_VERIFIED_BACKUP_NOTE}\n${ICLOUD_BACKUP_LINE}` : NO_VERIFIED_BACKUP_NOTE,
+      )
 
     if (legacyPresent) {
       notice(

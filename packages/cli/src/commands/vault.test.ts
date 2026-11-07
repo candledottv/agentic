@@ -50,7 +50,7 @@ interface Harness {
 }
 
 async function harness(
-  opts: { secrets?: string[]; lines?: string[]; env?: Record<string, string>; tty?: boolean } = {},
+  opts: { secrets?: string[]; lines?: string[]; env?: Record<string, string>; tty?: boolean; platform?: string } = {},
 ): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "candle-vault-cmd-"))
   const stdout = createCapture()
@@ -62,6 +62,8 @@ async function harness(
     fetch: unreachableFetch,
     stdout,
     stderr,
+    // The macOS-only lines (Apple account, iCloud shorthand) are asserted on both sides of this.
+    platform: opts.platform ?? "darwin",
     // HOME is the harness's own temp dir, never the developer's (BE-245). `vault init` offers an
     // iCloud Drive backup when `$HOME/Library/Mobile Documents/com~apple~CloudDocs` exists, so a
     // suite that inherited the real home would prompt on a Mac and not on CI.
@@ -92,9 +94,9 @@ async function harness(
  * stdout afterwards -- exactly where the operator reads it.
  */
 async function initVault(
-  opts: { args?: string[]; env?: Record<string, string> } = {},
+  opts: { args?: string[]; env?: Record<string, string>; platform?: string } = {},
 ): Promise<Harness & { passphrase: string }> {
-  const h = await harness({ env: opts.env, lines: ["", "", "no"] })
+  const h = await harness({ env: opts.env, platform: opts.platform, lines: ["", "", "no"] })
   const code = await run(["vault", "init", ...(opts.args ?? []), "--keystore", h.vaultPath], h.deps)
   if (code !== 0) throw new Error(`init failed (${code}): ${h.stderr.text}${h.stdout.text}`)
   return { ...h, passphrase: generatedPassphraseFrom(h.stdout.text) }
@@ -202,6 +204,57 @@ describe("T33: AD-6's passphrase policy", () => {
   test("init prints the AD-6 line about the Apple account", async () => {
     const h = await initVault()
     expect(humanText(h.stdout.text)).toContain(humanText("outside the Apple account that holds a synced passkey"))
+  })
+})
+
+describe("BE-2703 (R69): vault on Linux", () => {
+  test("init labels the initial derivation and the verification derivation in order", async () => {
+    const h = await initVault({ platform: "linux" })
+    expect(h.stderr.text.split("\n").filter((line) => line.includes("Argon2id"))).toEqual([
+      "Deriving the vault key (Argon2id, 19 MiB)",
+      "Verifying the vault key (Argon2id, 19 MiB)",
+    ])
+  })
+
+  test("init describes security-key enrollment as a separate optional command", async () => {
+    const h = await initVault({ platform: "linux" })
+    const out = humanText(h.stdout.text)
+    expect(out).toContain(
+      humanText("To add a security key later, run this separate optional command: candle vault enroll security-key"),
+    )
+    expect(out).toContain(humanText("This vault has exactly one recoverable factor: the passphrase."))
+    expect(out).toContain(humanText("the recovery phrase becomes the only route back"))
+    expect(h.asked.some((prompt) => /security.key|enroll/i.test(prompt))).toBe(false)
+    const file = JSON.parse(await readFile(h.vaultPath, "utf8")) as {
+      envelopes: Array<{ factor: string }>
+      keyIds: string[]
+    }
+    expect(file.envelopes.map((envelope) => envelope.factor)).toEqual(["passphrase"])
+    expect(file.keyIds).toEqual([])
+  })
+
+  test("init on Linux does not mention the Apple account", async () => {
+    const h = await initVault({ platform: "linux" })
+    expect(humanText(h.stdout.text)).not.toContain("Apple account")
+  })
+
+  test("status on Linux offers a path backup and no iCloud shorthand", async () => {
+    const h = await initVault({ platform: "linux" })
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, platform: "linux" })
+    await run(["vault", "status", "--keystore", h.vaultPath], s.deps)
+    expect(humanText(s.stdout.text)).toContain(humanText("candle vault backup --to <path>"))
+    expect(humanText(s.stdout.text)).not.toContain("iCloud")
+  })
+
+  test("the pre-words notice is a warning, not an error, and names no Phase 1 store", async () => {
+    const own = "a passphrase I picked myself"
+    const h = await harness({ platform: "linux", secrets: [own, own, own], lines: ["yes", "stop"] })
+    await run(["vault", "init", "--own-passphrase", "--keystore", h.vaultPath], h.deps)
+    const out = humanText(h.stdout.text)
+    expect(out).toContain("The 24 words below re-derive every key")
+    expect(out).not.toContain("Phase 1")
+    expect(out).toContain("! The 24 words below")
+    expect(out).not.toContain("x The 24 words")
   })
 })
 

@@ -231,12 +231,12 @@ export async function unlockVault(
   path: string,
   raw: string,
   request: UnlockRequest,
-  opts: { notice?: (line: string) => void } = {},
+  opts: { notice?: (line: string) => void; derivationLabel?: string } = {},
 ): Promise<UnlockedVault> {
   const file = parseVaultFile(raw)
   const envelope = pickEnvelope(file, request)
 
-  const dek = await unwrapDek(file, envelope, request, opts.notice)
+  const dek = await unwrapDek(file, envelope, request, opts.notice, opts.derivationLabel)
   if (dek.length !== DEK_BYTES) {
     wipe(dek)
     throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.")
@@ -315,9 +315,10 @@ async function unwrapDek(
   envelope: Envelope,
   request: UnlockRequest,
   notice?: (line: string) => void,
+  derivationLabel?: string,
 ): Promise<Uint8Array> {
   if (request.factor === "passphrase") {
-    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice)
+    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice, derivationLabel)
     return withSecret(kek, async (kekBytes) => {
       const kekKey = await importAesKey(kekBytes)
       return openBlob(kekKey, envelope.wrap, envelopeAad(file, envelope), {
@@ -387,7 +388,7 @@ export async function unlockWithPassphrase(
   path: string,
   raw: string,
   passphrase: string,
-  opts: { notice?: (line: string) => void } = {},
+  opts: { notice?: (line: string) => void; derivationLabel?: string } = {},
 ): Promise<UnlockedVault> {
   const file = parseVaultFile(raw)
   const envelopes = file.envelopes.filter((envelope) => envelope.factor === "passphrase")

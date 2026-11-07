@@ -183,9 +183,10 @@ export async function derivePassphraseKek(
   passphrase: string,
   kdf: Argon2Params,
   notice?: (line: string) => void,
+  derivationLabel = "Deriving the vault key",
 ): Promise<Uint8Array> {
   assertKdfInBounds(kdf)
-  notice?.(`Deriving the vault key (Argon2id, ${Math.round(kdf.m / 1024)} MiB)\n`)
+  notice?.(`${derivationLabel} (Argon2id, ${Math.round(kdf.m / 1024)} MiB)\n`)
   const reuseKey = testKekReuse ? kekReuseKey(passphrase, kdf) : null
   const reused = reuseKey ? testKekReuse?.get(reuseKey) : undefined
   if (reused) return ownSecret(Uint8Array.from(reused))

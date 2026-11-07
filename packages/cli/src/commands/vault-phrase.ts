@@ -137,8 +137,8 @@ export async function runPhraseCeremony(
   notice(
     deps,
     "stdout",
-    "danger",
-    `The 24 words below re-derive every key this vault derives, on any BIP-39 wallet, with no passphrase and no server.\nThey do NOT restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.\nAnyone who reads them can move every derived key's funds.\n\n`,
+    "warning",
+    `The 24 words below re-derive every key this vault derives, on any BIP-39 wallet, with no passphrase and no server.\nThey do NOT restore any key you imported from an older wallet store; the vault file plus a factor does that.\nAnyone who reads them can move every derived key's funds.\n\n`,
   )
   const acknowledgement = (await deps.promptLine(`Type ${ACKNOWLEDGEMENT} to continue, or anything else to stop: `))
     .trim()

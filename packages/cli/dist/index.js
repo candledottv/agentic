@@ -532,7 +532,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.16";
+var CLI_VERSION = "0.13.17";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -12603,9 +12603,9 @@ function kekReuseKey(passphrase, kdf) {
   const inputs = JSON.stringify([passphrase, kdf.salt, kdf.m, kdf.t, kdf.p, kdf.version]);
   return b64u(sha2562(new TextEncoder().encode(inputs)));
 }
-async function derivePassphraseKek(passphrase, kdf, notice2) {
+async function derivePassphraseKek(passphrase, kdf, notice2, derivationLabel = "Deriving the vault key") {
   assertKdfInBounds(kdf);
-  notice2?.(`Deriving the vault key (Argon2id, ${Math.round(kdf.m / 1024)} MiB)
+  notice2?.(`${derivationLabel} (Argon2id, ${Math.round(kdf.m / 1024)} MiB)
 `);
   const reuseKey = testKekReuse ? kekReuseKey(passphrase, kdf) : null;
   const reused = reuseKey ? testKekReuse?.get(reuseKey) : undefined;
@@ -13990,7 +13990,7 @@ function closeVault(vault) {
 async function unlockVault(path, raw, request, opts = {}) {
   const file = parseVaultFile(raw);
   const envelope = pickEnvelope(file, request);
-  const dek = await unwrapDek(file, envelope, request, opts.notice);
+  const dek = await unwrapDek(file, envelope, request, opts.notice, opts.derivationLabel);
   if (dek.length !== DEK_BYTES) {
     wipe(dek);
     throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
@@ -14030,9 +14030,9 @@ async function openWithDek(path, raw, file, envelope, dek) {
     throw error;
   }
 }
-async function unwrapDek(file, envelope, request, notice2) {
+async function unwrapDek(file, envelope, request, notice2, derivationLabel) {
   if (request.factor === "passphrase") {
-    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice2);
+    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice2, derivationLabel);
     return withSecret(kek, async (kekBytes) => {
       const kekKey2 = await importAesKey(kekBytes);
       return open(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
@@ -109747,7 +109747,10 @@ async function createVault(request2, clock) {
   if (raw === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault was written to ${request2.path} but could not be read back.`);
   }
-  return unlockWithPassphrase(request2.path, raw, request2.passphrase, { notice: request2.notice });
+  return unlockWithPassphrase(request2.path, raw, request2.passphrase, {
+    notice: request2.notice,
+    derivationLabel: request2.verificationLabel
+  });
 }
 
 // src/commands/vault-init.ts
@@ -109821,8 +109824,8 @@ async function runPhraseCeremony(ctx, vault, opts = {}) {
     const { closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
     closeVault2(reopened);
   }
-  notice(deps, "stdout", "danger", `The 24 words below re-derive every key this vault derives, on any BIP-39 wallet, with no passphrase and no server.
-They do NOT restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.
+  notice(deps, "stdout", "warning", `The 24 words below re-derive every key this vault derives, on any BIP-39 wallet, with no passphrase and no server.
+They do NOT restore any key you imported from an older wallet store; the vault file plus a factor does that.
 Anyone who reads them can move every derived key's funds.
 
 `);
@@ -109931,7 +109934,8 @@ async function vaultInit(args, ctx) {
       strength: strengthFor(own),
       rootEntropy,
       label: parsed.values["--label"],
-      notice: (line) => deps.stderr.write(line)
+      notice: (line) => deps.stderr.write(line),
+      verificationLabel: "Verifying the vault key"
     }, deps));
     try {
       if (ctx.json) {
@@ -109961,12 +109965,13 @@ async function vaultInit(args, ctx) {
         ["Verified", "file re-read, opened with your passphrase, root blob decrypted"],
         ["Create a key", "candle vault new-key --chain solana"]
       ]);
-      notice(deps, "stdout", "note", `
+      if (deps.platform === "darwin")
+        notice(deps, "stdout", "note", `
 ${APPLE_ACCOUNT_NOTICE}
 `.trim());
       if (countRecoverableFactors(vault.file.envelopes) === 1) {
         notice(deps, "stdout", "warning", `
-This vault has exactly one recoverable factor: the passphrase. Lose it and no copy of this file can be opened, and the recovery phrase becomes the only route back. Add a second when you can: candle vault enroll security-key
+This vault has exactly one recoverable factor: the passphrase. Lose it and no copy of this file can be opened, and the recovery phrase becomes the only route back. To add a security key later, run this separate optional command: candle vault enroll security-key
 `.trim());
       }
       notice(deps, "stdout", "note", `
@@ -114412,8 +114417,8 @@ init_store();
 init_vault_support();
 var LIST_POINTER = "One line per key, with an optional SOL balance: candle vault list";
 var NO_VERIFIED_BACKUP_NOTE = `No backup of this vault has ever been verified from this machine. If this file is lost, only the 24-word recovery phrase can rebuild it, and it rebuilds derived keys only. Take one now:
-candle vault backup --to <path>
-on a Mac with iCloud Drive: candle vault backup --to icloud`;
+candle vault backup --to <path>`;
+var ICLOUD_BACKUP_LINE = "on a Mac with iCloud Drive: candle vault backup --to icloud";
 async function vaultStatus(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore"],
@@ -114555,7 +114560,8 @@ async function vaultStatus(args, ctx) {
       notice(deps, "stdout", "note", "No vault.state.json beside this vault, so an older copy of it cannot be recognized on this machine.");
     }
     if (sidecar?.lastVerifiedBackupAt === undefined)
-      notice(deps, "stdout", "warning", NO_VERIFIED_BACKUP_NOTE);
+      notice(deps, "stdout", "warning", deps.platform === "darwin" ? `${NO_VERIFIED_BACKUP_NOTE}
+${ICLOUD_BACKUP_LINE}` : NO_VERIFIED_BACKUP_NOTE);
     if (legacyPresent) {
       notice(deps, "stdout", "warning", `A legacy wallets.enc exists at ${legacy}; this CLI does not read it.
 A key it holds that was imported is already a linked wallet, managed with: candle wallets

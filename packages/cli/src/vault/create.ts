@@ -69,6 +69,8 @@ export interface CreateVaultRequest {
   /** Restore seeds the `hd` record with its discovery record; `init` passes nothing. */
   hd?: HdRecord
   notice?: (line: string) => void
+  /** Progress label for the read-back derivation only; other callers keep the default. */
+  verificationLabel?: string
 }
 
 /** Clock plus the sleep the record lock polls with (Phase 4b: the orphan move-aside takes it). */
@@ -176,5 +178,8 @@ export async function createVault(request: CreateVaultRequest, clock: CreateCloc
   if (raw === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault was written to ${request.path} but could not be read back.`)
   }
-  return unlockWithPassphrase(request.path, raw, request.passphrase, { notice: request.notice })
+  return unlockWithPassphrase(request.path, raw, request.passphrase, {
+    notice: request.notice,
+    derivationLabel: request.verificationLabel,
+  })
 }

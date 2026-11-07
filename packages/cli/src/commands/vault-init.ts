@@ -148,6 +148,7 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
           rootEntropy,
           label: parsed.values["--label"],
           notice: (line) => deps.stderr.write(line),
+          verificationLabel: "Verifying the vault key",
         },
         deps,
       ),
@@ -192,7 +193,8 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
         ["Verified", "file re-read, opened with your passphrase, root blob decrypted"],
         ["Create a key", "candle vault new-key --chain solana"],
       ])
-      notice(deps, "stdout", "note", `\n${APPLE_ACCOUNT_NOTICE}\n`.trim())
+      // The Apple-account line is about iCloud Keychain and synced passkeys: said on a Mac only.
+      if (deps.platform === "darwin") notice(deps, "stdout", "note", `\n${APPLE_ACCOUNT_NOTICE}\n`.trim())
       // BE-245: what `--high-value` was reaching for, said as advice instead of enforced as a gate
       // nothing authenticates. It needs no flag and no stored state, and it is true of every vault
       // this command creates, which is more than the flag ever managed.
@@ -201,7 +203,7 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
           deps,
           "stdout",
           "warning",
-          `\nThis vault has exactly one recoverable factor: the passphrase. Lose it and no copy of this file can be opened, and the recovery phrase becomes the only route back. Add a second when you can: candle vault enroll security-key\n`.trim(),
+          `\nThis vault has exactly one recoverable factor: the passphrase. Lose it and no copy of this file can be opened, and the recovery phrase becomes the only route back. To add a security key later, run this separate optional command: candle vault enroll security-key\n`.trim(),
         )
       }
 
