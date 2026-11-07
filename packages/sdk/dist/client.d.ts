@@ -65,7 +65,8 @@ export type Chain = "solana" | "hood";
  */
 export type LaunchTier = "open" | "exclusive" | "test-open" | "test-exclusive" | "exp-a" | "exp-b" | "exp-c" | "exp-custom";
 /**
- * `finalstretch`: pump.fun tokens at 50% or more of their bonding curve, most complete first; no delta, read the whole list.
+ * `finalstretch`: pump.fun tokens at 50% or more of their bonding curve, most complete first, at most the 200 most
+ * complete (`getFeed` returns all of them; each row carries `progress`); no delta, read the whole list.
  * It exists only where the API has it switched on; elsewhere it is refused like an unknown bucket.
  * `bluechip` is deprecated and will be removed.
  */

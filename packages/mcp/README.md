@@ -134,7 +134,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_launch_token` | Launch a token on Candle | `POST /api/v1/launch/headless` (or `/dry-run` when `dryRun: true`); with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
 | `candle_get_market` | Get market state | `GET /api/v1/markets/:chain/:mint` | none |
 | `candle_get_price_history` | One Solana token's OHLC bars in USD per token, oldest first (interval 1m-1d, limit 1-500, `to` unix seconds); `source` and `volumeUnit` say whose bars. Hood is refused with its REST route | `GET /api/v1/markets/solana/:mint/candles` | none |
-| `candle_get_feed` | Get a token feed | `GET /api/v1/markets/feed?bucket=...` | none |
+| `candle_get_feed` | Get a token feed (`finalstretch`: at most the 200 most complete; `where` on `progress` narrows it) | `GET /api/v1/markets/feed?bucket=...` | none |
 | `candle_token_edit` | As the token's creator, set Candle's copy of its description and links; an unknown `socials` key is refused locally. Needs a `launch:write` key from the launching account; reuse `idempotencyKey` to retry. Off until the deployment switches it on (503 `METADATA_EDIT_DISABLED`) | `PATCH /api/v1/tokens/:chain/:mint/metadata` | `x-api-key` |
 | `candle_token_history` | A token's metadata edits, newest first, with the previous values | `GET /api/v1/tokens/:chain/:mint/metadata/history?limit=...&cursor=...` | none |
 | `candle_token_events` | One token's signals, callouts and tracked-wallet trades, newest first; `kind` filters the returned page, `nextCursor`/`before` pages it. Off until the deployment switches it on (503 `TOKEN_EVENTS_DISABLED`) | `GET /api/v1/tokens/:chain/:mint/events?since=...&limit=...&before=...` | none |

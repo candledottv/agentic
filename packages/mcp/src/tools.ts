@@ -1072,7 +1072,7 @@ const getFeedShape = {
   bucket: z
     .enum(["new", "graduated", "onfire", "bluechip", "finalstretch"])
     .describe(
-      "finalstretch: pump.fun tokens at 50% or more of their bonding curve, most complete first; no delta, read the whole list. Where it is not switched on it is refused as an unknown bucket: use another bucket. bluechip is deprecated and will be removed.",
+      'finalstretch: pump.fun tokens at 50% or more of their bonding curve, most complete first, at most the 200 most complete (limit 200 reads all of them); no delta, read the whole list. Narrow it to tokens near graduation with where {"progress":{"gte":0.9}}. Where it is not switched on it is refused as an unknown bucket: use another bucket. bluechip is deprecated and will be removed.',
     ),
   chain: z.string().optional().describe("Optional chain filter"),
   where: z

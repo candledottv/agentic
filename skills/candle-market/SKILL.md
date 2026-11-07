@@ -27,7 +27,9 @@ trade, or report activity, see the candle-setup skill to get an agent key.
 2. `candle_get_feed` with `{ bucket, chain? }` where `bucket` is one of `new`, `graduated`,
    `onfire`, or `finalstretch`, and `chain` optionally narrows the results to one chain.
    `finalstretch` is pump.fun tokens at 50% or more of their bonding curve, most complete first:
-   each token carries `progress` from 0 to 1, read from the curve account. It has no delta, so
+   each token carries `progress` from 0 to 1, read from the curve account. It holds at most the
+   200 most complete tokens (`limit` 200 reads all of them); keep the ones nearest graduation with
+   `where` `{"progress":{"gte":0.9}}`. It has no delta, so
    read the whole list each time, and treat an empty list as "nothing qualifies" only when the
    response's `feed.ok` and `exact.ok` are both true and `stale` is false. Where the `finalstretch`
    source list is unavailable it is refused as an unknown bucket; use another bucket. `bluechip` still
