@@ -254,6 +254,7 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
 export async function keysCreate(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {
+    booleanFlags: ["--no-store"],
     valueFlags: [
       "--scopes",
       "--access",
@@ -388,7 +389,9 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
     embeddedWallet?: "allowed" | "denied"
   }
 
-  // Store only when the CLI holds no working key yet -- it manages exactly one, and any other
+  const noStore = parsed.booleans.has("--no-store")
+
+  // Store only when requested and the CLI holds no working key yet -- it manages exactly one, and any other
   // key belongs to whichever agent it was minted for. Under a profile the ref and the recorded
   // prefix/scopes are namespaced to it; the legacy top-level fields are used only pre-profile.
   const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey
@@ -404,7 +407,7 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   let stored = false
   let storeError: string | undefined
   try {
-    if (!(await deps.store.get(apiKeyRef))) {
+    if (!noStore && !(await deps.store.get(apiKeyRef))) {
       await deps.store.set(apiKeyRef, body.key)
       if (ctx.profile) {
         await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes })
@@ -454,7 +457,9 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
             ? "no (store failed)"
             : stored
               ? `${deps.backend}, as this CLI's working key`
-              : "no (the CLI already manages a different working key)",
+              : noStore
+                ? "no (--no-store)"
+                : "no (the CLI already manages a different working key)",
         ],
       ],
       style,

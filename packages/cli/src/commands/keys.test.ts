@@ -94,6 +94,7 @@ describe("keys list", () => {
     for (const argv of [
       ["keys", "list", "--json"],
       ["keys", "create", "--json"],
+      ["keys", "create", "--no-store", "--json"],
       ["keys", "revoke", "ck_liveab", "--json"],
     ]) {
       const { fetch, calls } = createRoutedFetch({})
@@ -354,6 +355,109 @@ describe("keys create", () => {
     expect(code).toBe(0)
     expect(stdout.text).toContain("swap:write")
     expect(stdout.text.toLowerCase()).toContain("fund")
+  })
+})
+
+describe("keys create --no-store", () => {
+  const key = "ck_live_FIXTURE_HANDOFF_KEY"
+  const body = {
+    success: true,
+    key,
+    keyPrefix: "ck_handoff",
+    scopes: ["account:read"],
+    environment: "test",
+    embeddedWallet: "denied",
+  }
+
+  for (const profiled of [false, true]) {
+    for (const existing of [false, true]) {
+      for (const json of [false, true]) {
+        test(`${profiled ? "profile" : "legacy"}, ${existing ? "existing" : "no"} working key, ${json ? "JSON" : "human"}: prints once and leaves credentials and metadata untouched`, async () => {
+          const ref = profiled ? "profile:handoff:api_key" : SECRET_REFS.apiKey
+          const original = existing ? { keyPrefix: "ck_existing", scopes: ["launch:read"] } : {}
+          const config = createFakeConfigStore(
+            profiled ? { profiles: { handoff: original }, activeProfile: "handoff" } : original,
+          )
+          const before = await config.readConfig()
+          const store = createFakeStore(existing ? { [ref]: "ck_live_EXISTING_WORKING_KEY" } : {})
+          let writes = 0
+          const { fetch, calls } = createRoutedFetch({
+            "/api/v1/agent/keys": () => jsonResponse(201, body),
+          })
+          const stdout = createCapture()
+          const stderr = createCapture()
+          const code = await run(
+            ["keys", "create", "--no-store", "--access", "read", ...(json ? ["--json"] : [])],
+            createTestDeps({
+              ...config,
+              fetch,
+              store: {
+                ...store,
+                set: async () => {
+                  writes++
+                },
+                delete: async () => {
+                  writes++
+                },
+              },
+              writeConfig: async () => {
+                writes++
+              },
+              updateProfile: async () => {
+                writes++
+              },
+              env: { CANDLE_DEVICE_TOKEN: "fixture-device-token" },
+              stdout,
+              stderr,
+            }),
+          )
+          expect(code).toBe(0)
+          expect(calls).toHaveLength(1)
+          expect(calls[0]?.init.method).toBe("POST")
+          expect(JSON.parse(calls[0]?.init.body as string)).toEqual({
+            scopes: ["account:read"],
+            embeddedWallet: "denied",
+          })
+          expect(stdout.text.split(key)).toHaveLength(2)
+          expect(stderr.text).toBe("")
+          expect(writes).toBe(0)
+          expect(await store.get(ref)).toBe(existing ? "ck_live_EXISTING_WORKING_KEY" : null)
+          expect(await config.readConfig()).toEqual(before)
+          if (json) {
+            expect(JSON.parse(stdout.text)).toEqual({ ...body, stored: false })
+          } else {
+            expect(stdout.text).toContain("no (--no-store)")
+            expect(stdout.text).not.toContain("already manages a different working key")
+          }
+        })
+      }
+    }
+  }
+
+  test("does not open the API-key store when storage is disabled", async () => {
+    const stdout = createCapture()
+    const { fetch } = createRoutedFetch({ "/api/v1/agent/keys": () => jsonResponse(201, body) })
+    const code = await run(
+      ["keys", "create", "--no-store", "--json"],
+      createTestDeps({
+        fetch,
+        stdout,
+        env: { CANDLE_DEVICE_TOKEN: "fixture-device-token" },
+        store: {
+          get: async () => {
+            throw new Error("keychain is locked")
+          },
+          set: async () => {
+            throw new Error("keychain is locked")
+          },
+          delete: async () => {
+            throw new Error("keychain is locked")
+          },
+        },
+      }),
+    )
+    expect(code).toBe(0)
+    expect(JSON.parse(stdout.text)).toEqual({ ...body, stored: false })
   })
 })
 

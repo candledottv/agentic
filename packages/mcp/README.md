@@ -36,6 +36,8 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 `candle auth login`, and `candle mcp` launches this server with the stored key and API URL in its
 environment.
 
+To mint a key for another agent without keeping it as the CLI profile's working key, run `candle keys create --access write --label agent-one --no-store` after device login. The key is printed once; put it in the intended agent's secret store. `--json` reports `stored: false` and exits 0. The profile's existing working key, prefix and scopes stay unchanged, even when it has no working key. Add `--embedded-wallet allow` at a terminal if this key needs the account's embedded wallet. This is a CLI storage option; it adds no MCP tool and does not change tool counts.
+
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
 Unset means all eighty-seven. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for

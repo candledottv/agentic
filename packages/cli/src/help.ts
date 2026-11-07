@@ -1140,9 +1140,9 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation:
-          "create [--access read|write|withdraw|trade-perps | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
+          "create [--access read|write|withdraw|trade-perps | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow] [--no-store]",
         description:
-          "Create an API key; --access mints one of the levels (write trades and launches; only withdraw can move funds; trade-perps is exactly account:read and perps:write, for Hyperliquid perps setup and orders, and it cannot fund its own Hyperliquid account: a Relay deposit needs swap:write and a withdrawal needs perps:withdraw, each a separate grant through --scopes). A trade-perps key trades from an EVM TEE wallet promoted onto it (candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>; candle tee new is Solana only) and a signer on the trading machine (candle tee signer new --key <prefix>). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal",
+          "Create an API key; --no-store prints it without saving it as the profile's working key (default: store only if no working key exists). --access mints one of the levels (write trades and launches; only withdraw can move funds; trade-perps is exactly account:read and perps:write, for Hyperliquid perps setup and orders, and it cannot fund its own Hyperliquid account: a Relay deposit needs swap:write and a withdrawal needs perps:withdraw, each a separate grant through --scopes). A trade-perps key trades from an EVM TEE wallet promoted onto it (candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>; candle tee new is Solana only) and a signer on the trading machine (candle tee signer new --key <prefix>). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal",
       },
       {
         invocation: "access <prefix|label|self> (--access read|write|withdraw [--yes] | --history)",
@@ -1204,7 +1204,7 @@ export const HELP: Record<string, Topic> = {
       "candle keys list",
       "candle keys create --access withdraw --label rebalancer",
       "candle keys create --access trade-perps --label perps-bot",
-      "candle keys create --scopes trade:write --label agent-one",
+      "candle keys create --scopes trade:write --label agent-one --no-store",
       "candle keys access cndl --access withdraw",
       "candle keys access self --access read --yes",
       "candle keys update agent-one --embedded-wallet deny --yes",

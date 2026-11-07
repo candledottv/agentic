@@ -38135,6 +38135,7 @@ async function keysList(args, ctx) {
 async function keysCreate(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {
+    booleanFlags: ["--no-store"],
     valueFlags: [
       "--scopes",
       "--access",
@@ -38239,11 +38240,12 @@ async function keysCreate(args, ctx) {
     return 1;
   }
   const body = result.body;
+  const noStore = parsed.booleans.has("--no-store");
   const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
   let stored = false;
   let storeError;
   try {
-    if (!await deps.store.get(apiKeyRef)) {
+    if (!noStore && !await deps.store.get(apiKeyRef)) {
       await deps.store.set(apiKeyRef, body.key);
       if (ctx.profile) {
         await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes });
@@ -38277,7 +38279,7 @@ Or mint it that way: candle keys create --access withdraw --embedded-wallet allo
     ...body.embeddedWallet === "allowed" || body.embeddedWallet === "denied" ? [["Embedded wallet", embeddedWalletSummary(body.embeddedWallet)]] : [],
     [
       "Stored",
-      storeError !== undefined ? "no (store failed)" : stored ? `${deps.backend}, as this CLI's working key` : "no (the CLI already manages a different working key)"
+      storeError !== undefined ? "no (store failed)" : stored ? `${deps.backend}, as this CLI's working key` : noStore ? "no (--no-store)" : "no (the CLI already manages a different working key)"
     ]
   ], style).join(`
 `)}
@@ -40791,32 +40793,38 @@ async function executionStatus(cfg, doFetch) {
     }
     return { ok: res.ok, status: res.status, body };
   };
-  const [wallets2, tier, limits] = await Promise.all([
+  const [wallets2, tier, limits, risk] = await Promise.all([
     get("/api/v1/agent/wallets/embedded"),
     get("/api/v1/agent/tier"),
-    get("/api/v1/agent/keys/self/limits")
+    get("/api/v1/agent/keys/self/limits"),
+    get("/api/v1/agent/keys/self/risk")
   ]);
   const unreadable2 = [
     ["wallets", wallets2],
     ["tier", tier],
-    ["limits", limits]
+    ["limits", limits],
+    ["risk", risk]
   ].filter(([, r]) => !r.ok);
   const tierBody = tier.ok ? tier.body : undefined;
+  const riskBody = risk.ok ? risk.body : undefined;
+  const stopped = riskBody?.stopped === true;
   return {
     text: JSON.stringify({
       success: true,
-      ready: unreadable2.length === 0 ? true : undefined,
+      ready: stopped ? false : unreadable2.length === 0 ? true : undefined,
+      stopped: stopped ? { tripped: riskBody?.tripped ?? null, clearedBy: STOP_CLEARED_BY } : undefined,
       notice: tierBody?.maxExpired ? tierBody.maxExpiredNotice : undefined,
       updateAvailable: updateAvailable() ?? undefined,
       unreadable: unreadable2.length > 0 ? unreadable2.map(([name]) => name) : undefined,
       wallets: wallets2.body,
       tier: tier.body,
-      limits: limits.body
+      limits: limits.body,
+      risk: risk.body
     }, null, 2),
     ...unreadable2.length > 0 ? { isError: true } : {}
   };
 }
-var SOLANA_SEED_CEILINGS, MAIN_PAYER, SWEEP_BASE_ASSETS;
+var SOLANA_SEED_CEILINGS, MAIN_PAYER, SWEEP_BASE_ASSETS, STOP_CLEARED_BY = "An account owner reviews the profile and resumes it from the agent console; an API key cannot resume it.";
 var init_orchestrate = __esm(() => {
   init_convert();
   init_image();
@@ -45763,7 +45771,7 @@ function registerToolSubset(server, options) {
   });
   register("candle_execution_status", {
     title: "Can this key execute right now",
-    description: "One call before trading: the embedded wallets to spend from, the tier that decides what " + "may be traded, and this key's own spend limits. Reads only; moves nothing. Call it when " + "a run starts, or after an authorization error, rather than inferring readiness from a " + "failed trade. If a read could not be completed the tool says which one and does NOT " + "claim the account is unready: an unreachable endpoint and a missing tier are different " + "problems with different fixes.",
+    description: "One call before trading: the embedded wallets to spend from, the tier that decides what " + "may be traded, this key's own spend limits, and its loss limits and stop state (risk: " + "lossLimits, state, stopped, tripped). A stopped key reports ready: false and a top-level " + "stopped naming the bound that broke; every trade answers RISK_LIMIT_REACHED until an " + "account owner resumes it, so stop trading and say why rather than retrying. Any scope " + "can read its own. Reads only; moves nothing. Call it when " + "a run starts, or after an authorization error, rather than inferring readiness from a " + "failed trade. If a read could not be completed the tool says which one and does NOT " + "claim the account is unready: an unreachable endpoint and a missing tier are different " + "problems with different fixes.",
     inputSchema: {}
   }, async () => {
     const result = await executionStatus(getConfig(), doFetch);
@@ -76944,8 +76952,8 @@ var HELP = {
         description: "List live API keys: name and Read, Write or Withdraw access; --all includes revoked keys; --scopes adds the raw scopes"
       },
       {
-        invocation: "create [--access read|write|withdraw|trade-perps | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
-        description: "Create an API key; --access mints one of the levels (write trades and launches; only withdraw can move funds; trade-perps is exactly account:read and perps:write, for Hyperliquid perps setup and orders, and it cannot fund its own Hyperliquid account: a Relay deposit needs swap:write and a withdrawal needs perps:withdraw, each a separate grant through --scopes). A trade-perps key trades from an EVM TEE wallet promoted onto it (candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>; candle tee new is Solana only) and a signer on the trading machine (candle tee signer new --key <prefix>). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal"
+        invocation: "create [--access read|write|withdraw|trade-perps | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow] [--no-store]",
+        description: "Create an API key; --no-store prints it without saving it as the profile's working key (default: store only if no working key exists). --access mints one of the levels (write trades and launches; only withdraw can move funds; trade-perps is exactly account:read and perps:write, for Hyperliquid perps setup and orders, and it cannot fund its own Hyperliquid account: a Relay deposit needs swap:write and a withdrawal needs perps:withdraw, each a separate grant through --scopes). A trade-perps key trades from an EVM TEE wallet promoted onto it (candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>; candle tee new is Solana only) and a signer on the trading machine (candle tee signer new --key <prefix>). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal"
       },
       {
         invocation: "access <prefix|label|self> (--access read|write|withdraw [--yes] | --history)",
@@ -76995,7 +77003,7 @@ var HELP = {
       "candle keys list",
       "candle keys create --access withdraw --label rebalancer",
       "candle keys create --access trade-perps --label perps-bot",
-      "candle keys create --scopes trade:write --label agent-one",
+      "candle keys create --scopes trade:write --label agent-one --no-store",
       "candle keys access cndl --access withdraw",
       "candle keys access self --access read --yes",
       "candle keys update agent-one --embedded-wallet deny --yes",
