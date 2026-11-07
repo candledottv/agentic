@@ -369,7 +369,12 @@ async function promoteFresh(
       ),
     )
 
-    await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`)
+    await confirmAddress(
+      ctx,
+      "vault",
+      destination.address,
+      `promote a new TEE wallet with pinned vault ${destination.address}`,
+    )
     if (toKey !== undefined) {
       // BE-322: the fresh mode has no controlled-by block; the target is named here, with its cap
       // lines, before the import.

@@ -111520,7 +111520,7 @@ async function promoteEvmFresh(input, fromLabel) {
       addKeys: [blob]
     }, ctx.deps));
     scanStart = await appendScanStart(ctx, vault.path, address, height);
-    await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`);
+    await confirmAddress(ctx, "vault", destination.address, `promote a new TEE wallet with pinned vault ${destination.address}`);
     if (toKey !== undefined) {
       notice(ctx.deps, "stderr", "note", `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")].join(`
 `)}
@@ -111900,7 +111900,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
       },
       addKeys: [blob]
     }, ctx.deps));
-    await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`);
+    await confirmAddress(ctx, "vault", destination.address, `promote a new TEE wallet with pinned vault ${destination.address}`);
     if (toKey !== undefined) {
       notice(ctx.deps, "stderr", "note", `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "solana")].join(`
 `)}

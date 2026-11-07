@@ -201,7 +201,12 @@ export async function promoteEvmFresh(input: EvmPromoteContext, fromLabel: strin
     // D1: after the write that created the record key. A fresh key's only height is this one.
     scanStart = await appendScanStart(ctx, vault.path, address, height)
 
-    await confirmAddress(ctx, "vault", destination.address, `sweep this wallet home to ${destination.address}`)
+    await confirmAddress(
+      ctx,
+      "vault",
+      destination.address,
+      `promote a new TEE wallet with pinned vault ${destination.address}`,
+    )
     if (toKey !== undefined) {
       notice(
         ctx.deps,

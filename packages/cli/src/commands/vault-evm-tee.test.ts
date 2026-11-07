@@ -384,6 +384,10 @@ describe("H3: vault promote on EVM", () => {
     fx.node.state.head = 7_777n
 
     expect(await fx.cli(["vault", "promote", "--from", "hood-cold", "--json"])).toBe(0)
+    expect(fx.prompts.filter((prompt) => prompt.startsWith("Type confirm"))).toEqual([
+      `Type confirm to promote a new TEE wallet with pinned vault ${FIXTURE_EVM_0}: `,
+    ])
+    expect(fx.stderr.text).toContain(`vault ${groupAddress(FIXTURE_EVM_0)}\n`)
     const doc = lastJson(fx.stdout.text)
     expect(doc).toMatchObject({
       mode: "fresh",
@@ -515,11 +519,11 @@ describe("H3: vault promote on EVM", () => {
     ])
 
     fx.prompts.length = 0
-    fx.answer((prompt) => (prompt.startsWith("Type confirm to sweep this wallet home") ? "yes" : undefined))
+    fx.answer((prompt) => (prompt.startsWith("Type confirm to promote a new TEE wallet") ? "yes" : undefined))
     expect(await fx.cli(["vault", "promote", "--from", "hood-cold", "--json"])).toBe(5)
     expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
     expect(fx.prompts.filter((prompt) => prompt.startsWith("Type confirm"))).toEqual([
-      `Type confirm to sweep this wallet home to ${FIXTURE_EVM_0}: `,
+      `Type confirm to promote a new TEE wallet with pinned vault ${FIXTURE_EVM_0}: `,
     ])
     expect(fx.stderr.text).toContain(`vault ${groupAddress(FIXTURE_EVM_0)}\n`)
     // `--from` records the derived key's exposure before this prompt, as ever; nothing is imported.

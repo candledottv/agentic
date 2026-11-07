@@ -294,6 +294,7 @@ describe("T40: vault promote --from and vault fund", () => {
     const err = createCapture()
     const secrets = [passphrase, passphrase]
     const lines = ["confirm"]
+    const prompts: string[] = []
     const deps = createTestDeps({
       fetch,
       store: createFakeStore({ "profile:prc:api_key": API_KEY }),
@@ -301,7 +302,10 @@ describe("T40: vault promote --from and vault fund", () => {
       stderr: err,
       env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_URL: API },
       promptSecret: async () => secrets.shift() ?? passphrase,
-      promptLine: async () => lines.shift() ?? "",
+      promptLine: async (prompt) => {
+        prompts.push(prompt)
+        return lines.shift() ?? ""
+      },
       readFile: (path) => readFile(path, "utf8"),
       writeFile: (path, content) => writeFile(path, content, "utf8"),
     })
@@ -313,6 +317,8 @@ describe("T40: vault promote --from and vault fund", () => {
     const code = await run(["vault", "promote", "--from", "cold", "--json"], deps)
     expect(code).toBe(0)
     expect(importCalls.n).toBe(1)
+    expect(prompts).toEqual([`Type confirm to promote a new TEE wallet with pinned vault ${cold}: `])
+    expect(err.text).toContain(`vault ${groupAddress(cold)}\n`)
     const body = JSON.parse(out.text.trim().split("\n").at(-1)!)
     expect(body.mode).toBe("fresh")
     expect(body.vaultDestination).toBe(cold)
@@ -824,7 +830,7 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
   })
 })
 
-describe("BE-1710: vault promote --from asks confirm under the sweep vault", () => {
+describe("BE-2679: vault promote --from confirms promotion under the pinned vault", () => {
   test("anything but the word, the vault's old last six included, imports nothing", async () => {
     const dir = tempDir("candle-be1710-from-")
     const { passphrase } = await initVault(dir)
@@ -866,7 +872,7 @@ describe("BE-1710: vault promote --from asks confirm under the sweep vault", () 
     })
     // BE-2674 (R28): a declined typed confirm is exit 5 (CANCELLED_EXIT).
     expect(await run(["vault", "promote", "--from", "cold", "--json"], deps)).toBe(5)
-    expect(asked).toEqual([`Type confirm to sweep this wallet home to ${cold}: `])
+    expect(asked).toEqual([`Type confirm to promote a new TEE wallet with pinned vault ${cold}: `])
     expect(err.text).toContain(`vault ${groupAddress(cold)}\n`)
     expect(JSON.parse(out.text.trim().split("\n").at(-1) as string)).toMatchObject({
       ok: false,
