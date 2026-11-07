@@ -2399,6 +2399,7 @@ async function resolveToken(args, cfg, doFetch) {
     return read.err;
   return { text: JSON.stringify({ success: true, chain, mint: args.mint, market: read.market }, null, 2) };
 }
+var STOP_CLEARED_BY = "An account owner reviews the profile and resumes it from the agent console; an API key cannot resume it.";
 async function executionStatus(cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
   const get = async (path) => {
@@ -2413,27 +2414,33 @@ async function executionStatus(cfg, doFetch) {
     }
     return { ok: res.ok, status: res.status, body };
   };
-  const [wallets, tier, limits] = await Promise.all([
+  const [wallets, tier, limits, risk] = await Promise.all([
     get("/api/v1/agent/wallets/embedded"),
     get("/api/v1/agent/tier"),
-    get("/api/v1/agent/keys/self/limits")
+    get("/api/v1/agent/keys/self/limits"),
+    get("/api/v1/agent/keys/self/risk")
   ]);
   const unreadable = [
     ["wallets", wallets],
     ["tier", tier],
-    ["limits", limits]
+    ["limits", limits],
+    ["risk", risk]
   ].filter(([, r]) => !r.ok);
   const tierBody = tier.ok ? tier.body : undefined;
+  const riskBody = risk.ok ? risk.body : undefined;
+  const stopped = riskBody?.stopped === true;
   return {
     text: JSON.stringify({
       success: true,
-      ready: unreadable.length === 0 ? true : undefined,
+      ready: stopped ? false : unreadable.length === 0 ? true : undefined,
+      stopped: stopped ? { tripped: riskBody?.tripped ?? null, clearedBy: STOP_CLEARED_BY } : undefined,
       notice: tierBody?.maxExpired ? tierBody.maxExpiredNotice : undefined,
       updateAvailable: updateAvailable() ?? undefined,
       unreadable: unreadable.length > 0 ? unreadable.map(([name]) => name) : undefined,
       wallets: wallets.body,
       tier: tier.body,
-      limits: limits.body
+      limits: limits.body,
+      risk: risk.body
     }, null, 2),
     ...unreadable.length > 0 ? { isError: true } : {}
   };
@@ -7644,7 +7651,7 @@ function registerToolSubset(server, options) {
   });
   register("candle_execution_status", {
     title: "Can this key execute right now",
-    description: "One call before trading: the embedded wallets to spend from, the tier that decides what " + "may be traded, and this key's own spend limits. Reads only; moves nothing. Call it when " + "a run starts, or after an authorization error, rather than inferring readiness from a " + "failed trade. If a read could not be completed the tool says which one and does NOT " + "claim the account is unready: an unreachable endpoint and a missing tier are different " + "problems with different fixes.",
+    description: "One call before trading: the embedded wallets to spend from, the tier that decides what " + "may be traded, this key's own spend limits, and its loss limits and stop state (risk: " + "lossLimits, state, stopped, tripped). A stopped key reports ready: false and a top-level " + "stopped naming the bound that broke; every trade answers RISK_LIMIT_REACHED until an " + "account owner resumes it, so stop trading and say why rather than retrying. Any scope " + "can read its own. Reads only; moves nothing. Call it when " + "a run starts, or after an authorization error, rather than inferring readiness from a " + "failed trade. If a read could not be completed the tool says which one and does NOT " + "claim the account is unready: an unreachable endpoint and a missing tier are different " + "problems with different fixes.",
     inputSchema: {}
   }, async () => {
     const result = await executionStatus(getConfig(), doFetch);

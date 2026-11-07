@@ -2416,7 +2416,11 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       title: "Can this key execute right now",
       description:
         "One call before trading: the embedded wallets to spend from, the tier that decides what " +
-        "may be traded, and this key's own spend limits. Reads only; moves nothing. Call it when " +
+        "may be traded, this key's own spend limits, and its loss limits and stop state (risk: " +
+        "lossLimits, state, stopped, tripped). A stopped key reports ready: false and a top-level " +
+        "stopped naming the bound that broke; every trade answers RISK_LIMIT_REACHED until an " +
+        "account owner resumes it, so stop trading and say why rather than retrying. Any scope " +
+        "can read its own. Reads only; moves nothing. Call it when " +
         "a run starts, or after an authorization error, rather than inferring readiness from a " +
         "failed trade. If a read could not be completed the tool says which one and does NOT " +
         "claim the account is unready: an unreachable endpoint and a missing tier are different " +

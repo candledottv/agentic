@@ -897,15 +897,21 @@ export async function resolveToken(args: ResolveTokenArgs, cfg: RequestConfig, d
  * candle_execution_status: one call answering "can this key trade right now, and if not, what is
  * missing".
  *
- * Three reads that an agent would otherwise have to know to make separately and in the right
- * order: the embedded wallets it executes with, the tier that decides what it may trade, and the
- * calling key's own spend limits.
+ * Four reads that an agent would otherwise have to know to make separately and in the right
+ * order: the embedded wallets it executes with, the tier that decides what it may trade, the
+ * calling key's own spend limits, and its own loss limits and stop state (BE-2692: the key's
+ * `/keys/self/risk`, any scope, so a swap-only key can read why it was stopped).
  *
  * Each read is reported as it came back. A failing read is NOT flattened into "not ready": a 500
  * on the tier endpoint and a key that genuinely lacks a tier are different situations, and an
  * agent told "not ready" for the first one would go and re-run setup that was never broken. The
- * `ready` flag is therefore only ever false because a read SUCCEEDED and said so.
+ * `ready` flag is therefore only ever false because a read SUCCEEDED and said so: today, the risk
+ * read saying the profile is stopped.
  */
+/** Who clears a stop, in the words the API's own RISK_LIMIT_REACHED hint uses. */
+const STOP_CLEARED_BY =
+  "An account owner reviews the profile and resumes it from the agent console; an API key cannot resume it."
+
 export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
   const apiKey = requireApiKey(cfg)
   const get = async (path: string) => {
@@ -921,21 +927,28 @@ export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): P
     return { ok: res.ok, status: res.status, body }
   }
 
-  const [wallets, tier, limits] = await Promise.all([
+  const [wallets, tier, limits, risk] = await Promise.all([
     get("/api/v1/agent/wallets/embedded"),
     get("/api/v1/agent/tier"),
     get("/api/v1/agent/keys/self/limits"),
+    get("/api/v1/agent/keys/self/risk"),
   ])
 
   const unreadable = [
     ["wallets", wallets],
     ["tier", tier],
     ["limits", limits],
+    ["risk", risk],
   ].filter(([, r]) => !(r as { ok: boolean }).ok)
 
   const tierBody = tier.ok
     ? (tier.body as { maxExpired?: boolean; maxExpiredNotice?: string; feeBps?: number })
     : undefined
+  // A stopped profile answers RISK_LIMIT_REACHED to every build until an account owner resumes it,
+  // so it is the one read that can say "not ready" outright. Only `stopped: true` decides it; any
+  // other body leaves `ready` to the reads.
+  const riskBody = risk.ok ? (risk.body as { stopped?: unknown; tripped?: unknown }) : undefined
+  const stopped = riskBody?.stopped === true
 
   return {
     text: JSON.stringify(
@@ -943,7 +956,10 @@ export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): P
         success: true,
         // Undefined rather than false when a read failed: the honest answer is "not known", and a
         // false here would read as "authorized: no" to a model that cannot see the reads.
-        ready: unreadable.length === 0 ? true : undefined,
+        ready: stopped ? false : unreadable.length === 0 ? true : undefined,
+        // At the top for the reason `notice` is: it changes what to do next. Waiting and retrying
+        // will not clear it; the agent should stop trading on this key and say why.
+        stopped: stopped ? { tripped: riskBody?.tripped ?? null, clearedBy: STOP_CLEARED_BY } : undefined,
         // Surfaced at the TOP of the context, not buried in tier.body, because it changes what a
         // trading agent should do next: an account whose Max lapsed pays a per-trade platform fee
         // it may be assuming is zero. The sentence is the server's own copy, so the agent relays
@@ -956,6 +972,7 @@ export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): P
         wallets: wallets.body,
         tier: tier.body,
         limits: limits.body,
+        risk: risk.body,
       },
       null,
       2,

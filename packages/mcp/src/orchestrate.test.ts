@@ -1234,12 +1234,25 @@ describe("executeSweep", () => {
   })
 })
 
+/** `GET /keys/self/risk` for a profile that is running (BE-2692). */
+const RUNNING_RISK = {
+  keyPrefix: "KeyAAAA1",
+  lossLimits: { maxDailyLossUsdMicros: 5_000_000 },
+  state: null,
+  computedAt: null,
+  unresolvedFills: 0,
+  stopped: false,
+  tripped: null,
+  breaker: { tradesInWindow: 0, failedSellStreak: 0, failedSellMint: null },
+}
+
 describe("executionStatus max-expiry notice", () => {
   const ROUTES = {
     "https://api.test/api/v1/agent/wallets/embedded": {
       body: { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } },
     },
     "https://api.test/api/v1/agent/keys/self/limits": { body: { success: true, limits: [] } },
+    "https://api.test/api/v1/agent/keys/self/risk": { body: RUNNING_RISK },
   }
 
   test("a lapsed Max surfaces as a top-level notice, in the server's own words", async () => {
@@ -1279,6 +1292,7 @@ describe("executionStatus update notice", () => {
         body: { success: true, wallets: { solana: null, evm: null } },
       },
       "https://api.test/api/v1/agent/keys/self/limits": { body: { success: true, limits: [] } },
+      "https://api.test/api/v1/agent/keys/self/risk": { body: RUNNING_RISK },
       "https://api.test/api/v1/agent/tier": { body: { success: true, tier: "max", feeBps: 0, maxExpired: false } },
     })
     // fakeFetch's responses have no headers, so simulate the capture the real fetch site does.
@@ -1289,6 +1303,93 @@ describe("executionStatus update notice", () => {
     expect(body.updateAvailable?.latest).toBe("99.0.0")
     expect(body.updateAvailable?.command).toBe("npm install -g @candledottv/mcp@latest")
     __resetUpdateNoticeForTest()
+  })
+})
+
+describe("executionStatus loss limits and stop (BE-2692, R55)", () => {
+  const BASE = {
+    "https://api.test/api/v1/agent/wallets/embedded": {
+      body: { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } },
+    },
+    "https://api.test/api/v1/agent/keys/self/limits": { body: { success: true, limits: [] } },
+    "https://api.test/api/v1/agent/tier": { body: { success: true, tier: "pro", feeBps: 50, maxExpired: false } },
+  }
+  const TRIPPED = { at: 1_700_000_000_500, reason: "daily_loss", limitValue: 5_000_000, observed: 6_000_000 }
+
+  test("reads the calling key's own risk, GET, with its key, and relays the body as-is", async () => {
+    const { calls, fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/keys/self/risk": { body: RUNNING_RISK },
+    })
+    const out = await executionStatus(CFG, fetch)
+    const riskCall = calls.find((c) => c.url === "https://api.test/api/v1/agent/keys/self/risk")
+    expect(riskCall?.init?.method).toBe("GET")
+    expect(calls).toHaveLength(4)
+    const body = JSON.parse(out.text) as { ready?: boolean; stopped?: unknown; risk?: unknown }
+    expect(body.ready).toBe(true)
+    expect(body.stopped).toBeUndefined()
+    expect(body.risk).toEqual(RUNNING_RISK)
+    expect(out.isError).toBeUndefined()
+  })
+
+  test("a stopped key is ready: false with the broken bound and who clears it at the top", async () => {
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/keys/self/risk": { body: { ...RUNNING_RISK, stopped: true, tripped: TRIPPED } },
+    })
+    const out = await executionStatus(CFG, fetch)
+    const body = JSON.parse(out.text) as {
+      ready?: boolean
+      stopped?: { tripped: unknown; clearedBy: string }
+      unreadable?: string[]
+    }
+    expect(body.ready).toBe(false)
+    expect(body.stopped?.tripped).toEqual(TRIPPED)
+    expect(body.stopped?.clearedBy).toContain("account owner")
+    expect(body.stopped?.clearedBy).toContain("an API key cannot resume it")
+    expect(body.unreadable).toBeUndefined()
+    // A successful read that says "stopped" is an answer, not a tool failure.
+    expect(out.isError).toBeUndefined()
+  })
+
+  test("a stop still reads as not ready when another read failed", async () => {
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/tier": { status: 500, body: { success: false } },
+      "https://api.test/api/v1/agent/keys/self/risk": { body: { ...RUNNING_RISK, stopped: true, tripped: TRIPPED } },
+    })
+    const body = JSON.parse((await executionStatus(CFG, fetch)).text) as { ready?: boolean; unreadable?: string[] }
+    expect(body.ready).toBe(false)
+    expect(body.unreadable).toEqual(["tier"])
+  })
+
+  test("an unreadable risk read is unknown, not a no: ready is absent and risk is named", async () => {
+    // What an API without /keys/self/risk answers a swap-only key: the prefix route's refusal.
+    const refusal = {
+      success: false,
+      error: { code: "SCOPE_MISSING", message: "This key lacks the account:read scope" },
+    }
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/keys/self/risk": { status: 403, body: refusal },
+    })
+    const out = await executionStatus(CFG, fetch)
+    const body = JSON.parse(out.text) as { ready?: boolean; stopped?: unknown; unreadable?: string[]; risk?: unknown }
+    expect(body.ready).toBeUndefined()
+    expect(body.stopped).toBeUndefined()
+    expect(body.unreadable).toEqual(["risk"])
+    expect(body.risk).toEqual(refusal)
+    expect(out.isError).toBe(true)
+  })
+
+  test("only stopped: true stops: a truthy non-boolean is not read as a stop", async () => {
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/keys/self/risk": { body: { ...RUNNING_RISK, stopped: "yes" } },
+    })
+    const body = JSON.parse((await executionStatus(CFG, fetch)).text) as { ready?: boolean; stopped?: unknown }
+    expect(body.ready).toBe(true)
+    expect(body.stopped).toBeUndefined()
   })
 })
 
