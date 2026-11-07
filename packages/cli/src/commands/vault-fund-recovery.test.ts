@@ -290,4 +290,96 @@ describe("BE-506 TEE fund destination hints", () => {
     expect(f.output.text + f.errors.text).not.toContain("--from")
     expect(f.broadcasts).toBe(0)
   })
+
+  test("R34: a retired TEE wallet is refused as a fund destination, before any request", async () => {
+    const f = await fixture()
+    const vault = await reopen(f.path)
+    vault.index.entries.find((entry) => entry.address === f.teeAddress)!.tee!.lifecycle = "retired"
+    await commitVault(vault, { index: vault.index }, testClock)
+    closeVault(vault)
+    const calls = f.calls.length
+    expect(await fund(f)).toBe(1)
+    expect(f.output.text).toContain("TEE_WALLET_STOPPED")
+    expect(f.output.text).toContain("retired TEE wallet")
+    expect(f.broadcasts).toBe(0)
+    expect(f.signingPrompts).toBe(0)
+    expect(f.calls.length).toBe(calls)
+  })
+
+  // R34 FAIL-fix: the retirement refusal must come before receipt reconciliation, so an outstanding
+  // receipt can never trigger an RPC request (or settle into a success exit) for a retired wallet.
+  async function retireWithPendingReceipt(f: Awaited<ReturnType<typeof fixture>>, onDestination: boolean) {
+    if (!onDestination) {
+      // A second TEE wallet holds the unfinalized receipt and is associated with the retired
+      // destination's pinned source, so reconciliation would fetch for it too.
+      expect(await run(["vault", "new-key", "--chain", "solana", "--label", "holder"], f.deps)).toBe(0)
+    }
+    const vault = await reopen(f.path)
+    const tee = vault.index.entries.find((entry) => entry.address === f.teeAddress)!
+    tee.tee!.lifecycle = "retired"
+    const receipt: FundingReceipt = {
+      signature: onDestination ? "OldPendingFunding" : "OldPendingFundingFromSource",
+      blockhash: BLOCKHASH,
+      from: f.from,
+      amount: "0.1",
+      asset: "SOL",
+      amountRaw: "100000000",
+      at: new Date(0).toISOString(),
+      finalized: false,
+    }
+    if (onDestination) {
+      tee.tee!.fundingReceipts = [receipt]
+    } else {
+      const holder = vault.index.entries.find((entry) => entry.label === "holder")!
+      holder.role = "tee-wallet"
+      holder.exposure.everRemoteExposed = true
+      holder.linkedWalletId = "lw_holder"
+      holder.tee = {
+        network: "solana-mainnet",
+        lifecycle: "enabled",
+        vaultDestination: f.from,
+        remoteAuthority: "verified-active",
+        destinationExposureAccepted: true,
+        boundKeyPrefix: "ck_live_test",
+        grantIdentity: { account: "TestAccount", apiBaseUrl: "https://api.test", source: "recorded-at-operation" },
+        fundingReceipts: [receipt],
+      }
+    }
+    await commitVault(vault, { index: vault.index }, testClock)
+    closeVault(vault)
+  }
+
+  for (const onDestination of [true, false]) {
+    test(`R34: a retired fund destination with an outstanding receipt (${
+      onDestination ? "on the destination" : "associated through the pinned source"
+    }) refuses before any request`, async () => {
+      const f = await fixture()
+      await retireWithPendingReceipt(f, onDestination)
+      const calls = f.calls.length
+      expect(await fund(f)).toBe(1)
+      expect(f.output.text).toContain("TEE_WALLET_STOPPED")
+      expect(f.output.text).toContain("retired TEE wallet")
+      expect(f.output.text).not.toContain("OldPendingFunding")
+      expect(f.broadcasts).toBe(0)
+      expect(f.signingPrompts).toBe(0)
+      expect(f.calls.length).toBe(calls)
+      // The outstanding receipt is preserved untouched for a live reconciliation path.
+      const kept = onDestination
+        ? (await f.receipts()).fundingReceipts
+        : await (async () => {
+            const vault = await reopen(f.path)
+            try {
+              return vault.index.entries.find((entry) => entry.label === "holder")!.tee!.fundingReceipts
+            } finally {
+              closeVault(vault)
+            }
+          })()
+      expect(kept).toEqual([
+        expect.objectContaining({
+          signature: onDestination ? "OldPendingFunding" : "OldPendingFundingFromSource",
+          finalized: false,
+        }),
+      ])
+    })
+  }
 })

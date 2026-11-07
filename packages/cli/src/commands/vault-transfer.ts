@@ -36,10 +36,12 @@
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { createEvmRpc, EVM_RPC_URL_ENV, resolveEvmRpcUrl, rpcHostOf } from "../evm-lite"
+import { writeLocalFailure } from "../render"
 import { resolveSolanaEndpoint, solanaClientFor } from "../solana-endpoint"
 import { VaultError } from "../vault/errors"
 import { assertHoodChain, assertWalletLockFree, readHoodTeeServer } from "../vault/evm-tee"
 import { assertSolanaDestination, runEvmTransfer } from "../vault/evm-transfer"
+import { isRetiredTee } from "../vault/format"
 import { reconcileFundingReceipts } from "../vault/funding-receipts"
 import { wipe } from "../vault/hygiene"
 import { findTransferSource } from "../vault/promote-support"
@@ -128,6 +130,22 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
       return usage(ctx, `No vault key or promoted wallet matches --from ${fromLabel}.`)
     }
     assertTransferSigner(fromEntry)
+    // R34: a retired TEE wallet in this vault is never a destination; a send there strands funds.
+    const retiredDestination = vault.index.entries.find(
+      (entry) => isRetiredTee(entry) && entry.address.toLowerCase() === to.toLowerCase(),
+    )
+    if (retiredDestination !== undefined) {
+      writeLocalFailure(
+        ctx.deps,
+        {
+          code: "TEE_WALLET_STOPPED",
+          message: `${to} is a retired TEE wallet (${retiredDestination.label}); a retired address is never refunded.`,
+          suggestion: "Nothing was signed. Send to a live wallet, or create one: candle tee new",
+        },
+        ctx.json,
+      )
+      return 1
+    }
 
     if (fromEntry.chain === "evm") {
       // Phase 4a (D5): an EVM `role: "vault"` key. Phase 4b (D1): or a promoted Hood wallet.

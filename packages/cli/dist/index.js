@@ -110408,6 +110408,7 @@ init_solana_endpoint();
 init_errors2();
 init_evm_tee();
 init_evm_transfer();
+init_format();
 
 // src/vault/funding-receipts.ts
 init_errors2();
@@ -110592,6 +110593,8 @@ async function vaultFund(args, ctx) {
     if (parsed.values["--from"] !== undefined) {
       return usage(ctx, "--from applies to an external wallet only; a TEE wallet is funded from its pinned vault key.");
     }
+    if (isRetiredTee(teeEntry))
+      return refuseRetiredFund(ctx, teeAddress);
     const reconciled = await reconcileFundingReceipts(vault, [teeAddress, ...teeEntry.tee?.vaultDestination ? [teeEntry.tee.vaultDestination] : []], solana.rpc, ctx);
     if (reconciled !== null)
       return reconciled;
@@ -110713,6 +110716,8 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
       }, ctx.json);
       return 1;
     }
+    if (isRetiredTee(teeEntry))
+      return refuseRetiredFund(ctx, teeEntry.address);
     if (teeEntry.tee?.remoteAuthority !== "verified-active" || teeEntry.tee.stopRequestedAt !== undefined) {
       writeLocalFailure(ctx.deps, {
         code: "TEE_WALLET_NOT_VERIFIED",
@@ -110746,6 +110751,14 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
       writeJson: (value) => writeJson(ctx.deps, { ...value, tee: teeEntry.address })
     }, client2.rpc);
   });
+}
+function refuseRetiredFund(ctx, address) {
+  writeLocalFailure(ctx.deps, {
+    code: "TEE_WALLET_STOPPED",
+    message: `${address} is a retired TEE wallet; a retired address is never refunded.`,
+    suggestion: "Nothing was signed. Create a new wallet to fund: candle tee new"
+  }, ctx.json);
+  return 1;
 }
 
 // src/commands/vault-import-legacy.ts
@@ -114776,10 +114789,12 @@ function describeEnvelope(envelope, facts) {
 init_args();
 init_deps();
 init_evm_lite();
+init_render();
 init_solana_endpoint();
 init_errors2();
 init_evm_tee();
 init_evm_transfer();
+init_format();
 init_promote_support();
 init_store();
 init_vault_support();
@@ -114835,6 +114850,15 @@ async function vaultTransfer(args, ctx) {
       return usage(ctx, `No vault key or promoted wallet matches --from ${fromLabel}.`);
     }
     assertTransferSigner(fromEntry);
+    const retiredDestination = vault.index.entries.find((entry) => isRetiredTee(entry) && entry.address.toLowerCase() === to.toLowerCase());
+    if (retiredDestination !== undefined) {
+      writeLocalFailure(ctx.deps, {
+        code: "TEE_WALLET_STOPPED",
+        message: `${to} is a retired TEE wallet (${retiredDestination.label}); a retired address is never refunded.`,
+        suggestion: "Nothing was signed. Send to a live wallet, or create one: candle tee new"
+      }, ctx.json);
+      return 1;
+    }
     if (fromEntry.chain === "evm") {
       const evmRpc = resolveEvmRpcUrl(rpcUrlFlag, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
       if ("error" in evmRpc)

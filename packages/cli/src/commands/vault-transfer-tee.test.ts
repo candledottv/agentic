@@ -50,7 +50,9 @@ function tokenAccount(amount: bigint): string {
   return Buffer.from(data).toString("base64")
 }
 
-async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: boolean; sweepPending?: boolean } = {}) {
+async function fixture(
+  opts: { lifecycle?: Handler; report?: Handler; apiKey?: boolean; sweepPending?: boolean; retireCold?: boolean } = {},
+) {
   const made = await makeVault()
   closeVault(made.vault)
   const output = createCapture()
@@ -145,6 +147,12 @@ async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: b
     grantIdentity: { account: "TestAccount", apiBaseUrl: "https://api.test", source: "recorded-at-operation" },
     ...(opts.sweepPending ? { sweepPending: [{ signature: "PendingSweepSig", mint: null }] } : {}),
   }
+  if (opts.retireCold) {
+    // R34: the vault key is now a retired TEE wallet (demoted and swept), so it is no destination.
+    const coldEntry = opened.index.entries.find((entry) => entry.label === "cold")!
+    coldEntry.role = "tee-wallet"
+    coldEntry.tee = { ...tee.tee!, lifecycle: "retired" }
+  }
   await commitVault(opened, { index: opened.index }, testClock)
   closeVault(opened)
   output.text = ""
@@ -190,6 +198,19 @@ async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: b
 }
 
 describe("BE-326: vault transfer from a promoted wallet", () => {
+  test("R34: a retired TEE wallet in the vault is refused as a destination, with nothing signed", async () => {
+    const f = await fixture({ retireCold: true })
+    const code = await run(
+      ["vault", "transfer", f.cold, "--from", "desk", "--amount", "0.1", "--asset", "SOL", "--rpc-url", RPC],
+      f.deps,
+    )
+    expect(code).not.toBe(0)
+    const text = f.output.text + f.errors.text
+    expect(text).toContain("retired TEE wallet")
+    expect(f.sent).toHaveLength(0)
+    expect(f.events).not.toContain("confirm")
+  })
+
   test("signs and broadcasts a SOL transfer by label, with the vault key's one unlock and typed confirm", async () => {
     const f = await fixture()
     expect(await f.transfer("desk")).toBe(0)

@@ -19,7 +19,7 @@ Single and batch rename require new labels of at most 64 characters, without edg
 control characters or a leading `-`; names are never trimmed. Existing longer labels still
 resolve as targets. A terminal is required. TEE wallets are refused by `vault rename`; use
 `candle tee rename`. A retired TEE wallet (demoted and swept) is the exception: it renames here,
-since Candle no longer holds it. `candle vault list` hides retired TEE wallets unless `--all`.
+since Candle no longer holds it. `candle vault list` hides retired TEE wallets unless `--all`; `vault fund` and `vault transfer` refuse one as a destination (`TEE_WALLET_STOPPED`).
 
 `candle tee rename <label|address|id> <new-label>` renames a TEE wallet on both sides: the label
 Candle holds and, when the wallet's key is in this vault, the vault entry.

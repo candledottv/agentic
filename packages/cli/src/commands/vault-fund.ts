@@ -33,7 +33,7 @@ import { openSolanaClient, type SolanaClient } from "../solana-endpoint"
 import { VaultError } from "../vault/errors"
 import { assertHoodChain, hoodHostLine, resolveHoodClient } from "../vault/evm-tee"
 import { runEvmTransfer } from "../vault/evm-transfer"
-import type { KeyEntry } from "../vault/format"
+import { isRetiredTee, type KeyEntry } from "../vault/format"
 import { type FundingReceipt, reconcileFundingReceipts, saveFundingReceipt } from "../vault/funding-receipts"
 import { wipe } from "../vault/hygiene"
 import { assertNotEvmEntry, sameAddress } from "../vault/promote-support"
@@ -213,6 +213,10 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     if (parsed.values["--from"] !== undefined) {
       return usage(ctx, "--from applies to an external wallet only; a TEE wallet is funded from its pinned vault key.")
     }
+    // R34: the retirement refusal comes before receipt reconciliation, so an outstanding receipt
+    // (on the destination or its pinned source) can never trigger an RPC request, a prompt, or a
+    // broadcast attempt against a retired wallet.
+    if (isRetiredTee(teeEntry)) return refuseRetiredFund(ctx, teeAddress)
     const reconciled = await reconcileFundingReceipts(
       vault,
       [teeAddress, ...(teeEntry.tee?.vaultDestination ? [teeEntry.tee.vaultDestination] : [])],
@@ -374,6 +378,7 @@ async function vaultFundEvm(ctx: CommandContext, parsed: ParsedArgs, teeAddress:
       )
       return 1
     }
+    if (isRetiredTee(teeEntry)) return refuseRetiredFund(ctx, teeEntry.address)
     if (teeEntry.tee?.remoteAuthority !== "verified-active" || teeEntry.tee.stopRequestedAt !== undefined) {
       writeLocalFailure(
         ctx.deps,
@@ -426,4 +431,18 @@ async function vaultFundEvm(ctx: CommandContext, parsed: ParsedArgs, teeAddress:
       client.rpc,
     )
   })
+}
+
+/** R34: a retired (demoted and swept) TEE wallet is never funded; refused before any request or signature. */
+function refuseRetiredFund(ctx: CommandContext, address: string): number {
+  writeLocalFailure(
+    ctx.deps,
+    {
+      code: "TEE_WALLET_STOPPED",
+      message: `${address} is a retired TEE wallet; a retired address is never refunded.`,
+      suggestion: "Nothing was signed. Create a new wallet to fund: candle tee new",
+    },
+    ctx.json,
+  )
+  return 1
 }
