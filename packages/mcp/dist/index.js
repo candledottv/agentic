@@ -6528,6 +6528,9 @@ var TOOL_NAMES = [
   "candle_set_profile_wallets",
   "candle_get_profile_pnl",
   "candle_get_profile_trades",
+  "candle_get_paper_inventory",
+  "candle_get_profile_paper",
+  "candle_get_account_pnl",
   "candle_get_portfolio",
   "candle_resolve_token",
   "candle_execution_status",
@@ -6937,11 +6940,38 @@ function buildRequest(name, args, cfg) {
     }
     case "candle_get_profile_trades": {
       const apiKey = requireApiKey2(cfg);
-      const { keyPrefix, limit } = args;
-      const query2 = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
+      const { keyPrefix, limit, since, until, cursor } = args;
+      const params = new URLSearchParams;
+      if (limit !== undefined)
+        params.set("limit", String(limit));
+      if (since !== undefined)
+        params.set("since", since);
+      if (until !== undefined)
+        params.set("until", until);
+      if (cursor !== undefined)
+        params.set("cursor", cursor);
       return {
-        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query2}`,
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${params.size ? `?${params}` : ""}`,
         init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
+    case "candle_get_paper_inventory": {
+      return {
+        url: `${base2}/api/v1/trade/agent/paper/inventory`,
+        init: { method: "GET", headers: jsonHeaders(requireApiKey2(cfg)) }
+      };
+    }
+    case "candle_get_profile_paper": {
+      const { keyPrefix } = args;
+      return {
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/paper`,
+        init: { method: "GET", headers: jsonHeaders(requireApiKey2(cfg)) }
+      };
+    }
+    case "candle_get_account_pnl": {
+      return {
+        url: `${base2}/api/v1/agent/keys/pnl`,
+        init: { method: "GET", headers: jsonHeaders(requireApiKey2(cfg)) }
       };
     }
     case "candle_transfer": {
@@ -7161,8 +7191,12 @@ var profilePnlShape = {
 };
 var profileTradesShape = {
   keyPrefix: z9.string().describe("The profile's API key prefix"),
-  limit: z9.number().optional().describe("How many of the most recent trades to return. Default 200, max 1000.")
+  limit: z9.number().optional().describe("How many of the most recent trades to return. Default 200, max 1000."),
+  since: z9.string().optional().describe("Inclusive lower bound on the trade's createdAt: an ISO 8601 time or epoch milliseconds."),
+  until: z9.string().optional().describe("Exclusive upper bound on createdAt, in the same forms as `since`."),
+  cursor: z9.string().optional().describe("The `nextCursor` of the previous page, to continue the same window.")
 };
+var noArgsShape = {};
 var setProfileWalletsShape = {
   keyPrefix: z9.string().describe("The profile's API key prefix"),
   walletIds: z9.array(z9.string()).describe("The linked-wallet ids the profile may spend from -- ids, not addresses. This REPLACES the " + "whole set: any wallet omitted loses access. An empty array assigns none.")
@@ -7571,9 +7605,24 @@ function registerToolSubset(server, options) {
   }, async (args) => callAndRelay("candle_get_profile_pnl", args, getConfig(), doFetch));
   register("candle_get_profile_trades", {
     title: "Read an agent profile's trade history",
-    description: "Orders, actual fills, fees, timestamps and transaction hashes for this profile. Includes FAILED " + "trades, with an errorCode saying why each did not go through, so this answers 'what happened to " + "my order' as well as 'what did I trade'. Reads only; moves nothing.",
+    description: "Orders, actual fills, fees, timestamps and transaction hashes for this profile. Page by time with " + "`since`, `until` and `cursor` (continue with the response's `nextCursor`). Includes FAILED " + "trades, with an errorCode saying why each did not go through, so this answers 'what happened to " + "my order' as well as 'what did I trade'. Reads only; moves nothing.",
     inputSchema: profileTradesShape
   }, async (args) => callAndRelay("candle_get_profile_trades", args, getConfig(), doFetch));
+  register("candle_get_paper_inventory", {
+    title: "Read this key's paper inventory",
+    description: "This key's PAPER book in raw units: the positions that paper buys have credited and a paper " + "percent sell sizes itself from. Derived from admitted quotes; no money moved and the live " + "wallet is untouched. Never mix it with live holdings (candle_get_portfolio). Fails retryably " + "when the book cannot be read completely. Needs swap:write on the key. Reads only.",
+    inputSchema: noArgsShape
+  }, async (args) => callAndRelay("candle_get_paper_inventory", args, getConfig(), doFetch));
+  register("candle_get_profile_paper", {
+    title: "Read an agent profile's paper P&L",
+    description: "One profile's PAPER results: the same accounting as candle_get_profile_pnl, from trades that " + "never happened. `pnl` is the paper P&L and `trades` its 50 most recent paper trades. Carries " + '`basis: "quote"`: the figures come from quotes at admission and are optimistic by the ' + "slippage and fees real execution pays. Never add them to live P&L. Reads only.",
+    inputSchema: profilePnlShape
+  }, async (args) => callAndRelay("candle_get_profile_paper", args, getConfig(), doFetch));
+  register("candle_get_account_pnl", {
+    title: "Read P&L across all of an account's agent keys",
+    description: "The account's P&L split by agent profile in one read, as `candle pnl` without `--profile` " + "does: one row per profile with its ledger figures and, where it has a board entry, `board` " + "(all-time public total with creator-fee claims credited to the launching agent, so a profile's " + "board total can differ from its per-key ledger P&L). A wallet shared by several keys books a " + "round to its bound key, else the key whose buy opened it. Use candle_get_profile_pnl for one " + "profile's positions. Reads only.",
+    inputSchema: noArgsShape
+  }, async (args) => callAndRelay("candle_get_account_pnl", args, getConfig(), doFetch));
   register("candle_get_portfolio", {
     title: "Read what the account holds, on Solana and Hood",
     description: "Balances and prices for the wallets Candle already knows on this account, on both chains: the " + "embedded wallet and every TEE wallet. Solana wallets are in `embedded` and `tee` (SOL as raw " + "`lamports`, tokens as raw `amountRaw` with `decimals`). Hood wallets are in `hood.embedded` and " + "`hood.tee` (ETH as raw `wei`, ERC-20s including USDG), never in the top-level arrays. Every " + "wallet and holding carries `chain`. Prices are in `prices`: a Solana mint under its own " + "address, Hood ETH under `hood:native`, and a Hood token under `hood:<contract lowercased>`, so " + "lowercase the address before looking it up. An unpriced entry is `priceUsd: null`, never zero; " + "a Hood one says why in `unpricedReason` (no-market-row, unusable-price, stale-mark, " + "source-unavailable), and `hood.unpriced` / `hood.unpricedByReason` count them. A Hood token " + "mark older than six hours is not used, so many Hood tokens read unpriced. A wallet whose read " + "failed has null balances, never zero, and is listed in `unavailable` (Solana) or " + "`hood.unavailable`; check `complete` before quoting a total. `walletsComplete` is false only " + "when the wallet list itself was cut off, and is absent on a server that predates it: then " + "`complete: false` may be a cut-off list or a failed read. Vault and external wallets are " + "not included: Candle does not know their addresses (the Candle CLI's `candle portfolio` reads " + "them over your own RPC). Needs a key with the account:read scope; without it the answer is " + "SCOPE_MISSING. A server that predates Hood in the portfolio omits `hood` and `chain`. Reads " + "only; moves nothing." + (options.localHyperliquid ? " This local server adds `hyperliquid`: each Hood TEE wallet's Hyperliquid account (account value, " + "unrealized P&L, positions, risk level at the default thresholds) read live from Hyperliquid, with a " + "subtotal. It is not in the ledger and is never part of any total. `read: false` with a reason, or " + "entries in `unread`, means those accounts are unknown, not empty." : ""),

@@ -23,15 +23,18 @@ test("all registered tools are listed", () => {
     "candle_delete_post",
     "candle_execution_status",
     "candle_finish_unstake",
+    "candle_get_account_pnl",
     "candle_get_agent_positions",
     "candle_get_agent_profile",
     "candle_get_feed",
     "candle_get_fees",
     "candle_get_market",
     "candle_get_operation",
+    "candle_get_paper_inventory",
     "candle_get_plans",
     "candle_get_portfolio",
     "candle_get_price_history",
+    "candle_get_profile_paper",
     "candle_get_profile_pnl",
     "candle_get_profile_trades",
     "candle_get_profile_wallets",
@@ -417,6 +420,51 @@ describe("registerTools: CANDLE_MCP_TOOLS filtering", () => {
     const { server, registered } = fakeServer()
     expect(() => registerTools(server, { CANDLE_MCP_TOOLS: "nope" })).toThrow(/Valid names/)
     expect(registered).toHaveLength(0)
+  })
+})
+
+describe("buildRequest: paper book, account P&L and trade windows (BE-2651)", () => {
+  const cfg = { apiUrl: "https://api.test", apiKey: "cndl_live_k" }
+  const key = (r: { init: RequestInit }) => (r.init.headers as Record<string, string>)["x-api-key"]
+
+  test("candle_get_paper_inventory reads the trade-agent paper inventory with the key", () => {
+    const r = buildRequest("candle_get_paper_inventory", {}, cfg)
+    expect(r.url).toBe("https://api.test/api/v1/trade/agent/paper/inventory")
+    expect(r.init.method).toBe("GET")
+    expect(key(r)).toBe("cndl_live_k")
+  })
+  test("candle_get_profile_paper reads the profile's paper results", () => {
+    const r = buildRequest("candle_get_profile_paper", { keyPrefix: "cndl_live_ab" }, cfg)
+    expect(r.url).toBe("https://api.test/api/v1/agent/keys/cndl_live_ab/paper")
+    expect(key(r)).toBe("cndl_live_k")
+  })
+  test("candle_get_account_pnl reads /keys/pnl, not a profile", () => {
+    const r = buildRequest("candle_get_account_pnl", {}, cfg)
+    expect(r.url).toBe("https://api.test/api/v1/agent/keys/pnl")
+    expect(r.init.method).toBe("GET")
+  })
+  test("the paper and account reads need a key", () => {
+    for (const name of ["candle_get_paper_inventory", "candle_get_account_pnl"] as const) {
+      expect(() => buildRequest(name, {}, { apiUrl: "https://api.test" })).toThrow()
+    }
+  })
+  test("candle_get_profile_trades forwards limit, since, until and cursor", () => {
+    const r = buildRequest(
+      "candle_get_profile_trades",
+      { keyPrefix: "p", limit: 5, since: "2026-11-01T00:00:00Z", until: "1762560000000", cursor: "c+/=" },
+      cfg,
+    )
+    const url = new URL(r.url)
+    expect(url.pathname).toBe("/api/v1/agent/keys/p/trades")
+    expect(url.searchParams.get("limit")).toBe("5")
+    expect(url.searchParams.get("since")).toBe("2026-11-01T00:00:00Z")
+    expect(url.searchParams.get("until")).toBe("1762560000000")
+    expect(url.searchParams.get("cursor")).toBe("c+/=")
+  })
+  test("candle_get_profile_trades with no options has no query string", () => {
+    expect(buildRequest("candle_get_profile_trades", { keyPrefix: "p" }, cfg).url).toBe(
+      "https://api.test/api/v1/agent/keys/p/trades",
+    )
   })
 })
 

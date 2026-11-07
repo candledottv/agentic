@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-eighty-four tools over stdio, plus four Hyperliquid market reads (eighty-eight in all), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+eighty-seven tools over stdio, plus four Hyperliquid market reads (eighty-eight in all), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, and backtest a strategy in hacc's strategy lab without hand-rolling HTTP calls. The five
@@ -37,7 +37,7 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all eighty-four. An unknown name fails startup with the valid names in the message, rather
+Unset means all eighty-seven. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -168,7 +168,10 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_get_profile_wallets` | Which wallets an agent profile may spend from, and whether it is scoped | `GET /api/v1/agent/keys/:prefix/wallets` | `CANDLE_AGENT_API_KEY` |
 | `candle_set_profile_wallets` | Replace the wallets an agent profile may spend from | `PUT /api/v1/agent/keys/:prefix/wallets` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_profile_pnl` | An agent profile's share of the account's P&L, the console's figures to the cent: realized on its sales, fees, and the open positions that belong to it at cost basis, marked at current prices (unpriced positions counted, not zeroed), with `totalUsd`, the closed positions as made, lost and partial sells (`closed`), dust flagged and counted apart (`openPositionsExDust`), split by wallet (`pnl.byWallet`, summing to the total) and by chain (`pnl.byChain`), with `chain` and `wallet` on every position; `sinceMs` adds a `window` of realized and open mark changes, including older holdings (see "P&L since a time") | `GET /api/v1/agent/keys/:prefix/pnl` | `CANDLE_AGENT_API_KEY` |
-| `candle_get_profile_trades` | An agent profile's orders, fills, fees and transaction hashes | `GET /api/v1/agent/keys/:prefix/trades` | `CANDLE_AGENT_API_KEY` |
+| `candle_get_profile_trades` | An agent profile's orders, fills, fees and transaction hashes; page by time with `since`, `until` and `cursor` | `GET /api/v1/agent/keys/:prefix/trades` | `CANDLE_AGENT_API_KEY` |
+| `candle_get_profile_paper` | An agent profile's PAPER P&L and 50 latest paper trades, from quotes (`basis: "quote"`), never live figures | `GET /api/v1/agent/keys/:prefix/paper` | `CANDLE_AGENT_API_KEY` |
+| `candle_get_paper_inventory` | This key's paper positions in raw units (needs `swap:write`) | `GET /api/v1/trade/agent/paper/inventory` | `CANDLE_AGENT_API_KEY` |
+| `candle_get_account_pnl` | P&L for every agent profile on the account in one read (`candle pnl` without `--profile`) | `GET /api/v1/agent/keys/pnl` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_portfolio` | What the account's embedded and TEE wallets hold on Solana and Hood (Hood in `hood`), with prices; unpriced holdings say why, never zero | `GET /api/v1/agent/portfolio` | `CANDLE_AGENT_API_KEY` (`account:read`) |
 | `candle_execution_status` | One call before trading: wallets to spend from, tier, and whether trading is possible | Composes the wallet and tier reads | `CANDLE_AGENT_API_KEY` |
 | `candle_get_operation` | Look up a trade, swap or launch by the id its write used, and whether it landed. `kind: "swap"` reads a `candle_swap` by its `clientSwapId` and answers `job.outcome` (`in_flight`, `confirmed`, `failed`, `partial` or `indeterminate`) | `GET /api/v1/trade/agent/jobs/:clientId`, `/api/v1/agent/swap/by-client-id/:clientId` or `/api/v1/launch/headless/jobs/:clientId` | `CANDLE_AGENT_API_KEY` |
@@ -250,7 +253,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-eighty-four tools:
+eighty-seven tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.

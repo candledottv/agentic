@@ -194,6 +194,11 @@ export const TOOL_NAMES = [
   "candle_set_profile_wallets",
   "candle_get_profile_pnl",
   "candle_get_profile_trades",
+  // BE-2651 (R4, R51): the paper book and the account-wide P&L. Stdio only; the hosted
+  // connector's Read set (apps/api/src/mcp/hosted.ts) does not offer them.
+  "candle_get_paper_inventory",
+  "candle_get_profile_paper",
+  "candle_get_account_pnl",
   "candle_get_portfolio",
   "candle_resolve_token",
   "candle_execution_status",
@@ -776,11 +781,43 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
 
     case "candle_get_profile_trades": {
       const apiKey = requireApiKey(cfg)
-      const { keyPrefix, limit } = args as { keyPrefix: string; limit?: number }
-      const query = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`
+      const { keyPrefix, limit, since, until, cursor } = args as {
+        keyPrefix: string
+        limit?: number
+        since?: string
+        until?: string
+        cursor?: string
+      }
+      const params = new URLSearchParams()
+      if (limit !== undefined) params.set("limit", String(limit))
+      if (since !== undefined) params.set("since", since)
+      if (until !== undefined) params.set("until", until)
+      if (cursor !== undefined) params.set("cursor", cursor)
       return {
-        url: `${base}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query}`,
+        url: `${base}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${params.size ? `?${params}` : ""}`,
         init: { method: "GET", headers: jsonHeaders(apiKey) },
+      }
+    }
+
+    case "candle_get_paper_inventory": {
+      return {
+        url: `${base}/api/v1/trade/agent/paper/inventory`,
+        init: { method: "GET", headers: jsonHeaders(requireApiKey(cfg)) },
+      }
+    }
+
+    case "candle_get_profile_paper": {
+      const { keyPrefix } = args as { keyPrefix: string }
+      return {
+        url: `${base}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/paper`,
+        init: { method: "GET", headers: jsonHeaders(requireApiKey(cfg)) },
+      }
+    }
+
+    case "candle_get_account_pnl": {
+      return {
+        url: `${base}/api/v1/agent/keys/pnl`,
+        init: { method: "GET", headers: jsonHeaders(requireApiKey(cfg)) },
       }
     }
 
@@ -1195,7 +1232,15 @@ const profilePnlShape = {
 const profileTradesShape = {
   keyPrefix: z.string().describe("The profile's API key prefix"),
   limit: z.number().optional().describe("How many of the most recent trades to return. Default 200, max 1000."),
+  since: z
+    .string()
+    .optional()
+    .describe("Inclusive lower bound on the trade's createdAt: an ISO 8601 time or epoch milliseconds."),
+  until: z.string().optional().describe("Exclusive upper bound on createdAt, in the same forms as `since`."),
+  cursor: z.string().optional().describe("The `nextCursor` of the previous page, to continue the same window."),
 }
+
+const noArgsShape = {}
 
 const setProfileWalletsShape = {
   keyPrefix: z.string().describe("The profile's API key prefix"),
@@ -2254,12 +2299,57 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Read an agent profile's trade history",
       description:
-        "Orders, actual fills, fees, timestamps and transaction hashes for this profile. Includes FAILED " +
+        "Orders, actual fills, fees, timestamps and transaction hashes for this profile. Page by time with " +
+        "`since`, `until` and `cursor` (continue with the response's `nextCursor`). Includes FAILED " +
         "trades, with an errorCode saying why each did not go through, so this answers 'what happened to " +
         "my order' as well as 'what did I trade'. Reads only; moves nothing.",
       inputSchema: profileTradesShape,
     },
     async (args) => callAndRelay("candle_get_profile_trades", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_paper_inventory",
+    {
+      title: "Read this key's paper inventory",
+      description:
+        "This key's PAPER book in raw units: the positions that paper buys have credited and a paper " +
+        "percent sell sizes itself from. Derived from admitted quotes; no money moved and the live " +
+        "wallet is untouched. Never mix it with live holdings (candle_get_portfolio). Fails retryably " +
+        "when the book cannot be read completely. Needs swap:write on the key. Reads only.",
+      inputSchema: noArgsShape,
+    },
+    async (args) => callAndRelay("candle_get_paper_inventory", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_profile_paper",
+    {
+      title: "Read an agent profile's paper P&L",
+      description:
+        "One profile's PAPER results: the same accounting as candle_get_profile_pnl, from trades that " +
+        "never happened. `pnl` is the paper P&L and `trades` its 50 most recent paper trades. Carries " +
+        '`basis: "quote"`: the figures come from quotes at admission and are optimistic by the ' +
+        "slippage and fees real execution pays. Never add them to live P&L. Reads only.",
+      inputSchema: profilePnlShape,
+    },
+    async (args) => callAndRelay("candle_get_profile_paper", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_account_pnl",
+    {
+      title: "Read P&L across all of an account's agent keys",
+      description:
+        "The account's P&L split by agent profile in one read, as `candle pnl` without `--profile` " +
+        "does: one row per profile with its ledger figures and, where it has a board entry, `board` " +
+        "(all-time public total with creator-fee claims credited to the launching agent, so a profile's " +
+        "board total can differ from its per-key ledger P&L). A wallet shared by several keys books a " +
+        "round to its bound key, else the key whose buy opened it. Use candle_get_profile_pnl for one " +
+        "profile's positions. Reads only.",
+      inputSchema: noArgsShape,
+    },
+    async (args) => callAndRelay("candle_get_account_pnl", args, getConfig(), doFetch),
   )
 
   register(

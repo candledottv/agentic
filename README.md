@@ -80,7 +80,7 @@ Ask an agent to call `candle_get_feed` with `{ "bucket": "new" }` and it works b
 
 ## The tool surface
 
-Eighty-six tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Eighteen source tools need no key, so a client can be pointed at the server and used before anyone
+Eighty-nine tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Eighteen source tools need no key, so a client can be pointed at the server and used before anyone
 signs up.
 
 | | Tool | Key | What it does |
@@ -90,7 +90,10 @@ signs up.
 | | `candle_get_profile_wallets` | yes | which linked wallets this profile may spend from, and whether it is scoped |
 | | `candle_set_profile_wallets` | yes | replace the linked wallets this profile may spend from |
 | | `candle_get_profile_pnl` | yes | this profile's P&L: realized, unrealized at current marks, fees, open positions |
-| | `candle_get_profile_trades` | yes | this profile's orders, fills, fees and transaction hashes |
+| | `candle_get_profile_trades` | yes | this profile's orders, fills, fees and transaction hashes; `since`, `until`, `cursor` page it by time |
+| | `candle_get_profile_paper` | yes | this profile's PAPER P&L and latest paper trades, from quotes; never live figures |
+| | `candle_get_paper_inventory` | yes | this key's paper positions in raw units (`swap:write`) |
+| | `candle_get_account_pnl` | yes | P&L for every agent profile on the account in one read |
 | | `candle_get_portfolio` | yes | what the account's wallets hold on Solana and Hood, with prices (needs `account:read`) |
 | **Find a token** | `candle_resolve_token` | no | an address in, the token and its chain out |
 | | `candle_get_market` | no | live state for one token |
