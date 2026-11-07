@@ -354,6 +354,41 @@ export interface LaunchRequest extends Omit<GeneratedLaunchFields, "wallet" | "d
   buyAmount?: number | string
 }
 
+/**
+ * A launch's resolved rules (BE-2791 spec 4.1), on the dry run and the build of every Solana
+ * launch route that took `launchRules`; absent when the launch has none. Times are ISO strings,
+ * resolved against `clusterTime`, the cluster clock the API read once for the build; windows run
+ * from the open. Amounts are raw units of the launch's quote asset.
+ */
+export interface LaunchRulesSummary {
+  /** null when buys open at the launch. */
+  openAt: string | null
+  /** null without a per-wallet cap. */
+  capUntil: string | null
+  maxBuyPerWalletRaw: string | null
+  /** null without an allowlist. */
+  allowlistUntil: string | null
+  /** The allowlist's Merkle root, hex; null without a list. */
+  allowlistRoot: string | null
+  allowlistSize: number
+  /** The wallet that pays the launch: the only one that may buy before the open. */
+  devBuyer: string
+  /** The most the dev buyer may spend before the open; "0" without an open delay or a dev buy. */
+  devBuyMaxRaw: string
+  clusterTime: string
+}
+
+/**
+ * GET /api/v1/launch/:mint/allowlist-proof/:wallet (BE-2791 spec 5.3). `proof` is the bottom-up
+ * list of hex nodes `register_buyer` takes; absent for a wallet that is not on the list.
+ */
+export interface AllowlistProofResult {
+  allowlisted: boolean
+  /** The pool's allowlist root, hex, as it is on chain. */
+  root: string
+  proof?: string[]
+}
+
 /** POST /api/v1/launch/self/build request body. Extends LaunchRequest with linkedWalletId. */
 export interface BuildSelfLaunchRequest extends Omit<LaunchRequest, "wallet" | "buy"> {
   linkedWalletId: string
@@ -367,6 +402,8 @@ export interface BuildSelfLaunchSolanaResult {
   pool: string
   clientLaunchId: string
   expiresAt: number
+  /** The resolved launch rules; absent when the launch has none. */
+  launchRules?: LaunchRulesSummary
 }
 
 /** POST /api/v1/launch/self/build response for Hood (calldata). */
@@ -516,6 +553,8 @@ export interface DryRunResult {
   size?: { txBytes: number; limit: number; maxNameBytes: number; fits: boolean }
   /** Present only when the launch chose a non-default pool fee or shape. */
   graduation?: LaunchGraduationPreview
+  /** The launch rules as the build would resolve them now; absent when the request has none. */
+  launchRules?: LaunchRulesSummary
 }
 
 /**
@@ -3496,6 +3535,8 @@ export interface BuildAtomicLaunchResult {
   bundleId: string
   legs: AtomicBundleResponseLeg[]
   expiresAt: number
+  /** The resolved launch rules; absent when the launch has none. */
+  launchRules?: LaunchRulesSummary
 }
 
 /** One first buy in an atomic dry run, as `/build` would floor it. */
@@ -3529,6 +3570,8 @@ export interface AtomicDryRunResult {
   graduatesInBundle: boolean
   checks: { exclusiveEligible?: boolean }
   matrixVersion: number
+  /** The launch rules as the build would resolve them now; absent when the request has none. */
+  launchRules?: LaunchRulesSummary
 }
 
 /**
@@ -4104,6 +4147,19 @@ export class CandleClient {
       // The cast covers name/symbol/imageUrl, which a preset never carries; the launch
       // endpoint rejects a body that still lacks them.
     } as LaunchRequest
+  }
+
+  /**
+   * A wallet's allowlist proof on a Solana pool launched with launch rules (BE-2791 spec 5.3).
+   * Public: needs no key. `allowlisted: false` is a wallet not on the list. A pool with no
+   * allowlist answers 404 `NOT_FOUND` (a thrown `CandleApiError`). Candle's own buys attach the
+   * proof themselves; this is for a caller that builds `register_buyer` itself.
+   */
+  async allowlistProof(mint: string, wallet: string): Promise<AllowlistProofResult> {
+    return this.requestJson<AllowlistProofResult>(
+      "GET",
+      `/api/v1/launch/${encodeURIComponent(mint)}/allowlist-proof/${encodeURIComponent(wallet)}`,
+    )
   }
 
   async getMarket(chain: Chain, mint: string): Promise<MarketState> {

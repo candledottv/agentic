@@ -35,6 +35,13 @@ import { BundleReadError, readLaunchBundle } from "../launch-bundle"
 import { launchCheck } from "../launch-check"
 import { LAUNCH_DEFINITION } from "../launch-definition"
 import { LAUNCH_IMAGE_FLAG, LAUNCH_USAGE, launchFieldProblem, launchFlagFields } from "../launch-options"
+import {
+  type LaunchRulesBody,
+  launchRulesGiven,
+  launchRulesLines,
+  launchRulesRequest,
+  readAllowlist,
+} from "../launch-rules"
 import { notice } from "../presentation"
 import { writeUsageFailure } from "../render"
 import { postSignatureRateLimitMessage, postSignatureSuggestion } from "../solana-endpoint"
@@ -97,7 +104,7 @@ export const LAUNCH_ARG_SPEC: ArgSpec = {
     "--yes",
     "--require-fee-wallet",
   ],
-  pathFlags: ["--image", "--banner"],
+  pathFlags: ["--image", "--banner", "--allowlist"],
 }
 
 /** The launch quote assets by chain, as the server's launch matrix lists them. */
@@ -349,6 +356,22 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         return tradingFailure(ctx, error)
       }
     }
+    // BE-2794: launch rules are read, converted and checked here, before any request. Under --check
+    // nothing is read, as with the image.
+    let rules: LaunchRulesBody | undefined
+    if (!check && launchRulesGiven(flags)) {
+      if (hinted === "hood") {
+        writeUsageFailure(ctx.deps, `${LAUNCH_RULES_SOLANA_ONLY} ${USAGE}`, ctx.json)
+        return 2
+      }
+      try {
+        rules = await launchRulesFor(ctx, flags)
+      } catch (error) {
+        if (error instanceof TradingError) throw error
+        writeUsageFailure(ctx.deps, (error as Error).message, ctx.json)
+        return 2
+      }
+    }
     const key = await tradingKey(ctx)
     // BE-2139 (surfaces item B): the one preflight call, before any upload, build or id claim.
     if (check) return await launchCheck(ctx, key, flags["--wallet"], hinted, feeWallet)
@@ -400,6 +423,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         retry,
         yes: parsed.booleans.has("--yes"),
         dryRun,
+        rules,
       })
     // Past --check, the required-flags refusal above guarantees --wallet is present.
     const wallet = await tradingWallet(ctx, key, flags["--wallet"] ?? "", "launch:write", hinted ?? "any")
@@ -414,6 +438,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       throw new TradingUsage(
         "Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.",
       )
+    if (chain === "hood" && launchRulesGiven(flags)) throw new TradingUsage(LAUNCH_RULES_SOLANA_ONLY)
     // BE-1721 (D1): a Solana TEE launch with a first buy is an atomic launch, the buy its own leg.
     // Its local refusals come here, before the upload and before the id is claimed.
     const atomic = chain === "solana" && buy !== undefined
@@ -426,7 +451,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     if (typeof uploaded === "number") return uploaded
     const { imageUrl, bannerUrl, used } = uploaded
     // BE-1806: the dry run sends the body the launch would build, to the route's dry run, and stops.
-    if (dryRun) return await dryRunLaunch(ctx, key, { flags, id, wallet, chain, buy, imageUrl, bannerUrl, used })
+    if (dryRun) return await dryRunLaunch(ctx, key, { flags, id, wallet, chain, buy, imageUrl, bannerUrl, rules, used })
     if (atomic)
       return await atomicLaunch(ctx, key, {
         flags,
@@ -435,6 +460,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         buy,
         imageUrl,
         bannerUrl,
+        rules,
         used,
         yes: parsed.booleans.has("--yes"),
         retry: retry !== undefined,
@@ -456,16 +482,15 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         "This machine already started this launch id; no write was resent.",
       )
     writeFields(ctx.deps, "stderr", [["Operation", id]])
-    const built = launchBuildSchema.parse(
-      await request(
-        ctx,
-        key,
-        "/api/v1/launch/self/build",
-        solanaSelfBody({ flags, id, wallet, buy, imageUrl, bannerUrl }),
-      ).catch((error) => {
-        throw buyRefusal(error)
-      }),
-    )
+    const answer = await request(
+      ctx,
+      key,
+      "/api/v1/launch/self/build",
+      solanaSelfBody({ flags, id, wallet, buy, imageUrl, bannerUrl, rules }),
+    ).catch((error) => {
+      throw buyRefusal(error)
+    })
+    const built = launchBuildSchema.parse(answer)
     if (!built.transaction || !/^\d+$/.test(built.maxDebitLamports ?? ""))
       throw new TradingError(
         "INVALID_RESPONSE",
@@ -482,6 +507,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       feeWallet: feeWalletQuoteLine(feeWallet, built),
       tokenRisks: [],
     }
+    ctx.deps.stderr.write(rulesBlock(answer, "solana", flags))
     notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim())
     if (!(await confirmQuote(ctx, quote, parsed.booleans.has("--yes"))))
       return printTradingResult(ctx, {
@@ -589,6 +615,8 @@ interface LaunchBodyArgs {
   buy?: LaunchBuy
   imageUrl: string
   bannerUrl?: string
+  /** BE-2794: the request's `launchRules`, read and checked before any request; Solana only. */
+  rules?: LaunchRulesBody
 }
 
 /** Optional metadata is identical on every launch route. */
@@ -622,6 +650,8 @@ function launchFields(args: LaunchBodyArgs): Json {
     ...launchMetadataFields(flags),
     // Solana graduation choices; a Hood launch refuses these flags before any body is built.
     ...poolRequestFields(flags),
+    // BE-2794: absent without rules, so the request hashes as it did before the field existed.
+    ...(args.rules ? { launchRules: args.rules } : {}),
   }
 }
 
@@ -728,7 +758,45 @@ function previewLines(answer: Json, chain: TradeChain, feeWallet: FeeWalletSelec
   if (devBuyMax) lines.push(`Dev-buy ceiling: ${whole(devBuyMax)}.`)
   // BE-2519: the fee wallet, chosen or defaulted, with the server's echo naming the default.
   if (chain === "solana") lines.push(...feeWalletLines(feeWallet, { feeWallet: echo, feeWalletSource }))
+  // BE-2794 (spec 7.1): the resolved launch rules, from the answer's own `launchRules` object.
+  lines.push(...launchRulesLines(answer, whole))
   return lines.length ? `${lines.join("\n")}\n` : ""
+}
+
+/** A build answer's "Launch rules" block alone, for a launch whose confirm shows no other preview. */
+function rulesBlock(answer: unknown, chain: TradeChain, flags: Record<string, string>): string {
+  const quote = (flags["--quote-asset"] ?? LAUNCH_DEFINITION.defaultQuote[chain]).toUpperCase()
+  const decimals = BASES[quote]?.decimals
+  const lines = launchRulesLines(answer, (raw) =>
+    decimals === undefined ? `${raw} raw` : `${shortAmount(raw, decimals)} ${quote}`,
+  )
+  return lines.length ? `${lines.join("\n")}\n` : ""
+}
+
+const LAUNCH_RULES_SOLANA_ONLY =
+  "Launch rules (--open-in, --max-buy-per-wallet, --cap-window, --allowlist, --allowlist-window, --dev-buy-max) are only available on Solana launches."
+
+/**
+ * BE-2794: the launch rules flags as the request's `launchRules`, in raw units of the Solana quote
+ * asset, held to this launch's own `--buy` and its dev-buy ceiling as the API holds them (spec
+ * 3.3). Rules are Solana only, so the quote is `--quote-asset` or SOL. Throws a usage message.
+ */
+async function launchRulesFor(
+  ctx: CommandContext,
+  flags: Record<string, string>,
+): Promise<LaunchRulesBody | undefined> {
+  const quote = flags["--quote-asset"] ?? LAUNCH_DEFINITION.defaultQuote.solana
+  const decimals = LAUNCH_DEFINITION.quoteDecimals[quote as keyof typeof LAUNCH_DEFINITION.quoteDecimals]
+  if (decimals === undefined || QUOTE_CHAIN[quote] !== "solana") throw new Error(LAUNCH_RULES_SOLANA_ONLY)
+  const buy = launchBuy(flags, "solana")
+  const allowlist = flags["--allowlist"] !== undefined ? await readAllowlist(flags["--allowlist"]) : undefined
+  return launchRulesRequest(flags, {
+    quote,
+    decimals,
+    buyRaw: buy ? BigInt(buy.raw) : 0n,
+    ceilingRaw: effectiveDevBuyCeiling(ctx, flags, quote),
+    ...(allowlist ? { allowlist } : {}),
+  })
 }
 
 /**
@@ -831,6 +899,18 @@ function firstBuyCeiling(ctx: CommandContext, flags: Record<string, string>, buy
     )
 }
 
+/**
+ * The dev-buy ceiling this launch is held to, raw, as the API's `devBuyCeiling` computes it: the
+ * ordinary ceiling, or on an exp- curve the lower of that and 10% of the threshold.
+ */
+function effectiveDevBuyCeiling(ctx: CommandContext, flags: Record<string, string>, quoteAsset: string): bigint {
+  const { ceiling } = devBuyCeiling(ctx.deps.env, quoteAsset)
+  const threshold = expThresholdRaw(flags, quoteAsset)
+  if (threshold === undefined) return ceiling
+  const curveCap = (threshold * BigInt(LAUNCH_DEFINITION.buyLimits.thresholdBps)) / 10_000n
+  return curveCap < ceiling ? curveCap : ceiling
+}
+
 const atomicLegSchema = z.object({
   index: z.number().int(),
   role: z.enum(["launch", "buy"]),
@@ -875,6 +955,7 @@ async function atomicLaunch(
     buy: LaunchBuy
     imageUrl: string
     bannerUrl?: string
+    rules?: LaunchRulesBody
     used: Json
     yes: boolean
     /** A same-id retry after a bundle that did not land: the id is already this machine's. */
@@ -888,11 +969,10 @@ async function atomicLaunch(
       "This machine already started this launch id; no write was resent.",
     )
   writeFields(ctx.deps, "stderr", [["Operation", id]])
-  const built = atomicBuildSchema.parse(
-    await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody(args)).catch((error) => {
-      throw buyRefusal(error)
-    }),
-  )
+  const answer = await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody(args)).catch((error) => {
+    throw buyRefusal(error)
+  })
+  const built = atomicBuildSchema.parse(answer)
   const [launchLeg, buyLeg] = built.legs
   if (
     built.legs.length !== 2 ||
@@ -950,6 +1030,7 @@ async function atomicLaunch(
     ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
     outcome: "unsigned",
   })
+  ctx.deps.stderr.write(rulesBlock(answer, "solana", flags))
   notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim())
   if (!(await confirmQuote(ctx, quote, args.yes))) {
     notice(
@@ -1164,6 +1245,7 @@ async function embeddedLaunch(
     retry?: { imageUrl?: string; bannerUrl?: string }
     yes: boolean
     dryRun: boolean
+    rules?: LaunchRulesBody
   },
 ): Promise<number> {
   const { flags, id } = args
@@ -1198,6 +1280,7 @@ async function embeddedLaunch(
     ...poolRequestFields(flags),
     // BE-2519: the headless route takes the same Solana fee-wallet fields as the self build.
     ...feeWalletRequestFields(flags),
+    ...(args.rules ? { launchRules: args.rules } : {}),
     ...(buy
       ? { buyAmount: chain === "hood" || BigInt(buy.raw) > BigInt(Number.MAX_SAFE_INTEGER) ? buy.raw : Number(buy.raw) }
       : {}),

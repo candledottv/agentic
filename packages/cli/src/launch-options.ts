@@ -1,4 +1,5 @@
 import { LAUNCH_DEFINITION } from "./launch-definition"
+import { durationProblem, launchRulesFlagProblem } from "./launch-rules"
 
 /** Local file input is an alternative source for imageUrl, rather than another wire field. */
 export const LAUNCH_IMAGE_FLAG = "--image"
@@ -37,6 +38,12 @@ export function launchFieldProblem(flags: Record<string, string>): string | unde
     if (field.type === "decimal" && value.trim() !== "" && !/^\d+(\.\d+)?$/.test(value))
       return `${field.cli.flag} takes a whole-unit decimal amount.`
     if (field.type === "integer" && !/^\d+$/.test(value)) return `${field.cli.flag} takes a whole number.`
+    // BE-2794: a duration's range is in seconds, checked once the duration is read.
+    if (field.type === "duration" && "range" in field && "min" in field.range && "max" in field.range) {
+      const problem = durationProblem(field.cli.flag, value, Number(field.range.min), Number(field.range.max))
+      if (problem) return problem
+      continue
+    }
     if ("range" in field) {
       const range = field.range
       const byQuote = "byQuote" in range ? range.byQuote : undefined
@@ -58,5 +65,5 @@ export function launchFieldProblem(flags: Record<string, string>): string | unde
         return `${field.cli.flag} is too long. ${field.help}`
     }
   }
-  return undefined
+  return launchRulesFlagProblem(flags)
 }

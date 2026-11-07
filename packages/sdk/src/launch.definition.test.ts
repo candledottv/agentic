@@ -30,6 +30,7 @@ const requestKeys = {
   feeWallet: true,
   feeWalletMultisig: true,
   buy: true,
+  launchRules: true,
   buyAmount: true,
 } satisfies Record<keyof LaunchRequest, true>
 

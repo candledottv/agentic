@@ -20,11 +20,13 @@ describe("CLI launch definition conformance in both directions", () => {
     expect(command).toMatch(/LAUNCH_ARG_SPEC,?\s*\)/)
     // Flags wired by handlers must match too. A new field needs an implementation, even when
     // the author regenerates the copy, and a handler-only fake flag cannot hide in the parser.
-    // fee-wallet.ts (BE-2519) carries the fee-wallet flags' handlers.
+    // fee-wallet.ts (BE-2519) carries the fee-wallet flags' handlers, and launch-rules.ts
+    // (BE-2794) the launch rules flags'.
     const handlers =
       command +
       readFileSync(resolve(import.meta.dir, "pool-options.ts"), "utf8") +
-      readFileSync(resolve(import.meta.dir, "../fee-wallet.ts"), "utf8")
+      readFileSync(resolve(import.meta.dir, "../fee-wallet.ts"), "utf8") +
+      readFileSync(resolve(import.meta.dir, "../launch-rules.ts"), "utf8")
     const handled = sorted(
       [...handlers.matchAll(/flags\["(--[a-z-]+)"\]/g)].flatMap((match) => (match[1] ? [match[1]] : [])),
     )

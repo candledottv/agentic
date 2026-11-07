@@ -11,7 +11,7 @@ import { LAUNCH_DEFINITION } from "./launch-definition"
 // `feeWallet` and `feeWalletMultisig` (BE-2519) ship on the CLI first; the MCP surface waits for
 // its own card, exactly like wallet and buy wait for M2.
 const M2_TOP_KEYS = new Set(["wallet", "buy", "feeWallet", "feeWalletMultisig"])
-const GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee"])
+const GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee", "launchRules"])
 
 type LaunchField = (typeof LAUNCH_DEFINITION.fields)[number]
 
@@ -183,6 +183,26 @@ function poolFeeSchema() {
     .describe([tierHelp, startHelp, endHelp, minutesHelp].join(" "))
 }
 
+/**
+ * BE-2794 (BE-2791 spec 7.1): the request's nested `launchRules`, in seconds and raw units like
+ * this tool's other amounts. Bounds stay the API's: it answers LAUNCH_RULES_INVALID with the field
+ * and the reason. Passthrough, so a key the API refuses (the sniper fee) reaches it and gets that
+ * refusal, rather than failing inside the MCP SDK before any envelope exists.
+ */
+function launchRulesSchema() {
+  const helps: string[] = []
+  const shape: Record<string, z.ZodTypeAny> = {}
+  for (const field of mcpLaunchFields()) {
+    const key = mcpKey(field)
+    if (!key?.startsWith("launchRules.")) continue
+    const wire = "wireType" in field ? field.wireType : undefined
+    const schema = wire === "number" ? z.number().int() : wire === "string[]" ? z.array(z.string()) : z.string()
+    shape[key.slice("launchRules.".length)] = schema.optional().describe(field.help)
+    helps.push(field.help)
+  }
+  return z.object(shape).passthrough().optional().describe(helps.join(" "))
+}
+
 function scalarSchema(field: LaunchField): z.ZodTypeAny {
   const values = "values" in field ? field.values : undefined
   let schema: z.ZodTypeAny
@@ -213,6 +233,7 @@ export function buildLaunchTokenShape(): Record<string, z.ZodTypeAny> {
   shape.socials = socialsSchema()
   shape.curve = curveSchema()
   shape.poolFee = poolFeeSchema()
+  shape.launchRules = launchRulesSchema()
   shape.buyAmount = z.union([z.string(), z.number()]).optional().describe(BUY_AMOUNT_DESCRIPTION)
   return shape
 }

@@ -65,7 +65,13 @@ point at a different deployment.
    0.13.9 or later); without it they earn to the wallet that launches the token where the server
    has `LAUNCH_FEE_WALLET_FROM_LAUNCHER` on, otherwise to the account wallet, and the CLI's
    preview, confirm and `--check` all say which is in force. The SDK's `launchAtomic`
-   lands the launch and 1 to 4 first buys in one bundle (payers are the embedded or linked wallets and may repeat). Neither is needed
+   lands the launch and 1 to 4 first buys in one bundle (payers are the embedded or linked wallets and may repeat). On Solana,
+   where the server has `CURVE_LAUNCH_RULES_ENABLED` on, every launch path can also fix launch
+   rules the curve program enforces: an open delay, a per-wallet cap and an allowlist, each with
+   its window from the open (`launchRules` on both MCP launch tools and the SDK, in seconds and raw
+   units; `--open-in`, `--max-buy-per-wallet`, `--cap-window`, `--allowlist`,
+   `--allowlist-window` and `--dev-buy-max` on the CLI). Dry-run first: the preview names the
+   resolved times. Neither is needed
    for a launch with a dev buy: steps 1 to 3 above do that on any plan. The MCP server never
    handles private key material by design, so both stay SDK routes.
 7. Attribute it: once the launch confirms, call `candle_report_activity` with `{ "chain": "solana",

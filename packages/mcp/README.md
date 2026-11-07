@@ -73,6 +73,13 @@ rest, and omitted uses `curve_price` when allocations fit, otherwise `legacy`. `
 `discord`. See
 [Custom curves](https://docs.candle.tv/developers/headless-launch#custom-curves-choose-v-and-g-switched-off).
 
+On Solana, where the API has `CURVE_LAUNCH_RULES_ENABLED` on, both launch tools take
+`launchRules`, the request's nested object in seconds and raw units like their other amounts:
+`openDelaySecs`, `maxBuyPerWalletRaw` with `capWindowSecs`, `allowlist` with
+`allowlistWindowSecs`, and `devBuyMaxRaw`. The API checks the bounds and answers
+`LAUNCH_RULES_INVALID` with the field and the reason. See
+[Launch rules](https://docs.candle.tv/developers/headless-launch#launch-rules-solana).
+
 For a full walkthrough of `candle_launch_and_seed` and `candle_trade`, including the keyless read
 tools, getting a key, funding the embedded wallet, and idempotent retries, see
 [Candle MCP server](https://docs.candle.tv/developers/mcp-server).

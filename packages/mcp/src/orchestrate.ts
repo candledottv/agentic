@@ -480,6 +480,8 @@ export interface LaunchAndSeedArgs {
   poolFee?: { tier: 25 | 50 | 100 } | { startBps: number; endBps: 25 | 50 | 100; minutes: number }
   poolOpen?: "legacy" | "curve_price"
   expPoolShape?: "floor" | "full_range"
+  /** BE-2794: Solana launch rules in seconds and raw units; forwarded as given. See `launchTokenShape.launchRules`. */
+  launchRules?: Record<string, unknown>
   dexVersion?: string | null
   description?: string
   socials?: Record<string, string>

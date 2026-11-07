@@ -776,6 +776,171 @@ export const LAUNCH_DEFINITION = {
       }
     },
     {
+      "key": "launchRules.openDelaySecs",
+      "type": "duration",
+      "help": "Launch rules, Solana only, where the server has CURVE_LAUNCH_RULES_ENABLED on: how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.",
+      "wireType": "number",
+      "range": {
+        "min": "0",
+        "max": "604800",
+        "unit": "seconds"
+      },
+      "chains": [
+        "solana"
+      ],
+      "surfaces": {
+        "cli": {
+          "flag": "--open-in",
+          "value": "<duration>"
+        },
+        "mcp": {
+          "key": "launchRules.openDelaySecs"
+        },
+        "sdk": {
+          "key": "launchRules.openDelaySecs"
+        }
+      }
+    },
+    {
+      "key": "launchRules.maxBuyPerWalletRaw",
+      "type": "decimal",
+      "help": "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+      "range": {
+        "unit": "whole quote units"
+      },
+      "chains": [
+        "solana"
+      ],
+      "requires": [
+        "launchRules.capWindowSecs"
+      ],
+      "surfaces": {
+        "cli": {
+          "flag": "--max-buy-per-wallet",
+          "value": "<amount>"
+        },
+        "mcp": {
+          "key": "launchRules.maxBuyPerWalletRaw"
+        },
+        "sdk": {
+          "key": "launchRules.maxBuyPerWalletRaw"
+        }
+      }
+    },
+    {
+      "key": "launchRules.capWindowSecs",
+      "type": "duration",
+      "help": "How long the per-wallet cap holds, counted from the open: 1 second to 24 hours (86400 seconds); needs --max-buy-per-wallet.",
+      "wireType": "number",
+      "range": {
+        "min": "1",
+        "max": "86400",
+        "unit": "seconds"
+      },
+      "chains": [
+        "solana"
+      ],
+      "requires": [
+        "launchRules.maxBuyPerWalletRaw"
+      ],
+      "surfaces": {
+        "cli": {
+          "flag": "--cap-window",
+          "value": "<duration>"
+        },
+        "mcp": {
+          "key": "launchRules.capWindowSecs"
+        },
+        "sdk": {
+          "key": "launchRules.capWindowSecs"
+        }
+      }
+    },
+    {
+      "key": "launchRules.allowlist",
+      "type": "file",
+      "help": "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.",
+      "wireType": "string[]",
+      "range": {
+        "min": "1",
+        "max": "4096",
+        "unit": "wallets"
+      },
+      "chains": [
+        "solana"
+      ],
+      "requires": [
+        "launchRules.allowlistWindowSecs"
+      ],
+      "surfaces": {
+        "cli": {
+          "flag": "--allowlist",
+          "value": "<path>"
+        },
+        "mcp": {
+          "key": "launchRules.allowlist"
+        },
+        "sdk": {
+          "key": "launchRules.allowlist"
+        }
+      }
+    },
+    {
+      "key": "launchRules.allowlistWindowSecs",
+      "type": "duration",
+      "help": "How long the allowlist phase holds, counted from the open: 1 second to 24 hours (86400 seconds); needs --allowlist.",
+      "wireType": "number",
+      "range": {
+        "min": "1",
+        "max": "86400",
+        "unit": "seconds"
+      },
+      "chains": [
+        "solana"
+      ],
+      "requires": [
+        "launchRules.allowlist"
+      ],
+      "surfaces": {
+        "cli": {
+          "flag": "--allowlist-window",
+          "value": "<duration>"
+        },
+        "mcp": {
+          "key": "launchRules.allowlistWindowSecs"
+        },
+        "sdk": {
+          "key": "launchRules.allowlistWindowSecs"
+        }
+      }
+    },
+    {
+      "key": "launchRules.devBuyMaxRaw",
+      "type": "decimal",
+      "help": "The most the launching wallet may buy before the open, only with --open-in: at least the launch's own buy, at most the dev-buy ceiling, and the buy by default. That spend counts toward the per-wallet cap after the open. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+      "range": {
+        "unit": "whole quote units"
+      },
+      "chains": [
+        "solana"
+      ],
+      "requires": [
+        "launchRules.openDelaySecs"
+      ],
+      "surfaces": {
+        "cli": {
+          "flag": "--dev-buy-max",
+          "value": "<amount>"
+        },
+        "mcp": {
+          "key": "launchRules.devBuyMaxRaw"
+        },
+        "sdk": {
+          "key": "launchRules.devBuyMaxRaw"
+        }
+      }
+    },
+    {
       "key": "dryRun",
       "type": "boolean",
       "help": "Print the launch preview without building, signing or recording a launch; local image uploads still become public and permanent.",
@@ -834,5 +999,13 @@ export interface GeneratedLaunchFields {
     vaultIndex?: number
   }
   buy?: string
+  launchRules?: {
+    openDelaySecs?: number
+    maxBuyPerWalletRaw?: string
+    capWindowSecs?: number
+    allowlist?: string[]
+    allowlistWindowSecs?: number
+    devBuyMaxRaw?: string
+  }
   dryRun?: boolean
 }

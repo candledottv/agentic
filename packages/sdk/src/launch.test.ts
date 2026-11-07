@@ -135,3 +135,59 @@ describe("TEE wallet discovery", () => {
     expect(calls[0]?.body).toEqual({ ...fields, linkedWalletId: row.id })
   })
 })
+
+// BE-2794 (BE-2791 spec 7.1): LaunchRequest's launchRules is the API's nested object in seconds
+// and raw units, sent as given; the dry run answers its resolved summary.
+describe("launchRules and allowlistProof", () => {
+  const launchRules = {
+    openDelaySecs: 600,
+    maxBuyPerWalletRaw: "10000000",
+    capWindowSecs: 3600,
+    allowlist: ["11111111111111111111111111111111"],
+    allowlistWindowSecs: 1800,
+    devBuyMaxRaw: "5000000",
+  } satisfies LaunchRequest["launchRules"]
+
+  test("launch and dry run send launchRules verbatim, and the dry run reads the summary", async () => {
+    const summary = {
+      openAt: "2026-11-06T12:10:00.000Z",
+      capUntil: "2026-11-06T13:10:00.000Z",
+      maxBuyPerWalletRaw: "10000000",
+      allowlistUntil: "2026-11-06T12:40:00.000Z",
+      allowlistRoot: "ab".repeat(32),
+      allowlistSize: 1,
+      devBuyer: "Embedded1",
+      devBuyMaxRaw: "5000000",
+      clusterTime: "2026-11-06T12:00:00.000Z",
+    }
+    const { client, calls } = fixture([{ success: true, dryRun: true, launchRules: summary }])
+    const preview = await client.dryRunLaunch({ ...fields, launchRules })
+    expect(calls[0]?.url).toEndWith("/launch/headless/dry-run")
+    expect(calls[0]?.body).toEqual({ ...fields, launchRules })
+    expect("launchRules" in preview ? preview.launchRules : undefined).toEqual(summary)
+    await client.launch({ ...fields, launchRules })
+    expect(calls[1]?.body).toEqual({ ...fields, launchRules })
+  })
+
+  test("allowlistProof reads the public proof route for one mint and wallet", async () => {
+    const { client, calls } = fixture([{ allowlisted: true, root: "ab".repeat(32), proof: ["cd".repeat(32)] }])
+    const proof = await client.allowlistProof("Mint1", "Wallet1")
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/launch/Mint1/allowlist-proof/Wallet1")
+    expect(proof).toEqual({ allowlisted: true, root: "ab".repeat(32), proof: ["cd".repeat(32)] })
+  })
+
+  test("a pool with no allowlist is a 404 CandleApiError", async () => {
+    const client = new CandleClient({
+      apiUrl: "https://api.test",
+      maxRetries: 0,
+      fetch: (async () =>
+        Response.json(
+          { error: { code: "NOT_FOUND", message: "Not found" } },
+          { status: 404 },
+        )) as unknown as typeof fetch,
+    })
+    const error = await client.allowlistProof("Mint1", "Wallet1").catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect((error as CandleApiError).status).toBe(404)
+  })
+})

@@ -39898,6 +39898,171 @@ var init_launch_definition = __esm(() => {
         }
       },
       {
+        key: "launchRules.openDelaySecs",
+        type: "duration",
+        help: "Launch rules, Solana only, where the server has CURVE_LAUNCH_RULES_ENABLED on: how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.",
+        wireType: "number",
+        range: {
+          min: "0",
+          max: "604800",
+          unit: "seconds"
+        },
+        chains: [
+          "solana"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--open-in",
+            value: "<duration>"
+          },
+          mcp: {
+            key: "launchRules.openDelaySecs"
+          },
+          sdk: {
+            key: "launchRules.openDelaySecs"
+          }
+        }
+      },
+      {
+        key: "launchRules.maxBuyPerWalletRaw",
+        type: "decimal",
+        help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+        range: {
+          unit: "whole quote units"
+        },
+        chains: [
+          "solana"
+        ],
+        requires: [
+          "launchRules.capWindowSecs"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--max-buy-per-wallet",
+            value: "<amount>"
+          },
+          mcp: {
+            key: "launchRules.maxBuyPerWalletRaw"
+          },
+          sdk: {
+            key: "launchRules.maxBuyPerWalletRaw"
+          }
+        }
+      },
+      {
+        key: "launchRules.capWindowSecs",
+        type: "duration",
+        help: "How long the per-wallet cap holds, counted from the open: 1 second to 24 hours (86400 seconds); needs --max-buy-per-wallet.",
+        wireType: "number",
+        range: {
+          min: "1",
+          max: "86400",
+          unit: "seconds"
+        },
+        chains: [
+          "solana"
+        ],
+        requires: [
+          "launchRules.maxBuyPerWalletRaw"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--cap-window",
+            value: "<duration>"
+          },
+          mcp: {
+            key: "launchRules.capWindowSecs"
+          },
+          sdk: {
+            key: "launchRules.capWindowSecs"
+          }
+        }
+      },
+      {
+        key: "launchRules.allowlist",
+        type: "file",
+        help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.",
+        wireType: "string[]",
+        range: {
+          min: "1",
+          max: "4096",
+          unit: "wallets"
+        },
+        chains: [
+          "solana"
+        ],
+        requires: [
+          "launchRules.allowlistWindowSecs"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--allowlist",
+            value: "<path>"
+          },
+          mcp: {
+            key: "launchRules.allowlist"
+          },
+          sdk: {
+            key: "launchRules.allowlist"
+          }
+        }
+      },
+      {
+        key: "launchRules.allowlistWindowSecs",
+        type: "duration",
+        help: "How long the allowlist phase holds, counted from the open: 1 second to 24 hours (86400 seconds); needs --allowlist.",
+        wireType: "number",
+        range: {
+          min: "1",
+          max: "86400",
+          unit: "seconds"
+        },
+        chains: [
+          "solana"
+        ],
+        requires: [
+          "launchRules.allowlist"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--allowlist-window",
+            value: "<duration>"
+          },
+          mcp: {
+            key: "launchRules.allowlistWindowSecs"
+          },
+          sdk: {
+            key: "launchRules.allowlistWindowSecs"
+          }
+        }
+      },
+      {
+        key: "launchRules.devBuyMaxRaw",
+        type: "decimal",
+        help: "The most the launching wallet may buy before the open, only with --open-in: at least the launch's own buy, at most the dev-buy ceiling, and the buy by default. That spend counts toward the per-wallet cap after the open. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+        range: {
+          unit: "whole quote units"
+        },
+        chains: [
+          "solana"
+        ],
+        requires: [
+          "launchRules.openDelaySecs"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--dev-buy-max",
+            value: "<amount>"
+          },
+          mcp: {
+            key: "launchRules.devBuyMaxRaw"
+          },
+          sdk: {
+            key: "launchRules.devBuyMaxRaw"
+          }
+        }
+      },
+      {
         key: "dryRun",
         type: "boolean",
         help: "Print the launch preview without building, signing or recording a launch; local image uploads still become public and permanent.",
@@ -40037,6 +40202,20 @@ function poolFeeSchema() {
     }).strict()
   ]).optional().describe([tierHelp, startHelp, endHelp, minutesHelp].join(" "));
 }
+function launchRulesSchema() {
+  const helps = [];
+  const shape = {};
+  for (const field of mcpLaunchFields()) {
+    const key = mcpKey(field);
+    if (!key?.startsWith("launchRules."))
+      continue;
+    const wire = "wireType" in field ? field.wireType : undefined;
+    const schema = wire === "number" ? exports_external.number().int() : wire === "string[]" ? exports_external.array(exports_external.string()) : exports_external.string();
+    shape[key.slice("launchRules.".length)] = schema.optional().describe(field.help);
+    helps.push(field.help);
+  }
+  return exports_external.object(shape).passthrough().optional().describe(helps.join(" "));
+}
 function scalarSchema(field) {
   const values = "values" in field ? field.values : undefined;
   let schema;
@@ -40066,6 +40245,7 @@ function buildLaunchTokenShape() {
   shape.socials = socialsSchema();
   shape.curve = curveSchema();
   shape.poolFee = poolFeeSchema();
+  shape.launchRules = launchRulesSchema();
   shape.buyAmount = exports_external.union([exports_external.string(), exports_external.number()]).optional().describe(BUY_AMOUNT_DESCRIPTION);
   return shape;
 }
@@ -40074,7 +40254,7 @@ var init_launch_schema = __esm(() => {
   init_zod();
   init_launch_definition();
   M2_TOP_KEYS = new Set(["wallet", "buy", "feeWallet", "feeWalletMultisig"]);
-  GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee"]);
+  GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee", "launchRules"]);
   LAUNCH_SHARED_SENTENCES = mcpLaunchFields().map((field) => field.help).join(" ");
   SOCIAL_KEYS = mcpLaunchFields().flatMap((field) => {
     const key = mcpKey(field);
@@ -41347,14 +41527,14 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
   if (!Array.isArray(rawUniverse))
     throw new Error("Hyperliquid returned an unreadable market list");
   const universe = rawUniverse.map((m) => {
-    const row = m;
-    if (typeof row.name !== "string" || !Number.isInteger(row.szDecimals) || !Number.isInteger(row.maxLeverage))
+    const row2 = m;
+    if (typeof row2.name !== "string" || !Number.isInteger(row2.szDecimals) || !Number.isInteger(row2.maxLeverage))
       throw new Error("Hyperliquid returned an unreadable market");
     return {
-      name: row.name,
-      szDecimals: row.szDecimals,
-      maxLeverage: row.maxLeverage,
-      onlyIsolated: row.onlyIsolated === true
+      name: row2.name,
+      szDecimals: row2.szDecimals,
+      maxLeverage: row2.maxLeverage,
+      onlyIsolated: row2.onlyIsolated === true
     };
   });
   const ctxs = metaAndCtxs[1];
@@ -42094,13 +42274,13 @@ function parseMarkets(value) {
   const [meta, ctxs] = value;
   if (!object(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
     return unavailable2();
-  for (const row of meta.universe) {
-    if (!object(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
+  for (const row2 of meta.universe) {
+    if (!object(row2) || typeof row2.name !== "string" || !integer(row2.szDecimals) || row2.szDecimals > 6 || !integer(row2.maxLeverage))
       return unavailable2();
     for (const key of ["isDelisted", "onlyIsolated"])
-      if (row[key] !== undefined && typeof row[key] !== "boolean")
+      if (row2[key] !== undefined && typeof row2[key] !== "boolean")
         return unavailable2();
-    if (row.marginTableId !== undefined && !integer(row.marginTableId))
+    if (row2.marginTableId !== undefined && !integer(row2.marginTableId))
       return unavailable2();
   }
   for (const ctx of ctxs) {
@@ -42168,10 +42348,10 @@ function perpsMarketGate(meta, ctx, minOpenInterestUsd) {
 }
 function resolve(snapshot, coin) {
   if (/^[A-Za-z0-9]{1,20}$/.test(coin)) {
-    const exact = snapshot.universe.findIndex((row) => row.name === coin);
+    const exact = snapshot.universe.findIndex((row2) => row2.name === coin);
     if (exact !== -1)
       return exact;
-    const matches = snapshot.universe.map((row, i) => ({ row, i })).filter(({ row }) => row.name.toLowerCase() === coin.toLowerCase());
+    const matches = snapshot.universe.map((row2, i) => ({ row: row2, i })).filter(({ row: row2 }) => row2.name.toLowerCase() === coin.toLowerCase());
     if (matches.length === 1)
       return at(matches, 0).i;
   }
@@ -42214,15 +42394,15 @@ function parsePerpsFundingHistory(value, coin, window) {
   if (!Array.isArray(value))
     return unavailable2();
   const funding = [];
-  for (const row of value) {
-    if (!object(row) || row.coin !== coin || !integer(row.time) || !decimal2(row.fundingRate) || !decimal2(row.premium))
+  for (const row2 of value) {
+    if (!object(row2) || row2.coin !== coin || !integer(row2.time) || !decimal2(row2.fundingRate) || !decimal2(row2.premium))
       return unavailable2();
-    if (row.time >= window.startTime && row.time <= window.endTime)
+    if (row2.time >= window.startTime && row2.time <= window.endTime)
       funding.push({
-        time: row.time,
-        fundingRate: row.fundingRate,
-        fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
-        premium: row.premium
+        time: row2.time,
+        fundingRate: row2.fundingRate,
+        fundingAprPct: fixed(scaled(row2.fundingRate) * 876000n, 2),
+        premium: row2.premium
       });
   }
   funding.sort((a, b) => a.time - b.time);
@@ -42379,7 +42559,7 @@ class PerpsMarketReader {
       return usage3("sort must be volume, oi, funding, change or name.");
     const limit = opts.limit === undefined ? undefined : bounded(opts.limit, 500, 1, 500, "limit");
     const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    const rows = core.universe.map((_, asset) => this.row(core, extras, config, asset)).filter((row) => opts.all || row.candle.tradeable !== false);
+    const rows = core.universe.map((_, asset) => this.row(core, extras, config, asset)).filter((row2) => opts.all || row2.candle.tradeable !== false);
     const field = {
       volume: "dayNotionalVolumeUsd",
       oi: "openInterestUsd",
@@ -42534,13 +42714,13 @@ class PerpsMarketReader {
       return unavailable2();
     const predicted = [];
     for (const meta of core.universe) {
-      const row = extras.predicted.get(meta.name);
-      if (row)
+      const row2 = extras.predicted.get(meta.name);
+      if (row2)
         predicted.push({
           coin: meta.name,
-          fundingRate: row.fundingRate,
-          fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
-          nextFundingTime: row.nextFundingTime
+          fundingRate: row2.fundingRate,
+          fundingAprPct: fixed(scaled(row2.fundingRate) * 876000n, 2),
+          nextFundingTime: row2.nextFundingTime
         });
     }
     predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
@@ -42659,28 +42839,28 @@ function isDecimalString(value) {
   return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
 }
 function asFill(raw) {
-  const row = raw;
-  if (!row || typeof row !== "object" || typeof row.coin !== "string" || !isTime(row.time) || !Number.isSafeInteger(row.tid) || !Number.isSafeInteger(row.oid) || !isDecimalString(row.px) || !isDecimalString(row.sz) || typeof row.side !== "string" || !isDecimalString(row.closedPnl) || !isDecimalString(row.fee) || row.builderFee !== undefined && !isDecimalString(row.builderFee))
+  const row2 = raw;
+  if (!row2 || typeof row2 !== "object" || typeof row2.coin !== "string" || !isTime(row2.time) || !Number.isSafeInteger(row2.tid) || !Number.isSafeInteger(row2.oid) || !isDecimalString(row2.px) || !isDecimalString(row2.sz) || typeof row2.side !== "string" || !isDecimalString(row2.closedPnl) || !isDecimalString(row2.fee) || row2.builderFee !== undefined && !isDecimalString(row2.builderFee))
     throw unavailable3("Hyperliquid returned a fill this client cannot read");
-  return row;
+  return row2;
 }
 function asFunding(raw) {
-  const row = raw;
-  const delta = row?.delta;
-  if (!row || typeof row !== "object" || !isTime(row.time) || typeof row.hash !== "string" || !delta || typeof delta !== "object" || typeof delta.coin !== "string" || !isDecimalString(delta.usdc) || !isDecimalString(delta.fundingRate) || !isDecimalString(delta.szi))
+  const row2 = raw;
+  const delta = row2?.delta;
+  if (!row2 || typeof row2 !== "object" || !isTime(row2.time) || typeof row2.hash !== "string" || !delta || typeof delta !== "object" || typeof delta.coin !== "string" || !isDecimalString(delta.usdc) || !isDecimalString(delta.fundingRate) || !isDecimalString(delta.szi))
     throw unavailable3("Hyperliquid returned a funding payment this client cannot read");
-  return row;
+  return row2;
 }
-function identity(kind, row) {
+function identity(kind, row2) {
   if (kind === "fills") {
-    const fill = row;
+    const fill = row2;
     return `${fill.coin}|${fill.tid}|${fill.oid}`;
   }
-  const funding = row;
+  const funding = row2;
   return `${funding.hash}|${funding.time}|${funding.delta.coin}|${canonical2(funding.delta)}`;
 }
-function rowCoin(kind, row) {
-  return kind === "fills" ? row.coin : row.delta.coin;
+function rowCoin(kind, row2) {
+  return kind === "fills" ? row2.coin : row2.delta.coin;
 }
 async function postInfo(req, body, what) {
   const controller = typeof AbortController === "function" ? new AbortController : null;
@@ -42807,26 +42987,26 @@ async function readPerpsHistoryPage(req) {
       if (!Array.isArray(raw))
         throw unavailable3(`Hyperliquid returned an unreadable ${kind} response`);
       const rows = raw.map((r) => kind === "fills" ? asFill(r) : asFunding(r));
-      const keyed = rows.map((row) => ({ row, id: identity(kind, row) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const keyed = rows.map((row2) => ({ row: row2, id: identity(kind, row2) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const full = rows.length >= max;
       const startedAt = t;
       let previousId = null;
-      for (const { row, id } of keyed) {
+      for (const { row: row2, id } of keyed) {
         if (id === previousId)
           continue;
         previousId = id;
-        if (row.time < t || row.time > state.e || row.time === t && boundary.has(id))
+        if (row2.time < t || row2.time > state.e || row2.time === t && boundary.has(id))
           continue;
         if (page.length >= state.l)
           break walk;
-        if (row.time > t) {
-          t = row.time;
+        if (row2.time > t) {
+          t = row2.time;
           boundary = new Set;
         }
         boundary.add(id);
         consumed++;
-        if (coins.has(rowCoin(kind, row)))
-          page.push(row);
+        if (coins.has(rowCoin(kind, row2)))
+          page.push(row2);
         if (kind === "fills" && consumed >= PERPS_HISTORY_FILL_RETENTION) {
           stop("PERPS_HISTORY_RETENTION_LIMIT", "Reached Hyperliquid's 10,000-fill retention across this cursor chain; older fills are not available", true);
           break walk;
@@ -43260,21 +43440,21 @@ function summarizePerpsRecent(fills, funding, window) {
   let paid = 0n;
   let fillCount = 0;
   let fundingCount = 0;
-  for (const row of fills) {
-    if (!isRecord2(row))
+  for (const row2 of fills) {
+    if (!isRecord2(row2))
       throw new HyperliquidReadError("Unexpected fill row");
-    if (!isMainPerpCoin(row.coin))
+    if (!isMainPerpCoin(row2.coin))
       continue;
-    const closed = dec(row.closedPnl);
-    const fee = dec(row.fee);
+    const closed = dec(row2.closedPnl);
+    const fee = dec(row2.fee);
     if (closed === null || fee === null)
       throw new HyperliquidReadError("Unexpected fill amount");
     realized += closed;
     fees += fee;
     fillCount++;
   }
-  for (const row of funding) {
-    const delta = isRecord2(row) ? row.delta : undefined;
+  for (const row2 of funding) {
+    const delta = isRecord2(row2) ? row2.delta : undefined;
     if (!isRecord2(delta))
       throw new HyperliquidReadError("Unexpected funding row");
     if (delta.type !== "funding" || !isMainPerpCoin(delta.coin))
@@ -43500,7 +43680,7 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
       return { text: JSON.stringify(answer2) };
     }
     const name = typeof args.wallet === "string" ? args.wallet : undefined;
-    const { row } = await walletFor(cfg, fetch2, name);
+    const { row: row2 } = await walletFor(cfg, fetch2, name);
     const now = Date.now();
     const start = tool === "candle_perps_account" ? sinceStart(args.since, now) : now;
     if (typeof start === "string")
@@ -43509,15 +43689,15 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
     const report = readPerpsRisk({
       fetcher: fetcherOf(fetch2),
       network: net,
-      walletId: row.id,
-      address: row.address,
+      walletId: row2.id,
+      address: row2.address,
       thresholds: await thresholds(cfg, fetch2),
       now: Date.now
     });
     if (tool === "candle_perps_account") {
       const [risk2, recent] = await Promise.all([
         report,
-        readPerpsRecent(fetcherOf(fetch2), net, row.address, { startTime: start, endTime: now })
+        readPerpsRecent(fetcherOf(fetch2), net, row2.address, { startTime: start, endTime: now })
       ]);
       return { text: JSON.stringify(perpsAccountReport(risk2, recent)) };
     }
@@ -43533,9 +43713,9 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
     return fail2("PERPS_READ_FAILED", error instanceof Error ? error.message : "Hyperliquid read failed");
   }
 }
-async function positionsAdditions(cfg, fetch2, env, row) {
+async function positionsAdditions(cfg, fetch2, env, row2) {
   const t = await thresholds(cfg, fetch2);
-  const identity2 = { walletId: row.id, address: row.address, network: network(env) };
+  const identity2 = { walletId: row2.id, address: row2.address, network: network(env) };
   let report;
   try {
     report = await readPerpsRisk({ ...identity2, fetcher: fetcherOf(fetch2), thresholds: t, now: Date.now });
@@ -43555,10 +43735,10 @@ async function withPortfolioSection(text2, fetch2, env) {
   if (!body || typeof body !== "object" || Array.isArray(body))
     return text2;
   const hood = body.hood;
-  const accounts = (hood?.tee ?? []).filter((row) => typeof row.address === "string").map((row) => ({
-    address: row.address,
-    ...typeof row.label === "string" ? { label: row.label } : {},
-    ...typeof row.id === "string" ? { walletId: row.id } : {}
+  const accounts = (hood?.tee ?? []).filter((row2) => typeof row2.address === "string").map((row2) => ({
+    address: row2.address,
+    ...typeof row2.label === "string" ? { label: row2.label } : {},
+    ...typeof row2.id === "string" ? { walletId: row2.id } : {}
   }));
   const section = await perpsPortfolioSection(fetcherOf(fetch2), network(env), accounts);
   return JSON.stringify({ ...body, hyperliquid: section });
@@ -43589,7 +43769,7 @@ var init_perps_risk = __esm(() => {
 
 // ../mcp/src/perps.ts
 import { createPrivateKey as createPrivateKey2, randomBytes as randomBytes6, sign as sign3 } from "node:crypto";
-import { readFile as readFile9 } from "node:fs/promises";
+import { readFile as readFile10 } from "node:fs/promises";
 function fail2(code, message, extra = {}) {
   return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true };
 }
@@ -43620,10 +43800,10 @@ async function walletFor(cfg, fetch2, name, scope) {
   if (scope && !(Array.isArray(listed.scopes) && listed.scopes.includes(scope)))
     throw new Refusal(fail2("SCOPE_MISSING", `The key needs ${scope}.`));
   const rows = Array.isArray(listed.page) ? listed.page : [];
-  const evm = rows.filter((row) => row.chain === "evm");
-  const matches = name === undefined ? evm : evm.filter((row) => row.id === name || row.label === name || row.address.toLowerCase() === name.toLowerCase());
+  const evm = rows.filter((row2) => row2.chain === "evm");
+  const matches = name === undefined ? evm : evm.filter((row2) => row2.id === name || row2.label === name || row2.address.toLowerCase() === name.toLowerCase());
   if (matches.length !== 1)
-    throw new Refusal(fail2("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row) => row.label ?? row.id).join(", ")}`));
+    throw new Refusal(fail2("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row2) => row2.label ?? row2.id).join(", ")}`));
   return { row: matches[0], appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" };
 }
 function builderPin(env) {
@@ -43642,23 +43822,23 @@ async function executePerps(tool, args, cfg, env, fetch2) {
   const name = typeof args.wallet === "string" ? args.wallet : undefined;
   try {
     if (tool === "candle_perps_orders" || tool === "candle_perps_positions") {
-      const { row: row2 } = await walletFor(cfg, fetch2, name);
-      const query2 = new URLSearchParams({ walletId: row2.id });
+      const { row: row3 } = await walletFor(cfg, fetch2, name);
+      const query2 = new URLSearchParams({ walletId: row3.id });
       if (typeof args.limit === "number")
         query2.set("limit", String(args.limit));
       const result = await call(cfg, fetch2, "GET", `${PATHS[tool]}?${query2}`);
       if (tool === "candle_perps_positions")
-        return { text: JSON.stringify({ ...result, ...await positionsAdditions(cfg, fetch2, env, row2) }) };
+        return { text: JSON.stringify({ ...result, ...await positionsAdditions(cfg, fetch2, env, row3) }) };
       return { text: JSON.stringify(result) };
     }
     if (tool === "candle_perps_fills" || tool === "candle_perps_funding") {
-      const { row: row2 } = await walletFor(cfg, fetch2, name);
+      const { row: row3 } = await walletFor(cfg, fetch2, name);
       try {
         const page = await readPerpsHistoryPage({
           kind: tool === "candle_perps_fills" ? "fills" : "funding",
           network: network2,
-          walletId: row2.id,
-          address: row2.address,
+          walletId: row3.id,
+          address: row3.address,
           options: {
             ...typeof args.startTime === "number" ? { startTime: args.startTime } : {},
             ...typeof args.endTime === "number" ? { endTime: args.endTime } : {},
@@ -43736,27 +43916,27 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       if (!pemFile)
         return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
       try {
-        signerPem = await readFile9(pemFile, "utf8");
+        signerPem = await readFile10(pemFile, "utf8");
         createPrivateKey2(signerPem);
       } catch {
         return fail2("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
       }
     }
-    const { row, appId } = await walletFor(cfg, fetch2, name, "perps:write");
+    const { row: row2, appId } = await walletFor(cfg, fetch2, name, "perps:write");
     const builder = builderPin(env);
     const relaySign2 = async (typedData) => {
-      if (signerPem === null || !appId || !row.privyWalletId)
+      if (signerPem === null || !appId || !row2.privyWalletId)
         throw new Refusal(fail2("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers."));
       const body = hyperliquidRelayBody(typedData);
       const payload = hyperliquidCanonicalJson({
         body,
         headers: { "privy-app-id": appId },
         method: "POST",
-        url: `https://api.privy.io/v1/wallets/${row.privyWalletId}/rpc`,
+        url: `https://api.privy.io/v1/wallets/${row2.privyWalletId}/rpc`,
         version: 1
       });
       const authorizationSignature2 = sign3("sha256", Buffer.from(payload), signerPem).toString("base64");
-      const relay = await call(cfg, fetch2, "POST", `/api/v1/agent/wallets/${encodeURIComponent(row.id)}/sign`, {
+      const relay = await call(cfg, fetch2, "POST", `/api/v1/agent/wallets/${encodeURIComponent(row2.id)}/sign`, {
         authorizationSignature: authorizationSignature2,
         body
       });
@@ -43768,8 +43948,8 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       const reduceOnly = await call(cfg, fetch2, "GET", "/api/v1/agent/keys/self/perps-reduce-only").catch(() => null);
       const io = {
         network: network2,
-        walletId: row.id,
-        address: row.address,
+        walletId: row2.id,
+        address: row2.address,
         builder,
         keyReduceOnly: reduceOnly === null ? true : reduceOnly.perpsReduceOnly === true,
         fetcher: fetch2,
@@ -43793,7 +43973,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     let mode;
     if (method === "setup") {
       try {
-        mode = await hyperliquidAccountMode(fetch2, network2, row.address);
+        mode = await hyperliquidAccountMode(fetch2, network2, row2.address);
       } catch (error) {
         return fail2("PERPS_UNAVAILABLE", `${error instanceof Error ? error.message : "Cannot read the account mode"}. Nothing was requested.`);
       }
@@ -43801,7 +43981,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         return fail2("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`, { mode });
     }
     const build = await call(cfg, fetch2, "POST", path, {
-      walletId: row.id,
+      walletId: row2.id,
       ...fields2,
       ...tool === "candle_perps_open" ? { type: fields2.price === undefined ? "market" : "limit" } : {}
     });
@@ -43813,14 +43993,14 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       }
     };
     if (method === "setup") {
-      const problem = perpsSetupStatusProblem(build, { network: network2, address: row.address, builder, mode });
+      const problem = perpsSetupStatusProblem(build, { network: network2, address: row2.address, builder, mode });
       if (problem)
         return fail2("PERPS_BUILD_REFUSED", `Refused this setup answer: ${problem}. Nothing was signed.`);
     }
     if (build.ready === true)
       return { text: JSON.stringify(build) };
     if (build.replayed === true) {
-      if (clientId2 === undefined || build.clientId !== clientId2 || build.walletId !== row.id)
+      if (clientId2 === undefined || build.clientId !== clientId2 || build.walletId !== row2.id)
         return fail2("PERPS_BUILD_REFUSED", "Refused a replay that does not name this request's client id and wallet. Nothing was signed.");
       return { text: JSON.stringify(build) };
     }
@@ -43829,7 +44009,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     const verifyOpts = {
       builder,
       network: network2,
-      address: row.address,
+      address: row2.address,
       intent: { method, params: fields2 },
       keyReduceOnly: build.perpsReduceOnly === true
     };
@@ -43859,7 +44039,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     const extra = {};
     if (accepted && method === "scheduleCancel") {
       const ack = await call(cfg, fetch2, "POST", "/api/v1/agent/perps/schedule-cancel/ack", {
-        walletId: row.id,
+        walletId: row2.id,
         perpOrderId: build.perpOrderId,
         exchange
       }).catch(() => null);
@@ -43871,7 +44051,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         const res = await fetch2(HYPERLIQUID_EXCHANGE_URLS[network2].replace("/exchange", "/info"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "activeAssetData", user: row.address, coin: String(fields2.coin) })
+          body: JSON.stringify({ type: "activeAssetData", user: row2.address, coin: String(fields2.coin) })
         });
         const type = JSON.parse(await res.text())?.leverage?.type;
         confirmedMode = type === "cross" || type === "isolated" ? type : null;
@@ -43898,7 +44078,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         perpOrderId: build.perpOrderId,
         kind: build.kind,
         network: build.network,
-        address: row.address,
+        address: row2.address,
         ...build.cloid ? { cloid: build.cloid } : {},
         ...build.childCloids ? { childCloids: build.childCloids } : {},
         nonce: build.nonce,
@@ -43933,10 +44113,10 @@ function rawUnits(amount, decimals) {
   return raw > 0n ? raw.toString() : null;
 }
 function pickWallet(rows, chain2, name, what) {
-  const onChain = rows.filter((row) => row.chain === chain2);
-  const matches = name === undefined ? onChain : onChain.filter((row) => row.id === name || row.label === name || row.address.toLowerCase() === name.toLowerCase());
+  const onChain = rows.filter((row2) => row2.chain === chain2);
+  const matches = name === undefined ? onChain : onChain.filter((row2) => row2.id === name || row2.label === name || row2.address.toLowerCase() === name.toLowerCase());
   if (matches.length !== 1)
-    throw new Refusal(fail2("TEE_WALLET_REQUIRED", onChain.length === 0 ? `This key has no ${what} bound to it.` : `Name exactly one ${what}: ${onChain.map((row) => row.label ?? row.id).join(", ")}`));
+    throw new Refusal(fail2("TEE_WALLET_REQUIRED", onChain.length === 0 ? `This key has no ${what} bound to it.` : `Name exactly one ${what}: ${onChain.map((row2) => row2.label ?? row2.id).join(", ")}`));
   return matches[0];
 }
 function depositProblem(build, expect) {
@@ -43980,7 +44160,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
     if (!pemFile)
       return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
     try {
-      signerPem = await readFile9(pemFile, "utf8");
+      signerPem = await readFile10(pemFile, "utf8");
       createPrivateKey2(signerPem);
     } catch {
       return fail2("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
@@ -44346,15 +44526,15 @@ function priceCell(entry) {
 }
 function planTableRows(table) {
   const plans = table.plans;
-  const row = (label, cell) => [label, ...plans.map(cell)];
+  const row2 = (label, cell) => [label, ...plans.map(cell)];
   const rows = [
-    row("Price", priceCell),
-    row("Agent trade fee", (e) => formatPlanBps(e.feeBps)),
-    row("Perps builder fee", (e) => formatPlanBps(e.perpFeeBps)),
-    row("Requests per minute", (e) => count(e.limits.rateLimitPerMin)),
-    row("Launches per day", (e) => count(e.limits.dailyLaunchCap)),
-    row("Uploads per minute", (e) => count(e.limits.uploadsPerMin)),
-    row("Linked wallets", (e) => count(e.limits.linkedWallets))
+    row2("Price", priceCell),
+    row2("Agent trade fee", (e) => formatPlanBps(e.feeBps)),
+    row2("Perps builder fee", (e) => formatPlanBps(e.perpFeeBps)),
+    row2("Requests per minute", (e) => count(e.limits.rateLimitPerMin)),
+    row2("Launches per day", (e) => count(e.limits.dailyLaunchCap)),
+    row2("Uploads per minute", (e) => count(e.limits.uploadsPerMin)),
+    row2("Linked wallets", (e) => count(e.limits.linkedWallets))
   ];
   const known = Object.keys(PLAN_CAPABILITY_LABELS);
   const served = new Set;
@@ -44367,7 +44547,7 @@ function planTableRows(table) {
   ];
   for (const key of keys) {
     const label = Object.hasOwn(PLAN_CAPABILITY_LABELS, key) ? PLAN_CAPABILITY_LABELS[key] : key;
-    rows.push(row(label, (e) => {
+    rows.push(row2(label, (e) => {
       const value = e.capabilities?.[key];
       return value === true ? "yes" : value === false ? "no" : "-";
     }));
@@ -73414,7 +73594,7 @@ Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv �
 init_client();
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod17, readFile as readFile20, realpath as realpath2, rename as rename16, unlink, writeFile as writeFile16 } from "node:fs/promises";
+import { chmod as chmod17, readFile as readFile21, realpath as realpath2, rename as rename16, unlink, writeFile as writeFile16 } from "node:fs/promises";
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -75294,6 +75474,171 @@ var LAUNCH_DEFINITION = {
       }
     },
     {
+      key: "launchRules.openDelaySecs",
+      type: "duration",
+      help: "Launch rules, Solana only, where the server has CURVE_LAUNCH_RULES_ENABLED on: how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.",
+      wireType: "number",
+      range: {
+        min: "0",
+        max: "604800",
+        unit: "seconds"
+      },
+      chains: [
+        "solana"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--open-in",
+          value: "<duration>"
+        },
+        mcp: {
+          key: "launchRules.openDelaySecs"
+        },
+        sdk: {
+          key: "launchRules.openDelaySecs"
+        }
+      }
+    },
+    {
+      key: "launchRules.maxBuyPerWalletRaw",
+      type: "decimal",
+      help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+      range: {
+        unit: "whole quote units"
+      },
+      chains: [
+        "solana"
+      ],
+      requires: [
+        "launchRules.capWindowSecs"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--max-buy-per-wallet",
+          value: "<amount>"
+        },
+        mcp: {
+          key: "launchRules.maxBuyPerWalletRaw"
+        },
+        sdk: {
+          key: "launchRules.maxBuyPerWalletRaw"
+        }
+      }
+    },
+    {
+      key: "launchRules.capWindowSecs",
+      type: "duration",
+      help: "How long the per-wallet cap holds, counted from the open: 1 second to 24 hours (86400 seconds); needs --max-buy-per-wallet.",
+      wireType: "number",
+      range: {
+        min: "1",
+        max: "86400",
+        unit: "seconds"
+      },
+      chains: [
+        "solana"
+      ],
+      requires: [
+        "launchRules.maxBuyPerWalletRaw"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--cap-window",
+          value: "<duration>"
+        },
+        mcp: {
+          key: "launchRules.capWindowSecs"
+        },
+        sdk: {
+          key: "launchRules.capWindowSecs"
+        }
+      }
+    },
+    {
+      key: "launchRules.allowlist",
+      type: "file",
+      help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.",
+      wireType: "string[]",
+      range: {
+        min: "1",
+        max: "4096",
+        unit: "wallets"
+      },
+      chains: [
+        "solana"
+      ],
+      requires: [
+        "launchRules.allowlistWindowSecs"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--allowlist",
+          value: "<path>"
+        },
+        mcp: {
+          key: "launchRules.allowlist"
+        },
+        sdk: {
+          key: "launchRules.allowlist"
+        }
+      }
+    },
+    {
+      key: "launchRules.allowlistWindowSecs",
+      type: "duration",
+      help: "How long the allowlist phase holds, counted from the open: 1 second to 24 hours (86400 seconds); needs --allowlist.",
+      wireType: "number",
+      range: {
+        min: "1",
+        max: "86400",
+        unit: "seconds"
+      },
+      chains: [
+        "solana"
+      ],
+      requires: [
+        "launchRules.allowlist"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--allowlist-window",
+          value: "<duration>"
+        },
+        mcp: {
+          key: "launchRules.allowlistWindowSecs"
+        },
+        sdk: {
+          key: "launchRules.allowlistWindowSecs"
+        }
+      }
+    },
+    {
+      key: "launchRules.devBuyMaxRaw",
+      type: "decimal",
+      help: "The most the launching wallet may buy before the open, only with --open-in: at least the launch's own buy, at most the dev-buy ceiling, and the buy by default. That spend counts toward the per-wallet cap after the open. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+      range: {
+        unit: "whole quote units"
+      },
+      chains: [
+        "solana"
+      ],
+      requires: [
+        "launchRules.openDelaySecs"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--dev-buy-max",
+          value: "<amount>"
+        },
+        mcp: {
+          key: "launchRules.devBuyMaxRaw"
+        },
+        sdk: {
+          key: "launchRules.devBuyMaxRaw"
+        }
+      }
+    },
+    {
       key: "dryRun",
       type: "boolean",
       help: "Print the launch preview without building, signing or recording a launch; local image uploads still become public and permanent.",
@@ -75312,6 +75657,214 @@ var LAUNCH_DEFINITION = {
     }
   ]
 };
+
+// src/launch-rules.ts
+init_zod();
+import { readFile as readFile7, stat as stat5 } from "node:fs/promises";
+init_solana_lite();
+init_trading();
+var LAUNCH_RULES_FLAGS = [
+  "--open-in",
+  "--max-buy-per-wallet",
+  "--cap-window",
+  "--allowlist",
+  "--allowlist-window",
+  "--dev-buy-max"
+];
+var U64_MAX = 0xffff_ffff_ffff_ffffn;
+var UNITS = { s: 1, m: 60, h: 3600, d: 86400 };
+var MAX_ALLOWLIST_FILE_BYTES = 1e6;
+var rulesField = (key) => {
+  const found = LAUNCH_DEFINITION.fields.find((field) => field.key === `launchRules.${key}`);
+  if (!found || !("range" in found))
+    throw new Error(`Missing launch rules field ${key}`);
+  return found.range;
+};
+var maxAllowlist = Number(rulesField("allowlist").max);
+function launchRulesGiven(flags) {
+  return LAUNCH_RULES_FLAGS.some((flag) => flags[flag] !== undefined);
+}
+function parseDuration(value) {
+  const match = /^(\d+)([smhd])?$/.exec(value.trim());
+  if (!match)
+    return;
+  const seconds = Number(match[1]) * (UNITS[match[2] ?? "s"] ?? 1);
+  return Number.isSafeInteger(seconds) ? seconds : undefined;
+}
+function durationProblem(flag, value, min, max) {
+  const seconds = parseDuration(value);
+  if (seconds !== undefined && seconds >= min && seconds <= max)
+    return;
+  return `${flag} must be a whole number of seconds from ${min} to ${max}, or a duration such as 90m or 6h.`;
+}
+var given = (flags, flag) => flags[flag] !== undefined;
+var openDelay = (flags) => parseDuration(flags["--open-in"] ?? "0") ?? 0;
+function launchRulesFlagProblem(flags) {
+  if (given(flags, "--max-buy-per-wallet") !== given(flags, "--cap-window"))
+    return "--max-buy-per-wallet and --cap-window go together: pass both or neither.";
+  if (given(flags, "--allowlist") !== given(flags, "--allowlist-window"))
+    return "--allowlist and --allowlist-window go together: pass both or neither.";
+  if (given(flags, "--dev-buy-max") && openDelay(flags) === 0)
+    return "--dev-buy-max needs --open-in above 0: it only applies before the open.";
+  for (const flag of ["--max-buy-per-wallet", "--dev-buy-max"]) {
+    const value = flags[flag];
+    if (value !== undefined && !/^\d+(\.\d+)?$/.test(value))
+      return amountFormat(flag);
+    if (value !== undefined && /^0+(\.0+)?$/.test(value))
+      return amountFormat(flag);
+  }
+  return;
+}
+var amountFormat = (flag) => `${flag} must be a positive amount in whole quote units, at most the quote asset's decimals, that fits in u64.`;
+function parseAllowlist(text, path) {
+  const wallets2 = new Set;
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    for (const cell of line.split(",")) {
+      const entry = cell.trim().replace(/^"(.*)"$/, "$1");
+      if (entry === "")
+        continue;
+      let canonical;
+      try {
+        canonical = encodePubkey(decodePubkey(entry));
+      } catch {}
+      if (canonical !== entry)
+        throw new Error(`--allowlist ${safeText(path)}, line ${index + 1}: ${safeText(entry.slice(0, 64))} is not a base58 Solana address.`);
+      wallets2.add(entry);
+    }
+  }
+  if (wallets2.size < 1 || wallets2.size > maxAllowlist)
+    throw new Error(`--allowlist holds 1 to ${maxAllowlist} distinct wallets; ${safeText(path)} has ${wallets2.size}.`);
+  return [...wallets2];
+}
+async function readAllowlist(path) {
+  let text;
+  try {
+    const info = await stat5(path);
+    if (!info.isFile())
+      throw new Error("not a file");
+    if (info.size > MAX_ALLOWLIST_FILE_BYTES)
+      throw new Error(`--allowlist ${safeText(path)} is over 1MB, far more than ${maxAllowlist} addresses.`);
+    text = await readFile7(path, "utf8");
+  } catch (error) {
+    if (error.message.startsWith("--allowlist"))
+      throw error;
+    throw new Error(`--allowlist ${safeText(path)} could not be read as a file.`);
+  }
+  return parseAllowlist(text, path);
+}
+function launchRulesRequest(flags, launch) {
+  const problem = launchRulesFlagProblem(flags);
+  if (problem)
+    throw new Error(problem);
+  const symbol = launch.quote.toUpperCase();
+  const whole = (raw2) => `${shortAmount(raw2.toString(), launch.decimals)} ${symbol}`;
+  const raw = (flag, value) => {
+    if (value === undefined)
+      return;
+    let amount;
+    try {
+      amount = BigInt(rawAmount(value, launch.decimals));
+    } catch {
+      throw new Error(amountFormat(flag));
+    }
+    if (amount > U64_MAX)
+      throw new Error(amountFormat(flag));
+    return amount;
+  };
+  const body = {};
+  const delay = openDelay(flags);
+  if (delay > 0)
+    body.openDelaySecs = delay;
+  const cap = raw("--max-buy-per-wallet", flags["--max-buy-per-wallet"]);
+  if (cap !== undefined) {
+    body.maxBuyPerWalletRaw = cap.toString();
+    body.capWindowSecs = parseDuration(flags["--cap-window"] ?? "");
+  }
+  if (launch.allowlist !== undefined) {
+    body.allowlist = launch.allowlist;
+    body.allowlistWindowSecs = parseDuration(flags["--allowlist-window"] ?? "");
+  }
+  const devBuyMax = raw("--dev-buy-max", flags["--dev-buy-max"]);
+  if (devBuyMax !== undefined) {
+    if (devBuyMax < launch.buyRaw)
+      throw new Error(`--dev-buy-max (${whole(devBuyMax)}) is below this launch's own dev buy, --buy (${whole(launch.buyRaw)}).`);
+    if (devBuyMax > launch.ceilingRaw)
+      throw new Error(`--dev-buy-max is above the dev-buy ceiling for this launch (${whole(launch.ceilingRaw)}).`);
+    body.devBuyMaxRaw = devBuyMax.toString();
+  }
+  if (cap !== undefined && delay === 0 && launch.buyRaw > cap)
+    throw new Error(`This launch's dev buy (--buy ${whole(launch.buyRaw)}) is over --max-buy-per-wallet (${whole(cap)}); with no open delay the dev buy is held to the cap.`);
+  return Object.keys(body).length ? body : undefined;
+}
+function shortAmount(raw, decimals) {
+  const full = decimalAmount(raw, decimals);
+  return full.includes(".") ? full.replace(/0+$/, "").replace(/\.$/, "") : full;
+}
+var summarySchema = exports_external.object({
+  openAt: exports_external.string().nullable(),
+  capUntil: exports_external.string().nullable(),
+  maxBuyPerWalletRaw: exports_external.string().regex(/^\d+$/).nullable(),
+  allowlistUntil: exports_external.string().nullable(),
+  allowlistRoot: exports_external.string().nullable(),
+  allowlistSize: exports_external.number(),
+  devBuyer: exports_external.string(),
+  devBuyMaxRaw: exports_external.string().regex(/^\d+$/),
+  clusterTime: exports_external.string()
+}).passthrough();
+function utc(iso) {
+  const time = new Date(iso);
+  if (Number.isNaN(time.getTime()))
+    return safeText(iso);
+  const text = time.toISOString();
+  const seconds = text.slice(17, 19);
+  return `${text.slice(0, 10)} ${text.slice(11, 16)}${seconds === "00" ? "" : `:${seconds}`} UTC`;
+}
+function span(seconds) {
+  const parts = [];
+  let left = Math.max(0, Math.round(seconds));
+  for (const [unit, size] of [
+    ["d", 86400],
+    ["h", 3600],
+    ["m", 60]
+  ]) {
+    if (left >= size)
+      parts.push(`${Math.floor(left / size)}${unit}`);
+    left %= size;
+  }
+  if (left || !parts.length)
+    parts.push(`${left}s`);
+  return parts.join(" ");
+}
+var LABEL = 13;
+var row = (label, text) => `  ${label.padEnd(LABEL)}${text}`;
+var more = (text) => `  ${"".padEnd(LABEL)}${text}`;
+function launchRulesLines(answer, whole) {
+  const parsed = exports_external.object({ launchRules: summarySchema }).safeParse(answer);
+  if (!parsed.success)
+    return [];
+  const rules = parsed.data.launchRules;
+  const lines = ["Launch rules"];
+  if (rules.openAt) {
+    const delay = (new Date(rules.openAt).getTime() - new Date(rules.clusterTime).getTime()) / 1000;
+    const when = `${utc(rules.openAt)}${Number.isFinite(delay) ? ` (in ${span(delay)})` : ""}`;
+    if (rules.devBuyMaxRaw === "0")
+      lines.push(row("Opens", `${when}; nobody may buy before then`));
+    else {
+      lines.push(row("Opens", `${when}; only your wallet may buy before then, up to ${whole(rules.devBuyMaxRaw)}`));
+      if (rules.capUntil)
+        lines.push(more("(that spend counts toward the per-wallet cap after the open)"));
+    }
+  }
+  if (rules.allowlistUntil) {
+    const root = rules.allowlistRoot ? ` (root ${safeText(rules.allowlistRoot.slice(0, 4))}…${safeText(rules.allowlistRoot.slice(-4))})` : "";
+    lines.push(row("Allowlist", `${rules.allowlistSize.toLocaleString("en-US")} wallets until ${utc(rules.allowlistUntil)}${root}`));
+  }
+  if (rules.capUntil && rules.maxBuyPerWalletRaw)
+    lines.push(row("Cap", `${whole(rules.maxBuyPerWalletRaw)} per wallet until ${utc(rules.capUntil)}`));
+  if (rules.capUntil || rules.allowlistUntil)
+    lines.push(row("Buyers pay", "a one-time ~0.0015 SOL registration while a cap or allowlist is active (refundable)"));
+  return lines;
+}
 
 // src/launch-options.ts
 var LAUNCH_IMAGE_FLAG = "--image";
@@ -75347,6 +75900,12 @@ function launchFieldProblem(flags) {
       return `${field.cli.flag} takes a whole-unit decimal amount.`;
     if (field.type === "integer" && !/^\d+$/.test(value))
       return `${field.cli.flag} takes a whole number.`;
+    if (field.type === "duration" && "range" in field && "min" in field.range && "max" in field.range) {
+      const problem = durationProblem(field.cli.flag, value, Number(field.range.min), Number(field.range.max));
+      if (problem)
+        return problem;
+      continue;
+    }
     if ("range" in field) {
       const range = field.range;
       const byQuote = "byQuote" in range ? range.byQuote : undefined;
@@ -75360,7 +75919,7 @@ function launchFieldProblem(flags) {
         return `${field.cli.flag} is too long. ${field.help}`;
     }
   }
-  return;
+  return launchRulesFlagProblem(flags);
 }
 
 // src/help.ts
@@ -75858,7 +76417,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, launch:write, a bound key and verified authority; a server with TEE_LAUNCH_BY_SCOPE_ENABLED off also asks for the owner's allowLaunch (deprecated), and with it on a TEE first buy also needs swap:write. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass.",
+    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, launch:write, a bound key and verified authority; a server with TEE_LAUNCH_BY_SCOPE_ENABLED off also asks for the owner's allowLaunch (deprecated), and with it on a TEE first buy also needs swap:write. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. On Solana, where the server has CURVE_LAUNCH_RULES_ENABLED on, launch rules are fixed at launch and enforced by the curve program: --open-in delays the open (until then only the launching wallet may buy, up to --dev-buy-max, which defaults to the buy), --max-buy-per-wallet with --cap-window caps what each wallet spends on the curve after the open, and --allowlist <file> with --allowlist-window lets only the listed wallets buy; durations are seconds or 90m, 6h, 2d and amounts are whole quote units, each is checked here before any request, and the preview prints a Launch rules block. Nobody can change the rules after the launch. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass.",
     usage: [LAUNCH_USAGE, "candle launch status <mint-or-client-launch-id> [--wait]"],
     rows: [
       {
@@ -75895,6 +76454,7 @@ var HELP = {
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --buy 0.1",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet embedded --buy 0.1 --dry-run",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --mode exp-custom --curve-v 4 --curve-g 20 --creator-fee-bps 100 --dry-run",
+      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --buy 0.1 --open-in 10m --max-buy-per-wallet 0.5 --cap-window 1h --allowlist ./wallets.txt --allowlist-window 30m --dry-run",
       "candle launch status <mint-or-id> --wait"
     ],
     env: ENV_API
@@ -76151,7 +76711,7 @@ var HELP = {
         invocation: "--reason <reason>",
         description: "flag: spam, scam, abuse, misleading, unsafe_link or other; --detail adds up to 500 characters"
       },
-      ...launchFlagRows.filter((row) => /^--(description|website|x|telegram|discord) /.test(row.invocation)).map((row) => ({ invocation: row.invocation, description: `edit: ${row.description}` })),
+      ...launchFlagRows.filter((row2) => /^--(description|website|x|telegram|discord) /.test(row2.invocation)).map((row2) => ({ invocation: row2.invocation, description: `edit: ${row2.description}` })),
       {
         invocation: "--clear <field>",
         description: "edit: remove website, x, telegram, discord or description; repeatable"
@@ -76889,10 +77449,10 @@ function displayName(canonical) {
 }
 function documentedSubcommands(topic) {
   const words = [];
-  for (const row of topic.rows) {
-    if (row.invocation.startsWith(" "))
+  for (const row2 of topic.rows) {
+    if (row2.invocation.startsWith(" "))
       continue;
-    const first = row.invocation.split(" ")[0];
+    const first = row2.invocation.split(" ")[0];
     if (first !== undefined && /^[a-z][a-z-]*$/.test(first))
       words.push(first);
   }
@@ -76900,10 +77460,10 @@ function documentedSubcommands(topic) {
 }
 function documentedFlags(topic) {
   const flags = new Set;
-  for (const row of [...topic.rows, ...topic.flags ?? []]) {
-    for (const match of row.invocation.matchAll(/--[a-z][a-z-]*/g))
+  for (const row2 of [...topic.rows, ...topic.flags ?? []]) {
+    for (const match of row2.invocation.matchAll(/--[a-z][a-z-]*/g))
       flags.add(match[0]);
-    if (/(^|[\s,])-k([\s,]|$)/.test(row.invocation))
+    if (/(^|[\s,])-k([\s,]|$)/.test(row2.invocation))
       flags.add("-k");
   }
   return [...flags].sort();
@@ -76929,20 +77489,20 @@ function rowSummary(description) {
   }
   return description;
 }
-function renderRows(rows, maxColumn, width = WIDTH, more = true) {
+function renderRows(rows, maxColumn, width = WIDTH, more2 = true) {
   if (rows.length === 0)
     return [];
-  const longest = Math.max(...rows.map((row) => row.invocation.length));
+  const longest = Math.max(...rows.map((row2) => row2.invocation.length));
   const column = Math.min(2 + longest + 2, maxColumn, Math.max(4, Math.floor(width / 3)));
   const pad = " ".repeat(column);
   const out = [];
-  for (const row of rows) {
-    const description = more ? [row.description, row.more].filter(Boolean).join(" ") : rowSummary(row.description);
-    if (2 + row.invocation.length + 2 <= column) {
+  for (const row2 of rows) {
+    const description = more2 ? [row2.description, row2.more].filter(Boolean).join(" ") : rowSummary(row2.description);
+    if (2 + row2.invocation.length + 2 <= column) {
       const [first = "", ...rest] = wrapText(description, width - column);
-      out.push(`  ${row.invocation.padEnd(column - 2)}${first}`, ...rest.map((line) => `${pad}${line}`));
+      out.push(`  ${row2.invocation.padEnd(column - 2)}${first}`, ...rest.map((line) => `${pad}${line}`));
     } else {
-      out.push(...indented(row.invocation, width), ...indented(description, width, "    "));
+      out.push(...indented(row2.invocation, width), ...indented(description, width, "    "));
     }
   }
   return out;
@@ -76954,7 +77514,7 @@ function renderEnv(names, width = WIDTH) {
 function renderTopLevel(style) {
   return renderPresentedTopLevel(style);
 }
-function renderTopic(word3, style, more = false) {
+function renderTopic(word3, style, more2 = false) {
   const topic = topicFor(word3);
   if (!topic)
     return;
@@ -76967,12 +77527,12 @@ function renderTopic(word3, style, more = false) {
   ];
   out.push("", ...topic.usage.flatMap((usage3, index) => indented(usage3, width, index === 0 ? "Usage: " : "       ", "       ")));
   if (topic.rows.length > 0)
-    out.push("", ...renderRows(topic.rows, 58, width, more));
+    out.push("", ...renderRows(topic.rows, 58, width, more2));
   if (topic.flags && topic.flags.length > 0) {
-    out.push("", ...wrapText(`Flags every ${display} subcommand takes`, width), ...renderRows(topic.flags, 28, width, more));
+    out.push("", ...wrapText(`Flags every ${display} subcommand takes`, width), ...renderRows(topic.flags, 28, width, more2));
   }
   out.push("", "Examples", ...topic.examples.flatMap((example) => indented(example, width)));
-  if (more)
+  if (more2)
     out.push("", "Rules", ...wrapText(topic.description, width));
   out.push("", ...wrapText("Environment variables: candle --help", width));
   return `${out.join(`
@@ -77016,8 +77576,8 @@ function completableWords() {
 }
 function globalFlagTokens() {
   const tokens = new Set;
-  for (const row of GLOBAL_FLAGS) {
-    for (const token of row.invocation.split(/[\s,]+/))
+  for (const row2 of GLOBAL_FLAGS) {
+    for (const token of row2.invocation.split(/[\s,]+/))
       if (token.startsWith("-"))
         tokens.add(token);
   }
@@ -77106,12 +77666,12 @@ function fishScript() {
     }
   }
   lines.push("");
-  for (const row of GLOBAL_FLAGS) {
-    for (const token of row.invocation.split(/[\s,]+/)) {
+  for (const row2 of GLOBAL_FLAGS) {
+    for (const token of row2.invocation.split(/[\s,]+/)) {
       if (token.startsWith("--"))
-        lines.push(`complete -c candle -l '${token.slice(2)}' -d '${safe(row.description)}'`);
+        lines.push(`complete -c candle -l '${token.slice(2)}' -d '${safe(row2.description)}'`);
       else if (token.startsWith("-") && token.length === 2) {
-        lines.push(`complete -c candle -s '${token.slice(1)}' -d '${safe(row.description)}'`);
+        lines.push(`complete -c candle -s '${token.slice(1)}' -d '${safe(row2.description)}'`);
       }
     }
   }
@@ -77171,7 +77731,7 @@ import { join as join11 } from "node:path";
 
 // src/core/agent-profiles.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
-import { readFile as readFile7, rename as rename5, writeFile as writeFile5 } from "node:fs/promises";
+import { readFile as readFile8, rename as rename5, writeFile as writeFile5 } from "node:fs/promises";
 var DEFAULT_QUANT_PROFILE = {
   id: "quant",
   kind: "hosted-quant",
@@ -77230,7 +77790,7 @@ class AgentProfiles {
   static async open(path) {
     let text;
     try {
-      text = await readFile7(path, "utf8");
+      text = await readFile8(path, "utf8");
     } catch (error) {
       if (error.code !== "ENOENT")
         throw error;
@@ -77421,9 +77981,9 @@ async function claimableFor(executor, mint, writeKey) {
       return;
     const body = outcome.result;
     const rows = Array.isArray(body.tokens) ? body.tokens : [];
-    const row = rows.find((candidate) => candidate.mint === mint);
-    if (row)
-      return { claimableAmounts: row.claimableAmounts ?? null, claimable: row.claimable ?? null };
+    const row2 = rows.find((candidate) => candidate.mint === mint);
+    if (row2)
+      return { claimableAmounts: row2.claimableAmounts ?? null, claimable: row2.claimable ?? null };
     if (typeof body.continueCursor !== "string" || body.continueCursor === "")
       return;
     cursor = body.continueCursor;
@@ -77538,7 +78098,7 @@ function encodeLine(message) {
 
 // src/core/trading.ts
 import { randomBytes as randomBytes4 } from "node:crypto";
-import { readFile as readFile8, rename as rename6, writeFile as writeFile6 } from "node:fs/promises";
+import { readFile as readFile9, rename as rename6, writeFile as writeFile6 } from "node:fs/promises";
 var WITHDRAW_KEY_DAYS = 30;
 function formatKeyLimit(limit) {
   if (limit === undefined)
@@ -77590,7 +78150,7 @@ class TradingState {
   static async open(deps) {
     const state = new TradingState(deps);
     try {
-      const parsed = JSON.parse(await readFile8(deps.settingsPath, "utf8"));
+      const parsed = JSON.parse(await readFile9(deps.settingsPath, "utf8"));
       const slot = await deps.slotExists();
       state.on = parsed.tradingOn === true && slot;
       state.withdraw = slot ? parseWithdraw(parsed.withdraw) : { status: "off" };
@@ -78118,10 +78678,10 @@ function parseSuggestedBy(value, origin) {
     return;
   if (origin.role !== "view")
     throw invalidParams("suggestedBy is set by a view only.");
-  const given = value;
-  if (typeof given !== "object" || given.agent !== "quant" || typeof given.turnId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(given.turnId) || Object.keys(given).some((key) => key !== "agent" && key !== "turnId"))
+  const given2 = value;
+  if (typeof given2 !== "object" || given2.agent !== "quant" || typeof given2.turnId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(given2.turnId) || Object.keys(given2).some((key) => key !== "agent" && key !== "turnId"))
     throw invalidParams('suggestedBy is {agent: "quant", turnId}.');
-  return { agent: "quant", turnId: given.turnId };
+  return { agent: "quant", turnId: given2.turnId };
 }
 var TRANSFER_TOOLS = {
   vault: "core_vault_transfer",
@@ -78940,57 +79500,57 @@ class CardBook {
     return this.opView(op);
   }
   async rebuild(rows) {
-    for (const row of rows) {
-      if (row.type === "card.created" && row.card && typeof row.card === "object") {
-        const card2 = row.card;
-        this.cards.set(card2.cardId, { card: card2, proposedKey: typeof row.proposedKey === "string" ? row.proposedKey : "" });
+    for (const row2 of rows) {
+      if (row2.type === "card.created" && row2.card && typeof row2.card === "object") {
+        const card2 = row2.card;
+        this.cards.set(card2.cardId, { card: card2, proposedKey: typeof row2.proposedKey === "string" ? row2.proposedKey : "" });
         continue;
       }
-      const cardState = /^card\.(approved|rejected|withdrawn|expired)$/.exec(row.type)?.[1];
-      if (cardState && typeof row.cardId === "string") {
-        const entry = this.cards.get(row.cardId);
+      const cardState = /^card\.(approved|rejected|withdrawn|expired)$/.exec(row2.type)?.[1];
+      if (cardState && typeof row2.cardId === "string") {
+        const entry = this.cards.get(row2.cardId);
         if (entry)
           entry.card.state = cardState;
         continue;
       }
-      if (row.type === "operation.submitting" && typeof row.opId === "string" && typeof row.cardId === "string") {
-        const card2 = this.cards.get(row.cardId)?.card;
-        const previous = this.operations.get(row.opId);
-        this.operations.set(row.opId, {
+      if (row2.type === "operation.submitting" && typeof row2.opId === "string" && typeof row2.cardId === "string") {
+        const card2 = this.cards.get(row2.cardId)?.card;
+        const previous = this.operations.get(row2.opId);
+        this.operations.set(row2.opId, {
           ...previous ?? {},
-          opId: row.opId,
-          cardId: row.cardId,
-          kind: card2?.kind ?? row.kind,
-          tool: String(row.tool ?? card2?.tool ?? ""),
-          idKey: card2?.idKey ?? row.idKey,
-          ownerClientId: String(row.ownerClientId ?? card2?.origin.clientId ?? ""),
+          opId: row2.opId,
+          cardId: row2.cardId,
+          kind: card2?.kind ?? row2.kind,
+          tool: String(row2.tool ?? card2?.tool ?? ""),
+          idKey: card2?.idKey ?? row2.idKey,
+          ownerClientId: String(row2.ownerClientId ?? card2?.origin.clientId ?? ""),
           state: "submitting",
-          createdAt: previous?.createdAt ?? row.at,
-          updatedAt: row.at,
-          ...row.evidence ? { evidence: row.evidence } : {},
-          ...row.transfer && typeof row.transfer === "object" ? { transfer: row.transfer } : {}
+          createdAt: previous?.createdAt ?? row2.at,
+          updatedAt: row2.at,
+          ...row2.evidence ? { evidence: row2.evidence } : {},
+          ...row2.transfer && typeof row2.transfer === "object" ? { transfer: row2.transfer } : {}
         });
         continue;
       }
-      const op = typeof row.opId === "string" ? this.operations.get(row.opId) : undefined;
+      const op = typeof row2.opId === "string" ? this.operations.get(row2.opId) : undefined;
       if (op === undefined)
         continue;
-      if (row.type === "operation.resend")
+      if (row2.type === "operation.resend")
         op.resolution = "resent";
-      if (row.type === "operation.late_record")
-        op.lateRecord = row.record;
-      if (row.type === "operation.evidence" && row.evidence)
-        op.evidence = row.evidence;
-      const opState = /^operation\.(pending|succeeded|failed|refused|unknown|resolved_abandoned|attested_sent|attested_not_sent)$/.exec(row.type)?.[1];
+      if (row2.type === "operation.late_record")
+        op.lateRecord = row2.record;
+      if (row2.type === "operation.evidence" && row2.evidence)
+        op.evidence = row2.evidence;
+      const opState = /^operation\.(pending|succeeded|failed|refused|unknown|resolved_abandoned|attested_sent|attested_not_sent)$/.exec(row2.type)?.[1];
       if (opState) {
         op.state = opState;
-        op.updatedAt = row.at;
+        op.updatedAt = row2.at;
         if (opState === "resolved_abandoned")
           op.resolution = "abandoned";
-        if (row.result !== undefined)
-          op.result = row.result;
-        if (row.error && typeof row.error === "object")
-          op.error = row.error;
+        if (row2.result !== undefined)
+          op.result = row2.result;
+        if (row2.error && typeof row2.error === "object")
+          op.error = row2.error;
       }
     }
     let expired = 0;
@@ -79104,18 +79664,18 @@ class CardBook {
     return;
   }
   opIdFor(idKey, params) {
-    const given = params[idKey];
+    const given2 = params[idKey];
     if (idKey === "rewardId") {
-      if (typeof given !== "string" || given.length === 0)
+      if (typeof given2 !== "string" || given2.length === 0)
         throw invalidParams("rewardId names the reward to claim.");
-      return given;
+      return given2;
     }
     if (idKey === "coreOpId")
       return `op_${randomBytes5(12).toString("base64url")}`;
-    if (typeof given === "string" && given.length > 0 && given.length <= 128) {
-      if (idKey === "clientId" && !PERPS_CLIENT_ID.test(given))
+    if (typeof given2 === "string" && given2.length > 0 && given2.length <= 128) {
+      if (idKey === "clientId" && !PERPS_CLIENT_ID.test(given2))
         throw invalidParams("clientId is 0x and 32 hex characters.");
-      return given;
+      return given2;
     }
     if (idKey === "clientId")
       return `0x${randomBytes5(16).toString("hex")}`;
@@ -79236,14 +79796,14 @@ function sortTape(rows) {
 }
 function replaceTape(rows) {
   const byId = new Map;
-  for (const row of rows)
-    byId.set(row.haccId, row);
+  for (const row2 of rows)
+    byId.set(row2.haccId, row2);
   return sortTape([...byId.values()]).slice(0, SIGNAL_TAPE_CAP);
 }
-function upsertTape(rows, row) {
-  const prev = rows.find((r) => r.haccId === row.haccId);
-  const merged = mergeTapeRow(prev, row);
-  return sortTape([...rows.filter((r) => r.haccId !== row.haccId), merged]).slice(0, SIGNAL_TAPE_CAP);
+function upsertTape(rows, row2) {
+  const prev = rows.find((r) => r.haccId === row2.haccId);
+  const merged = mergeTapeRow(prev, row2);
+  return sortTape([...rows.filter((r) => r.haccId !== row2.haccId), merged]).slice(0, SIGNAL_TAPE_CAP);
 }
 var SOLANA = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var EVM = /^0x[0-9a-fA-F]{40}$/;
@@ -79263,7 +79823,7 @@ function parseStreamRow(raw) {
     return;
   if (typeof r.createdAt !== "number" || !Number.isFinite(r.createdAt))
     return;
-  const row = {
+  const row2 = {
     haccId: r.haccId,
     pattern: r.pattern,
     summary: r.summary.slice(0, 1000),
@@ -79272,14 +79832,14 @@ function parseStreamRow(raw) {
     createdAt: r.createdAt
   };
   if (typeof r.symbol === "string" && r.symbol.length > 0)
-    row.symbol = r.symbol.slice(0, 64);
+    row2.symbol = r.symbol.slice(0, 64);
   if (typeof r.marketCap === "number" && Number.isFinite(r.marketCap))
-    row.marketCap = r.marketCap;
+    row2.marketCap = r.marketCap;
   if (typeof r.walletLabel === "string" && r.walletLabel.length > 0)
-    row.walletLabel = r.walletLabel.slice(0, 128);
+    row2.walletLabel = r.walletLabel.slice(0, 128);
   if (typeof r.wallet === "string" && r.wallet.trim() !== "")
-    row.wallet = r.wallet.trim();
-  return row;
+    row2.wallet = r.wallet.trim();
+  return row2;
 }
 function tapeUrl(apiUrl) {
   return `${apiUrl.replace(/\/+$/, "").replace(/^http:/, "ws:").replace(/^https:/, "wss:")}/api/v1/hacc-signals/stream`;
@@ -79387,7 +79947,7 @@ class SignalService {
   }
   mine() {
     const list = this.watchlist ?? [];
-    return this.rowsCache.filter((row) => this.watched(row, list));
+    return this.rowsCache.filter((row2) => this.watched(row2, list));
   }
   snapshotAll() {
     return { type: "snapshot", rows: this.rows(), ...this.status() };
@@ -79422,7 +79982,7 @@ class SignalService {
       const wait = this.deps.waitForSnapshot ?? ((ms, until) => Promise.race([until, new Promise((resolve) => this.schedule(resolve, ms))]));
       await wait(SIGNAL_QUERY_WAIT_MS, ready);
     }
-    const rows = this.rowsCache.filter((row) => query.chain === undefined || row.chain === query.chain).filter((row) => query.mint === undefined || sameWallet(row.chain, row.mint, query.mint)).filter((row) => query.pattern === undefined || row.pattern === query.pattern).slice(0, query.limit);
+    const rows = this.rowsCache.filter((row2) => query.chain === undefined || row2.chain === query.chain).filter((row2) => query.mint === undefined || sameWallet(row2.chain, row2.mint, query.mint)).filter((row2) => query.pattern === undefined || row2.pattern === query.pattern).slice(0, query.limit);
     return { rows, stale: !this.snapshotSeen || this.state !== "live" };
   }
   stop() {
@@ -79437,11 +79997,11 @@ class SignalService {
     this.socket = undefined;
     socket?.close();
   }
-  watched(row, list) {
-    const wallet = row.wallet;
+  watched(row2, list) {
+    const wallet = row2.wallet;
     if (wallet === undefined)
       return false;
-    return list.some((entry) => entry.chain === row.chain && sameWallet(row.chain, entry.address, wallet));
+    return list.some((entry) => entry.chain === row2.chain && sameWallet(row2.chain, entry.address, wallet));
   }
   armIdle() {
     this.idleCancel?.();
@@ -79514,7 +80074,7 @@ class SignalService {
     if (frame === null || typeof frame !== "object")
       return;
     if (frame.type === "snapshot" && Array.isArray(frame.signals)) {
-      const parsed = frame.signals.map(parseStreamRow).filter((row) => row !== undefined);
+      const parsed = frame.signals.map(parseStreamRow).filter((row2) => row2 !== undefined);
       this.rowsCache = replaceTape(parsed);
       this.snapshotSeen = true;
       for (const resolve of this.waiters.splice(0))
@@ -79524,11 +80084,11 @@ class SignalService {
       return;
     }
     if (frame.type === "signal") {
-      const row = parseStreamRow(frame.signal);
-      if (row === undefined)
+      const row2 = parseStreamRow(frame.signal);
+      if (row2 === undefined)
         return;
-      this.rowsCache = upsertTape(this.rowsCache, row);
-      const merged = this.rowsCache.find((r) => r.haccId === row.haccId) ?? row;
+      this.rowsCache = upsertTape(this.rowsCache, row2);
+      const merged = this.rowsCache.find((r) => r.haccId === row2.haccId) ?? row2;
       this.deps.events.publish("signals", { type: "signal", row: merged });
       if (this.watched(merged, this.watchlist ?? []))
         this.deps.events.publish("signals:mine", { type: "signal", row: merged });
@@ -79561,9 +80121,9 @@ function watchlistFrom(body) {
     return;
   const out = [];
   for (const raw of wallets2) {
-    const row = raw;
-    if ((row?.chain === "solana" || row?.chain === "hood") && typeof row.address === "string" && row.address)
-      out.push({ chain: row.chain, address: row.address });
+    const row2 = raw;
+    if ((row2?.chain === "solana" || row2?.chain === "hood") && typeof row2.address === "string" && row2.address)
+      out.push({ chain: row2.chain, address: row2.address });
   }
   return out;
 }
@@ -79799,7 +80359,7 @@ function factorFailureKind(code) {
 }
 
 // src/core/instance-lock.ts
-import { link, open as open6, readFile as readFile10, rename as rename7, rm as rm3 } from "node:fs/promises";
+import { link, open as open6, readFile as readFile11, rename as rename7, rm as rm3 } from "node:fs/promises";
 
 class CoreAlreadyRunningError extends Error {
   pid;
@@ -79824,7 +80384,7 @@ function pidIsAlive(pid) {
 }
 async function lockOwner(path) {
   try {
-    const parsed = JSON.parse(await readFile10(path, "utf8"));
+    const parsed = JSON.parse(await readFile11(path, "utf8"));
     return typeof parsed.pid === "number" ? parsed.pid : undefined;
   } catch {
     return;
@@ -79881,7 +80441,7 @@ async function acquireInstanceLock(input) {
 }
 
 // src/core/journal.ts
-import { chmod as chmod7, open as open7, readFile as readFile11 } from "node:fs/promises";
+import { chmod as chmod7, open as open7, readFile as readFile12 } from "node:fs/promises";
 var RESERVED = new Set(["seq", "at", "environment", "profile"]);
 
 class Journal {
@@ -79899,11 +80459,11 @@ class Journal {
     this.identity = identity2;
     this.now = now;
     this.history = history2;
-    this.seq = history2.rows.reduce((max, row) => Math.max(max, row.seq), 0);
+    this.seq = history2.rows.reduce((max, row2) => Math.max(max, row2.seq), 0);
   }
   static async open(input) {
     const history2 = await readJournal(input.path);
-    const foreign = history2.rows.find((row) => row.environment !== input.environment || row.profile !== input.profile);
+    const foreign = history2.rows.find((row2) => row2.environment !== input.environment || row2.profile !== input.profile);
     if (foreign !== undefined) {
       throw new JournalIdentityError(`This journal holds rows for profile "${foreign.profile}" on ${foreign.environment}; this core is profile "${input.profile}" on ${input.environment}.`);
     }
@@ -79930,7 +80490,7 @@ class Journal {
         throw new Error(`A journal row's mode must be paper or live, not ${mode}.`);
       if (typeof input.type !== "string" || input.type.length === 0)
         throw new Error("A journal row needs a type.");
-      const row = this.redactor.value({
+      const row2 = this.redactor.value({
         ...input,
         seq: this.seq + 1,
         at: new Date(this.now()).toISOString(),
@@ -79938,11 +80498,11 @@ class Journal {
         profile: this.identity.profile,
         mode
       });
-      await this.raw(`${JSON.stringify(row)}
+      await this.raw(`${JSON.stringify(row2)}
 `);
-      this.seq = row.seq;
-      this.history.rows.push(row);
-      return row;
+      this.seq = row2.seq;
+      this.history.rows.push(row2);
+      return row2;
     });
     this.chain = next.catch(() => {});
     return next;
@@ -79971,7 +80531,7 @@ class JournalIdentityError extends Error {
 async function readJournal(path) {
   let text2;
   try {
-    text2 = await readFile11(path, "utf8");
+    text2 = await readFile12(path, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return { rows: [], skipped: 0, tornTail: false };
@@ -79985,11 +80545,11 @@ async function readJournal(path) {
 `)) {
     if (line.trim() === "")
       continue;
-    const row = parseRow(line);
-    if (row === undefined)
+    const row2 = parseRow(line);
+    if (row2 === undefined)
       skipped++;
     else
-      rows.push(row);
+      rows.push(row2);
   }
   return { rows, skipped, tornTail };
 }
@@ -80002,14 +80562,14 @@ function parseRow(line) {
   }
   if (value === null || typeof value !== "object")
     return;
-  const row = value;
-  if (typeof row.seq !== "number" || typeof row.type !== "string")
+  const row2 = value;
+  if (typeof row2.seq !== "number" || typeof row2.type !== "string")
     return;
-  if (row.environment !== "staging" && row.environment !== "production")
+  if (row2.environment !== "staging" && row2.environment !== "production")
     return;
-  if (typeof row.profile !== "string" || row.mode !== "paper" && row.mode !== "live")
+  if (typeof row2.profile !== "string" || row2.mode !== "paper" && row2.mode !== "live")
     return;
-  return row;
+  return row2;
 }
 
 // src/core/launch.ts
@@ -80630,7 +81190,7 @@ function withoutFactorValue(factor) {
 // src/core/server.ts
 init_render();
 import { randomBytes as randomBytes8 } from "node:crypto";
-import { chmod as chmod9, readFile as readFile13, rename as rename9, rm as rm4, writeFile as writeFile8 } from "node:fs/promises";
+import { chmod as chmod9, readFile as readFile14, rename as rename9, rm as rm4, writeFile as writeFile8 } from "node:fs/promises";
 import { createServer } from "node:net";
 
 // src/core/events.ts
@@ -80749,7 +81309,7 @@ class EventHub {
 // src/core/tokens.ts
 init_render();
 import { createHash as createHash4, randomBytes as randomBytes7, timingSafeEqual } from "node:crypto";
-import { chmod as chmod8, readFile as readFile12, rename as rename8, writeFile as writeFile7 } from "node:fs/promises";
+import { chmod as chmod8, readFile as readFile13, rename as rename8, writeFile as writeFile7 } from "node:fs/promises";
 var HARNESS_PREFIX = "cht_";
 var TOKEN_ID = /^[A-Za-z0-9]{12}$/;
 function b64u2(bytes) {
@@ -80791,7 +81351,7 @@ class TokenBook {
   static async open(path, now) {
     let records = [];
     try {
-      const parsed = JSON.parse(await readFile12(path, "utf8"));
+      const parsed = JSON.parse(await readFile13(path, "utf8"));
       if (Array.isArray(parsed.harness)) {
         records = parsed.harness.filter((r) => r !== null && typeof r === "object" && typeof r.tokenId === "string" && typeof r.hash === "string" && typeof r.name === "string");
       }
@@ -81274,7 +81834,7 @@ class CoreServer {
   }
   async readLayout() {
     try {
-      const parsed = JSON.parse(await readFile13(this.options.layoutPath, "utf8"));
+      const parsed = JSON.parse(await readFile14(this.options.layoutPath, "utf8"));
       if (parsed.layout && typeof parsed.layout === "object")
         return parsed.layout;
     } catch (error) {
@@ -81314,7 +81874,7 @@ init_secret_store();
 init_canonical_json();
 init_crypto();
 init_ownership();
-import { open as openFile, readFile as readFile14, rename as rename10, rm as rm5 } from "node:fs/promises";
+import { open as openFile, readFile as readFile15, rename as rename10, rm as rm5 } from "node:fs/promises";
 var CORE_SLOT_FORMAT = "candle-core-slot";
 var CORE_SLOT_VERSION = 1;
 var HKDF_INFO = "candle-core/v1/slot";
@@ -81372,7 +81932,7 @@ function parseCoreSlotFile(raw) {
 async function readCoreSlotHeader(paths) {
   let raw;
   try {
-    raw = await readFile14(paths.slot, "utf8");
+    raw = await readFile15(paths.slot, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return;
@@ -81745,7 +82305,7 @@ init_evm_lite();
 init_solana_lite();
 init_token_2022();
 init_evm_transfer();
-import { chmod as chmod10, mkdir as mkdir8, readFile as readFile15, rename as rename11, rm as rm6, writeFile as writeFile9 } from "node:fs/promises";
+import { chmod as chmod10, mkdir as mkdir8, readFile as readFile16, rename as rename11, rm as rm6, writeFile as writeFile9 } from "node:fs/promises";
 import { join as join10 } from "node:path";
 
 // src/vault/vault-transfer-sign.ts
@@ -82331,7 +82891,7 @@ function createTransferChain(chainDeps) {
     },
     async readPending(opId) {
       try {
-        const parsed = JSON.parse(await readFile15(pendingPath(opId), "utf8"));
+        const parsed = JSON.parse(await readFile16(pendingPath(opId), "utf8"));
         return typeof parsed?.id === "string" && typeof parsed.wire === "string" ? parsed : undefined;
       } catch {
         return;
@@ -82409,16 +82969,16 @@ class DestinationHistory {
   async rebuild(rows) {
     this.seen.clear();
     const transfers = new Map;
-    for (const row of rows) {
-      const transfer = row.transfer;
-      if (row.type === "operation.submitting" && typeof row.opId === "string" && transfer) {
+    for (const row2 of rows) {
+      const transfer = row2.transfer;
+      if (row2.type === "operation.submitting" && typeof row2.opId === "string" && transfer) {
         if ((transfer.chain === "solana" || transfer.chain === "hood") && typeof transfer.to === "string") {
-          transfers.set(row.opId, { chain: transfer.chain, to: transfer.to });
+          transfers.set(row2.opId, { chain: transfer.chain, to: transfer.to });
         }
-      } else if (row.type === "operation.succeeded" && typeof row.opId === "string") {
-        const sent = transfers.get(row.opId);
+      } else if (row2.type === "operation.succeeded" && typeof row2.opId === "string") {
+        const sent = transfers.get(row2.opId);
         if (sent)
-          this.seen.add(this.key(row.environment, sent.chain, sent.to));
+          this.seen.add(this.key(row2.environment, sent.chain, sent.to));
       }
     }
     await this.write();
@@ -82516,13 +83076,13 @@ async function destinations(params, _call, deps) {
     throw refused("INVALID_CHAIN", "chain is solana or hood.");
   const out = [];
   const push = (address, extra) => {
-    if (out.some((row) => sameAddress3(chain2, row.address, address)))
+    if (out.some((row2) => sameAddress3(chain2, row2.address, address)))
       return;
     out.push({ address, ...extra, sentBefore: deps.history.has(chain2, address) });
   };
   if (kind === "embedded") {
-    for (const row of await deps.reads.serverDestinations(chain2)) {
-      push(row.address, { serverClass: row.serverClass, ...row.label ? { label: terminalText(row.label) } : {} });
+    for (const row2 of await deps.reads.serverDestinations(chain2)) {
+      push(row2.address, { serverClass: row2.serverClass, ...row2.label ? { label: terminalText(row2.label) } : {} });
     }
   } else {
     for (const wallet3 of deps.trading.vaultWallets() ?? []) {
@@ -82580,7 +83140,7 @@ async function prepare(params, call2, deps) {
       usedUsdMicros: 0,
       readAt: 0
     })?.replace(/, \$[\d.]+ left$/, "");
-    const allowed = (await deps.reads.serverDestinations(parsed.chain)).find((row) => sameAddress3(parsed.chain, row.address, parsed.to));
+    const allowed = (await deps.reads.serverDestinations(parsed.chain)).find((row2) => sameAddress3(parsed.chain, row2.address, parsed.to));
     if (allowed !== undefined) {
       serverClass = allowed.serverClass;
       toLabel = allowed.label;
@@ -83269,18 +83829,18 @@ async function serverDestinations(chain2, read) {
   for (let page = 0;page < 10; page++) {
     const body = await read(`/api/v1/agent/wallets?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
     const rows = Array.isArray(body?.page) ? body.page : [];
-    for (const row of rows) {
-      if (row.revokedAt || typeof row.address !== "string")
+    for (const row2 of rows) {
+      if (row2.revokedAt || typeof row2.address !== "string")
         continue;
-      if ((row.chain === "evm" ? "hood" : row.chain) !== chain2)
+      if ((row2.chain === "evm" ? "hood" : row2.chain) !== chain2)
         continue;
-      const trusted = row.addedVia === "session" || typeof row.trustedAt === "number";
+      const trusted = row2.addedVia === "session" || typeof row2.trustedAt === "number";
       if (!trusted)
         continue;
       out.push({
         chain: chain2,
-        address: row.address,
-        ...typeof row.label === "string" ? { label: row.label } : {},
+        address: row2.address,
+        ...typeof row2.label === "string" ? { label: row2.label } : {},
         serverClass: "linked"
       });
     }
@@ -83289,13 +83849,13 @@ async function serverDestinations(chain2, read) {
     cursor = body.continueCursor;
   }
   const allow = (await read("/api/v1/agent/withdrawal-addresses"))?.addresses;
-  for (const row of Array.isArray(allow) ? allow : []) {
-    if (row.revokedAt || row.chain !== chain2 || typeof row.address !== "string")
+  for (const row2 of Array.isArray(allow) ? allow : []) {
+    if (row2.revokedAt || row2.chain !== chain2 || typeof row2.address !== "string")
       continue;
     out.push({
       chain: chain2,
-      address: row.address,
-      ...typeof row.label === "string" ? { label: row.label } : {},
+      address: row2.address,
+      ...typeof row2.label === "string" ? { label: row2.label } : {},
       serverClass: "approved"
     });
   }
@@ -83332,12 +83892,12 @@ async function transferChainFor(ctx, stateDir, executor, history2, readKey2) {
 function keyLimitOf(keys, prefix, now) {
   if (!Array.isArray(keys) || prefix === undefined)
     return;
-  const row = keys.find((key) => key?.keyPrefix === prefix);
-  const limit = row?.txLimit;
+  const row2 = keys.find((key) => key?.keyPrefix === prefix);
+  const limit = row2?.txLimit;
   if (!limit || typeof limit.usdMicros !== "number")
     return;
   const reset = limit.reset === "weekly" || limit.reset === "monthly" || limit.reset === "never" ? limit.reset : "daily";
-  const reserved = row?.emberWindow?.reservedUsdMicros;
+  const reserved = row2?.emberWindow?.reservedUsdMicros;
   if (typeof reserved === "number")
     return { usdMicros: limit.usdMicros, reset, usedUsdMicros: reserved, readAt: now };
   const field = {
@@ -83346,7 +83906,7 @@ function keyLimitOf(keys, prefix, now) {
     monthly: "monthUsdMicros",
     never: "lifetimeUsdMicros"
   }[reset];
-  const used = row?.usage?.[field];
+  const used = row2?.usage?.[field];
   return { usdMicros: limit.usdMicros, reset, usedUsdMicros: typeof used === "number" ? used : 0, readAt: now };
 }
 
@@ -83772,37 +84332,37 @@ init_profiles();
 init_render();
 var REBIND_CHUNK = 200;
 var SELECTED_SCOPE_LIMIT = 1000;
-function targetKeyRefusal(row, keyPrefix, now) {
+function targetKeyRefusal(row2, keyPrefix, now) {
   const written = "Nothing was written.";
-  if (row === undefined) {
+  if (row2 === undefined) {
     return {
       code: "REBIND_KEY_NOT_FOUND",
       message: `No key ${keyPrefix} on this account. ${written}`,
       suggestion: "The target must be a key on the same account: candle keys list"
     };
   }
-  if (row.revokedAt !== undefined) {
+  if (row2.revokedAt !== undefined) {
     return {
       code: "REBIND_TARGET_INVALID",
       message: `The target key ${keyPrefix} is revoked. ${written}`,
       suggestion: "Pick an active key: candle keys list"
     };
   }
-  if (row.expiresAt !== undefined && row.expiresAt !== null && row.expiresAt <= now) {
+  if (row2.expiresAt !== undefined && row2.expiresAt !== null && row2.expiresAt <= now) {
     return {
       code: "REBIND_TARGET_INVALID",
       message: `The target key ${keyPrefix} has expired. ${written}`,
       suggestion: "Pick an active key: candle keys list"
     };
   }
-  if (row.environment !== "production") {
+  if (row2.environment !== "production") {
     return {
       code: "REBIND_TARGET_INVALID",
       message: `The target key ${keyPrefix} is a test key; the trade rail refuses test keys. ${written}`,
       suggestion: "Pick a production key: candle keys list"
     };
   }
-  if (!row.scopes.includes("swap:write")) {
+  if (!row2.scopes.includes("swap:write")) {
     return {
       code: "REBIND_TARGET_INVALID",
       message: `The target key ${keyPrefix} lacks swap:write, which a TEE wallet needs to trade. ${written}`,
@@ -83811,8 +84371,8 @@ function targetKeyRefusal(row, keyPrefix, now) {
   }
   return null;
 }
-function tradeReadinessOf(row) {
-  const limits = row.spendLimits ?? [];
+function tradeReadinessOf(row2) {
+  const limits = row2.spendLimits ?? [];
   const capOf = (asset) => {
     let cap = null;
     for (const limit of limits) {
@@ -83956,11 +84516,11 @@ async function preflightToKey(ctx, raw, opts) {
   if (!resolved.ok)
     return { ok: false, exit: resolved.code };
   const keyPrefix = resolved.keyPrefix;
-  const row = keys.find((key) => key.keyPrefix === keyPrefix);
-  const refusal3 = targetKeyRefusal(row, keyPrefix, deps.now());
+  const row2 = keys.find((key) => key.keyPrefix === keyPrefix);
+  const refusal3 = targetKeyRefusal(row2, keyPrefix, deps.now());
   if (refusal3 !== null)
     return refuse3(refusal3);
-  const target = row;
+  const target = row2;
   const walletScope = target.walletScope === "selected" ? "selected" : "all";
   if (walletScope === "selected") {
     const room = await readSelectedScopeRoom(ctx, keyPrefix);
@@ -84059,8 +84619,8 @@ async function rebindPromoted(ctx, deviceToken, toKeyPrefix, wallets2, pinnedSpk
     const shown = preview.body;
     if (run2.toKey === undefined)
       run2.toKey = shown.toKey;
-    for (const row of shown.unchanged)
-      run2.outcomes.set(row.id, { state: "unchanged" });
+    for (const row2 of shown.unchanged)
+      run2.outcomes.set(row2.id, { state: "unchanged" });
     const moving = shown.rebound;
     if (moving.length === 0)
       continue;
@@ -84070,8 +84630,8 @@ async function rebindPromoted(ctx, deviceToken, toKeyPrefix, wallets2, pinnedSpk
       if (!confirmed.ok) {
         run2.ok = false;
         run2.failure = { ...confirmed.failure, status: 0, chunk: at2 + 1 };
-        for (const row of moving)
-          run2.outcomes.set(row.id, { state: "failed" });
+        for (const row2 of moving)
+          run2.outcomes.set(row2.id, { state: "failed" });
         return run2;
       }
       pinned = signer.spkiSha256;
@@ -84079,11 +84639,11 @@ async function rebindPromoted(ctx, deviceToken, toKeyPrefix, wallets2, pinnedSpk
     run2.requests += 1;
     const committed = await commitRebind(ctx, deviceToken, {
       toKeyPrefix,
-      walletIds: moving.map((row) => row.id),
-      expect: Object.fromEntries(moving.map((row) => [row.id, row.fromKeyPrefix]))
+      walletIds: moving.map((row2) => row2.id),
+      expect: Object.fromEntries(moving.map((row2) => [row2.id, row2.fromKeyPrefix]))
     }, {
       appId: shown.privyAppId,
-      fromKeyPrefixes: Object.fromEntries(moving.map((row) => [row.id, row.fromKeyPrefix])),
+      fromKeyPrefixes: Object.fromEntries(moving.map((row2) => [row2.id, row2.fromKeyPrefix])),
       signerSpkiSha256: pinned
     });
     if (!committed.ok) {
@@ -84096,23 +84656,23 @@ async function rebindPromoted(ctx, deviceToken, toKeyPrefix, wallets2, pinnedSpk
       } else {
         run2.failure = {
           ...rebindFailureDetails(committed.result, {
-            fromKeyPrefixes: Array.from(new Set(moving.map((row) => row.fromKeyPrefix)))
+            fromKeyPrefixes: Array.from(new Set(moving.map((row2) => row2.fromKeyPrefix)))
           }),
           chunk: at2 + 1
         };
       }
-      for (const row of moving)
-        run2.outcomes.set(row.id, { state: "failed" });
+      for (const row2 of moving)
+        run2.outcomes.set(row2.id, { state: "failed" });
       return run2;
     }
     if (committed.signed.length > 0)
       run2.requests += 1;
     const result = committed.result.body;
-    for (const row of result.rebound) {
-      run2.outcomes.set(row.id, { state: "rebound", ...row.auditId !== undefined ? { auditId: row.auditId } : {} });
+    for (const row2 of result.rebound) {
+      run2.outcomes.set(row2.id, { state: "rebound", ...row2.auditId !== undefined ? { auditId: row2.auditId } : {} });
     }
-    for (const row of result.unchanged)
-      run2.outcomes.set(row.id, { state: "unchanged" });
+    for (const row2 of result.unchanged)
+      run2.outcomes.set(row2.id, { state: "unchanged" });
   }
   return run2;
 }
@@ -84880,8 +85440,8 @@ async function moveToLiveKey(ctx, deviceToken, source, toKeyRaw) {
     }
     const shown = preview.body;
     toKey ??= shown.toKey;
-    for (const row of shown.unchanged)
-      outcomes.push({ walletId: row.id, label: row.label, state: "already" });
+    for (const row2 of shown.unchanged)
+      outcomes.push({ walletId: row2.id, label: row2.label, state: "already" });
     if (shown.rebound.length === 0)
       continue;
     const signer = shown.toKey.signer ?? null;
@@ -84900,11 +85460,11 @@ async function moveToLiveKey(ctx, deviceToken, source, toKeyRaw) {
     }
     const committed = await commitRebind(ctx, deviceToken, {
       toKeyPrefix: target.keyPrefix,
-      walletIds: shown.rebound.map((row) => row.id),
-      expect: Object.fromEntries(shown.rebound.map((row) => [row.id, row.fromKeyPrefix]))
+      walletIds: shown.rebound.map((row2) => row2.id),
+      expect: Object.fromEntries(shown.rebound.map((row2) => [row2.id, row2.fromKeyPrefix]))
     }, {
       appId: shown.privyAppId,
-      fromKeyPrefixes: Object.fromEntries(shown.rebound.map((row) => [row.id, row.fromKeyPrefix])),
+      fromKeyPrefixes: Object.fromEntries(shown.rebound.map((row2) => [row2.id, row2.fromKeyPrefix])),
       signerSpkiSha256: pinned
     });
     if (!committed.ok) {
@@ -84916,10 +85476,10 @@ async function moveToLiveKey(ctx, deviceToken, source, toKeyRaw) {
         writeScreenLocalFailure(deps, rebindFailureDetails(committed.result, { fromKeyPrefixes: [source] }), json);
       return 1;
     }
-    for (const row of committed.result.body.rebound) {
-      outcomes.push({ walletId: row.id, label: row.label, state: "moved" });
+    for (const row2 of committed.result.body.rebound) {
+      outcomes.push({ walletId: row2.id, label: row2.label, state: "moved" });
       if (!json)
-        writeSuccess(deps, "stderr", `  moved ${row.label ?? row.id} to ${target.keyPrefix}
+        writeSuccess(deps, "stderr", `  moved ${row2.label ?? row2.id} to ${target.keyPrefix}
 `.trim());
     }
   }
@@ -84958,7 +85518,7 @@ async function accountOwners(ctx, creds) {
         break;
     }
     if (complete)
-      return rows.map((row) => ({ id: row._id, signerQuorumId: row.signerQuorumId ?? null }));
+      return rows.map((row2) => ({ id: row2._id, signerQuorumId: row2.signerQuorumId ?? null }));
   }
   if (creds.deviceToken !== undefined) {
     const keys = await apiRequest("/api/v1/agent/keys", {
@@ -85187,14 +85747,14 @@ async function teeSignerRemove(args, ctx) {
     return exit;
   }
   const lines = [];
-  for (const row of removed) {
-    const where = row.state === "absent" ? "already gone on the server" : "gone on the server";
-    lines.push(`Removed signer ${row.fingerprint} for key ${keyPrefix} (${where}).`);
+  for (const row2 of removed) {
+    const where = row2.state === "absent" ? "already gone on the server" : "gone on the server";
+    lines.push(`Removed signer ${row2.fingerprint} for key ${keyPrefix} (${where}).`);
   }
-  for (const row of kept) {
-    lines.push(`Kept signer ${row.fingerprint}: ${row.code} ${row.message}`);
-    if (row.suggestion)
-      lines.push(row.suggestion);
+  for (const row2 of kept) {
+    lines.push(`Kept signer ${row2.fingerprint}: ${row2.code} ${row2.message}`);
+    if (row2.suggestion)
+      lines.push(row2.suggestion);
   }
   deps.stdout.write(`${lines.join(`
 `)}
@@ -85398,22 +85958,22 @@ function renderDoctorReport(rows, role, style) {
     SKIP: dim(sym.missing, style)
   };
   const markWidth = Math.max(sym.ok.length, sym.warning.length, sym.danger.length, sym.missing.length);
-  const labelWidth = Math.max(...rows.map((row) => row.check.length));
+  const labelWidth = Math.max(...rows.map((row2) => row2.check.length));
   const indent = 2;
   const detailWidth = Math.max(1, proseWidth(style) - indent - markWidth - 1 - labelWidth - 2);
   const out = [...fields([["Role", role]], style), ""];
-  for (const row of rows) {
-    const text3 = row.check === DEVICE_TOKEN_ROW ? "" : row.detail;
+  for (const row2 of rows) {
+    const text3 = row2.check === DEVICE_TOKEN_ROW ? "" : row2.detail;
     const [first = "", ...rest] = text3 === "" ? [] : wrapText(text3, detailWidth);
-    const mark = `${marks[row.state]}${" ".repeat(markWidth - displayMarkWidth(row.state, sym))}`;
-    out.push(`${" ".repeat(indent)}${mark} ${padDisplay(row.check, labelWidth)}  ${first}`.trimEnd());
+    const mark = `${marks[row2.state]}${" ".repeat(markWidth - displayMarkWidth(row2.state, sym))}`;
+    out.push(`${" ".repeat(indent)}${mark} ${padDisplay(row2.check, labelWidth)}  ${first}`.trimEnd());
     for (const line of rest)
       out.push(`${" ".repeat(indent + markWidth + 1 + labelWidth + 2)}${line}`);
   }
-  if (rows.some((row) => row.check === DEVICE_TOKEN_ROW)) {
+  if (rows.some((row2) => row2.check === DEVICE_TOKEN_ROW)) {
     out.push("", ...renderNotice("warning", DEVICE_TOKEN_NOTICE, style), `${" ".repeat(indent + 4)}${DEVICE_TOKEN_FIX}`);
   }
-  const count2 = (state) => rows.filter((row) => row.state === state).length;
+  const count2 = (state) => rows.filter((row2) => row2.state === state).length;
   const tally = [
     plural2(count2("PASS"), "passed", "passed"),
     ...count2("WARN") > 0 ? [plural2(count2("WARN"), "warning", "warnings")] : [],
@@ -85754,10 +86314,10 @@ async function doctor(args, ctx) {
   } : { check: "Update", state: "SKIP", detail: `could not check: ${latest.message}` });
   rows.push(...signerReport.rows);
   if (storeError || signerReport.locked) {
-    const row = rows.find((r) => r.check === "Keychain backend");
-    if (row) {
-      row.state = "FAIL";
-      row.detail = signerReport.locked || storeError instanceof SecretStoreLockedError ? new SecretStoreLockedError().message : storeError instanceof Error ? storeError.message : "Secret store cannot be opened";
+    const row2 = rows.find((r) => r.check === "Keychain backend");
+    if (row2) {
+      row2.state = "FAIL";
+      row2.detail = signerReport.locked || storeError instanceof SecretStoreLockedError ? new SecretStoreLockedError().message : storeError instanceof Error ? storeError.message : "Secret store cannot be opened";
     }
   }
   if (role === "bot" || signerReport.hasSigners || trading?.paused === true) {
@@ -85770,8 +86330,8 @@ async function doctor(args, ctx) {
   }
   if (apiKey && wallets2.length > 0)
     rows.push(await teeLimitsRow(ctx, apiKey, wallets2));
-  const identifiedRows = rows.map((row) => ({ ...row, id: DOCTOR_ROW_IDS[row.check] }));
-  const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
+  const identifiedRows = rows.map((row2) => ({ ...row2, id: DOCTOR_ROW_IDS[row2.check] }));
+  const exitCode = rows.some((row2) => row2.state === "FAIL") ? 1 : 0;
   await printIdentity(ctx);
   if (json) {
     deps.stdout.write(`${JSON.stringify({
@@ -88919,12 +89479,12 @@ async function externalList(args, ctx) {
 candle external new --label <name>`);
       return 0;
     }
-    for (const row of rows) {
+    for (const row2 of rows) {
       writeFields(deps, "stdout", [
-        ["Address", row.address],
-        ["Label", row.label],
-        ...row.derivation ? [["Derivation", row.derivation]] : [],
-        ...row.exposureUnknown ? [["History", "unknown (restored from the phrase)"]] : []
+        ["Address", row2.address],
+        ["Label", row2.label],
+        ...row2.derivation ? [["Derivation", row2.derivation]] : [],
+        ...row2.exposureUnknown ? [["History", "unknown (restored from the phrase)"]] : []
       ]);
       deps.stdout.write(`
 `);
@@ -89041,19 +89601,19 @@ init_trading();
 init_swap();
 var LIST_USAGE = "Usage: candle fees [--cursor <cursor>] [--limit <1-50>] [--json]";
 var CLAIM_USAGE = "Usage: candle fees claim <mint> [--dry-run] [--json]";
-function amountText(row, missing) {
-  const raw = typeof row.amountRaw === "string" && /^\d+$/.test(row.amountRaw) ? row.amountRaw : null;
+function amountText(row2, missing) {
+  const raw = typeof row2.amountRaw === "string" && /^\d+$/.test(row2.amountRaw) ? row2.amountRaw : null;
   if (raw === null)
     return missing;
-  const decimals = Number.isInteger(row.decimals) ? row.decimals : 0;
-  const label = row.symbol ? row.symbol : row.mint ?? "";
+  const decimals = Number.isInteger(row2.decimals) ? row2.decimals : 0;
+  const label = row2.symbol ? row2.symbol : row2.mint ?? "";
   const value = decimalAmount(raw, decimals);
   return `${value.includes(".") ? value.replace(/\.?0+$/, "") : value} ${safeText(label)}`.trim();
 }
 function amountsText(rows, missing) {
   if (!Array.isArray(rows) || rows.length === 0)
     return "none";
-  return rows.map((row) => amountText(row, missing)).join(", ");
+  return rows.map((row2) => amountText(row2, missing)).join(", ");
 }
 var REASON_WORDS = {
   below_dust: "under the dust floor",
@@ -89097,13 +89657,13 @@ async function feesList(args, ctx) {
     if (page.length === 0)
       notice(ctx.deps, "stdout", "note", "No launched tokens on this account.");
     else {
-      const rows = page.map((row) => {
-        const status = row.unreadable ? "could not be read" : row.claimable ? `${row.reason === "claimable_by_key" ? "claimable by this key" : "claimable"}: ${amountsText(row.claimableAmounts, missing)}` : `not claimable: ${reasonText(row.reason, missing)}`;
+      const rows = page.map((row2) => {
+        const status = row2.unreadable ? "could not be read" : row2.claimable ? `${row2.reason === "claimable_by_key" ? "claimable by this key" : "claimable"}: ${amountsText(row2.claimableAmounts, missing)}` : `not claimable: ${reasonText(row2.reason, missing)}`;
         return [
-          safeText(String(row.symbol ?? row.name ?? row.mint)),
-          safeText(String(row.chain)),
+          safeText(String(row2.symbol ?? row2.name ?? row2.mint)),
+          safeText(String(row2.chain)),
           status,
-          safeText(String(row.mint))
+          safeText(String(row2.mint))
         ];
       });
       ctx.deps.stdout.write(`${renderTable(["TOKEN", "CHAIN", "STATUS", "MINT"], rows, {
@@ -89145,10 +89705,10 @@ async function feesClaim(args, ctx) {
       const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, "launch:write");
       const signedClaims = [];
       for (const signing of body.signing) {
-        const row = rows.find((row2) => row2.id === signing.walletId && row2.address === signing.wallet);
-        if (!row || row.chain !== "solana")
+        const row2 = rows.find((row3) => row3.id === signing.walletId && row3.address === signing.wallet);
+        if (!row2 || row2.chain !== "solana")
           throw new TradingError("TEE_WALLET_REQUIRED", "The claim's wallet is not bound to this key");
-        const wallet3 = await completeTradingWallet(ctx, row, appId, "account:read", "solana", {
+        const wallet3 = await completeTradingWallet(ctx, row2, appId, "account:read", "solana", {
           apiKey: key,
           keyPrefix
         });
@@ -89205,9 +89765,9 @@ ${fields(rows, style).join(`
 `)}
 `);
       if (!dryRun) {
-        for (const row of claimed) {
-          if (row.txHash)
-            ctx.deps.stdout.write(`${bold(safeText(row.txHash), style)}
+        for (const row2 of claimed) {
+          if (row2.txHash)
+            ctx.deps.stdout.write(`${bold(safeText(row2.txHash), style)}
 `);
         }
       }
@@ -89330,8 +89890,8 @@ function accessScreen(shown, identity2, style) {
   const bound = shown.effects.boundTeeWallets;
   if (bound && bound.count > 0) {
     const names = bound.sample.map((w) => labelCell(w.label ?? undefined) || shortAddress2(w.address));
-    const more = bound.count > names.length ? `, and ${bound.count - names.length} more` : "";
-    advice(`TEE wallets on this key: ${bound.count}  (${names.join(", ")}${more})`, "note");
+    const more2 = bound.count > names.length ? `, and ${bound.count - names.length} more` : "";
+    advice(`TEE wallets on this key: ${bound.count}  (${names.join(", ")}${more2})`, "note");
     if (shown.direction === "widen" && shown.added.includes("transfer:bound")) {
       advice("It can move these wallets' funds to their vaults as soon as you confirm.");
     }
@@ -89569,12 +90129,12 @@ async function keysAccessHistory(target, ctx) {
     notice(deps, "stdout", "note", `No access changes on key ${resolved.keyPrefix}.`);
     return 0;
   }
-  deps.stdout.write(`${renderTable(["Time", "From", "To", "Actor", "Device or key"], rows.map((row) => [
-    formatTime(row.at, { now: deps.now(), missing: symbols(terminalStyle(deps, "stdout")).missing }),
-    levelName(row.from),
-    levelName(row.to),
-    row.actor,
-    row.actorDevicePrefix ?? row.actorKeyPrefix ?? ""
+  deps.stdout.write(`${renderTable(["Time", "From", "To", "Actor", "Device or key"], rows.map((row2) => [
+    formatTime(row2.at, { now: deps.now(), missing: symbols(terminalStyle(deps, "stdout")).missing }),
+    levelName(row2.from),
+    levelName(row2.to),
+    row2.actor,
+    row2.actorDevicePrefix ?? row2.actorKeyPrefix ?? ""
   ]), {
     style: terminalStyle(deps, "stdout"),
     width: terminalStyle(deps, "stdout").width,
@@ -89583,7 +90143,7 @@ async function keysAccessHistory(target, ctx) {
     columns: [{ id: true }, { priority: 2 }, { priority: 3 }, { priority: 1 }, { id: true }]
   })}
 `);
-  if (rows.some((row) => row.actor === "device"))
+  if (rows.some((row2) => row2.actor === "device"))
     notice(deps, "stdout", "note", PORTAL_REVOKE_LINE);
   return 0;
 }
@@ -89851,12 +90411,12 @@ function writeUnknown(ctx, idempotencyKey) {
   return EXIT_OUTCOME_UNKNOWN;
 }
 function idempotencyKeyOf(values, usage4) {
-  const given = values["--idempotency-key"];
-  if (given === undefined)
+  const given2 = values["--idempotency-key"];
+  if (given2 === undefined)
     return randomUUID6();
-  if (given.length < 1 || given.length > 128)
+  if (given2.length < 1 || given2.length > 128)
     return usage4("--idempotency-key must be 1 to 128 characters.");
-  return given;
+  return given2;
 }
 function sectionOf(value) {
   return TOKEN_PAGE_SECTIONS.includes(value ?? "") ? value : undefined;
@@ -89900,8 +90460,8 @@ function sectionText(bytes, section2) {
     return { error: `${section2} is at most ${limit} characters; the file has ${length}.` };
   return { text: text3 };
 }
-function signatureFor(chain2, given) {
-  const value = given.trim();
+function signatureFor(chain2, given2) {
+  const value = given2.trim();
   if (chain2 === "hood")
     return /^0x[0-9a-fA-F]{130}$/.test(value) ? value : undefined;
   try {
@@ -90038,20 +90598,20 @@ async function tokenClaim(args, ctx) {
   const creator = booleans.has("--creator");
   const challenge = booleans.has("--challenge");
   const challengeId = values["--challenge-id"];
-  const given = values["--signature"];
-  if ((challenge || challengeId !== undefined || given !== undefined) && !creator)
+  const given2 = values["--signature"];
+  if ((challenge || challengeId !== undefined || given2 !== undefined) && !creator)
     return usage4("--challenge, --challenge-id and --signature are for --creator.");
-  if (challenge && (challengeId !== undefined || given !== undefined))
+  if (challenge && (challengeId !== undefined || given2 !== undefined))
     return usage4("--challenge asks for a new challenge; send the signature in a second run.");
-  if (challengeId === undefined !== (given === undefined))
+  if (challengeId === undefined !== (given2 === undefined))
     return usage4("--challenge-id and --signature go together.");
   if (values["--message-out"] !== undefined && !challenge)
     return usage4("--message-out goes with --challenge.");
   if (challengeId !== undefined && !UUID2.test(challengeId))
     return usage4("--challenge-id is the id the challenge printed.");
   let signature;
-  if (given !== undefined) {
-    signature = signatureFor(chain2, given);
+  if (given2 !== undefined) {
+    signature = signatureFor(chain2, given2);
     if (!signature)
       return usage4(chain2 === "hood" ? "--signature must be the 0x-hex message signature (65 bytes)." : "--signature must be the 64-byte Ed25519 signature, base58 or base64.");
   }
@@ -91362,7 +91922,7 @@ async function report(args, ctx, kind) {
     if (kind === "edges")
       ctx.deps.stdout.write(`Edges net of ${text3(body.cost_pct)}% round-trip cost (server's table).
 `);
-    const rows = Array.isArray(list) ? list.map((row) => columns.map((column) => text3(object3(row)[column]))) : [];
+    const rows = Array.isArray(list) ? list.map((row2) => columns.map((column) => text3(object3(row2)[column]))) : [];
     if (!rows.length)
       ctx.deps.stdout.write(`No ${kind} in this window.
 `);
@@ -91620,14 +92180,14 @@ var checkSchema = exports_external.object({
   }))
 }).passthrough();
 var EMBEDDED_NAMES = new Set(LAUNCH_DEFINITION.wallet.embeddedNames);
-function walletName(row) {
-  return row.label ?? row.id;
+function walletName(row2) {
+  return row2.label ?? row2.id;
 }
-function walletLines(answer2, row, requestedChain) {
-  const name2 = walletName(row);
-  const chain2 = row.chain === "evm" ? "Hood" : "Solana";
+function walletLines(answer2, row2, requestedChain) {
+  const name2 = walletName(row2);
+  const chain2 = row2.chain === "evm" ? "Hood" : "Solana";
   const lines = [];
-  if (requestedChain && rowChain(row) !== requestedChain)
+  if (requestedChain && rowChain(row2) !== requestedChain)
     return [
       `${name2} (${chain2}) cannot launch on ${chainName(requestedChain)}: choose a ${chainName(requestedChain)} wallet.`
     ];
@@ -91638,9 +92198,9 @@ function walletLines(answer2, row, requestedChain) {
   }
   if (!answer2.key.selfLaunch)
     lines.push(`${name2} (${chain2}) cannot launch: TEE launches need Pro or Max, and this key is ${answer2.key.tier}.`);
-  else if (!row.allowLaunch)
-    lines.push(`${name2} (${chain2}) cannot launch: the account owner has allowLaunch off for it. Run candle wallets allow-launch ${row.id} on a profile signed in with candle auth login.`);
-  else if (!row.active)
+  else if (!row2.allowLaunch)
+    lines.push(`${name2} (${chain2}) cannot launch: the account owner has allowLaunch off for it. Run candle wallets allow-launch ${row2.id} on a profile signed in with candle auth login.`);
+  else if (!row2.active)
     lines.push(`${name2} (${chain2}) cannot launch: it is not a verified-active TEE wallet.`);
   else {
     lines.push(`This key can launch from ${name2} with no first buy.`);
@@ -91691,8 +92251,8 @@ function embeddedLines(answer2, requestedChain) {
   }
   return lines;
 }
-function walletWorks(answer2, row, requestedChain) {
-  return (requestedChain === undefined || rowChain(row) === requestedChain) && gatedOff(answer2) === undefined && answer2.key.selfLaunch && row.allowLaunch && row.active;
+function walletWorks(answer2, row2, requestedChain) {
+  return (requestedChain === undefined || rowChain(row2) === requestedChain) && gatedOff(answer2) === undefined && answer2.key.selfLaunch && row2.allowLaunch && row2.active;
 }
 function embeddedPaths(answer2, requestedChain) {
   return (requestedChain ? [requestedChain] : ["solana", "hood"]).map((chain2) => ({
@@ -91703,13 +92263,13 @@ function embeddedPaths(answer2, requestedChain) {
 function embeddedWorks(answer2, requestedChain) {
   return gatedOff(answer2) === undefined && answer2.key.embeddedWalletPermission === "allowed" && embeddedPaths(answer2, requestedChain).some(({ wallet: wallet3 }) => wallet3 != null && wallet3.delegated !== false);
 }
-function describeRow(row) {
-  return `${row.label ? `${row.label} ` : ""}(${row.id}, ${row.address})`;
+function describeRow(row2) {
+  return `${row2.label ? `${row2.label} ` : ""}(${row2.id}, ${row2.address})`;
 }
 async function launchCheck(ctx, key, walletFlag, requestedChain, feeWallet = undefined) {
   const answer2 = checkSchema.parse(await request(ctx, key, "/api/v1/launch/preflight"));
   const embeddedOnly = walletFlag !== undefined && EMBEDDED_NAMES.has(walletFlag);
-  const named = walletFlag === undefined || embeddedOnly ? [] : answer2.wallets.filter((row) => row.id === walletFlag || row.address === walletFlag || row.label === walletFlag);
+  const named = walletFlag === undefined || embeddedOnly ? [] : answer2.wallets.filter((row2) => row2.id === walletFlag || row2.address === walletFlag || row2.label === walletFlag);
   if (walletFlag !== undefined && !embeddedOnly && named.length !== 1)
     throw new TradingError("TEE_WALLET_REQUIRED", named.length > 1 ? `"${walletFlag}" matches ${named.length} TEE wallets on this key: ${named.map(describeRow).join("; ")}. Name one by id or address.` : answer2.wallets.length === 0 ? "This key has no TEE wallets bound to it. Enrol one, or select the profile whose key holds it." : `No TEE wallet on this key is called "${walletFlag}". Bound to this key: ${answer2.wallets.map(describeRow).join("; ")}.`);
   const shownWallets = walletFlag === undefined ? answer2.wallets : named;
@@ -91723,9 +92283,9 @@ async function launchCheck(ctx, key, walletFlag, requestedChain, feeWallet = und
     lines.push(...feeWalletLines(feeWallet, undefined, launcherDefault));
   if (walletFlag === undefined || embeddedOnly)
     lines.push(...embeddedLines(answer2, requestedChain));
-  for (const row of shownWallets)
-    lines.push(...walletLines(answer2, row, requestedChain));
-  const works = (walletFlag === undefined || embeddedOnly ? embeddedWorks(answer2, requestedChain) : false) || shownWallets.some((row) => walletWorks(answer2, row, requestedChain));
+  for (const row2 of shownWallets)
+    lines.push(...walletLines(answer2, row2, requestedChain));
+  const works = (walletFlag === undefined || embeddedOnly ? embeddedWorks(answer2, requestedChain) : false) || shownWallets.some((row2) => walletWorks(answer2, row2, requestedChain));
   lines.push(works ? "Nothing was uploaded, built or sent; this was the whole check." : "No launch path works for this key. Nothing was uploaded, built or sent.");
   const result = {
     success: true,
@@ -91736,10 +92296,10 @@ async function launchCheck(ctx, key, walletFlag, requestedChain, feeWallet = und
     switches: answer2.switches,
     ...feeWallet ? { feeWallet: { ...feeWallet, set: true } } : { feeWallet: { default: launcherDefault ? "launching wallet" : "account wallet", set: false } },
     ...answer2.embedded ? { embedded: answer2.embedded } : {},
-    wallets: shownWallets.map((row) => ({
-      ...row,
-      canLaunch: walletWorks(answer2, row, requestedChain),
-      canBuy: walletWorks(answer2, row, requestedChain) && answer2.switches.teeLaunchBuys && (row.chain !== "solana" || answer2.switches.agentTrading)
+    wallets: shownWallets.map((row2) => ({
+      ...row2,
+      canLaunch: walletWorks(answer2, row2, requestedChain),
+      canBuy: walletWorks(answer2, row2, requestedChain) && answer2.switches.teeLaunchBuys && (row2.chain !== "solana" || answer2.switches.agentTrading)
     })),
     ...embeddedOnly || walletFlag === undefined ? { embeddedCanLaunch: embeddedWorks(answer2, requestedChain) } : {}
   };
@@ -91816,7 +92376,7 @@ var LAUNCH_ARG_SPEC = {
     "--yes",
     "--require-fee-wallet"
   ],
-  pathFlags: ["--image", "--banner"]
+  pathFlags: ["--image", "--banner", "--allowlist"]
 };
 var QUOTE_CHAIN = LAUNCH_DEFINITION.quoteChains;
 var HOOD_LAUNCH_LEGS = ["createCurve"];
@@ -91984,6 +92544,21 @@ async function launch(args, ctx) {
         return tradingFailure(ctx, error);
       }
     }
+    let rules;
+    if (!check && launchRulesGiven(flags)) {
+      if (hinted === "hood") {
+        writeUsageFailure(ctx.deps, `${LAUNCH_RULES_SOLANA_ONLY} ${USAGE10}`, ctx.json);
+        return 2;
+      }
+      try {
+        rules = await launchRulesFor(ctx, flags);
+      } catch (error) {
+        if (error instanceof TradingError)
+          throw error;
+        writeUsageFailure(ctx.deps, error.message, ctx.json);
+        return 2;
+      }
+    }
     const key = await tradingKey(ctx);
     if (check)
       return await launchCheck(ctx, key, flags["--wallet"], hinted, feeWallet);
@@ -92021,7 +92596,8 @@ async function launch(args, ctx) {
         banner,
         retry,
         yes: parsed.booleans.has("--yes"),
-        dryRun
+        dryRun,
+        rules
       });
     const wallet3 = await tradingWallet(ctx, key, flags["--wallet"] ?? "", "launch:write", hinted ?? "any");
     const chain2 = wallet3.chain === "evm" ? "hood" : "solana";
@@ -92032,6 +92608,8 @@ async function launch(args, ctx) {
     const buy = launchBuy(flags, chain2);
     if (chain2 === "hood" && (Object.keys(poolRequestFields(flags)).length || feeWalletGiven(flags)))
       throw new TradingUsage("Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.");
+    if (chain2 === "hood" && launchRulesGiven(flags))
+      throw new TradingUsage(LAUNCH_RULES_SOLANA_ONLY);
     const atomic = chain2 === "solana" && buy !== undefined;
     if (atomic)
       firstBuyCeiling(ctx, flags, buy);
@@ -92041,7 +92619,7 @@ async function launch(args, ctx) {
       return uploaded;
     const { imageUrl, bannerUrl, used } = uploaded;
     if (dryRun)
-      return await dryRunLaunch(ctx, key, { flags, id, wallet: wallet3, chain: chain2, buy, imageUrl, bannerUrl, used });
+      return await dryRunLaunch(ctx, key, { flags, id, wallet: wallet3, chain: chain2, buy, imageUrl, bannerUrl, rules, used });
     if (atomic)
       return await atomicLaunch(ctx, key, {
         flags,
@@ -92050,6 +92628,7 @@ async function launch(args, ctx) {
         buy,
         imageUrl,
         bannerUrl,
+        rules,
         used,
         yes: parsed.booleans.has("--yes"),
         retry: retry !== undefined
@@ -92068,9 +92647,10 @@ async function launch(args, ctx) {
     if (!await claimOperation(ctx, key, id, "launch"))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
     writeFields(ctx.deps, "stderr", [["Operation", id]]);
-    const built = launchBuildSchema.parse(await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody({ flags, id, wallet: wallet3, buy, imageUrl, bannerUrl })).catch((error) => {
+    const answer2 = await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody({ flags, id, wallet: wallet3, buy, imageUrl, bannerUrl, rules })).catch((error) => {
       throw buyRefusal(error);
-    }));
+    });
+    const built = launchBuildSchema.parse(answer2);
     if (!built.transaction || !/^\d+$/.test(built.maxDebitLamports ?? ""))
       throw new TradingError("INVALID_RESPONSE", "Candle did not return a launch transaction and maximum debit; nothing was signed.");
     const quote = {
@@ -92084,6 +92664,7 @@ async function launch(args, ctx) {
       feeWallet: feeWalletQuoteLine(feeWallet, built),
       tokenRisks: []
     };
+    ctx.deps.stderr.write(rulesBlock(answer2, "solana", flags));
     notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim());
     if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
       return printTradingResult(ctx, {
@@ -92172,7 +92753,8 @@ function launchFields(args) {
     ...flags["--mode"] ? { mode: flags["--mode"] } : {},
     ...launchCurveFields(flags),
     ...launchMetadataFields(flags),
-    ...poolRequestFields(flags)
+    ...poolRequestFields(flags),
+    ...args.rules ? { launchRules: args.rules } : {}
   };
 }
 function solanaSelfBody(args) {
@@ -92226,7 +92808,7 @@ function previewLines(answer2, chain2, feeWallet = undefined) {
   const { resolved, curveTerms: terms, devBuyMax, feeWallet: echo, feeWalletSource, fills } = parsed.data;
   const quote = (resolved?.quoteAsset ?? LAUNCH_DEFINITION.defaultQuote[chain2]).toUpperCase();
   const decimals = (chain2 === "hood" ? HOOD_BASES[quote] : BASES[quote])?.decimals;
-  const whole = (raw) => decimals === undefined ? `${raw} raw` : `${shortAmount(raw, decimals)} ${quote}`;
+  const whole = (raw) => decimals === undefined ? `${raw} raw` : `${shortAmount2(raw, decimals)} ${quote}`;
   const lines = [];
   if (terms) {
     lines.push(`Curve${resolved ? ` (${safeText(resolved.mode)})` : ""}: raises ${terms.raise} ${safeText(terms.symbol)}; market cap ${terms.startFdv} at start and ${terms.bondingFdv} at graduation; ${percent(terms.supplySoldPct)} of the supply sold by graduation.`);
@@ -92243,9 +92825,34 @@ function previewLines(answer2, chain2, feeWallet = undefined) {
     lines.push(`Dev-buy ceiling: ${whole(devBuyMax)}.`);
   if (chain2 === "solana")
     lines.push(...feeWalletLines(feeWallet, { feeWallet: echo, feeWalletSource }));
+  lines.push(...launchRulesLines(answer2, whole));
   return lines.length ? `${lines.join(`
 `)}
 ` : "";
+}
+function rulesBlock(answer2, chain2, flags) {
+  const quote = (flags["--quote-asset"] ?? LAUNCH_DEFINITION.defaultQuote[chain2]).toUpperCase();
+  const decimals = BASES[quote]?.decimals;
+  const lines = launchRulesLines(answer2, (raw) => decimals === undefined ? `${raw} raw` : `${shortAmount2(raw, decimals)} ${quote}`);
+  return lines.length ? `${lines.join(`
+`)}
+` : "";
+}
+var LAUNCH_RULES_SOLANA_ONLY = "Launch rules (--open-in, --max-buy-per-wallet, --cap-window, --allowlist, --allowlist-window, --dev-buy-max) are only available on Solana launches.";
+async function launchRulesFor(ctx, flags) {
+  const quote = flags["--quote-asset"] ?? LAUNCH_DEFINITION.defaultQuote.solana;
+  const decimals = LAUNCH_DEFINITION.quoteDecimals[quote];
+  if (decimals === undefined || QUOTE_CHAIN[quote] !== "solana")
+    throw new Error(LAUNCH_RULES_SOLANA_ONLY);
+  const buy = launchBuy(flags, "solana");
+  const allowlist = flags["--allowlist"] !== undefined ? await readAllowlist(flags["--allowlist"]) : undefined;
+  return launchRulesRequest(flags, {
+    quote,
+    decimals,
+    buyRaw: buy ? BigInt(buy.raw) : 0n,
+    ceilingRaw: effectiveDevBuyCeiling(ctx, flags, quote),
+    ...allowlist ? { allowlist } : {}
+  });
 }
 async function dryRunLaunch(ctx, key, args) {
   const { chain: chain2 } = args;
@@ -92267,7 +92874,7 @@ function devBuyCeiling(env, quoteAsset) {
   const value = raw && /^\d+$/.test(raw) ? BigInt(raw) : 0n;
   return { ceiling: value > 0n ? value : BigInt(bounds.raw), unit: bounds.unit };
 }
-function shortAmount(raw, decimals) {
+function shortAmount2(raw, decimals) {
   const full = decimalAmount(raw, decimals);
   return full.includes(".") ? full.replace(/0+$/, "").replace(/\.$/, "") : full;
 }
@@ -92292,11 +92899,19 @@ function firstBuyCeiling(ctx, flags, buy) {
     if (BigInt(buy.raw) > applies) {
       const symbol = quoteAsset.toUpperCase();
       const decimals = BASES[symbol]?.decimals ?? 9;
-      throw new TradingError("DEV_BUY_TOO_HIGH", `buyAmount exceeds this launch's dev-buy ceiling of ${shortAmount(applies.toString(), decimals)} ${symbol} (${applies} ${unit}): at most ${shortAmount(ceiling.toString(), decimals)} ${symbol}, or 10% of the threshold when that is lower`, { details: { field: "buyAmount" } });
+      throw new TradingError("DEV_BUY_TOO_HIGH", `buyAmount exceeds this launch's dev-buy ceiling of ${shortAmount2(applies.toString(), decimals)} ${symbol} (${applies} ${unit}): at most ${shortAmount2(ceiling.toString(), decimals)} ${symbol}, or 10% of the threshold when that is lower`, { details: { field: "buyAmount" } });
     }
   }
   if (BigInt(buy.raw) > ceiling)
     throw new TradingError("DEV_BUY_TOO_HIGH", `buyAmount exceeds the per-launch dev-buy ceiling of ${ceiling} ${unit} for ${quoteAsset} on solana`, { details: { field: "buyAmount" } });
+}
+function effectiveDevBuyCeiling(ctx, flags, quoteAsset) {
+  const { ceiling } = devBuyCeiling(ctx.deps.env, quoteAsset);
+  const threshold = expThresholdRaw(flags, quoteAsset);
+  if (threshold === undefined)
+    return ceiling;
+  const curveCap = threshold * BigInt(LAUNCH_DEFINITION.buyLimits.thresholdBps) / 10000n;
+  return curveCap < ceiling ? curveCap : ceiling;
 }
 var atomicLegSchema = exports_external.object({
   index: exports_external.number().int(),
@@ -92322,9 +92937,10 @@ async function atomicLaunch(ctx, key, args) {
   if (!args.retry && !await claimOperation(ctx, key, id, "launch"))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
   writeFields(ctx.deps, "stderr", [["Operation", id]]);
-  const built = atomicBuildSchema.parse(await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody(args)).catch((error) => {
+  const answer2 = await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody(args)).catch((error) => {
     throw buyRefusal(error);
-  }));
+  });
+  const built = atomicBuildSchema.parse(answer2);
   const [launchLeg, buyLeg] = built.legs;
   if (built.legs.length !== 2 || launchLeg?.role !== "launch" || buyLeg?.role !== "buy" || built.legs.some((leg, index) => leg.index !== index || leg.signer !== "client" || !leg.unsignedTxBase64))
     throw new TradingError("INVALID_RESPONSE", "Candle did not return this wallet's launch leg and first-buy leg to sign; nothing was signed.");
@@ -92365,6 +92981,7 @@ async function atomicLaunch(ctx, key, args) {
     ...args.bannerUrl ? { bannerUrl: args.bannerUrl } : {},
     outcome: "unsigned"
   });
+  ctx.deps.stderr.write(rulesBlock(answer2, "solana", flags));
   notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim());
   if (!await confirmQuote(ctx, quote, args.yes)) {
     notice(ctx.deps, "stderr", "note", `Nothing was signed. Candle holds bundle ${safeText(built.bundleId)}'s spend reservation until the build expires at ${new Date(built.expiresAt).toISOString()}.
@@ -92507,6 +93124,7 @@ async function embeddedLaunch(ctx, key, args) {
     ...launchMetadataFields(flags),
     ...poolRequestFields(flags),
     ...feeWalletRequestFields(flags),
+    ...args.rules ? { launchRules: args.rules } : {},
     ...buy ? { buyAmount: chain2 === "hood" || BigInt(buy.raw) > BigInt(Number.MAX_SAFE_INTEGER) ? buy.raw : Number(buy.raw) } : {}
   };
   const answer2 = await request(ctx, key, "/api/v1/launch/headless/dry-run", body);
@@ -92873,8 +93491,8 @@ function poolToken(value) {
     return BASES[base2]?.mint;
   return solanaAddress(value, "The token");
 }
-function matchesWallet(row, name2) {
-  return row.id === name2 || row.address === name2 || row.label === name2;
+function matchesWallet(row2, name2) {
+  return row2.id === name2 || row2.address === name2 || row2.label === name2;
 }
 function usage5(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
@@ -92934,16 +93552,16 @@ async function lpPositions(args, ctx) {
     const key = await tradingKey(ctx);
     const { rows } = await listTradingWallets(ctx, key);
     const name2 = parsed.values["--wallet"];
-    const wallets2 = rows.filter((row) => row.chain === "solana" && (name2 === undefined || matchesWallet(row, name2)));
+    const wallets2 = rows.filter((row2) => row2.chain === "solana" && (name2 === undefined || matchesWallet(row2, name2)));
     if (name2 !== undefined && wallets2.length === 0)
       throw new TradingError("TEE_WALLET_REQUIRED", `No TEE wallet on this key is called "${name2}".`);
     const report2 = [];
-    for (const row of wallets2) {
-      const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row.id)}`));
+    for (const row2 of wallets2) {
+      const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row2.id)}`));
       report2.push({
-        id: row.id,
-        address: row.address,
-        ...row.label ? { label: row.label } : {},
+        id: row2.id,
+        address: row2.address,
+        ...row2.label ? { label: row2.label } : {},
         positions: positions.positions
       });
     }
@@ -92995,12 +93613,12 @@ async function walletHolding(ctx, key, position, name2) {
   if (name2 !== undefined)
     return tradingWallet(ctx, key, name2, LP_SCOPE);
   const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, LP_SCOPE);
-  for (const row of rows) {
-    if (row.chain !== "solana")
+  for (const row2 of rows) {
+    if (row2.chain !== "solana")
       continue;
-    const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row.id)}`));
+    const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row2.id)}`));
     if (positions.positions.some((held) => held.position === position))
-      return completeTradingWallet(ctx, row, appId, LP_SCOPE, "solana", { apiKey: key, keyPrefix });
+      return completeTradingWallet(ctx, row2, appId, LP_SCOPE, "solana", { apiKey: key, keyPrefix });
   }
   throw new TradingError("LP_POSITION_NOT_FOUND", `No TEE wallet bound to this key holds position ${position}. See candle lp positions, or name the wallet with --wallet.`);
 }
@@ -94206,14 +94824,14 @@ async function hyperliquidWalletSnapshot2(fetcher, network2, address, now = Date
   if (!Array.isArray(rawUniverse))
     throw new Error("Hyperliquid returned an unreadable market list");
   const universe = rawUniverse.map((m) => {
-    const row = m;
-    if (typeof row.name !== "string" || !Number.isInteger(row.szDecimals) || !Number.isInteger(row.maxLeverage))
+    const row2 = m;
+    if (typeof row2.name !== "string" || !Number.isInteger(row2.szDecimals) || !Number.isInteger(row2.maxLeverage))
       throw new Error("Hyperliquid returned an unreadable market");
     return {
-      name: row.name,
-      szDecimals: row.szDecimals,
-      maxLeverage: row.maxLeverage,
-      onlyIsolated: row.onlyIsolated === true
+      name: row2.name,
+      szDecimals: row2.szDecimals,
+      maxLeverage: row2.maxLeverage,
+      onlyIsolated: row2.onlyIsolated === true
     };
   });
   const ctxs = metaAndCtxs[1];
@@ -94484,13 +95102,13 @@ function parseMarkets2(value) {
   const [meta, ctxs] = value;
   if (!object4(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
     return unavailable4();
-  for (const row of meta.universe) {
-    if (!object4(row) || typeof row.name !== "string" || !integer2(row.szDecimals) || row.szDecimals > 6 || !integer2(row.maxLeverage))
+  for (const row2 of meta.universe) {
+    if (!object4(row2) || typeof row2.name !== "string" || !integer2(row2.szDecimals) || row2.szDecimals > 6 || !integer2(row2.maxLeverage))
       return unavailable4();
     for (const key of ["isDelisted", "onlyIsolated"])
-      if (row[key] !== undefined && typeof row[key] !== "boolean")
+      if (row2[key] !== undefined && typeof row2[key] !== "boolean")
         return unavailable4();
-    if (row.marginTableId !== undefined && !integer2(row.marginTableId))
+    if (row2.marginTableId !== undefined && !integer2(row2.marginTableId))
       return unavailable4();
   }
   for (const ctx of ctxs) {
@@ -94558,10 +95176,10 @@ function perpsMarketGate2(meta, ctx, minOpenInterestUsd) {
 }
 function resolve3(snapshot, coin) {
   if (/^[A-Za-z0-9]{1,20}$/.test(coin)) {
-    const exact = snapshot.universe.findIndex((row) => row.name === coin);
+    const exact = snapshot.universe.findIndex((row2) => row2.name === coin);
     if (exact !== -1)
       return exact;
-    const matches = snapshot.universe.map((row, i) => ({ row, i })).filter(({ row }) => row.name.toLowerCase() === coin.toLowerCase());
+    const matches = snapshot.universe.map((row2, i) => ({ row: row2, i })).filter(({ row: row2 }) => row2.name.toLowerCase() === coin.toLowerCase());
     if (matches.length === 1)
       return at2(matches, 0).i;
   }
@@ -94638,15 +95256,15 @@ function parsePerpsFundingHistory2(value, coin, window) {
   if (!Array.isArray(value))
     return unavailable4();
   const funding = [];
-  for (const row of value) {
-    if (!object4(row) || row.coin !== coin || !integer2(row.time) || !decimal5(row.fundingRate) || !decimal5(row.premium))
+  for (const row2 of value) {
+    if (!object4(row2) || row2.coin !== coin || !integer2(row2.time) || !decimal5(row2.fundingRate) || !decimal5(row2.premium))
       return unavailable4();
-    if (row.time >= window.startTime && row.time <= window.endTime)
+    if (row2.time >= window.startTime && row2.time <= window.endTime)
       funding.push({
-        time: row.time,
-        fundingRate: row.fundingRate,
-        fundingAprPct: fixed2(scaled2(row.fundingRate) * 876000n, 2),
-        premium: row.premium
+        time: row2.time,
+        fundingRate: row2.fundingRate,
+        fundingAprPct: fixed2(scaled2(row2.fundingRate) * 876000n, 2),
+        premium: row2.premium
       });
   }
   funding.sort((a, b) => a.time - b.time);
@@ -94803,7 +95421,7 @@ class PerpsMarketReader2 {
       return usage6("sort must be volume, oi, funding, change or name.");
     const limit = opts.limit === undefined ? undefined : bounded2(opts.limit, 500, 1, 500, "limit");
     const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    const rows = core.universe.map((_, asset) => this.row(core, extras, config, asset)).filter((row) => opts.all || row.candle.tradeable !== false);
+    const rows = core.universe.map((_, asset) => this.row(core, extras, config, asset)).filter((row2) => opts.all || row2.candle.tradeable !== false);
     const field = {
       volume: "dayNotionalVolumeUsd",
       oi: "openInterestUsd",
@@ -94958,13 +95576,13 @@ class PerpsMarketReader2 {
       return unavailable4();
     const predicted = [];
     for (const meta of core.universe) {
-      const row = extras.predicted.get(meta.name);
-      if (row)
+      const row2 = extras.predicted.get(meta.name);
+      if (row2)
         predicted.push({
           coin: meta.name,
-          fundingRate: row.fundingRate,
-          fundingAprPct: fixed2(scaled2(row.fundingRate) * 876000n, 2),
-          nextFundingTime: row.nextFundingTime
+          fundingRate: row2.fundingRate,
+          fundingAprPct: fixed2(scaled2(row2.fundingRate) * 876000n, 2),
+          nextFundingTime: row2.nextFundingTime
         });
     }
     predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
@@ -95055,28 +95673,28 @@ function isDecimalString2(value) {
   return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
 }
 function asFill2(raw) {
-  const row = raw;
-  if (!row || typeof row !== "object" || typeof row.coin !== "string" || !isTime2(row.time) || !Number.isSafeInteger(row.tid) || !Number.isSafeInteger(row.oid) || !isDecimalString2(row.px) || !isDecimalString2(row.sz) || typeof row.side !== "string" || !isDecimalString2(row.closedPnl) || !isDecimalString2(row.fee) || row.builderFee !== undefined && !isDecimalString2(row.builderFee))
+  const row2 = raw;
+  if (!row2 || typeof row2 !== "object" || typeof row2.coin !== "string" || !isTime2(row2.time) || !Number.isSafeInteger(row2.tid) || !Number.isSafeInteger(row2.oid) || !isDecimalString2(row2.px) || !isDecimalString2(row2.sz) || typeof row2.side !== "string" || !isDecimalString2(row2.closedPnl) || !isDecimalString2(row2.fee) || row2.builderFee !== undefined && !isDecimalString2(row2.builderFee))
     throw unavailable5("Hyperliquid returned a fill this client cannot read");
-  return row;
+  return row2;
 }
 function asFunding2(raw) {
-  const row = raw;
-  const delta = row?.delta;
-  if (!row || typeof row !== "object" || !isTime2(row.time) || typeof row.hash !== "string" || !delta || typeof delta !== "object" || typeof delta.coin !== "string" || !isDecimalString2(delta.usdc) || !isDecimalString2(delta.fundingRate) || !isDecimalString2(delta.szi))
+  const row2 = raw;
+  const delta = row2?.delta;
+  if (!row2 || typeof row2 !== "object" || !isTime2(row2.time) || typeof row2.hash !== "string" || !delta || typeof delta !== "object" || typeof delta.coin !== "string" || !isDecimalString2(delta.usdc) || !isDecimalString2(delta.fundingRate) || !isDecimalString2(delta.szi))
     throw unavailable5("Hyperliquid returned a funding payment this client cannot read");
-  return row;
+  return row2;
 }
-function identity3(kind, row) {
+function identity3(kind, row2) {
   if (kind === "fills") {
-    const fill = row;
+    const fill = row2;
     return `${fill.coin}|${fill.tid}|${fill.oid}`;
   }
-  const funding = row;
+  const funding = row2;
   return `${funding.hash}|${funding.time}|${funding.delta.coin}|${canonical4(funding.delta)}`;
 }
-function rowCoin2(kind, row) {
-  return kind === "fills" ? row.coin : row.delta.coin;
+function rowCoin2(kind, row2) {
+  return kind === "fills" ? row2.coin : row2.delta.coin;
 }
 async function postInfo2(req, body, what) {
   const controller = typeof AbortController === "function" ? new AbortController : null;
@@ -95203,26 +95821,26 @@ async function readPerpsHistoryPage2(req) {
       if (!Array.isArray(raw))
         throw unavailable5(`Hyperliquid returned an unreadable ${kind} response`);
       const rows = raw.map((r) => kind === "fills" ? asFill2(r) : asFunding2(r));
-      const keyed = rows.map((row) => ({ row, id: identity3(kind, row) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const keyed = rows.map((row2) => ({ row: row2, id: identity3(kind, row2) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const full = rows.length >= max;
       const startedAt = t;
       let previousId = null;
-      for (const { row, id } of keyed) {
+      for (const { row: row2, id } of keyed) {
         if (id === previousId)
           continue;
         previousId = id;
-        if (row.time < t || row.time > state.e || row.time === t && boundary.has(id))
+        if (row2.time < t || row2.time > state.e || row2.time === t && boundary.has(id))
           continue;
         if (page.length >= state.l)
           break walk;
-        if (row.time > t) {
-          t = row.time;
+        if (row2.time > t) {
+          t = row2.time;
           boundary = new Set;
         }
         boundary.add(id);
         consumed++;
-        if (coins.has(rowCoin2(kind, row)))
-          page.push(row);
+        if (coins.has(rowCoin2(kind, row2)))
+          page.push(row2);
         if (kind === "fills" && consumed >= PERPS_HISTORY_FILL_RETENTION2) {
           stop("PERPS_HISTORY_RETENTION_LIMIT", "Reached Hyperliquid's 10,000-fill retention across this cursor chain; older fills are not available", true);
           break walk;
@@ -95728,21 +96346,21 @@ function summarizePerpsRecent2(fills, funding, window) {
   let paid = 0n;
   let fillCount = 0;
   let fundingCount = 0;
-  for (const row of fills) {
-    if (!isRecord3(row))
+  for (const row2 of fills) {
+    if (!isRecord3(row2))
       throw new HyperliquidReadError2("Unexpected fill row");
-    if (!isMainPerpCoin2(row.coin))
+    if (!isMainPerpCoin2(row2.coin))
       continue;
-    const closed = dec2(row.closedPnl);
-    const fee = dec2(row.fee);
+    const closed = dec2(row2.closedPnl);
+    const fee = dec2(row2.fee);
     if (closed === null || fee === null)
       throw new HyperliquidReadError2("Unexpected fill amount");
     realized += closed;
     fees += fee;
     fillCount++;
   }
-  for (const row of funding) {
-    const delta = isRecord3(row) ? row.delta : undefined;
+  for (const row2 of funding) {
+    const delta = isRecord3(row2) ? row2.delta : undefined;
     if (!isRecord3(delta))
       throw new HyperliquidReadError2("Unexpected funding row");
     if (delta.type !== "funding" || !isMainPerpCoin2(delta.coin))
@@ -96128,15 +96746,15 @@ function riskLine(report2) {
   if (report2.level === "unknown")
     return `Risk: UNKNOWN (${safeText(report2.reason ?? "not read")})`;
   const lead = report2.drivers[0] ?? report2.closest;
-  const more = report2.drivers.length > 1 ? `; ${report2.drivers.length - 1} more` : "";
-  return `Risk: ${report2.level.toUpperCase()}${lead ? ` (${report2.level === "ok" ? "closest: " : ""}${describeDriver(lead)}${more})` : ""}`;
+  const more2 = report2.drivers.length > 1 ? `; ${report2.drivers.length - 1} more` : "";
+  return `Risk: ${report2.level.toUpperCase()}${lead ? ` (${report2.level === "ok" ? "closest: " : ""}${describeDriver(lead)}${more2})` : ""}`;
 }
-function levelCell(row) {
-  if (row.level !== "none")
-    return row.level;
-  if (row.markPx === null)
+function levelCell(row2) {
+  if (row2.level !== "none")
+    return row2.level;
+  if (row2.markPx === null)
     return "n/a";
-  return row.liquidationPx === null ? "ok" : "n/a";
+  return row2.liquidationPx === null ? "ok" : "n/a";
 }
 function writeAccountFields(ctx, line) {
   const missing = symbols(terminalStyle(ctx.deps, "stdout")).missing;
@@ -96294,13 +96912,13 @@ async function perpsRisk(args, ctx) {
     return usage7(ctx, "Usage: candle perps risk [--wallet <tee>] [--json]");
   try {
     const key = await tradingKey(ctx);
-    const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
+    const { row: row2 } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
     const thresholds2 = await perpsThresholdsFor(ctx, key);
     const report2 = await readPerpsRisk2({
       fetcher: fetcherOf2(ctx),
       network: perpsNetwork(ctx),
-      walletId: row.id,
-      address: row.address,
+      walletId: row2.id,
+      address: row2.address,
       thresholds: thresholds2,
       now: ctx.deps.now,
       ...infoOpts(ctx)
@@ -96349,20 +96967,20 @@ async function perpsAccount(args, ctx) {
     return usage7(ctx, startTime);
   try {
     const key = await tradingKey(ctx);
-    const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
+    const { row: row2 } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
     const thresholds2 = await perpsThresholdsFor(ctx, key);
     const network2 = perpsNetwork(ctx);
     const [report2, recent] = await Promise.all([
       readPerpsRisk2({
         fetcher: fetcherOf2(ctx),
         network: network2,
-        walletId: row.id,
-        address: row.address,
+        walletId: row2.id,
+        address: row2.address,
         thresholds: thresholds2,
         now: ctx.deps.now,
         ...infoOpts(ctx)
       }),
-      readPerpsRecent2(fetcherOf2(ctx), network2, row.address, { startTime, endTime: now }, infoOpts(ctx))
+      readPerpsRecent2(fetcherOf2(ctx), network2, row2.address, { startTime, endTime: now }, infoOpts(ctx))
     ]).catch((error) => {
       throw readFailure(error);
     });
@@ -96404,9 +97022,9 @@ function writeAccountText(ctx, account, report2) {
   notice(ctx.deps, "stdout", "note", `${riskLine(report2)}
 `.trim());
 }
-async function positionsAdditions2(ctx, key, row) {
+async function positionsAdditions2(ctx, key, row2) {
   const thresholds2 = await perpsThresholdsFor(ctx, key);
-  const identity4 = { walletId: row.id, address: row.address, network: perpsNetwork(ctx) };
+  const identity4 = { walletId: row2.id, address: row2.address, network: perpsNetwork(ctx) };
   let report2;
   try {
     report2 = await readPerpsRisk2({
@@ -96467,10 +97085,10 @@ async function perpsWatch(args, ctx) {
   const line = (event) => out.write(`${JSON.stringify(event)}
 `);
   let key;
-  let row;
+  let row2;
   try {
     key = await tradingKey(ctx);
-    row = (await perpsWallet(ctx, key, parsed.values["--wallet"])).row;
+    row2 = (await perpsWallet(ctx, key, parsed.values["--wallet"])).row;
   } catch (error) {
     return tradingFailure(ctx, error);
   }
@@ -96491,8 +97109,8 @@ async function perpsWatch(args, ctx) {
     const result = await watchPerpsRisk({
       fetcher: fetcherOf2(ctx),
       network: perpsNetwork(ctx),
-      walletId: row.id,
-      address: row.address,
+      walletId: row2.id,
+      address: row2.address,
       thresholds: () => perpsThresholdsStrict(ctx, key),
       intervalMs: interval * 1000,
       heartbeatMs: heartbeat * 1000,
@@ -96711,19 +97329,19 @@ function builderPin2(ctx) {
 }
 async function perpsWallet(ctx, key, name2, scope) {
   const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, scope);
-  const evm = rows.filter((row2) => row2.chain === "evm");
-  const matches = name2 === undefined ? evm : evm.filter((row2) => matchesName(row2, name2));
+  const evm = rows.filter((row3) => row3.chain === "evm");
+  const matches = name2 === undefined ? evm : evm.filter((row3) => matchesName(row3, name2));
   if (matches.length !== 1) {
     throw new TradingError("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it. Hyperliquid perps sign only from one. Give it one: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix> (candle tee new is Solana only), and candle tee signer new --key <prefix> on the machine that trades." : matches.length === 0 ? `No EVM TEE wallet on this key is called "${name2}". Bound to this key: ${evm.map(describeWallet).join("; ")}.` : `Name one EVM TEE wallet with --wallet: ${matches.map(describeWallet).join("; ")}.`);
   }
-  const row = matches[0];
+  const row2 = matches[0];
   if (scope === undefined)
-    return { row };
-  const wallet3 = await completeTradingWallet(ctx, row, appId, scope, "hood", {
+    return { row: row2 };
+  const wallet3 = await completeTradingWallet(ctx, row2, appId, scope, "hood", {
     apiKey: key,
     ...keyPrefix !== undefined ? { keyPrefix } : {}
   });
-  return { row, wallet: wallet3 };
+  return { row: row2, wallet: wallet3 };
 }
 function typedDataAuthorization(wallet3, typedData) {
   const body = hyperliquidRelayBody2(typedData);
@@ -97153,9 +97771,9 @@ async function perpsPositions(args, ctx) {
     return usage8(ctx, "Usage: candle perps positions [--wallet <tee>]");
   try {
     const key = await tradingKey(ctx);
-    const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
-    const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(row.id)}`);
-    const additions = await positionsAdditions2(ctx, key, row);
+    const { row: row2 } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
+    const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(row2.id)}`);
+    const additions = await positionsAdditions2(ctx, key, row2);
     if (ctx.json)
       return printTradingResult(ctx, { ...result, ...additions });
     writeFields(ctx.deps, "stdout", [
@@ -97192,8 +97810,8 @@ async function perpsOrders(args, ctx) {
     return usage8(ctx, "Usage: candle perps orders [--wallet <tee>] [--limit <n>]");
   try {
     const key = await tradingKey(ctx);
-    const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
-    const query3 = new URLSearchParams({ walletId: row.id });
+    const { row: row2 } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
+    const query3 = new URLSearchParams({ walletId: row2.id });
     if (limit !== undefined)
       query3.set("limit", limit);
     const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/orders?${query3}`);
@@ -97260,12 +97878,12 @@ async function perpsHistory(kind, args, ctx) {
   const cursor = values["--cursor"];
   try {
     const key = await tradingKey(ctx);
-    const { row } = await perpsWallet(ctx, key, values["--wallet"]);
+    const { row: row2 } = await perpsWallet(ctx, key, values["--wallet"]);
     const page = await readPerpsHistoryPage2({
       kind,
       network: perpsNetwork(ctx),
-      walletId: row.id,
-      address: row.address,
+      walletId: row2.id,
+      address: row2.address,
       options: {
         ...startTime !== undefined ? { startTime } : {},
         ...endTime !== undefined ? { endTime } : {},
@@ -98390,26 +99008,26 @@ function fundingCell(rate, missing) {
   const n = Number(rate) * 100;
   return Number.isFinite(n) ? `${n.toFixed(4)}%` : missing;
 }
-function flagCell(row) {
+function flagCell(row2) {
   return [
-    row.onlyIsolated ? "iso" : "",
-    row.atOpenInterestCap ? "cap" : "",
-    row.candle.tradeable === false ? `x:${row.candle.reason}` : row.candle.tradeable === null ? "?:networkMismatch" : ""
+    row2.onlyIsolated ? "iso" : "",
+    row2.atOpenInterestCap ? "cap" : "",
+    row2.candle.tradeable === false ? `x:${row2.candle.reason}` : row2.candle.tradeable === null ? "?:networkMismatch" : ""
   ].filter(Boolean).join(",");
 }
 function writeMarkets(ctx, result) {
   const style = terminalStyle(ctx.deps, "stdout");
   const missing = symbols(style).missing;
-  const rows = result.markets.map((row) => [
-    safeText(row.coin),
-    marketUsd(row.markPx, missing, false),
-    changeCell(row.change24hPct, missing),
-    fundingCell(row.fundingRate, missing),
-    row.fundingAprPct === null ? missing : `${row.fundingAprPct}%`,
-    marketUsd(row.openInterestUsd, missing, true),
-    marketUsd(row.dayNotionalVolumeUsd, missing, true),
-    `${row.maxLeverage}x`,
-    flagCell(row)
+  const rows = result.markets.map((row2) => [
+    safeText(row2.coin),
+    marketUsd(row2.markPx, missing, false),
+    changeCell(row2.change24hPct, missing),
+    fundingCell(row2.fundingRate, missing),
+    row2.fundingAprPct === null ? missing : `${row2.fundingAprPct}%`,
+    marketUsd(row2.openInterestUsd, missing, true),
+    marketUsd(row2.dayNotionalVolumeUsd, missing, true),
+    `${row2.maxLeverage}x`,
+    flagCell(row2)
   ]);
   ctx.deps.stdout.write(`${renderTable(["COIN", "MARK", "24H", "FUNDING/H", "APR", "OI", "24H VOL", "LEV", "FLAGS"], rows, {
     style,
@@ -98786,7 +99404,7 @@ async function perpsWithdraw(args, ctx) {
     if (!wallet3)
       throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.");
     const { rows } = await listTradingWallets(ctx, key);
-    const ownDestinations = to === "hood" ? [wallet3.address] : rows.filter((row) => row.chain === "solana").map((row) => row.address);
+    const ownDestinations = to === "hood" ? [wallet3.address] : rows.filter((row2) => row2.chain === "solana").map((row2) => row2.address);
     if (ownDestinations.length === 0)
       throw new TradingError("TEE_WALLET_REQUIRED", "This key has no Solana TEE wallet, so --to solana has nowhere to land. Withdraw --to hood instead.");
     writeFields(ctx.deps, "stderr", [["Withdrawal", id]]);
@@ -99017,7 +99635,7 @@ function encodePaymentPayload(args) {
 
 // src/x402/plan-state.ts
 init_file_lock();
-import { chmod as chmod11, mkdir as mkdir9, readFile as readFile16, rename as rename13, writeFile as writeFile11 } from "node:fs/promises";
+import { chmod as chmod11, mkdir as mkdir9, readFile as readFile17, rename as rename13, writeFile as writeFile11 } from "node:fs/promises";
 function signupSignerRef(spkiSha256) {
   return `x402_signup_signer_${spkiSha256}`;
 }
@@ -99093,7 +99711,7 @@ function parsePlanState(text4) {
 }
 async function readText(path) {
   try {
-    return await readFile16(path, "utf8");
+    return await readFile17(path, "utf8");
   } catch (error) {
     if (error?.code === "ENOENT")
       return null;
@@ -99164,7 +99782,7 @@ function networkConfig(env) {
   }
   return { ok: true, config: { network: network2, asset: USDC_MINTS[network2], payTo: override === "" ? null : override } };
 }
-var U64_MAX = 0xffffffffffffffffn;
+var U64_MAX2 = 0xffffffffffffffffn;
 function describeOffer(r) {
   return `${r.scheme} ${r.network} ${r.asset} ${r.amount}`;
 }
@@ -99178,7 +99796,7 @@ function selectRequirement(required, config) {
     };
   }
   const requirement = candidates[0];
-  if (!/^[1-9][0-9]{0,19}$/.test(requirement.amount) || BigInt(requirement.amount) > U64_MAX) {
+  if (!/^[1-9][0-9]{0,19}$/.test(requirement.amount) || BigInt(requirement.amount) > U64_MAX2) {
     return {
       ok: false,
       reason: `The offer's amount is not a positive whole number of base units: ${requirement.amount}`
@@ -99278,7 +99896,7 @@ function serializePartiallySigned(transfer, payerSignature2) {
 // src/x402/spend-log.ts
 init_file_lock();
 init_store();
-import { appendFile as appendFile2, chmod as chmod12, mkdir as mkdir10, readFile as readFile17, rename as rename14, writeFile as writeFile12 } from "node:fs/promises";
+import { appendFile as appendFile2, chmod as chmod12, mkdir as mkdir10, readFile as readFile18, rename as rename14, writeFile as writeFile12 } from "node:fs/promises";
 import { join as join13 } from "node:path";
 var DEFAULT_DAILY_LIMIT_USD_MICROS = 5000000n;
 var DEFAULT_MAX_PER_CALL_USD_MICROS = 1000000n;
@@ -99295,7 +99913,7 @@ async function ensureDir(dir) {
 }
 async function readIfPresent2(path) {
   try {
-    return await readFile17(path, "utf8");
+    return await readFile18(path, "utf8");
   } catch (error) {
     if (error?.code === "ENOENT")
       return null;
@@ -100803,15 +101421,15 @@ function priceCell2(entry) {
 }
 function planTableRows2(table) {
   const plans = table.plans;
-  const row = (label, cell) => [label, ...plans.map(cell)];
+  const row2 = (label, cell) => [label, ...plans.map(cell)];
   const rows = [
-    row("Price", priceCell2),
-    row("Agent trade fee", (e) => formatPlanBps2(e.feeBps)),
-    row("Perps builder fee", (e) => formatPlanBps2(e.perpFeeBps)),
-    row("Requests per minute", (e) => count2(e.limits.rateLimitPerMin)),
-    row("Launches per day", (e) => count2(e.limits.dailyLaunchCap)),
-    row("Uploads per minute", (e) => count2(e.limits.uploadsPerMin)),
-    row("Linked wallets", (e) => count2(e.limits.linkedWallets))
+    row2("Price", priceCell2),
+    row2("Agent trade fee", (e) => formatPlanBps2(e.feeBps)),
+    row2("Perps builder fee", (e) => formatPlanBps2(e.perpFeeBps)),
+    row2("Requests per minute", (e) => count2(e.limits.rateLimitPerMin)),
+    row2("Launches per day", (e) => count2(e.limits.dailyLaunchCap)),
+    row2("Uploads per minute", (e) => count2(e.limits.uploadsPerMin)),
+    row2("Linked wallets", (e) => count2(e.limits.linkedWallets))
   ];
   const known = Object.keys(PLAN_CAPABILITY_LABELS2);
   const served = new Set;
@@ -100824,7 +101442,7 @@ function planTableRows2(table) {
   ];
   for (const key of keys) {
     const label = Object.hasOwn(PLAN_CAPABILITY_LABELS2, key) ? PLAN_CAPABILITY_LABELS2[key] : key;
-    rows.push(row(label, (e) => {
+    rows.push(row2(label, (e) => {
       const value = e.capabilities?.[key];
       return value === true ? "yes" : value === false ? "no" : "-";
     }));
@@ -100874,7 +101492,7 @@ ${USAGE13}` : USAGE13, ctx.json);
   const { headers: headers2, rows } = planTableRows2(body);
   const out = ctx.deps.stdout;
   writeFields(ctx.deps, "stdout", [["API", ctx.apiUrl]], "Plans");
-  out.write(`${renderTable(headers2.map(terminalText), rows.map((row) => row.map(terminalText)), {
+  out.write(`${renderTable(headers2.map(terminalText), rows.map((row2) => row2.map(terminalText)), {
     style: terminalStyle(ctx.deps, "stdout"),
     width: terminalStyle(ctx.deps, "stdout").width,
     indent: 2,
@@ -101305,10 +101923,10 @@ function signed(text4, style) {
 }
 function financialTable(ctx, headers2, rows, columns) {
   const style = terminalStyle(ctx.deps, "stdout");
-  const clean3 = rows.map((row) => row.map(terminalText));
+  const clean3 = rows.map((row2) => row2.map(terminalText));
   const specs = headers2.map((_, col) => {
     const spec = columns[col] ?? {};
-    const numeric = clean3.some((row) => /^[+−-]?[<>~]?[$]?[\d,.]+(?:[%xKMBT])?$/.test(row[col] ?? ""));
+    const numeric = clean3.some((row2) => /^[+−-]?[<>~]?[$]?[\d,.]+(?:[%xKMBT])?$/.test(row2[col] ?? ""));
     return {
       ...spec,
       ...numeric ? { id: true } : {},
@@ -101319,7 +101937,7 @@ function financialTable(ctx, headers2, rows, columns) {
   if (style.width >= 60 && table.split(`
 `).every((line) => displayWidth(line) <= style.width))
     return table;
-  return clean3.map((row) => fields(headers2.map((label, col) => [label, specs[col]?.signed ? signed(row[col] ?? "", style) : row[col]]), style).join(`
+  return clean3.map((row2) => fields(headers2.map((label, col) => [label, specs[col]?.signed ? signed(row2[col] ?? "", style) : row2[col]]), style).join(`
 `)).join(`
 
 `);
@@ -101822,7 +102440,7 @@ function writeLpPositions(ctx, lp, withBook) {
   const value = (p) => p.status === "valued" && p.valueUsd !== undefined ? formatUsd(p.valueUsd) : p.status === "unpriced" ? "unpriced" : p.status === "unreadable" ? "not read" : "closed outside the ledger";
   const none = symbolsMissing(ctx);
   const rows = lp.positions.map((p) => {
-    const row = [
+    const row2 = [
       financialId(ctx, p.position),
       financialId(ctx, p.pool),
       financialId(ctx, p.wallet),
@@ -101832,8 +102450,8 @@ function writeLpPositions(ctx, lp, withBook) {
       p.vsHoldingUsd !== undefined ? formatUsd(p.vsHoldingUsd, SIGNED) : none
     ];
     if (withBook)
-      row.push(p.book ?? none);
-    return row;
+      row2.push(p.book ?? none);
+    return row2;
   });
   writeTable2(ctx, "Open LP positions", headers2, rows, [
     { id: true },
@@ -101864,7 +102482,7 @@ ${all.length === 0 ? "No open positions." : "No open positions above dust."}
     headers2.push("COST SOURCE");
   const wallet3 = (w) => w === undefined || isUnplacedWallet(w) ? none : financialId(ctx, w);
   const rows = positions.map((p) => {
-    const row = [
+    const row2 = [
       `${financialToken(ctx, p.symbol, p.mint)}${p.dust === true ? " (dust)" : ""}`,
       p.chain ?? none,
       ...withWallet ? [wallet3(p.wallet)] : [],
@@ -101874,10 +102492,10 @@ ${all.length === 0 ? "No open positions." : "No open positions above dust."}
       p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd, SIGNED) : none
     ];
     if (withBook)
-      row.push(p.book ?? none);
+      row2.push(p.book ?? none);
     if (withBasis)
-      row.push(p.transferredIn ? `Moved in${p.movedInFromWallet ? ` from ${financialId(ctx, p.movedInFromWallet)}` : ""}: ${p.basisSource ?? "unknown"}${p.zeroCostQuantity ? `, ${formatQuantity(p.zeroCostQuantity)} at $0 (no purchase found)` : ""}${p.basisComplete === false ? " (partial)" : ""}` : none);
-    return row;
+      row2.push(p.transferredIn ? `Moved in${p.movedInFromWallet ? ` from ${financialId(ctx, p.movedInFromWallet)}` : ""}: ${p.basisSource ?? "unknown"}${p.zeroCostQuantity ? `, ${formatQuantity(p.zeroCostQuantity)} at $0 (no purchase found)` : ""}${p.basisComplete === false ? " (partial)" : ""}` : none);
+    return row2;
   });
   const columns = [
     { id: true },
@@ -102052,10 +102670,10 @@ async function portfolio(args, ctx) {
     const candleHood = showHood ? fromCandle.hood : undefined;
     let perps;
     if (showHood && !parsed.booleans.has("--no-perps")) {
-      const accounts = (candleHood?.tee ?? []).map((row) => ({
-        address: row.address,
-        ...row.label !== undefined ? { label: row.label } : {},
-        walletId: row.id
+      const accounts = (candleHood?.tee ?? []).map((row2) => ({
+        address: row2.address,
+        ...row2.label !== undefined ? { label: row2.label } : {},
+        walletId: row2.id
       }));
       if (accounts.length > 0) {
         const n = Math.min(accounts.length, PERPS_PORTFOLIO_MAX_ACCOUNTS2);
@@ -102187,20 +102805,20 @@ async function portfolio(args, ctx) {
         })
       ], vaultEntries !== undefined, vaultReason),
       group("tee", [
-        ...solanaRows(fromCandle.tee).map((row) => wallet3("solana", row.address, solanaHoldings(row, prices), {
-          id: row.id,
-          ...row.label ? { label: row.label } : {},
-          active: row.active
+        ...solanaRows(fromCandle.tee).map((row2) => wallet3("solana", row2.address, solanaHoldings(row2, prices), {
+          id: row2.id,
+          ...row2.label ? { label: row2.label } : {},
+          active: row2.active
         })),
-        ...(candleHood?.tee ?? []).map((row) => wallet3("hood", row.address, hoodHoldings(row, prices, "hood-tokens"), {
-          id: row.id,
-          ...row.label ? { label: row.label } : {},
-          active: row.active
+        ...(candleHood?.tee ?? []).map((row2) => wallet3("hood", row2.address, hoodHoldings(row2, prices, "hood-tokens"), {
+          id: row2.id,
+          ...row2.label ? { label: row2.label } : {},
+          active: row2.active
         }))
       ], true),
       group("embedded", [
-        ...solanaRows(fromCandle.embedded).map((row) => wallet3("solana", row.address, solanaHoldings(row, prices), {})),
-        ...(candleHood?.embedded ?? []).map((row) => wallet3("hood", row.address, hoodHoldings(row, prices, "hood-tokens"), {}))
+        ...solanaRows(fromCandle.embedded).map((row2) => wallet3("solana", row2.address, solanaHoldings(row2, prices), {})),
+        ...(candleHood?.embedded ?? []).map((row2) => wallet3("hood", row2.address, hoodHoldings(row2, prices, "hood-tokens"), {}))
       ], true)
     ];
     const unavailableByChain = {
@@ -102303,10 +102921,10 @@ function matches(wallet3, filter) {
 function filterCandle(body, keep) {
   const tee = (body.tee ?? []).filter(keep);
   const embedded = (body.embedded ?? []).filter(keep);
-  const kept = new Set([...tee, ...embedded].map((row) => row.address));
+  const kept = new Set([...tee, ...embedded].map((row2) => row2.address));
   const hoodTee = (body.hood?.tee ?? []).filter(keep);
   const hoodEmbedded = (body.hood?.embedded ?? []).filter(keep);
-  const hoodKept = new Set([...hoodTee, ...hoodEmbedded].map((row) => row.address));
+  const hoodKept = new Set([...hoodTee, ...hoodEmbedded].map((row2) => row2.address));
   return {
     ...body,
     tee,
@@ -104516,12 +105134,12 @@ async function runStake(action, args, ctx) {
           ["sCNDL", decimalAmount(w.staked.amountRaw, w.staked.decimals)],
           ["Pending CNDL (raw)", safeText(w.pendingWithdrawalRaw)]
         ]);
-        for (const row of w.withdrawals.active)
+        for (const row2 of w.withdrawals.active)
           writeFields(ctx.deps, "stdout", [
-            ["Withdrawal", safeText(row.withdrawal)],
-            ["CNDL (raw)", safeText(row.amountRaw)],
-            ["Ends", safeText(row.endTime)],
-            ["Status", row.claimable ? "ready" : "waiting"]
+            ["Withdrawal", safeText(row2.withdrawal)],
+            ["CNDL (raw)", safeText(row2.amountRaw)],
+            ["Ends", safeText(row2.endTime)],
+            ["Status", row2.claimable ? "ready" : "waiting"]
           ]);
         for (const reward of w.unclaimedRewards)
           writeFields(ctx.deps, "stdout", [
@@ -104756,12 +105374,12 @@ function parseRenamePairs(contents) {
   }
   for (const field of ["from", "to"]) {
     const seen = new Map;
-    for (const row of rows) {
-      const earlier = seen.get(row[field]);
+    for (const row2 of rows) {
+      const earlier = seen.get(row2[field]);
       if (earlier !== undefined)
-        findings.push({ line: row.line, problem: `Duplicate ${field} ${row[field]} (line ${earlier}).` });
+        findings.push({ line: row2.line, problem: `Duplicate ${field} ${row2[field]} (line ${earlier}).` });
       else
-        seen.set(row[field], row.line);
+        seen.set(row2[field], row2.line);
     }
   }
   return { rows, findings };
@@ -104770,35 +105388,35 @@ function planBatchRename(index, rows) {
   const plan2 = [];
   const findings = [];
   const seen = new Map;
-  for (const row of rows) {
-    const match = resolveRenameTarget(index, row.from);
+  for (const row2 of rows) {
+    const match = resolveRenameTarget(index, row2.from);
     if (match.kind !== "found") {
       findings.push({
-        line: row.line,
-        problem: match.kind === "none" ? `No key matches ${row.from}.` : `${row.from} is ambiguous; use an id. Candidates: ${match.candidates.map((entry2) => `${entry2.address} (${entry2.id})`).join(", ")}.`
+        line: row2.line,
+        problem: match.kind === "none" ? `No key matches ${row2.from}.` : `${row2.from} is ambiguous; use an id. Candidates: ${match.candidates.map((entry2) => `${entry2.address} (${entry2.id})`).join(", ")}.`
       });
       continue;
     }
     const entry = match.entry;
     const earlier = seen.get(entry.id);
     if (earlier !== undefined)
-      findings.push({ line: row.line, problem: `Same key as line ${earlier}, named by another handle.` });
+      findings.push({ line: row2.line, problem: `Same key as line ${earlier}, named by another handle.` });
     else
-      seen.set(entry.id, row.line);
+      seen.set(entry.id, row2.line);
     if (entry.role !== "vault" && entry.role !== "external" && !isRetiredTee(entry)) {
       findings.push({
-        line: row.line,
+        line: row2.line,
         problem: `${entry.label} is a TEE wallet; vault rename only changes vault or external keys. Use candle tee rename.`
       });
     }
-    if (entry.label === row.to)
-      findings.push({ line: row.line, problem: `${row.to} is already this key's label.` });
-    plan2.push({ ...row, entry });
+    if (entry.label === row2.to)
+      findings.push({ line: row2.line, problem: `${row2.to} is already this key's label.` });
+    plan2.push({ ...row2, entry });
   }
   const targets = new Set(plan2.map(({ entry }) => entry.id));
-  for (const row of plan2) {
-    if (index.entries.some((entry) => entry.label === row.to && !targets.has(entry.id))) {
-      findings.push({ line: row.line, problem: `New name ${row.to} is taken by a key outside the batch.` });
+  for (const row2 of plan2) {
+    if (index.entries.some((entry) => entry.label === row2.to && !targets.has(entry.id))) {
+      findings.push({ line: row2.line, problem: `New name ${row2.to} is taken by a key outside the batch.` });
     }
   }
   return { plan: plan2, findings };
@@ -104903,13 +105521,13 @@ async function vaultRename(args, ctx) {
             ]
           ] : []
         ]);
-        for (const row of renamed)
+        for (const row2 of renamed)
           writeFields(deps, "stdout", [
-            ["From", row.from],
-            ["To", row.to],
-            ["Address", row.address],
-            ["Id", row.id],
-            ["Role", row.role]
+            ["From", row2.from],
+            ["To", row2.to],
+            ["Address", row2.address],
+            ["Id", row2.id],
+            ["Role", row2.role]
           ]);
       }
       return 0;
@@ -104993,9 +105611,9 @@ var DEVICE_TOKEN_REQUIRED2 = {
   suggestion: "Run: candle auth login"
 };
 function rerunFile(rows) {
-  if (rows.every((row) => !/[\s,"]/.test(row.to)))
-    return rows.map((row) => `${row.from} ${row.to}`);
-  return ["from,to", ...rows.map((row) => `${row.from},"${row.to.replaceAll('"', '""')}"`)];
+  if (rows.every((row2) => !/[\s,"]/.test(row2.to)))
+    return rows.map((row2) => `${row2.from} ${row2.to}`);
+  return ["from,to", ...rows.map((row2) => `${row2.from},"${row2.to.replaceAll('"', '""')}"`)];
 }
 function refusal3(ctx, findings, exit) {
   const message = "TEE rename refused. Nothing was changed.";
@@ -105039,14 +105657,14 @@ function serverFailure(ctx, result, pairs, batch) {
   writeFailure(deps, result, { apiUrl, authType: "device" }, json);
   return 1;
 }
-function vaultEntriesFor(entries, row) {
-  const lower = row.address.toLowerCase();
-  return entries.filter((entry) => entry.role === "tee-wallet" && (entry.linkedWalletId === row.id || entry.address === row.address || entry.chain === "evm" && row.chain === "evm" && entry.address.toLowerCase() === lower));
+function vaultEntriesFor(entries, row2) {
+  const lower = row2.address.toLowerCase();
+  return entries.filter((entry) => entry.role === "tee-wallet" && (entry.linkedWalletId === row2.id || entry.address === row2.address || entry.chain === "evm" && row2.chain === "evm" && entry.address.toLowerCase() === lower));
 }
 function unknownCommit(ctx, rows, onServer, inVault) {
   const { deps, json } = ctx;
-  const changing = new Set([...onServer.map((row) => row.id), ...inVault.map(({ row }) => row.id)]);
-  const rerun = rows.filter((row) => changing.has(row.id)).map((row) => ({ from: row.address, to: row.label }));
+  const changing = new Set([...onServer.map((row2) => row2.id), ...inVault.map(({ row: row2 }) => row2.id)]);
+  const rerun = rows.filter((row2) => changing.has(row2.id)).map((row2) => ({ from: row2.address, to: row2.label }));
   const message = `The rename request got no answer, so whether the server applied it is unknown. Nothing was written to the vault. ${rerun.length} wallet${rerun.length === 1 ? "" : "s"} may or may not carry the new name on the server.`;
   if (json)
     writeJson(deps, { ok: false, code: "TEE_RENAME_SERVER_UNKNOWN", message, rerun });
@@ -105124,7 +105742,7 @@ async function teeRename(args, ctx) {
     return serverFailure(ctx, preview, pairs, batch);
   const shown = preview.body;
   const rows = [...shown.renamed ?? [], ...shown.unchanged ?? []].sort((a, b) => a.row - b.row);
-  if (rows.length !== pairs.length || rows.some((row, at3) => row.row !== at3 || row.label !== pairs[at3]?.to)) {
+  if (rows.length !== pairs.length || rows.some((row2, at3) => row2.row !== at3 || row2.label !== pairs[at3]?.to)) {
     writeLocalFailure(deps, {
       code: "TEE_RENAME_PREVIEW_INVALID",
       message: "The API's preview did not answer every row; nothing was changed."
@@ -105134,7 +105752,7 @@ async function teeRename(args, ctx) {
   const vaultPath = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
   if ("error" in vaultPath)
     return usage(ctx, vaultPath.error);
-  const raw = rows.some((row) => row.tee) ? await readVaultRaw(vaultPath.path) : null;
+  const raw = rows.some((row2) => row2.tee) ? await readVaultRaw(vaultPath.path) : null;
   if (raw !== null && !requireTty(ctx, "tee rename"))
     return 1;
   return runVaultCommand(ctx, async ({ hold }) => {
@@ -105145,26 +105763,26 @@ async function teeRename(args, ctx) {
     const findings = [];
     let twice = false;
     if (vault !== null) {
-      for (const row of rows) {
-        const line = pairs[row.row]?.line ?? 0;
-        const entries = vaultEntriesFor(vault.index.entries, row);
+      for (const row2 of rows) {
+        const line = pairs[row2.row]?.line ?? 0;
+        const entries = vaultEntriesFor(vault.index.entries, row2);
         if (entries.length > 1) {
           twice = true;
           findings.push({
             line,
-            problem: `The vault holds ${entries.length} TEE entries for ${row.address}; a rename would give them one name.`
+            problem: `The vault holds ${entries.length} TEE entries for ${row2.address}; a rename would give them one name.`
           });
         } else if (entries[0] !== undefined)
-          local.push({ row, entry: entries[0] });
+          local.push({ row: row2, entry: entries[0] });
       }
       const targets = new Set(local.map(({ entry }) => entry.id));
-      for (const { row, entry } of local) {
-        if (entry.label === row.label)
+      for (const { row: row2, entry } of local) {
+        if (entry.label === row2.label)
           continue;
-        if (vault.index.entries.some((other) => other.label === row.label && !targets.has(other.id))) {
+        if (vault.index.entries.some((other) => other.label === row2.label && !targets.has(other.id))) {
           findings.push({
-            line: pairs[row.row]?.line ?? 0,
-            problem: `New name ${row.label} is taken by a vault key outside this rename.`
+            line: pairs[row2.row]?.line ?? 0,
+            problem: `New name ${row2.label} is taken by a vault key outside this rename.`
           });
         }
       }
@@ -105179,33 +105797,33 @@ async function teeRename(args, ctx) {
       }, json);
       return 1;
     }
-    const localById = new Map(local.map(({ row, entry }) => [row.id, entry]));
-    const receipt = rows.map((row) => {
-      const entry = localById.get(row.id);
+    const localById = new Map(local.map(({ row: row2, entry }) => [row2.id, entry]));
+    const receipt = rows.map((row2) => {
+      const entry = localById.get(row2.id);
       return {
-        id: row.id,
-        chain: row.chain,
-        address: row.address,
-        from: row.from,
-        to: row.label,
-        server: row.from === row.label ? "unchanged" : "renamed",
-        vault: entry === undefined ? "none" : entry.label === row.label ? "unchanged" : "renamed"
+        id: row2.id,
+        chain: row2.chain,
+        address: row2.address,
+        from: row2.from,
+        to: row2.label,
+        server: row2.from === row2.label ? "unchanged" : "renamed",
+        vault: entry === undefined ? "none" : entry.label === row2.label ? "unchanged" : "renamed"
       };
     });
-    const onServer = rows.filter((row) => row.from !== row.label);
-    const inVault = local.filter(({ row, entry }) => entry.label !== row.label);
+    const onServer = rows.filter((row2) => row2.from !== row2.label);
+    const inVault = local.filter(({ row: row2, entry }) => entry.label !== row2.label);
     const print = (headline) => {
       if (json)
         return writeJson(deps, { ok: true, renamed: receipt, ...dryRun ? { dryRun: true } : {} });
       writeSuccess(deps, "stdout", `${headline}
 `.trim());
-      for (const row of receipt) {
-        const sides = row.server === "renamed" && row.vault === "renamed" ? "server and vault" : row.server === "renamed" ? "server" : row.vault === "renamed" ? "vault; the server already had this name" : "already named";
-        const was = row.server === "renamed" ? row.from : localById.get(row.id)?.label ?? row.from;
+      for (const row2 of receipt) {
+        const sides = row2.server === "renamed" && row2.vault === "renamed" ? "server and vault" : row2.server === "renamed" ? "server" : row2.vault === "renamed" ? "vault; the server already had this name" : "already named";
+        const was = row2.server === "renamed" ? row2.from : localById.get(row2.id)?.label ?? row2.from;
         writeFields(deps, "stdout", [
           ["From", was],
-          ["To", row.to],
-          ["Address", row.address],
+          ["To", row2.to],
+          ["Address", row2.address],
           ["Changed in", sides]
         ]);
       }
@@ -105219,15 +105837,15 @@ async function teeRename(args, ctx) {
       return 0;
     }
     if (onServer.length > 0) {
-      const committed = await call2({ renames: onServer.map((row) => ({ id: row.id, label: row.label })) });
+      const committed = await call2({ renames: onServer.map((row2) => ({ id: row2.id, label: row2.label })) });
       if (!committed.ok) {
         if (committed.status === 0)
           return unknownCommit(ctx, rows, onServer, inVault);
-        return serverFailure(ctx, committed, onServer.map((row) => pairs[row.row]), batch);
+        return serverFailure(ctx, committed, onServer.map((row2) => pairs[row2.row]), batch);
       }
     }
     if (vault !== null && inVault.length > 0) {
-      const names = new Map(inVault.map(({ row, entry }) => [entry.id, row.label]));
+      const names = new Map(inVault.map(({ row: row2, entry }) => [entry.id, row2.label]));
       try {
         await commitVault(vault, {
           index: {
@@ -105236,7 +105854,7 @@ async function teeRename(args, ctx) {
           }
         }, deps);
       } catch (error) {
-        const rerun = inVault.map(({ row }) => ({ from: row.address, to: row.label }));
+        const rerun = inVault.map(({ row: row2 }) => ({ from: row2.address, to: row2.label }));
         const cause = isVaultError(error) ? error.code : "VAULT_UNREADABLE";
         const why = error instanceof Error ? error.message : String(error);
         const message = `The server renamed ${onServer.length} wallet${onServer.length === 1 ? "" : "s"}, but the vault write failed (${cause}: ${why}). ${rerun.length} vault ${rerun.length === 1 ? "entry still has its" : "entries still have their"} old name.`;
@@ -105256,7 +105874,7 @@ async function teeRename(args, ctx) {
         return 1;
       }
     }
-    const changed = receipt.filter((row) => row.server === "renamed" || row.vault === "renamed").length;
+    const changed = receipt.filter((row2) => row2.server === "renamed" || row2.vault === "renamed").length;
     print(`Renamed ${changed} wallet${changed === 1 ? "" : "s"}.`);
     return 0;
   });
@@ -105558,8 +106176,8 @@ ${line}` : line, ctx.json);
     return 2;
   };
 }
-function chainFor(mint, given) {
-  const chain2 = given ?? (mint.startsWith("0x") ? "hood" : "solana");
+function chainFor(mint, given2) {
+  const chain2 = given2 ?? (mint.startsWith("0x") ? "hood" : "solana");
   return chain2 === "solana" || chain2 === "hood" ? chain2 : undefined;
 }
 function metadataPath(chain2, mint, rest = "") {
@@ -105666,11 +106284,11 @@ async function tokenEdit(args, ctx) {
   const body = editBodyOf(parsed.values, split2.clears);
   if ("error" in body)
     return usage12(body.error);
-  const given = parsed.values["--idempotency-key"];
-  if (given !== undefined && (given.length < 1 || given.length > 128)) {
+  const given2 = parsed.values["--idempotency-key"];
+  if (given2 !== undefined && (given2.length < 1 || given2.length > 128)) {
     return usage12("--idempotency-key must be 1 to 128 characters.");
   }
-  const idempotencyKey = given ?? randomUUID15();
+  const idempotencyKey = given2 ?? randomUUID15();
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
     writeLocalFailure(ctx.deps, {
@@ -105847,19 +106465,19 @@ async function resolveDestination(ctx, key, source, to, chain2 = "solana") {
     return { kind: "vault", address: checked.address };
   }
   const rowChain2 = hood ? "evm" : "solana";
-  const rows = (await readLinkedWallets(ctx, key)).filter((row) => row.chain === rowChain2 && row.revokedAt === undefined && !same(row.address, source.address));
-  const matches2 = rows.filter((row) => row.label === to || row._id === to || same(row.address, to));
+  const rows = (await readLinkedWallets(ctx, key)).filter((row2) => row2.chain === rowChain2 && row2.revokedAt === undefined && !same(row2.address, source.address));
+  const matches2 = rows.filter((row2) => row2.label === to || row2._id === to || same(row2.address, to));
   if (matches2.length > 1)
-    throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${matches2.length} linked wallets: ${matches2.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}. Name one by id or address.`);
+    throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${matches2.length} linked wallets: ${matches2.map((row2) => `${row2.label ?? ""} (${row2._id}, ${row2.address})`.trim()).join("; ")}. Name one by id or address.`);
   const match = matches2[0];
   if (match)
     return { kind: "linked", address: match.address, id: match._id, ...match.label ? { label: match.label } : {} };
   if (same(to, source.address))
     throw new TradingError("DESTINATION_IS_SOURCE", "--to names the wallet the funds would leave. Name a different destination.");
-  const allowlist = (await readWithdrawalAddresses(ctx, key)).filter((row) => row.chain === chain2 && row.revokedAt === undefined && !same(row.address, source.address));
-  const approved = allowlist.filter((row) => row.label === to || row.id === to || same(row.address, to));
+  const allowlist = (await readWithdrawalAddresses(ctx, key)).filter((row2) => row2.chain === chain2 && row2.revokedAt === undefined && !same(row2.address, source.address));
+  const approved = allowlist.filter((row2) => row2.label === to || row2.id === to || same(row2.address, to));
   if (approved.length > 1)
-    throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${approved.length} approved withdrawal addresses: ${approved.map((row) => `${row.label ?? ""} (${row.id}, ${row.address})`.trim()).join("; ")}. Name one by id or address.`);
+    throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${approved.length} approved withdrawal addresses: ${approved.map((row2) => `${row2.label ?? ""} (${row2.id}, ${row2.address})`.trim()).join("; ")}. Name one by id or address.`);
   const listed = approved[0];
   if (listed) {
     const address = hood ? checkEvmAddress(listed.address) : undefined;
@@ -105879,9 +106497,9 @@ async function resolveDestination(ctx, key, source, to, chain2 = "solana") {
     return { kind: "address", address: evm.address };
   const name2 = hood ? "Hood" : "Solana";
   const known = [
-    ...rows.length > 0 ? [`Linked wallets: ${rows.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}.`] : [],
+    ...rows.length > 0 ? [`Linked wallets: ${rows.map((row2) => `${row2.label ?? ""} (${row2._id}, ${row2.address})`.trim()).join("; ")}.`] : [],
     ...allowlist.length > 0 ? [
-      `Approved withdrawal addresses: ${allowlist.map((row) => `${row.label ?? ""} (${row.id}, ${row.address})`.trim()).join("; ")}.`
+      `Approved withdrawal addresses: ${allowlist.map((row2) => `${row2.label ?? ""} (${row2.id}, ${row2.address})`.trim()).join("; ")}.`
     ] : []
   ];
   throw new TradingError("DESTINATION_UNKNOWN", known.length === 0 ? `"${to}" is not vault, a ${name2} address, a linked wallet or an approved withdrawal address on this account (it has no other active ${name2} linked wallets or approved addresses).` : `"${to}" is not vault, a ${name2} address, a linked wallet or an approved withdrawal address on this account. ${known.join(" ")}`);
@@ -106890,7 +107508,7 @@ async function discard(deps, path) {
 init_args();
 init_human_output();
 init_presentation();
-import { chmod as chmod13, copyFile, mkdir as mkdir11, stat as stat5 } from "node:fs/promises";
+import { chmod as chmod13, copyFile, mkdir as mkdir11, stat as stat6 } from "node:fs/promises";
 import nodePath, { dirname as dirname11, resolve as resolve4 } from "node:path";
 init_crypto();
 init_errors2();
@@ -107122,7 +107740,7 @@ async function vaultBackup(args, ctx) {
       }
     }
     const recordCopy = live.file.version === EVM_TEE_VAULT_VERSION ? await copyEvmRecordForBackup(live, copyRecordPath, deps) : undefined;
-    const written = await stat5(destination);
+    const written = await stat6(destination);
     const { report: report2, copyHeader, record: record6 } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
     assertFloorCarried(copyHeader, live.file);
     const verifiedAt = new Date(deps.now()).toISOString();
@@ -107440,7 +108058,7 @@ function assertOutsideConfigDir(destination, env, home, api = nodePath) {
 }
 async function exists2(path) {
   try {
-    await stat5(path);
+    await stat6(path);
     return true;
   } catch {
     return false;
@@ -107636,25 +108254,25 @@ async function vaultDemoteBatch(args, ctx) {
     const planned = [];
     const plan2 = (entry) => {
       const chain2 = entry.chain === "evm" ? "evm" : "solana";
-      const row = { address: entry.address, label: entry.label, chain: chain2, destination: null };
+      const row2 = { address: entry.address, label: entry.label, chain: chain2, destination: null };
       const pinned = entry.tee?.vaultDestination;
       if (pinned !== undefined)
-        row.destination = pinned;
+        row2.destination = pinned;
       else if (sweepTo === undefined)
-        row.destinationNote = "no pinned destination; pass --sweep-to";
+        row2.destinationNote = "no pinned destination; pass --sweep-to";
       else {
         try {
-          row.destination = assertColdVaultDestination(held.index, sweepTo, {
+          row2.destination = assertColdVaultDestination(held.index, sweepTo, {
             chain: chain2,
             subjectAddress: entry.address
           }).address;
         } catch (error) {
           if (!isVaultError(error))
             throw error;
-          row.destinationNote = `--sweep-to ${sweepTo}: ${error.message}`;
+          row2.destinationNote = `--sweep-to ${sweepTo}: ${error.message}`;
         }
       }
-      planned.push(row);
+      planned.push(row2);
     };
     const tees = held.index.entries.filter((entry) => entry.role === "tee-wallet");
     if (all) {
@@ -107718,18 +108336,18 @@ async function vaultDemoteBatch(args, ctx) {
         plan2(entry);
       }
     }
-    if (rpcUrl !== undefined && new Set(planned.map((row) => row.chain)).size > 1) {
+    if (rpcUrl !== undefined && new Set(planned.map((row2) => row2.chain)).size > 1) {
       return usage(ctx, "--rpc-url names one chain's node; demote Solana and Hood wallets in separate batches.");
     }
     if (planned.length > 0) {
       const display = ctx.json ? "stderr" : "stdout";
       ctx.deps[display].write(`Demote ${planned.length} TEE wallet${planned.length === 1 ? "" : "s"}, one at a time: disable, then sweep to the destination shown.
 `);
-      writeTable(ctx.deps, display, ["#", "TEE wallet", "Label", "Sweeps to"], planned.map((row, i) => [
+      writeTable(ctx.deps, display, ["#", "TEE wallet", "Label", "Sweeps to"], planned.map((row2, i) => [
         String(i + 1),
-        row.address,
-        row.label,
-        row.destination ?? `none (${row.destinationNote})`
+        row2.address,
+        row2.label,
+        row2.destination ?? `none (${row2.destinationNote})`
       ]), []);
       for (const skipped of outcomes) {
         ctx.deps[display].write(`Not demoted: ${skipped.address}: ${skipped.reason}
@@ -107746,11 +108364,11 @@ async function vaultDemoteBatch(args, ctx) {
     }
     const session = { path: held.path, open: (bytes) => openHeld(opened, held, bytes) };
     const width = String(planned.length).length;
-    for (const [i, row] of planned.entries()) {
+    for (const [i, row2] of planned.entries()) {
       if (!ctx.json) {
-        notice(ctx.deps, "stdout", "note", `[${String(i + 1).padStart(width)}/${planned.length}] Demoting ${row.address} (${row.label})`);
+        notice(ctx.deps, "stdout", "note", `[${String(i + 1).padStart(width)}/${planned.length}] Demoting ${row2.address} (${row2.label})`);
       }
-      const outcome = await demoteOne(ctx, session, row, parsed.values, parsed.booleans);
+      const outcome = await demoteOne(ctx, session, row2, parsed.values, parsed.booleans);
       outcomes.push(outcome);
       if (!ctx.json)
         writeResultLine(ctx.deps, outcome);
@@ -107789,9 +108407,9 @@ async function openHeld(opened, held, raw) {
     confirm: opened.confirm
   };
 }
-async function demoteOne(ctx, session, row, values, booleans) {
-  const base2 = { address: row.address, label: row.label, chain: row.chain };
-  const args = [row.address];
+async function demoteOne(ctx, session, row2, values, booleans) {
+  const base2 = { address: row2.address, label: row2.label, chain: row2.chain };
+  const args = [row2.address];
   for (const flag of ["--rpc-url", "--sweep-to", "--keystore"]) {
     const value = values[flag];
     if (value !== undefined)
@@ -107800,7 +108418,7 @@ async function demoteOne(ctx, session, row, values, booleans) {
   for (const flag of ["--emergency", "--accept-older-copy"])
     if (booleans.has(flag))
       args.push(flag);
-  const covered = row.destination === null ? null : `Type confirm to sweep everything to ${row.destination}: `;
+  const covered = row2.destination === null ? null : `Type confirm to sweep everything to ${row2.destination}: `;
   const promptLine = async (text4) => text4 === covered ? "confirm" : ctx.deps.promptLine(text4);
   const captured = [];
   const errLines = [];
@@ -109044,8 +109662,8 @@ Anyone who reads them can move every derived key's funds.
   deps.stdout.write(`
 `);
   for (let i = 0;i < words.length; i += 4) {
-    const row = words.slice(i, i + 4).map((word3, offset) => `${String(i + offset + 1).padStart(2, " ")}. ${word3.padEnd(9, " ")}`).join("  ");
-    deps.stdout.write(`    ${row.trimEnd()}
+    const row2 = words.slice(i, i + 4).map((word3, offset) => `${String(i + offset + 1).padStart(2, " ")}. ${word3.padEnd(9, " ")}`).join("  ");
+    deps.stdout.write(`    ${row2.trimEnd()}
 `);
   }
   deps.stdout.write(`
@@ -109276,16 +109894,16 @@ async function vaultFactorList(args, ctx) {
       writeJson(deps, { ok: true, envelopes: rows, recoverableFactors: countRecoverableFactors(file.envelopes) });
       return 0;
     }
-    for (const row of rows) {
+    for (const row2 of rows) {
       writeFields(deps, "stdout", [
-        ["Id", row.id],
-        ["Factor", `${row.factor}${row.transport ? `/${row.transport}` : ""}`],
-        ["Domain", row.domain],
-        ["Label", row.label]
+        ["Id", row2.id],
+        ["Factor", `${row2.factor}${row2.transport ? `/${row2.transport}` : ""}`],
+        ["Domain", row2.domain],
+        ["Label", row2.label]
       ]);
       writeFields(deps, "stdout", [
-        ["Availability", row.availability],
-        ["Reason", row.reason]
+        ["Availability", row2.availability],
+        ["Reason", row2.reason]
       ]);
     }
     writeFields(deps, "stdout", [
@@ -109841,7 +110459,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
 init_args();
 init_human_output();
 init_presentation();
-import { readFile as readFile18 } from "node:fs/promises";
+import { readFile as readFile19 } from "node:fs/promises";
 init_ed255192();
 init_errors2();
 
@@ -110017,7 +110635,7 @@ async function vaultImportLegacy(args, ctx) {
     const vaultRaw = await requireVaultRaw(ctx, resolvedVault);
     let legacyRaw;
     try {
-      legacyRaw = await readFile18(fromPath, "utf8");
+      legacyRaw = await readFile19(fromPath, "utf8");
     } catch (error) {
       const code = error?.code;
       if (code === "ENOENT") {
@@ -110108,7 +110726,7 @@ async function vaultImportLegacy(args, ctx) {
 async function resolveDefaultTeePath(env, home) {
   const current = defaultTeeKeystorePath(env, home);
   try {
-    await readFile18(current);
+    await readFile19(current);
     return current;
   } catch {}
   return legacyTeeKeystorePath(env, home);
@@ -110126,7 +110744,7 @@ async function recordMigrationSidecar(vaultPath, vault, fromPath, digest, now) {
   const path = sidecarPath(vaultPath);
   const previous = await readSidecar(path);
   const existing = previous?.migratedFrom ?? [];
-  if (existing.some((row) => row.sourceDigest === digest && row.path === fromPath)) {
+  if (existing.some((row2) => row2.sourceDigest === digest && row2.path === fromPath)) {
     await writeSidecar(path, nextSidecar(previous, vault.file)).catch(() => {});
     return;
   }
@@ -110185,11 +110803,11 @@ function reportDone(ctx, result) {
       ["From", result.path],
       ["Vault", result.vaultPath]
     ], "TEE wallet keys migrated");
-    for (const row of result.addresses) {
+    for (const row2 of result.addresses) {
       writeFields(deps, "stdout", [
-        ["Address", row.address],
-        ["Lifecycle", row.lifecycle],
-        ["Label", row.label]
+        ["Address", row2.address],
+        ["Lifecycle", row2.lifecycle],
+        ["Label", row2.label]
       ]);
     }
     if (result.skipped > 0) {
@@ -110434,7 +111052,7 @@ async function vaultList(args, ctx) {
     if (evmColumns && hood)
       headers2.push("USDG");
     const rows = matched.map((entry) => {
-      const row = [
+      const row2 = [
         entry.address,
         entry.label || symbols(terminalStyle(deps, "stdout")).missing,
         entry.role,
@@ -110443,17 +111061,17 @@ async function vaultList(args, ctx) {
       ];
       if (balances) {
         const held = lamports.get(entry.address);
-        row.push(held === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatSol3(held));
+        row2.push(held === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatSol3(held));
       }
       if (evmColumns) {
         const wei = evmRead2?.wei.get(entry.address);
-        row.push(wei === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatUnits(wei, NATIVE_DECIMALS));
+        row2.push(wei === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatUnits(wei, NATIVE_DECIMALS));
         if (hood) {
           const usdg = evmRead2?.usdg.get(entry.address);
-          row.push(usdg === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatUnits(usdg, HOOD_USDG_DECIMALS));
+          row2.push(usdg === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatUnits(usdg, HOOD_USDG_DECIMALS));
         }
       }
-      return row;
+      return row2;
     });
     writeTable(deps, "stdout", headers2, rows, headers2.map((_, i) => i === 0 ? { id: true } : i === 1 ? { priority: 2 } : i === 4 ? { priority: 3 } : i >= 5 ? { align: "right", priority: 1 } : {}));
     if (balances) {
@@ -111734,30 +112352,30 @@ function parsePairsFile(contents, opts) {
     }
   }
   const seen = new Map;
-  for (const row of rows) {
-    const earlier = seen.get(row.label);
+  for (const row2 of rows) {
+    const earlier = seen.get(row2.label);
     if (earlier !== undefined) {
-      findings.push({ line: earlier, problem: `label ${row.label} appears again on line ${row.line}` });
+      findings.push({ line: earlier, problem: `label ${row2.label} appears again on line ${row2.line}` });
       continue;
     }
-    seen.set(row.label, row.line);
+    seen.set(row2.label, row2.line);
   }
   let previous;
-  for (const row of rows) {
-    if (row.order === undefined)
+  for (const row2 of rows) {
+    if (row2.order === undefined)
       continue;
-    const value = Number(row.order);
-    if (row.order.trim() === "" || !Number.isFinite(value)) {
-      findings.push({ line: row.line, problem: `order "${row.order}" is not a number` });
+    const value = Number(row2.order);
+    if (row2.order.trim() === "" || !Number.isFinite(value)) {
+      findings.push({ line: row2.line, problem: `order "${row2.order}" is not a number` });
       continue;
     }
     if (previous !== undefined && !(value > previous.value)) {
       findings.push({
-        line: row.line,
-        problem: `order ${row.order} is not greater than the previous row's ${previous.value}; the file's line order is what runs`
+        line: row2.line,
+        problem: `order ${row2.order} is not greater than the previous row's ${previous.value}; the file's line order is what runs`
       });
     }
-    previous = { line: row.line, value };
+    previous = { line: row2.line, value };
   }
   if (findings.length === 0) {
     if (rows.length === 1) {
@@ -111800,8 +112418,8 @@ function resolveDestinationAddress(index, destination) {
 function batchChain(index, rows) {
   let solana = false;
   let evm = false;
-  for (const row of rows) {
-    const subject = findEntryByLabelOrAddress(index, row.label) ?? index.entries.find((entry) => entry.chain === "evm" && entry.address.toLowerCase() === row.label.toLowerCase());
+  for (const row2 of rows) {
+    const subject = findEntryByLabelOrAddress(index, row2.label) ?? index.entries.find((entry) => entry.chain === "evm" && entry.address.toLowerCase() === row2.label.toLowerCase());
     if (subject?.chain === "evm")
       evm = true;
     else if (subject?.chain === "solana")
@@ -111811,9 +112429,9 @@ function batchChain(index, rows) {
     return "mixed";
   return evm ? "evm" : "solana";
 }
-function classifyRow(index, row) {
-  const subject = findEntryByLabelOrAddress(index, row.label);
-  const destinationAddress = resolveDestinationAddress(index, row.destination);
+function classifyRow(index, row2) {
+  const subject = findEntryByLabelOrAddress(index, row2.label);
+  const destinationAddress = resolveDestinationAddress(index, row2.destination);
   if (subject === undefined || subject.role !== "tee-wallet") {
     return { state: "promote", ...subject ? { subject } : {}, destinationAddress };
   }
@@ -111835,20 +112453,20 @@ async function preflightBatch(index, rows, opts) {
   const failures = [];
   const pinnedBy = new Map;
   const promotedBy = new Map;
-  const refuse3 = (row, failure3) => {
+  const refuse3 = (row2, failure3) => {
     failures.push({
-      line: row.line,
-      label: row.label,
-      destination: row.destination,
+      line: row2.line,
+      label: row2.label,
+      destination: row2.destination,
       code: failure3.code,
       message: failure3.message,
       ...failure3.suggestion !== undefined ? { suggestion: failure3.suggestion } : {},
       ...failure3.why !== undefined ? { why: failure3.why } : {}
     });
   };
-  const refuseWith = (row, error, why) => {
+  const refuseWith = (row2, error, why) => {
     if (isVaultError(error)) {
-      refuse3(row, {
+      refuse3(row2, {
         code: error.code,
         message: error.message,
         ...error.suggestion !== undefined ? { suggestion: error.suggestion } : {},
@@ -111856,22 +112474,22 @@ async function preflightBatch(index, rows, opts) {
       });
       return;
     }
-    refuse3(row, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) });
+    refuse3(row2, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) });
   };
-  for (const row of rows) {
-    const classified = classifyRow(index, row);
+  for (const row2 of rows) {
+    const classified = classifyRow(index, row2);
     if (classified.subject !== undefined) {
       try {
         await opts.verifySubject(classified.subject);
       } catch (error) {
-        refuseWith(row, error);
+        refuseWith(row2, error);
         continue;
       }
     }
     if (classified.state === "skip") {
       planned.push({
         kind: "skip",
-        row,
+        row: row2,
         subject: classified.subject,
         destinationAddress: classified.destinationAddress
       });
@@ -111880,26 +112498,26 @@ async function preflightBatch(index, rows, opts) {
     if (classified.state === "conflict") {
       const subject = classified.subject;
       const lifecycle = subject.tee?.lifecycle ?? "unknown";
-      refuse3(row, {
+      refuse3(row2, {
         code: "PROMOTE_ALREADY_TEE_WALLET",
         message: `${subject.label ?? subject.address} is already a TEE wallet (${lifecycle}).`,
-        why: classified.onDisk !== undefined ? `On disk it sweeps to ${classified.onDisk}; this file says ${row.destination} (${classified.destinationAddress}).` : `Its lifecycle is ${lifecycle}, which is not resumable; this file says ${row.destination}.`
+        why: classified.onDisk !== undefined ? `On disk it sweeps to ${classified.onDisk}; this file says ${row2.destination} (${classified.destinationAddress}).` : `Its lifecycle is ${lifecycle}, which is not resumable; this file says ${row2.destination}.`
       });
       continue;
     }
     if (classified.state === "resume") {
       const subject = classified.subject;
-      const reconciled = await opts.reconcileResume(row, subject, {
+      const reconciled = await opts.reconcileResume(row2, subject, {
         ...classified.onDisk !== undefined ? { onDisk: classified.onDisk } : {},
         destinationAddress: classified.destinationAddress
       });
       if (!reconciled.ok) {
-        refuse3(row, reconciled.failure);
+        refuse3(row2, reconciled.failure);
         continue;
       }
       planned.push({
         kind: "resume",
-        row,
+        row: row2,
         subject,
         destinationAddress: reconciled.destinationAddress,
         ...reconciled.account !== undefined ? { account: reconciled.account } : {}
@@ -111908,44 +112526,44 @@ async function preflightBatch(index, rows, opts) {
     }
     try {
       const check = opts.chain === "evm" ? assertEvmInPlacePreconditions : assertInPlacePreconditions;
-      const { subject, destination, resume } = check(projection, row.label, row.destination, {
+      const { subject, destination, resume } = check(projection, row2.label, row2.destination, {
         acceptUnknownExposure: opts.acceptUnknownExposure
       });
       if (resume) {
-        refuse3(row, {
+        refuse3(row2, {
           code: "PROMOTE_ALREADY_TEE_WALLET",
           message: `${subject.label ?? subject.address} is already a TEE wallet (${subject.tee?.lifecycle ?? "unknown"}).`
         });
         continue;
       }
       const acceptedUnknown = opts.acceptUnknownExposure && destination.exposure?.exposureUnknown === true;
-      planned.push({ kind: "promote", row, subject, destination, acceptedUnknown });
+      planned.push({ kind: "promote", row: row2, subject, destination, acceptedUnknown });
       projection = applyPromotion(projection, subject, destination, {
         now: opts.now,
         acceptUnknownExposure: opts.acceptUnknownExposure
       });
       if (!pinnedBy.has(destination.address))
-        pinnedBy.set(destination.address, row.line);
-      promotedBy.set(subject.label, row.line);
-      promotedBy.set(subject.address, row.line);
+        pinnedBy.set(destination.address, row2.line);
+      promotedBy.set(subject.label, row2.line);
+      promotedBy.set(subject.address, row2.line);
     } catch (error) {
-      refuseWith(row, error, annotate(error, row, classified, pinnedBy, promotedBy));
+      refuseWith(row2, error, annotate(error, row2, classified, pinnedBy, promotedBy));
     }
   }
   return { planned, failures, projection };
 }
-function annotate(error, row, classified, pinnedBy, promotedBy) {
+function annotate(error, row2, classified, pinnedBy, promotedBy) {
   if (!isVaultError(error))
     return;
   if (error.code === "PROMOTE_KEY_IS_PINNED_DESTINATION" && classified.subject !== undefined) {
     const line = pinnedBy.get(classified.subject.address);
     if (line !== undefined)
-      return `Row ${line} of this file sweeps to ${row.label}.`;
+      return `Row ${line} of this file sweeps to ${row2.label}.`;
   }
   if (error.code === "PROMOTE_DESTINATION_NOT_COLD") {
-    const line = promotedBy.get(row.destination) ?? promotedBy.get(classified.destinationAddress);
+    const line = promotedBy.get(row2.destination) ?? promotedBy.get(classified.destinationAddress);
     if (line !== undefined)
-      return `${row.destination} is promoted by row ${line} of this file.`;
+      return `${row2.destination} is promoted by row ${line} of this file.`;
   }
   return;
 }
@@ -111960,24 +112578,24 @@ function writeBatchRefusal(deps, json, refusal4) {
       code: "PROMOTE_BATCH_REFUSED",
       message: `${n} of ${refusal4.total} rows cannot run; nothing was written.`,
       suggestion: "Fix the rows below and run again; the next run re-checks every row from scratch.",
-      rows: refusal4.rows.map((row) => ({
-        line: row.line,
-        label: row.label,
-        destination: row.destination,
-        code: row.code,
-        message: row.message,
-        ...row.why !== undefined ? { why: row.why } : {}
+      rows: refusal4.rows.map((row2) => ({
+        line: row2.line,
+        label: row2.label,
+        destination: row2.destination,
+        code: row2.code,
+        message: row2.message,
+        ...row2.why !== undefined ? { why: row2.why } : {}
       }))
     })}
 `);
     return;
   }
-  const table = renderTable(["line", "label", "destination", "code", "why"], refusal4.rows.map((row) => [
-    String(row.line),
-    row.label,
-    row.destination,
-    row.code,
-    row.why !== undefined ? `${row.message} ${row.why}` : row.message
+  const table = renderTable(["line", "label", "destination", "code", "why"], refusal4.rows.map((row2) => [
+    String(row2.line),
+    row2.label,
+    row2.destination,
+    row2.code,
+    row2.why !== undefined ? `${row2.message} ${row2.why}` : row2.message
   ]));
   deps.stderr.write(`This batch was refused and NOTHING was written. ${n} of ${refusal4.total} rows cannot run:
 
@@ -112033,24 +112651,24 @@ var rowObserver = null;
 function splitRebindable(results) {
   const wallets2 = [];
   const notRebindable = [];
-  for (const row of results) {
-    if (row.linkedWalletId !== null && row.remoteAuthority === "verified-active") {
-      wallets2.push({ id: row.linkedWalletId, address: row.address, label: row.label });
+  for (const row2 of results) {
+    if (row2.linkedWalletId !== null && row2.remoteAuthority === "verified-active") {
+      wallets2.push({ id: row2.linkedWalletId, address: row2.address, label: row2.label });
     } else {
       notRebindable.push({
-        address: row.address,
-        label: row.label,
-        reason: row.linkedWalletId === null ? `no linked wallet id (${row.lifecycle})` : `remote authority is ${row.remoteAuthority ?? "unknown"}, not verified-active`
+        address: row2.address,
+        label: row2.label,
+        reason: row2.linkedWalletId === null ? `no linked wallet id (${row2.lifecycle})` : `remote authority is ${row2.remoteAuthority ?? "unknown"}, not verified-active`
       });
     }
   }
   return { wallets: wallets2, notRebindable };
 }
 function keysWithRebind(results, phase, run2) {
-  return results.map((row) => ({
-    ...row,
-    boundKeyPrefix: finalBoundKey({ id: row.linkedWalletId, importedTo: phase.importedTo.get(row.address) ?? null }, run2, phase.toKey.target.keyPrefix),
-    rebind: walletRebindJson({ id: row.linkedWalletId, remoteAuthority: row.remoteAuthority }, run2)
+  return results.map((row2) => ({
+    ...row2,
+    boundKeyPrefix: finalBoundKey({ id: row2.linkedWalletId, importedTo: phase.importedTo.get(row2.address) ?? null }, run2, phase.toKey.target.keyPrefix),
+    rebind: walletRebindJson({ id: row2.linkedWalletId, remoteAuthority: row2.remoteAuthority }, run2)
   }));
 }
 async function vaultPromoteBatch(args, ctx) {
@@ -112098,7 +112716,7 @@ async function vaultPromoteBatch(args, ctx) {
   const { rows, hasValueUsd } = parsedFile;
   let toKey;
   if (toKeyRaw !== undefined) {
-    const preflight = await preflightToKey(ctx, toKeyRaw, { labels: rows.map((row) => row.label) });
+    const preflight = await preflightToKey(ctx, toKeyRaw, { labels: rows.map((row2) => row2.label) });
     if (!preflight.ok)
       return preflight.exit;
     toKey = {
@@ -112137,7 +112755,7 @@ async function vaultPromoteBatch(args, ctx) {
         const secret = await verifySubjectSecret(current, subject);
         wipe(secret);
       },
-      reconcileResume: (row, subject, resolved) => reconcileForPreflight(ctx, row, subject, resolved)
+      reconcileResume: (row2, subject, resolved) => reconcileForPreflight(ctx, row2, subject, resolved)
     });
     if (preflight.failures.length > 0) {
       writeBatchRefusal(deps, ctx.json, { rows: preflight.failures, total: rows.length });
@@ -112364,7 +112982,7 @@ ${renderControlledBy(controlledBy, acting.length)}
           continue;
         }
         if (item.kind === "promote") {
-          const { subject: subject2, destination, row: row2 } = item;
+          const { subject: subject2, destination, row: row3 } = item;
           const preImportIndex = current.index;
           current = hold(await commitVault(current, {
             index: applyPromotion(current.index, subject2, destination, {
@@ -112372,7 +112990,7 @@ ${renderControlledBy(controlledBy, acting.length)}
               acceptUnknownExposure: acceptUnknown
             })
           }, deps));
-          await rowObserver?.({ line: row2.line, stage: "pre-import", vault: current });
+          await rowObserver?.({ line: row3.line, stage: "pre-import", vault: current });
           if (hoodHeight !== undefined)
             await appendScanStart(ctx, path, subject2.address, hoodHeight);
           const secret = await verifySubjectSecret(current, subject2);
@@ -112408,7 +113026,7 @@ ${renderControlledBy(controlledBy, acting.length)}
               }
             }
             stopped2 = {
-              line: row2.line,
+              line: row3.line,
               exit: imported.exit,
               code: failure3.code,
               message: failure3.message,
@@ -112418,13 +113036,13 @@ ${renderControlledBy(controlledBy, acting.length)}
           }
           if (imported.vault !== undefined)
             current = hold(imported.vault);
-          await rowObserver?.({ line: row2.line, stage: "imported", vault: current });
+          await rowObserver?.({ line: row3.line, stage: "imported", vault: current });
           worst = Math.max(worst, imported.exit);
           done += 1;
           last = { address: subject2.address, keyId: subject2.id };
           rebindPhase?.importedTo.set(subject2.address, imported.submitted.boundKeyPrefix ?? null);
           results.push({
-            line: row2.line,
+            line: row3.line,
             label: subject2.label,
             address: subject2.address,
             destination: destination.address,
@@ -112438,7 +113056,7 @@ ${renderControlledBy(controlledBy, acting.length)}
 `.trim());
           continue;
         }
-        const { subject, row, destinationAddress, account } = item;
+        const { subject, row: row2, destinationAddress, account } = item;
         const resumed = await resumePromote(ctx, current, subject, opened.reopen, path, hold, {
           confirmAccount: async (candidate) => {
             if (candidate !== account) {
@@ -112451,7 +113069,7 @@ ${renderControlledBy(controlledBy, acting.length)}
         });
         if (resumed.failure !== undefined || resumed.exit !== 0) {
           stopped2 = {
-            line: row.line,
+            line: row2.line,
             exit: resumed.exit,
             ...resumed.failure ?? { code: "PROMOTE_OUTCOME_UNRESOLVED", message: "The resume did not complete." }
           };
@@ -112459,12 +113077,12 @@ ${renderControlledBy(controlledBy, acting.length)}
         }
         if (resumed.vault !== undefined)
           current = hold(resumed.vault);
-        await rowObserver?.({ line: row.line, stage: "resumed", vault: current });
+        await rowObserver?.({ line: row2.line, stage: "resumed", vault: current });
         done += 1;
         last = { address: subject.address, keyId: subject.id };
         rebindPhase?.importedTo.set(subject.address, subject.tee?.boundKeyPrefix ?? null);
         results.push({
-          line: row.line,
+          line: row2.line,
           label: subject.label,
           address: subject.address,
           destination: destinationAddress,
@@ -112560,7 +113178,7 @@ async function runRebindPhase(ctx, phase, results) {
     notice(ctx.deps, "stderr", "note", `${report2}
 `.trim());
   const keySigner = phase.toKey.keySigner;
-  if (keySigner !== undefined && results.some((row) => phase.importedTo.get(row.address) === phase.toKey.target.keyPrefix)) {
+  if (keySigner !== undefined && results.some((row2) => phase.importedTo.get(row2.address) === phase.toKey.target.keyPrefix)) {
     notice(ctx.deps, "stderr", "note", `${keySignerTradableLine({ target: phase.toKey.target, keySigner })}
 `.trim());
   }
@@ -112579,7 +113197,7 @@ async function verifySubjectSecret(vault, subject) {
   }
   return secret;
 }
-async function reconcileForPreflight(ctx, row, subject, resolved) {
+async function reconcileForPreflight(ctx, row2, subject, resolved) {
   const { onDisk } = resolved;
   const refuse3 = (failure3) => ({ ok: false, failure: failure3 });
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
@@ -112630,7 +113248,7 @@ async function reconcileForPreflight(ctx, row, subject, resolved) {
     return refuse3({
       code: "PROMOTE_ALREADY_TEE_WALLET",
       message: `${subject.address} is stranded; it is never re-promotable.`,
-      suggestion: `Run: candle vault promote --in-place ${row.label} (which records the stranding), then remove this row from the file.`
+      suggestion: `Run: candle vault promote --in-place ${row2.label} (which records the stranding), then remove this row from the file.`
     });
   }
   const server = verdict.row.vaultDestination;
@@ -112655,8 +113273,8 @@ async function reconcileForPreflight(ctx, row, subject, resolved) {
   if (server !== fileDestination) {
     return refuse3({
       code: "GRANT_BINDING_MISMATCH",
-      message: `The server-reported vault destination ${server} does not match this file's ${row.destination} (${fileDestination}).`,
-      why: `Row ${row.line} names a different destination from the grant the server holds; the file and the server describe different migrations.`
+      message: `The server-reported vault destination ${server} does not match this file's ${row2.destination} (${fileDestination}).`,
+      why: `Row ${row2.line} names a different destination from the grant the server holds; the file and the server describe different migrations.`
     });
   }
   return { ok: true, destinationAddress: server, ...assertedAccount !== undefined ? { account } : {} };
@@ -113128,16 +113746,16 @@ This profile acts as account ${read3.account}.
   const matched = [];
   const unmatched = [];
   const externalListed = [];
-  for (const row of read3.rows) {
-    if (typeof row.address !== "string")
+  for (const row2 of read3.rows) {
+    if (typeof row2.address !== "string")
       continue;
-    const entry = derived.byAddress.get(lookupKey(row.address));
+    const entry = derived.byAddress.get(lookupKey(row2.address));
     if (entry)
-      matched.push({ entry, row });
-    else if (derived.externalByAddress.has(row.address))
-      externalListed.push(row.address);
+      matched.push({ entry, row: row2 });
+    else if (derived.externalByAddress.has(row2.address))
+      externalListed.push(row2.address);
     else
-      unmatched.push(row.address);
+      unmatched.push(row2.address);
   }
   return { matched, unmatched, externalListed, account: read3.account, complete: true };
 }
@@ -113145,22 +113763,22 @@ async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
   const now = new Date(ctx.deps.now()).toISOString();
   const matchByAddress = new Map(matches3.matched.map((match) => [match.entry.address, match.row]));
   const entries = derived.entries.map((entry) => {
-    const row = matchByAddress.get(entry.address);
+    const row2 = matchByAddress.get(entry.address);
     if (entry.branch === "evmTee") {
       const base3 = {
         id: entry.keyId,
         chain: "evm",
         curve: "secp256k1",
         address: entry.address,
-        label: row?.label ?? `evm-tee-${entry.index}`,
+        label: row2?.label ?? `evm-tee-${entry.index}`,
         createdAt: now,
         role: "tee-wallet",
         origin: "derived",
         derivation: { scheme: EVM_DERIVATION_SCHEME, path: entry.path },
         exposure: { everRemoteExposed: true, everExported: false, exposureUnknown: true }
       };
-      if (row !== undefined)
-        return { ...base3, ...teeFieldsFor(row, ctx, "hood-mainnet"), role: "tee-wallet" };
+      if (row2 !== undefined)
+        return { ...base3, ...teeFieldsFor(row2, ctx, "hood-mainnet"), role: "tee-wallet" };
       return {
         ...base3,
         tee: {
@@ -113177,12 +113795,12 @@ async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
         chain: "evm",
         curve: "secp256k1",
         address: entry.address,
-        label: row?.label ?? `evm-${entry.index}`,
+        label: row2?.label ?? `evm-${entry.index}`,
         createdAt: now,
         role: "vault",
         origin: "derived",
         derivation: { scheme: EVM_DERIVATION_SCHEME, path: entry.path },
-        exposure: { everRemoteExposed: row !== undefined, everExported: false, exposureUnknown: true }
+        exposure: { everRemoteExposed: row2 !== undefined, everExported: false, exposureUnknown: true }
       };
     }
     const external3 = entry.branch === "solanaExternal";
@@ -113191,16 +113809,16 @@ async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
       chain: "solana",
       curve: "ed25519",
       address: entry.address,
-      label: row?.label ?? `${external3 ? "external" : entry.branch === "solanaTee" ? "tee" : "key"}-${entry.index}`,
+      label: row2?.label ?? `${external3 ? "external" : entry.branch === "solanaTee" ? "tee" : "key"}-${entry.index}`,
       createdAt: now,
       role: external3 ? "external" : "vault",
       origin: "derived",
       derivation: { scheme: DERIVATION_SCHEME, path: entry.path },
       exposure: { everRemoteExposed: false, everExported: false, exposureUnknown: true }
     };
-    if (row === undefined)
+    if (row2 === undefined)
       return base2;
-    return { ...base2, ...teeFieldsFor(row, ctx), exposure: { ...base2.exposure, everRemoteExposed: true } };
+    return { ...base2, ...teeFieldsFor(row2, ctx), exposure: { ...base2.exposure, everRemoteExposed: true } };
   });
   const highest = { solanaVault: -1, solanaTee: -1, solanaExternal: -1, evm: -1, evmTee: -1 };
   const exposed = { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [], evmTee: [] };
@@ -113248,8 +113866,8 @@ async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
   await commitVault(vault, { index: { hd, entries }, addKeys: derived.entries.map((entry) => entry.blob) }, ctx.deps);
   return { entries, hd };
 }
-function teeFieldsFor(row, ctx, network2 = "solana-mainnet") {
-  const remoteState = row.sweptAt !== undefined ? "swept" : row.revokedAt !== undefined ? "quarantined" : "enabled";
+function teeFieldsFor(row2, ctx, network2 = "solana-mainnet") {
+  const remoteState = row2.sweptAt !== undefined ? "swept" : row2.revokedAt !== undefined ? "quarantined" : "enabled";
   const grantIdentity = {
     account: "",
     apiBaseUrl: ctx.apiUrl,
@@ -113257,17 +113875,17 @@ function teeFieldsFor(row, ctx, network2 = "solana-mainnet") {
   };
   const common = {
     network: network2,
-    ...row.vaultDestination !== undefined ? { vaultDestination: row.vaultDestination } : {},
-    ...row.boundKeyPrefix !== undefined ? { boundKeyPrefix: row.boundKeyPrefix } : {},
-    ...row.remoteAuthority !== undefined ? { remoteAuthority: row.remoteAuthority } : {},
-    ...row.sweptAt !== undefined ? { sweptAt: new Date(row.sweptAt).toISOString() } : {},
+    ...row2.vaultDestination !== undefined ? { vaultDestination: row2.vaultDestination } : {},
+    ...row2.boundKeyPrefix !== undefined ? { boundKeyPrefix: row2.boundKeyPrefix } : {},
+    ...row2.remoteAuthority !== undefined ? { remoteAuthority: row2.remoteAuthority } : {},
+    ...row2.sweptAt !== undefined ? { sweptAt: new Date(row2.sweptAt).toISOString() } : {},
     remoteState
   };
-  if (row.sweptAt !== undefined && row.vaultDestination !== undefined) {
+  if (row2.sweptAt !== undefined && row2.vaultDestination !== undefined) {
     return { role: "tee-wallet", tee: { ...common, lifecycle: "retired" } };
   }
-  if (row.vaultDestination !== undefined) {
-    return { role: "tee-wallet", linkedWalletId: row._id, tee: { ...common, lifecycle: "enabled", grantIdentity } };
+  if (row2.vaultDestination !== undefined) {
+    return { role: "tee-wallet", linkedWalletId: row2._id, tee: { ...common, lifecycle: "enabled", grantIdentity } };
   }
   return { role: "tee-wallet", tee: { ...common, lifecycle: "stranded", grantIdentity } };
 }
@@ -113392,7 +114010,7 @@ async function vaultReconcileExposure(args, ctx) {
     if (recorded !== undefined && recorded !== "" && recorded !== read3.account) {
       throw new VaultError("EXPOSURE_ACCOUNT_MISMATCH", `This vault recorded its discovery against account ${recorded}, and this profile acts as ${read3.account}.`, { suggestion: "Switch profile and run it again. Nothing was flagged." });
     }
-    const listed = new Set(read3.rows.map((row) => lookupKey(row.address)));
+    const listed = new Set(read3.rows.map((row2) => lookupKey(row2.address)));
     const entries = vault.index.entries.map((entry) => entry.role !== "external" && listed.has(lookupKey(entry.address)) && !entry.exposure.everRemoteExposed ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } } : entry);
     const added = entries.filter((entry, i) => entry !== vault.index.entries[i]);
     const exposedIndexes = { ...vault.index.hd.exposedIndexes };
@@ -113484,7 +114102,7 @@ init_presentation();
 init_render();
 init_errors2();
 init_sidecar();
-import { rename as rename15, stat as stat6 } from "node:fs/promises";
+import { rename as rename15, stat as stat7 } from "node:fs/promises";
 init_wallet_keystore();
 init_vault_support();
 async function vaultRetireLegacy(args, ctx) {
@@ -113591,7 +114209,7 @@ async function vaultRetireLegacy(args, ctx) {
 async function resolveLegacyPath(env, home) {
   const current = defaultTeeKeystorePath(env, home);
   try {
-    await stat6(current);
+    await stat7(current);
     return current;
   } catch {
     return legacyTeeKeystorePath(env, home);
@@ -114187,14 +114805,14 @@ var DEVICE_TOKEN_REQUIRED3 = {
   suggestion: "Run: candle auth login"
 };
 var NOT_ENFORCED_LINE = "this server does not enforce allowLaunch; a key's launch:write decides; the value is saved for when it does";
-var nameOf = (row) => row.label ?? row.address;
+var nameOf = (row2) => row2.label ?? row2.address;
 function allowLaunchTable(rows, style) {
-  return renderTable(["line", "label", "wallet", "address", "bound key"], rows.map((row, i) => [
+  return renderTable(["line", "label", "wallet", "address", "bound key"], rows.map((row2, i) => [
     String(i + 1),
-    row.label ?? (style ? symbols(style).missing : "-"),
-    row.chain,
-    row.address,
-    row.boundKeyPrefix ?? (style ? symbols(style).missing : "-")
+    row2.label ?? (style ? symbols(style).missing : "-"),
+    row2.chain,
+    row2.address,
+    row2.boundKeyPrefix ?? (style ? symbols(style).missing : "-")
   ]), style ? {
     style,
     width: style.width,
@@ -114331,15 +114949,15 @@ async function setAllowLaunch(args, ctx, enabled) {
   const done = [];
   const failed = [];
   const notEnforced = [];
-  for (const row of changing) {
-    const result = await request2(capabilityPath(row.id), "PUT", { capability: "allowLaunch", enabled });
+  for (const row2 of changing) {
+    const result = await request2(capabilityPath(row2.id), "PUT", { capability: "allowLaunch", enabled });
     if (result.ok)
-      done.push({ ...row, allowLaunch: enabled });
+      done.push({ ...row2, allowLaunch: enabled });
     else if (result.status === 409 && result.code === "ALLOW_LAUNCH_NOT_ENFORCED") {
-      notEnforced.push({ id: row.id, code: result.code, message: result.message });
+      notEnforced.push({ id: row2.id, code: result.code, message: result.message });
     } else {
       failed.push({
-        id: row.id,
+        id: row2.id,
         code: result.status === 404 ? "WALLET_NOT_FOUND" : result.code ?? null,
         message: result.status === 404 ? "no longer an active TEE wallet on this account" : result.message
       });
@@ -114558,8 +115176,8 @@ function previewLines3(preview, walletName2) {
     `Close ${preview.accountCount} empty token account${preview.accountCount === 1 ? "" : "s"} on the ${walletName2}`,
     `Rent returned to that same wallet: ${safeText(preview.totalSol)} SOL in ${preview.transactions} transaction${preview.transactions === 1 ? "" : "s"}, network fee about ${solOf(preview.estimatedFeeLamports)} SOL, net ${safeText(preview.netSol)} SOL`
   ];
-  for (const row of preview.accounts.slice(0, LISTED_ROWS))
-    lines.push(`  ${safeText(row.mint)}  ${safeText(row.tokenProgram)}  ${solOf(row.lamports)} SOL`);
+  for (const row2 of preview.accounts.slice(0, LISTED_ROWS))
+    lines.push(`  ${safeText(row2.mint)}  ${safeText(row2.tokenProgram)}  ${solOf(row2.lamports)} SOL`);
   if (preview.accounts.length > LISTED_ROWS)
     lines.push(`  ... and ${preview.accounts.length - LISTED_ROWS} more (--json lists every one)`);
   const cap = preview.maxAccountsPerCall;
@@ -114567,8 +115185,8 @@ function previewLines3(preview, walletName2) {
     lines.push(`This run closes the first ${cap}; run it again for the rest.`);
   if (preview.skipped.length > 0) {
     const counts = new Map;
-    for (const row of preview.skipped)
-      counts.set(row.reason, (counts.get(row.reason) ?? 0) + 1);
+    for (const row2 of preview.skipped)
+      counts.set(row2.reason, (counts.get(row2.reason) ?? 0) + 1);
     lines.push(`Left open: ${[...counts].map(([reason, n]) => `${n} ${SKIP_WORDS[reason] ?? safeText(reason)}`).join(", ")}`);
   }
   return lines;
@@ -114606,7 +115224,7 @@ async function previewAndConfirm(ctx, preview, walletName2, yes) {
       wallet: preview.wallet,
       preview
     });
-  return preview.accounts.map((row) => row.account);
+  return preview.accounts.map((row2) => row2.account);
 }
 async function embeddedAddress2(ctx, key) {
   const body = await request(ctx, key, "/api/v1/agent/wallets/embedded");
@@ -114836,7 +115454,7 @@ var DEVICE_TOKEN_REQUIRED4 = {
 function sessionLinkedLine(rows) {
   const n = rows.length;
   const it = n === 1 ? "it" : "them";
-  const names = rows.map((row) => row.label ?? row.address).join(", ");
+  const names = rows.map((row2) => row2.label ?? row2.address).join(", ");
   return `${n} linked while signed in (${names}): always yours while linked. Revoke ${it} to remove ${it}.`;
 }
 function nothingToChangeLine2(shown, trusted) {
@@ -114886,7 +115504,7 @@ function writeTrustFailure(ctx, result) {
   return 1;
 }
 function trustTable(rows, style) {
-  return renderTable(["line", "label", "wallet", "address"], rows.map((row, i) => [String(i + 1), row.label ?? (style ? symbols(style).missing : "-"), row.chain, row.address]), style ? {
+  return renderTable(["line", "label", "wallet", "address"], rows.map((row2, i) => [String(i + 1), row2.label ?? (style ? symbols(style).missing : "-"), row2.chain, row2.address]), style ? {
     style,
     width: style.width,
     indent: 2,
@@ -114949,7 +115567,7 @@ async function setTrust(args, ctx, trusted) {
   const screen = [
     trustTable(changing, json ? undefined : terminalStyle(deps, "stderr")),
     ...shown.unchanged.length > 0 ? [
-      `${shown.unchanged.length} already ${trusted ? "trusted" : "untrusted"}: ${shown.unchanged.map((row) => row.label ?? row.address).join(", ")}`
+      `${shown.unchanged.length} already ${trusted ? "trusted" : "untrusted"}: ${shown.unchanged.map((row2) => row2.label ?? row2.address).join(", ")}`
     ] : [],
     ...(shown.sessionLinked?.length ?? 0) > 0 ? [sessionLinkedLine(shown.sessionLinked ?? [])] : [],
     "",
@@ -114978,7 +115596,7 @@ async function setTrust(args, ctx, trusted) {
       return 1;
     }
   }
-  const committed = await call2({ walletIds: changing.map((row) => row.id), trusted });
+  const committed = await call2({ walletIds: changing.map((row2) => row2.id), trusted });
   if (!committed.ok)
     return writeTrustFailure(ctx, committed);
   const result = committed.body;
@@ -115002,7 +115620,7 @@ function walletsUntrust(args, ctx) {
 }
 
 // src/config.ts
-import { chmod as chmod15, mkdir as mkdir12, readFile as readFile19, rm as rm8, writeFile as writeFile14 } from "node:fs/promises";
+import { chmod as chmod15, mkdir as mkdir12, readFile as readFile20, rm as rm8, writeFile as writeFile14 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
 import { join as join16 } from "node:path";
 function configDir2() {
@@ -115013,7 +115631,7 @@ function configFilePath() {
 }
 async function readConfig() {
   try {
-    const raw = await readFile19(configFilePath(), "utf8");
+    const raw = await readFile20(configFilePath(), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (err.code === "ENOENT")
@@ -115742,8 +116360,8 @@ async function buildRealDeps() {
       const { runStdioServer: runStdioServer2 } = await Promise.resolve().then(() => (init_server3(), exports_server));
       await runStdioServer2(env);
     },
-    readFile: (path) => readFile20(path, "utf8"),
-    readBytes: (path) => readFile20(path),
+    readFile: (path) => readFile21(path, "utf8"),
+    readBytes: (path) => readFile21(path),
     readStdin: () => new Promise((resolve6, reject) => {
       const chunks = [];
       process.stdin.on("data", (chunk) => chunks.push(chunk));

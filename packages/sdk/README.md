@@ -222,6 +222,15 @@ locally. `socials` accepts only `website`, `twitter`, `telegram` and `discord`, 
 The remaining limits, defaults and field help come from the shared launch definition; the server
 validates ranges and eligibility.
 
+On Solana, where the server has `CURVE_LAUNCH_RULES_ENABLED` on, `launchRules` sets the curve's
+launch rules, fixed at launch and enforced by the curve program. It is the API's nested object, in
+seconds and raw units: `openDelaySecs` (at most 604800), `maxBuyPerWalletRaw` with `capWindowSecs`,
+`allowlist` (1 to 4,096 addresses) with `allowlistWindowSecs` (each window 1 to 86400, from the
+open), and `devBuyMaxRaw` (only with a delay). The dry run and the build answer the resolved
+`launchRules`. `allowlistProof(mint, wallet)` reads a wallet's proof on a pool's allowlist, for a
+caller that builds `register_buyer` itself; Candle's own buys attach it. See
+[Launch rules](https://docs.candle.tv/developers/headless-launch#launch-rules-solana).
+
 Embedded launches use `/launch/headless` with or without a buy. TEE launches use `/launch/self/build`
 and the existing sign/broadcast/confirm flow; a Solana TEE buy signs the returned bundle and sends
 it to `/launch/atomic/submit`. Dry runs use the selected family's `/dry-run`. Existing server

@@ -650,6 +650,143 @@ export declare const LAUNCH_DEFINITION: {
             };
         };
     }, {
+        readonly key: "launchRules.openDelaySecs";
+        readonly type: "duration";
+        readonly help: "Launch rules, Solana only, where the server has CURVE_LAUNCH_RULES_ENABLED on: how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.";
+        readonly wireType: "number";
+        readonly range: {
+            readonly min: "0";
+            readonly max: "604800";
+            readonly unit: "seconds";
+        };
+        readonly chains: readonly ["solana"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--open-in";
+                readonly value: "<duration>";
+            };
+            readonly mcp: {
+                readonly key: "launchRules.openDelaySecs";
+            };
+            readonly sdk: {
+                readonly key: "launchRules.openDelaySecs";
+            };
+        };
+    }, {
+        readonly key: "launchRules.maxBuyPerWalletRaw";
+        readonly type: "decimal";
+        readonly help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string.";
+        readonly range: {
+            readonly unit: "whole quote units";
+        };
+        readonly chains: readonly ["solana"];
+        readonly requires: readonly ["launchRules.capWindowSecs"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--max-buy-per-wallet";
+                readonly value: "<amount>";
+            };
+            readonly mcp: {
+                readonly key: "launchRules.maxBuyPerWalletRaw";
+            };
+            readonly sdk: {
+                readonly key: "launchRules.maxBuyPerWalletRaw";
+            };
+        };
+    }, {
+        readonly key: "launchRules.capWindowSecs";
+        readonly type: "duration";
+        readonly help: "How long the per-wallet cap holds, counted from the open: 1 second to 24 hours (86400 seconds); needs --max-buy-per-wallet.";
+        readonly wireType: "number";
+        readonly range: {
+            readonly min: "1";
+            readonly max: "86400";
+            readonly unit: "seconds";
+        };
+        readonly chains: readonly ["solana"];
+        readonly requires: readonly ["launchRules.maxBuyPerWalletRaw"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--cap-window";
+                readonly value: "<duration>";
+            };
+            readonly mcp: {
+                readonly key: "launchRules.capWindowSecs";
+            };
+            readonly sdk: {
+                readonly key: "launchRules.capWindowSecs";
+            };
+        };
+    }, {
+        readonly key: "launchRules.allowlist";
+        readonly type: "file";
+        readonly help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.";
+        readonly wireType: "string[]";
+        readonly range: {
+            readonly min: "1";
+            readonly max: "4096";
+            readonly unit: "wallets";
+        };
+        readonly chains: readonly ["solana"];
+        readonly requires: readonly ["launchRules.allowlistWindowSecs"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--allowlist";
+                readonly value: "<path>";
+            };
+            readonly mcp: {
+                readonly key: "launchRules.allowlist";
+            };
+            readonly sdk: {
+                readonly key: "launchRules.allowlist";
+            };
+        };
+    }, {
+        readonly key: "launchRules.allowlistWindowSecs";
+        readonly type: "duration";
+        readonly help: "How long the allowlist phase holds, counted from the open: 1 second to 24 hours (86400 seconds); needs --allowlist.";
+        readonly wireType: "number";
+        readonly range: {
+            readonly min: "1";
+            readonly max: "86400";
+            readonly unit: "seconds";
+        };
+        readonly chains: readonly ["solana"];
+        readonly requires: readonly ["launchRules.allowlist"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--allowlist-window";
+                readonly value: "<duration>";
+            };
+            readonly mcp: {
+                readonly key: "launchRules.allowlistWindowSecs";
+            };
+            readonly sdk: {
+                readonly key: "launchRules.allowlistWindowSecs";
+            };
+        };
+    }, {
+        readonly key: "launchRules.devBuyMaxRaw";
+        readonly type: "decimal";
+        readonly help: "The most the launching wallet may buy before the open, only with --open-in: at least the launch's own buy, at most the dev-buy ceiling, and the buy by default. That spend counts toward the per-wallet cap after the open. The CLI takes whole quote units; the request field is raw units as a decimal string.";
+        readonly range: {
+            readonly unit: "whole quote units";
+        };
+        readonly chains: readonly ["solana"];
+        readonly requires: readonly ["launchRules.openDelaySecs"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--dev-buy-max";
+                readonly value: "<amount>";
+            };
+            readonly mcp: {
+                readonly key: "launchRules.devBuyMaxRaw";
+            };
+            readonly sdk: {
+                readonly key: "launchRules.devBuyMaxRaw";
+            };
+        };
+    }, {
         readonly key: "dryRun";
         readonly type: "boolean";
         readonly help: "Print the launch preview without building, signing or recording a launch; local image uploads still become public and permanent.";
@@ -706,6 +843,14 @@ export interface GeneratedLaunchFields {
         vaultIndex?: number;
     };
     buy?: string;
+    launchRules?: {
+        openDelaySecs?: number;
+        maxBuyPerWalletRaw?: string;
+        capWindowSecs?: number;
+        allowlist?: string[];
+        allowlistWindowSecs?: number;
+        devBuyMaxRaw?: string;
+    };
     dryRun?: boolean;
 }
 //# sourceMappingURL=launch-definition.d.ts.map

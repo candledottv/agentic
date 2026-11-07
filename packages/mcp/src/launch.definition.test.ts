@@ -115,3 +115,48 @@ test("an unknown socials key is refused locally and the four keys pass", async (
     expect(String(calls[0]?.url)).toContain("/launch/headless/dry-run")
   }
 })
+
+// BE-2794 (BE-2791 spec 7.1): both launch tools take the nested launchRules object, in seconds
+// and raw units, and forward it as given; the API refuses what is out of bounds.
+const RULES = {
+  openDelaySecs: 600,
+  maxBuyPerWalletRaw: "10000000",
+  capWindowSecs: 3600,
+  allowlist: ["11111111111111111111111111111111"],
+  allowlistWindowSecs: 1800,
+  devBuyMaxRaw: "5000000",
+}
+
+test("launchRules is one nested object with the six wire fields, each with its help", () => {
+  const tools = registered()
+  for (const name of ["candle_launch_token", "candle_launch_and_seed"] as const) {
+    const schema = tools.get(name)?.inputSchema.launchRules as import("zod").ZodTypeAny
+    expect(schema.safeParse(RULES).success).toBe(true)
+    expect(schema.safeParse(undefined).success).toBe(true)
+    expect(schema.safeParse({ openDelaySecs: "600" }).success).toBe(false)
+    expect(schema.safeParse({ allowlist: "one" }).success).toBe(false)
+    for (const key of Object.keys(RULES)) expect(schema.description).toContain(launchFieldHelp(`launchRules.${key}`))
+  }
+})
+
+test("both launch tools forward launchRules verbatim, with and without a seed", async () => {
+  const calls: { url: string; body: Record<string, unknown> }[] = []
+  const fetch: FetchLike = async (url, init) => {
+    calls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+    return { ok: true, status: 200, text: async () => JSON.stringify({ success: true, dryRun: true }) }
+  }
+  const tools = registered(undefined, fetch)
+  await tools.get("candle_launch_token")?.handler({ ...BASE, launchRules: RULES, dryRun: true })
+  await tools.get("candle_launch_and_seed")?.handler({ ...BASE, launchRules: RULES, dryRun: true })
+  await tools.get("candle_launch_and_seed")?.handler({ ...BASE, launchRules: RULES, devBuy: "0.005", dryRun: true })
+  expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+    "/api/v1/launch/headless/dry-run",
+    "/api/v1/launch/headless/dry-run",
+    "/api/v1/launch/atomic/dry-run",
+  ])
+  for (const call of calls) expect(call.body.launchRules).toEqual(RULES)
+  // Without the field, no body carries it.
+  calls.length = 0
+  await tools.get("candle_launch_token")?.handler({ ...BASE, dryRun: true })
+  expect(calls[0]?.body).not.toHaveProperty("launchRules")
+})
