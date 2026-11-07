@@ -42,6 +42,7 @@ import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysAccess } from "./commands/keys-access"
 import { keysSelf, keysUpdate } from "./commands/keys-embedded-wallet"
 import { keysLimit } from "./commands/keys-limit"
+import { keysLimits } from "./commands/keys-limits"
 import { keysRotate } from "./commands/keys-rotate"
 import { keysResume, keysStop } from "./commands/keys-stop"
 import { keysWallets } from "./commands/keys-wallets"
@@ -362,6 +363,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       // token, both directions); `self` is the key's own, and only denies.
       update: keysUpdate,
       limit: keysLimit,
+      // BE-2691 (R54): per-asset caps over the profile's own API key; tighten only.
+      limits: keysLimits,
       self: keysSelf,
       // BE-2648: a new secret for the same key; --finish ends the old secret's grace window.
       rotate: keysRotate,

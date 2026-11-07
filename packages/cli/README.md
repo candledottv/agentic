@@ -96,6 +96,7 @@ emergency procedure, rebinding, trusted wallets and API key access levels are al
 | `candle keys list [--scopes]` | Lists this account's API keys: prefix, name, Read, Write or Withdraw access, environment, timestamps, and which device minted each one. `--scopes` adds the raw scopes, sorted. |
 | `candle keys create [--access read\|write\|withdraw \| --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily\|weekly\|monthly\|never]] [--embedded-wallet deny\|allow] [--no-store]` | Creates a new API key and prints the plaintext exactly once, with the same optional name, expiration, and USD transaction limit the portal's create form takes. `--access` mints one of the portal's three levels (`write` trades and launches and cannot move funds; `withdraw` is Write plus `transfer:write` and `transfer:bound`: the key can move funds between your own wallets and to addresses you approved, and out of the wallet it runs to wallets you linked while signed in or marked trusted and to that wallet's vault); `--scopes` names raw scopes instead, never both. `--embedded-wallet` defaults to `deny`; `allow` lets the key spend the account's embedded wallet and is confirmed at a terminal. Stored locally only if the CLI does not already hold a working key. `--no-store` prints the new key without saving it or changing the profile's working key or metadata; `--json` reports `stored: false`. An account holds at most 25 active keys. |
 | `candle keys access <prefix\|label\|self> (--access read\|write\|withdraw [--yes] \| --history)` | Changes an existing key's level in place (same key, wallets and caps). Widening needs the device token and the prefix typed back at a terminal; `--yes` skips the prompt when narrowing; `self` narrows the profile's own key and can never widen it. `--history` lists the key's changes and who made them. |
+| `candle keys limits <prefix> <asset>=<raw> [<asset>=<raw> ...]` | Sets a key's per-asset caps (`sol`, `usdc`, `cndl`, `eth`, `usdg`, in base units per transaction) with the profile's own API key. It can only tighten; raising or removing a cap is `LOOSEN_REQUIRES_SESSION`, and the owner does that in the web key manager. A device token cannot set these caps. |
 | `candle keys update <prefix\|label> --embedded-wallet allow\|deny [--yes]`, `candle keys self embedded-wallet deny` | Allow or deny a key the account's embedded wallet, with the device token (allowing needs the prefix typed back at a terminal). `self embedded-wallet deny` lets the profile's own key give it up with no prompt; a key can never allow itself. |
 | `candle keys signer approve <code> --key <prefix\|label> [--reject]`, `candle keys signer move <prefix\|label> [--to-key <prefix\|label>]` | Key signers for bots on a different machine from the vault. `approve` accepts (or rejects) a key's signer request with the device token, after you type the full fingerprint the trading machine printed. `move`, on the machine holding a wallet's current signer, moves every wallet on the key onto its active signer; `--to-key` moves a revoked key's wallets to a live key. |
 | `candle keys stop <prefix>` | Pause one key using the device token. Its requests are refused with `PROFILE_PAUSED` until resumed; the key and its local credential are kept. Repeating the command succeeds. |
@@ -411,10 +412,11 @@ key; Candle builds the transaction and Privy signs it through the relay. See TEE
 below. Limit orders are a REST surface only (`/api/v1/trade/agent/orders`), not in this CLI, the
 SDK or the MCP server.
 
-**`keys limits`.** There is no command for setting per-key spend limits, because the API route
-that sets them (`PUT /keys/:prefix/limits`) structurally rejects a device token. It only accepts
-an agent key or a live session, since a spend limit is fund-movement authority, and this CLI's
-device token is scoped narrowly to key management. Manage limits from the portal.
+**`keys limits`.** The API route that sets per-key spend limits (`PUT /keys/:prefix/limits`)
+structurally rejects a device token: a spend limit is fund-movement authority, and this CLI's
+device token is scoped narrowly to key management. So `candle keys limits` sends the profile's own
+API key, and an agent key may only tighten (lower a cap, or add one where none was set). Raising
+or removing a cap is refused with `LOOSEN_REQUIRES_SESSION`; the owner does that from the portal.
 
 **`devices list` / `devices revoke`.** The device-token endpoints (`GET`/`DELETE
 /device/tokens`) are session-only by design: this is the self-renewal guard that keeps a stolen

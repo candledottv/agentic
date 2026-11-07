@@ -1160,6 +1160,11 @@ export const HELP: Record<string, Topic> = {
           "Set or clear the USD transaction cap on an existing key, with the device token. --reset defaults to daily",
       },
       {
+        invocation: "limits <prefix> <asset>=<raw> [<asset>=<raw> ...]",
+        description:
+          "Set a key's per-asset caps (sol, usdc, cndl, eth, usdg; a whole number of base units per transaction) with the profile's own API key. It can only lower a cap or add one; raising or removing one is refused (LOOSEN_REQUIRES_SESSION) and is the owner's, in the web key manager. The list replaces the key's caps",
+      },
+      {
         invocation: "self embedded-wallet deny",
         description:
           "The profile's own key gives up the embedded wallet, with no prompt. A key can never allow itself: the owner does that with keys update",
@@ -1209,6 +1214,7 @@ export const HELP: Record<string, Topic> = {
       "candle keys access self --access read --yes",
       "candle keys update agent-one --embedded-wallet deny --yes",
       "candle keys self embedded-wallet deny",
+      "candle keys limits Ab3dEf9h sol=1000000000 usdc=50000000",
       "candle keys wallets ck_live_ab12",
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
       "candle keys signer approve ABCD-EFGH --key tr-2",
