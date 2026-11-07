@@ -39,7 +39,7 @@ import { parseRenamePairs, planBatchRename, type RenameFinding, type RenamePair 
 import { commitVault } from "../vault/store"
 import {
   refuseEnvPassphrase,
-  requireTty,
+  refusePromptsWithoutTerminal,
   requireVaultRaw,
   runVaultCommand,
   unlockInteractively,
@@ -82,7 +82,8 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
   const id = parsed.values["--id"]
 
   if (!refuseEnvPassphrase(ctx)) return 1
-  if (!requireTty(ctx, "vault rename")) return 1
+  // BE-2661 (R10): refused at the prompt, so a factor that asks nothing renames without a terminal.
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "vault rename")
 
   const { deps } = ctx
   const resolvedVault = vaultPathFor(ctx, parsed)
@@ -103,7 +104,7 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
 
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault)
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const opened = await unlockInteractively(promptCtx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
     const vault = hold(opened.vault)

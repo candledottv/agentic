@@ -55,7 +55,7 @@ import {
   describeEntry,
   missingVault,
   refuseEnvPassphrase,
-  requirePromptStreams,
+  refusePromptsWithoutTerminal,
   runVaultCommand,
   unlockInteractively,
   usage,
@@ -222,14 +222,15 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
   if (balances && "error" in evmRpc) return usage(ctx, evmRpc.error)
   const evmRpcUrl = "url" in evmRpc ? evmRpc.url : DEFAULT_HOOD_RPC_URL
   // D7: the prompt reads stdin and writes stderr, so those are the two streams that must be a
-  // terminal. stdout is the payload channel and may be a file.
-  if (!requirePromptStreams(ctx, "vault list")) return 1
+  // terminal. stdout is the payload channel and may be a file. BE-2661 (R10): refused at the
+  // prompt rather than up front, so a factor that asks nothing lists without a terminal.
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "vault list")
 
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await readVaultRaw(path)
     if (raw === null) throw missingVault(ctx, resolvedVault)
     const vault = hold(
-      (await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") }))
+      (await unlockInteractively(promptCtx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") }))
         .vault,
     )
     const all = vault.index.entries

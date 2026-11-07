@@ -38,6 +38,7 @@ import {
   describeSend,
   findExternalEntry,
   refuseEnvPassphrase,
+  refusePromptsWithoutTerminal,
   requireTty,
   requireVaultRaw,
   runVaultCommand,
@@ -195,7 +196,8 @@ export async function externalList(args: string[], ctx: CommandContext): Promise
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
   if (!refuseEnvPassphrase(ctx)) return 1
-  if (!requireTty(ctx, "external list")) return 1
+  // BE-2661 (R10): refused at the prompt, so a factor that asks nothing lists without a terminal.
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "external list")
 
   const { deps } = ctx
   const resolvedVault = vaultPathFor(ctx, parsed)
@@ -204,7 +206,7 @@ export async function externalList(args: string[], ctx: CommandContext): Promise
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault)
     const vault = hold(
-      (await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") }))
+      (await unlockInteractively(promptCtx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") }))
         .vault,
     )
     const externals = vault.index.entries.filter((entry) => entry.role === "external")

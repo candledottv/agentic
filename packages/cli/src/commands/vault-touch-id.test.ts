@@ -1054,3 +1054,30 @@ test("native helper identity quotes are refused at parse time without a spawn or
     expect(h.asked).toEqual([])
   }
 })
+
+describe("BE-2661 (R10): a command whose only prompt is the unlock runs without a terminal", () => {
+  test("vault list and external list open with Touch ID and no terminal, and a passphrase still refuses before any prompt", async () => {
+    const t = await vaultWithTouchId()
+    for (const args of [
+      ["vault", "list"],
+      ["external", "list"],
+    ]) {
+      const piped = await harness({
+        env: { CANDLE_CONFIG_DIR: t.dir },
+        script: { store: t.add.script.store },
+        tty: false,
+      })
+      expect(await run([...args, "--factor", "touch-id", "--json", "--keystore", t.vaultPath], piped.deps)).toBe(0)
+      expect(piped.stdout.text.trim().split("\n")).toHaveLength(1)
+      expect(piped.asked).toEqual([])
+      expect(piped.calls.filter((call) => call.op === "decrypt")).toHaveLength(1)
+
+      const typed = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase], tty: false })
+      expect(await run([...args, "--factor", "passphrase", "--json", "--keystore", t.vaultPath], typed.deps)).toBe(1)
+      expect(typed.asked).toEqual([])
+      expect(failure(typed).code).toBe("VAULT_UNLOCK_FAILED")
+      expect(failure(typed).message).toContain(`${args.join(" ")} needs a terminal`)
+      expect(failure(typed).suggestion).toContain("--factor touch-id")
+    }
+  })
+})

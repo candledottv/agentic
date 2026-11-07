@@ -75,7 +75,7 @@ import {
   describeRole,
   findExternalEntry,
   refuseEnvPassphrase,
-  requireTty,
+  refusePromptsWithoutTerminal,
   requireVaultRaw,
   runVaultCommand,
   takeRepeatedFlag,
@@ -279,7 +279,8 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
   const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
   if ("error" in solana) return usage(ctx, solana.error)
   if (!refuseEnvPassphrase(ctx)) return 1
-  if (!requireTty(ctx, "candle sign")) return 1
+  // BE-2661 (R10): refused at the prompt, so a factor that asks nothing signs without a terminal.
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "candle sign")
 
   const { deps } = ctx
   const resolvedVault = vaultPathFor(ctx, parsed)
@@ -322,7 +323,7 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
 
     // Step 2: the vault, and the signer refusals.
     const raw = await requireVaultRaw(ctx, resolvedVault)
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const opened = await unlockInteractively(promptCtx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
     const vault = hold(opened.vault)
@@ -518,7 +519,8 @@ export async function signMessage(args: string[], ctx: CommandContext): Promise<
   if (lifted.values.length !== 1) return usage(ctx, "--wallet <external> is required, exactly once.")
   const requested = lifted.values[0] as string
   if (!refuseEnvPassphrase(ctx)) return 1
-  if (!requireTty(ctx, "candle sign message")) return 1
+  // BE-2661 (R10): as `candle sign`.
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "candle sign message")
 
   const { deps } = ctx
   const resolvedVault = vaultPathFor(ctx, parsed)
@@ -535,7 +537,7 @@ export async function signMessage(args: string[], ctx: CommandContext): Promise<
       )
     }
     const raw = await requireVaultRaw(ctx, resolvedVault)
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const opened = await unlockInteractively(promptCtx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
     const vault = hold(opened.vault)

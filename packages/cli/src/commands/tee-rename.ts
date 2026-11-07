@@ -39,7 +39,14 @@ import { parseRenamePairs, type RenameFinding, type RenamePair } from "../vault/
 import { commitVault, readVaultRaw } from "../vault/store"
 import { refuseEnvPassphrase } from "./tee"
 import { SAME_STRING_LINE } from "./vault-rename"
-import { requireTty, runVaultCommand, unlockInteractively, usage, vaultPathFor, writeJson } from "./vault-support"
+import {
+  refusePromptsWithoutTerminal,
+  runVaultCommand,
+  unlockInteractively,
+  usage,
+  vaultPathFor,
+  writeJson,
+} from "./vault-support"
 
 const RENAME_PATH = "/api/v1/agent/linked-wallets/rename"
 
@@ -273,7 +280,8 @@ export async function teeRename(args: string[], ctx: CommandContext): Promise<nu
   // Which keys a vault holds is inside the encrypted index, so a TEE wallet named beside a vault
   // on this machine is what an unlock is for. No TEE wallet, or no vault: no unlock.
   const raw = rows.some((row) => row.tee) ? await readVaultRaw(vaultPath.path) : null
-  if (raw !== null && !requireTty(ctx, "tee rename")) return 1
+  // BE-2661 (R10): refused at the prompt, so a factor that asks nothing renames without a terminal.
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "tee rename")
 
   return runVaultCommand(ctx, async ({ hold }) => {
     const vault =
@@ -281,7 +289,7 @@ export async function teeRename(args: string[], ctx: CommandContext): Promise<nu
         ? null
         : hold(
             (
-              await unlockInteractively(ctx, vaultPath.path, raw, {
+              await unlockInteractively(promptCtx, vaultPath.path, raw, {
                 acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
               })
             ).vault,

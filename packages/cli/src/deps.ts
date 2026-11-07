@@ -136,8 +136,8 @@ export interface Deps {
    *
    * `stderr` is here because the prompt writes THERE, not to stdout (`prompt-streams.ts`'s
    * `realPromptStreams` names `output: process.stderr`). `requireTty` demands stdin and stdout and
-   * is unchanged; `requirePromptStreams` (BE-274, D7) demands the two streams the prompt actually
-   * uses, so a listing whose whole output is a document can be redirected to a file.
+   * is unchanged; `refusePromptsWithoutTerminal` (BE-274 D7, BE-1551, BE-2661) checks the two streams
+   * the prompt actually uses, so a listing whose whole output is a document can be redirected to a file.
    */
   isTTY: { stdin: boolean; stdout: boolean; stderr: boolean }
   columns?: { stdout?: number; stderr?: number }

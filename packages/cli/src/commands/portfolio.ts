@@ -113,11 +113,12 @@ import { describeRpcFailure, openSolanaClient, rateLimitedReadFailure, type Sola
 import { isRateLimited, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { formatAmount, formatPrice, formatUsd } from "../usd"
 import { VaultError } from "../vault/errors"
-import { readVaultRaw } from "../vault/store"
+import { readVaultRaw, type UnlockedVault } from "../vault/store"
 import { financialHeading, financialId, financialTable, financialToken } from "./financial-output"
 import {
+  isNoTerminalRefusal,
   refuseEnvPassphrase,
-  requirePromptStreams,
+  refusePromptsWithoutTerminal,
   runVaultCommand,
   unlockInteractively,
   usage,
@@ -316,13 +317,22 @@ const NO_API_KEY = {
   suggestion: "Set CANDLE_API_KEY, or run `candle auth login` to store one.",
 }
 
+/** BE-2661 (R10): the vault row and the stderr note when a vault exists and no terminal can unlock it. */
+const NO_TERMINAL_REASON = "not read: no terminal for its unlock"
+const NO_TERMINAL_NOTE =
+  "The vault was not read: its unlock needs a prompt, and standard input and standard error are not both a terminal. Run it at a terminal, pass --factor touch-id or --factor passkey to unlock without a prompt, or pass --no-vault to leave it out."
+
 export async function portfolio(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--rpc-url", "--evm-rpc-url", "--keystore", "--chain"],
-    booleanFlags: ["--no-perps"],
+    booleanFlags: ["--no-perps", "--no-vault"],
     pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
+  const noVault = parsed.booleans.has("--no-vault")
+  if (noVault && parsed.values["--keystore"] !== undefined) {
+    return usage(ctx, "--keystore names the vault to read and has no effect with --no-vault.")
+  }
   if (parsed.positionals.length > 1) return usage(ctx, `Unexpected argument: ${parsed.positionals[1]}`)
   const filter = parsed.positionals[0]
   if (filter !== undefined && filter.trim() === "") return usage(ctx, "The filter is empty.")
@@ -371,15 +381,33 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     let vaultEntries: { address: string; label: string; role: "vault" | "external" }[] | undefined
     let evmEntries: { address: string; label: string }[] | undefined
     let vaultReason: string | undefined
+    // A vault that exists but could not be opened: its holdings are missing from the total.
+    let vaultSkipped = false
     // Wallets before the filter, for "N of M": the vault's here, Candle's once it has answered.
     let known = 0
-    const raw = await readVaultRaw(resolvedVault.path)
-    if (raw === null) {
-      vaultReason = `no vault at ${resolvedVault.path}`
-    } else {
+    const raw = noVault ? null : await readVaultRaw(resolvedVault.path)
+    let vault: UnlockedVault | undefined
+    if (raw !== null) {
       if (!refuseEnvPassphrase(ctx)) return 1
-      if (!requirePromptStreams(ctx, "portfolio")) return 1
-      const vault = hold((await unlockInteractively(ctx, resolvedVault.path, raw)).vault)
+      // BE-2661 (R10): the vault is read only for its addresses, so a portfolio never needs a
+      // terminal. A factor that asks nothing (`--factor touch-id`, `passkey`) still opens it; one
+      // that would prompt is not asked, and the vault row says why instead of the command refusing.
+      try {
+        const unlockCtx = refusePromptsWithoutTerminal(ctx, "portfolio")
+        vault = hold((await unlockInteractively(unlockCtx, resolvedVault.path, raw)).vault)
+      } catch (error) {
+        if (!isNoTerminalRefusal(error)) throw error
+      }
+    }
+    if (noVault) {
+      vaultReason = "not read (--no-vault)"
+    } else if (raw === null) {
+      vaultReason = `no vault at ${resolvedVault.path}`
+    } else if (vault === undefined) {
+      vaultReason = NO_TERMINAL_REASON
+      vaultSkipped = true
+      notice(deps, "stderr", "note", NO_TERMINAL_NOTE)
+    } else {
       vaultEntries = showSolana
         ? vault.index.entries
             .filter((entry) => entry.chain === "solana" && (entry.role === "vault" || entry.role === "external"))
@@ -719,7 +747,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     // instead of reporting the result complete.
     const listNote: "cut-off" | "unknown" | null =
       listStatus === "cut-off" ? "cut-off" : listStatus === "unknown" && !shownUnread ? "unknown" : null
-    const complete = listNote === null && !shownUnread && !perpsPartial
+    const complete = listNote === null && !shownUnread && !perpsPartial && !vaultSkipped
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0)
     const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0)
     const lp = lpSection
@@ -818,6 +846,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       byChain,
       unavailableByChain,
       listNote,
+      vaultSkipped,
       lp,
     })
     if (perps) writePerpsSection(ctx, perps)
@@ -1206,6 +1235,7 @@ function writeTable(
     >
     unavailableByChain: Record<Chain, string[]>
     listNote: "cut-off" | "unknown" | null
+    vaultSkipped?: boolean
     lp?: { positions: number; unpriced: number; unreadable: number; valueUsd: number }
   },
 ): void {
@@ -1317,9 +1347,12 @@ function writeTable(
   notes.push([
     "total",
     formatUsd(totals.totalUsd),
-    totals.unpriced > 0
-      ? `${totals.unpriced} unpriced ${totals.unpriced === 1 ? "holding" : "holdings"} not counted`
-      : "every holding priced",
+    (totals.vaultSkipped ? "partial: the vault was not read (no terminal for its unlock). " : "") +
+      (totals.unpriced > 0
+        ? `${totals.unpriced} unpriced ${totals.unpriced === 1 ? "holding" : "holdings"} not counted`
+        : totals.vaultSkipped
+          ? "other holdings priced"
+          : "every holding priced"),
   ])
   const style = terminalStyle(deps, "stdout")
   const width = Math.max(...notes.map(([label]) => displayWidth(label as string)))
@@ -1344,6 +1377,10 @@ function writeTable(
       `${unavailable} ${unavailable === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain, n]) => `${n} on ${CHAIN_NAMES[chain]}`).join(", ")}). What was not read is marked "not read" and is not in the total.`,
     )
   }
+  if (totals.vaultSkipped)
+    warnings.push(
+      "The vault was not read: no terminal for its unlock. Its holdings are not in the total, so the total is partial (exit 3). Run it in a terminal, or pass --no-vault to leave the vault out on purpose.",
+    )
   writeNotes(ctx, warnings)
   writeListNote(ctx, totals.listNote)
   const later: string[] = []

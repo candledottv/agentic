@@ -649,7 +649,7 @@ describe("T8: D7's streams", () => {
     expect(h.asked).toHaveLength(1)
   })
 
-  test("stdin or stderr not a terminal is VAULT_UNLOCK_FAILED, before any prompt", async () => {
+  test("stdin or stderr not a terminal is VAULT_UNLOCK_FAILED at the prompt, before it asks anything", async () => {
     const fx = await vaultWith(THREE_KEYS)
     for (const tty of [
       { stdin: false, stdout: true, stderr: true },
@@ -657,9 +657,10 @@ describe("T8: D7's streams", () => {
     ]) {
       const h = harness({ dir: fx.dir, tty })
       expect(await run(["vault", "list"], h.deps)).toBe(1)
+      // BE-2661 (R10): refused at the prompt, so a factor that asks nothing still lists.
       expect(humanText(h.stderr.text)).toContain(
         humanText(
-          "vault list needs a terminal for the passphrase prompt: standard input and standard error must both be a terminal. Standard output may be redirected; that is where the listing goes.",
+          "vault list needs a terminal here: this unlock reads a vault passphrase, a security key PIN or a choice from a prompt, and standard input and standard error must both be a terminal for that. Standard output may be redirected.",
         ),
       )
       expect(h.asked).toEqual([])

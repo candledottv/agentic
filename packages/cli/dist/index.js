@@ -28989,13 +28989,13 @@ __export(exports_vault_support, {
   runVaultCommand: () => runVaultCommand,
   requireVaultRaw: () => requireVaultRaw,
   requireTty: () => requireTty,
-  requirePromptStreams: () => requirePromptStreams,
   refusePromptsWithoutTerminal: () => refusePromptsWithoutTerminal,
   refuseEnvPassphrase: () => refuseEnvPassphrase,
   openWithTypedPassphrase: () => openWithTypedPassphrase,
   nonDefaultVaultFooter: () => nonDefaultVaultFooter,
   missingVault: () => missingVault,
   menuSafeText: () => menuSafeText,
+  isNoTerminalRefusal: () => isNoTerminalRefusal,
   groupAddress: () => groupAddress,
   findExternalEntry: () => findExternalEntry,
   factorMenu: () => factorMenu,
@@ -29039,21 +29039,22 @@ function requireTty(ctx, what) {
   }));
   return false;
 }
-function requirePromptStreams(ctx, what) {
-  if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stderr)
-    return true;
-  writeVaultFailure(ctx, new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal for the passphrase prompt: standard input and standard error must both be a terminal. Standard output may be redirected; that is where the listing goes.`));
-  return false;
-}
 function refusePromptsWithoutTerminal(ctx, what) {
   if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stderr)
     return ctx;
   const refuse2 = async () => {
-    throw new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal here: this unlock reads a vault passphrase, a security key PIN or a choice from a prompt, and standard input and standard error must both be a terminal for that. Standard output may be redirected.`, {
+    throw tagNoTerminal(new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal here: this unlock reads a vault passphrase, a security key PIN or a choice from a prompt, and standard input and standard error must both be a terminal for that. Standard output may be redirected.`, {
       suggestion: "Run it from a terminal, or pass --factor touch-id or --factor passkey to unlock with a factor that reads no prompt. No environment variable or flag supplies a passphrase or PIN."
-    });
+    }));
   };
   return { ...ctx, deps: { ...ctx.deps, promptSecret: refuse2, promptLine: refuse2 } };
+}
+function tagNoTerminal(error) {
+  noTerminalRefusals.add(error);
+  return error;
+}
+function isNoTerminalRefusal(error) {
+  return error instanceof VaultError && noTerminalRefusals.has(error);
 }
 function vaultPathFor(ctx, parsed) {
   const flag = parsed.values["--keystore"];
@@ -29674,7 +29675,7 @@ function takeRepeatedFlag(args, flag) {
   }
   return { values, rest };
 }
-var PASSPHRASE_ONLY_PREFIX = "Passphrase only: ";
+var noTerminalRefusals, PASSPHRASE_ONLY_PREFIX = "Passphrase only: ";
 var init_vault_support = __esm(() => {
   init_args();
   init_presentation();
@@ -29690,6 +29691,7 @@ var init_vault_support = __esm(() => {
   init_platform();
   init_sidecar();
   init_store();
+  noTerminalRefusals = new WeakSet;
 });
 
 // src/vault/ed25519.ts
@@ -76567,9 +76569,9 @@ var HELP = {
     group: "Account",
     intro: "Holdings, prices and value of every wallet",
     summary: "Every wallet's holdings, prices and value on Solana and Hood (vault read over your own RPCs)",
-    description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so. After the totals, a Hyperliquid section (live from Hyperliquid, not in the ledger, and never in the total) lists each EVM TEE wallet's Hyperliquid account value, unrealized P&L, positions and risk at the default thresholds, read from Hyperliquid's public API on this machine; a failed read there is not read and the exit is 3. --chain solana and --no-perps read nothing from Hyperliquid.",
+    description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so. After the totals, a Hyperliquid section (live from Hyperliquid, not in the ledger, and never in the total) lists each EVM TEE wallet's Hyperliquid account value, unrealized P&L, positions and risk at the default thresholds, read from Hyperliquid's public API on this machine; a failed read there is not read and the exit is 3. --chain solana and --no-perps read nothing from Hyperliquid. The vault is read only for its addresses, so the command needs no terminal: without one, a factor that asks nothing (--factor touch-id or passkey) still unlocks it, and otherwise the vault row says not read and the other groups are shown, but the result is partial: the total says so and the exit is 3. --no-vault leaves the vault out on purpose, and then the result can be complete (exit 0).",
     usage: [
-      "candle portfolio [<filter>] [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--no-perps] [--json]"
+      "candle portfolio [<filter>] [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--no-perps] [--no-vault] [--json]"
     ],
     rows: [
       {
@@ -76590,6 +76592,10 @@ var HELP = {
       {
         invocation: "--no-perps",
         description: "Skip the Hyperliquid section: send no EVM TEE address to Hyperliquid's public API"
+      },
+      {
+        invocation: "--no-vault",
+        description: "Leave the vault out: no unlock, and no vault address is sent to your RPC"
       },
       KEYSTORE_FLAG
     ],
@@ -89536,8 +89542,7 @@ async function externalList(args, ctx) {
     return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   if (!refuseEnvPassphrase(ctx))
     return 1;
-  if (!requireTty(ctx, "external list"))
-    return 1;
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "external list");
   const { deps } = ctx;
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
@@ -89545,7 +89550,7 @@ async function externalList(args, ctx) {
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
-    const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+    const vault = hold((await unlockInteractively(promptCtx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const externals = vault.index.entries.filter((entry) => entry.role === "external");
     const rows = externals.map((entry) => ({
       address: entry.address,
@@ -102036,15 +102041,14 @@ async function runPlugin(name2, rawArgs, ctx) {
   if (split2.wallets.length > 0) {
     if (!refuseEnvPassphrase(ctx))
       return 1;
-    if (!requireTty(ctx, "candle <plugin> --wallet"))
-      return 1;
+    const promptCtx = refusePromptsWithoutTerminal(ctx, "candle <plugin> --wallet");
     const resolvedVault = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
     if ("error" in resolvedVault)
       return usage(ctx, resolvedVault.error);
     const vaultPath = resolvedVault.path;
     const resolved = await runVaultCommand(ctx, async ({ hold }) => {
       const raw = await requireVaultRaw(ctx, resolvedVault);
-      const vault = hold((await unlockInteractively(ctx, vaultPath, raw)).vault);
+      const vault = hold((await unlockInteractively(promptCtx, vaultPath, raw)).vault);
       for (const requested of split2.wallets) {
         const entry = findExternalEntry(vault.index, requested);
         if (entry === undefined) {
@@ -102734,14 +102738,20 @@ var NO_API_KEY6 = {
   message: "No API key for this profile.",
   suggestion: "Set CANDLE_API_KEY, or run `candle auth login` to store one."
 };
+var NO_TERMINAL_REASON = "not read: no terminal for its unlock";
+var NO_TERMINAL_NOTE = "The vault was not read: its unlock needs a prompt, and standard input and standard error are not both a terminal. Run it at a terminal, pass --factor touch-id or --factor passkey to unlock without a prompt, or pass --no-vault to leave it out.";
 async function portfolio(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--rpc-url", "--evm-rpc-url", "--keystore", "--chain"],
-    booleanFlags: ["--no-perps"],
+    booleanFlags: ["--no-perps", "--no-vault"],
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
+  const noVault = parsed.booleans.has("--no-vault");
+  if (noVault && parsed.values["--keystore"] !== undefined) {
+    return usage(ctx, "--keystore names the vault to read and has no effect with --no-vault.");
+  }
   if (parsed.positionals.length > 1)
     return usage(ctx, `Unexpected argument: ${parsed.positionals[1]}`);
   const filter = parsed.positionals[0];
@@ -102788,16 +102798,30 @@ async function portfolio(args, ctx) {
     let vaultEntries;
     let evmEntries;
     let vaultReason;
+    let vaultSkipped = false;
     let known = 0;
-    const raw = await readVaultRaw(resolvedVault.path);
-    if (raw === null) {
-      vaultReason = `no vault at ${resolvedVault.path}`;
-    } else {
+    const raw = noVault ? null : await readVaultRaw(resolvedVault.path);
+    let vault;
+    if (raw !== null) {
       if (!refuseEnvPassphrase(ctx))
         return 1;
-      if (!requirePromptStreams(ctx, "portfolio"))
-        return 1;
-      const vault = hold((await unlockInteractively(ctx, resolvedVault.path, raw)).vault);
+      try {
+        const unlockCtx = refusePromptsWithoutTerminal(ctx, "portfolio");
+        vault = hold((await unlockInteractively(unlockCtx, resolvedVault.path, raw)).vault);
+      } catch (error) {
+        if (!isNoTerminalRefusal(error))
+          throw error;
+      }
+    }
+    if (noVault) {
+      vaultReason = "not read (--no-vault)";
+    } else if (raw === null) {
+      vaultReason = `no vault at ${resolvedVault.path}`;
+    } else if (vault === undefined) {
+      vaultReason = NO_TERMINAL_REASON;
+      vaultSkipped = true;
+      notice(deps, "stderr", "note", NO_TERMINAL_NOTE);
+    } else {
       vaultEntries = showSolana ? vault.index.entries.filter((entry) => entry.chain === "solana" && (entry.role === "vault" || entry.role === "external")).map((entry) => ({ address: entry.address, label: entry.label, role: entry.role })) : [];
       evmEntries = showHood ? vault.index.entries.filter((entry) => entry.chain === "evm" && entry.role === "vault").map((entry) => ({ address: entry.address, label: entry.label })) : [];
       known += vaultEntries.length + evmEntries.length;
@@ -103012,7 +103036,7 @@ async function portfolio(args, ctx) {
     const listStatus = walletListStatus(answered);
     const shownUnread = unavailable6.length > 0 || lpUnread > 0;
     const listNote = listStatus === "cut-off" ? "cut-off" : listStatus === "unknown" && !shownUnread ? "unknown" : null;
-    const complete = listNote === null && !shownUnread && !perpsPartial;
+    const complete = listNote === null && !shownUnread && !perpsPartial && !vaultSkipped;
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0);
     const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0);
     const lp = lpSection ? {
@@ -103089,6 +103113,7 @@ async function portfolio(args, ctx) {
       byChain,
       unavailableByChain,
       listNote,
+      vaultSkipped,
       lp
     });
     if (perps)
@@ -103464,7 +103489,7 @@ ${tableBlock(ctx, "LP positions", ["GROUP", "WALLET", "POSITION", "POOL", "HOLDI
   notes.push([
     "total",
     formatUsd(totals.totalUsd),
-    totals.unpriced > 0 ? `${totals.unpriced} unpriced ${totals.unpriced === 1 ? "holding" : "holdings"} not counted` : "every holding priced"
+    (totals.vaultSkipped ? "partial: the vault was not read (no terminal for its unlock). " : "") + (totals.unpriced > 0 ? `${totals.unpriced} unpriced ${totals.unpriced === 1 ? "holding" : "holdings"} not counted` : totals.vaultSkipped ? "other holdings priced" : "every holding priced")
   ]);
   const style = terminalStyle(deps, "stdout");
   const width = Math.max(...notes.map(([label]) => displayWidth(label)));
@@ -103486,6 +103511,8 @@ ${tableBlock(ctx, "LP positions", ["GROUP", "WALLET", "POSITION", "POOL", "HOLDI
   if (unavailable6 > 0) {
     warnings.push(`${unavailable6} ${unavailable6 === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain2, n]) => `${n} on ${CHAIN_NAMES[chain2]}`).join(", ")}). What was not read is marked "not read" and is not in the total.`);
   }
+  if (totals.vaultSkipped)
+    warnings.push("The vault was not read: no terminal for its unlock. Its holdings are not in the total, so the total is partial (exit 3). Run it in a terminal, or pass --no-vault to leave the vault out on purpose.");
   writeNotes2(ctx, warnings);
   writeListNote(ctx, totals.listNote);
   const later = [];
@@ -104669,8 +104696,7 @@ async function sign5(args, ctx) {
     return usage(ctx, solana.error);
   if (!refuseEnvPassphrase(ctx))
     return 1;
-  if (!requireTty(ctx, "candle sign"))
-    return 1;
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "candle sign");
   const { deps } = ctx;
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
@@ -104700,7 +104726,7 @@ async function sign5(args, ctx) {
       throw error;
     }
     const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const opened = await unlockInteractively(promptCtx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
@@ -104859,8 +104885,7 @@ async function signMessage2(args, ctx) {
   const requested = lifted.values[0];
   if (!refuseEnvPassphrase(ctx))
     return 1;
-  if (!requireTty(ctx, "candle sign message"))
-    return 1;
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "candle sign message");
   const { deps } = ctx;
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
@@ -104874,7 +104899,7 @@ async function signMessage2(args, ctx) {
       throw new VaultError("VAULT_UNREADABLE", `The message could not be read: ${error instanceof Error ? error.message : error}.`);
     }
     const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const opened = await unlockInteractively(promptCtx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
@@ -105642,8 +105667,7 @@ async function vaultRename(args, ctx) {
   const id = parsed.values["--id"];
   if (!refuseEnvPassphrase(ctx))
     return 1;
-  if (!requireTty(ctx, "vault rename"))
-    return 1;
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "vault rename");
   const { deps } = ctx;
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
@@ -105664,7 +105688,7 @@ async function vaultRename(args, ctx) {
   }
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const opened = await unlockInteractively(promptCtx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
@@ -105935,10 +105959,9 @@ async function teeRename(args, ctx) {
   if ("error" in vaultPath)
     return usage(ctx, vaultPath.error);
   const raw = rows.some((row2) => row2.tee) ? await readVaultRaw(vaultPath.path) : null;
-  if (raw !== null && !requireTty(ctx, "tee rename"))
-    return 1;
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "tee rename");
   return runVaultCommand(ctx, async ({ hold }) => {
-    const vault = raw === null ? null : hold((await unlockInteractively(ctx, vaultPath.path, raw, {
+    const vault = raw === null ? null : hold((await unlockInteractively(promptCtx, vaultPath.path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     })).vault);
     const local = [];
@@ -111130,13 +111153,12 @@ async function vaultList(args, ctx) {
   if (balances && "error" in evmRpc)
     return usage(ctx, evmRpc.error);
   const evmRpcUrl = "url" in evmRpc ? evmRpc.url : DEFAULT_HOOD_RPC_URL;
-  if (!requirePromptStreams(ctx, "vault list"))
-    return 1;
+  const promptCtx = refusePromptsWithoutTerminal(ctx, "vault list");
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await readVaultRaw(path);
     if (raw === null)
       throw missingVault(ctx, resolvedVault);
-    const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+    const vault = hold((await unlockInteractively(promptCtx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const all = vault.index.entries;
     const filtered = filter === undefined ? all : all.filter((entry) => matches2(entry, filter));
     const showRetired = parsed.booleans.has("--all");
