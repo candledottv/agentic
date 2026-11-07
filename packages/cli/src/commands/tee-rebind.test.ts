@@ -547,6 +547,18 @@ describe("L9: tee rebinds", () => {
     expect(parsed.rebinds).toHaveLength(2)
   })
 
+  // R20 (BE-2667): the operator's word is sent as typed; the server resolves it (an id, an
+  // address or an exact label, BE-2792). The CLI must not rewrite or refuse it.
+  test("an address or label is passed through as typed for the server to resolve", async () => {
+    for (const selector of [ADDR_1, "trading hot wallet", "cn-*"]) {
+      const { fetch, calls } = createRoutedFetch({ "/api/v1/agent/tee-wallets/rebinds": history })
+      const { deps, stdout } = depsFor(fetch, { tty: false, answers: [] })
+      expect(await run(["tee", "rebinds", selector, "--json"], deps)).toBe(0)
+      expect(calls[0]?.url.endsWith(`?walletId=${encodeURIComponent(selector)}`)).toBe(true)
+      expect(JSON.parse(stdout.text).command).toBe("tee rebinds")
+    }
+  })
+
   test("without a device token it is DEVICE_TOKEN_REQUIRED, with no request", async () => {
     const { fetch, calls } = createRoutedFetch({})
     const { deps, stdout } = depsFor(fetch, { store: {}, answers: [] })
