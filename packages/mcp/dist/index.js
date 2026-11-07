@@ -2034,6 +2034,12 @@ async function executeTrade(args, cfg, doFetch) {
   let amountRaw;
   let resolved = {};
   let paper = isPaperFlag(args.paper);
+  const deferExecution = isPaperFlag(args.deferExecution);
+  if (deferExecution && paper) {
+    return errText("deferExecution cannot be combined with paper; a paper trade records a quote and never executes", {
+      clientTradeId
+    });
+  }
   try {
     if (args.side === "buy") {
       const amount = args.amount;
@@ -2142,6 +2148,9 @@ async function executeTrade(args, cfg, doFetch) {
   } catch (err) {
     return errText(err instanceof Error ? err.message : String(err), { clientTradeId });
   }
+  if (deferExecution && paper) {
+    return errText("deferExecution needs a live holding, and this sell resolved to the paper book (the wallet holds none of the mint); a paper trade never executes", { clientTradeId });
+  }
   const posted = await postJson(`${base(cfg)}/api/v1/trade/agent/build`, apiKey, {
     clientTradeId,
     mint: args.mint,
@@ -2151,7 +2160,8 @@ async function executeTrade(args, cfg, doFetch) {
     payer: { type: "main" },
     ...args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {},
     ...args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {},
-    ...paper ? { paper: true } : {}
+    ...paper ? { paper: true } : {},
+    ...deferExecution ? { deferExecution: true } : {}
   }, doFetch);
   if ("thrown" in posted)
     return transportError("clientTradeId", clientTradeId, posted.thrown);
@@ -6525,6 +6535,7 @@ var TOOL_NAMES = [
   "candle_get_agent_positions",
   "candle_get_plans",
   "candle_trade",
+  "candle_trade_execute",
   "candle_launch_and_seed",
   "candle_atomic_launch_dry_run",
   "candle_swap",
@@ -6858,6 +6869,13 @@ function buildRequest(name, args, cfg) {
       const id = encodeURIComponent(clientId2);
       const path = kind === "launch" ? `/api/v1/launch/headless/jobs/${id}` : kind === "swap" ? `/api/v1/agent/swap/by-client-id/${id}` : `/api/v1/trade/agent/jobs/${id}`;
       return { url: `${base2}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } };
+    }
+    case "candle_trade_execute": {
+      const { clientTradeId } = args;
+      return {
+        url: `${base2}/api/v1/trade/agent/execute`,
+        init: { method: "POST", headers: jsonHeaders(requireApiKey2(cfg)), body: JSON.stringify({ clientTradeId }) }
+      };
     }
     case "candle_get_staking": {
       return { url: `${base2}/api/v1/agent/staking`, init: { method: "GET", headers: jsonHeaders(requireApiKey2(cfg)) } };
@@ -7224,7 +7242,11 @@ var tradeShape = {
   quoteAsset: z9.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Echoing the `quoteAsset` a quote (POST /api/v1/trade/agent/quote) returned is safe. On Solana it applies only ' + "to an arbitrary mint Candle never launched (a buy or sell works on any plan) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
   maxSlippageBps: z9.number().int().min(0).max(5000).optional().describe("Slippage bound in bps, 0-5000 (50%). Server defaults to 100 (1%)"),
   clientTradeId: z9.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
-  paper: z9.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, z9.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted."))
+  paper: z9.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, z9.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted.")),
+  deferExecution: z9.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, z9.boolean().optional().describe("Quote first, spend later. The trade is built and the result carries the quote with " + 'status "built"; NOTHING is signed or spent until candle_trade_execute is called with the same ' + "clientTradeId. The build holds for 30 minutes; executing after that is QUOTE_EXPIRED and you " + "build again for a fresh quote. Rebuilding with the same clientTradeId re-quotes it, until it has " + "been sent to candle_trade_execute. There is no cancel: let an unwanted build expire. Cannot be " + "combined with `paper`."))
+};
+var tradeExecuteShape = {
+  clientTradeId: z9.string().min(1).describe("The clientTradeId of a candle_trade built with deferExecution: true. Nothing else is accepted.")
 };
 var tokenImageUrl = launchSchemaField(launchTokenShape, "imageUrl");
 var tokenBannerUrl = launchSchemaField(launchTokenShape, "bannerUrl");
@@ -7710,6 +7732,13 @@ function registerToolSubset(server, options) {
     const result = await executeTrade(args, getConfig(), doFetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
+  register("candle_trade_execute", {
+    title: "Execute a deferred trade",
+    description: "Execute a trade you built with candle_trade and deferExecution: true. MOVES REAL FUNDS: Candle signs " + "the plan it kept back from the build with the account's own delegation and broadcasts it. Takes the " + "clientTradeId and nothing else, so nothing you send can change what gets signed; to change the trade, " + `build a new one.
+
+` + "Exactly one execution per build. Calling again never broadcasts a second time: it returns the stored " + "result once the first has confirmed, and a 409 IDEMPOTENCY_CONFLICT while the outcome is still " + "unknown (read candle_get_operation with the clientTradeId, kind trade, before doing anything else). " + "More than 30 minutes after the build it is 409 QUOTE_EXPIRED: build again for a fresh quote. A " + "trade built without deferExecution has already executed and is refused here.",
+    inputSchema: tradeExecuteShape
+  }, async (args) => callAndRelay("candle_trade_execute", args, getConfig(), doFetch));
   register("candle_atomic_launch_dry_run", {
     title: "Dry-run an atomic Solana launch",
     description: "Check a Solana launch bundled with first buys and price each buy, without building anything. Runs the " + "same checks as the atomic build, in the same order (payers, Believer check, fee and spend limits, the " + "key's transaction cap), then returns the launch preview (curveTerms) and one fill per first buy: the " + "tokens it would receive and the floor the build would sign it at. Reads only; moves nothing, reserves " + "nothing, and the clientLaunchId stays unused. It does not check balances, the daily cap, or the " + "transaction's size, so the real launch can still refuse. Needs launch:write, swap:write and Pro or Max.",

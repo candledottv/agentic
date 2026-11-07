@@ -55,7 +55,7 @@ for parameters and limits.
 
 ## The tool surface
 
-Eighty-nine tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Eighteen source tools need no key at all, so a client can be pointed at the server and used before
+Ninety tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_trade_execute`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Eighteen source tools need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -118,7 +118,8 @@ anyone signs up for anything.
 
 | Tool | Key | What it does |
 | --- | --- | --- |
-| `candle_trade` | yes | buy or sell a token |
+| `candle_trade` | yes | buy or sell a token; `deferExecution: true` builds and quotes without spending |
+| `candle_trade_execute` | yes | execute a trade built with `deferExecution: true`, by its `clientTradeId` (within 30 minutes) |
 | `candle_swap` | yes | convert between base assets; a pair spanning both chains is a bridge |
 | `candle_transfer` | yes | move an asset to an own wallet or an owner-approved withdrawal address |
 | `candle_sweep` | yes | sweep a wallet's base assets to one destination |

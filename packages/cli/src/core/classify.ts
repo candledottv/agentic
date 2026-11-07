@@ -89,6 +89,9 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_perps_thresholds: READ,
   // Money writes (K-1).
   candle_trade: card("trade", "clientTradeId"),
+  // BE-2657: the second half of a deferred candle_trade. It is its own card with a core-issued id:
+  // the build's card already holds the clientTradeId, and sharing it would read as OP_ID_CONFLICT.
+  candle_trade_execute: card("trade"),
   candle_swap: card("swap", "clientSwapId"),
   candle_launch_token: card("launch", "clientLaunchId"),
   candle_launch_and_seed: card("launch", "clientLaunchId"),

@@ -44,6 +44,13 @@ MCP server anywhere: the CLI and MCP default to the alpha API host
 (`https://api.alpha.candle.tv`), where the trade routes run today. Set `CANDLE_API_URL` only to
 point at a different deployment.
 
+## Quote first, spend later
+
+`candle_trade` takes `deferExecution: true`: it builds the trade and returns the quote with
+`status: "built"`, and nothing is signed or spent. To go ahead, call `candle_trade_execute` with the same
+`clientTradeId` within 30 minutes; after that it is `QUOTE_EXPIRED` and you build again. There is no cancel,
+so let an unwanted build expire. It cannot be combined with `paper`. Executing twice never trades twice.
+
 ## Rehearse first
 
 `candle_trade` takes `paper: true`. The request runs through every admission rule a live trade runs

@@ -183,6 +183,8 @@ export const TOOL_NAMES = [
   // BE-723 (Plans v2 P6): the served plan table, keyless.
   "candle_get_plans",
   "candle_trade",
+  // BE-2657: the second half of a candle_trade built with deferExecution.
+  "candle_trade_execute",
   "candle_launch_and_seed",
   // BE-1851: the atomic launch dry run on its own, with first buys priced; keyed, writes nothing.
   "candle_atomic_launch_dry_run",
@@ -682,6 +684,14 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
             ? `/api/v1/agent/swap/by-client-id/${id}`
             : `/api/v1/trade/agent/jobs/${id}`
       return { url: `${base}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } }
+    }
+
+    case "candle_trade_execute": {
+      const { clientTradeId } = args as { clientTradeId: string }
+      return {
+        url: `${base}/api/v1/trade/agent/execute`,
+        init: { method: "POST", headers: jsonHeaders(requireApiKey(cfg)), body: JSON.stringify({ clientTradeId }) },
+      }
     }
 
     case "candle_get_staking": {
@@ -1349,6 +1359,32 @@ const tradeShape = {
           "live wallet is empty, even if this flag is omitted.",
       ),
   ),
+  deferExecution: z.preprocess(
+    (value) =>
+      value === "true" || value === 1 || value === "1"
+        ? true
+        : value === "false" || value === 0 || value === "0"
+          ? false
+          : value,
+    z
+      .boolean()
+      .optional()
+      .describe(
+        "Quote first, spend later. The trade is built and the result carries the quote with " +
+          'status "built"; NOTHING is signed or spent until candle_trade_execute is called with the same ' +
+          "clientTradeId. The build holds for 30 minutes; executing after that is QUOTE_EXPIRED and you " +
+          "build again for a fresh quote. Rebuilding with the same clientTradeId re-quotes it, until it has " +
+          "been sent to candle_trade_execute. There is no cancel: let an unwanted build expire. Cannot be " +
+          "combined with `paper`.",
+      ),
+  ),
+}
+
+const tradeExecuteShape = {
+  clientTradeId: z
+    .string()
+    .min(1)
+    .describe("The clientTradeId of a candle_trade built with deferExecution: true. Nothing else is accepted."),
 }
 
 /**
@@ -2537,6 +2573,25 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       const result = await executeTrade(args as never, getConfig(), doFetch)
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
+  )
+
+  register(
+    "candle_trade_execute",
+    {
+      title: "Execute a deferred trade",
+      description:
+        "Execute a trade you built with candle_trade and deferExecution: true. MOVES REAL FUNDS: Candle signs " +
+        "the plan it kept back from the build with the account's own delegation and broadcasts it. Takes the " +
+        "clientTradeId and nothing else, so nothing you send can change what gets signed; to change the trade, " +
+        "build a new one.\n\n" +
+        "Exactly one execution per build. Calling again never broadcasts a second time: it returns the stored " +
+        "result once the first has confirmed, and a 409 IDEMPOTENCY_CONFLICT while the outcome is still " +
+        "unknown (read candle_get_operation with the clientTradeId, kind trade, before doing anything else). " +
+        "More than 30 minutes after the build it is 409 QUOTE_EXPIRED: build again for a fresh quote. A " +
+        "trade built without deferExecution has already executed and is refused here.",
+      inputSchema: tradeExecuteShape,
+    },
+    async (args) => callAndRelay("candle_trade_execute", args, getConfig(), doFetch),
   )
 
   register(

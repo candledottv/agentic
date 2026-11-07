@@ -173,6 +173,33 @@ describe("T-7: write-ahead and the same id across a restart", () => {
 })
 
 describe("R-2 on a lost answer", () => {
+  test("an interrupted deferred execute reads the build's trade id and settles its own card", async () => {
+    const clientTradeId = "t-built"
+    const s = await setup({
+      candle_trade_execute: () => ({ state: "unknown", error: { code: "EXECUTOR_TRANSPORT", message: "lost" } }),
+      candle_get_operation: (params) =>
+        params.clientId === clientTradeId
+          ? { state: "succeeded", result: { job: { clientTradeId, status: "confirmed" } } }
+          : NOT_FOUND,
+    })
+    const build = await tradeCard(s.book, { clientTradeId, deferExecution: true })
+    const card = await s.book.propose({ tool: "candle_trade_execute", params: { clientTradeId } }, HARNESS)
+    expect(build.opId).toBe(clientTradeId)
+    expect(card.opId).not.toBe(build.opId)
+    expect((await s.approve(card.cardId, card.cardHash)).operation.state).toBe("unknown")
+    await s.flush(() => s.journal.rows().some((row) => row.opId === card.opId && row.type === "operation.succeeded"))
+    expect(s.book.operation(card.opId, VIEW, false)).toMatchObject({
+      opId: card.opId,
+      state: "succeeded",
+      result: { clientTradeId, status: "confirmed" },
+    })
+    expect(s.calls).toEqual([
+      { tool: "candle_trade_execute", params: { clientTradeId } },
+      { tool: "candle_get_operation", params: { clientId: clientTradeId, kind: "trade" } },
+    ])
+    expect(s.timers).toEqual([])
+  }, 10_000)
+
   test("a lost trade answer is read back at once, then polled until the record is terminal", async () => {
     let reads = 0
     const s = await setup({

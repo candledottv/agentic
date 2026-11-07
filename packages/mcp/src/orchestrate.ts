@@ -265,6 +265,8 @@ export interface TradeArgs {
   clientTradeId?: string
   /** Rehearse: run every admission rule, record the quote, broadcast nothing. */
   paper?: unknown
+  /** Build and quote only; the trade fires on candle_trade_execute with the same clientTradeId. */
+  deferExecution?: unknown
 }
 
 export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
@@ -288,6 +290,12 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
   // holding but this key does have a paper position for the mint (Cented / SOLCAT: the sell
   // omitted `paper: true` after a paper buy, then MCP checked the wallet and 404'd the market).
   let paper = isPaperFlag(args.paper)
+  const deferExecution = isPaperFlag(args.deferExecution)
+  if (deferExecution && paper) {
+    return errText("deferExecution cannot be combined with paper; a paper trade records a quote and never executes", {
+      clientTradeId,
+    })
+  }
   try {
     if (args.side === "buy") {
       const amount = args.amount as string
@@ -428,6 +436,14 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
     return errText(err instanceof Error ? err.message : String(err), { clientTradeId })
   }
 
+  if (deferExecution && paper) {
+    // Reached only when a sell with no on-chain holding fell back to the paper book above.
+    return errText(
+      "deferExecution needs a live holding, and this sell resolved to the paper book (the wallet holds none of the mint); a paper trade never executes",
+      { clientTradeId },
+    )
+  }
+
   // The caller's quoteAsset still rides along untouched: the API validates it and uses it where
   // it applies (an arbitrary mint with no `tokens` row). It just never drives the conversion.
   const posted = await postJson(
@@ -449,6 +465,7 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       // trade, which is exactly the string someone greps for when working out whether real money
       // moved.
       ...(paper ? { paper: true } : {}),
+      ...(deferExecution ? { deferExecution: true } : {}),
     },
     doFetch,
   )

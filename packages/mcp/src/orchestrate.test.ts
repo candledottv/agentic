@@ -188,6 +188,55 @@ describe("executeTrade: buys", () => {
   })
 })
 
+describe("executeTrade: deferExecution (BE-2657)", () => {
+  test("deferExecution: true reaches /build, and a live trade carries no such key", async () => {
+    for (const [defer, expected] of [
+      [true, true],
+      [undefined, false],
+    ] as const) {
+      const { calls, fetch } = fakeFetch({
+        "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+        "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
+      })
+      await executeTrade(
+        { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "d-1", ...(defer ? { deferExecution: defer } : {}) },
+        CFG,
+        fetch,
+      )
+      const raw = String(calls[1]?.init?.body)
+      expect(raw.includes("deferExecution")).toBe(expected)
+      if (expected) expect(JSON.parse(raw).deferExecution).toBe(true)
+    }
+  })
+
+  test("accepts the string and number forms a client may send", async () => {
+    for (const value of ["true", 1, "1"]) {
+      const { calls, fetch } = fakeFetch({
+        "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+        "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
+      })
+      await executeTrade(
+        { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "d-2", deferExecution: value },
+        CFG,
+        fetch,
+      )
+      expect(JSON.parse(String(calls[1]?.init?.body)).deferExecution).toBe(true)
+    }
+  })
+
+  test("refuses deferExecution with paper before any request, naming the clientTradeId", async () => {
+    const { calls, fetch } = fakeFetch({})
+    const result = await executeTrade(
+      { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "d-3", paper: true, deferExecution: true },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    expect(calls.length).toBe(0)
+    expect(JSON.parse(result.text).clientTradeId).toBe("d-3")
+  })
+})
+
 describe("executeTrade: paper mode", () => {
   /*
     Paper existed on the API and was reachable from nothing an agent could call, so an agent had

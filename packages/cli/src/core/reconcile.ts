@@ -6,7 +6,8 @@
  * new id. What can be read, by kind:
  *
  *   - `trade`, `launch`: `candle_get_operation {clientId: opId, kind}`. A record is terminal or
- *     still running; no record is `unknown`.
+ *     still running; no record is `unknown`. `candle_trade_execute` uses its build's clientTradeId
+ *     for the read, since its core-issued opId identifies the separate execution card only.
  *   - `candle_claim_fees`: no id and no record (V-5). The core reads the token's claimable amounts
  *     before it sends the claim and again on a check; the two are evidence shown on the reconcile
  *     card, never a verdict.
@@ -54,7 +55,8 @@ const LAUNCH_STATES: Record<string, "pending" | "succeeded" | "failed"> = {
 export async function readOnce(executor: Executor, target: ReadTarget, writeKey: string): Promise<ReadVerdict> {
   if (!readsById(target)) return { readable: false }
   const kind = target.kind === "launch" ? "launch" : "trade"
-  const outcome = await executor.execute("candle_get_operation", { clientId: target.opId, kind }, writeKey)
+  const clientId = target.tool === "candle_trade_execute" ? target.params.clientTradeId : target.opId
+  const outcome = await executor.execute("candle_get_operation", { clientId, kind }, writeKey)
   if (outcome.state === "succeeded" || outcome.state === "pending") {
     const job = ((outcome.result as { job?: unknown } | undefined)?.job ?? outcome.result) as
       | { status?: unknown }

@@ -87,6 +87,7 @@ export const MCP_TOOL_NAMES = [
   "candle_get_plans",
   "candle_report_activity",
   "candle_trade",
+  "candle_trade_execute",
   "candle_swap",
   "candle_transfer",
   "candle_sweep",

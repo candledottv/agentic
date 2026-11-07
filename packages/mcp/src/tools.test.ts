@@ -103,6 +103,7 @@ test("all registered tools are listed", () => {
     "candle_token_page_updates",
 
     "candle_trade",
+    "candle_trade_execute",
     "candle_transfer",
     "candle_unstake",
     "candle_update_profile",
@@ -175,6 +176,20 @@ describe("buildRequest: creator fees (FE-438)", () => {
       JSON.parse(String(buildRequest("candle_atomic_launch_dry_run", { ...body, payer: linked }, cfg).init.body)).payer,
     ).toEqual(linked)
     expect(() => buildRequest("candle_atomic_launch_dry_run", body, { apiUrl: "https://api.test" })).toThrow()
+  })
+
+  test("candle_trade_execute posts the clientTradeId and nothing else", () => {
+    const r = buildRequest(
+      "candle_trade_execute",
+      { clientTradeId: "t-1", payer: { type: "linked" }, amountRaw: "9" },
+      cfg,
+    )
+    expect(r.url).toBe("https://api.test/api/v1/trade/agent/execute")
+    expect(r.init.method).toBe("POST")
+    expect(JSON.parse(String(r.init.body))).toEqual({ clientTradeId: "t-1" })
+    expect(() =>
+      buildRequest("candle_trade_execute", { clientTradeId: "t-1" }, { apiUrl: "https://api.test" }),
+    ).toThrow()
   })
 
   test("candle_claim_fees posts the dry-run flag and nothing else, mint in the path", () => {
