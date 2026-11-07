@@ -293,8 +293,12 @@ export async function mcp(args: string[], ctx: CommandContext): Promise<number> 
   // The blank line is the one audit 4.2 puts after the identity. It stays on stderr with the line.
   const identityConfig = await deps.readConfig()
   const identityFields = effectiveProfileFields(identityConfig, ctx.profile)
+  // BE-2677 (R32): under an env override the cached account is not what is acting, and a launcher
+  // makes no lookup, so the line names the override alone; identityLine treats an account passed
+  // beside an override as the acting key's own live answer, which this path never has.
+  const identityOverrides = credentialEnvOverrides(deps.env)
   deps.stderr.write(
-    `${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username, identityStyle(deps, "stderr"))}\n\n`,
+    `${identityLine(ctx.profile, identityOverrides.length > 0 ? undefined : identityFields.account, apiUrl, identityOverrides.length > 0 ? identityOverrides : undefined, identityFields.username, identityStyle(deps, "stderr"))}\n\n`,
   )
 
   if (parsed.booleans.has("--print-config")) {

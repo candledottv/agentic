@@ -329,7 +329,12 @@ function harness(opts: {
       return FIXTURE_PASSPHRASE
     },
   })
-  const candleRequests = () => requests.filter((r) => r.host === "api.example.test")
+  // BE-2677 (R32): the harness runs under a CANDLE_API_KEY override, so printIdentity asks
+  // /api/v1/agent/wallets/embedded which account the acting key belongs to before the command's
+  // own reads. That lookup is the identity line's business, not this command's, so it stays out
+  // of the Candle-request assertions (the same posture as keys-access's keyCalls).
+  const candleRequests = () =>
+    requests.filter((r) => r.host === "api.example.test" && r.path !== "/api/v1/agent/wallets/embedded")
   const rpcRequests = () => requests.filter((r) => r.host === "rpc.example.test")
   const evmRequests = () => requests.filter((r) => r.host === "evm.example.test")
   const hyperliquidRequests = () => requests.filter((r) => r.host === "api.hyperliquid.xyz")
@@ -1149,7 +1154,9 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     const h = harness({ dir, env: { CANDLE_EVM_RPC_URL: EVM_RPC_URL }, evm: { chainId: 1 } })
     expect(await run(["portfolio"], h.deps)).toBe(1)
     expect(h.evmRequests().map((r) => (JSON.parse(r.body) as { method: string }).method)).toEqual(["eth_chainId"])
-    expect(h.candleRequests()).toEqual([])
+    // No Candle read beyond the identity line's own override-key lookup (excluded by
+    // candleRequests); the refusal happens before any portfolio data is asked for.
+    expect(h.requests.filter((r) => r.host === "api.example.test")).toHaveLength(1)
     expect(humanText(h.stderr.text)).toContain(humanText("evm.example.test answered chain id 1"))
     expect(humanText(h.stderr.text)).toContain(humanText("Hood, chain id 4663, only"))
 

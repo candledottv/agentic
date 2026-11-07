@@ -190,7 +190,12 @@ describe("candle pnl", () => {
   test("no --profile reads the account's books with the active key and renders both kinds of unpriced honestly", async () => {
     const h = harness()
     expect(await run(["pnl"], h.deps)).toBe(0)
-    expect(h.calls).toEqual([{ path: "/api/v1/agent/books", key: KEY_A }])
+    // BE-2677 (R32): under the CANDLE_API_KEY override, printIdentity first asks the acting key
+    // which account it belongs to, so the identity lookup precedes the command's own read.
+    expect(h.calls).toEqual([
+      { path: "/api/v1/agent/wallets/embedded", key: KEY_A },
+      { path: "/api/v1/agent/books", key: KEY_A },
+    ])
     const out = h.stdout.text
     expect(out).toContain("P&L for the account: every profile, the web app and the CLI, one ledger")
     expect(out).toMatch(/Realized net\s+\+\$97\.00\s+gross \$100\.00, fees \$3\.00/)

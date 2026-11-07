@@ -256,13 +256,16 @@ describe("identityLine", () => {
       "Profile none · Account unknown · api.candle.tv",
     )
   })
-  test("an acting env override is named INSTEAD of the cached account, which is not what is acting", () => {
-    expect(identityLine("staging", "FaKwE2xX", "https://api.candle.tv", ["CANDLE_API_KEY"])).toBe(
+  test("an acting env override with no key answer is named INSTEAD of any cached account", () => {
+    // BE-2677 (R32): under an override, `account` is only ever the acting key's own live answer;
+    // printIdentity passes undefined when it has none, so "unknown" is the no-answer form. The
+    // cached account is never handed to this branch.
+    expect(identityLine("staging", undefined, "https://api.candle.tv", ["CANDLE_API_KEY"])).toBe(
       "Profile staging · Account unknown (CANDLE_API_KEY override) · api.candle.tv",
     )
-    expect(
-      identityLine("staging", "FaKwE2xX", "https://api.candle.tv", ["CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"]),
-    ).toBe("Profile staging · Account unknown (CANDLE_API_KEY, CANDLE_DEVICE_TOKEN override) · api.candle.tv")
+    expect(identityLine("staging", undefined, "https://api.candle.tv", ["CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"])).toBe(
+      "Profile staging · Account unknown (CANDLE_API_KEY, CANDLE_DEVICE_TOKEN override) · api.candle.tv",
+    )
     expect(identityLine("staging", "FaKwE2xX", "https://api.candle.tv", [])).toContain("Account FaKwE2xX")
   })
   test("shows the username beside the address when both are present, the address alone without", () => {
@@ -278,11 +281,30 @@ describe("identityLine", () => {
     )
   })
   test("an env override stays username-free even when a username is cached", () => {
-    // The override REPLACES the account entirely; a cached username describes the profile's own
-    // stored key, not the credential the env var supplied, so it must not appear beside it.
-    expect(identityLine("staging", "FaKwE2xX", "https://api.candle.tv", ["CANDLE_API_KEY"], "satoshi")).toBe(
+    // The override branch never carries the profile's own username: it describes the profile's
+    // stored key, not the credential the env var supplied. With no key answer either, the line is
+    // the unknown form.
+    expect(identityLine("staging", undefined, "https://api.candle.tv", ["CANDLE_API_KEY"], "satoshi")).toBe(
       "Profile staging · Account unknown (CANDLE_API_KEY override) · api.candle.tv",
     )
+  })
+  test("BE-2677 (R32): under an override, a looked-up account is named beside the override mark", () => {
+    // `account` here is the acting key's OWN answer (printIdentity's lookup), never the profile's
+    // cached value, so naming it asserts nothing unverified.
+    expect(
+      identityLine("staging", "9xKQveryLongAccountAddressZZZZffff8pPD", "https://api.candle.tv", ["CANDLE_API_KEY"]),
+    ).toBe("Profile staging · Account 9xKQ…8pPD (CANDLE_API_KEY override) · api.candle.tv")
+    // The username stays out of the override branch even when the lookup carried one: the pair
+    // form belongs to the profile's own account, and the override mark already fills the slot.
+    expect(
+      identityLine(
+        "staging",
+        "9xKQveryLongAccountAddressZZZZffff8pPD",
+        "https://api.candle.tv",
+        ["CANDLE_API_KEY"],
+        "satoshi",
+      ),
+    ).toBe("Profile staging · Account 9xKQ…8pPD (CANDLE_API_KEY override) · api.candle.tv")
   })
 })
 

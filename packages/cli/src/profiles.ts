@@ -7,6 +7,7 @@
  * IO around it (reading config, copying secrets on migration) lives in index.ts and the commands.
  */
 
+import { fetchAccount } from "./account"
 import type { CliConfig, ProfileConfig } from "./config"
 // Type-only: deps.ts imports a value from this module, so a value import back here would form a
 // runtime cycle. A type import is erased at compile time and carries no such risk.
@@ -254,6 +255,12 @@ export function credentialEnvOverrides(env: Record<string, string | undefined>):
  * line exists to stop being assumed. For the same reason the override branch is username-free: the
  * username belongs to the profile's own account, not to whatever the env var supplied.
  *
+ * BE-2677 (R32): under an override, `account` is the account the ACTING key reported (the lookup
+ * `printIdentity` makes), not the profile's cached value. When that lookup succeeded the line
+ * names it beside the override (`Account FaKw… (CANDLE_API_KEY override)`); when it did not, the
+ * branch stays `unknown (<var> override)`, the pre-R32 form. Either way the override is named, so
+ * the line never reads as the profile's own credential.
+ *
  * `username` is the account's Candle handle (optional). When it and an account are both known the
  * line reads `Account <username> (<address>)`; with no username it is the address alone.
  *
@@ -277,7 +284,9 @@ export function identityLine(
 ): string {
   const address = account === undefined ? undefined : shortId(account, options.full)
   const shown = overrides?.length
-    ? `unknown (${overrides.join(", ")} override)`
+    ? address
+      ? `${address} (${overrides.join(", ")} override)`
+      : `unknown (${overrides.join(", ")} override)`
     : username && address
       ? `${username} (${address})`
       : (address ?? "unknown")
@@ -289,17 +298,34 @@ export function identityLine(
 
 /** Every authenticated command prints this before its own output, then a blank line, human mode
  * only; --json outputs carry `profile` and `account` fields instead. Cached account, no network:
- * the live comparison is the Phase 2 guard. */
+ * the live comparison is the Phase 2 guard. One exception (BE-2677, R32): under a `CANDLE_API_KEY`
+ * env override the acting key itself is asked which account it belongs to, so the line names that
+ * account instead of `unknown`. A key whose lookup fails (offline, revoked, no account in the
+ * response) degrades to the `unknown (<var> override)` line; nothing is cached from it. */
 export async function printIdentity(ctx: CommandContext): Promise<void> {
   if (ctx.json) return
   const config = await ctx.deps.readConfig()
   const fields = effectiveProfileFields(config, ctx.profile)
+  const overrides = credentialEnvOverrides(ctx.deps.env)
+  let account = fields.account
+  let username = fields.username
+  if (overrides.length > 0) {
+    // The override REPLACES the cached identity entirely (see identityLine): only a live answer
+    // about the acting credential may stand in its place, never the profile's own cached fields.
+    account = undefined
+    username = undefined
+    const key = ctx.deps.env.CANDLE_API_KEY?.trim()
+    if (key) {
+      const lookup = await fetchAccount(ctx.deps, ctx.apiUrl, key)
+      if (lookup.account) account = lookup.account
+    }
+  }
   const line = identityLine(
     ctx.profile,
-    fields.account,
+    account,
     ctx.apiUrl,
-    credentialEnvOverrides(ctx.deps.env),
-    fields.username,
+    overrides.length > 0 ? overrides : undefined,
+    username,
     identityStyle(ctx.deps, "stdout"),
   )
   ctx.deps.stdout.write(`${line}\n\n`)

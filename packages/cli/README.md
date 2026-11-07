@@ -361,9 +361,11 @@ address is shortened (`FfU8…8pPD`; `--full` prints it whole) and an `https://`
 `auth login` and `doctor`, which carry `profile` and `account`; `auth status` and `doctor` also
 carry `cachedAccount`, the account the profile recorded, whenever a profile is resolved; scripts
 get identity from `auth status --json`. The account is cached
-at login from the API. Where the line is printed from that cache and `CANDLE_API_KEY` or
-`CANDLE_DEVICE_TOKEN` is overriding the stored credential, it reads
-`Account unknown (CANDLE_API_KEY override)` rather than naming an account that credential was
+at login from the API. Where the line is printed and `CANDLE_API_KEY` or `CANDLE_DEVICE_TOKEN` is
+overriding the stored credential, it reads `Account <address> (CANDLE_API_KEY override)` when the
+overriding key could be asked which account it belongs to, and
+`Account unknown (CANDLE_API_KEY override)` when it could not (offline, revoked, or a
+device-token-only override), rather than naming an account that credential was
 never checked against; `auth status` and `setup` look the account up live and print what they
 get, and `auth status` and `doctor` name the account the profile recorded beside it when the two
 differ (not under an env credential override, where the live answer is not the profile's key's).

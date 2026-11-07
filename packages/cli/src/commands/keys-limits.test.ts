@@ -26,17 +26,24 @@ describe("keys limits", () => {
       env: { CANDLE_API_KEY: API_KEY },
     })
     expect(await run(["keys", "limits", PREFIX, "sol=1000000000", "USDC=50000000"], deps)).toBe(0)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]?.init.method).toBe("PUT")
-    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+    // BE-2677 (R32): under the CANDLE_API_KEY override the identity line asks the acting key which
+    // account it is (a GET with the same key), so the call list holds that lookup plus the one PUT.
+    // The lookup is intended; the contract under test is that exactly one PUT goes out and that
+    // every request carries the API key, never the device token.
+    const puts = calls.filter((c) => c.init.method === "PUT")
+    expect(puts).toHaveLength(1)
+    expect(calls.filter((c) => c.init.method !== "PUT")).toHaveLength(calls.length - 1)
+    expect(JSON.parse(String(puts[0]?.init.body))).toEqual({
       limits: [
         { asset: "sol", maxPerTxRaw: "1000000000" },
         { asset: "usdc", maxPerTxRaw: "50000000" },
       ],
     })
-    const headers = new Headers(calls[0]?.init.headers)
-    expect(headers.get("x-api-key")).toBe(API_KEY)
-    expect(headers.get("authorization")).toBeNull()
+    for (const call of calls) {
+      const headers = new Headers(call.init.headers)
+      expect(headers.get("x-api-key")).toBe(API_KEY)
+      expect(headers.get("authorization")).toBeNull()
+    }
     expect(stdout.text).toContain(PREFIX)
     expect(stdout.text).toContain("1000000000")
   })

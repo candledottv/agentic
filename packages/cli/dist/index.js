@@ -11163,6 +11163,25 @@ var init_solana_alt = __esm(() => {
   ];
 });
 
+// src/account.ts
+async function fetchAccount(deps, apiUrl, apiKey) {
+  const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  const body = identity.ok ? identity.body : undefined;
+  const account = body?.account;
+  if (account)
+    return { account, ...body?.username ? { username: body.username } : {} };
+  return { failure: identity.ok ? "no account in the response" : identity.message };
+}
+var init_account = __esm(() => {
+  init_client();
+});
+
 // src/profiles.ts
 function assertOrdinaryProfile(config, profile) {
   if (profile !== undefined && config.profiles?.[profile]?.apiKeyItem !== undefined) {
@@ -11297,7 +11316,7 @@ function credentialEnvOverrides(env) {
 }
 function identityLine(profile, account, apiUrl, overrides, username, options = {}) {
   const address = account === undefined ? undefined : shortId(account, options.full);
-  const shown = overrides?.length ? `unknown (${overrides.join(", ")} override)` : username && address ? `${username} (${address})` : address ?? "unknown";
+  const shown = overrides?.length ? address ? `${address} (${overrides.join(", ")} override)` : `unknown (${overrides.join(", ")} override)` : username && address ? `${username} (${address})` : address ?? "unknown";
   const name = profile ?? "none";
   const host = apiUrl.replace(/^https:\/\//i, "").replace(/\/+$/, "");
   const sep = options.style ? symbols(options.style).note : "·";
@@ -11308,7 +11327,20 @@ async function printIdentity(ctx) {
     return;
   const config = await ctx.deps.readConfig();
   const fields2 = effectiveProfileFields(config, ctx.profile);
-  const line = identityLine(ctx.profile, fields2.account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env), fields2.username, identityStyle(ctx.deps, "stdout"));
+  const overrides = credentialEnvOverrides(ctx.deps.env);
+  let account = fields2.account;
+  let username = fields2.username;
+  if (overrides.length > 0) {
+    account = undefined;
+    username = undefined;
+    const key = ctx.deps.env.CANDLE_API_KEY?.trim();
+    if (key) {
+      const lookup = await fetchAccount(ctx.deps, ctx.apiUrl, key);
+      if (lookup.account)
+        account = lookup.account;
+    }
+  }
+  const line = identityLine(ctx.profile, account, ctx.apiUrl, overrides.length > 0 ? overrides : undefined, username, identityStyle(ctx.deps, "stdout"));
   ctx.deps.stdout.write(`${line}
 
 `);
@@ -11352,6 +11384,7 @@ function profileTable(config, now) {
 }
 var ProfileFleetOnlyError, PRE_PROFILE_FIELDS, API_KEY_PREFIXES, API_KEY_RANDOM_LENGTH = 43, INVALID_RPC_HOST = "invalid (fix with profile set)";
 var init_profiles = __esm(() => {
+  init_account();
   init_presentation();
   init_render();
   ProfileFleetOnlyError = class ProfileFleetOnlyError extends Error {
@@ -74180,29 +74213,11 @@ ${USAGE3}` : USAGE3, ctx.json);
 }
 
 // src/commands/auth.ts
-import { homedir as homedir3 } from "node:os";
-import { join as join9 } from "node:path";
-
-// src/account.ts
-init_client();
-async function fetchAccount(deps, apiUrl, apiKey) {
-  const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  const body = identity.ok ? identity.body : undefined;
-  const account = body?.account;
-  if (account)
-    return { account, ...body?.username ? { username: body.username } : {} };
-  return { failure: identity.ok ? "no account in the response" : identity.message };
-}
-
-// src/commands/auth.ts
+init_account();
 init_agent_key_access();
 init_args();
+import { homedir as homedir3 } from "node:os";
+import { join as join9 } from "node:path";
 
 // src/checks.ts
 init_client();
@@ -94248,7 +94263,8 @@ async function mcp(args, ctx) {
   }
   const identityConfig = await deps.readConfig();
   const identityFields = effectiveProfileFields(identityConfig, ctx.profile);
-  deps.stderr.write(`${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username, identityStyle(deps, "stderr"))}
+  const identityOverrides = credentialEnvOverrides(deps.env);
+  deps.stderr.write(`${identityLine(ctx.profile, identityOverrides.length > 0 ? undefined : identityFields.account, apiUrl, identityOverrides.length > 0 ? identityOverrides : undefined, identityFields.username, identityStyle(deps, "stderr"))}
 
 `);
   if (parsed.booleans.has("--print-config")) {
@@ -103603,6 +103619,7 @@ ${financialHeading("Hyperliquid (live from Hyperliquid, not in the ledger; not i
 }
 
 // src/commands/profile.ts
+init_account();
 init_args();
 init_client();
 init_human_output();
@@ -116031,6 +116048,7 @@ init_ownership();
 init_file_lock();
 
 // src/guard.ts
+init_account();
 init_profiles();
 async function verifyProfileAccount(ctx, config) {
   const { deps, profile } = ctx;
