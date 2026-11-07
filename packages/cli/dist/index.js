@@ -38568,7 +38568,7 @@ var init_token_clusters = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.29";
+var SERVER_VERSION = "0.10.30";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -77050,6 +77050,10 @@ var HELP = {
       },
       { invocation: "revoke <wallet-id>", description: "Revoke a linked wallet" },
       {
+        invocation: "allowlist [--all]",
+        description: "The account's withdrawal allowlist (the destinations candle transfer --to <label> resolves by). Any key reads it; approving an address is the owner's, in the agent console's Wallets tab (an API key cannot approve); an acting key can revoke one, a read-only key cannot. --all adds removed rows"
+      },
+      {
         invocation: "trust <label|address|id|prefix*>...",
         description: "Mark linked wallets yours, so agents can move funds into them (owner only; typed confirm)"
       },
@@ -77082,6 +77086,7 @@ var HELP = {
       "candle wallet authorize",
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
+      "candle wallet allowlist",
       "candle wallet trust 'tr-*' 'dest-*'",
       "candle wallet allow-launch launcher-1",
       "candle wallet close-empty --keep EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -115197,6 +115202,101 @@ function walletsDisallowLaunch(args, ctx) {
   return setAllowLaunch(args, ctx, false);
 }
 
+// src/commands/wallets-allowlist.ts
+init_args();
+init_client();
+init_deps();
+init_human_output();
+init_presentation();
+init_profiles();
+init_render();
+init_key_output();
+var EMPTY_NOTE = "No approved withdrawal addresses. An agent can move funds only to the account's own wallets and its vault.";
+var MANAGED_HINT = "Approving an address needs the owner signed in to the agent console's Wallets tab; an API key cannot approve. An acting key can revoke one; a read-only key cannot.";
+async function walletsAllowlist(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { booleanFlags: ["--all"] });
+  if ("error" in parsed) {
+    writeScreenUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeScreenLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
+    return 1;
+  }
+  const query3 = parsed.booleans.has("--all") ? "?includeRevoked=true" : "";
+  const result = await apiRequest(`/api/v1/agent/withdrawal-addresses${query3}`, {
+    method: "GET",
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeScreenFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  const body = result.body;
+  if (!Array.isArray(body.addresses)) {
+    writeScreenLocalFailure(deps, { code: "INVALID_RESPONSE", message: "The withdrawal allowlist read did not return a list." }, json);
+    return 1;
+  }
+  const rows = body.addresses;
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ success: true, addresses: rows, count: rows.length })}
+`);
+    return 0;
+  }
+  const style = terminalStyle(deps, "stdout");
+  deps.stdout.write(`${heading(`Withdrawal allowlist (${rows.length})`, style)}
+
+`);
+  if (rows.length === 0) {
+    notice(deps, "stdout", "note", EMPTY_NOTE);
+    notice(deps, "stdout", "note", MANAGED_HINT);
+    return 0;
+  }
+  if (style.width < 100) {
+    for (const row2 of rows) {
+      writeFields(deps, "stdout", [
+        ["Id", row2.id],
+        ["Address", row2.address],
+        ["Label", row2.label],
+        ["Chain", row2.chain],
+        ["Revoked", row2.revokedAt ? "yes" : "no"]
+      ]);
+      deps.stdout.write(`
+`);
+    }
+  } else {
+    deps.stdout.write(`${renderTable(["Id", "Chain", "Address", "Label", "Revoked"], rows.map((row2) => [
+      row2.id,
+      row2.chain,
+      row2.address,
+      row2.label ?? symbols(style).missing,
+      row2.revokedAt ? "yes" : "no"
+    ]), {
+      style,
+      width: style.width,
+      indent: 2,
+      rule: false,
+      columns: [{ id: true }, { priority: 3 }, { id: true }, { priority: 2 }, { priority: 1 }]
+    })}
+`);
+  }
+  deps.stdout.write(`
+`);
+  notice(deps, "stdout", "note", MANAGED_HINT);
+  return 0;
+}
+
 // src/commands/wallets-authorize.ts
 init_args();
 init_client();
@@ -116166,7 +116266,8 @@ var COMMANDS = {
       "allow-launch": walletsAllowLaunch,
       "disallow-launch": walletsDisallowLaunch,
       "close-empty": walletsCloseEmpty,
-      authorize: walletsAuthorize
+      authorize: walletsAuthorize,
+      allowlist: walletsAllowlist
     },
     bare: wallets
   },

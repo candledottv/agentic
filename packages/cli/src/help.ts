@@ -1253,6 +1253,11 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "revoke <wallet-id>", description: "Revoke a linked wallet" },
       {
+        invocation: "allowlist [--all]",
+        description:
+          "The account's withdrawal allowlist (the destinations candle transfer --to <label> resolves by). Any key reads it; approving an address is the owner's, in the agent console's Wallets tab (an API key cannot approve); an acting key can revoke one, a read-only key cannot. --all adds removed rows",
+      },
+      {
         invocation: "trust <label|address|id|prefix*>...",
         description: "Mark linked wallets yours, so agents can move funds into them (owner only; typed confirm)",
       },
@@ -1290,6 +1295,7 @@ export const HELP: Record<string, Topic> = {
       "candle wallet authorize",
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
+      "candle wallet allowlist",
       "candle wallet trust 'tr-*' 'dest-*'",
       "candle wallet allow-launch launcher-1",
       "candle wallet close-empty --keep EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",

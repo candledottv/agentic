@@ -130,6 +130,7 @@ import { vaultTransfer } from "./commands/vault-transfer"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
 import { walletsAllowLaunch, walletsDisallowLaunch } from "./commands/wallets-allow-launch"
+import { walletsAllowlist } from "./commands/wallets-allowlist"
 import { walletsAuthorize } from "./commands/wallets-authorize"
 import { walletsCloseEmpty } from "./commands/wallets-close-empty"
 import { walletsTrust, walletsUntrust } from "./commands/wallets-trust"
@@ -396,6 +397,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       "close-empty": walletsCloseEmpty,
       // BE-2698: opens the console's grant-only step; the grant itself is the member's browser.
       authorize: walletsAuthorize,
+      // BE-2672 (R26): the withdrawal allowlist read `candle transfer --to <label>` resolves by.
+      allowlist: walletsAllowlist,
     },
     bare: wallets,
   },
