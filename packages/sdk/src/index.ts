@@ -159,6 +159,7 @@ export type {
   ProfilePnlResult,
   ProfilePnlSummaryRow,
   ProfilePnlWindow,
+  ProfileSwapRow,
   ProfileTradeRow,
   ProfileTradesOptions,
   ProfileTradesResult,

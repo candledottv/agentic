@@ -5137,9 +5137,36 @@ describe("getProfileTrades: range, paging and fee fields (BE-900)", () => {
     expect(url.searchParams.get("cursor")).toBe("prev+/=")
     // Typed access: each is a compile error if the field is missing from the type.
     expect(result.nextCursor).toBe("abc")
-    expect(result.trades[0]?.landedUnconfirmed).toBe(true)
-    expect(result.trades[0]?.feeRaw).toBe("100")
-    expect(result.trades[0]?.feeCollectedRaw).toBeUndefined()
+    const first = result.trades[0]
+    if (first?.kind === "swap") throw new Error("expected a trade row")
+    expect(first?.landedUnconfirmed).toBe(true)
+    expect(first?.feeRaw).toBe("100")
+    expect(first?.feeCollectedRaw).toBeUndefined()
+  })
+
+  test("BE-2665: a swap row narrows on kind to ProfileSwapRow", async () => {
+    const swap = {
+      kind: "swap",
+      rail: "build",
+      clientTradeId: "c1",
+      createdAt: 1,
+      status: "confirmed",
+      fromAsset: "SOL",
+      toAsset: "USDC",
+      amountRaw: "100",
+      signature: "sig",
+    }
+    const { client } = makeClient(KEYED, [json(200, { success: true, keyPrefix: "ck_a", trades: [swap] })])
+    const [row] = (await client.getProfileTrades("ck_a")).trades
+    if (row?.kind !== "swap") throw new Error("expected a swap row")
+    // Typed access: a compile error if the field is missing from ProfileSwapRow.
+    expect([row.rail, row.fromAsset, row.toAsset, row.amountRaw, row.status]).toEqual([
+      "build",
+      "SOL",
+      "USDC",
+      "100",
+      "confirmed",
+    ])
   })
 
   test("no options sends no query string", async () => {

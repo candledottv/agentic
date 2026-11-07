@@ -105,6 +105,8 @@ async function fixture(
         buyRaw: BigInt(body.buyAmount),
         feeRaw: FEE[quote],
         minOutRaw: BigInt(MIN_OUT),
+        // BE-2899: as the API builds it, a launch with rules registers the creator before its buy.
+        ...(body.launchRules ? { register: {} } : {}),
         ...opts.legs,
       }
       return ok({
@@ -648,6 +650,35 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     const f = await fixture({ legs: { launchPayer: Keypair.generate().publicKey.toBase58() } })
     expect(await run(buyArgs, f.deps)).toBe(1)
     expect(humanText(lastJson(f.stdout.text).message)).toContain(humanText("leg 0 is not paid by this wallet"))
+    expect(f.paths().some((path) => path.endsWith("/sign"))).toBe(false)
+  })
+
+  test("BE-2899: a launch with rules and a dev buy reads the creator's register_buyer, signs both legs and submits", async () => {
+    const f = await fixture()
+    expect(await run([...buyArgs, "--open-in", "1h"], f.deps)).toBe(0)
+    const build = f.calls.find((call) => call.path === "/api/v1/launch/self/build")
+    expect(build?.body?.launchRules).toBeDefined()
+    const lamports = expectedLamports({
+      wallet: WALLET,
+      quote: "SOL",
+      buyRaw: 10_000_000n,
+      feeRaw: FEE.SOL,
+      minOutRaw: 0n,
+      register: {},
+    })
+    expect(humanText(f.stderr.text)).toContain(
+      humanText(`Most this wallet can lose: 0.0${lamports.toString().padStart(8, "0")} SOL`),
+    )
+    expect(f.paths().filter((path) => path.endsWith("/sign"))).toHaveLength(2)
+    expect(f.paths()).toContain("/api/v1/launch/atomic/submit")
+  })
+
+  test("BE-2899: a register_buyer on a launch without rules is refused before anything is signed", async () => {
+    const f = await fixture({ legs: { register: {} } })
+    expect(await run(buyArgs, f.deps)).toBe(1)
+    const out = lastJson(f.stdout.text)
+    expect(out.code).toBe("INVALID_RESPONSE")
+    expect(humanText(out.message)).toContain(humanText("registers a buyer on a launch without rules"))
     expect(f.paths().some((path) => path.endsWith("/sign"))).toBe(false)
   })
 

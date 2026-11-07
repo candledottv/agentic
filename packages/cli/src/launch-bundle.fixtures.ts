@@ -4,7 +4,9 @@
  * them. Leg 0 is a v0 message against a lookup table with the four launch signers (payer, platform
  * authority, mint, attribution), the reimbursement, a stand-in `initialize_pool`, the Jito tip and,
  * for an SPL quote, the treasury ATA create. Leg 1 is `atomic-first-buys.ts`'s shape: both ATA
- * creates, the wrap (SOL), the curve swap, the close (SOL) and the tier-fee transfer.
+ * creates, the wrap (SOL), the curve swap, the close (SOL) and the tier-fee transfer. On a launch
+ * with rules (BE-2899), leg 1 starts with the creator's `register_buyer`, and the swap names the
+ * same launch_rules and tally accounts.
  */
 import {
   createAssociatedTokenAccountIdempotentInstruction,
@@ -30,6 +32,9 @@ export const FIXTURE_USDC = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZ
 export const FIXTURE_REIMBURSEMENT = 26_126_320n
 export const FIXTURE_TIP = 100_000n
 export const FIXTURE_RENT = 2_039_280n
+/** An 82-byte `BuyerTally`'s rent, which the creator's `register_buyer` pays. */
+export const FIXTURE_TALLY_RENT = 1_461_600n
+const REGISTER_BUYER = Buffer.from([144, 92, 137, 46, 209, 220, 27, 164])
 const BLOCKHASH = "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
 
 export interface LegOptions {
@@ -44,11 +49,26 @@ export interface LegOptions {
   extraBuy?: (wallet: PublicKey) => TransactionInstruction[]
   /** Another fee payer for the launch leg. */
   launchPayer?: string
+  /** BE-2899: a `register_buyer` ahead of the swap, as a launch with rules builds it. */
+  register?: {
+    /** Proof nodes; the creator's own has none. */
+    proof?: Buffer[]
+    /** Someone other than the wallet registered. */
+    buyer?: string
+    /** The swap names other launch_rules and tally accounts. */
+    otherPool?: boolean
+  }
 }
 
 function u64(value: bigint): Buffer {
   const out = Buffer.alloc(8)
   out.writeBigUInt64LE(value)
+  return out
+}
+
+function u32(value: number): Buffer {
+  const out = Buffer.alloc(4)
+  out.writeUInt32LE(value)
   return out
 }
 
@@ -108,16 +128,37 @@ export function buyLeg(opts: LegOptions): string {
   const quoteMint = opts.quote === "SOL" ? NATIVE_MINT : FIXTURE_USDC
   const baseMint = Keypair.generate().publicKey
   const userQuote = getAssociatedTokenAddressSync(quoteMint, wallet, true)
+  const rules = Keypair.generate().publicKey
+  const tally = Keypair.generate().publicKey
+  const register = opts.register
+  const registerIx = register
+    ? [
+        new TransactionInstruction({
+          programId: FIXTURE_CURVE_PROGRAM,
+          keys: [
+            { pubkey: register.buyer ? new PublicKey(register.buyer) : wallet, isSigner: true, isWritable: false },
+            { pubkey: wallet, isSigner: true, isWritable: true },
+            { pubkey: rules, isSigner: false, isWritable: false },
+            { pubkey: tally, isSigner: false, isWritable: true },
+            { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+          ],
+          data: Buffer.concat([REGISTER_BUYER, u32(register.proof?.length ?? 0), ...(register.proof ?? [])]),
+        }),
+      ]
+    : []
+  const swapRules = register?.otherPool ? [Keypair.generate().publicKey, Keypair.generate().publicKey] : [rules, tally]
   const swap = new TransactionInstruction({
     programId: FIXTURE_CURVE_PROGRAM,
     keys: [
       { pubkey: wallet, isSigner: true, isWritable: true },
       { pubkey: userQuote, isSigner: false, isWritable: true },
+      ...(register ? swapRules.map((pubkey, i) => ({ pubkey, isSigner: false, isWritable: i === 1 })) : []),
     ],
     data: Buffer.concat([Buffer.alloc(8, 9), u64(opts.swapRaw ?? opts.buyRaw), u64(opts.minOutRaw)]),
   })
   const treasury = Keypair.generate().publicKey
   const instructions = [
+    ...registerIx,
     createAssociatedTokenAccountIdempotentInstruction(
       wallet,
       getAssociatedTokenAddressSync(baseMint, wallet, true),
@@ -155,7 +196,11 @@ export function buyLeg(opts: LegOptions): string {
 /** What the reader should count for these legs: leg 0's four signatures, leg 1's one, and every transfer and rent. */
 export function expectedLamports(opts: LegOptions): bigint {
   const launch = 4n * 5_000n + FIXTURE_REIMBURSEMENT + FIXTURE_TIP + (opts.quote === "USDC" ? FIXTURE_RENT : 0n)
-  const buy = 5_000n + 2n * FIXTURE_RENT + (opts.quote === "SOL" ? opts.buyRaw + opts.feeRaw : 0n)
+  const buy =
+    5_000n +
+    2n * FIXTURE_RENT +
+    (opts.quote === "SOL" ? opts.buyRaw + opts.feeRaw : 0n) +
+    (opts.register ? FIXTURE_TALLY_RENT : 0n)
   return launch + buy
 }
 

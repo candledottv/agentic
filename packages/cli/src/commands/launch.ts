@@ -996,6 +996,7 @@ async function atomicLaunch(
       quote: quoteAsset,
       buyRaw: BigInt(buy.raw),
       ...(minOut !== undefined ? { minOutRaw: BigInt(minOut) } : {}),
+      rules: args.rules !== undefined,
     })
   } catch (error) {
     if (!(error instanceof BundleReadError)) throw error

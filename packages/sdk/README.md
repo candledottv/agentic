@@ -271,6 +271,8 @@ const fill = await candle.trade({ mint: "9dXSV8...CNDL", side: "buy", amountRaw:
   including one that has never traded. `sort` is `newest`, `active` or `pnl`.
 - `getPortfolio()`, `getProfilePnl(keyPrefix)`, `getProfileTrades(keyPrefix)` and
   `getSpendLimits()` read the account's holdings, a profile's P&L and fills, and this key's caps.
+  `getProfileTrades` lists the profile's swaps among its trades; tell them apart by `kind`
+  (`"trade"` or `"swap"`, a `ProfileSwapRow`).
 - `fees.list()` and `fees.claim(mint, { dryRun })` read what the account's launched tokens can pay in creator fees and claim it to the wallet fixed at launch (off until the server enables it).
 - `closeEmptyAccounts()` closes the embedded wallet's empty token accounts and returns the rent;
   with `wallet` and `privyWalletId`, a Solana TEE wallet's, signed through `signLinkedTransaction()`.

@@ -1960,6 +1960,8 @@ export interface PortfolioResult {
  * zero.
  */
 export interface ProfileTradeRow {
+  /** Absent on a server from before swaps were listed, where every row is a trade. */
+  kind?: "trade"
   clientTradeId: string
   createdAt: number
   status: "built" | "confirmed" | "failed"
@@ -1999,11 +2001,46 @@ export interface ProfileTradeRow {
   errorCode?: string
 }
 
+/**
+ * One swap on a profile's history, listed among its trades by time. `rail` says which route made
+ * it, and so which id reads it back: `"swap"` is `swap()` (`POST /api/v1/agent/swap`, by
+ * `clientSwapId`, and listed only when one was sent), `"build"` is the build and submit route
+ * (`POST /api/v1/agent/swap/build`, by `clientTradeId`).
+ */
+export interface ProfileSwapRow {
+  kind: "swap"
+  rail: "swap" | "build"
+  clientSwapId?: string
+  clientTradeId?: string
+  createdAt: number
+  /** `built` (not submitted), `submitted` (sent, not yet known to have landed), `confirmed`, `failed`. */
+  status: "built" | "submitted" | "confirmed" | "failed"
+  fromAsset: string
+  toAsset: string
+  /** What was asked for, raw units of `fromAsset`. */
+  amountRaw: string
+  /** The quote's output, raw units of `toAsset`. */
+  expectedOutRaw?: string
+  outDecimals?: number
+  venueCostUsd?: number
+  /** The first leg's hash. */
+  signature?: string
+  /** Every leg's hash, in broadcast order. */
+  hashes?: string[]
+  errorCode?: string
+}
+
 /** `GET /api/v1/agent/keys/{prefix}/trades` response. */
 export interface ProfileTradesResult {
   success: true
   keyPrefix: string
-  trades: ProfileTradeRow[]
+  /** Trades and swaps, newest first. Tell them apart by `kind`. */
+  trades: Array<ProfileTradeRow | ProfileSwapRow>
+  /**
+   * Whether swaps were read. `false`: the page is the trades alone because the server could not
+   * read swaps, not because the profile made none. Absent on a server from before swaps were listed.
+   */
+  swapsListed?: boolean
   /**
    * Pass back as `cursor` for the next, older page. Present whenever the page read a full `limit`,
    * so a short or even empty page can still have one: only its absence means the end.
@@ -4704,7 +4741,8 @@ export class CandleClient {
   }
 
   /**
-   * One profile's trade history (GET /api/v1/agent/keys/{prefix}/trades).
+   * One profile's trade history (GET /api/v1/agent/keys/{prefix}/trades), with its swaps among
+   * the trades (`kind: "swap"`, `ProfileSwapRow`).
    *
    * Includes FAILED trades, deliberately: a record that dropped them would misrepresent what the
    * agent did, and `errorCode` is how you find out why one did not go through. For a spreadsheet

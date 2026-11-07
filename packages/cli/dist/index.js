@@ -532,7 +532,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.17";
+var CLI_VERSION = "0.13.18";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -45784,7 +45784,7 @@ function registerToolSubset(server, options) {
   }, async (args) => callAndRelay("candle_get_profile_pnl", args, getConfig(), doFetch));
   register("candle_get_profile_trades", {
     title: "Read an agent profile's trade history",
-    description: "Orders, actual fills, fees, timestamps and transaction hashes for this profile. Page by time with " + "`since`, `until` and `cursor` (continue with the response's `nextCursor`). Includes FAILED " + "trades, with an errorCode saying why each did not go through, so this answers 'what happened to " + "my order' as well as 'what did I trade'. Reads only; moves nothing.",
+    description: "Orders, actual fills, fees, timestamps and transaction hashes for this profile. Page by time with " + "`since`, `until` and `cursor` (continue with the response's `nextCursor`). Includes FAILED " + "trades, with an errorCode saying why each did not go through, so this answers 'what happened to " + "my order' as well as 'what did I trade'. The profile's swaps are listed among the trades by " + "time, each with kind 'swap', rail ('swap' for candle_swap, 'build' for the CLI's build and " + "submit), fromAsset, toAsset and amountRaw; a candle_swap made without a clientSwapId is not " + "recorded, so it is not listed. Reads only; moves nothing.",
     inputSchema: profileTradesShape
   }, async (args) => callAndRelay("candle_get_profile_trades", args, getConfig(), doFetch));
   register("candle_get_paper_inventory", {
@@ -92262,6 +92262,8 @@ init_solana_lite();
 var NATIVE_MINT2 = "So11111111111111111111111111111111111111112";
 var LAMPORTS_PER_SIGNATURE = 5000n;
 var TOKEN_ACCOUNT_RENT_LAMPORTS = 2039280n;
+var BUYER_TALLY_RENT_LAMPORTS = 1461600n;
+var REGISTER_BUYER = [144, 92, 137, 46, 209, 220, 27, 164];
 var DEFAULT_UNITS_PER_INSTRUCTION = 200000n;
 var MAX_COMPUTE_UNITS = 1400000n;
 
@@ -92345,7 +92347,7 @@ function readLeg(tx, index, wallet3) {
     if (program === MEMO_PROGRAM_ID)
       continue;
     if (program !== undefined)
-      others.push({ program, data: ix.data });
+      others.push({ program, data: ix.data, accounts: accounts.map(key) });
   }
   if (unitPrice > 0n) {
     const units = unitLimit ?? (computed * DEFAULT_UNITS_PER_INSTRUCTION > MAX_COMPUTE_UNITS ? MAX_COMPUTE_UNITS : computed * DEFAULT_UNITS_PER_INSTRUCTION);
@@ -92353,12 +92355,36 @@ function readLeg(tx, index, wallet3) {
   }
   return { lamports, tokenOut, systemTransfers, others };
 }
+function isRegisterBuyer(data) {
+  return data.length >= 8 && REGISTER_BUYER.every((byte, i) => data[i] === byte);
+}
+function readRegisterBuyer(register, swap3, wallet3) {
+  if (register.program !== swap3.program)
+    throw new BundleReadError("leg 1 registers the buyer with another program");
+  if (register.data.length !== 12 || u323(register.data, 8) !== 0n)
+    throw new BundleReadError("leg 1 registers the buyer with a proof");
+  const [buyer, rentPayer, rules, tally] = register.accounts;
+  if (buyer !== wallet3)
+    throw new BundleReadError("leg 1 registers a buyer other than this wallet");
+  if (rules === undefined || tally === undefined || !swap3.accounts.includes(rules) || !swap3.accounts.includes(tally))
+    throw new BundleReadError("leg 1 registers the buyer for another pool than the one it buys");
+  return rentPayer === wallet3 ? BUYER_TALLY_RENT_LAMPORTS : 0n;
+}
 function readLaunchBundle(args) {
   const launch = readLeg(decodeLeg(args.legs[0], 0), 0, args.wallet);
   const buy = readLeg(decodeLeg(args.legs[1], 1), 1, args.wallet);
-  if (buy.others.length !== 1)
+  let registerLamports = 0n;
+  const first = buy.others[0];
+  if (first && isRegisterBuyer(first.data)) {
+    if (!args.rules)
+      throw new BundleReadError("leg 1 registers a buyer on a launch without rules");
+    const swap4 = buy.others[1];
+    if (buy.others.length !== 2 || !swap4 || isRegisterBuyer(swap4.data))
+      throw new BundleReadError("leg 1 is not one curve swap");
+    registerLamports = readRegisterBuyer(first, swap4, args.wallet);
+  } else if (buy.others.length !== 1)
     throw new BundleReadError("leg 1 is not one curve swap");
-  const swap3 = buy.others[0];
+  const swap3 = buy.others[buy.others.length - 1];
   if (u64(swap3.data, 8) !== args.buyRaw)
     throw new BundleReadError("leg 1 does not swap the confirmed --buy");
   if (args.minOutRaw !== undefined && u64(swap3.data, 16) !== args.minOutRaw)
@@ -92378,7 +92404,7 @@ function readLaunchBundle(args) {
     feeRaw = buy.tokenOut;
     quoteRaw = args.buyRaw + buy.tokenOut + launch.tokenOut;
   }
-  return { lamports: launch.lamports + buy.lamports, quoteRaw, feeRaw };
+  return { lamports: launch.lamports + buy.lamports + registerLamports, quoteRaw, feeRaw };
 }
 
 // src/launch-check.ts
@@ -93187,7 +93213,8 @@ async function atomicLaunch(ctx, key, args) {
       wallet: wallet3.address,
       quote: quoteAsset,
       buyRaw: BigInt(buy.raw),
-      ...minOut !== undefined ? { minOutRaw: BigInt(minOut) } : {}
+      ...minOut !== undefined ? { minOutRaw: BigInt(minOut) } : {},
+      rules: args.rules !== undefined
     });
   } catch (error) {
     if (!(error instanceof BundleReadError))

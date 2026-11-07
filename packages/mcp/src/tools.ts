@@ -2338,7 +2338,10 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "Orders, actual fills, fees, timestamps and transaction hashes for this profile. Page by time with " +
         "`since`, `until` and `cursor` (continue with the response's `nextCursor`). Includes FAILED " +
         "trades, with an errorCode saying why each did not go through, so this answers 'what happened to " +
-        "my order' as well as 'what did I trade'. Reads only; moves nothing.",
+        "my order' as well as 'what did I trade'. The profile's swaps are listed among the trades by " +
+        "time, each with kind 'swap', rail ('swap' for candle_swap, 'build' for the CLI's build and " +
+        "submit), fromAsset, toAsset and amountRaw; a candle_swap made without a clientSwapId is not " +
+        "recorded, so it is not listed. Reads only; moves nothing.",
       inputSchema: profileTradesShape,
     },
     async (args) => callAndRelay("candle_get_profile_trades", args, getConfig(), doFetch),

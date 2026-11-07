@@ -17,6 +17,10 @@
  * buy leg swaps exactly `--buy` (and, for SOL, wraps exactly that), and no leg hands the wallet's
  * control or a token account's rent to anyone else. Anything it cannot account for is refused;
  * the caller says "nothing was signed."
+ *
+ * BE-2899: on a launch with rules (BE-2791 spec, 4.2), the buy leg's curve swap is preceded by the
+ * creator's own `register_buyer`, with no proof, which creates the wallet's tally at its expense.
+ * That one instruction is read, and its rent counted; on any other launch it is refused.
  */
 import {
   COMPUTE_BUDGET_PROGRAM_ID,
@@ -41,6 +45,10 @@ const NATIVE_MINT = "So11111111111111111111111111111111111111112"
 const LAMPORTS_PER_SIGNATURE = 5_000n
 /** A rent-exempt SPL token account (165 bytes) at the mainnet schedule. */
 const TOKEN_ACCOUNT_RENT_LAMPORTS = 2_039_280n
+/** A rent-exempt `BuyerTally` (82 bytes, addendum 4.3) at the mainnet schedule. */
+const BUYER_TALLY_RENT_LAMPORTS = 1_461_600n
+/** The upgraded curve's `register_buyer` (Anchor `global:register_buyer`). */
+const REGISTER_BUYER = [144, 92, 137, 46, 209, 220, 27, 164]
 const DEFAULT_UNITS_PER_INSTRUCTION = 200_000n
 const MAX_COMPUTE_UNITS = 1_400_000n
 
@@ -83,7 +91,7 @@ function readLeg(
   lamports: bigint
   tokenOut: bigint
   systemTransfers: { to: string | undefined; lamports: bigint }[]
-  others: { program: string; data: Uint8Array }[]
+  others: { program: string; data: Uint8Array; accounts: (string | undefined)[] }[]
 } {
   const keys = tx.message.staticKeys
   if (keys[0] !== wallet) throw new BundleReadError(`leg ${index} is not paid by this wallet`)
@@ -94,7 +102,7 @@ function readLeg(
   let unitLimit: bigint | undefined
   let computed = 0n
   const systemTransfers: { to: string | undefined; lamports: bigint }[] = []
-  const others: { program: string; data: Uint8Array }[] = []
+  const others: { program: string; data: Uint8Array; accounts: (string | undefined)[] }[] = []
   for (const ix of tx.message.instructions) {
     // Programs are never loaded from a lookup table, so every program id is a static key.
     const program = key(ix.programIdIndex)
@@ -137,7 +145,7 @@ function readLeg(
       continue
     }
     if (program === MEMO_PROGRAM_ID) continue
-    if (program !== undefined) others.push({ program, data: ix.data })
+    if (program !== undefined) others.push({ program, data: ix.data, accounts: accounts.map(key) })
   }
   if (unitPrice > 0n) {
     const units =
@@ -148,6 +156,31 @@ function readLeg(
     lamports += (unitPrice * units + 999_999n) / 1_000_000n
   }
   return { lamports, tokenOut, systemTransfers, others }
+}
+
+function isRegisterBuyer(data: Uint8Array): boolean {
+  return data.length >= 8 && REGISTER_BUYER.every((byte, i) => data[i] === byte)
+}
+
+/**
+ * BE-2899: the creator's `register_buyer` ahead of the swap on a launch with rules. Accounts are
+ * buyer, rent payer, launch_rules, buyer_tally, system program; the data is the discriminator and
+ * an empty proof (the dev buyer needs none). The buyer is this wallet, and the swap names the same
+ * launch_rules and tally, so it registers for the pool it buys. Returns the lamports it costs.
+ */
+function readRegisterBuyer(
+  register: { program: string; data: Uint8Array; accounts: (string | undefined)[] },
+  swap: { program: string; accounts: (string | undefined)[] },
+  wallet: string,
+): bigint {
+  if (register.program !== swap.program) throw new BundleReadError("leg 1 registers the buyer with another program")
+  if (register.data.length !== 12 || u32(register.data, 8) !== 0n)
+    throw new BundleReadError("leg 1 registers the buyer with a proof")
+  const [buyer, rentPayer, rules, tally] = register.accounts
+  if (buyer !== wallet) throw new BundleReadError("leg 1 registers a buyer other than this wallet")
+  if (rules === undefined || tally === undefined || !swap.accounts.includes(rules) || !swap.accounts.includes(tally))
+    throw new BundleReadError("leg 1 registers the buyer for another pool than the one it buys")
+  return rentPayer === wallet ? BUYER_TALLY_RENT_LAMPORTS : 0n
 }
 
 /**
@@ -161,12 +194,23 @@ export function readLaunchBundle(args: {
   quote: "SOL" | "USDC" | "CNDL"
   buyRaw: bigint
   minOutRaw?: bigint
+  /** BE-2899: the launch sets rules, so the buy leg may register the wallet before its swap. */
+  rules?: boolean
 }): BundleReading {
   const launch = readLeg(decodeLeg(args.legs[0], 0), 0, args.wallet)
   const buy = readLeg(decodeLeg(args.legs[1], 1), 1, args.wallet)
   // The first buy is one curve swap: an 8-byte discriminator, then the input and the floor (u64).
-  if (buy.others.length !== 1) throw new BundleReadError("leg 1 is not one curve swap")
-  const swap = buy.others[0] as { data: Uint8Array }
+  // On a launch with rules, the wallet's `register_buyer` may go first, and nothing else.
+  let registerLamports = 0n
+  const first = buy.others[0]
+  if (first && isRegisterBuyer(first.data)) {
+    if (!args.rules) throw new BundleReadError("leg 1 registers a buyer on a launch without rules")
+    const swap = buy.others[1]
+    if (buy.others.length !== 2 || !swap || isRegisterBuyer(swap.data))
+      throw new BundleReadError("leg 1 is not one curve swap")
+    registerLamports = readRegisterBuyer(first, swap, args.wallet)
+  } else if (buy.others.length !== 1) throw new BundleReadError("leg 1 is not one curve swap")
+  const swap = buy.others[buy.others.length - 1] as { data: Uint8Array }
   if (u64(swap.data, 8) !== args.buyRaw) throw new BundleReadError("leg 1 does not swap the confirmed --buy")
   if (args.minOutRaw !== undefined && u64(swap.data, 16) !== args.minOutRaw)
     throw new BundleReadError("leg 1's floor is not the one the build quoted")
@@ -183,5 +227,5 @@ export function readLaunchBundle(args: {
     feeRaw = buy.tokenOut
     quoteRaw = args.buyRaw + buy.tokenOut + launch.tokenOut
   }
-  return { lamports: launch.lamports + buy.lamports, quoteRaw, feeRaw }
+  return { lamports: launch.lamports + buy.lamports + registerLamports, quoteRaw, feeRaw }
 }
