@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Candle CLI installer. Downloads the signed release binary for this machine into ~/.local/bin,
 # checks its SHA-256 against the release's SHA256SUMS and manifest (consistency), verifies its
-# Sigstore signature with cosign or gh (the actual verification; the install fails closed without
-# one unless CANDLE_INSTALL_ALLOW_UNSIGNED=1), and prepends the bin dir to PATH. The security key
+# Sigstore signature (the actual verification), and prepends the bin dir to PATH. The signature is
+# checked by cosign or a signed-in gh when one is installed, and otherwise by Candle's own
+# `candle verify`, offline, run from the CLI release at VERIFIER_TAG below: this script carries that
+# release's SHA-256s, so the verifier itself is checked before it runs and nothing else needs to be
+# installed. Without any of the three the install fails closed unless
+# CANDLE_INSTALL_ALLOW_UNSIGNED=1. The security key
 # helper (candle-fido2, Ember Phase 2 PR E) is fetched and verified the same way and installed
 # beside the binary; a release that predates it is installed without one, and says so. Usage:
 #   curl -fsSL https://candle.tv/install.sh | bash
@@ -27,6 +31,26 @@ ISSUER='https://token.actions.githubusercontent.com'
 # Where an unpinned install looks for the latest release: "current" (candledottv/cli) since the
 # switch (spec 2026-10-23-candle-github, section 9, step 4). Pinned tags still route by version.
 DEFAULT_HOME='current'
+
+# The verifier for a machine with no cosign and no signed-in gh: Candle's CLI at VERIFIER_TAG, whose
+# `candle verify` checks a Sigstore bundle against the trusted root compiled into it, with no network
+# and no other tool. Each platform's binary must match the SHA-256 below before it runs; that pin is
+# what makes it trustworthy, since a binary cannot vouch for itself. scripts/pin-verifier.ts writes
+# this block, after checking each binary's own signature in process, and install-script.test.ts holds
+# its shape (a released tag after BRIDGE_VERSION, one pin per platform). It verifies any later
+# release too, so it moves when the verifier or Sigstore's trusted root does, not on every release.
+# BEGIN VERIFIER PINS
+VERIFIER_TAG='cli-v0.13.15'
+verifier_pin() {
+  case "$1" in
+    candle-darwin-arm64) echo 'b54426f0505be8f0a0012736a38abf4720986c1ee5bd51de64f1a01594a24931' ;;
+    candle-darwin-x64) echo '8b41cd61abf8cfea28fad3e15cfb5519e41de9cb21c5719d1596dc523abd6a95' ;;
+    candle-linux-arm64) echo '53b6a6c7d733b723bc0c84879fa94e676e7ec821a7ce2bdc7b5bb38c17ee893f' ;;
+    candle-linux-x64) echo '50c6acce393fa0d4da1a93ea7c69fe43d4aa800b319ce5e46fd72a42f6f41735' ;;
+    *) echo '' ;;
+  esac
+}
+# END VERIFIER PINS
 
 usage() {
   cat <<EOF
@@ -140,7 +164,20 @@ if [ -n "$VERSION_TAG" ]; then
 fi
 RELEASE_BASE="${CANDLE_RELEASE_BASE_URL:-https://github.com/$(repository_of "$fetch_home")}"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+staged=""
+staged_helper=""
+staged_enclave=""
+staged_verifier=""
+# One cleanup for every exit, set before anything is staged: the temp dir, any staged file that was
+# never renamed into place, and the pinned verifier. Empty names are skipped rather than handed to
+# rm, which BSD rm (macOS) answers with an error.
+cleanup() {
+  local path
+  for path in "$tmp" "$staged" "$staged_helper" "$staged_enclave" "$staged_verifier"; do
+    if [ -n "$path" ]; then rm -rf "$path"; fi
+  done
+}
+trap cleanup EXIT
 if [ -n "$VERSION_TAG" ]; then
   download_base="${RELEASE_BASE}/releases/download/${VERSION_TAG}"
 else
@@ -194,6 +231,45 @@ identity_exact="https://github.com/${release_repository}/.github/workflows/relea
 # the two cannot drift apart in what they check.
 curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/SHA256SUMS" -o "$tmp/SHA256SUMS" || fail "could not fetch SHA256SUMS"
 
+# The pinned verifier, fetched at most once per run and only when neither cosign nor a signed-in gh
+# is there. Sets verifier to an executable path and returns 0, or returns 1 when this run cannot
+# have one (no pin for this platform, or the download failed), which leaves the install to the
+# fail-closed rule below. A download whose SHA-256 differs from the pin is not "unavailable": it is
+# a file that is not Candle's, and the install stops even with CANDLE_INSTALL_ALLOW_UNSIGNED=1.
+verifier=""
+verifier_state="unset"
+verifier_problem="this installer carries no pin for ${asset}"
+VERIFIER_BASE="${CANDLE_RELEASE_BASE_URL:-https://github.com/${CURRENT_REPOSITORY}}"
+obtain_verifier() {
+  [ "$verifier_state" = "ready" ] && return 0
+  [ "$verifier_state" = "unavailable" ] && return 1
+  verifier_state="unavailable"
+  local pin source
+  pin="$(verifier_pin "$asset")"
+  [ -n "$pin" ] || return 1
+  if [ -f "$tmp/$asset" ] && [ "$(sha256 "$tmp/$asset")" = "$pin" ]; then
+    # The release being installed is the pinned one: its binary already matches the pin, so it is
+    # its own verifier and nothing more is downloaded.
+    source="$tmp/$asset"
+  else
+    echo "No cosign or signed-in gh found: fetching Candle's CLI ${VERIFIER_TAG#cli-v} to check the signature with candle verify (pinned by this installer)..."
+    # curl's own complaint is kept for the fail-closed message rather than printed here: with
+    # CANDLE_INSTALL_ALLOW_UNSIGNED=1 an unreachable verifier is a warning, not an error.
+    verifier_problem="$(curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${VERIFIER_BASE}/releases/download/${VERIFIER_TAG}/${asset}" -o "$tmp/verifier" 2>&1)" || return 1
+    [ "$(sha256 "$tmp/verifier")" = "$pin" ] \
+      || fail "the verifier downloaded from ${VERIFIER_BASE} isn't the file Candle released as ${VERIFIER_TAG} (its SHA-256 differs from the one this installer carries); nothing installed"
+    source="$tmp/verifier"
+  fi
+  # Staged in the bin dir rather than run from $tmp, which is often mounted noexec on Linux. This
+  # runs as an `elif` condition, where set -e is off, so each step says for itself what failing means.
+  mkdir -p "$BIN_DIR" || fail "could not create $BIN_DIR"
+  staged_verifier="$(mktemp "$BIN_DIR/.candle-verifier.XXXXXX")" || fail "could not stage the verifier in $BIN_DIR"
+  cp "$source" "$staged_verifier" || fail "could not stage the verifier in $BIN_DIR"
+  chmod 700 "$staged_verifier" || fail "could not stage the verifier in $BIN_DIR"
+  verifier="$staged_verifier"
+  verifier_state="ready"
+}
+
 # $1: the asset name. Downloads it and its bundle into $tmp, checks both checksums, and verifies
 # the signature. Sets verified=1 when a verifier ran, 0 when the install rests on the checksum.
 verify_asset() {
@@ -242,19 +318,31 @@ verify_asset() {
       fail "signature verification failed for $name (gh attestation verify); nothing installed"
     fi
     verified=1
+  elif obtain_verifier; then
+    # The same exact identity and issuer as the two branches above, always passed: without them
+    # candle verify would take the identity from a latest.json beside the bundle, and the one in
+    # $tmp is the downloaded manifest this check exists to distrust.
+    if ! verify_output="$("$verifier" verify "$tmp/$name" --bundle "$tmp/$name.sigstore.json" --identity "$identity_exact" --issuer "$ISSUER" 2>&1)"; then
+      echo "$verify_output" >&2
+      fail "signature verification failed for $name (candle verify, from ${VERIFIER_TAG}); nothing installed"
+    fi
+    verified=1
+    verified_by_pin=1
   fi
   if [ "$verified" -eq 0 ]; then
     if [ "${CANDLE_INSTALL_ALLOW_UNSIGNED:-}" != "1" ]; then
-      # Named per platform, and only ways that work. This used to say "apt/dnf install cosign";
-      # cosign is packaged in neither Debian/Ubuntu nor Fedora, so the one instruction a Linux user
-      # was handed could only fail. Upstream ships a single static binary, and gh is the other route.
-      fail "no signature verifier found, so the download is not verified and nothing was installed. This binary will hold API keys and wallet signers, so the installer stops here by default. Install one and rerun: on macOS, brew install cosign; on Linux, download cosign from https://github.com/sigstore/cosign/releases (a single binary) or run gh auth login for the GitHub CLI. To install on the checksum alone: CANDLE_INSTALL_ALLOW_UNSIGNED=1 curl -fsSL https://candle.tv/install.sh | bash"
+      # Reached only when cosign and gh are absent AND the pinned verifier could not be had (a
+      # failed download, or a platform this script carries no pin for). Named per platform, and only
+      # ways that work: cosign is packaged in neither Debian/Ubuntu nor Fedora, so "apt/dnf install
+      # cosign" could only fail. Upstream ships a single static binary, and gh is the other route.
+      fail "the signature could not be checked, so nothing was installed: there is no cosign or signed-in gh here, and Candle's pinned verifier (${VERIFIER_TAG}) could not be downloaded from ${VERIFIER_BASE} (${verifier_problem:-no reason given}). This binary will hold API keys and wallet signers, so the installer stops here by default. Rerun once GitHub is reachable, or install a verifier and rerun: on macOS, brew install cosign; on Linux, download cosign from https://github.com/sigstore/cosign/releases (a single binary) or run gh auth login for the GitHub CLI. To install on the checksum alone: CANDLE_INSTALL_ALLOW_UNSIGNED=1 curl -fsSL https://candle.tv/install.sh | bash"
     fi
-    echo "Warning: signature not verified for $name (CANDLE_INSTALL_ALLOW_UNSIGNED=1); the checksum matched. To verify later:"
+    echo "Warning: signature not verified for $name (CANDLE_INSTALL_ALLOW_UNSIGNED=1; no cosign or signed-in gh, and the pinned verifier ${VERIFIER_TAG} was not available: ${verifier_problem:-no reason given}); the checksum matched. To verify later:"
     echo "  cosign verify-blob --new-bundle-format --bundle ${name}.sigstore.json --certificate-identity-regexp '${identity_regex}' --certificate-oidc-issuer ${ISSUER} ${name}"
   fi
 }
 
+verified_by_pin=0
 curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${asset}" -o "$tmp/$asset" || fail "no release binary for ${os}-${arch} at ${download_base}/${asset}"
 verify_asset "$asset"
 
@@ -302,11 +390,8 @@ mkdir -p "$BIN_DIR"
 # group-writable bin dir somebody can create that exact path first and have `mv` move THEIR file
 # over candle. mktemp creates the file itself and fails rather than reusing one that exists.
 staged="$(mktemp "$BIN_DIR/.candle.new.XXXXXX")"
-staged_helper=""
 if [ "$helper_present" -eq 1 ]; then staged_helper="$(mktemp "$BIN_DIR/.candle-fido2.new.XXXXXX")"; fi
-staged_enclave=""
 if [ "$enclave_present" -eq 1 ]; then staged_enclave="$(mktemp -d "$BIN_DIR/.candle-enclave.new.XXXXXX")"; fi
-trap 'rm -rf "$tmp" "$staged" "$staged_helper" "$staged_enclave"' EXIT
 cp "$tmp/$asset" "$staged"
 chmod 755 "$staged"
 mv -f "$staged" "$BIN_DIR/candle"
@@ -366,6 +451,9 @@ fi
 
 # 9. Prove it.
 echo "Installed candle $version to $BIN_DIR/candle"
+if [ "$verified_by_pin" -eq 1 ]; then
+  echo "Signature checked by candle verify from ${VERIFIER_TAG}, whose SHA-256 this installer carries."
+fi
 "$BIN_DIR/candle" --version
 if [ "$helper_present" -eq 1 ]; then
   echo "Installed candle-fido2 to $BIN_DIR/candle-fido2 (security keys need libfido2: brew install libfido2, or your distribution's libfido2 package)"

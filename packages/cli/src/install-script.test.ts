@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { parseVerifierPins, renderVerifierPins, replaceVerifierPins, VERIFIER_ASSETS } from "../scripts/pin-verifier"
+import { BRIDGE_VERSION, compareVersions, RELEASE_ISSUER, releaseHomeFor, versionOfTag } from "./release"
+import { CLI_VERSION } from "./version"
 
 /**
  * Runs the real install.sh against a local fixture server standing in for GitHub Releases. The
@@ -32,13 +35,29 @@ const os = process.platform === "darwin" ? "darwin" : "linux"
 const arch = process.arch === "arm64" ? "arm64" : "x64"
 const ASSET = `candle-${os}-${arch}`
 const HELPER = `candle-fido2-${os}-${arch}`
-const FAKE_BINARY = '#!/bin/sh\necho "candle 0.13.5"\n'
+// The fake binary answers `verify` the way the pinned verifier is asked to, so the one test that
+// pins the release being installed can watch it verify itself. It logs each call as one line, tab
+// separated, to CANDLE_TEST_VERIFIER_LOG, and exits CANDLE_TEST_VERIFIER_EXIT (default 0).
+const VERIFY_STUB = `if [ "$1" = verify ]; then printf '%s\\t' "$@" >> "\${CANDLE_TEST_VERIFIER_LOG:-/dev/null}"; printf '\\n' >> "\${CANDLE_TEST_VERIFIER_LOG:-/dev/null}"; exit "\${CANDLE_TEST_VERIFIER_EXIT:-0}"; fi`
+const FAKE_BINARY = `#!/bin/sh\n${VERIFY_STUB}\necho "candle 0.13.5"\n`
+/** The pinned verifier the fixture copy of install.sh carries: another release, 0.13.9. */
+const FAKE_VERIFIER = `#!/bin/sh\n${VERIFY_STUB}\necho "candle 0.13.9"\n`
+const VERIFIER_TAG = "cli-v0.13.9"
 const FAKE_HELPER = '#!/bin/sh\necho "candle-fido2 0.13.5 (protocol 1)"\n'
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
 
 let server: ReturnType<typeof Bun.serve>
 let base: string
 let fixtures: Record<string, string | Uint8Array>
+// What the fixture server serves at releases/download/<VERIFIER_TAG>/<name>. Empty by default, so a
+// run with no cosign and no gh finds no pinned verifier and takes the fail-closed rule, as every
+// test written before the pinned verifier expects; the pinned-verifier tests fill it in.
+let verifierFixtures: Record<string, string> = {}
+// install.sh with its VERIFIER PINS block swapped for the fixture's (VERIFIER_TAG, FAKE_VERIFIER's
+// SHA-256 on every platform). The real pins name real release binaries, which the fixture server
+// does not serve; the block's own shape is tested against the real script further down.
+let fixtureScript: string
+let fixtureScriptDir: string
 let fixtureTools: string
 // Every request path the fixture server has seen, in order. Tests that care reset it first
 // (requestPaths = []) so a later assertion is about their own run, not an earlier test's.
@@ -119,23 +138,35 @@ beforeAll(async () => {
       const pathname = new URL(req.url).pathname
       requestPaths.push(pathname)
       const name = pathname.split("/").pop() ?? ""
-      const body = fixtures[name]
+      const body = pathname.startsWith(`/releases/download/${VERIFIER_TAG}/`) ? verifierFixtures[name] : fixtures[name]
       // A zip fixture is bytes; the rest are text. Either is a valid body, whatever the lib typings say.
       return body === undefined ? new Response("not found", { status: 404 }) : new Response(body as BodyInit)
     },
   })
   base = `http://127.0.0.1:${server.port}`
+  fixtureScriptDir = await mkdtemp(join(tmpdir(), "candle-install-script-"))
+  fixtureScript = await scriptPinnedTo(VERIFIER_TAG, sha256(FAKE_VERIFIER))
 })
 afterAll(async () => {
   server.stop()
   await rm(fixtureTools, { recursive: true, force: true })
+  await rm(fixtureScriptDir, { recursive: true, force: true })
 })
+
+/** A copy of install.sh whose pinned verifier is `tag`, with `pin` as every platform's SHA-256. */
+async function scriptPinnedTo(tag: string, pin: string): Promise<string> {
+  const path = join(fixtureScriptDir, `install-${tag}-${pin.slice(0, 8)}.sh`)
+  const pins = Object.fromEntries(VERIFIER_ASSETS.map((name) => [name, pin]))
+  await writeFile(path, replaceVerifierPins(readFileSync(SCRIPT, "utf8"), { tag, pins }))
+  return path
+}
 
 async function runInstaller(
   args: string[],
   env: Record<string, string> = {},
   stubDir?: string,
   beforeRun?: (home: string) => Promise<void>,
+  script: string = fixtureScript,
 ) {
   const home = await mkdtemp(join(tmpdir(), "candle-install-"))
   if (beforeRun) await beforeRun(home)
@@ -143,7 +174,7 @@ async function runInstaller(
   const path = stubDir ? `${stubDir}:${fixtureTools}` : fixtureTools
   // Most cases install on the checksum alone through the explicit escape hatch; the fail-closed
   // test clears it, and the cosign cases exercise the real default path with a stub verifier.
-  const proc = Bun.spawn(["bash", SCRIPT, ...args], {
+  const proc = Bun.spawn(["bash", script, ...args], {
     env: {
       HOME: home,
       PATH: path,
@@ -215,7 +246,7 @@ describe("install.sh", () => {
     const rc = await readFile(join(first.home, ".zshrc"), "utf8")
     expect(rc).toContain('export PATH="$HOME/.local/bin:$PATH"')
     // Second run against the same HOME: the block is not duplicated.
-    const proc = Bun.spawn(["bash", SCRIPT], {
+    const proc = Bun.spawn(["bash", fixtureScript], {
       env: {
         HOME: first.home,
         PATH: fixtureTools,
@@ -406,6 +437,8 @@ describe("install.sh", () => {
     const NO_VERIFIER_PATH = fixtureTools
     const closed = await runInstaller([], { CANDLE_INSTALL_ALLOW_UNSIGNED: "", PATH: NO_VERIFIER_PATH })
     expect(closed.code).toBe(1)
+    // Only reached when the pinned verifier could not be had either (the fixture serves none here).
+    expect(closed.stderr).toContain(`Candle's pinned verifier (${VERIFIER_TAG}) could not be downloaded`)
     // Remedies that actually work, named per platform. `apt install cosign` and `dnf install
     // cosign` were in this message and neither package exists in Debian, Ubuntu or Fedora: the
     // one instruction a Linux user was given did nothing but fail. Upstream ships a single
@@ -638,6 +671,166 @@ describe("install.sh", () => {
     expect(r.stderr).toContain("linux-arm64")
     await rm(r.home, { recursive: true, force: true })
     await rm(stubDir, { recursive: true, force: true })
+  })
+})
+
+/**
+ * BE-2697 (R62): a machine with no cosign and no signed-in gh still verifies. The installer fetches
+ * Candle's own CLI at the release this script pins, checks it against the SHA-256 the script carries,
+ * and runs its offline `candle verify` against the exact identity the other two verifiers check.
+ */
+describe("install.sh with no cosign and no gh: the pinned candle verify", () => {
+  /** Every `verify` call the fake verifier logged, one argv per call. */
+  async function verifyCalls(log: string): Promise<string[][]> {
+    const text = await readFile(log, "utf8").catch(() => "")
+    return text
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => line.split("\t").filter((arg, i, all) => i < all.length - 1 || arg.length > 0))
+  }
+
+  async function withVerifier<T>(body: string, run: () => Promise<T>): Promise<T> {
+    verifierFixtures = { [ASSET]: body }
+    try {
+      return await run()
+    } finally {
+      verifierFixtures = {}
+    }
+  }
+
+  test("fetches the pinned candle, checks it against the pin, and verifies the binary and helper at the exact identity", async () => {
+    const logDir = await mkdtemp(join(tmpdir(), "candle-verifier-log-"))
+    const log = join(logDir, "verify.log")
+    requestPaths = []
+    const r = await withVerifier(FAKE_VERIFIER, () =>
+      runInstaller([], { CANDLE_INSTALL_ALLOW_UNSIGNED: "", CANDLE_TEST_VERIFIER_LOG: log }),
+    )
+    expect(r.stderr).toBe("")
+    expect(r.code).toBe(0)
+    expect(requestPaths).toContain(`/releases/download/${VERIFIER_TAG}/${ASSET}`)
+    const calls = await verifyCalls(log)
+    expect(calls.map((argv) => argv[1]?.split("/").pop())).toEqual([ASSET, HELPER])
+    const identity = "https://github.com/candledottv/cli/.github/workflows/release.yaml@refs/tags/cli-v0.13.5"
+    for (const argv of calls) {
+      const file = argv[1] as string
+      // Exact identity and issuer on every call, never left to a latest.json beside the bundle.
+      expect(argv).toEqual([
+        "verify",
+        file,
+        "--bundle",
+        `${file}.sigstore.json`,
+        "--identity",
+        identity,
+        "--issuer",
+        RELEASE_ISSUER,
+      ])
+    }
+    expect(r.stdout).toContain(`Signature checked by candle verify from ${VERIFIER_TAG}`)
+    expect(r.stdout).not.toContain("not verified")
+    // The installed binary is the release's, and the verifier left nothing behind in the bin dir.
+    expect(await readFile(join(r.binDir, "candle"), "utf8")).toBe(FAKE_BINARY)
+    expect((await readdir(r.binDir)).sort()).toEqual(["candle", "candle-fido2"])
+    await rm(r.home, { recursive: true, force: true })
+    await rm(logDir, { recursive: true, force: true })
+  })
+
+  test("a verifier whose bytes differ from the pin never runs and installs nothing, escape hatch or not", async () => {
+    const logDir = await mkdtemp(join(tmpdir(), "candle-verifier-log-"))
+    const log = join(logDir, "verify.log")
+    for (const allowUnsigned of ["", "1"]) {
+      const r = await withVerifier(`${FAKE_VERIFIER}# tampered\n`, () =>
+        runInstaller([], { CANDLE_INSTALL_ALLOW_UNSIGNED: allowUnsigned, CANDLE_TEST_VERIFIER_LOG: log }),
+      )
+      expect(r.code).toBe(1)
+      expect(r.stderr).toContain(`isn't the file Candle released as ${VERIFIER_TAG}`)
+      await expect(readFile(join(r.binDir, "candle"), "utf8")).rejects.toThrow()
+      expect((await readdir(r.binDir).catch(() => [])).filter((name) => !name.startsWith("."))).toEqual([])
+      await rm(r.home, { recursive: true, force: true })
+    }
+    expect(await verifyCalls(log)).toEqual([])
+    await rm(logDir, { recursive: true, force: true })
+  })
+
+  test("a signature the pinned verifier refuses leaves an existing install unchanged, escape hatch or not", async () => {
+    for (const allowUnsigned of ["", "1"]) {
+      const r = await withVerifier(FAKE_VERIFIER, () =>
+        runInstaller(
+          [],
+          { CANDLE_INSTALL_ALLOW_UNSIGNED: allowUnsigned, CANDLE_TEST_VERIFIER_EXIT: "1" },
+          undefined,
+          async (home) => {
+            await mkdir(join(home, ".local", "bin"), { recursive: true })
+            await writeFile(join(home, ".local", "bin", "candle"), "old CLI")
+          },
+        ),
+      )
+      expect(r.code).toBe(1)
+      expect(r.stderr).toContain(`signature verification failed for ${ASSET} (candle verify, from ${VERIFIER_TAG})`)
+      expect(await readFile(join(r.binDir, "candle"), "utf8")).toBe("old CLI")
+      expect((await readdir(r.binDir)).sort()).toEqual(["candle"])
+      await rm(r.home, { recursive: true, force: true })
+    }
+  })
+
+  test("the pinned release itself verifies with its own binary, with no second download", async () => {
+    const logDir = await mkdtemp(join(tmpdir(), "candle-verifier-log-"))
+    const log = join(logDir, "verify.log")
+    const selfPinned = await scriptPinnedTo("cli-v0.13.5", sha256(FAKE_BINARY))
+    requestPaths = []
+    const r = await runInstaller(
+      [],
+      { CANDLE_INSTALL_ALLOW_UNSIGNED: "", CANDLE_TEST_VERIFIER_LOG: log },
+      undefined,
+      undefined,
+      selfPinned,
+    )
+    expect(r.stderr).toBe("")
+    expect(r.code).toBe(0)
+    expect(requestPaths.filter((path) => path.endsWith(`/${ASSET}`))).toEqual([`/releases/latest/download/${ASSET}`])
+    expect((await verifyCalls(log)).map((argv) => argv[1]?.split("/").pop())).toEqual([ASSET, HELPER])
+    expect(r.stdout).not.toContain("fetching Candle's CLI")
+    await rm(r.home, { recursive: true, force: true })
+    await rm(logDir, { recursive: true, force: true })
+  })
+
+  test("with cosign on PATH the pinned verifier is never fetched", async () => {
+    const stubDir = await mkdtemp(join(tmpdir(), "candle-stub-"))
+    await writeFile(join(stubDir, "cosign"), "#!/bin/sh\nexit 0\n")
+    await chmod(join(stubDir, "cosign"), 0o755)
+    requestPaths = []
+    const r = await withVerifier(FAKE_VERIFIER, () => runInstaller([], { CANDLE_INSTALL_ALLOW_UNSIGNED: "" }, stubDir))
+    expect(r.code).toBe(0)
+    expect(requestPaths.some((path) => path.includes(VERIFIER_TAG))).toBe(false)
+    expect(r.stdout).not.toContain("Signature checked by candle verify")
+    await rm(r.home, { recursive: true, force: true })
+    await rm(stubDir, { recursive: true, force: true })
+  })
+
+  test("the shipped pins: one released tag after the bridge, no later than this CLI, a SHA-256 per platform, written by the script", () => {
+    const script = readFileSync(SCRIPT, "utf8")
+    const pinned = parseVerifierPins(script)
+    const version = versionOfTag(pinned.tag)
+    expect(version).not.toBeNull()
+    // In the current home, so the download URL install.sh builds from CURRENT_REPOSITORY is its home.
+    expect(releaseHomeFor(version as string)).toBe("current")
+    expect(compareVersions(version as string, BRIDGE_VERSION)).toBe(1)
+    expect(compareVersions(version as string, CLI_VERSION)).toBeLessThanOrEqual(0)
+    expect(Object.keys(pinned.pins).sort()).toEqual([...VERIFIER_ASSETS].sort())
+    for (const pin of Object.values(pinned.pins)) expect(pin).toMatch(/^[0-9a-f]{64}$/)
+    // Byte for byte what scripts/pin-verifier.ts renders, so a hand edit to the block shows here.
+    expect(script).toContain(renderVerifierPins(pinned))
+    expect(script).toContain(`VERIFIER_BASE="\${CANDLE_RELEASE_BASE_URL:-https://github.com/\${CURRENT_REPOSITORY}}"`)
+  })
+
+  test("replaceVerifierPins rewrites the block and nothing else, and refuses a script without one", () => {
+    const script = readFileSync(SCRIPT, "utf8")
+    const pins = Object.fromEntries(VERIFIER_ASSETS.map((name, i) => [name, String(i).repeat(64)]))
+    const rewritten = replaceVerifierPins(script, { tag: "cli-v9.9.9", pins })
+    expect(parseVerifierPins(rewritten)).toEqual({ tag: "cli-v9.9.9", pins })
+    const outside = (text: string) => text.replace(/# BEGIN VERIFIER PINS[\s\S]*# END VERIFIER PINS/, "")
+    expect(outside(rewritten)).toBe(outside(script))
+    expect(() => replaceVerifierPins("#!/bin/sh\n", { tag: "cli-v9.9.9", pins })).toThrow()
+    expect(() => renderVerifierPins({ tag: "cli-v9.9.9", pins: {} })).toThrow()
   })
 })
 

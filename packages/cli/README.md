@@ -53,6 +53,12 @@ or with Homebrew:
 Then: candle setup
 ```
 
+The installer checks the download's SHA-256 and its Sigstore signature before it writes anything,
+and needs nothing beyond `curl` and `sha256sum` or `shasum`. It checks the signature with `cosign` or
+a signed-in `gh` when one is installed, and otherwise with Candle's own `candle verify`, offline, from
+a CLI release whose SHA-256 the script carries (it downloads that `candle` and checks it against the
+SHA-256 before running it). If no check can run, it installs nothing.
+
 `candle setup` authorizes this device from your browser, shows the agent wallets as funding
 destinations, prints the skill and MCP install lines, and runs a full health check. `candle auth
 login` on its own does just the authorization step.
@@ -214,7 +220,7 @@ which `candle verify` cannot read.
 
 No cosign or gh installed? `candle verify <file> --bundle <path>` (this CLI's own command, see the
 table above) runs the same check against the trusted root compiled into the binary, no network
-call required. Full walkthrough, including the installer script's own signature and the
+call required. It is also what `install.sh` uses on a machine with neither. Full walkthrough, including the installer script's own signature and the
 transparency log: [Verify a Candle release](https://docs.candle.tv/developers/verify-a-candle-release).
 
 ## The `--json` contract
