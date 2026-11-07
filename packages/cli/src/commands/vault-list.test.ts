@@ -649,7 +649,7 @@ describe("T8: D7's streams", () => {
     expect(h.asked).toHaveLength(1)
   })
 
-  test("stdin or stderr not a terminal is VAULT_UNLOCK_FAILED at the prompt, before it asks anything", async () => {
+  test("stdin or stderr not a terminal is VAULT_TERMINAL_REQUIRED at the prompt, before it asks anything", async () => {
     const fx = await vaultWith(THREE_KEYS)
     for (const tty of [
       { stdin: false, stdout: true, stderr: true },
@@ -669,7 +669,7 @@ describe("T8: D7's streams", () => {
       // Same refusal under --json, and its code is one VAULT_ERROR_CODES already carried (T12).
       const json = harness({ dir: fx.dir, tty })
       expect(await run(["vault", "list", "--json"], json.deps)).toBe(1)
-      expect((JSON.parse(json.stdout.text) as { code: string }).code).toBe("VAULT_UNLOCK_FAILED")
+      expect((JSON.parse(json.stdout.text) as { code: string }).code).toBe("VAULT_TERMINAL_REQUIRED")
     }
   })
 })

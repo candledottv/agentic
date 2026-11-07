@@ -379,7 +379,7 @@ describe("factor add touch-id: the ceremony", () => {
     const v = await initVault()
     const add = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, tty: false })
     expect(await run(["vault", "factor", "add", "touch-id", "--json", "--keystore", v.vaultPath], add.deps)).toBe(1)
-    expect(failure(add)).toMatchObject({ code: "VAULT_UNLOCK_FAILED" })
+    expect(failure(add)).toMatchObject({ code: "VAULT_TERMINAL_REQUIRED" })
     expect(failure(add).message).toContain("needs a terminal")
     expect(add.calls).toEqual([])
   })
@@ -763,7 +763,7 @@ describe("unlocking with Touch ID", () => {
       expect(await run(["vault", "status", "--unlock", ...factor, "--json", "--keystore", t.vaultPath], h.deps)).toBe(1)
       expect(h.asked).toEqual([])
       expect(h.calls.filter((call) => call.op === "decrypt")).toHaveLength(0)
-      expect(failure(h).code).toBe("VAULT_UNLOCK_FAILED")
+      expect(failure(h).code).toBe("VAULT_TERMINAL_REQUIRED")
       expect(failure(h).message).toContain("vault status --unlock needs a terminal")
       expect(failure(h).suggestion).toContain("--factor touch-id")
     }
@@ -1075,7 +1075,7 @@ describe("BE-2661 (R10): a command whose only prompt is the unlock runs without 
       const typed = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase], tty: false })
       expect(await run([...args, "--factor", "passphrase", "--json", "--keystore", t.vaultPath], typed.deps)).toBe(1)
       expect(typed.asked).toEqual([])
-      expect(failure(typed).code).toBe("VAULT_UNLOCK_FAILED")
+      expect(failure(typed).code).toBe("VAULT_TERMINAL_REQUIRED")
       expect(failure(typed).message).toContain(`${args.join(" ")} needs a terminal`)
       expect(failure(typed).suggestion).toContain("--factor touch-id")
     }

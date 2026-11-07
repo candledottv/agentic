@@ -261,7 +261,10 @@ A generated vault passphrase is shown once on the terminal and never inside a JS
 `vault init` and `vault factor add passphrase` under `--json` take `--own-passphrase` (typed at a
 hidden prompt, nothing shown) and refuse the generated form with exit `2`. Prompts themselves are
 rendered on stderr, so a command that unlocks a vault on a terminal still leaves stdout as one
-JSON value. A security key's PIN is read the same way, by the CLI on its own hidden prompt, and
+JSON value. A vault command run without a terminal to prompt at — stdin and stdout for the
+ceremony commands, stdin and stderr for the prompt itself — refuses with `VAULT_TERMINAL_REQUIRED`
+before anything is asked; it is not an unlock failure, and no flag or environment variable
+supplies a passphrase or PIN. A security key's PIN is read the same way, by the CLI on its own hidden prompt, and
 reaches the `candle-fido2` helper only inside a request piped to it; the helper never reads the
 terminal and the PIN never appears in any output.
 

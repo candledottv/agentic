@@ -656,7 +656,7 @@ describe("the argument-shape refusals: exit 2, before any prompt", () => {
     })
     expect(out.code).toBe(1)
     expect(out.prompted).toBe(0)
-    expect(json(out).code).toBe("VAULT_UNLOCK_FAILED")
+    expect(json(out).code).toBe("VAULT_TERMINAL_REQUIRED")
   })
 })
 

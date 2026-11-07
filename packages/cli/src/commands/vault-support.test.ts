@@ -126,7 +126,7 @@ test("the three vault sends still refuse without a terminal, before any prompt",
       },
     })
     expect(await run([...args, "--json"], deps)).toBe(1)
-    expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, code: "VAULT_UNLOCK_FAILED" })
+    expect(JSON.parse(stdout.text)).toMatchObject({ ok: false, code: "VAULT_TERMINAL_REQUIRED" })
     expect(JSON.parse(stdout.text).message).toContain("needs a terminal")
     expect(asked).toEqual([])
   }

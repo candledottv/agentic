@@ -108,7 +108,9 @@ export function requireTty(ctx: CommandContext, what: string): boolean {
   writeVaultFailure(
     ctx,
     new VaultError(
-      "VAULT_UNLOCK_FAILED",
+      // BE-2696 (R61): not an unlock failure -- nothing was tried. A dedicated code lets an agent
+      // tell "run this from a terminal" apart from "wrong passphrase" without parsing the message.
+      "VAULT_TERMINAL_REQUIRED",
       `${what} needs a terminal: this CLI reads a vault passphrase or a security key PIN from a hidden prompt and from nowhere else.`,
       {
         suggestion: "There is no environment variable and no flag that supplies one.",
@@ -143,7 +145,11 @@ export function refusePromptsWithoutTerminal(ctx: CommandContext, what: string):
   const refuse = async (): Promise<string> => {
     throw tagNoTerminal(
       new VaultError(
-        "VAULT_UNLOCK_FAILED",
+        // BE-2696 (R61): not an unlock failure -- nothing was tried. A dedicated code lets an
+        // agent tell "run this from a terminal" apart from "wrong passphrase" without parsing
+        // the message. The WeakSet tag below is what `isNoTerminalRefusal` reads, so callers
+        // that skip the vault row (portfolio) are unaffected by the code.
+        "VAULT_TERMINAL_REQUIRED",
         `${what} needs a terminal here: this unlock reads a vault passphrase, a security key PIN or a choice from a prompt, and standard input and standard error must both be a terminal for that. Standard output may be redirected.`,
         {
           suggestion:

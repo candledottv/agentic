@@ -12448,6 +12448,7 @@ var init_errors2 = __esm(() => {
     "VAULT_FIELD_UNKNOWN",
     "VAULT_KDF_OUT_OF_BOUNDS",
     "VAULT_UNLOCK_FAILED",
+    "VAULT_TERMINAL_REQUIRED",
     "VAULT_BLOB_TAMPERED",
     "VAULT_INDEX_INVALID",
     "VAULT_OLDER_COPY",
@@ -29067,7 +29068,7 @@ async function askForOwnPassphrase(ctx, promptText) {
 function requireTty(ctx, what) {
   if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stdout)
     return true;
-  writeVaultFailure(ctx, new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal: this CLI reads a vault passphrase or a security key PIN from a hidden prompt and from nowhere else.`, {
+  writeVaultFailure(ctx, new VaultError("VAULT_TERMINAL_REQUIRED", `${what} needs a terminal: this CLI reads a vault passphrase or a security key PIN from a hidden prompt and from nowhere else.`, {
     suggestion: "There is no environment variable and no flag that supplies one."
   }));
   return false;
@@ -29076,7 +29077,7 @@ function refusePromptsWithoutTerminal(ctx, what) {
   if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stderr)
     return ctx;
   const refuse2 = async () => {
-    throw tagNoTerminal(new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal here: this unlock reads a vault passphrase, a security key PIN or a choice from a prompt, and standard input and standard error must both be a terminal for that. Standard output may be redirected.`, {
+    throw tagNoTerminal(new VaultError("VAULT_TERMINAL_REQUIRED", `${what} needs a terminal here: this unlock reads a vault passphrase, a security key PIN or a choice from a prompt, and standard input and standard error must both be a terminal for that. Standard output may be redirected.`, {
       suggestion: "Run it from a terminal, or pass --factor touch-id or --factor passkey to unlock with a factor that reads no prompt. No environment variable or flag supplies a passphrase or PIN."
     }));
   };

@@ -36,6 +36,8 @@ const NO_SUGGESTION_NEEDED: Record<string, string> = {
     "A file that fails its own verification is a broken file. The message names which of the eight steps failed and that nothing was committed; the next move is a restore, not a flag.",
   VAULT_UNLOCK_FAILED:
     "Wrong passphrase, wrong PIN, or a mismatch at a copy-back prompt. The only step is to run it again, which the message already says.",
+  VAULT_TERMINAL_REQUIRED:
+    "No terminal to prompt at (BE-2696/R61). The message already names the streams that must be a terminal and that no flag or environment variable supplies a passphrase or PIN; there is no other step.",
   VAULT_UNREADABLE:
     "An unreadable file at a named path. The message carries the path and the OS reason; candle has nothing to suggest about someone else's filesystem.",
   VAULT_INDEX_INVALID:

@@ -21,6 +21,12 @@ export const VAULT_ERROR_CODES = [
   "VAULT_FIELD_UNKNOWN",
   "VAULT_KDF_OUT_OF_BOUNDS",
   "VAULT_UNLOCK_FAILED",
+  // BE-2696 (R61): a vault command that has no terminal to prompt at. Thrown only by the two
+  // terminal guards in `commands/vault-support.ts` (`requireTty` and
+  // `refusePromptsWithoutTerminal`), which previously answered VAULT_UNLOCK_FAILED -- a code that
+  // also means "wrong passphrase", so an agent (or operator) could not tell a retry-able
+  // failure from "run this from a terminal". Nothing was attempted; exit 1.
+  "VAULT_TERMINAL_REQUIRED",
   "VAULT_BLOB_TAMPERED",
   "VAULT_INDEX_INVALID",
   "VAULT_OLDER_COPY",

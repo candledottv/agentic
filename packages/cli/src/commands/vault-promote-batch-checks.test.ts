@@ -152,12 +152,12 @@ describe("T-J1, T-J2, T-J3: --json", () => {
     expect(r.submits.n).toBe(0)
   })
 
-  test("T-J2: no TTY refuses with the shipped VAULT_UNLOCK_FAILED; CANDLE_KEYSTORE_PASSPHRASE is refused first", async () => {
+  test("T-J2: no TTY refuses with VAULT_TERMINAL_REQUIRED; CANDLE_KEYSTORE_PASSPHRASE is refused first", async () => {
     const f = await fixture(["a", "b", "cold"])
     const file = await pairsFile(f.dir, "a cold\nb cold\n")
     const pipe = await runBatch(f, { file, json: true, tty: false })
     expect(pipe.code).toBe(1)
-    expect(JSON.parse(pipe.out)).toMatchObject({ ok: false, code: "VAULT_UNLOCK_FAILED" })
+    expect(JSON.parse(pipe.out)).toMatchObject({ ok: false, code: "VAULT_TERMINAL_REQUIRED" })
     expect(humanText(String(JSON.parse(pipe.out).message))).toContain(humanText("vault promote-batch needs a terminal"))
     const env = await runBatch(f, { file, json: true, env: { CANDLE_KEYSTORE_PASSPHRASE: "x" } })
     expect(env.code).toBe(1)
