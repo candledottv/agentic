@@ -215,6 +215,7 @@ export type {
   TradeRoute,
   TradeRouteHop,
   TradeSide,
+  TxLimitUse,
   VerifyResult,
   WalletKind,
 } from "./client"

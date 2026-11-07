@@ -189,7 +189,7 @@ function readClusterResult(value, mint) {
 }
 
 // src/version.ts
-var SERVER_VERSION = "0.10.29";
+var SERVER_VERSION = "0.10.30";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;

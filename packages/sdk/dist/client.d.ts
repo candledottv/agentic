@@ -1312,6 +1312,31 @@ export interface SpendLimit {
 export interface SpendLimitsResult {
     success: true;
     keyLimits: SpendLimit[] | null;
+    /** The key's USD volume limit, or null. Absent on an older API. */
+    txLimit?: {
+        usdMicros: number;
+        reset: "never" | "daily" | "weekly" | "monthly";
+    } | null;
+    /** How much of `txLimit` the key has used (BE-2671). Null without a `txLimit`; absent on an older API. */
+    txLimitUse?: TxLimitUse | null;
+}
+/**
+ * The calling key's use of its `txLimit`, from `GET /api/v1/agent/keys/self/limits`. Two figures,
+ * because the gates count differently: `reservedUsdMicros` is the open window's reservation
+ * (holds from swaps, perps and TEE operations; TEE sells excluded) and `bookedUsdMicros` is the
+ * booked swap, launch and transfer volume in the same window. The cap check holds the key to both,
+ * so `remainingUsdMicros` is the limit less the LARGER of the two; size a trade from it, not from
+ * either raw figure alone. Either raw figure is `null` when its read failed (and then
+ * `remainingUsdMicros` is too): not zero. `resetsAt` is epoch ms, `null` for a `never` limit.
+ */
+export interface TxLimitUse {
+    usdMicros: number;
+    reset: "never" | "daily" | "weekly" | "monthly";
+    reservedUsdMicros: number | null;
+    bookedUsdMicros: number | null;
+    remainingUsdMicros: number | null;
+    resetsAt: number | null;
+    readAt: number;
 }
 /** POST /api/v1/agent/wallets/import/submit response: the linked-wallet row summary. */
 export interface ImportWalletResult {
@@ -4605,7 +4630,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.18";
+export declare const SDK_VERSION = "0.6.19";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map
