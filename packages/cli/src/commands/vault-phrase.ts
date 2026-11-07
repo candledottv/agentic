@@ -10,7 +10,8 @@
  *   A typed acknowledgement, so the operator has said what they are about to do.
  *   `rootExported: true` written to the vault FIRST, so the record precedes the exposure and a
  *     crash between the write and the render leaves the vault saying the phrase may be out.
- *   Only then the 24 words, and a read-back of three of them at random positions.
+ *   Only then the 24 words, a pause to save them, a screen clear, and a read-back of three of
+ *     them at random positions from the saved copy.
  *
  * What this stops, precisely: an agent driving the CLI through pipes, a subprocess, or `--json`
  * cannot obtain the phrase, because the CLI refuses before rendering it. What it does not stop,
@@ -175,6 +176,17 @@ export async function runPhraseCeremony(
   }
   deps.stdout.write("\n")
 
+  await deps.promptLine("Press Enter when you have saved the 24 words offline; the screen will clear for the check: ")
+  // Clear the visible phrase BEFORE asking for words from the saved copy. Scrollback is outside
+  // this CLI's control; be explicit about that limit rather than promising erasure.
+  deps.stdout.write("\u001b[2J\u001b[H")
+  notice(
+    deps,
+    "stdout",
+    "warning",
+    "The phrase is no longer on screen. Clear your terminal's scrollback: the words were rendered there and this CLI cannot remove them.",
+  )
+
   const positions = randomPositions(3, words.length)
   let confirmed = true
   for (const position of positions) {
@@ -182,15 +194,8 @@ export async function runPhraseCeremony(
     if (typed !== words[position]) confirmed = false
   }
 
-  // Hygiene, not a guarantee (CC-04): the words were on a screen and this only removes them from
-  // the visible region. The scrollback is the operator's to clear and the output says so.
+  // Clear the typed read-back answers too (visible-region hygiene, not a guarantee, CC-04).
   deps.stdout.write("\u001b[2J\u001b[H")
-  notice(
-    deps,
-    "stdout",
-    "warning",
-    "The phrase is no longer on screen. Clear your terminal's scrollback: the words were rendered there and this CLI cannot remove them.\n".trim(),
-  )
   notice(
     deps,
     "stdout",

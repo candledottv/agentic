@@ -786,6 +786,7 @@ describe("T9, T10, T11: phrase show with a security key", () => {
       h.asked.push(`line: ${text}`)
       h.events.push(`line: ${text}`)
       if (text.startsWith("Type understood")) return "understood"
+      if (text.startsWith("Press Enter when you have saved")) return ""
       const match = /Type word (\d+):/.exec(text)
       if (!match?.[1]) throw new Error(`unexpected prompt: ${text}`)
       return state.words[Number(match[1]) - 1] as string

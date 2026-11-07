@@ -91,6 +91,10 @@ vault key with `candle tee sweep` or `candle vault demote`. Promoting, moving fu
 emergency procedure, rebinding, trusted wallets and API key access levels are all in
 [Custody tiers: the vault and TEE wallets](https://docs.candle.tv/developers/cli-custody).
 
+The recovery phrase ceremony (`vault init`'s offer or `vault phrase show`) waits for you to save
+all 24 words offline and press Enter, then clears the screen before asking for three randomly
+chosen words from your saved copy. Clear your terminal's scrollback too: the CLI cannot erase it.
+
 ## Commands
 
 | Command | What it does |

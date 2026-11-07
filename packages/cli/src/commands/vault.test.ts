@@ -697,17 +697,32 @@ describe("T54: the phrase ceremony", () => {
     expect(unchanged.generation).toBe(before.generation)
   })
 
-  test("the 24 words are rendered from the stored entropy, and rootExported is written first", async () => {
+  test("BE-2704: the saved phrase is cleared before any read-back question", async () => {
     const h = await initVault()
-    // Three read-back answers are asked for at random positions, so the queue is padded with the
-    // full word list: whichever three are asked, the harness answers with the right ones below.
+    // Keep an offline copy so the answers do not depend on what remains visible after the clear.
     const p = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase], lines: ["understood"] })
     const answered: string[] = []
+    const positions: number[] = []
+    let saved = false
     let words: string[] = []
     p.deps.promptLine = async (text: string) => {
       if (text.startsWith("Type understood")) return "understood"
+      if (text.startsWith("Press Enter when you have saved")) {
+        // All 24 words remain visible while the operator makes an offline copy.
+        const rendered = [...p.stdout.text.matchAll(/(\d+)\. (\w+)/g)].map((match) => match[2])
+        expect(rendered).toEqual(words)
+        expect(p.stdout.text).not.toContain("\u001b[2J")
+        saved = true
+        return ""
+      }
       const match = /Type word (\d+):/.exec(text)
       if (!match?.[1]) throw new Error(`unexpected prompt: ${text}`)
+      expect(saved).toBe(true)
+      const clear = p.stdout.text.lastIndexOf("\u001b[2J\u001b[H")
+      expect(clear).toBeGreaterThan(p.stdout.text.indexOf("24. "))
+      expect(p.stdout.text.slice(clear)).not.toMatch(/\d+\. \w+/)
+      expect(humanText(p.stdout.text.slice(clear))).toContain(humanText("scrollback"))
+      positions.push(Number(match[1]))
       const word = words[Number(match[1]) - 1] as string
       answered.push(word)
       return word
@@ -723,6 +738,8 @@ describe("T54: the phrase ceremony", () => {
 
     expect(await run(["vault", "phrase", "show", "--keystore", h.vaultPath], p.deps)).toBe(0)
     expect(answered).toHaveLength(3)
+    expect(new Set(positions).size).toBe(3)
+    expect(positions.every((position) => position >= 1 && position <= 24)).toBe(true)
     expect(humanText(p.stdout.text)).toContain(humanText("Read-back matched"))
 
     // The record precedes the exposure: the write happened, and the flag never resets.
@@ -742,7 +759,12 @@ describe("T54: the phrase ceremony", () => {
   test("a mismatched read-back exits 1 with the record ALREADY true", async () => {
     const h = await initVault()
     const p = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
-    p.deps.promptLine = async (text: string) => (text.startsWith("Type understood") ? "understood" : "wrongword")
+    p.deps.promptLine = async (text: string) => {
+      if (text.startsWith("Type understood")) return "understood"
+      if (text.startsWith("Press Enter when you have saved")) return ""
+      expect(p.stdout.text).toContain("\u001b[2J\u001b[H")
+      return "wrongword"
+    }
 
     expect(await run(["vault", "phrase", "show", "--keystore", h.vaultPath], p.deps)).toBe(1)
     expect(humanText(p.stderr.text)).toContain(humanText("did not match"))

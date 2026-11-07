@@ -109850,6 +109850,9 @@ Anyone who reads them can move every derived key's funds.
   }
   deps.stdout.write(`
 `);
+  await deps.promptLine("Press Enter when you have saved the 24 words offline; the screen will clear for the check: ");
+  deps.stdout.write("\x1B[2J\x1B[H");
+  notice(deps, "stdout", "warning", "The phrase is no longer on screen. Clear your terminal's scrollback: the words were rendered there and this CLI cannot remove them.");
   const positions = randomPositions(3, words.length);
   let confirmed = true;
   for (const position of positions) {
@@ -109858,8 +109861,6 @@ Anyone who reads them can move every derived key's funds.
       confirmed = false;
   }
   deps.stdout.write("\x1B[2J\x1B[H");
-  notice(deps, "stdout", "warning", `The phrase is no longer on screen. Clear your terminal's scrollback: the words were rendered there and this CLI cannot remove them.
-`.trim());
   notice(deps, "stdout", "warning", `This vault now records that the recovery phrase was exported; that record never resets.
 `.trim());
   words.fill("");
