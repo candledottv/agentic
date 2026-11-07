@@ -285,7 +285,8 @@ describe("BE-2596: SOL max", () => {
       f.chain.balance += 1
       return confirms === 1 ? "confirm" : "no"
     }
-    expect(await f.transfer()).toBe(1)
+    // BE-2674 (R28): a declined typed confirm is exit 5 (CANCELLED_EXIT).
+    expect(await f.transfer()).toBe(5)
     expect(lastJson(f.stdout.text)).toMatchObject({ code: "DESTINATION_NOT_CONFIRMED" })
     expect(f.wires).toHaveLength(0)
   })

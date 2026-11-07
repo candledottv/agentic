@@ -354,12 +354,13 @@ describe("candle lp: the writes", () => {
   test("declining the prompt cancels: nothing is signed, broadcast or confirmed", async () => {
     const f = await fixture({ prompt: "n" })
     f.deps.isTTY.stdin = true
+    // BE-2674 (R28): a decline is exit 5 (CANCELLED_EXIT).
     expect(
       await run(
         addArgs.filter((arg) => arg !== "--yes"),
         f.deps,
       ),
-    ).toBe(0)
+    ).toBe(5)
     expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ success: true, status: "cancelled", action: "add" })
     expect(f.calls.some((c) => c.path.endsWith("/sign") || c.path.endsWith("/confirm"))).toBe(false)
     expect(f.calls.filter((c) => c.path === "/rpc")).toEqual([])

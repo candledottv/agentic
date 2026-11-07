@@ -46,7 +46,7 @@ import {
   tradingWallet,
 } from "../trading"
 import { formatUsd } from "../usd"
-import { decimalsFor, printTradingResult, tradingFailure, validClientId } from "./swap"
+import { decimalsFor, printCancelledResult, printTradingResult, tradingFailure, validClientId } from "./swap"
 
 const LP_SCOPE = "lp:write"
 /** Confirmation polling after the broadcast: 2 s apart, up to 45 tries (90 s), as `tee sweep` waits. */
@@ -413,7 +413,7 @@ async function runLpOperation(ctx: CommandContext, plan: LpPlan): Promise<number
     candleFeeBps: built.preview?.candleFeeBps ?? 0,
   }
   if (!(await confirmPreview(ctx, plan, built)))
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,

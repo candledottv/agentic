@@ -952,7 +952,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
         hoodLaunch().filter((arg) => arg !== "--yes"),
         f.deps,
       ),
-    ).toBe(0)
+    ).toBe(5)
     expect(signs(f.calls)).toEqual([])
     expect(lastJson(f.stdout.text)).toMatchObject({ status: "cancelled", operationId: "op-1", walletHeldUntil: 10_000 })
     expect(f.stderr.text).toContain("WALLET_BUSY")
@@ -1058,7 +1058,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
           withImage(path).filter((arg) => arg !== "--yes"),
           f.deps,
         ),
-      ).toBe(0)
+      ).toBe(5)
       expect(uploads(f.calls)).toHaveLength(1)
       expect(signs(f.calls)).toEqual([])
       expect(lastJson(f.stdout.text)).toMatchObject({ status: "cancelled", imageUrl: hostedImage })

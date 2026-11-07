@@ -408,6 +408,16 @@ describe("candle perps deposit from Hood", () => {
     expect(paths(f.calls).some((p) => p.endsWith("/sign") || p.endsWith("/deposit/submit"))).toBe(false)
   })
 
+  // BE-2674 (R28): declining the "Sign and send?" prompt is exit 5, with nothing signed or submitted.
+  test("declining the confirmation exits 5 and signs and submits nothing", async () => {
+    const f = await fixture()
+    f.deps.isTTY.stdin = true
+    f.deps.promptLine = async () => "n"
+    expect(await run(["perps", "deposit", "25", "USDG", "--json"], f.deps)).toBe(5)
+    expect(f.stderr.text + f.stdout.text).toContain("CANCELLED")
+    expect(paths(f.calls).some((p) => p.endsWith("/sign") || p.endsWith("/deposit/submit"))).toBe(false)
+  })
+
   test("a real build sends no preview flag", async () => {
     const f = await fixture()
     expect(await run(["perps", "deposit", "25", "USDG", "--yes", "--json"], f.deps)).toBe(0)

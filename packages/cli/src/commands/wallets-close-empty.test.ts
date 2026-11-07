@@ -175,7 +175,8 @@ describe("candle wallet close-empty (BE-418)", () => {
   test("answering no closes nothing and reports cancelled", async () => {
     const f = await fixture({ prompt: "n" })
     const code = await run(["wallet", "close-empty", "--json"], f.deps)
-    expect(code).toBe(0)
+    // BE-2674 (R28): a decline is exit 5 (CANCELLED_EXIT), not 0 and not the refusal's 1.
+    expect(code).toBe(5)
     expect(f.paths()).not.toContain(EXECUTE)
     expect(JSON.parse(f.stdout.text)).toMatchObject({ success: true, status: "cancelled", wallet: EMBEDDED })
   })

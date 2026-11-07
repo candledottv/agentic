@@ -283,7 +283,7 @@ describe("embedded launch through headless, with an optional first buy", () => {
   test("dry run and decline leave the launch id unused", async () => {
     for (const extra of [["--dry-run"], []]) {
       const f = await fixture({ prompt: "n" })
-      expect(await run([...launchArgs, "--buy", "0.1", ...extra], f.deps)).toBe(0)
+      expect(await run([...launchArgs, "--buy", "0.1", ...extra], f.deps)).toBe(extra.length ? 0 : 5)
       expect(f.paths()).not.toContain("/api/v1/launch/headless")
       expect(f.operations()).toEqual([])
       expect(json(f.stdout.text)).toMatchObject(extra.length ? { dryRun: true } : { status: "cancelled" })

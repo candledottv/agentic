@@ -15,7 +15,8 @@
  * Exit codes: 0 success, 1 user-facing failure (denied, expired, invalid input, or a routing
  * failure -- no command or subcommand matched, so nothing ran), 2 a malformed invocation of an
  * otherwise-valid command (a recognized command missing a required flag/argument, or given an
- * unknown flag). `doctor` exits 1 on any FAIL row (`doctor.ts`).
+ * unknown flag), 5 the user declined a confirmation (BE-2674/R28: nothing was signed, sent or
+ * written; distinct from a refusal). `doctor` exits 1 on any FAIL row (`doctor.ts`).
  */
 
 import { spawn } from "node:child_process"

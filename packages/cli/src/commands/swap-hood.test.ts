@@ -630,7 +630,7 @@ describe("H8: the sequenced leg loop", () => {
         sellArgs().filter((arg) => arg !== "--yes"),
         f.deps,
       ),
-    ).toBe(0)
+    ).toBe(5)
     expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
     const result = lastJson(f.stdout.text)
     expect(result.status).toBe("cancelled")

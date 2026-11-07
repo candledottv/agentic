@@ -15757,7 +15757,7 @@ function payerSignature(transaction) {
     throw new TradingError("INVALID_RESPONSE", "Missing payer signature.");
   return base58.encode(bytes.subarray(offset, offset + 64));
 }
-var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES, HOOD_BASES, SWAP_SUBMIT_EVIDENCE, TRADE_BROADCAST_PATHS, TRADE_BROADCAST_EVIDENCE, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage;
+var CANCELLED_EXIT = 5, TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES, HOOD_BASES, SWAP_SUBMIT_EVIDENCE, TRADE_BROADCAST_PATHS, TRADE_BROADCAST_EVIDENCE, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage;
 var init_trading = __esm(() => {
   init_sha3();
   init_esm();
@@ -17008,6 +17008,10 @@ function printTradingResult(ctx, result) {
 `);
   return 0;
 }
+function printCancelledResult(ctx, result) {
+  printTradingResult(ctx, result);
+  return CANCELLED_EXIT;
+}
 function reportSettlement(ctx, settlement, out, id) {
   const parsed = settlementSchema.safeParse(settlement);
   const reading = parsed.success ? parsed.data : undefined;
@@ -17280,7 +17284,7 @@ async function swap(args, ctx) {
       tokenRisks: artifacts.tokenRisks ?? []
     };
     if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
-      return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote });
+      return printCancelledResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote });
     if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
       throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
     if (payerWallet.kind === "embedded") {
@@ -17495,7 +17499,7 @@ async function hoodSwap(ctx, args) {
     if (sequenced)
       notice(ctx.deps, "stderr", "note", `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.
 `.trim());
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,
@@ -17734,7 +17738,7 @@ async function bridgeSwap(ctx, args) {
     if (sequenced)
       notice(ctx.deps, "stderr", "note", `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade or sweep from it waits until then.
 `.trim());
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,
@@ -29548,14 +29552,16 @@ async function confirmSend(ctx, send) {
   if (await typedConfirm(ctx, "to", send.address, describeSend(send.amount, send.asset, send.address)))
     return;
   throw new VaultError("DESTINATION_NOT_CONFIRMED", "The send was not confirmed; nothing was done.", {
-    suggestion: "Nothing was signed. Run it again and type confirm at the prompt."
+    suggestion: "Nothing was signed. Run it again and type confirm at the prompt.",
+    exitCode: CANCELLED_EXIT
   });
 }
 async function confirmAddress(ctx, label, address, action) {
   if (await typedConfirm(ctx, label, address, action))
     return;
   throw new VaultError("DESTINATION_NOT_CONFIRMED", "That was not confirmed; nothing was done.", {
-    suggestion: "Nothing was signed or written. Run it again and type confirm at the prompt."
+    suggestion: "Nothing was signed or written. Run it again and type confirm at the prompt.",
+    exitCode: CANCELLED_EXIT
   });
 }
 async function typedConfirm(io, label, address, action) {
@@ -92667,7 +92673,7 @@ async function launch(args, ctx) {
     ctx.deps.stderr.write(rulesBlock(answer2, "solana", flags));
     notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim());
     if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
-      return printTradingResult(ctx, {
+      return printCancelledResult(ctx, {
         success: true,
         status: "cancelled",
         clientTradeId: id,
@@ -92986,7 +92992,7 @@ async function atomicLaunch(ctx, key, args) {
   if (!await confirmQuote(ctx, quote, args.yes)) {
     notice(ctx.deps, "stderr", "note", `Nothing was signed. Candle holds bundle ${safeText(built.bundleId)}'s spend reservation until the build expires at ${new Date(built.expiresAt).toISOString()}.
 `.trim());
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,
@@ -93166,7 +93172,7 @@ async function embeddedLaunch(ctx, key, args) {
   }
   notice(ctx.deps, "stderr", "note", buyNotice(buy, chain2).trim());
   if (!await confirmQuote(ctx, quote, args.yes))
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,
@@ -93246,7 +93252,7 @@ async function hoodLaunch(ctx, key, args) {
   if (!await confirmQuote(ctx, quote, args.yes)) {
     notice(ctx.deps, "stderr", "note", `Nothing was signed. Operation ${first.operationId} holds this wallet until ${new Date(first.expiresAt).toISOString()}; a new Hood operation from it is refused as WALLET_BUSY until then.
 `.trim());
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,
@@ -93719,7 +93725,7 @@ async function runLpOperation(ctx, plan) {
     candleFeeBps: built.preview?.candleFeeBps ?? 0
   };
   if (!await confirmPreview(ctx, plan, built))
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,
@@ -97486,7 +97492,7 @@ async function runPerpsWrite(ctx, opts) {
   if (!opts.submit)
     return printTradingResult(ctx, { ...build, signed: false, submitted: false });
   if (!await confirm(ctx, build, wallet3.address, opts.yes)) {
-    throw new TradingError("CANCELLED", "Nothing was signed.");
+    throw new TradingError("CANCELLED", "Nothing was signed.", { exitCode: CANCELLED_EXIT });
   }
   const relay2 = await perpsRequest(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet3.id)}/sign`, typedDataAuthorization(wallet3, build.typedData));
   const signature = relay2.signature;
@@ -98117,7 +98123,7 @@ async function perpsDeposit(args, ctx) {
         if (sequenced)
           notice(ctx.deps, "stderr", "note", `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}.
 `.trim());
-        throw new TradingError("CANCELLED", "Nothing was signed.");
+        throw new TradingError("CANCELLED", "Nothing was signed.", { exitCode: CANCELLED_EXIT });
       }
     }
     if (typeof build.expiresAt !== "number" || build.expiresAt <= ctx.deps.now())
@@ -99449,7 +99455,9 @@ async function perpsWithdraw(args, ctx) {
     closeVault(opened.vault);
     const typed = await ctx.deps.promptLine(`Type confirm to withdraw ${formatWithdrawAmount(amountMicros)} USDC to ${build.to.address}: `);
     if (typed.trim().toLowerCase() !== "confirm")
-      throw new TradingError("CANCELLED", "The withdrawal was not confirmed; nothing was signed.");
+      throw new TradingError("CANCELLED", "The withdrawal was not confirmed; nothing was signed.", {
+        exitCode: CANCELLED_EXIT
+      });
     if (typeof build.expiresAt !== "number" || build.expiresAt <= ctx.deps.now())
       throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start again with a new --id.");
     const mappingSignature = await relaySignature(ctx, key, wallet3, build.typedData);
@@ -105163,7 +105171,7 @@ async function runStake(action, args, ctx) {
 ${rewards.filter((r) => ids.includes(r.rewardId)).map((r) => `${safeText(r.rewardId)} -> ${safeText(r.owner)} (${safeText(r.amountRaw)} raw ${safeText(r.mint)})`).join(`
 `)}
 ${notes}`, booleans.has("--yes")))
-        return printTradingResult(ctx, { success: true, status: "cancelled" });
+        return printCancelledResult(ctx, { success: true, status: "cancelled" });
       const results = [];
       for (const rewardId of ids)
         results.push(await request(ctx, key, `${ROOT}/rewards/${encodeURIComponent(rewardId)}/claim`, {}));
@@ -105195,7 +105203,7 @@ ${notes}`, booleans.has("--yes")))
 Pool wait: ${view.pool?.withdrawalTimelockSeconds ?? "unavailable"} seconds.
 SOL costs and reserve (lamports): ${safeText(JSON.stringify(preview.figures))}
 ${notes}`, booleans.has("--yes")))
-      return printTradingResult(ctx, { success: true, status: "cancelled", clientStakeId: id });
+      return printCancelledResult(ctx, { success: true, status: "cancelled", clientStakeId: id });
     const saved = await savedOperation(ctx, key, id);
     if (!saved && !await claimOperation(ctx, key, id, "stake"))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; retry with the same id.");
@@ -106608,7 +106616,7 @@ async function transfer(args, ctx) {
       destinationNote(destination, false)
     ], parsed.booleans.has("--yes"));
     if (!confirmed)
-      return printTradingResult(ctx, { success: true, status: "cancelled", walletId: wallet3.id, destination });
+      return printCancelledResult(ctx, { success: true, status: "cancelled", walletId: wallet3.id, destination });
     const built = await request(ctx, key, "/api/v1/agent/transfer/build", {
       walletId: wallet3.id,
       chain: "solana",
@@ -106694,7 +106702,7 @@ async function hoodTransfer(ctx, args) {
     ] : []
   ], args.yes);
   if (!confirmed)
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       chain: "hood",
@@ -115218,7 +115226,7 @@ async function previewAndConfirm(ctx, preview, walletName2, yes) {
     });
   }
   if (!await confirmClose(ctx, previewLines3(preview, walletName2), yes))
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       wallet: preview.wallet,

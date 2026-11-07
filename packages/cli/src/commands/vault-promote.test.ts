@@ -864,7 +864,8 @@ describe("BE-1710: vault promote --from asks confirm under the sweep vault", () 
       activeProfile: "prc",
       profiles: { prc: { account: ACCOUNT, apiUrl: API, accountCachedAt: Date.now() } },
     })
-    expect(await run(["vault", "promote", "--from", "cold", "--json"], deps)).toBe(1)
+    // BE-2674 (R28): a declined typed confirm is exit 5 (CANCELLED_EXIT).
+    expect(await run(["vault", "promote", "--from", "cold", "--json"], deps)).toBe(5)
     expect(asked).toEqual([`Type confirm to sweep this wallet home to ${cold}: `])
     expect(err.text).toContain(`vault ${groupAddress(cold)}\n`)
     expect(JSON.parse(out.text.trim().split("\n").at(-1) as string)).toMatchObject({
@@ -969,7 +970,7 @@ describe("BE-1710: a resumed promote asks confirm for the account and the server
 
   test("the account's old last six refuses DESTINATION_NOT_CONFIRMED before any read, with nothing written", async () => {
     const r = await resume([ACCOUNT.slice(-6)], Keypair.generate().publicKey.toBase58())
-    expect(r.code).toBe(1)
+    expect(r.code).toBe(5)
     expect(r.asked).toEqual([`Type confirm to act as account ${ACCOUNT}: `])
     expect(r.out).toContain(`account ${groupAddress(ACCOUNT)}\n`)
     expect(humanText(r.err)).toContain(humanText("That was not confirmed; nothing was done."))
@@ -1758,7 +1759,7 @@ describe("BE-296: vault promote --in-place: one sentence, live block, always-on 
     const f = await setup("t4")
     const before = await readFile(f.vaultPath, "utf8")
     const r = await runSingle(f, { lines: [f.subject.slice(-6), "confirm", "confirm"], json: true })
-    expect(r.code).toBe(1)
+    expect(r.code).toBe(5)
     const doc = JSON.parse(r.out.split("\n").filter((line) => line.startsWith("{"))[0] as string)
     expect(doc).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
     expect(r.asked).toEqual([`Type confirm to promote ${f.subject}: `])

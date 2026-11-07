@@ -420,7 +420,7 @@ describe("TEE CLI trading", () => {
         swapArgs.filter((arg) => arg !== "--yes"),
         f.deps,
       ),
-    ).toBe(0)
+    ).toBe(5)
     expect(f.calls.some((call) => /\/(sign|submit)$/.test(call.path))).toBe(false)
     expect(JSON.parse(f.stdout.text).status).toBe("cancelled")
   })
@@ -755,7 +755,7 @@ describe("TEE CLI trading", () => {
   })
   test("declining an embedded quote executes nothing", async () => {
     const f = await fixture({ prompt: "n" })
-    expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", embedded, "--json"], f.deps)).toBe(0)
+    expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", embedded, "--json"], f.deps)).toBe(5)
     // The probe is the only /execute call: it answers JOB_NOT_FOUND and writes nothing.
     expect(f.calls.filter((call) => call.path === "/api/v1/trade/agent/execute")).toHaveLength(1)
     expect(JSON.parse(f.stdout.text).status).toBe("cancelled")
@@ -1328,7 +1328,7 @@ describe("BE-2569 (W2): one --json result shape for swap and trade", () => {
         swapArgs.filter((arg) => arg !== "--yes"),
         f.deps,
       ),
-    ).toBe(0)
+    ).toBe(5)
     expect(only(f)).toMatchObject({ kind: "swap", status: "cancelled", signature: null, signatures: [] })
   })
 })

@@ -508,7 +508,7 @@ describe("H3: vault promote on EVM", () => {
     expect(await fx.cli(["vault", "new-key", "--chain", "evm", "--label", "hood-cold"])).toBe(0)
     expect(await fx.cli(["vault", "new-key", "--chain", "evm", "--label", "hood-hot"])).toBe(0)
     fx.answer((prompt) => (prompt.startsWith("Type confirm to promote") ? FIXTURE_EVM_1.slice(-6) : undefined))
-    expect(await fx.cli(["vault", "promote", "--in-place", "hood-hot", "--sweep-to", "hood-cold", "--json"])).toBe(1)
+    expect(await fx.cli(["vault", "promote", "--in-place", "hood-hot", "--sweep-to", "hood-cold", "--json"])).toBe(5)
     expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
     expect(fx.prompts.filter((prompt) => prompt.startsWith("Type confirm"))).toEqual([
       `Type confirm to promote ${FIXTURE_EVM_1}: `,
@@ -516,7 +516,7 @@ describe("H3: vault promote on EVM", () => {
 
     fx.prompts.length = 0
     fx.answer((prompt) => (prompt.startsWith("Type confirm to sweep this wallet home") ? "yes" : undefined))
-    expect(await fx.cli(["vault", "promote", "--from", "hood-cold", "--json"])).toBe(1)
+    expect(await fx.cli(["vault", "promote", "--from", "hood-cold", "--json"])).toBe(5)
     expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
     expect(fx.prompts.filter((prompt) => prompt.startsWith("Type confirm"))).toEqual([
       `Type confirm to sweep this wallet home to ${FIXTURE_EVM_0}: `,
@@ -826,7 +826,8 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     fx.node.setEth(fx.wallet, ETH)
     fx.prompts.length = 0
     fx.answer(() => FIXTURE_EVM_0.slice(-6))
-    expect(await fx.cli(["tee", "sweep", fx.wallet, "--json"])).toBe(1)
+    // BE-2674 (R28): a declined typed confirm is exit 5 (CANCELLED_EXIT).
+    expect(await fx.cli(["tee", "sweep", fx.wallet, "--json"])).toBe(5)
     expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
     expect(fx.prompts.filter((prompt) => prompt.startsWith("Type confirm"))).toEqual([
       `Type confirm to sweep everything to ${FIXTURE_EVM_0}: `,

@@ -45,7 +45,7 @@ import {
   tradingKey,
   tradingPayer,
 } from "../trading"
-import { printTradingResult, tradingFailure, validClientId } from "./swap"
+import { printCancelledResult, printTradingResult, tradingFailure, validClientId } from "./swap"
 
 const USAGE =
   "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]"
@@ -176,7 +176,7 @@ async function previewAndConfirm(
     })
   }
   if (!(await confirmClose(ctx, previewLines(preview, walletName), yes)))
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       wallet: preview.wallet,

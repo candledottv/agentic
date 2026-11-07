@@ -62,6 +62,7 @@ import {
   hoodDecimals,
   lazyEvmRpc,
   lazySolanaClient,
+  printCancelledResult,
   printTradingResult,
   tradingFailure,
   tradingRead,
@@ -360,7 +361,7 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
       parsed.booleans.has("--yes"),
     )
     if (!confirmed)
-      return printTradingResult(ctx, { success: true, status: "cancelled", walletId: wallet.id, destination })
+      return printCancelledResult(ctx, { success: true, status: "cancelled", walletId: wallet.id, destination })
     const built = await request(ctx, key, "/api/v1/agent/transfer/build", {
       walletId: wallet.id,
       chain: "solana",
@@ -512,7 +513,7 @@ async function hoodTransfer(
     args.yes,
   )
   if (!confirmed)
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       chain: "hood",

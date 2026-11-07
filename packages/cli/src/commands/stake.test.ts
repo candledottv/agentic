@@ -161,7 +161,8 @@ for (const verb of ["add", "remove", "finish"] as const) {
 
 test("declined approval creates no build or relay signature", async () => {
   const f = await fixture({ prompt: "n" })
-  expect(await run(["stake", "add", "1"], f.deps)).toBe(0)
+  // BE-2674 (R28): a decline is exit 5 (CANCELLED_EXIT).
+  expect(await run(["stake", "add", "1"], f.deps)).toBe(5)
   expect(f.calls.filter((c) => c.path.endsWith("/build"))).toHaveLength(1)
   expect(f.stdout.text).toContain("cancelled")
 })

@@ -38,6 +38,7 @@ import { solanaSpendProblem } from "../solana-verify"
 import {
   BASES,
   baseAsset,
+  CANCELLED_EXIT,
   chainMismatch,
   chainName,
   claimOperation,
@@ -84,8 +85,9 @@ import {
 /**
  * One failure envelope for every trading command. Exit 1, except a `TradingError` that carries
  * exit 3: a rate limit after a signature (BE-355, D4), or a submit answered `stage: "unconfirmed"`
- * or, for a token trade, `"executed"` (BE-1397), where the transaction may be on chain. A
- * `TradingUsage` (an endpoint that fails validation) is the `USAGE` envelope, exit 2.
+ * or, for a token trade, `"executed"` (BE-1397), where the transaction may be on chain; or exit 5
+ * (`CANCELLED_EXIT`, BE-2674/R28) when the user declined a confirmation. A `TradingUsage` (an
+ * endpoint that fails validation) is the `USAGE` envelope, exit 2.
  */
 export function tradingFailure(ctx: CommandContext, error: unknown, id?: string): number {
   if (error instanceof TradingUsage) {
@@ -250,6 +252,16 @@ export function printTradingResult(ctx: CommandContext, result: Json): number {
   const printed = ctx.json && (result.kind === "swap" || result.kind === "trade") ? swapJsonResult(result) : result
   ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(printed)}\n` : `${JSON.stringify(result, null, 2)}\n`)
   return 0
+}
+
+/**
+ * BE-2674 (R28): a declined confirmation. Prints the same `status: "cancelled"` result as before,
+ * but exits `CANCELLED_EXIT` (5) instead of 0, so a script can tell a user decline from both a
+ * success and a refusal.
+ */
+export function printCancelledResult(ctx: CommandContext, result: Json): number {
+  printTradingResult(ctx, result)
+  return CANCELLED_EXIT
 }
 
 /** The API's ceiling on an agent's `maxSlippageBps` (apps/api `AGENT_MAX_SLIPPAGE_BPS`). */
@@ -682,7 +694,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
       tokenRisks: artifacts.tokenRisks ?? [],
     }
     if (!(await confirmQuote(ctx, quote, parsed.booleans.has("--yes"))))
-      return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote })
+      return printCancelledResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote })
     // Checked for both payers, and before either second call. The server enforces the same window
     // (QUOTE_EXPIRED from /execute, the sign relay's own claim expiry for a TEE wallet); this is
     // the local half, which costs nothing and answers before a round trip.
@@ -1002,7 +1014,7 @@ async function hoodSwap(
         "note",
         `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.\n`.trim(),
       )
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,
@@ -1364,7 +1376,7 @@ async function bridgeSwap(
         "note",
         `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade or sweep from it waits until then.\n`.trim(),
       )
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,

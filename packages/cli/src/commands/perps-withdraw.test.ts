@@ -247,7 +247,8 @@ describe("R12: the owner gate", () => {
 
   test("anything but confirm cancels with nothing signed", async () => {
     const f = await fixture({ confirm: "yes" })
-    expect(await run(WITHDRAW, f.deps)).toBe(1)
+    // BE-2674 (R28): a decline is exit 5 (CANCELLED_EXIT), not the refusal's 1.
+    expect(await run(WITHDRAW, f.deps)).toBe(5)
     expect(relayCalls(f.calls)).toEqual([])
   })
 

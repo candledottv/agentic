@@ -20,7 +20,7 @@ import {
   tradingKey,
   tradingWallet,
 } from "../trading"
-import { printTradingResult, tradingFailure, validClientId } from "./swap"
+import { printCancelledResult, printTradingResult, tradingFailure, validClientId } from "./swap"
 
 const withdrawal = z
   .object({ withdrawal: z.string(), amountRaw: z.string(), endTime: z.string(), claimable: z.boolean() })
@@ -238,7 +238,7 @@ async function runStake(
           booleans.has("--yes"),
         ))
       )
-        return printTradingResult(ctx, { success: true, status: "cancelled" })
+        return printCancelledResult(ctx, { success: true, status: "cancelled" })
       const results: Json[] = []
       for (const rewardId of ids)
         results.push(await request(ctx, key, `${ROOT}/rewards/${encodeURIComponent(rewardId)}/claim`, {}))
@@ -286,7 +286,7 @@ async function runStake(
         booleans.has("--yes"),
       ))
     )
-      return printTradingResult(ctx, { success: true, status: "cancelled", clientStakeId: id })
+      return printCancelledResult(ctx, { success: true, status: "cancelled", clientStakeId: id })
     const saved = await savedOperation(ctx, key, id)
     if (!saved && !(await claimOperation(ctx, key, id, "stake")))
       throw new TradingError(

@@ -297,7 +297,7 @@ describe("T46: vault export-key ceremony", () => {
       secrets: [h.passphrase],
       lines: [h.address.slice(-6)],
     })
-    expect(await run(["vault", "export-key", "typo", "--to", destination, "--keystore", h.vaultPath], e.deps)).toBe(1)
+    expect(await run(["vault", "export-key", "typo", "--to", destination, "--keystore", h.vaultPath], e.deps)).toBe(5)
     expect(e.asked).toEqual([`Type confirm to export the key for ${h.address}: `])
     expect(e.stdout.text).toContain(`key  ${groupAddress(h.address)}\n`)
     expect(e.stderr.text).toContain("That was not confirmed; nothing was done.")

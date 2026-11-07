@@ -27,6 +27,13 @@ import { activeSigner, localSignerFor, readSigner, type SignerView } from "./key
 import { openSolanaClient, rateLimitedMessage, rateLimitedSuggestion, type SolanaClient } from "./solana-endpoint"
 import type { SolanaRpcError } from "./solana-lite"
 
+/**
+ * BE-2674 (R28): the exit code for a user decline. A confirmation prompt answered with anything
+ * but the confirming word (or a typed confirm refused) exits this, not 1, so a script can tell
+ * "the user cancelled, nothing was sent" from a refusal. One code everywhere a user declines.
+ */
+export const CANCELLED_EXIT = 5 as const
+
 export class TradingError extends Error {
   /** A fix the failure envelope carries beside the message, when there is one (BE-355, D3, D4). */
   readonly suggestion?: string
@@ -34,8 +41,9 @@ export class TradingError extends Error {
    * 1 for every refusal, as always. 3 when the transaction may still land, or did, and nothing is
    * re-sent: a rate limit after a signature (BE-355, D4), or a submit the server answered with
    * `stage: "unconfirmed"` or, for a token trade, `"executed"` (BE-1397). `tradingFailure` returns it.
+   * 5 when the user declined a confirmation (BE-2674, R28: `CANCELLED_EXIT`): nothing was sent.
    */
-  readonly exitCode: 1 | 3
+  readonly exitCode: 1 | 3 | 5
   /**
    * Facts the `--json` envelope carries beside the message (Phase 4b, D4): the sequenced
    * operation's id, the legs that landed, and an uncertain leg's hash. The message says the same.
@@ -44,7 +52,7 @@ export class TradingError extends Error {
   constructor(
     public code: string,
     message: string,
-    opts: { suggestion?: string; exitCode?: 1 | 3; details?: Record<string, unknown> } = {},
+    opts: { suggestion?: string; exitCode?: 1 | 3 | 5; details?: Record<string, unknown> } = {},
   ) {
     super(message)
     this.suggestion = opts.suggestion
@@ -978,7 +986,7 @@ export async function runSequencedLegs(
       await opts.onLanded(leg)
     }
   }
-  const failWith = (code: string, message: string, exitCode: 1 | 3, extra: Record<string, unknown> = {}) =>
+  const failWith = (code: string, message: string, exitCode: 1 | 3 | 5, extra: Record<string, unknown> = {}) =>
     new TradingError(code, `${message}${describeLanded(landed)}`, {
       exitCode,
       details: { operationId: current.operationId, landedLegs: landed, ...extra },

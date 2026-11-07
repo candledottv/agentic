@@ -175,7 +175,9 @@ export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]
  * can map one catch to one failure envelope instead of guessing at a message.
  *
  * `exitCode` follows the Phase 1 convention the spec's Interfaces section restates: 1 failure,
- * 2 usage, 3 pending or partial. It defaults to 1 because that is what almost every refusal is.
+ * 2 usage, 3 pending or partial, and 5 when the user declined a confirmation (`CANCELLED_EXIT`,
+ * BE-2674/R28: nothing was done, and the command is telling you who stopped it). It defaults to 1
+ * because that is what almost every refusal is.
  *
  * `details` (D3, BE-241) carries the FACTS a caller can act on, machine-readable: for
  * `VAULT_MISSING` and `VAULT_EXISTS`, `{ path, pathSource }`. `writeVaultFailure` spreads it into
@@ -187,13 +189,13 @@ export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]
 export class VaultError extends Error {
   readonly code: VaultErrorCode
   readonly suggestion?: string
-  readonly exitCode: 1 | 2 | 3
+  readonly exitCode: 1 | 2 | 3 | 5
   readonly details?: Record<string, string>
 
   constructor(
     code: VaultErrorCode,
     message: string,
-    opts: { suggestion?: string; exitCode?: 1 | 2 | 3; details?: Record<string, string> } = {},
+    opts: { suggestion?: string; exitCode?: 1 | 2 | 3 | 5; details?: Record<string, string> } = {},
   ) {
     super(message)
     this.name = "VaultError"

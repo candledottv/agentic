@@ -69,6 +69,7 @@ import { writeUsageFailure } from "../render"
 import { solanaSpendProblem } from "../solana-verify"
 import {
   BASES,
+  CANCELLED_EXIT,
   completeTradingWallet,
   decimalAmount,
   describeWallet,
@@ -366,7 +367,7 @@ export async function runPerpsWrite(
     throw new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`)
   if (!opts.submit) return printTradingResult(ctx, { ...build, signed: false, submitted: false })
   if (!(await confirm(ctx, build, wallet.address, opts.yes))) {
-    throw new TradingError("CANCELLED", "Nothing was signed.")
+    throw new TradingError("CANCELLED", "Nothing was signed.", { exitCode: CANCELLED_EXIT })
   }
   const relay = await perpsRequest(
     ctx,
@@ -1129,7 +1130,7 @@ export async function perpsDeposit(args: string[], ctx: CommandContext): Promise
             "note",
             `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}.\n`.trim(),
           )
-        throw new TradingError("CANCELLED", "Nothing was signed.")
+        throw new TradingError("CANCELLED", "Nothing was signed.", { exitCode: CANCELLED_EXIT })
       }
     }
     if (typeof build.expiresAt !== "number" || build.expiresAt <= ctx.deps.now())

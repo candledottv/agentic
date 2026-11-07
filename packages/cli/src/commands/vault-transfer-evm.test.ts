@@ -520,7 +520,7 @@ describe("E5: every pre-sign refusal in D6 fires with no signature", () => {
     for (const word of ["", "yes", "dEaD", "confirmed"]) {
       const fx = await fixture()
       fx.type(word)
-      expect(await fx.transfer([DEAD, "--amount", "0.1", "--asset", "ETH", "--from", "hood-cold", "--json"])).toBe(1)
+      expect(await fx.transfer([DEAD, "--amount", "0.1", "--asset", "ETH", "--from", "hood-cold", "--json"])).toBe(5)
       expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
       expect(fx.events).toEqual(["confirm"])
       // The prompt is the last thing: no second chain id or nonce read, nothing sent.

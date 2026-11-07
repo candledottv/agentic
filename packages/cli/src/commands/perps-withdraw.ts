@@ -35,7 +35,7 @@ import {
 } from "../hyperliquid-withdraw"
 import { notice } from "../presentation"
 import { writeUsageFailure } from "../render"
-import { type Json, listTradingWallets, safeText, TradingError, tradingKey } from "../trading"
+import { CANCELLED_EXIT, type Json, listTradingWallets, safeText, TradingError, tradingKey } from "../trading"
 import { isVaultError } from "../vault/errors"
 import { closeVault } from "../vault/store"
 import { perpsRequest, perpsWallet, typedDataAuthorization, venueRefusal } from "./perps"
@@ -224,7 +224,9 @@ export async function perpsWithdraw(args: string[], ctx: CommandContext): Promis
       `Type confirm to withdraw ${formatWithdrawAmount(amountMicros)} USDC to ${build.to.address}: `,
     )
     if (typed.trim().toLowerCase() !== "confirm")
-      throw new TradingError("CANCELLED", "The withdrawal was not confirmed; nothing was signed.")
+      throw new TradingError("CANCELLED", "The withdrawal was not confirmed; nothing was signed.", {
+        exitCode: CANCELLED_EXIT,
+      })
     if (typeof build.expiresAt !== "number" || build.expiresAt <= ctx.deps.now())
       throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start again with a new --id.")
 

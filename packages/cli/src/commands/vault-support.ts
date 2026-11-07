@@ -12,7 +12,7 @@ import type { CommandContext, Deps } from "../deps"
 import { notice as outputNotice } from "../presentation"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { describeRpcFailure } from "../solana-endpoint"
-import { safeText } from "../trading"
+import { CANCELLED_EXIT, safeText } from "../trading"
 import { type EnclaveSession, openEnclaveSession, pinnedHelperIdentity, unwrapKekWithEnclave } from "../vault/enclave"
 import { isVaultError, VaultError } from "../vault/errors"
 import {
@@ -1143,6 +1143,7 @@ export async function confirmSend(ctx: CommandContext, send: SendConfirmation): 
   if (await typedConfirm(ctx, "to", send.address, describeSend(send.amount, send.asset, send.address))) return
   throw new VaultError("DESTINATION_NOT_CONFIRMED", "The send was not confirmed; nothing was done.", {
     suggestion: "Nothing was signed. Run it again and type confirm at the prompt.",
+    exitCode: CANCELLED_EXIT,
   })
 }
 
@@ -1161,6 +1162,7 @@ export async function confirmAddress(
   if (await typedConfirm(ctx, label, address, action)) return
   throw new VaultError("DESTINATION_NOT_CONFIRMED", "That was not confirmed; nothing was done.", {
     suggestion: "Nothing was signed or written. Run it again and type confirm at the prompt.",
+    exitCode: CANCELLED_EXIT,
   })
 }
 

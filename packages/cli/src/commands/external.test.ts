@@ -313,7 +313,8 @@ describe("vault fund <external>: vault-signed, decoded, the DESTINATION confirme
     expect(h.stderr.text).toContain("Unknown flag: --yes")
     // The old answer, the destination's last six, is no longer a confirmation; one prompt, no retry.
     h.lines.push(expectedExternal0.slice(-6))
-    expect(await run(["vault", "fund", "trader", "--amount", "0.1", "--rpc-url", RPC, "--json"], h.deps)).toBe(1)
+    // BE-2674 (R28): a declined typed confirm is exit 5 (CANCELLED_EXIT).
+    expect(await run(["vault", "fund", "trader", "--amount", "0.1", "--rpc-url", RPC, "--json"], h.deps)).toBe(5)
     expect(JSON.parse(h.stdout.text.trim().split("\n").at(-1) ?? "")).toMatchObject({
       ok: false,
       code: "DESTINATION_NOT_CONFIRMED",
@@ -391,7 +392,7 @@ describe("external sweep <external> --to <vault>: both named, neither inferred, 
     expect(await run(["vault", "new-key", "--chain", "solana", "--label", "cold"], h.deps)).toBe(0)
     expect(await run(["external", "new", "--label", "trader"], h.deps)).toBe(0)
     h.lines.push(expectedVault0.slice(-6))
-    expect(await run(["external", "sweep", "trader", "--to", "cold", "--rpc-url", RPC], h.deps)).toBe(1)
+    expect(await run(["external", "sweep", "trader", "--to", "cold", "--rpc-url", RPC], h.deps)).toBe(5)
     expect(h.stderr.text).toContain("The send was not confirmed; nothing was done.")
     expect(rpc.sends).toEqual([])
     h.lines.push("  CONFIRM ")

@@ -310,7 +310,8 @@ describe("candle transfer (R19)", () => {
   test("declining the confirmation builds, signs and submits nothing", async () => {
     const f = await fixture({ prompt: "n" })
     const code = await run([...base, "--to", "treasury", "--asset", "USDC", "--amount", "1"], f.deps)
-    expect(code).toBe(0)
+    // BE-2674 (R28): a decline is exit 5 (CANCELLED_EXIT).
+    expect(code).toBe(5)
     expect(f.paths().some((p) => p.includes("/transfer/") || p.endsWith("/sign"))).toBe(false)
     expect(f.stdout.text).toContain('"status": "cancelled"')
   })

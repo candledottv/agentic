@@ -607,7 +607,7 @@ describe("Hood origin (4c-ED-6, 4c-ED-7)", () => {
 
   test("declining the quote signs nothing and says the wallet is held", async () => {
     const f = await fixture({ legs: [{ kind: "bridgeDeposit", leg: ethDepositLeg("10000000000000000") }], prompt: "n" })
-    expect(await run(["swap", "ETH", "SOL", "--amount", "0.01", "--client-trade-id", "b-1", "--json"], f.deps)).toBe(0)
+    expect(await run(["swap", "ETH", "SOL", "--amount", "0.01", "--client-trade-id", "b-1", "--json"], f.deps)).toBe(5)
     expect(lastJson(f.stdout.text)).toMatchObject({ status: "cancelled", operationId: "op-b" })
     expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
   })
@@ -627,7 +627,7 @@ describe("--wait never turns a sent bridge into a failure", () => {
 
   test("status --wait on a bridge that was never broadcast returns at once", async () => {
     const f = await fixture({ legs: [{ kind: "bridgeDeposit", leg: ethDepositLeg("10000000000000000") }], prompt: "n" })
-    expect(await run(["swap", "ETH", "SOL", "--amount", "0.01", "--client-trade-id", "b-1", "--json"], f.deps)).toBe(0)
+    expect(await run(["swap", "ETH", "SOL", "--amount", "0.01", "--client-trade-id", "b-1", "--json"], f.deps)).toBe(5)
     const before = f.calls.filter((call) => call.path.includes("/jobs/")).length
     expect(await run(["swap", "status", "b-1", "--wait", "--json"], f.deps)).toBe(0)
     const out = lastJson(f.stdout.text)

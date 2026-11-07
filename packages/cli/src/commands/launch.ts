@@ -83,6 +83,7 @@ import { poolRequestFields } from "./pool-options"
 import {
   lazyEvmRpc,
   lookupOperation,
+  printCancelledResult,
   printTradingResult,
   recordTradedToken,
   tradingFailure,
@@ -510,7 +511,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     ctx.deps.stderr.write(rulesBlock(answer, "solana", flags))
     notice(ctx.deps, "stderr", "note", buyNotice(buy, "solana").trim())
     if (!(await confirmQuote(ctx, quote, parsed.booleans.has("--yes"))))
-      return printTradingResult(ctx, {
+      return printCancelledResult(ctx, {
         success: true,
         status: "cancelled",
         clientTradeId: id,
@@ -1039,7 +1040,7 @@ async function atomicLaunch(
       "note",
       `Nothing was signed. Candle holds bundle ${safeText(built.bundleId)}'s spend reservation until the build expires at ${new Date(built.expiresAt).toISOString()}.\n`.trim(),
     )
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,
@@ -1344,7 +1345,7 @@ async function embeddedLaunch(
   }
   notice(ctx.deps, "stderr", "note", buyNotice(buy, chain).trim())
   if (!(await confirmQuote(ctx, quote, args.yes)))
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,
@@ -1488,7 +1489,7 @@ async function hoodLaunch(
       "note",
       `Nothing was signed. Operation ${first.operationId} holds this wallet until ${new Date(first.expiresAt).toISOString()}; a new Hood operation from it is refused as WALLET_BUSY until then.\n`.trim(),
     )
-    return printTradingResult(ctx, {
+    return printCancelledResult(ctx, {
       success: true,
       status: "cancelled",
       clientTradeId: id,

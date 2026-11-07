@@ -224,7 +224,11 @@ result on success, or a failure envelope -- and stderr carries diagnostics only.
 wrong; nothing ran), `3` not yet verified (the command did its part, but the outcome it exists to
 guarantee is unconfirmed: a wallet stop whose remote enforcement is still pending, a TEE wallet
 enabled without verified signing authority, or a sweep that left a residual). Treat `3` as not
-done: follow the printed next step, usually re-running the same command.
+done: follow the printed next step, usually re-running the same command. `5` cancelled: you
+declined a confirmation prompt, or typed the wrong word at a typed confirm, so nothing was
+signed, sent or written (BE-2674). Under `--json` the document still says what happened --
+`status: "cancelled"` for a result, or the `CANCELLED` / `DESTINATION_NOT_CONFIRMED` envelope --
+and a script can now tell a user decline from a refusal by the exit code alone.
 
 A swap or token trade also exits `3` when it may be on chain: the server answered
 `stage: "unconfirmed"` (sent, outcome not seen) or, for a token trade, `stage: "executed"` (the

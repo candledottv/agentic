@@ -655,7 +655,7 @@ describe("BE-1721: candle launch --wallet <solana tee> --buy is an atomic launch
     const f = await fixture({ prompt: "n" })
     const args = buyArgs.filter((arg) => arg !== "--yes")
     f.deps.isTTY.stdin = true
-    expect(await run(args, f.deps)).toBe(0)
+    expect(await run(args, f.deps)).toBe(5)
     expect(lastJson(f.stdout.text).status).toBe("cancelled")
     expect(humanText(f.stderr.text)).toContain(humanText("Nothing was signed"))
     expect(f.paths().some((path) => path.endsWith("/sign") || path.endsWith("/submit"))).toBe(false)

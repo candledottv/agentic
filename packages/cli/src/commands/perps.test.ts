@@ -251,6 +251,20 @@ describe("candle perps open", () => {
     })
   })
 
+  test("BE-2674 (R28): declining the confirm exits 5, distinct from a refusal's 1, with nothing signed", async () => {
+    const f = await fixture()
+    f.deps.promptLine = async () => "n"
+    expect(
+      await run(
+        OPEN.filter((arg) => arg !== "--yes"),
+        f.deps,
+      ),
+    ).toBe(5)
+    expect(f.calls.map((c) => c.path)).not.toContain("/api/v1/agent/wallets/wallet/sign")
+    expect(f.calls.some((c) => c.host === "api.hyperliquid.xyz" && c.path === "/exchange")).toBe(false)
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ ok: false, code: "CANCELLED" })
+  })
+
   test("a dishonest build reaches neither the relay nor Hyperliquid", async () => {
     for (const build of [
       buildFor(orderAction(OTHER)),
