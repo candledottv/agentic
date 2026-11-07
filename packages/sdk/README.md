@@ -626,3 +626,39 @@ approval. `payer: "linked"` with `linkedWalletId` returns a build for external/T
 records its landing. Preserve the unstake's withdrawal co-signature. Reuse the same operation id
 and body on retry; reward retries use the same rewardId. Amounts are raw CNDL on stake and raw
 sCNDL on unstake.
+
+
+## P&L since a time
+
+`GET /api/v1/agent/keys/{prefix}/pnl?sinceMs=<unix ms>` (SDK `getProfilePnl(prefix, { sinceMs })`, MCP
+`candle_get_profile_pnl` with `sinceMs`) adds a spot trading `window` beside the unchanged all-time
+`pnl`. LP, Hyperliquid and creator fee income are separate from this window.
+
+Holdings present immediately before T start at the last completed historical minute candle's close,
+not their lifetime purchase cost. The candle containing T is excluded to avoid using future trades.
+`boundary.marks` gives each price, `source: "candle-close"` and `updatedAt` (the candle's end, Unix ms);
+a quiet token's last candle can be older than T. These are historical observed marks, not interpolated
+prices at exactly T. Later buys enter at their actual trade cost. Partial sells, additional buys and
+moves between wallets use the account engine's average-cost rules on this opening book.
+
+`realizedGrossUsd` is sales' profit against window basis; `feesUsd` charges all in-window buy and sell
+fees exactly once, including buys still open. Fees are debited separately and never added to cost
+basis. Fees follow the key that placed each fill; a manual sale credits the original opener's gross
+but its fee stays with Manual.
+`realizedNetUsd = realizedGrossUsd - feesUsd`;
+`unrealizedUsd` is open holdings' change against window basis; `windowedUsd` is their sum. `closed`
+and `closedRounds` describe rounds closed during this replay, using window basis and only window
+fees. A pre-T buy fee is excluded even when that holding is sold after T. Fills exactly at T are included.
+
+`complete: false` and `incompleteReasons` explicitly identify missing boundary/current marks,
+truncated history, unvalued fills or unknown/incomplete cost. In that case **`windowedUsd` is null**;
+component figures are partial, never a complete zero. `boundary.missingMints` names missing opening
+prices, including holdings since fully closed. Boundary coverage is checked account-wide because
+other wallets' and unplaced holdings can fund this key's sales. Price history uses the existing
+Candle candle store; tokens without historical candles have incomplete coverage. There are no new
+vendor requests or fabricated opening prices. The window requires the Postgres account ledger
+(`API_DATABASE_URL`); an unavailable ledger/history read returns an error, not an all-time fallback.
+
+`sinceMs` must be a non-negative integer Unix timestamp in milliseconds at or before now; invalid,
+blank, fractional or future inputs return `VALIDATION_FAILED` (400). Omitting it returns the existing
+all-time response without `window`.

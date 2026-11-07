@@ -1159,3 +1159,43 @@ describe("launch parity (BE-1806)", () => {
     expect(bodies).toEqual([{ ...BASE, ...CUSTOM, payer, firstBuys: [{ payer, amountRaw: "300000000" }] }])
   })
 })
+
+describe("buildRequest: profile P&L window (BE-2655)", () => {
+  const cfg = { apiUrl: "https://api.test/", apiKey: "cndl_live_secret" }
+
+  test("sinceMs becomes a query parameter, and is absent otherwise", () => {
+    expect(buildRequest("candle_get_profile_pnl", { keyPrefix: "cndl_a" }, cfg).url).toBe(
+      "https://api.test/api/v1/agent/keys/cndl_a/pnl",
+    )
+    expect(buildRequest("candle_get_profile_pnl", { keyPrefix: "cndl_a", sinceMs: 1700000000000 }, cfg).url).toBe(
+      "https://api.test/api/v1/agent/keys/cndl_a/pnl?sinceMs=1700000000000",
+    )
+  })
+})
+
+test("profile P&L window schema and relay preserve boundary coverage and null totals", async () => {
+  const body = {
+    success: true,
+    pnl: { totalUsd: 20 },
+    window: {
+      sinceTs: 120000,
+      complete: false,
+      windowedUsd: null,
+      incompleteReasons: ["missing-boundary-marks"],
+      boundary: { missingMints: ["M"], marks: [] },
+    },
+  }
+  const { tools, call } = toolsWith(["candle_get_profile_pnl"], async (url) => {
+    expect(url).toBe("https://api.test/api/v1/agent/keys/own/pnl?sinceMs=120000")
+    return answer(200, JSON.stringify(body))
+  })
+  const shape = z.object(tools.get("candle_get_profile_pnl")?.inputSchema as z.ZodRawShape)
+  expect(shape.parse({ keyPrefix: "own", sinceMs: 0 }).sinceMs).toBe(0)
+  expect(shape.parse({ keyPrefix: "own" }).sinceMs).toBeUndefined()
+  for (const sinceMs of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "120000"]) {
+    expect(() => shape.parse({ keyPrefix: "own", sinceMs })).toThrow()
+  }
+  const result = await call("candle_get_profile_pnl", { keyPrefix: "own", sinceMs: 120000 })
+  expect(result.result.isError).toBeUndefined()
+  expect(JSON.parse(result.text)).toMatchObject(body)
+})

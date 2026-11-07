@@ -758,9 +758,10 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
 
     case "candle_get_profile_pnl": {
       const apiKey = requireApiKey(cfg)
-      const { keyPrefix } = args as { keyPrefix: string }
+      const { keyPrefix, sinceMs } = args as { keyPrefix: string; sinceMs?: number }
+      const query = sinceMs !== undefined ? `?sinceMs=${encodeURIComponent(String(sinceMs))}` : ""
       return {
-        url: `${base}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl`,
+        url: `${base}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl${query}`,
         init: { method: "GET", headers: jsonHeaders(apiKey) },
       }
     }
@@ -1181,6 +1182,14 @@ const profileWalletsShape = {
 
 const profilePnlShape = {
   keyPrefix: z.string().describe("The profile's API key prefix"),
+  sinceMs: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe(
+      "Unix time in milliseconds. Adds a `window` block: realized and open mark changes since then, including older holdings. Buy and sell fees are charged once. Read complete and incompleteReasons; windowedUsd is null when incomplete. The all-time `pnl` is unchanged.",
+    ),
 }
 
 const profileTradesShape = {
@@ -2228,7 +2237,13 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "`chain`). The two chains sum to the total. A " +
         "server that predates per-chain P&L omits `chain` and `byChain`. " +
         PROFILE_PNL_HYPERLIQUID +
-        " Reads only.",
+        " Pass `sinceMs` for a `window` block beside all-time `pnl`: existing holdings start at the last " +
+        "completed historical minute candle's close, returned in `boundary.marks` with its timestamp. " +
+        "Sales and open positions use that window basis, with later buys at trade cost. `feesUsd` includes " +
+        "both buy and sell fees once, separately from basis. `windowedUsd` is " +
+        "realizedNetUsd plus unrealizedUsd. Missing boundary/current marks or incomplete history return " +
+        "complete:false, incompleteReasons and windowedUsd:null; component sums are partial then. " +
+        "This is spot trading P&L; LP, perps and fee income remain separate. Reads only.",
       inputSchema: profilePnlShape,
     },
     async (args) => callAndRelay("candle_get_profile_pnl", args, getConfig(), doFetch),

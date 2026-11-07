@@ -167,7 +167,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_get_wallets` | The account's embedded wallets, one per chain, with delegation state | `GET /api/v1/agent/wallets/embedded` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_profile_wallets` | Which wallets an agent profile may spend from, and whether it is scoped | `GET /api/v1/agent/keys/:prefix/wallets` | `CANDLE_AGENT_API_KEY` |
 | `candle_set_profile_wallets` | Replace the wallets an agent profile may spend from | `PUT /api/v1/agent/keys/:prefix/wallets` | `CANDLE_AGENT_API_KEY` |
-| `candle_get_profile_pnl` | An agent profile's share of the account's P&L, the console's figures to the cent: realized on its sales, fees, and the open positions that belong to it at cost basis, marked at current prices (unpriced positions counted, not zeroed), with `totalUsd`, the closed positions as made, lost and partial sells (`closed`), dust flagged and counted apart (`openPositionsExDust`), split by wallet (`pnl.byWallet`, summing to the total) and by chain (`pnl.byChain`), with `chain` and `wallet` on every position | `GET /api/v1/agent/keys/:prefix/pnl` | `CANDLE_AGENT_API_KEY` |
+| `candle_get_profile_pnl` | An agent profile's share of the account's P&L, the console's figures to the cent: realized on its sales, fees, and the open positions that belong to it at cost basis, marked at current prices (unpriced positions counted, not zeroed), with `totalUsd`, the closed positions as made, lost and partial sells (`closed`), dust flagged and counted apart (`openPositionsExDust`), split by wallet (`pnl.byWallet`, summing to the total) and by chain (`pnl.byChain`), with `chain` and `wallet` on every position; `sinceMs` adds a `window` of realized and open mark changes, including older holdings (see "P&L since a time") | `GET /api/v1/agent/keys/:prefix/pnl` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_profile_trades` | An agent profile's orders, fills, fees and transaction hashes | `GET /api/v1/agent/keys/:prefix/trades` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_portfolio` | What the account's embedded and TEE wallets hold on Solana and Hood (Hood in `hood`), with prices; unpriced holdings say why, never zero | `GET /api/v1/agent/portfolio` | `CANDLE_AGENT_API_KEY` (`account:read`) |
 | `candle_execution_status` | One call before trading: wallets to spend from, tier, and whether trading is possible | Composes the wallet and tier reads | `CANDLE_AGENT_API_KEY` |
@@ -485,3 +485,39 @@ account's own comment, including after selling; no other account can. Flags appl
 ## Rate-limit cost per tool
 
 Every tool spends from the key's per-minute limit (`tierCaps.rateLimitPerMin` on `GET /api/v1/agent/tier`; Free 30, Pro 300, Max 600). Over `candle mcp` (stdio) a tool costs one per REST request it makes: `candle_execution_status` makes 3, and `candle_get_portfolio`, `candle_get_profile_pnl` and `candle_get_wallets` make 1 each. The hosted connector charges one per tool call at admission, and adds a separate 60 a minute per IP. A refusal is `429 RATE_LIMITED` with `Retry-After: 60`. Details: the developer docs, "Rate limits and what a call costs".
+
+
+## P&L since a time
+
+`GET /api/v1/agent/keys/{prefix}/pnl?sinceMs=<unix ms>` (SDK `getProfilePnl(prefix, { sinceMs })`, MCP
+`candle_get_profile_pnl` with `sinceMs`) adds a spot trading `window` beside the unchanged all-time
+`pnl`. LP, Hyperliquid and creator fee income are separate from this window.
+
+Holdings present immediately before T start at the last completed historical minute candle's close,
+not their lifetime purchase cost. The candle containing T is excluded to avoid using future trades.
+`boundary.marks` gives each price, `source: "candle-close"` and `updatedAt` (the candle's end, Unix ms);
+a quiet token's last candle can be older than T. These are historical observed marks, not interpolated
+prices at exactly T. Later buys enter at their actual trade cost. Partial sells, additional buys and
+moves between wallets use the account engine's average-cost rules on this opening book.
+
+`realizedGrossUsd` is sales' profit against window basis; `feesUsd` charges all in-window buy and sell
+fees exactly once, including buys still open. Fees are debited separately and never added to cost
+basis. Fees follow the key that placed each fill; a manual sale credits the original opener's gross
+but its fee stays with Manual.
+`realizedNetUsd = realizedGrossUsd - feesUsd`;
+`unrealizedUsd` is open holdings' change against window basis; `windowedUsd` is their sum. `closed`
+and `closedRounds` describe rounds closed during this replay, using window basis and only window
+fees. A pre-T buy fee is excluded even when that holding is sold after T. Fills exactly at T are included.
+
+`complete: false` and `incompleteReasons` explicitly identify missing boundary/current marks,
+truncated history, unvalued fills or unknown/incomplete cost. In that case **`windowedUsd` is null**;
+component figures are partial, never a complete zero. `boundary.missingMints` names missing opening
+prices, including holdings since fully closed. Boundary coverage is checked account-wide because
+other wallets' and unplaced holdings can fund this key's sales. Price history uses the existing
+Candle candle store; tokens without historical candles have incomplete coverage. There are no new
+vendor requests or fabricated opening prices. The window requires the Postgres account ledger
+(`API_DATABASE_URL`); an unavailable ledger/history read returns an error, not an all-time fallback.
+
+`sinceMs` must be a non-negative integer Unix timestamp in milliseconds at or before now; invalid,
+blank, fractional or future inputs return `VALIDATION_FAILED` (400). Omitting it returns the existing
+all-time response without `window`.

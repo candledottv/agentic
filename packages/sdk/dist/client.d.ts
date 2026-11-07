@@ -1542,7 +1542,39 @@ export interface ProfileChainPnl extends ProfilePnlEngineFields {
  *   account's activity bound, not 500 of this key's trades.
  * Every account's realized figure can move on the day a server ships this.
  */
+/** The `window` block `getProfilePnl(prefix, { sinceMs })` adds. See the agent-trading docs, "P&L since a time". */
+export interface ProfilePnlWindow {
+    sinceTs: number;
+    realizedEvents: number;
+    /** Holdings present at T use their boundary mark as the window's opening basis. */
+    realizedGrossUsd: number;
+    /** Buy and sell fees within the window, charged once, separately from cost basis. */
+    feesUsd: number;
+    realizedNetUsd: number;
+    closedRounds: number;
+    closed: Record<string, unknown>;
+    unrealizedUsd: number;
+    openPositions: number;
+    unmarkedPositions: number;
+    boundary: {
+        positions: number;
+        missingMints: string[];
+        marks: {
+            mint: string;
+            priceUsd: number;
+            updatedAt: number;
+            source: "candle-close";
+        }[];
+    };
+    /** Null when complete is false; component figures are partial in that case. */
+    windowedUsd: number | null;
+    complete: boolean;
+    incompleteReasons: string[];
+    truncated: boolean;
+}
 export interface ProfilePnlResult {
+    /** Present only when `sinceMs` was passed. The all-time `pnl` beside it is unchanged. */
+    window?: ProfilePnlWindow;
     /** Public board figures including fee income; independent of pnl.totalUsd and its coverage. */
     board?: ProfileBoardPnl;
     /**
@@ -3706,7 +3738,9 @@ export declare class CandleClient {
      * no trusted USD price and were left out rather than counted as zero, the second says the
      * lookback window was full and this is not a lifetime figure.
      */
-    getProfilePnl(keyPrefix: string): Promise<ProfilePnlResult>;
+    getProfilePnl(keyPrefix: string, options?: {
+        sinceMs?: number;
+    }): Promise<ProfilePnlResult>;
     /**
      * What the account holds in the wallets Candle knows, on Solana and Hood, with prices
      * (GET /api/v1/agent/portfolio): the embedded wallet and every TEE wallet on each chain. Hood

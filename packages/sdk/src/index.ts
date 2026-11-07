@@ -158,6 +158,7 @@ export type {
   ProfilePnlEngineFields,
   ProfilePnlResult,
   ProfilePnlSummaryRow,
+  ProfilePnlWindow,
   ProfileTradeRow,
   ProfileTradesOptions,
   ProfileTradesResult,

@@ -5558,9 +5558,10 @@ class CandleClient {
     const query = params.toString() === "" ? "" : `?${params.toString()}`;
     return this.requestJson("GET", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query}`);
   }
-  async getProfilePnl(keyPrefix) {
+  async getProfilePnl(keyPrefix, options = {}) {
     this.requireKey("getProfilePnl()");
-    return this.requestJson("GET", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl`);
+    const query = options.sinceMs !== undefined ? `?sinceMs=${encodeURIComponent(String(options.sinceMs))}` : "";
+    return this.requestJson("GET", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl${query}`);
   }
   async getPortfolio() {
     this.requireKey("getPortfolio()");
