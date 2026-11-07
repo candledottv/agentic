@@ -14589,17 +14589,18 @@ async function promptVisibleLine(promptText) {
 }
 async function readVisibleLine(promptText, io) {
   const readline = await import("node:readline");
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
     rl.question(promptText, (answer) => {
       rl.close();
       resolve(answer);
     });
+    onInterrupted(rl, io, reject);
   });
 }
 async function readHiddenLine(promptText, io) {
   const readline = await import("node:readline");
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
     const rlInternals = rl;
     rlInternals._writeToOutput = (text) => {
@@ -14612,6 +14613,15 @@ async function readHiddenLine(promptText, io) {
 `);
       resolve(answer);
     });
+    onInterrupted(rl, io, reject);
+  });
+}
+function onInterrupted(rl, io, reject) {
+  rl.on("SIGINT", () => {
+    rl.close();
+    io.output.write(`
+`);
+    reject(new Error("Interrupted (Ctrl-C); run the command again"));
   });
 }
 function toBase642(bytes) {

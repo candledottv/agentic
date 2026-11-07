@@ -62,4 +62,29 @@ describe("the real prompts write to the stream they are given, and the hidden on
     const hidden = source.slice(source.indexOf("export async function readHiddenLine"))
     expect(hidden).not.toContain("process.stdout")
   })
+
+  // BE-2675: with no SIGINT listener on a terminal-mode interface, readline swallows Ctrl-C,
+  // the promise never settles, and the CLI spins. It must reject instead (here driven by
+  // writing the Ctrl-C byte, which readline's keypress parser reads the same way a TTY does).
+  test("hidden: Ctrl-C rejects the prompt instead of leaving it unsettled", async () => {
+    const input = new PassThrough()
+    const output = capture()
+    const interrupted = readHiddenLine("Vault passphrase (input hidden): ", {
+      input,
+      output: output.stream,
+    })
+    await Bun.sleep(20)
+    input.write("\x03")
+    await expect(interrupted).rejects.toThrow("Interrupted (Ctrl-C)")
+    expect(withoutAnsi(output.text)).toContain("Vault passphrase (input hidden): \n")
+  })
+
+  test("visible: Ctrl-C rejects the prompt instead of leaving it unsettled", async () => {
+    const input = new PassThrough()
+    const output = capture()
+    const interrupted = readVisibleLine("Type word 3: ", { input, output: output.stream })
+    await Bun.sleep(20)
+    input.write("\x03")
+    await expect(interrupted).rejects.toThrow("Interrupted (Ctrl-C)")
+  })
 })

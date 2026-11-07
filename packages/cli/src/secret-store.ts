@@ -365,19 +365,20 @@ export async function promptVisibleLine(promptText: string): Promise<string> {
 /** The visible prompt on explicit streams: exported so the stream choice above is testable. */
 export async function readVisibleLine(promptText: string, io: PromptStreams): Promise<string> {
   const readline = await import("node:readline")
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true })
     rl.question(promptText, (answer) => {
       rl.close()
       resolve(answer)
     })
+    onInterrupted(rl, io, reject)
   })
 }
 
 /** The hidden prompt on explicit streams: exported so the echo guard and the stream choice are testable. */
 export async function readHiddenLine(promptText: string, io: PromptStreams): Promise<string> {
   const readline = await import("node:readline")
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true })
     const rlInternals = rl as unknown as { _writeToOutput?: (text: string) => void }
     // Fail CLOSED: echo only a write that is exactly the prompt text itself. Everything else --
@@ -393,6 +394,26 @@ export async function readHiddenLine(promptText: string, io: PromptStreams): Pro
       io.output.write("\n")
       resolve(answer)
     })
+    onInterrupted(rl, io, reject)
+  })
+}
+
+/**
+ * Ctrl-C at a terminal-mode readline prompt (BE-2675): with no SIGINT listener on the
+ * interface, readline swallows the interrupt, the question callback never fires, and the
+ * awaiting promise never settles -- the CLI sits at the prompt spinning. Handle it the way
+ * every interactive prompt does: close the interface, end the line, and reject so the
+ * command exits instead of hanging.
+ */
+function onInterrupted(
+  rl: import("node:readline").Interface,
+  io: PromptStreams,
+  reject: (reason: Error) => void,
+): void {
+  rl.on("SIGINT", () => {
+    rl.close()
+    io.output.write("\n")
+    reject(new Error("Interrupted (Ctrl-C); run the command again"))
   })
 }
 
