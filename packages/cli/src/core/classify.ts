@@ -40,6 +40,8 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_token_events: READ,
   // BE-2119: the public token card read. Keyless; the same body for every caller.
   candle_token_card: READ,
+  // BE-2654 (R2): one Solana token's price history. Keyless; the same bars for every caller.
+  candle_get_price_history: READ,
   // BE-2140: the public edit history is a read; the creator's edit is an approval card, replayed by its key.
   candle_token_history: READ,
   candle_token_page_about: READ,

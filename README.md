@@ -34,8 +34,8 @@ one place.
 
 ## Try it with no account
 
-Eighteen tools are read-only and need no API key at all: `candle_get_market`, `candle_get_feed`,
-`candle_token_events`, `candle_token_card`, `candle_token_history`, `candle_token_forensics`, `candle_token_page_about`, `candle_token_page_burns`, `candle_token_page_history`, `candle_token_page_updates`, `candle_token_page_comments`, `candle_token_clusters`, `candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_get_agent_positions`, `candle_resolve_token`, and `candle_get_plans`. The five token-page reads, `candle_token_clusters` and `candle_token_history` are unreleased source.
+Nineteen tools are read-only and need no API key at all: `candle_get_market`, `candle_get_price_history`, `candle_get_feed`,
+`candle_token_events`, `candle_token_card`, `candle_token_history`, `candle_token_forensics`, `candle_token_page_about`, `candle_token_page_burns`, `candle_token_page_history`, `candle_token_page_updates`, `candle_token_page_comments`, `candle_token_clusters`, `candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_get_agent_positions`, `candle_resolve_token`, and `candle_get_plans`. The five token-page reads, `candle_token_clusters`, `candle_token_history` and `candle_get_price_history` are unreleased source.
 The published server has the original ten public reads, no signup required:
 
 ```json
@@ -94,6 +94,7 @@ signs up.
 | | `candle_get_portfolio` | yes | what the account's wallets hold on Solana and Hood, with prices (needs `account:read`) |
 | **Find a token** | `candle_resolve_token` | no | an address in, the token and its chain out |
 | | `candle_get_market` | no | live state for one token |
+| | `candle_get_price_history` | no | one Solana token's OHLC bars in USD, oldest first; `source` and `volumeUnit` say whose bars. Unreleased source |
 | | `candle_get_feed` | no | curated feeds with price and market cap |
 | | `candle_token_events` | no | one token's signals, callouts and tracked-wallet trades, newest first; `kind` filters the page on this server, `nextCursor`/`before` pages it. Off until the deployment switches it on (503 TOKEN_EVENTS_DISABLED) |
 | | `candle_token_card` | no | one token's card data: market, all-time high since launch, forensics coverage, safety and same-name facts, tracked wallets in the last hour, each with its source. Off until the deployment switches it on (503 TOKEN_CARD_DISABLED) |

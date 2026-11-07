@@ -31,6 +31,7 @@ test("all registered tools are listed", () => {
     "candle_get_operation",
     "candle_get_plans",
     "candle_get_portfolio",
+    "candle_get_price_history",
     "candle_get_profile_pnl",
     "candle_get_profile_trades",
     "candle_get_profile_wallets",

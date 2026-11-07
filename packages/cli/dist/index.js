@@ -44786,6 +44786,21 @@ function buildRequest(name, args, cfg) {
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
+    case "candle_get_price_history": {
+      const { chain: chain2, mint, interval, limit, to } = args;
+      const query2 = new URLSearchParams;
+      if (interval !== undefined)
+        query2.set("interval", interval);
+      if (limit !== undefined)
+        query2.set("limit", String(limit));
+      if (to !== undefined)
+        query2.set("to", String(to));
+      const qs = query2.size > 0 ? `?${query2}` : "";
+      return {
+        url: `${base2}/api/v1/markets/${encodeURIComponent(chain2 ?? "solana")}/${encodeURIComponent(mint)}/candles${qs}`,
+        init: { method: "GET", headers: jsonHeaders() }
+      };
+    }
     case "candle_token_events": {
       const { chain: chain2, mint, since, limit, before } = args;
       const params = new URLSearchParams;
@@ -45315,6 +45330,11 @@ function registerToolSubset(server, options) {
     inputSchema: tokenHistoryShape,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (args) => callAndRelay("candle_token_history", args, getConfig(), doFetch));
+  register("candle_get_price_history", {
+    title: "Get price history",
+    description: "One Solana token's price history: OHLC bars in USD per token, oldest first, the same bars as the token's chart on Candle. interval 1m, 5m, 15m, 1h, 4h or 1d (default 1h); limit 1-500 (default 100); to is unix seconds (default now). The answer is up to limit bars at or before to (limit is a maximum). Coverage is bounded by source: Candle's own bars come from the latest 1,500 active minutes and a bar whose start cannot be established is left out; the indexer is searched only (limit + 1) x interval seconds back from to. A quiet token can therefore return fewer bars than limit, and a minute with no trades has no bar, so read each bar's time rather than assuming a gapless series. source says which answered: candle (Candle's own curve bars, volumeUnit usd) or birdeye (the indexer's, volumeUnit token). An empty candles list means no bars in the searched coverage, not no history and not a zero price; page back with to. No key needed and none is sent. Hood is refused (400 VALIDATION_FAILED naming GET /api/v1/hood/token/:address/candles). For the current price and 5m/1h/24h change, read candle_get_market.",
+    inputSchema: priceHistoryShape
+  }, async (args) => callAndRelay("candle_get_price_history", args, getConfig(), doFetch));
   register("candle_token_events", {
     title: "Token events",
     description: `One token's event list, newest first: every signal (pattern and summary, new_ticker included), every callout, and every tracked-wallet trade (buys and sells, W or L on a sell whose outcome is known), plus trades Candle's own agents and users made. Each wallet carries its display name or short address, its kind (dev, kol, smart, agent, tracked) and its public group names. No key needed; none is sent even when one is configured, so group names follow the public tier. Off on a deployment until it switches TOKEN_EVENTS on: off, the call answers 503 TOKEN_EVENTS_DISABLED (retryable: false) and that is the server's answer, not a broken tool.
@@ -45771,7 +45791,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, getMarketShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, getMarketShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
 var init_tools = __esm(() => {
   init_zod();
   init_client2();
@@ -45804,6 +45824,7 @@ var init_tools = __esm(() => {
     "candle_vamp_candidates",
     "candle_token_events",
     "candle_token_card",
+    "candle_get_price_history",
     "candle_token_edit",
     "candle_token_history",
     "candle_token_page_about",
@@ -45900,6 +45921,13 @@ var init_tools = __esm(() => {
   getMarketShape = {
     chain: exports_external.string().describe('"solana" or "hood"'),
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)")
+  };
+  priceHistoryShape = {
+    chain: exports_external.string().optional().describe('"solana" (the default). Hood is refused with the REST route that serves it'),
+    mint: exports_external.string().describe("Token mint"),
+    interval: exports_external.enum(["1m", "5m", "15m", "1h", "4h", "1d"]).optional().describe("Bar length. Default 1h"),
+    limit: exports_external.number().int().min(1).max(500).optional().describe("How many bars, 1-500. Default 100"),
+    to: exports_external.number().int().positive().optional().describe("Unix seconds: the newest bar opens at or before this. Default now; page back with the oldest bar's time")
   };
   tokenEventsLimit = exports_external.preprocess((value) => {
     if (typeof value !== "string")
@@ -73317,8 +73345,9 @@ var init_server3 = __esm(() => {
   init_tools();
   INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You hold a scoped API key, never a private key; signing and funding stay with the key owner's wallet.
 
-START HERE — fourteen tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
+START HERE — fifteen tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
+  candle_get_price_history one Solana token's OHLC bars in USD (1m to 1d, up to 500, page back with to); source and volumeUnit say whose bars
   candle_get_feed         the roster: hot streak, new pairs, graduated, final stretch, blue chip (final stretch is refused where it is not switched on; use another bucket)
   candle_token_page_about public About summary, switches default off
   candle_token_page_burns completed CNDL burn history
@@ -77243,6 +77272,7 @@ var TOOL_CLASSES = {
   candle_vamp_candidates: READ,
   candle_token_events: READ,
   candle_token_card: READ,
+  candle_get_price_history: READ,
   candle_token_history: READ,
   candle_token_page_about: READ,
   candle_token_page_capabilities: READ,
@@ -93217,6 +93247,7 @@ var MCP_TOOL_NAMES = [
   "candle_vamp_candidates",
   "candle_token_events",
   "candle_token_card",
+  "candle_get_price_history",
   "candle_token_edit",
   "candle_token_history",
   "candle_token_page_about",
@@ -93299,6 +93330,7 @@ var READ_ONLY_TOOL_NAMES = [
   "candle_get_feed",
   "candle_token_events",
   "candle_token_card",
+  "candle_get_price_history",
   "candle_token_history",
   "candle_token_page_about",
   "candle_token_page_burns",

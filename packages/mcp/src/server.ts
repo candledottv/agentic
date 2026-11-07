@@ -42,8 +42,9 @@ import { SERVER_VERSION } from "./version"
  */
 const INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You hold a scoped API key, never a private key; signing and funding stay with the key owner's wallet.
 
-START HERE — fourteen tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
+START HERE — fifteen tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
+  candle_get_price_history one Solana token's OHLC bars in USD (1m to 1d, up to 500, page back with to); source and volumeUnit say whose bars
   candle_get_feed         the roster: hot streak, new pairs, graduated, final stretch, blue chip (final stretch is refused where it is not switched on; use another bucket)
   candle_token_page_about public About summary, switches default off
   candle_token_page_burns completed CNDL burn history
