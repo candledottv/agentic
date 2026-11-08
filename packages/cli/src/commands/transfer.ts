@@ -69,7 +69,10 @@ import {
 } from "./swap"
 
 const USAGE =
-  "Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]"
+  "Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--client-id <id>] [--rpc-url <url>] [--yes] [--json]\n       candle transfer status <transfer id|client id> [--json]"
+
+/** What `--client-id` may be: the API's own pattern for `clientTransferId` (1 to 128 of A-Za-z0-9._:-). */
+const CLIENT_ID = /^[A-Za-z0-9._:-]{1,128}$/
 
 /** The base assets a linked-origin transfer may name by key; anything else is a `--mint` (Solana) or `--token` (Hood). */
 const TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)]
@@ -288,9 +291,31 @@ async function confirmTransfer(ctx: CommandContext, lines: string[], yes: boolea
   return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y"
 }
 
+/**
+ * `candle transfer status <id>` (BE-2673, R27): where a transfer stands, by the id the build
+ * returned or the `--client-id` it was sent under. Reads the server's ledger (24 hours); an older
+ * transfer is in `candle activity`.
+ */
+async function transferStatus(args: string[], ctx: CommandContext): Promise<number> {
+  const parsed = parseArgs(args, { valueFlags: [], booleanFlags: [] })
+  if ("error" in parsed || parsed.positionals.length !== 1 || !CLIENT_ID.test(parsed.positionals[0] ?? "")) {
+    writeUsageFailure(ctx.deps, "Usage: candle transfer status <transfer id|client id> [--json]", ctx.json)
+    return 2
+  }
+  try {
+    const key = await tradingKey(ctx)
+    const id = parsed.positionals[0] as string
+    const found = await request(ctx, key, `/api/v1/agent/transfer/${encodeURIComponent(id)}`)
+    return printTradingResult(ctx, found)
+  } catch (error) {
+    return tradingFailure(ctx, error)
+  }
+}
+
 export async function transfer(args: string[], ctx: CommandContext): Promise<number> {
+  if (args[0] === "status") return await transferStatus(args.slice(1), ctx)
   const parsed = parseArgs(args, {
-    valueFlags: ["--wallet", "--to", "--asset", "--mint", "--token", "--amount", "--rpc-url"],
+    valueFlags: ["--wallet", "--to", "--asset", "--mint", "--token", "--amount", "--rpc-url", "--client-id"],
     booleanFlags: ["--yes"],
   })
   if ("error" in parsed) {
@@ -306,7 +331,8 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
     [flags["--asset"], flags["--mint"], flags["--token"]].filter(Boolean).length !== 1 ||
     (asset !== undefined && !TRANSFER_ASSETS.includes(asset)) ||
     (flags["--mint"] !== undefined && !BASE58_ADDRESS.test(flags["--mint"])) ||
-    (flags["--token"] !== undefined && !checkEvmAddress(flags["--token"]).ok)
+    (flags["--token"] !== undefined && !checkEvmAddress(flags["--token"]).ok) ||
+    (flags["--client-id"] !== undefined && !CLIENT_ID.test(flags["--client-id"]))
   ) {
     writeUsageFailure(ctx.deps, USAGE, ctx.json)
     return 2
@@ -368,6 +394,7 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
       ...(asset ? { asset } : { mint: flags["--mint"] }),
       amountRaw,
       to: destination.address,
+      ...(flags["--client-id"] !== undefined ? { clientTransferId: flags["--client-id"] } : {}),
     })
     const transferId = built.transferId
     const unsigned = built.unsignedTransactionsBase64
@@ -435,6 +462,7 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
     const receipt: Json = {
       ...result,
       transferId,
+      ...(flags["--client-id"] !== undefined ? { clientTransferId: flags["--client-id"] } : {}),
       walletId: wallet.id,
       wallet: safeText(wallet.address),
       destination,
@@ -526,6 +554,7 @@ async function hoodTransfer(
     ...(asset ? { asset } : { mint: tokenAddress }),
     amountRaw: requested,
     to: destination.address,
+    ...(flags["--client-id"] !== undefined ? { clientTransferId: flags["--client-id"] } : {}),
   })
   // D4: a Hood TEE wallet signs one leg at a time; anything else is never signed from it.
   const parsed = sequencedSchema.safeParse(built)
@@ -582,6 +611,7 @@ async function hoodTransfer(
   const receipt: Json = {
     ...run.final,
     transferId,
+    ...(flags["--client-id"] !== undefined ? { clientTransferId: flags["--client-id"] } : {}),
     chain: "hood",
     walletId: wallet.id,
     wallet: safeText(wallet.address),

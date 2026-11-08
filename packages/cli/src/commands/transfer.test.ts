@@ -148,6 +148,15 @@ async function fixture(
         destinationKind: "linked",
         walletId: "wallet",
       })
+    if (path.startsWith("/api/v1/agent/transfer/")) {
+      const id = decodeURIComponent(path.slice("/api/v1/agent/transfer/".length))
+      if (id !== "tr-1" && id !== "mine")
+        return Response.json(
+          { error: { code: "JOB_NOT_FOUND", message: "No transfer with this id." } },
+          { status: 404 },
+        )
+      return ok({ success: true, transfer: { transferId: "tr-1", clientTransferId: "mine", state: "built" } })
+    }
     if (path === "/rpc") {
       const read = scenario && scenarioRpcResult(scenario, String(body?.method), body?.params as unknown[])
       return ok({ jsonrpc: "2.0", id: 1, result: read ?? { value: { decimals: 6 } } })
@@ -344,6 +353,58 @@ describe("candle transfer (R19)", () => {
     expect(failure.message).toContain("candle keys create --access withdraw")
     expect(failure.message).toContain("candle tee rebind")
     expect(f.paths()).not.toContain("/api/v1/agent/transfer/build")
+  })
+
+  test("BE-2673: --client-id rides the build as clientTransferId and comes back on the receipt", async () => {
+    const f = await fixture()
+    const code = await run(
+      [...base, "--to", "treasury", "--asset", "USDC", "--amount", "250", "--client-id", "mine", "--json"],
+      f.deps,
+    )
+    expect(code).toBe(0)
+    const build = f.calls.find((call) => call.path === "/api/v1/agent/transfer/build")
+    expect(build?.body).toMatchObject({ clientTransferId: "mine" })
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ transferId: "tr-1", clientTransferId: "mine" })
+  })
+
+  test("BE-2673: no --client-id sends no clientTransferId", async () => {
+    const f = await fixture()
+    await run([...base, "--to", "treasury", "--asset", "USDC", "--amount", "250", "--json"], f.deps)
+    const build = f.calls.find((call) => call.path === "/api/v1/agent/transfer/build")
+    expect(build?.body).not.toHaveProperty("clientTransferId")
+  })
+
+  test("BE-2673: a malformed --client-id is a usage error and nothing is requested", async () => {
+    for (const bad of ["has space", "x".repeat(129), "a/b"]) {
+      const f = await fixture()
+      const code = await run([...base, "--to", "vault", "--asset", "SOL", "--amount", "1", "--client-id", bad], f.deps)
+      expect(code).toBe(2)
+      expect(f.calls).toHaveLength(0)
+    }
+  })
+
+  test("BE-2673: transfer status reads by transfer id or client id, and an unknown id is JOB_NOT_FOUND", async () => {
+    for (const id of ["tr-1", "mine"]) {
+      const f = await fixture()
+      expect(await run(["transfer", "status", id, "--json"], f.deps)).toBe(0)
+      expect(f.paths()).toContain(`/api/v1/agent/transfer/${id}`)
+      expect(JSON.parse(f.stdout.text.trim()).transfer).toMatchObject({ clientTransferId: "mine", state: "built" })
+    }
+    const f = await fixture()
+    expect(await run(["transfer", "status", "nope", "--json"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text.trim()).code).toBe("JOB_NOT_FOUND")
+  })
+
+  test("BE-2673: transfer status needs exactly one well-formed id", async () => {
+    for (const argv of [
+      ["transfer", "status"],
+      ["transfer", "status", "a", "b"],
+      ["transfer", "status", "a b"],
+    ]) {
+      const f = await fixture()
+      expect(await run(argv, f.deps)).toBe(2)
+      expect(f.calls).toHaveLength(0)
+    }
   })
 
   test("a key without transfer:write cannot pay at all", async () => {

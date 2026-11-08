@@ -46274,7 +46274,7 @@ var init_tools = __esm(() => {
     return /^[0-9]+$/.test(trimmed) ? Number(trimmed) : value;
   }, exports_external.number({ invalid_type_error: FEED_LIMIT_MESSAGE }).int(FEED_LIMIT_MESSAGE).min(1, FEED_LIMIT_MESSAGE).max(200, FEED_LIMIT_MESSAGE).optional().describe("Max rows to return, an integer from 1 to 200."));
   getFeedShape = {
-    bucket: exports_external.enum(["new", "graduated", "onfire", "bluechip", "finalstretch"]).describe("finalstretch: pump.fun tokens at 50% or more of their bonding curve, most complete first; no delta, read the whole list. Where it is not switched on it is refused as an unknown bucket: use another bucket. bluechip is deprecated and will be removed."),
+    bucket: exports_external.enum(["new", "graduated", "onfire", "bluechip", "finalstretch"]).describe('finalstretch: pump.fun tokens at 50% or more of their bonding curve, most complete first, at most the 200 most complete (limit 200 reads all of them); no delta, read the whole list. Narrow it to tokens near graduation with where {"progress":{"gte":0.9}}. Where it is not switched on it is refused as an unknown bucket: use another bucket. bluechip is deprecated and will be removed.'),
     chain: exports_external.string().optional().describe("Optional chain filter"),
     where: exports_external.string().optional().describe('JSON filter, e.g. {"marketCap":{"lt":150000},"liquidityUsd":{"gte":25000},"mintAuthorityDisabled":{"eq":true}}. ' + "Comparators: eq, ne, lt, lte, gt, gte, present. An ABSENT field satisfies none of them except " + "present:false, so a filter for mintAuthorityDisabled eq true returns only tokens that actually say " + "true, never ones where the flag is simply missing. Use present:false to find the tokens with no data."),
     sort: exports_external.string().optional().describe('Sort as "field" or "field:asc" / "field:desc". A bare field means desc.'),
@@ -76505,9 +76505,10 @@ var HELP = {
     group: "Trade",
     intro: "Move funds out of a TEE wallet to your wallets or its vault",
     summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
-    description: "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Withdraw key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted, and, where the server has TEE_WITHDRAWALS_ENABLED on, an address on the account's withdrawal allowlist (named by its label, id or address). To a linked wallet or an approved address only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and the asset must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
+    description: "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Withdraw key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted, and, where the server has TEE_WITHDRAWALS_ENABLED on, an address on the account's withdrawal allowlist (named by its label, id or address). To a linked wallet or an approved address only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and the asset must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. candle transfer status <id> reads a transfer by its id or your --client-id: built, expired, submitted with its signature, unconfirmed (check the chain or candle activity before using a new client id), or failed (kept for 24 hours; older transfers are in candle activity). The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
     usage: [
-      "candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]"
+      "candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <tee>] [--client-id <id>] [--yes] [--json]",
+      "candle transfer status <transfer id|client id> [--json]"
     ],
     rows: [],
     flags: [
@@ -76527,10 +76528,15 @@ var HELP = {
         invocation: "--rpc-url <url>",
         description: "Your own Solana RPC, or on Hood the EVM RPC a --token's decimals are read over (optional)"
       },
+      {
+        invocation: "--client-id <id>",
+        description: "Your own id for this transfer (1 to 128 of letters, digits, . _ : -). An id already used for a built or sent transfer is refused with IDEMPOTENCY_CONFLICT naming that transfer, so a retry never sends twice; read it with candle transfer status <id>"
+      },
       { invocation: "--yes", description: "Skip the confirmation prompt (the destination is still printed)" }
     ],
     examples: [
-      "candle transfer --to vault --asset SOL --amount max --wallet AgentOne",
+      "candle transfer --to vault --asset SOL --amount max --wallet AgentOne --client-id sweep-2026-11-07",
+      "candle transfer status sweep-2026-11-07",
       "candle transfer --to treasury --asset USDC --amount 250 --wallet AgentOne --yes --json",
       "candle transfer --to vault --asset ETH --amount max --wallet HoodAgent"
     ],
@@ -106710,7 +106716,9 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE18 = "Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE18 = `Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--client-id <id>] [--rpc-url <url>] [--yes] [--json]
+       candle transfer status <transfer id|client id> [--json]`;
+var CLIENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -106843,9 +106851,26 @@ async function confirmTransfer(ctx, lines, yes) {
     throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes for an ordinary transfer prompt.");
   return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
 }
+async function transferStatus(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: [], booleanFlags: [] });
+  if ("error" in parsed || parsed.positionals.length !== 1 || !CLIENT_ID.test(parsed.positionals[0] ?? "")) {
+    writeUsageFailure(ctx.deps, "Usage: candle transfer status <transfer id|client id> [--json]", ctx.json);
+    return 2;
+  }
+  try {
+    const key = await tradingKey(ctx);
+    const id = parsed.positionals[0];
+    const found = await request(ctx, key, `/api/v1/agent/transfer/${encodeURIComponent(id)}`);
+    return printTradingResult(ctx, found);
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
 async function transfer(args, ctx) {
+  if (args[0] === "status")
+    return await transferStatus(args.slice(1), ctx);
   const parsed = parseArgs(args, {
-    valueFlags: ["--wallet", "--to", "--asset", "--mint", "--token", "--amount", "--rpc-url"],
+    valueFlags: ["--wallet", "--to", "--asset", "--mint", "--token", "--amount", "--rpc-url", "--client-id"],
     booleanFlags: ["--yes"]
   });
   if ("error" in parsed) {
@@ -106854,7 +106879,7 @@ async function transfer(args, ctx) {
   }
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
-  if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok) {
+  if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok || flags2["--client-id"] !== undefined && !CLIENT_ID.test(flags2["--client-id"])) {
     writeUsageFailure(ctx.deps, USAGE18, ctx.json);
     return 2;
   }
@@ -106901,7 +106926,8 @@ async function transfer(args, ctx) {
       chain: "solana",
       ...asset ? { asset } : { mint: flags2["--mint"] },
       amountRaw,
-      to: destination.address
+      to: destination.address,
+      ...flags2["--client-id"] !== undefined ? { clientTransferId: flags2["--client-id"] } : {}
     });
     const transferId = built.transferId;
     const unsigned = built.unsignedTransactionsBase64;
@@ -106937,6 +106963,7 @@ async function transfer(args, ctx) {
     const receipt = {
       ...result,
       transferId,
+      ...flags2["--client-id"] !== undefined ? { clientTransferId: flags2["--client-id"] } : {},
       walletId: wallet3.id,
       wallet: safeText(wallet3.address),
       destination,
@@ -106993,7 +107020,8 @@ async function hoodTransfer(ctx, args) {
     chain: "hood",
     ...asset ? { asset } : { mint: tokenAddress },
     amountRaw: requested,
-    to: destination.address
+    to: destination.address,
+    ...flags2["--client-id"] !== undefined ? { clientTransferId: flags2["--client-id"] } : {}
   });
   const parsed = sequencedSchema.safeParse(built);
   if (!parsed.success)
@@ -107030,6 +107058,7 @@ async function hoodTransfer(ctx, args) {
   const receipt = {
     ...run2.final,
     transferId,
+    ...flags2["--client-id"] !== undefined ? { clientTransferId: flags2["--client-id"] } : {},
     chain: "hood",
     walletId: wallet3.id,
     wallet: safeText(wallet3.address),
