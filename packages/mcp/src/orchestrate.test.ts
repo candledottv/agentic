@@ -1301,6 +1301,7 @@ describe("executionStatus max-expiry notice", () => {
       body: { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } },
     },
     "https://api.test/api/v1/agent/keys/self/limits": { body: { success: true, limits: [] } },
+    "https://api.test/api/v1/agent/wallets/trading": { body: { success: true, paused: false, page: [], isDone: true } },
     "https://api.test/api/v1/agent/keys/self/risk": { body: RUNNING_RISK },
   }
 
@@ -1343,6 +1344,7 @@ describe("executionStatus update notice", () => {
       "https://api.test/api/v1/agent/keys/self/limits": { body: { success: true, limits: [] } },
       "https://api.test/api/v1/agent/keys/self/risk": { body: RUNNING_RISK },
       "https://api.test/api/v1/agent/tier": { body: { success: true, tier: "max", feeBps: 0, maxExpired: false } },
+      "https://api.test/api/v1/agent/wallets/trading": { body: { success: true, page: [], isDone: true } },
     })
     // fakeFetch's responses have no headers, so simulate the capture the real fetch site does.
     noteVersionHeaders(new Response("{}", { headers: { "x-candle-mcp-latest": "99.0.0" } }))
@@ -1355,6 +1357,176 @@ describe("executionStatus update notice", () => {
   })
 })
 
+describe("executionStatus TEE wallets (BE-2650, R33)", () => {
+  const BASE = {
+    "https://api.test/api/v1/agent/wallets/embedded": {
+      body: { success: true, wallets: { solana: { address: "Emb", delegated: true }, evm: null } },
+    },
+    "https://api.test/api/v1/agent/tier": { body: { success: true, tier: "max", feeBps: 0, maxExpired: false } },
+    "https://api.test/api/v1/agent/keys/self/limits": { body: { success: true, keyLimits: null } },
+    "https://api.test/api/v1/agent/keys/self/risk": { body: RUNNING_RISK },
+  }
+  const ROWS = [
+    {
+      id: "w1",
+      address: "TeeSol",
+      chain: "solana",
+      label: "bot",
+      privyWalletId: "p1",
+      allowLaunch: true,
+      active: true,
+      walletKind: "tee",
+    },
+    { id: "w2", address: "0xTee", chain: "evm", privyWalletId: "p2", allowLaunch: false, active: false },
+  ]
+  type Status = {
+    ready?: boolean
+    unreadable?: string[]
+    wallets?: unknown
+    tee?: Array<Record<string, unknown>>
+    teeScopes?: string[]
+    teePaused?: boolean
+    teeComplete?: boolean
+    teeError?: unknown
+  }
+
+  test("lists the key's TEE wallets beside the embedded ones, each with chain and spend state", async () => {
+    const { calls, fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/wallets/trading": {
+        body: { success: true, keyPrefix: "kp", scopes: ["swap:write"], paused: false, page: ROWS, isDone: true },
+      },
+    })
+    const out = await executionStatus(CFG, fetch)
+    const body = JSON.parse(out.text) as Status
+    expect(out.isError).toBeUndefined()
+    expect(body.ready).toBe(true)
+    expect(body.wallets).toEqual(BASE["https://api.test/api/v1/agent/wallets/embedded"].body)
+    // Five reads, the TEE one with the caller's key.
+    expect(calls.map((c) => c.url).sort()).toEqual([
+      "https://api.test/api/v1/agent/keys/self/limits",
+      "https://api.test/api/v1/agent/keys/self/risk",
+      "https://api.test/api/v1/agent/tier",
+      "https://api.test/api/v1/agent/wallets/embedded",
+      "https://api.test/api/v1/agent/wallets/trading",
+    ])
+    // No signer material (privyWalletId) in the summary.
+    expect(body.tee).toEqual([
+      { id: "w1", address: "TeeSol", chain: "solana", label: "bot", active: true, allowLaunch: true, spendable: true },
+      { id: "w2", address: "0xTee", chain: "evm", active: false, allowLaunch: false, spendable: false },
+    ])
+    expect(body.teePaused).toBe(false)
+    expect(body.teeComplete).toBe(true)
+    expect(body.teeScopes).toEqual(["swap:write"])
+  })
+
+  test("a read-only key's active TEE wallets are listed but never spendable", async () => {
+    // /wallets/trading answers for ANY scope (apps/api routes/agent.ts), so a read-only key sees
+    // its wallets here; only the scopes decide whether it can pay, exactly as /wallets/self/balances
+    // gates (holdsSpendScope). spendable must agree with the balances route: false.
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/wallets/trading": {
+        body: { success: true, keyPrefix: "kp", scopes: ["account:read"], paused: false, page: ROWS, isDone: true },
+      },
+    })
+    const body = JSON.parse((await executionStatus(CFG, fetch)).text) as Status
+    expect(body.ready).toBe(true)
+    expect(body.teeScopes).toEqual(["account:read"])
+    expect(body.tee?.map((w) => w.spendable)).toEqual([false, false])
+  })
+
+  test("absent scopes are read as none: an active unpaused wallet is still not spendable", async () => {
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/wallets/trading": {
+        body: { success: true, paused: false, page: ROWS, isDone: true },
+      },
+    })
+    const body = JSON.parse((await executionStatus(CFG, fetch)).text) as Status
+    expect(body.teeScopes).toEqual([])
+    expect(body.tee?.map((w) => w.spendable)).toEqual([false, false])
+  })
+
+  test("any one spend scope makes an active unpaused wallet spendable", async () => {
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/wallets/trading": {
+        body: {
+          success: true,
+          keyPrefix: "kp",
+          scopes: ["account:read", "transfer:write"],
+          paused: false,
+          page: [ROWS[0]],
+          isDone: true,
+        },
+      },
+    })
+    const body = JSON.parse((await executionStatus(CFG, fetch)).text) as Status
+    expect(body.tee?.[0]?.spendable).toBe(true)
+  })
+
+  test("a paused key's TEE wallets are listed but none is spendable", async () => {
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/wallets/trading": {
+        // Paused is independent of scopes: even a spend scope cannot pay while the key is paused.
+        body: { success: true, scopes: ["swap:write"], paused: true, page: ROWS, isDone: true },
+      },
+    })
+    const body = JSON.parse((await executionStatus(CFG, fetch)).text) as Status
+    expect(body.teePaused).toBe(true)
+    expect(body.tee?.map((w) => w.spendable)).toEqual([false, false])
+  })
+
+  test("more than one page says so instead of claiming the list is whole", async () => {
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/wallets/trading": {
+        body: { success: true, paused: false, page: [ROWS[0]], isDone: false, continueCursor: "tk1:x" },
+      },
+    })
+    const body = JSON.parse((await executionStatus(CFG, fetch)).text) as Status
+    expect(body.tee).toHaveLength(1)
+    expect(body.teeComplete).toBe(false)
+  })
+
+  test("a failed TEE read is unknown, never an empty list", async () => {
+    const error = { success: false, error: { code: "VALIDATION_FAILED", message: "boom" } }
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/wallets/trading": { status: 500, body: error },
+    })
+    const out = await executionStatus(CFG, fetch)
+    const body = JSON.parse(out.text) as Status
+    expect(out.isError).toBe(true)
+    expect(body.ready).toBeUndefined()
+    expect(body.unreadable).toEqual(["tee"])
+    expect(body.tee).toBeUndefined()
+    expect(body.teeComplete).toBeUndefined()
+    expect(body.teeError).toEqual(error)
+  })
+
+  test("a 200 that is not a wallet page is unreadable too", async () => {
+    const { fetch } = fakeFetch({
+      ...BASE,
+      "https://api.test/api/v1/agent/wallets/trading": { body: { success: true } },
+    })
+    const body = JSON.parse((await executionStatus(CFG, fetch)).text) as Status
+    expect(body.unreadable).toEqual(["tee"])
+    expect(body.tee).toBeUndefined()
+  })
+
+  test("teeWallets: false (the hosted server) makes no TEE read", async () => {
+    const { calls, fetch } = fakeFetch(BASE)
+    const out = await executionStatus(CFG, fetch, { teeWallets: false })
+    const body = JSON.parse(out.text) as Status
+    expect(calls.some((c) => c.url.includes("/wallets/trading"))).toBe(false)
+    expect(body.ready).toBe(true)
+    expect("tee" in body).toBe(false)
+  })
+})
+
 describe("executionStatus loss limits and stop (BE-2692, R55)", () => {
   const BASE = {
     "https://api.test/api/v1/agent/wallets/embedded": {
@@ -1362,6 +1534,7 @@ describe("executionStatus loss limits and stop (BE-2692, R55)", () => {
     },
     "https://api.test/api/v1/agent/keys/self/limits": { body: { success: true, limits: [] } },
     "https://api.test/api/v1/agent/tier": { body: { success: true, tier: "pro", feeBps: 50, maxExpired: false } },
+    "https://api.test/api/v1/agent/wallets/trading": { body: { success: true, paused: false, page: [], isDone: true } },
   }
   const TRIPPED = { at: 1_700_000_000_500, reason: "daily_loss", limitValue: 5_000_000, observed: 6_000_000 }
 
@@ -1373,7 +1546,8 @@ describe("executionStatus loss limits and stop (BE-2692, R55)", () => {
     const out = await executionStatus(CFG, fetch)
     const riskCall = calls.find((c) => c.url === "https://api.test/api/v1/agent/keys/self/risk")
     expect(riskCall?.init?.method).toBe("GET")
-    expect(calls).toHaveLength(4)
+    // Five reads: embedded, TEE (BE-2650), tier, limits and risk.
+    expect(calls).toHaveLength(5)
     const body = JSON.parse(out.text) as { ready?: boolean; stopped?: unknown; risk?: unknown }
     expect(body.ready).toBe(true)
     expect(body.stopped).toBeUndefined()

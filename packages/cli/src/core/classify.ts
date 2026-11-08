@@ -63,6 +63,9 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_get_agent_positions: READ,
   candle_get_plans: READ,
   candle_get_wallets: READ,
+  // BE-2650 (R25): the key's TEE wallets, and the balances of every wallet it may spend from.
+  candle_get_trading_wallets: READ,
+  candle_get_spendable_balances: READ,
   candle_get_profile_wallets: READ,
   candle_get_profile_pnl: READ,
   candle_get_profile_trades: READ,

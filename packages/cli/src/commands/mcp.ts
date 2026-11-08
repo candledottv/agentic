@@ -92,6 +92,8 @@ export const MCP_TOOL_NAMES = [
   "candle_transfer",
   "candle_sweep",
   "candle_get_wallets",
+  "candle_get_trading_wallets",
+  "candle_get_spendable_balances",
   "candle_get_profile_wallets",
   "candle_set_profile_wallets",
   "candle_get_profile_pnl",

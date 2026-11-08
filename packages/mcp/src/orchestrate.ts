@@ -910,14 +910,63 @@ export async function resolveToken(args: ResolveTokenArgs, cfg: RequestConfig, d
   return { text: JSON.stringify({ success: true, chain, mint: args.mint, market: read.market }, null, 2) }
 }
 
+/** One `/wallets/trading` row, as execution status reports it. */
+interface TeePayer {
+  id: string
+  address: string
+  chain: string
+  label?: string
+  active: boolean
+  allowLaunch: boolean
+  /**
+   * Active, the key not paused, and the key holding a spend scope (swap:write, transfer:write or
+   * launch:write — the same set /wallets/self/balances gates on, apps/api lib/self-balances.ts).
+   * /wallets/trading admits any scope, so the row alone proves nothing about spending: a
+   * read-only key sees its wallets with spendable false. Absent scopes are read as none.
+   */
+  spendable: boolean
+}
+
+/** The scopes /wallets/self/balances treats as authorization to spend (SPEND_SCOPES). */
+const TEE_SPEND_SCOPES = ["swap:write", "transfer:write", "launch:write"] as const
+
+function teePayers(
+  body: unknown,
+): { paused: boolean; scopes: string[]; wallets: TeePayer[]; complete: boolean } | undefined {
+  const page = body as {
+    paused?: unknown
+    scopes?: unknown
+    page?: unknown
+    isDone?: unknown
+  }
+  if (!Array.isArray(page?.page)) return undefined
+  const paused = page.paused === true
+  // Absent or malformed scopes are read as none: the conservative answer for a key whose
+  // authorization the response did not establish is "cannot spend", never "can".
+  const scopes = Array.isArray(page.scopes) ? page.scopes.filter((s): s is string => typeof s === "string") : []
+  const spendAuthorized = TEE_SPEND_SCOPES.some((scope) => scopes.includes(scope))
+  const wallets = (page.page as Array<Record<string, unknown>>).map((row) => ({
+    id: String(row.id),
+    address: String(row.address),
+    chain: String(row.chain),
+    ...(typeof row.label === "string" ? { label: row.label } : {}),
+    active: row.active === true,
+    allowLaunch: row.allowLaunch === true,
+    spendable: row.active === true && !paused && spendAuthorized,
+  }))
+  return { paused, scopes, wallets, complete: page.isDone === true }
+}
+
 /**
  * candle_execution_status: one call answering "can this key trade right now, and if not, what is
  * missing".
  *
- * Four reads that an agent would otherwise have to know to make separately and in the right
- * order: the embedded wallets it executes with, the tier that decides what it may trade, the
+ * Five reads that an agent would otherwise have to know to make separately and in the right
+ * order: the embedded wallets it executes with, the TEE wallets bound to the calling key (BE-2650,
+ * R33: before them an agent saw no TEE payer at all), the tier that decides what it may trade, the
  * calling key's own spend limits, and its own loss limits and stop state (BE-2692: the key's
- * `/keys/self/risk`, any scope, so a swap-only key can read why it was stopped).
+ * `/keys/self/risk`, any scope, so a swap-only key can read why it was stopped). The hosted server
+ * passes `teeWallets: false`: it exposes no TEE wallet and its route list does not admit the read.
  *
  * Each read is reported as it came back. A failing read is NOT flattened into "not ready": a 500
  * on the tier endpoint and a key that genuinely lacks a tier are different situations, and an
@@ -929,7 +978,12 @@ export async function resolveToken(args: ResolveTokenArgs, cfg: RequestConfig, d
 const STOP_CLEARED_BY =
   "An account owner reviews the profile and resumes it from the agent console; an API key cannot resume it."
 
-export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
+export async function executionStatus(
+  cfg: RequestConfig,
+  doFetch: FetchLike,
+  options: { teeWallets?: boolean } = {},
+): Promise<ToolText> {
+  const readTee = options.teeWallets !== false
   const apiKey = requireApiKey(cfg)
   const get = async (path: string) => {
     const res = await doFetch(`${base(cfg)}${path}`, { method: "GET", headers: headers(apiKey) })
@@ -944,15 +998,19 @@ export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): P
     return { ok: res.ok, status: res.status, body }
   }
 
-  const [wallets, tier, limits, risk] = await Promise.all([
+  const [wallets, trading, tier, limits, risk] = await Promise.all([
     get("/api/v1/agent/wallets/embedded"),
+    readTee ? get("/api/v1/agent/wallets/trading") : Promise.resolve(undefined),
     get("/api/v1/agent/tier"),
     get("/api/v1/agent/keys/self/limits"),
     get("/api/v1/agent/keys/self/risk"),
   ])
 
+  const tee = trading?.ok ? teePayers(trading.body) : undefined
   const unreadable = [
     ["wallets", wallets],
+    // A 200 that is not a wallet page is as unknown as a failed read.
+    ...(trading ? [["tee", tee ? trading : { ok: false }]] : []),
     ["tier", tier],
     ["limits", limits],
     ["risk", risk],
@@ -987,6 +1045,16 @@ export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): P
         updateAvailable: updateAvailable() ?? undefined,
         unreadable: unreadable.length > 0 ? unreadable.map(([name]) => name) : undefined,
         wallets: wallets.body,
+        // The first page of TEE wallets bound to this key, each with its chain and whether it can pay
+        // now. teeComplete false means more pages: candle_get_trading_wallets lists them all. A failed
+        // read leaves both out and names "tee" in unreadable; it is never an empty list.
+        tee: tee?.wallets,
+        // The key's own scopes, so an agent told "not spendable" can see why (a read-only key)
+        // without a second call; /wallets/trading returns them with every page.
+        teeScopes: tee ? tee.scopes : undefined,
+        teePaused: tee ? tee.paused : undefined,
+        teeComplete: tee ? tee.complete : undefined,
+        teeError: trading && !tee ? trading.body : undefined,
         tier: tier.body,
         limits: limits.body,
         risk: risk.body,

@@ -40825,7 +40825,26 @@ async function resolveToken(args, cfg, doFetch) {
     return read.err;
   return { text: JSON.stringify({ success: true, chain: chain2, mint: args.mint, market: read.market }, null, 2) };
 }
-async function executionStatus(cfg, doFetch) {
+function teePayers(body) {
+  const page = body;
+  if (!Array.isArray(page?.page))
+    return;
+  const paused = page.paused === true;
+  const scopes = Array.isArray(page.scopes) ? page.scopes.filter((s) => typeof s === "string") : [];
+  const spendAuthorized = TEE_SPEND_SCOPES.some((scope) => scopes.includes(scope));
+  const wallets2 = page.page.map((row2) => ({
+    id: String(row2.id),
+    address: String(row2.address),
+    chain: String(row2.chain),
+    ...typeof row2.label === "string" ? { label: row2.label } : {},
+    active: row2.active === true,
+    allowLaunch: row2.allowLaunch === true,
+    spendable: row2.active === true && !paused && spendAuthorized
+  }));
+  return { paused, scopes, wallets: wallets2, complete: page.isDone === true };
+}
+async function executionStatus(cfg, doFetch, options = {}) {
+  const readTee = options.teeWallets !== false;
   const apiKey = requireApiKey(cfg);
   const get = async (path) => {
     const res = await doFetch(`${base(cfg)}${path}`, { method: "GET", headers: headers(apiKey) });
@@ -40839,14 +40858,17 @@ async function executionStatus(cfg, doFetch) {
     }
     return { ok: res.ok, status: res.status, body };
   };
-  const [wallets2, tier, limits, risk] = await Promise.all([
+  const [wallets2, trading, tier, limits, risk] = await Promise.all([
     get("/api/v1/agent/wallets/embedded"),
+    readTee ? get("/api/v1/agent/wallets/trading") : Promise.resolve(undefined),
     get("/api/v1/agent/tier"),
     get("/api/v1/agent/keys/self/limits"),
     get("/api/v1/agent/keys/self/risk")
   ]);
+  const tee = trading?.ok ? teePayers(trading.body) : undefined;
   const unreadable2 = [
     ["wallets", wallets2],
+    ...trading ? [["tee", tee ? trading : { ok: false }]] : [],
     ["tier", tier],
     ["limits", limits],
     ["risk", risk]
@@ -40863,6 +40885,11 @@ async function executionStatus(cfg, doFetch) {
       updateAvailable: updateAvailable() ?? undefined,
       unreadable: unreadable2.length > 0 ? unreadable2.map(([name]) => name) : undefined,
       wallets: wallets2.body,
+      tee: tee?.wallets,
+      teeScopes: tee ? tee.scopes : undefined,
+      teePaused: tee ? tee.paused : undefined,
+      teeComplete: tee ? tee.complete : undefined,
+      teeError: trading && !tee ? trading.body : undefined,
       tier: tier.body,
       limits: limits.body,
       risk: risk.body
@@ -40870,7 +40897,7 @@ async function executionStatus(cfg, doFetch) {
     ...unreadable2.length > 0 ? { isError: true } : {}
   };
 }
-var SOLANA_SEED_CEILINGS, MAIN_PAYER, SWEEP_BASE_ASSETS, STOP_CLEARED_BY = "An account owner reviews the profile and resumes it from the agent console; an API key cannot resume it.";
+var SOLANA_SEED_CEILINGS, MAIN_PAYER, SWEEP_BASE_ASSETS, TEE_SPEND_SCOPES, STOP_CLEARED_BY = "An account owner reviews the profile and resumes it from the agent console; an API key cannot resume it.";
 var init_orchestrate = __esm(() => {
   init_convert();
   init_image();
@@ -40886,6 +40913,7 @@ var init_orchestrate = __esm(() => {
     solana: ["USDC", "CNDL", "SOL"],
     hood: ["USDG", "ETH"]
   };
+  TEE_SPEND_SCOPES = ["swap:write", "transfer:write", "launch:write"];
 });
 
 // ../mcp/src/hyperliquid.ts
@@ -45273,6 +45301,28 @@ function buildRequest(name, args, cfg) {
         init: { method: "GET", headers: jsonHeaders(apiKey) }
       };
     }
+    case "candle_get_trading_wallets": {
+      const apiKey = requireApiKey2(cfg);
+      const { cursor } = args;
+      const query2 = cursor === undefined ? "" : `?cursor=${encodeURIComponent(cursor)}`;
+      return {
+        url: `${base2}/api/v1/agent/wallets/trading${query2}`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
+    case "candle_get_spendable_balances": {
+      const apiKey = requireApiKey2(cfg);
+      const { cursor, mints } = args;
+      const params = new URLSearchParams;
+      if (cursor !== undefined)
+        params.set("cursor", cursor);
+      if (mints !== undefined && mints.length > 0)
+        params.set("mints", mints.join(","));
+      return {
+        url: `${base2}/api/v1/agent/wallets/self/balances${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
     case "candle_get_profile_wallets": {
       const apiKey = requireApiKey2(cfg);
       const { keyPrefix } = args;
@@ -45768,6 +45818,16 @@ function registerToolSubset(server, options) {
     description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",
     inputSchema: {}
   }, async () => callAndRelay("candle_get_wallets", {}, getConfig(), doFetch));
+  register("candle_get_trading_wallets", {
+    title: "List the TEE wallets bound to this key",
+    description: "The TEE wallets bound to THIS key, on Solana (`chain: solana`) and Hood (`chain: evm`): the wallets " + "it may pay from beside the embedded ones in candle_get_wallets. Each row has its id, address, label, " + "`active` (true when the wallet's signing authority is verified active; a false row cannot pay) and " + "`allowLaunch`. The body also carries this key's `scopes` and `paused` (true while the owner has paused " + "the key, which then spends from nothing; spending also needs one of the spend scopes — " + "swap:write, transfer:write or launch:write — and `scopes` says which this key holds). A TEE wallet is signed on your own machine with the key " + "signer: the perps tools here and the candle CLI (`candle swap --wallet <id|address|label>`) pay from " + "it, while candle_trade and candle_swap spend the embedded wallet. Answers for any scope and on a " + "paused key. Paged: pass `continueCursor` back as `cursor` until `isDone`. Reads only; moves nothing.",
+    inputSchema: tradingWalletsShape
+  }, async (args) => callAndRelay("candle_get_trading_wallets", args, getConfig(), doFetch));
+  register("candle_get_spendable_balances", {
+    title: "Read the balances of every wallet this key may spend from",
+    description: "Every wallet THIS key may spend from, and no other, with its balances: the embedded wallets when " + "the owner allows this key to spend them, the TEE wallets bound to it with an active signing " + "authority, and the linked wallets its wallet scope admits. Each row has `kind` (embedded, tee or " + "linked), `chain` (solana or evm), `address`, and `id` and `label` for a linked or TEE wallet. " + "`balances` always holds the base assets (SOL, USDC and CNDL on Solana; ETH and USDG on Hood) plus " + "the `mints` you name (at most 10), each in raw units with the slot or block it was read at. A read " + "that failed is in `unavailable`, never reported as zero. A key with no spend scope (swap:write, " + "transfer:write or launch:write) can spend from nothing and gets an empty page, not an error. " + "`complete: false` means the account's wallet list was cut off. 50 wallets a page: pass " + "`continueCursor` back as `cursor` until `isDone`. Needs no account:read; candle_get_portfolio is " + "the whole-account read. Reads only; moves nothing.",
+    inputSchema: spendableBalancesShape
+  }, async (args) => callAndRelay("candle_get_spendable_balances", args, getConfig(), doFetch));
   register("candle_get_profile_wallets", {
     title: "Read which wallets an agent profile can spend from",
     description: "An agent profile (API key) either spends from EVERY wallet on its account or only from " + "the ones assigned to it. Read walletScope before drawing any conclusion from the list: " + "an empty list means 'every wallet' under scope 'all' and 'none at all' under 'selected'. " + "Reads only; moves nothing.",
@@ -45824,10 +45884,12 @@ function registerToolSubset(server, options) {
   });
   register("candle_execution_status", {
     title: "Can this key execute right now",
-    description: "One call before trading: the embedded wallets to spend from, the tier that decides what " + "may be traded, this key's own spend limits, and its loss limits and stop state (risk: " + "lossLimits, state, stopped, tripped). A stopped key reports ready: false and a top-level " + "stopped naming the bound that broke; every trade answers RISK_LIMIT_REACHED until an " + "account owner resumes it, so stop trading and say why rather than retrying. Any scope " + "can read its own. Reads only; moves nothing. Call it when " + "a run starts, or after an authorization error, rather than inferring readiness from a " + "failed trade. If a read could not be completed the tool says which one and does NOT " + "claim the account is unready: an unreachable endpoint and a missing tier are different " + "problems with different fixes.",
+    description: "One call before trading: the embedded wallets to spend from, the TEE wallets bound to this " + "key, the tier that decides what may be traded, this key's own spend limits, and its loss " + "limits and stop state (risk: lossLimits, state, stopped, tripped). `wallets` is the embedded " + "read. `tee` lists the first page of TEE wallets with `chain` (solana or evm), `active` and " + "`spendable` (active, the key not paused — `teePaused` says whether it is — and the key " + "holding a spend scope: swap:write, transfer:write or launch:write; `teeScopes` lists the " + "key's scopes, so a read-only key shows its wallets with `spendable: false`); " + "`teeComplete: false` means more, which candle_get_trading_wallets lists. candle_trade and " + "candle_swap spend the embedded wallet; a TEE wallet is signed locally (the perps tools, the " + "candle CLI's --wallet). A stopped key reports ready: false and a top-level stopped naming " + "the bound that broke; every trade answers RISK_LIMIT_REACHED until an account owner resumes " + "it, so stop trading and say why rather than retrying. Any scope can read its own. Reads " + "only; moves nothing. Call it when " + "a run starts, or after an authorization error, rather than inferring readiness from a " + "failed trade. If a read could not be completed the tool says which one and does NOT " + "claim the account is unready: an unreachable endpoint and a missing tier are different " + "problems with different fixes.",
     inputSchema: {}
   }, async () => {
-    const result = await executionStatus(getConfig(), doFetch);
+    const result = await executionStatus(getConfig(), doFetch, {
+      teeWallets: options.embeddedExecutionStatus !== true
+    });
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
   register("candle_swap", {
@@ -46098,7 +46160,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, getMarketShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, getMarketShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
 var init_tools = __esm(() => {
   init_zod();
   init_client2();
@@ -46170,6 +46232,8 @@ var init_tools = __esm(() => {
     "candle_transfer",
     "candle_sweep",
     "candle_get_wallets",
+    "candle_get_trading_wallets",
+    "candle_get_spendable_balances",
     "candle_get_profile_wallets",
     "candle_set_profile_wallets",
     "candle_get_profile_pnl",
@@ -46349,6 +46413,13 @@ var init_tools = __esm(() => {
   };
   resolveTokenShape = {
     mint: exports_external.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
+  };
+  tradingWalletsShape = {
+    cursor: exports_external.string().optional().describe("The continueCursor of the previous page. Omit for the first page")
+  };
+  spendableBalancesShape = {
+    cursor: exports_external.string().optional().describe("The continueCursor of the previous page. Omit for the first page"),
+    mints: exports_external.array(exports_external.string()).max(10).optional().describe("Up to 10 extra tokens to read beside the base assets: Solana mints or Hood (0x) token addresses. " + "Each is read on the wallets of its own chain")
   };
   profileWalletsShape = {
     keyPrefix: exports_external.string().describe("The profile's API key prefix, as listed by candle keys list or in the dashboard")
@@ -77993,6 +78064,8 @@ var TOOL_CLASSES = {
   candle_get_agent_positions: READ,
   candle_get_plans: READ,
   candle_get_wallets: READ,
+  candle_get_trading_wallets: READ,
+  candle_get_spendable_balances: READ,
   candle_get_profile_wallets: READ,
   candle_get_profile_pnl: READ,
   candle_get_profile_trades: READ,
@@ -94169,6 +94242,8 @@ var MCP_TOOL_NAMES = [
   "candle_transfer",
   "candle_sweep",
   "candle_get_wallets",
+  "candle_get_trading_wallets",
+  "candle_get_spendable_balances",
   "candle_get_profile_wallets",
   "candle_set_profile_wallets",
   "candle_get_profile_pnl",

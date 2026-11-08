@@ -80,13 +80,15 @@ Ask an agent to call `candle_get_feed` with `{ "bucket": "new" }` and it works b
 
 ## The tool surface
 
-Ninety tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_trade_execute`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Eighteen source tools need no key, so a client can be pointed at the server and used before anyone
+Ninety-four tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_trade_execute`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl`, `candle_get_trading_wallets`, `candle_get_spendable_balances` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Eighteen source tools need no key, so a client can be pointed at the server and used before anyone
 signs up.
 
 | | Tool | Key | What it does |
 | --- | --- | --- | --- |
-| **Can I trade?** | `candle_execution_status` | yes | wallets, tier and this key's spend limits, in one call |
+| **Can I trade?** | `candle_execution_status` | yes | embedded and TEE wallets, tier and this key's spend limits, in one call |
 | | `candle_get_wallets` | yes | the embedded wallets this key spends from |
+| | `candle_get_trading_wallets` | yes | the TEE wallets bound to this key, on Solana and Hood, with `active` and the key's `paused` |
+| | `candle_get_spendable_balances` | yes | every wallet this key may spend from (embedded, its TEE, linked in scope), with balances |
 | | `candle_get_profile_wallets` | yes | which linked wallets this profile may spend from, and whether it is scoped |
 | | `candle_set_profile_wallets` | yes | replace the linked wallets this profile may spend from |
 | | `candle_get_profile_pnl` | yes | this profile's P&L: realized, unrealized at current marks, fees, open positions |
