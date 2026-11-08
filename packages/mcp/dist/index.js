@@ -6527,6 +6527,7 @@ var stakingWriteShape = {
 var TOOL_NAMES = [
   "candle_launch_token",
   "candle_get_market",
+  "candle_quote",
   "candle_get_feed",
   "candle_vamp_candidates",
   "candle_token_events",
@@ -6722,6 +6723,26 @@ function buildRequest(name, args, cfg) {
       return {
         url: `${base2}/api/v1/markets/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}`,
         init: { method: "GET", headers: jsonHeaders() }
+      };
+    }
+    case "candle_quote": {
+      const apiKey = requireApiKey2(cfg);
+      const { chain, mint, side, amountRaw, quoteAsset, poolKey, includeRoundTrip } = args;
+      return {
+        url: `${base2}/api/v1/trade/agent/quote`,
+        init: {
+          method: "POST",
+          headers: jsonHeaders(apiKey),
+          body: JSON.stringify({
+            chain,
+            mint,
+            side,
+            amountRaw,
+            ...quoteAsset !== undefined && quoteAsset !== "" ? { quoteAsset } : {},
+            ...poolKey !== undefined ? { poolKey } : {},
+            ...includeRoundTrip !== undefined ? { includeRoundTrip } : {}
+          })
+        }
       };
     }
     case "candle_get_price_history": {
@@ -7139,6 +7160,15 @@ var getMarketShape = {
   chain: z9.string().describe('"solana" or "hood"'),
   mint: z9.string().describe("Token mint (solana) or contract address (hood)")
 };
+var quoteShape = {
+  chain: z9.enum(["solana", "hood"]),
+  mint: z9.string().describe("Token mint (solana) or contract address (hood)"),
+  side: z9.enum(["buy", "sell"]),
+  amountRaw: z9.string().describe("Positive integer in base units: the quote asset's for a buy, the token's for a sell"),
+  quoteAsset: z9.string().optional().describe('Asset to price in, e.g. "sol" or "usdc" on Solana, "eth" or "usdg" on Hood'),
+  poolKey: z9.unknown().optional().describe("Hood only: a pool hint for a pool nobody has indexed yet"),
+  includeRoundTrip: z9.boolean().optional().describe("Hood only: also return the buy-then-sell cost in basis points")
+};
 var priceHistoryShape = {
   chain: z9.string().optional().describe('"solana" (the default). Hood is refused with the REST route that serves it'),
   mint: z9.string().describe("Token mint"),
@@ -7486,6 +7516,12 @@ function registerToolSubset(server, options) {
     description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch));
+  register("candle_quote", {
+    title: "Quote a trade",
+    description: "Price a buy or sell before making it. Moves nothing. Needs an API key with the swap:write scope: a read-only key (account:read) is refused, so use candle_get_market for state instead. " + "Returns amountOut (base units), venue, quoteAsset, quoteDecimals and quotedAt; Hood answers also carry fee and price impact. " + "route is present only on some answers, so do not assume it. A quote is a snapshot (Hood quotes are cached for 10 seconds), not a promise of the fill. " + "Limited to 600 quotes a minute per key, and counted against the key's own limit. Pass amountRaw in base units; candle_trade and candle_swap take decimals.",
+    inputSchema: quoteShape,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async (args) => callAndRelay("candle_quote", args, getConfig(), doFetch));
   register("candle_token_forensics", {
     title: "Token forensics",
     description: "Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer; when no developer is on chain, deployer.attribution names the launchpad or issuer instead, e.g. launched via stonk.fun or issued by xStocks), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), same-funder insider share, same-funder deployer cluster, and safety.summary with six sourced flags (mintAuthority, freezeAuthority, tokenExtensions, lpLock, sellability, liquidityDrain). Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. deployer.priorLaunches is counted (pump.fun curves for a curve creator; record.count says the source); deployer.launcher is the wallet that sent the launch, often a launch tool's signer, never the developer; launch.deployerLaunches is that wallet's inclusive informational count, never a warning. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.\n\nMARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed, and any Solana mint Jupiter's index knows, now answers with a partial report instead. On Hood, a token Candle did not launch names its launch account (deployer.method cvc_launch_account) for pons.family and pools.trade launches, with no record of earlier coins; other Hood launchpads return no developer.",

@@ -34,6 +34,7 @@ const card = (kind: CardKind, idKey: IdKey = "coreOpId"): ToolClass => ({ class:
 export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   // Reads.
   candle_get_market: READ,
+  candle_quote: READ,
   candle_get_feed: READ,
   candle_vamp_candidates: READ,
   // BE-2095: the public per-token events read. Keyless; filters the page itself when kind is set.

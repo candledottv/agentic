@@ -75,6 +75,7 @@ test("all registered tools are listed", () => {
     "candle_perps_setup",
     "candle_perps_thresholds",
     "candle_perps_tpsl",
+    "candle_quote",
     "candle_report_activity",
     "candle_resolve_token",
     "candle_set_profile_wallets",
@@ -368,6 +369,32 @@ describe("buildRequest", () => {
       buildRequest("candle_swap", { from: "SOL", to: "USDC", amountRaw: "1" }, { apiUrl: "https://api.test" }),
     ).toThrow(/CANDLE_AGENT_API_KEY/)
   })
+  test("candle_quote is a keyed POST to the trade quote route and forwards only what was set", () => {
+    const r = buildRequest(
+      "candle_quote",
+      { chain: "solana", mint: "M1", side: "buy", amountRaw: "1000" },
+      { apiUrl: "https://api.test", apiKey: "cndl_live_k" },
+    )
+    expect(r.url).toBe("https://api.test/api/v1/trade/agent/quote")
+    expect(r.init.method).toBe("POST")
+    expect((r.init.headers as Record<string, string>)["x-api-key"]).toBe("cndl_live_k")
+    expect(JSON.parse(r.init.body as string)).toEqual({ chain: "solana", mint: "M1", side: "buy", amountRaw: "1000" })
+    const hood = buildRequest(
+      "candle_quote",
+      { chain: "hood", mint: "0xA", side: "sell", amountRaw: "5", quoteAsset: "usdg", includeRoundTrip: true },
+      { apiUrl: "https://api.test", apiKey: "cndl_live_k" },
+    )
+    expect(JSON.parse(hood.init.body as string)).toMatchObject({ quoteAsset: "usdg", includeRoundTrip: true })
+  })
+  test("candle_quote needs a key", () => {
+    expect(() =>
+      buildRequest(
+        "candle_quote",
+        { chain: "solana", mint: "M1", side: "buy", amountRaw: "1" },
+        { apiUrl: "https://api.test" },
+      ),
+    ).toThrow(/CANDLE_AGENT_API_KEY/)
+  })
   test("get_market is an unauthenticated GET", () => {
     const r = buildRequest("candle_get_market", { chain: "solana", mint: "M1" }, { apiUrl: "https://api.test" })
     expect(r.url).toBe("https://api.test/api/v1/markets/solana/M1")
@@ -657,6 +684,13 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     expect(d).toContain("coverage.since")
     // Never calls a copy risky, "original" or "fake", and never names the data suppliers.
     expect(d).not.toMatch(/risk|original|fake|hacc|pump\.fun|helius|alchemy/i)
+  })
+
+  test("candle_quote says it needs swap:write and that a read-only key cannot quote", () => {
+    const d = describeOf("candle_quote")
+    expect(d).toContain("swap:write")
+    expect(d).toContain("read-only key")
+    expect(d).toContain("route is present only on some answers")
   })
 
   test("get_market explains routing, provenance and the general quote endpoint", () => {

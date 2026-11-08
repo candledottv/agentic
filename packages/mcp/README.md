@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-ninety tools over stdio, plus four Hyperliquid market reads (ninety-four in all), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+ninety-one tools over stdio, plus four Hyperliquid market reads (ninety-five in all; `candle_quote`, `candle_get_price_history`, `candle_get_trading_wallets` and `candle_get_spendable_balances` are in source only and not in the published 0.10.29), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, and backtest a strategy in hacc's strategy lab without hand-rolling HTTP calls. The five
@@ -39,7 +39,8 @@ environment.
 To mint a key for another agent without keeping it as the CLI profile's working key, run `candle keys create --access write --label agent-one --no-store` after device login. The key is printed once; put it in the intended agent's secret store. `--json` reports `stored: false` and exits 0. The profile's existing working key, prefix and scopes stay unchanged, even when it has no working key. Add `--embedded-wallet allow` at a terminal if this key needs the account's embedded wallet. This is a CLI storage option; it adds no MCP tool and does not change tool counts.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all ninety. An unknown name fails startup with the valid names in the message, rather
+Unset means all ninety-five: the ninety-one tools in the table below plus the four Hyperliquid
+market reads. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -134,6 +135,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_launch_token` | Launch a token on Candle | `POST /api/v1/launch/headless` (or `/dry-run` when `dryRun: true`); with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
 | `candle_get_market` | Get market state | `GET /api/v1/markets/:chain/:mint` | none |
 | `candle_get_price_history` | One Solana token's OHLC bars in USD per token, oldest first (interval 1m-1d, limit 1-500, `to` unix seconds); `source` and `volumeUnit` say whose bars. Hood is refused with its REST route | `GET /api/v1/markets/solana/:mint/candles` | none |
+| `candle_quote` | **Unreleased (source only; not in 0.10.29).** Price a buy or sell before making it; moves nothing. Returns `amountOut` in base units, `venue`, `quoteAsset`, `quoteDecimals`, `quotedAt`; `route` appears only on some answers. `amountRaw` is in base units. Limit 600 a minute per key | `POST /api/v1/trade/agent/quote` | `CANDLE_AGENT_API_KEY` with `swap:write` (a read-only key cannot quote) |
 | `candle_get_feed` | Get a token feed (`finalstretch`: at most the 200 most complete; `where` on `progress` narrows it) | `GET /api/v1/markets/feed?bucket=...` | none |
 | `candle_token_edit` | As the token's creator, set Candle's copy of its description and links; an unknown `socials` key is refused locally. Needs a `launch:write` key from the launching account; reuse `idempotencyKey` to retry. Off until the deployment switches it on (503 `METADATA_EDIT_DISABLED`) | `PATCH /api/v1/tokens/:chain/:mint/metadata` | `x-api-key` |
 | `candle_token_history` | A token's metadata edits, newest first, with the previous values | `GET /api/v1/tokens/:chain/:mint/metadata/history?limit=...&cursor=...` | none |
@@ -266,7 +268,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-ninety tools:
+ninety-one tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.

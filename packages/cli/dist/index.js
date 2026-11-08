@@ -45064,6 +45064,26 @@ function buildRequest(name, args, cfg) {
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
+    case "candle_quote": {
+      const apiKey = requireApiKey2(cfg);
+      const { chain: chain2, mint, side, amountRaw, quoteAsset, poolKey, includeRoundTrip } = args;
+      return {
+        url: `${base2}/api/v1/trade/agent/quote`,
+        init: {
+          method: "POST",
+          headers: jsonHeaders(apiKey),
+          body: JSON.stringify({
+            chain: chain2,
+            mint,
+            side,
+            amountRaw,
+            ...quoteAsset !== undefined && quoteAsset !== "" ? { quoteAsset } : {},
+            ...poolKey !== undefined ? { poolKey } : {},
+            ...includeRoundTrip !== undefined ? { includeRoundTrip } : {}
+          })
+        }
+      };
+    }
     case "candle_get_price_history": {
       const { chain: chain2, mint, interval, limit, to } = args;
       const query2 = new URLSearchParams;
@@ -45628,6 +45648,12 @@ function registerToolSubset(server, options) {
     description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch));
+  register("candle_quote", {
+    title: "Quote a trade",
+    description: "Price a buy or sell before making it. Moves nothing. Needs an API key with the swap:write scope: a read-only key (account:read) is refused, so use candle_get_market for state instead. " + "Returns amountOut (base units), venue, quoteAsset, quoteDecimals and quotedAt; Hood answers also carry fee and price impact. " + "route is present only on some answers, so do not assume it. A quote is a snapshot (Hood quotes are cached for 10 seconds), not a promise of the fill. " + "Limited to 600 quotes a minute per key, and counted against the key's own limit. Pass amountRaw in base units; candle_trade and candle_swap take decimals.",
+    inputSchema: quoteShape,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async (args) => callAndRelay("candle_quote", args, getConfig(), doFetch));
   register("candle_token_forensics", {
     title: "Token forensics",
     description: "Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer; when no developer is on chain, deployer.attribution names the launchpad or issuer instead, e.g. launched via stonk.fun or issued by xStocks), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), same-funder insider share, same-funder deployer cluster, and safety.summary with six sourced flags (mintAuthority, freezeAuthority, tokenExtensions, lpLock, sellability, liquidityDrain). Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. deployer.priorLaunches is counted (pump.fun curves for a curve creator; record.count says the source); deployer.launcher is the wallet that sent the launch, often a launch tool's signer, never the developer; launch.deployerLaunches is that wallet's inclusive informational count, never a warning. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.\n\nMARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed, and any Solana mint Jupiter's index knows, now answers with a partial report instead. On Hood, a token Candle did not launch names its launch account (deployer.method cvc_launch_account) for pons.family and pools.trade launches, with no record of earlier coins; other Hood launchpads return no developer.",
@@ -46160,7 +46186,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, getMarketShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
 var init_tools = __esm(() => {
   init_zod();
   init_client2();
@@ -46189,6 +46215,7 @@ var init_tools = __esm(() => {
   TOOL_NAMES = [
     "candle_launch_token",
     "candle_get_market",
+    "candle_quote",
     "candle_get_feed",
     "candle_vamp_candidates",
     "candle_token_events",
@@ -46296,6 +46323,15 @@ var init_tools = __esm(() => {
   getMarketShape = {
     chain: exports_external.string().describe('"solana" or "hood"'),
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)")
+  };
+  quoteShape = {
+    chain: exports_external.enum(["solana", "hood"]),
+    mint: exports_external.string().describe("Token mint (solana) or contract address (hood)"),
+    side: exports_external.enum(["buy", "sell"]),
+    amountRaw: exports_external.string().describe("Positive integer in base units: the quote asset's for a buy, the token's for a sell"),
+    quoteAsset: exports_external.string().optional().describe('Asset to price in, e.g. "sol" or "usdc" on Solana, "eth" or "usdg" on Hood'),
+    poolKey: exports_external.unknown().optional().describe("Hood only: a pool hint for a pool nobody has indexed yet"),
+    includeRoundTrip: exports_external.boolean().optional().describe("Hood only: also return the buy-then-sell cost in basis points")
   };
   priceHistoryShape = {
     chain: exports_external.string().optional().describe('"solana" (the default). Hood is refused with the REST route that serves it'),
@@ -78041,6 +78077,7 @@ var READ = { class: "read" };
 var card = (kind, idKey = "coreOpId") => ({ class: "card", kind, idKey });
 var TOOL_CLASSES = {
   candle_get_market: READ,
+  candle_quote: READ,
   candle_get_feed: READ,
   candle_vamp_candidates: READ,
   candle_token_events: READ,
@@ -94201,6 +94238,7 @@ var MCP_TOOL_NAMES = [
   "candle_launch_token",
   "candle_launch_and_seed",
   "candle_get_market",
+  "candle_quote",
   "candle_get_feed",
   "candle_vamp_candidates",
   "candle_token_events",

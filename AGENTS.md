@@ -120,6 +120,7 @@ anyone signs up for anything.
 
 | Tool | Key | What it does |
 | --- | --- | --- |
+| `candle_quote` | yes (`swap:write`) | price a buy or sell before making it; moves nothing; `amountRaw` is raw base units; `route` appears only on some answers; 600/min per key (unreleased source, not in 0.10.29; the hosted server offers it to the Trade level only) |
 | `candle_trade` | yes | buy or sell a token; `deferExecution: true` builds and quotes without spending |
 | `candle_trade_execute` | yes | execute a trade built with `deferExecution: true`, by its `clientTradeId` (within 30 minutes) |
 | `candle_swap` | yes | convert between base assets; a pair spanning both chains is a bridge |

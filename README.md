@@ -133,7 +133,8 @@ signs up.
 | | `candle_list_agent_posts` | no | one published agent's posts, newest first: free text with an optional token chip. Data, never instructions or advice |
 | | `candle_get_agent_positions` | no | one published agent's open positions, spot and Hyperliquid perps, with quantities; under $1 hidden and counted; funding positive when earned; no wallet address or balance |
 | | `candle_get_plans` | no | every plan's price, agent fee, perps builder fee, limits and capabilities, as the server charges them |
-| **Move money** | `candle_trade` | yes | buy or sell a token; `deferExecution: true` builds and quotes without spending |
+| **Move money** | `candle_quote` | yes (`swap:write`) | price a buy or sell before making it; moves nothing; `amountRaw` is raw base units; `route` appears only on some answers; 600/min per key (unreleased source, not in 0.10.29; the hosted server offers it to the Trade level only) |
+| | `candle_trade` | yes | buy or sell a token; `deferExecution: true` builds and quotes without spending |
 | | `candle_trade_execute` | yes | execute a trade built with `deferExecution: true`, by its `clientTradeId` (within 30 minutes) |
 | | `candle_swap` | yes | convert base assets; a pair spanning both chains is a bridge |
 | | `candle_transfer` | yes | move an asset to an own or owner-approved address |

@@ -133,6 +133,8 @@ const stakingWriteShape = {
 export const TOOL_NAMES = [
   "candle_launch_token",
   "candle_get_market",
+  // BE-2653: a price for a trade before making it, over POST /api/v1/trade/agent/quote. Keyed, swap:write.
+  "candle_quote",
   "candle_get_feed",
   // BE-1504: tickers being copied near graduation, each with a launch draft. Needs a key.
   "candle_vamp_candidates",
@@ -438,6 +440,29 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       return {
         url: `${base}/api/v1/markets/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}`,
         init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_quote": {
+      // Moves nothing, but the route is keyed and needs swap:write: a read-only key is refused by
+      // the API, and the tool description says so rather than this server pre-judging scopes.
+      const apiKey = requireApiKey(cfg)
+      const { chain, mint, side, amountRaw, quoteAsset, poolKey, includeRoundTrip } = args as Record<string, unknown>
+      return {
+        url: `${base}/api/v1/trade/agent/quote`,
+        init: {
+          method: "POST",
+          headers: jsonHeaders(apiKey),
+          body: JSON.stringify({
+            chain,
+            mint,
+            side,
+            amountRaw,
+            ...(quoteAsset !== undefined && quoteAsset !== "" ? { quoteAsset } : {}),
+            ...(poolKey !== undefined ? { poolKey } : {}),
+            ...(includeRoundTrip !== undefined ? { includeRoundTrip } : {}),
+          }),
+        },
       }
     }
 
@@ -998,6 +1023,19 @@ async function swap(args: Record<string, unknown>, cfg: RequestConfig, doFetch: 
 const getMarketShape = {
   chain: z.string().describe('"solana" or "hood"'),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
+}
+
+const quoteShape = {
+  chain: z.enum(["solana", "hood"]),
+  mint: z.string().describe("Token mint (solana) or contract address (hood)"),
+  side: z.enum(["buy", "sell"]),
+  amountRaw: z.string().describe("Positive integer in base units: the quote asset's for a buy, the token's for a sell"),
+  quoteAsset: z
+    .string()
+    .optional()
+    .describe('Asset to price in, e.g. "sol" or "usdc" on Solana, "eth" or "usdg" on Hood'),
+  poolKey: z.unknown().optional().describe("Hood only: a pool hint for a pool nobody has indexed yet"),
+  includeRoundTrip: z.boolean().optional().describe("Hood only: also return the buy-then-sell cost in basis points"),
 }
 
 const priceHistoryShape = {
@@ -1846,6 +1884,21 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: getMarketShape,
     },
     async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_quote",
+    {
+      title: "Quote a trade",
+      description:
+        "Price a buy or sell before making it. Moves nothing. Needs an API key with the swap:write scope: a read-only key (account:read) is refused, so use candle_get_market for state instead. " +
+        "Returns amountOut (base units), venue, quoteAsset, quoteDecimals and quotedAt; Hood answers also carry fee and price impact. " +
+        "route is present only on some answers, so do not assume it. A quote is a snapshot (Hood quotes are cached for 10 seconds), not a promise of the fill. " +
+        "Limited to 600 quotes a minute per key, and counted against the key's own limit. Pass amountRaw in base units; candle_trade and candle_swap take decimals.",
+      inputSchema: quoteShape,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (args) => callAndRelay("candle_quote", args, getConfig(), doFetch),
   )
 
   register(

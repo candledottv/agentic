@@ -50,6 +50,7 @@ export const MCP_TOOL_NAMES = [
   "candle_launch_token",
   "candle_launch_and_seed",
   "candle_get_market",
+  "candle_quote",
   "candle_get_feed",
   "candle_vamp_candidates",
   "candle_token_events",
