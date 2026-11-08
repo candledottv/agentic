@@ -6198,7 +6198,8 @@ var PLAN_CAPABILITY_LABELS = {
   createLinkedWallets: "Create linked wallets",
   importLinkedWallets: "Import linked wallets",
   limitOrders: "Limit orders",
-  quant: "Quant deep analyses (Max)"
+  quant: "Quant deep analyses (Max)",
+  strategyLab: "Strategy lab (saved strategies stay Max)"
 };
 var PLAN_LABELS = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
 function planLabel(plan) {
@@ -6227,6 +6228,9 @@ function planTableRows(table) {
     row("Uploads per minute", (e) => count(e.limits.uploadsPerMin)),
     row("Linked wallets", (e) => count(e.limits.linkedWallets))
   ];
+  if (plans.some((e) => typeof e.limits.labReplaysPerDay === "number")) {
+    rows.push(row("Strategy lab replays", (e) => typeof e.limits.labReplaysPerDay === "number" ? `${count(e.limits.labReplaysPerDay)} a day` : "-"));
+  }
   const known = Object.keys(PLAN_CAPABILITY_LABELS);
   const served = new Set;
   for (const entry of plans)

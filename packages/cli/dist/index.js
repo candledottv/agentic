@@ -44634,6 +44634,9 @@ function planTableRows(table) {
     row2("Uploads per minute", (e) => count(e.limits.uploadsPerMin)),
     row2("Linked wallets", (e) => count(e.limits.linkedWallets))
   ];
+  if (plans.some((e) => typeof e.limits.labReplaysPerDay === "number")) {
+    rows.push(row2("Strategy lab replays", (e) => typeof e.limits.labReplaysPerDay === "number" ? `${count(e.limits.labReplaysPerDay)} a day` : "-"));
+  }
   const known = Object.keys(PLAN_CAPABILITY_LABELS);
   const served = new Set;
   for (const entry of plans)
@@ -44678,7 +44681,8 @@ var init_plans = __esm(() => {
     createLinkedWallets: "Create linked wallets",
     importLinkedWallets: "Import linked wallets",
     limitOrders: "Limit orders",
-    quant: "Quant deep analyses (Max)"
+    quant: "Quant deep analyses (Max)",
+    strategyLab: "Strategy lab (saved strategies stay Max)"
   };
   PLAN_LABELS = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
 });
@@ -101789,7 +101793,8 @@ var PLAN_CAPABILITY_LABELS2 = {
   createLinkedWallets: "Create linked wallets",
   importLinkedWallets: "Import linked wallets",
   limitOrders: "Limit orders",
-  quant: "Quant deep analyses (Max)"
+  quant: "Quant deep analyses (Max)",
+  strategyLab: "Strategy lab (saved strategies stay Max)"
 };
 var PLAN_LABELS2 = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
 function planLabel2(plan2) {
@@ -101818,6 +101823,9 @@ function planTableRows2(table) {
     row2("Uploads per minute", (e) => count2(e.limits.uploadsPerMin)),
     row2("Linked wallets", (e) => count2(e.limits.linkedWallets))
   ];
+  if (plans.some((e) => typeof e.limits.labReplaysPerDay === "number")) {
+    rows.push(row2("Strategy lab replays", (e) => typeof e.limits.labReplaysPerDay === "number" ? `${count2(e.limits.labReplaysPerDay)} a day` : "-"));
+  }
   const known = Object.keys(PLAN_CAPABILITY_LABELS2);
   const served = new Set;
   for (const entry of plans)

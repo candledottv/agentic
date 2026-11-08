@@ -30,6 +30,8 @@ export interface PlanLimits {
     uploadsPerMin: number;
     /** Linked wallets the account may have active at once. */
     linkedWallets: number;
+    /** Strategy lab replays a day. Display only: hacc enforces the cap. */
+    labReplaysPerDay?: number;
 }
 /** What a plan can do, one flag per gate the API enforces (PL-ED-14). */
 export interface PlanCapabilities {
@@ -48,6 +50,8 @@ export interface PlanCapabilities {
     limitOrders: boolean;
     /** Max-level Quant: the deep `run_analysis` studies. Pro also has Quant, on Telegram and in Candle, but by its plan name, not this flag. */
     quant: boolean;
+    /** Strategy lab: Max always; Pro only when the deployment has opened it. Saved strategies stay Max. */
+    strategyLab: boolean;
     /** Base-pair swaps and base-asset bridges between the key's own wallets carry no Candle fee. A bridge also needs its own deployment switch. */
     freeBaseTransfers: boolean;
 }

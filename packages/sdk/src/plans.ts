@@ -33,6 +33,8 @@ export interface PlanLimits {
   uploadsPerMin: number
   /** Linked wallets the account may have active at once. */
   linkedWallets: number
+  /** Strategy lab replays a day. Display only: hacc enforces the cap. */
+  labReplaysPerDay?: number
 }
 
 /** What a plan can do, one flag per gate the API enforces (PL-ED-14). */
@@ -52,6 +54,8 @@ export interface PlanCapabilities {
   limitOrders: boolean
   /** Max-level Quant: the deep `run_analysis` studies. Pro also has Quant, on Telegram and in Candle, but by its plan name, not this flag. */
   quant: boolean
+  /** Strategy lab: Max always; Pro only when the deployment has opened it. Saved strategies stay Max. */
+  strategyLab: boolean
   /** Base-pair swaps and base-asset bridges between the key's own wallets carry no Candle fee. A bridge also needs its own deployment switch. */
   freeBaseTransfers: boolean
 }
@@ -104,6 +108,7 @@ export const PLAN_CAPABILITY_LABELS: Record<keyof PlanCapabilities, string> = {
   importLinkedWallets: "Import linked wallets",
   limitOrders: "Limit orders",
   quant: "Quant deep analyses (Max)",
+  strategyLab: "Strategy lab (saved strategies stay Max)",
 }
 
 const PLAN_LABELS: Record<PlanName, string> = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" }
@@ -145,6 +150,14 @@ export function planTableRows(table: PlanTable): { headers: string[]; rows: stri
     row("Uploads per minute", (e) => count(e.limits.uploadsPerMin)),
     row("Linked wallets", (e) => count(e.limits.linkedWallets)),
   ]
+  // An older server does not serve the lab cap; its table keeps the rows it had.
+  if (plans.some((e) => typeof e.limits.labReplaysPerDay === "number")) {
+    rows.push(
+      row("Strategy lab replays", (e) =>
+        typeof e.limits.labReplaysPerDay === "number" ? `${count(e.limits.labReplaysPerDay)} a day` : "-",
+      ),
+    )
+  }
   const known = Object.keys(PLAN_CAPABILITY_LABELS) as Array<keyof PlanCapabilities>
   const served = new Set<string>()
   for (const entry of plans) for (const key of Object.keys(entry.capabilities ?? {})) served.add(key)
