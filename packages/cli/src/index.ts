@@ -24,7 +24,7 @@ import { realpathSync } from "node:fs"
 import { chmod, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises"
 import { homedir, hostname } from "node:os"
 import { pathToFileURL } from "node:url"
-import { browserUrl, resolveApiUrl } from "./client"
+import { browserUrl, resolveApiUrl, setOwnerConfirmHooks } from "./client"
 import { agentPositions } from "./commands/agent-positions"
 import { agentPost } from "./commands/agent-post"
 import { agentProfile } from "./commands/agent-profile"
@@ -150,6 +150,12 @@ import { ConfigDirUnwritableError } from "./file-lock"
 import { verifyProfileAccount } from "./guard"
 import { renderTopic, renderTopLevel } from "./help"
 import { resolveSecretStore, SECRETS_SERVICE, SecretStoreLockedError, SecretStoreReadError } from "./keychain"
+import {
+  cliOwnerConfirmHooks,
+  EXIT_OWNER_CONFIRM_PENDING,
+  OWN_NO_WAIT_COMMANDS,
+  type OwnerConfirmRunState,
+} from "./owner-confirm"
 import { pluginInvocation, realRunPlugin } from "./plugins"
 import { terminalStyle } from "./presentation"
 import { writeOwnerOnlyFile } from "./private-file"
@@ -608,7 +614,48 @@ export const NEVER_GUARDED = new Set([
   "tui",
 ])
 
+/**
+ * BE-2948 (owner confirm 7.1): `--open` and `--no-wait` belong to the browser confirm, for any command that
+ * reaches a gated owner step. Taken out of argv before the command parses it, except for the commands that
+ * already own a `--no-wait` of their own (`tee signer new`, `lab`, `wallets authorize`).
+ */
+function extractOwnerConfirmFlags(argv: string[]): { argv: string[]; open: boolean; noWait: boolean } {
+  const end = argv.indexOf("--")
+  const head = end === -1 ? argv : argv.slice(0, end)
+  const tail = end === -1 ? [] : argv.slice(end)
+  const words = head.filter((arg) => !arg.startsWith("-"))
+  const command = words[0] === "candle" ? words.slice(1) : words
+  const ownsNoWait = OWN_NO_WAIT_COMMANDS.some((prefix) => prefix.every((word, i) => command[i] === word))
+  const open = head.includes("--open")
+  const noWait = !ownsNoWait && head.includes("--no-wait")
+  const kept = head.filter((arg) => arg !== "--open" && (ownsNoWait || arg !== "--no-wait"))
+  return { argv: [...kept, ...tail], open, noWait }
+}
+
 export async function run(argv: string[], deps: Deps): Promise<number> {
+  const confirmFlags = extractOwnerConfirmFlags(argv)
+  argv = confirmFlags.argv
+  const confirmState: OwnerConfirmRunState = { pendingWithoutWait: false }
+  const jsonForConfirm = (() => {
+    const parsed = extractGlobalFlags(argv)
+    return !("error" in parsed) && parsed.flags.json
+  })()
+  const previousConfirmHooks = setOwnerConfirmHooks(
+    cliOwnerConfirmHooks(
+      deps,
+      { json: jsonForConfirm, wait: !confirmFlags.noWait, open: confirmFlags.open },
+      confirmState,
+    ),
+  )
+  try {
+    const code = await runWithConfirm(argv, deps)
+    return confirmState.pendingWithoutWait && code !== 0 ? EXIT_OWNER_CONFIRM_PENDING : code
+  } finally {
+    setOwnerConfirmHooks(previousConfirmHooks)
+  }
+}
+
+async function runWithConfirm(argv: string[], deps: Deps): Promise<number> {
   const cosmetic = extractGlobalFlags(argv)
   if (!("error" in cosmetic)) {
     deps = {

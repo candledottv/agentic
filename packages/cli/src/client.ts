@@ -81,6 +81,83 @@ export interface ApiRequestOptions {
    * from `auth` and `credentials`.
    */
   headers?: Record<string, string>
+  /**
+   * BE-2948 (owner confirm, spec 2026-11-09-owner-confirm-device-token-design.md 7.1): how a device-token
+   * request that answers `403 OWNER_CONFIRM_REQUIRED` is shown and waited on. Absent, the process-wide
+   * hooks the CLI installed for this run apply ({@link setOwnerConfirmHooks}); with neither, the 403 comes
+   * back as it is. `candle core` passes its own, which publish an event to the Harness instead of printing.
+   */
+  ownerConfirm?: OwnerConfirmHooks
+}
+
+/** What `error.ownerConfirm` carries on a `403 OWNER_CONFIRM_REQUIRED` (the API's 5.1). */
+export interface OwnerConfirmChallenge {
+  confirmId: string
+  userCode: string
+  verificationUri: string
+  verificationUriComplete: string
+  expiresIn: number
+  interval: number
+  step: string
+  summary: string
+  reason: string
+}
+
+export type OwnerConfirmOutcome = "approved" | "denied" | "expired" | "cancelled"
+
+/** The client's side of the owner confirm: who shows the challenge, and whether to wait. */
+export interface OwnerConfirmHooks {
+  /** Shows the summary, URL and code (stderr, or a Harness event). Never shows `confirmId`. */
+  pending(challenge: OwnerConfirmChallenge): void
+  /** The final outcome of one challenge, after the poll ends. */
+  settled?(challenge: OwnerConfirmChallenge, outcome: OwnerConfirmOutcome): void
+  /** False for `--no-wait`: print and stop, without polling. */
+  wait: boolean
+  sleep(ms: number): Promise<void>
+  now(): number
+  /** Set by a cancelled Harness modal: the poll stops and the request just expires. */
+  cancelled?(): boolean
+}
+
+/** The redeem header (API 5.3). */
+export const OWNER_CONFIRM_HEADER = "Candle-Owner-Confirm"
+/** CLI-local codes for the ends of a confirm that changed nothing. */
+export const OWNER_CONFIRM_DENIED = "OWNER_CONFIRM_DENIED"
+export const OWNER_CONFIRM_EXPIRED = "OWNER_CONFIRM_EXPIRED"
+export const OWNER_CONFIRM_CANCELLED = "OWNER_CONFIRM_CANCELLED"
+
+let installedOwnerConfirmHooks: OwnerConfirmHooks | undefined
+
+/** Installs the hooks for this run and returns the previous ones, so a caller can restore them. */
+export function setOwnerConfirmHooks(hooks: OwnerConfirmHooks | undefined): OwnerConfirmHooks | undefined {
+  const previous = installedOwnerConfirmHooks
+  installedOwnerConfirmHooks = hooks
+  return previous
+}
+
+/** The challenge a failed result carries, or null. */
+export function ownerConfirmChallengeOf(result: ApiResult): OwnerConfirmChallenge | null {
+  if (result.ok || result.status !== 403 || result.code !== "OWNER_CONFIRM_REQUIRED") return null
+  const error = (result.raw as { error?: { ownerConfirm?: unknown } } | undefined)?.error
+  const oc = error?.ownerConfirm as Record<string, unknown> | undefined
+  if (!oc || typeof oc !== "object") return null
+  const str = (k: string) => (typeof oc[k] === "string" ? (oc[k] as string) : null)
+  const num = (k: string) => (typeof oc[k] === "number" && Number.isFinite(oc[k]) ? (oc[k] as number) : null)
+  const confirmId = str("confirmId")
+  const userCode = str("userCode")
+  const verificationUriComplete = str("verificationUriComplete")
+  if (!confirmId || !userCode || !verificationUriComplete) return null
+  return {
+    confirmId,
+    userCode,
+    verificationUri: str("verificationUri") ?? verificationUriComplete,
+    verificationUriComplete,
+    expiresIn: num("expiresIn") ?? 300,
+    interval: Math.max(1, num("interval") ?? 5),
+    step: str("step") ?? "",
+    summary: str("summary") ?? "",
+    reason: str("reason") ?? "required",
+  }
 }
 
 /** Trims trailing slashes so joining with a path never produces (or is missing) a `/`. */
@@ -268,7 +345,14 @@ export class CrossOriginRedirectError extends Error {
  * Matched case-insensitively because the credentials are written lowercase while the x402
  * client sends its headers with their wire casing through `ApiRequestOptions.headers`.
  */
-const PROTECTED_REQUEST_HEADERS = new Set(["x-api-key", "authorization", "payment-signature", "sign-in-with-x"])
+const PROTECTED_REQUEST_HEADERS = new Set([
+  "x-api-key",
+  "authorization",
+  "payment-signature",
+  "sign-in-with-x",
+  // BE-2948: an owner-confirm grant is good for one already-approved request; never forward it.
+  "candle-owner-confirm",
+])
 
 /**
  * fetch for a request that carries a header a redirect must not forward: the API key, the device
@@ -401,7 +485,91 @@ function headersOf(response: Response): Record<string, string> | undefined {
   return out
 }
 
+/**
+ * Polls `POST /device/confirm/status` at the challenge's interval, adding 5 s after a 429, until the owner
+ * approves or denies, or the window passes. A request the server no longer knows has expired.
+ */
+async function waitForOwnerConfirm(
+  challenge: OwnerConfirmChallenge,
+  opts: ApiRequestOptions,
+  hooks: OwnerConfirmHooks,
+): Promise<OwnerConfirmOutcome> {
+  const deadline = hooks.now() + challenge.expiresIn * 1000
+  let interval = challenge.interval * 1000
+  for (;;) {
+    await hooks.sleep(interval)
+    if (hooks.cancelled?.()) return "cancelled"
+    if (hooks.now() >= deadline) return "expired"
+    const polled = await sendOnce("/api/v1/agent/device/confirm/status", {
+      method: "POST",
+      auth: "device",
+      credentials: opts.credentials,
+      apiUrl: opts.apiUrl,
+      ...(opts.fetch ? { fetch: opts.fetch } : {}),
+      ...(opts.env ? { env: opts.env } : {}),
+      body: { confirmId: challenge.confirmId },
+    })
+    if (polled.ok) {
+      const status = (polled.body as { status?: unknown } | undefined)?.status
+      if (status === "approved" || status === "denied" || status === "expired") return status
+      continue
+    }
+    if (polled.status === 429) {
+      interval += 5000
+      continue
+    }
+    if (polled.status === 404) return "expired"
+    // A network blip or a 5xx: keep polling until the window passes.
+  }
+}
+
+function confirmFailure(result: ApiResult, code: string, message: string): ApiResult {
+  return { ok: false, status: result.status, code, message, raw: result.ok ? result.body : result.raw }
+}
+
+/**
+ * BE-2948 (7.1): the CLI's single HTTP call site, so every device-token request that reaches a gated owner
+ * step gets the confirm flow, whichever command made it. The original request is resent byte for byte (the
+ * same body, the same headers, the same Idempotency-Key) with `Candle-Owner-Confirm`; a second 403 after a
+ * redeem is followed once, and a third ends with the server's message.
+ */
 export async function apiRequest(path: string, opts: ApiRequestOptions): Promise<ApiResult> {
+  const first = await sendOnce(path, opts)
+  const hooks = opts.ownerConfirm ?? installedOwnerConfirmHooks
+  if (opts.auth !== "device" || !hooks) return first
+  let result = first
+  for (let round = 0; round < 2; round++) {
+    const challenge = ownerConfirmChallengeOf(result)
+    if (!challenge) return result
+    hooks.pending(challenge)
+    if (!hooks.wait) {
+      return confirmFailure(
+        result,
+        "OWNER_CONFIRM_REQUIRED",
+        "Not waiting (--no-wait); nothing changed. Run the command without --no-wait and approve while it waits, or make this change in the console.",
+      )
+    }
+    const outcome = await waitForOwnerConfirm(challenge, opts, hooks)
+    hooks.settled?.(challenge, outcome)
+    if (outcome === "denied")
+      return confirmFailure(result, OWNER_CONFIRM_DENIED, "Denied in the browser; nothing changed.")
+    if (outcome === "expired") {
+      return confirmFailure(
+        result,
+        OWNER_CONFIRM_EXPIRED,
+        "The confirmation expired; nothing changed. Run the command again.",
+      )
+    }
+    if (outcome === "cancelled") return confirmFailure(result, OWNER_CONFIRM_CANCELLED, "Cancelled; nothing changed.")
+    result = await sendOnce(path, {
+      ...opts,
+      headers: { ...(opts.headers ?? {}), [OWNER_CONFIRM_HEADER]: challenge.confirmId },
+    })
+  }
+  return result
+}
+
+async function sendOnce(path: string, opts: ApiRequestOptions): Promise<ApiResult> {
   const url = buildUrl(opts.apiUrl, path)
   // The backstop, checked here because this is the CLI's single HTTP call site: a URL can arrive
   // from --api-url, CANDLE_API_URL, a stored profile or a hand-edited config, and validating each

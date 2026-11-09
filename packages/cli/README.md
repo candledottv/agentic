@@ -234,6 +234,17 @@ table above) runs the same check against the trusted root compiled into the bina
 call required. It is also what `install.sh` uses on a machine with neither. Full walkthrough, including the installer script's own signature and the
 transparency log: [Verify a Candle release](https://docs.candle.tv/developers/verify-a-candle-release).
 
+## Browser confirm for owner steps
+
+Where the API has `OWNER_CONFIRM_ENABLED` on, an owner step made with the device token that widens what the account's keys can do also needs one approval in your browser, signed in as the account owner. The API answers `403 OWNER_CONFIRM_REQUIRED` and changes nothing; the CLI then:
+
+1. Prints what you are approving (a summary the server built), `Open <url>` and `Code: XXXX-XXXX` on stderr, with "Only approve if you just ran this command." It opens the browser only with `--open`. Under `--json` it writes one line to stderr instead, `{"ok":false,"pending":true,"code":"OWNER_CONFIRM_REQUIRED","ownerConfirm":{"userCode","verificationUriComplete","expiresIn","step","summary"}}`, and keeps stdout for the final result.
+2. Waits, polling every few seconds. The code expires 5 minutes after it was issued.
+3. When you approve at `/dev/agent/confirm`, sends the identical request again and prints its result. Deny it and the command exits 1 with `Denied in the browser; nothing changed.`; let it expire and it exits 1 with `The confirmation expired; nothing changed. Run the command again.`
+4. With `--no-wait` it prints the code and exits 7 without waiting. The command does not resume later: run it again without `--no-wait`, or make the change in the console.
+
+One approval covers exactly one request, from this device, for this account. The steps that ask for it: `keys create` (every key, a read-only one included), `keys rotate`, `keys access` when it widens, `keys update --embedded-wallet allow`, `auth login --embedded-wallet allow` when it allows the new key the embedded wallet, `keys signer approve` (not `--reject`), `tee rebind` (not the preview), `wallets allow-launch`, `vault promote --to-key` (one approval per wallet), `keys limit` when it raises, clears or changes the window of a transaction limit, `perps thresholds set` and `clear` when they loosen, and `perps reduce-only off`. The Candle Harness shows the same summary, URL and code when its core mints a key. Narrowing steps never ask: revoking or stopping a key, narrowing access, `rotate --finish`, tightening a limit, `reduce-only on`. An older CLI prints the server's message, which carries the URL and code, but cannot finish the step: update the CLI before this is on. A signed-in console session never sees the confirm.
+
 ## The `--json` contract
 
 For agents and scripts, `--json` guarantees: **stdout carries exactly one JSON value** -- the

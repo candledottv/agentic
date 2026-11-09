@@ -17,13 +17,16 @@
   "categories": {
     "auth": {
       "retryable": false,
-      "action": "Fix the credential. Run `candle doctor` to tell 'no key' apart from 'wrong environment' and 'revoked'.",
+      "action": "Fix the credential. Run `candle doctor` to tell 'no key' apart from 'wrong environment' and 'revoked'. OWNER_CONFIRM_REQUIRED is the exception and is retryable: a device-token owner step that widens authority needs the account owner to approve error.ownerConfirm.verificationUriComplete in a signed-in browser; then resend the identical request with Candle-Owner-Confirm: <confirmId>. The Candle CLI does this for you. Nothing changed until then.",
       "codes": [
         "UNAUTHORIZED",
         "KEY_EXPIRED",
         "DEVICE_TOKEN_INVALID",
         "DEVICE_CODE_EXPIRED",
         "DEVICE_CODE_NOT_FOUND",
+        "OWNER_CONFIRM_REQUIRED",
+        "OWNER_CONFIRM_NOT_FOUND",
+        "OWNER_CONFIRM_EXPIRED",
         "CONNECT_REQUEST_EXPIRED",
         "CONNECT_REQUEST_NOT_FOUND",
         "CONNECTION_NOT_FOUND",

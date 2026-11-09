@@ -41,7 +41,7 @@ import { closeSync, writeSync } from "node:fs"
 import { join } from "node:path"
 import { scopesForPreset } from "../agent-key-access"
 import { parseArgs } from "../args"
-import { apiRequest } from "../client"
+import { apiRequest, type OwnerConfirmHooks } from "../client"
 import { AgentProfiles } from "../core/agent-profiles"
 import { type Card, CardBook } from "../core/cards"
 import { coreLocalTools } from "../core/core-local-tools"
@@ -75,6 +75,7 @@ import type { TransferChain } from "../core/transfer-params"
 import { DestinationHistory, registerTransferHandlers, type ServerDestination } from "../core/transfers"
 import type { CommandContext } from "../deps"
 import { createEvmRpc, DEFAULT_HOOD_RPC_URL, EVM_RPC_URL_ENV, resolveEvmRpcUrl } from "../evm-lite"
+import { coreOwnerConfirmHooks } from "../owner-confirm"
 import { apiKeyPrefix, candleEnvironment, profileSecretRef } from "../profiles"
 import { createQuantKeyClient } from "../quant"
 import { writeLocalFailure, writeUsageFailure } from "../render"
@@ -166,6 +167,21 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
 
   let journal: Journal | undefined
   let server: CoreServer | undefined
+  /**
+   * BE-2948 (owner confirm 7.2): both key mints report a pending confirm to the Harness as an
+   * `owner_confirm` event, poll and resend through the client flow, then publish the outcome. A cancel
+   * from the Harness (`ownerConfirm.cancel`) stops the poll; the request then just expires.
+   */
+  const confirmCancelled = new Set<string>()
+  const coreOwnerConfirm = (mint: "withdraw" | "read"): OwnerConfirmHooks =>
+    coreOwnerConfirmHooks(mint, {
+      sleep: (ms) => deps.sleep(ms),
+      now: () => deps.now(),
+      publish: (data) => {
+        server?.events.publish("owner_confirm", data)
+      },
+      cancelled: confirmCancelled,
+    })
   let cardBook: CardBook | undefined
   let quant: QuantService | undefined
   let signals: SignalService | undefined
@@ -294,6 +310,7 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
           apiUrl: ctx.apiUrl,
           fetch: deps.fetch,
           env: deps.env,
+          ownerConfirm: coreOwnerConfirm("withdraw"),
           body: {
             scopes: withdrawScopes,
             label: "Candle TUI (withdraw)",
@@ -347,6 +364,7 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
           apiUrl: ctx.apiUrl,
           fetch: deps.fetch,
           env: deps.env,
+          ownerConfirm: coreOwnerConfirm("read"),
           body: { scopes: ["account:read"], label: "Candle TUI (read)", embeddedWallet: "denied" },
         })
         const key = result.ok ? (result.body as { key?: unknown }).key : undefined
@@ -453,6 +471,11 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
       quantOn: () => agentProfiles.quantOn(),
     })
     registerQuantHandlers(server, quant)
+    server.handle("ownerConfirm.cancel", async (params) => {
+      const mint = params.mint === "withdraw" || params.mint === "read" ? params.mint : undefined
+      for (const name of mint ? [mint] : ["withdraw", "read"]) confirmCancelled.add(name)
+      return { cancelled: true }
+    })
     registerToolFace(server, {
       cards,
       trading,

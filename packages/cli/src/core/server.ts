@@ -87,6 +87,8 @@ export const METHOD_ROLES: Readonly<Record<string, { view: Access; harness: Acce
   "quant.send": { view: "yes", harness: "no" },
   "quant.cancel": { view: "yes", harness: "no" },
   "quant.history": { view: "yes", harness: "no" },
+  // BE-2948 (owner confirm 7.2): the Harness's cancel stops a key mint's poll; the request just expires.
+  "ownerConfirm.cancel": { view: "yes", harness: "no" },
 }
 
 /** Longest socket path every supported platform accepts (macOS `sun_path` is 104 bytes with the NUL). */

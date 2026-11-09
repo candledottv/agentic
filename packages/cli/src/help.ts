@@ -202,6 +202,16 @@ export const GLOBAL_FLAGS: Row[] = [
     invocation: "--no-verify-account",
     description: "Skip the check that the stored key belongs to the profile's account",
   },
+  {
+    invocation: "--open",
+    description:
+      "Owner steps that need a browser confirm (OWNER_CONFIRM_REQUIRED): also open the console page. The URL and code are printed either way",
+  },
+  {
+    invocation: "--no-wait",
+    description:
+      "Owner steps that need a browser confirm: print the URL and code and exit 7 without waiting; nothing changes. (tee signer new, lab and wallets authorize keep their own --no-wait.)",
+  },
   { invocation: "--help, -h", description: "Show help; after a command word, that command's help" },
   { invocation: "--version, -v", description: "Show the CLI version" },
 ]

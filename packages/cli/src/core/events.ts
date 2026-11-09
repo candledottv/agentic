@@ -46,6 +46,9 @@ export function topicAllowed(topic: string, role: Role): { known: boolean; allow
   // S5 (BE-1737): Quant is view only (Q-I2); a harness reads the "All" tape, never the watchlist (Q-I10).
   if (topic === "quant" || topic === "signals:mine") return { known: true, allowed: role === "view" }
   if (topic === "signals") return { known: true, allowed: true }
+  // BE-2948 (owner confirm 7.2): the owner's approval code and URL for a key mint, view only, so an agent
+  // harness never sees an approval it could hand to someone else.
+  if (topic === "owner_confirm") return { known: true, allowed: role === "view" }
   return { known: false, allowed: false }
 }
 

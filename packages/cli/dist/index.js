@@ -85,6 +85,37 @@ var __callDispose = (stack, error, hasError) => {
 };
 
 // src/client.ts
+function setOwnerConfirmHooks(hooks) {
+  const previous = installedOwnerConfirmHooks;
+  installedOwnerConfirmHooks = hooks;
+  return previous;
+}
+function ownerConfirmChallengeOf(result) {
+  if (result.ok || result.status !== 403 || result.code !== "OWNER_CONFIRM_REQUIRED")
+    return null;
+  const error = result.raw?.error;
+  const oc = error?.ownerConfirm;
+  if (!oc || typeof oc !== "object")
+    return null;
+  const str = (k) => typeof oc[k] === "string" ? oc[k] : null;
+  const num = (k) => typeof oc[k] === "number" && Number.isFinite(oc[k]) ? oc[k] : null;
+  const confirmId = str("confirmId");
+  const userCode = str("userCode");
+  const verificationUriComplete = str("verificationUriComplete");
+  if (!confirmId || !userCode || !verificationUriComplete)
+    return null;
+  return {
+    confirmId,
+    userCode,
+    verificationUri: str("verificationUri") ?? verificationUriComplete,
+    verificationUriComplete,
+    expiresIn: num("expiresIn") ?? 300,
+    interval: Math.max(1, num("interval") ?? 5),
+    step: str("step") ?? "",
+    summary: str("summary") ?? "",
+    reason: str("reason") ?? "required"
+  };
+}
 function trimTrailingSlashes(url) {
   return url.trim().replace(/\/+$/, "");
 }
@@ -241,7 +272,72 @@ function headersOf(response) {
   });
   return out;
 }
+async function waitForOwnerConfirm(challenge, opts, hooks) {
+  const deadline = hooks.now() + challenge.expiresIn * 1000;
+  let interval = challenge.interval * 1000;
+  for (;; ) {
+    await hooks.sleep(interval);
+    if (hooks.cancelled?.())
+      return "cancelled";
+    if (hooks.now() >= deadline)
+      return "expired";
+    const polled = await sendOnce("/api/v1/agent/device/confirm/status", {
+      method: "POST",
+      auth: "device",
+      credentials: opts.credentials,
+      apiUrl: opts.apiUrl,
+      ...opts.fetch ? { fetch: opts.fetch } : {},
+      ...opts.env ? { env: opts.env } : {},
+      body: { confirmId: challenge.confirmId }
+    });
+    if (polled.ok) {
+      const status = polled.body?.status;
+      if (status === "approved" || status === "denied" || status === "expired")
+        return status;
+      continue;
+    }
+    if (polled.status === 429) {
+      interval += 5000;
+      continue;
+    }
+    if (polled.status === 404)
+      return "expired";
+  }
+}
+function confirmFailure(result, code, message) {
+  return { ok: false, status: result.status, code, message, raw: result.ok ? result.body : result.raw };
+}
 async function apiRequest(path, opts) {
+  const first = await sendOnce(path, opts);
+  const hooks = opts.ownerConfirm ?? installedOwnerConfirmHooks;
+  if (opts.auth !== "device" || !hooks)
+    return first;
+  let result = first;
+  for (let round = 0;round < 2; round++) {
+    const challenge = ownerConfirmChallengeOf(result);
+    if (!challenge)
+      return result;
+    hooks.pending(challenge);
+    if (!hooks.wait) {
+      return confirmFailure(result, "OWNER_CONFIRM_REQUIRED", "Not waiting (--no-wait); nothing changed. Run the command without --no-wait and approve while it waits, or make this change in the console.");
+    }
+    const outcome = await waitForOwnerConfirm(challenge, opts, hooks);
+    hooks.settled?.(challenge, outcome);
+    if (outcome === "denied")
+      return confirmFailure(result, OWNER_CONFIRM_DENIED, "Denied in the browser; nothing changed.");
+    if (outcome === "expired") {
+      return confirmFailure(result, OWNER_CONFIRM_EXPIRED, "The confirmation expired; nothing changed. Run the command again.");
+    }
+    if (outcome === "cancelled")
+      return confirmFailure(result, OWNER_CONFIRM_CANCELLED, "Cancelled; nothing changed.");
+    result = await sendOnce(path, {
+      ...opts,
+      headers: { ...opts.headers ?? {}, [OWNER_CONFIRM_HEADER]: challenge.confirmId }
+    });
+  }
+  return result;
+}
+async function sendOnce(path, opts) {
   const url = buildUrl(opts.apiUrl, path);
   const insecure = insecureApiUrlFault(opts.apiUrl, opts.env ?? process.env);
   if (insecure) {
@@ -289,7 +385,7 @@ async function apiRequest(path, opts) {
     ...responseHeaders ? { headers: responseHeaders } : {}
   };
 }
-var DEFAULT_API_URL = "https://api.alpha.candle.tv", ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP", REDIRECT_STATUSES, MAX_REDIRECTS = 5, CrossOriginRedirectError, PROTECTED_REQUEST_HEADERS, latestCliVersionSeen = null;
+var DEFAULT_API_URL = "https://api.alpha.candle.tv", OWNER_CONFIRM_HEADER = "Candle-Owner-Confirm", OWNER_CONFIRM_DENIED = "OWNER_CONFIRM_DENIED", OWNER_CONFIRM_EXPIRED = "OWNER_CONFIRM_EXPIRED", OWNER_CONFIRM_CANCELLED = "OWNER_CONFIRM_CANCELLED", installedOwnerConfirmHooks, ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP", REDIRECT_STATUSES, MAX_REDIRECTS = 5, CrossOriginRedirectError, PROTECTED_REQUEST_HEADERS, latestCliVersionSeen = null;
 var init_client = __esm(() => {
   REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
   CrossOriginRedirectError = class CrossOriginRedirectError extends Error {
@@ -302,7 +398,13 @@ var init_client = __esm(() => {
       this.name = "CrossOriginRedirectError";
     }
   };
-  PROTECTED_REQUEST_HEADERS = new Set(["x-api-key", "authorization", "payment-signature", "sign-in-with-x"]);
+  PROTECTED_REQUEST_HEADERS = new Set([
+    "x-api-key",
+    "authorization",
+    "payment-signature",
+    "sign-in-with-x",
+    "candle-owner-confirm"
+  ]);
 });
 
 // src/args.ts
@@ -76694,6 +76796,14 @@ var GLOBAL_FLAGS = [
     invocation: "--no-verify-account",
     description: "Skip the check that the stored key belongs to the profile's account"
   },
+  {
+    invocation: "--open",
+    description: "Owner steps that need a browser confirm (OWNER_CONFIRM_REQUIRED): also open the console page. The URL and code are printed either way"
+  },
+  {
+    invocation: "--no-wait",
+    description: "Owner steps that need a browser confirm: print the URL and code and exit 7 without waiting; nothing changes. (tee signer new, lab and wallets authorize keep their own --no-wait.)"
+  },
   { invocation: "--help, -h", description: "Show help; after a command word, that command's help" },
   { invocation: "--version, -v", description: "Show the CLI version" }
 ];
@@ -81929,6 +82039,8 @@ function topicAllowed(topic, role) {
     return { known: true, allowed: role === "view" };
   if (topic === "signals")
     return { known: true, allowed: true };
+  if (topic === "owner_confirm")
+    return { known: true, allowed: role === "view" };
   return { known: false, allowed: false };
 }
 
@@ -82165,7 +82277,8 @@ var METHOD_ROLES = {
   "quant.status": { view: "yes", harness: "no" },
   "quant.send": { view: "yes", harness: "no" },
   "quant.cancel": { view: "yes", harness: "no" },
-  "quant.history": { view: "yes", harness: "no" }
+  "quant.history": { view: "yes", harness: "no" },
+  "ownerConfirm.cancel": { view: "yes", harness: "no" }
 };
 var MAX_SOCKET_PATH_BYTES = 103;
 var HELLO_TIMEOUT_MS = 1e4;
@@ -83908,6 +84021,79 @@ async function prepare(params, call2, deps) {
 
 // src/commands/core.ts
 init_evm_lite();
+
+// src/owner-confirm.ts
+init_client();
+var EXIT_OWNER_CONFIRM_PENDING = 7;
+var OWN_NO_WAIT_COMMANDS = [["tee"], ["lab"], ["wallets", "authorize"]];
+function ownerConfirmPendingLine(challenge) {
+  return JSON.stringify({
+    ok: false,
+    pending: true,
+    code: "OWNER_CONFIRM_REQUIRED",
+    ownerConfirm: {
+      userCode: challenge.userCode,
+      verificationUriComplete: challenge.verificationUriComplete,
+      expiresIn: challenge.expiresIn,
+      step: challenge.step,
+      summary: challenge.summary
+    }
+  });
+}
+function cliOwnerConfirmHooks(deps, opts, state) {
+  return {
+    wait: opts.wait,
+    sleep: (ms) => deps.sleep(ms),
+    now: () => deps.now(),
+    pending(challenge) {
+      if (!opts.wait)
+        state.pendingWithoutWait = true;
+      if (opts.json) {
+        deps.stderr.write(`${ownerConfirmPendingLine(challenge)}
+`);
+      } else {
+        const minutes = Math.max(1, Math.round(challenge.expiresIn / 60));
+        deps.stderr.write([
+          `This needs your approval in the browser: ${challenge.summary}`,
+          `Open ${challenge.verificationUriComplete}`,
+          `Code: ${challenge.userCode}`,
+          "Only approve if you just ran this command.",
+          opts.wait ? `Waiting for approval (expires in ${minutes} minute${minutes === 1 ? "" : "s"})...` : ""
+        ].filter(Boolean).join(`
+`).concat(`
+`));
+      }
+      if (opts.open) {
+        const url = browserUrl(challenge.verificationUriComplete);
+        if (url)
+          deps.openBrowser(url);
+      }
+    },
+    settled(_challenge, outcome) {
+      if (!opts.json && outcome === "approved")
+        deps.stderr.write(`Approved. Sending the request again.
+`);
+    }
+  };
+}
+function coreOwnerConfirmHooks(mint, opts) {
+  return {
+    wait: true,
+    sleep: opts.sleep,
+    now: opts.now,
+    cancelled: () => opts.cancelled.has(mint),
+    pending(challenge) {
+      opts.cancelled.delete(mint);
+      const line = JSON.parse(ownerConfirmPendingLine(challenge));
+      opts.publish({ mint, state: "pending", ...line.ownerConfirm });
+    },
+    settled(challenge, outcome) {
+      opts.publish({ mint, state: outcome, step: challenge.step, summary: challenge.summary });
+    }
+  };
+}
+
+// src/commands/core.ts
 init_profiles();
 init_render();
 init_solana_endpoint();
@@ -84040,6 +84226,15 @@ ${USAGE5}`, json);
   }
   let journal;
   let server;
+  const confirmCancelled = new Set;
+  const coreOwnerConfirm = (mint) => coreOwnerConfirmHooks(mint, {
+    sleep: (ms) => deps.sleep(ms),
+    now: () => deps.now(),
+    publish: (data) => {
+      server?.events.publish("owner_confirm", data);
+    },
+    cancelled: confirmCancelled
+  });
   let cardBook;
   let quant;
   let signals;
@@ -84165,6 +84360,7 @@ ${USAGE5}`, json);
           apiUrl: ctx.apiUrl,
           fetch: deps.fetch,
           env: deps.env,
+          ownerConfirm: coreOwnerConfirm("withdraw"),
           body: {
             scopes: withdrawScopes,
             label: "Candle TUI (withdraw)",
@@ -84214,6 +84410,7 @@ ${USAGE5}`, json);
           apiUrl: ctx.apiUrl,
           fetch: deps.fetch,
           env: deps.env,
+          ownerConfirm: coreOwnerConfirm("read"),
           body: { scopes: ["account:read"], label: "Candle TUI (read)", embeddedWallet: "denied" }
         });
         const key = result.ok ? result.body.key : undefined;
@@ -84311,6 +84508,12 @@ ${USAGE5}`, json);
       quantOn: () => agentProfiles.quantOn()
     });
     registerQuantHandlers(server, quant);
+    server.handle("ownerConfirm.cancel", async (params) => {
+      const mint = params.mint === "withdraw" || params.mint === "read" ? params.mint : undefined;
+      for (const name of mint ? [mint] : ["withdraw", "read"])
+        confirmCancelled.add(name);
+      return { cancelled: true };
+    });
     registerToolFace(server, {
       cards,
       trading,
@@ -117088,7 +117291,35 @@ var NEVER_GUARDED = new Set([
   "plugins",
   "tui"
 ]);
+function extractOwnerConfirmFlags(argv) {
+  const end = argv.indexOf("--");
+  const head = end === -1 ? argv : argv.slice(0, end);
+  const tail = end === -1 ? [] : argv.slice(end);
+  const words = head.filter((arg) => !arg.startsWith("-"));
+  const command = words[0] === "candle" ? words.slice(1) : words;
+  const ownsNoWait = OWN_NO_WAIT_COMMANDS.some((prefix) => prefix.every((word3, i) => command[i] === word3));
+  const open8 = head.includes("--open");
+  const noWait = !ownsNoWait && head.includes("--no-wait");
+  const kept = head.filter((arg) => arg !== "--open" && (ownsNoWait || arg !== "--no-wait"));
+  return { argv: [...kept, ...tail], open: open8, noWait };
+}
 async function run2(argv, deps) {
+  const confirmFlags = extractOwnerConfirmFlags(argv);
+  argv = confirmFlags.argv;
+  const confirmState = { pendingWithoutWait: false };
+  const jsonForConfirm = (() => {
+    const parsed = extractGlobalFlags(argv);
+    return !("error" in parsed) && parsed.flags.json;
+  })();
+  const previousConfirmHooks = setOwnerConfirmHooks(cliOwnerConfirmHooks(deps, { json: jsonForConfirm, wait: !confirmFlags.noWait, open: confirmFlags.open }, confirmState));
+  try {
+    const code = await runWithConfirm(argv, deps);
+    return confirmState.pendingWithoutWait && code !== 0 ? EXIT_OWNER_CONFIRM_PENDING : code;
+  } finally {
+    setOwnerConfirmHooks(previousConfirmHooks);
+  }
+}
+async function runWithConfirm(argv, deps) {
   const cosmetic = extractGlobalFlags(argv);
   if (!("error" in cosmetic)) {
     deps = {

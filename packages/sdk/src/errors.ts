@@ -100,6 +100,47 @@ export interface CandleErrorPayload {
 export const BRIDGE_ERROR_CODES = ["BRIDGE_DESTINATION_MISSING", "RELAY_STEP_REFUSED", "BRIDGE_IN_FLIGHT"] as const
 export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number]
 
+/**
+ * BE-2948 (owner confirm, spec 2026-11-09-owner-confirm-device-token-design.md 5.1): the codes a device-token
+ * owner step and its confirm routes answer. The SDK's own requests use agent keys and never see them; they
+ * are exported for anyone calling the owner routes with a `cndl_dvc_` device token.
+ *
+ * - `OWNER_CONFIRM_REQUIRED` (403, retryable): the step widens authority and needs the owner's browser
+ *   approval; nothing changed. `error.ownerConfirm` is an {@link OwnerConfirmDetail}. After approval, resend
+ *   the identical request with the `Candle-Owner-Confirm: <confirmId>` header.
+ * - `OWNER_CONFIRM_NOT_FOUND` (404) and `OWNER_CONFIRM_EXPIRED` (400): the confirm routes' refusals.
+ */
+export const OWNER_CONFIRM_ERROR_CODES = [
+  "OWNER_CONFIRM_REQUIRED",
+  "OWNER_CONFIRM_NOT_FOUND",
+  "OWNER_CONFIRM_EXPIRED",
+] as const
+export type OwnerConfirmErrorCode = (typeof OWNER_CONFIRM_ERROR_CODES)[number]
+
+/** What `error.ownerConfirm` carries on `403 OWNER_CONFIRM_REQUIRED`. */
+export interface OwnerConfirmDetail {
+  /** 32 random bytes, base64url: poll `POST /api/v1/agent/device/confirm/status` and redeem with it. A secret. */
+  confirmId: string
+  userCode: string
+  verificationUri: string
+  verificationUriComplete: string
+  /** Seconds from creation (300); approving does not extend it. */
+  expiresIn: number
+  /** Seconds between polls. */
+  interval: number
+  step: string
+  /** Built by the server from the parsed request, never caller text. */
+  summary: string
+  reason:
+    | "required"
+    | "grant_pending"
+    | "grant_denied"
+    | "grant_expired"
+    | "grant_consumed"
+    | "grant_mismatch"
+    | "grant_unknown"
+}
+
 export class CandleApiError extends Error {
   readonly legs?: SignedTradeLeg[]
   /** The envelope's `error.code`, or `"HTTP_" + status` for non-envelope responses. */
