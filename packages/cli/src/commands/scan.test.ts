@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { __resetChainRegistryForTest, __setChainRegistryForTest, listChains, requireEvmChain } from "../chains"
 import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { displayWidth } from "../presentation"
@@ -257,12 +258,12 @@ describe("candle scan", () => {
         const f = setup(cardBody())
         expect([argv.join(" "), await run(argv, f.deps)]).toEqual([argv.join(" "), 2])
         expect(f.seen).toHaveLength(0)
-        expect(f.stderr.text + f.stdout.text).toContain("Solana and Hood")
+        expect(f.stderr.text + f.stdout.text).toContain("Invalid")
       }
     }
     const mismatch = setup(cardBody())
     await run(["scan", hoodToken, "--chain", "solana"], mismatch.deps)
-    expect(humanText(mismatch.stderr.text)).toContain("That address is a Hood contract, not a Solana one")
+    expect(humanText(mismatch.stderr.text)).toContain("Invalid solana address")
   })
 
   test("a valid address with the matching explicit --chain is read", async () => {
@@ -296,10 +297,31 @@ describe("candle scan", () => {
     expect(JSON.parse(f.stdout.text)).toMatchObject({ ok: false, code: "BAD_RESPONSE" })
   })
 
-  test("chainOfAddress reads Hood from 0x and Solana from base58, and nothing else", () => {
+  test("chainOfAddress applies the request default and validates both families", () => {
     expect(chainOfAddress(hoodToken)).toBe("hood")
     expect(chainOfAddress("So11111111111111111111111111111111111111112")).toBe("solana")
     expect(chainOfAddress("0x1234")).toBeNull()
     expect(chainOfAddress("0OIl0OIl0OIl0OIl0OIl0OIl0OIl0OIl")).toBeNull()
   })
+})
+
+test("scan preserves an explicit EVM network and refuses a disabled one before fetching", async () => {
+  const testevm = { ...structuredClone(requireEvmChain("hood")), slug: "testevm" }
+  testevm.evm.chainId = 9_990_004
+  try {
+    __setChainRegistryForTest([...listChains(), testevm])
+    const f = setup(cardBody({ chain: "testevm", mint: hoodToken }))
+    expect(await run(["scan", hoodToken, "--chain", "testevm"], f.deps)).toBe(0)
+    expect(new URL(f.seen[0]?.url ?? "").pathname).toBe(`/api/v1/tokens/testevm/${hoodToken}/card`)
+    const wrong = setup(cardBody({ chain: "hood", mint: hoodToken }))
+    expect(await run(["scan", hoodToken, "--chain", "testevm"], wrong.deps)).toBe(1)
+    expect(wrong.stderr.text).toContain("not readable")
+    __setChainRegistryForTest(listChains().map((c) => (c.slug === "testevm" ? { ...c, enabled: false } : c)))
+    const disabled = setup(cardBody())
+    expect(await run(["scan", hoodToken, "--chain", "testevm"], disabled.deps)).toBe(2)
+    expect(disabled.seen).toHaveLength(0)
+    expect(disabled.stderr.text).toContain("disabled")
+  } finally {
+    __resetChainRegistryForTest()
+  }
 })

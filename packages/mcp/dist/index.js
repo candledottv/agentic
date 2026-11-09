@@ -1909,6 +1909,290 @@ var launchAndSeedShape = (() => {
 
 // src/orchestrate.ts
 import { randomUUID } from "node:crypto";
+
+// src/chains/registry.json
+var registry_default = [
+  {
+    slug: "solana",
+    family: "solana",
+    displayName: "Solana",
+    enabled: true,
+    addressFormat: "solana-base58",
+    native: { symbol: "SOL", name: "Solana", decimals: 9 },
+    explorer: { url: "https://solscan.io", urlEnv: null, api: "solscan" },
+    rpc: { env: {}, publicUrl: null, fallbackSwitchEnv: null }
+  },
+  {
+    slug: "hood",
+    family: "evm",
+    displayName: "Robinhood Chain",
+    enabled: true,
+    addressFormat: "evm-hex20",
+    native: { symbol: "ETH", name: "Ether", decimals: 18 },
+    explorer: { url: "https://robinhoodchain.blockscout.com", urlEnv: "HOOD_EXPLORER_URL", api: "blockscout" },
+    rpc: {
+      env: {
+        read: "HOOD_RPC_URL",
+        ledger: "LEDGER_HOOD_RPC_URL",
+        ledgerFallback: "LEDGER_HOOD_RPC_FALLBACK_URL",
+        feed: "FEED_HOOD_RPC_URL",
+        browser: "NEXT_PUBLIC_HOOD_RPC_URL"
+      },
+      publicUrl: "https://rpc.mainnet.chain.robinhood.com",
+      fallbackSwitchEnv: "HOOD_RPC_FALLBACK"
+    },
+    evm: {
+      chainId: 4663,
+      wrappedNative: { symbol: "WETH", address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18 },
+      stablecoins: [{ symbol: "USDG", address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", decimals: 6 }],
+      quoteAssets: ["0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"],
+      l1DataFee: "arbitrum",
+      blockTimeMs: 100,
+      publicMempool: false,
+      multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
+      dex: {
+        uniswapV3: {
+          factory: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
+          router: "0xCaf681a66D020601342297493863E78C959E5cb2",
+          quoter: "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
+          initCodeHash: "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54"
+        },
+        uniswapV4: {
+          poolManager: "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+          universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
+          quoter: "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+          stateView: "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
+        },
+        permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+      },
+      aggregators: [
+        { id: "kyber", vendorChainSlug: "robinhood", router: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" }
+      ],
+      vendors: { dexscreener: "robinhood", birdeye: "robinhood", geckoterminal: null },
+      cvcBaseUrlEnv: "CVC_API_URL",
+      feeTreasuryEnv: "AGENT_FEE_TREASURY_HOOD",
+      gasReserve: { feeMultiplier: 2, extraErc20Transfers: 1, legGasFallback: "500000" },
+      teePolicyChainId: "4663",
+      launch: {
+        contractEnv: {
+          curveFactory: "HOOD_CURVE_FACTORY",
+          curveRegistry: "HOOD_CURVE_REGISTRY",
+          stakingDistributor: "HOOD_STAKING_DISTRIBUTOR",
+          migratorV3: "HOOD_MIGRATOR_V3",
+          migratorV4: "HOOD_MIGRATOR_V4",
+          feeSplitterFactory: "HOOD_FEE_SPLITTER_FACTORY",
+          believerNft: "HOOD_BELIEVER_NFT"
+        }
+      }
+    }
+  }
+];
+
+// src/chains/registry.ts
+class ChainRegistryError extends Error {
+  code;
+  slug;
+  constructor(code, slug, message) {
+    super(message ?? `${code}: ${slug}`);
+    this.name = "ChainRegistryError";
+    this.code = code;
+    this.slug = slug;
+  }
+}
+var EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+var SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+var isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function fail(path, why) {
+  throw new Error(`chain registry: ${path} ${why}`);
+}
+function needString(o, key, path) {
+  if (typeof o[key] !== "string" || o[key] === "")
+    fail(`${path}.${key}`, "must be a non-empty string");
+}
+function needBool(o, key, path) {
+  if (typeof o[key] !== "boolean")
+    fail(`${path}.${key}`, "must be a boolean");
+}
+function needNumber(o, key, path) {
+  if (typeof o[key] !== "number" || !Number.isFinite(o[key]))
+    fail(`${path}.${key}`, "must be a number");
+}
+function needObject(o, key, path) {
+  const v = o[key];
+  if (!isObject(v))
+    fail(`${path}.${key}`, "must be an object");
+  return v;
+}
+function needNullableString(o, key, path) {
+  if (o[key] !== null && typeof o[key] !== "string")
+    fail(`${path}.${key}`, "must be a string or null");
+}
+function needAddress(v, path) {
+  if (typeof v !== "string" || !EVM_ADDRESS.test(v))
+    fail(path, "must be 0x plus 40 hex digits");
+}
+function needNullableAddress(o, key, path) {
+  if (o[key] !== null)
+    needAddress(o[key], `${path}.${key}`);
+}
+function checkToken(v, path) {
+  if (!isObject(v))
+    fail(path, "must be an object");
+  needString(v, "symbol", path);
+  needAddress(v.address, `${path}.address`);
+  needNumber(v, "decimals", path);
+}
+function checkAddressSet(v, path, keys) {
+  if (v === null)
+    return;
+  if (!isObject(v))
+    fail(path, "must be an object or null");
+  for (const k of keys)
+    needAddress(v[k], `${path}.${k}`);
+}
+function checkEvm(evm, path) {
+  needNumber(evm, "chainId", path);
+  checkToken(evm.wrappedNative, `${path}.wrappedNative`);
+  if (!Array.isArray(evm.stablecoins))
+    fail(`${path}.stablecoins`, "must be an array");
+  evm.stablecoins.forEach((t, i) => {
+    checkToken(t, `${path}.stablecoins[${i}]`);
+  });
+  if (!Array.isArray(evm.quoteAssets))
+    fail(`${path}.quoteAssets`, "must be an array");
+  evm.quoteAssets.forEach((a, i) => {
+    needAddress(a, `${path}.quoteAssets[${i}]`);
+  });
+  if (!["none", "arbitrum", "op-stack"].includes(evm.l1DataFee))
+    fail(`${path}.l1DataFee`, "is not a known model");
+  needNumber(evm, "blockTimeMs", path);
+  needBool(evm, "publicMempool", path);
+  needNullableAddress(evm, "multicall3", path);
+  const dex = needObject(evm, "dex", path);
+  checkAddressSet(dex.uniswapV3, `${path}.dex.uniswapV3`, ["factory", "router", "quoter"]);
+  if (isObject(dex.uniswapV3) && !/^0x[0-9a-fA-F]{64}$/.test(String(dex.uniswapV3.initCodeHash)))
+    fail(`${path}.dex.uniswapV3.initCodeHash`, "must be 0x plus 64 hex digits");
+  checkAddressSet(dex.uniswapV4, `${path}.dex.uniswapV4`, ["poolManager", "universalRouter", "quoter", "stateView"]);
+  needNullableAddress(dex, "permit2", `${path}.dex`);
+  if (!Array.isArray(evm.aggregators))
+    fail(`${path}.aggregators`, "must be an array");
+  evm.aggregators.forEach((a, i) => {
+    if (!isObject(a))
+      fail(`${path}.aggregators[${i}]`, "must be an object");
+    needString(a, "id", `${path}.aggregators[${i}]`);
+    needString(a, "vendorChainSlug", `${path}.aggregators[${i}]`);
+    needAddress(a.router, `${path}.aggregators[${i}].router`);
+  });
+  const vendors = needObject(evm, "vendors", path);
+  for (const k of ["dexscreener", "birdeye", "geckoterminal"])
+    needNullableString(vendors, k, `${path}.vendors`);
+  needNullableString(evm, "cvcBaseUrlEnv", path);
+  needNullableString(evm, "feeTreasuryEnv", path);
+  const gas = needObject(evm, "gasReserve", path);
+  needNumber(gas, "feeMultiplier", `${path}.gasReserve`);
+  needNumber(gas, "extraErc20Transfers", `${path}.gasReserve`);
+  needString(gas, "legGasFallback", `${path}.gasReserve`);
+  needNullableString(evm, "teePolicyChainId", path);
+  if (evm.launch !== null) {
+    const launch = needObject(evm, "launch", path);
+    needObject(launch, "contractEnv", `${path}.launch`);
+  }
+}
+function validateChainEntries(raw) {
+  if (!Array.isArray(raw))
+    fail("registry", "must be an array");
+  const slugs = new Set;
+  const chainIds = new Set;
+  raw.forEach((item, i) => {
+    const path = `entry[${i}]`;
+    if (!isObject(item))
+      fail(path, "must be an object");
+    needString(item, "slug", path);
+    needString(item, "family", path);
+    needString(item, "displayName", path);
+    needBool(item, "enabled", path);
+    needString(item, "addressFormat", path);
+    const native = needObject(item, "native", path);
+    needString(native, "symbol", `${path}.native`);
+    needString(native, "name", `${path}.native`);
+    needNumber(native, "decimals", `${path}.native`);
+    if (item.explorer !== null) {
+      const ex = needObject(item, "explorer", path);
+      needString(ex, "url", `${path}.explorer`);
+      needNullableString(ex, "urlEnv", `${path}.explorer`);
+      if (!["blockscout", "etherscan", "solscan", "none"].includes(ex.api))
+        fail(`${path}.explorer.api`, "is not a known API kind");
+    }
+    const rpc = needObject(item, "rpc", path);
+    needObject(rpc, "env", `${path}.rpc`);
+    needNullableString(rpc, "publicUrl", `${path}.rpc`);
+    needNullableString(rpc, "fallbackSwitchEnv", `${path}.rpc`);
+    if (slugs.has(item.slug))
+      fail(path, `has duplicate slug "${item.slug}"`);
+    slugs.add(item.slug);
+    if (item.family === "evm") {
+      if (item.addressFormat !== "evm-hex20")
+        fail(`${path}.addressFormat`, "must be evm-hex20 for an evm entry");
+      if (!isObject(item.evm))
+        fail(`${path}.evm`, "is required on an evm entry");
+      checkEvm(item.evm, `${path}.evm`);
+      const id = item.evm.chainId;
+      if (chainIds.has(id))
+        fail(path, `has duplicate chain id ${id}`);
+      chainIds.add(id);
+    } else if (item.family === "solana") {
+      if (item.addressFormat !== "solana-base58")
+        fail(`${path}.addressFormat`, "must be solana-base58");
+      if ("evm" in item)
+        fail(`${path}.evm`, "is not allowed on a non-evm entry");
+    } else {
+      fail(`${path}.family`, `"${String(item.family)}" is not a known family`);
+    }
+  });
+  return raw;
+}
+var BUILT_IN = validateChainEntries(registry_default);
+var entries = BUILT_IN;
+var isEvmChain = (entry) => entry.family === "evm";
+var getChain = (slug) => entries.find((e) => e.slug === slug);
+function requireChain(slug, opts) {
+  const entry = getChain(slug);
+  if (!entry)
+    throw new ChainRegistryError("UNKNOWN_CHAIN", slug, `Unknown chain "${slug}"`);
+  if (!entry.enabled && !opts?.allowDisabled)
+    throw new ChainRegistryError("CHAIN_DISABLED", slug, `Chain "${slug}" is disabled`);
+  return entry;
+}
+function requireEvmChain(slug, opts) {
+  const entry = requireChain(slug, opts);
+  if (!isEvmChain(entry))
+    throw new ChainRegistryError("NOT_EVM", slug, `Chain "${slug}" is not an EVM chain`);
+  return entry;
+}
+function defaultEvmChain() {
+  return requireEvmChain("hood", { allowDisabled: true });
+}
+function isValidChainAddress(slug, address) {
+  const entry = requireChain(slug, { allowDisabled: true });
+  return entry.addressFormat === "evm-hex20" ? EVM_ADDRESS.test(address) : SOLANA_ADDRESS.test(address);
+}
+// src/request-chain.ts
+function requestAddressChain(address, chain) {
+  if (chain !== undefined) {
+    const entry = requireChain(chain);
+    if (!isValidChainAddress(entry.slug, address))
+      throw new ChainRegistryError("INVALID_ADDRESS", entry.slug, `Invalid ${entry.slug} address`);
+    return entry.slug;
+  }
+  if (isValidChainAddress("solana", address))
+    return requireChain("solana").slug;
+  const evm = defaultEvmChain();
+  if (isValidChainAddress(evm.slug, address))
+    return requireChain(evm.slug).slug;
+  return null;
+}
+
+// src/orchestrate.ts
 function requireApiKey(cfg) {
   if (!cfg.apiKey) {
     throw new Error("CANDLE_AGENT_API_KEY is required for this tool. Set it in the environment or MCP client config.");
@@ -1955,8 +2239,11 @@ function transportError(idKey, id, thrown) {
     isError: true
   };
 }
-function chainForMint(mint) {
-  return mint.startsWith("0x") ? "hood" : "solana";
+function chainForMint(mint, chain) {
+  const resolved = requestAddressChain(mint.trim(), chain);
+  if (!resolved)
+    throw new Error("Invalid token address");
+  return resolved;
 }
 function quoteIdDecimals(quoteAsset, chain, extra) {
   const quote = quoteAsset ?? defaultQuoteId(chain);
@@ -1983,8 +2270,8 @@ async function postJson(url, apiKey, payload, doFetch) {
     return { thrown };
   }
 }
-async function readMarket(mint, cfg, doFetch, extra) {
-  const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint)}/${encodeURIComponent(mint)}`, {
+async function readMarket(mint, cfg, doFetch, extra, chain) {
+  const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint, chain)}/${encodeURIComponent(mint)}`, {
     method: "GET",
     headers: headers()
   });
@@ -2112,10 +2399,10 @@ async function executeTrade(args, cfg, doFetch) {
         return relayRead(walletsText, { clientTradeId });
       const walletsBody = JSON.parse(walletsText);
       const chain = chainForMint(args.mint);
-      const address = chain === "hood" ? walletsBody.wallets?.evm?.address : walletsBody.wallets?.solana?.address;
+      const address = isEvmChain(requireChain(chain)) ? walletsBody.wallets?.evm?.address : walletsBody.wallets?.solana?.address;
       let walletEmpty;
       if (!address) {
-        walletEmpty = errText(`percent sells need an embedded ${chain === "hood" ? "EVM" : "Solana"} wallet, and this account has none`, { clientTradeId });
+        walletEmpty = errText(`percent sells need an embedded ${isEvmChain(requireChain(chain)) ? "EVM" : "Solana"} wallet, and this account has none`, { clientTradeId });
       } else {
         const balRes = await doFetch(`${base(cfg)}/api/v1/tokens/${encodeURIComponent(args.mint)}/balance/${encodeURIComponent(address)}`, {
           method: "GET",
@@ -2403,8 +2690,13 @@ async function executeSweep(args, cfg, doFetch) {
   };
 }
 async function resolveToken(args, cfg, doFetch) {
-  const chain = chainForMint(args.mint);
-  const read = await readMarket(args.mint, cfg, doFetch, { mint: args.mint, chain });
+  let chain;
+  try {
+    chain = chainForMint(args.mint, args.chain);
+  } catch (error) {
+    return errText(error instanceof Error ? error.message : String(error), { mint: args.mint });
+  }
+  const read = await readMarket(args.mint, cfg, doFetch, { mint: args.mint, chain }, chain);
   if ("err" in read)
     return read.err;
   return { text: JSON.stringify({ success: true, chain, mint: args.mint, market: read.market }, null, 2) };
@@ -2603,13 +2895,13 @@ function packValue(out, value) {
     for (const item of value)
       packValue(out, item);
   } else if (typeof value === "object") {
-    const entries = Object.entries(value).filter(([, v]) => v !== undefined);
-    for (const [key] of entries) {
+    const entries2 = Object.entries(value).filter(([, v]) => v !== undefined);
+    for (const [key] of entries2) {
       if (/^(0|[1-9][0-9]*)$/.test(key))
         throw new Error(`msgpack: integer-like key "${key}"`);
     }
-    packHeader(out, entries.length, 128, 15, [0, 222, 223]);
-    for (const [key, item] of entries) {
+    packHeader(out, entries2.length, 128, 15, [0, 222, 223]);
+    for (const [key, item] of entries2) {
       packValue(out, key);
       packValue(out, item);
     }
@@ -2829,7 +3121,7 @@ function checkActionIntent(action, opts) {
   if (!intent)
     return null;
   const { method, params: p } = intent;
-  const types = {
+  const types2 = {
     setup: "approveBuilderFee",
     open: "order",
     close: "order",
@@ -2840,7 +3132,7 @@ function checkActionIntent(action, opts) {
     tpsl: "order",
     scheduleCancel: "scheduleCancel"
   };
-  if (action.type !== types[method])
+  if (action.type !== types2[method])
     return "action type does not match the requested method";
   if (opts.keyReduceOnly === true && method === "open")
     return "this key is reduce-only and an open is not reducing";
@@ -5378,9 +5670,9 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
       const { clear, ...rest } = args;
       const fields = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
       if (clear === true && Object.keys(fields).length > 0)
-        return fail("MCP_VALIDATION", "Pass clear: true alone, or the thresholds to set; not both.");
+        return fail2("MCP_VALIDATION", "Pass clear: true alone, or the thresholds to set; not both.");
       if (clear !== true && Object.keys(fields).length === 0)
-        return fail("MCP_VALIDATION", "Name at least one threshold, or pass clear: true.");
+        return fail2("MCP_VALIDATION", "Name at least one threshold, or pass clear: true.");
       const answer = await call(cfg, fetch2, "PUT", "/api/v1/agent/keys/self/perps-risk", {
         perpsRisk: clear === true ? null : fields
       });
@@ -5391,7 +5683,7 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
     const now = Date.now();
     const start = tool === "candle_perps_account" ? sinceStart(args.since, now) : now;
     if (typeof start === "string")
-      return fail("MCP_VALIDATION", start);
+      return fail2("MCP_VALIDATION", start);
     const net = network(env);
     const report = readPerpsRisk({
       fetcher: fetcherOf(fetch2),
@@ -5410,14 +5702,14 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
     }
     const risk = await report;
     if (risk.level === "unknown")
-      return fail(risk.reason ?? "PERPS_READ_FAILED", "No level was computed.", { report: risk });
+      return fail2(risk.reason ?? "PERPS_READ_FAILED", "No level was computed.", { report: risk });
     return { text: JSON.stringify(risk) };
   } catch (error) {
     if (error instanceof Refusal)
       return error.tool;
     if (error instanceof HyperliquidReadError)
-      return fail("PERPS_READ_FAILED", `${error.message}. No level was computed.`);
-    return fail("PERPS_READ_FAILED", error instanceof Error ? error.message : "Hyperliquid read failed");
+      return fail2("PERPS_READ_FAILED", `${error.message}. No level was computed.`);
+    return fail2("PERPS_READ_FAILED", error instanceof Error ? error.message : "Hyperliquid read failed");
   }
 }
 async function positionsAdditions(cfg, fetch2, env, row) {
@@ -5584,7 +5876,7 @@ var PATHS = {
   candle_perps_flatten: "",
   candle_perps_reduce_only: "/api/v1/agent/keys/self/perps-reduce-only"
 };
-function fail(code, message, extra = {}) {
+function fail2(code, message, extra = {}) {
   return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true };
 }
 
@@ -5610,34 +5902,34 @@ async function call(cfg, fetch2, method, path, body) {
   }
   if (!res.ok) {
     if (res.status === 404 && (typeof parsed !== "object" || parsed === null))
-      throw new Refusal(fail("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."));
+      throw new Refusal(fail2("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."));
     throw new Refusal({ text: typeof parsed === "string" ? parsed : JSON.stringify(parsed), isError: true });
   }
   if (typeof parsed !== "object" || parsed === null)
-    throw new Refusal(fail("INVALID_RESPONSE", "Not a JSON object"));
+    throw new Refusal(fail2("INVALID_RESPONSE", "Not a JSON object"));
   return parsed;
 }
 async function walletFor(cfg, fetch2, name, scope) {
   const listed = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/trading");
   if (scope && !(Array.isArray(listed.scopes) && listed.scopes.includes(scope)))
-    throw new Refusal(fail("SCOPE_MISSING", `The key needs ${scope}.`));
+    throw new Refusal(fail2("SCOPE_MISSING", `The key needs ${scope}.`));
   const rows = Array.isArray(listed.page) ? listed.page : [];
   const evm = rows.filter((row) => row.chain === "evm");
   const matches = name === undefined ? evm : evm.filter((row) => row.id === name || row.label === name || row.address.toLowerCase() === name.toLowerCase());
   if (matches.length !== 1)
-    throw new Refusal(fail("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row) => row.label ?? row.id).join(", ")}`));
+    throw new Refusal(fail2("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row) => row.label ?? row.id).join(", ")}`));
   return { row: matches[0], appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" };
 }
 function builderPin(env) {
   try {
     return resolveHyperliquidBuilder(env.CANDLE_HYPERLIQUID_BUILDER);
   } catch (error) {
-    throw new Refusal(fail("PERPS_BUILD_REFUSED", error.message));
+    throw new Refusal(fail2("PERPS_BUILD_REFUSED", error.message));
   }
 }
 async function executePerps(tool, args, cfg, env, fetch2) {
   if (!cfg.apiKey)
-    return fail("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
+    return fail2("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
   if (isRiskTool(tool))
     return executePerpsRisk(tool, args, cfg, env, fetch2);
   const network2 = env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet";
@@ -5673,7 +5965,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         return { text: JSON.stringify(page) };
       } catch (error) {
         if (error instanceof PerpsHistoryError)
-          return fail(error.code, error.message, {
+          return fail2(error.code, error.message, {
             ...error.extra.field ? { field: error.extra.field } : {},
             ...error.extra.retryable ? { retryable: true } : {},
             ...error.extra.retryAfterMs !== undefined ? { retryAfterMs: error.extra.retryAfterMs } : {}
@@ -5690,23 +5982,23 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     let method = path.split("/").at(-1);
     if (tool === "candle_perps_close") {
       if (fields.pct !== undefined && fields.size !== undefined)
-        return fail("MCP_VALIDATION", "Give size or pct, not both.");
+        return fail2("MCP_VALIDATION", "Give size or pct, not both.");
       if (fields.pct !== undefined && hyperliquidClosePct(fields.pct) === null)
-        return fail("MCP_VALIDATION", "pct must be above 0 and at most 100, with at most 4 decimals.");
+        return fail2("MCP_VALIDATION", "pct must be above 0 and at most 100, with at most 4 decimals.");
     }
     if (tool === "candle_perps_modify") {
       if (fields.price === undefined && fields.size === undefined)
-        return fail("MCP_VALIDATION", "Give price, size, or both.");
+        return fail2("MCP_VALIDATION", "Give price, size, or both.");
       fields = { ...fields, cloid: String(fields.cloid).toLowerCase() };
     }
     if (tool === "candle_perps_margin") {
       if (fields.amount === undefined === (fields.mode === undefined))
-        return fail("MCP_VALIDATION", "Give amount or mode, exactly one.");
+        return fail2("MCP_VALIDATION", "Give amount or mode, exactly one.");
       if (fields.amount !== undefined) {
         if (fields.leverage !== undefined)
-          return fail("MCP_VALIDATION", "leverage goes with mode.");
+          return fail2("MCP_VALIDATION", "leverage goes with mode.");
         if (/^0+(\.0+)?$/.test(String(fields.amount)))
-          return fail("MCP_VALIDATION", "amount must be positive.");
+          return fail2("MCP_VALIDATION", "amount must be positive.");
         fields = { coin: fields.coin, amount: fields.amount };
         method = "margin";
       } else {
@@ -5722,33 +6014,33 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     if (tool === "candle_perps_schedule_cancel") {
       const clear = fields.clear === true;
       if (clear === (fields.seconds !== undefined))
-        return fail("MCP_VALIDATION", "Give seconds, or clear: true.");
+        return fail2("MCP_VALIDATION", "Give seconds, or clear: true.");
       fields = clear ? { clear: true } : { seconds: fields.seconds };
       method = "scheduleCancel";
     }
     if (tool === "candle_perps_tpsl") {
       const problem = perpsTpslParamsProblem(fields);
       if (problem)
-        return fail("MCP_VALIDATION", problem);
+        return fail2("MCP_VALIDATION", problem);
     }
     const willSubmit = args.submit !== false;
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
     let signerPem = null;
     if (willSubmit) {
       if (!pemFile)
-        return fail("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
+        return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
       try {
         signerPem = await readFile(pemFile, "utf8");
         createPrivateKey(signerPem);
       } catch {
-        return fail("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
+        return fail2("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
       }
     }
     const { row, appId } = await walletFor(cfg, fetch2, name, "perps:write");
     const builder = builderPin(env);
     const relaySign = async (typedData) => {
       if (signerPem === null || !appId || !row.privyWalletId)
-        throw new Refusal(fail("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers."));
+        throw new Refusal(fail2("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers."));
       const body = hyperliquidRelayBody(typedData);
       const payload = hyperliquidCanonicalJson({
         body,
@@ -5763,7 +6055,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         body
       });
       if (typeof relay.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(relay.signature))
-        throw new Refusal(fail("INVALID_RESPONSE", "The relay did not return a signature."));
+        throw new Refusal(fail2("INVALID_RESPONSE", "The relay did not return a signature."));
       return relay.signature;
     };
     if (tool === "candle_perps_tpsl" || tool === "candle_perps_flatten") {
@@ -5788,7 +6080,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         return { text: JSON.stringify(result), ...failed ? { isError: true } : {} };
       } catch (error) {
         if (error instanceof PerpsWorkflowError)
-          return fail(error.code, error.message, error.details);
+          return fail2(error.code, error.message, error.details);
         throw error;
       }
     }
@@ -5797,10 +6089,10 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       try {
         mode = await hyperliquidAccountMode(fetch2, network2, row.address);
       } catch (error) {
-        return fail("PERPS_UNAVAILABLE", `${error instanceof Error ? error.message : "Cannot read the account mode"}. Nothing was requested.`);
+        return fail2("PERPS_UNAVAILABLE", `${error instanceof Error ? error.message : "Cannot read the account mode"}. Nothing was requested.`);
       }
       if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
-        return fail("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`, { mode });
+        return fail2("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`, { mode });
     }
     const build = await call(cfg, fetch2, "POST", path, {
       walletId: row.id,
@@ -5817,17 +6109,17 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     if (method === "setup") {
       const problem = perpsSetupStatusProblem(build, { network: network2, address: row.address, builder, mode });
       if (problem)
-        return fail("PERPS_BUILD_REFUSED", `Refused this setup answer: ${problem}. Nothing was signed.`);
+        return fail2("PERPS_BUILD_REFUSED", `Refused this setup answer: ${problem}. Nothing was signed.`);
     }
     if (build.ready === true)
       return { text: JSON.stringify(build) };
     if (build.replayed === true) {
       if (clientId2 === undefined || build.clientId !== clientId2 || build.walletId !== row.id)
-        return fail("PERPS_BUILD_REFUSED", "Refused a replay that does not name this request's client id and wallet. Nothing was signed.");
+        return fail2("PERPS_BUILD_REFUSED", "Refused a replay that does not name this request's client id and wallet. Nothing was signed.");
       return { text: JSON.stringify(build) };
     }
     if (clientId2 !== undefined && (build.clientId !== clientId2 || build.cloid !== clientId2))
-      return fail("PERPS_CLIENT_ID_UNSUPPORTED", "This Candle API did not echo the client order id, so a retry could not be recognized. Nothing was signed.");
+      return fail2("PERPS_CLIENT_ID_UNSUPPORTED", "This Candle API did not echo the client order id, so a retry could not be recognized. Nothing was signed.");
     const verifyOpts = {
       builder,
       network: network2,
@@ -5837,7 +6129,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     };
     const check = method === "setup" ? verifyPerpsBuild(build, verifyOpts) : await verifyPerpsBuildAgainstVenue(build, { ...verifyOpts, fetcher: fetch2 });
     if (!check.ok)
-      return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
+      return fail2("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
     const signature = await relaySign(build.typedData);
@@ -5854,7 +6146,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         throw new Error(`HTTP ${res.status}`);
       exchange = JSON.parse(text);
     } catch (error) {
-      return fail("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`, { perpOrderId: build.perpOrderId, exchangeBody });
+      return fail2("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`, { perpOrderId: build.perpOrderId, exchangeBody });
     }
     const outcome = hyperliquidExchangeOutcome(exchange);
     const accepted = outcome.status === "confirmed";
@@ -5883,13 +6175,13 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       Object.assign(extra, { requestedMode: fields.mode, confirmedMode });
     }
     if (outcome.status === "rejected" && method === "scheduleCancel")
-      return fail("PERPS_SCHEDULE_CANCEL_REJECTED", `Hyperliquid refused the scheduled cancel: ${outcome.error}`, {
+      return fail2("PERPS_SCHEDULE_CANCEL_REJECTED", `Hyperliquid refused the scheduled cancel: ${outcome.error}`, {
         limit: "scheduleCancel",
         perpOrderId: build.perpOrderId,
         exchange
       });
     if (outcome.status === "unknown")
-      return fail("PERPS_SUBMIT_FAILED", `Hyperliquid's answer could not be read (${outcome.error}); reconcile before acting again.`, {
+      return fail2("PERPS_SUBMIT_FAILED", `Hyperliquid's answer could not be read (${outcome.error}); reconcile before acting again.`, {
         perpOrderId: build.perpOrderId,
         exchangeBody,
         exchange
@@ -5915,12 +6207,12 @@ async function executePerps(tool, args, cfg, env, fetch2) {
   } catch (error) {
     if (error instanceof Refusal)
       return error.tool;
-    return fail("MCP_TRANSPORT", error instanceof Error ? error.message : "The perps call failed.");
+    return fail2("MCP_TRANSPORT", error instanceof Error ? error.message : "The perps call failed.");
   }
 }
 async function executeReduceOnly(args, cfg, fetch2) {
   if (args.on === false)
-    return fail("LOOSEN_REQUIRES_SESSION", "This tool holds only the agent credential, which may turn reduce-only on and never off. The owner turns it off: candle perps reduce-only off --key <prefix>.");
+    return fail2("LOOSEN_REQUIRES_SESSION", "This tool holds only the agent credential, which may turn reduce-only on and never off. The owner turns it off: candle perps reduce-only off --key <prefix>.");
   if (args.on === true) {
     const result = await call(cfg, fetch2, "PUT", "/api/v1/agent/keys/self/perps-reduce-only", { perpsReduceOnly: true });
     return { text: JSON.stringify(result) };
@@ -5955,7 +6247,7 @@ function pickWallet(rows, chain, name, what) {
   const onChain = rows.filter((row) => row.chain === chain);
   const matches = name === undefined ? onChain : onChain.filter((row) => row.id === name || row.label === name || row.address.toLowerCase() === name.toLowerCase());
   if (matches.length !== 1)
-    throw new Refusal(fail("TEE_WALLET_REQUIRED", onChain.length === 0 ? `This key has no ${what} bound to it.` : `Name exactly one ${what}: ${onChain.map((row) => row.label ?? row.id).join(", ")}`));
+    throw new Refusal(fail2("TEE_WALLET_REQUIRED", onChain.length === 0 ? `This key has no ${what} bound to it.` : `Name exactly one ${what}: ${onChain.map((row) => row.label ?? row.id).join(", ")}`));
   return matches[0];
 }
 function depositProblem(build, expect) {
@@ -5982,14 +6274,14 @@ function depositProblem(build, expect) {
 }
 async function executePerpsDeposit(args, cfg, env, fetch2) {
   if (!cfg.apiKey)
-    return fail("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
+    return fail2("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
   const asset = args.asset;
   const spec = DEPOSIT_ASSETS[asset];
   if (!spec)
-    return fail("MCP_VALIDATION", "asset must be SOL, USDC, ETH or USDG.");
+    return fail2("MCP_VALIDATION", "asset must be SOL, USDC, ETH or USDG.");
   const amountRaw = typeof args.amount === "string" ? rawUnits(args.amount, spec.decimals) : null;
   if (!amountRaw)
-    return fail("MCP_VALIDATION", `amount must be a positive ${asset} amount with at most ${spec.decimals} decimals.`);
+    return fail2("MCP_VALIDATION", `amount must be a positive ${asset} amount with at most ${spec.decimals} decimals.`);
   const hood = spec.chain === "evm";
   const clientDepositId = typeof args.clientDepositId === "string" ? args.clientDepositId : `deposit-${crypto.randomUUID()}`;
   const willSubmit = args.submit !== false;
@@ -5997,24 +6289,24 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
   if (willSubmit) {
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
     if (!pemFile)
-      return fail("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
+      return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
     try {
       signerPem = await readFile(pemFile, "utf8");
       createPrivateKey(signerPem);
     } catch {
-      return fail("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
+      return fail2("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
     }
   }
   try {
     const listed = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/trading");
     if (!(Array.isArray(listed.scopes) && listed.scopes.includes("swap:write")))
-      throw new Refusal(fail("SCOPE_MISSING", "A deposit needs swap:write on the key."));
+      throw new Refusal(fail2("SCOPE_MISSING", "A deposit needs swap:write on the key."));
     const rows = Array.isArray(listed.page) ? listed.page : [];
     const appId = typeof listed.privyAppId === "string" ? listed.privyAppId : "";
     const name = typeof args.wallet === "string" ? args.wallet : undefined;
     const source = pickWallet(rows, spec.chain, name, `${hood ? "Hood" : "Solana"} TEE wallet`);
     if (hood && args.perpsWallet !== undefined)
-      return fail("MCP_VALIDATION", "From a Hood TEE wallet the deposit lands on that wallet's own account; omit perpsWallet.");
+      return fail2("MCP_VALIDATION", "From a Hood TEE wallet the deposit lands on that wallet's own account; omit perpsWallet.");
     const account = hood ? source : pickWallet(rows, "evm", typeof args.perpsWallet === "string" ? args.perpsWallet : undefined, "EVM TEE wallet");
     const build = await call(cfg, fetch2, "POST", "/api/v1/agent/perps/deposit", {
       clientDepositId,
@@ -6029,13 +6321,13 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
       return { text: JSON.stringify(build) };
     const problem = depositProblem(build, { walletId: source.id, asset, amountRaw, account: account.address, hood });
     if (problem)
-      return fail("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem}. Nothing was signed.`);
+      return fail2("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem}. Nothing was signed.`);
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
     if (build.preview === true || typeof build.depositId !== "string")
-      return fail("PERPS_BUILD_REFUSED", "Refused to sign this deposit: Candle answered a preview. Nothing was signed.");
+      return fail2("PERPS_BUILD_REFUSED", "Refused to sign this deposit: Candle answered a preview. Nothing was signed.");
     if (!appId || !source.privyWalletId)
-      return fail("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.");
+      return fail2("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.");
     const pem = signerPem;
     const relaySign = async (body2) => {
       const payload = hyperliquidCanonicalJson({
@@ -6051,7 +6343,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
         body: body2
       });
       if (typeof relay.signedTransaction !== "string")
-        throw new Refusal(fail("INVALID_RESPONSE", "The relay did not return a signed transaction."));
+        throw new Refusal(fail2("INVALID_RESPONSE", "The relay did not return a signed transaction."));
       return relay.signedTransaction;
     };
     const ids = { clientDepositId, depositId: build.depositId };
@@ -6072,7 +6364,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
       const leg = body.nextLeg;
       const kind = String(body.legKind);
       if (!leg || body.operationId !== build.operationId || body.plannedLegCount !== planned || typeof planned !== "number" || planned > allowed.length || !allowed.includes(kind) || signedKinds.has(kind) || leg.chainId !== 4663)
-        return fail("PERPS_BUILD_REFUSED", `Refused to sign deposit leg ${kind}: it is not the plan this deposit was built with.`, { clientDepositId, operationId: build.operationId });
+        return fail2("PERPS_BUILD_REFUSED", `Refused to sign deposit leg ${kind}: it is not the plan this deposit was built with.`, { clientDepositId, operationId: build.operationId });
       signedKinds.add(kind);
       const signed = await relaySign({
         method: "eth_signTransaction",
@@ -6101,7 +6393,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
   } catch (error) {
     if (error instanceof Refusal)
       return error.tool;
-    return fail("MCP_TRANSPORT", error instanceof Error ? error.message : "The deposit call failed.");
+    return fail2("MCP_TRANSPORT", error instanceof Error ? error.message : "The deposit call failed.");
   }
 }
 

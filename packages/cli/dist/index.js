@@ -40879,6 +40879,300 @@ var init_market_disclosure = __esm(() => {
   EXTERNAL_MARKET_DISCLOSURE = "For external tokens (external: true), buysOpen, sellsOpen, quoteMint, feeBps, venue, " + "graduationVenue and poolAddress are compatibility placeholders, not measured facts about " + "trading availability, pool pairing, fees or pool venue; trade.routable is stored eligibility " + "and does not verify those fields.";
 });
 
+// ../mcp/src/chains/registry.json
+var registry_default;
+var init_registry = __esm(() => {
+  registry_default = [
+    {
+      slug: "solana",
+      family: "solana",
+      displayName: "Solana",
+      enabled: true,
+      addressFormat: "solana-base58",
+      native: { symbol: "SOL", name: "Solana", decimals: 9 },
+      explorer: { url: "https://solscan.io", urlEnv: null, api: "solscan" },
+      rpc: { env: {}, publicUrl: null, fallbackSwitchEnv: null }
+    },
+    {
+      slug: "hood",
+      family: "evm",
+      displayName: "Robinhood Chain",
+      enabled: true,
+      addressFormat: "evm-hex20",
+      native: { symbol: "ETH", name: "Ether", decimals: 18 },
+      explorer: { url: "https://robinhoodchain.blockscout.com", urlEnv: "HOOD_EXPLORER_URL", api: "blockscout" },
+      rpc: {
+        env: {
+          read: "HOOD_RPC_URL",
+          ledger: "LEDGER_HOOD_RPC_URL",
+          ledgerFallback: "LEDGER_HOOD_RPC_FALLBACK_URL",
+          feed: "FEED_HOOD_RPC_URL",
+          browser: "NEXT_PUBLIC_HOOD_RPC_URL"
+        },
+        publicUrl: "https://rpc.mainnet.chain.robinhood.com",
+        fallbackSwitchEnv: "HOOD_RPC_FALLBACK"
+      },
+      evm: {
+        chainId: 4663,
+        wrappedNative: { symbol: "WETH", address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18 },
+        stablecoins: [{ symbol: "USDG", address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", decimals: 6 }],
+        quoteAssets: ["0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"],
+        l1DataFee: "arbitrum",
+        blockTimeMs: 100,
+        publicMempool: false,
+        multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
+        dex: {
+          uniswapV3: {
+            factory: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
+            router: "0xCaf681a66D020601342297493863E78C959E5cb2",
+            quoter: "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
+            initCodeHash: "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54"
+          },
+          uniswapV4: {
+            poolManager: "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+            universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
+            quoter: "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+            stateView: "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
+          },
+          permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+        },
+        aggregators: [
+          { id: "kyber", vendorChainSlug: "robinhood", router: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" }
+        ],
+        vendors: { dexscreener: "robinhood", birdeye: "robinhood", geckoterminal: null },
+        cvcBaseUrlEnv: "CVC_API_URL",
+        feeTreasuryEnv: "AGENT_FEE_TREASURY_HOOD",
+        gasReserve: { feeMultiplier: 2, extraErc20Transfers: 1, legGasFallback: "500000" },
+        teePolicyChainId: "4663",
+        launch: {
+          contractEnv: {
+            curveFactory: "HOOD_CURVE_FACTORY",
+            curveRegistry: "HOOD_CURVE_REGISTRY",
+            stakingDistributor: "HOOD_STAKING_DISTRIBUTOR",
+            migratorV3: "HOOD_MIGRATOR_V3",
+            migratorV4: "HOOD_MIGRATOR_V4",
+            feeSplitterFactory: "HOOD_FEE_SPLITTER_FACTORY",
+            believerNft: "HOOD_BELIEVER_NFT"
+          }
+        }
+      }
+    }
+  ];
+});
+
+// ../mcp/src/chains/registry.ts
+function fail2(path, why) {
+  throw new Error(`chain registry: ${path} ${why}`);
+}
+function needString(o, key, path) {
+  if (typeof o[key] !== "string" || o[key] === "")
+    fail2(`${path}.${key}`, "must be a non-empty string");
+}
+function needBool(o, key, path) {
+  if (typeof o[key] !== "boolean")
+    fail2(`${path}.${key}`, "must be a boolean");
+}
+function needNumber(o, key, path) {
+  if (typeof o[key] !== "number" || !Number.isFinite(o[key]))
+    fail2(`${path}.${key}`, "must be a number");
+}
+function needObject(o, key, path) {
+  const v = o[key];
+  if (!isObject(v))
+    fail2(`${path}.${key}`, "must be an object");
+  return v;
+}
+function needNullableString(o, key, path) {
+  if (o[key] !== null && typeof o[key] !== "string")
+    fail2(`${path}.${key}`, "must be a string or null");
+}
+function needAddress(v, path) {
+  if (typeof v !== "string" || !EVM_ADDRESS.test(v))
+    fail2(path, "must be 0x plus 40 hex digits");
+}
+function needNullableAddress(o, key, path) {
+  if (o[key] !== null)
+    needAddress(o[key], `${path}.${key}`);
+}
+function checkToken(v, path) {
+  if (!isObject(v))
+    fail2(path, "must be an object");
+  needString(v, "symbol", path);
+  needAddress(v.address, `${path}.address`);
+  needNumber(v, "decimals", path);
+}
+function checkAddressSet(v, path, keys) {
+  if (v === null)
+    return;
+  if (!isObject(v))
+    fail2(path, "must be an object or null");
+  for (const k of keys)
+    needAddress(v[k], `${path}.${k}`);
+}
+function checkEvm(evm, path) {
+  needNumber(evm, "chainId", path);
+  checkToken(evm.wrappedNative, `${path}.wrappedNative`);
+  if (!Array.isArray(evm.stablecoins))
+    fail2(`${path}.stablecoins`, "must be an array");
+  evm.stablecoins.forEach((t, i) => {
+    checkToken(t, `${path}.stablecoins[${i}]`);
+  });
+  if (!Array.isArray(evm.quoteAssets))
+    fail2(`${path}.quoteAssets`, "must be an array");
+  evm.quoteAssets.forEach((a, i) => {
+    needAddress(a, `${path}.quoteAssets[${i}]`);
+  });
+  if (!["none", "arbitrum", "op-stack"].includes(evm.l1DataFee))
+    fail2(`${path}.l1DataFee`, "is not a known model");
+  needNumber(evm, "blockTimeMs", path);
+  needBool(evm, "publicMempool", path);
+  needNullableAddress(evm, "multicall3", path);
+  const dex = needObject(evm, "dex", path);
+  checkAddressSet(dex.uniswapV3, `${path}.dex.uniswapV3`, ["factory", "router", "quoter"]);
+  if (isObject(dex.uniswapV3) && !/^0x[0-9a-fA-F]{64}$/.test(String(dex.uniswapV3.initCodeHash)))
+    fail2(`${path}.dex.uniswapV3.initCodeHash`, "must be 0x plus 64 hex digits");
+  checkAddressSet(dex.uniswapV4, `${path}.dex.uniswapV4`, ["poolManager", "universalRouter", "quoter", "stateView"]);
+  needNullableAddress(dex, "permit2", `${path}.dex`);
+  if (!Array.isArray(evm.aggregators))
+    fail2(`${path}.aggregators`, "must be an array");
+  evm.aggregators.forEach((a, i) => {
+    if (!isObject(a))
+      fail2(`${path}.aggregators[${i}]`, "must be an object");
+    needString(a, "id", `${path}.aggregators[${i}]`);
+    needString(a, "vendorChainSlug", `${path}.aggregators[${i}]`);
+    needAddress(a.router, `${path}.aggregators[${i}].router`);
+  });
+  const vendors = needObject(evm, "vendors", path);
+  for (const k of ["dexscreener", "birdeye", "geckoterminal"])
+    needNullableString(vendors, k, `${path}.vendors`);
+  needNullableString(evm, "cvcBaseUrlEnv", path);
+  needNullableString(evm, "feeTreasuryEnv", path);
+  const gas = needObject(evm, "gasReserve", path);
+  needNumber(gas, "feeMultiplier", `${path}.gasReserve`);
+  needNumber(gas, "extraErc20Transfers", `${path}.gasReserve`);
+  needString(gas, "legGasFallback", `${path}.gasReserve`);
+  needNullableString(evm, "teePolicyChainId", path);
+  if (evm.launch !== null) {
+    const launch = needObject(evm, "launch", path);
+    needObject(launch, "contractEnv", `${path}.launch`);
+  }
+}
+function validateChainEntries(raw) {
+  if (!Array.isArray(raw))
+    fail2("registry", "must be an array");
+  const slugs = new Set;
+  const chainIds = new Set;
+  raw.forEach((item, i) => {
+    const path = `entry[${i}]`;
+    if (!isObject(item))
+      fail2(path, "must be an object");
+    needString(item, "slug", path);
+    needString(item, "family", path);
+    needString(item, "displayName", path);
+    needBool(item, "enabled", path);
+    needString(item, "addressFormat", path);
+    const native = needObject(item, "native", path);
+    needString(native, "symbol", `${path}.native`);
+    needString(native, "name", `${path}.native`);
+    needNumber(native, "decimals", `${path}.native`);
+    if (item.explorer !== null) {
+      const ex = needObject(item, "explorer", path);
+      needString(ex, "url", `${path}.explorer`);
+      needNullableString(ex, "urlEnv", `${path}.explorer`);
+      if (!["blockscout", "etherscan", "solscan", "none"].includes(ex.api))
+        fail2(`${path}.explorer.api`, "is not a known API kind");
+    }
+    const rpc = needObject(item, "rpc", path);
+    needObject(rpc, "env", `${path}.rpc`);
+    needNullableString(rpc, "publicUrl", `${path}.rpc`);
+    needNullableString(rpc, "fallbackSwitchEnv", `${path}.rpc`);
+    if (slugs.has(item.slug))
+      fail2(path, `has duplicate slug "${item.slug}"`);
+    slugs.add(item.slug);
+    if (item.family === "evm") {
+      if (item.addressFormat !== "evm-hex20")
+        fail2(`${path}.addressFormat`, "must be evm-hex20 for an evm entry");
+      if (!isObject(item.evm))
+        fail2(`${path}.evm`, "is required on an evm entry");
+      checkEvm(item.evm, `${path}.evm`);
+      const id = item.evm.chainId;
+      if (chainIds.has(id))
+        fail2(path, `has duplicate chain id ${id}`);
+      chainIds.add(id);
+    } else if (item.family === "solana") {
+      if (item.addressFormat !== "solana-base58")
+        fail2(`${path}.addressFormat`, "must be solana-base58");
+      if ("evm" in item)
+        fail2(`${path}.evm`, "is not allowed on a non-evm entry");
+    } else {
+      fail2(`${path}.family`, `"${String(item.family)}" is not a known family`);
+    }
+  });
+  return raw;
+}
+function requireChain(slug, opts) {
+  const entry = getChain(slug);
+  if (!entry)
+    throw new ChainRegistryError("UNKNOWN_CHAIN", slug, `Unknown chain "${slug}"`);
+  if (!entry.enabled && !opts?.allowDisabled)
+    throw new ChainRegistryError("CHAIN_DISABLED", slug, `Chain "${slug}" is disabled`);
+  return entry;
+}
+function requireEvmChain(slug, opts) {
+  const entry = requireChain(slug, opts);
+  if (!isEvmChain(entry))
+    throw new ChainRegistryError("NOT_EVM", slug, `Chain "${slug}" is not an EVM chain`);
+  return entry;
+}
+function defaultEvmChain() {
+  return requireEvmChain("hood", { allowDisabled: true });
+}
+function isValidChainAddress(slug, address) {
+  const entry = requireChain(slug, { allowDisabled: true });
+  return entry.addressFormat === "evm-hex20" ? EVM_ADDRESS.test(address) : SOLANA_ADDRESS.test(address);
+}
+var ChainRegistryError, EVM_ADDRESS, SOLANA_ADDRESS, isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v), BUILT_IN, entries, isEvmChain = (entry) => entry.family === "evm", getChain = (slug) => entries.find((e) => e.slug === slug);
+var init_registry2 = __esm(() => {
+  init_registry();
+  ChainRegistryError = class ChainRegistryError extends Error {
+    code;
+    slug;
+    constructor(code, slug, message) {
+      super(message ?? `${code}: ${slug}`);
+      this.name = "ChainRegistryError";
+      this.code = code;
+      this.slug = slug;
+    }
+  };
+  EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+  SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+  BUILT_IN = validateChainEntries(registry_default);
+  entries = BUILT_IN;
+});
+// ../mcp/src/chains/index.ts
+var init_chains = __esm(() => {
+  init_registry2();
+});
+
+// ../mcp/src/request-chain.ts
+function requestAddressChain(address, chain2) {
+  if (chain2 !== undefined) {
+    const entry = requireChain(chain2);
+    if (!isValidChainAddress(entry.slug, address))
+      throw new ChainRegistryError("INVALID_ADDRESS", entry.slug, `Invalid ${entry.slug} address`);
+    return entry.slug;
+  }
+  if (isValidChainAddress("solana", address))
+    return requireChain("solana").slug;
+  const evm = defaultEvmChain();
+  if (isValidChainAddress(evm.slug, address))
+    return requireChain(evm.slug).slug;
+  return null;
+}
+var init_request_chain = __esm(() => {
+  init_chains();
+});
+
 // ../mcp/src/orchestrate.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
 function requireApiKey(cfg) {
@@ -40927,8 +41221,11 @@ function transportError(idKey, id, thrown) {
     isError: true
   };
 }
-function chainForMint(mint) {
-  return mint.startsWith("0x") ? "hood" : "solana";
+function chainForMint(mint, chain2) {
+  const resolved = requestAddressChain(mint.trim(), chain2);
+  if (!resolved)
+    throw new Error("Invalid token address");
+  return resolved;
 }
 function quoteIdDecimals(quoteAsset, chain2, extra) {
   const quote = quoteAsset ?? defaultQuoteId(chain2);
@@ -40955,8 +41252,8 @@ async function postJson(url, apiKey, payload, doFetch) {
     return { thrown };
   }
 }
-async function readMarket(mint, cfg, doFetch, extra) {
-  const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint)}/${encodeURIComponent(mint)}`, {
+async function readMarket(mint, cfg, doFetch, extra, chain2) {
+  const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint, chain2)}/${encodeURIComponent(mint)}`, {
     method: "GET",
     headers: headers()
   });
@@ -41084,10 +41381,10 @@ async function executeTrade(args, cfg, doFetch) {
         return relayRead(walletsText, { clientTradeId });
       const walletsBody = JSON.parse(walletsText);
       const chain2 = chainForMint(args.mint);
-      const address = chain2 === "hood" ? walletsBody.wallets?.evm?.address : walletsBody.wallets?.solana?.address;
+      const address = isEvmChain(requireChain(chain2)) ? walletsBody.wallets?.evm?.address : walletsBody.wallets?.solana?.address;
       let walletEmpty;
       if (!address) {
-        walletEmpty = errText(`percent sells need an embedded ${chain2 === "hood" ? "EVM" : "Solana"} wallet, and this account has none`, { clientTradeId });
+        walletEmpty = errText(`percent sells need an embedded ${isEvmChain(requireChain(chain2)) ? "EVM" : "Solana"} wallet, and this account has none`, { clientTradeId });
       } else {
         const balRes = await doFetch(`${base(cfg)}/api/v1/tokens/${encodeURIComponent(args.mint)}/balance/${encodeURIComponent(address)}`, {
           method: "GET",
@@ -41365,8 +41662,13 @@ async function executeSweep(args, cfg, doFetch) {
   };
 }
 async function resolveToken(args, cfg, doFetch) {
-  const chain2 = chainForMint(args.mint);
-  const read = await readMarket(args.mint, cfg, doFetch, { mint: args.mint, chain: chain2 });
+  let chain2;
+  try {
+    chain2 = chainForMint(args.mint, args.chain);
+  } catch (error) {
+    return errText(error instanceof Error ? error.message : String(error), { mint: args.mint });
+  }
+  const read = await readMarket(args.mint, cfg, doFetch, { mint: args.mint, chain: chain2 }, chain2);
   if ("err" in read)
     return read.err;
   return { text: JSON.stringify({ success: true, chain: chain2, mint: args.mint, market: read.market }, null, 2) };
@@ -41445,9 +41747,11 @@ async function executionStatus(cfg, doFetch, options = {}) {
 }
 var SOLANA_SEED_CEILINGS, MAIN_PAYER, SWEEP_BASE_ASSETS, TEE_SPEND_SCOPES, STOP_CLEARED_BY = "An account owner reviews the profile and resumes it from the agent console; an API key cannot resume it.";
 var init_orchestrate = __esm(() => {
+  init_chains();
   init_convert();
   init_image();
   init_launch_schema();
+  init_request_chain();
   init_update_notice();
   SOLANA_SEED_CEILINGS = {
     sol: { raw: 500000000n, unit: "lamports", expRaw: 500000000n },
@@ -41552,13 +41856,13 @@ function packValue(out, value) {
     for (const item of value)
       packValue(out, item);
   } else if (typeof value === "object") {
-    const entries = Object.entries(value).filter(([, v]) => v !== undefined);
-    for (const [key] of entries) {
+    const entries2 = Object.entries(value).filter(([, v]) => v !== undefined);
+    for (const [key] of entries2) {
       if (/^(0|[1-9][0-9]*)$/.test(key))
         throw new Error(`msgpack: integer-like key "${key}"`);
     }
-    packHeader(out, entries.length, 128, 15, [0, 222, 223]);
-    for (const [key, item] of entries) {
+    packHeader(out, entries2.length, 128, 15, [0, 222, 223]);
+    for (const [key, item] of entries2) {
       packValue(out, key);
       packValue(out, item);
     }
@@ -41767,7 +42071,7 @@ function checkActionIntent(action, opts) {
   if (!intent)
     return null;
   const { method, params: p } = intent;
-  const types2 = {
+  const types3 = {
     setup: "approveBuilderFee",
     open: "order",
     close: "order",
@@ -41778,7 +42082,7 @@ function checkActionIntent(action, opts) {
     tpsl: "order",
     scheduleCancel: "scheduleCancel"
   };
-  if (action.type !== types2[method])
+  if (action.type !== types3[method])
     return "action type does not match the requested method";
   if (opts.keyReduceOnly === true && method === "open")
     return "this key is reduce-only and an open is not reducing";
@@ -44315,9 +44619,9 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
       const { clear, ...rest } = args;
       const fields2 = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
       if (clear === true && Object.keys(fields2).length > 0)
-        return fail2("MCP_VALIDATION", "Pass clear: true alone, or the thresholds to set; not both.");
+        return fail3("MCP_VALIDATION", "Pass clear: true alone, or the thresholds to set; not both.");
       if (clear !== true && Object.keys(fields2).length === 0)
-        return fail2("MCP_VALIDATION", "Name at least one threshold, or pass clear: true.");
+        return fail3("MCP_VALIDATION", "Name at least one threshold, or pass clear: true.");
       const answer2 = await call(cfg, fetch2, "PUT", "/api/v1/agent/keys/self/perps-risk", {
         perpsRisk: clear === true ? null : fields2
       });
@@ -44328,7 +44632,7 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
     const now = Date.now();
     const start = tool === "candle_perps_account" ? sinceStart(args.since, now) : now;
     if (typeof start === "string")
-      return fail2("MCP_VALIDATION", start);
+      return fail3("MCP_VALIDATION", start);
     const net = network(env);
     const report = readPerpsRisk({
       fetcher: fetcherOf(fetch2),
@@ -44347,14 +44651,14 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
     }
     const risk = await report;
     if (risk.level === "unknown")
-      return fail2(risk.reason ?? "PERPS_READ_FAILED", "No level was computed.", { report: risk });
+      return fail3(risk.reason ?? "PERPS_READ_FAILED", "No level was computed.", { report: risk });
     return { text: JSON.stringify(risk) };
   } catch (error) {
     if (error instanceof Refusal)
       return error.tool;
     if (error instanceof HyperliquidReadError)
-      return fail2("PERPS_READ_FAILED", `${error.message}. No level was computed.`);
-    return fail2("PERPS_READ_FAILED", error instanceof Error ? error.message : "Hyperliquid read failed");
+      return fail3("PERPS_READ_FAILED", `${error.message}. No level was computed.`);
+    return fail3("PERPS_READ_FAILED", error instanceof Error ? error.message : "Hyperliquid read failed");
   }
 }
 async function positionsAdditions(cfg, fetch2, env, row2) {
@@ -44414,7 +44718,7 @@ var init_perps_risk = __esm(() => {
 // ../mcp/src/perps.ts
 import { createPrivateKey as createPrivateKey2, randomBytes as randomBytes6, sign as sign3 } from "node:crypto";
 import { readFile as readFile10 } from "node:fs/promises";
-function fail2(code, message, extra = {}) {
+function fail3(code, message, extra = {}) {
   return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true };
 }
 async function call(cfg, fetch2, method, path, body) {
@@ -44432,34 +44736,34 @@ async function call(cfg, fetch2, method, path, body) {
   }
   if (!res.ok) {
     if (res.status === 404 && (typeof parsed !== "object" || parsed === null))
-      throw new Refusal(fail2("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."));
+      throw new Refusal(fail3("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."));
     throw new Refusal({ text: typeof parsed === "string" ? parsed : JSON.stringify(parsed), isError: true });
   }
   if (typeof parsed !== "object" || parsed === null)
-    throw new Refusal(fail2("INVALID_RESPONSE", "Not a JSON object"));
+    throw new Refusal(fail3("INVALID_RESPONSE", "Not a JSON object"));
   return parsed;
 }
 async function walletFor(cfg, fetch2, name, scope) {
   const listed = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/trading");
   if (scope && !(Array.isArray(listed.scopes) && listed.scopes.includes(scope)))
-    throw new Refusal(fail2("SCOPE_MISSING", `The key needs ${scope}.`));
+    throw new Refusal(fail3("SCOPE_MISSING", `The key needs ${scope}.`));
   const rows = Array.isArray(listed.page) ? listed.page : [];
   const evm = rows.filter((row2) => row2.chain === "evm");
   const matches = name === undefined ? evm : evm.filter((row2) => row2.id === name || row2.label === name || row2.address.toLowerCase() === name.toLowerCase());
   if (matches.length !== 1)
-    throw new Refusal(fail2("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row2) => row2.label ?? row2.id).join(", ")}`));
+    throw new Refusal(fail3("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row2) => row2.label ?? row2.id).join(", ")}`));
   return { row: matches[0], appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" };
 }
 function builderPin(env) {
   try {
     return resolveHyperliquidBuilder(env.CANDLE_HYPERLIQUID_BUILDER);
   } catch (error) {
-    throw new Refusal(fail2("PERPS_BUILD_REFUSED", error.message));
+    throw new Refusal(fail3("PERPS_BUILD_REFUSED", error.message));
   }
 }
 async function executePerps(tool, args, cfg, env, fetch2) {
   if (!cfg.apiKey)
-    return fail2("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
+    return fail3("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
   if (isRiskTool(tool))
     return executePerpsRisk(tool, args, cfg, env, fetch2);
   const network2 = env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet";
@@ -44495,7 +44799,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         return { text: JSON.stringify(page) };
       } catch (error) {
         if (error instanceof PerpsHistoryError)
-          return fail2(error.code, error.message, {
+          return fail3(error.code, error.message, {
             ...error.extra.field ? { field: error.extra.field } : {},
             ...error.extra.retryable ? { retryable: true } : {},
             ...error.extra.retryAfterMs !== undefined ? { retryAfterMs: error.extra.retryAfterMs } : {}
@@ -44512,23 +44816,23 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     let method = path.split("/").at(-1);
     if (tool === "candle_perps_close") {
       if (fields2.pct !== undefined && fields2.size !== undefined)
-        return fail2("MCP_VALIDATION", "Give size or pct, not both.");
+        return fail3("MCP_VALIDATION", "Give size or pct, not both.");
       if (fields2.pct !== undefined && hyperliquidClosePct(fields2.pct) === null)
-        return fail2("MCP_VALIDATION", "pct must be above 0 and at most 100, with at most 4 decimals.");
+        return fail3("MCP_VALIDATION", "pct must be above 0 and at most 100, with at most 4 decimals.");
     }
     if (tool === "candle_perps_modify") {
       if (fields2.price === undefined && fields2.size === undefined)
-        return fail2("MCP_VALIDATION", "Give price, size, or both.");
+        return fail3("MCP_VALIDATION", "Give price, size, or both.");
       fields2 = { ...fields2, cloid: String(fields2.cloid).toLowerCase() };
     }
     if (tool === "candle_perps_margin") {
       if (fields2.amount === undefined === (fields2.mode === undefined))
-        return fail2("MCP_VALIDATION", "Give amount or mode, exactly one.");
+        return fail3("MCP_VALIDATION", "Give amount or mode, exactly one.");
       if (fields2.amount !== undefined) {
         if (fields2.leverage !== undefined)
-          return fail2("MCP_VALIDATION", "leverage goes with mode.");
+          return fail3("MCP_VALIDATION", "leverage goes with mode.");
         if (/^0+(\.0+)?$/.test(String(fields2.amount)))
-          return fail2("MCP_VALIDATION", "amount must be positive.");
+          return fail3("MCP_VALIDATION", "amount must be positive.");
         fields2 = { coin: fields2.coin, amount: fields2.amount };
         method = "margin";
       } else {
@@ -44544,33 +44848,33 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     if (tool === "candle_perps_schedule_cancel") {
       const clear = fields2.clear === true;
       if (clear === (fields2.seconds !== undefined))
-        return fail2("MCP_VALIDATION", "Give seconds, or clear: true.");
+        return fail3("MCP_VALIDATION", "Give seconds, or clear: true.");
       fields2 = clear ? { clear: true } : { seconds: fields2.seconds };
       method = "scheduleCancel";
     }
     if (tool === "candle_perps_tpsl") {
       const problem = perpsTpslParamsProblem(fields2);
       if (problem)
-        return fail2("MCP_VALIDATION", problem);
+        return fail3("MCP_VALIDATION", problem);
     }
     const willSubmit = args.submit !== false;
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
     let signerPem = null;
     if (willSubmit) {
       if (!pemFile)
-        return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
+        return fail3("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
       try {
         signerPem = await readFile10(pemFile, "utf8");
         createPrivateKey2(signerPem);
       } catch {
-        return fail2("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
+        return fail3("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
       }
     }
     const { row: row2, appId } = await walletFor(cfg, fetch2, name, "perps:write");
     const builder = builderPin(env);
     const relaySign2 = async (typedData) => {
       if (signerPem === null || !appId || !row2.privyWalletId)
-        throw new Refusal(fail2("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers."));
+        throw new Refusal(fail3("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers."));
       const body = hyperliquidRelayBody(typedData);
       const payload = hyperliquidCanonicalJson({
         body,
@@ -44585,7 +44889,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         body
       });
       if (typeof relay.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(relay.signature))
-        throw new Refusal(fail2("INVALID_RESPONSE", "The relay did not return a signature."));
+        throw new Refusal(fail3("INVALID_RESPONSE", "The relay did not return a signature."));
       return relay.signature;
     };
     if (tool === "candle_perps_tpsl" || tool === "candle_perps_flatten") {
@@ -44610,7 +44914,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         return { text: JSON.stringify(result), ...failed ? { isError: true } : {} };
       } catch (error) {
         if (error instanceof PerpsWorkflowError)
-          return fail2(error.code, error.message, error.details);
+          return fail3(error.code, error.message, error.details);
         throw error;
       }
     }
@@ -44619,10 +44923,10 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       try {
         mode = await hyperliquidAccountMode(fetch2, network2, row2.address);
       } catch (error) {
-        return fail2("PERPS_UNAVAILABLE", `${error instanceof Error ? error.message : "Cannot read the account mode"}. Nothing was requested.`);
+        return fail3("PERPS_UNAVAILABLE", `${error instanceof Error ? error.message : "Cannot read the account mode"}. Nothing was requested.`);
       }
       if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
-        return fail2("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`, { mode });
+        return fail3("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`, { mode });
     }
     const build = await call(cfg, fetch2, "POST", path, {
       walletId: row2.id,
@@ -44639,17 +44943,17 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     if (method === "setup") {
       const problem = perpsSetupStatusProblem(build, { network: network2, address: row2.address, builder, mode });
       if (problem)
-        return fail2("PERPS_BUILD_REFUSED", `Refused this setup answer: ${problem}. Nothing was signed.`);
+        return fail3("PERPS_BUILD_REFUSED", `Refused this setup answer: ${problem}. Nothing was signed.`);
     }
     if (build.ready === true)
       return { text: JSON.stringify(build) };
     if (build.replayed === true) {
       if (clientId2 === undefined || build.clientId !== clientId2 || build.walletId !== row2.id)
-        return fail2("PERPS_BUILD_REFUSED", "Refused a replay that does not name this request's client id and wallet. Nothing was signed.");
+        return fail3("PERPS_BUILD_REFUSED", "Refused a replay that does not name this request's client id and wallet. Nothing was signed.");
       return { text: JSON.stringify(build) };
     }
     if (clientId2 !== undefined && (build.clientId !== clientId2 || build.cloid !== clientId2))
-      return fail2("PERPS_CLIENT_ID_UNSUPPORTED", "This Candle API did not echo the client order id, so a retry could not be recognized. Nothing was signed.");
+      return fail3("PERPS_CLIENT_ID_UNSUPPORTED", "This Candle API did not echo the client order id, so a retry could not be recognized. Nothing was signed.");
     const verifyOpts = {
       builder,
       network: network2,
@@ -44659,7 +44963,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     };
     const check = method === "setup" ? verifyPerpsBuild(build, verifyOpts) : await verifyPerpsBuildAgainstVenue(build, { ...verifyOpts, fetcher: fetch2 });
     if (!check.ok)
-      return fail2("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
+      return fail3("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
     const signature = await relaySign2(build.typedData);
@@ -44676,7 +44980,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         throw new Error(`HTTP ${res.status}`);
       exchange = JSON.parse(text2);
     } catch (error) {
-      return fail2("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`, { perpOrderId: build.perpOrderId, exchangeBody });
+      return fail3("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`, { perpOrderId: build.perpOrderId, exchangeBody });
     }
     const outcome = hyperliquidExchangeOutcome(exchange);
     const accepted = outcome.status === "confirmed";
@@ -44705,13 +45009,13 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       Object.assign(extra, { requestedMode: fields2.mode, confirmedMode });
     }
     if (outcome.status === "rejected" && method === "scheduleCancel")
-      return fail2("PERPS_SCHEDULE_CANCEL_REJECTED", `Hyperliquid refused the scheduled cancel: ${outcome.error}`, {
+      return fail3("PERPS_SCHEDULE_CANCEL_REJECTED", `Hyperliquid refused the scheduled cancel: ${outcome.error}`, {
         limit: "scheduleCancel",
         perpOrderId: build.perpOrderId,
         exchange
       });
     if (outcome.status === "unknown")
-      return fail2("PERPS_SUBMIT_FAILED", `Hyperliquid's answer could not be read (${outcome.error}); reconcile before acting again.`, {
+      return fail3("PERPS_SUBMIT_FAILED", `Hyperliquid's answer could not be read (${outcome.error}); reconcile before acting again.`, {
         perpOrderId: build.perpOrderId,
         exchangeBody,
         exchange
@@ -44737,12 +45041,12 @@ async function executePerps(tool, args, cfg, env, fetch2) {
   } catch (error) {
     if (error instanceof Refusal)
       return error.tool;
-    return fail2("MCP_TRANSPORT", error instanceof Error ? error.message : "The perps call failed.");
+    return fail3("MCP_TRANSPORT", error instanceof Error ? error.message : "The perps call failed.");
   }
 }
 async function executeReduceOnly(args, cfg, fetch2) {
   if (args.on === false)
-    return fail2("LOOSEN_REQUIRES_SESSION", "This tool holds only the agent credential, which may turn reduce-only on and never off. The owner turns it off: candle perps reduce-only off --key <prefix>.");
+    return fail3("LOOSEN_REQUIRES_SESSION", "This tool holds only the agent credential, which may turn reduce-only on and never off. The owner turns it off: candle perps reduce-only off --key <prefix>.");
   if (args.on === true) {
     const result = await call(cfg, fetch2, "PUT", "/api/v1/agent/keys/self/perps-reduce-only", { perpsReduceOnly: true });
     return { text: JSON.stringify(result) };
@@ -44760,7 +45064,7 @@ function pickWallet(rows, chain2, name, what) {
   const onChain = rows.filter((row2) => row2.chain === chain2);
   const matches = name === undefined ? onChain : onChain.filter((row2) => row2.id === name || row2.label === name || row2.address.toLowerCase() === name.toLowerCase());
   if (matches.length !== 1)
-    throw new Refusal(fail2("TEE_WALLET_REQUIRED", onChain.length === 0 ? `This key has no ${what} bound to it.` : `Name exactly one ${what}: ${onChain.map((row2) => row2.label ?? row2.id).join(", ")}`));
+    throw new Refusal(fail3("TEE_WALLET_REQUIRED", onChain.length === 0 ? `This key has no ${what} bound to it.` : `Name exactly one ${what}: ${onChain.map((row2) => row2.label ?? row2.id).join(", ")}`));
   return matches[0];
 }
 function depositProblem(build, expect) {
@@ -44787,14 +45091,14 @@ function depositProblem(build, expect) {
 }
 async function executePerpsDeposit(args, cfg, env, fetch2) {
   if (!cfg.apiKey)
-    return fail2("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
+    return fail3("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
   const asset = args.asset;
   const spec = DEPOSIT_ASSETS[asset];
   if (!spec)
-    return fail2("MCP_VALIDATION", "asset must be SOL, USDC, ETH or USDG.");
+    return fail3("MCP_VALIDATION", "asset must be SOL, USDC, ETH or USDG.");
   const amountRaw = typeof args.amount === "string" ? rawUnits(args.amount, spec.decimals) : null;
   if (!amountRaw)
-    return fail2("MCP_VALIDATION", `amount must be a positive ${asset} amount with at most ${spec.decimals} decimals.`);
+    return fail3("MCP_VALIDATION", `amount must be a positive ${asset} amount with at most ${spec.decimals} decimals.`);
   const hood = spec.chain === "evm";
   const clientDepositId = typeof args.clientDepositId === "string" ? args.clientDepositId : `deposit-${crypto.randomUUID()}`;
   const willSubmit = args.submit !== false;
@@ -44802,24 +45106,24 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
   if (willSubmit) {
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
     if (!pemFile)
-      return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
+      return fail3("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
     try {
       signerPem = await readFile10(pemFile, "utf8");
       createPrivateKey2(signerPem);
     } catch {
-      return fail2("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
+      return fail3("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
     }
   }
   try {
     const listed = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/trading");
     if (!(Array.isArray(listed.scopes) && listed.scopes.includes("swap:write")))
-      throw new Refusal(fail2("SCOPE_MISSING", "A deposit needs swap:write on the key."));
+      throw new Refusal(fail3("SCOPE_MISSING", "A deposit needs swap:write on the key."));
     const rows = Array.isArray(listed.page) ? listed.page : [];
     const appId = typeof listed.privyAppId === "string" ? listed.privyAppId : "";
     const name = typeof args.wallet === "string" ? args.wallet : undefined;
     const source = pickWallet(rows, spec.chain, name, `${hood ? "Hood" : "Solana"} TEE wallet`);
     if (hood && args.perpsWallet !== undefined)
-      return fail2("MCP_VALIDATION", "From a Hood TEE wallet the deposit lands on that wallet's own account; omit perpsWallet.");
+      return fail3("MCP_VALIDATION", "From a Hood TEE wallet the deposit lands on that wallet's own account; omit perpsWallet.");
     const account = hood ? source : pickWallet(rows, "evm", typeof args.perpsWallet === "string" ? args.perpsWallet : undefined, "EVM TEE wallet");
     const build = await call(cfg, fetch2, "POST", "/api/v1/agent/perps/deposit", {
       clientDepositId,
@@ -44834,13 +45138,13 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
       return { text: JSON.stringify(build) };
     const problem = depositProblem(build, { walletId: source.id, asset, amountRaw, account: account.address, hood });
     if (problem)
-      return fail2("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem}. Nothing was signed.`);
+      return fail3("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem}. Nothing was signed.`);
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
     if (build.preview === true || typeof build.depositId !== "string")
-      return fail2("PERPS_BUILD_REFUSED", "Refused to sign this deposit: Candle answered a preview. Nothing was signed.");
+      return fail3("PERPS_BUILD_REFUSED", "Refused to sign this deposit: Candle answered a preview. Nothing was signed.");
     if (!appId || !source.privyWalletId)
-      return fail2("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.");
+      return fail3("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.");
     const pem = signerPem;
     const relaySign2 = async (body2) => {
       const payload = hyperliquidCanonicalJson({
@@ -44856,7 +45160,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
         body: body2
       });
       if (typeof relay.signedTransaction !== "string")
-        throw new Refusal(fail2("INVALID_RESPONSE", "The relay did not return a signed transaction."));
+        throw new Refusal(fail3("INVALID_RESPONSE", "The relay did not return a signed transaction."));
       return relay.signedTransaction;
     };
     const ids = { clientDepositId, depositId: build.depositId };
@@ -44877,7 +45181,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
       const leg = body.nextLeg;
       const kind = String(body.legKind);
       if (!leg || body.operationId !== build.operationId || body.plannedLegCount !== planned || typeof planned !== "number" || planned > allowed.length || !allowed.includes(kind) || signedKinds.has(kind) || leg.chainId !== 4663)
-        return fail2("PERPS_BUILD_REFUSED", `Refused to sign deposit leg ${kind}: it is not the plan this deposit was built with.`, { clientDepositId, operationId: build.operationId });
+        return fail3("PERPS_BUILD_REFUSED", `Refused to sign deposit leg ${kind}: it is not the plan this deposit was built with.`, { clientDepositId, operationId: build.operationId });
       signedKinds.add(kind);
       const signed = await relaySign2({
         method: "eth_signTransaction",
@@ -44906,7 +45210,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
   } catch (error) {
     if (error instanceof Refusal)
       return error.tool;
-    return fail2("MCP_TRANSPORT", error instanceof Error ? error.message : "The deposit call failed.");
+    return fail3("MCP_TRANSPORT", error instanceof Error ? error.message : "The deposit call failed.");
   }
 }
 var PERPS_RISK_TOOL_NAMES, PERPS_TOOL_NAMES, isRiskTool = (tool) => PERPS_RISK_TOOL_NAMES.includes(tool), decimal3, wallet2, submit, clientId, epochMs, history = (max) => ({
@@ -49449,37 +49753,37 @@ var require_dataType = __commonJS((exports) => {
     DataType2[DataType2["Wrong"] = 1] = "Wrong";
   })(DataType || (exports.DataType = DataType = {}));
   function getSchemaTypes(schema) {
-    const types2 = getJSONTypes(schema.type);
-    const hasNull = types2.includes("null");
+    const types3 = getJSONTypes(schema.type);
+    const hasNull = types3.includes("null");
     if (hasNull) {
       if (schema.nullable === false)
         throw new Error("type: null contradicts nullable: false");
     } else {
-      if (!types2.length && schema.nullable !== undefined) {
+      if (!types3.length && schema.nullable !== undefined) {
         throw new Error('"nullable" cannot be used without "type"');
       }
       if (schema.nullable === true)
-        types2.push("null");
+        types3.push("null");
     }
-    return types2;
+    return types3;
   }
   exports.getSchemaTypes = getSchemaTypes;
   function getJSONTypes(ts) {
-    const types2 = Array.isArray(ts) ? ts : ts ? [ts] : [];
-    if (types2.every(rules_1.isJSONType))
-      return types2;
-    throw new Error("type must be JSONType or JSONType[]: " + types2.join(","));
+    const types3 = Array.isArray(ts) ? ts : ts ? [ts] : [];
+    if (types3.every(rules_1.isJSONType))
+      return types3;
+    throw new Error("type must be JSONType or JSONType[]: " + types3.join(","));
   }
   exports.getJSONTypes = getJSONTypes;
-  function coerceAndCheckDataType(it, types2) {
+  function coerceAndCheckDataType(it, types3) {
     const { gen: gen2, data, opts } = it;
-    const coerceTo = coerceToTypes(types2, opts.coerceTypes);
-    const checkTypes = types2.length > 0 && !(coerceTo.length === 0 && types2.length === 1 && (0, applicability_1.schemaHasRulesForType)(it, types2[0]));
+    const coerceTo = coerceToTypes(types3, opts.coerceTypes);
+    const checkTypes = types3.length > 0 && !(coerceTo.length === 0 && types3.length === 1 && (0, applicability_1.schemaHasRulesForType)(it, types3[0]));
     if (checkTypes) {
-      const wrongType = checkDataTypes(types2, data, opts.strictNumbers, DataType.Wrong);
+      const wrongType = checkDataTypes(types3, data, opts.strictNumbers, DataType.Wrong);
       gen2.if(wrongType, () => {
         if (coerceTo.length)
-          coerceData(it, types2, coerceTo);
+          coerceData(it, types3, coerceTo);
         else
           reportTypeError(it);
       });
@@ -49488,15 +49792,15 @@ var require_dataType = __commonJS((exports) => {
   }
   exports.coerceAndCheckDataType = coerceAndCheckDataType;
   var COERCIBLE = new Set(["string", "number", "integer", "boolean", "null"]);
-  function coerceToTypes(types2, coerceTypes) {
-    return coerceTypes ? types2.filter((t) => COERCIBLE.has(t) || coerceTypes === "array" && t === "array") : [];
+  function coerceToTypes(types3, coerceTypes) {
+    return coerceTypes ? types3.filter((t) => COERCIBLE.has(t) || coerceTypes === "array" && t === "array") : [];
   }
-  function coerceData(it, types2, coerceTo) {
+  function coerceData(it, types3, coerceTo) {
     const { gen: gen2, data, opts } = it;
     const dataType = gen2.let("dataType", (0, codegen_1._)`typeof ${data}`);
     const coerced = gen2.let("coerced", (0, codegen_1._)`undefined`);
     if (opts.coerceTypes === "array") {
-      gen2.if((0, codegen_1._)`${dataType} == 'object' && Array.isArray(${data}) && ${data}.length == 1`, () => gen2.assign(data, (0, codegen_1._)`${data}[0]`).assign(dataType, (0, codegen_1._)`typeof ${data}`).if(checkDataTypes(types2, data, opts.strictNumbers), () => gen2.assign(coerced, data)));
+      gen2.if((0, codegen_1._)`${dataType} == 'object' && Array.isArray(${data}) && ${data}.length == 1`, () => gen2.assign(data, (0, codegen_1._)`${data}[0]`).assign(dataType, (0, codegen_1._)`typeof ${data}`).if(checkDataTypes(types3, data, opts.strictNumbers), () => gen2.assign(coerced, data)));
     }
     gen2.if((0, codegen_1._)`${coerced} !== undefined`);
     for (const t of coerceTo) {
@@ -49572,19 +49876,19 @@ var require_dataType = __commonJS((exports) => {
       return checkDataType(dataTypes[0], data, strictNums, correct);
     }
     let cond;
-    const types2 = (0, util_1.toHash)(dataTypes);
-    if (types2.array && types2.object) {
+    const types3 = (0, util_1.toHash)(dataTypes);
+    if (types3.array && types3.object) {
       const notObj = (0, codegen_1._)`typeof ${data} != "object"`;
-      cond = types2.null ? notObj : (0, codegen_1._)`!${data} || ${notObj}`;
-      delete types2.null;
-      delete types2.array;
-      delete types2.object;
+      cond = types3.null ? notObj : (0, codegen_1._)`!${data} || ${notObj}`;
+      delete types3.null;
+      delete types3.array;
+      delete types3.object;
     } else {
       cond = codegen_1.nil;
     }
-    if (types2.number)
-      delete types2.integer;
-    for (const t in types2)
+    if (types3.number)
+      delete types3.integer;
+    for (const t in types3)
       cond = (0, codegen_1.and)(cond, checkDataType(t, data, strictNums, correct));
     return cond;
   }
@@ -50372,9 +50676,9 @@ var require_validate = __commonJS((exports) => {
   function typeAndKeywords(it, errsCount) {
     if (it.opts.jtd)
       return schemaKeywords(it, [], false, errsCount);
-    const types2 = (0, dataType_1.getSchemaTypes)(it.schema);
-    const checkedTypes = (0, dataType_1.coerceAndCheckDataType)(it, types2);
-    schemaKeywords(it, types2, !checkedTypes, errsCount);
+    const types3 = (0, dataType_1.getSchemaTypes)(it.schema);
+    const checkedTypes = (0, dataType_1.coerceAndCheckDataType)(it, types3);
+    schemaKeywords(it, types3, !checkedTypes, errsCount);
   }
   function checkRefsAndKeywords(it) {
     const { schema, errSchemaPath, opts, self } = it;
@@ -50424,7 +50728,7 @@ var require_validate = __commonJS((exports) => {
     if (items instanceof codegen_1.Name)
       gen2.assign((0, codegen_1._)`${evaluated}.items`, items);
   }
-  function schemaKeywords(it, types2, typeErrors, errsCount) {
+  function schemaKeywords(it, types3, typeErrors, errsCount) {
     const { gen: gen2, schema, data, allErrors, opts, self } = it;
     const { RULES } = self;
     if (schema.$ref && (opts.ignoreKeywordsWithRef || !(0, util_1.schemaHasRulesButRef)(schema, RULES))) {
@@ -50432,7 +50736,7 @@ var require_validate = __commonJS((exports) => {
       return;
     }
     if (!opts.jtd)
-      checkStrictTypes(it, types2);
+      checkStrictTypes(it, types3);
     gen2.block(() => {
       for (const group of RULES.rules)
         groupKeywords(group);
@@ -50444,7 +50748,7 @@ var require_validate = __commonJS((exports) => {
       if (group.type) {
         gen2.if((0, dataType_2.checkDataType)(group.type, data, opts.strictNumbers));
         iterateKeywords(it, group);
-        if (types2.length === 1 && types2[0] === group.type && typeErrors) {
+        if (types3.length === 1 && types3[0] === group.type && typeErrors) {
           gen2.else();
           (0, dataType_2.reportTypeError)(it);
         }
@@ -50468,27 +50772,27 @@ var require_validate = __commonJS((exports) => {
       }
     });
   }
-  function checkStrictTypes(it, types2) {
+  function checkStrictTypes(it, types3) {
     if (it.schemaEnv.meta || !it.opts.strictTypes)
       return;
-    checkContextTypes(it, types2);
+    checkContextTypes(it, types3);
     if (!it.opts.allowUnionTypes)
-      checkMultipleTypes(it, types2);
+      checkMultipleTypes(it, types3);
     checkKeywordTypes(it, it.dataTypes);
   }
-  function checkContextTypes(it, types2) {
-    if (!types2.length)
+  function checkContextTypes(it, types3) {
+    if (!types3.length)
       return;
     if (!it.dataTypes.length) {
-      it.dataTypes = types2;
+      it.dataTypes = types3;
       return;
     }
-    types2.forEach((t) => {
+    types3.forEach((t) => {
       if (!includesType(it.dataTypes, t)) {
         strictTypesError(it, `type "${t}" not allowed by context "${it.dataTypes.join(",")}"`);
       }
     });
-    narrowSchemaTypes(it, types2);
+    narrowSchemaTypes(it, types3);
   }
   function checkMultipleTypes(it, ts) {
     if (ts.length > 1 && !(ts.length === 2 && ts.includes("null"))) {
@@ -55631,15 +55935,15 @@ function parseUnionDef(def, refs) {
     return asAnyOf(def, refs);
   const options = def.options instanceof Map ? Array.from(def.options.values()) : def.options;
   if (options.every((x) => (x._def.typeName in primitiveMappings) && (!x._def.checks || !x._def.checks.length))) {
-    const types2 = options.reduce((types3, x) => {
+    const types3 = options.reduce((types4, x) => {
       const type = primitiveMappings[x._def.typeName];
-      return type && !types3.includes(type) ? [...types3, type] : types3;
+      return type && !types4.includes(type) ? [...types4, type] : types4;
     }, []);
     return {
-      type: types2.length > 1 ? types2 : types2[0]
+      type: types3.length > 1 ? types3 : types3[0]
     };
   } else if (options.every((x) => x._def.typeName === "ZodLiteral" && !x.description)) {
-    const types2 = options.reduce((acc, x) => {
+    const types3 = options.reduce((acc, x) => {
       const type = typeof x._def.value;
       switch (type) {
         case "string":
@@ -55658,8 +55962,8 @@ function parseUnionDef(def, refs) {
           return acc;
       }
     }, []);
-    if (types2.length === options.length) {
-      const uniqueTypes = types2.filter((x, i, a) => a.indexOf(x) === i);
+    if (types3.length === options.length) {
+      const uniqueTypes = types3.filter((x, i, a) => a.indexOf(x) === i);
       return {
         type: uniqueTypes.length > 1 ? uniqueTypes : uniqueTypes[0],
         enum: options.reduce((acc, x) => {
@@ -64726,9 +65030,9 @@ var init_types3 = __esm(() => {
       return this._def.options;
     }
   };
-  ZodUnion2.create = (types2, params) => {
+  ZodUnion2.create = (types4, params) => {
     return new ZodUnion2({
-      options: types2,
+      options: types4,
       typeName: ZodFirstPartyTypeKind2.ZodUnion,
       ...processCreateParams3(params)
     });
@@ -65974,7 +66278,7 @@ __export(exports_util, {
   joinValues: () => joinValues,
   issue: () => issue,
   isPlainObject: () => isPlainObject2,
-  isObject: () => isObject7,
+  isObject: () => isObject9,
   hexToUint8Array: () => hexToUint8Array,
   getSizableOrigin: () => getSizableOrigin,
   getParsedType: () => getParsedType3,
@@ -66019,9 +66323,9 @@ function assertNever(_x) {
   throw new Error("Unexpected value in exhaustive check");
 }
 function assert(_) {}
-function getEnumValues(entries) {
-  const numericValues = Object.values(entries).filter((v) => typeof v === "number");
-  const values = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
+function getEnumValues(entries3) {
+  const numericValues = Object.values(entries3).filter((v) => typeof v === "number");
+  const values = Object.entries(entries3).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
   return values;
 }
 function joinValues(array2, separator = "|") {
@@ -66141,11 +66445,11 @@ function esc(str2) {
 function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
-function isObject7(data) {
+function isObject9(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 function isPlainObject2(o) {
-  if (isObject7(o) === false)
+  if (isObject9(o) === false)
     return false;
   const ctor = o.constructor;
   if (ctor === undefined)
@@ -66153,7 +66457,7 @@ function isPlainObject2(o) {
   if (typeof ctor !== "function")
     return true;
   const prot = ctor.prototype;
-  if (isObject7(prot) === false)
+  if (isObject9(prot) === false)
     return false;
   if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) {
     return false;
@@ -68034,13 +68338,13 @@ var init_schemas = __esm(() => {
       }
       return propValues;
     });
-    const isObject8 = isObject7;
+    const isObject10 = isObject9;
     const catchall = def.catchall;
     let value;
     inst._zod.parse = (payload, ctx) => {
       value ?? (value = _normalized.value);
       const input = payload.value;
-      if (!isObject8(input)) {
+      if (!isObject10(input)) {
         payload.issues.push({
           expected: "object",
           code: "invalid_type",
@@ -68138,7 +68442,7 @@ var init_schemas = __esm(() => {
       return (payload, ctx) => fn(shape, payload, ctx);
     };
     let fastpass;
-    const isObject8 = isObject7;
+    const isObject10 = isObject9;
     const jit = !globalConfig.jitless;
     const allowsEval2 = allowsEval;
     const fastEnabled = jit && allowsEval2.value;
@@ -68147,7 +68451,7 @@ var init_schemas = __esm(() => {
     inst._zod.parse = (payload, ctx) => {
       value ?? (value = _normalized.value);
       const input = payload.value;
-      if (!isObject8(input)) {
+      if (!isObject10(input)) {
         payload.issues.push({
           expected: "object",
           code: "invalid_type",
@@ -68251,7 +68555,7 @@ var init_schemas = __esm(() => {
     });
     inst._zod.parse = (payload, ctx) => {
       const input = payload.value;
-      if (!isObject7(input)) {
+      if (!isObject9(input)) {
         payload.issues.push({
           code: "invalid_type",
           expected: "object",
@@ -68811,14 +69115,14 @@ class $ZodRegistry {
     return this._map.has(schema);
   }
 }
-function registry2() {
+function registry4() {
   return new $ZodRegistry;
 }
 var _a, $output, $input, globalRegistry;
 var init_registries = __esm(() => {
   $output = Symbol("ZodOutput");
   $input = Symbol("ZodInput");
-  (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
+  (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry4());
   globalRegistry = globalThis.__zod_globalRegistry;
 });
 
@@ -69644,21 +69948,21 @@ var init_to_json_schema = __esm(() => {
 // ../../node_modules/@modelcontextprotocol/sdk/node_modules/zod/v4/core/json-schema-processors.js
 function toJSONSchema(input, params) {
   if ("_idmap" in input) {
-    const registry3 = input;
+    const registry5 = input;
     const ctx2 = initializeContext({ ...params, processors: allProcessors });
     const defs = {};
-    for (const entry of registry3._idmap.entries()) {
+    for (const entry of registry5._idmap.entries()) {
       const [_, schema] = entry;
       process3(schema, ctx2);
     }
     const schemas = {};
     const external4 = {
-      registry: registry3,
+      registry: registry5,
       uri: params?.uri,
       defs
     };
     ctx2.external = external4;
-    for (const entry of registry3._idmap.entries()) {
+    for (const entry of registry5._idmap.entries()) {
       const [key, schema] = entry;
       extractDefs(ctx2, schema);
       schemas[key] = finalize(ctx2, schema);
@@ -70583,10 +70887,10 @@ function record6(keyType, valueType, params) {
   });
 }
 function _enum(values, params) {
-  const entries = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
+  const entries3 = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
   return new ZodEnum3({
     type: "enum",
-    entries,
+    entries: entries3,
     ...exports_util.normalizeParams(params)
   });
 }
@@ -81019,7 +81323,7 @@ function isRefusal(code, tool) {
 async function capture(tools, options) {
   const { registerToolSubset: registerToolSubset2 } = await Promise.resolve().then(() => (init_tools(), exports_tools));
   const captured = new Map;
-  const registry2 = {
+  const registry3 = {
     registerTool(name, definition, handler) {
       captured.set(name, { name, ...definition, handler });
       return { enable() {}, disable() {}, remove() {}, update() {} };
@@ -81027,7 +81331,7 @@ async function capture(tools, options) {
   };
   const doFetch = options.fetch;
   const observe = options.onResponse;
-  registerToolSubset2(registry2, {
+  registerToolSubset2(registry3, {
     tools,
     getConfig: () => ({ apiUrl: options.apiUrl, apiKey: options.apiKey }),
     ...doFetch || observe ? {
@@ -86614,8 +86918,8 @@ async function teeSignerRemove(args, ctx) {
     keyPrefix = view.keyPrefix;
     auth = { apiKey };
   }
-  const entries = await localKeySigners(deps, keyPrefix);
-  if (entries.length === 0) {
+  const entries2 = await localKeySigners(deps, keyPrefix);
+  if (entries2.length === 0) {
     writeScreenLocalFailure(deps, {
       code: "KEY_SIGNER_NOT_LOCAL",
       message: `This machine holds no key signer for key ${keyPrefix}.`,
@@ -86625,7 +86929,7 @@ async function teeSignerRemove(args, ctx) {
   }
   const removed = [];
   const kept = [];
-  for (const entry of entries) {
+  for (const entry of entries2) {
     const result = await retireSigner(ctx, auth, keyPrefix, {
       spkiSha256: entry.spkiSha256,
       ...entry.signerQuorumId ? { signerQuorumId: entry.signerQuorumId } : {}
@@ -86685,8 +86989,8 @@ async function teeSignerRemove(args, ctx) {
 async function keySignerDoctorReport(ctx, creds) {
   const { deps } = ctx;
   const rows = [];
-  const entries = await localKeySigners(deps);
-  if (entries.length === 0)
+  const entries2 = await localKeySigners(deps);
+  if (entries2.length === 0)
     return { rows, hasSigners: false, reachableWalletIds: [], locked: false };
   let view = null;
   if (creds.apiKey !== undefined) {
@@ -86697,7 +87001,7 @@ async function keySignerDoctorReport(ctx, creds) {
   const problems = [];
   const readableQuorums = new Set;
   let locked = false;
-  for (const entry of entries) {
+  for (const entry of entries2) {
     const ref = keySignerRef(entry.keyPrefix, entry.spkiSha256);
     let stored;
     try {
@@ -86718,7 +87022,7 @@ async function keySignerDoctorReport(ctx, creds) {
       readableQuorums.add(entry.signerQuorumId);
   }
   if (creds.apiKey !== undefined && view !== null) {
-    const quorums = new Set(entries.flatMap((e) => e.signerQuorumId ? [e.signerQuorumId] : []));
+    const quorums = new Set(entries2.flatMap((e) => e.signerQuorumId ? [e.signerQuorumId] : []));
     for (const wallet3 of allSignerWallets(view)) {
       if (wallet3.signerQuorumId && quorums.has(wallet3.signerQuorumId))
         continue;
@@ -86740,24 +87044,24 @@ async function keySignerDoctorReport(ctx, creds) {
   }
   for (const problem of problems)
     rows.push({ check: "Signer slot", state: "FAIL", detail: problem });
-  if (entries.length > 0 && problems.length === 0) {
+  if (entries2.length > 0 && problems.length === 0) {
     rows.push({
       check: "Key signers",
       state: "PASS",
-      detail: entries.map((e) => `${e.keyPrefix} ${e.fingerprint}${e.signerQuorumId === undefined ? " (pending)" : ""}`).join(", ")
+      detail: entries2.map((e) => `${e.keyPrefix} ${e.fingerprint}${e.signerQuorumId === undefined ? " (pending)" : ""}`).join(", ")
     });
   }
   const active = view !== null ? activeSigner(view) : null;
-  if (active !== null && !entries.some((e) => e.spkiSha256 === active.spkiSha256)) {
+  if (active !== null && !entries2.some((e) => e.spkiSha256 === active.spkiSha256)) {
     rows.push({
       check: "Key signer",
       state: "WARN",
       detail: `key ${view?.keyPrefix}'s active signer ${active.fingerprint} is not on this machine; its wallets trade from the machine that holds it`
     });
   }
-  if (creds.deviceToken !== undefined && entries.length > 0) {
-    const idle = creds.role === undefined ? null : await localSignersIdle(ctx, entries, view, creds);
-    const prefixes = [...new Set(entries.map((entry) => entry.keyPrefix))];
+  if (creds.deviceToken !== undefined && entries2.length > 0) {
+    const idle = creds.role === undefined ? null : await localSignersIdle(ctx, entries2, view, creds);
+    const prefixes = [...new Set(entries2.map((entry) => entry.keyPrefix))];
     rows.push({
       check: "Device token beside signer",
       state: "WARN",
@@ -86767,9 +87071,9 @@ async function keySignerDoctorReport(ctx, creds) {
   const reachableWalletIds = view === null ? [] : allSignerWallets(view).filter((wallet3) => wallet3.signerQuorumId && readableQuorums.has(wallet3.signerQuorumId)).map((wallet3) => wallet3.id);
   return { rows, hasSigners: true, reachableWalletIds, locked };
 }
-async function localSignersIdle(ctx, entries, selfView, creds) {
+async function localSignersIdle(ctx, entries2, selfView, creds) {
   const views = new Map;
-  for (const prefix of new Set(entries.map((entry) => entry.keyPrefix))) {
+  for (const prefix of new Set(entries2.map((entry) => entry.keyPrefix))) {
     if (selfView?.keyPrefix === prefix) {
       views.set(prefix, selfView);
       continue;
@@ -86782,7 +87086,7 @@ async function localSignersIdle(ctx, entries, selfView, creds) {
     views.set(prefix, read?.ok ? read.body : null);
   }
   let idle = true;
-  for (const entry of entries) {
+  for (const entry of entries2) {
     if (!entry.signerQuorumId)
       continue;
     const loaded = views.get(entry.keyPrefix);
@@ -95238,13 +95542,13 @@ function packValue2(out, value) {
     for (const item of value)
       packValue2(out, item);
   } else if (typeof value === "object") {
-    const entries = Object.entries(value).filter(([, v]) => v !== undefined);
-    for (const [key] of entries) {
+    const entries2 = Object.entries(value).filter(([, v]) => v !== undefined);
+    for (const [key] of entries2) {
       if (/^(0|[1-9][0-9]*)$/.test(key))
         throw new Error(`msgpack: integer-like key "${key}"`);
     }
-    packHeader2(out, entries.length, 128, 15, [0, 222, 223]);
-    for (const [key, item] of entries) {
+    packHeader2(out, entries2.length, 128, 15, [0, 222, 223]);
+    for (const [key, item] of entries2) {
       packValue2(out, key);
       packValue2(out, item);
     }
@@ -95464,7 +95768,7 @@ function checkActionIntent2(action, opts) {
   if (!intent)
     return null;
   const { method, params: p } = intent;
-  const types2 = {
+  const types3 = {
     setup: "approveBuilderFee",
     open: "order",
     close: "order",
@@ -95475,7 +95779,7 @@ function checkActionIntent2(action, opts) {
     tpsl: "order",
     scheduleCancel: "scheduleCancel"
   };
-  if (action.type !== types2[method])
+  if (action.type !== types3[method])
     return "action type does not match the requested method";
   if (opts.keyReduceOnly === true && method === "open")
     return "this key is reduce-only and an open is not reducing";
@@ -100245,7 +100549,7 @@ function parseSendAssetAmount(value, form) {
     return null;
   return BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, "0"));
 }
-function isObject(value) {
+function isObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function exactKeys3(value, keys) {
@@ -100255,16 +100559,16 @@ function exactKeys3(value, keys) {
 function sameEvm(a, b) {
   return typeof a === "string" && EVM_ADDRESS_RE5.test(a) && a.toLowerCase() === b.toLowerCase();
 }
-function typesMatch(types2, expected) {
-  if (!isObject(types2) || !exactKeys3(types2, Object.keys(expected)))
+function typesMatch(types3, expected) {
+  if (!isObject2(types3) || !exactKeys3(types3, Object.keys(expected)))
     return false;
   return Object.entries(expected).every(([key, want]) => {
-    const fields2 = types2[key];
-    return Array.isArray(fields2) && fields2.length === want.length && fields2.every((field, i) => isObject(field) && exactKeys3(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
+    const fields2 = types3[key];
+    return Array.isArray(fields2) && fields2.length === want.length && fields2.every((field, i) => isObject2(field) && exactKeys3(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
   });
 }
 function domainMatches(domain, expected) {
-  return isObject(domain) && exactKeys3(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
+  return isObject2(domain) && exactKeys3(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
 }
 function verifyWithdrawMapping(build, expect) {
   const refuse3 = (reason) => ({ ok: false, reason });
@@ -100283,14 +100587,14 @@ function verifyWithdrawMapping(build, expect) {
   if (parseWithdrawAmount(build.amountUsdc) !== expect.amountMicros)
     return refuse3("the build is for another amount");
   const typed = build.typedData;
-  if (!isObject(typed) || typed.primary_type !== "NonceMapping")
+  if (!isObject2(typed) || typed.primary_type !== "NonceMapping")
     return refuse3("the typed data is not a NonceMapping");
   if (!domainMatches(typed.domain, { name: "RelayNonceMapping", version: "2", chainId: 1 }))
     return refuse3("the NonceMapping domain is not Relay's");
   if (!typesMatch(typed.types, RELAY_NONCE_MAPPING_TYPES))
     return refuse3("the NonceMapping type list differs");
   const message = typed.message;
-  if (!isObject(message) || !exactKeys3(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
+  if (!isObject2(message) || !exactKeys3(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
     return refuse3("the NonceMapping message has other fields");
   if (message.chainId !== "hyperliquid")
     return refuse3("the NonceMapping names another chain");
@@ -100312,14 +100616,14 @@ function verifyWithdrawSendAsset(authorization, expect) {
   if (pins === null)
     return refuse3("no withdrawal pins are set");
   const typed = authorization.typedData;
-  if (!isObject(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
+  if (!isObject2(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
     return refuse3("the typed data is not a SendAsset");
   if (!domainMatches(typed.domain, { name: "HyperliquidSignTransaction", version: "1", chainId: 42161 }))
     return refuse3("the SendAsset domain is not Hyperliquid's user-signed domain");
   if (!typesMatch(typed.types, HYPERLIQUID_SEND_ASSET_TYPES))
     return refuse3("the SendAsset type list differs");
   const m = typed.message;
-  if (!isObject(m) || !exactKeys3(m, SEND_ASSET_KEYS))
+  if (!isObject2(m) || !exactKeys3(m, SEND_ASSET_KEYS))
     return refuse3("the SendAsset message has other fields");
   if (m.hyperliquidChain !== "Mainnet")
     return refuse3("the SendAsset is not on Mainnet");
@@ -100338,7 +100642,7 @@ function verifyWithdrawSendAsset(authorization, expect) {
   if (typeof m.destination !== "string" || !pins.depositories.includes(m.destination.toLowerCase()))
     return refuse3("the SendAsset destination is not a Relay depository on the allow-list");
   const action = authorization.action;
-  if (!isObject(action) || !exactKeys3(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
+  if (!isObject2(action) || !exactKeys3(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
     return refuse3("the action has other fields");
   if (action.type !== "sendAsset" || action.signatureChainId !== "0xa4b1")
     return refuse3("the action is not a sendAsset");
@@ -100588,7 +100892,7 @@ class X402DecodeError extends Error {
   }
 }
 var BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
-var isObject2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var isString = (value) => typeof value === "string";
 function encodeHeader(value) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
@@ -100603,12 +100907,12 @@ function decodeHeader(value) {
   } catch {
     throw new X402DecodeError("not JSON");
   }
-  if (!isObject2(parsed))
+  if (!isObject3(parsed))
     throw new X402DecodeError("not a JSON object");
   return parsed;
 }
 function parseRequirements(value) {
-  if (!isObject2(value))
+  if (!isObject3(value))
     throw new X402DecodeError("requirements are not an object");
   const { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, extra } = value;
   if (!isString(scheme) || !isString(network2) || !isString(amount) || !isString(asset) || !isString(payTo)) {
@@ -100617,7 +100921,7 @@ function parseRequirements(value) {
   if (typeof maxTimeoutSeconds !== "number" || !Number.isInteger(maxTimeoutSeconds)) {
     throw new X402DecodeError("maxTimeoutSeconds is not an integer");
   }
-  if (extra !== undefined && !isObject2(extra))
+  if (extra !== undefined && !isObject3(extra))
     throw new X402DecodeError("extra is not an object");
   return { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, ...extra ? { extra } : {} };
 }
@@ -100626,7 +100930,7 @@ function decodePaymentRequired(header) {
   if (object5.x402Version !== X402_VERSION)
     throw new X402DecodeError("x402Version is not 2");
   const resource = object5.resource;
-  if (!isObject2(resource) || !isString(resource.url))
+  if (!isObject3(resource) || !isString(resource.url))
     throw new X402DecodeError("resource is missing");
   if (!Array.isArray(object5.accepts))
     throw new X402DecodeError("accepts is not an array");
@@ -100641,7 +100945,7 @@ function decodePaymentRequired(header) {
       ...isString(resource.mimeType) ? { mimeType: resource.mimeType } : {}
     },
     accepts: object5.accepts.map(parseRequirements),
-    ...isObject2(object5.extensions) ? { extensions: object5.extensions } : {}
+    ...isObject3(object5.extensions) ? { extensions: object5.extensions } : {}
   };
 }
 function paymentRequiredOf(headers2) {
@@ -100693,11 +100997,11 @@ function signupSignerRef(spkiSha256) {
 function planStatePath(paths) {
   return paths.log.replace(/\.jsonl$/, ".plan.json");
 }
-var isObject3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var str = (value) => typeof value === "string" ? value : undefined;
 var plan = (value) => value === "pro" || value === "max" ? value : undefined;
 function parsePending(value) {
-  if (!isObject3(value) || !isObject3(value.body))
+  if (!isObject4(value) || !isObject4(value.body))
     return;
   const p = plan(value.plan);
   const { id, path, paymentHeader, amountRaw, payer, startedAt } = value;
@@ -100726,7 +101030,7 @@ function parsePending(value) {
   };
 }
 function parseSigner(value) {
-  if (!isObject3(value))
+  if (!isObject4(value))
     return;
   const { spkiSha256, publicKeyDer, fingerprint, payer, createdAt } = value;
   if (typeof spkiSha256 !== "string" || !/^[0-9a-f]{64}$/.test(spkiSha256) || typeof publicKeyDer !== "string" || typeof fingerprint !== "string" || typeof payer !== "string" || typeof createdAt !== "string") {
@@ -100743,7 +101047,7 @@ function parsePlanState(text4) {
   } catch {
     return { autoRenew: false };
   }
-  if (!isObject3(raw))
+  if (!isObject4(raw))
     return { autoRenew: false };
   const ceiling = str(raw.renewCeilingRaw);
   const pending = parsePending(raw.pending);
@@ -101034,13 +101338,13 @@ async function appendSpendLines(paths, lines) {
   await chmod12(paths.log, 384).catch(() => {});
 }
 function foldSpendLog(lines) {
-  const entries = new Map;
+  const entries2 = new Map;
   for (const line of lines) {
-    const existing = entries.get(line.id);
+    const existing = entries2.get(line.id);
     if (!existing) {
       if (line.state !== "pending" || line.amountRaw === undefined || !/^[0-9]{1,20}$/.test(line.amountRaw))
         continue;
-      entries.set(line.id, {
+      entries2.set(line.id, {
         id: line.id,
         startedAt: line.at,
         updatedAt: line.at,
@@ -101063,15 +101367,15 @@ function foldSpendLog(lines) {
     if (line.reason !== undefined)
       existing.reason = line.reason;
   }
-  return [...entries.values()];
+  return [...entries2.values()];
 }
 function utcDay(at3) {
   return new Date(at3).toISOString().slice(0, 10);
 }
 var PLAN_SPEND_KIND = "plan";
-function spentOn(entries, day) {
+function spentOn(entries2, day) {
   let total = 0n;
-  for (const entry of entries) {
+  for (const entry of entries2) {
     if (entry.kind === PLAN_SPEND_KIND)
       continue;
     if (entry.state !== "failed" && utcDay(entry.startedAt) === day)
@@ -101190,14 +101494,14 @@ init_client();
 // src/x402/siwx.ts
 init_esm();
 var SIWX_EXTENSION = "sign-in-with-x";
-var isObject4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 function spendChallengeOf(extensions, apiHost, network2) {
   const extension = extensions?.[SIWX_EXTENSION];
-  if (!isObject4(extension) || !isObject4(extension.info))
+  if (!isObject5(extension) || !isObject5(extension.info))
     return null;
   const info3 = extension.info;
   const chains = Array.isArray(extension.supportedChains) ? extension.supportedChains : [];
-  const chain2 = chains.find((c) => isObject4(c) && c.chainId === network2 && c.type === "ed25519");
+  const chain2 = chains.find((c) => isObject5(c) && c.chainId === network2 && c.type === "ed25519");
   if (!chain2)
     return null;
   const { domain, uri, version, nonce, issuedAt, expirationTime } = info3;
@@ -101341,8 +101645,8 @@ function dailyRefusal(priceUsdc, spentToday, limit) {
     priceUsdc
   };
 }
-function mayHoldWalletCredit(entries, address, network2) {
-  return entries.some((e) => e.keyless && e.state === "credited" && e.payer === address && e.network === network2);
+function mayHoldWalletCredit(entries2, address, network2) {
+  return entries2.some((e) => e.keyless && e.state === "credited" && e.payer === address && e.network === network2);
 }
 function outcomeOf2(second) {
   const settlement = settlementOf(second.headers);
@@ -101657,9 +101961,9 @@ function isSolanaAddress2(value) {
     return false;
   }
 }
-var isObject5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject6 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 function quotedPlanOf(raw) {
-  const plan2 = isObject5(raw) && isObject5(raw.plan) ? raw.plan : null;
+  const plan2 = isObject6(raw) && isObject6(raw.plan) ? raw.plan : null;
   if (!plan2)
     return null;
   const n = (v) => typeof v === "string" && /^[0-9]{1,20}$/.test(v) ? BigInt(v) : null;
@@ -101671,14 +101975,14 @@ function quotedPlanOf(raw) {
   return { listRaw, creditRaw, dueRaw, signup: plan2.signup === true };
 }
 function receiptOf(body) {
-  if (!isObject5(body) || body.status !== "fulfilled" || typeof body.account !== "string")
+  if (!isObject6(body) || body.status !== "fulfilled" || typeof body.account !== "string")
     return null;
   if (body.plan !== "pro" && body.plan !== "max")
     return null;
   const paid = typeof body.amountPaidUsdMicros === "string" && /^[0-9]{1,20}$/.test(body.amountPaidUsdMicros);
-  const s = isObject5(body.signup) ? body.signup : null;
-  const signer = s && isObject5(s.signer) ? s.signer : null;
-  const wallets2 = s && isObject5(s.wallets) ? s.wallets : null;
+  const s = isObject6(body.signup) ? body.signup : null;
+  const signer = s && isObject6(s.signer) ? s.signer : null;
+  const wallets2 = s && isObject6(s.wallets) ? s.wallets : null;
   const signup = s && typeof s.keyPrefix === "string" && signer && typeof signer.fingerprint === "string" && typeof signer.signerQuorumId === "string" && wallets2 && typeof wallets2.solana === "string" && typeof wallets2.evm === "string" ? {
     keyPrefix: s.keyPrefix,
     fingerprint: signer.fingerprint,
@@ -102096,7 +102400,7 @@ async function runPlanPayment(ctx, run2) {
         return 1;
       }
     }
-    const termsUrl = isObject5(quote.raw) && isObject5(quote.raw.terms) && typeof quote.raw.terms.url === "string" ? quote.raw.terms.url : CANDLE_TERMS_URL;
+    const termsUrl = isObject6(quote.raw) && isObject6(quote.raw.terms) && typeof quote.raw.terms.url === "string" ? quote.raw.terms.url : CANDLE_TERMS_URL;
     writeFields(deps, json || run2.mode === "auto" ? "stderr" : "stdout", [
       ["Plan", `Candle ${planName(run2.plan)}, 30 days${renew ? " (renewal)" : ""}${isSignup ? ", new account" : ""}`],
       ...quoted && quoted.creditRaw > 0n ? [
@@ -102231,7 +102535,7 @@ async function serverPlan(ctx, apiKey) {
     env: ctx.deps.env,
     fetch: ctx.deps.fetch
   });
-  if (!result.ok || !isObject5(result.body))
+  if (!result.ok || !isObject6(result.body))
     return null;
   const tier = typeof result.body.tier === "string" ? result.body.tier : null;
   const expires = result.body.maxTierExpiresAt;
@@ -102331,9 +102635,9 @@ async function planStatus(args, ctx) {
     if (!payments.ok && payments.status === 404) {
       paymentNote = "x402 payment history is not available yet on this Candle server; any payment shown is this machine's record.";
     }
-    if (payments.ok && isObject5(payments.body) && Array.isArray(payments.body.payments)) {
-      const found = payments.body.payments.find((p) => isObject5(p) && p.kind === PLAN_SPEND_KIND);
-      lastServer = isObject5(found) ? found : null;
+    if (payments.ok && isObject6(payments.body) && Array.isArray(payments.body.payments)) {
+      const found = payments.body.payments.find((p) => isObject6(p) && p.kind === PLAN_SPEND_KIND);
+      lastServer = isObject6(found) ? found : null;
     }
   }
   const local = foldSpendLog(await readSpendLog(paths)).filter((e) => e.kind === PLAN_SPEND_KIND).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
@@ -105105,30 +105409,313 @@ async function quantTerms(args, ctx) {
 
 // src/commands/scan.ts
 init_args();
+
+// src/chains/registry.json
+var registry_default2 = [
+  {
+    slug: "solana",
+    family: "solana",
+    displayName: "Solana",
+    enabled: true,
+    addressFormat: "solana-base58",
+    native: { symbol: "SOL", name: "Solana", decimals: 9 },
+    explorer: { url: "https://solscan.io", urlEnv: null, api: "solscan" },
+    rpc: { env: {}, publicUrl: null, fallbackSwitchEnv: null }
+  },
+  {
+    slug: "hood",
+    family: "evm",
+    displayName: "Robinhood Chain",
+    enabled: true,
+    addressFormat: "evm-hex20",
+    native: { symbol: "ETH", name: "Ether", decimals: 18 },
+    explorer: { url: "https://robinhoodchain.blockscout.com", urlEnv: "HOOD_EXPLORER_URL", api: "blockscout" },
+    rpc: {
+      env: {
+        read: "HOOD_RPC_URL",
+        ledger: "LEDGER_HOOD_RPC_URL",
+        ledgerFallback: "LEDGER_HOOD_RPC_FALLBACK_URL",
+        feed: "FEED_HOOD_RPC_URL",
+        browser: "NEXT_PUBLIC_HOOD_RPC_URL"
+      },
+      publicUrl: "https://rpc.mainnet.chain.robinhood.com",
+      fallbackSwitchEnv: "HOOD_RPC_FALLBACK"
+    },
+    evm: {
+      chainId: 4663,
+      wrappedNative: { symbol: "WETH", address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18 },
+      stablecoins: [{ symbol: "USDG", address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", decimals: 6 }],
+      quoteAssets: ["0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"],
+      l1DataFee: "arbitrum",
+      blockTimeMs: 100,
+      publicMempool: false,
+      multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
+      dex: {
+        uniswapV3: {
+          factory: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
+          router: "0xCaf681a66D020601342297493863E78C959E5cb2",
+          quoter: "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
+          initCodeHash: "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54"
+        },
+        uniswapV4: {
+          poolManager: "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+          universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
+          quoter: "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+          stateView: "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
+        },
+        permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+      },
+      aggregators: [
+        { id: "kyber", vendorChainSlug: "robinhood", router: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" }
+      ],
+      vendors: { dexscreener: "robinhood", birdeye: "robinhood", geckoterminal: null },
+      cvcBaseUrlEnv: "CVC_API_URL",
+      feeTreasuryEnv: "AGENT_FEE_TREASURY_HOOD",
+      gasReserve: { feeMultiplier: 2, extraErc20Transfers: 1, legGasFallback: "500000" },
+      teePolicyChainId: "4663",
+      launch: {
+        contractEnv: {
+          curveFactory: "HOOD_CURVE_FACTORY",
+          curveRegistry: "HOOD_CURVE_REGISTRY",
+          stakingDistributor: "HOOD_STAKING_DISTRIBUTOR",
+          migratorV3: "HOOD_MIGRATOR_V3",
+          migratorV4: "HOOD_MIGRATOR_V4",
+          feeSplitterFactory: "HOOD_FEE_SPLITTER_FACTORY",
+          believerNft: "HOOD_BELIEVER_NFT"
+        }
+      }
+    }
+  }
+];
+
+// src/chains/registry.ts
+class ChainRegistryError2 extends Error {
+  code;
+  slug;
+  constructor(code, slug, message) {
+    super(message ?? `${code}: ${slug}`);
+    this.name = "ChainRegistryError";
+    this.code = code;
+    this.slug = slug;
+  }
+}
+var EVM_ADDRESS2 = /^0x[0-9a-fA-F]{40}$/;
+var SOLANA_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+var isObject7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function fail4(path, why) {
+  throw new Error(`chain registry: ${path} ${why}`);
+}
+function needString2(o, key, path) {
+  if (typeof o[key] !== "string" || o[key] === "")
+    fail4(`${path}.${key}`, "must be a non-empty string");
+}
+function needBool2(o, key, path) {
+  if (typeof o[key] !== "boolean")
+    fail4(`${path}.${key}`, "must be a boolean");
+}
+function needNumber2(o, key, path) {
+  if (typeof o[key] !== "number" || !Number.isFinite(o[key]))
+    fail4(`${path}.${key}`, "must be a number");
+}
+function needObject2(o, key, path) {
+  const v = o[key];
+  if (!isObject7(v))
+    fail4(`${path}.${key}`, "must be an object");
+  return v;
+}
+function needNullableString2(o, key, path) {
+  if (o[key] !== null && typeof o[key] !== "string")
+    fail4(`${path}.${key}`, "must be a string or null");
+}
+function needAddress2(v, path) {
+  if (typeof v !== "string" || !EVM_ADDRESS2.test(v))
+    fail4(path, "must be 0x plus 40 hex digits");
+}
+function needNullableAddress2(o, key, path) {
+  if (o[key] !== null)
+    needAddress2(o[key], `${path}.${key}`);
+}
+function checkToken2(v, path) {
+  if (!isObject7(v))
+    fail4(path, "must be an object");
+  needString2(v, "symbol", path);
+  needAddress2(v.address, `${path}.address`);
+  needNumber2(v, "decimals", path);
+}
+function checkAddressSet2(v, path, keys) {
+  if (v === null)
+    return;
+  if (!isObject7(v))
+    fail4(path, "must be an object or null");
+  for (const k of keys)
+    needAddress2(v[k], `${path}.${k}`);
+}
+function checkEvm2(evm, path) {
+  needNumber2(evm, "chainId", path);
+  checkToken2(evm.wrappedNative, `${path}.wrappedNative`);
+  if (!Array.isArray(evm.stablecoins))
+    fail4(`${path}.stablecoins`, "must be an array");
+  evm.stablecoins.forEach((t, i) => {
+    checkToken2(t, `${path}.stablecoins[${i}]`);
+  });
+  if (!Array.isArray(evm.quoteAssets))
+    fail4(`${path}.quoteAssets`, "must be an array");
+  evm.quoteAssets.forEach((a, i) => {
+    needAddress2(a, `${path}.quoteAssets[${i}]`);
+  });
+  if (!["none", "arbitrum", "op-stack"].includes(evm.l1DataFee))
+    fail4(`${path}.l1DataFee`, "is not a known model");
+  needNumber2(evm, "blockTimeMs", path);
+  needBool2(evm, "publicMempool", path);
+  needNullableAddress2(evm, "multicall3", path);
+  const dex = needObject2(evm, "dex", path);
+  checkAddressSet2(dex.uniswapV3, `${path}.dex.uniswapV3`, ["factory", "router", "quoter"]);
+  if (isObject7(dex.uniswapV3) && !/^0x[0-9a-fA-F]{64}$/.test(String(dex.uniswapV3.initCodeHash)))
+    fail4(`${path}.dex.uniswapV3.initCodeHash`, "must be 0x plus 64 hex digits");
+  checkAddressSet2(dex.uniswapV4, `${path}.dex.uniswapV4`, ["poolManager", "universalRouter", "quoter", "stateView"]);
+  needNullableAddress2(dex, "permit2", `${path}.dex`);
+  if (!Array.isArray(evm.aggregators))
+    fail4(`${path}.aggregators`, "must be an array");
+  evm.aggregators.forEach((a, i) => {
+    if (!isObject7(a))
+      fail4(`${path}.aggregators[${i}]`, "must be an object");
+    needString2(a, "id", `${path}.aggregators[${i}]`);
+    needString2(a, "vendorChainSlug", `${path}.aggregators[${i}]`);
+    needAddress2(a.router, `${path}.aggregators[${i}].router`);
+  });
+  const vendors = needObject2(evm, "vendors", path);
+  for (const k of ["dexscreener", "birdeye", "geckoterminal"])
+    needNullableString2(vendors, k, `${path}.vendors`);
+  needNullableString2(evm, "cvcBaseUrlEnv", path);
+  needNullableString2(evm, "feeTreasuryEnv", path);
+  const gas = needObject2(evm, "gasReserve", path);
+  needNumber2(gas, "feeMultiplier", `${path}.gasReserve`);
+  needNumber2(gas, "extraErc20Transfers", `${path}.gasReserve`);
+  needString2(gas, "legGasFallback", `${path}.gasReserve`);
+  needNullableString2(evm, "teePolicyChainId", path);
+  if (evm.launch !== null) {
+    const launch2 = needObject2(evm, "launch", path);
+    needObject2(launch2, "contractEnv", `${path}.launch`);
+  }
+}
+function validateChainEntries2(raw) {
+  if (!Array.isArray(raw))
+    fail4("registry", "must be an array");
+  const slugs = new Set;
+  const chainIds = new Set;
+  raw.forEach((item, i) => {
+    const path = `entry[${i}]`;
+    if (!isObject7(item))
+      fail4(path, "must be an object");
+    needString2(item, "slug", path);
+    needString2(item, "family", path);
+    needString2(item, "displayName", path);
+    needBool2(item, "enabled", path);
+    needString2(item, "addressFormat", path);
+    const native = needObject2(item, "native", path);
+    needString2(native, "symbol", `${path}.native`);
+    needString2(native, "name", `${path}.native`);
+    needNumber2(native, "decimals", `${path}.native`);
+    if (item.explorer !== null) {
+      const ex = needObject2(item, "explorer", path);
+      needString2(ex, "url", `${path}.explorer`);
+      needNullableString2(ex, "urlEnv", `${path}.explorer`);
+      if (!["blockscout", "etherscan", "solscan", "none"].includes(ex.api))
+        fail4(`${path}.explorer.api`, "is not a known API kind");
+    }
+    const rpc = needObject2(item, "rpc", path);
+    needObject2(rpc, "env", `${path}.rpc`);
+    needNullableString2(rpc, "publicUrl", `${path}.rpc`);
+    needNullableString2(rpc, "fallbackSwitchEnv", `${path}.rpc`);
+    if (slugs.has(item.slug))
+      fail4(path, `has duplicate slug "${item.slug}"`);
+    slugs.add(item.slug);
+    if (item.family === "evm") {
+      if (item.addressFormat !== "evm-hex20")
+        fail4(`${path}.addressFormat`, "must be evm-hex20 for an evm entry");
+      if (!isObject7(item.evm))
+        fail4(`${path}.evm`, "is required on an evm entry");
+      checkEvm2(item.evm, `${path}.evm`);
+      const id = item.evm.chainId;
+      if (chainIds.has(id))
+        fail4(path, `has duplicate chain id ${id}`);
+      chainIds.add(id);
+    } else if (item.family === "solana") {
+      if (item.addressFormat !== "solana-base58")
+        fail4(`${path}.addressFormat`, "must be solana-base58");
+      if ("evm" in item)
+        fail4(`${path}.evm`, "is not allowed on a non-evm entry");
+    } else {
+      fail4(`${path}.family`, `"${String(item.family)}" is not a known family`);
+    }
+  });
+  return raw;
+}
+var BUILT_IN2 = validateChainEntries2(registry_default2);
+var entries2 = BUILT_IN2;
+var isEvmChain2 = (entry) => entry.family === "evm";
+function listChains(filter) {
+  return entries2.filter((e) => (!filter?.family || e.family === filter.family) && (!filter?.enabledOnly || e.enabled));
+}
+var getChain2 = (slug) => entries2.find((e) => e.slug === slug);
+function requireChain2(slug, opts) {
+  const entry = getChain2(slug);
+  if (!entry)
+    throw new ChainRegistryError2("UNKNOWN_CHAIN", slug, `Unknown chain "${slug}"`);
+  if (!entry.enabled && !opts?.allowDisabled)
+    throw new ChainRegistryError2("CHAIN_DISABLED", slug, `Chain "${slug}" is disabled`);
+  return entry;
+}
+function requireEvmChain2(slug, opts) {
+  const entry = requireChain2(slug, opts);
+  if (!isEvmChain2(entry))
+    throw new ChainRegistryError2("NOT_EVM", slug, `Chain "${slug}" is not an EVM chain`);
+  return entry;
+}
+function defaultEvmChain2() {
+  return requireEvmChain2("hood", { allowDisabled: true });
+}
+function isValidChainAddress2(slug, address) {
+  const entry = requireChain2(slug, { allowDisabled: true });
+  return entry.addressFormat === "evm-hex20" ? EVM_ADDRESS2.test(address) : SOLANA_ADDRESS2.test(address);
+}
+// src/commands/scan.ts
 init_client();
 init_human_output();
 init_presentation();
 init_render();
-var USAGE16 = "Usage: candle scan <contract address> [--chain solana|hood] [--json]";
-var OTHER_CHAIN = "Candle trades Solana and Hood today; that is not a Solana or Hood contract address.";
-var HOOD_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-var SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-function chainOfAddress(address) {
-  if (HOOD_ADDRESS.test(address))
-    return "hood";
-  if (SOLANA_ADDRESS.test(address))
-    return "solana";
+
+// src/request-chain.ts
+function requestAddressChain2(address, chain2) {
+  if (chain2 !== undefined) {
+    const entry = requireChain2(chain2);
+    if (!isValidChainAddress2(entry.slug, address))
+      throw new ChainRegistryError2("INVALID_ADDRESS", entry.slug, `Invalid ${entry.slug} address`);
+    return entry.slug;
+  }
+  if (isValidChainAddress2("solana", address))
+    return requireChain2("solana").slug;
+  const evm = defaultEvmChain2();
+  if (isValidChainAddress2(evm.slug, address))
+    return requireChain2(evm.slug).slug;
   return null;
 }
-var isObject6 = (value) => value !== null && typeof value === "object";
+
+// src/commands/scan.ts
+var usage12 = () => `Usage: candle scan <contract address> [--chain ${listChains({ enabledOnly: true }).map((c) => c.slug).join("|")}] [--json]`;
+var OTHER_CHAIN = "Candle trades Solana and Hood today; that is not a Solana or Hood contract address.";
+function chainOfAddress(address, chain2) {
+  return requestAddressChain2(address, chain2);
+}
+var isObject8 = (value) => value !== null && typeof value === "object";
 function readCard(body) {
-  if (!isObject6(body) || body.success !== true || !isObject6(body.card))
+  if (!isObject8(body) || body.success !== true || !isObject8(body.card))
     return null;
   const card2 = body.card;
   const blocks = ["identity", "market", "forensics", "events", "hacc", "sameName", "sources", "links"];
-  if (typeof card2.mint !== "string" || card2.chain !== "solana" && card2.chain !== "hood")
+  if (typeof card2.mint !== "string" || typeof card2.chain !== "string" || !getChain2(card2.chain))
     return null;
-  if (!blocks.every((block2) => isObject6(card2[block2])))
+  if (!blocks.every((block2) => isObject8(card2[block2])))
     return null;
   return card2;
 }
@@ -105149,7 +105736,7 @@ function title(card2) {
   const parts = [
     symbol || shortAddress(card2.mint),
     name2 && name2 !== symbol ? name2 : null,
-    card2.chain === "hood" ? "Hood" : "Solana",
+    card2.chain === "hood" ? "Hood" : getChain2(card2.chain)?.displayName ?? card2.chain,
     launchpad,
     isCandle === true ? "launched on Candle" : null
   ];
@@ -105208,24 +105795,24 @@ async function scan(args, ctx) {
     return 2;
   }
   const named = parsed.values["--chain"];
-  if (parsed.positionals.length !== 1 || named !== undefined && named !== "solana" && named !== "hood") {
-    writeUsageFailure(ctx.deps, USAGE16, ctx.json);
+  if (parsed.positionals.length !== 1) {
+    writeUsageFailure(ctx.deps, usage12(), ctx.json);
     return 2;
   }
   const address = parsed.positionals[0].trim();
-  const found = chainOfAddress(address);
-  if (found === null) {
+  let chain2;
+  try {
+    chain2 = chainOfAddress(address, named);
+  } catch (error) {
+    writeUsageFailure(ctx.deps, `${error instanceof Error ? error.message : String(error)}
+${usage12()}`, ctx.json);
+    return 2;
+  }
+  if (chain2 === null) {
     writeUsageFailure(ctx.deps, `${OTHER_CHAIN}
-${USAGE16}`, ctx.json);
+${usage12()}`, ctx.json);
     return 2;
   }
-  if (named !== undefined && named !== found) {
-    const label = (c) => c === "hood" ? "Hood" : "Solana";
-    writeUsageFailure(ctx.deps, `That address is a ${label(found)} contract, not a ${label(named)} one. Candle trades Solana and Hood today.
-${USAGE16}`, ctx.json);
-    return 2;
-  }
-  const chain2 = found;
   const result = await apiRequest(`/api/v1/tokens/${chain2}/${encodeURIComponent(address)}/card`, {
     apiUrl: ctx.apiUrl,
     auth: "none",
@@ -105238,7 +105825,7 @@ ${USAGE16}`, ctx.json);
     return 1;
   }
   const card2 = readCard(result.body);
-  if (!card2) {
+  if (!card2 || card2.chain !== chain2) {
     writeFailure(ctx.deps, {
       ok: false,
       status: result.status,
@@ -105962,11 +106549,11 @@ async function spendShow(args, ctx) {
     });
   }
   const limits = await readLimits(paths);
-  const entries = foldSpendLog(await readSpendLog(paths));
+  const entries3 = foldSpendLog(await readSpendLog(paths));
   const today = utcDay(now);
-  const spentToday = spentOn(entries, today);
+  const spentToday = spentOn(entries3, today);
   const since = now - days * DAY_MS;
-  const shown = entries.filter((e) => Date.parse(e.startedAt) >= since).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  const shown = entries3.filter((e) => Date.parse(e.startedAt) >= since).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
   const credit = await readCredit(ctx, apiKey);
   if (ctx.json) {
     ctx.deps.stdout.write(`${JSON.stringify({
@@ -106140,7 +106727,7 @@ async function runStake(action, args, ctx) {
     valueFlags: ["--wallet", "--client-stake-id"],
     booleanFlags: ["--yes", ...action === "claim" ? ["--all"] : []]
   });
-  const usage12 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
+  const usage13 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
@@ -106149,7 +106736,7 @@ async function runStake(action, args, ctx) {
   const id = values["--client-stake-id"] ?? `stake-${randomUUID15()}`;
   const all = booleans.has("--all");
   if (!validClientId(id) || id.length > 128 || (action === "positions" ? positionals.length !== 0 : action === "finish" ? positionals.length > 1 : action === "claim" ? all ? positionals.length !== 0 : positionals.length !== 1 : positionals.length !== 1)) {
-    writeUsageFailure(ctx.deps, usage12, ctx.json);
+    writeUsageFailure(ctx.deps, usage13, ctx.json);
     return 2;
   }
   try {
@@ -106320,9 +106907,9 @@ function duplicateLabels(index) {
       holders.push(entry);
   }
   const out = [];
-  for (const [label, entries] of byLabel) {
-    if (entries.length > 1)
-      out.push({ label, entries });
+  for (const [label, entries3] of byLabel) {
+    if (entries3.length > 1)
+      out.push({ label, entries: entries3 });
   }
   return out;
 }
@@ -106732,9 +107319,9 @@ function serverFailure(ctx, result, pairs, batch) {
   writeFailure(deps, result, { apiUrl, authType: "device" }, json);
   return 1;
 }
-function vaultEntriesFor(entries, row2) {
+function vaultEntriesFor(entries3, row2) {
   const lower = row2.address.toLowerCase();
-  return entries.filter((entry) => entry.role === "tee-wallet" && (entry.linkedWalletId === row2.id || entry.address === row2.address || entry.chain === "evm" && row2.chain === "evm" && entry.address.toLowerCase() === lower));
+  return entries3.filter((entry) => entry.role === "tee-wallet" && (entry.linkedWalletId === row2.id || entry.address === row2.address || entry.chain === "evm" && row2.chain === "evm" && entry.address.toLowerCase() === lower));
 }
 function unknownCommit(ctx, rows, onServer, inVault) {
   const { deps, json } = ctx;
@@ -106839,15 +107426,15 @@ async function teeRename(args, ctx) {
     if (vault !== null) {
       for (const row2 of rows) {
         const line = pairs[row2.row]?.line ?? 0;
-        const entries = vaultEntriesFor(vault.index.entries, row2);
-        if (entries.length > 1) {
+        const entries3 = vaultEntriesFor(vault.index.entries, row2);
+        if (entries3.length > 1) {
           twice = true;
           findings.push({
             line,
-            problem: `The vault holds ${entries.length} TEE entries for ${row2.address}; a rename would give them one name.`
+            problem: `The vault holds ${entries3.length} TEE entries for ${row2.address}; a rename would give them one name.`
           });
-        } else if (entries[0] !== undefined)
-          local.push({ row: row2, entry: entries[0] });
+        } else if (entries3[0] !== undefined)
+          local.push({ row: row2, entry: entries3[0] });
       }
       const targets = new Set(local.map(({ entry }) => entry.id));
       for (const { row: row2, entry } of local) {
@@ -107096,7 +107683,7 @@ init_deps();
 init_human_output();
 init_render();
 var KINDS = ["trade", "signal", "callout"];
-var USAGE17 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
+var USAGE16 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
 function readEventsBody(body) {
   if (body === null || typeof body !== "object" || !Array.isArray(body.events))
     return null;
@@ -107154,11 +107741,11 @@ async function tokenEvents(args, ctx) {
   const since = parsed.values["--since"];
   const before = parsed.values["--before"];
   if (parsed.positionals.length !== 1 || chain2 !== "solana" && chain2 !== "hood") {
-    writeUsageFailure(ctx.deps, USAGE17, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE16, ctx.json);
     return 2;
   }
   if (kind !== undefined && !KINDS.includes(kind)) {
-    writeUsageFailure(ctx.deps, USAGE17, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE16, ctx.json);
     return 2;
   }
   if (limit !== undefined && !/^[1-9][0-9]{0,3}$/.test(limit) || Number(limit) > 1000) {
@@ -107340,27 +107927,27 @@ function mayHaveCommitted(result) {
   return result.retryable === true || result.status >= 500 && result.retryable !== false;
 }
 async function tokenEdit(args, ctx) {
-  const usage12 = usageFor2(ctx, EDIT_USAGE);
+  const usage13 = usageFor2(ctx, EDIT_USAGE);
   const split2 = splitClears(args);
   if ("error" in split2)
-    return usage12(split2.error);
+    return usage13(split2.error);
   const parsed = parseArgs(split2.rest, {
     valueFlags: ["--chain", "--idempotency-key", ...EDIT_FIELDS.map((field) => field.cli.flag)]
   });
   if ("error" in parsed)
-    return usage12(parsed.error);
+    return usage13(parsed.error);
   const [mint] = parsed.positionals;
   if (parsed.positionals.length !== 1 || !mint)
-    return usage12();
+    return usage13();
   const chain2 = chainFor(mint, parsed.values["--chain"]);
   if (!chain2)
-    return usage12("--chain must be solana or hood.");
+    return usage13("--chain must be solana or hood.");
   const body = editBodyOf(parsed.values, split2.clears);
   if ("error" in body)
-    return usage12(body.error);
+    return usage13(body.error);
   const given2 = parsed.values["--idempotency-key"];
   if (given2 !== undefined && (given2.length < 1 || given2.length > 128)) {
-    return usage12("--idempotency-key must be 1 to 128 characters.");
+    return usage13("--idempotency-key must be 1 to 128 characters.");
   }
   const idempotencyKey = given2 ?? randomUUID16();
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
@@ -107431,14 +108018,14 @@ async function tokenHistory2(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
   if ("error" in parsed || parsed.positionals.length !== 1)
     return tokenHistory(args, ctx);
-  const usage12 = usageFor2(ctx, HISTORY_USAGE);
+  const usage13 = usageFor2(ctx, HISTORY_USAGE);
   const mint = parsed.positionals[0];
   const chain2 = chainFor(mint, parsed.values["--chain"]);
   if (!chain2)
-    return usage12("--chain must be solana or hood.");
+    return usage13("--chain must be solana or hood.");
   const limit = parsed.values["--limit"];
   if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50)) {
-    return usage12("--limit is a whole number from 1 to 50.");
+    return usage13("--limit is a whole number from 1 to 50.");
   }
   const query3 = new URLSearchParams({
     ...limit !== undefined ? { limit } : {},
@@ -107497,7 +108084,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
-var USAGE18 = `Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--client-id <id>] [--rpc-url <url>] [--yes] [--json]
+var USAGE17 = `Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--client-id <id>] [--rpc-url <url>] [--yes] [--json]
        candle transfer status <transfer id|client id> [--json]`;
 var CLIENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
@@ -107661,7 +108248,7 @@ async function transfer(args, ctx) {
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok || flags2["--client-id"] !== undefined && !CLIENT_ID.test(flags2["--client-id"])) {
-    writeUsageFailure(ctx.deps, USAGE18, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE17, ctx.json);
     return 2;
   }
   const to = flags2["--to"];
@@ -108624,7 +109211,7 @@ init_ed255192();
 init_errors2();
 init_format();
 init_store();
-function fail3(step, message, entry) {
+function fail5(step, message, entry) {
   throw new VaultError("VAULT_VERIFY_FAILED", `Verification failed at step ${step}${entry ? ` on entry ${entry}` : ""}: ${message}`, {
     suggestion: "Nothing was recorded and the file was left in place for inspection."
   });
@@ -108637,26 +109224,26 @@ async function verifyVaultIntegrity(copy, opts = {}) {
   const declared = new Set(copy.file.keyIds);
   const present = new Set(copy.file.keys.map((blob) => blob.id));
   if (declared.size !== present.size || [...declared].some((id) => !present.has(id))) {
-    fail3(3, "the vault's keyIds and its key blobs are not the same set");
+    fail5(3, "the vault's keyIds and its key blobs are not the same set");
   }
   const indexed = new Set(copy.index.entries.map((entry) => entry.id));
   for (const id of declared) {
     if (!indexed.has(id))
-      fail3(3, `key ${id} has a blob and a keyIds entry but no index entry`);
+      fail5(3, `key ${id} has a blob and a keyIds entry but no index entry`);
   }
   for (const id of indexed) {
     if (!declared.has(id))
-      fail3(3, `index entry ${id} has no key blob`);
+      fail5(3, `index entry ${id} has no key blob`);
   }
   observer?.onStep?.(4);
   const root = await decryptRoot(copy);
   const report2 = { addressChecked: [], rederived: [], notRederived: [], comparedAgainstLive: false };
   try {
     if (root.length !== ROOT_ENTROPY_BYTES) {
-      fail3(4, `the root blob holds ${root.length} bytes, expected ${ROOT_ENTROPY_BYTES}`);
+      fail5(4, `the root blob holds ${root.length} bytes, expected ${ROOT_ENTROPY_BYTES}`);
     }
     if (!isValidPhrase(phraseFromEntropy(root))) {
-      fail3(4, "the root entropy does not render a recovery phrase with a valid checksum");
+      fail5(4, "the root entropy does not render a recovery phrase with a valid checksum");
     }
     observer?.onStep?.(5);
     for (const entry of copy.index.entries) {
@@ -108673,10 +109260,10 @@ async function verifyVaultIntegrity(copy, opts = {}) {
     if (located === undefined)
       continue;
     if (nextIndexOf(copy.index.hd, located.branch) <= located.index) {
-      fail3(7, `hd.nextIndex.${located.branch} is ${nextIndexOf(copy.index.hd, located.branch)}, at or below this entry's index ${located.index}`, entry.id);
+      fail5(7, `hd.nextIndex.${located.branch} is ${nextIndexOf(copy.index.hd, located.branch)}, at or below this entry's index ${located.index}`, entry.id);
     }
     if (entry.exposure.everRemoteExposed && !exposedIndexesOf(copy.index.hd, located.branch).includes(located.index)) {
-      fail3(7, `it is flagged remotely exposed but index ${located.index} is missing from hd.exposedIndexes.${located.branch}`, entry.id);
+      fail5(7, `it is flagged remotely exposed but index ${located.index} is missing from hd.exposedIndexes.${located.branch}`, entry.id);
     }
   }
   if (opts.live) {
@@ -108687,7 +109274,7 @@ async function verifyVaultIntegrity(copy, opts = {}) {
     const missing = [...liveAddresses].filter((address) => !copyAddresses.has(address));
     const extra = [...copyAddresses].filter((address) => !liveAddresses.has(address));
     if (missing.length > 0 || extra.length > 0) {
-      fail3(8, `this copy's address set does not match the live vault (${missing.length} address(es) in the vault and not in the copy, ${extra.length} the other way). It may be a stale copy, or a copy of a different vault`);
+      fail5(8, `this copy's address set does not match the live vault (${missing.length} address(es) in the vault and not in the copy, ${extra.length} the other way). It may be a stale copy, or a copy of a different vault`);
     }
   }
   return report2;
@@ -108698,14 +109285,14 @@ async function verifyEntry(copy, entry, root, report2, observer) {
   try {
     const expectedLength = entry.curve === "ed25519" ? SOLANA_SECRET_BYTES : SECP256K1_SCALAR_BYTES;
     if (secret.length !== expectedLength) {
-      fail3(5, `its stored secret is ${secret.length} bytes, but a ${entry.curve} key is ${expectedLength}`, entry.id);
+      fail5(5, `its stored secret is ${secret.length} bytes, but a ${entry.curve} key is ${expectedLength}`, entry.id);
     }
     if (entry.curve === "ed25519") {
       if (addressFromSecret64(secret) !== entry.address) {
-        fail3(5, "its stored secret does not produce the address the index records", entry.id);
+        fail5(5, "its stored secret does not produce the address the index records", entry.id);
       }
     } else if (!sameEvmAddress(evmAddressFromSecret(secret), entry.address)) {
-      fail3(5, "its stored secret does not produce the address the index records", entry.id);
+      fail5(5, "its stored secret does not produce the address the index records", entry.id);
     }
     report2.addressChecked.push(entry.id);
     if (entry.origin !== "derived" || entry.derivation === undefined) {
@@ -108716,13 +109303,13 @@ async function verifyEntry(copy, entry, root, report2, observer) {
       const index = evmIndexOfPath(entry.derivation.path);
       const teeIndex = evmTeeIndexOfPath(entry.derivation.path);
       if (index === undefined && teeIndex === undefined) {
-        fail3(5, `its recorded path ${entry.derivation.path} is not on an EVM branch`, entry.id);
+        fail5(5, `its recorded path ${entry.derivation.path} is not on an EVM branch`, entry.id);
       }
       const derivedEvm = index !== undefined ? await deriveEvmKeyFromRoot(root, index) : await deriveEvmTeeKeyFromRoot(root, teeIndex);
       observer?.onLeafLive?.(2);
       try {
         if (!bytesEqual(derivedEvm.secret, secret)) {
-          fail3(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id);
+          fail5(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id);
         }
         report2.rederived.push(entry.id);
       } finally {
@@ -108739,7 +109326,7 @@ async function verifyEntry(copy, entry, root, report2, observer) {
     observer?.onLeafLive?.(2);
     try {
       if (!bytesEqual(derived.secret64, secret)) {
-        fail3(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id);
+        fail5(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id);
       }
       report2.rederived.push(entry.id);
     } finally {
@@ -109810,14 +110397,14 @@ function nativeKeyFileContents(entry, secret) {
 `;
 }
 async function markEverExported(vault, entry, ctx) {
-  const entries = vault.index.entries.map((candidate) => candidate.id === entry.id ? {
+  const entries3 = vault.index.entries.map((candidate) => candidate.id === entry.id ? {
     ...candidate,
     exposure: {
       ...candidate.exposure,
       everExported: true
     }
   } : candidate);
-  return commitVault(vault, { index: { ...vault.index, entries } }, ctx.deps);
+  return commitVault(vault, { index: { ...vault.index, entries: entries3 } }, ctx.deps);
 }
 async function assertExportTargetWritable(destination) {
   try {
@@ -111230,7 +111817,7 @@ function readReceipt(value) {
   return value;
 }
 async function saveFundingReceipt(vault, teeId, receipt, ctx) {
-  const entries = vault.index.entries.map((entry) => {
+  const entries3 = vault.index.entries.map((entry) => {
     if (entry.id !== teeId || !entry.tee)
       return entry;
     const prior = entry.tee.fundingReceipts ?? [];
@@ -111238,7 +111825,7 @@ async function saveFundingReceipt(vault, teeId, receipt, ctx) {
     const fundingReceipts = exists3 ? prior.map((value) => readReceipt(value).signature === receipt.signature ? receipt : value) : [...prior, receipt];
     return { ...entry, tee: { ...entry.tee, fundingReceipts } };
   });
-  const next = await commitVault(vault, { index: { ...vault.index, entries } }, ctx.deps);
+  const next = await commitVault(vault, { index: { ...vault.index, entries: entries3 } }, ctx.deps);
   Object.assign(vault, next);
 }
 async function reconcileFundingReceipts(vault, addresses, rpc, ctx) {
@@ -111868,14 +112455,14 @@ async function recordMigrationSidecar(vaultPath, vault, fromPath, digest, now) {
     migratedFrom: [...existing, { path: fromPath, at: new Date(now).toISOString(), sourceDigest: digest }]
   })).catch(() => {});
 }
-async function verifyMigratedOnDisk(path, reopen, entries, _ctx) {
+async function verifyMigratedOnDisk(path, reopen, entries3, _ctx) {
   const raw = await readVaultRaw(path);
   if (raw === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back after the migration.`);
   }
   const reopened = await reopen(path, raw);
   try {
-    for (const entry of entries) {
+    for (const entry of entries3) {
       const secret = await decryptKey(reopened, entry.id);
       try {
         if (addressFromSecret64(secret) !== entry.address) {
@@ -113115,14 +113702,14 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
 async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmations) {
   const announceGrant = confirmations.announceGrant ?? true;
   const report2 = confirmations.report ?? "write";
-  const fail4 = (failure4, exit) => {
+  const fail6 = (failure4, exit) => {
     if (report2 === "write")
       writeLocalFailure(ctx.deps, failure4, ctx.json);
     return { exit, ...report2 === "return" ? { failure: failure4 } : {} };
   };
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
-    return fail4({
+    return fail6({
       code: "PROMOTE_RECONCILE_INCOMPLETE",
       message: "No API key is available; reconciliation cannot run.",
       suggestion: "Run: candle keys create"
@@ -113134,7 +113721,7 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
     const name2 = ctx.profile ?? config.activeProfile;
     const cached = name2 !== undefined ? config.profiles?.[name2]?.account : undefined;
     if (cached === undefined || cached === "") {
-      return fail4({
+      return fail6({
         code: "PROMOTE_RECONCILE_INCOMPLETE",
         message: "This entry has no grant identity, and this profile has no cached account to assert."
       }, 1);
@@ -113147,10 +113734,10 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
   }
   const verdict = await reconcileGrant(ctx, entry, { assertedAccount });
   if (verdict.kind === "unreadable") {
-    return fail4({ code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason }, 1);
+    return fail6({ code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason }, 1);
   }
   if (verdict.kind === "unresolved") {
-    return fail4({
+    return fail6({
       code: "PROMOTE_OUTCOME_UNRESOLVED",
       message: `No authoritative grant or stranding record for ${entry.address}; the outcome is not established.`,
       suggestion: "Nothing was written. Demote under --emergency if funds must move, then promote a fresh key."
@@ -113193,7 +113780,7 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
     announceGrant
   });
   if (adoption.outcome === "declined") {
-    return fail4({
+    return fail6({
       code: "GRANT_DESTINATION_UNRESOLVED",
       message: `Adoption of the server grant for ${entry.address} was declined; the entry was left unchanged.`
     }, 1);
@@ -113369,8 +113956,8 @@ async function runTeeImport(ctx, opts) {
     ...closeReopened ? {} : { vault: committed }
   };
 }
-function namesEvmEntry(entries, labelOrAddress) {
-  return entries.some((entry) => entry.chain === "evm" && (entry.label === labelOrAddress || sameAddress2(entry.address, labelOrAddress)));
+function namesEvmEntry(entries3, labelOrAddress) {
+  return entries3.some((entry) => entry.chain === "evm" && (entry.label === labelOrAddress || sameAddress2(entry.address, labelOrAddress)));
 }
 
 // src/commands/vault-promote-batch.ts
@@ -114877,7 +115464,7 @@ This profile acts as account ${read3.account}.
 async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
   const now = new Date(ctx.deps.now()).toISOString();
   const matchByAddress = new Map(matches3.matched.map((match) => [match.entry.address, match.row]));
-  const entries = derived.entries.map((entry) => {
+  const entries3 = derived.entries.map((entry) => {
     const row2 = matchByAddress.get(entry.address);
     if (entry.branch === "evmTee") {
       const base3 = {
@@ -114937,7 +115524,7 @@ async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
   });
   const highest = { solanaVault: -1, solanaTee: -1, solanaExternal: -1, evm: -1, evmTee: -1 };
   const exposed = { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [], evmTee: [] };
-  for (const entry of entries) {
+  for (const entry of entries3) {
     const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
     if (located === undefined)
       continue;
@@ -114978,8 +115565,8 @@ async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
     },
     ...matches3.complete ? { exposureReconciledAt: now } : {}
   };
-  await commitVault(vault, { index: { hd, entries }, addKeys: derived.entries.map((entry) => entry.blob) }, ctx.deps);
-  return { entries, hd };
+  await commitVault(vault, { index: { hd, entries: entries3 }, addKeys: derived.entries.map((entry) => entry.blob) }, ctx.deps);
+  return { entries: entries3, hd };
 }
 function teeFieldsFor(row2, ctx, network2 = "solana-mainnet") {
   const remoteState = row2.sweptAt !== undefined ? "swept" : row2.revokedAt !== undefined ? "quarantined" : "enabled";
@@ -115126,10 +115713,10 @@ async function vaultReconcileExposure(args, ctx) {
       throw new VaultError("EXPOSURE_ACCOUNT_MISMATCH", `This vault recorded its discovery against account ${recorded}, and this profile acts as ${read3.account}.`, { suggestion: "Switch profile and run it again. Nothing was flagged." });
     }
     const listed = new Set(read3.rows.map((row2) => lookupKey(row2.address)));
-    const entries = vault.index.entries.map((entry) => entry.role !== "external" && listed.has(lookupKey(entry.address)) && !entry.exposure.everRemoteExposed ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } } : entry);
-    const added = entries.filter((entry, i) => entry !== vault.index.entries[i]);
+    const entries3 = vault.index.entries.map((entry) => entry.role !== "external" && listed.has(lookupKey(entry.address)) && !entry.exposure.everRemoteExposed ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } } : entry);
+    const added = entries3.filter((entry, i) => entry !== vault.index.entries[i]);
     const exposedIndexes = { ...vault.index.hd.exposedIndexes };
-    for (const entry of entries) {
+    for (const entry of entries3) {
       const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
       if (located === undefined || !entry.exposure.everRemoteExposed)
         continue;
@@ -115142,7 +115729,7 @@ async function vaultReconcileExposure(args, ctx) {
     const highestMatched = {
       ...vault.index.hd.discovery?.highestMatched ?? { solanaVault: -1, solanaTee: -1, solanaExternal: -1 }
     };
-    for (const entry of entries) {
+    for (const entry of entries3) {
       if (!entry.exposure.everRemoteExposed)
         continue;
       const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
@@ -115159,7 +115746,7 @@ async function vaultReconcileExposure(args, ctx) {
           exposureReconciledAt: now,
           ...vault.index.hd.discovery ? { discovery: { ...vault.index.hd.discovery, highestMatched } } : {}
         },
-        entries
+        entries: entries3
       }
     }, deps);
     if (ctx.json) {
@@ -115805,7 +116392,7 @@ init_human_output();
 init_release();
 import { dirname as dirname13, join as join15 } from "node:path";
 init_key_output();
-var USAGE19 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE18 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -115837,19 +116424,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE19}`, json);
+${USAGE18}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeScreenUsageFailure(deps, `verify takes exactly one file.
-${USAGE19}`, json);
+${USAGE18}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeScreenUsageFailure(deps, `--bundle is required.
-${USAGE19}`, json);
+${USAGE18}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -115863,7 +116450,7 @@ ${USAGE19}`, json);
   }
   if (resolved.kind === "absent") {
     writeScreenUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE19}`, json);
+${USAGE18}`, json);
     return 2;
   }
   const identity4 = resolved.uri;
@@ -115992,7 +116579,7 @@ function writeFailure2(ctx, result) {
 }
 async function setAllowLaunch(args, ctx, enabled) {
   const { deps, apiUrl, json } = ctx;
-  const usage12 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
+  const usage13 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
   const command = enabled ? "wallets allow-launch" : "wallets disallow-launch";
   const parsed = parseArgs(args, enabled ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -116000,7 +116587,7 @@ async function setAllowLaunch(args, ctx, enabled) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage12}`, json);
+    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage13}`, json);
     return 2;
   }
   const skipConfirm = !enabled && parsed.booleans.has("--yes");
@@ -116217,7 +116804,7 @@ init_presentation();
 init_profiles();
 init_render();
 init_key_output();
-var USAGE20 = "Usage: candle wallets authorize [--no-browser] [--no-wait] [--timeout <seconds>] [--json]";
+var USAGE19 = "Usage: candle wallets authorize [--no-browser] [--no-wait] [--timeout <seconds>] [--json]";
 var AUTHORIZE_WAIT_DEFAULT_SECONDS = 600;
 var AUTHORIZE_POLL_MS = 3000;
 function authorizeUrl(apiUrl, portalOrigin) {
@@ -116240,12 +116827,12 @@ async function walletsAuthorize(args, ctx) {
   const parsed = parseArgs(args, { booleanFlags: ["--no-browser", "--no-wait"], valueFlags: ["--timeout"] });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE20}`, json);
+${USAGE19}`, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
     writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}
-${USAGE20}`, json);
+${USAGE19}`, json);
     return 2;
   }
   let timeoutSeconds = AUTHORIZE_WAIT_DEFAULT_SECONDS;
@@ -116254,7 +116841,7 @@ ${USAGE20}`, json);
     const n = Number(rawTimeout);
     if (!Number.isInteger(n) || n <= 0) {
       writeScreenUsageFailure(deps, `--timeout must be a whole number of seconds above 0, got ${rawTimeout}
-${USAGE20}`, json);
+${USAGE19}`, json);
       return 2;
     }
     timeoutSeconds = n;
@@ -116361,7 +116948,7 @@ init_solana_lite();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID17 } from "node:crypto";
-var USAGE21 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes] [--json]";
+var USAGE20 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -116636,7 +117223,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE21}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE20}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, {
@@ -116650,7 +117237,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID17()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE21, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE20, ctx.json);
     return 2;
   }
   const run2 = {
@@ -116757,7 +117344,7 @@ function trustTable(rows, style) {
 }
 async function setTrust(args, ctx, trusted) {
   const { deps, apiUrl, json } = ctx;
-  const usage12 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
+  const usage13 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
   const command = trusted ? "wallets trust" : "wallets untrust";
   const parsed = parseArgs(args, trusted ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -116765,7 +117352,7 @@ async function setTrust(args, ctx, trusted) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage12}`, json);
+    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage13}`, json);
     return 2;
   }
   const skipConfirm = !trusted && parsed.booleans.has("--yes");

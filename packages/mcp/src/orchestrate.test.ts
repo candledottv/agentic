@@ -45,16 +45,20 @@ const SOL_MARKET = { body: { success: true, market: { decimals: 6, quoteDecimals
 describe("executeTrade: buys", () => {
   test("a buy reads the market and converts against the TOKEN'S quote decimals", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    const result = await executeTrade({ mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "t-1" }, CFG, fetch)
+    const result = await executeTrade(
+      { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5", clientTradeId: "t-1" },
+      CFG,
+      fetch,
+    )
     expect(calls.length).toBe(2)
-    expect(calls[0]?.url).toBe("https://api.test/api/v1/markets/solana/M1nt")
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111")
     const body = JSON.parse(String(calls[1]?.init?.body))
     expect(body).toMatchObject({
       clientTradeId: "t-1",
-      mint: "M1nt",
+      mint: "M1nt1111111111111111111111111111",
       side: "buy",
       amountRaw: "500000000",
       amountDecimals: 9,
@@ -67,13 +71,13 @@ describe("executeTrade: buys", () => {
 
   test("REGRESSION: a USDC-quoted token converts at 6 decimals, not the sol default's 9", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/UsdcTok": {
+      "https://api.test/api/v1/markets/solana/UsdcTok1111111111111111111111111": {
         body: { success: true, market: { decimals: 6, quoteDecimals: 6 } },
       },
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
     const result = await executeTrade(
-      { mint: "UsdcTok", side: "buy", amount: "100", clientTradeId: "t-usdc" },
+      { mint: "UsdcTok1111111111111111111111111", side: "buy", amount: "100", clientTradeId: "t-usdc" },
       CFG,
       fetch,
     )
@@ -85,11 +89,17 @@ describe("executeTrade: buys", () => {
 
   test("the caller's quoteAsset rides along to the API but never drives a buy's decimals", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
     await executeTrade(
-      { mint: "M1nt", side: "buy", amount: "1000", quoteAsset: "usdc", clientTradeId: "t-2" },
+      {
+        mint: "M1nt1111111111111111111111111111",
+        side: "buy",
+        amount: "1000",
+        quoteAsset: "usdc",
+        clientTradeId: "t-2",
+      },
       CFG,
       fetch,
     )
@@ -101,14 +111,20 @@ describe("executeTrade: buys", () => {
 
   test("a mint with no Candle market falls back to the caller's quoteAsset, the way the API does", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/JupTok": {
+      "https://api.test/api/v1/markets/solana/JupTok11111111111111111111111111": {
         status: 404,
         body: { success: false, error: { code: "MARKET_NOT_FOUND", message: "no market" } },
       },
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
     const result = await executeTrade(
-      { mint: "JupTok", side: "buy", amount: "250", quoteAsset: "usdc", clientTradeId: "t-jup" },
+      {
+        mint: "JupTok11111111111111111111111111",
+        side: "buy",
+        amount: "250",
+        quoteAsset: "usdc",
+        clientTradeId: "t-jup",
+      },
       CFG,
       fetch,
     )
@@ -119,10 +135,12 @@ describe("executeTrade: buys", () => {
 
   test("a market that reports no quoteDecimals is a clear error, no trade attempted", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": { body: { success: true, market: { decimals: 6 } } },
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": {
+        body: { success: true, market: { decimals: 6 } },
+      },
     })
     const result = await executeTrade(
-      { mint: "M1nt", side: "buy", amount: "1", clientTradeId: "t-no-quote-decimals" },
+      { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "1", clientTradeId: "t-no-quote-decimals" },
       CFG,
       fetch,
     )
@@ -134,10 +152,14 @@ describe("executeTrade: buys", () => {
 
   test("clientTradeId is auto-generated when omitted and echoed back", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    const result = await executeTrade({ mint: "M1nt", side: "buy", amount: "0.5" }, CFG, fetch)
+    const result = await executeTrade(
+      { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5" },
+      CFG,
+      fetch,
+    )
     const sent = JSON.parse(String(calls[1]?.init?.body)).clientTradeId
     expect(typeof sent).toBe("string")
     expect(sent.length).toBeGreaterThan(0)
@@ -147,7 +169,7 @@ describe("executeTrade: buys", () => {
   test("percent on a buy is rejected before any request", async () => {
     const { calls, fetch } = fakeFetch({})
     const result = await executeTrade(
-      { mint: "M1nt", side: "buy", percent: 50, clientTradeId: "t-percent-buy" },
+      { mint: "M1nt1111111111111111111111111111", side: "buy", percent: 50, clientTradeId: "t-percent-buy" },
       CFG,
       fetch,
     )
@@ -159,13 +181,19 @@ describe("executeTrade: buys", () => {
 
   test("an unknown quoteAsset on the arbitrary-mint path is rejected, with the id still echoed", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/JupTok": {
+      "https://api.test/api/v1/markets/solana/JupTok11111111111111111111111111": {
         status: 404,
         body: { success: false, error: { code: "MARKET_NOT_FOUND", message: "no market" } },
       },
     })
     const result = await executeTrade(
-      { mint: "JupTok", side: "buy", amount: "1", quoteAsset: "doge", clientTradeId: "t-bad-quote" },
+      {
+        mint: "JupTok11111111111111111111111111",
+        side: "buy",
+        amount: "1",
+        quoteAsset: "doge",
+        clientTradeId: "t-bad-quote",
+      },
       CFG,
       fetch,
     )
@@ -176,9 +204,11 @@ describe("executeTrade: buys", () => {
   })
 
   test("a malformed amount fails conversion and is caught, with the id still echoed", async () => {
-    const { calls, fetch } = fakeFetch({ "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET })
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
+    })
     const result = await executeTrade(
-      { mint: "M1nt", side: "buy", amount: "not-a-number", clientTradeId: "t-bad-amount" },
+      { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "not-a-number", clientTradeId: "t-bad-amount" },
       CFG,
       fetch,
     )
@@ -195,11 +225,17 @@ describe("executeTrade: deferExecution (BE-2657)", () => {
       [undefined, false],
     ] as const) {
       const { calls, fetch } = fakeFetch({
-        "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+        "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
         "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
       })
       await executeTrade(
-        { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "d-1", ...(defer ? { deferExecution: defer } : {}) },
+        {
+          mint: "M1nt1111111111111111111111111111",
+          side: "buy",
+          amount: "0.5",
+          clientTradeId: "d-1",
+          ...(defer ? { deferExecution: defer } : {}),
+        },
         CFG,
         fetch,
       )
@@ -212,11 +248,17 @@ describe("executeTrade: deferExecution (BE-2657)", () => {
   test("accepts the string and number forms a client may send", async () => {
     for (const value of ["true", 1, "1"]) {
       const { calls, fetch } = fakeFetch({
-        "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+        "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
         "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
       })
       await executeTrade(
-        { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "d-2", deferExecution: value },
+        {
+          mint: "M1nt1111111111111111111111111111",
+          side: "buy",
+          amount: "0.5",
+          clientTradeId: "d-2",
+          deferExecution: value,
+        },
         CFG,
         fetch,
       )
@@ -227,7 +269,14 @@ describe("executeTrade: deferExecution (BE-2657)", () => {
   test("refuses deferExecution with paper before any request, naming the clientTradeId", async () => {
     const { calls, fetch } = fakeFetch({})
     const result = await executeTrade(
-      { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "d-3", paper: true, deferExecution: true },
+      {
+        mint: "M1nt1111111111111111111111111111",
+        side: "buy",
+        amount: "0.5",
+        clientTradeId: "d-3",
+        paper: true,
+        deferExecution: true,
+      },
       CFG,
       fetch,
     )
@@ -246,10 +295,14 @@ describe("executeTrade: paper mode", () => {
   */
   test("paper: true reaches the API", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    await executeTrade({ mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "p-1", paper: true }, CFG, fetch)
+    await executeTrade(
+      { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5", clientTradeId: "p-1", paper: true },
+      CFG,
+      fetch,
+    )
     expect(JSON.parse(String(calls[1]?.init?.body)).paper).toBe(true)
   })
 
@@ -257,11 +310,17 @@ describe("executeTrade: paper mode", () => {
     const bodies: string[] = []
     for (const paper of [undefined, true]) {
       const { calls, fetch } = fakeFetch({
-        "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+        "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
         "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
       })
       await executeTrade(
-        { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "same", ...(paper ? { paper } : {}) },
+        {
+          mint: "M1nt1111111111111111111111111111",
+          side: "buy",
+          amount: "0.5",
+          clientTradeId: "same",
+          ...(paper ? { paper } : {}),
+        },
         CFG,
         fetch,
       )
@@ -280,10 +339,14 @@ describe("executeTrade: paper mode", () => {
   test("a live trade carries no paper key at all, not paper: false", async () => {
     for (const args of [{}, { paper: false as const }]) {
       const { calls, fetch } = fakeFetch({
-        "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+        "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
         "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
       })
-      await executeTrade({ mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "live", ...args }, CFG, fetch)
+      await executeTrade(
+        { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5", clientTradeId: "live", ...args },
+        CFG,
+        fetch,
+      )
       const raw = String(calls[1]?.init?.body)
       expect(raw).not.toContain("paper")
       expect(JSON.parse(raw)).not.toHaveProperty("paper")
@@ -292,10 +355,14 @@ describe("executeTrade: paper mode", () => {
 
   test("paper works on a sell too, since rehearsing an exit is the half that matters", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    await executeTrade({ mint: "M1nt", side: "sell", amount: "100", clientTradeId: "p-2", paper: true }, CFG, fetch)
+    await executeTrade(
+      { mint: "M1nt1111111111111111111111111111", side: "sell", amount: "100", clientTradeId: "p-2", paper: true },
+      CFG,
+      fetch,
+    )
     const body = JSON.parse(String(calls[1]?.init?.body))
     expect(body).toMatchObject({ side: "sell", paper: true })
   })
@@ -305,7 +372,7 @@ describe("executeTrade: paper mode", () => {
       "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
     })
     const result = await executeTrade(
-      { mint: "ExtMint", side: "sell", percent: 100, clientTradeId: "p-pct", paper: true },
+      { mint: "ExtMint1111111111111111111111111", side: "sell", percent: 100, clientTradeId: "p-pct", paper: true },
       CFG,
       fetch,
     )
@@ -313,32 +380,39 @@ describe("executeTrade: paper mode", () => {
     expect(calls.length).toBe(1)
     expect(calls[0]?.url).toBe("https://api.test/api/v1/trade/agent/build")
     const body = JSON.parse(String(calls[0]?.init?.body))
-    expect(body).toMatchObject({ side: "sell", percent: 100, paper: true, mint: "ExtMint" })
+    expect(body).toMatchObject({ side: "sell", percent: 100, paper: true, mint: "ExtMint1111111111111111111111111" })
     expect(body).not.toHaveProperty("amountRaw")
   })
 
   test("a paper amount sell of an external mint uses paper inventory decimals, not MARKET_NOT_FOUND", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/ExtMint": {
+      "https://api.test/api/v1/markets/solana/ExtMint1111111111111111111111111": {
         status: 404,
         body: {
           success: false,
-          error: { code: "MARKET_NOT_FOUND", message: "No solana market found for mint ExtMint" },
+          error: {
+            code: "MARKET_NOT_FOUND",
+            message: "No solana market found for mint ExtMint1111111111111111111111111",
+          },
         },
       },
       "https://api.test/api/v1/trade/agent/paper/inventory": {
-        body: { success: true, paper: true, positions: [{ mint: "ExtMint", amountRaw: "5000000", tokenDecimals: 6 }] },
+        body: {
+          success: true,
+          paper: true,
+          positions: [{ mint: "ExtMint1111111111111111111111111", amountRaw: "5000000", tokenDecimals: 6 }],
+        },
       },
       "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
     })
     const result = await executeTrade(
-      { mint: "ExtMint", side: "sell", amount: "5", clientTradeId: "p-amt", paper: true },
+      { mint: "ExtMint1111111111111111111111111", side: "sell", amount: "5", clientTradeId: "p-amt", paper: true },
       CFG,
       fetch,
     )
     expect(result.isError).not.toBe(true)
     expect(calls.map((c) => c.url)).toEqual([
-      "https://api.test/api/v1/markets/solana/ExtMint",
+      "https://api.test/api/v1/markets/solana/ExtMint1111111111111111111111111",
       "https://api.test/api/v1/trade/agent/paper/inventory",
       "https://api.test/api/v1/trade/agent/build",
     ])
@@ -351,11 +425,14 @@ describe("executeTrade: paper mode", () => {
 
   test("a live amount sell of an external mint still relays MARKET_NOT_FOUND", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/ExtMint": {
+      "https://api.test/api/v1/markets/solana/ExtMint1111111111111111111111111": {
         status: 404,
         body: {
           success: false,
-          error: { code: "MARKET_NOT_FOUND", message: "No solana market found for mint ExtMint" },
+          error: {
+            code: "MARKET_NOT_FOUND",
+            message: "No solana market found for mint ExtMint1111111111111111111111111",
+          },
         },
       },
       "https://api.test/api/v1/trade/agent/paper/inventory": {
@@ -363,7 +440,7 @@ describe("executeTrade: paper mode", () => {
       },
     })
     const result = await executeTrade(
-      { mint: "ExtMint", side: "sell", amount: "5", clientTradeId: "live-404" },
+      { mint: "ExtMint1111111111111111111111111", side: "sell", amount: "5", clientTradeId: "live-404" },
       CFG,
       fetch,
     )
@@ -377,7 +454,7 @@ describe("executeTrade: paper mode", () => {
       "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
     })
     const result = await executeTrade(
-      { mint: "ExtMint", side: "sell", percent: 100, clientTradeId: "p-str", paper: "true" },
+      { mint: "ExtMint1111111111111111111111111", side: "sell", percent: 100, clientTradeId: "p-str", paper: "true" },
       CFG,
       fetch,
     )
@@ -391,18 +468,18 @@ describe("executeTrade: paper mode", () => {
       "https://api.test/api/v1/agent/wallets/embedded": {
         body: { success: true, wallets: { solana: { address: "Hba1Empty", delegated: true }, evm: null } },
       },
-      "https://api.test/api/v1/tokens/ExtMint/balance/Hba1Empty": { body: { payload: null } },
+      "https://api.test/api/v1/tokens/ExtMint1111111111111111111111111/balance/Hba1Empty": { body: { payload: null } },
       "https://api.test/api/v1/trade/agent/paper/inventory": {
         body: {
           success: true,
           paper: true,
-          positions: [{ mint: "ExtMint", amountRaw: "2286574413", tokenDecimals: 6 }],
+          positions: [{ mint: "ExtMint1111111111111111111111111", amountRaw: "2286574413", tokenDecimals: 6 }],
         },
       },
       "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
     })
     const result = await executeTrade(
-      { mint: "ExtMint", side: "sell", percent: 100, clientTradeId: "p-infer-pct" },
+      { mint: "ExtMint1111111111111111111111111", side: "sell", percent: 100, clientTradeId: "p-infer-pct" },
       CFG,
       fetch,
     )
@@ -413,30 +490,33 @@ describe("executeTrade: paper mode", () => {
       side: "sell",
       percent: 100,
       paper: true,
-      mint: "ExtMint",
+      mint: "ExtMint1111111111111111111111111",
     })
   })
 
   test("an amount sell of an external mint with no paper flag uses paper inventory instead of MARKET_NOT_FOUND", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/ExtMint": {
+      "https://api.test/api/v1/markets/solana/ExtMint1111111111111111111111111": {
         status: 404,
         body: {
           success: false,
-          error: { code: "MARKET_NOT_FOUND", message: "No solana market found for mint ExtMint" },
+          error: {
+            code: "MARKET_NOT_FOUND",
+            message: "No solana market found for mint ExtMint1111111111111111111111111",
+          },
         },
       },
       "https://api.test/api/v1/trade/agent/paper/inventory": {
         body: {
           success: true,
           paper: true,
-          positions: [{ mint: "ExtMint", amountRaw: "2286574413", tokenDecimals: 6 }],
+          positions: [{ mint: "ExtMint1111111111111111111111111", amountRaw: "2286574413", tokenDecimals: 6 }],
         },
       },
       "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
     })
     const result = await executeTrade(
-      { mint: "ExtMint", side: "sell", amount: "2286.574413", clientTradeId: "p-infer-amt" },
+      { mint: "ExtMint1111111111111111111111111", side: "sell", amount: "2286.574413", clientTradeId: "p-infer-amt" },
       CFG,
       fetch,
     )
@@ -464,10 +544,16 @@ describe("isPaperFlag", () => {
 describe("executeTrade: sells", () => {
   test("a sell with amount reads market decimals then trades", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": { body: { success: true, market: { decimals: 6 } } },
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": {
+        body: { success: true, market: { decimals: 6 } },
+      },
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    await executeTrade({ mint: "M1nt", side: "sell", amount: "1000", clientTradeId: "t-3" }, CFG, fetch)
+    await executeTrade(
+      { mint: "M1nt1111111111111111111111111111", side: "sell", amount: "1000", clientTradeId: "t-3" },
+      CFG,
+      fetch,
+    )
     expect(calls.length).toBe(2)
     const body = JSON.parse(String(calls[1]?.init?.body))
     expect(body.amountRaw).toBe("1000000000")
@@ -476,10 +562,12 @@ describe("executeTrade: sells", () => {
 
   test("unresolvable market decimals is a clear error, with the id still echoed", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": { body: { success: true, market: {} } },
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": {
+        body: { success: true, market: {} },
+      },
     })
     const result = await executeTrade(
-      { mint: "M1nt", side: "sell", amount: "1000", clientTradeId: "t-no-decimals" },
+      { mint: "M1nt1111111111111111111111111111", side: "sell", amount: "1000", clientTradeId: "t-no-decimals" },
       CFG,
       fetch,
     )
@@ -494,12 +582,16 @@ describe("executeTrade: sells", () => {
       "https://api.test/api/v1/agent/wallets/embedded": {
         body: { success: true, wallets: { solana: { address: "Emb1", delegated: true }, evm: null } },
       },
-      "https://api.test/api/v1/tokens/M1nt/balance/Emb1": {
+      "https://api.test/api/v1/tokens/M1nt1111111111111111111111111111/balance/Emb1": {
         body: { payload: { balance: "1000001", uiAmount: 1.000001, decimals: 6 } },
       },
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    const result = await executeTrade({ mint: "M1nt", side: "sell", percent: 50, clientTradeId: "t-4" }, CFG, fetch)
+    const result = await executeTrade(
+      { mint: "M1nt1111111111111111111111111111", side: "sell", percent: 50, clientTradeId: "t-4" },
+      CFG,
+      fetch,
+    )
     expect(calls.length).toBe(3)
     const body = JSON.parse(String(calls[2]?.init?.body))
     expect(body.amountRaw).toBe("500000")
@@ -516,7 +608,7 @@ describe("executeTrade: sells", () => {
       },
     })
     const result = await executeTrade(
-      { mint: "M1nt", side: "sell", percent: 50, clientTradeId: "t-no-wallet" },
+      { mint: "M1nt1111111111111111111111111111", side: "sell", percent: 50, clientTradeId: "t-no-wallet" },
       CFG,
       fetch,
     )
@@ -531,13 +623,13 @@ describe("executeTrade: sells", () => {
       "https://api.test/api/v1/agent/wallets/embedded": {
         body: { success: true, wallets: { solana: { address: "Emb1", delegated: true }, evm: null } },
       },
-      "https://api.test/api/v1/tokens/M1nt/balance/Emb1": { body: { payload: null } },
+      "https://api.test/api/v1/tokens/M1nt1111111111111111111111111111/balance/Emb1": { body: { payload: null } },
       "https://api.test/api/v1/trade/agent/paper/inventory": {
         body: { success: true, paper: true, positions: [] },
       },
     })
     const result = await executeTrade(
-      { mint: "M1nt", side: "sell", percent: 50, clientTradeId: "t-zero-bal" },
+      { mint: "M1nt1111111111111111111111111111", side: "sell", percent: 50, clientTradeId: "t-zero-bal" },
       CFG,
       fetch,
     )
@@ -554,13 +646,18 @@ describe("executeTrade: sells", () => {
           wallets: { solana: { address: "Emb1", delegated: true }, evm: { address: "0xEmb2", delegated: true } },
         },
       },
-      "https://api.test/api/v1/tokens/0xAbC123/balance/0xEmb2": {
+      "https://api.test/api/v1/tokens/0xAbC1230000000000000000000000000000000000/balance/0xEmb2": {
         body: { payload: { balance: "2000000000000000000", uiAmount: 2, decimals: 18 } },
       },
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
     const result = await executeTrade(
-      { mint: "0xAbC123", side: "sell", percent: 50, clientTradeId: "t-hood-percent" },
+      {
+        mint: "0xAbC1230000000000000000000000000000000000",
+        side: "sell",
+        percent: 50,
+        clientTradeId: "t-hood-percent",
+      },
       CFG,
       fetch,
     )
@@ -580,7 +677,7 @@ describe("executeTrade: sells", () => {
       },
     })
     const result = await executeTrade(
-      { mint: "0xAbC123", side: "sell", percent: 50, clientTradeId: "t-hood-no-evm" },
+      { mint: "0xAbC1230000000000000000000000000000000000", side: "sell", percent: 50, clientTradeId: "t-hood-no-evm" },
       CFG,
       fetch,
     )
@@ -596,7 +693,11 @@ describe("executeTrade: sells", () => {
         body: { success: false, error: { code: "UNAUTHORIZED", message: "invalid api key" } },
       },
     })
-    const result = await executeTrade({ mint: "M1nt", side: "sell", percent: 50, clientTradeId: "t-401" }, CFG, fetch)
+    const result = await executeTrade(
+      { mint: "M1nt1111111111111111111111111111", side: "sell", percent: 50, clientTradeId: "t-401" },
+      CFG,
+      fetch,
+    )
     expect(result.isError).toBe(true)
     const parsed = JSON.parse(result.text)
     expect(parsed.clientTradeId).toBe("t-401")
@@ -607,12 +708,16 @@ describe("executeTrade: sells", () => {
 
   test("a non-ok market read is relayed verbatim, not reported as unresolvable decimals", async () => {
     const { fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": {
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": {
         status: 500,
         body: { success: false, error: { code: "INTERNAL", message: "convex down" } },
       },
     })
-    const result = await executeTrade({ mint: "M1nt", side: "sell", amount: "10", clientTradeId: "t-500" }, CFG, fetch)
+    const result = await executeTrade(
+      { mint: "M1nt1111111111111111111111111111", side: "sell", amount: "10", clientTradeId: "t-500" },
+      CFG,
+      fetch,
+    )
     expect(result.isError).toBe(true)
     const parsed = JSON.parse(result.text)
     expect(parsed.clientTradeId).toBe("t-500")
@@ -623,13 +728,17 @@ describe("executeTrade: sells", () => {
   test("amount and percent together, or neither, are rejected before any request", async () => {
     const { calls, fetch } = fakeFetch({})
     const both = await executeTrade(
-      { mint: "M1nt", side: "sell", amount: "1", percent: 50, clientTradeId: "t-both" },
+      { mint: "M1nt1111111111111111111111111111", side: "sell", amount: "1", percent: 50, clientTradeId: "t-both" },
       CFG,
       fetch,
     )
     expect(both.isError).toBe(true)
     expect(JSON.parse(both.text).clientTradeId).toBe("t-both")
-    const neither = await executeTrade({ mint: "M1nt", side: "sell", clientTradeId: "t-neither" }, CFG, fetch)
+    const neither = await executeTrade(
+      { mint: "M1nt1111111111111111111111111111", side: "sell", clientTradeId: "t-neither" },
+      CFG,
+      fetch,
+    )
     expect(neither.isError).toBe(true)
     expect(JSON.parse(neither.text).clientTradeId).toBe("t-neither")
     expect(calls.length).toBe(0)
@@ -640,10 +749,14 @@ describe("executeTrade: relay discipline", () => {
   test("an API error envelope is relayed verbatim, marked isError", async () => {
     const envelope = { success: false, error: { code: "SPEND_LIMIT_EXCEEDED", message: "over cap" } }
     const { fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { status: 400, body: envelope },
     })
-    const result = await executeTrade({ mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "t-5" }, CFG, fetch)
+    const result = await executeTrade(
+      { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5", clientTradeId: "t-5" },
+      CFG,
+      fetch,
+    )
     expect(result.isError).toBe(true)
     expect(result.text).toContain("SPEND_LIMIT_EXCEEDED")
     expect(result.text).toContain("t-5")
@@ -660,11 +773,11 @@ describe("executeTrade: relay discipline", () => {
       },
     }
     const { fetch } = fakeFetch({
-      "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+      "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { status: 403, body: refusal },
     })
     const result = await executeTrade(
-      { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "t-limit" },
+      { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5", clientTradeId: "t-limit" },
       CFG,
       fetch,
     )
@@ -683,7 +796,7 @@ describe("executeTrade: relay discipline", () => {
       throw new Error("socket hang up")
     }
     const result = await executeTrade(
-      { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "t-boom" },
+      { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5", clientTradeId: "t-boom" },
       CFG,
       doFetch,
     )
@@ -703,7 +816,7 @@ describe("executeTrade: relay discipline", () => {
       return { ok: false, status: 502, text: async () => "<html>502 Bad Gateway</html>" }
     }
     const result = await executeTrade(
-      { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "t-html" },
+      { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5", clientTradeId: "t-html" },
       CFG,
       doFetch,
     )
@@ -716,7 +829,11 @@ describe("executeTrade: relay discipline", () => {
   test("a missing api key throws the standard message before any request", async () => {
     const { calls, fetch } = fakeFetch({})
     await expect(
-      executeTrade({ mint: "M1nt", side: "buy", amount: "1" }, { apiUrl: "https://api.test" }, fetch),
+      executeTrade(
+        { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "1" },
+        { apiUrl: "https://api.test" },
+        fetch,
+      ),
     ).rejects.toThrow(/CANDLE_AGENT_API_KEY/)
     expect(calls.length).toBe(0)
   })
@@ -725,12 +842,15 @@ describe("executeTrade: relay discipline", () => {
 const LAUNCHED = {
   success: true,
   chain: "solana",
-  mint: "NewMint111",
+  mint: "NewMint1111111111111111111111111",
   pool: "Pool111",
   signature: "LaunchSig",
   quoteAsset: "sol",
   mode: "open",
-  links: { candle: "https://candle.tv/token/NewMint111", explorer: "https://solscan.io/tx/LaunchSig" },
+  links: {
+    candle: "https://candle.tv/token/NewMint1111111111111111111111111",
+    explorer: "https://solscan.io/tx/LaunchSig",
+  },
   devBuy: { fee: { bps: 100, feeRaw: "1000", treasury: "T" } },
 }
 
@@ -746,7 +866,7 @@ const BUNDLE_BUILT = {
 const BUNDLE_LANDED = {
   status: "landed",
   bundleId: "bundle-1",
-  mint: "NewMint111",
+  mint: "NewMint1111111111111111111111111",
   signatures: ["LaunchSig", "BuySig"],
   booking: { state: "booked", missing: [] },
 }
@@ -757,7 +877,7 @@ describe("executeLaunchAndSeed", () => {
     const { calls, fetch } = fakeFetch({
       "https://api.test/api/v1/launch/atomic/build": { body: BUNDLE_BUILT },
       "https://api.test/api/v1/launch/atomic/submit": { body: BUNDLE_LANDED },
-      "https://api.test/api/v1/markets/solana/NewMint111": {
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111": {
         body: { success: true, market: { lifecycle: "curve", decimals: 6 } },
       },
     })
@@ -769,7 +889,7 @@ describe("executeLaunchAndSeed", () => {
     expect(calls.map((call) => call.url)).toEqual([
       "https://api.test/api/v1/launch/atomic/build",
       "https://api.test/api/v1/launch/atomic/submit",
-      "https://api.test/api/v1/markets/solana/NewMint111",
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111",
     ])
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
       clientLaunchId: "L-1",
@@ -786,7 +906,11 @@ describe("executeLaunchAndSeed", () => {
     expect(result.isError).toBeUndefined()
     expect(parsed.clientLaunchId).toBe("L-1")
     expect(parsed.bundleId).toBe("bundle-1")
-    expect(parsed.launch).toMatchObject({ status: "landed", mint: "NewMint111", signatures: ["LaunchSig", "BuySig"] })
+    expect(parsed.launch).toMatchObject({
+      status: "landed",
+      mint: "NewMint1111111111111111111111111",
+      signatures: ["LaunchSig", "BuySig"],
+    })
     expect(parsed.market).toMatchObject({ lifecycle: "curve" })
   })
 
@@ -892,7 +1016,7 @@ describe("executeLaunchAndSeed", () => {
     const { calls, fetch } = fakeFetch({
       "https://api.test/api/v1/launch/atomic/build": { body: BUNDLE_BUILT },
       "https://api.test/api/v1/launch/atomic/submit": { body: BUNDLE_LANDED },
-      "https://api.test/api/v1/markets/solana/NewMint111": {
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111": {
         body: { success: true, market: { lifecycle: "curve", decimals: 6 } },
       },
     })
@@ -913,7 +1037,7 @@ describe("executeLaunchAndSeed", () => {
     expect(calls.map((call) => call.url)).toEqual([
       "https://api.test/api/v1/launch/atomic/build",
       "https://api.test/api/v1/launch/atomic/submit",
-      "https://api.test/api/v1/markets/solana/NewMint111",
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111",
     ])
     expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({
       quoteAsset: "cndl",
@@ -960,7 +1084,9 @@ describe("executeLaunchAndSeed", () => {
   test("BE-1849: with headlessSeed (the hosted server) a Solana seed stays on the headless route", async () => {
     const { calls, fetch } = fakeFetch({
       "https://api.test/api/v1/launch/headless": { body: LAUNCHED },
-      "https://api.test/api/v1/markets/solana/NewMint111": { body: { success: true, market: {} } },
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111": {
+        body: { success: true, market: {} },
+      },
     })
     await executeLaunchAndSeed(
       { clientLaunchId: "L-h", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.25" },
@@ -978,7 +1104,9 @@ describe("executeLaunchAndSeed", () => {
   test("a launch without devBuy sends no buyAmount", async () => {
     const { calls, fetch } = fakeFetch({
       "https://api.test/api/v1/launch/headless": { body: LAUNCHED },
-      "https://api.test/api/v1/markets/solana/NewMint111": { body: { success: true, market: {} } },
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111": {
+        body: { success: true, market: {} },
+      },
     })
     await executeLaunchAndSeed(
       { clientLaunchId: "L-2", name: "T", symbol: "T", imageUrl: "https://x/y.png" },
@@ -992,7 +1120,9 @@ describe("executeLaunchAndSeed", () => {
   test("clientLaunchId auto-generates when omitted and is echoed", async () => {
     const { calls, fetch } = fakeFetch({
       "https://api.test/api/v1/launch/headless": { body: LAUNCHED },
-      "https://api.test/api/v1/markets/solana/NewMint111": { body: { success: true, market: {} } },
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111": {
+        body: { success: true, market: {} },
+      },
     })
     const result = await executeLaunchAndSeed({ name: "T", symbol: "T", imageUrl: "https://x/y.png" }, CFG, fetch)
     const sent = JSON.parse(String(calls[0]?.init?.body)).clientLaunchId
@@ -1003,7 +1133,10 @@ describe("executeLaunchAndSeed", () => {
   test("PARTIAL FAILURE: market read fails after a real launch; mint and links still returned, market null, no throw", async () => {
     const { fetch } = fakeFetch({
       "https://api.test/api/v1/launch/headless": { body: LAUNCHED },
-      "https://api.test/api/v1/markets/solana/NewMint111": { status: 500, body: { error: "boom" } },
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111": {
+        status: 500,
+        body: { error: "boom" },
+      },
     })
     const result = await executeLaunchAndSeed(
       { clientLaunchId: "L-3", name: "T", symbol: "T", imageUrl: "https://x/y.png" },
@@ -1012,7 +1145,7 @@ describe("executeLaunchAndSeed", () => {
     )
     expect(result.isError).toBeUndefined()
     const parsed = JSON.parse(result.text)
-    expect(parsed.launch.mint).toBe("NewMint111")
+    expect(parsed.launch.mint).toBe("NewMint1111111111111111111111111")
     expect(parsed.market).toBeNull()
     expect(parsed.note).toMatch(/market/i)
   })
@@ -1038,7 +1171,9 @@ describe("executeLaunchAndSeed", () => {
       "https://api.test/api/v1/launch/headless": {
         body: { ...LAUNCHED, bundleId: "creator-bundle", devBuy: { signature: "buy-sig" } },
       },
-      "https://api.test/api/v1/markets/solana/NewMint111": { body: { success: true, market: {} } },
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111": {
+        body: { success: true, market: {} },
+      },
     })
     const result = await executeLaunchAndSeed(
       { clientLaunchId: "creator-id", name: "T", symbol: "T", imageUrl: "https://x/y.png", devBuy: "0.01" },
@@ -1117,8 +1252,12 @@ describe("executeLaunchAndSeed", () => {
 
   test("REGRESSION: a hood devBuy with no quoteAsset converts at ETH's 18 decimals, not sol's 9", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/launch/headless": { body: { ...LAUNCHED, chain: "hood", mint: "0xNew" } },
-      "https://api.test/api/v1/markets/hood/0xNew": { body: { success: true, market: {} } },
+      "https://api.test/api/v1/launch/headless": {
+        body: { ...LAUNCHED, chain: "hood", mint: "0x00000000000000000000000000000000000000ee" },
+      },
+      "https://api.test/api/v1/markets/hood/0x00000000000000000000000000000000000000ee": {
+        body: { success: true, market: {} },
+      },
     })
     await executeLaunchAndSeed(
       {
@@ -1140,8 +1279,12 @@ describe("executeLaunchAndSeed", () => {
 
   test("an explicit hood quoteAsset converts with THAT pair's decimals", async () => {
     const { calls, fetch } = fakeFetch({
-      "https://api.test/api/v1/launch/headless": { body: { ...LAUNCHED, chain: "hood", mint: "0xNew" } },
-      "https://api.test/api/v1/markets/hood/0xNew": { body: { success: true, market: {} } },
+      "https://api.test/api/v1/launch/headless": {
+        body: { ...LAUNCHED, chain: "hood", mint: "0x00000000000000000000000000000000000000ee" },
+      },
+      "https://api.test/api/v1/markets/hood/0x00000000000000000000000000000000000000ee": {
+        body: { success: true, market: {} },
+      },
     })
     await executeLaunchAndSeed(
       {
@@ -1164,7 +1307,9 @@ describe("executeLaunchAndSeed", () => {
     const { calls, fetch } = fakeFetch({
       "https://api.test/api/v1/launch/atomic/build": { body: BUNDLE_BUILT },
       "https://api.test/api/v1/launch/atomic/submit": { body: BUNDLE_LANDED },
-      "https://api.test/api/v1/markets/solana/NewMint111": { body: { success: true, market: {} } },
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111": {
+        body: { success: true, market: {} },
+      },
     })
     await executeLaunchAndSeed(
       {
@@ -1619,7 +1764,7 @@ describe("executionStatus loss limits and stop (BE-2692, R55)", () => {
 describe("paper mint matching", () => {
   for (const [mint, heldMint] of [
     ["0xabcdefabcdefabcdefabcdefabcdefabcdefabcd", "0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd"],
-    ["  ExtMint  ", "ExtMint"],
+    ["  ExtMint1111111111111111111111111  ", "ExtMint1111111111111111111111111"],
   ] as const) {
     test(`matches canonical inventory for ${mint}`, async () => {
       const { calls, fetch } = fakeFetch({
@@ -1652,10 +1797,13 @@ test("live sell forwards wrong-chain discovery and explicit retryability without
     discovery: { indexed: true, chain: "hood" },
   }
   const { calls, fetch } = fakeFetch({
-    "https://api.test/api/v1/markets/solana/ExtMint": { status: 404, body: { success: false, error } },
+    "https://api.test/api/v1/markets/solana/ExtMint1111111111111111111111111": {
+      status: 404,
+      body: { success: false, error },
+    },
   })
   const result = await executeTrade(
-    { mint: "ExtMint", side: "sell", amount: "5", clientTradeId: "wrong-chain" },
+    { mint: "ExtMint1111111111111111111111111", side: "sell", amount: "5", clientTradeId: "wrong-chain" },
     CFG,
     fetch,
   )
@@ -1665,13 +1813,19 @@ test("live sell forwards wrong-chain discovery and explicit retryability without
 
 test("external market 200 uses the selected quote asset scale for a buy", async () => {
   const { calls, fetch } = fakeFetch({
-    "https://api.test/api/v1/markets/solana/ExtMint": {
+    "https://api.test/api/v1/markets/solana/ExtMint1111111111111111111111111": {
       body: { success: true, market: { candleLaunched: false, external: true, quoteDecimals: 9, decimals: 6 } },
     },
     "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
   })
   const result = await executeTrade(
-    { mint: "ExtMint", side: "buy", amount: "1", quoteAsset: "usdc", clientTradeId: "external-usdc" },
+    {
+      mint: "ExtMint1111111111111111111111111",
+      side: "buy",
+      amount: "1",
+      quoteAsset: "usdc",
+      clientTradeId: "external-usdc",
+    },
     CFG,
     fetch,
   )

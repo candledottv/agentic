@@ -98,7 +98,7 @@ describe("mcpExecutor", () => {
   for (const tool of ["candle_trade", "candle_launch_and_seed"] as const) {
     const params =
       tool === "candle_trade"
-        ? { clientTradeId: "trade-1", mint: "M1nt", side: "buy", amount: "0.5" }
+        ? { clientTradeId: "trade-1", mint: "So11111111111111111111111111111111111111112", side: "buy", amount: "0.5" }
         : { clientLaunchId: "launch-1", name: "Fixture", symbol: "FIX", imageUrl: "https://example.com/image.png" }
     const writePath = tool === "candle_trade" ? "/api/v1/trade/agent/build" : "/api/v1/launch/headless"
     const cases = [
@@ -143,7 +143,7 @@ describe("mcpExecutor", () => {
         const api = fakeApi((url) => {
           if (url.endsWith(writePath))
             return Response.json(scenario.body, { status: "status" in scenario ? scenario.status : 200 })
-          if (url.endsWith("/api/v1/markets/solana/M1nt"))
+          if (url.endsWith("/api/v1/markets/solana/So11111111111111111111111111111111111111112"))
             return Response.json({ market: { decimals: 6, quoteDecimals: 9 } })
           throw new Error(`unrouted fixture: ${url}`)
         })

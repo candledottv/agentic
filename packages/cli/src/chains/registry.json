@@ -1,0 +1,76 @@
+[
+  {
+    "slug": "solana",
+    "family": "solana",
+    "displayName": "Solana",
+    "enabled": true,
+    "addressFormat": "solana-base58",
+    "native": { "symbol": "SOL", "name": "Solana", "decimals": 9 },
+    "explorer": { "url": "https://solscan.io", "urlEnv": null, "api": "solscan" },
+    "rpc": { "env": {}, "publicUrl": null, "fallbackSwitchEnv": null }
+  },
+  {
+    "slug": "hood",
+    "family": "evm",
+    "displayName": "Robinhood Chain",
+    "enabled": true,
+    "addressFormat": "evm-hex20",
+    "native": { "symbol": "ETH", "name": "Ether", "decimals": 18 },
+    "explorer": { "url": "https://robinhoodchain.blockscout.com", "urlEnv": "HOOD_EXPLORER_URL", "api": "blockscout" },
+    "rpc": {
+      "env": {
+        "read": "HOOD_RPC_URL",
+        "ledger": "LEDGER_HOOD_RPC_URL",
+        "ledgerFallback": "LEDGER_HOOD_RPC_FALLBACK_URL",
+        "feed": "FEED_HOOD_RPC_URL",
+        "browser": "NEXT_PUBLIC_HOOD_RPC_URL"
+      },
+      "publicUrl": "https://rpc.mainnet.chain.robinhood.com",
+      "fallbackSwitchEnv": "HOOD_RPC_FALLBACK"
+    },
+    "evm": {
+      "chainId": 4663,
+      "wrappedNative": { "symbol": "WETH", "address": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", "decimals": 18 },
+      "stablecoins": [{ "symbol": "USDG", "address": "0x5fc5360d0400a0fd4f2af552add042d716f1d168", "decimals": 6 }],
+      "quoteAssets": ["0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"],
+      "l1DataFee": "arbitrum",
+      "blockTimeMs": 100,
+      "publicMempool": false,
+      "multicall3": "0xcA11bde05977b3631167028862bE2a173976CA11",
+      "dex": {
+        "uniswapV3": {
+          "factory": "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
+          "router": "0xCaf681a66D020601342297493863E78C959E5cb2",
+          "quoter": "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
+          "initCodeHash": "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54"
+        },
+        "uniswapV4": {
+          "poolManager": "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+          "universalRouter": "0x8876789976decbfcbbbe364623c63652db8c0904",
+          "quoter": "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+          "stateView": "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
+        },
+        "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+      },
+      "aggregators": [
+        { "id": "kyber", "vendorChainSlug": "robinhood", "router": "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" }
+      ],
+      "vendors": { "dexscreener": "robinhood", "birdeye": "robinhood", "geckoterminal": null },
+      "cvcBaseUrlEnv": "CVC_API_URL",
+      "feeTreasuryEnv": "AGENT_FEE_TREASURY_HOOD",
+      "gasReserve": { "feeMultiplier": 2, "extraErc20Transfers": 1, "legGasFallback": "500000" },
+      "teePolicyChainId": "4663",
+      "launch": {
+        "contractEnv": {
+          "curveFactory": "HOOD_CURVE_FACTORY",
+          "curveRegistry": "HOOD_CURVE_REGISTRY",
+          "stakingDistributor": "HOOD_STAKING_DISTRIBUTOR",
+          "migratorV3": "HOOD_MIGRATOR_V3",
+          "migratorV4": "HOOD_MIGRATOR_V4",
+          "feeSplitterFactory": "HOOD_FEE_SPLITTER_FACTORY",
+          "believerNft": "HOOD_BELIEVER_NFT"
+        }
+      }
+    }
+  }
+]

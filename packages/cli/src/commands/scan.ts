@@ -6,18 +6,21 @@
  *
  * Facts, never a verdict: no score and no "safe". Every figure is the route's; a field the route
  * has no source for prints the kit's missing mark, never a guess, and the Sources block names
- * where each block came from. The chain is read from the address (a 0x address is Hood, a
- * base58 one Solana) unless --chain names it.
+ * where each block came from. --chain names the network. Without it an EVM address uses the
+ * registry's documented default (Hood); base58 keeps the Solana path.
  */
+
 import { parseArgs } from "../args"
+import { getChain, listChains } from "../chains"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { writeFields } from "../human-output"
 import { type FieldValue, symbols, terminalStyle } from "../presentation"
 import { formatTime, writeFailure, writeUsageFailure } from "../render"
+import { requestAddressChain } from "../request-chain"
 import { formatPrice, formatUsd, shortAddress } from "../usd"
 
-type Chain = "solana" | "hood"
+type Chain = string
 
 /** One hacc card fact (BE-2117): `display` is the producer's text, an en dash unless `state` is ok. */
 type CardFact = { value: number | null; display: string; state: "ok" | "pending" | "unavailable" }
@@ -76,17 +79,15 @@ type Card = {
   links: { token: string }
 }
 
-const USAGE = "Usage: candle scan <contract address> [--chain solana|hood] [--json]"
+const usage = () =>
+  `Usage: candle scan <contract address> [--chain ${listChains({ enabledOnly: true })
+    .map((c) => c.slug)
+    .join("|")}] [--json]`
 const OTHER_CHAIN = "Candle trades Solana and Hood today; that is not a Solana or Hood contract address."
 
-const HOOD_ADDRESS = /^0x[0-9a-fA-F]{40}$/
-const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/
-
-/** The chain an address belongs to, or null when it is neither a Solana mint nor a Hood token. */
-export function chainOfAddress(address: string): Chain | null {
-  if (HOOD_ADDRESS.test(address)) return "hood"
-  if (SOLANA_ADDRESS.test(address)) return "solana"
-  return null
+/** Request-edge default only; an explicit network is never replaced by the default. */
+export function chainOfAddress(address: string, chain?: string): Chain | null {
+  return requestAddressChain(address, chain)
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object"
@@ -96,7 +97,7 @@ function readCard(body: unknown): Card | null {
   if (!isObject(body) || body.success !== true || !isObject(body.card)) return null
   const card = body.card
   const blocks = ["identity", "market", "forensics", "events", "hacc", "sameName", "sources", "links"]
-  if (typeof card.mint !== "string" || (card.chain !== "solana" && card.chain !== "hood")) return null
+  if (typeof card.mint !== "string" || typeof card.chain !== "string" || !getChain(card.chain)) return null
   if (!blocks.every((block) => isObject(card[block]))) return null
   return card as unknown as Card
 }
@@ -121,7 +122,7 @@ function title(card: Card): string {
   const parts = [
     symbol || shortAddress(card.mint),
     name && name !== symbol ? name : null,
-    card.chain === "hood" ? "Hood" : "Solana",
+    card.chain === "hood" ? "Hood" : (getChain(card.chain)?.displayName ?? card.chain),
     launchpad,
     isCandle === true ? "launched on Candle" : null,
   ]
@@ -182,26 +183,22 @@ export async function scan(args: string[], ctx: CommandContext): Promise<number>
     return 2
   }
   const named = parsed.values["--chain"]
-  if (parsed.positionals.length !== 1 || (named !== undefined && named !== "solana" && named !== "hood")) {
-    writeUsageFailure(ctx.deps, USAGE, ctx.json)
+  if (parsed.positionals.length !== 1) {
+    writeUsageFailure(ctx.deps, usage(), ctx.json)
     return 2
   }
   const address = (parsed.positionals[0] as string).trim()
-  const found = chainOfAddress(address)
-  if (found === null) {
-    writeUsageFailure(ctx.deps, `${OTHER_CHAIN}\n${USAGE}`, ctx.json)
+  let chain: string | null
+  try {
+    chain = chainOfAddress(address, named)
+  } catch (error) {
+    writeUsageFailure(ctx.deps, `${error instanceof Error ? error.message : String(error)}\n${usage()}`, ctx.json)
     return 2
   }
-  if (named !== undefined && named !== found) {
-    const label = (c: string) => (c === "hood" ? "Hood" : "Solana")
-    writeUsageFailure(
-      ctx.deps,
-      `That address is a ${label(found)} contract, not a ${label(named)} one. Candle trades Solana and Hood today.\n${USAGE}`,
-      ctx.json,
-    )
+  if (chain === null) {
+    writeUsageFailure(ctx.deps, `${OTHER_CHAIN}\n${usage()}`, ctx.json)
     return 2
   }
-  const chain: Chain = found
 
   const result: ApiResult = await apiRequest(`/api/v1/tokens/${chain}/${encodeURIComponent(address)}/card`, {
     apiUrl: ctx.apiUrl,
@@ -215,7 +212,7 @@ export async function scan(args: string[], ctx: CommandContext): Promise<number>
     return 1
   }
   const card = readCard(result.body)
-  if (!card) {
+  if (!card || card.chain !== chain) {
     writeFailure(
       ctx.deps,
       {

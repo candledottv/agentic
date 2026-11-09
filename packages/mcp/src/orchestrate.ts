@@ -22,11 +22,14 @@
  * idempotency id attached (`transportError`, code MCP_TRANSPORT), because that id is what makes
  * the retry a replay instead of a second trade or a second launch.
  */
+
 import { randomUUID } from "node:crypto"
+import { isEvmChain, requireChain } from "./chains"
 import type { RequestConfig } from "./client"
 import { decimalToRaw, defaultQuoteId, percentOfBalance, QUOTE_DECIMALS } from "./convert"
 import { type ImageFs, imageRefusalBody, resolveLaunchImage, uploadedFields } from "./image"
 import { socialsRefusal } from "./launch-schema"
+import { requestAddressChain } from "./request-chain"
 import { noteVersionHeaders, updateAvailable } from "./update-notice"
 
 export type FetchLike = (
@@ -116,9 +119,11 @@ export function transportError(
   }
 }
 
-/** Chain from the mint's own shape, the same heuristic the API applies to arbitrary mints. */
-function chainForMint(mint: string): "hood" | "solana" {
-  return mint.startsWith("0x") ? "hood" : "solana"
+/** Compatibility at the request edge. An explicit network never falls back to Hood. */
+function chainForMint(mint: string, chain?: string): string {
+  const resolved = requestAddressChain(mint.trim(), chain)
+  if (!resolved) throw new Error("Invalid token address")
+  return resolved
 }
 
 /**
@@ -190,8 +195,9 @@ async function readMarket(
   cfg: RequestConfig,
   doFetch: FetchLike,
   extra: Record<string, unknown>,
+  chain?: string,
 ): Promise<{ market: MarketRead } | { status: number; err: ToolText; reason?: string }> {
-  const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint)}/${encodeURIComponent(mint)}`, {
+  const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint, chain)}/${encodeURIComponent(mint)}`, {
     method: "GET",
     headers: headers(),
   })
@@ -393,11 +399,13 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       // different chain axes the wallets table names as "Wallet" and "Launches on"; see
       // docs/reference/chain-vocabulary.md.
       const chain = chainForMint(args.mint)
-      const address = chain === "hood" ? walletsBody.wallets?.evm?.address : walletsBody.wallets?.solana?.address
+      const address = isEvmChain(requireChain(chain))
+        ? walletsBody.wallets?.evm?.address
+        : walletsBody.wallets?.solana?.address
       let walletEmpty: ToolText | undefined
       if (!address) {
         walletEmpty = errText(
-          `percent sells need an embedded ${chain === "hood" ? "EVM" : "Solana"} wallet, and this account has none`,
+          `percent sells need an embedded ${isEvmChain(requireChain(chain)) ? "EVM" : "Solana"} wallet, and this account has none`,
           { clientTradeId },
         )
       } else {
@@ -889,11 +897,8 @@ export async function executeSweep(args: SweepArgs, cfg: RequestConfig, doFetch:
 /**
  * candle_resolve_token: a contract address in, the token's market out.
  *
- * The chain is not asked for and not guessed. `chainForMint` reads it off the address's own shape,
- * which is the same rule the API applies, and it is deterministic rather than a heuristic in the
- * risky sense: an EVM address is 0x-prefixed and a Solana mint is base58, so the two cannot be
- * confused. An agent handed a bare CA by a human therefore does not have to ask which chain it is
- * on, which is the whole point of the tool.
+ * A caller can name the network. A bare EVM address uses the registry's documented Hood
+ * default. Address format identifies the signing family, not which EVM network owns an asset.
  *
  * The market body is relayed as-is, 404 included: "Candle has no market for this mint" is a real
  * answer an agent must be able to act on, and turning it into a guess about the token would be
@@ -901,11 +906,17 @@ export async function executeSweep(args: SweepArgs, cfg: RequestConfig, doFetch:
  */
 export interface ResolveTokenArgs {
   mint: string
+  chain?: string
 }
 
 export async function resolveToken(args: ResolveTokenArgs, cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
-  const chain = chainForMint(args.mint)
-  const read = await readMarket(args.mint, cfg, doFetch, { mint: args.mint, chain })
+  let chain: string
+  try {
+    chain = chainForMint(args.mint, args.chain)
+  } catch (error) {
+    return errText(error instanceof Error ? error.message : String(error), { mint: args.mint })
+  }
+  const read = await readMarket(args.mint, cfg, doFetch, { mint: args.mint, chain }, chain)
   if ("err" in read) return read.err
   return { text: JSON.stringify({ success: true, chain, mint: args.mint, market: read.market }, null, 2) }
 }
