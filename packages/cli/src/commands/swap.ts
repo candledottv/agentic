@@ -81,6 +81,7 @@ import {
   tradingSolanaClient,
   walletNameChain,
 } from "../trading"
+import { swapCheck } from "../trading-checks"
 
 /**
  * One failure envelope for every trading command. Exit 1, except a `TradingError` that carries
@@ -506,6 +507,7 @@ async function assertDeferredExecuteSupported(ctx: CommandContext, key: string, 
 }
 
 export async function swap(args: string[], ctx: CommandContext): Promise<number> {
+  if (args.includes("--dry-run")) return swapCheck(args, ctx)
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--percent", "--wallet", "--to", "--client-trade-id", "--slippage-bps", "--rpc-url"],
     booleanFlags: ["--yes", "--wait"],

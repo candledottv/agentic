@@ -164,6 +164,7 @@ import {
 import { platformKey } from "./release"
 import { writeLocalFailure, writeUsageFailure } from "./render"
 import { defaultSecretsPath, promptHiddenSecret, promptVisibleLine, SECRET_REFS } from "./secret-store"
+import { teeCheck } from "./trading-checks"
 import { maybeWriteUpdateNotice } from "./update-notice"
 import { appendEvmRecordForTrade } from "./vault/evm-tee"
 import type { HelperRun } from "./vault/fido2"
@@ -440,6 +441,7 @@ const COMMANDS: Record<string, CommandRoute> = {
   tee: {
     subcommands: {
       new: teeNew,
+      check: teeCheck,
       enable: teeEnable,
       fund: teeFund,
       status: teeStatus,

@@ -35,6 +35,7 @@ const tempDir = tempDirs()
  */
 const FROZEN_CODES: readonly string[] = [
   "ACCOUNT_MISMATCH",
+  "API_KEY_REQUIRED",
   "BAD_REQUEST",
   "BUNDLE_UNREADABLE",
   "CHAIN_NOT_OFFERED",
@@ -85,6 +86,7 @@ const FROZEN_CODES: readonly string[] = [
   "SIGNATURE_INVALID",
   "SIGNER_COMMIT_FAILED",
   "SIGNER_STORE_FAILED",
+  "SIGN_FAILED",
   "SIGN_BROADCAST_FAILED",
   "SIGN_LOOKUP_TABLE_UNRESOLVED",
   "SIGN_SIGNER_NOT_EXTERNAL",
@@ -110,6 +112,7 @@ const FROZEN_CODES: readonly string[] = [
   "TEE_WALLET_STILL_ENABLED",
   "TEE_WALLET_STOPPED",
   "TEE_WALLET_UNKNOWN",
+  "WALLET_RECORD_MISMATCH",
   "UPDATE_NOT_WRITABLE",
   "UPDATE_UNREACHABLE",
   "UPDATE_UNSUPPORTED_PLATFORM",
@@ -181,6 +184,75 @@ async function codesInSource(): Promise<Set<string>> {
 }
 
 describe("T19: no failure code from the baseline has disappeared", () => {
+  test("TEE check-only codes are declared and stay outside the real swap path", async () => {
+    const found = await codesInSource()
+    const realSwap = await readFile(join(import.meta.dir, "commands/swap.ts"), "utf8")
+    const realTrading = await readFile(join(import.meta.dir, "trading.ts"), "utf8")
+    for (const code of ["WALLET_RECORD_MISMATCH", "SIGN_FAILED"]) {
+      expect(found.has(code)).toBe(true)
+      expect(realSwap).not.toContain(`"${code}"`)
+      expect(realTrading).not.toContain(`"${code}"`)
+    }
+  })
+
+  test("tee check JSON keeps one run object, independent checks and batch summary", async () => {
+    const stdout = createCapture(),
+      stderr = createCapture()
+    const address = "7ZL9FvkpCMgdvzfoMSYZSuCXLCYN25dfgtDXej1BBJaB"
+    const deps = createTestDeps({
+      stdout,
+      stderr,
+      env: { CANDLE_API_KEY: "bound-key" },
+      fetch: (async (input) => {
+        const path = new URL(String(input)).pathname
+        if (path.endsWith("/trading"))
+          return Response.json({
+            scopes: ["swap:write"],
+            privyAppId: "app",
+            isDone: true,
+            page: [
+              {
+                id: "convex-id",
+                address,
+                label: "pool-1",
+                chain: "solana",
+                active: true,
+                allowLaunch: true,
+                privyWalletId: "pw",
+              },
+            ],
+          })
+        if (path.endsWith("/wallets"))
+          return Response.json({
+            isDone: true,
+            page: [
+              {
+                _id: "postgres-id",
+                address,
+                label: "pool-1",
+                chain: "solana",
+                profile: "ember-tee",
+                signerQuorumId: "quorum",
+              },
+            ],
+          })
+        throw new Error(`Unexpected ${path}`)
+      }) as typeof fetch,
+    })
+    expect(await run(["tee", "check", "pool-1", "missing", "--json"], deps)).toBe(1)
+    const result = JSON.parse(stdout.text)
+    expect(result).toMatchObject({ success: false, dryRun: true, summary: { total: 2, pass: 0, fail: 2 } })
+    expect(result.wallets[0]).toMatchObject({ id: "convex-id", address, label: "pool-1", ok: false })
+    expect(result.wallets[0].checks).toEqual(
+      expect.arrayContaining([
+        { id: "payable", status: "pass" },
+        expect.objectContaining({ id: "record", status: "fail", code: "WALLET_RECORD_MISMATCH" }),
+        expect.objectContaining({ id: "signer", status: "fail", code: "SIGNER_UNAVAILABLE" }),
+        { id: "sign", status: "skipped", because: "--sign not set" },
+      ]),
+    )
+    expect(stderr.text).toBe("")
+  })
   test("every frozen code is still one the source can write", async () => {
     const found = await codesInSource()
     const gone = FROZEN_CODES.filter((code) => !found.has(code) && code !== "USAGE")
@@ -212,6 +284,8 @@ const JSON_ANSWERING: { name: string; argv: string[] }[] = [
   { name: "wallet", argv: ["wallet"] },
   { name: "profile list", argv: ["profile", "list"] },
   { name: "swap", argv: ["swap"] },
+  { name: "swap dry run", argv: ["swap", "SOL", "USDC", "--amount", "0.001", "--dry-run"] },
+  { name: "tee check", argv: ["tee", "check", "pool-1"] },
   { name: "swap status", argv: ["swap", "status"] },
   // BE-332 PR C: with no flags it is a usage error, like `swap` with no pair.
   { name: "transfer", argv: ["transfer"] },

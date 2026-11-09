@@ -466,28 +466,57 @@ export async function completeTradingWallet(
   /** The key that listed the row, so a refusal can name whose signer owns it (5.3). */
   key?: { apiKey: string; keyPrefix?: string },
 ): Promise<TradingWallet> {
-  if (rowChain(row) !== chain) throw chainMismatch(`TEE wallet ${describeWallet(row)}`, rowChain(row), chain)
+  const inspected = await inspectTradingWallet(ctx, row, appId, scope, chain, key, true)
+  if (inspected.failures[0]) throw inspected.failures[0]
+  return inspected.row as TradingWallet
+}
+
+export async function inspectTradingWallet(
+  ctx: CommandContext,
+  row: WalletRow,
+  appId: string,
+  scope: string,
+  chain: TradeChain = "solana",
+  /** The key that listed the row, so a refusal can name whose signer owns it (5.3). */
+  key?: { apiKey: string; keyPrefix?: string },
+  /** Real operations retain short circuit behavior, including their read/error order. */
+  firstOnly = false,
+): Promise<{ row?: TradingWallet; failures: TradingError[] }> {
+  const failures: TradingError[] = []
+  if (rowChain(row) !== chain) failures.push(chainMismatch(`TEE wallet ${describeWallet(row)}`, rowChain(row), chain))
+  if (firstOnly && failures.length) return { failures }
   if (!row.active)
-    throw new TradingError("TEE_WALLET_INACTIVE", `The payer must be a verified-active ${chainName(chain)} TEE wallet.`)
-  if (scope === "launch:write" && row.allowLaunch !== true)
-    throw new TradingError(
-      "LAUNCH_NOT_ALLOWED",
-      `The account owner must turn on allowLaunch for wallet ${row.id}: run candle wallets allow-launch ${row.id} on a profile signed in with candle auth login. An agent key cannot.`,
+    failures.push(
+      new TradingError("TEE_WALLET_INACTIVE", `The payer must be a verified-active ${chainName(chain)} TEE wallet.`),
     )
+  if (firstOnly && failures.length) return { failures }
+  if (scope === "launch:write" && row.allowLaunch !== true)
+    failures.push(
+      new TradingError(
+        "LAUNCH_NOT_ALLOWED",
+        `The account owner must turn on allowLaunch for wallet ${row.id}: run candle wallets allow-launch ${row.id} on a profile signed in with candle auth login. An agent key cannot.`,
+      ),
+    )
+  if (firstOnly && failures.length) return { failures }
   if (!appId || !row.privyWalletId)
-    throw new TradingError("SIGNER_UNAVAILABLE", "The server did not return its relay public identifiers.")
+    failures.push(new TradingError("SIGNER_UNAVAILABLE", "The server did not return its relay public identifiers."))
+  if (firstOnly && failures.length) return { failures }
   // Key signers (spec 2026-09-25-key-signers-design.md, 5.3): the local signer whose quorum is the
   // wallet's owner, a key signer of any key (a moving wallet still trades from the machine that
   // holds its source signer), else the legacy per-wallet signer.
   const signer = await localSignerFor(ctx.deps, row.id, row.signerQuorumId)
-  if (!signer) throw new TradingError("SIGNER_UNAVAILABLE", await signerUnavailableMessage(ctx, row, key))
+  if (!signer) failures.push(new TradingError("SIGNER_UNAVAILABLE", await signerUnavailableMessage(ctx, row, key)))
+  if (failures.length || !signer || !row.privyWalletId) return { failures }
   return {
-    id: row.id,
-    address: row.address,
-    privyWalletId: row.privyWalletId,
-    appId,
-    signer: signer.pem,
-    chain: row.chain === "evm" ? "evm" : "solana",
+    failures,
+    row: {
+      id: row.id,
+      address: row.address,
+      privyWalletId: row.privyWalletId,
+      appId,
+      signer: signer.pem,
+      chain: row.chain === "evm" ? "evm" : "solana",
+    },
   }
 }
 
@@ -599,7 +628,28 @@ export async function tradingPayer(
   scope = "swap:write",
   chain: TradeChain = "solana",
 ): Promise<SwapPayer> {
-  const { rows, appId, scopes, keyPrefix } = await listTradingWallets(ctx, key, scope)
+  const listing = await listTradingWallets(ctx, key, scope)
+  const selected = await selectTradingPayer(ctx, key, name, listing, chain)
+  if (selected.kind === "embedded") return selected
+  const wallet = await completeTradingWallet(ctx, selected.row, listing.appId, scope, chain, {
+    apiKey: key,
+    keyPrefix: listing.keyPrefix,
+  })
+  return { kind: "tee", wallet, scopes: listing.scopes }
+}
+
+export type TradingWalletListing = Awaited<ReturnType<typeof listTradingWallets>>
+export type PayerSelection = { kind: "tee"; row: TradingWalletRow } | Extract<SwapPayer, { kind: "embedded" }>
+
+/** Shared selection, without completion, so diagnostics can collect independent refusals. */
+export async function selectTradingPayer(
+  ctx: CommandContext,
+  key: string,
+  name: string | undefined,
+  listing: TradingWalletListing,
+  chain: TradeChain = "solana",
+): Promise<PayerSelection> {
+  const { rows, scopes, keyPrefix } = listing
   // Read even when a name was given: it is what lets a miss say "here is what you could have
   // meant" instead of naming only half the account.
   const discovered = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded"))
@@ -615,7 +665,7 @@ export async function tradingPayer(
   const deniedAddress = denied ? embeddedOn[chain] : undefined
   const embedded = denied ? undefined : embeddedOn[chain]
   const onChain = rows.filter((row) => rowChain(row) === chain)
-  const asEmbedded = (): SwapPayer => ({ kind: "embedded", address: embedded as string, scopes })
+  const asEmbedded = (): PayerSelection => ({ kind: "embedded", address: embedded as string, scopes })
   const deniedError = () =>
     embeddedWalletNotPermitted(deniedAddress as string, keyPrefix, chain, onChain.map(describeWallet))
   const options = [
@@ -624,15 +674,7 @@ export async function tradingPayer(
   ].join("; ")
 
   if (name === undefined) {
-    if (onChain.length === 1 && !embedded)
-      return {
-        kind: "tee",
-        wallet: await completeTradingWallet(ctx, onChain[0] as WalletRow, appId, scope, chain, {
-          apiKey: key,
-          keyPrefix,
-        }),
-        scopes,
-      }
+    if (onChain.length === 1 && !embedded) return { kind: "tee", row: onChain[0] as WalletRow }
     if (onChain.length === 0 && embedded) return asEmbedded()
     if (onChain.length === 0 && deniedAddress !== undefined) throw deniedError()
     throw new TradingError(
@@ -644,15 +686,7 @@ export async function tradingPayer(
   }
 
   const matches = rows.filter((row) => matchesName(row, name))
-  if (matches.length === 1)
-    return {
-      kind: "tee",
-      wallet: await completeTradingWallet(ctx, matches[0] as WalletRow, appId, scope, chain, {
-        apiKey: key,
-        keyPrefix,
-      }),
-      scopes,
-    }
+  if (matches.length === 1) return { kind: "tee", row: matches[0] as WalletRow }
   if (matches.length === 0) {
     if (embedded !== undefined && sameAddress(embedded, name)) return asEmbedded()
     if (deniedAddress !== undefined && sameAddress(deniedAddress, name)) throw deniedError()

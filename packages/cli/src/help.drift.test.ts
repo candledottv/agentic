@@ -23,6 +23,16 @@ import { ALIASES, NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, routesToCo
 
 const sorted = (words: readonly string[]) => [...words].sort()
 
+test("TEE diagnostics document signing and dry-run restrictions", () => {
+  expect(documentedSubcommands(HELP.tee as Topic)).toContain("check")
+  expect(documentedFlags(HELP.tee as Topic)).toEqual(
+    expect.arrayContaining(["--label-prefix", "--sign", "--max", "--rpc-url"]),
+  )
+  expect(documentedFlags(HELP.swap as Topic)).toContain("--dry-run")
+  expect(HELP.tee?.rows.find((r) => r.invocation.startsWith("check "))?.description).toContain("never broadcasts")
+  expect(HELP.swap?.flags?.find((r) => r.invocation === "--dry-run")?.description).toContain("Never signs")
+})
+
 describe("the help data stays in step with dispatch", () => {
   test("lab help and completion expose the four routed operations and hacc override", () => {
     const topic = HELP.lab as Topic

@@ -381,6 +381,11 @@ export interface RpcContextOptions {
   onContext?: (slot: number) => void
 }
 
+export interface SimulationOptions extends RpcContextOptions {
+  /** Verify the original signed message; never replace its blockhash. */
+  sigVerify?: boolean
+}
+
 export interface SolanaRpc {
   getLatestBlockhash(opts?: RpcContextOptions): Promise<string>
   getBalance(address: string, opts?: RpcContextOptions): Promise<bigint>
@@ -408,7 +413,7 @@ export interface SolanaRpc {
    * delta arithmetic live in `solana-alt.ts` (P3-ED-6), not here.
    */
   getMultipleAccounts(addresses: string[], opts?: RpcContextOptions): Promise<Array<AccountView | null>>
-  simulateTransaction(txBase64: string, addresses: string[], opts?: RpcContextOptions): Promise<SimulationResult>
+  simulateTransaction(txBase64: string, addresses: string[], opts?: SimulationOptions): Promise<SimulationResult>
   getFeeForMessage(messageBase64: string, opts?: RpcContextOptions): Promise<bigint | null>
   getMinimumBalanceForRentExemption(size: number): Promise<bigint>
   /**
@@ -1036,10 +1041,10 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: 
           txBase64,
           withMinContextSlot(
             {
-              sigVerify: false,
+              sigVerify: opts?.sigVerify ?? false,
               // The transaction is simulated as it will be signed, but against a blockhash the RPC can
               // still evaluate; the blockhash the tool put in the message is what is signed and sent.
-              replaceRecentBlockhash: true,
+              replaceRecentBlockhash: !opts?.sigVerify,
               commitment: "finalized",
               encoding: "base64",
               accounts: { encoding: "base64", addresses },
@@ -1233,9 +1238,10 @@ export function withContextFloor(rpc: SolanaRpc, floor: ContextFloor): SolanaRpc
       ...(opts?.onContext !== undefined ? { onContext: opts.onContext } : {}),
     }
   }
-  const finalized = (opts?: RpcContextOptions): RpcContextOptions => {
+  const finalized = (opts?: SimulationOptions): SimulationOptions => {
     const base = required(opts)
     return {
+      ...(opts?.sigVerify !== undefined ? { sigVerify: opts.sigVerify } : {}),
       // Not spread: that would freeze the live `minContextSlot` getter at its current value.
       get minContextSlot() {
         return base.minContextSlot
