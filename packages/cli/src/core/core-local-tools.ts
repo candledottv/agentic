@@ -7,6 +7,7 @@
  * either, or any other key, is `VALIDATION_FAILED`. It never reaches the API or the MCP executor.
  */
 import { z } from "zod"
+import { enabledChainSlugs } from "../chain-registry"
 import type { ToolDefinition, ToolResult } from "./executor"
 import { parseSignalQuery, type SignalService } from "./signals"
 
@@ -26,7 +27,13 @@ export function coreLocalDefinitions(): ToolDefinition[] {
       title: "Get market signals",
       description: GET_SIGNALS_DESCRIPTION,
       inputSchema: {
-        chain: z.enum(["solana", "hood"]).optional().describe("Only rows on this chain"),
+        chain: z
+          .string()
+          .refine((v) => enabledChainSlugs().includes(v), {
+            message: `chain must be one of ${enabledChainSlugs().join(", ")}`,
+          })
+          .optional()
+          .describe(`Only rows on this chain (${enabledChainSlugs().join(", ")})`),
         mint: z.string().optional().describe("Only rows for this token address"),
         pattern: z.string().optional().describe("Only rows of this signal pattern"),
         limit: z.number().int().min(1).max(100).optional().describe("How many rows, 1 to 100 (default 20)"),

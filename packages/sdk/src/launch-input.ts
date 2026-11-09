@@ -59,7 +59,10 @@ export function validateLaunchInput(req: LaunchRequest): void {
 /** Strip SDK controls and translate the whole-unit first buy without floating point rounding. */
 export function launchBody(req: LaunchRequest, chain?: Chain): Omit<LaunchRequest, "wallet" | "buy"> {
   const { wallet: _wallet, buy, ...body } = req
-  if (chain !== undefined) body.chain = chain
+  // Multi-EVM F5: `Chain` is registry-wide, while a launch still names one of the chains with
+  // launch contracts (the generated definition's enum). A chain outside it fails closed two
+  // lines below: no default quote, so "Unsupported launch quote asset".
+  if (chain !== undefined) body.chain = chain as LaunchRequest["chain"]
   const quote = body.quoteAsset ?? LAUNCH_DEFINITION.defaultQuote[body.chain ?? "solana"]
   const quoteChain = LAUNCH_DEFINITION.quoteChains[quote]
   if (!quoteChain) throw launchInputError("quoteAsset", "Unsupported launch quote asset.")

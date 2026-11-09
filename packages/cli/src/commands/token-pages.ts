@@ -22,6 +22,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import { base58, base64 } from "@scure/base"
 import { parseArgs } from "../args"
+import { isEvmChainSlug } from "../chain-registry"
 import { type ApiResult, apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { writeFields, writeHeading } from "../human-output"
@@ -86,7 +87,7 @@ const REFUSALS: Record<string, string> = {
 const SECTION_SUGGESTION =
   "Your file was not changed. Read the newer text with candle token history, merge, then rerun with --base-revision set to the latest revision."
 
-type Chain = "solana" | "hood"
+type Chain = "solana" | "hood" | (string & {})
 type Usage = (message?: string) => number
 type Refusal = { status: number; code: string; extra: Record<string, unknown> }
 
@@ -99,7 +100,7 @@ function usageFor(ctx: CommandContext, line: string): Usage {
 
 function chainOf(values: Record<string, string>): Chain | undefined {
   const chain = values["--chain"] ?? "solana"
-  return chain === "solana" || chain === "hood" ? chain : undefined
+  return chain === "solana" || isEvmChainSlug(chain) ? chain : undefined
 }
 
 function pagePath(chain: Chain, address: string, rest = ""): string {

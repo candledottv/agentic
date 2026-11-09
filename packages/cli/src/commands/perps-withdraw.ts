@@ -20,6 +20,7 @@
  */
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
+import { isEvmChainSlug } from "../chain-registry"
 import type { CommandContext } from "../deps"
 import { writeFields } from "../human-output"
 import { HYPERLIQUID_EXCHANGE_URLS, type HyperliquidTypedData, hyperliquidExchangeBody } from "../hyperliquid"
@@ -136,7 +137,8 @@ export async function perpsWithdraw(args: string[], ctx: CommandContext): Promis
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [amount] = parsed.positionals
   const to = parsed.values["--to"]
-  if (parsed.positionals.length !== 1 || !amount || (to !== "solana" && to !== "hood")) return usage(ctx, USAGE)
+  if (parsed.positionals.length !== 1 || !amount || to === undefined || (to !== "solana" && !isEvmChainSlug(to)))
+    return usage(ctx, USAGE)
   const amountMicros = parseWithdrawAmount(amount)
   if (amountMicros === null) return usage(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.")
   const id = parsed.values["--id"] ?? `withdraw-${randomUUID()}`
@@ -160,6 +162,11 @@ export async function perpsWithdraw(args: string[], ctx: CommandContext): Promis
     if (!wallet) throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.")
     // The destinations this key owns on the chain asked for: the build must land on one of them.
     const { rows } = await listTradingWallets(ctx, key)
+    if (to !== "solana" && to !== "hood")
+      throw new TradingError(
+        "PERPS_WITHDRAW_UNVERIFIED",
+        `A withdrawal lands on this key's Solana or Hood TEE wallet; "${to}" has no TEE wallet to land on yet. Nothing was built.`,
+      )
     const ownDestinations =
       to === "hood" ? [wallet.address] : rows.filter((row) => row.chain === "solana").map((row) => row.address)
     if (ownDestinations.length === 0)

@@ -7,6 +7,7 @@
  * same mixed page whatever the filter.
  */
 import { parseArgs } from "../args"
+import { isEvmChainSlug } from "../chain-registry"
 import { type ApiResult, apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { writeFields } from "../human-output"
@@ -116,7 +117,7 @@ export async function tokenEvents(args: string[], ctx: CommandContext): Promise<
   const limit = parsed.values["--limit"]
   const since = parsed.values["--since"]
   const before = parsed.values["--before"]
-  if (parsed.positionals.length !== 1 || (chain !== "solana" && chain !== "hood")) {
+  if (parsed.positionals.length !== 1 || (chain !== "solana" && !isEvmChainSlug(chain))) {
     writeUsageFailure(ctx.deps, USAGE, ctx.json)
     return 2
   }

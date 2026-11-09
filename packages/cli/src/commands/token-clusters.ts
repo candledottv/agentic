@@ -1,4 +1,5 @@
 import { parseArgs } from "../args"
+import { isEvmChainSlug } from "../chain-registry"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { writeFields } from "../human-output"
@@ -11,9 +12,11 @@ export async function tokenClusters(args: string[], ctx: CommandContext): Promis
   if (
     "error" in parsed ||
     parsed.positionals.length !== 1 ||
-    (parsed.values["--chain"] !== undefined && !["solana", "hood"].includes(parsed.values["--chain"]))
+    (parsed.values["--chain"] !== undefined &&
+      parsed.values["--chain"] !== "solana" &&
+      !isEvmChainSlug(parsed.values["--chain"]))
   ) {
-    writeUsageFailure(ctx.deps, "Usage: candle token clusters <mint> [--chain solana|hood]", ctx.json)
+    writeUsageFailure(ctx.deps, "Usage: candle token clusters <mint> [--chain <chain>]", ctx.json)
     return 2
   }
   const mint = parsed.positionals[0] as string

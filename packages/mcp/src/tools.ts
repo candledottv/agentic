@@ -50,6 +50,7 @@ import { randomUUID } from "node:crypto"
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
+import { chainSchema } from "./chain-registry"
 import { keyedRedirectGuard, type RequestConfig, resolveConfig } from "./client"
 import { CLUSTER_READ_DESCRIPTION, readTokenClusters, tokenClustersShape } from "./cluster-read"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
@@ -1021,12 +1022,12 @@ async function swap(args: Record<string, unknown>, cfg: RequestConfig, doFetch: 
 }
 
 const getMarketShape = {
-  chain: z.string().describe('"solana" or "hood"'),
+  chain: chainSchema(),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
 }
 
 const quoteShape = {
-  chain: z.enum(["solana", "hood"]),
+  chain: chainSchema(),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
   side: z.enum(["buy", "sell"]),
   amountRaw: z.string().describe("Positive integer in base units: the quote asset's for a buy, the token's for a sell"),
@@ -1080,7 +1081,7 @@ const TOKEN_EVENTS_KIND_NOTE =
   "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null"
 
 const tokenCardShape = {
-  chain: z.string().describe('"solana" or "hood"'),
+  chain: chainSchema(),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
   tag: z
     .string()
@@ -1091,7 +1092,7 @@ const tokenCardShape = {
 }
 
 const tokenEventsShape = {
-  chain: z.string().describe('"solana" or "hood"'),
+  chain: chainSchema(),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
   kind: z.enum(["trade", "signal", "callout"]).optional().describe(`Only this kind; ${TOKEN_EVENTS_KIND_NOTE}`),
   since: z
@@ -1103,7 +1104,7 @@ const tokenEventsShape = {
 }
 
 const tokenForensicsShape = {
-  chain: z.string().describe('"solana" or "hood"'),
+  chain: chainSchema(),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
 }
 
@@ -1162,7 +1163,7 @@ const getFeedShape = {
 // The activity report body is a passthrough: the API is the authoritative validator, and its
 // shape already varies by chain (solana signature vs hood signature). See apps/api/src/routes/activity.ts.
 const reportActivityShape = {
-  chain: z.string().describe('"solana" or "hood"'),
+  chain: chainSchema(),
   signature: z.string().describe("Transaction signature/hash to verify and record"),
 }
 
@@ -1197,7 +1198,7 @@ const createPostShape = {
     .describe("1 to 500 characters. Line breaks are kept; any other control character and bidi characters are refused"),
   token: z
     .object({
-      chain: z.enum(["solana", "hood"]),
+      chain: chainSchema(),
       mint: z.string().describe("The token's mint (Solana) or contract address (Hood)"),
     })
     .strict()
@@ -1510,7 +1511,7 @@ const IMAGE_PATH_DISCLOSURE =
   "a wide banner goes in bannerPath, which is not cropped."
 
 const transferShape = {
-  chain: z.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
+  chain: chainSchema("Which chain the transfer executes on"),
   asset: z
     .enum(["SOL", "USDC", "CNDL", "ETH", "USDG"])
     .optional()
@@ -1535,7 +1536,7 @@ const transferShape = {
 }
 
 const sweepShape = {
-  chain: z.enum(["solana", "hood"]).describe("Which chain to sweep"),
+  chain: chainSchema("Which chain to sweep"),
   to: z.string().describe("Destination address, same rules as candle_transfer's `to`"),
   mints: z
     .array(z.string())

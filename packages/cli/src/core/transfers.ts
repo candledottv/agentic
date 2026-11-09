@@ -15,6 +15,7 @@
  */
 import { randomBytes } from "node:crypto"
 import { rename, writeFile } from "node:fs/promises"
+import { isEvmChainSlug } from "../chain-registry"
 import { terminalText } from "../render"
 import type { CardBook, TransferDisplay } from "./cards"
 import type { CoreEnvironment, Journal, JournalRow } from "./journal"
@@ -196,12 +197,17 @@ async function sources(params: Record<string, unknown>, call: CallContext, deps:
   return { sources: out, vaultListed: wallets !== undefined, withdraw }
 }
 
+/** Vault wallets and the embedded wallet exist on Solana and Hood only until a chain-aware wallet map lands. */
+function unsupportedChainText(chain: unknown): string {
+  return `Transfers from a wallet on ${String(chain)} are not supported yet: chain is solana or hood. Nothing was prepared.`
+}
+
 /** T-3: the server's allowed destinations for `embedded`, the user's own wallets for `vault`, and the hints. */
 async function destinations(params: Record<string, unknown>, _call: CallContext, deps: TransferHandlerDeps) {
   const kind = (params.source as { kind?: unknown } | undefined)?.kind
   const chain = params.chain
   if (kind !== "vault" && kind !== "embedded") throw refused("INVALID_SOURCE", "source.kind is vault or embedded.")
-  if (chain !== "solana" && chain !== "hood") throw refused("INVALID_CHAIN", "chain is solana or hood.")
+  if (chain !== "solana" && chain !== "hood") throw refused("INVALID_CHAIN", unsupportedChainText(chain))
   const out: Record<string, unknown>[] = []
   const push = (address: string, extra: Record<string, unknown>) => {
     if (out.some((row) => sameAddress(chain, row.address as string, address))) return
@@ -225,6 +231,9 @@ async function destinations(params: Record<string, unknown>, _call: CallContext,
 async function prepare(params: Record<string, unknown>, call: CallContext, deps: TransferHandlerDeps) {
   const input = (params.params ?? params) as Record<string, unknown>
   if (input === null || typeof input !== "object") throw refused("INVALID_PARAMS", "params must be an object.")
+  // chain-lint-allowed: wallet maps support only Hood EVM accounts; refuse other EVM chains before wallet selection or signing.
+  if (typeof input.chain === "string" && isEvmChainSlug(input.chain) && input.chain !== "hood")
+    throw refused("INVALID_CHAIN", unsupportedChainText(input.chain))
   const parsed = await parseTransferInput(input, (chain, asset) => deps.reads.decimals(chain, asset))
   const decimals =
     "symbol" in parsed.asset

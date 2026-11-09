@@ -1,4 +1,5 @@
 import { parseArgs } from "../args"
+import { isEvmChainSlug } from "../chain-registry"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { terminalText, writeFailure, writeUsageFailure } from "../render"
@@ -52,8 +53,8 @@ export async function agentPost(args: string[], ctx: CommandContext): Promise<nu
     const mint = values["--mint"]
     if (positionals.length || text === undefined) return usage()
     if ((chain === undefined) !== (mint === undefined)) return usage(`--chain and --mint go together\n${USAGE}`)
-    if (chain !== undefined && chain !== "solana" && chain !== "hood") {
-      return usage(`--chain must be solana or hood\n${USAGE}`)
+    if (chain !== undefined && chain !== "solana" && !isEvmChainSlug(chain)) {
+      return usage(`--chain must be an enabled chain (solana or an EVM chain from the registry)\n${USAGE}`)
     }
     const body = { text, ...(chain !== undefined ? { token: { chain, mint } } : {}) }
     plan = async (key) => request("/api/v1/agent/posts", { method: "POST", body, key: await key() })

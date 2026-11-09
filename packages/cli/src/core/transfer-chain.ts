@@ -16,6 +16,7 @@
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { base58, base64 } from "@scure/base"
+import { evmChainIdFor } from "../chain-registry"
 import {
   type EvmRpc,
   EvmRpcError,
@@ -199,6 +200,15 @@ export function createTransferChain(chainDeps: ChainDeps) {
       builtIn,
     })
     if ("usage" in planned) throw refused("INVALID_AMOUNT", planned.usage)
+    // Multi-EVM F5: the RPC the core holds must be the chain the card names, read from the
+    // registry, so a transfer for another EVM chain is refused, never signed on Hood's RPC.
+    const expectedChainId = evmChainIdFor(params.chain)
+    if (expectedChainId !== undefined && planned.chainId !== BigInt(expectedChainId)) {
+      throw refused(
+        "EVM_CHAIN_MISMATCH",
+        `The configured EVM RPC answers chain id ${planned.chainId}, not ${expectedChainId} (${params.chain}). Nothing was planned.`,
+      )
+    }
     if (wallet.role === "tee-wallet" && planned.chainId !== BigInt(HOOD_CHAIN_ID)) {
       throw refused("EVM_CHAIN_MISMATCH", `A promoted wallet signs on Hood only (chain id ${HOOD_CHAIN_ID}).`)
     }
@@ -350,7 +360,7 @@ export function createTransferChain(chainDeps: ChainDeps) {
         }
         const signed = signTransaction(plan.tx, secret)
         return {
-          chain: "hood",
+          chain: params.chain,
           id: signed.hash,
           wire: base64.encode(signed.raw),
           from: wallet.address,

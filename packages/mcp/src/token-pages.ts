@@ -1,10 +1,11 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
+import { chainSchema } from "./chain-registry"
 import type { RequestConfig } from "./client"
 import type { FetchLike } from "./orchestrate"
 import { noteVersionHeaders } from "./update-notice"
 
-const token = { chain: z.enum(["solana", "hood"]), address: z.string().min(1) }
+const token = { chain: chainSchema(), address: z.string().min(1) }
 const section = z.enum(["thesis", "tokenomics", "lore"])
 const pagination = { cursor: z.string().optional(), limit: z.number().int().min(1).max(50).optional() }
 const revision = z.string().regex(/^(0|[1-9][0-9]{0,18})$/)

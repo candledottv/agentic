@@ -18798,12 +18798,12 @@ function authorityCell(address, result) {
 }
 function notReadRuns(notChecked) {
   const runs = [];
-  for (const entry of notChecked) {
+  for (const entry2 of notChecked) {
     const last = runs[runs.length - 1];
-    if (last !== undefined && last.reason === entry.reason)
-      last.groups.push(groupLabel(entry.group));
+    if (last !== undefined && last.reason === entry2.reason)
+      last.groups.push(groupLabel(entry2.group));
     else
-      runs.push({ reason: entry.reason, groups: [groupLabel(entry.group)] });
+      runs.push({ reason: entry2.reason, groups: [groupLabel(entry2.group)] });
   }
   return runs;
 }
@@ -19042,7 +19042,7 @@ function assertColdVaultDestination(index, destinationLabelOrAddress, opts = {})
   return destination;
 }
 function assertNotEvmEntry(index, labelOrAddress, command) {
-  const named = index.entries.find((entry) => entry.chain === "evm" && (entry.label === labelOrAddress || entry.address.toLowerCase() === labelOrAddress.toLowerCase()));
+  const named = index.entries.find((entry2) => entry2.chain === "evm" && (entry2.label === labelOrAddress || entry2.address.toLowerCase() === labelOrAddress.toLowerCase()));
   if (named === undefined)
     return;
   throw new VaultError("SOLANA_COMMAND_EVM_KEY", `${named.label || named.address} is an EVM key (${named.address}); ${command} works on Solana keys only.`, {
@@ -19055,37 +19055,37 @@ function sameAddress2(a, b) {
   return a === b;
 }
 function assertNotSolanaEntry(index, labelOrAddress) {
-  const named = index.entries.find((entry) => entry.chain === "solana" && (entry.label === labelOrAddress || entry.address === labelOrAddress));
+  const named = index.entries.find((entry2) => entry2.chain === "solana" && (entry2.label === labelOrAddress || entry2.address === labelOrAddress));
   if (named === undefined)
     return;
   throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${named.label || named.address} is a Solana key; a Hood TEE wallet sweeps home to a cold EVM vault key.`, { suggestion: "Nothing was written. Create one with: candle vault new-key --chain evm" });
 }
 function findEvmVaultRoleEntry(index, labelOrAddress) {
-  const evm = index.entries.filter((entry) => entry.chain === "evm");
-  const byLabel = evm.find((entry) => entry.role === "vault" && entry.label === labelOrAddress);
+  const evm = index.entries.filter((entry2) => entry2.chain === "evm");
+  const byLabel = evm.find((entry2) => entry2.role === "vault" && entry2.label === labelOrAddress);
   if (byLabel !== undefined)
     return byLabel;
-  return evm.find((entry) => sameAddress2(entry.address, labelOrAddress));
+  return evm.find((entry2) => sameAddress2(entry2.address, labelOrAddress));
 }
 function findVaultRoleEntry(index, labelOrAddress) {
-  const solana = index.entries.filter((entry) => entry.chain === "solana");
-  const byLabel = solana.find((entry) => entry.role === "vault" && entry.label !== undefined && entry.label === labelOrAddress);
+  const solana = index.entries.filter((entry2) => entry2.chain === "solana");
+  const byLabel = solana.find((entry2) => entry2.role === "vault" && entry2.label !== undefined && entry2.label === labelOrAddress);
   if (byLabel !== undefined)
     return byLabel;
-  return solana.find((entry) => entry.address === labelOrAddress);
+  return solana.find((entry2) => entry2.address === labelOrAddress);
 }
 function findTransferSource(index, labelOrAddress) {
-  const byLabel = (role) => index.entries.find((entry) => entry.role === role && entry.label !== undefined && entry.label === labelOrAddress);
-  return byLabel("vault") ?? byLabel("tee-wallet") ?? index.entries.find((entry) => sameAddress2(entry.address, labelOrAddress));
+  const byLabel = (role) => index.entries.find((entry2) => entry2.role === role && entry2.label !== undefined && entry2.label === labelOrAddress);
+  return byLabel("vault") ?? byLabel("tee-wallet") ?? index.entries.find((entry2) => sameAddress2(entry2.address, labelOrAddress));
 }
 function findEntryByLabelOrAddress(index, labelOrAddress) {
-  const byLabel = index.entries.find((entry) => entry.label !== undefined && entry.label === labelOrAddress);
+  const byLabel = index.entries.find((entry2) => entry2.label !== undefined && entry2.label === labelOrAddress);
   if (byLabel !== undefined)
     return byLabel;
-  return index.entries.find((entry) => entry.address === labelOrAddress);
+  return index.entries.find((entry2) => entry2.address === labelOrAddress);
 }
 function assertNotPinnedDestination(index, subjectAddress) {
-  const pinners = index.entries.filter((entry) => entry.tee?.vaultDestination !== undefined && sameAddress2(entry.tee.vaultDestination, subjectAddress));
+  const pinners = index.entries.filter((entry2) => entry2.tee?.vaultDestination !== undefined && sameAddress2(entry2.tee.vaultDestination, subjectAddress));
   if (pinners.length === 0)
     return;
   throw new VaultError("PROMOTE_KEY_IS_PINNED_DESTINATION", `${subjectAddress} is the pinned sweep destination for: ${pinners.map((e) => e.label ?? e.address).join(", ")}.`, {
@@ -19126,7 +19126,7 @@ function assertInPlacePreconditions(index, subjectLabel, sweepToLabel, opts) {
   return { subject, destination, resume: false };
 }
 function assertEvmInPlacePreconditions(index, subjectLabel, sweepToLabel, opts) {
-  const subject = index.entries.find((entry) => entry.chain === "evm" && entry.label === subjectLabel) ?? index.entries.find((entry) => entry.chain === "evm" && sameAddress2(entry.address, subjectLabel));
+  const subject = index.entries.find((entry2) => entry2.chain === "evm" && entry2.label === subjectLabel) ?? index.entries.find((entry2) => entry2.chain === "evm" && sameAddress2(entry2.address, subjectLabel));
   if (subject === undefined) {
     throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No EVM entry matches ${subjectLabel}.`);
   }
@@ -19152,18 +19152,18 @@ function assertEvmInPlacePreconditions(index, subjectLabel, sweepToLabel, opts) 
   assertNotPinnedDestination(index, subject.address);
   return { subject, destination: destinationFor(), resume: false };
 }
-function promotedEntry(entry, destination, label, now, acceptUnknown) {
+function promotedEntry(entry2, destination, label, now, acceptUnknown) {
   return {
-    ...entry,
+    ...entry2,
     role: "tee-wallet",
-    label: label ?? entry.label,
+    label: label ?? entry2.label,
     exposure: {
       everRemoteExposed: true,
-      everExported: entry.exposure?.everExported === true,
-      ...entry.exposure?.exposureUnknown ? { exposureUnknown: true } : {}
+      everExported: entry2.exposure?.everExported === true,
+      ...entry2.exposure?.exposureUnknown ? { exposureUnknown: true } : {}
     },
     tee: {
-      network: teeNetworkFor(entry.chain),
+      network: teeNetworkFor(entry2.chain),
       lifecycle: "import-pending",
       vaultDestination: destination.address,
       promotedInPlaceAt: now,
@@ -19172,10 +19172,10 @@ function promotedEntry(entry, destination, label, now, acceptUnknown) {
   };
 }
 function applyPromotion(index, subject, destination, opts) {
-  const entries = index.entries.map((entry) => entry.id === subject.id ? promotedEntry(entry, destination, opts.label, opts.now, opts.acceptUnknownExposure) : entry);
+  const entries2 = index.entries.map((entry2) => entry2.id === subject.id ? promotedEntry(entry2, destination, opts.label, opts.now, opts.acceptUnknownExposure) : entry2);
   const located = subject.derivation !== undefined ? branchOfPath(subject.derivation.path) : undefined;
   if (located === undefined || located.branch !== "solanaVault" && located.branch !== "evm") {
-    return { hd: index.hd, entries };
+    return { hd: index.hd, entries: entries2 };
   }
   const exposed = [...index.hd.exposedIndexes[located.branch]];
   if (!exposed.includes(located.index))
@@ -19186,7 +19186,7 @@ function applyPromotion(index, subject, destination, opts) {
       ...index.hd,
       exposedIndexes: { ...index.hd.exposedIndexes, [located.branch]: exposed }
     },
-    entries
+    entries: entries2
   };
 }
 function promoteSentence(input) {
@@ -29702,7 +29702,7 @@ function factorAddPassphraseOnlyReason(unusable) {
   if (unusable.length === 0) {
     return "adding a factor opens the vault with the passphrase or a security key, and this vault has no security key.";
   }
-  const keys = unusable.map((entry) => `${entry.word} ${entry.id} cannot be used on this machine: ${entry.availability}`);
+  const keys = unusable.map((entry2) => `${entry2.word} ${entry2.id} cannot be used on this machine: ${entry2.availability}`);
   return `adding a factor opens the vault with the passphrase or a security key, and ${keys.join("; ")}.`;
 }
 function derivationNotice(line, purpose) {
@@ -29910,7 +29910,7 @@ async function chooseFactor(ctx, vaultId, allEnvelopes, facts, requested, opts =
         return { kind: "passphrase" };
       if (among2 !== undefined)
         return { kind: "passphrase", onlyBecause: among2.because(unusable()) };
-      const detail = unusable().map((entry) => `${entry.id} ${entry.word}: ${entry.availability}`).join("; ");
+      const detail = unusable().map((entry2) => `${entry2.id} ${entry2.word}: ${entry2.availability}`).join("; ");
       return {
         kind: "passphrase",
         onlyBecause: `no other factor on this vault can be used on this machine (${detail}). Details: candle vault status`
@@ -30002,7 +30002,7 @@ function factorMenu(input) {
     ...input.keys.filter((envelope) => presence(envelope) === "attached"),
     ...input.keys.filter((envelope) => presence(envelope) !== "attached")
   ];
-  const entries = [
+  const entries2 = [
     ...keys.map((envelope) => {
       const state = presence(envelope);
       const preferDevice = input.attached?.holder.get(envelope.id);
@@ -30026,7 +30026,7 @@ function factorMenu(input) {
       choice: { kind: "passkey", envelope }
     }))
   ];
-  const described = entries.map(({ envelope, state, choice }) => {
+  const described = entries2.map(({ envelope, state, choice }) => {
     const name = menuName(envelope);
     const kind = wordFor(envelope);
     const descriptor = name.toLowerCase() === kind.toLowerCase() ? state : state !== undefined ? `${kind}, ${state}` : kind;
@@ -30201,37 +30201,37 @@ function writeJson(deps, value) {
   deps.stdout.write(`${JSON.stringify(value)}
 `);
 }
-function describeEntry(entry) {
+function describeEntry(entry2) {
   const flags = [];
-  if (entry.exposure.everRemoteExposed)
+  if (entry2.exposure.everRemoteExposed)
     flags.push("remotely exposed");
-  if (entry.exposure.everExported)
+  if (entry2.exposure.everExported)
     flags.push("exported");
-  if (entry.exposure.exposureUnknown)
+  if (entry2.exposure.exposureUnknown)
     flags.push("history unknown (restored)");
   return {
-    address: entry.address,
-    label: entry.label,
-    id: entry.id,
-    role: entry.role,
-    origin: entry.origin,
-    derivation: entry.derivation?.path,
+    address: entry2.address,
+    label: entry2.label,
+    id: entry2.id,
+    role: entry2.role,
+    origin: entry2.origin,
+    derivation: entry2.derivation?.path,
     exposure: flags.length > 0 ? flags.join(", ") : "cold in this vault's record",
-    teeLifecycle: entry.tee?.lifecycle,
-    teeRemoteState: entry.tee?.remoteState,
-    destinationExposureAccepted: entry.tee?.destinationExposureAccepted === true
+    teeLifecycle: entry2.tee?.lifecycle,
+    teeRemoteState: entry2.tee?.remoteState,
+    destinationExposureAccepted: entry2.tee?.destinationExposureAccepted === true
   };
 }
 function findExternalEntry(index, labelOrAddress) {
-  const byLabel = index.entries.find((entry) => entry.role === "external" && entry.label === labelOrAddress);
+  const byLabel = index.entries.find((entry2) => entry2.role === "external" && entry2.label === labelOrAddress);
   if (byLabel !== undefined)
     return byLabel;
-  return index.entries.find((entry) => entry.role === "external" && entry.address === labelOrAddress);
+  return index.entries.find((entry2) => entry2.role === "external" && entry2.address === labelOrAddress);
 }
-function describeRole(entry) {
-  if (entry.role === "vault")
+function describeRole(entry2) {
+  if (entry2.role === "vault")
     return "a vault key";
-  if (entry.role === "tee-wallet")
+  if (entry2.role === "tee-wallet")
     return "a TEE wallet";
   return "an external wallet";
 }
@@ -30375,12 +30375,12 @@ var init_linked_wallets = __esm(() => {
 });
 
 // src/vault/reconcile-grant.ts
-async function reconcileGrant(ctx, entry, opts = {}) {
+async function reconcileGrant(ctx, entry2, opts = {}) {
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
     return { kind: "unreadable", reason: "no API key is available for this profile" };
   }
-  const identity = entry.tee?.grantIdentity;
+  const identity = entry2.tee?.grantIdentity;
   if (identity?.source === "recorded-at-operation") {
     if (identity.apiBaseUrl !== ctx.apiUrl) {
       throw new VaultError("GRANT_IDENTITY_MISMATCH", `This entry was recorded against ${identity.apiBaseUrl}, and this command is using ${ctx.apiUrl}.`);
@@ -30399,7 +30399,7 @@ async function reconcileGrant(ctx, entry, opts = {}) {
   if (identity === undefined && opts.assertedAccount !== undefined && opts.assertedAccount !== wallets.account) {
     throw new VaultError("GRANT_IDENTITY_MISMATCH", `The asserted account ${opts.assertedAccount} does not match this profile's account ${wallets.account}.`);
   }
-  const row = wallets.rows.find((candidate) => sameWalletAddress(candidate.address, entry.address));
+  const row = wallets.rows.find((candidate) => sameWalletAddress(candidate.address, entry2.address));
   if (row !== undefined) {
     return { kind: "granted", row, account: wallets.account };
   }
@@ -30407,21 +30407,21 @@ async function reconcileGrant(ctx, entry, opts = {}) {
   if (!stranded.complete) {
     return { kind: "unreadable", reason: stranded.incompleteReason ?? "the stranded-import read was incomplete" };
   }
-  const failure3 = stranded.failures.find((candidate) => sameWalletAddress(candidate.address, entry.address));
+  const failure3 = stranded.failures.find((candidate) => sameWalletAddress(candidate.address, entry2.address));
   if (failure3?.stage === "convex_link") {
     return { kind: "strand-final", account: wallets.account, failure: failure3 };
   }
   return { kind: "unresolved", account: wallets.account };
 }
-async function adoptGrantedRow(ctx, entry, row, account, opts) {
-  const tee = entry.tee;
+async function adoptGrantedRow(ctx, entry2, row, account, opts) {
+  const tee = entry2.tee;
   if (tee === undefined) {
-    throw new VaultError("VAULT_INDEX_INVALID", `Entry ${entry.address} has no tee metadata.`);
+    throw new VaultError("VAULT_INDEX_INVALID", `Entry ${entry2.address} has no tee metadata.`);
   }
-  if (entry.linkedWalletId !== undefined && tee.vaultDestination !== undefined && tee.boundKeyPrefix !== undefined) {
-    const moved = assertBinding(entry, row);
+  if (entry2.linkedWalletId !== undefined && tee.vaultDestination !== undefined && tee.boundKeyPrefix !== undefined) {
+    const moved = assertBinding(entry2, row);
     if (moved !== undefined) {
-      ctx.deps.stderr.write(`${entry.address}: bound key is now ${moved.to} (was ${moved.from}); it was moved with tee rebind.
+      ctx.deps.stderr.write(`${entry2.address}: bound key is now ${moved.to} (was ${moved.from}); it was moved with tee rebind.
 `);
     }
     return {
@@ -30444,7 +30444,7 @@ async function adoptGrantedRow(ctx, entry, row, account, opts) {
     }
     return {
       patch: {
-        linkedWalletId: entry.linkedWalletId ?? row._id,
+        linkedWalletId: entry2.linkedWalletId ?? row._id,
         tee: {
           ...tee,
           boundKeyPrefix: tee.boundKeyPrefix ?? row.boundKeyPrefix,
@@ -30458,12 +30458,12 @@ async function adoptGrantedRow(ctx, entry, row, account, opts) {
     };
   }
   if (row.vaultDestination === undefined) {
-    throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `The server lists ${entry.address} but carries no vault destination to adopt.`, {
+    throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `The server lists ${entry2.address} but carries no vault destination to adopt.`, {
       suggestion: "Choose a vault key with `vault demote --sweep-to`, or wait until the grant records a destination."
     });
   }
   if (opts.announceGrant ?? true) {
-    ctx.deps.stdout.write(`Server grant for ${entry.address}:
+    ctx.deps.stdout.write(`Server grant for ${entry2.address}:
 ` + `  linkedWalletId   ${row._id}
 ` + `  boundKeyPrefix   ${row.boundKeyPrefix ?? "(none)"}
 ` + `  vaultDestination ${row.vaultDestination}
@@ -30478,7 +30478,7 @@ async function adoptGrantedRow(ctx, entry, row, account, opts) {
     patch: {
       linkedWalletId: row._id,
       tee: {
-        network: teeNetworkFor(entry.chain),
+        network: teeNetworkFor(entry2.chain),
         lifecycle: "enabled",
         vaultDestination: row.vaultDestination,
         ...row.boundKeyPrefix !== undefined ? { boundKeyPrefix: row.boundKeyPrefix } : {},
@@ -30492,15 +30492,15 @@ async function adoptGrantedRow(ctx, entry, row, account, opts) {
     outcome: "adopted"
   };
 }
-function assertBinding(entry, row) {
-  if (entry.linkedWalletId !== undefined && entry.linkedWalletId !== row._id) {
-    throw new VaultError("GRANT_BINDING_MISMATCH", `The recorded linkedWalletId ${entry.linkedWalletId} does not match the server's ${row._id}.`);
+function assertBinding(entry2, row) {
+  if (entry2.linkedWalletId !== undefined && entry2.linkedWalletId !== row._id) {
+    throw new VaultError("GRANT_BINDING_MISMATCH", `The recorded linkedWalletId ${entry2.linkedWalletId} does not match the server's ${row._id}.`);
   }
-  if (entry.tee?.vaultDestination !== undefined && row.vaultDestination !== undefined && entry.tee.vaultDestination !== row.vaultDestination) {
-    throw new VaultError("GRANT_BINDING_MISMATCH", `The recorded vault destination ${entry.tee.vaultDestination} does not match the server's ${row.vaultDestination}.`);
+  if (entry2.tee?.vaultDestination !== undefined && row.vaultDestination !== undefined && entry2.tee.vaultDestination !== row.vaultDestination) {
+    throw new VaultError("GRANT_BINDING_MISMATCH", `The recorded vault destination ${entry2.tee.vaultDestination} does not match the server's ${row.vaultDestination}.`);
   }
-  if (entry.tee?.boundKeyPrefix !== undefined && row.boundKeyPrefix !== undefined && entry.tee.boundKeyPrefix !== row.boundKeyPrefix) {
-    return { from: entry.tee.boundKeyPrefix, to: row.boundKeyPrefix };
+  if (entry2.tee?.boundKeyPrefix !== undefined && row.boundKeyPrefix !== undefined && entry2.tee.boundKeyPrefix !== row.boundKeyPrefix) {
+    return { from: entry2.tee.boundKeyPrefix, to: row.boundKeyPrefix };
   }
   return;
 }
@@ -30539,10 +30539,10 @@ async function completeStrandedImportRead(ctx, apiKey) {
   }
   return { failures: body.failures, complete: true };
 }
-function requireTeeDestination(entry) {
-  const destination = entry.tee?.vaultDestination;
+function requireTeeDestination(entry2) {
+  const destination = entry2.tee?.vaultDestination;
   if (destination === undefined || destination === "") {
-    throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${entry.address} has no pinned vault destination.`, {
+    throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${entry2.address} has no pinned vault destination.`, {
       suggestion: "Adopt the server's pin (the first operation that reconciles a grant will ask), or choose a vault key with `vault demote --sweep-to`."
     });
   }
@@ -30588,15 +30588,15 @@ async function findTeeInVault(ctx, address, opts = {}) {
     closeVault(vault);
     throw error;
   }
-  const entry = vault.index.entries.find((candidate) => candidate.address === address && candidate.role === "tee-wallet");
-  if (entry === undefined) {
+  const entry2 = vault.index.entries.find((candidate) => candidate.address === address && candidate.role === "tee-wallet");
+  if (entry2 === undefined) {
     closeVault(vault);
     return { hit: false };
   }
-  return { hit: true, vault, entry, reopen: opened.reopen };
+  return { hit: true, vault, entry: entry2, reopen: opened.reopen };
 }
 function vaultOwnsTeeAddress(vault, address) {
-  return vault.index.entries.some((entry) => entry.address === address && entry.role === "tee-wallet");
+  return vault.index.entries.some((entry2) => entry2.address === address && entry2.role === "tee-wallet");
 }
 var init_tee_lookup = __esm(() => {
   init_args();
@@ -30657,8 +30657,8 @@ async function resolveTeeAddress(ctx, _parsed, address, openLegacy, access4 = "r
   const opened = await openLegacy();
   if (!opened.ok)
     return opened;
-  const entry = opened.store.entries.find((candidate) => candidate.address === address);
-  if (entry === undefined) {
+  const entry2 = opened.store.entries.find((candidate) => candidate.address === address);
+  if (entry2 === undefined) {
     writeLocalFailure(ctx.deps, {
       code: "TEE_WALLET_UNKNOWN",
       message: `${address} is not a TEE wallet in ${opened.path}.`,
@@ -30670,7 +30670,7 @@ async function resolveTeeAddress(ctx, _parsed, address, openLegacy, access4 = "r
     ok: true,
     resolved: {
       source: "legacy",
-      entry,
+      entry: entry2,
       path: opened.path,
       store: opened.store,
       passphrase: opened.passphrase,
@@ -30705,13 +30705,13 @@ function refuseLegacyWriteForVaultAddress(ctx, address) {
   return 1;
 }
 async function commitVaultTeeEntry(ctx, vault, entryId, mutate) {
-  const entries = vault.index.entries.map((entry) => entry.id === entryId ? { ...entry, tee: entry.tee ? { ...entry.tee } : undefined } : entry);
-  const target = entries.find((entry) => entry.id === entryId);
+  const entries2 = vault.index.entries.map((entry2) => entry2.id === entryId ? { ...entry2, tee: entry2.tee ? { ...entry2.tee } : undefined } : entry2);
+  const target = entries2.find((entry2) => entry2.id === entryId);
   if (target === undefined) {
     throw new VaultError("VAULT_INDEX_INVALID", `Entry ${entryId} is not in the vault.`);
   }
   mutate(target);
-  return commitVault(vault, { index: { hd: vault.index.hd, entries } }, ctx.deps);
+  return commitVault(vault, { index: { hd: vault.index.hd, entries: entries2 } }, ctx.deps);
 }
 async function maybeReconcileVaultTee(ctx, resolved, caller = "default") {
   const lifecycle = resolved.entry.tee?.lifecycle;
@@ -30783,9 +30783,9 @@ async function maybeReconcileVaultTee(ctx, resolved, caller = "default") {
   }
   if (verdict.kind === "strand-final") {
     const priorTee = resolved.entry.tee;
-    const next2 = await commitVaultTeeEntry(ctx, resolved.vault, resolved.entry.id, (entry) => {
-      entry.tee = {
-        network: teeNetworkFor(entry.chain),
+    const next2 = await commitVaultTeeEntry(ctx, resolved.vault, resolved.entry.id, (entry2) => {
+      entry2.tee = {
+        network: teeNetworkFor(entry2.chain),
         lifecycle: "stranded",
         grantIdentity: {
           account: verdict.account,
@@ -30796,7 +30796,7 @@ async function maybeReconcileVaultTee(ctx, resolved, caller = "default") {
         ...priorTee?.sweepReceipts !== undefined ? { sweepReceipts: priorTee.sweepReceipts } : {},
         ...priorTee?.sweepPending !== undefined ? { sweepPending: priorTee.sweepPending } : {}
       };
-      delete entry.linkedWalletId;
+      delete entry2.linkedWalletId;
     });
     applyVault(resolved, next2);
     return { entry: resolved.entry, code: null };
@@ -30821,11 +30821,11 @@ async function maybeReconcileVaultTee(ctx, resolved, caller = "default") {
   if (adoption.patch.linkedWalletId === undefined && adoption.patch.tee === undefined) {
     return { entry: resolved.entry, code: null };
   }
-  const next = await commitVaultTeeEntry(ctx, resolved.vault, resolved.entry.id, (entry) => {
+  const next = await commitVaultTeeEntry(ctx, resolved.vault, resolved.entry.id, (entry2) => {
     if (adoption.patch.linkedWalletId !== undefined)
-      entry.linkedWalletId = adoption.patch.linkedWalletId;
+      entry2.linkedWalletId = adoption.patch.linkedWalletId;
     if (adoption.patch.tee !== undefined)
-      entry.tee = adoption.patch.tee;
+      entry2.tee = adoption.patch.tee;
   });
   applyVault(resolved, next);
   return { entry: resolved.entry, code: null };
@@ -30834,15 +30834,15 @@ function applyVault(resolved, next) {
   resolved.vault.raw = next.raw;
   resolved.vault.file = next.file;
   resolved.vault.index = next.index;
-  const updated = next.index.entries.find((entry) => entry.id === resolved.entry.id);
+  const updated = next.index.entries.find((entry2) => entry2.id === resolved.entry.id);
   if (updated === undefined) {
     throw new VaultError("VAULT_INDEX_INVALID", `Entry ${resolved.entry.id} vanished after the vault write.`);
   }
   resolved.entry = updated;
   resolved.legacyView = keyEntryAsKeystore(updated, resolved.privateKeyBase58);
 }
-function keyEntryAsKeystore(entry, privateKeyBase58) {
-  const tee = entry.tee;
+function keyEntryAsKeystore(entry2, privateKeyBase58) {
+  const tee = entry2.tee;
   const meta = tee === undefined ? undefined : {
     network: tee.network,
     ...tee.vaultDestination !== undefined ? { vaultDestination: tee.vaultDestination } : {},
@@ -30857,12 +30857,12 @@ function keyEntryAsKeystore(entry, privateKeyBase58) {
   return {
     index: 0,
     chain: "solana",
-    address: entry.address,
-    label: entry.label,
-    createdAt: entry.createdAt,
+    address: entry2.address,
+    label: entry2.label,
+    createdAt: entry2.createdAt,
     privateKey: privateKeyBase58 ?? "",
-    imported: entry.linkedWalletId !== undefined || tee?.lifecycle === "enabled" || tee?.lifecycle === "retired",
-    ...entry.linkedWalletId !== undefined ? { linkedWalletId: entry.linkedWalletId } : {},
+    imported: entry2.linkedWalletId !== undefined || tee?.lifecycle === "enabled" || tee?.lifecycle === "retired",
+    ...entry2.linkedWalletId !== undefined ? { linkedWalletId: entry2.linkedWalletId } : {},
     ...meta !== undefined ? { tee: meta } : {}
   };
 }
@@ -33589,10 +33589,10 @@ function alwaysTokens() {
   return [toChecksumAddress(HOOD_USDG_ADDRESS), HOOD_WETH_ADDRESS];
 }
 function recordSource(read, wallet) {
-  const mine = read.entries.filter((entry) => sameToken(entry.wallet, wallet));
+  const mine = read.entries.filter((entry2) => sameToken(entry2.wallet, wallet));
   return {
-    tokens: mine.flatMap((entry) => entry.kind === "token" ? [entry.token] : []),
-    scanStarts: mine.flatMap((entry) => entry.kind === "scanStart" ? [BigInt(entry.block)] : []),
+    tokens: mine.flatMap((entry2) => entry2.kind === "token" ? [entry2.token] : []),
+    scanStarts: mine.flatMap((entry2) => entry2.kind === "scanStart" ? [BigInt(entry2.block)] : []),
     absent: read.absent,
     noKey: read.noKey,
     unreadableLines: read.unreadableLines,
@@ -33731,7 +33731,7 @@ async function appendScanStart(ctx, vaultPath, wallet, block2) {
 `);
   return { recorded: false, block: block2.toString() };
 }
-async function appendEvmRecordForTrade(ctx, entry) {
+async function appendEvmRecordForTrade(ctx, entry2) {
   let vaultPath;
   try {
     vaultPath = defaultVaultPath(ctx.deps.env, ctx.deps.homedir());
@@ -33739,22 +33739,22 @@ async function appendEvmRecordForTrade(ctx, entry) {
     return { appended: false, notice: error instanceof Error ? error.message : String(error) };
   }
   try {
-    const outcome = await appendEvmRecordEntry({ vaultPath, entry, clock: ctx.deps });
+    const outcome = await appendEvmRecordEntry({ vaultPath, entry: entry2, clock: ctx.deps });
     if (!outcome.written)
       return { appended: false, notice: outcome.detail };
-    const repaired = appendNotice(outcome, `token ${entry.token}`);
+    const repaired = appendNotice(outcome, `token ${entry2.token}`);
     return { appended: true, ...repaired !== undefined ? { notice: repaired } : {} };
   } catch (error) {
     return { appended: false, notice: error instanceof Error ? error.message : String(error) };
   }
 }
-async function readHoodTeeServer(ctx, entry) {
-  if (entry.linkedWalletId === undefined) {
+async function readHoodTeeServer(ctx, entry2) {
+  if (entry2.linkedWalletId === undefined) {
     return {
       lock: {
         state: "unknown",
         reason: "this wallet has no linked wallet id recorded",
-        suggestion: `Nothing was signed. This wallet has no server row, so its lock cannot be read. candle tee sweep ${entry.address} --emergency moves the funds and exits 3; it does not record sweptAt or retire the entry.`
+        suggestion: `Nothing was signed. This wallet has no server row, so its lock cannot be read. candle tee sweep ${entry2.address} --emergency moves the funds and exits 3; it does not record sweptAt or retire the entry.`
       }
     };
   }
@@ -33762,7 +33762,7 @@ async function readHoodTeeServer(ctx, entry) {
   if (apiKey === undefined)
     return { lock: { state: "unknown", reason: "no API key for this profile" } };
   try {
-    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/hood-tee`, {
+    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry2.linkedWalletId)}/hood-tee`, {
       auth: "key",
       credentials: { apiKey },
       apiUrl: ctx.apiUrl,
@@ -33773,7 +33773,7 @@ async function readHoodTeeServer(ctx, entry) {
       return { lock: { state: "unknown", reason: result.message ?? `HTTP ${result.status}` } };
     const body = result.body ?? {};
     const reported = typeof body.address === "string" ? body.address : undefined;
-    if (reported === undefined || !sameAddress2(reported, entry.address)) {
+    if (reported === undefined || !sameAddress2(reported, entry2.address)) {
       return {
         lock: {
           state: "unknown",
@@ -33814,18 +33814,18 @@ function busyStatusHint(kind, operationId) {
     return `candle swap status ${operationId} --kind ${kind}`;
   return `the ${kind} operation ${operationId}`;
 }
-function assertWalletLockFree(entry, lock, now) {
+function assertWalletLockFree(entry2, lock, now) {
   if (lock.state === "free")
     return;
   if (lock.state === "held") {
     const left = Math.max(0, Math.ceil((lock.expiresAt - now) / 60000));
-    throw new VaultError("WALLET_BUSY", `${entry.label || entry.address} has a sequenced ${lock.kind} in flight (operation ${lock.operationId}); signing locally now could use the nonce one of its legs holds.`, {
-      suggestion: `Nothing was signed. Wait for operation ${lock.operationId} to finish (${busyStatusHint(lock.kind, lock.operationId)}); the lock expires within ${left} minute(s) at most. If funds must move now, candle tee sweep ${entry.address} --emergency compares the chain's nonces instead.`,
+    throw new VaultError("WALLET_BUSY", `${entry2.label || entry2.address} has a sequenced ${lock.kind} in flight (operation ${lock.operationId}); signing locally now could use the nonce one of its legs holds.`, {
+      suggestion: `Nothing was signed. Wait for operation ${lock.operationId} to finish (${busyStatusHint(lock.kind, lock.operationId)}); the lock expires within ${left} minute(s) at most. If funds must move now, candle tee sweep ${entry2.address} --emergency compares the chain's nonces instead.`,
       details: { operationId: lock.operationId }
     });
   }
-  throw new VaultError("WALLET_LOCK_UNKNOWN", `Could not read whether ${entry.label || entry.address} has a sequenced operation in flight (${lock.reason}), so nothing is signed at its nonce.`, {
-    suggestion: lock.suggestion ?? `Nothing was signed. Restore the API key or connectivity and run it again. If the server is unreachable and funds must move: candle tee sweep ${entry.address} --emergency`
+  throw new VaultError("WALLET_LOCK_UNKNOWN", `Could not read whether ${entry2.label || entry2.address} has a sequenced operation in flight (${lock.reason}), so nothing is signed at its nonce.`, {
+    suggestion: lock.suggestion ?? `Nothing was signed. Restore the API key or connectivity and run it again. If the server is unreachable and funds must move: candle tee sweep ${entry2.address} --emergency`
   });
 }
 var init_evm_tee = __esm(() => {
@@ -34317,7 +34317,7 @@ async function wallets(args, ctx) {
   }
   const listing = linked.listing;
   const linkedRows = listing.rows;
-  const keySignerQuorums = new Set((await localKeySigners(deps)).flatMap((entry) => entry.signerQuorumId ? [entry.signerQuorumId] : []));
+  const keySignerQuorums = new Set((await localKeySigners(deps)).flatMap((entry2) => entry2.signerQuorumId ? [entry2.signerQuorumId] : []));
   const { states: signerStates, storeError } = await probeSignerStates(linkedRows, deps.store, keySignerQuorums);
   if (storeError !== undefined) {
     if (json)
@@ -34761,7 +34761,7 @@ function extractRepeated(args, flag) {
   return { rest, values };
 }
 function findEvmTee(vault, address) {
-  return vault.index.entries.find((entry) => entry.chain === "evm" && entry.role === "tee-wallet" && sameAddress2(entry.address, address));
+  return vault.index.entries.find((entry2) => entry2.chain === "evm" && entry2.role === "tee-wallet" && sameAddress2(entry2.address, address));
 }
 function unknownWallet(ctx, address) {
   writeLocalFailure(ctx.deps, {
@@ -34775,7 +34775,7 @@ async function patchTee(ctx, vault, entryId, patch) {
   return commitVault(vault, {
     index: {
       ...vault.index,
-      entries: vault.index.entries.map((entry) => entry.id === entryId && entry.tee !== undefined ? { ...entry, tee: patch(entry.tee) } : entry)
+      entries: vault.index.entries.map((entry2) => entry2.id === entryId && entry2.tee !== undefined ? { ...entry2, tee: patch(entry2.tee) } : entry2)
     }
   }, ctx.deps);
 }
@@ -34808,10 +34808,10 @@ async function teeSweepEvm(args, ctx) {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, resolvedVault.path, raw, { acceptOlderCopy: true });
     const vault = hold(opened.vault);
-    const entry = findEvmTee(vault, address);
-    if (entry === undefined)
+    const entry2 = findEvmTee(vault, address);
+    if (entry2 === undefined)
       return unknownWallet(ctx, address);
-    return sweepEvmWallet({ ctx, vault, hold, entry, client, emergency, tokenFlags: tokens, fromBlock });
+    return sweepEvmWallet({ ctx, vault, hold, entry: entry2, client, emergency, tokenFlags: tokens, fromBlock });
   });
 }
 function sweepOptions(ctx, parsed, tokenFlags) {
@@ -34838,12 +34838,12 @@ async function sweepEvmWallet(input) {
   const { ctx, client, emergency, hold } = input;
   const { deps, json } = ctx;
   let vault = input.vault;
-  let entry = input.entry;
-  const address = entry.address;
+  let entry2 = input.entry;
+  const address = entry2.address;
   const rpc = client.rpc;
   const note = (line) => (json ? deps.stderr : deps.stdout).write(`${line}
 `);
-  const destination = entry.tee?.vaultDestination;
+  const destination = entry2.tee?.vaultDestination;
   if (destination === undefined) {
     writeLocalFailure(deps, {
       code: "TEE_WALLET_NO_VAULT",
@@ -34856,13 +34856,13 @@ async function sweepEvmWallet(input) {
   let apiKey;
   let server;
   if (!emergency) {
-    if (entry.linkedWalletId !== undefined) {
+    if (entry2.linkedWalletId !== undefined) {
       apiKey = await resolveApiKey(deps, ctx.profile);
       let unreadReason;
       if (apiKey === undefined)
         unreadReason = "no API key available";
       else {
-        const lifecycle = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/lifecycle`, { auth: "key", credentials: { apiKey }, apiUrl: ctx.apiUrl, fetch: deps.fetch, env: deps.env });
+        const lifecycle = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry2.linkedWalletId)}/lifecycle`, { auth: "key", credentials: { apiKey }, apiUrl: ctx.apiUrl, fetch: deps.fetch, env: deps.env });
         if (!lifecycle.ok)
           unreadReason = `the lifecycle read failed: ${lifecycle.message ?? `HTTP ${lifecycle.status}`}`;
         else
@@ -34897,8 +34897,8 @@ async function sweepEvmWallet(input) {
         return 1;
       }
     }
-    server = await readHoodTeeServer(ctx, entry);
-    assertWalletLockFree(entry, server.lock, deps.now());
+    server = await readHoodTeeServer(ctx, entry2);
+    assertWalletLockFree(entry2, server.lock, deps.now());
     const bridgeGate = bridgeSweepGate(address, server.bridges);
     if (bridgeGate.refusal) {
       writeLocalFailure(deps, bridgeGate.refusal, json);
@@ -34914,9 +34914,9 @@ async function sweepEvmWallet(input) {
   notice(deps, "stderr", "note", `${hoodHostLine(client, "the chain id, nonces, balances and logs")}
 `.trim());
   await assertHoodChain(client);
-  const resolved = await resolvePending2(ctx, vault, entry, rpc);
+  const resolved = await resolvePending2(ctx, vault, entry2, rpc);
   vault = hold(resolved.vault);
-  entry = findEvmTee(vault, address);
+  entry2 = findEvmTee(vault, address);
   if (resolved.stillPending.length > 0) {
     writeLocalFailure(deps, {
       code: "EVM_SWEEP_INCOMPLETE",
@@ -35074,10 +35074,10 @@ async function sweepEvmWallet(input) {
   const somethingToMove = planned.length > 0 || ethBalance > 0n;
   if (somethingToMove) {
     await confirmAddress(ctx, "vault", destination, `sweep everything to ${destination}`);
-    const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date(deps.now()).toISOString();
-    vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, stopRequestedAt })));
+    const stopRequestedAt = entry2.tee?.stopRequestedAt ?? new Date(deps.now()).toISOString();
+    vault = hold(await patchTee(ctx, vault, entry2.id, (tee) => ({ ...tee, stopRequestedAt })));
     if (!emergency)
-      assertWalletLockFree(entry, (await readHoodTeeServer(ctx, entry)).lock, deps.now());
+      assertWalletLockFree(entry2, (await readHoodTeeServer(ctx, entry2)).lock, deps.now());
     let nonce;
     if (emergencyNonces !== undefined) {
       const { latest, pending } = emergencyNonces;
@@ -35086,7 +35086,7 @@ async function sweepEvmWallet(input) {
     } else {
       nonce = await rpc.getTransactionCount(address, "pending");
     }
-    const secret = await decryptKey(vault, entry.id);
+    const secret = await decryptKey(vault, entry2.id);
     try {
       if (!sameEvmAddress(evmAddressFromSecret(secret), address)) {
         throw new VaultError("VAULT_VERIFY_FAILED", "The stored secret does not derive this address; refusing to sign.");
@@ -35102,7 +35102,7 @@ async function sweepEvmWallet(input) {
           amountRaw: meta.amountRaw.toString(),
           at: new Date(deps.now()).toISOString()
         };
-        vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({
+        vault = hold(await patchTee(ctx, vault, entry2.id, (tee) => ({
           ...tee,
           sweepPending: [...tee.sweepPending ?? [], record2]
         })));
@@ -35119,7 +35119,7 @@ async function sweepEvmWallet(input) {
             status = "reverted";
             line = error.message;
           } else if (error instanceof VaultError && error.code === "EVM_NONCE_STALE") {
-            vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({
+            vault = hold(await patchTee(ctx, vault, entry2.id, (tee) => ({
               ...tee,
               sweepPending: (tee.sweepPending ?? []).filter((p) => p.hash !== signed.hash)
             })));
@@ -35146,7 +35146,7 @@ async function sweepEvmWallet(input) {
           at: new Date(deps.now()).toISOString()
         };
         receipts.push(receipt);
-        vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({
+        vault = hold(await patchTee(ctx, vault, entry2.id, (tee) => ({
           ...tee,
           sweepPending: (tee.sweepPending ?? []).filter((p) => p.hash !== signed.hash),
           sweepReceipts: [...tee.sweepReceipts ?? [], receipt]
@@ -35246,11 +35246,11 @@ async function sweepEvmWallet(input) {
   if (!emergency && !sources.server.answered)
     missingSources.push("the server's traded-token list");
   const observedEmpty = inventory.verified && residuals.length === 0 && stopped === undefined && missingSources.length === 0;
-  const allReceipts = [...entry.tee?.sweepReceipts ?? [], ...receipts].filter((receipt, at, list) => list.findIndex((other) => other.hash === receipt.hash) === at);
-  let recordedOnServer = entry.tee?.sweptAt !== undefined || serverState === "swept";
-  const complete = observedEmpty && !emergency && (serverState === "quarantined" || serverState === "swept" || serverState === "local-only" && !entry.linkedWalletId);
-  if (complete && entry.linkedWalletId && apiKey && !recordedOnServer) {
-    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/swept`, {
+  const allReceipts = [...entry2.tee?.sweepReceipts ?? [], ...receipts].filter((receipt, at, list) => list.findIndex((other) => other.hash === receipt.hash) === at);
+  let recordedOnServer = entry2.tee?.sweptAt !== undefined || serverState === "swept";
+  const complete = observedEmpty && !emergency && (serverState === "quarantined" || serverState === "swept" || serverState === "local-only" && !entry2.linkedWalletId);
+  if (complete && entry2.linkedWalletId && apiKey && !recordedOnServer) {
+    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry2.linkedWalletId)}/swept`, {
       method: "POST",
       auth: "key",
       credentials: { apiKey },
@@ -35267,10 +35267,10 @@ async function sweepEvmWallet(input) {
       });
     }
   }
-  let sweptLocally = entry.tee?.sweptAt !== undefined;
-  if (complete && (recordedOnServer || !entry.linkedWalletId) && !sweptLocally) {
+  let sweptLocally = entry2.tee?.sweptAt !== undefined;
+  if (complete && (recordedOnServer || !entry2.linkedWalletId) && !sweptLocally) {
     const sweptAt = new Date(deps.now()).toISOString();
-    vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({
+    vault = hold(await patchTee(ctx, vault, entry2.id, (tee) => ({
       ...tee,
       sweptAt,
       lifecycle: tee.lifecycle === "stranded" ? tee.lifecycle : "retired",
@@ -35360,11 +35360,11 @@ async function sweepEvmWallet(input) {
   ], "Inventory");
   return exit;
 }
-async function resolvePending2(ctx, vault, entry, rpc) {
-  const pending = entry.tee?.sweepPending ?? [];
+async function resolvePending2(ctx, vault, entry2, rpc) {
+  const pending = entry2.tee?.sweepPending ?? [];
   if (pending.length === 0)
     return { vault, stillPending: [] };
-  const latest = await rpc.getTransactionCount(entry.address, "latest");
+  const latest = await rpc.getTransactionCount(entry2.address, "latest");
   const still = [];
   const landed = [];
   for (const record of pending) {
@@ -35395,7 +35395,7 @@ async function resolvePending2(ctx, vault, entry, rpc) {
       continue;
     still.push(record);
   }
-  const next = await patchTee(ctx, vault, entry.id, (tee) => ({
+  const next = await patchTee(ctx, vault, entry2.id, (tee) => ({
     ...tee,
     sweepPending: still,
     sweepReceipts: [...tee.sweepReceipts ?? [], ...landed]
@@ -35425,29 +35425,29 @@ async function teeDisableEvm(args, ctx) {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, resolvedVault.path, raw, { acceptOlderCopy: true });
     const vault = hold(opened.vault);
-    const entry = findEvmTee(vault, address);
-    if (entry === undefined)
+    const entry2 = findEvmTee(vault, address);
+    if (entry2 === undefined)
       return unknownWallet(ctx, address);
-    return (await disableEvmEntry(ctx, vault, hold, entry, false)).code;
+    return (await disableEvmEntry(ctx, vault, hold, entry2, false)).code;
   });
 }
-async function disableEvmEntry(ctx, opened, hold, entry, inDemote) {
+async function disableEvmEntry(ctx, opened, hold, entry2, inDemote) {
   const { deps, json } = ctx;
   let vault = opened;
-  if (entry.linkedWalletId === undefined) {
-    writeLocalFailure(deps, { code: "TEE_WALLET_NOT_ENABLED", message: `${entry.address} was never enabled; there is nothing to stop.` }, json);
+  if (entry2.linkedWalletId === undefined) {
+    writeLocalFailure(deps, { code: "TEE_WALLET_NOT_ENABLED", message: `${entry2.address} was never enabled; there is nothing to stop.` }, json);
     return { code: 1, vault };
   }
-  const linkedWalletId = entry.linkedWalletId;
-  const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date(deps.now()).toISOString();
-  vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, stopRequestedAt })));
+  const linkedWalletId = entry2.linkedWalletId;
+  const stopRequestedAt = entry2.tee?.stopRequestedAt ?? new Date(deps.now()).toISOString();
+  vault = hold(await patchTee(ctx, vault, entry2.id, (tee) => ({ ...tee, stopRequestedAt })));
   const unconfirmed = (detail, suggestion) => {
     if (json) {
       writeJson(deps, {
         ok: false,
         code: "STOP_UNCONFIRMED",
         message: detail,
-        address: entry.address,
+        address: entry2.address,
         linkedWalletId,
         stopRequestedAt,
         remoteEnforcement: "unconfirmed",
@@ -35456,14 +35456,14 @@ async function disableEvmEntry(ctx, opened, hold, entry, inDemote) {
       return { code: 1, vault };
     }
     notice(deps, "stderr", "warning", `${detail}
-Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${entry.address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.
+Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${entry2.address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.
 ${suggestion}
 `.trim());
     return { code: 1, vault };
   };
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
-    return unconfirmed("No API key available, so the server was not asked to stop the agent.", `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${entry.address}`);
+    return unconfirmed("No API key available, so the server was not asked to stop the agent.", `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${entry2.address}`);
   }
   const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(linkedWalletId)}`, {
     method: "DELETE",
@@ -35474,27 +35474,27 @@ ${suggestion}
     env: deps.env
   });
   if (!result.ok) {
-    return unconfirmed(`The stop request failed: ${result.message ?? `HTTP ${result.status}`}.`, `Re-run: candle tee disable ${entry.address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`);
+    return unconfirmed(`The stop request failed: ${result.message ?? `HTTP ${result.status}`}.`, `Re-run: candle tee disable ${entry2.address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`);
   }
   const outcome = readDisableOutcome(result.body);
-  for (const warning of bridgeDisableWarnings(entry.address, result.body))
+  for (const warning of bridgeDisableWarnings(entry2.address, result.body))
     notice(deps, "stderr", "note", `${warning}
 `.trim());
   if (json) {
-    writeJson(deps, { address: entry.address, linkedWalletId, ...result.body });
+    writeJson(deps, { address: entry2.address, linkedWalletId, ...result.body });
     return { code: outcome.complete ? 0 : 3, vault };
   }
   if (outcome.complete) {
-    notice(deps, "stdout", "note", `Stopped ${entry.address}. Remote signing denial verified; the wallet is quarantined.
+    notice(deps, "stdout", "note", `Stopped ${entry2.address}. Remote signing denial verified; the wallet is quarantined.
 `.trim());
     if (!inDemote)
-      notice(deps, "stdout", "note", `Recover the funds: candle tee sweep ${entry.address}
+      notice(deps, "stdout", "note", `Recover the funds: candle tee sweep ${entry2.address}
 `.trim());
     return { code: 0, vault };
   }
-  notice(deps, "stdout", "warning", `Agent trading stopped at Candle for ${entry.address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
-Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${entry.address}
-${inDemote ? "" : `If the provider is down or theft is suspected: candle tee sweep ${entry.address} --emergency
+  notice(deps, "stdout", "warning", `Agent trading stopped at Candle for ${entry2.address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
+Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${entry2.address}
+${inDemote ? "" : `If the provider is down or theft is suspected: candle tee sweep ${entry2.address} --emergency
 `}`.trim());
   return { code: 3, vault };
 }
@@ -35529,10 +35529,10 @@ async function vaultDemoteEvm(args, ctx) {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     let vault = hold(opened.vault);
-    let entry = findEvmTee(vault, address);
-    if (entry === undefined)
+    let entry2 = findEvmTee(vault, address);
+    if (entry2 === undefined)
       return unknownWallet(ctx, address);
-    if (entry.tee?.vaultDestination === undefined) {
+    if (entry2.tee?.vaultDestination === undefined) {
       if (sweepTo === undefined) {
         throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${address} has no pinned vault destination.`, {
           suggestion: "Pass --sweep-to <evm vault key> (a cold EVM vault key in this vault)."
@@ -35542,34 +35542,34 @@ async function vaultDemoteEvm(args, ctx) {
         chain: "evm",
         acceptUnknownExposure: parsed.booleans.has("--accept-unknown-exposure")
       });
-      vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, vaultDestination: destination.address })));
-      entry = findEvmTee(vault, address);
+      vault = hold(await patchTee(ctx, vault, entry2.id, (tee) => ({ ...tee, vaultDestination: destination.address })));
+      entry2 = findEvmTee(vault, address);
     }
-    if (entry.linkedWalletId === undefined) {
-      notice(ctx.deps, "stdout", "warning", `No linkedWalletId is recorded for ${entry.address}; disable was not called and remote authority stays unknown.
+    if (entry2.linkedWalletId === undefined) {
+      notice(ctx.deps, "stdout", "warning", `No linkedWalletId is recorded for ${entry2.address}; disable was not called and remote authority stays unknown.
 `.trim());
       emergency = true;
     }
     if (!emergency) {
       await printIdentity(ctx);
-      const disabled = await disableEvmEntry(ctx, vault, hold, entry, true);
+      const disabled = await disableEvmEntry(ctx, vault, hold, entry2, true);
       if (disabled.code !== 0 && disabled.code !== 3)
         return disabled.code;
       vault = disabled.vault;
-      entry = findEvmTee(vault, address);
+      entry2 = findEvmTee(vault, address);
       if (disabled.code === 3) {
         notice(ctx.deps, "stdout", "note", `The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote ${address} --emergency
 `.trim());
       }
     }
     if (!ctx.json)
-      notice(ctx.deps, "stdout", "note", `Sweeping remaining funds to ${entry.tee?.vaultDestination}...
+      notice(ctx.deps, "stdout", "note", `Sweeping remaining funds to ${entry2.tee?.vaultDestination}...
 `.trim());
     return sweepEvmWallet({
       ctx,
       vault,
       hold,
-      entry,
+      entry: entry2,
       client: options.client,
       emergency,
       tokenFlags: options.tokens,
@@ -35630,17 +35630,17 @@ async function readVaultEntry(ctx, address) {
     return null;
   const opened = await unlockInteractively(ctx, resolved.path, raw, { acceptOlderCopy: true });
   try {
-    const entry = opened.vault.index.entries.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
-    if (entry === undefined)
+    const entry2 = opened.vault.index.entries.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
+    if (entry2 === undefined)
       return null;
-    if (entry.role !== "tee-wallet")
-      throw new VaultError("SOLANA_COMMAND_EVM_KEY", `${entry.label || entry.address} is an EVM key (${entry.address}) but not a TEE wallet; tee status reads Solana and Hood TEE wallets only.`, {
+    if (entry2.role !== "tee-wallet")
+      throw new VaultError("SOLANA_COMMAND_EVM_KEY", `${entry2.label || entry2.address} is an EVM key (${entry2.address}) but not a TEE wallet; tee status reads Solana and Hood TEE wallets only.`, {
         suggestion: `Nothing was read or written. An EVM vault key's balances are in: candle vault list --balances`
       });
     return {
-      label: entry.label,
-      ...entry.linkedWalletId ? { linkedWalletId: entry.linkedWalletId } : {},
-      ...entry.tee?.vaultDestination ? { vaultDestination: entry.tee.vaultDestination } : {}
+      label: entry2.label,
+      ...entry2.linkedWalletId ? { linkedWalletId: entry2.linkedWalletId } : {},
+      ...entry2.tee?.vaultDestination ? { vaultDestination: entry2.tee.vaultDestination } : {}
     };
   } finally {
     closeVault(opened.vault);
@@ -35957,19 +35957,19 @@ async function commitTee(deps, opened, mutate, opts = {}) {
 function vaultActiveTee(ctx, resolved) {
   return { source: "vault", resolved, entry: resolved.legacyView, path: "vault", ctx };
 }
-function applyKeystoreViewToVaultEntry(entry, view) {
+function applyKeystoreViewToVaultEntry(entry2, view) {
   if (view.linkedWalletId !== undefined)
-    entry.linkedWalletId = view.linkedWalletId;
+    entry2.linkedWalletId = view.linkedWalletId;
   else
-    delete entry.linkedWalletId;
+    delete entry2.linkedWalletId;
   const meta = view.tee;
   if (meta === undefined)
     return;
-  const prior = entry.tee;
+  const prior = entry2.tee;
   let lifecycle = prior?.lifecycle ?? "enabled";
   if (meta.sweptAt !== undefined && lifecycle !== "stranded")
     lifecycle = "retired";
-  entry.tee = {
+  entry2.tee = {
     ...prior,
     ...meta,
     lifecycle
@@ -35977,8 +35977,8 @@ function applyKeystoreViewToVaultEntry(entry, view) {
 }
 async function commitActiveTee(active, mutate) {
   if (active.source === "legacy") {
-    return commitTee(active.deps, active.opened, (entries) => {
-      const target = entries.find((e) => e.address === active.entry.address);
+    return commitTee(active.deps, active.opened, (entries2) => {
+      const target = entries2.find((e) => e.address === active.entry.address);
       if (!target)
         throw new Error(`${active.entry.address} is no longer in ${active.path}`);
       mutate(target);
@@ -35987,8 +35987,8 @@ async function commitActiveTee(active, mutate) {
   }
   mutate(active.entry);
   try {
-    const next = await commitVaultTeeEntry(active.ctx, active.resolved.vault, active.resolved.entry.id, (entry) => {
-      applyKeystoreViewToVaultEntry(entry, active.entry);
+    const next = await commitVaultTeeEntry(active.ctx, active.resolved.vault, active.resolved.entry.id, (entry2) => {
+      applyKeystoreViewToVaultEntry(entry2, active.entry);
     });
     active.resolved.vault.raw = next.raw;
     active.resolved.vault.file = next.file;
@@ -36166,10 +36166,10 @@ Then: candle vault promote --from <label> --to-key <prefix>`
   const wallet = generateWallet("solana");
   let index = -1;
   let label = "";
-  const committed = await commitTee(deps, { store, path, passphrase: passphrase.passphrase, raw }, (entries) => {
-    index = entries.length;
+  const committed = await commitTee(deps, { store, path, passphrase: passphrase.passphrase, raw }, (entries2) => {
+    index = entries2.length;
     label = parsed.values["--label"] ?? `tee-${index}`;
-    entries.push({
+    entries2.push({
       index,
       chain: "solana",
       address: wallet.address,
@@ -36295,13 +36295,13 @@ async function teeEnable(args, ctx) {
   if (!opened.ok)
     return opened.code;
   const { store, path } = opened;
-  const entry = findEntry(store, address);
-  if (!entry)
+  const entry2 = findEntry(store, address);
+  if (!entry2)
     return noSuchEntry(ctx, address, path);
-  if (entry.imported || entry.linkedWalletId) {
+  if (entry2.imported || entry2.linkedWalletId) {
     writeLocalFailure(deps, {
       code: "TEE_WALLET_ALREADY_ENABLED",
-      message: `${address} was already enabled${entry.linkedWalletId ? ` as ${entry.linkedWalletId}` : ""}.`,
+      message: `${address} was already enabled${entry2.linkedWalletId ? ` as ${entry2.linkedWalletId}` : ""}.`,
       suggestion: "A retired or enabled TEE wallet is never re-enabled. Run: candle tee new"
     }, json);
     return 1;
@@ -36326,8 +36326,8 @@ async function teeEnable(args, ctx) {
   const flow = await runImportFlow({
     chain: "solana",
     address,
-    privateKey: entry.privateKey,
-    label: parsed.values["--label"] ?? entry.label,
+    privateKey: entry2.privateKey,
+    label: parsed.values["--label"] ?? entry2.label,
     apiKey,
     apiUrl,
     deps,
@@ -36349,8 +36349,8 @@ async function teeEnable(args, ctx) {
   }
   const submitted = flow.submitted;
   const importedAt = new Date().toISOString();
-  const committed = await commitTee(deps, opened, (entries) => {
-    const target = entries.find((e) => e.address === address);
+  const committed = await commitTee(deps, opened, (entries2) => {
+    const target = entries2.find((e) => e.address === address);
     if (!target)
       throw new Error(`${address} is no longer in ${path}`);
     target.imported = true;
@@ -36430,8 +36430,8 @@ async function teeFund(args, ctx) {
   if (!resolved.ok)
     return resolved.code;
   try {
-    const entry = resolved.resolved.source === "vault" ? resolved.resolved.legacyView : resolved.resolved.entry;
-    if (!entry.linkedWalletId || entry.tee?.remoteAuthority !== "verified-active") {
+    const entry2 = resolved.resolved.source === "vault" ? resolved.resolved.legacyView : resolved.resolved.entry;
+    if (!entry2.linkedWalletId || entry2.tee?.remoteAuthority !== "verified-active") {
       writeLocalFailure(deps, {
         code: "TEE_WALLET_NOT_VERIFIED",
         message: `${address} is not an enabled TEE wallet with verified remote authority; do not fund it.`,
@@ -36439,7 +36439,7 @@ async function teeFund(args, ctx) {
       }, json);
       return 1;
     }
-    if (entry.tee?.stopRequestedAt) {
+    if (entry2.tee?.stopRequestedAt) {
       writeLocalFailure(deps, { code: "TEE_WALLET_STOPPED", message: `${address} has been stopped; a retired address is never refunded.` }, json);
       return 1;
     }
@@ -36507,17 +36507,17 @@ async function teeStatus(args, ctx) {
   if ("error" in solana)
     return usage2(ctx, solana.error);
   let local = null;
-  let entry;
+  let entry2;
   if (verify) {
     const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
     if (!resolved.ok)
       return resolved.code;
     local = resolved.resolved;
-    entry = local.source === "vault" ? local.legacyView : local.entry;
+    entry2 = local.source === "vault" ? local.legacyView : local.entry;
   } else {
     try {
       const { row } = await serverTeeWallet(ctx, address, "solana");
-      entry = { address, label: row.label ?? "", linkedWalletId: row.id };
+      entry2 = { address, label: row.label ?? "", linkedWalletId: row.id };
     } catch (error) {
       return tradingFailure(ctx, error);
     }
@@ -36530,21 +36530,21 @@ async function teeStatus(args, ctx) {
     }
     const report = {
       address,
-      label: entry.label,
+      label: entry2.label,
       source: local?.source ?? "server",
       verified: verify,
-      linkedWalletId: entry.linkedWalletId ?? null,
-      vaultDestination: verify ? entry.tee?.vaultDestination ?? null : null,
+      linkedWalletId: entry2.linkedWalletId ?? null,
+      vaultDestination: verify ? entry2.tee?.vaultDestination ?? null : null,
       vaultLifecycle: local?.source === "vault" ? local.entry.tee?.lifecycle ?? null : null,
-      localState: !verify ? null : entry.tee?.sweptAt ? "swept" : entry.tee?.stopRequestedAt ? "stop-requested" : entry.linkedWalletId ? "enabled" : "local-only",
-      retainedSweepReceipts: verify ? entry.tee?.sweepReceipts?.length ?? 0 : null,
-      pendingSweepTransactions: verify ? entry.tee?.sweepPending?.length ?? 0 : null,
+      localState: !verify ? null : entry2.tee?.sweptAt ? "swept" : entry2.tee?.stopRequestedAt ? "stop-requested" : entry2.linkedWalletId ? "enabled" : "local-only",
+      retainedSweepReceipts: verify ? entry2.tee?.sweepReceipts?.length ?? 0 : null,
+      pendingSweepTransactions: verify ? entry2.tee?.sweepPending?.length ?? 0 : null,
       observedAt: new Date(deps.now()).toISOString()
     };
-    if (entry.linkedWalletId) {
+    if (entry2.linkedWalletId) {
       const apiKey = await resolveApiKey(deps, ctx.profile);
       if (apiKey) {
-        const lifecycle = await readLifecycle(ctx, apiKey, entry.linkedWalletId);
+        const lifecycle = await readLifecycle(ctx, apiKey, entry2.linkedWalletId);
         if (lifecycle.ok) {
           report.server = lifecycle.body;
         } else {
@@ -36586,7 +36586,7 @@ async function teeStatus(args, ctx) {
     }
     writeFields(deps, "stdout", [
       ["Address", address],
-      ["Label", entry.label]
+      ["Label", entry2.label]
     ], "TEE wallet");
     if (local?.source === "vault") {
       writeFields(deps, "stdout", [
@@ -36600,7 +36600,7 @@ async function teeStatus(args, ctx) {
     else
       writeFields(deps, "stdout", [
         ["Local state", String(report.localState)],
-        ["Vault", entry.tee?.vaultDestination]
+        ["Vault", entry2.tee?.vaultDestination]
       ]);
     const server = report.server;
     if (server) {
@@ -36660,13 +36660,13 @@ async function teeDisable(args, ctx, demote) {
     return openedActive.code;
   const { active } = openedActive;
   try {
-    const entry = active.entry;
-    if (!entry.linkedWalletId) {
+    const entry2 = active.entry;
+    if (!entry2.linkedWalletId) {
       writeLocalFailure(deps, { code: "TEE_WALLET_NOT_ENABLED", message: `${address} was never enabled; there is nothing to stop.` }, json);
       return 1;
     }
-    const linkedWalletId = entry.linkedWalletId;
-    const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString();
+    const linkedWalletId = entry2.linkedWalletId;
+    const stopRequestedAt = entry2.tee?.stopRequestedAt ?? new Date().toISOString();
     const committed = await commitActiveTee(active, (target) => {
       target.tee = { ...target.tee ?? { network: "solana-mainnet" }, stopRequestedAt };
     });
@@ -36717,7 +36717,7 @@ ${suggestion}
       notice(deps, "stderr", "note", `${warning}
 `.trim());
     if (json) {
-      deps.stdout.write(`${JSON.stringify({ address, linkedWalletId: entry.linkedWalletId, ...result.body })}
+      deps.stdout.write(`${JSON.stringify({ address, linkedWalletId: entry2.linkedWalletId, ...result.body })}
 `);
       return outcome.complete ? 0 : 3;
     }
@@ -36739,17 +36739,17 @@ If the provider is down or theft is suspected: ${demote ? `candle vault demote $
       releaseActiveTee(active);
   }
 }
-async function nothingLeftToSweep(solana, entry) {
-  const tee = entry.tee;
+async function nothingLeftToSweep(solana, entry2) {
+  const tee = entry2.tee;
   if ((tee?.sweepPending?.length ?? 0) > 0)
     return false;
   if ((tee?.sweepReceipts?.length ?? 0) > 0 && tee?.sweptAt === undefined)
     return false;
   try {
-    if (await solana.rpc.getBalance(entry.address) > 0n)
+    if (await solana.rpc.getBalance(entry2.address) > 0n)
       return false;
     for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
-      if ((await solana.rpc.getTokenAccountsByOwner(entry.address, programId)).length > 0)
+      if ((await solana.rpc.getTokenAccountsByOwner(entry2.address, programId)).length > 0)
         return false;
     }
     return true;
@@ -36900,8 +36900,8 @@ async function teeSweep(args, ctx, demote) {
     return openedActive.code;
   const { active } = openedActive;
   try {
-    const entry = active.entry;
-    const vault = entry.tee?.vaultDestination;
+    const entry2 = active.entry;
+    const vault = entry2.tee?.vaultDestination;
     if (!vault) {
       writeLocalFailure(deps, {
         code: "TEE_WALLET_NO_VAULT",
@@ -36913,12 +36913,12 @@ async function teeSweep(args, ctx, demote) {
     let apiKey;
     let unreadReason = null;
     let bridges;
-    if (entry.linkedWalletId) {
+    if (entry2.linkedWalletId) {
       apiKey = await resolveApiKey(deps, ctx.profile);
       if (!apiKey)
         unreadReason = "no API key available";
       else {
-        const lifecycle = await readLifecycle(ctx, apiKey, entry.linkedWalletId);
+        const lifecycle = await readLifecycle(ctx, apiKey, entry2.linkedWalletId);
         if (!lifecycle.ok) {
           unreadReason = `the lifecycle read failed: ${lifecycle.result.message ?? `HTTP ${lifecycle.result.status}`}`;
           if (lifecycle.result.status === 401 || lifecycle.result.status === 403)
@@ -36993,13 +36993,13 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       writeLocalFailure(deps, { code: "VAULT_NOT_CONFIRMED", message: "The vault was not confirmed. Nothing was signed." }, json);
       return 1;
     }
-    const secret = base58.decode(entry.privateKey);
+    const secret = base58.decode(entry2.privateKey);
     const teePubkey = pubkeyFromSecret(secret);
     if (encodePubkey(teePubkey) !== address) {
       writeLocalFailure(deps, { code: "TEE_KEY_MISMATCH", message: "The stored secret does not derive this address; refusing to sign." }, json);
       return 1;
     }
-    const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString();
+    const stopRequestedAt = entry2.tee?.stopRequestedAt ?? new Date().toISOString();
     const marked = await commitActiveTee(active, (target) => {
       target.tee = { ...target.tee ?? { network: "solana-mainnet" }, stopRequestedAt };
     });
@@ -37009,7 +37009,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     }
     const vaultKey = decodePubkey(vault);
     const floor = createContextFloor();
-    for (const receipt of entry.tee?.sweepReceipts ?? [])
+    for (const receipt of entry2.tee?.sweepReceipts ?? [])
       if (receipt.slot !== undefined)
         floor.raise(receipt.slot);
     const isContextFailure = (error) => error instanceof SolanaRpcError && Boolean(error.contextBehind || error.contextUnverified || floor.slot !== undefined && error.rpcCode === -32602);
@@ -37029,11 +37029,11 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         };
       }
     });
-    const retained = entry.tee?.sweepReceipts ?? [];
+    const retained = entry2.tee?.sweepReceipts ?? [];
     const receipts = [];
     const residuals = [];
     let solHandledAsResidual = false;
-    const alreadyRecordedLocally = entry.tee?.sweptAt !== undefined;
+    const alreadyRecordedLocally = entry2.tee?.sweptAt !== undefined;
     const pendingStill = [];
     const retainReceipt = async (receipt) => {
       if (receipt.slot !== undefined)
@@ -37177,7 +37177,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       status: (signature) => rpc.getSignatureStatus(signature),
       blockhashValid: (blockhash) => rpc.isBlockhashValid(blockhash)
     };
-    for (const p of entry.tee?.sweepPending ?? []) {
+    for (const p of entry2.tee?.sweepPending ?? []) {
       const resolution = await resolvePending(reads, p);
       if (resolution.kind === "finalized") {
         await retainReceipt({
@@ -37242,7 +37242,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             notAttempted(acct);
             continue;
           }
-          if (!apiKey || !entry.linkedWalletId) {
+          if (!apiKey || !entry2.linkedWalletId) {
             leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, "no bound API key is available to build the close; the NFT was left in place");
             continue;
           }
@@ -37572,9 +37572,9 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     }
     const allReceipts = [...retained, ...receipts];
     let recordedOnServer = alreadyRecordedLocally || serverState === "swept";
-    const complete = residuals.length === 0 && allReceipts.length > 0 && inventory.verified && !emergency && (serverState === "quarantined" || serverState === "swept" || serverState === "local-only" && !entry.linkedWalletId);
-    if (complete && entry.linkedWalletId && apiKey && !recordedOnServer) {
-      const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/swept`, {
+    const complete = residuals.length === 0 && allReceipts.length > 0 && inventory.verified && !emergency && (serverState === "quarantined" || serverState === "swept" || serverState === "local-only" && !entry2.linkedWalletId);
+    if (complete && entry2.linkedWalletId && apiKey && !recordedOnServer) {
+      const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry2.linkedWalletId)}/swept`, {
         method: "POST",
         auth: "key",
         credentials: { apiKey },
@@ -37601,7 +37601,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       }
     }
     let sweptLocally = false;
-    if (complete && (recordedOnServer || !entry.linkedWalletId)) {
+    if (complete && (recordedOnServer || !entry2.linkedWalletId)) {
       if (alreadyRecordedLocally)
         sweptLocally = true;
       else {
@@ -38971,6 +38971,305 @@ var init_keys = __esm(() => {
     message: "No device token available.",
     suggestion: "Run: candle auth login"
   };
+});
+
+// ../mcp/src/chains/registry.json
+var registry_default2;
+var init_registry = __esm(() => {
+  registry_default2 = [
+    {
+      slug: "solana",
+      family: "solana",
+      displayName: "Solana",
+      enabled: true,
+      addressFormat: "solana-base58",
+      native: { symbol: "SOL", name: "Solana", decimals: 9 },
+      explorer: { url: "https://solscan.io", urlEnv: null, api: "solscan" },
+      rpc: { env: {}, publicUrl: null, fallbackSwitchEnv: null }
+    },
+    {
+      slug: "hood",
+      family: "evm",
+      displayName: "Robinhood Chain",
+      enabled: true,
+      addressFormat: "evm-hex20",
+      native: { symbol: "ETH", name: "Ether", decimals: 18 },
+      explorer: { url: "https://robinhoodchain.blockscout.com", urlEnv: "HOOD_EXPLORER_URL", api: "blockscout" },
+      rpc: {
+        env: {
+          read: "HOOD_RPC_URL",
+          ledger: "LEDGER_HOOD_RPC_URL",
+          ledgerFallback: "LEDGER_HOOD_RPC_FALLBACK_URL",
+          feed: "FEED_HOOD_RPC_URL",
+          browser: "NEXT_PUBLIC_HOOD_RPC_URL"
+        },
+        publicUrl: "https://rpc.mainnet.chain.robinhood.com",
+        fallbackSwitchEnv: "HOOD_RPC_FALLBACK"
+      },
+      evm: {
+        chainId: 4663,
+        wrappedNative: { symbol: "WETH", address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18 },
+        stablecoins: [{ symbol: "USDG", address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", decimals: 6 }],
+        quoteAssets: ["0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"],
+        l1DataFee: "arbitrum",
+        blockTimeMs: 100,
+        publicMempool: false,
+        multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
+        dex: {
+          uniswapV3: {
+            factory: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
+            router: "0xCaf681a66D020601342297493863E78C959E5cb2",
+            quoter: "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
+            initCodeHash: "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54"
+          },
+          uniswapV4: {
+            poolManager: "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+            universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
+            quoter: "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+            stateView: "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
+          },
+          permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+        },
+        aggregators: [
+          { id: "kyber", vendorChainSlug: "robinhood", router: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" }
+        ],
+        vendors: { dexscreener: "robinhood", birdeye: "robinhood", geckoterminal: null },
+        cvcBaseUrlEnv: "CVC_API_URL",
+        feeTreasuryEnv: "AGENT_FEE_TREASURY_HOOD",
+        gasReserve: { feeMultiplier: 2, extraErc20Transfers: 1, legGasFallback: "500000" },
+        teePolicyChainId: "4663",
+        launch: {
+          contractEnv: {
+            curveFactory: "HOOD_CURVE_FACTORY",
+            curveRegistry: "HOOD_CURVE_REGISTRY",
+            stakingDistributor: "HOOD_STAKING_DISTRIBUTOR",
+            migratorV3: "HOOD_MIGRATOR_V3",
+            migratorV4: "HOOD_MIGRATOR_V4",
+            feeSplitterFactory: "HOOD_FEE_SPLITTER_FACTORY",
+            believerNft: "HOOD_BELIEVER_NFT"
+          }
+        }
+      }
+    }
+  ];
+});
+
+// ../mcp/src/chains/registry.ts
+function fail3(path, why) {
+  throw new Error(`chain registry: ${path} ${why}`);
+}
+function needString2(o, key, path) {
+  if (typeof o[key] !== "string" || o[key] === "")
+    fail3(`${path}.${key}`, "must be a non-empty string");
+}
+function needBool2(o, key, path) {
+  if (typeof o[key] !== "boolean")
+    fail3(`${path}.${key}`, "must be a boolean");
+}
+function needNumber2(o, key, path) {
+  if (typeof o[key] !== "number" || !Number.isFinite(o[key]))
+    fail3(`${path}.${key}`, "must be a number");
+}
+function needObject2(o, key, path) {
+  const v = o[key];
+  if (!isObject2(v))
+    fail3(`${path}.${key}`, "must be an object");
+  return v;
+}
+function needNullableString2(o, key, path) {
+  if (o[key] !== null && typeof o[key] !== "string")
+    fail3(`${path}.${key}`, "must be a string or null");
+}
+function needAddress2(v, path) {
+  if (typeof v !== "string" || !EVM_ADDRESS2.test(v))
+    fail3(path, "must be 0x plus 40 hex digits");
+}
+function needNullableAddress2(o, key, path) {
+  if (o[key] !== null)
+    needAddress2(o[key], `${path}.${key}`);
+}
+function checkToken2(v, path) {
+  if (!isObject2(v))
+    fail3(path, "must be an object");
+  needString2(v, "symbol", path);
+  needAddress2(v.address, `${path}.address`);
+  needNumber2(v, "decimals", path);
+}
+function checkAddressSet2(v, path, keys) {
+  if (v === null)
+    return;
+  if (!isObject2(v))
+    fail3(path, "must be an object or null");
+  for (const k of keys)
+    needAddress2(v[k], `${path}.${k}`);
+}
+function checkEvm2(evm, path) {
+  needNumber2(evm, "chainId", path);
+  checkToken2(evm.wrappedNative, `${path}.wrappedNative`);
+  if (!Array.isArray(evm.stablecoins))
+    fail3(`${path}.stablecoins`, "must be an array");
+  evm.stablecoins.forEach((t, i) => {
+    checkToken2(t, `${path}.stablecoins[${i}]`);
+  });
+  if (!Array.isArray(evm.quoteAssets))
+    fail3(`${path}.quoteAssets`, "must be an array");
+  evm.quoteAssets.forEach((a, i) => {
+    needAddress2(a, `${path}.quoteAssets[${i}]`);
+  });
+  if (!["none", "arbitrum", "op-stack"].includes(evm.l1DataFee))
+    fail3(`${path}.l1DataFee`, "is not a known model");
+  needNumber2(evm, "blockTimeMs", path);
+  needBool2(evm, "publicMempool", path);
+  needNullableAddress2(evm, "multicall3", path);
+  const dex = needObject2(evm, "dex", path);
+  checkAddressSet2(dex.uniswapV3, `${path}.dex.uniswapV3`, ["factory", "router", "quoter"]);
+  if (isObject2(dex.uniswapV3) && !/^0x[0-9a-fA-F]{64}$/.test(String(dex.uniswapV3.initCodeHash)))
+    fail3(`${path}.dex.uniswapV3.initCodeHash`, "must be 0x plus 64 hex digits");
+  checkAddressSet2(dex.uniswapV4, `${path}.dex.uniswapV4`, ["poolManager", "universalRouter", "quoter", "stateView"]);
+  needNullableAddress2(dex, "permit2", `${path}.dex`);
+  if (!Array.isArray(evm.aggregators))
+    fail3(`${path}.aggregators`, "must be an array");
+  evm.aggregators.forEach((a, i) => {
+    if (!isObject2(a))
+      fail3(`${path}.aggregators[${i}]`, "must be an object");
+    needString2(a, "id", `${path}.aggregators[${i}]`);
+    needString2(a, "vendorChainSlug", `${path}.aggregators[${i}]`);
+    needAddress2(a.router, `${path}.aggregators[${i}].router`);
+  });
+  const vendors = needObject2(evm, "vendors", path);
+  for (const k of ["dexscreener", "birdeye", "geckoterminal"])
+    needNullableString2(vendors, k, `${path}.vendors`);
+  needNullableString2(evm, "cvcBaseUrlEnv", path);
+  needNullableString2(evm, "feeTreasuryEnv", path);
+  const gas = needObject2(evm, "gasReserve", path);
+  needNumber2(gas, "feeMultiplier", `${path}.gasReserve`);
+  needNumber2(gas, "extraErc20Transfers", `${path}.gasReserve`);
+  needString2(gas, "legGasFallback", `${path}.gasReserve`);
+  needNullableString2(evm, "teePolicyChainId", path);
+  if (evm.launch !== null) {
+    const launch = needObject2(evm, "launch", path);
+    needObject2(launch, "contractEnv", `${path}.launch`);
+  }
+}
+function validateChainEntries2(raw) {
+  if (!Array.isArray(raw))
+    fail3("registry", "must be an array");
+  const slugs = new Set;
+  const chainIds = new Set;
+  raw.forEach((item, i) => {
+    const path = `entry[${i}]`;
+    if (!isObject2(item))
+      fail3(path, "must be an object");
+    needString2(item, "slug", path);
+    needString2(item, "family", path);
+    needString2(item, "displayName", path);
+    needBool2(item, "enabled", path);
+    needString2(item, "addressFormat", path);
+    const native = needObject2(item, "native", path);
+    needString2(native, "symbol", `${path}.native`);
+    needString2(native, "name", `${path}.native`);
+    needNumber2(native, "decimals", `${path}.native`);
+    if (item.explorer !== null) {
+      const ex = needObject2(item, "explorer", path);
+      needString2(ex, "url", `${path}.explorer`);
+      needNullableString2(ex, "urlEnv", `${path}.explorer`);
+      if (!["blockscout", "etherscan", "solscan", "none"].includes(ex.api))
+        fail3(`${path}.explorer.api`, "is not a known API kind");
+    }
+    const rpc = needObject2(item, "rpc", path);
+    needObject2(rpc, "env", `${path}.rpc`);
+    needNullableString2(rpc, "publicUrl", `${path}.rpc`);
+    needNullableString2(rpc, "fallbackSwitchEnv", `${path}.rpc`);
+    if (slugs.has(item.slug))
+      fail3(path, `has duplicate slug "${item.slug}"`);
+    slugs.add(item.slug);
+    if (item.family === "evm") {
+      if (item.addressFormat !== "evm-hex20")
+        fail3(`${path}.addressFormat`, "must be evm-hex20 for an evm entry");
+      if (!isObject2(item.evm))
+        fail3(`${path}.evm`, "is required on an evm entry");
+      checkEvm2(item.evm, `${path}.evm`);
+      const id = item.evm.chainId;
+      if (chainIds.has(id))
+        fail3(path, `has duplicate chain id ${id}`);
+      chainIds.add(id);
+    } else if (item.family === "solana") {
+      if (item.addressFormat !== "solana-base58")
+        fail3(`${path}.addressFormat`, "must be solana-base58");
+      if ("evm" in item)
+        fail3(`${path}.evm`, "is not allowed on a non-evm entry");
+    } else {
+      fail3(`${path}.family`, `"${String(item.family)}" is not a known family`);
+    }
+  });
+  return raw;
+}
+function listChains2(filter) {
+  return entries2.filter((e) => (!filter?.family || e.family === filter.family) && (!filter?.enabledOnly || e.enabled));
+}
+function requireChain2(slug, opts) {
+  const entry2 = getChain2(slug);
+  if (!entry2)
+    throw new ChainRegistryError2("UNKNOWN_CHAIN", slug, `Unknown chain "${slug}"`);
+  if (!entry2.enabled && !opts?.allowDisabled)
+    throw new ChainRegistryError2("CHAIN_DISABLED", slug, `Chain "${slug}" is disabled`);
+  return entry2;
+}
+function requireEvmChain2(slug, opts) {
+  const entry2 = requireChain2(slug, opts);
+  if (!isEvmChain2(entry2))
+    throw new ChainRegistryError2("NOT_EVM", slug, `Chain "${slug}" is not an EVM chain`);
+  return entry2;
+}
+function defaultEvmChain2() {
+  return requireEvmChain2("hood", { allowDisabled: true });
+}
+function isValidChainAddress2(slug, address) {
+  const entry2 = requireChain2(slug, { allowDisabled: true });
+  return entry2.addressFormat === "evm-hex20" ? EVM_ADDRESS2.test(address) : SOLANA_ADDRESS2.test(address);
+}
+var ChainRegistryError2, EVM_ADDRESS2, SOLANA_ADDRESS2, isObject2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v), BUILT_IN2, entries2, isEvmChain2 = (entry2) => entry2.family === "evm", getChain2 = (slug) => entries2.find((e) => e.slug === slug);
+var init_registry2 = __esm(() => {
+  init_registry();
+  ChainRegistryError2 = class ChainRegistryError2 extends Error {
+    code;
+    slug;
+    constructor(code, slug, message) {
+      super(message ?? `${code}: ${slug}`);
+      this.name = "ChainRegistryError";
+      this.code = code;
+      this.slug = slug;
+    }
+  };
+  EVM_ADDRESS2 = /^0x[0-9a-fA-F]{40}$/;
+  SOLANA_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+  BUILT_IN2 = validateChainEntries2(registry_default2);
+  entries2 = BUILT_IN2;
+});
+// ../mcp/src/chains/index.ts
+var init_chains = __esm(() => {
+  init_registry2();
+});
+
+// ../mcp/src/chain-registry.ts
+function enabledChainSlugs2() {
+  return listChains2({ enabledOnly: true }).map((e) => e.slug);
+}
+function chainDescriptionText() {
+  const slugs = enabledChainSlugs2();
+  return slugs.length <= 1 ? slugs.join(", ") : `${slugs.slice(0, -1).join(", ")} or ${slugs[slugs.length - 1]}`;
+}
+function chainSchema(description) {
+  const slugs = enabledChainSlugs2();
+  const listed = chainDescriptionText();
+  return exports_external.enum(slugs, {
+    errorMap: () => ({ message: `chain must be one of ${listed}` })
+  }).describe(description ?? `"${listed}"`);
+}
+var init_chain_registry = __esm(() => {
+  init_zod();
+  init_chains();
+  init_chains();
 });
 
 // ../mcp/src/client.ts
@@ -40879,294 +41178,19 @@ var init_market_disclosure = __esm(() => {
   EXTERNAL_MARKET_DISCLOSURE = "For external tokens (external: true), buysOpen, sellsOpen, quoteMint, feeBps, venue, " + "graduationVenue and poolAddress are compatibility placeholders, not measured facts about " + "trading availability, pool pairing, fees or pool venue; trade.routable is stored eligibility " + "and does not verify those fields.";
 });
 
-// ../mcp/src/chains/registry.json
-var registry_default;
-var init_registry = __esm(() => {
-  registry_default = [
-    {
-      slug: "solana",
-      family: "solana",
-      displayName: "Solana",
-      enabled: true,
-      addressFormat: "solana-base58",
-      native: { symbol: "SOL", name: "Solana", decimals: 9 },
-      explorer: { url: "https://solscan.io", urlEnv: null, api: "solscan" },
-      rpc: { env: {}, publicUrl: null, fallbackSwitchEnv: null }
-    },
-    {
-      slug: "hood",
-      family: "evm",
-      displayName: "Robinhood Chain",
-      enabled: true,
-      addressFormat: "evm-hex20",
-      native: { symbol: "ETH", name: "Ether", decimals: 18 },
-      explorer: { url: "https://robinhoodchain.blockscout.com", urlEnv: "HOOD_EXPLORER_URL", api: "blockscout" },
-      rpc: {
-        env: {
-          read: "HOOD_RPC_URL",
-          ledger: "LEDGER_HOOD_RPC_URL",
-          ledgerFallback: "LEDGER_HOOD_RPC_FALLBACK_URL",
-          feed: "FEED_HOOD_RPC_URL",
-          browser: "NEXT_PUBLIC_HOOD_RPC_URL"
-        },
-        publicUrl: "https://rpc.mainnet.chain.robinhood.com",
-        fallbackSwitchEnv: "HOOD_RPC_FALLBACK"
-      },
-      evm: {
-        chainId: 4663,
-        wrappedNative: { symbol: "WETH", address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18 },
-        stablecoins: [{ symbol: "USDG", address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", decimals: 6 }],
-        quoteAssets: ["0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"],
-        l1DataFee: "arbitrum",
-        blockTimeMs: 100,
-        publicMempool: false,
-        multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
-        dex: {
-          uniswapV3: {
-            factory: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
-            router: "0xCaf681a66D020601342297493863E78C959E5cb2",
-            quoter: "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
-            initCodeHash: "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54"
-          },
-          uniswapV4: {
-            poolManager: "0x8366a39cc670b4001a1121b8f6a443a643e40951",
-            universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
-            quoter: "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
-            stateView: "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
-          },
-          permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3"
-        },
-        aggregators: [
-          { id: "kyber", vendorChainSlug: "robinhood", router: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" }
-        ],
-        vendors: { dexscreener: "robinhood", birdeye: "robinhood", geckoterminal: null },
-        cvcBaseUrlEnv: "CVC_API_URL",
-        feeTreasuryEnv: "AGENT_FEE_TREASURY_HOOD",
-        gasReserve: { feeMultiplier: 2, extraErc20Transfers: 1, legGasFallback: "500000" },
-        teePolicyChainId: "4663",
-        launch: {
-          contractEnv: {
-            curveFactory: "HOOD_CURVE_FACTORY",
-            curveRegistry: "HOOD_CURVE_REGISTRY",
-            stakingDistributor: "HOOD_STAKING_DISTRIBUTOR",
-            migratorV3: "HOOD_MIGRATOR_V3",
-            migratorV4: "HOOD_MIGRATOR_V4",
-            feeSplitterFactory: "HOOD_FEE_SPLITTER_FACTORY",
-            believerNft: "HOOD_BELIEVER_NFT"
-          }
-        }
-      }
-    }
-  ];
-});
-
-// ../mcp/src/chains/registry.ts
-function fail2(path, why) {
-  throw new Error(`chain registry: ${path} ${why}`);
-}
-function needString(o, key, path) {
-  if (typeof o[key] !== "string" || o[key] === "")
-    fail2(`${path}.${key}`, "must be a non-empty string");
-}
-function needBool(o, key, path) {
-  if (typeof o[key] !== "boolean")
-    fail2(`${path}.${key}`, "must be a boolean");
-}
-function needNumber(o, key, path) {
-  if (typeof o[key] !== "number" || !Number.isFinite(o[key]))
-    fail2(`${path}.${key}`, "must be a number");
-}
-function needObject(o, key, path) {
-  const v = o[key];
-  if (!isObject(v))
-    fail2(`${path}.${key}`, "must be an object");
-  return v;
-}
-function needNullableString(o, key, path) {
-  if (o[key] !== null && typeof o[key] !== "string")
-    fail2(`${path}.${key}`, "must be a string or null");
-}
-function needAddress(v, path) {
-  if (typeof v !== "string" || !EVM_ADDRESS.test(v))
-    fail2(path, "must be 0x plus 40 hex digits");
-}
-function needNullableAddress(o, key, path) {
-  if (o[key] !== null)
-    needAddress(o[key], `${path}.${key}`);
-}
-function checkToken(v, path) {
-  if (!isObject(v))
-    fail2(path, "must be an object");
-  needString(v, "symbol", path);
-  needAddress(v.address, `${path}.address`);
-  needNumber(v, "decimals", path);
-}
-function checkAddressSet(v, path, keys) {
-  if (v === null)
-    return;
-  if (!isObject(v))
-    fail2(path, "must be an object or null");
-  for (const k of keys)
-    needAddress(v[k], `${path}.${k}`);
-}
-function checkEvm(evm, path) {
-  needNumber(evm, "chainId", path);
-  checkToken(evm.wrappedNative, `${path}.wrappedNative`);
-  if (!Array.isArray(evm.stablecoins))
-    fail2(`${path}.stablecoins`, "must be an array");
-  evm.stablecoins.forEach((t, i) => {
-    checkToken(t, `${path}.stablecoins[${i}]`);
-  });
-  if (!Array.isArray(evm.quoteAssets))
-    fail2(`${path}.quoteAssets`, "must be an array");
-  evm.quoteAssets.forEach((a, i) => {
-    needAddress(a, `${path}.quoteAssets[${i}]`);
-  });
-  if (!["none", "arbitrum", "op-stack"].includes(evm.l1DataFee))
-    fail2(`${path}.l1DataFee`, "is not a known model");
-  needNumber(evm, "blockTimeMs", path);
-  needBool(evm, "publicMempool", path);
-  needNullableAddress(evm, "multicall3", path);
-  const dex = needObject(evm, "dex", path);
-  checkAddressSet(dex.uniswapV3, `${path}.dex.uniswapV3`, ["factory", "router", "quoter"]);
-  if (isObject(dex.uniswapV3) && !/^0x[0-9a-fA-F]{64}$/.test(String(dex.uniswapV3.initCodeHash)))
-    fail2(`${path}.dex.uniswapV3.initCodeHash`, "must be 0x plus 64 hex digits");
-  checkAddressSet(dex.uniswapV4, `${path}.dex.uniswapV4`, ["poolManager", "universalRouter", "quoter", "stateView"]);
-  needNullableAddress(dex, "permit2", `${path}.dex`);
-  if (!Array.isArray(evm.aggregators))
-    fail2(`${path}.aggregators`, "must be an array");
-  evm.aggregators.forEach((a, i) => {
-    if (!isObject(a))
-      fail2(`${path}.aggregators[${i}]`, "must be an object");
-    needString(a, "id", `${path}.aggregators[${i}]`);
-    needString(a, "vendorChainSlug", `${path}.aggregators[${i}]`);
-    needAddress(a.router, `${path}.aggregators[${i}].router`);
-  });
-  const vendors = needObject(evm, "vendors", path);
-  for (const k of ["dexscreener", "birdeye", "geckoterminal"])
-    needNullableString(vendors, k, `${path}.vendors`);
-  needNullableString(evm, "cvcBaseUrlEnv", path);
-  needNullableString(evm, "feeTreasuryEnv", path);
-  const gas = needObject(evm, "gasReserve", path);
-  needNumber(gas, "feeMultiplier", `${path}.gasReserve`);
-  needNumber(gas, "extraErc20Transfers", `${path}.gasReserve`);
-  needString(gas, "legGasFallback", `${path}.gasReserve`);
-  needNullableString(evm, "teePolicyChainId", path);
-  if (evm.launch !== null) {
-    const launch = needObject(evm, "launch", path);
-    needObject(launch, "contractEnv", `${path}.launch`);
-  }
-}
-function validateChainEntries(raw) {
-  if (!Array.isArray(raw))
-    fail2("registry", "must be an array");
-  const slugs = new Set;
-  const chainIds = new Set;
-  raw.forEach((item, i) => {
-    const path = `entry[${i}]`;
-    if (!isObject(item))
-      fail2(path, "must be an object");
-    needString(item, "slug", path);
-    needString(item, "family", path);
-    needString(item, "displayName", path);
-    needBool(item, "enabled", path);
-    needString(item, "addressFormat", path);
-    const native = needObject(item, "native", path);
-    needString(native, "symbol", `${path}.native`);
-    needString(native, "name", `${path}.native`);
-    needNumber(native, "decimals", `${path}.native`);
-    if (item.explorer !== null) {
-      const ex = needObject(item, "explorer", path);
-      needString(ex, "url", `${path}.explorer`);
-      needNullableString(ex, "urlEnv", `${path}.explorer`);
-      if (!["blockscout", "etherscan", "solscan", "none"].includes(ex.api))
-        fail2(`${path}.explorer.api`, "is not a known API kind");
-    }
-    const rpc = needObject(item, "rpc", path);
-    needObject(rpc, "env", `${path}.rpc`);
-    needNullableString(rpc, "publicUrl", `${path}.rpc`);
-    needNullableString(rpc, "fallbackSwitchEnv", `${path}.rpc`);
-    if (slugs.has(item.slug))
-      fail2(path, `has duplicate slug "${item.slug}"`);
-    slugs.add(item.slug);
-    if (item.family === "evm") {
-      if (item.addressFormat !== "evm-hex20")
-        fail2(`${path}.addressFormat`, "must be evm-hex20 for an evm entry");
-      if (!isObject(item.evm))
-        fail2(`${path}.evm`, "is required on an evm entry");
-      checkEvm(item.evm, `${path}.evm`);
-      const id = item.evm.chainId;
-      if (chainIds.has(id))
-        fail2(path, `has duplicate chain id ${id}`);
-      chainIds.add(id);
-    } else if (item.family === "solana") {
-      if (item.addressFormat !== "solana-base58")
-        fail2(`${path}.addressFormat`, "must be solana-base58");
-      if ("evm" in item)
-        fail2(`${path}.evm`, "is not allowed on a non-evm entry");
-    } else {
-      fail2(`${path}.family`, `"${String(item.family)}" is not a known family`);
-    }
-  });
-  return raw;
-}
-function requireChain(slug, opts) {
-  const entry = getChain(slug);
-  if (!entry)
-    throw new ChainRegistryError("UNKNOWN_CHAIN", slug, `Unknown chain "${slug}"`);
-  if (!entry.enabled && !opts?.allowDisabled)
-    throw new ChainRegistryError("CHAIN_DISABLED", slug, `Chain "${slug}" is disabled`);
-  return entry;
-}
-function requireEvmChain(slug, opts) {
-  const entry = requireChain(slug, opts);
-  if (!isEvmChain(entry))
-    throw new ChainRegistryError("NOT_EVM", slug, `Chain "${slug}" is not an EVM chain`);
-  return entry;
-}
-function defaultEvmChain() {
-  return requireEvmChain("hood", { allowDisabled: true });
-}
-function isValidChainAddress(slug, address) {
-  const entry = requireChain(slug, { allowDisabled: true });
-  return entry.addressFormat === "evm-hex20" ? EVM_ADDRESS.test(address) : SOLANA_ADDRESS.test(address);
-}
-var ChainRegistryError, EVM_ADDRESS, SOLANA_ADDRESS, isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v), BUILT_IN, entries, isEvmChain = (entry) => entry.family === "evm", getChain = (slug) => entries.find((e) => e.slug === slug);
-var init_registry2 = __esm(() => {
-  init_registry();
-  ChainRegistryError = class ChainRegistryError extends Error {
-    code;
-    slug;
-    constructor(code, slug, message) {
-      super(message ?? `${code}: ${slug}`);
-      this.name = "ChainRegistryError";
-      this.code = code;
-      this.slug = slug;
-    }
-  };
-  EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-  SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-  BUILT_IN = validateChainEntries(registry_default);
-  entries = BUILT_IN;
-});
-// ../mcp/src/chains/index.ts
-var init_chains = __esm(() => {
-  init_registry2();
-});
-
 // ../mcp/src/request-chain.ts
 function requestAddressChain(address, chain2) {
   if (chain2 !== undefined) {
-    const entry = requireChain(chain2);
-    if (!isValidChainAddress(entry.slug, address))
-      throw new ChainRegistryError("INVALID_ADDRESS", entry.slug, `Invalid ${entry.slug} address`);
-    return entry.slug;
+    const entry2 = requireChain2(chain2);
+    if (!isValidChainAddress2(entry2.slug, address))
+      throw new ChainRegistryError2("INVALID_ADDRESS", entry2.slug, `Invalid ${entry2.slug} address`);
+    return entry2.slug;
   }
-  if (isValidChainAddress("solana", address))
-    return requireChain("solana").slug;
-  const evm = defaultEvmChain();
-  if (isValidChainAddress(evm.slug, address))
-    return requireChain(evm.slug).slug;
+  if (isValidChainAddress2("solana", address))
+    return requireChain2("solana").slug;
+  const evm = defaultEvmChain2();
+  if (isValidChainAddress2(evm.slug, address))
+    return requireChain2(evm.slug).slug;
   return null;
 }
 var init_request_chain = __esm(() => {
@@ -41381,10 +41405,10 @@ async function executeTrade(args, cfg, doFetch) {
         return relayRead(walletsText, { clientTradeId });
       const walletsBody = JSON.parse(walletsText);
       const chain2 = chainForMint(args.mint);
-      const address = isEvmChain(requireChain(chain2)) ? walletsBody.wallets?.evm?.address : walletsBody.wallets?.solana?.address;
+      const address = isEvmChain2(requireChain2(chain2)) ? walletsBody.wallets?.evm?.address : walletsBody.wallets?.solana?.address;
       let walletEmpty;
       if (!address) {
-        walletEmpty = errText(`percent sells need an embedded ${isEvmChain(requireChain(chain2)) ? "EVM" : "Solana"} wallet, and this account has none`, { clientTradeId });
+        walletEmpty = errText(`percent sells need an embedded ${isEvmChain2(requireChain2(chain2)) ? "EVM" : "Solana"} wallet, and this account has none`, { clientTradeId });
       } else {
         const balRes = await doFetch(`${base(cfg)}/api/v1/tokens/${encodeURIComponent(args.mint)}/balance/${encodeURIComponent(address)}`, {
           method: "GET",
@@ -41856,13 +41880,13 @@ function packValue(out, value) {
     for (const item of value)
       packValue(out, item);
   } else if (typeof value === "object") {
-    const entries2 = Object.entries(value).filter(([, v]) => v !== undefined);
-    for (const [key] of entries2) {
+    const entries3 = Object.entries(value).filter(([, v]) => v !== undefined);
+    for (const [key] of entries3) {
       if (/^(0|[1-9][0-9]*)$/.test(key))
         throw new Error(`msgpack: integer-like key "${key}"`);
     }
-    packHeader(out, entries2.length, 128, 15, [0, 222, 223]);
-    for (const [key, item] of entries2) {
+    packHeader(out, entries3.length, 128, 15, [0, 222, 223]);
+    for (const [key, item] of entries3) {
       packValue(out, key);
       packValue(out, item);
     }
@@ -42071,7 +42095,7 @@ function checkActionIntent(action, opts) {
   if (!intent)
     return null;
   const { method, params: p } = intent;
-  const types3 = {
+  const types4 = {
     setup: "approveBuilderFee",
     open: "order",
     close: "order",
@@ -42082,7 +42106,7 @@ function checkActionIntent(action, opts) {
     tpsl: "order",
     scheduleCancel: "scheduleCancel"
   };
-  if (action.type !== types3[method])
+  if (action.type !== types4[method])
     return "action type does not match the requested method";
   if (opts.keyReduceOnly === true && method === "open")
     return "this key is reduce-only and an open is not reducing";
@@ -42496,8 +42520,8 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
   if (!Array.isArray(positionsRaw))
     throw new Error("Hyperliquid returned an unreadable account state");
   const positions = [];
-  for (const entry of positionsRaw) {
-    const p = entry?.position;
+  for (const entry2 of positionsRaw) {
+    const p = entry2?.position;
     const coin = p?.coin;
     const lev = p?.leverage;
     const szi = p?.szi;
@@ -43245,16 +43269,16 @@ function parseMarkets(value) {
   if (meta.marginTables !== undefined) {
     if (!Array.isArray(meta.marginTables))
       return unavailable2();
-    for (const entry of meta.marginTables) {
-      if (!Array.isArray(entry) || !integer(entry[0]) || !object(entry[1]) || !Array.isArray(entry[1].marginTiers))
+    for (const entry2 of meta.marginTables) {
+      if (!Array.isArray(entry2) || !integer(entry2[0]) || !object(entry2[1]) || !Array.isArray(entry2[1].marginTiers))
         return unavailable2();
       const tiers = [];
-      for (const tier of entry[1].marginTiers) {
+      for (const tier of entry2[1].marginTiers) {
         if (!object(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
           return unavailable2();
         tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
       }
-      marginTables.set(entry[0], tiers);
+      marginTables.set(entry2[0], tiers);
     }
   }
   return { universe: meta.universe, ctxs, marginTables };
@@ -43422,16 +43446,16 @@ class PerpsMarketReader {
           if (!Array.isArray(value2))
             return unavailable2();
           const map = new Map;
-          for (const entry of value2) {
-            if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1]))
+          for (const entry2 of value2) {
+            if (!Array.isArray(entry2) || typeof entry2[0] !== "string" || !Array.isArray(entry2[1]))
               return unavailable2();
-            for (const venue of entry[1]) {
+            for (const venue of entry2[1]) {
               if (!Array.isArray(venue) || typeof venue[0] !== "string")
                 return unavailable2();
               if (venue[0] === "HlPerp" && venue[1] !== null) {
                 if (!object(venue[1]) || !decimal2(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
                   return unavailable2();
-                map.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
+                map.set(entry2[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
               }
             }
           }
@@ -44145,8 +44169,8 @@ function parseClearinghouse(body) {
     throw bad("withdrawable");
   if (!Array.isArray(body.assetPositions))
     throw bad("assetPositions");
-  const positions = body.assetPositions.map((entry) => {
-    const p = isRecord2(entry) ? entry.position : undefined;
+  const positions = body.assetPositions.map((entry2) => {
+    const p = isRecord2(entry2) ? entry2.position : undefined;
     if (!isRecord2(p) || typeof p.coin !== "string" || p.coin === "")
       throw bad("position");
     for (const field of ["szi", "entryPx", "positionValue", "unrealizedPnl", "returnOnEquity", "marginUsed"])
@@ -44619,9 +44643,9 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
       const { clear, ...rest } = args;
       const fields2 = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
       if (clear === true && Object.keys(fields2).length > 0)
-        return fail3("MCP_VALIDATION", "Pass clear: true alone, or the thresholds to set; not both.");
+        return fail4("MCP_VALIDATION", "Pass clear: true alone, or the thresholds to set; not both.");
       if (clear !== true && Object.keys(fields2).length === 0)
-        return fail3("MCP_VALIDATION", "Name at least one threshold, or pass clear: true.");
+        return fail4("MCP_VALIDATION", "Name at least one threshold, or pass clear: true.");
       const answer2 = await call(cfg, fetch2, "PUT", "/api/v1/agent/keys/self/perps-risk", {
         perpsRisk: clear === true ? null : fields2
       });
@@ -44632,7 +44656,7 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
     const now = Date.now();
     const start = tool === "candle_perps_account" ? sinceStart(args.since, now) : now;
     if (typeof start === "string")
-      return fail3("MCP_VALIDATION", start);
+      return fail4("MCP_VALIDATION", start);
     const net = network(env);
     const report = readPerpsRisk({
       fetcher: fetcherOf(fetch2),
@@ -44651,14 +44675,14 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
     }
     const risk = await report;
     if (risk.level === "unknown")
-      return fail3(risk.reason ?? "PERPS_READ_FAILED", "No level was computed.", { report: risk });
+      return fail4(risk.reason ?? "PERPS_READ_FAILED", "No level was computed.", { report: risk });
     return { text: JSON.stringify(risk) };
   } catch (error) {
     if (error instanceof Refusal)
       return error.tool;
     if (error instanceof HyperliquidReadError)
-      return fail3("PERPS_READ_FAILED", `${error.message}. No level was computed.`);
-    return fail3("PERPS_READ_FAILED", error instanceof Error ? error.message : "Hyperliquid read failed");
+      return fail4("PERPS_READ_FAILED", `${error.message}. No level was computed.`);
+    return fail4("PERPS_READ_FAILED", error instanceof Error ? error.message : "Hyperliquid read failed");
   }
 }
 async function positionsAdditions(cfg, fetch2, env, row2) {
@@ -44718,7 +44742,7 @@ var init_perps_risk = __esm(() => {
 // ../mcp/src/perps.ts
 import { createPrivateKey as createPrivateKey2, randomBytes as randomBytes6, sign as sign3 } from "node:crypto";
 import { readFile as readFile10 } from "node:fs/promises";
-function fail3(code, message, extra = {}) {
+function fail4(code, message, extra = {}) {
   return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true };
 }
 async function call(cfg, fetch2, method, path, body) {
@@ -44736,34 +44760,34 @@ async function call(cfg, fetch2, method, path, body) {
   }
   if (!res.ok) {
     if (res.status === 404 && (typeof parsed !== "object" || parsed === null))
-      throw new Refusal(fail3("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."));
+      throw new Refusal(fail4("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."));
     throw new Refusal({ text: typeof parsed === "string" ? parsed : JSON.stringify(parsed), isError: true });
   }
   if (typeof parsed !== "object" || parsed === null)
-    throw new Refusal(fail3("INVALID_RESPONSE", "Not a JSON object"));
+    throw new Refusal(fail4("INVALID_RESPONSE", "Not a JSON object"));
   return parsed;
 }
 async function walletFor(cfg, fetch2, name, scope) {
   const listed = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/trading");
   if (scope && !(Array.isArray(listed.scopes) && listed.scopes.includes(scope)))
-    throw new Refusal(fail3("SCOPE_MISSING", `The key needs ${scope}.`));
+    throw new Refusal(fail4("SCOPE_MISSING", `The key needs ${scope}.`));
   const rows = Array.isArray(listed.page) ? listed.page : [];
   const evm = rows.filter((row2) => row2.chain === "evm");
   const matches = name === undefined ? evm : evm.filter((row2) => row2.id === name || row2.label === name || row2.address.toLowerCase() === name.toLowerCase());
   if (matches.length !== 1)
-    throw new Refusal(fail3("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row2) => row2.label ?? row2.id).join(", ")}`));
+    throw new Refusal(fail4("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row2) => row2.label ?? row2.id).join(", ")}`));
   return { row: matches[0], appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" };
 }
 function builderPin(env) {
   try {
     return resolveHyperliquidBuilder(env.CANDLE_HYPERLIQUID_BUILDER);
   } catch (error) {
-    throw new Refusal(fail3("PERPS_BUILD_REFUSED", error.message));
+    throw new Refusal(fail4("PERPS_BUILD_REFUSED", error.message));
   }
 }
 async function executePerps(tool, args, cfg, env, fetch2) {
   if (!cfg.apiKey)
-    return fail3("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
+    return fail4("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
   if (isRiskTool(tool))
     return executePerpsRisk(tool, args, cfg, env, fetch2);
   const network2 = env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet";
@@ -44799,7 +44823,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         return { text: JSON.stringify(page) };
       } catch (error) {
         if (error instanceof PerpsHistoryError)
-          return fail3(error.code, error.message, {
+          return fail4(error.code, error.message, {
             ...error.extra.field ? { field: error.extra.field } : {},
             ...error.extra.retryable ? { retryable: true } : {},
             ...error.extra.retryAfterMs !== undefined ? { retryAfterMs: error.extra.retryAfterMs } : {}
@@ -44816,23 +44840,23 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     let method = path.split("/").at(-1);
     if (tool === "candle_perps_close") {
       if (fields2.pct !== undefined && fields2.size !== undefined)
-        return fail3("MCP_VALIDATION", "Give size or pct, not both.");
+        return fail4("MCP_VALIDATION", "Give size or pct, not both.");
       if (fields2.pct !== undefined && hyperliquidClosePct(fields2.pct) === null)
-        return fail3("MCP_VALIDATION", "pct must be above 0 and at most 100, with at most 4 decimals.");
+        return fail4("MCP_VALIDATION", "pct must be above 0 and at most 100, with at most 4 decimals.");
     }
     if (tool === "candle_perps_modify") {
       if (fields2.price === undefined && fields2.size === undefined)
-        return fail3("MCP_VALIDATION", "Give price, size, or both.");
+        return fail4("MCP_VALIDATION", "Give price, size, or both.");
       fields2 = { ...fields2, cloid: String(fields2.cloid).toLowerCase() };
     }
     if (tool === "candle_perps_margin") {
       if (fields2.amount === undefined === (fields2.mode === undefined))
-        return fail3("MCP_VALIDATION", "Give amount or mode, exactly one.");
+        return fail4("MCP_VALIDATION", "Give amount or mode, exactly one.");
       if (fields2.amount !== undefined) {
         if (fields2.leverage !== undefined)
-          return fail3("MCP_VALIDATION", "leverage goes with mode.");
+          return fail4("MCP_VALIDATION", "leverage goes with mode.");
         if (/^0+(\.0+)?$/.test(String(fields2.amount)))
-          return fail3("MCP_VALIDATION", "amount must be positive.");
+          return fail4("MCP_VALIDATION", "amount must be positive.");
         fields2 = { coin: fields2.coin, amount: fields2.amount };
         method = "margin";
       } else {
@@ -44848,33 +44872,33 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     if (tool === "candle_perps_schedule_cancel") {
       const clear = fields2.clear === true;
       if (clear === (fields2.seconds !== undefined))
-        return fail3("MCP_VALIDATION", "Give seconds, or clear: true.");
+        return fail4("MCP_VALIDATION", "Give seconds, or clear: true.");
       fields2 = clear ? { clear: true } : { seconds: fields2.seconds };
       method = "scheduleCancel";
     }
     if (tool === "candle_perps_tpsl") {
       const problem = perpsTpslParamsProblem(fields2);
       if (problem)
-        return fail3("MCP_VALIDATION", problem);
+        return fail4("MCP_VALIDATION", problem);
     }
     const willSubmit = args.submit !== false;
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
     let signerPem = null;
     if (willSubmit) {
       if (!pemFile)
-        return fail3("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
+        return fail4("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
       try {
         signerPem = await readFile10(pemFile, "utf8");
         createPrivateKey2(signerPem);
       } catch {
-        return fail3("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
+        return fail4("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
       }
     }
     const { row: row2, appId } = await walletFor(cfg, fetch2, name, "perps:write");
     const builder = builderPin(env);
     const relaySign2 = async (typedData) => {
       if (signerPem === null || !appId || !row2.privyWalletId)
-        throw new Refusal(fail3("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers."));
+        throw new Refusal(fail4("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers."));
       const body = hyperliquidRelayBody(typedData);
       const payload = hyperliquidCanonicalJson({
         body,
@@ -44889,7 +44913,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         body
       });
       if (typeof relay.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(relay.signature))
-        throw new Refusal(fail3("INVALID_RESPONSE", "The relay did not return a signature."));
+        throw new Refusal(fail4("INVALID_RESPONSE", "The relay did not return a signature."));
       return relay.signature;
     };
     if (tool === "candle_perps_tpsl" || tool === "candle_perps_flatten") {
@@ -44914,7 +44938,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         return { text: JSON.stringify(result), ...failed ? { isError: true } : {} };
       } catch (error) {
         if (error instanceof PerpsWorkflowError)
-          return fail3(error.code, error.message, error.details);
+          return fail4(error.code, error.message, error.details);
         throw error;
       }
     }
@@ -44923,10 +44947,10 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       try {
         mode = await hyperliquidAccountMode(fetch2, network2, row2.address);
       } catch (error) {
-        return fail3("PERPS_UNAVAILABLE", `${error instanceof Error ? error.message : "Cannot read the account mode"}. Nothing was requested.`);
+        return fail4("PERPS_UNAVAILABLE", `${error instanceof Error ? error.message : "Cannot read the account mode"}. Nothing was requested.`);
       }
       if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
-        return fail3("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`, { mode });
+        return fail4("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`, { mode });
     }
     const build = await call(cfg, fetch2, "POST", path, {
       walletId: row2.id,
@@ -44943,17 +44967,17 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     if (method === "setup") {
       const problem = perpsSetupStatusProblem(build, { network: network2, address: row2.address, builder, mode });
       if (problem)
-        return fail3("PERPS_BUILD_REFUSED", `Refused this setup answer: ${problem}. Nothing was signed.`);
+        return fail4("PERPS_BUILD_REFUSED", `Refused this setup answer: ${problem}. Nothing was signed.`);
     }
     if (build.ready === true)
       return { text: JSON.stringify(build) };
     if (build.replayed === true) {
       if (clientId2 === undefined || build.clientId !== clientId2 || build.walletId !== row2.id)
-        return fail3("PERPS_BUILD_REFUSED", "Refused a replay that does not name this request's client id and wallet. Nothing was signed.");
+        return fail4("PERPS_BUILD_REFUSED", "Refused a replay that does not name this request's client id and wallet. Nothing was signed.");
       return { text: JSON.stringify(build) };
     }
     if (clientId2 !== undefined && (build.clientId !== clientId2 || build.cloid !== clientId2))
-      return fail3("PERPS_CLIENT_ID_UNSUPPORTED", "This Candle API did not echo the client order id, so a retry could not be recognized. Nothing was signed.");
+      return fail4("PERPS_CLIENT_ID_UNSUPPORTED", "This Candle API did not echo the client order id, so a retry could not be recognized. Nothing was signed.");
     const verifyOpts = {
       builder,
       network: network2,
@@ -44963,7 +44987,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     };
     const check = method === "setup" ? verifyPerpsBuild(build, verifyOpts) : await verifyPerpsBuildAgainstVenue(build, { ...verifyOpts, fetcher: fetch2 });
     if (!check.ok)
-      return fail3("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
+      return fail4("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
     const signature = await relaySign2(build.typedData);
@@ -44980,7 +45004,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         throw new Error(`HTTP ${res.status}`);
       exchange = JSON.parse(text2);
     } catch (error) {
-      return fail3("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`, { perpOrderId: build.perpOrderId, exchangeBody });
+      return fail4("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`, { perpOrderId: build.perpOrderId, exchangeBody });
     }
     const outcome = hyperliquidExchangeOutcome(exchange);
     const accepted = outcome.status === "confirmed";
@@ -45009,13 +45033,13 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       Object.assign(extra, { requestedMode: fields2.mode, confirmedMode });
     }
     if (outcome.status === "rejected" && method === "scheduleCancel")
-      return fail3("PERPS_SCHEDULE_CANCEL_REJECTED", `Hyperliquid refused the scheduled cancel: ${outcome.error}`, {
+      return fail4("PERPS_SCHEDULE_CANCEL_REJECTED", `Hyperliquid refused the scheduled cancel: ${outcome.error}`, {
         limit: "scheduleCancel",
         perpOrderId: build.perpOrderId,
         exchange
       });
     if (outcome.status === "unknown")
-      return fail3("PERPS_SUBMIT_FAILED", `Hyperliquid's answer could not be read (${outcome.error}); reconcile before acting again.`, {
+      return fail4("PERPS_SUBMIT_FAILED", `Hyperliquid's answer could not be read (${outcome.error}); reconcile before acting again.`, {
         perpOrderId: build.perpOrderId,
         exchangeBody,
         exchange
@@ -45041,12 +45065,12 @@ async function executePerps(tool, args, cfg, env, fetch2) {
   } catch (error) {
     if (error instanceof Refusal)
       return error.tool;
-    return fail3("MCP_TRANSPORT", error instanceof Error ? error.message : "The perps call failed.");
+    return fail4("MCP_TRANSPORT", error instanceof Error ? error.message : "The perps call failed.");
   }
 }
 async function executeReduceOnly(args, cfg, fetch2) {
   if (args.on === false)
-    return fail3("LOOSEN_REQUIRES_SESSION", "This tool holds only the agent credential, which may turn reduce-only on and never off. The owner turns it off: candle perps reduce-only off --key <prefix>.");
+    return fail4("LOOSEN_REQUIRES_SESSION", "This tool holds only the agent credential, which may turn reduce-only on and never off. The owner turns it off: candle perps reduce-only off --key <prefix>.");
   if (args.on === true) {
     const result = await call(cfg, fetch2, "PUT", "/api/v1/agent/keys/self/perps-reduce-only", { perpsReduceOnly: true });
     return { text: JSON.stringify(result) };
@@ -45064,7 +45088,7 @@ function pickWallet(rows, chain2, name, what) {
   const onChain = rows.filter((row2) => row2.chain === chain2);
   const matches = name === undefined ? onChain : onChain.filter((row2) => row2.id === name || row2.label === name || row2.address.toLowerCase() === name.toLowerCase());
   if (matches.length !== 1)
-    throw new Refusal(fail3("TEE_WALLET_REQUIRED", onChain.length === 0 ? `This key has no ${what} bound to it.` : `Name exactly one ${what}: ${onChain.map((row2) => row2.label ?? row2.id).join(", ")}`));
+    throw new Refusal(fail4("TEE_WALLET_REQUIRED", onChain.length === 0 ? `This key has no ${what} bound to it.` : `Name exactly one ${what}: ${onChain.map((row2) => row2.label ?? row2.id).join(", ")}`));
   return matches[0];
 }
 function depositProblem(build, expect) {
@@ -45091,14 +45115,14 @@ function depositProblem(build, expect) {
 }
 async function executePerpsDeposit(args, cfg, env, fetch2) {
   if (!cfg.apiKey)
-    return fail3("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
+    return fail4("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
   const asset = args.asset;
   const spec = DEPOSIT_ASSETS[asset];
   if (!spec)
-    return fail3("MCP_VALIDATION", "asset must be SOL, USDC, ETH or USDG.");
+    return fail4("MCP_VALIDATION", "asset must be SOL, USDC, ETH or USDG.");
   const amountRaw = typeof args.amount === "string" ? rawUnits(args.amount, spec.decimals) : null;
   if (!amountRaw)
-    return fail3("MCP_VALIDATION", `amount must be a positive ${asset} amount with at most ${spec.decimals} decimals.`);
+    return fail4("MCP_VALIDATION", `amount must be a positive ${asset} amount with at most ${spec.decimals} decimals.`);
   const hood = spec.chain === "evm";
   const clientDepositId = typeof args.clientDepositId === "string" ? args.clientDepositId : `deposit-${crypto.randomUUID()}`;
   const willSubmit = args.submit !== false;
@@ -45106,24 +45130,24 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
   if (willSubmit) {
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
     if (!pemFile)
-      return fail3("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
+      return fail4("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
     try {
       signerPem = await readFile10(pemFile, "utf8");
       createPrivateKey2(signerPem);
     } catch {
-      return fail3("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
+      return fail4("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
     }
   }
   try {
     const listed = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/trading");
     if (!(Array.isArray(listed.scopes) && listed.scopes.includes("swap:write")))
-      throw new Refusal(fail3("SCOPE_MISSING", "A deposit needs swap:write on the key."));
+      throw new Refusal(fail4("SCOPE_MISSING", "A deposit needs swap:write on the key."));
     const rows = Array.isArray(listed.page) ? listed.page : [];
     const appId = typeof listed.privyAppId === "string" ? listed.privyAppId : "";
     const name = typeof args.wallet === "string" ? args.wallet : undefined;
     const source = pickWallet(rows, spec.chain, name, `${hood ? "Hood" : "Solana"} TEE wallet`);
     if (hood && args.perpsWallet !== undefined)
-      return fail3("MCP_VALIDATION", "From a Hood TEE wallet the deposit lands on that wallet's own account; omit perpsWallet.");
+      return fail4("MCP_VALIDATION", "From a Hood TEE wallet the deposit lands on that wallet's own account; omit perpsWallet.");
     const account = hood ? source : pickWallet(rows, "evm", typeof args.perpsWallet === "string" ? args.perpsWallet : undefined, "EVM TEE wallet");
     const build = await call(cfg, fetch2, "POST", "/api/v1/agent/perps/deposit", {
       clientDepositId,
@@ -45138,13 +45162,13 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
       return { text: JSON.stringify(build) };
     const problem = depositProblem(build, { walletId: source.id, asset, amountRaw, account: account.address, hood });
     if (problem)
-      return fail3("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem}. Nothing was signed.`);
+      return fail4("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem}. Nothing was signed.`);
     if (!willSubmit || signerPem === null)
       return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
     if (build.preview === true || typeof build.depositId !== "string")
-      return fail3("PERPS_BUILD_REFUSED", "Refused to sign this deposit: Candle answered a preview. Nothing was signed.");
+      return fail4("PERPS_BUILD_REFUSED", "Refused to sign this deposit: Candle answered a preview. Nothing was signed.");
     if (!appId || !source.privyWalletId)
-      return fail3("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.");
+      return fail4("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.");
     const pem = signerPem;
     const relaySign2 = async (body2) => {
       const payload = hyperliquidCanonicalJson({
@@ -45160,7 +45184,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
         body: body2
       });
       if (typeof relay.signedTransaction !== "string")
-        throw new Refusal(fail3("INVALID_RESPONSE", "The relay did not return a signed transaction."));
+        throw new Refusal(fail4("INVALID_RESPONSE", "The relay did not return a signed transaction."));
       return relay.signedTransaction;
     };
     const ids = { clientDepositId, depositId: build.depositId };
@@ -45181,7 +45205,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
       const leg = body.nextLeg;
       const kind = String(body.legKind);
       if (!leg || body.operationId !== build.operationId || body.plannedLegCount !== planned || typeof planned !== "number" || planned > allowed.length || !allowed.includes(kind) || signedKinds.has(kind) || leg.chainId !== 4663)
-        return fail3("PERPS_BUILD_REFUSED", `Refused to sign deposit leg ${kind}: it is not the plan this deposit was built with.`, { clientDepositId, operationId: build.operationId });
+        return fail4("PERPS_BUILD_REFUSED", `Refused to sign deposit leg ${kind}: it is not the plan this deposit was built with.`, { clientDepositId, operationId: build.operationId });
       signedKinds.add(kind);
       const signed = await relaySign2({
         method: "eth_signTransaction",
@@ -45210,7 +45234,7 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
   } catch (error) {
     if (error instanceof Refusal)
       return error.tool;
-    return fail3("MCP_TRANSPORT", error instanceof Error ? error.message : "The deposit call failed.");
+    return fail4("MCP_TRANSPORT", error instanceof Error ? error.message : "The deposit call failed.");
   }
 }
 var PERPS_RISK_TOOL_NAMES, PERPS_TOOL_NAMES, isRiskTool = (tool) => PERPS_RISK_TOOL_NAMES.includes(tool), decimal3, wallet2, submit, clientId, epochMs, history = (max) => ({
@@ -45467,10 +45491,10 @@ function formatPlanBps(bps2) {
 function count(n) {
   return n.toLocaleString("en-US");
 }
-function priceCell(entry) {
-  if (entry.price)
-    return `$${count(entry.price.pricePerMonthUsd)} a month`;
-  return entry.plan === "free" ? "free" : "not sold";
+function priceCell(entry2) {
+  if (entry2.price)
+    return `$${count(entry2.price.pricePerMonthUsd)} a month`;
+  return entry2.plan === "free" ? "free" : "not sold";
 }
 function planTableRows(table) {
   const plans = table.plans;
@@ -45489,8 +45513,8 @@ function planTableRows(table) {
   }
   const known = Object.keys(PLAN_CAPABILITY_LABELS);
   const served = new Set;
-  for (const entry of plans)
-    for (const key of Object.keys(entry.capabilities ?? {}))
+  for (const entry2 of plans)
+    for (const key of Object.keys(entry2.capabilities ?? {}))
       served.add(key);
   const keys = [
     ...known.filter((k) => served.has(k)),
@@ -45613,16 +45637,17 @@ function tokenHistoryRequest(base2, args) {
 var METADATA_EDIT_DESCRIPTION_MAX_CHARS = 500, tokenEditShape, tokenHistoryShape, TOKEN_EDIT_DESCRIPTION = `Edit Candle's copy of a token's description and links (website, twitter for X, telegram, discord), as the token's creator. Needs CANDLE_AGENT_API_KEY with launch:write from the account that launched the token; any other account is refused NOT_TOKEN_CREATOR. Name, symbol and image cannot be changed. A field left out keeps its value; a link set to "" or null is removed. Nothing is written on chain: Candle's token page and API change at once, wallets reading on-chain metadata do not. A Hood token that carries its metadata on chain is refused ONCHAIN_METADATA_TOKEN (edit it on chain instead), and a TEE-launched Hood token TEE_LAUNCHED_HOOD_TOKEN. Re-sending the current values returns changed:false and adds no version. Retry with the SAME idempotencyKey after no answer or a retryable UNKNOWN: it returns the first result and never edits twice. Off on a deployment until it switches TOKEN_METADATA_EDIT on: off, the call answers 503 METADATA_EDIT_DISABLED (retryable: false), the server's answer, not a broken tool.`, TOKEN_HISTORY_DESCRIPTION = "A token's metadata edits, newest first: each version's description and links, what they were before, which fields changed, when, and the author as a published agent name or the neutral Agent (never an account or key). Public; no key needed and none is sent. An empty list means the token was never edited. Page with nextCursor until it is null.";
 var init_token_metadata = __esm(() => {
   init_zod();
+  init_chain_registry();
   init_launch_schema();
   tokenEditShape = {
-    chain: exports_external.enum(["solana", "hood"]).describe('"solana" or "hood"'),
+    chain: chainSchema(),
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)"),
     description: exports_external.string().optional().describe(`${launchFieldHelp("description")} At most ${METADATA_EDIT_DESCRIPTION_MAX_CHARS} characters; "" clears it.`),
     socials: editSocialsSchema(),
     idempotencyKey: exports_external.string().min(1).max(128).optional().describe("Reuse the same key and body to retry without editing twice; a fresh one is sent when absent")
   };
   tokenHistoryShape = {
-    chain: exports_external.enum(["solana", "hood"]).describe('"solana" or "hood"'),
+    chain: chainSchema(),
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)"),
     cursor: exports_external.string().optional().describe("nextCursor from an earlier page"),
     limit: exports_external.number().int().min(1).max(50).optional().describe("How many edits, 1 to 50 (default 20)")
@@ -45752,8 +45777,9 @@ async function tokenPageRelay(name, args, cfg, doFetch) {
 var token, section, pagination, revision, write, tokenPageShapes;
 var init_token_pages = __esm(() => {
   init_zod();
+  init_chain_registry();
   init_update_notice();
-  token = { chain: exports_external.enum(["solana", "hood"]), address: exports_external.string().min(1) };
+  token = { chain: chainSchema(), address: exports_external.string().min(1) };
   section = exports_external.enum(["thesis", "tokenomics", "lore"]);
   pagination = { cursor: exports_external.string().optional(), limit: exports_external.number().int().min(1).max(50).optional() };
   revision = exports_external.string().regex(/^(0|[1-9][0-9]{0,18})$/);
@@ -47043,6 +47069,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
 var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
 var init_tools = __esm(() => {
   init_zod();
+  init_chain_registry();
   init_client2();
   init_cluster_read();
   init_convert();
@@ -47175,11 +47202,11 @@ var init_tools = __esm(() => {
   ];
   OPERATION_NOT_FOUND_RULE = "No record exists under this id in the ledger `kind` asked. That does not prove the write did " + "not run: a write that is still starting has no record yet. If a write was sent with this id, " + "send the SAME request again with the SAME id. It returns the stored outcome, or reports the one " + "still running. It never executes a second time. A refusal of that resend (a conflict or a " + "limit) is an answer about the resend, not about the write: read candle_get_operation again " + "before reporting an outcome. Never send it under a new id: a new id is a second trade, swap or " + "launch. Check `kind`: an id read under the wrong kind has no record there. A swap sent without " + "a `clientSwapId` has no record at all.";
   getMarketShape = {
-    chain: exports_external.string().describe('"solana" or "hood"'),
+    chain: chainSchema(),
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)")
   };
   quoteShape = {
-    chain: exports_external.enum(["solana", "hood"]),
+    chain: chainSchema(),
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)"),
     side: exports_external.enum(["buy", "sell"]),
     amountRaw: exports_external.string().describe("Positive integer in base units: the quote asset's for a buy, the token's for a sell"),
@@ -47203,12 +47230,12 @@ var init_tools = __esm(() => {
     return /^[0-9]+$/.test(trimmed) ? Number(trimmed) : value;
   }, exports_external.number({ invalid_type_error: TOKEN_EVENTS_LIMIT_MESSAGE }).int(TOKEN_EVENTS_LIMIT_MESSAGE).min(1, TOKEN_EVENTS_LIMIT_MESSAGE).max(1000, TOKEN_EVENTS_LIMIT_MESSAGE).optional().describe("Page size, an integer from 1 to 1000 (the route's default is 200)."));
   tokenCardShape = {
-    chain: exports_external.string().describe('"solana" or "hood"'),
+    chain: chainSchema(),
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)"),
     tag: exports_external.string().optional().describe("Optional card source tag v1.<group>.<poster>.<card> (each part 1-40 of A-Za-z0-9_-), carried on links.token to count card arrivals. Credits nobody; a malformed tag is ignored")
   };
   tokenEventsShape = {
-    chain: exports_external.string().describe('"solana" or "hood"'),
+    chain: chainSchema(),
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)"),
     kind: exports_external.enum(["trade", "signal", "callout"]).optional().describe(`Only this kind; ${TOKEN_EVENTS_KIND_NOTE}`),
     since: exports_external.string().optional().describe("Inclusive ISO 8601 time: the page starts at the newest event and goes back no further than this"),
@@ -47216,7 +47243,7 @@ var init_tools = __esm(() => {
     before: exports_external.string().optional().describe("The previous page's nextCursor, exactly as received; continues that page")
   };
   tokenForensicsShape = {
-    chain: exports_external.string().describe('"solana" or "hood"'),
+    chain: chainSchema(),
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)")
   };
   feedLimit = exports_external.preprocess((value) => {
@@ -47236,7 +47263,7 @@ var init_tools = __esm(() => {
     limit: feedLimit
   };
   reportActivityShape = {
-    chain: exports_external.string().describe('"solana" or "hood"'),
+    chain: chainSchema(),
     signature: exports_external.string().describe("Transaction signature/hash to verify and record")
   };
   getAgentProfileShape = {
@@ -47252,7 +47279,7 @@ var init_tools = __esm(() => {
   createPostShape = {
     text: exports_external.string().describe("1 to 500 characters. Line breaks are kept; any other control character and bidi characters are refused"),
     token: exports_external.object({
-      chain: exports_external.enum(["solana", "hood"]),
+      chain: chainSchema(),
       mint: exports_external.string().describe("The token's mint (Solana) or contract address (Hood)")
     }).strict().optional().describe("A token Candle shows publicly, shown as a chip beside the post. Optional")
   };
@@ -47364,7 +47391,7 @@ var init_tools = __esm(() => {
   localLaunchAndSeedShape = { ...launchAndSeedShape, ...localImageShape };
   IMAGE_PATH_DISCLOSURE = " With imagePath or bannerPath, the file is uploaded first and becomes public and permanent, on a dry run too; " + "nothing about a dry run keeps that file private. imagePath is the square token image (Candle crops it); " + "a wide banner goes in bannerPath, which is not cropped.";
   transferShape = {
-    chain: exports_external.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
+    chain: chainSchema("Which chain the transfer executes on"),
     asset: exports_external.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).optional().describe("A base asset key. Pass exactly one of asset or mint."),
     mint: exports_external.string().optional().describe("An arbitrary token: SPL mint (Solana) or ERC-20 contract (Hood). Own-wallet destinations only; withdrawals to approved addresses are base-assets-only."),
     amountRaw: exports_external.string().describe('RAW base units as a decimal string (lamports, wei, token raw units), or "max" to sweep the spendable balance. NOT a human decimal: 1 SOL is "1000000000".'),
@@ -47372,7 +47399,7 @@ var init_tools = __esm(() => {
     clientTransferId: exports_external.string().optional().describe("Caller-chosen idempotency key for safe retries")
   };
   sweepShape = {
-    chain: exports_external.enum(["solana", "hood"]).describe("Which chain to sweep"),
+    chain: chainSchema("Which chain to sweep"),
     to: exports_external.string().describe("Destination address, same rules as candle_transfer's `to`"),
     mints: exports_external.array(exports_external.string()).optional().describe("Extra token mints/contracts to sweep besides the chain's base assets (own-wallet destinations only).")
   };
@@ -49753,37 +49780,37 @@ var require_dataType = __commonJS((exports) => {
     DataType2[DataType2["Wrong"] = 1] = "Wrong";
   })(DataType || (exports.DataType = DataType = {}));
   function getSchemaTypes(schema) {
-    const types3 = getJSONTypes(schema.type);
-    const hasNull = types3.includes("null");
+    const types4 = getJSONTypes(schema.type);
+    const hasNull = types4.includes("null");
     if (hasNull) {
       if (schema.nullable === false)
         throw new Error("type: null contradicts nullable: false");
     } else {
-      if (!types3.length && schema.nullable !== undefined) {
+      if (!types4.length && schema.nullable !== undefined) {
         throw new Error('"nullable" cannot be used without "type"');
       }
       if (schema.nullable === true)
-        types3.push("null");
+        types4.push("null");
     }
-    return types3;
+    return types4;
   }
   exports.getSchemaTypes = getSchemaTypes;
   function getJSONTypes(ts) {
-    const types3 = Array.isArray(ts) ? ts : ts ? [ts] : [];
-    if (types3.every(rules_1.isJSONType))
-      return types3;
-    throw new Error("type must be JSONType or JSONType[]: " + types3.join(","));
+    const types4 = Array.isArray(ts) ? ts : ts ? [ts] : [];
+    if (types4.every(rules_1.isJSONType))
+      return types4;
+    throw new Error("type must be JSONType or JSONType[]: " + types4.join(","));
   }
   exports.getJSONTypes = getJSONTypes;
-  function coerceAndCheckDataType(it, types3) {
+  function coerceAndCheckDataType(it, types4) {
     const { gen: gen2, data, opts } = it;
-    const coerceTo = coerceToTypes(types3, opts.coerceTypes);
-    const checkTypes = types3.length > 0 && !(coerceTo.length === 0 && types3.length === 1 && (0, applicability_1.schemaHasRulesForType)(it, types3[0]));
+    const coerceTo = coerceToTypes(types4, opts.coerceTypes);
+    const checkTypes = types4.length > 0 && !(coerceTo.length === 0 && types4.length === 1 && (0, applicability_1.schemaHasRulesForType)(it, types4[0]));
     if (checkTypes) {
-      const wrongType = checkDataTypes(types3, data, opts.strictNumbers, DataType.Wrong);
+      const wrongType = checkDataTypes(types4, data, opts.strictNumbers, DataType.Wrong);
       gen2.if(wrongType, () => {
         if (coerceTo.length)
-          coerceData(it, types3, coerceTo);
+          coerceData(it, types4, coerceTo);
         else
           reportTypeError(it);
       });
@@ -49792,15 +49819,15 @@ var require_dataType = __commonJS((exports) => {
   }
   exports.coerceAndCheckDataType = coerceAndCheckDataType;
   var COERCIBLE = new Set(["string", "number", "integer", "boolean", "null"]);
-  function coerceToTypes(types3, coerceTypes) {
-    return coerceTypes ? types3.filter((t) => COERCIBLE.has(t) || coerceTypes === "array" && t === "array") : [];
+  function coerceToTypes(types4, coerceTypes) {
+    return coerceTypes ? types4.filter((t) => COERCIBLE.has(t) || coerceTypes === "array" && t === "array") : [];
   }
-  function coerceData(it, types3, coerceTo) {
+  function coerceData(it, types4, coerceTo) {
     const { gen: gen2, data, opts } = it;
     const dataType = gen2.let("dataType", (0, codegen_1._)`typeof ${data}`);
     const coerced = gen2.let("coerced", (0, codegen_1._)`undefined`);
     if (opts.coerceTypes === "array") {
-      gen2.if((0, codegen_1._)`${dataType} == 'object' && Array.isArray(${data}) && ${data}.length == 1`, () => gen2.assign(data, (0, codegen_1._)`${data}[0]`).assign(dataType, (0, codegen_1._)`typeof ${data}`).if(checkDataTypes(types3, data, opts.strictNumbers), () => gen2.assign(coerced, data)));
+      gen2.if((0, codegen_1._)`${dataType} == 'object' && Array.isArray(${data}) && ${data}.length == 1`, () => gen2.assign(data, (0, codegen_1._)`${data}[0]`).assign(dataType, (0, codegen_1._)`typeof ${data}`).if(checkDataTypes(types4, data, opts.strictNumbers), () => gen2.assign(coerced, data)));
     }
     gen2.if((0, codegen_1._)`${coerced} !== undefined`);
     for (const t of coerceTo) {
@@ -49876,19 +49903,19 @@ var require_dataType = __commonJS((exports) => {
       return checkDataType(dataTypes[0], data, strictNums, correct);
     }
     let cond;
-    const types3 = (0, util_1.toHash)(dataTypes);
-    if (types3.array && types3.object) {
+    const types4 = (0, util_1.toHash)(dataTypes);
+    if (types4.array && types4.object) {
       const notObj = (0, codegen_1._)`typeof ${data} != "object"`;
-      cond = types3.null ? notObj : (0, codegen_1._)`!${data} || ${notObj}`;
-      delete types3.null;
-      delete types3.array;
-      delete types3.object;
+      cond = types4.null ? notObj : (0, codegen_1._)`!${data} || ${notObj}`;
+      delete types4.null;
+      delete types4.array;
+      delete types4.object;
     } else {
       cond = codegen_1.nil;
     }
-    if (types3.number)
-      delete types3.integer;
-    for (const t in types3)
+    if (types4.number)
+      delete types4.integer;
+    for (const t in types4)
       cond = (0, codegen_1.and)(cond, checkDataType(t, data, strictNums, correct));
     return cond;
   }
@@ -50676,9 +50703,9 @@ var require_validate = __commonJS((exports) => {
   function typeAndKeywords(it, errsCount) {
     if (it.opts.jtd)
       return schemaKeywords(it, [], false, errsCount);
-    const types3 = (0, dataType_1.getSchemaTypes)(it.schema);
-    const checkedTypes = (0, dataType_1.coerceAndCheckDataType)(it, types3);
-    schemaKeywords(it, types3, !checkedTypes, errsCount);
+    const types4 = (0, dataType_1.getSchemaTypes)(it.schema);
+    const checkedTypes = (0, dataType_1.coerceAndCheckDataType)(it, types4);
+    schemaKeywords(it, types4, !checkedTypes, errsCount);
   }
   function checkRefsAndKeywords(it) {
     const { schema, errSchemaPath, opts, self } = it;
@@ -50728,7 +50755,7 @@ var require_validate = __commonJS((exports) => {
     if (items instanceof codegen_1.Name)
       gen2.assign((0, codegen_1._)`${evaluated}.items`, items);
   }
-  function schemaKeywords(it, types3, typeErrors, errsCount) {
+  function schemaKeywords(it, types4, typeErrors, errsCount) {
     const { gen: gen2, schema, data, allErrors, opts, self } = it;
     const { RULES } = self;
     if (schema.$ref && (opts.ignoreKeywordsWithRef || !(0, util_1.schemaHasRulesButRef)(schema, RULES))) {
@@ -50736,7 +50763,7 @@ var require_validate = __commonJS((exports) => {
       return;
     }
     if (!opts.jtd)
-      checkStrictTypes(it, types3);
+      checkStrictTypes(it, types4);
     gen2.block(() => {
       for (const group of RULES.rules)
         groupKeywords(group);
@@ -50748,7 +50775,7 @@ var require_validate = __commonJS((exports) => {
       if (group.type) {
         gen2.if((0, dataType_2.checkDataType)(group.type, data, opts.strictNumbers));
         iterateKeywords(it, group);
-        if (types3.length === 1 && types3[0] === group.type && typeErrors) {
+        if (types4.length === 1 && types4[0] === group.type && typeErrors) {
           gen2.else();
           (0, dataType_2.reportTypeError)(it);
         }
@@ -50772,27 +50799,27 @@ var require_validate = __commonJS((exports) => {
       }
     });
   }
-  function checkStrictTypes(it, types3) {
+  function checkStrictTypes(it, types4) {
     if (it.schemaEnv.meta || !it.opts.strictTypes)
       return;
-    checkContextTypes(it, types3);
+    checkContextTypes(it, types4);
     if (!it.opts.allowUnionTypes)
-      checkMultipleTypes(it, types3);
+      checkMultipleTypes(it, types4);
     checkKeywordTypes(it, it.dataTypes);
   }
-  function checkContextTypes(it, types3) {
-    if (!types3.length)
+  function checkContextTypes(it, types4) {
+    if (!types4.length)
       return;
     if (!it.dataTypes.length) {
-      it.dataTypes = types3;
+      it.dataTypes = types4;
       return;
     }
-    types3.forEach((t) => {
+    types4.forEach((t) => {
       if (!includesType(it.dataTypes, t)) {
         strictTypesError(it, `type "${t}" not allowed by context "${it.dataTypes.join(",")}"`);
       }
     });
-    narrowSchemaTypes(it, types3);
+    narrowSchemaTypes(it, types4);
   }
   function checkMultipleTypes(it, ts) {
     if (ts.length > 1 && !(ts.length === 2 && ts.includes("null"))) {
@@ -55935,15 +55962,15 @@ function parseUnionDef(def, refs) {
     return asAnyOf(def, refs);
   const options = def.options instanceof Map ? Array.from(def.options.values()) : def.options;
   if (options.every((x) => (x._def.typeName in primitiveMappings) && (!x._def.checks || !x._def.checks.length))) {
-    const types3 = options.reduce((types4, x) => {
+    const types4 = options.reduce((types5, x) => {
       const type = primitiveMappings[x._def.typeName];
-      return type && !types4.includes(type) ? [...types4, type] : types4;
+      return type && !types5.includes(type) ? [...types5, type] : types5;
     }, []);
     return {
-      type: types3.length > 1 ? types3 : types3[0]
+      type: types4.length > 1 ? types4 : types4[0]
     };
   } else if (options.every((x) => x._def.typeName === "ZodLiteral" && !x.description)) {
-    const types3 = options.reduce((acc, x) => {
+    const types4 = options.reduce((acc, x) => {
       const type = typeof x._def.value;
       switch (type) {
         case "string":
@@ -55962,8 +55989,8 @@ function parseUnionDef(def, refs) {
           return acc;
       }
     }, []);
-    if (types3.length === options.length) {
-      const uniqueTypes = types3.filter((x, i, a) => a.indexOf(x) === i);
+    if (types4.length === options.length) {
+      const uniqueTypes = types4.filter((x, i, a) => a.indexOf(x) === i);
       return {
         type: uniqueTypes.length > 1 ? uniqueTypes : uniqueTypes[0],
         enum: options.reduce((acc, x) => {
@@ -59141,11 +59168,11 @@ var require_validate2 = __commonJS((exports) => {
         invalidValues.push("verificationMaterial.tlogEntries");
       } else {
         if (b.verificationMaterial.tlogEntries.length > 0) {
-          b.verificationMaterial.tlogEntries.forEach((entry, i) => {
-            if (entry.logId === undefined) {
+          b.verificationMaterial.tlogEntries.forEach((entry2, i) => {
+            if (entry2.logId === undefined) {
               invalidValues.push(`verificationMaterial.tlogEntries[${i}].logId`);
             }
-            if (entry.kindVersion === undefined) {
+            if (entry2.kindVersion === undefined) {
               invalidValues.push(`verificationMaterial.tlogEntries[${i}].kindVersion`);
             }
           });
@@ -59157,8 +59184,8 @@ var require_validate2 = __commonJS((exports) => {
   function validateInclusionPromise(b) {
     const invalidValues = [];
     if (b.verificationMaterial && b.verificationMaterial.tlogEntries?.length > 0) {
-      b.verificationMaterial.tlogEntries.forEach((entry, i) => {
-        if (entry.inclusionPromise === undefined) {
+      b.verificationMaterial.tlogEntries.forEach((entry2, i) => {
+        if (entry2.inclusionPromise === undefined) {
           invalidValues.push(`verificationMaterial.tlogEntries[${i}].inclusionPromise`);
         }
       });
@@ -59168,11 +59195,11 @@ var require_validate2 = __commonJS((exports) => {
   function validateInclusionProof(b) {
     const invalidValues = [];
     if (b.verificationMaterial && b.verificationMaterial.tlogEntries?.length > 0) {
-      b.verificationMaterial.tlogEntries.forEach((entry, i) => {
-        if (entry.inclusionProof === undefined) {
+      b.verificationMaterial.tlogEntries.forEach((entry2, i) => {
+        if (entry2.inclusionProof === undefined) {
           invalidValues.push(`verificationMaterial.tlogEntries[${i}].inclusionProof`);
         } else {
-          if (entry.inclusionProof.checkpoint === undefined) {
+          if (entry2.inclusionProof.checkpoint === undefined) {
             invalidValues.push(`verificationMaterial.tlogEntries[${i}].inclusionProof.checkpoint`);
           }
         }
@@ -60854,11 +60881,11 @@ var require_bundle2 = __commonJS((exports) => {
   function toSignedEntity(bundle, artifact) {
     const { tlogEntries, timestampVerificationData } = bundle.verificationMaterial;
     const timestamps = [];
-    for (const entry of tlogEntries) {
-      if (entry.integratedTime && entry.integratedTime !== "0") {
+    for (const entry2 of tlogEntries) {
+      if (entry2.integratedTime && entry2.integratedTime !== "0") {
         timestamps.push({
           $case: "transparency-log",
-          tlogEntry: entry
+          tlogEntry: entry2
         });
       }
     }
@@ -61412,14 +61439,14 @@ var require_timestamp3 = __commonJS((exports) => {
       timestamp: timestamp.signingTime
     };
   }
-  function getTLogTimestamp(entry) {
-    if (!entry.inclusionPromise) {
+  function getTLogTimestamp(entry2) {
+    if (!entry2.inclusionPromise) {
       return;
     }
     return {
       type: "transparency-log",
-      logID: entry.logId.keyId,
-      timestamp: new Date(Number(entry.integratedTime) * 1000)
+      logID: entry2.logId.keyId,
+      timestamp: new Date(Number(entry2.integratedTime) * 1000)
     };
   }
 });
@@ -61894,8 +61921,8 @@ var require_checkpoint = __commonJS((exports) => {
 
 `;
   var SIGNATURE_REGEX = /\u2014 (\S+) (\S+)\n/g;
-  function verifyCheckpoint(entry, tlogs) {
-    const inclusionProof = entry.inclusionProof;
+  function verifyCheckpoint(entry2, tlogs) {
+    const inclusionProof = entry2.inclusionProof;
     const signedNote = SignedNote.fromString(inclusionProof.checkpoint.envelope);
     const checkpoint = LogCheckpoint.fromString(signedNote.note);
     if (!verifySignedNote(signedNote, tlogs)) {
@@ -62006,8 +62033,8 @@ var require_merkle = __commonJS((exports) => {
   var error_1 = require_error4();
   var RFC6962_LEAF_HASH_PREFIX = Buffer.from([0]);
   var RFC6962_NODE_HASH_PREFIX = Buffer.from([1]);
-  function verifyMerkleInclusion(entry, checkpoint) {
-    const inclusionProof = entry.inclusionProof;
+  function verifyMerkleInclusion(entry2, checkpoint) {
+    const inclusionProof = entry2.inclusionProof;
     let logIndex;
     try {
       logIndex = BigInt(inclusionProof.logIndex);
@@ -62033,7 +62060,7 @@ var require_merkle = __commonJS((exports) => {
     }
     const innerHashes = inclusionProof.hashes.slice(0, inner);
     const borderHashes = inclusionProof.hashes.slice(inner);
-    const leafHash = hashLeaf(entry.canonicalizedBody);
+    const leafHash = hashLeaf(entry2.canonicalizedBody);
     const calculatedHash = chainBorderRight(chainInner(leafHash, innerHashes, logIndex), borderHashes);
     if (!core_1.crypto.bufferEqual(calculatedHash, checkpoint.logHash)) {
       throw new error_1.VerificationError({
@@ -62086,15 +62113,15 @@ var require_set = __commonJS((exports) => {
   var core_1 = require_dist4();
   var error_1 = require_error4();
   var trust_1 = require_trust();
-  function verifyTLogSET(entry, tlogs) {
+  function verifyTLogSET(entry2, tlogs) {
     const validTLogs = (0, trust_1.filterTLogAuthorities)(tlogs, {
-      logID: entry.logId.keyId,
-      targetDate: new Date(Number(entry.integratedTime) * 1000)
+      logID: entry2.logId.keyId,
+      targetDate: new Date(Number(entry2.integratedTime) * 1000)
     });
     const verified = validTLogs.some((tlog) => {
-      const payload = toVerificationPayload(entry);
+      const payload = toVerificationPayload(entry2);
       const data = Buffer.from(core_1.json.canonicalize(payload), "utf8");
-      const signature = entry.inclusionPromise.signedEntryTimestamp;
+      const signature = entry2.inclusionPromise.signedEntryTimestamp;
       return core_1.crypto.verify(data, tlog.publicKey, signature);
     });
     if (!verified) {
@@ -62104,8 +62131,8 @@ var require_set = __commonJS((exports) => {
       });
     }
   }
-  function toVerificationPayload(entry) {
-    const { integratedTime, logIndex, logId, canonicalizedBody } = entry;
+  function toVerificationPayload(entry2) {
+    const { integratedTime, logIndex, logId, canonicalizedBody } = entry2;
     return {
       body: canonicalizedBody.toString("base64"),
       integratedTime: Number(integratedTime),
@@ -62128,11 +62155,11 @@ var require_tlog = __commonJS((exports) => {
   var checkpoint_1 = require_checkpoint();
   var merkle_1 = require_merkle();
   var set_1 = require_set();
-  function verifyTLogBody(entry, sigContent) {
-    const { kind, version } = entry.kindVersion;
+  function verifyTLogBody(entry2, sigContent) {
+    const { kind, version } = entry2.kindVersion;
     let body;
     try {
-      body = JSON.parse(entry.canonicalizedBody.toString("utf8"));
+      body = JSON.parse(entry2.canonicalizedBody.toString("utf8"));
     } catch {
       throw new error_1.VerificationError({
         code: "TLOG_BODY_ERROR",
@@ -62169,15 +62196,15 @@ var require_tlog = __commonJS((exports) => {
         });
     }
   }
-  function verifyTLogInclusion(entry, tlogAuthorities) {
+  function verifyTLogInclusion(entry2, tlogAuthorities) {
     let inclusionVerified = false;
-    if (isTLogEntryWithInclusionPromise(entry)) {
-      (0, set_1.verifyTLogSET)(entry, tlogAuthorities);
+    if (isTLogEntryWithInclusionPromise(entry2)) {
+      (0, set_1.verifyTLogSET)(entry2, tlogAuthorities);
       inclusionVerified = true;
     }
-    if (isTLogEntryWithInclusionProof(entry)) {
-      const checkpoint = (0, checkpoint_1.verifyCheckpoint)(entry, tlogAuthorities);
-      (0, merkle_1.verifyMerkleInclusion)(entry, checkpoint);
+    if (isTLogEntryWithInclusionProof(entry2)) {
+      const checkpoint = (0, checkpoint_1.verifyCheckpoint)(entry2, tlogAuthorities);
+      (0, merkle_1.verifyMerkleInclusion)(entry2, checkpoint);
       inclusionVerified = true;
     }
     if (!inclusionVerified) {
@@ -62188,11 +62215,11 @@ var require_tlog = __commonJS((exports) => {
     }
     return;
   }
-  function isTLogEntryWithInclusionPromise(entry) {
-    return entry.inclusionPromise !== undefined;
+  function isTLogEntryWithInclusionPromise(entry2) {
+    return entry2.inclusionPromise !== undefined;
   }
-  function isTLogEntryWithInclusionProof(entry) {
-    return entry.inclusionProof !== undefined;
+  function isTLogEntryWithInclusionProof(entry2) {
+    return entry2.inclusionProof !== undefined;
   }
 });
 
@@ -62284,10 +62311,10 @@ var require_verifier2 = __commonJS((exports) => {
     }
     verifyTLogs({ signature: content, tlogEntries }) {
       const entryIDs = [];
-      tlogEntries.forEach((entry) => {
-        (0, tlog_1.verifyTLogInclusion)(entry, this.trustMaterial.tlogs);
-        (0, tlog_1.verifyTLogBody)(entry, content);
-        entryIDs.push({ logID: entry.logId.keyId, logIndex: entry.logIndex });
+      tlogEntries.forEach((entry2) => {
+        (0, tlog_1.verifyTLogInclusion)(entry2, this.trustMaterial.tlogs);
+        (0, tlog_1.verifyTLogBody)(entry2, content);
+        entryIDs.push({ logID: entry2.logId.keyId, logIndex: entry2.logIndex });
       });
       if (containsDupes(entryIDs)) {
         throw new error_1.VerificationError({
@@ -69677,42 +69704,42 @@ function extractDefs(ctx, schema) {
   if (!root)
     throw new Error("Unprocessed schema. This is a bug in Zod.");
   const idToSchema = new Map;
-  for (const entry of ctx.seen.entries()) {
-    const id = ctx.metadataRegistry.get(entry[0])?.id;
+  for (const entry2 of ctx.seen.entries()) {
+    const id = ctx.metadataRegistry.get(entry2[0])?.id;
     if (id) {
       const existing = idToSchema.get(id);
-      if (existing && existing !== entry[0]) {
+      if (existing && existing !== entry2[0]) {
         throw new Error(`Duplicate schema id "${id}" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.`);
       }
-      idToSchema.set(id, entry[0]);
+      idToSchema.set(id, entry2[0]);
     }
   }
-  const makeURI = (entry) => {
+  const makeURI = (entry2) => {
     const defsSegment = ctx.target === "draft-2020-12" ? "$defs" : "definitions";
     if (ctx.external) {
-      const externalId = ctx.external.registry.get(entry[0])?.id;
+      const externalId = ctx.external.registry.get(entry2[0])?.id;
       const uriGenerator = ctx.external.uri ?? ((id2) => id2);
       if (externalId) {
         return { ref: uriGenerator(externalId) };
       }
-      const id = entry[1].defId ?? entry[1].schema.id ?? `schema${ctx.counter++}`;
-      entry[1].defId = id;
+      const id = entry2[1].defId ?? entry2[1].schema.id ?? `schema${ctx.counter++}`;
+      entry2[1].defId = id;
       return { defId: id, ref: `${uriGenerator("__shared")}#/${defsSegment}/${id}` };
     }
-    if (entry[1] === root) {
+    if (entry2[1] === root) {
       return { ref: "#" };
     }
     const uriPrefix = `#`;
     const defUriPrefix = `${uriPrefix}/${defsSegment}/`;
-    const defId = entry[1].schema.id ?? `__schema${ctx.counter++}`;
+    const defId = entry2[1].schema.id ?? `__schema${ctx.counter++}`;
     return { defId, ref: defUriPrefix + defId };
   };
-  const extractToDef = (entry) => {
-    if (entry[1].schema.$ref) {
+  const extractToDef = (entry2) => {
+    if (entry2[1].schema.$ref) {
       return;
     }
-    const seen = entry[1];
-    const { ref, defId } = makeURI(entry);
+    const seen = entry2[1];
+    const { ref, defId } = makeURI(entry2);
     seen.def = { ...seen.schema };
     if (defId)
       seen.defId = defId;
@@ -69723,38 +69750,38 @@ function extractDefs(ctx, schema) {
     schema2.$ref = ref;
   };
   if (ctx.cycles === "throw") {
-    for (const entry of ctx.seen.entries()) {
-      const seen = entry[1];
+    for (const entry2 of ctx.seen.entries()) {
+      const seen = entry2[1];
       if (seen.cycle) {
         throw new Error("Cycle detected: " + `#/${seen.cycle?.join("/")}/<root>` + '\n\nSet the `cycles` parameter to `"ref"` to resolve cyclical schemas with defs.');
       }
     }
   }
-  for (const entry of ctx.seen.entries()) {
-    const seen = entry[1];
-    if (schema === entry[0]) {
-      extractToDef(entry);
+  for (const entry2 of ctx.seen.entries()) {
+    const seen = entry2[1];
+    if (schema === entry2[0]) {
+      extractToDef(entry2);
       continue;
     }
     if (ctx.external) {
-      const ext = ctx.external.registry.get(entry[0])?.id;
-      if (schema !== entry[0] && ext) {
-        extractToDef(entry);
+      const ext = ctx.external.registry.get(entry2[0])?.id;
+      if (schema !== entry2[0] && ext) {
+        extractToDef(entry2);
         continue;
       }
     }
-    const id = ctx.metadataRegistry.get(entry[0])?.id;
+    const id = ctx.metadataRegistry.get(entry2[0])?.id;
     if (id) {
-      extractToDef(entry);
+      extractToDef(entry2);
       continue;
     }
     if (seen.cycle) {
-      extractToDef(entry);
+      extractToDef(entry2);
       continue;
     }
     if (seen.count > 1) {
       if (ctx.reused === "ref") {
-        extractToDef(entry);
+        extractToDef(entry2);
         continue;
       }
     }
@@ -69826,8 +69853,8 @@ function finalize(ctx, schema) {
       path: seen.path ?? []
     });
   };
-  for (const entry of [...ctx.seen.entries()].reverse()) {
-    flattenRef(entry[0]);
+  for (const entry2 of [...ctx.seen.entries()].reverse()) {
+    flattenRef(entry2[0]);
   }
   const result = {};
   if (ctx.target === "draft-2020-12") {
@@ -69845,8 +69872,8 @@ function finalize(ctx, schema) {
   }
   Object.assign(result, root.def ?? root.schema);
   const defs = ctx.external?.defs ?? {};
-  for (const entry of ctx.seen.entries()) {
-    const seen = entry[1];
+  for (const entry2 of ctx.seen.entries()) {
+    const seen = entry2[1];
     if (seen.def && seen.defId) {
       defs[seen.defId] = seen.def;
     }
@@ -69951,8 +69978,8 @@ function toJSONSchema(input, params) {
     const registry5 = input;
     const ctx2 = initializeContext({ ...params, processors: allProcessors });
     const defs = {};
-    for (const entry of registry5._idmap.entries()) {
-      const [_, schema] = entry;
+    for (const entry2 of registry5._idmap.entries()) {
+      const [_, schema] = entry2;
       process3(schema, ctx2);
     }
     const schemas = {};
@@ -69962,8 +69989,8 @@ function toJSONSchema(input, params) {
       defs
     };
     ctx2.external = external4;
-    for (const entry of registry5._idmap.entries()) {
-      const [key, schema] = entry;
+    for (const entry2 of registry5._idmap.entries()) {
+      const [key, schema] = entry2;
       extractDefs(ctx2, schema);
       schemas[key] = finalize(ctx2, schema);
     }
@@ -74852,6 +74879,297 @@ ${USAGE}`);
 
 // src/commands/agent-post.ts
 init_args();
+
+// src/chains/registry.json
+var registry_default = [
+  {
+    slug: "solana",
+    family: "solana",
+    displayName: "Solana",
+    enabled: true,
+    addressFormat: "solana-base58",
+    native: { symbol: "SOL", name: "Solana", decimals: 9 },
+    explorer: { url: "https://solscan.io", urlEnv: null, api: "solscan" },
+    rpc: { env: {}, publicUrl: null, fallbackSwitchEnv: null }
+  },
+  {
+    slug: "hood",
+    family: "evm",
+    displayName: "Robinhood Chain",
+    enabled: true,
+    addressFormat: "evm-hex20",
+    native: { symbol: "ETH", name: "Ether", decimals: 18 },
+    explorer: { url: "https://robinhoodchain.blockscout.com", urlEnv: "HOOD_EXPLORER_URL", api: "blockscout" },
+    rpc: {
+      env: {
+        read: "HOOD_RPC_URL",
+        ledger: "LEDGER_HOOD_RPC_URL",
+        ledgerFallback: "LEDGER_HOOD_RPC_FALLBACK_URL",
+        feed: "FEED_HOOD_RPC_URL",
+        browser: "NEXT_PUBLIC_HOOD_RPC_URL"
+      },
+      publicUrl: "https://rpc.mainnet.chain.robinhood.com",
+      fallbackSwitchEnv: "HOOD_RPC_FALLBACK"
+    },
+    evm: {
+      chainId: 4663,
+      wrappedNative: { symbol: "WETH", address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18 },
+      stablecoins: [{ symbol: "USDG", address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", decimals: 6 }],
+      quoteAssets: ["0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"],
+      l1DataFee: "arbitrum",
+      blockTimeMs: 100,
+      publicMempool: false,
+      multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
+      dex: {
+        uniswapV3: {
+          factory: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
+          router: "0xCaf681a66D020601342297493863E78C959E5cb2",
+          quoter: "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
+          initCodeHash: "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54"
+        },
+        uniswapV4: {
+          poolManager: "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+          universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
+          quoter: "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+          stateView: "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
+        },
+        permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+      },
+      aggregators: [
+        { id: "kyber", vendorChainSlug: "robinhood", router: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" }
+      ],
+      vendors: { dexscreener: "robinhood", birdeye: "robinhood", geckoterminal: null },
+      cvcBaseUrlEnv: "CVC_API_URL",
+      feeTreasuryEnv: "AGENT_FEE_TREASURY_HOOD",
+      gasReserve: { feeMultiplier: 2, extraErc20Transfers: 1, legGasFallback: "500000" },
+      teePolicyChainId: "4663",
+      launch: {
+        contractEnv: {
+          curveFactory: "HOOD_CURVE_FACTORY",
+          curveRegistry: "HOOD_CURVE_REGISTRY",
+          stakingDistributor: "HOOD_STAKING_DISTRIBUTOR",
+          migratorV3: "HOOD_MIGRATOR_V3",
+          migratorV4: "HOOD_MIGRATOR_V4",
+          feeSplitterFactory: "HOOD_FEE_SPLITTER_FACTORY",
+          believerNft: "HOOD_BELIEVER_NFT"
+        }
+      }
+    }
+  }
+];
+
+// src/chains/registry.ts
+class ChainRegistryError extends Error {
+  code;
+  slug;
+  constructor(code, slug, message) {
+    super(message ?? `${code}: ${slug}`);
+    this.name = "ChainRegistryError";
+    this.code = code;
+    this.slug = slug;
+  }
+}
+var EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+var SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+var isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function fail2(path, why) {
+  throw new Error(`chain registry: ${path} ${why}`);
+}
+function needString(o, key, path) {
+  if (typeof o[key] !== "string" || o[key] === "")
+    fail2(`${path}.${key}`, "must be a non-empty string");
+}
+function needBool(o, key, path) {
+  if (typeof o[key] !== "boolean")
+    fail2(`${path}.${key}`, "must be a boolean");
+}
+function needNumber(o, key, path) {
+  if (typeof o[key] !== "number" || !Number.isFinite(o[key]))
+    fail2(`${path}.${key}`, "must be a number");
+}
+function needObject(o, key, path) {
+  const v = o[key];
+  if (!isObject(v))
+    fail2(`${path}.${key}`, "must be an object");
+  return v;
+}
+function needNullableString(o, key, path) {
+  if (o[key] !== null && typeof o[key] !== "string")
+    fail2(`${path}.${key}`, "must be a string or null");
+}
+function needAddress(v, path) {
+  if (typeof v !== "string" || !EVM_ADDRESS.test(v))
+    fail2(path, "must be 0x plus 40 hex digits");
+}
+function needNullableAddress(o, key, path) {
+  if (o[key] !== null)
+    needAddress(o[key], `${path}.${key}`);
+}
+function checkToken(v, path) {
+  if (!isObject(v))
+    fail2(path, "must be an object");
+  needString(v, "symbol", path);
+  needAddress(v.address, `${path}.address`);
+  needNumber(v, "decimals", path);
+}
+function checkAddressSet(v, path, keys) {
+  if (v === null)
+    return;
+  if (!isObject(v))
+    fail2(path, "must be an object or null");
+  for (const k of keys)
+    needAddress(v[k], `${path}.${k}`);
+}
+function checkEvm(evm, path) {
+  needNumber(evm, "chainId", path);
+  checkToken(evm.wrappedNative, `${path}.wrappedNative`);
+  if (!Array.isArray(evm.stablecoins))
+    fail2(`${path}.stablecoins`, "must be an array");
+  evm.stablecoins.forEach((t, i) => {
+    checkToken(t, `${path}.stablecoins[${i}]`);
+  });
+  if (!Array.isArray(evm.quoteAssets))
+    fail2(`${path}.quoteAssets`, "must be an array");
+  evm.quoteAssets.forEach((a, i) => {
+    needAddress(a, `${path}.quoteAssets[${i}]`);
+  });
+  if (!["none", "arbitrum", "op-stack"].includes(evm.l1DataFee))
+    fail2(`${path}.l1DataFee`, "is not a known model");
+  needNumber(evm, "blockTimeMs", path);
+  needBool(evm, "publicMempool", path);
+  needNullableAddress(evm, "multicall3", path);
+  const dex = needObject(evm, "dex", path);
+  checkAddressSet(dex.uniswapV3, `${path}.dex.uniswapV3`, ["factory", "router", "quoter"]);
+  if (isObject(dex.uniswapV3) && !/^0x[0-9a-fA-F]{64}$/.test(String(dex.uniswapV3.initCodeHash)))
+    fail2(`${path}.dex.uniswapV3.initCodeHash`, "must be 0x plus 64 hex digits");
+  checkAddressSet(dex.uniswapV4, `${path}.dex.uniswapV4`, ["poolManager", "universalRouter", "quoter", "stateView"]);
+  needNullableAddress(dex, "permit2", `${path}.dex`);
+  if (!Array.isArray(evm.aggregators))
+    fail2(`${path}.aggregators`, "must be an array");
+  evm.aggregators.forEach((a, i) => {
+    if (!isObject(a))
+      fail2(`${path}.aggregators[${i}]`, "must be an object");
+    needString(a, "id", `${path}.aggregators[${i}]`);
+    needString(a, "vendorChainSlug", `${path}.aggregators[${i}]`);
+    needAddress(a.router, `${path}.aggregators[${i}].router`);
+  });
+  const vendors = needObject(evm, "vendors", path);
+  for (const k of ["dexscreener", "birdeye", "geckoterminal"])
+    needNullableString(vendors, k, `${path}.vendors`);
+  needNullableString(evm, "cvcBaseUrlEnv", path);
+  needNullableString(evm, "feeTreasuryEnv", path);
+  const gas = needObject(evm, "gasReserve", path);
+  needNumber(gas, "feeMultiplier", `${path}.gasReserve`);
+  needNumber(gas, "extraErc20Transfers", `${path}.gasReserve`);
+  needString(gas, "legGasFallback", `${path}.gasReserve`);
+  needNullableString(evm, "teePolicyChainId", path);
+  if (evm.launch !== null) {
+    const launch = needObject(evm, "launch", path);
+    needObject(launch, "contractEnv", `${path}.launch`);
+  }
+}
+function validateChainEntries(raw) {
+  if (!Array.isArray(raw))
+    fail2("registry", "must be an array");
+  const slugs = new Set;
+  const chainIds = new Set;
+  raw.forEach((item, i) => {
+    const path = `entry[${i}]`;
+    if (!isObject(item))
+      fail2(path, "must be an object");
+    needString(item, "slug", path);
+    needString(item, "family", path);
+    needString(item, "displayName", path);
+    needBool(item, "enabled", path);
+    needString(item, "addressFormat", path);
+    const native = needObject(item, "native", path);
+    needString(native, "symbol", `${path}.native`);
+    needString(native, "name", `${path}.native`);
+    needNumber(native, "decimals", `${path}.native`);
+    if (item.explorer !== null) {
+      const ex = needObject(item, "explorer", path);
+      needString(ex, "url", `${path}.explorer`);
+      needNullableString(ex, "urlEnv", `${path}.explorer`);
+      if (!["blockscout", "etherscan", "solscan", "none"].includes(ex.api))
+        fail2(`${path}.explorer.api`, "is not a known API kind");
+    }
+    const rpc = needObject(item, "rpc", path);
+    needObject(rpc, "env", `${path}.rpc`);
+    needNullableString(rpc, "publicUrl", `${path}.rpc`);
+    needNullableString(rpc, "fallbackSwitchEnv", `${path}.rpc`);
+    if (slugs.has(item.slug))
+      fail2(path, `has duplicate slug "${item.slug}"`);
+    slugs.add(item.slug);
+    if (item.family === "evm") {
+      if (item.addressFormat !== "evm-hex20")
+        fail2(`${path}.addressFormat`, "must be evm-hex20 for an evm entry");
+      if (!isObject(item.evm))
+        fail2(`${path}.evm`, "is required on an evm entry");
+      checkEvm(item.evm, `${path}.evm`);
+      const id = item.evm.chainId;
+      if (chainIds.has(id))
+        fail2(path, `has duplicate chain id ${id}`);
+      chainIds.add(id);
+    } else if (item.family === "solana") {
+      if (item.addressFormat !== "solana-base58")
+        fail2(`${path}.addressFormat`, "must be solana-base58");
+      if ("evm" in item)
+        fail2(`${path}.evm`, "is not allowed on a non-evm entry");
+    } else {
+      fail2(`${path}.family`, `"${String(item.family)}" is not a known family`);
+    }
+  });
+  return raw;
+}
+var BUILT_IN = validateChainEntries(registry_default);
+var entries = BUILT_IN;
+var isEvmChain = (entry) => entry.family === "evm";
+function listChains(filter) {
+  return entries.filter((e) => (!filter?.family || e.family === filter.family) && (!filter?.enabledOnly || e.enabled));
+}
+var getChain = (slug) => entries.find((e) => e.slug === slug);
+function requireChain(slug, opts) {
+  const entry = getChain(slug);
+  if (!entry)
+    throw new ChainRegistryError("UNKNOWN_CHAIN", slug, `Unknown chain "${slug}"`);
+  if (!entry.enabled && !opts?.allowDisabled)
+    throw new ChainRegistryError("CHAIN_DISABLED", slug, `Chain "${slug}" is disabled`);
+  return entry;
+}
+function requireEvmChain(slug, opts) {
+  const entry = requireChain(slug, opts);
+  if (!isEvmChain(entry))
+    throw new ChainRegistryError("NOT_EVM", slug, `Chain "${slug}" is not an EVM chain`);
+  return entry;
+}
+function defaultEvmChain() {
+  return requireEvmChain("hood", { allowDisabled: true });
+}
+function isValidChainAddress(slug, address) {
+  const entry = requireChain(slug, { allowDisabled: true });
+  return entry.addressFormat === "evm-hex20" ? EVM_ADDRESS.test(address) : SOLANA_ADDRESS.test(address);
+}
+// src/chain-registry.ts
+var entry = (slug) => getChain(slug);
+function enabledChainSlugs() {
+  return listChains({ enabledOnly: true }).map((e) => e.slug);
+}
+function enabledEvmChainSlugs() {
+  return listChains({ family: "evm", enabledOnly: true }).map((e) => e.slug);
+}
+function chainDisplayName(slug) {
+  return entry(slug)?.displayName ?? slug;
+}
+function isEvmChainSlug(slug) {
+  const e = entry(slug);
+  return e !== undefined && e.enabled && e.family === "evm";
+}
+function evmChainIdFor(slug) {
+  const e = entry(slug);
+  return e !== undefined && e.family === "evm" ? e.evm.chainId : undefined;
+}
+
+// src/commands/agent-post.ts
 init_client();
 init_render();
 init_trading();
@@ -74894,8 +75212,8 @@ ${USAGE2}`);
     if (chain2 === undefined !== (mint === undefined))
       return usage(`--chain and --mint go together
 ${USAGE2}`);
-    if (chain2 !== undefined && chain2 !== "solana" && chain2 !== "hood") {
-      return usage(`--chain must be solana or hood
+    if (chain2 !== undefined && chain2 !== "solana" && !isEvmChainSlug(chain2)) {
+      return usage(`--chain must be an enabled chain (solana or an EVM chain from the registry)
 ${USAGE2}`);
     }
     const body = { text, ...chain2 !== undefined ? { token: { chain: chain2, mint } } : {} };
@@ -76803,16 +77121,16 @@ function parseAllowlist(text, path) {
   const wallets2 = new Set;
   for (const [index, line] of text.split(/\r?\n/).entries()) {
     for (const cell of line.split(",")) {
-      const entry = cell.trim().replace(/^"(.*)"$/, "$1");
-      if (entry === "")
+      const entry2 = cell.trim().replace(/^"(.*)"$/, "$1");
+      if (entry2 === "")
         continue;
       let canonical;
       try {
-        canonical = encodePubkey(decodePubkey(entry));
+        canonical = encodePubkey(decodePubkey(entry2));
       } catch {}
-      if (canonical !== entry)
-        throw new Error(`--allowlist ${safeText(path)}, line ${index + 1}: ${safeText(entry.slice(0, 64))} is not a base58 Solana address.`);
-      wallets2.add(entry);
+      if (canonical !== entry2)
+        throw new Error(`--allowlist ${safeText(path)}, line ${index + 1}: ${safeText(entry2.slice(0, 64))} is not a base58 Solana address.`);
+      wallets2.add(entry2);
     }
   }
   if (wallets2.size < 1 || wallets2.size > maxAllowlist)
@@ -78632,8 +78950,8 @@ function renderRows(rows, maxColumn, width = WIDTH, more2 = true) {
   return out;
 }
 function renderEnv(names, width = WIDTH) {
-  const vars = names.map((name) => ENVIRONMENT.find((entry) => entry.name === name)).filter((entry) => entry !== undefined);
-  return renderRows(vars.map((entry) => ({ invocation: entry.name, description: entry.description })), 32, width);
+  const vars = names.map((name) => ENVIRONMENT.find((entry2) => entry2.name === name)).filter((entry2) => entry2 !== undefined);
+  return renderRows(vars.map((entry2) => ({ invocation: entry2.name, description: entry2.description })), 32, width);
 }
 function renderTopLevel(style) {
   return renderPresentedTopLevel(style);
@@ -78678,7 +78996,7 @@ function renderPresentedTopLevel(style) {
     out.push("", heading2(name), ...renderRows(Object.entries(HELP).filter(([, topic]) => topic.group === name).map(([word3, topic]) => ({ invocation: displayName(word3), description: topic.summary })), 18, width));
   }
   out.push("", heading2("Global flags"), ...renderRows(GLOBAL_FLAGS, 28, width));
-  out.push("", heading2("Environment"), ...renderEnv(ENVIRONMENT.map((entry) => entry.name), width));
+  out.push("", heading2("Environment"), ...renderEnv(ENVIRONMENT.map((entry2) => entry2.name), width));
   out.push("", heading2("Plug-ins"), ...renderRows([PLUGIN_LINE], 26, width));
   return `${out.join(`
 `)}
@@ -78710,10 +79028,10 @@ function globalFlagTokens() {
 function perWord() {
   const out = [];
   for (const [canonical, topic] of Object.entries(HELP)) {
-    const entry = { subcommands: documentedSubcommands(topic), flags: documentedFlags(topic) };
-    out.push({ word: canonical, ...entry });
+    const entry2 = { subcommands: documentedSubcommands(topic), flags: documentedFlags(topic) };
+    out.push({ word: canonical, ...entry2 });
     if (topic.display)
-      out.push({ word: topic.display, ...entry });
+      out.push({ word: topic.display, ...entry2 });
   }
   return out.sort((a, b) => a.word.localeCompare(b.word));
 }
@@ -78880,8 +79198,8 @@ function parseAgentProfiles(raw) {
   if (!Array.isArray(profiles))
     throw new AgentProfileError("AGENT_PROFILES_INVALID", "profiles must be a list.");
   const out = [];
-  for (const entry of profiles) {
-    const p = entry;
+  for (const entry2 of profiles) {
+    const p = entry2;
     if (p === null || typeof p !== "object")
       throw new AgentProfileError("AGENT_PROFILES_INVALID", "A profile is an object.");
     if (p.kind !== "hosted-quant" || p.id !== "quant")
@@ -79690,10 +80008,10 @@ function normalizeAddress(chain2, input) {
   if (typeof input !== "string")
     throw refused("INVALID_DESTINATION", "The destination must be an address.");
   const compact = input.replace(/\s+/g, "");
-  if (chain2 === "hood") {
+  if (chain2 !== "solana") {
     const checked = checkEvmAddress(compact);
     if (!checked.ok)
-      throw refused("INVALID_DESTINATION", `Not a Hood address: ${checked.reason}.`);
+      throw refused("INVALID_DESTINATION", `Not a ${chain2 === "hood" ? "Hood" : chain2} address: ${checked.reason}.`);
     return checked.address;
   }
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(compact)) {
@@ -79707,7 +80025,7 @@ function normalizeAddress(chain2, input) {
   return compact;
 }
 function sameAddress3(chain2, a, b) {
-  return chain2 === "hood" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  return chain2 !== "solana" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 function assetLabel(asset) {
   return "symbol" in asset ? asset.symbol : ("mint" in asset) ? asset.mint : asset.token;
@@ -79749,9 +80067,10 @@ async function parseTransferInput(input, decimalsFor2) {
   if (source.kind !== "vault" && source.kind !== "embedded") {
     throw refused("INVALID_SOURCE", "A transfer sends from a vault wallet or the embedded wallet.");
   }
-  const chain2 = input.chain;
-  if (chain2 !== "solana" && chain2 !== "hood")
-    throw refused("INVALID_CHAIN", "chain is solana or hood.");
+  const rawChain = input.chain;
+  if (typeof rawChain !== "string" || rawChain !== "solana" && !isEvmChainSlug(rawChain))
+    throw refused("INVALID_CHAIN", `chain is one of ${["solana", ...enabledEvmChainSlugs()].join(", ")}.`);
+  const chain2 = rawChain;
   if (typeof source.address !== "string" || source.address.length === 0)
     throw refused("INVALID_SOURCE", "The source wallet's address is missing.");
   const sourceAddress = normalizeAddress(chain2, source.address);
@@ -79760,13 +80079,13 @@ async function parseTransferInput(input, decimalsFor2) {
   if (rawAsset !== null && typeof rawAsset === "object" && typeof rawAsset.symbol === "string") {
     const symbol = rawAsset.symbol.toUpperCase();
     if (!BASE_SYMBOLS.includes(symbol) || BASE_ASSETS[symbol].chain !== chain2) {
-      throw refused("INVALID_ASSET", `${chain2 === "hood" ? "Hood" : "Solana"} sends ${BASE_SYMBOLS.filter((s) => BASE_ASSETS[s].chain === chain2).join(", ")} or a token address.`);
+      throw refused("INVALID_ASSET", `${chain2 === "solana" ? "Solana" : chainDisplayName(chain2)} sends ${BASE_SYMBOLS.filter((s) => BASE_ASSETS[s].chain === chain2).join(", ")} or a token address.`);
     }
     asset = { symbol };
   } else if (chain2 === "solana" && rawAsset && typeof rawAsset.mint === "string") {
     asset = { mint: normalizeAddress("solana", rawAsset.mint) };
-  } else if (chain2 === "hood" && rawAsset && typeof rawAsset.token === "string") {
-    asset = { token: normalizeAddress("hood", rawAsset.token) };
+  } else if (chain2 !== "solana" && rawAsset && typeof rawAsset.token === "string") {
+    asset = { token: normalizeAddress(chain2, rawAsset.token) };
   } else {
     throw refused("INVALID_ASSET", "Choose an asset: a base symbol, a Solana mint or a Hood token address.");
   }
@@ -79906,9 +80225,9 @@ class CardBook {
       throw refused("TRADING_OFF", "Trading is off. Turn it on in Settings > Trading.");
     }
     await this.expireDue();
-    for (const entry of this.cards.values()) {
-      if (isOpen(entry.card) && entry.card.origin.clientId === origin.clientId && entry.proposedKey === proposedKey && entry.card.proposalKey === proposalKey) {
-        return this.view(entry.card);
+    for (const entry2 of this.cards.values()) {
+      if (isOpen(entry2.card) && entry2.card.origin.clientId === origin.clientId && entry2.proposedKey === proposedKey && entry2.card.proposalKey === proposalKey) {
+        return this.view(entry2.card);
       }
     }
     await this.assertUnderCap(origin, tool);
@@ -79956,10 +80275,10 @@ class CardBook {
   }
   async dryRun(input, viewClientId) {
     await this.expireDue();
-    const entry = typeof input.cardId === "string" ? this.cards.get(input.cardId) : undefined;
-    if (entry === undefined)
+    const entry2 = typeof input.cardId === "string" ? this.cards.get(input.cardId) : undefined;
+    if (entry2 === undefined)
       throw refused("CARD_NOT_FOUND", "No card with that id.");
-    const card2 = entry.card;
+    const card2 = entry2.card;
     if (card2.kind !== "launch")
       throw refused("NOT_A_LAUNCH", "Only a launch card has a dry run.");
     if (card2.state !== "proposed") {
@@ -80146,11 +80465,11 @@ class CardBook {
     return [...this.cards.values()].map((e) => e.card).filter((card2) => !ownOnly || card2.origin.clientId === clientId).map((card2) => this.view(card2));
   }
   get(cardId, clientId, ownOnly) {
-    const entry = typeof cardId === "string" ? this.cards.get(cardId) : undefined;
-    if (entry === undefined || ownOnly && entry.card.origin.clientId !== clientId) {
+    const entry2 = typeof cardId === "string" ? this.cards.get(cardId) : undefined;
+    if (entry2 === undefined || ownOnly && entry2.card.origin.clientId !== clientId) {
       throw refused("CARD_NOT_FOUND", "No card with that id.");
     }
-    return this.view(entry.card);
+    return this.view(entry2.card);
   }
   operationsFor(clientId, ownOnly) {
     return [...this.operations.values()].filter((op) => !ownOnly || op.ownerClientId === clientId).map((op) => this.opView(op));
@@ -80163,10 +80482,10 @@ class CardBook {
   }
   async approve(input, viewClientId) {
     await this.expireDue();
-    const entry = typeof input.cardId === "string" ? this.cards.get(input.cardId) : undefined;
-    if (entry === undefined)
+    const entry2 = typeof input.cardId === "string" ? this.cards.get(input.cardId) : undefined;
+    if (entry2 === undefined)
       throw refused("CARD_NOT_FOUND", "No card with that id.");
-    const card2 = entry.card;
+    const card2 = entry2.card;
     if (card2.kind === "launch" && card2.state === "proposed" && !this.approving.has(card2.cardId)) {
       await this.deps.journal.append({
         type: "approval.refused",
@@ -80451,8 +80770,8 @@ class CardBook {
     return this.close(cardId, "rejected", { by: viewClientId });
   }
   async withdraw(cardId, clientId) {
-    const entry = typeof cardId === "string" ? this.cards.get(cardId) : undefined;
-    if (entry === undefined || entry.card.origin.clientId !== clientId)
+    const entry2 = typeof cardId === "string" ? this.cards.get(cardId) : undefined;
+    if (entry2 === undefined || entry2.card.origin.clientId !== clientId)
       throw refused("CARD_NOT_FOUND", "No card with that id.");
     return this.close(cardId, "withdrawn", { by: clientId });
   }
@@ -80640,9 +80959,9 @@ class CardBook {
       }
       const cardState = /^card\.(approved|rejected|withdrawn|expired)$/.exec(row2.type)?.[1];
       if (cardState && typeof row2.cardId === "string") {
-        const entry = this.cards.get(row2.cardId);
-        if (entry)
-          entry.card.state = cardState;
+        const entry2 = this.cards.get(row2.cardId);
+        if (entry2)
+          entry2.card.state = cardState;
         continue;
       }
       if (row2.type === "operation.submitting" && typeof row2.opId === "string" && typeof row2.cardId === "string") {
@@ -80777,10 +81096,10 @@ class CardBook {
     this.publishOperation(op);
   }
   async close(cardId, state, detail) {
-    const entry = typeof cardId === "string" ? this.cards.get(cardId) : undefined;
-    if (entry === undefined)
+    const entry2 = typeof cardId === "string" ? this.cards.get(cardId) : undefined;
+    if (entry2 === undefined)
       throw refused("CARD_NOT_FOUND", "No card with that id.");
-    const card2 = entry.card;
+    const card2 = entry2.card;
     if (!isOpen(card2) || this.approving.has(card2.cardId)) {
       throw refused("CARD_NOT_AWAITING", `This card is ${card2.state}.`, { state: card2.state });
     }
@@ -80790,9 +81109,9 @@ class CardBook {
     return this.view(card2);
   }
   byOpId(opId) {
-    for (const entry of this.cards.values())
-      if (entry.card.opId === opId)
-        return entry;
+    for (const entry2 of this.cards.values())
+      if (entry2.card.opId === opId)
+        return entry2;
     return;
   }
   opIdFor(idKey, params) {
@@ -80819,8 +81138,8 @@ class CardBook {
     return JSON.parse(JSON.stringify(card2));
   }
   held(opId) {
-    const entry = this.byOpId(opId);
-    return entry ? this.viewWithOperation(entry.card) : undefined;
+    const entry2 = this.byOpId(opId);
+    return entry2 ? this.viewWithOperation(entry2.card) : undefined;
   }
   viewWithOperation(card2) {
     const op = this.operations.get(card2.opId);
@@ -80898,8 +81217,8 @@ function sortedJson(value) {
   if (Array.isArray(value))
     return `[${value.map(sortedJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value).filter(([, inner]) => inner !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-    return `{${entries.map(([key, inner]) => `${JSON.stringify(key)}:${sortedJson(inner)}`).join(",")}}`;
+    const entries2 = Object.entries(value).filter(([, inner]) => inner !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    return `{${entries2.map(([key, inner]) => `${JSON.stringify(key)}:${sortedJson(inner)}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
 }
@@ -81133,7 +81452,7 @@ class SignalService {
     const wallet = row2.wallet;
     if (wallet === undefined)
       return false;
-    return list.some((entry) => entry.chain === row2.chain && sameWallet(row2.chain, entry.address, wallet));
+    return list.some((entry2) => entry2.chain === row2.chain && sameWallet(row2.chain, entry2.address, wallet));
   }
   armIdle() {
     this.idleCancel?.();
@@ -81269,7 +81588,9 @@ function coreLocalDefinitions() {
       title: "Get market signals",
       description: GET_SIGNALS_DESCRIPTION,
       inputSchema: {
-        chain: exports_external.enum(["solana", "hood"]).optional().describe("Only rows on this chain"),
+        chain: exports_external.string().refine((v) => enabledChainSlugs().includes(v), {
+          message: `chain must be one of ${enabledChainSlugs().join(", ")}`
+        }).optional().describe(`Only rows on this chain (${enabledChainSlugs().join(", ")})`),
         mint: exports_external.string().optional().describe("Only rows for this token address"),
         pattern: exports_external.string().optional().describe("Only rows of this signal pattern"),
         limit: exports_external.number().int().min(1).max(100).optional().describe("How many rows, 1 to 100 (default 20)")
@@ -81323,7 +81644,7 @@ function isRefusal(code, tool) {
 async function capture(tools, options) {
   const { registerToolSubset: registerToolSubset2 } = await Promise.resolve().then(() => (init_tools(), exports_tools));
   const captured = new Map;
-  const registry3 = {
+  const registry4 = {
     registerTool(name, definition, handler) {
       captured.set(name, { name, ...definition, handler });
       return { enable() {}, disable() {}, remove() {}, update() {} };
@@ -81331,7 +81652,7 @@ async function capture(tools, options) {
   };
   const doFetch = options.fetch;
   const observe = options.onResponse;
-  registerToolSubset2(registry3, {
+  registerToolSubset2(registry4, {
     tools,
     getConfig: () => ({ apiUrl: options.apiUrl, apiKey: options.apiKey }),
     ...doFetch || observe ? {
@@ -82389,10 +82710,10 @@ class EventHub {
     return event;
   }
   subscribe(subscriber, topics, sinceSeq = {}) {
-    const entry = this.subscriptions.get(subscriber.clientId) ?? { subscriber, topics: new Set };
-    this.subscriptions.set(subscriber.clientId, entry);
+    const entry2 = this.subscriptions.get(subscriber.clientId) ?? { subscriber, topics: new Set };
+    this.subscriptions.set(subscriber.clientId, entry2);
     for (const topic of topics) {
-      entry.topics.add(topic);
+      entry2.topics.add(topic);
       const since = sinceSeq[topic];
       const buffer = this.buffers.get(topic);
       const oldest = buffer?.[0]?.seq;
@@ -82413,14 +82734,14 @@ class EventHub {
     this.changed();
   }
   unsubscribe(clientId2, topics) {
-    const entry = this.subscriptions.get(clientId2);
-    if (entry === undefined)
+    const entry2 = this.subscriptions.get(clientId2);
+    if (entry2 === undefined)
       return;
     if (topics === undefined)
       this.subscriptions.delete(clientId2);
     else
       for (const topic of topics)
-        entry.topics.delete(topic);
+        entry2.topics.delete(topic);
     this.changed();
   }
   topicsOf(clientId2) {
@@ -83154,7 +83475,7 @@ async function removeLegacyCopies(deps, deviceToken, writeKeyPrefix, writeKey) {
 }
 async function plainWriteRefs(deps, profile, writeKeyPrefix) {
   const config = await deps.readConfig();
-  const signerRefs = (config.keySigners?.entries ?? []).filter((entry) => entry.keyPrefix === writeKeyPrefix).map((entry) => keySignerRef(entry.keyPrefix, entry.spkiSha256));
+  const signerRefs = (config.keySigners?.entries ?? []).filter((entry2) => entry2.keyPrefix === writeKeyPrefix).map((entry2) => keySignerRef(entry2.keyPrefix, entry2.spkiSha256));
   return [profileSecretRef(profile, "deviceToken"), ...signerRefs];
 }
 async function moveProfileToCore(input) {
@@ -83436,12 +83757,12 @@ async function getOperation2(args, deps) {
 
 // src/core/transfer-chain.ts
 init_esm();
+import { chmod as chmod10, mkdir as mkdir8, readFile as readFile16, rename as rename11, rm as rm6, writeFile as writeFile9 } from "node:fs/promises";
+import { join as join10 } from "node:path";
 init_evm_lite();
 init_solana_lite();
 init_token_2022();
 init_evm_transfer();
-import { chmod as chmod10, mkdir as mkdir8, readFile as readFile16, rename as rename11, rm as rm6, writeFile as writeFile9 } from "node:fs/promises";
-import { join as join10 } from "node:path";
 
 // src/vault/vault-transfer-sign.ts
 init_esm();
@@ -83458,18 +83779,18 @@ function decimalToRaw4(decimal4, decimals) {
     return null;
   return BigInt((whole ?? "0") + frac.padEnd(decimals, "0"));
 }
-function assertVaultSigner(entry) {
-  if (entry.role !== "vault") {
-    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is not a vault key, and vault fund signs from vault keys only (ED-10).`, {
-      suggestion: `To move funds out of a promoted wallet, use: candle vault transfer <to> --from ${entry.label ?? entry.address}`
+function assertVaultSigner(entry2) {
+  if (entry2.role !== "vault") {
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry2.label ?? entry2.address} is not a vault key, and vault fund signs from vault keys only (ED-10).`, {
+      suggestion: `To move funds out of a promoted wallet, use: candle vault transfer <to> --from ${entry2.label ?? entry2.address}`
     });
   }
 }
-function assertTransferSigner(entry) {
-  if (entry.role === "vault" || entry.role === "tee-wallet")
+function assertTransferSigner(entry2) {
+  if (entry2.role === "vault" || entry2.role === "tee-wallet")
     return;
-  throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is an external wallet and cannot sign vault transfer shapes (ED-10).`, {
-    suggestion: `Move funds out of an external wallet with: candle external sweep ${entry.label} --to <vault>`
+  throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry2.label ?? entry2.address} is an external wallet and cannot sign vault transfer shapes (ED-10).`, {
+    suggestion: `Move funds out of an external wallet with: candle external sweep ${entry2.label} --to <vault>`
   });
 }
 function namedSendFailure(plan) {
@@ -83794,8 +84115,8 @@ function tokenAccountAmount2(data) {
     return 0n;
   return new DataView(data.buffer, data.byteOffset + TOKEN_ACCOUNT_AMOUNT_OFFSET2, 8).getBigUint64(0, true);
 }
-function keyEntryOf(wallet3, entry) {
-  return entry ?? {
+function keyEntryOf(wallet3, entry2) {
+  return entry2 ?? {
     id: wallet3.id,
     chain: wallet3.chain,
     curve: wallet3.chain === "evm" ? "secp256k1" : "ed25519",
@@ -83863,10 +84184,10 @@ function createTransferChain(chainDeps) {
       rpc: solanaRpc
     }));
   }
-  async function evmPlan(params, wallet3, entry) {
+  async function evmPlan(params, wallet3, entry2) {
     const { rpc, builtIn } = deps.hood;
     const planned = await planEvmTransfer(rpc, {
-      from: keyEntryOf(wallet3, entry),
+      from: keyEntryOf(wallet3, entry2),
       to: params.to,
       asset: evmAsset(params.asset),
       amount: "max" in params.amount ? "max" : rawToDecimal(BigInt(params.amount.raw), await evmDecimals(params.asset)),
@@ -83874,6 +84195,10 @@ function createTransferChain(chainDeps) {
     });
     if ("usage" in planned)
       throw refused("INVALID_AMOUNT", planned.usage);
+    const expectedChainId = evmChainIdFor(params.chain);
+    if (expectedChainId !== undefined && planned.chainId !== BigInt(expectedChainId)) {
+      throw refused("EVM_CHAIN_MISMATCH", `The configured EVM RPC answers chain id ${planned.chainId}, not ${expectedChainId} (${params.chain}). Nothing was planned.`);
+    }
     if (wallet3.role === "tee-wallet" && planned.chainId !== BigInt(HOOD_CHAIN_ID)) {
       throw refused("EVM_CHAIN_MISMATCH", `A promoted wallet signs on Hood only (chain id ${HOOD_CHAIN_ID}).`);
     }
@@ -83964,9 +84289,9 @@ function createTransferChain(chainDeps) {
       if (wallet3 === undefined || vault.signingKey === undefined) {
         throw refused("INVALID_SOURCE", "That wallet is not in the vault that opened. Nothing was signed.");
       }
-      const entry = vault.entry?.(wallet3.id);
-      if (wallet3.role === "tee-wallet" && entry !== undefined)
-        await deps.teeChecks?.(entry);
+      const entry2 = vault.entry?.(wallet3.id);
+      if (wallet3.role === "tee-wallet" && entry2 !== undefined)
+        await deps.teeChecks?.(entry2);
       if (params.chain === "solana") {
         const plan2 = await solanaPlan(params);
         const fee = await deps.solana.read(() => quoteTransferFee(solanaRpc, plan2.from, plan2.instructions));
@@ -83996,7 +84321,7 @@ function createTransferChain(chainDeps) {
           wipe(secret2);
         }
       }
-      const plan = await evmPlan(params, wallet3, entry);
+      const plan = await evmPlan(params, wallet3, entry2);
       const secret = await vault.signingKey(wallet3.id);
       try {
         if (!sameEvmAddress(evmAddressFromSecret(secret), wallet3.address)) {
@@ -84004,7 +84329,7 @@ function createTransferChain(chainDeps) {
         }
         const signed = signTransaction(plan.tx, secret);
         return {
-          chain: "hood",
+          chain: params.chain,
           id: signed.hash,
           wire: base64.encode(signed.raw),
           from: wallet3.address,
@@ -84085,9 +84410,9 @@ function createTransferChain(chainDeps) {
 }
 
 // src/core/transfers.ts
-init_render();
 import { randomBytes as randomBytes9 } from "node:crypto";
 import { rename as rename12, writeFile as writeFile10 } from "node:fs/promises";
+init_render();
 function walletChain(wallet3) {
   return wallet3.chain === "evm" ? "hood" : "solana";
 }
@@ -84202,13 +84527,16 @@ async function sources(params, call2, deps) {
   await deps.journal.append({ type: "transfer.sources", clientId: call2.client.clientId, count: out.length });
   return { sources: out, vaultListed: wallets2 !== undefined, withdraw };
 }
+function unsupportedChainText(chain2) {
+  return `Transfers from a wallet on ${String(chain2)} are not supported yet: chain is solana or hood. Nothing was prepared.`;
+}
 async function destinations(params, _call, deps) {
   const kind = params.source?.kind;
   const chain2 = params.chain;
   if (kind !== "vault" && kind !== "embedded")
     throw refused("INVALID_SOURCE", "source.kind is vault or embedded.");
   if (chain2 !== "solana" && chain2 !== "hood")
-    throw refused("INVALID_CHAIN", "chain is solana or hood.");
+    throw refused("INVALID_CHAIN", unsupportedChainText(chain2));
   const out = [];
   const push = (address, extra) => {
     if (out.some((row2) => sameAddress3(chain2, row2.address, address)))
@@ -84234,6 +84562,8 @@ async function prepare(params, call2, deps) {
   const input = params.params ?? params;
   if (input === null || typeof input !== "object")
     throw refused("INVALID_PARAMS", "params must be an object.");
+  if (typeof input.chain === "string" && isEvmChainSlug(input.chain) && input.chain !== "hood")
+    throw refused("INVALID_CHAIN", unsupportedChainText(input.chain));
   const parsed = await parseTransferInput(input, (chain2, asset) => deps.reads.decimals(chain2, asset));
   const decimals = "symbol" in parsed.asset ? BASE_ASSETS[parsed.asset.symbol].decimals : await deps.reads.decimals(parsed.chain, parsed.asset);
   if (decimals === undefined)
@@ -84410,20 +84740,20 @@ init_store();
 // src/vault/tee-transfer.ts
 init_client();
 init_errors2();
-function assertNoPendingSweep(entry) {
-  const pending = entry.tee?.sweepPending?.length ?? 0;
+function assertNoPendingSweep(entry2) {
+  const pending = entry2.tee?.sweepPending?.length ?? 0;
   if (pending === 0)
     return;
-  throw new VaultError("TRANSFER_SWEEP_PENDING", `${entry.label} (${entry.address}) has ${pending} pending sweep transaction(s); a transfer would interleave with that sweep.`, { suggestion: `Finish the sweep first: candle tee sweep ${entry.address}` });
+  throw new VaultError("TRANSFER_SWEEP_PENDING", `${entry2.label} (${entry2.address}) has ${pending} pending sweep transaction(s); a transfer would interleave with that sweep.`, { suggestion: `Finish the sweep first: candle tee sweep ${entry2.address}` });
 }
-async function readTeeServerState(ctx, entry, apiKey) {
-  if (entry.linkedWalletId === undefined) {
+async function readTeeServerState(ctx, entry2, apiKey) {
+  if (entry2.linkedWalletId === undefined) {
     return { read: false, reason: "this wallet has no linked wallet id recorded" };
   }
   if (apiKey === undefined)
     return { read: false, reason: "no API key for this profile" };
   try {
-    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/lifecycle`, {
+    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry2.linkedWalletId)}/lifecycle`, {
       auth: "key",
       credentials: { apiKey },
       apiUrl: ctx.apiUrl,
@@ -84601,15 +84931,15 @@ ${USAGE5}`, json);
       dek: vault.dek,
       file: vault.file,
       close: () => closeVault(vault),
-      wallets: vault.index.entries.filter((entry) => entry.role === "vault" || entry.role === "tee-wallet").map((entry) => ({
-        id: entry.id,
-        chain: entry.chain,
-        address: entry.address,
-        label: entry.label,
-        role: entry.role
+      wallets: vault.index.entries.filter((entry2) => entry2.role === "vault" || entry2.role === "tee-wallet").map((entry2) => ({
+        id: entry2.id,
+        chain: entry2.chain,
+        address: entry2.address,
+        label: entry2.label,
+        role: entry2.role
       })),
       signingKey: (walletId) => decryptKey(vault, walletId),
-      entry: (walletId) => vault.index.entries.find((entry) => entry.id === walletId)
+      entry: (walletId) => vault.index.entries.find((entry2) => entry2.id === walletId)
     });
     const withdrawScopes = scopesForPreset("readwritetransfer");
     const trading = await TradingState.open({
@@ -85101,11 +85431,11 @@ async function transferChainFor(ctx, stateDir, executor, history2, readKey2) {
     hood,
     executor,
     pendingDir: join11(stateDir, "pending"),
-    teeChecks: async (entry) => {
-      assertNoPendingSweep(entry);
-      if (entry.chain === "evm") {
+    teeChecks: async (entry2) => {
+      assertNoPendingSweep(entry2);
+      if (entry2.chain === "evm") {
         await assertHoodChain({ rpc: hood.rpc, url: evmUrl, host: new URL(evmUrl).host, builtIn: hood.builtIn });
-        assertWalletLockFree(entry, (await readHoodTeeServer(ctx, entry)).lock, ctx.deps.now());
+        assertWalletLockFree(entry2, (await readHoodTeeServer(ctx, entry2)).lock, ctx.deps.now());
       }
     },
     reportActivity: async (on, id) => {
@@ -86083,20 +86413,20 @@ async function teeSignerNew(args, ctx) {
   }
   const locals = await localKeySigners(deps, keyPrefix);
   const active = activeSigner(view);
-  let entry = locals.filter((e) => e.signerQuorumId === undefined).at(-1);
-  if (entry !== undefined && await deps.store.get(keySignerRef(keyPrefix, entry.spkiSha256)) === null) {
-    await deleteKeySignerEntry(deps, entry);
-    entry = undefined;
+  let entry2 = locals.filter((e) => e.signerQuorumId === undefined).at(-1);
+  if (entry2 !== undefined && await deps.store.get(keySignerRef(keyPrefix, entry2.spkiSha256)) === null) {
+    await deleteKeySignerEntry(deps, entry2);
+    entry2 = undefined;
   }
-  if (entry !== undefined && active !== null && active.spkiSha256 === entry.spkiSha256) {
-    const recorded = { ...entry, signerQuorumId: active.signerQuorumId, pendingRequest: undefined };
+  if (entry2 !== undefined && active !== null && active.spkiSha256 === entry2.spkiSha256) {
+    const recorded = { ...entry2, signerQuorumId: active.signerQuorumId, pendingRequest: undefined };
     await saveKeySignerEntry(deps, recorded);
     await writeOut(ctx, out, recorded);
     return reportApproved(ctx, view, recorded, { resumed: true, requested: false });
   }
   let replaces = null;
-  let resumed = entry !== undefined;
-  if (entry === undefined) {
+  let resumed = entry2 !== undefined;
+  if (entry2 === undefined) {
     const all = allSignerWallets(view);
     const owning = locals.filter((e) => e.signerQuorumId !== undefined).map((e) => ({ entry: e, count: all.filter((w) => w.signerQuorumId === e.signerQuorumId).length })).filter((o) => o.count > 0);
     if (owning.length > 0 && !force) {
@@ -86127,28 +86457,28 @@ async function teeSignerNew(args, ctx) {
       return 1;
     }
     await deps.store.set(ref, pemToStoredSigner(pair.pem));
-    entry = {
+    entry2 = {
       keyPrefix,
       spkiSha256,
       fingerprint: keySignerFingerprint(spkiSha256),
       publicKeyDer: pair.publicKeyDer,
       createdAt: deps.now()
     };
-    await saveKeySignerEntry(deps, entry);
+    await saveKeySignerEntry(deps, entry2);
     resumed = false;
   }
-  await writeOut(ctx, out, entry);
-  const cached = matchingPendingRequest(ctx, view, entry);
+  await writeOut(ctx, out, entry2);
+  const cached = matchingPendingRequest(ctx, view, entry2);
   const requested = cached ? {
     ok: true,
     status: 200,
-    body: { ...cached, spkiSha256: entry.spkiSha256, fingerprint: entry.fingerprint }
-  } : await requestSigner(ctx, apiKey, entry.publicKeyDer);
+    body: { ...cached, spkiSha256: entry2.spkiSha256, fingerprint: entry2.fingerprint }
+  } : await requestSigner(ctx, apiKey, entry2.publicKeyDer);
   if (!requested.ok) {
     if (requested.code === "KEY_SIGNER_ALREADY_ACTIVE") {
       const quorum = errorDetails(requested).keySigner?.signerQuorumId;
       if (typeof quorum === "string") {
-        const recorded = { ...entry, signerQuorumId: quorum, pendingRequest: undefined };
+        const recorded = { ...entry2, signerQuorumId: quorum, pendingRequest: undefined };
         await saveKeySignerEntry(deps, recorded);
         const reread = await readSigner(ctx, "self", { apiKey });
         return reportApproved(ctx, reread.ok ? reread.body : view, recorded, {
@@ -86161,10 +86491,10 @@ async function teeSignerNew(args, ctx) {
     writeScreenFailure(deps, requested, { apiUrl: ctx.apiUrl, authType: "key" }, json);
     if (!json)
       if (json) {
-        notice(deps, "stderr", "note", `The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.
+        notice(deps, "stderr", "note", `The signer ${entry2.fingerprint} stays pending on this machine; run the same command again to request a new code.
 `.trim());
       } else {
-        notice(deps, "stderr", "note", `The signer ${entry.fingerprint} stays pending on this machine; run the same command again to request a new code.
+        notice(deps, "stderr", "note", `The signer ${entry2.fingerprint} stays pending on this machine; run the same command again to request a new code.
 `.trimEnd());
       }
     return 1;
@@ -86178,15 +86508,15 @@ async function teeSignerNew(args, ctx) {
       notice(deps, "stderr", "warning", `An earlier pending request for this key was cancelled.
 `.trimEnd());
     }
-  if (body.spkiSha256 !== entry.spkiSha256) {
+  if (body.spkiSha256 !== entry2.spkiSha256) {
     writeScreenLocalFailure(deps, {
       code: "KEY_SIGNER_CHANGED",
-      message: `The server recorded a different public key (${body.fingerprint}) than this machine sent (${entry.fingerprint}). Do not approve it.`
+      message: `The server recorded a different public key (${body.fingerprint}) than this machine sent (${entry2.fingerprint}). Do not approve it.`
     }, json);
     return 1;
   }
-  entry = {
-    ...entry,
+  entry2 = {
+    ...entry2,
     pendingRequest: {
       apiUrl: ctx.apiUrl,
       userCode: body.userCode,
@@ -86195,7 +86525,7 @@ async function teeSignerNew(args, ctx) {
       expiresAt: body.expiresAt
     }
   };
-  await saveKeySignerEntry(deps, entry);
+  await saveKeySignerEntry(deps, entry2);
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       state: "pending",
@@ -86211,7 +86541,7 @@ async function teeSignerNew(args, ctx) {
       ["Key", keyPrefix],
       ["Label", view.keyLabel ? labelCell(view.keyLabel) : undefined],
       ["Request", resumed ? "resumed" : "new"],
-      ["Fingerprint", entry.fingerprint],
+      ["Fingerprint", entry2.fingerprint],
       ["Open", body.verificationUriComplete],
       ["Approve on owner machine", `candle keys signer approve ${body.userCode} --key ${keyPrefix}`],
       ["Expires", formatTime(body.expiresAt)]
@@ -86222,7 +86552,7 @@ async function teeSignerNew(args, ctx) {
       ["Key", keyPrefix],
       ["Label", labelCell(view.keyLabel ?? undefined)],
       ["State", resumed ? "resumed" : "pending"],
-      ["Fingerprint", entry.fingerprint],
+      ["Fingerprint", entry2.fingerprint],
       ["Approve at", body.verificationUriComplete],
       ["Expires", formatTime(body.expiresAt, { now: deps.now() })]
     ], "Key signer request");
@@ -86240,32 +86570,32 @@ Waiting for approval...`}`);
       continue;
     view = read.body;
     const now = activeSigner(view);
-    if (now !== null && now.spkiSha256 === entry.spkiSha256) {
-      const recorded = { ...entry, signerQuorumId: now.signerQuorumId, pendingRequest: undefined };
+    if (now !== null && now.spkiSha256 === entry2.spkiSha256) {
+      const recorded = { ...entry2, signerQuorumId: now.signerQuorumId, pendingRequest: undefined };
       await saveKeySignerEntry(deps, recorded);
       return reportApproved(ctx, view, recorded, { resumed, requested: cached === undefined, replaces });
     }
-    if (view.pending === null || view.pending.spkiSha256 !== entry.spkiSha256) {
+    if (view.pending === null || view.pending.spkiSha256 !== entry2.spkiSha256) {
       writeScreenLocalFailure(deps, {
         code: "KEY_SIGNER_NOT_APPROVED",
-        message: `The request for ${entry.fingerprint} was ${view.pending === null ? "rejected or withdrawn" : "superseded by another request for this key"}. The pair stays pending on this machine.`,
+        message: `The request for ${entry2.fingerprint} was ${view.pending === null ? "rejected or withdrawn" : "superseded by another request for this key"}. The pair stays pending on this machine.`,
         suggestion: `Run candle tee signer new --key ${keyPrefix} again to request a new code for the same signer.`,
-        details: { keyPrefix, fingerprint: entry.fingerprint, spkiSha256: entry.spkiSha256, state: "pending" }
+        details: { keyPrefix, fingerprint: entry2.fingerprint, spkiSha256: entry2.spkiSha256, state: "pending" }
       }, json);
       return 1;
     }
   }
   writeScreenLocalFailure(deps, {
     code: "KEY_SIGNER_NOT_APPROVED",
-    message: `The code expired before the owner approved ${entry.fingerprint}. The pair stays pending on this machine.`,
+    message: `The code expired before the owner approved ${entry2.fingerprint}. The pair stays pending on this machine.`,
     suggestion: `Run candle tee signer new --key ${keyPrefix} again to request a new code for the same signer.`,
-    details: { keyPrefix, fingerprint: entry.fingerprint, spkiSha256: entry.spkiSha256, state: "pending" }
+    details: { keyPrefix, fingerprint: entry2.fingerprint, spkiSha256: entry2.spkiSha256, state: "pending" }
   }, json);
   return 1;
 }
-function matchingPendingRequest(ctx, view, entry) {
-  const pending = entry.pendingRequest;
-  return pending?.apiUrl === ctx.apiUrl && pending.expiresAt > ctx.deps.now() && view.pending?.spkiSha256 === entry.spkiSha256 && view.pending.expiresAt === pending.expiresAt ? pending : undefined;
+function matchingPendingRequest(ctx, view, entry2) {
+  const pending = entry2.pendingRequest;
+  return pending?.apiUrl === ctx.apiUrl && pending.expiresAt > ctx.deps.now() && view.pending?.spkiSha256 === entry2.spkiSha256 && view.pending.expiresAt === pending.expiresAt ? pending : undefined;
 }
 async function teeSignerStatus(args, ctx) {
   const { deps, json } = ctx;
@@ -86290,8 +86620,8 @@ async function teeSignerStatus(args, ctx) {
     return 1;
   }
   const locals = await localKeySigners(deps, view.keyPrefix);
-  const entry = locals.find((local) => local.spkiSha256 === view.pending?.spkiSha256);
-  const pending = entry ? matchingPendingRequest(ctx, view, entry) : undefined;
+  const entry2 = locals.find((local) => local.spkiSha256 === view.pending?.spkiSha256);
+  const pending = entry2 ? matchingPendingRequest(ctx, view, entry2) : undefined;
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       ok: true,
@@ -86315,10 +86645,10 @@ async function teeSignerStatus(args, ctx) {
   }
   return 0;
 }
-async function writeOut(ctx, out, entry) {
+async function writeOut(ctx, out, entry2) {
   if (out === undefined)
     return;
-  const stored = await ctx.deps.store.get(keySignerRef(entry.keyPrefix, entry.spkiSha256));
+  const stored = await ctx.deps.store.get(keySignerRef(entry2.keyPrefix, entry2.spkiSha256));
   if (stored === null)
     return;
   await ctx.deps.writeFile(out, storedSignerToPem(stored));
@@ -86330,18 +86660,18 @@ async function writeOut(ctx, out, entry) {
 `.trimEnd());
   }
 }
-function reportApproved(ctx, view, entry, how) {
+function reportApproved(ctx, view, entry2, how) {
   const { deps, json } = ctx;
   const { onSigner, legacy, moving } = view.wallets;
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       ok: true,
       command: "tee signer new",
-      keyPrefix: entry.keyPrefix,
+      keyPrefix: entry2.keyPrefix,
       state: "active",
-      fingerprint: entry.fingerprint,
-      spkiSha256: entry.spkiSha256,
-      signerQuorumId: entry.signerQuorumId,
+      fingerprint: entry2.fingerprint,
+      spkiSha256: entry2.spkiSha256,
+      signerQuorumId: entry2.signerQuorumId,
       resumed: how.resumed,
       requested: how.requested,
       replaces: how.replaces ?? null,
@@ -86355,19 +86685,19 @@ function reportApproved(ctx, view, entry, how) {
     return 0;
   }
   const lines = [
-    `Approved: key ${entry.keyPrefix}'s signer is ${entry.fingerprint}, held on this machine.`,
+    `Approved: key ${entry2.keyPrefix}'s signer is ${entry2.fingerprint}, held on this machine.`,
     onSigner.length > 0 ? `${plural(onSigner.length, "wallet")} on this signer trade${onSigner.length === 1 ? "s" : ""} from this machine now.` : "No wallet is on this signer yet. Promote onto it with candle vault promote --to-key on the vault machine."
   ];
   if (moving.length > 0) {
-    lines.push(`${plural(moving.length, "wallet")} ${moving.length === 1 ? "is" : "are"} still on a previous signer of this key and keep${moving.length === 1 ? "s" : ""} trading from the machine that holds it until candle keys signer move ${entry.keyPrefix} runs there: ${moving.map(name).join(", ")}`);
+    lines.push(`${plural(moving.length, "wallet")} ${moving.length === 1 ? "is" : "are"} still on a previous signer of this key and keep${moving.length === 1 ? "s" : ""} trading from the machine that holds it until candle keys signer move ${entry2.keyPrefix} runs there: ${moving.map(name).join(", ")}`);
   }
   if (legacy.length > 0) {
-    lines.push(`${plural(legacy.length, "wallet")} keep${legacy.length === 1 ? "s" : ""} a per-wallet signer on the machine that promoted ${legacy.length === 1 ? "it" : "them"} until candle keys signer move ${entry.keyPrefix} runs there: ${legacy.map(name).join(", ")}`);
+    lines.push(`${plural(legacy.length, "wallet")} keep${legacy.length === 1 ? "s" : ""} a per-wallet signer on the machine that promoted ${legacy.length === 1 ? "it" : "them"} until candle keys signer move ${entry2.keyPrefix} runs there: ${legacy.map(name).join(", ")}`);
   }
   writeSuccess(deps, "stdout", "Key signer approved");
   writeFields(deps, "stdout", [
-    ["Key", entry.keyPrefix],
-    ["Fingerprint", entry.fingerprint],
+    ["Key", entry2.keyPrefix],
+    ["Fingerprint", entry2.fingerprint],
     ["Held", "on this machine"]
   ]);
   for (const line of lines.slice(1))
@@ -86770,9 +87100,9 @@ async function deleteDrainedSlots(ctx, opts) {
   const { deps } = ctx;
   const cleanup = { deleted: [], kept: [] };
   const candidates = new Map;
-  for (const entry of await localKeySigners(deps, opts.source)) {
-    if (entry.signerQuorumId !== undefined)
-      candidates.set(keySignerRef(entry.keyPrefix, entry.spkiSha256), entry);
+  for (const entry2 of await localKeySigners(deps, opts.source)) {
+    if (entry2.signerQuorumId !== undefined)
+      candidates.set(keySignerRef(entry2.keyPrefix, entry2.spkiSha256), entry2);
   }
   for (const signer of opts.used) {
     if (signer.kind === "key")
@@ -86791,21 +87121,21 @@ async function deleteDrainedSlots(ctx, opts) {
     return cleanup;
   }
   const quorumOf = new Map(owners.map((w) => [w.id, w.signerQuorumId ?? null]));
-  for (const [ref, entry] of candidates) {
-    const read = await readSigner(ctx, opts.apiKey !== undefined && apiKeyPrefix(opts.apiKey) === entry.keyPrefix ? "self" : entry.keyPrefix, opts.apiKey !== undefined && apiKeyPrefix(opts.apiKey) === entry.keyPrefix ? { apiKey: opts.apiKey } : opts.deviceToken !== undefined ? { deviceToken: opts.deviceToken } : opts.auth);
+  for (const [ref, entry2] of candidates) {
+    const read = await readSigner(ctx, opts.apiKey !== undefined && apiKeyPrefix(opts.apiKey) === entry2.keyPrefix ? "self" : entry2.keyPrefix, opts.apiKey !== undefined && apiKeyPrefix(opts.apiKey) === entry2.keyPrefix ? { apiKey: opts.apiKey } : opts.deviceToken !== undefined ? { deviceToken: opts.deviceToken } : opts.auth);
     if (!read.ok) {
-      cleanup.kept.push({ slot: ref, reason: `could not read key ${entry.keyPrefix}'s signer` });
+      cleanup.kept.push({ slot: ref, reason: `could not read key ${entry2.keyPrefix}'s signer` });
       continue;
     }
     const active = activeSigner(read.body);
-    if (active !== null && active.spkiSha256 === entry.spkiSha256)
+    if (active !== null && active.spkiSha256 === entry2.spkiSha256)
       continue;
-    const left = owners.filter((w) => w.signerQuorumId === entry.signerQuorumId).length;
+    const left = owners.filter((w) => w.signerQuorumId === entry2.signerQuorumId).length;
     if (left > 0) {
       cleanup.kept.push({ slot: ref, reason: `${plural(left, "wallet")} still on it` });
       continue;
     }
-    await deleteKeySignerEntry(deps, entry);
+    await deleteKeySignerEntry(deps, entry2);
     cleanup.deleted.push(ref);
   }
   for (const signer of legacyUsed) {
@@ -86918,8 +87248,8 @@ async function teeSignerRemove(args, ctx) {
     keyPrefix = view.keyPrefix;
     auth = { apiKey };
   }
-  const entries2 = await localKeySigners(deps, keyPrefix);
-  if (entries2.length === 0) {
+  const entries3 = await localKeySigners(deps, keyPrefix);
+  if (entries3.length === 0) {
     writeScreenLocalFailure(deps, {
       code: "KEY_SIGNER_NOT_LOCAL",
       message: `This machine holds no key signer for key ${keyPrefix}.`,
@@ -86929,10 +87259,10 @@ async function teeSignerRemove(args, ctx) {
   }
   const removed = [];
   const kept = [];
-  for (const entry of entries2) {
+  for (const entry2 of entries3) {
     const result = await retireSigner(ctx, auth, keyPrefix, {
-      spkiSha256: entry.spkiSha256,
-      ...entry.signerQuorumId ? { signerQuorumId: entry.signerQuorumId } : {}
+      spkiSha256: entry2.spkiSha256,
+      ...entry2.signerQuorumId ? { signerQuorumId: entry2.signerQuorumId } : {}
     });
     if (!result.ok) {
       if (result.status === 404 && result.code === undefined) {
@@ -86940,11 +87270,11 @@ async function teeSignerRemove(args, ctx) {
           writeScreenLocalFailure(deps, unsupported, json);
           return 1;
         }
-        kept.push({ fingerprint: entry.fingerprint, code: unsupported.code, message: unsupported.message });
+        kept.push({ fingerprint: entry2.fingerprint, code: unsupported.code, message: unsupported.message });
         continue;
       }
       kept.push({
-        fingerprint: entry.fingerprint,
+        fingerprint: entry2.fingerprint,
         code: result.code ?? "REQUEST_FAILED",
         message: result.message,
         ...result.code === "KEY_SIGNER_OWNS_WALLETS" ? { suggestion: `Move them first: candle keys signer move ${keyPrefix}` } : {}
@@ -86953,17 +87283,17 @@ async function teeSignerRemove(args, ctx) {
     }
     const state = result.body?.state ?? "retired";
     try {
-      await deleteKeySignerEntry(deps, entry);
+      await deleteKeySignerEntry(deps, entry2);
     } catch (error) {
       kept.push({
-        fingerprint: entry.fingerprint,
+        fingerprint: entry2.fingerprint,
         code: "KEY_SIGNER_LOCAL_DELETE_FAILED",
         message: `The server no longer has this signer, but this machine could not delete it: ${error instanceof Error ? error.message : String(error)}`,
         suggestion: `Run candle tee signer remove --key ${keyPrefix} again.`
       });
       continue;
     }
-    removed.push({ fingerprint: entry.fingerprint, spkiSha256: entry.spkiSha256, state });
+    removed.push({ fingerprint: entry2.fingerprint, spkiSha256: entry2.spkiSha256, state });
   }
   const exit = kept.length > 0 ? 1 : 0;
   if (json) {
@@ -86989,8 +87319,8 @@ async function teeSignerRemove(args, ctx) {
 async function keySignerDoctorReport(ctx, creds) {
   const { deps } = ctx;
   const rows = [];
-  const entries2 = await localKeySigners(deps);
-  if (entries2.length === 0)
+  const entries3 = await localKeySigners(deps);
+  if (entries3.length === 0)
     return { rows, hasSigners: false, reachableWalletIds: [], locked: false };
   let view = null;
   if (creds.apiKey !== undefined) {
@@ -87001,28 +87331,28 @@ async function keySignerDoctorReport(ctx, creds) {
   const problems = [];
   const readableQuorums = new Set;
   let locked = false;
-  for (const entry of entries2) {
-    const ref = keySignerRef(entry.keyPrefix, entry.spkiSha256);
+  for (const entry2 of entries3) {
+    const ref = keySignerRef(entry2.keyPrefix, entry2.spkiSha256);
     let stored;
     try {
       stored = await deps.store.get(ref);
     } catch (error) {
       locked ||= error instanceof SecretStoreLockedError;
-      problems.push(error instanceof SecretStoreLockedError ? "cannot be opened: keychain locked" : `${entry.fingerprint}: cannot be opened: ${error instanceof Error ? error.message : String(error)}`);
+      problems.push(error instanceof SecretStoreLockedError ? "cannot be opened: keychain locked" : `${entry2.fingerprint}: cannot be opened: ${error instanceof Error ? error.message : String(error)}`);
       continue;
     }
     if (stored === null) {
-      problems.push(`${ref} (${entry.fingerprint}): missing from the secret store`);
+      problems.push(`${ref} (${entry2.fingerprint}): missing from the secret store`);
       continue;
     }
-    const problem = signerSlotProblem(stored, entry.spkiSha256);
+    const problem = signerSlotProblem(stored, entry2.spkiSha256);
     if (problem !== null)
-      problems.push(`${ref} (${entry.fingerprint}): ${problem}`);
-    else if (entry.signerQuorumId)
-      readableQuorums.add(entry.signerQuorumId);
+      problems.push(`${ref} (${entry2.fingerprint}): ${problem}`);
+    else if (entry2.signerQuorumId)
+      readableQuorums.add(entry2.signerQuorumId);
   }
   if (creds.apiKey !== undefined && view !== null) {
-    const quorums = new Set(entries2.flatMap((e) => e.signerQuorumId ? [e.signerQuorumId] : []));
+    const quorums = new Set(entries3.flatMap((e) => e.signerQuorumId ? [e.signerQuorumId] : []));
     for (const wallet3 of allSignerWallets(view)) {
       if (wallet3.signerQuorumId && quorums.has(wallet3.signerQuorumId))
         continue;
@@ -87044,24 +87374,24 @@ async function keySignerDoctorReport(ctx, creds) {
   }
   for (const problem of problems)
     rows.push({ check: "Signer slot", state: "FAIL", detail: problem });
-  if (entries2.length > 0 && problems.length === 0) {
+  if (entries3.length > 0 && problems.length === 0) {
     rows.push({
       check: "Key signers",
       state: "PASS",
-      detail: entries2.map((e) => `${e.keyPrefix} ${e.fingerprint}${e.signerQuorumId === undefined ? " (pending)" : ""}`).join(", ")
+      detail: entries3.map((e) => `${e.keyPrefix} ${e.fingerprint}${e.signerQuorumId === undefined ? " (pending)" : ""}`).join(", ")
     });
   }
   const active = view !== null ? activeSigner(view) : null;
-  if (active !== null && !entries2.some((e) => e.spkiSha256 === active.spkiSha256)) {
+  if (active !== null && !entries3.some((e) => e.spkiSha256 === active.spkiSha256)) {
     rows.push({
       check: "Key signer",
       state: "WARN",
       detail: `key ${view?.keyPrefix}'s active signer ${active.fingerprint} is not on this machine; its wallets trade from the machine that holds it`
     });
   }
-  if (creds.deviceToken !== undefined && entries2.length > 0) {
-    const idle = creds.role === undefined ? null : await localSignersIdle(ctx, entries2, view, creds);
-    const prefixes = [...new Set(entries2.map((entry) => entry.keyPrefix))];
+  if (creds.deviceToken !== undefined && entries3.length > 0) {
+    const idle = creds.role === undefined ? null : await localSignersIdle(ctx, entries3, view, creds);
+    const prefixes = [...new Set(entries3.map((entry2) => entry2.keyPrefix))];
     rows.push({
       check: "Device token beside signer",
       state: "WARN",
@@ -87071,9 +87401,9 @@ async function keySignerDoctorReport(ctx, creds) {
   const reachableWalletIds = view === null ? [] : allSignerWallets(view).filter((wallet3) => wallet3.signerQuorumId && readableQuorums.has(wallet3.signerQuorumId)).map((wallet3) => wallet3.id);
   return { rows, hasSigners: true, reachableWalletIds, locked };
 }
-async function localSignersIdle(ctx, entries2, selfView, creds) {
+async function localSignersIdle(ctx, entries3, selfView, creds) {
   const views = new Map;
-  for (const prefix of new Set(entries2.map((entry) => entry.keyPrefix))) {
+  for (const prefix of new Set(entries3.map((entry2) => entry2.keyPrefix))) {
     if (selfView?.keyPrefix === prefix) {
       views.set(prefix, selfView);
       continue;
@@ -87086,13 +87416,13 @@ async function localSignersIdle(ctx, entries2, selfView, creds) {
     views.set(prefix, read?.ok ? read.body : null);
   }
   let idle = true;
-  for (const entry of entries2) {
-    if (!entry.signerQuorumId)
+  for (const entry2 of entries3) {
+    if (!entry2.signerQuorumId)
       continue;
-    const loaded = views.get(entry.keyPrefix);
+    const loaded = views.get(entry2.keyPrefix);
     if (!loaded)
       return null;
-    if (allSignerWallets(loaded).some((wallet3) => wallet3.signerQuorumId === entry.signerQuorumId))
+    if (allSignerWallets(loaded).some((wallet3) => wallet3.signerQuorumId === entry2.signerQuorumId))
       idle = false;
   }
   return idle;
@@ -90409,7 +90739,7 @@ async function vaultNewKey(args, ctx) {
             wipe(key.secret64);
           }
         }
-        const entry = {
+        const entry2 = {
           id: keyId,
           chain: chain2,
           curve: chain2 === "evm" ? "secp256k1" : "ed25519",
@@ -90424,7 +90754,7 @@ async function vaultNewKey(args, ctx) {
         current = await commitVault(current, {
           index: {
             hd: { ...current.index.hd, nextIndex: { ...current.index.hd.nextIndex, [branch]: index + 1 } },
-            entries: [...current.index.entries, entry]
+            entries: [...current.index.entries, entry2]
           },
           addKeys: [blob]
         }, deps);
@@ -90504,7 +90834,7 @@ function sameAddress4(chain2, a, b) {
   return chain2 === "evm" ? sameEvmAddress(a, b) : a === b;
 }
 function labelClash(index, planned) {
-  const taken = new Set(index.entries.map((entry) => entry.label));
+  const taken = new Set(index.entries.map((entry2) => entry2.label));
   const seen = new Set;
   for (const label of planned) {
     if (taken.has(label) || seen.has(label))
@@ -90557,9 +90887,9 @@ async function verifyWritten(path, address, keyId, reopen, _ctx, chain2 = "solan
 // src/commands/external.ts
 init_vault_support();
 function requireExternalEntry(index, named) {
-  const entry = findExternalEntry(index, named);
-  if (entry !== undefined)
-    return entry;
+  const entry2 = findExternalEntry(index, named);
+  if (entry2 !== undefined)
+    return entry2;
   const other = index.entries.find((candidate) => candidate.label === named || candidate.address === named);
   throw new VaultError("VAULT_INDEX_INVALID", other === undefined ? `No external wallet in this vault matches ${named}.` : `${named} is ${describeRole(other)}, not an external wallet.`, { suggestion: "List them: candle external list. Create one: candle external new --label <name>", exitCode: 2 });
 }
@@ -90597,7 +90927,7 @@ async function externalNew(args, ctx) {
     const index = nextAllocatableIndex(vault.index.hd.nextIndex.solanaExternal, vault.index.hd.exposedIndexes.solanaExternal);
     const derivationPath = solanaExternalPath(index);
     const label = parsed.values["--label"] ?? `external-${index}`;
-    if (vault.index.entries.some((entry2) => entry2.label === label)) {
+    if (vault.index.entries.some((entry3) => entry3.label === label)) {
       return usage(ctx, `A key labelled ${label} already exists in this vault; choose another --label.`);
     }
     const root = await decryptRoot(vault);
@@ -90616,7 +90946,7 @@ async function externalNew(args, ctx) {
     } finally {
       wipe(root);
     }
-    const entry = {
+    const entry2 = {
       id: keyId,
       chain: "solana",
       curve: "ed25519",
@@ -90632,7 +90962,7 @@ async function externalNew(args, ctx) {
     const written = await commitVault(vault, {
       index: {
         hd: { ...vault.index.hd, nextIndex: { ...vault.index.hd.nextIndex, solanaExternal: index + 1 } },
-        entries: [...vault.index.entries, entry]
+        entries: [...vault.index.entries, entry2]
       },
       addKeys: [blob]
     }, deps);
@@ -90687,12 +91017,12 @@ async function externalList(args, ctx) {
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const vault = hold((await unlockInteractively(promptCtx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
-    const externals = vault.index.entries.filter((entry) => entry.role === "external");
-    const rows = externals.map((entry) => ({
-      address: entry.address,
-      label: entry.label,
-      derivation: entry.derivation?.path,
-      exposureUnknown: entry.exposure.exposureUnknown === true
+    const externals = vault.index.entries.filter((entry2) => entry2.role === "external");
+    const rows = externals.map((entry2) => ({
+      address: entry2.address,
+      label: entry2.label,
+      derivation: entry2.derivation?.path,
+      exposureUnknown: entry2.exposure.exposureUnknown === true
     }));
     if (ctx.json) {
       writeJson(deps, { ok: true, wallets: rows, vaultVersion: vault.file.version });
@@ -91579,12 +91909,12 @@ import { randomUUID as randomUUID8 } from "node:crypto";
 // src/commands/token-pages.ts
 init_esm();
 init_args();
+import { createHash as createHash5, randomUUID as randomUUID7 } from "node:crypto";
 init_client();
 init_deps();
 init_human_output();
 init_presentation();
 init_render();
-import { createHash as createHash5, randomUUID as randomUUID7 } from "node:crypto";
 var EXIT_OUTCOME_UNKNOWN = 3;
 var EXIT_REVISION_CONFLICT = 4;
 var TOKEN_PAGE_LIMITS = { thesis: 280, tokenomics: 5000, lore: 5000, update: 1000, comment: 500 };
@@ -91635,7 +91965,7 @@ ${line}` : line, ctx.json);
 }
 function chainOf(values) {
   const chain2 = values["--chain"] ?? "solana";
-  return chain2 === "solana" || chain2 === "hood" ? chain2 : undefined;
+  return chain2 === "solana" || isEvmChainSlug(chain2) ? chain2 : undefined;
 }
 function pagePath(chain2, address, rest = "") {
   return `/api/v1/token-pages/${chain2}/${encodeURIComponent(address)}${rest}`;
@@ -95542,13 +95872,13 @@ function packValue2(out, value) {
     for (const item of value)
       packValue2(out, item);
   } else if (typeof value === "object") {
-    const entries2 = Object.entries(value).filter(([, v]) => v !== undefined);
-    for (const [key] of entries2) {
+    const entries3 = Object.entries(value).filter(([, v]) => v !== undefined);
+    for (const [key] of entries3) {
       if (/^(0|[1-9][0-9]*)$/.test(key))
         throw new Error(`msgpack: integer-like key "${key}"`);
     }
-    packHeader2(out, entries2.length, 128, 15, [0, 222, 223]);
-    for (const [key, item] of entries2) {
+    packHeader2(out, entries3.length, 128, 15, [0, 222, 223]);
+    for (const [key, item] of entries3) {
       packValue2(out, key);
       packValue2(out, item);
     }
@@ -95768,7 +96098,7 @@ function checkActionIntent2(action, opts) {
   if (!intent)
     return null;
   const { method, params: p } = intent;
-  const types3 = {
+  const types4 = {
     setup: "approveBuilderFee",
     open: "order",
     close: "order",
@@ -95779,7 +96109,7 @@ function checkActionIntent2(action, opts) {
     tpsl: "order",
     scheduleCancel: "scheduleCancel"
   };
-  if (action.type !== types3[method])
+  if (action.type !== types4[method])
     return "action type does not match the requested method";
   if (opts.keyReduceOnly === true && method === "open")
     return "this key is reduce-only and an open is not reducing";
@@ -96198,8 +96528,8 @@ async function hyperliquidWalletSnapshot2(fetcher, network2, address, now = Date
   if (!Array.isArray(positionsRaw))
     throw new Error("Hyperliquid returned an unreadable account state");
   const positions = [];
-  for (const entry of positionsRaw) {
-    const p = entry?.position;
+  for (const entry2 of positionsRaw) {
+    const p = entry2?.position;
     const coin = p?.coin;
     const lev = p?.leverage;
     const szi = p?.szi;
@@ -96478,16 +96808,16 @@ function parseMarkets2(value) {
   if (meta.marginTables !== undefined) {
     if (!Array.isArray(meta.marginTables))
       return unavailable4();
-    for (const entry of meta.marginTables) {
-      if (!Array.isArray(entry) || !integer2(entry[0]) || !object4(entry[1]) || !Array.isArray(entry[1].marginTiers))
+    for (const entry2 of meta.marginTables) {
+      if (!Array.isArray(entry2) || !integer2(entry2[0]) || !object4(entry2[1]) || !Array.isArray(entry2[1].marginTiers))
         return unavailable4();
       const tiers = [];
-      for (const tier of entry[1].marginTiers) {
+      for (const tier of entry2[1].marginTiers) {
         if (!object4(tier) || nonnegative2(tier.lowerBound) === null || !integer2(tier.maxLeverage))
           return unavailable4();
         tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
       }
-      marginTables.set(entry[0], tiers);
+      marginTables.set(entry2[0], tiers);
     }
   }
   return { universe: meta.universe, ctxs, marginTables };
@@ -96689,16 +97019,16 @@ class PerpsMarketReader2 {
           if (!Array.isArray(value2))
             return unavailable4();
           const map2 = new Map;
-          for (const entry of value2) {
-            if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1]))
+          for (const entry2 of value2) {
+            if (!Array.isArray(entry2) || typeof entry2[0] !== "string" || !Array.isArray(entry2[1]))
               return unavailable4();
-            for (const venue of entry[1]) {
+            for (const venue of entry2[1]) {
               if (!Array.isArray(venue) || typeof venue[0] !== "string")
                 return unavailable4();
               if (venue[0] === "HlPerp" && venue[1] !== null) {
                 if (!object4(venue[1]) || !decimal5(venue[1].fundingRate) || !integer2(venue[1].nextFundingTime))
                   return unavailable4();
-                map2.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
+                map2.set(entry2[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
               }
             }
           }
@@ -97447,8 +97777,8 @@ function parseClearinghouse2(body) {
     throw bad("withdrawable");
   if (!Array.isArray(body.assetPositions))
     throw bad("assetPositions");
-  const positions = body.assetPositions.map((entry) => {
-    const p = isRecord3(entry) ? entry.position : undefined;
+  const positions = body.assetPositions.map((entry2) => {
+    const p = isRecord3(entry2) ? entry2.position : undefined;
     if (!isRecord3(p) || typeof p.coin !== "string" || p.coin === "")
       throw bad("position");
     for (const field of ["szi", "entryPx", "positionValue", "unrealizedPnl", "returnOnEquity", "marginUsed"])
@@ -100492,8 +100822,8 @@ var perpsCandles = (argv, ctx) => read2(ctx, argv, "candles");
 
 // src/commands/perps-withdraw.ts
 init_args();
-init_human_output();
 import { randomUUID as randomUUID12 } from "node:crypto";
+init_human_output();
 
 // src/hyperliquid-withdraw.ts
 var CANDLE_PERPS_WITHDRAW_PINS = {
@@ -100549,7 +100879,7 @@ function parseSendAssetAmount(value, form) {
     return null;
   return BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, "0"));
 }
-function isObject2(value) {
+function isObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function exactKeys3(value, keys) {
@@ -100559,16 +100889,16 @@ function exactKeys3(value, keys) {
 function sameEvm(a, b) {
   return typeof a === "string" && EVM_ADDRESS_RE5.test(a) && a.toLowerCase() === b.toLowerCase();
 }
-function typesMatch(types3, expected) {
-  if (!isObject2(types3) || !exactKeys3(types3, Object.keys(expected)))
+function typesMatch(types4, expected) {
+  if (!isObject3(types4) || !exactKeys3(types4, Object.keys(expected)))
     return false;
   return Object.entries(expected).every(([key, want]) => {
-    const fields2 = types3[key];
-    return Array.isArray(fields2) && fields2.length === want.length && fields2.every((field, i) => isObject2(field) && exactKeys3(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
+    const fields2 = types4[key];
+    return Array.isArray(fields2) && fields2.length === want.length && fields2.every((field, i) => isObject3(field) && exactKeys3(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
   });
 }
 function domainMatches(domain, expected) {
-  return isObject2(domain) && exactKeys3(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
+  return isObject3(domain) && exactKeys3(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
 }
 function verifyWithdrawMapping(build, expect) {
   const refuse3 = (reason) => ({ ok: false, reason });
@@ -100587,14 +100917,14 @@ function verifyWithdrawMapping(build, expect) {
   if (parseWithdrawAmount(build.amountUsdc) !== expect.amountMicros)
     return refuse3("the build is for another amount");
   const typed = build.typedData;
-  if (!isObject2(typed) || typed.primary_type !== "NonceMapping")
+  if (!isObject3(typed) || typed.primary_type !== "NonceMapping")
     return refuse3("the typed data is not a NonceMapping");
   if (!domainMatches(typed.domain, { name: "RelayNonceMapping", version: "2", chainId: 1 }))
     return refuse3("the NonceMapping domain is not Relay's");
   if (!typesMatch(typed.types, RELAY_NONCE_MAPPING_TYPES))
     return refuse3("the NonceMapping type list differs");
   const message = typed.message;
-  if (!isObject2(message) || !exactKeys3(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
+  if (!isObject3(message) || !exactKeys3(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
     return refuse3("the NonceMapping message has other fields");
   if (message.chainId !== "hyperliquid")
     return refuse3("the NonceMapping names another chain");
@@ -100616,14 +100946,14 @@ function verifyWithdrawSendAsset(authorization, expect) {
   if (pins === null)
     return refuse3("no withdrawal pins are set");
   const typed = authorization.typedData;
-  if (!isObject2(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
+  if (!isObject3(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
     return refuse3("the typed data is not a SendAsset");
   if (!domainMatches(typed.domain, { name: "HyperliquidSignTransaction", version: "1", chainId: 42161 }))
     return refuse3("the SendAsset domain is not Hyperliquid's user-signed domain");
   if (!typesMatch(typed.types, HYPERLIQUID_SEND_ASSET_TYPES))
     return refuse3("the SendAsset type list differs");
   const m = typed.message;
-  if (!isObject2(m) || !exactKeys3(m, SEND_ASSET_KEYS))
+  if (!isObject3(m) || !exactKeys3(m, SEND_ASSET_KEYS))
     return refuse3("the SendAsset message has other fields");
   if (m.hyperliquidChain !== "Mainnet")
     return refuse3("the SendAsset is not on Mainnet");
@@ -100642,7 +100972,7 @@ function verifyWithdrawSendAsset(authorization, expect) {
   if (typeof m.destination !== "string" || !pins.depositories.includes(m.destination.toLowerCase()))
     return refuse3("the SendAsset destination is not a Relay depository on the allow-list");
   const action = authorization.action;
-  if (!isObject2(action) || !exactKeys3(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
+  if (!isObject3(action) || !exactKeys3(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
     return refuse3("the action has other fields");
   if (action.type !== "sendAsset" || action.signatureChainId !== "0xa4b1")
     return refuse3("the action is not a sendAsset");
@@ -100732,7 +101062,7 @@ async function perpsWithdraw(args, ctx) {
     return usage10(ctx, parsed.error);
   const [amount] = parsed.positionals;
   const to = parsed.values["--to"];
-  if (parsed.positionals.length !== 1 || !amount || to !== "solana" && to !== "hood")
+  if (parsed.positionals.length !== 1 || !amount || to === undefined || to !== "solana" && !isEvmChainSlug(to))
     return usage10(ctx, USAGE13);
   const amountMicros = parseWithdrawAmount(amount);
   if (amountMicros === null)
@@ -100757,6 +101087,8 @@ async function perpsWithdraw(args, ctx) {
     if (!wallet3)
       throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.");
     const { rows } = await listTradingWallets(ctx, key);
+    if (to !== "solana" && to !== "hood")
+      throw new TradingError("PERPS_WITHDRAW_UNVERIFIED", `A withdrawal lands on this key's Solana or Hood TEE wallet; "${to}" has no TEE wallet to land on yet. Nothing was built.`);
     const ownDestinations = to === "hood" ? [wallet3.address] : rows.filter((row2) => row2.chain === "solana").map((row2) => row2.address);
     if (ownDestinations.length === 0)
       throw new TradingError("TEE_WALLET_REQUIRED", "This key has no Solana TEE wallet, so --to solana has nowhere to land. Withdraw --to hood instead.");
@@ -100892,7 +101224,7 @@ class X402DecodeError extends Error {
   }
 }
 var BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
-var isObject3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var isString = (value) => typeof value === "string";
 function encodeHeader(value) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
@@ -100907,12 +101239,12 @@ function decodeHeader(value) {
   } catch {
     throw new X402DecodeError("not JSON");
   }
-  if (!isObject3(parsed))
+  if (!isObject4(parsed))
     throw new X402DecodeError("not a JSON object");
   return parsed;
 }
 function parseRequirements(value) {
-  if (!isObject3(value))
+  if (!isObject4(value))
     throw new X402DecodeError("requirements are not an object");
   const { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, extra } = value;
   if (!isString(scheme) || !isString(network2) || !isString(amount) || !isString(asset) || !isString(payTo)) {
@@ -100921,7 +101253,7 @@ function parseRequirements(value) {
   if (typeof maxTimeoutSeconds !== "number" || !Number.isInteger(maxTimeoutSeconds)) {
     throw new X402DecodeError("maxTimeoutSeconds is not an integer");
   }
-  if (extra !== undefined && !isObject3(extra))
+  if (extra !== undefined && !isObject4(extra))
     throw new X402DecodeError("extra is not an object");
   return { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, ...extra ? { extra } : {} };
 }
@@ -100930,7 +101262,7 @@ function decodePaymentRequired(header) {
   if (object5.x402Version !== X402_VERSION)
     throw new X402DecodeError("x402Version is not 2");
   const resource = object5.resource;
-  if (!isObject3(resource) || !isString(resource.url))
+  if (!isObject4(resource) || !isString(resource.url))
     throw new X402DecodeError("resource is missing");
   if (!Array.isArray(object5.accepts))
     throw new X402DecodeError("accepts is not an array");
@@ -100945,7 +101277,7 @@ function decodePaymentRequired(header) {
       ...isString(resource.mimeType) ? { mimeType: resource.mimeType } : {}
     },
     accepts: object5.accepts.map(parseRequirements),
-    ...isObject3(object5.extensions) ? { extensions: object5.extensions } : {}
+    ...isObject4(object5.extensions) ? { extensions: object5.extensions } : {}
   };
 }
 function paymentRequiredOf(headers2) {
@@ -100997,11 +101329,11 @@ function signupSignerRef(spkiSha256) {
 function planStatePath(paths) {
   return paths.log.replace(/\.jsonl$/, ".plan.json");
 }
-var isObject4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var str = (value) => typeof value === "string" ? value : undefined;
 var plan = (value) => value === "pro" || value === "max" ? value : undefined;
 function parsePending(value) {
-  if (!isObject4(value) || !isObject4(value.body))
+  if (!isObject5(value) || !isObject5(value.body))
     return;
   const p = plan(value.plan);
   const { id, path, paymentHeader, amountRaw, payer, startedAt } = value;
@@ -101030,7 +101362,7 @@ function parsePending(value) {
   };
 }
 function parseSigner(value) {
-  if (!isObject4(value))
+  if (!isObject5(value))
     return;
   const { spkiSha256, publicKeyDer, fingerprint, payer, createdAt } = value;
   if (typeof spkiSha256 !== "string" || !/^[0-9a-f]{64}$/.test(spkiSha256) || typeof publicKeyDer !== "string" || typeof fingerprint !== "string" || typeof payer !== "string" || typeof createdAt !== "string") {
@@ -101047,7 +101379,7 @@ function parsePlanState(text4) {
   } catch {
     return { autoRenew: false };
   }
-  if (!isObject4(raw))
+  if (!isObject5(raw))
     return { autoRenew: false };
   const ceiling = str(raw.renewCeilingRaw);
   const pending = parsePending(raw.pending);
@@ -101338,13 +101670,13 @@ async function appendSpendLines(paths, lines) {
   await chmod12(paths.log, 384).catch(() => {});
 }
 function foldSpendLog(lines) {
-  const entries2 = new Map;
+  const entries3 = new Map;
   for (const line of lines) {
-    const existing = entries2.get(line.id);
+    const existing = entries3.get(line.id);
     if (!existing) {
       if (line.state !== "pending" || line.amountRaw === undefined || !/^[0-9]{1,20}$/.test(line.amountRaw))
         continue;
-      entries2.set(line.id, {
+      entries3.set(line.id, {
         id: line.id,
         startedAt: line.at,
         updatedAt: line.at,
@@ -101367,19 +101699,19 @@ function foldSpendLog(lines) {
     if (line.reason !== undefined)
       existing.reason = line.reason;
   }
-  return [...entries2.values()];
+  return [...entries3.values()];
 }
 function utcDay(at3) {
   return new Date(at3).toISOString().slice(0, 10);
 }
 var PLAN_SPEND_KIND = "plan";
-function spentOn(entries2, day) {
+function spentOn(entries3, day) {
   let total = 0n;
-  for (const entry of entries2) {
-    if (entry.kind === PLAN_SPEND_KIND)
+  for (const entry2 of entries3) {
+    if (entry2.kind === PLAN_SPEND_KIND)
       continue;
-    if (entry.state !== "failed" && utcDay(entry.startedAt) === day)
-      total += entry.amountRaw;
+    if (entry2.state !== "failed" && utcDay(entry2.startedAt) === day)
+      total += entry2.amountRaw;
   }
   return total;
 }
@@ -101464,10 +101796,10 @@ async function openVaultSigner(ctx, options) {
     if (matches.length > 1) {
       throw new VaultError("VAULT_LABEL_AMBIGUOUS", `This vault has ${matches.length} Solana vault keys; name the one that pays with --wallet <label>. Nothing was paid.`, { suggestion: `Keys: ${matches.map((e) => e.label).join(", ")}` });
     }
-    const entry = matches[0];
-    const secret = await decryptKey(vault, entry.id);
+    const entry2 = matches[0];
+    const secret = await decryptKey(vault, entry2.id);
     return {
-      address: entry.address,
+      address: entry2.address,
       sign: (message) => signMessage(message, secret),
       close: () => {
         wipe(secret);
@@ -101482,11 +101814,11 @@ async function openVaultSigner(ctx, options) {
 
 // src/commands/token-paid.ts
 init_args();
+import { randomUUID as randomUUID13 } from "node:crypto";
 init_deps();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
-import { randomUUID as randomUUID13 } from "node:crypto";
 
 // src/x402/pay.ts
 init_client();
@@ -101494,14 +101826,14 @@ init_client();
 // src/x402/siwx.ts
 init_esm();
 var SIWX_EXTENSION = "sign-in-with-x";
-var isObject5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject6 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 function spendChallengeOf(extensions, apiHost, network2) {
   const extension = extensions?.[SIWX_EXTENSION];
-  if (!isObject5(extension) || !isObject5(extension.info))
+  if (!isObject6(extension) || !isObject6(extension.info))
     return null;
   const info3 = extension.info;
   const chains = Array.isArray(extension.supportedChains) ? extension.supportedChains : [];
-  const chain2 = chains.find((c) => isObject5(c) && c.chainId === network2 && c.type === "ed25519");
+  const chain2 = chains.find((c) => isObject6(c) && c.chainId === network2 && c.type === "ed25519");
   if (!chain2)
     return null;
   const { domain, uri, version, nonce, issuedAt, expirationTime } = info3;
@@ -101645,8 +101977,8 @@ function dailyRefusal(priceUsdc, spentToday, limit) {
     priceUsdc
   };
 }
-function mayHoldWalletCredit(entries2, address, network2) {
-  return entries2.some((e) => e.keyless && e.state === "credited" && e.payer === address && e.network === network2);
+function mayHoldWalletCredit(entries3, address, network2) {
+  return entries3.some((e) => e.keyless && e.state === "credited" && e.payer === address && e.network === network2);
 }
 function outcomeOf2(second) {
   const settlement = settlementOf(second.headers);
@@ -101874,8 +102206,8 @@ async function runPaidRead(ctx, input) {
 async function tokenForensics(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--chain", ...PAY_FLAGS], booleanFlags: PAY_BOOLEANS });
   const chain2 = "error" in parsed ? undefined : parsed.values["--chain"] ?? "solana";
-  if ("error" in parsed || parsed.positionals.length !== 1 || chain2 !== "solana" && chain2 !== "hood") {
-    writeUsageFailure(ctx.deps, "Usage: candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes]", ctx.json);
+  if ("error" in parsed || parsed.positionals.length !== 1 || chain2 === undefined || chain2 !== "solana" && !isEvmChainSlug(chain2)) {
+    writeUsageFailure(ctx.deps, "Usage: candle token forensics <mint> [--chain <chain>] [--wallet <vault key>] [--yes]", ctx.json);
     return 2;
   }
   const mint = parsed.positionals[0];
@@ -101961,9 +102293,9 @@ function isSolanaAddress2(value) {
     return false;
   }
 }
-var isObject6 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject7 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 function quotedPlanOf(raw) {
-  const plan2 = isObject6(raw) && isObject6(raw.plan) ? raw.plan : null;
+  const plan2 = isObject7(raw) && isObject7(raw.plan) ? raw.plan : null;
   if (!plan2)
     return null;
   const n = (v) => typeof v === "string" && /^[0-9]{1,20}$/.test(v) ? BigInt(v) : null;
@@ -101975,14 +102307,14 @@ function quotedPlanOf(raw) {
   return { listRaw, creditRaw, dueRaw, signup: plan2.signup === true };
 }
 function receiptOf(body) {
-  if (!isObject6(body) || body.status !== "fulfilled" || typeof body.account !== "string")
+  if (!isObject7(body) || body.status !== "fulfilled" || typeof body.account !== "string")
     return null;
   if (body.plan !== "pro" && body.plan !== "max")
     return null;
   const paid = typeof body.amountPaidUsdMicros === "string" && /^[0-9]{1,20}$/.test(body.amountPaidUsdMicros);
-  const s = isObject6(body.signup) ? body.signup : null;
-  const signer = s && isObject6(s.signer) ? s.signer : null;
-  const wallets2 = s && isObject6(s.wallets) ? s.wallets : null;
+  const s = isObject7(body.signup) ? body.signup : null;
+  const signer = s && isObject7(s.signer) ? s.signer : null;
+  const wallets2 = s && isObject7(s.wallets) ? s.wallets : null;
   const signup = s && typeof s.keyPrefix === "string" && signer && typeof signer.fingerprint === "string" && typeof signer.signerQuorumId === "string" && wallets2 && typeof wallets2.solana === "string" && typeof wallets2.evm === "string" ? {
     keyPrefix: s.keyPrefix,
     fingerprint: signer.fingerprint,
@@ -102400,7 +102732,7 @@ async function runPlanPayment(ctx, run2) {
         return 1;
       }
     }
-    const termsUrl = isObject6(quote.raw) && isObject6(quote.raw.terms) && typeof quote.raw.terms.url === "string" ? quote.raw.terms.url : CANDLE_TERMS_URL;
+    const termsUrl = isObject7(quote.raw) && isObject7(quote.raw.terms) && typeof quote.raw.terms.url === "string" ? quote.raw.terms.url : CANDLE_TERMS_URL;
     writeFields(deps, json || run2.mode === "auto" ? "stderr" : "stdout", [
       ["Plan", `Candle ${planName(run2.plan)}, 30 days${renew ? " (renewal)" : ""}${isSignup ? ", new account" : ""}`],
       ...quoted && quoted.creditRaw > 0n ? [
@@ -102535,7 +102867,7 @@ async function serverPlan(ctx, apiKey) {
     env: ctx.deps.env,
     fetch: ctx.deps.fetch
   });
-  if (!result.ok || !isObject6(result.body))
+  if (!result.ok || !isObject7(result.body))
     return null;
   const tier = typeof result.body.tier === "string" ? result.body.tier : null;
   const expires = result.body.maxTierExpiresAt;
@@ -102635,9 +102967,9 @@ async function planStatus(args, ctx) {
     if (!payments.ok && payments.status === 404) {
       paymentNote = "x402 payment history is not available yet on this Candle server; any payment shown is this machine's record.";
     }
-    if (payments.ok && isObject6(payments.body) && Array.isArray(payments.body.payments)) {
-      const found = payments.body.payments.find((p) => isObject6(p) && p.kind === PLAN_SPEND_KIND);
-      lastServer = isObject6(found) ? found : null;
+    if (payments.ok && isObject7(payments.body) && Array.isArray(payments.body.payments)) {
+      const found = payments.body.payments.find((p) => isObject7(p) && p.kind === PLAN_SPEND_KIND);
+      lastServer = isObject7(found) ? found : null;
     }
   }
   const local = foldSpendLog(await readSpendLog(paths)).filter((e) => e.kind === PLAN_SPEND_KIND).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
@@ -102770,10 +103102,10 @@ function formatPlanBps2(bps2) {
 function count2(n) {
   return n.toLocaleString("en-US");
 }
-function priceCell2(entry) {
-  if (entry.price)
-    return `$${count2(entry.price.pricePerMonthUsd)} a month`;
-  return entry.plan === "free" ? "free" : "not sold";
+function priceCell2(entry2) {
+  if (entry2.price)
+    return `$${count2(entry2.price.pricePerMonthUsd)} a month`;
+  return entry2.plan === "free" ? "free" : "not sold";
 }
 function planTableRows2(table) {
   const plans = table.plans;
@@ -102792,8 +103124,8 @@ function planTableRows2(table) {
   }
   const known = Object.keys(PLAN_CAPABILITY_LABELS2);
   const served = new Set;
-  for (const entry of plans)
-    for (const key of Object.keys(entry.capabilities ?? {}))
+  for (const entry2 of plans)
+    for (const key of Object.keys(entry2.capabilities ?? {}))
       served.add(key);
   const keys = [
     ...known.filter((k) => served.has(k)),
@@ -103222,8 +103554,8 @@ async function runPlugin(name2, rawArgs, ctx) {
       const raw = await requireVaultRaw(ctx, resolvedVault);
       const vault = hold((await unlockInteractively(promptCtx, vaultPath, raw)).vault);
       for (const requested of split2.wallets) {
-        const entry = findExternalEntry(vault.index, requested);
-        if (entry === undefined) {
+        const entry2 = findExternalEntry(vault.index, requested);
+        if (entry2 === undefined) {
           const other = vault.index.entries.find((e) => e.label === requested || e.address === requested);
           writeScreenLocalFailure(ctx.deps, {
             code: "PLUGIN_WALLET_NOT_EXTERNAL",
@@ -103232,7 +103564,7 @@ async function runPlugin(name2, rawArgs, ctx) {
           }, ctx.json);
           return 1;
         }
-        wallets2[entry.label] = entry.address;
+        wallets2[entry2.label] = entry2.address;
       }
       closeVault(vault);
       return 0;
@@ -103891,7 +104223,7 @@ var KNOWN_SYMBOLS = {
 var CHUNK = 100;
 var TOKEN_READS_IN_FLIGHT = 8;
 var EVM_READS_IN_FLIGHT = 8;
-var CHAINS2 = ["solana", "hood"];
+var chainsNow = () => ["solana", ...enabledEvmChainSlugs()];
 var CHAIN_NAMES = { solana: "Solana", hood: "Hood" };
 var HOOD_NATIVE = "native";
 function hoodPriceKey(mint) {
@@ -103932,10 +104264,14 @@ async function portfolio(args, ctx) {
   const keep = (wallet3) => filter === undefined || matches(wallet3, filter);
   const { deps } = ctx;
   const chainFlag = parsed.values["--chain"];
+  const CHAINS2 = chainsNow();
   if (chainFlag !== undefined && !CHAINS2.includes(chainFlag)) {
-    return usage(ctx, `--chain must be solana or hood, not ${chainFlag}.`);
+    return usage(ctx, `--chain must be one of ${CHAINS2.join(", ")}, not ${chainFlag}.`);
   }
-  const chains = chainFlag === undefined ? [...CHAINS2] : [chainFlag];
+  if (chainFlag !== undefined && chainFlag !== "solana" && chainFlag !== "hood") {
+    return usage(ctx, `portfolio cannot read ${chainFlag} yet: --chain is solana or hood. Nothing was read.`);
+  }
+  const chains = chainFlag === undefined ? CHAINS2.filter((c) => c === "solana" || c === "hood") : [chainFlag];
   const showSolana = chains.includes("solana");
   const showHood = chains.includes("hood");
   if (!showSolana && parsed.values["--rpc-url"] !== undefined) {
@@ -103994,8 +104330,8 @@ async function portfolio(args, ctx) {
       vaultSkipped = true;
       notice(deps, "stderr", "note", NO_TERMINAL_NOTE);
     } else {
-      vaultEntries = showSolana ? vault.index.entries.filter((entry) => entry.chain === "solana" && (entry.role === "vault" || entry.role === "external")).map((entry) => ({ address: entry.address, label: entry.label, role: entry.role })) : [];
-      evmEntries = showHood ? vault.index.entries.filter((entry) => entry.chain === "evm" && entry.role === "vault").map((entry) => ({ address: entry.address, label: entry.label })) : [];
+      vaultEntries = showSolana ? vault.index.entries.filter((entry2) => entry2.chain === "solana" && (entry2.role === "vault" || entry2.role === "external")).map((entry2) => ({ address: entry2.address, label: entry2.label, role: entry2.role })) : [];
+      evmEntries = showHood ? vault.index.entries.filter((entry2) => entry2.chain === "evm" && entry2.role === "vault").map((entry2) => ({ address: entry2.address, label: entry2.label })) : [];
       known += vaultEntries.length + evmEntries.length;
       vaultEntries = vaultEntries.filter(keep);
       evmEntries = evmEntries.filter(keep);
@@ -104015,7 +104351,7 @@ async function portfolio(args, ctx) {
       notice(deps, "stderr", "note", `Reading ETH and USDG for ${n} EVM vault ${n === 1 ? "address" : "addresses"} from ${evmHost}${evmRpc.builtIn ? " (the built-in Hood RPC)" : ""} in ${1 + 2 * n} requests. That endpoint sees them together; Candle sees none of them.
 `.trim());
     }
-    const evmRead2 = evmRpc && evmEntries && evmEntries.length > 0 ? await startEvmRead(evmEntries.map((entry) => entry.address), evmRpc.url, deps.fetch) : undefined;
+    const evmRead2 = evmRpc && evmEntries && evmEntries.length > 0 ? await startEvmRead(evmEntries.map((entry2) => entry2.address), evmRpc.url, deps.fetch) : undefined;
     const [candle, vaultRead, evmBalances] = await Promise.all([
       apiRequest("/api/v1/agent/portfolio", {
         auth: "key",
@@ -104024,7 +104360,7 @@ async function portfolio(args, ctx) {
         fetch: deps.fetch,
         env: deps.env
       }),
-      solana && vaultEntries && vaultEntries.length > 0 ? readOwnRpc(vaultEntries.map((entry) => entry.address), solana, ctx) : Promise.resolve(undefined),
+      solana && vaultEntries && vaultEntries.length > 0 ? readOwnRpc(vaultEntries.map((entry2) => entry2.address), solana, ctx) : Promise.resolve(undefined),
       evmRead2 ? evmRead2.balances() : Promise.resolve(undefined)
     ]);
     if (vaultRead?.failure !== undefined) {
@@ -104118,9 +104454,9 @@ async function portfolio(args, ctx) {
     const lpSection = showSolana ? fromCandle.lp : undefined;
     const lpByWallet = new Map;
     const lpOf = (address) => {
-      const entry = lpByWallet.get(address) ?? { positions: [], unread: [] };
-      lpByWallet.set(address, entry);
-      return entry;
+      const entry2 = lpByWallet.get(address) ?? { positions: [], unread: [] };
+      lpByWallet.set(address, entry2);
+      return entry2;
     };
     for (const position of lpSection?.positions ?? [])
       lpOf(position.wallet).positions.push(lpRow(position, prices));
@@ -104163,13 +104499,13 @@ async function portfolio(args, ctx) {
     const solanaRows = (rows) => showSolana ? rows ?? [] : [];
     const groups = [
       group("vault", [
-        ...(vaultEntries ?? []).map((entry) => wallet3("solana", entry.address, solanaHoldings(vaultRead?.byAddress.get(entry.address), prices), {
-          label: entry.label,
-          role: entry.role
+        ...(vaultEntries ?? []).map((entry2) => wallet3("solana", entry2.address, solanaHoldings(vaultRead?.byAddress.get(entry2.address), prices), {
+          label: entry2.label,
+          role: entry2.role
         })),
-        ...(evmEntries ?? []).map((entry) => {
-          const read3 = evmBalances?.byAddress.get(entry.address);
-          return wallet3("hood", entry.address, hoodHoldings(read3 && {
+        ...(evmEntries ?? []).map((entry2) => {
+          const read3 = evmBalances?.byAddress.get(entry2.address);
+          return wallet3("hood", entry2.address, hoodHoldings(read3 && {
             wei: read3.wei === null ? null : read3.wei.toString(),
             tokens: read3.usdg === null ? null : read3.usdg > 0n ? [
               {
@@ -104179,7 +104515,7 @@ async function portfolio(args, ctx) {
                 symbol: "USDG"
               }
             ] : []
-          }, prices, "usdg"), { label: entry.label, role: "vault" });
+          }, prices, "usdg"), { label: entry2.label, role: "vault" });
         })
       ], vaultEntries !== undefined, vaultReason),
       group("tee", [
@@ -104203,7 +104539,7 @@ async function portfolio(args, ctx) {
       solana: showSolana ? [...vaultRead?.unavailable ?? [], ...fromCandle.unavailable ?? []] : [],
       hood: [...evmBalances?.unavailable ?? [], ...candleHood?.unavailable ?? []]
     };
-    const unavailable6 = chains.flatMap((chain2) => unavailableByChain[chain2]);
+    const unavailable6 = chains.flatMap((chain2) => unavailableByChain[chain2] ?? []);
     const lpUnread = (lpSection?.unreadable ?? []).length;
     const listStatus = walletListStatus(answered);
     const shownUnread = unavailable6.length > 0 || lpUnread > 0;
@@ -104220,11 +104556,11 @@ async function portfolio(args, ctx) {
     const all = groups.flatMap((g) => g.wallets);
     const byChain = subtotals(all);
     for (const chain2 of chains) {
-      const entry = byChain[chain2];
-      if (!entry)
+      const entry2 = byChain[chain2];
+      if (!entry2)
         continue;
-      entry.wallets = all.filter((w) => w.chain === chain2).length;
-      entry.unavailable = unavailableByChain[chain2].length;
+      entry2.wallets = all.filter((w) => w.chain === chain2).length;
+      entry2.unavailable = unavailableByChain[chain2]?.length ?? 0;
     }
     const hoodTotals = byChain.hood;
     if (hoodTotals) {
@@ -104258,7 +104594,7 @@ async function portfolio(args, ctx) {
         unpriced,
         complete,
         unavailable: unavailable6,
-        unavailableByChain: Object.fromEntries(chains.map((chain2) => [chain2, unavailableByChain[chain2]])),
+        unavailableByChain: Object.fromEntries(chains.map((chain2) => [chain2, unavailableByChain[chain2] ?? []])),
         rpcHost: rpcHost ?? null,
         ...evmHost !== undefined ? { evmRpcHost: evmHost } : {},
         ...lp ? { lp } : {},
@@ -104677,7 +105013,7 @@ ${tableBlock(ctx, "LP positions", ["GROUP", "WALLET", "POSITION", "POOL", "HOLDI
       deps.stdout.write(`${" ".repeat(2 + width + 2 + valueWidth + 2)}${dim(line, style)}
 `);
   }
-  const unreadByChain = totals.chains.map((chain2) => [chain2, totals.unavailableByChain[chain2].length]).filter(([, n]) => n > 0);
+  const unreadByChain = totals.chains.map((chain2) => [chain2, totals.unavailableByChain[chain2]?.length ?? 0]).filter(([, n]) => n > 0);
   const unavailable6 = unreadByChain.reduce((sum, [, n]) => sum + n, 0);
   const warnings = [];
   if (unavailable6 > 0) {
@@ -105409,277 +105745,6 @@ async function quantTerms(args, ctx) {
 
 // src/commands/scan.ts
 init_args();
-
-// src/chains/registry.json
-var registry_default2 = [
-  {
-    slug: "solana",
-    family: "solana",
-    displayName: "Solana",
-    enabled: true,
-    addressFormat: "solana-base58",
-    native: { symbol: "SOL", name: "Solana", decimals: 9 },
-    explorer: { url: "https://solscan.io", urlEnv: null, api: "solscan" },
-    rpc: { env: {}, publicUrl: null, fallbackSwitchEnv: null }
-  },
-  {
-    slug: "hood",
-    family: "evm",
-    displayName: "Robinhood Chain",
-    enabled: true,
-    addressFormat: "evm-hex20",
-    native: { symbol: "ETH", name: "Ether", decimals: 18 },
-    explorer: { url: "https://robinhoodchain.blockscout.com", urlEnv: "HOOD_EXPLORER_URL", api: "blockscout" },
-    rpc: {
-      env: {
-        read: "HOOD_RPC_URL",
-        ledger: "LEDGER_HOOD_RPC_URL",
-        ledgerFallback: "LEDGER_HOOD_RPC_FALLBACK_URL",
-        feed: "FEED_HOOD_RPC_URL",
-        browser: "NEXT_PUBLIC_HOOD_RPC_URL"
-      },
-      publicUrl: "https://rpc.mainnet.chain.robinhood.com",
-      fallbackSwitchEnv: "HOOD_RPC_FALLBACK"
-    },
-    evm: {
-      chainId: 4663,
-      wrappedNative: { symbol: "WETH", address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", decimals: 18 },
-      stablecoins: [{ symbol: "USDG", address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", decimals: 6 }],
-      quoteAssets: ["0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"],
-      l1DataFee: "arbitrum",
-      blockTimeMs: 100,
-      publicMempool: false,
-      multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
-      dex: {
-        uniswapV3: {
-          factory: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA",
-          router: "0xCaf681a66D020601342297493863E78C959E5cb2",
-          quoter: "0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7",
-          initCodeHash: "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54"
-        },
-        uniswapV4: {
-          poolManager: "0x8366a39cc670b4001a1121b8f6a443a643e40951",
-          universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
-          quoter: "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
-          stateView: "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b"
-        },
-        permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3"
-      },
-      aggregators: [
-        { id: "kyber", vendorChainSlug: "robinhood", router: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" }
-      ],
-      vendors: { dexscreener: "robinhood", birdeye: "robinhood", geckoterminal: null },
-      cvcBaseUrlEnv: "CVC_API_URL",
-      feeTreasuryEnv: "AGENT_FEE_TREASURY_HOOD",
-      gasReserve: { feeMultiplier: 2, extraErc20Transfers: 1, legGasFallback: "500000" },
-      teePolicyChainId: "4663",
-      launch: {
-        contractEnv: {
-          curveFactory: "HOOD_CURVE_FACTORY",
-          curveRegistry: "HOOD_CURVE_REGISTRY",
-          stakingDistributor: "HOOD_STAKING_DISTRIBUTOR",
-          migratorV3: "HOOD_MIGRATOR_V3",
-          migratorV4: "HOOD_MIGRATOR_V4",
-          feeSplitterFactory: "HOOD_FEE_SPLITTER_FACTORY",
-          believerNft: "HOOD_BELIEVER_NFT"
-        }
-      }
-    }
-  }
-];
-
-// src/chains/registry.ts
-class ChainRegistryError2 extends Error {
-  code;
-  slug;
-  constructor(code, slug, message) {
-    super(message ?? `${code}: ${slug}`);
-    this.name = "ChainRegistryError";
-    this.code = code;
-    this.slug = slug;
-  }
-}
-var EVM_ADDRESS2 = /^0x[0-9a-fA-F]{40}$/;
-var SOLANA_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-var isObject7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function fail4(path, why) {
-  throw new Error(`chain registry: ${path} ${why}`);
-}
-function needString2(o, key, path) {
-  if (typeof o[key] !== "string" || o[key] === "")
-    fail4(`${path}.${key}`, "must be a non-empty string");
-}
-function needBool2(o, key, path) {
-  if (typeof o[key] !== "boolean")
-    fail4(`${path}.${key}`, "must be a boolean");
-}
-function needNumber2(o, key, path) {
-  if (typeof o[key] !== "number" || !Number.isFinite(o[key]))
-    fail4(`${path}.${key}`, "must be a number");
-}
-function needObject2(o, key, path) {
-  const v = o[key];
-  if (!isObject7(v))
-    fail4(`${path}.${key}`, "must be an object");
-  return v;
-}
-function needNullableString2(o, key, path) {
-  if (o[key] !== null && typeof o[key] !== "string")
-    fail4(`${path}.${key}`, "must be a string or null");
-}
-function needAddress2(v, path) {
-  if (typeof v !== "string" || !EVM_ADDRESS2.test(v))
-    fail4(path, "must be 0x plus 40 hex digits");
-}
-function needNullableAddress2(o, key, path) {
-  if (o[key] !== null)
-    needAddress2(o[key], `${path}.${key}`);
-}
-function checkToken2(v, path) {
-  if (!isObject7(v))
-    fail4(path, "must be an object");
-  needString2(v, "symbol", path);
-  needAddress2(v.address, `${path}.address`);
-  needNumber2(v, "decimals", path);
-}
-function checkAddressSet2(v, path, keys) {
-  if (v === null)
-    return;
-  if (!isObject7(v))
-    fail4(path, "must be an object or null");
-  for (const k of keys)
-    needAddress2(v[k], `${path}.${k}`);
-}
-function checkEvm2(evm, path) {
-  needNumber2(evm, "chainId", path);
-  checkToken2(evm.wrappedNative, `${path}.wrappedNative`);
-  if (!Array.isArray(evm.stablecoins))
-    fail4(`${path}.stablecoins`, "must be an array");
-  evm.stablecoins.forEach((t, i) => {
-    checkToken2(t, `${path}.stablecoins[${i}]`);
-  });
-  if (!Array.isArray(evm.quoteAssets))
-    fail4(`${path}.quoteAssets`, "must be an array");
-  evm.quoteAssets.forEach((a, i) => {
-    needAddress2(a, `${path}.quoteAssets[${i}]`);
-  });
-  if (!["none", "arbitrum", "op-stack"].includes(evm.l1DataFee))
-    fail4(`${path}.l1DataFee`, "is not a known model");
-  needNumber2(evm, "blockTimeMs", path);
-  needBool2(evm, "publicMempool", path);
-  needNullableAddress2(evm, "multicall3", path);
-  const dex = needObject2(evm, "dex", path);
-  checkAddressSet2(dex.uniswapV3, `${path}.dex.uniswapV3`, ["factory", "router", "quoter"]);
-  if (isObject7(dex.uniswapV3) && !/^0x[0-9a-fA-F]{64}$/.test(String(dex.uniswapV3.initCodeHash)))
-    fail4(`${path}.dex.uniswapV3.initCodeHash`, "must be 0x plus 64 hex digits");
-  checkAddressSet2(dex.uniswapV4, `${path}.dex.uniswapV4`, ["poolManager", "universalRouter", "quoter", "stateView"]);
-  needNullableAddress2(dex, "permit2", `${path}.dex`);
-  if (!Array.isArray(evm.aggregators))
-    fail4(`${path}.aggregators`, "must be an array");
-  evm.aggregators.forEach((a, i) => {
-    if (!isObject7(a))
-      fail4(`${path}.aggregators[${i}]`, "must be an object");
-    needString2(a, "id", `${path}.aggregators[${i}]`);
-    needString2(a, "vendorChainSlug", `${path}.aggregators[${i}]`);
-    needAddress2(a.router, `${path}.aggregators[${i}].router`);
-  });
-  const vendors = needObject2(evm, "vendors", path);
-  for (const k of ["dexscreener", "birdeye", "geckoterminal"])
-    needNullableString2(vendors, k, `${path}.vendors`);
-  needNullableString2(evm, "cvcBaseUrlEnv", path);
-  needNullableString2(evm, "feeTreasuryEnv", path);
-  const gas = needObject2(evm, "gasReserve", path);
-  needNumber2(gas, "feeMultiplier", `${path}.gasReserve`);
-  needNumber2(gas, "extraErc20Transfers", `${path}.gasReserve`);
-  needString2(gas, "legGasFallback", `${path}.gasReserve`);
-  needNullableString2(evm, "teePolicyChainId", path);
-  if (evm.launch !== null) {
-    const launch2 = needObject2(evm, "launch", path);
-    needObject2(launch2, "contractEnv", `${path}.launch`);
-  }
-}
-function validateChainEntries2(raw) {
-  if (!Array.isArray(raw))
-    fail4("registry", "must be an array");
-  const slugs = new Set;
-  const chainIds = new Set;
-  raw.forEach((item, i) => {
-    const path = `entry[${i}]`;
-    if (!isObject7(item))
-      fail4(path, "must be an object");
-    needString2(item, "slug", path);
-    needString2(item, "family", path);
-    needString2(item, "displayName", path);
-    needBool2(item, "enabled", path);
-    needString2(item, "addressFormat", path);
-    const native = needObject2(item, "native", path);
-    needString2(native, "symbol", `${path}.native`);
-    needString2(native, "name", `${path}.native`);
-    needNumber2(native, "decimals", `${path}.native`);
-    if (item.explorer !== null) {
-      const ex = needObject2(item, "explorer", path);
-      needString2(ex, "url", `${path}.explorer`);
-      needNullableString2(ex, "urlEnv", `${path}.explorer`);
-      if (!["blockscout", "etherscan", "solscan", "none"].includes(ex.api))
-        fail4(`${path}.explorer.api`, "is not a known API kind");
-    }
-    const rpc = needObject2(item, "rpc", path);
-    needObject2(rpc, "env", `${path}.rpc`);
-    needNullableString2(rpc, "publicUrl", `${path}.rpc`);
-    needNullableString2(rpc, "fallbackSwitchEnv", `${path}.rpc`);
-    if (slugs.has(item.slug))
-      fail4(path, `has duplicate slug "${item.slug}"`);
-    slugs.add(item.slug);
-    if (item.family === "evm") {
-      if (item.addressFormat !== "evm-hex20")
-        fail4(`${path}.addressFormat`, "must be evm-hex20 for an evm entry");
-      if (!isObject7(item.evm))
-        fail4(`${path}.evm`, "is required on an evm entry");
-      checkEvm2(item.evm, `${path}.evm`);
-      const id = item.evm.chainId;
-      if (chainIds.has(id))
-        fail4(path, `has duplicate chain id ${id}`);
-      chainIds.add(id);
-    } else if (item.family === "solana") {
-      if (item.addressFormat !== "solana-base58")
-        fail4(`${path}.addressFormat`, "must be solana-base58");
-      if ("evm" in item)
-        fail4(`${path}.evm`, "is not allowed on a non-evm entry");
-    } else {
-      fail4(`${path}.family`, `"${String(item.family)}" is not a known family`);
-    }
-  });
-  return raw;
-}
-var BUILT_IN2 = validateChainEntries2(registry_default2);
-var entries2 = BUILT_IN2;
-var isEvmChain2 = (entry) => entry.family === "evm";
-function listChains(filter) {
-  return entries2.filter((e) => (!filter?.family || e.family === filter.family) && (!filter?.enabledOnly || e.enabled));
-}
-var getChain2 = (slug) => entries2.find((e) => e.slug === slug);
-function requireChain2(slug, opts) {
-  const entry = getChain2(slug);
-  if (!entry)
-    throw new ChainRegistryError2("UNKNOWN_CHAIN", slug, `Unknown chain "${slug}"`);
-  if (!entry.enabled && !opts?.allowDisabled)
-    throw new ChainRegistryError2("CHAIN_DISABLED", slug, `Chain "${slug}" is disabled`);
-  return entry;
-}
-function requireEvmChain2(slug, opts) {
-  const entry = requireChain2(slug, opts);
-  if (!isEvmChain2(entry))
-    throw new ChainRegistryError2("NOT_EVM", slug, `Chain "${slug}" is not an EVM chain`);
-  return entry;
-}
-function defaultEvmChain2() {
-  return requireEvmChain2("hood", { allowDisabled: true });
-}
-function isValidChainAddress2(slug, address) {
-  const entry = requireChain2(slug, { allowDisabled: true });
-  return entry.addressFormat === "evm-hex20" ? EVM_ADDRESS2.test(address) : SOLANA_ADDRESS2.test(address);
-}
-// src/commands/scan.ts
 init_client();
 init_human_output();
 init_presentation();
@@ -105688,16 +105753,16 @@ init_render();
 // src/request-chain.ts
 function requestAddressChain2(address, chain2) {
   if (chain2 !== undefined) {
-    const entry = requireChain2(chain2);
-    if (!isValidChainAddress2(entry.slug, address))
-      throw new ChainRegistryError2("INVALID_ADDRESS", entry.slug, `Invalid ${entry.slug} address`);
-    return entry.slug;
+    const entry2 = requireChain(chain2);
+    if (!isValidChainAddress(entry2.slug, address))
+      throw new ChainRegistryError("INVALID_ADDRESS", entry2.slug, `Invalid ${entry2.slug} address`);
+    return entry2.slug;
   }
-  if (isValidChainAddress2("solana", address))
-    return requireChain2("solana").slug;
-  const evm = defaultEvmChain2();
-  if (isValidChainAddress2(evm.slug, address))
-    return requireChain2(evm.slug).slug;
+  if (isValidChainAddress("solana", address))
+    return requireChain("solana").slug;
+  const evm = defaultEvmChain();
+  if (isValidChainAddress(evm.slug, address))
+    return requireChain(evm.slug).slug;
   return null;
 }
 
@@ -105713,7 +105778,7 @@ function readCard(body) {
     return null;
   const card2 = body.card;
   const blocks = ["identity", "market", "forensics", "events", "hacc", "sameName", "sources", "links"];
-  if (typeof card2.mint !== "string" || typeof card2.chain !== "string" || !getChain2(card2.chain))
+  if (typeof card2.mint !== "string" || typeof card2.chain !== "string" || !getChain(card2.chain))
     return null;
   if (!blocks.every((block2) => isObject8(card2[block2])))
     return null;
@@ -105736,7 +105801,7 @@ function title(card2) {
   const parts = [
     symbol || shortAddress(card2.mint),
     name2 && name2 !== symbol ? name2 : null,
-    card2.chain === "hood" ? "Hood" : getChain2(card2.chain)?.displayName ?? card2.chain,
+    card2.chain === "hood" ? "Hood" : getChain(card2.chain)?.displayName ?? card2.chain,
     launchpad,
     isCandle === true ? "launched on Candle" : null
   ];
@@ -106013,23 +106078,23 @@ function assertExternalSigners(index, compiled, numRequiredSignatures, named) {
   const required = compiled.keys.slice(0, numRequiredSignatures);
   const signers = [];
   for (const [i, address] of required.entries()) {
-    const entry = index.entries.find((candidate) => candidate.address === address);
+    const entry2 = index.entries.find((candidate) => candidate.address === address);
     const role = i === 0 ? "the fee payer" : `signer ${i}`;
-    if (entry === undefined) {
+    if (entry2 === undefined) {
       throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is not an address this vault holds. candle sign signs only with this vault's external wallets.`, {
         suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
       });
     }
-    if (entry.role !== "external") {
-      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is ${describeRole(entry)}${entry.label ? ` "${entry.label}"` : ""}, which never signs for an outside tool. Only an external wallet does (candle external new).`, {
+    if (entry2.role !== "external") {
+      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is ${describeRole(entry2)}${entry2.label ? ` "${entry2.label}"` : ""}, which never signs for an outside tool. Only an external wallet does (candle external new).`, {
         suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
       });
     }
-    const provided = named.find((candidate) => candidate.id === entry.id);
+    const provided = named.find((candidate) => candidate.id === entry2.id);
     if (provided === undefined) {
-      throw new VaultError("SIGN_SIGNER_NOT_PROVIDED", `${address} (${role}) is external wallet "${entry.label}", and this invocation did not name it. Nothing was signed rather than returning a half-signed transaction.`, { suggestion: `Add: --wallet ${entry.label}` });
+      throw new VaultError("SIGN_SIGNER_NOT_PROVIDED", `${address} (${role}) is external wallet "${entry2.label}", and this invocation did not name it. Nothing was signed rather than returning a half-signed transaction.`, { suggestion: `Add: --wallet ${entry2.label}` });
     }
-    signers.push(entry);
+    signers.push(entry2);
   }
   return signers;
 }
@@ -106073,30 +106138,30 @@ function formatSol2(lamports) {
   return `${formatAmount2(lamports, 9)} SOL`;
 }
 function signerControlChanges(signers, simulation) {
-  const addresses = new Set(signers.map((entry) => entry.address));
+  const addresses = new Set(signers.map((entry2) => entry2.address));
   return controlChanges(simulation.snapshots, (address) => addresses.has(address));
 }
 function displayLines(input) {
   const { tx, compiled, signers, simulation, mints } = input;
   const lines = [];
   const feePayer = compiled.keys[0] ?? "(none)";
-  const signerAddresses = new Set(signers.map((entry) => entry.address));
+  const signerAddresses = new Set(signers.map((entry2) => entry2.address));
   lines.push(`message     ${tx.message.version === "legacy" ? "legacy" : "v0"}, ${tx.message.instructions.length} instruction(s), ${compiled.keys.length} account(s)${tx.message.lookups.length > 0 ? ` (${tx.message.lookups.length} lookup table(s) resolved)` : ""}`);
   lines.push(`fee payer   ${feePayer}${signerAddresses.has(feePayer) ? "" : "  (NOT this vault's external wallet)"}`);
-  lines.push(`signers     ${signers.map((entry) => `${entry.label} (${entry.address})`).join(", ")}`);
+  lines.push(`signers     ${signers.map((entry2) => `${entry2.label} (${entry2.address})`).join(", ")}`);
   const programs = [...new Set(tx.message.instructions.map((ix) => compiled.keys[ix.programIdIndex] ?? "?"))];
   for (const program of programs)
     lines.push(`program     ${programNameOf(program)}`);
   const deltas = computeDeltas(simulation.snapshots);
   const changes = signerControlChanges(signers, simulation);
-  for (const entry of signers) {
-    const sol = deltas.sol.find((delta) => delta.address === entry.address);
+  for (const entry2 of signers) {
+    const sol = deltas.sol.find((delta) => delta.address === entry2.address);
     if (sol) {
-      lines.push(`${entry.label.padEnd(11)} ${formatSol2(sol.before)} -> ${formatSol2(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol2(sol.after - sol.before)})`);
+      lines.push(`${entry2.label.padEnd(11)} ${formatSol2(sol.before)} -> ${formatSol2(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol2(sol.after - sol.before)})`);
     } else {
-      lines.push(`${entry.label.padEnd(11)} SOL unchanged (not a writable account of this transaction)`);
+      lines.push(`${entry2.label.padEnd(11)} SOL unchanged (not a writable account of this transaction)`);
     }
-    for (const token2 of deltas.tokens.filter((delta) => delta.ownerBefore === entry.address || delta.ownerAfter === entry.address)) {
+    for (const token2 of deltas.tokens.filter((delta) => delta.ownerBefore === entry2.address || delta.ownerAfter === entry2.address)) {
       const info3 = mints.get(token2.mint);
       lines.push(`            ${token2.mint}: ${formatAmount2(token2.before, info3?.decimals)} -> ${formatAmount2(token2.after, info3?.decimals)} (${token2.after >= token2.before ? "+" : ""}${formatAmount2(token2.after - token2.before, info3?.decimals)}${info3?.decimals === undefined ? "" : `, ${info3.decimals} dp`}) in ${token2.account}`);
     }
@@ -106189,8 +106254,8 @@ async function sign5(args, ctx) {
     const named = [];
     for (const requested of lifted.values) {
       assertNotEvmEntry(vault.index, requested, "candle sign");
-      const entry = findExternalEntry(vault.index, requested);
-      if (entry === undefined) {
+      const entry2 = findExternalEntry(vault.index, requested);
+      if (entry2 === undefined) {
         const other = vault.index.entries.find((candidate) => candidate.label === requested || candidate.address === requested);
         if (other !== undefined) {
           throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `--wallet ${requested} is ${describeRole(other)}, which never signs for an outside tool.`, {
@@ -106199,13 +106264,13 @@ async function sign5(args, ctx) {
         }
         return usage(ctx, `No external wallet in this vault matches --wallet ${requested}.`);
       }
-      if (!named.some((candidate) => candidate.id === entry.id))
-        named.push(entry);
+      if (!named.some((candidate) => candidate.id === entry2.id))
+        named.push(entry2);
     }
     const signers = assertExternalSigners(vault.index, compiled, tx.message.numRequiredSignatures, named);
-    const unused = named.filter((entry) => !signers.some((signer) => signer.id === entry.id));
+    const unused = named.filter((entry2) => !signers.some((signer) => signer.id === entry2.id));
     if (unused.length > 0) {
-      return usage(ctx, `--wallet ${unused.map((entry) => entry.label).join(", ")}: not a required signer of this transaction.`);
+      return usage(ctx, `--wallet ${unused.map((entry2) => entry2.label).join(", ")}: not a required signer of this transaction.`);
     }
     const unsignedBase64 = toBase64(attachSignatures(tx, new Map));
     let simulation;
@@ -106242,15 +106307,15 @@ ${changes.map((change) => `  ${describeControlChange(change)}`).join(`
       });
     }
     if (!yes)
-      await opened.confirm(`sign with ${signers.map((entry) => entry.label).join(", ")}`);
+      await opened.confirm(`sign with ${signers.map((entry2) => entry2.label).join(", ")}`);
     const signed2 = new Map;
     const signatures = [];
-    for (const [i, entry] of signers.entries()) {
-      const secret = await decryptKey(vault, entry.id);
+    for (const [i, entry2] of signers.entries()) {
+      const secret = await decryptKey(vault, entry2.id);
       try {
         const signature = signMessage(tx.message.bytes, secret);
         signed2.set(i, signature);
-        signatures.push({ wallet: entry.label, address: entry.address, signature: base58.encode(signature) });
+        signatures.push({ wallet: entry2.label, address: entry2.address, signature: base58.encode(signature) });
       } finally {
         wipe(secret);
       }
@@ -106360,8 +106425,8 @@ async function signMessage2(args, ctx) {
     });
     const vault = hold(opened.vault);
     assertNotEvmEntry(vault.index, requested, "candle sign message");
-    const entry = findExternalEntry(vault.index, requested);
-    if (entry === undefined) {
+    const entry2 = findExternalEntry(vault.index, requested);
+    if (entry2 === undefined) {
       const other = vault.index.entries.find((candidate) => candidate.label === requested || candidate.address === requested);
       if (other !== undefined) {
         throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `--wallet ${requested} is ${describeRole(other)}, which never signs a message for an outside tool.`, {
@@ -106373,7 +106438,7 @@ async function signMessage2(args, ctx) {
     const digest = hex3(sha2562(bytes));
     const text4 = renderableAsText(bytes);
     const lines = [
-      `wallet      ${entry.label} (${entry.address})`,
+      `wallet      ${entry2.label} (${entry2.address})`,
       `bytes       ${bytes.length}`,
       `sha256      ${digest}`,
       text4 === undefined ? `form        not renderable as text (not UTF-8, or a control character other than newline); shown as hex` : `form        UTF-8 text with no control characters other than newline`,
@@ -106388,8 +106453,8 @@ async function signMessage2(args, ctx) {
 `);
     }
     if (!parsed.booleans.has("--yes"))
-      await opened.confirm(`sign this message with ${entry.label}`);
-    const secret = await decryptKey(vault, entry.id);
+      await opened.confirm(`sign this message with ${entry2.label}`);
+    const secret = await decryptKey(vault, entry2.id);
     let signature;
     try {
       signature = signMessage(bytes, secret);
@@ -106400,8 +106465,8 @@ async function signMessage2(args, ctx) {
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
-        wallet: entry.label,
-        publicKey: entry.address,
+        wallet: entry2.label,
+        publicKey: entry2.address,
         byteLength: bytes.length,
         sha256: digest,
         renderedAs: text4 === undefined ? "hex" : "text",
@@ -106457,9 +106522,9 @@ async function reconcileUnknown(paths, now, fetchPayments) {
     return 0;
   const used = new Set;
   let resolved = 0;
-  for (const entry of stale) {
-    const started = Date.parse(entry.startedAt);
-    const candidates = payments.filter((p) => !used.has(p.id) && p.payer === entry.payer && p.kind === entry.kind && p.amountUsdMicros === entry.amountRaw.toString() && Math.abs(Date.parse(p.createdAt) - started) <= MATCH_WINDOW_MS).sort((a, b) => Math.abs(Date.parse(a.createdAt) - started) - Math.abs(Date.parse(b.createdAt) - started));
+  for (const entry2 of stale) {
+    const started = Date.parse(entry2.startedAt);
+    const candidates = payments.filter((p) => !used.has(p.id) && p.payer === entry2.payer && p.kind === entry2.kind && p.amountUsdMicros === entry2.amountRaw.toString() && Math.abs(Date.parse(p.createdAt) - started) <= MATCH_WINDOW_MS).sort((a, b) => Math.abs(Date.parse(a.createdAt) - started) - Math.abs(Date.parse(b.createdAt) - started));
     const match = candidates[0];
     if (!match)
       continue;
@@ -106468,7 +106533,7 @@ async function reconcileUnknown(paths, now, fetchPayments) {
     if (state === null)
       continue;
     await recordSpendState(paths, {
-      id: entry.id,
+      id: entry2.id,
       at: new Date(now).toISOString(),
       state,
       ...match.signature ? { signature: match.signature } : {},
@@ -106895,16 +106960,16 @@ init_errors2();
 
 // src/vault/labels.ts
 function entriesWithLabel(index, label) {
-  return index.entries.filter((entry) => entry.label === label);
+  return index.entries.filter((entry2) => entry2.label === label);
 }
 function duplicateLabels(index) {
   const byLabel = new Map;
-  for (const entry of index.entries) {
-    const holders = byLabel.get(entry.label);
+  for (const entry2 of index.entries) {
+    const holders = byLabel.get(entry2.label);
     if (holders === undefined)
-      byLabel.set(entry.label, [entry]);
+      byLabel.set(entry2.label, [entry2]);
     else
-      holders.push(entry);
+      holders.push(entry2);
   }
   const out = [];
   for (const [label, entries3] of byLabel) {
@@ -106938,20 +107003,20 @@ function validateLabel(label) {
 }
 function resolveRenameTarget(index, old, id) {
   if (id !== undefined) {
-    const entry = index.entries.find((candidate) => candidate.id === id);
-    return entry === undefined ? { kind: "none" } : { kind: "found", entry, by: "id" };
+    const entry2 = index.entries.find((candidate) => candidate.id === id);
+    return entry2 === undefined ? { kind: "none" } : { kind: "found", entry: entry2, by: "id" };
   }
   const byLabel = entriesWithLabel(index, old);
   if (byLabel.length === 1)
     return { kind: "found", entry: byLabel[0], by: "label" };
   if (byLabel.length > 1)
     return { kind: "ambiguous", by: "label", candidates: byLabel };
-  const byAddress = index.entries.filter((entry) => entry.address === old);
+  const byAddress = index.entries.filter((entry2) => entry2.address === old);
   if (byAddress.length === 1)
     return { kind: "found", entry: byAddress[0], by: "address" };
   if (byAddress.length > 1)
     return { kind: "ambiguous", by: "address", candidates: byAddress };
-  const byId = index.entries.find((entry) => entry.id === old);
+  const byId = index.entries.find((entry2) => entry2.id === old);
   if (byId !== undefined)
     return { kind: "found", entry: byId, by: "id" };
   return { kind: "none" };
@@ -107056,29 +107121,29 @@ function planBatchRename(index, rows) {
     if (match.kind !== "found") {
       findings.push({
         line: row2.line,
-        problem: match.kind === "none" ? `No key matches ${row2.from}.` : `${row2.from} is ambiguous; use an id. Candidates: ${match.candidates.map((entry2) => `${entry2.address} (${entry2.id})`).join(", ")}.`
+        problem: match.kind === "none" ? `No key matches ${row2.from}.` : `${row2.from} is ambiguous; use an id. Candidates: ${match.candidates.map((entry3) => `${entry3.address} (${entry3.id})`).join(", ")}.`
       });
       continue;
     }
-    const entry = match.entry;
-    const earlier = seen.get(entry.id);
+    const entry2 = match.entry;
+    const earlier = seen.get(entry2.id);
     if (earlier !== undefined)
       findings.push({ line: row2.line, problem: `Same key as line ${earlier}, named by another handle.` });
     else
-      seen.set(entry.id, row2.line);
-    if (entry.role !== "vault" && entry.role !== "external" && !isRetiredTee(entry)) {
+      seen.set(entry2.id, row2.line);
+    if (entry2.role !== "vault" && entry2.role !== "external" && !isRetiredTee(entry2)) {
       findings.push({
         line: row2.line,
-        problem: `${entry.label} is a TEE wallet; vault rename only changes vault or external keys. Use candle tee rename.`
+        problem: `${entry2.label} is a TEE wallet; vault rename only changes vault or external keys. Use candle tee rename.`
       });
     }
-    if (entry.label === row2.to)
+    if (entry2.label === row2.to)
       findings.push({ line: row2.line, problem: `${row2.to} is already this key's label.` });
-    plan2.push({ ...row2, entry });
+    plan2.push({ ...row2, entry: entry2 });
   }
-  const targets = new Set(plan2.map(({ entry }) => entry.id));
+  const targets = new Set(plan2.map(({ entry: entry2 }) => entry2.id));
   for (const row2 of plan2) {
-    if (index.entries.some((entry) => entry.label === row2.to && !targets.has(entry.id))) {
+    if (index.entries.some((entry2) => entry2.label === row2.to && !targets.has(entry2.id))) {
       findings.push({ line: row2.line, problem: `New name ${row2.to} is taken by a key outside the batch.` });
     }
   }
@@ -107152,12 +107217,12 @@ async function vaultRename(args, ctx) {
       const { plan: plan2, findings } = planBatchRename(vault.index, rows);
       if (findings.length > 0)
         return batchRefusal(ctx, findings, 1);
-      const retiredCount = plan2.filter(({ entry: entry2 }) => isRetiredTee(entry2)).length;
-      const renamed = plan2.map(({ entry: entry2, to }) => ({
-        id: entry2.id,
-        address: entry2.address,
-        role: entry2.role,
-        from: entry2.label,
+      const retiredCount = plan2.filter(({ entry: entry3 }) => isRetiredTee(entry3)).length;
+      const renamed = plan2.map(({ entry: entry3, to }) => ({
+        id: entry3.id,
+        address: entry3.address,
+        role: entry3.role,
+        from: entry3.label,
         to
       }));
       const dryRun = parsed.booleans.has("--dry-run");
@@ -107166,7 +107231,7 @@ async function vaultRename(args, ctx) {
         await commitVault(vault, {
           index: {
             hd: vault.index.hd,
-            entries: vault.index.entries.map((entry2) => names.has(entry2.id) ? { ...entry2, label: names.get(entry2.id) } : entry2)
+            entries: vault.index.entries.map((entry3) => names.has(entry3.id) ? { ...entry3, label: names.get(entry3.id) } : entry3)
           }
         }, deps);
       }
@@ -107196,14 +107261,14 @@ async function vaultRename(args, ctx) {
     }
     if (old === undefined || next === undefined)
       return usage(ctx, RENAME_USAGE);
-    const entry = resolveTarget(vault.index, old, id);
-    const retired = isRetiredTee(entry);
-    if (entry.role === "tee-wallet" && !retired) {
-      throw new VaultError("VAULT_RENAME_ROLE_REFUSED", `${entry.label} is a TEE wallet. Its label was sent to Candle when it was enabled and \`candle wallets\` lists that copy, so renaming it here would give one wallet two names.`, {
-        suggestion: `A vault key or an external wallet renames here. A TEE wallet renames on both sides with: candle tee rename ${entry.address} <new-label>`
+    const entry2 = resolveTarget(vault.index, old, id);
+    const retired = isRetiredTee(entry2);
+    if (entry2.role === "tee-wallet" && !retired) {
+      throw new VaultError("VAULT_RENAME_ROLE_REFUSED", `${entry2.label} is a TEE wallet. Its label was sent to Candle when it was enabled and \`candle wallets\` lists that copy, so renaming it here would give one wallet two names.`, {
+        suggestion: `A vault key or an external wallet renames here. A TEE wallet renames on both sides with: candle tee rename ${entry2.address} <new-label>`
       });
     }
-    if (entry.label === next) {
+    if (entry2.label === next) {
       throw new VaultError("VAULT_LABEL_UNCHANGED", `${next} is already this key's label. Nothing was written.`, {
         suggestion: "Nothing to rename. `candle vault status --unlock` lists every label."
       });
@@ -107213,23 +107278,23 @@ async function vaultRename(args, ctx) {
         suggestion: "Choose a name no key has, or rename that key first: `candle vault status --unlock` lists them."
       });
     }
-    const from = entry.label;
+    const from = entry2.label;
     await commitVault(vault, {
       index: {
         hd: vault.index.hd,
-        entries: vault.index.entries.map((candidate) => candidate.id === entry.id ? { ...candidate, label: next } : candidate)
+        entries: vault.index.entries.map((candidate) => candidate.id === entry2.id ? { ...candidate, label: next } : candidate)
       }
     }, deps);
     if (ctx.json) {
-      writeJson(deps, { ok: true, id: entry.id, address: entry.address, role: entry.role, from, to: next });
+      writeJson(deps, { ok: true, id: entry2.id, address: entry2.address, role: entry2.role, from, to: next });
       return 0;
     }
     writeSuccess(deps, "stdout", `Renamed ${from} to ${next}.
 `.trim());
     writeFields(deps, "stdout", [
-      ["Address", entry.address],
-      ["Id", entry.id],
-      ["Role", entry.role],
+      ["Address", entry2.address],
+      ["Id", entry2.id],
+      ["Role", entry2.role],
       ["Unchanged", "address, derivation path, key blob, every envelope"],
       ...retired ? [["Candle", "not changed: this retired TEE wallet was disabled there"]] : []
     ]);
@@ -107255,7 +107320,7 @@ function resolveTarget(index, old, id) {
   if (match.kind === "none") {
     throw new VaultError("VAULT_LABEL_NOT_FOUND", id === undefined ? `No key in this vault is called ${old}, and no key has that address or id.` : `No key in this vault has the id ${id}.`, { suggestion: "List them with their labels: `candle vault status --unlock`" });
   }
-  const candidates = match.candidates.map((entry) => `${entry.address} (${entry.id})`).join(", ");
+  const candidates = match.candidates.map((entry2) => `${entry2.address} (${entry2.id})`).join(", ");
   const count3 = match.candidates.length;
   const first = match.candidates[0];
   throw new VaultError("VAULT_LABEL_AMBIGUOUS", match.by === "label" ? `${count3} keys in this vault are called ${old}, so this rename would not say which one it meant. Nothing was written.` : `${count3} keys in this vault have the address ${old}, so this rename would not say which one it meant. Nothing was written.`, {
@@ -107321,7 +107386,7 @@ function serverFailure(ctx, result, pairs, batch) {
 }
 function vaultEntriesFor(entries3, row2) {
   const lower = row2.address.toLowerCase();
-  return entries3.filter((entry) => entry.role === "tee-wallet" && (entry.linkedWalletId === row2.id || entry.address === row2.address || entry.chain === "evm" && row2.chain === "evm" && entry.address.toLowerCase() === lower));
+  return entries3.filter((entry2) => entry2.role === "tee-wallet" && (entry2.linkedWalletId === row2.id || entry2.address === row2.address || entry2.chain === "evm" && row2.chain === "evm" && entry2.address.toLowerCase() === lower));
 }
 function unknownCommit(ctx, rows, onServer, inVault) {
   const { deps, json } = ctx;
@@ -107436,9 +107501,9 @@ async function teeRename(args, ctx) {
         } else if (entries3[0] !== undefined)
           local.push({ row: row2, entry: entries3[0] });
       }
-      const targets = new Set(local.map(({ entry }) => entry.id));
-      for (const { row: row2, entry } of local) {
-        if (entry.label === row2.label)
+      const targets = new Set(local.map(({ entry: entry2 }) => entry2.id));
+      for (const { row: row2, entry: entry2 } of local) {
+        if (entry2.label === row2.label)
           continue;
         if (vault.index.entries.some((other) => other.label === row2.label && !targets.has(other.id))) {
           findings.push({
@@ -107458,9 +107523,9 @@ async function teeRename(args, ctx) {
       }, json);
       return 1;
     }
-    const localById = new Map(local.map(({ row: row2, entry }) => [row2.id, entry]));
+    const localById = new Map(local.map(({ row: row2, entry: entry2 }) => [row2.id, entry2]));
     const receipt = rows.map((row2) => {
-      const entry = localById.get(row2.id);
+      const entry2 = localById.get(row2.id);
       return {
         id: row2.id,
         chain: row2.chain,
@@ -107468,11 +107533,11 @@ async function teeRename(args, ctx) {
         from: row2.from,
         to: row2.label,
         server: row2.from === row2.label ? "unchanged" : "renamed",
-        vault: entry === undefined ? "none" : entry.label === row2.label ? "unchanged" : "renamed"
+        vault: entry2 === undefined ? "none" : entry2.label === row2.label ? "unchanged" : "renamed"
       };
     });
     const onServer = rows.filter((row2) => row2.from !== row2.label);
-    const inVault = local.filter(({ row: row2, entry }) => entry.label !== row2.label);
+    const inVault = local.filter(({ row: row2, entry: entry2 }) => entry2.label !== row2.label);
     const print = (headline) => {
       if (json)
         return writeJson(deps, { ok: true, renamed: receipt, ...dryRun ? { dryRun: true } : {} });
@@ -107506,12 +107571,12 @@ async function teeRename(args, ctx) {
       }
     }
     if (vault !== null && inVault.length > 0) {
-      const names = new Map(inVault.map(({ row: row2, entry }) => [entry.id, row2.label]));
+      const names = new Map(inVault.map(({ row: row2, entry: entry2 }) => [entry2.id, row2.label]));
       try {
         await commitVault(vault, {
           index: {
             hd: vault.index.hd,
-            entries: vault.index.entries.map((entry) => names.has(entry.id) ? { ...entry, label: names.get(entry.id) } : entry)
+            entries: vault.index.entries.map((entry2) => names.has(entry2.id) ? { ...entry2, label: names.get(entry2.id) } : entry2)
           }
         }, deps);
       } catch (error) {
@@ -107633,8 +107698,8 @@ function readClusterResult2(value, mint) {
 // src/commands/token-clusters.ts
 async function tokenClusters(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--chain"] });
-  if ("error" in parsed || parsed.positionals.length !== 1 || parsed.values["--chain"] !== undefined && !["solana", "hood"].includes(parsed.values["--chain"])) {
-    writeUsageFailure(ctx.deps, "Usage: candle token clusters <mint> [--chain solana|hood]", ctx.json);
+  if ("error" in parsed || parsed.positionals.length !== 1 || parsed.values["--chain"] !== undefined && parsed.values["--chain"] !== "solana" && !isEvmChainSlug(parsed.values["--chain"])) {
+    writeUsageFailure(ctx.deps, "Usage: candle token clusters <mint> [--chain <chain>]", ctx.json);
     return 2;
   }
   const mint = parsed.positionals[0];
@@ -107740,7 +107805,7 @@ async function tokenEvents(args, ctx) {
   const limit = parsed.values["--limit"];
   const since = parsed.values["--since"];
   const before = parsed.values["--before"];
-  if (parsed.positionals.length !== 1 || chain2 !== "solana" && chain2 !== "hood") {
+  if (parsed.positionals.length !== 1 || chain2 !== "solana" && !isEvmChainSlug(chain2)) {
     writeUsageFailure(ctx.deps, USAGE16, ctx.json);
     return 2;
   }
@@ -107820,16 +107885,16 @@ async function tokenEvents(args, ctx) {
 
 // src/commands/token-metadata.ts
 init_args();
+import { randomUUID as randomUUID16 } from "node:crypto";
 init_client();
 init_deps();
 init_human_output();
-import { randomUUID as randomUUID16 } from "node:crypto";
 init_render();
 var EXIT_OUTCOME_UNKNOWN2 = 3;
 var EDIT_FIELDS = launchFlagFields.filter((field) => field.key === "description" || field.key.startsWith("socials."));
 var CLEAR_NAMES = new Map(EDIT_FIELDS.map((field) => [field.cli.flag.slice(2), field.key]));
-var EDIT_USAGE = `Usage: candle token edit <mint> [--chain solana|hood] ${EDIT_FIELDS.map((field) => `[${field.cli.flag} ${"value" in field.cli ? field.cli.value : "<value>"}]`).join(" ")} [--clear <${[...CLEAR_NAMES.keys()].join("|")}>]... [--idempotency-key <key>] [--json]`;
-var HISTORY_USAGE = "Usage: candle token history <mint> [--chain solana|hood] [--limit <n>] [--cursor <c>] [--json]";
+var EDIT_USAGE = `Usage: candle token edit <mint> [--chain <chain>] ${EDIT_FIELDS.map((field) => `[${field.cli.flag} ${"value" in field.cli ? field.cli.value : "<value>"}]`).join(" ")} [--clear <${[...CLEAR_NAMES.keys()].join("|")}>]... [--idempotency-key <key>] [--json]`;
+var HISTORY_USAGE = `Usage: candle token history <mint> [--chain <chain>] [--limit <n>] [--cursor <c>] [--json]`;
 function usageFor2(ctx, line) {
   return (message) => {
     writeUsageFailure(ctx.deps, message ? `${message}
@@ -107839,7 +107904,7 @@ ${line}` : line, ctx.json);
 }
 function chainFor(mint, given2) {
   const chain2 = given2 ?? (mint.startsWith("0x") ? "hood" : "solana");
-  return chain2 === "solana" || chain2 === "hood" ? chain2 : undefined;
+  return chain2 === "solana" || isEvmChainSlug(chain2) ? chain2 : undefined;
 }
 function metadataPath(chain2, mint, rest = "") {
   return `/api/v1/tokens/${chain2}/${encodeURIComponent(mint)}/metadata${rest}`;
@@ -109211,8 +109276,8 @@ init_ed255192();
 init_errors2();
 init_format();
 init_store();
-function fail5(step, message, entry) {
-  throw new VaultError("VAULT_VERIFY_FAILED", `Verification failed at step ${step}${entry ? ` on entry ${entry}` : ""}: ${message}`, {
+function fail5(step, message, entry2) {
+  throw new VaultError("VAULT_VERIFY_FAILED", `Verification failed at step ${step}${entry2 ? ` on entry ${entry2}` : ""}: ${message}`, {
     suggestion: "Nothing was recorded and the file was left in place for inspection."
   });
 }
@@ -109226,7 +109291,7 @@ async function verifyVaultIntegrity(copy, opts = {}) {
   if (declared.size !== present.size || [...declared].some((id) => !present.has(id))) {
     fail5(3, "the vault's keyIds and its key blobs are not the same set");
   }
-  const indexed = new Set(copy.index.entries.map((entry) => entry.id));
+  const indexed = new Set(copy.index.entries.map((entry2) => entry2.id));
   for (const id of declared) {
     if (!indexed.has(id))
       fail5(3, `key ${id} has a blob and a keyIds entry but no index entry`);
@@ -109246,8 +109311,8 @@ async function verifyVaultIntegrity(copy, opts = {}) {
       fail5(4, "the root entropy does not render a recovery phrase with a valid checksum");
     }
     observer?.onStep?.(5);
-    for (const entry of copy.index.entries) {
-      await verifyEntry(copy, entry, root, report2, observer);
+    for (const entry2 of copy.index.entries) {
+      await verifyEntry(copy, entry2, root, report2, observer);
     }
   } finally {
     wipe(root);
@@ -109255,22 +109320,22 @@ async function verifyVaultIntegrity(copy, opts = {}) {
     observer?.onRootZeroed?.();
   }
   observer?.onStep?.(7);
-  for (const entry of copy.index.entries) {
-    const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
+  for (const entry2 of copy.index.entries) {
+    const located = entry2.derivation ? branchOfPath(entry2.derivation.path) : undefined;
     if (located === undefined)
       continue;
     if (nextIndexOf(copy.index.hd, located.branch) <= located.index) {
-      fail5(7, `hd.nextIndex.${located.branch} is ${nextIndexOf(copy.index.hd, located.branch)}, at or below this entry's index ${located.index}`, entry.id);
+      fail5(7, `hd.nextIndex.${located.branch} is ${nextIndexOf(copy.index.hd, located.branch)}, at or below this entry's index ${located.index}`, entry2.id);
     }
-    if (entry.exposure.everRemoteExposed && !exposedIndexesOf(copy.index.hd, located.branch).includes(located.index)) {
-      fail5(7, `it is flagged remotely exposed but index ${located.index} is missing from hd.exposedIndexes.${located.branch}`, entry.id);
+    if (entry2.exposure.everRemoteExposed && !exposedIndexesOf(copy.index.hd, located.branch).includes(located.index)) {
+      fail5(7, `it is flagged remotely exposed but index ${located.index} is missing from hd.exposedIndexes.${located.branch}`, entry2.id);
     }
   }
   if (opts.live) {
     observer?.onStep?.(8);
     report2.comparedAgainstLive = true;
-    const copyAddresses = new Set(copy.index.entries.map((entry) => entry.address));
-    const liveAddresses = new Set(opts.live.index.entries.map((entry) => entry.address));
+    const copyAddresses = new Set(copy.index.entries.map((entry2) => entry2.address));
+    const liveAddresses = new Set(opts.live.index.entries.map((entry2) => entry2.address));
     const missing = [...liveAddresses].filter((address) => !copyAddresses.has(address));
     const extra = [...copyAddresses].filter((address) => !liveAddresses.has(address));
     if (missing.length > 0 || extra.length > 0) {
@@ -109279,56 +109344,56 @@ async function verifyVaultIntegrity(copy, opts = {}) {
   }
   return report2;
 }
-async function verifyEntry(copy, entry, root, report2, observer) {
-  const secret = await decryptKey(copy, entry.id);
+async function verifyEntry(copy, entry2, root, report2, observer) {
+  const secret = await decryptKey(copy, entry2.id);
   observer?.onLeafLive?.(1);
   try {
-    const expectedLength = entry.curve === "ed25519" ? SOLANA_SECRET_BYTES : SECP256K1_SCALAR_BYTES;
+    const expectedLength = entry2.curve === "ed25519" ? SOLANA_SECRET_BYTES : SECP256K1_SCALAR_BYTES;
     if (secret.length !== expectedLength) {
-      fail5(5, `its stored secret is ${secret.length} bytes, but a ${entry.curve} key is ${expectedLength}`, entry.id);
+      fail5(5, `its stored secret is ${secret.length} bytes, but a ${entry2.curve} key is ${expectedLength}`, entry2.id);
     }
-    if (entry.curve === "ed25519") {
-      if (addressFromSecret64(secret) !== entry.address) {
-        fail5(5, "its stored secret does not produce the address the index records", entry.id);
+    if (entry2.curve === "ed25519") {
+      if (addressFromSecret64(secret) !== entry2.address) {
+        fail5(5, "its stored secret does not produce the address the index records", entry2.id);
       }
-    } else if (!sameEvmAddress(evmAddressFromSecret(secret), entry.address)) {
-      fail5(5, "its stored secret does not produce the address the index records", entry.id);
+    } else if (!sameEvmAddress(evmAddressFromSecret(secret), entry2.address)) {
+      fail5(5, "its stored secret does not produce the address the index records", entry2.id);
     }
-    report2.addressChecked.push(entry.id);
-    if (entry.origin !== "derived" || entry.derivation === undefined) {
-      report2.notRederived.push(entry.id);
+    report2.addressChecked.push(entry2.id);
+    if (entry2.origin !== "derived" || entry2.derivation === undefined) {
+      report2.notRederived.push(entry2.id);
       return;
     }
-    if (entry.derivation.scheme === "bip32-secp256k1") {
-      const index = evmIndexOfPath(entry.derivation.path);
-      const teeIndex = evmTeeIndexOfPath(entry.derivation.path);
+    if (entry2.derivation.scheme === "bip32-secp256k1") {
+      const index = evmIndexOfPath(entry2.derivation.path);
+      const teeIndex = evmTeeIndexOfPath(entry2.derivation.path);
       if (index === undefined && teeIndex === undefined) {
-        fail5(5, `its recorded path ${entry.derivation.path} is not on an EVM branch`, entry.id);
+        fail5(5, `its recorded path ${entry2.derivation.path} is not on an EVM branch`, entry2.id);
       }
       const derivedEvm = index !== undefined ? await deriveEvmKeyFromRoot(root, index) : await deriveEvmTeeKeyFromRoot(root, teeIndex);
       observer?.onLeafLive?.(2);
       try {
         if (!bytesEqual(derivedEvm.secret, secret)) {
-          fail5(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id);
+          fail5(5, `it does not re-derive from the root along its recorded path ${entry2.derivation.path}`, entry2.id);
         }
-        report2.rederived.push(entry.id);
+        report2.rederived.push(entry2.id);
       } finally {
         wipe(derivedEvm.secret);
         observer?.onLeafLive?.(1);
       }
       return;
     }
-    if (entry.derivation.scheme !== "slip10-ed25519") {
-      report2.notRederived.push(entry.id);
+    if (entry2.derivation.scheme !== "slip10-ed25519") {
+      report2.notRederived.push(entry2.id);
       return;
     }
-    const derived = await deriveSolanaKey(root, entry.derivation.path);
+    const derived = await deriveSolanaKey(root, entry2.derivation.path);
     observer?.onLeafLive?.(2);
     try {
       if (!bytesEqual(derived.secret64, secret)) {
-        fail5(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id);
+        fail5(5, `it does not re-derive from the root along its recorded path ${entry2.derivation.path}`, entry2.id);
       }
-      report2.rederived.push(entry.id);
+      report2.rederived.push(entry2.id);
     } finally {
       wipe(derived.secret64);
       observer?.onLeafLive?.(1);
@@ -109496,7 +109561,7 @@ function sealedPassphraseOnlyReason(unusable) {
   if (unusable.length === 0) {
     return "a sealed copy opens with the passphrase or a security key, and this vault has no security key. Add one with: candle vault enroll security-key";
   }
-  const keys = unusable.map((entry) => `${entry.word} ${entry.id} cannot be used on this machine: ${entry.availability}`);
+  const keys = unusable.map((entry2) => `${entry2.word} ${entry2.id} cannot be used on this machine: ${entry2.availability}`);
   return `a sealed copy opens with the passphrase or a security key, and ${keys.join("; ")}.`;
 }
 function sameEnvelopeBytes(a, b) {
@@ -109571,7 +109636,7 @@ function verifyPassphraseOnlyReason(copyPath, copyHasKey, unusable) {
     return `${copyPath} carries no security key envelope (a copy sealed by an earlier CLI, or from a vault that had none then), so only the passphrase opens it.`;
   }
   if (unusable.length > 0) {
-    const keys = unusable.map((entry) => `${entry.word} ${entry.id} in ${copyPath} cannot be used on this machine: ${entry.availability}`);
+    const keys = unusable.map((entry2) => `${entry2.word} ${entry2.id} in ${copyPath} cannot be used on this machine: ${entry2.availability}`);
     return `${keys.join("; ")}.`;
   }
   return `no security key in ${copyPath} is still on this vault as it is now, so the passphrase is the carried factor that opens it here.`;
@@ -109936,10 +110001,10 @@ async function vaultDemoteBatch(args, ctx) {
     const held = hold(opened.vault);
     const outcomes = [];
     const planned = [];
-    const plan2 = (entry) => {
-      const chain2 = entry.chain === "evm" ? "evm" : "solana";
-      const row2 = { address: entry.address, label: entry.label, chain: chain2, destination: null };
-      const pinned = entry.tee?.vaultDestination;
+    const plan2 = (entry2) => {
+      const chain2 = entry2.chain === "evm" ? "evm" : "solana";
+      const row2 = { address: entry2.address, label: entry2.label, chain: chain2, destination: null };
+      const pinned = entry2.tee?.vaultDestination;
       if (pinned !== undefined)
         row2.destination = pinned;
       else if (sweepTo === undefined)
@@ -109948,7 +110013,7 @@ async function vaultDemoteBatch(args, ctx) {
         try {
           row2.destination = assertColdVaultDestination(held.index, sweepTo, {
             chain: chain2,
-            subjectAddress: entry.address
+            subjectAddress: entry2.address
           }).address;
         } catch (error) {
           if (!isVaultError(error))
@@ -109958,17 +110023,17 @@ async function vaultDemoteBatch(args, ctx) {
       }
       planned.push(row2);
     };
-    const tees = held.index.entries.filter((entry) => entry.role === "tee-wallet");
+    const tees = held.index.entries.filter((entry2) => entry2.role === "tee-wallet");
     if (all) {
-      for (const entry of tees) {
-        if (entry.tee?.lifecycle === "retired")
+      for (const entry2 of tees) {
+        if (entry2.tee?.lifecycle === "retired")
           continue;
         const base2 = {
-          address: entry.address,
-          label: entry.label,
-          chain: entry.chain === "evm" ? "evm" : "solana"
+          address: entry2.address,
+          label: entry2.label,
+          chain: entry2.chain === "evm" ? "evm" : "solana"
         };
-        if (entry.chain === "evm") {
+        if (entry2.chain === "evm") {
           outcomes.push({
             ...base2,
             status: "skipped",
@@ -109976,7 +110041,7 @@ async function vaultDemoteBatch(args, ctx) {
           });
           continue;
         }
-        if (!await nothingLeftToSweep(solana, entry)) {
+        if (!await nothingLeftToSweep(solana, entry2)) {
           outcomes.push({
             ...base2,
             status: "skipped",
@@ -109984,7 +110049,7 @@ async function vaultDemoteBatch(args, ctx) {
           });
           continue;
         }
-        plan2(entry);
+        plan2(entry2);
       }
     } else {
       const seen = [];
@@ -109995,8 +110060,8 @@ async function vaultDemoteBatch(args, ctx) {
           continue;
         }
         seen.push(address);
-        const entry = tees.find((candidate) => sameAddress5(chain2, candidate.address, address));
-        if (entry === undefined) {
+        const entry2 = tees.find((candidate) => sameAddress5(chain2, candidate.address, address));
+        if (entry2 === undefined) {
           outcomes.push({
             address,
             label: null,
@@ -110007,17 +110072,17 @@ async function vaultDemoteBatch(args, ctx) {
           });
           continue;
         }
-        if (entry.tee?.lifecycle === "retired") {
+        if (entry2.tee?.lifecycle === "retired") {
           outcomes.push({
             address,
-            label: entry.label,
+            label: entry2.label,
             chain: chain2,
             status: "skipped",
             reason: "already retired (demoted and swept)"
           });
           continue;
         }
-        plan2(entry);
+        plan2(entry2);
       }
     }
     if (rpcUrl !== undefined && new Set(planned.map((row2) => row2.chain)).size > 1) {
@@ -110231,9 +110296,9 @@ async function vaultDemote(args, ctx) {
     const reconciled = await maybeReconcileVaultTee(ctx, vaultResolved, "demote");
     if (reconciled.code !== null)
       return reconciled.code;
-    const entry = reconciled.entry;
+    const entry2 = reconciled.entry;
     const step = { resolved: vaultResolved, solana };
-    if (entry.tee?.vaultDestination === undefined) {
+    if (entry2.tee?.vaultDestination === undefined) {
       if (sweepTo === undefined) {
         throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${address} has no pinned vault destination.`, {
           suggestion: "Pass --sweep-to <vault-key-label> (subject to the recovery destination rule), or adopt the server's pin."
@@ -110241,7 +110306,7 @@ async function vaultDemote(args, ctx) {
       }
       await assertNotOlderCopy(ctx, path, vaultResolved.vault.raw, parsed.booleans.has("--accept-older-copy"));
       const destination = assertColdVaultDestination(vaultResolved.vault.index, sweepTo, {});
-      const next = await commitVaultTeeEntry(ctx, vaultResolved.vault, entry.id, (target) => {
+      const next = await commitVaultTeeEntry(ctx, vaultResolved.vault, entry2.id, (target) => {
         target.tee = {
           ...target.tee ?? { network: "solana-mainnet", lifecycle: "local-candidate" },
           vaultDestination: destination.address
@@ -110250,8 +110315,8 @@ async function vaultDemote(args, ctx) {
       applyVault(vaultResolved, next);
       return await demoteWithAdapter(ctx, step, address, parsed.values["--rpc-url"], true);
     }
-    requireTeeDestination(entry);
-    const needsEmergency = emergency || entry.linkedWalletId === undefined || entry.tee?.lifecycle === "stranded";
+    requireTeeDestination(entry2);
+    const needsEmergency = emergency || entry2.linkedWalletId === undefined || entry2.tee?.lifecycle === "stranded";
     return await demoteWithAdapter(ctx, step, address, parsed.values["--rpc-url"], needsEmergency);
   } catch (error) {
     if (error instanceof VaultError) {
@@ -110340,11 +110405,11 @@ async function vaultExportKey(args, ctx) {
       promptText: "Vault passphrase (input hidden): "
     });
     let vault = hold(opened.vault);
-    const entry = findEntryByLabelOrAddress(vault.index, label);
-    if (entry === undefined) {
+    const entry2 = findEntryByLabelOrAddress(vault.index, label);
+    if (entry2 === undefined) {
       return usage(ctx, `No vault key matches ${label}.`);
     }
-    const warning = `This writes the private key for ${entry.label ?? entry.address} to ${destination} as plaintext.
+    const warning = `This writes the private key for ${entry2.label ?? entry2.address} to ${destination} as plaintext.
 ` + `That file sits outside every vault guarantee: anyone who can read it can move the funds.
 ` + `The vault will record that this key was exported, and that record never resets.
 `;
@@ -110355,11 +110420,11 @@ async function vaultExportKey(args, ctx) {
       notice(ctx.deps, "stdout", "note", `
 ${warning}
 `.trim());
-    await confirmAddress(ctx, "key", entry.address, `export the key for ${entry.address}`);
-    vault = hold(await markEverExported(vault, entry, ctx));
-    const secret = await decryptKey(vault, entry.id);
+    await confirmAddress(ctx, "key", entry2.address, `export the key for ${entry2.address}`);
+    vault = hold(await markEverExported(vault, entry2, ctx));
+    const secret = await decryptKey(vault, entry2.id);
     try {
-      const body = nativeKeyFileContents(entry, secret);
+      const body = nativeKeyFileContents(entry2, secret);
       await writeExportFile(destination, body);
     } finally {
       wipe(secret);
@@ -110368,36 +110433,36 @@ ${warning}
       writeJson(ctx.deps, {
         ok: true,
         path: destination,
-        address: entry.address,
-        ...entry.label !== undefined ? { label: entry.label } : {},
+        address: entry2.address,
+        ...entry2.label !== undefined ? { label: entry2.label } : {},
         everExported: true
       });
       return 0;
     }
-    notice(ctx.deps, "stdout", "warning", (`Wrote the key for ${entry.label ?? entry.address} to ${destination} (mode 0600).
+    notice(ctx.deps, "stdout", "warning", (`Wrote the key for ${entry2.label ?? entry2.address} to ${destination} (mode 0600).
 ` + `This vault now records that the key was exported; that record never resets.
 ` + `Treat the file as a secret. This CLI will not print its contents.
 `).trim());
     return 0;
   });
 }
-function nativeKeyFileContents(entry, secret) {
-  if (entry.curve === "ed25519") {
+function nativeKeyFileContents(entry2, secret) {
+  if (entry2.curve === "ed25519") {
     if (secret.length !== 64) {
-      throw new VaultError("VAULT_INDEX_INVALID", `Key ${entry.id} is ed25519 but its secret is ${secret.length} bytes, not 64.`);
+      throw new VaultError("VAULT_INDEX_INVALID", `Key ${entry2.id} is ed25519 but its secret is ${secret.length} bytes, not 64.`);
     }
     return `${JSON.stringify([...secret])}
 `;
   }
   if (secret.length !== 32) {
-    throw new VaultError("VAULT_INDEX_INVALID", `Key ${entry.id} is secp256k1 but its secret is ${secret.length} bytes, not 32.`);
+    throw new VaultError("VAULT_INDEX_INVALID", `Key ${entry2.id} is secp256k1 but its secret is ${secret.length} bytes, not 32.`);
   }
   const hex4 = Array.from(secret, (b) => b.toString(16).padStart(2, "0")).join("");
   return `0x${hex4}
 `;
 }
-async function markEverExported(vault, entry, ctx) {
-  const entries3 = vault.index.entries.map((candidate) => candidate.id === entry.id ? {
+async function markEverExported(vault, entry2, ctx) {
+  const entries3 = vault.index.entries.map((candidate) => candidate.id === entry2.id ? {
     ...candidate,
     exposure: {
       ...candidate.exposure,
@@ -110939,11 +111004,11 @@ ${SECURITY_KEY_PAIR_NOTE}
   return 0;
 }
 function refuseIfEnrolled(device, attached) {
-  const entry = attached?.devices?.find((candidate) => candidate.deviceId === device.deviceId);
-  if (entry === undefined || attached?.credentials === undefined)
+  const entry2 = attached?.devices?.find((candidate) => candidate.deviceId === device.deviceId);
+  if (entry2 === undefined || attached?.credentials === undefined)
     return;
   for (const [envelopeId, credentialId] of attached.credentials) {
-    if (entry.present.includes(credentialId))
+    if (entry2.present.includes(credentialId))
       throw alreadyEnrolled(device, envelopeId);
   }
 }
@@ -110996,7 +111061,7 @@ function chooseAfterInsert(ctx, devices, probe) {
   }
   if (devices.length === 1)
     return selectDevice(devices, undefined, platform);
-  const holdsVault = (device) => (probe?.devices?.find((entry) => entry.deviceId === device.deviceId)?.present.length ?? 0) > 0;
+  const holdsVault = (device) => (probe?.devices?.find((entry2) => entry2.deviceId === device.deviceId)?.present.length ?? 0) > 0;
   const others = devices.filter((device) => !holdsVault(device));
   if (others.length === 1)
     return selectDevice(others, undefined, platform);
@@ -111817,37 +111882,37 @@ function readReceipt(value) {
   return value;
 }
 async function saveFundingReceipt(vault, teeId, receipt, ctx) {
-  const entries3 = vault.index.entries.map((entry) => {
-    if (entry.id !== teeId || !entry.tee)
-      return entry;
-    const prior = entry.tee.fundingReceipts ?? [];
+  const entries3 = vault.index.entries.map((entry2) => {
+    if (entry2.id !== teeId || !entry2.tee)
+      return entry2;
+    const prior = entry2.tee.fundingReceipts ?? [];
     const exists3 = prior.some((value) => readReceipt(value).signature === receipt.signature);
     const fundingReceipts = exists3 ? prior.map((value) => readReceipt(value).signature === receipt.signature ? receipt : value) : [...prior, receipt];
-    return { ...entry, tee: { ...entry.tee, fundingReceipts } };
+    return { ...entry2, tee: { ...entry2.tee, fundingReceipts } };
   });
   const next = await commitVault(vault, { index: { ...vault.index, entries: entries3 } }, ctx.deps);
   Object.assign(vault, next);
 }
 async function reconcileFundingReceipts(vault, addresses, rpc, ctx) {
   const results = [];
-  for (const entry of vault.index.entries) {
-    if (!entry.tee)
+  for (const entry2 of vault.index.entries) {
+    if (!entry2.tee)
       continue;
-    for (const value of entry.tee.fundingReceipts ?? []) {
+    for (const value of entry2.tee.fundingReceipts ?? []) {
       const receipt = readReceipt(value);
       if (receipt.finalized || receipt.outcome)
         continue;
-      const from = receipt.from ?? entry.tee.vaultDestination;
-      if (!addresses.includes(entry.address) && (from === undefined || !addresses.includes(from)))
+      const from = receipt.from ?? entry2.tee.vaultDestination;
+      if (!addresses.includes(entry2.address) && (from === undefined || !addresses.includes(from)))
         continue;
       const resolution = await resolvePending({
         status: (signature) => rpc.getSignatureStatus(signature),
         blockhashValid: (blockhash) => receipt.blockhash ? rpc.isBlockhashValid(blockhash) : Promise.resolve(true)
       }, { signature: receipt.signature, blockhash: receipt.blockhash ?? "" });
       if (resolution.kind === "finalized") {
-        await saveFundingReceipt(vault, entry.id, { ...receipt, finalized: true }, ctx);
+        await saveFundingReceipt(vault, entry2.id, { ...receipt, finalized: true }, ctx);
       } else if (resolution.kind === "failed" || resolution.kind === "expired") {
-        await saveFundingReceipt(vault, entry.id, { ...receipt, outcome: resolution.kind }, ctx);
+        await saveFundingReceipt(vault, entry2.id, { ...receipt, outcome: resolution.kind }, ctx);
       }
       results.push({ signature: receipt.signature, outcome: resolution.kind });
     }
@@ -111873,12 +111938,12 @@ init_promote_support();
 init_store();
 init_vault_support();
 async function fundExternal(ctx, vault, external3, input) {
-  const vaultKeys = vault.index.entries.filter((entry) => entry.role === "vault" && entry.chain === "solana");
+  const vaultKeys = vault.index.entries.filter((entry2) => entry2.role === "vault" && entry2.chain === "solana");
   const fromFlag = input.parsed.values["--from"];
   let fromEntry;
   if (fromFlag !== undefined) {
     assertNotEvmEntry(vault.index, fromFlag, "vault fund");
-    fromEntry = vaultKeys.find((entry) => entry.label === fromFlag) ?? vaultKeys.find((entry) => entry.address === fromFlag);
+    fromEntry = vaultKeys.find((entry2) => entry2.label === fromFlag) ?? vaultKeys.find((entry2) => entry2.address === fromFlag);
     if (fromEntry === undefined)
       return usage(ctx, `No vault key matches --from ${fromFlag}.`);
   } else if (vaultKeys.length === 1) {
@@ -111886,7 +111951,7 @@ async function fundExternal(ctx, vault, external3, input) {
   } else if (vaultKeys.length === 0) {
     return usage(ctx, "This vault has no vault receive key to fund from; create one: candle vault new-key --chain solana");
   } else {
-    return usage(ctx, `This vault has ${vaultKeys.length} vault keys; name the source with --from <label>: ${vaultKeys.map((entry) => entry.label).join(", ")}`);
+    return usage(ctx, `This vault has ${vaultKeys.length} vault keys; name the source with --from <label>: ${vaultKeys.map((entry2) => entry2.label).join(", ")}`);
   }
   if (fromEntry === undefined)
     return usage(ctx, "No source vault key.");
@@ -111975,7 +112040,7 @@ async function vaultFund(args, ctx) {
     assertNotEvmEntry(vault.index, teeAddress, "vault fund");
     if (parsed.values["--from"] !== undefined)
       assertNotEvmEntry(vault.index, parsed.values["--from"], "vault fund");
-    const teeEntry = vault.index.entries.find((entry) => entry.address === teeAddress && entry.role === "tee-wallet");
+    const teeEntry = vault.index.entries.find((entry2) => entry2.address === teeAddress && entry2.role === "tee-wallet");
     if (teeEntry === undefined) {
       const external3 = findExternalEntry(vault.index, teeAddress);
       if (external3 !== undefined)
@@ -112008,7 +112073,7 @@ async function vaultFund(args, ctx) {
         suggestion: "Nothing was signed. A TEE wallet is funded from its pinned vault key; pin one: candle tee enable <address> --vault <address>"
       });
     }
-    const fromEntry = vault.index.entries.find((entry) => entry.address === destination && entry.role === "vault" && entry.chain === "solana");
+    const fromEntry = vault.index.entries.find((entry2) => entry2.address === destination && entry2.role === "vault" && entry2.chain === "solana");
     if (fromEntry === undefined) {
       throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `Pinned destination ${destination} is not a vault key in this vault.`, {
         suggestion: "Nothing was signed. candle vault status lists this vault's keys and their pins."
@@ -112104,7 +112169,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
       reason: describeSend(amount, asset, teeAddress)
     });
     const vault = hold(opened.vault);
-    const teeEntry = vault.index.entries.find((entry) => entry.chain === "evm" && entry.role === "tee-wallet" && sameAddress2(entry.address, teeAddress));
+    const teeEntry = vault.index.entries.find((entry2) => entry2.chain === "evm" && entry2.role === "tee-wallet" && sameAddress2(entry2.address, teeAddress));
     if (teeEntry === undefined) {
       writeLocalFailure(ctx.deps, {
         code: "TEE_WALLET_UNKNOWN",
@@ -112123,7 +112188,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
       return 1;
     }
     const destination = teeEntry.tee.vaultDestination;
-    const fromEntry = destination === undefined ? undefined : vault.index.entries.find((entry) => entry.chain === "evm" && entry.role === "vault" && sameAddress2(entry.address, destination));
+    const fromEntry = destination === undefined ? undefined : vault.index.entries.find((entry2) => entry2.chain === "evm" && entry2.role === "vault" && sameAddress2(entry2.address, destination));
     if (fromEntry === undefined) {
       throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${teeEntry.address} has no pinned EVM vault key in this vault to fund from.`, { suggestion: "Nothing was signed. candle vault status lists this vault's keys and their pins." });
     }
@@ -112170,23 +112235,23 @@ init_errors2();
 init_esm();
 init_ed255192();
 init_errors2();
-function secretFromLegacyEntry(entry) {
-  if (entry.chain !== "solana") {
-    throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry.address} is chain ${entry.chain}; this release migrates Solana TEE wallet keys only.`);
+function secretFromLegacyEntry(entry2) {
+  if (entry2.chain !== "solana") {
+    throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry2.address} is chain ${entry2.chain}; this release migrates Solana TEE wallet keys only.`);
   }
   let decoded;
   try {
-    decoded = base58.decode(entry.privateKey);
+    decoded = base58.decode(entry2.privateKey);
   } catch {
-    throw new VaultError("VAULT_VERIFY_FAILED", `Legacy entry ${entry.address} does not hold a decodable Solana secret.`);
+    throw new VaultError("VAULT_VERIFY_FAILED", `Legacy entry ${entry2.address} does not hold a decodable Solana secret.`);
   }
   if (decoded.length !== SOLANA_SECRET_BYTES) {
     wipe(decoded);
-    throw new VaultError("VAULT_VERIFY_FAILED", `Legacy entry ${entry.address} holds a ${decoded.length}-byte secret; a Solana secret is ${SOLANA_SECRET_BYTES} bytes.`);
+    throw new VaultError("VAULT_VERIFY_FAILED", `Legacy entry ${entry2.address} holds a ${decoded.length}-byte secret; a Solana secret is ${SOLANA_SECRET_BYTES} bytes.`);
   }
   try {
-    if (addressFromSecret64(decoded) !== entry.address) {
-      throw new VaultError("VAULT_VERIFY_FAILED", `Legacy entry ${entry.address} does not re-derive from its stored secret.`);
+    if (addressFromSecret64(decoded) !== entry2.address) {
+      throw new VaultError("VAULT_VERIFY_FAILED", `Legacy entry ${entry2.address} does not re-derive from its stored secret.`);
     }
   } catch (error) {
     wipe(decoded);
@@ -112194,17 +112259,17 @@ function secretFromLegacyEntry(entry) {
   }
   return decoded;
 }
-function isLocalCandidateShape(entry) {
-  if (entry.imported || entry.linkedWalletId !== undefined)
+function isLocalCandidateShape(entry2) {
+  if (entry2.imported || entry2.linkedWalletId !== undefined)
     return false;
-  const tee = entry.tee;
+  const tee = entry2.tee;
   if (tee === undefined)
     return true;
   const keys = Object.keys(tee).filter((key) => tee[key] !== undefined);
   return keys.length === 1 && keys[0] === "network";
 }
-function isFullySweptShape(entry) {
-  const tee = entry.tee;
+function isFullySweptShape(entry2) {
+  const tee = entry2.tee;
   if (tee === undefined)
     return false;
   if (tee.sweptAt === undefined)
@@ -112215,40 +112280,40 @@ function isFullySweptShape(entry) {
     return false;
   return true;
 }
-function lifecycleForLegacyEntry(entry) {
-  if (isFullySweptShape(entry))
+function lifecycleForLegacyEntry(entry2) {
+  if (isFullySweptShape(entry2))
     return "retired";
-  if (isLocalCandidateShape(entry))
+  if (isLocalCandidateShape(entry2))
     return "local-candidate";
-  if (entry.imported && entry.linkedWalletId !== undefined)
+  if (entry2.imported && entry2.linkedWalletId !== undefined)
     return "enabled";
   return "local-candidate";
 }
-function mapLegacyTeeEntry(entry, keyId, grant, createdAtFallback) {
-  const lifecycle = lifecycleForLegacyEntry(entry);
-  const secret64 = secretFromLegacyEntry(entry);
+function mapLegacyTeeEntry(entry2, keyId, grant, createdAtFallback) {
+  const lifecycle = lifecycleForLegacyEntry(entry2);
+  const secret64 = secretFromLegacyEntry(entry2);
   const everRemoteExposed = lifecycle !== "local-candidate";
-  const tee = buildTeeMeta(entry, lifecycle, grant);
+  const tee = buildTeeMeta(entry2, lifecycle, grant);
   const mapped = {
     id: keyId,
     chain: "solana",
     curve: "ed25519",
-    address: entry.address,
-    label: entry.label,
-    createdAt: entry.createdAt || createdAtFallback,
+    address: entry2.address,
+    label: entry2.label,
+    createdAt: entry2.createdAt || createdAtFallback,
     role: "tee-wallet",
     origin: "migrated-tee",
     exposure: { everRemoteExposed, everExported: false },
     tee,
-    ...lifecycle === "enabled" && entry.linkedWalletId !== undefined ? { linkedWalletId: entry.linkedWalletId } : {}
+    ...lifecycle === "enabled" && entry2.linkedWalletId !== undefined ? { linkedWalletId: entry2.linkedWalletId } : {}
   };
   return { entry: mapped, secret64 };
 }
-function buildTeeMeta(entry, lifecycle, grant) {
-  const source = entry.tee;
+function buildTeeMeta(entry2, lifecycle, grant) {
+  const source = entry2.tee;
   const network2 = source?.network ?? "solana-mainnet";
   if (network2 !== "solana-mainnet") {
-    throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry.address} names network ${String(network2)}; only solana-mainnet migrates.`);
+    throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry2.address} names network ${String(network2)}; only solana-mainnet migrates.`);
   }
   const meta = { network: network2, lifecycle };
   carryOptional(meta, source, [
@@ -112266,12 +112331,12 @@ function buildTeeMeta(entry, lifecycle, grant) {
   }
   if (lifecycle === "enabled") {
     if (meta.vaultDestination === undefined) {
-      throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry.address} is imported but records no vaultDestination; the vault cannot represent it as enabled.`);
+      throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry2.address} is imported but records no vaultDestination; the vault cannot represent it as enabled.`);
     }
   }
   if (lifecycle === "enabled" || lifecycle === "stranded") {
     if (grant === null || grant.account.trim() === "") {
-      throw new VaultError("VAULT_UNREADABLE", `Migrating ${entry.address} as ${lifecycle} needs the migrating profile's account so grantIdentity can be recorded.`, { suggestion: "Run candle auth login (or candle profile use) so this profile caches its account, then retry." });
+      throw new VaultError("VAULT_UNREADABLE", `Migrating ${entry2.address} as ${lifecycle} needs the migrating profile's account so grantIdentity can be recorded.`, { suggestion: "Run candle auth login (or candle profile use) so this profile caches its account, then retry." });
     }
     const grantIdentity = {
       account: grant.account,
@@ -112282,7 +112347,7 @@ function buildTeeMeta(entry, lifecycle, grant) {
   }
   if (lifecycle === "retired") {
     if (meta.vaultDestination === undefined) {
-      throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry.address} looks fully swept but records no vaultDestination; the vault cannot represent it as retired.`);
+      throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry2.address} looks fully swept but records no vaultDestination; the vault cannot represent it as retired.`);
     }
   }
   return meta;
@@ -112366,8 +112431,8 @@ async function vaultImportLegacy(args, ctx) {
     assertRecoverableFactorExists(vault.file.envelopes);
     const grant = await migrationGrantContext(ctx);
     const digest = sourceDigest(vault.file.vaultId, new TextEncoder().encode(legacyRaw));
-    const already = new Set(vault.index.entries.map((entry) => entry.address));
-    const toMigrate = legacyEntries.filter((entry) => !already.has(entry.address));
+    const already = new Set(vault.index.entries.map((entry2) => entry2.address));
+    const toMigrate = legacyEntries.filter((entry2) => !already.has(entry2.address));
     const skipped2 = legacyEntries.length - toMigrate.length;
     if (toMigrate.length === 0) {
       await recordMigrationSidecar(vaultPath, vault, fromPath, digest, deps.now());
@@ -112416,10 +112481,10 @@ async function vaultImportLegacy(args, ctx) {
       vaultPath,
       migrated: newEntries.length,
       skipped: skipped2,
-      addresses: newEntries.map((entry) => ({
-        address: entry.address,
-        lifecycle: entry.tee?.lifecycle ?? "local-candidate",
-        label: entry.label
+      addresses: newEntries.map((entry2) => ({
+        address: entry2.address,
+        lifecycle: entry2.tee?.lifecycle ?? "local-candidate",
+        label: entry2.label
       })),
       digest,
       idempotent: false
@@ -112462,15 +112527,15 @@ async function verifyMigratedOnDisk(path, reopen, entries3, _ctx) {
   }
   const reopened = await reopen(path, raw);
   try {
-    for (const entry of entries3) {
-      const secret = await decryptKey(reopened, entry.id);
+    for (const entry2 of entries3) {
+      const secret = await decryptKey(reopened, entry2.id);
       try {
-        if (addressFromSecret64(secret) !== entry.address) {
-          throw new VaultError("VAULT_VERIFY_FAILED", `Migrated key ${entry.address} does not re-derive from the secret written to the vault.`);
+        if (addressFromSecret64(secret) !== entry2.address) {
+          throw new VaultError("VAULT_VERIFY_FAILED", `Migrated key ${entry2.address} does not re-derive from the secret written to the vault.`);
         }
-        const recorded = reopened.index.entries.find((candidate) => candidate.id === entry.id);
+        const recorded = reopened.index.entries.find((candidate) => candidate.id === entry2.id);
         if (recorded === undefined) {
-          throw new VaultError("VAULT_VERIFY_FAILED", `Migrated key ${entry.address} is missing from the re-opened index.`);
+          throw new VaultError("VAULT_VERIFY_FAILED", `Migrated key ${entry2.address} is missing from the re-opened index.`);
         }
       } finally {
         wipe(secret);
@@ -112652,12 +112717,12 @@ async function vaultList(args, ctx) {
       throw missingVault(ctx, resolvedVault);
     const vault = hold((await unlockInteractively(promptCtx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const all = vault.index.entries;
-    const filtered = filter === undefined ? all : all.filter((entry) => matches2(entry, filter));
+    const filtered = filter === undefined ? all : all.filter((entry2) => matches2(entry2, filter));
     const showRetired = parsed.booleans.has("--all");
-    const matched = showRetired ? filtered : filtered.filter((entry) => !isRetiredTee(entry));
+    const matched = showRetired ? filtered : filtered.filter((entry2) => !isRetiredTee(entry2));
     const hiddenRetired = filtered.length - matched.length;
     const hiddenLine = `${hiddenRetired} retired TEE ${hiddenRetired === 1 ? "wallet" : "wallets"} hidden; add --all to show ${hiddenRetired === 1 ? "it" : "them"}.`;
-    const solana = balances ? matched.filter((entry) => entry.chain === "solana") : [];
+    const solana = balances ? matched.filter((entry2) => entry2.chain === "solana") : [];
     const requests = Math.ceil(solana.length / CHUNK2);
     const rpcHost = solanaClient?.endpoint.host;
     if (balances && solana.length > 0 && solanaClient !== undefined) {
@@ -112669,7 +112734,7 @@ async function vaultList(args, ctx) {
     let unavailable6 = [];
     let failure4;
     if (balances && solana.length > 0 && solanaClient !== undefined) {
-      const outcome = await readLamports(solana.map((entry) => entry.address), solanaClient, ctx);
+      const outcome = await readLamports(solana.map((entry2) => entry2.address), solanaClient, ctx);
       lamports = outcome.lamports;
       unavailable6 = outcome.unavailable;
       failure4 = outcome.failure;
@@ -112680,13 +112745,13 @@ async function vaultList(args, ctx) {
       notice(deps, "stderr", "warning", `${unavailable6.length} ${unavailable6.length === 1 ? "address" : "addresses"} could not be read: ${failure4 ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
 `.trim());
     }
-    const evm = balances ? matched.filter((entry) => entry.chain === "evm") : [];
+    const evm = balances ? matched.filter((entry2) => entry2.chain === "evm") : [];
     let evmRead2;
     if (evm.length > 0) {
       const host = rpcHostOf(evmRpcUrl);
       notice(deps, "stderr", "note", `Reading ETH (and USDG when the chain is Hood) for ${evm.length} EVM ${evm.length === 1 ? "address" : "addresses"} from ${host}, in ${evmRequestsPlanned(evm.length)} requests. That endpoint sees all ${evm.length} together.
 `.trim());
-      evmRead2 = await readEvmBalances(evm.map((entry) => entry.address), evmRpcUrl, deps.fetch);
+      evmRead2 = await readEvmBalances(evm.map((entry2) => entry2.address), evmRpcUrl, deps.fetch);
       if (evmRead2.unavailable.length > 0) {
         notice(deps, "stderr", "warning", `${evmRead2.unavailable.length} EVM ${evmRead2.unavailable.length === 1 ? "address" : "addresses"} could not be read: ${evmRead2.failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --evm-rpc-url.
 `.trim());
@@ -112702,14 +112767,14 @@ async function vaultList(args, ctx) {
         matched: matched.length,
         hiddenRetired,
         ...filter === undefined ? {} : { filter },
-        entries: matched.map((entry) => {
-          const held = lamports.get(entry.address);
+        entries: matched.map((entry2) => {
+          const held = lamports.get(entry2.address);
           return {
-            ...describeEntry(entry),
-            ...balances && entry.chain === "solana" ? { lamports: held === undefined ? null : held.toString() } : {},
-            ...balances && entry.chain === "evm" ? {
-              wei: evmRead2?.wei.get(entry.address)?.toString() ?? null,
-              ...hood ? { usdgRaw: evmRead2?.usdg.get(entry.address)?.toString() ?? null } : {}
+            ...describeEntry(entry2),
+            ...balances && entry2.chain === "solana" ? { lamports: held === undefined ? null : held.toString() } : {},
+            ...balances && entry2.chain === "evm" ? {
+              wei: evmRead2?.wei.get(entry2.address)?.toString() ?? null,
+              ...hood ? { usdgRaw: evmRead2?.usdg.get(entry2.address)?.toString() ?? null } : {}
             } : {}
           };
         }),
@@ -112753,23 +112818,23 @@ async function vaultList(args, ctx) {
       headers2.push(nativeHeader);
     if (evmColumns && hood)
       headers2.push("USDG");
-    const rows = matched.map((entry) => {
+    const rows = matched.map((entry2) => {
       const row2 = [
-        entry.address,
-        entry.label || symbols(terminalStyle(deps, "stdout")).missing,
-        entry.role,
-        entry.tee?.lifecycle ?? symbols(terminalStyle(deps, "stdout")).missing,
-        entry.derivation?.path ?? symbols(terminalStyle(deps, "stdout")).missing
+        entry2.address,
+        entry2.label || symbols(terminalStyle(deps, "stdout")).missing,
+        entry2.role,
+        entry2.tee?.lifecycle ?? symbols(terminalStyle(deps, "stdout")).missing,
+        entry2.derivation?.path ?? symbols(terminalStyle(deps, "stdout")).missing
       ];
       if (balances) {
-        const held = lamports.get(entry.address);
+        const held = lamports.get(entry2.address);
         row2.push(held === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatSol3(held));
       }
       if (evmColumns) {
-        const wei = evmRead2?.wei.get(entry.address);
+        const wei = evmRead2?.wei.get(entry2.address);
         row2.push(wei === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatUnits(wei, NATIVE_DECIMALS));
         if (hood) {
-          const usdg = evmRead2?.usdg.get(entry.address);
+          const usdg = evmRead2?.usdg.get(entry2.address);
           row2.push(usdg === undefined ? symbols(terminalStyle(deps, "stdout")).missing : formatUnits(usdg, HOOD_USDG_DECIMALS));
         }
       }
@@ -112800,9 +112865,9 @@ total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable6.le
     return complete ? 0 : 3;
   });
 }
-function matches2(entry, filter) {
+function matches2(entry2, filter) {
   const needle = filter.toLowerCase();
-  return entry.label.toLowerCase().includes(needle) || entry.address.toLowerCase().includes(needle);
+  return entry2.label.toLowerCase().includes(needle) || entry2.address.toLowerCase().includes(needle);
 }
 
 // src/commands/vault-phrase-dispatch.ts
@@ -112991,7 +113056,7 @@ async function promoteEvmFresh(input, fromLabel) {
   let blob;
   let secret;
   let privateKey;
-  let entry;
+  let entry2;
   let scanStart;
   try {
     const derived = await deriveEvmTeeKeyFromRoot(root, teeIndex);
@@ -113005,7 +113070,7 @@ async function promoteEvmFresh(input, fromLabel) {
     }
     wipe(root);
     const now = new Date(ctx.deps.now()).toISOString();
-    entry = {
+    entry2 = {
       id: keyId,
       chain: "evm",
       curve: "secp256k1",
@@ -113035,7 +113100,7 @@ async function promoteEvmFresh(input, fromLabel) {
           nextIndex: { ...vault.index.hd.nextIndex, evmTee: teeIndex + 1 },
           exposedIndexes: { ...vault.index.hd.exposedIndexes, evmTee: exposedTee }
         },
-        entries: [...vault.index.entries, entry]
+        entries: [...vault.index.entries, entry2]
       },
       addKeys: [blob]
     }, ctx.deps));
@@ -113058,7 +113123,7 @@ async function promoteEvmFresh(input, fromLabel) {
   const { exit: code, submitted } = await runTeeImport(ctx, {
     address,
     privateKey,
-    label: entry.label,
+    label: entry2.label,
     vaultDestination: destination.address,
     reopenForWrite: opened.reopen,
     resolvedVault,
@@ -113079,7 +113144,7 @@ async function promoteEvmFresh(input, fromLabel) {
     rebound = await rebindAfterImport(ctx, toKey, {
       linkedWalletId: target.linkedWalletId ?? null,
       address,
-      label: entry.label,
+      label: entry2.label,
       remoteAuthority: target.tee?.remoteAuthority ?? submitted?.remoteAuthority ?? null,
       importedTo: submitted?.boundKeyPrefix ?? null
     }, await callingKeyPrefixFor(ctx), "evm");
@@ -113091,7 +113156,7 @@ async function promoteEvmFresh(input, fromLabel) {
       mode: "fresh",
       chain: "evm",
       address,
-      label: entry.label,
+      label: entry2.label,
       path: derivationPath,
       vaultDestination: destination.address,
       lifecycle: target.tee?.lifecycle,
@@ -113387,7 +113452,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
       wipe(root);
     }
     const now = new Date(ctx.deps.now()).toISOString();
-    const entry = {
+    const entry2 = {
       id: keyId,
       chain: "solana",
       curve: "ed25519",
@@ -113416,7 +113481,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
           nextIndex: { ...vault.index.hd.nextIndex, solanaTee: teeIndex + 1 },
           exposedIndexes: { ...vault.index.hd.exposedIndexes, solanaTee: exposedTee }
         },
-        entries: [...vault.index.entries, entry]
+        entries: [...vault.index.entries, entry2]
       },
       addKeys: [blob]
     }, ctx.deps));
@@ -113432,7 +113497,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
     const { exit: code, submitted } = await runTeeImport(ctx, {
       address,
       privateKey,
-      label: entry.label,
+      label: entry2.label,
       vaultDestination: destination.address,
       reopenForWrite: opened.reopen,
       resolvedVault,
@@ -113455,7 +113520,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
       rebound = await rebindAfterImport(ctx, toKey, {
         linkedWalletId: target.linkedWalletId ?? null,
         address,
-        label: entry.label,
+        label: entry2.label,
         remoteAuthority: target.tee?.remoteAuthority ?? submitted?.remoteAuthority ?? null,
         importedTo
       }, await callingKeyPrefixFor(ctx), "solana");
@@ -113466,7 +113531,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
         ok: rebound === undefined || rebound.exit === 0,
         mode: "fresh",
         address,
-        label: entry.label,
+        label: entry2.label,
         vaultDestination: destination.address,
         lifecycle: target.tee?.lifecycle,
         linkedWalletId: target.linkedWalletId ?? null,
@@ -113517,7 +113582,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     });
     let vault = hold(opened.vault);
     assertRecoverableFactorExists(vault.file.envelopes);
-    const existing = findEntryByLabelOrAddress(vault.index, subjectLabel) ?? vault.index.entries.find((entry) => entry.chain === "evm" && sameAddress2(entry.address, subjectLabel));
+    const existing = findEntryByLabelOrAddress(vault.index, subjectLabel) ?? vault.index.entries.find((entry2) => entry2.chain === "evm" && sameAddress2(entry2.address, subjectLabel));
     if (existing === undefined) {
       throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`, {
         suggestion: "Nothing was written. Run: candle vault status (which lists every label and address this vault holds)"
@@ -113699,7 +113764,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     return exit;
   });
 }
-async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmations) {
+async function resumePromote(ctx, vault, entry2, reopen, path, hold, confirmations) {
   const announceGrant = confirmations.announceGrant ?? true;
   const report2 = confirmations.report ?? "write";
   const fail6 = (failure4, exit) => {
@@ -113716,7 +113781,7 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
     }, 1);
   }
   let assertedAccount;
-  if (entry.tee?.grantIdentity === undefined) {
+  if (entry2.tee?.grantIdentity === undefined) {
     const config = await ctx.deps.readConfig();
     const name2 = ctx.profile ?? config.activeProfile;
     const cached = name2 !== undefined ? config.profiles?.[name2]?.account : undefined;
@@ -113732,14 +113797,14 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
     await confirmations.confirmAccount(cached);
     assertedAccount = cached;
   }
-  const verdict = await reconcileGrant(ctx, entry, { assertedAccount });
+  const verdict = await reconcileGrant(ctx, entry2, { assertedAccount });
   if (verdict.kind === "unreadable") {
     return fail6({ code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason }, 1);
   }
   if (verdict.kind === "unresolved") {
     return fail6({
       code: "PROMOTE_OUTCOME_UNRESOLVED",
-      message: `No authoritative grant or stranding record for ${entry.address}; the outcome is not established.`,
+      message: `No authoritative grant or stranding record for ${entry2.address}; the outcome is not established.`,
       suggestion: "Nothing was written. Demote under --emergency if funds must move, then promote a fresh key."
     }, 3);
   }
@@ -113747,7 +113812,7 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
     const next2 = await commitVault(vault, {
       index: {
         hd: vault.index.hd,
-        entries: vault.index.entries.map((e) => e.id === entry.id ? {
+        entries: vault.index.entries.map((e) => e.id === entry2.id ? {
           ...e,
           linkedWalletId: undefined,
           tee: {
@@ -113764,32 +113829,32 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
       }
     }, ctx.deps);
     hold(next2);
-    const stranded = `${entry.address} is stranded; it is never re-promotable.`;
+    const stranded = `${entry2.address} is stranded; it is never re-promotable.`;
     if (report2 === "return") {
       return { exit: 1, failure: { code: "PROMOTE_ALREADY_TEE_WALLET", message: stranded }, vault: next2 };
     }
     if (ctx.json)
-      writeJson(ctx.deps, { ok: false, lifecycle: "stranded", address: entry.address });
+      writeJson(ctx.deps, { ok: false, lifecycle: "stranded", address: entry2.address });
     else
       notice(ctx.deps, "stdout", "note", `${stranded}
 `.trim());
     return { exit: 1 };
   }
-  const adoption = await adoptGrantedRow(ctx, entry, verdict.row, verdict.account, {
+  const adoption = await adoptGrantedRow(ctx, entry2, verdict.row, verdict.account, {
     confirmDestination: confirmations.confirmDestination,
     announceGrant
   });
   if (adoption.outcome === "declined") {
     return fail6({
       code: "GRANT_DESTINATION_UNRESOLVED",
-      message: `Adoption of the server grant for ${entry.address} was declined; the entry was left unchanged.`
+      message: `Adoption of the server grant for ${entry2.address} was declined; the entry was left unchanged.`
     }, 1);
   }
   const next = await commitVault(vault, {
     index: {
       hd: vault.index.hd,
       entries: vault.index.entries.map((e) => {
-        if (e.id !== entry.id)
+        if (e.id !== entry2.id)
           return e;
         return {
           ...e,
@@ -113801,8 +113866,8 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
   }, ctx.deps);
   hold(next);
   const adopted = {
-    linkedWalletId: adoption.patch.linkedWalletId ?? entry.linkedWalletId,
-    remoteAuthority: adoption.patch.tee?.remoteAuthority ?? entry.tee?.remoteAuthority
+    linkedWalletId: adoption.patch.linkedWalletId ?? entry2.linkedWalletId,
+    remoteAuthority: adoption.patch.tee?.remoteAuthority ?? entry2.tee?.remoteAuthority
   };
   if (report2 === "return") {
     return { exit: 0, adopted, vault: next };
@@ -113811,12 +113876,12 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
     writeJson(ctx.deps, {
       ok: true,
       mode: "resume",
-      address: entry.address,
+      address: entry2.address,
       lifecycle: "enabled",
       importCalls: 0
     });
   } else {
-    writeSuccess(ctx.deps, "stdout", `Resumed ${entry.address}: grant adopted; no re-import.
+    writeSuccess(ctx.deps, "stdout", `Resumed ${entry2.address}: grant adopted; no re-import.
 `.trim());
   }
   return { exit: 0, adopted };
@@ -113910,25 +113975,25 @@ async function runTeeImport(ctx, opts) {
     committed = await commitVault(vault, {
       index: {
         hd: vault.index.hd,
-        entries: vault.index.entries.map((entry) => {
-          if (entry.address !== opts.address)
-            return entry;
-          if (entry.chain !== (opts.chain ?? "solana"))
-            return entry;
+        entries: vault.index.entries.map((entry2) => {
+          if (entry2.address !== opts.address)
+            return entry2;
+          if (entry2.chain !== (opts.chain ?? "solana"))
+            return entry2;
           return {
-            ...entry,
+            ...entry2,
             linkedWalletId: submitted.id,
             exposure: {
               everRemoteExposed: true,
-              everExported: entry.exposure?.everExported === true,
-              ...entry.exposure?.exposureUnknown ? { exposureUnknown: true } : {}
+              everExported: entry2.exposure?.everExported === true,
+              ...entry2.exposure?.exposureUnknown ? { exposureUnknown: true } : {}
             },
             tee: {
-              network: teeNetworkFor(entry.chain),
+              network: teeNetworkFor(entry2.chain),
               lifecycle: "enabled",
               vaultDestination: opts.vaultDestination,
-              ...entry.tee?.promotedInPlaceAt ? { promotedInPlaceAt: entry.tee.promotedInPlaceAt } : {},
-              ...entry.tee?.destinationExposureAccepted ? { destinationExposureAccepted: true } : {},
+              ...entry2.tee?.promotedInPlaceAt ? { promotedInPlaceAt: entry2.tee.promotedInPlaceAt } : {},
+              ...entry2.tee?.destinationExposureAccepted ? { destinationExposureAccepted: true } : {},
               ...submitted.boundKeyPrefix ? { boundKeyPrefix: submitted.boundKeyPrefix } : {},
               remoteAuthority: submitted.remoteAuthority ?? "unknown",
               enabledAt: importedAt,
@@ -113938,9 +114003,9 @@ async function runTeeImport(ctx, opts) {
                 source: "recorded-at-operation"
               },
               remoteState: "enabled",
-              ...entry.tee?.fundingReceipts ? { fundingReceipts: entry.tee.fundingReceipts } : {},
-              ...entry.tee?.sweepPending ? { sweepPending: entry.tee.sweepPending } : {},
-              ...entry.tee?.sweepReceipts ? { sweepReceipts: entry.tee.sweepReceipts } : {}
+              ...entry2.tee?.fundingReceipts ? { fundingReceipts: entry2.tee.fundingReceipts } : {},
+              ...entry2.tee?.sweepPending ? { sweepPending: entry2.tee.sweepPending } : {},
+              ...entry2.tee?.sweepReceipts ? { sweepReceipts: entry2.tee.sweepReceipts } : {}
             }
           };
         })
@@ -113957,7 +114022,7 @@ async function runTeeImport(ctx, opts) {
   };
 }
 function namesEvmEntry(entries3, labelOrAddress) {
-  return entries3.some((entry) => entry.chain === "evm" && (entry.label === labelOrAddress || sameAddress2(entry.address, labelOrAddress)));
+  return entries3.some((entry2) => entry2.chain === "evm" && (entry2.label === labelOrAddress || sameAddress2(entry2.address, labelOrAddress)));
 }
 
 // src/commands/vault-promote-batch.ts
@@ -114121,7 +114186,7 @@ function batchChain(index, rows) {
   let solana = false;
   let evm = false;
   for (const row2 of rows) {
-    const subject = findEntryByLabelOrAddress(index, row2.label) ?? index.entries.find((entry) => entry.chain === "evm" && entry.address.toLowerCase() === row2.label.toLowerCase());
+    const subject = findEntryByLabelOrAddress(index, row2.label) ?? index.entries.find((entry2) => entry2.chain === "evm" && entry2.address.toLowerCase() === row2.label.toLowerCase());
     if (subject?.chain === "evm")
       evm = true;
     else if (subject?.chain === "solana")
@@ -115347,9 +115412,9 @@ async function deriveWithinBounds(ctx, vault, counts, solana) {
       let consecutiveUnused = 0;
       let index = 0;
       for (;index < SCAN_CEILING && consecutiveUnused < GAP_LIMIT; index++) {
-        const entry = await deriveOne(vault, root, branch, index);
-        set2.entries.push(entry);
-        const used = await solana.read(() => addressLooksUsed(solana.rpc, entry.address));
+        const entry2 = await deriveOne(vault, root, branch, index);
+        set2.entries.push(entry2);
+        const used = await solana.read(() => addressLooksUsed(solana.rpc, entry2.address));
         consecutiveUnused = used ? 0 : consecutiveUnused + 1;
       }
       set2.scanStoppedAt[branch] = index;
@@ -115365,13 +115430,13 @@ async function deriveWithinBounds(ctx, vault, counts, solana) {
   } finally {
     wipe(root);
   }
-  for (const entry of set2.entries) {
-    if (entry.branch === "solanaExternal")
-      set2.externalByAddress.set(entry.address, entry);
-    else if (entry.branch === "evm" || entry.branch === "evmTee")
-      set2.byAddress.set(entry.address.toLowerCase(), entry);
+  for (const entry2 of set2.entries) {
+    if (entry2.branch === "solanaExternal")
+      set2.externalByAddress.set(entry2.address, entry2);
+    else if (entry2.branch === "evm" || entry2.branch === "evmTee")
+      set2.byAddress.set(entry2.address.toLowerCase(), entry2);
     else
-      set2.byAddress.set(entry.address, entry);
+      set2.byAddress.set(entry2.address, entry2);
   }
   return set2;
 }
@@ -115451,9 +115516,9 @@ This profile acts as account ${read3.account}.
   for (const row2 of read3.rows) {
     if (typeof row2.address !== "string")
       continue;
-    const entry = derived.byAddress.get(lookupKey(row2.address));
-    if (entry)
-      matched.push({ entry, row: row2 });
+    const entry2 = derived.byAddress.get(lookupKey(row2.address));
+    if (entry2)
+      matched.push({ entry: entry2, row: row2 });
     else if (derived.externalByAddress.has(row2.address))
       externalListed.push(row2.address);
     else
@@ -115464,19 +115529,19 @@ This profile acts as account ${read3.account}.
 async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
   const now = new Date(ctx.deps.now()).toISOString();
   const matchByAddress = new Map(matches3.matched.map((match) => [match.entry.address, match.row]));
-  const entries3 = derived.entries.map((entry) => {
-    const row2 = matchByAddress.get(entry.address);
-    if (entry.branch === "evmTee") {
+  const entries3 = derived.entries.map((entry2) => {
+    const row2 = matchByAddress.get(entry2.address);
+    if (entry2.branch === "evmTee") {
       const base3 = {
-        id: entry.keyId,
+        id: entry2.keyId,
         chain: "evm",
         curve: "secp256k1",
-        address: entry.address,
-        label: row2?.label ?? `evm-tee-${entry.index}`,
+        address: entry2.address,
+        label: row2?.label ?? `evm-tee-${entry2.index}`,
         createdAt: now,
         role: "tee-wallet",
         origin: "derived",
-        derivation: { scheme: EVM_DERIVATION_SCHEME, path: entry.path },
+        derivation: { scheme: EVM_DERIVATION_SCHEME, path: entry2.path },
         exposure: { everRemoteExposed: true, everExported: false, exposureUnknown: true }
       };
       if (row2 !== undefined)
@@ -115491,31 +115556,31 @@ async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
         }
       };
     }
-    if (entry.branch === "evm") {
+    if (entry2.branch === "evm") {
       return {
-        id: entry.keyId,
+        id: entry2.keyId,
         chain: "evm",
         curve: "secp256k1",
-        address: entry.address,
-        label: row2?.label ?? `evm-${entry.index}`,
+        address: entry2.address,
+        label: row2?.label ?? `evm-${entry2.index}`,
         createdAt: now,
         role: "vault",
         origin: "derived",
-        derivation: { scheme: EVM_DERIVATION_SCHEME, path: entry.path },
+        derivation: { scheme: EVM_DERIVATION_SCHEME, path: entry2.path },
         exposure: { everRemoteExposed: row2 !== undefined, everExported: false, exposureUnknown: true }
       };
     }
-    const external3 = entry.branch === "solanaExternal";
+    const external3 = entry2.branch === "solanaExternal";
     const base2 = {
-      id: entry.keyId,
+      id: entry2.keyId,
       chain: "solana",
       curve: "ed25519",
-      address: entry.address,
-      label: row2?.label ?? `${external3 ? "external" : entry.branch === "solanaTee" ? "tee" : "key"}-${entry.index}`,
+      address: entry2.address,
+      label: row2?.label ?? `${external3 ? "external" : entry2.branch === "solanaTee" ? "tee" : "key"}-${entry2.index}`,
       createdAt: now,
       role: external3 ? "external" : "vault",
       origin: "derived",
-      derivation: { scheme: DERIVATION_SCHEME, path: entry.path },
+      derivation: { scheme: DERIVATION_SCHEME, path: entry2.path },
       exposure: { everRemoteExposed: false, everExported: false, exposureUnknown: true }
     };
     if (row2 === undefined)
@@ -115524,12 +115589,12 @@ async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
   });
   const highest = { solanaVault: -1, solanaTee: -1, solanaExternal: -1, evm: -1, evmTee: -1 };
   const exposed = { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [], evmTee: [] };
-  for (const entry of entries3) {
-    const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
+  for (const entry2 of entries3) {
+    const located = entry2.derivation ? branchOfPath(entry2.derivation.path) : undefined;
     if (located === undefined)
       continue;
     highest[located.branch] = Math.max(highest[located.branch], located.index);
-    if (entry.exposure.everRemoteExposed)
+    if (entry2.exposure.everRemoteExposed)
       exposed[located.branch].push(located.index);
   }
   const highestMatched = { solanaVault: -1, solanaTee: -1, solanaExternal: -1 };
@@ -115565,7 +115630,7 @@ async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
     },
     ...matches3.complete ? { exposureReconciledAt: now } : {}
   };
-  await commitVault(vault, { index: { hd, entries: entries3 }, addKeys: derived.entries.map((entry) => entry.blob) }, ctx.deps);
+  await commitVault(vault, { index: { hd, entries: entries3 }, addKeys: derived.entries.map((entry2) => entry2.blob) }, ctx.deps);
   return { entries: entries3, hd };
 }
 function teeFieldsFor(row2, ctx, network2 = "solana-mainnet") {
@@ -115596,12 +115661,12 @@ function reportRestore(ctx, vault, derived, matches3, outcome, counts, ambientSo
   writeSuccess(deps, "stdout", `
 Recovered ${outcome.entries.length} address(es) from the phrase.
 `.trim());
-  for (const entry of outcome.entries) {
+  for (const entry2 of outcome.entries) {
     writeFields(deps, "stdout", [
-      ["Address", entry.address],
-      ["Derivation", entry.derivation?.path],
-      ["Role", entry.role],
-      ["This account imported it", entry.exposure.everRemoteExposed ? "yes" : "not observed"]
+      ["Address", entry2.address],
+      ["Derivation", entry2.derivation?.path],
+      ["Role", entry2.role],
+      ["This account imported it", entry2.exposure.everRemoteExposed ? "yes" : "not observed"]
     ]);
   }
   notice(deps, "stdout", "warning", `
@@ -115713,12 +115778,12 @@ async function vaultReconcileExposure(args, ctx) {
       throw new VaultError("EXPOSURE_ACCOUNT_MISMATCH", `This vault recorded its discovery against account ${recorded}, and this profile acts as ${read3.account}.`, { suggestion: "Switch profile and run it again. Nothing was flagged." });
     }
     const listed = new Set(read3.rows.map((row2) => lookupKey(row2.address)));
-    const entries3 = vault.index.entries.map((entry) => entry.role !== "external" && listed.has(lookupKey(entry.address)) && !entry.exposure.everRemoteExposed ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } } : entry);
-    const added = entries3.filter((entry, i) => entry !== vault.index.entries[i]);
+    const entries3 = vault.index.entries.map((entry2) => entry2.role !== "external" && listed.has(lookupKey(entry2.address)) && !entry2.exposure.everRemoteExposed ? { ...entry2, exposure: { ...entry2.exposure, everRemoteExposed: true } } : entry2);
+    const added = entries3.filter((entry2, i) => entry2 !== vault.index.entries[i]);
     const exposedIndexes = { ...vault.index.hd.exposedIndexes };
-    for (const entry of entries3) {
-      const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
-      if (located === undefined || !entry.exposure.everRemoteExposed)
+    for (const entry2 of entries3) {
+      const located = entry2.derivation ? branchOfPath(entry2.derivation.path) : undefined;
+      if (located === undefined || !entry2.exposure.everRemoteExposed)
         continue;
       const list = exposedIndexesOf({ exposedIndexes }, located.branch);
       if (!list.includes(located.index)) {
@@ -115729,10 +115794,10 @@ async function vaultReconcileExposure(args, ctx) {
     const highestMatched = {
       ...vault.index.hd.discovery?.highestMatched ?? { solanaVault: -1, solanaTee: -1, solanaExternal: -1 }
     };
-    for (const entry of entries3) {
-      if (!entry.exposure.everRemoteExposed)
+    for (const entry2 of entries3) {
+      if (!entry2.exposure.everRemoteExposed)
         continue;
-      const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
+      const located = entry2.derivation ? branchOfPath(entry2.derivation.path) : undefined;
       if (located?.branch === "solanaVault")
         highestMatched.solanaVault = Math.max(highestMatched.solanaVault, located.index);
       if (located?.branch === "solanaTee")
@@ -115862,7 +115927,7 @@ async function vaultRetireLegacy(args, ctx) {
     let legacyAddresses;
     try {
       const opened2 = await readKeystore(legacyRaw, legacyPass, { expectPurpose: TEE_KEYSTORE_PURPOSE });
-      legacyAddresses = opened2.entries.map((entry) => entry.address);
+      legacyAddresses = opened2.entries.map((entry2) => entry2.address);
     } catch (error) {
       throw new VaultError("VAULT_UNLOCK_FAILED", error instanceof Error ? error.message : "Could not open the TEE wallet store.");
     }
@@ -115872,7 +115937,7 @@ async function vaultRetireLegacy(args, ctx) {
     });
     const vault = hold(opened.vault);
     await verifyVaultIntegrity(vault);
-    const vaultAddresses = new Set(vault.index.entries.map((entry) => entry.address));
+    const vaultAddresses = new Set(vault.index.entries.map((entry2) => entry2.address));
     const missing = legacyAddresses.filter((address) => !vaultAddresses.has(address));
     if (missing.length > 0) {
       throw new VaultError("LEGACY_INCOMPLETE", `The vault is missing ${missing.length} address(es) still held in ${fromPath}.`, {
@@ -115975,7 +116040,7 @@ async function vaultStatus(args, ctx) {
         entries: vault.index.entries.map(describeEntry),
         duplicateLabels: duplicateLabels(vault.index).map((duplicate) => ({
           label: duplicate.label,
-          entries: duplicate.entries.map((entry) => ({ address: entry.address, id: entry.id }))
+          entries: duplicate.entries.map((entry2) => ({ address: entry2.address, id: entry2.id }))
         })),
         nextIndex: vault.index.hd.nextIndex,
         exposedIndexes: vault.index.hd.exposedIndexes,
@@ -116087,19 +116152,19 @@ A key it holds that was never imported opens with an earlier release's \`wallets
     }
     write3("");
     write3(heading(`Keys (${unlocked.entries.length})`, style));
-    for (const entry of unlocked.entries) {
+    for (const entry2 of unlocked.entries) {
       write3("");
-      write3(`${" ".repeat(2)}${entry.address}`);
+      write3(`${" ".repeat(2)}${entry2.address}`);
       const rows = [
-        ["Label", entry.label || miss],
-        ["Role", `${entry.role} (${entry.origin})`],
-        ["Exposure", entry.exposure]
+        ["Label", entry2.label || miss],
+        ["Role", `${entry2.role} (${entry2.origin})`],
+        ["Exposure", entry2.exposure]
       ];
-      if (entry.derivation)
-        rows.splice(2, 0, ["Derivation", entry.derivation]);
-      if (entry.teeLifecycle)
-        rows.push(["Tee", `${entry.teeLifecycle}${entry.teeRemoteState ? ` (server: ${entry.teeRemoteState})` : ""}`]);
-      if (entry.destinationExposureAccepted) {
+      if (entry2.derivation)
+        rows.splice(2, 0, ["Derivation", entry2.derivation]);
+      if (entry2.teeLifecycle)
+        rows.push(["Tee", `${entry2.teeLifecycle}${entry2.teeRemoteState ? ` (server: ${entry2.teeRemoteState})` : ""}`]);
+      if (entry2.destinationExposureAccepted) {
         rows.push(["Accepted", "an operator asserted this pinned destination's history despite exposureUnknown"]);
       }
       for (const line of fields(rows, style, 4))
@@ -116131,7 +116196,7 @@ A key it holds that was never imported opens with an earlier release's \`wallets
 function duplicateLabelLines(duplicates) {
   const lines = [];
   for (const duplicate of duplicates) {
-    const holders = duplicate.entries.map((entry) => `${entry.address} (${entry.id})`).join(", ");
+    const holders = duplicate.entries.map((entry2) => `${entry2.address} (${entry2.id})`).join(", ");
     lines.push(`  ${duplicate.label.padEnd(14)}${duplicate.entries.length} keys: ${holders}`);
     lines.push(`                --from ${duplicate.label} always picks the first; rename one: candle vault rename <address> <new-label>`);
   }
@@ -116247,7 +116312,7 @@ async function vaultTransfer(args, ctx) {
       return usage(ctx, `No vault key or promoted wallet matches --from ${fromLabel}.`);
     }
     assertTransferSigner(fromEntry);
-    const retiredDestination = vault.index.entries.find((entry) => isRetiredTee(entry) && entry.address.toLowerCase() === to.toLowerCase());
+    const retiredDestination = vault.index.entries.find((entry2) => isRetiredTee(entry2) && entry2.address.toLowerCase() === to.toLowerCase());
     if (retiredDestination !== undefined) {
       writeLocalFailure(ctx.deps, {
         code: "TEE_WALLET_STOPPED",
@@ -117135,8 +117200,8 @@ function checkedBuild(build, wallet3, previewed) {
   const indexes2 = new Set;
   const closing2 = new Set;
   const out = [];
-  for (const entry of list) {
-    const { index, unsignedTransaction, accounts } = entry ?? {};
+  for (const entry2 of list) {
+    const { index, unsignedTransaction, accounts } = entry2 ?? {};
     if (typeof index !== "number" || !Number.isInteger(index) || indexes2.has(index) || typeof unsignedTransaction !== "string" || !Array.isArray(accounts) || !accounts.every((a) => typeof a === "string"))
       throw refuse3("is not a list of indexed transactions");
     indexes2.add(index);

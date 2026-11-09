@@ -20,6 +20,7 @@
  */
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
+import { isEvmChainSlug } from "../chain-registry"
 import { type ApiResult, apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { writeFields, writeHeading } from "../human-output"
@@ -36,12 +37,12 @@ export const EDIT_FIELDS = launchFlagFields.filter(
 /** `--clear` names: the flag without its dashes (`x` for `socials.twitter`). */
 const CLEAR_NAMES = new Map(EDIT_FIELDS.map((field) => [field.cli.flag.slice(2), field.key]))
 
-const EDIT_USAGE = `Usage: candle token edit <mint> [--chain solana|hood] ${EDIT_FIELDS.map(
+const EDIT_USAGE = `Usage: candle token edit <mint> [--chain <chain>] ${EDIT_FIELDS.map(
   (field) => `[${field.cli.flag} ${"value" in field.cli ? field.cli.value : "<value>"}]`,
 ).join(" ")} [--clear <${[...CLEAR_NAMES.keys()].join("|")}>]... [--idempotency-key <key>] [--json]`
-const HISTORY_USAGE = "Usage: candle token history <mint> [--chain solana|hood] [--limit <n>] [--cursor <c>] [--json]"
+const HISTORY_USAGE = `Usage: candle token history <mint> [--chain <chain>] [--limit <n>] [--cursor <c>] [--json]`
 
-type Chain = "solana" | "hood"
+type Chain = "solana" | "hood" | (string & {})
 type Usage = (message?: string) => number
 
 function usageFor(ctx: CommandContext, line: string): Usage {
@@ -51,10 +52,10 @@ function usageFor(ctx: CommandContext, line: string): Usage {
   }
 }
 
-/** `--chain`, else the mint's shape: `0x` is Hood. */
+/** `--chain`, else the mint's shape: `0x` is Hood (the documented default, spec section 5). */
 export function chainFor(mint: string, given: string | undefined): Chain | undefined {
   const chain = given ?? (mint.startsWith("0x") ? "hood" : "solana")
-  return chain === "solana" || chain === "hood" ? chain : undefined
+  return chain === "solana" || isEvmChainSlug(chain) ? chain : undefined
 }
 
 function metadataPath(chain: Chain, mint: string, rest = ""): string {

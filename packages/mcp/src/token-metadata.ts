@@ -7,6 +7,7 @@
  */
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
+import { chainSchema } from "./chain-registry"
 import { launchFieldHelp, SOCIAL_KEYS } from "./launch-schema"
 
 /** Mirrors the API's edit-only caps (packages/shared launch-definition.ts, D3); the API is the authority. */
@@ -32,7 +33,7 @@ function editSocialsSchema() {
 }
 
 export const tokenEditShape = {
-  chain: z.enum(["solana", "hood"]).describe('"solana" or "hood"'),
+  chain: chainSchema(),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
   description: z
     .string()
@@ -50,7 +51,7 @@ export const tokenEditShape = {
 }
 
 export const tokenHistoryShape = {
-  chain: z.enum(["solana", "hood"]).describe('"solana" or "hood"'),
+  chain: chainSchema(),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
   cursor: z.string().optional().describe("nextCursor from an earlier page"),
   limit: z.number().int().min(1).max(50).optional().describe("How many edits, 1 to 50 (default 20)"),

@@ -52,7 +52,8 @@ import type { SecretStore } from "./secret-store";
 import type { CandleStaking } from "./staking";
 import { type ClusterResult } from "./token-clusters";
 import { type WalletChain } from "./wallet-import";
-export type Chain = "solana" | "hood";
+/** A chain slug: `solana`, `hood`, or any registry EVM chain a later release adds (Multi-EVM F5). */
+export type Chain = "solana" | "hood" | (string & {});
 /**
  * The two shipped tiers plus their low-threshold TEST twins (~1/80 economics, same identity and
  * NFT gate; see docs/superpowers/specs/2026-08-04-test-curve-configs-design.md). Test tiers are
@@ -110,11 +111,18 @@ export interface CandleClientOptions {
     /** Solana JSON-RPC endpoint used by broadcastSignedTransaction() and the Solana linked-wallet one-shots (trade()/selfLaunch()). */
     solanaRpcUrl?: string;
     /**
+     * EVM JSON-RPC endpoint, one per chain (Multi-EVM F5, BE-2959): keyed by registry chain slug
+     * (`hood`, and any chain the registry gains later). `evmRpcUrl` stays as Hood's single
+     * endpoint, so existing callers keep working; `evmRpcUrls` adds or overrides per chain.
+     * Resolved by `evmRpcUrlForChain()`, which every EVM one-shot flow reads.
+     */
+    evmRpcUrls?: Record<string, string>;
+    /**
      * EVM JSON-RPC endpoint used by broadcastSignedTransaction() and the Hood linked-wallet
      * one-shots (trade()/selfLaunch()): fetching chain id, nonce, and fee data, and estimating gas
      * for each leg (via packages/sdk/src/evm-tx.ts's helpers) all read from this endpoint. Required
      * for a Hood linked payer; trade()/selfLaunch() throw a clear error naming this option when it
-     * is unset, before any signing.
+     * is unset, before any signing. Shorthand for `evmRpcUrls: { hood: <url> }`.
      */
     evmRpcUrl?: string;
     /**
@@ -3535,6 +3543,7 @@ export declare class CandleClient {
     private readonly secretStore?;
     private readonly solanaRpcUrl?;
     private readonly evmRpcUrl?;
+    private readonly evmRpcUrls?;
     private readonly hyperliquidNetwork;
     private perpsMarketReader?;
     private hyperliquidBuilder?;
@@ -4355,11 +4364,19 @@ export declare class CandleClient {
     private launchAtomicSteps;
     /**
      * The `EvmRpc` seam packages/sdk/src/evm-tx.ts's helpers are built against, built from this
-     * client's own `jsonRpcCall`/`jsonRpcCallRaw` closed over `evmRpcUrl`. Callers must have already
-     * checked `evmRpcUrl` is set (trade()/selfLaunch() do, with a clear error naming it, before
+     * client's own `jsonRpcCall`/`jsonRpcCallRaw` closed over the chain's endpoint. Multi-EVM F5:
+     * the endpoint is per chain (`evmRpcUrls[chain]`, else `evmRpcUrl` for `hood`), so a chain the
+     * registry gains later needs only its own entry in `evmRpcUrls`. Callers must have already
+     * checked the URL resolves (trade()/selfLaunch() do, with a clear error naming it, before
      * calling this).
      */
     private evmRpc;
+    /**
+     * Multi-EVM F5 (BE-2959): the EVM endpoint a chain's one-shot flows read from. `evmRpcUrls` is
+     * keyed by registry chain slug; `evmRpcUrl` stays as Hood's single endpoint for callers that
+     * predate per-chain RPC.
+     */
+    evmRpcUrlForChain(chain: string): string | undefined;
     /**
      * Assembles, signs, broadcasts, and waits for the mined receipt of ONE Hood leg, returning its
      * transaction hash. Shared by trade()'s and selfLaunch()'s Hood branches, both of which must run

@@ -1213,7 +1213,7 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     }
     const bad = harness({ dir })
     await run(["portfolio", "--chain", "base"], bad.deps)
-    expect(humanText(bad.stderr.text)).toContain(humanText("--chain must be solana or hood, not base."))
+    expect(humanText(bad.stderr.text)).toContain(humanText("--chain must be one of solana, hood, not base."))
   })
 
   test("a Hood wallet Candle could not read: not read, out of the total, exit 3, and the footer names Hood", async () => {

@@ -75,6 +75,7 @@
  * (4c) moves value between the two chain subtotals; it is not a trade.
  */
 import { parseArgs } from "../args"
+import { enabledEvmChainSlugs } from "../chain-registry"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
@@ -139,10 +140,10 @@ const TOKEN_READS_IN_FLIGHT = 8
 /** EVM vault reads at once: two calls each (ETH, then USDG), over the operator's own RPC. */
 const EVM_READS_IN_FLIGHT = 8
 
-/** Every chain a wallet or holding can be on (4d-ED-1). A third is one more member here. */
-export type Chain = "solana" | "hood"
-const CHAINS: readonly Chain[] = ["solana", "hood"]
-const CHAIN_NAMES: Record<Chain, string> = { solana: "Solana", hood: "Hood" }
+/** Every chain a wallet or holding can be on (4d-ED-1, Multi-EVM F5): solana plus every enabled registry EVM chain. */
+export type Chain = "solana" | "hood" | (string & {})
+const chainsNow = (): readonly Chain[] => ["solana", ...enabledEvmChainSlugs()]
+const CHAIN_NAMES: Record<string, string> = { solana: "Solana", hood: "Hood" }
 
 /** The Hood ETH price key, and `hood:<lowercased address>` for a contract (4d-ED-5). */
 const HOOD_NATIVE = "native"
@@ -341,10 +342,17 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
 
   // 4d-ED-6: one chain, or both. A flag for the chain not shown reads nothing, so it is said.
   const chainFlag = parsed.values["--chain"]
-  if (chainFlag !== undefined && !CHAINS.includes(chainFlag as Chain)) {
-    return usage(ctx, `--chain must be solana or hood, not ${chainFlag}.`)
+  const CHAINS = chainsNow()
+  if (chainFlag !== undefined && !CHAINS.includes(chainFlag)) {
+    return usage(ctx, `--chain must be one of ${CHAINS.join(", ")}, not ${chainFlag}.`)
   }
-  const chains: Chain[] = chainFlag === undefined ? [...CHAINS] : [chainFlag as Chain]
+  // Portfolio reads Solana and Hood only (Multi-EVM F5, A5/A6): another registry chain is refused by name and nothing is read.
+  // chain-lint-allowed: portfolio has only Solana/Hood readers; refuse other enabled chains before any reads.
+  if (chainFlag !== undefined && chainFlag !== "solana" && chainFlag !== "hood") {
+    return usage(ctx, `portfolio cannot read ${chainFlag} yet: --chain is solana or hood. Nothing was read.`)
+  }
+  // chain-lint-allowed: an unfiltered portfolio must include only implemented Solana/Hood readers, never mislabel Hood holdings.
+  const chains: Chain[] = chainFlag === undefined ? CHAINS.filter((c) => c === "solana" || c === "hood") : [chainFlag]
   const showSolana = chains.includes("solana")
   const showHood = chains.includes("hood")
   if (!showSolana && parsed.values["--rpc-url"] !== undefined) {
@@ -731,11 +739,11 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       ),
     ]
 
-    const unavailableByChain: Record<Chain, string[]> = {
+    const unavailableByChain: Record<string, string[]> = {
       solana: showSolana ? [...(vaultRead?.unavailable ?? []), ...(fromCandle.unavailable ?? [])] : [],
       hood: [...(evmBalances?.unavailable ?? []), ...(candleHood?.unavailable ?? [])],
     }
-    const unavailable = chains.flatMap((chain) => unavailableByChain[chain])
+    const unavailable = chains.flatMap((chain) => unavailableByChain[chain] ?? [])
     const lpUnread = (lpSection?.unreadable ?? []).length
     // The list, from Candle's whole answer. A filter can drop the failed read that used to keep
     // `complete` false, and must not turn a cut-off list into a finished one.
@@ -776,7 +784,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       const entry = byChain[chain]
       if (!entry) continue
       entry.wallets = all.filter((w) => w.chain === chain).length
-      entry.unavailable = unavailableByChain[chain].length
+      entry.unavailable = unavailableByChain[chain]?.length ?? 0
     }
     const hoodTotals = byChain.hood
     if (hoodTotals) {
@@ -810,7 +818,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
         unpriced,
         complete,
         unavailable,
-        unavailableByChain: Object.fromEntries(chains.map((chain) => [chain, unavailableByChain[chain]])),
+        unavailableByChain: Object.fromEntries(chains.map((chain) => [chain, unavailableByChain[chain] ?? []])),
         rpcHost: rpcHost ?? null,
         ...(evmHost !== undefined ? { evmRpcHost: evmHost } : {}),
         ...(lp ? { lp } : {}),
@@ -1368,7 +1376,7 @@ function writeTable(
   }
   // 4d-ED-7: a failed read names its chain.
   const unreadByChain = totals.chains
-    .map((chain) => [chain, totals.unavailableByChain[chain].length] as const)
+    .map((chain) => [chain, totals.unavailableByChain[chain]?.length ?? 0] as const)
     .filter(([, n]) => n > 0)
   const unavailable = unreadByChain.reduce((sum, [, n]) => sum + n, 0)
   const warnings: string[] = []

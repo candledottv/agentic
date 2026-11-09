@@ -8,12 +8,15 @@
  * `describeSend`, `groupAddress`), so a send reads the same in the terminal and
  * the TUI.
  */
+
+import { chainDisplayName, enabledEvmChainSlugs, isEvmChainSlug } from "../chain-registry"
 import { checkEvmAddress } from "../evm-lite"
 import { decodePubkey } from "../solana-lite"
 import { refused } from "./rpc"
 
 export type TransferSourceKind = "vault" | "embedded"
-export type TransferChain = "solana" | "hood"
+/** Multi-EVM F5: `solana` or any enabled registry EVM chain, wherever `hood` worked. */
+export type TransferChain = "solana" | "hood" | (string & {})
 export const BASE_SYMBOLS = ["SOL", "USDC", "CNDL", "ETH", "USDG"] as const
 export type BaseSymbol = (typeof BASE_SYMBOLS)[number]
 
@@ -53,9 +56,10 @@ export const BASE_CONTRACTS: Record<BaseSymbol, string> = {
 export function normalizeAddress(chain: TransferChain, input: unknown): string {
   if (typeof input !== "string") throw refused("INVALID_DESTINATION", "The destination must be an address.")
   const compact = input.replace(/\s+/g, "")
-  if (chain === "hood") {
+  if (chain !== "solana") {
     const checked = checkEvmAddress(compact)
-    if (!checked.ok) throw refused("INVALID_DESTINATION", `Not a Hood address: ${checked.reason}.`)
+    if (!checked.ok)
+      throw refused("INVALID_DESTINATION", `Not a ${chain === "hood" ? "Hood" : chain} address: ${checked.reason}.`)
     return checked.address
   }
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(compact)) {
@@ -71,7 +75,7 @@ export function normalizeAddress(chain: TransferChain, input: unknown): string {
 
 /** Two spellings of one address are the same destination (EVM compares without case). */
 export function sameAddress(chain: TransferChain, a: string, b: string): boolean {
-  return chain === "hood" ? a.toLowerCase() === b.toLowerCase() : a === b
+  return chain !== "solana" ? a.toLowerCase() === b.toLowerCase() : a === b
 }
 
 /** The ticker a transfer names: a base symbol, or the mint or token address itself. */
@@ -133,8 +137,10 @@ export async function parseTransferInput(
   if (source.kind !== "vault" && source.kind !== "embedded") {
     throw refused("INVALID_SOURCE", "A transfer sends from a vault wallet or the embedded wallet.")
   }
-  const chain = input.chain
-  if (chain !== "solana" && chain !== "hood") throw refused("INVALID_CHAIN", "chain is solana or hood.")
+  const rawChain = input.chain
+  if (typeof rawChain !== "string" || (rawChain !== "solana" && !isEvmChainSlug(rawChain)))
+    throw refused("INVALID_CHAIN", `chain is one of ${["solana", ...enabledEvmChainSlugs()].join(", ")}.`)
+  const chain: TransferChain = rawChain
   if (typeof source.address !== "string" || source.address.length === 0)
     throw refused("INVALID_SOURCE", "The source wallet's address is missing.")
   const sourceAddress = normalizeAddress(chain, source.address)
@@ -146,14 +152,14 @@ export async function parseTransferInput(
     if (!BASE_SYMBOLS.includes(symbol) || BASE_ASSETS[symbol].chain !== chain) {
       throw refused(
         "INVALID_ASSET",
-        `${chain === "hood" ? "Hood" : "Solana"} sends ${BASE_SYMBOLS.filter((s) => BASE_ASSETS[s].chain === chain).join(", ")} or a token address.`,
+        `${chain === "solana" ? "Solana" : chainDisplayName(chain)} sends ${BASE_SYMBOLS.filter((s) => BASE_ASSETS[s].chain === chain).join(", ")} or a token address.`,
       )
     }
     asset = { symbol }
   } else if (chain === "solana" && rawAsset && typeof rawAsset.mint === "string") {
     asset = { mint: normalizeAddress("solana", rawAsset.mint) }
-  } else if (chain === "hood" && rawAsset && typeof rawAsset.token === "string") {
-    asset = { token: normalizeAddress("hood", rawAsset.token) }
+  } else if (chain !== "solana" && rawAsset && typeof rawAsset.token === "string") {
+    asset = { token: normalizeAddress(chain, rawAsset.token) }
   } else {
     throw refused("INVALID_ASSET", "Choose an asset: a base symbol, a Solana mint or a Hood token address.")
   }

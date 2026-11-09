@@ -10,6 +10,7 @@
  */
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
+import { isEvmChainSlug } from "../chain-registry"
 import type { ApiResult } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
@@ -115,14 +116,19 @@ async function runPaidRead(
   })
 }
 
-/** `candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes] [--json]` */
+/** `candle token forensics <mint> [--chain <chain>] [--wallet <vault key>] [--yes] [--json]` */
 export async function tokenForensics(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, { valueFlags: ["--chain", ...PAY_FLAGS], booleanFlags: PAY_BOOLEANS })
   const chain = "error" in parsed ? undefined : (parsed.values["--chain"] ?? "solana")
-  if ("error" in parsed || parsed.positionals.length !== 1 || (chain !== "solana" && chain !== "hood")) {
+  if (
+    "error" in parsed ||
+    parsed.positionals.length !== 1 ||
+    chain === undefined ||
+    (chain !== "solana" && !isEvmChainSlug(chain))
+  ) {
     writeUsageFailure(
       ctx.deps,
-      "Usage: candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes]",
+      "Usage: candle token forensics <mint> [--chain <chain>] [--wallet <vault key>] [--yes]",
       ctx.json,
     )
     return 2

@@ -5155,6 +5155,7 @@ class CandleClient {
   secretStore;
   solanaRpcUrl;
   evmRpcUrl;
+  evmRpcUrls;
   hyperliquidNetwork;
   perpsMarketReader;
   hyperliquidBuilder;
@@ -5252,6 +5253,8 @@ class CandleClient {
       this.solanaRpcUrl = opts.solanaRpcUrl;
     if (opts.evmRpcUrl !== undefined)
       this.evmRpcUrl = opts.evmRpcUrl;
+    if (opts.evmRpcUrls !== undefined)
+      this.evmRpcUrls = opts.evmRpcUrls;
     this.hyperliquidNetwork = opts.hyperliquidNetwork ?? "mainnet";
     this.perpsWithdrawPins = opts.perpsWithdrawPins ?? CANDLE_PERPS_WITHDRAW_PINS;
     if (opts.perpsStreamWebSocket !== undefined)
@@ -5735,10 +5738,10 @@ class CandleClient {
       }
       return this.jsonRpcCall(this.solanaRpcUrl, "sendTransaction", [signedTransaction, { encoding }]);
     }
-    if (!this.evmRpcUrl) {
+    if (!this.evmRpcUrlForChain("hood")) {
       throw new Error('broadcastSignedTransaction() for chain "evm" requires evmRpcUrl: pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))');
     }
-    return this.jsonRpcCall(this.evmRpcUrl, "eth_sendRawTransaction", [signedTransaction]);
+    return this.jsonRpcCall(this.evmRpcUrlForChain("hood"), "eth_sendRawTransaction", [signedTransaction]);
   }
   async swapFromLinked(req) {
     this.requireKey("swapFromLinked()");
@@ -5807,10 +5810,10 @@ class CandleClient {
       });
       return this.submit({ clientTradeId: built.clientTradeId, signedTransactions: [signed.signedTransaction] });
     }
-    if (!this.evmRpcUrl) {
+    if (!this.evmRpcUrlForChain("hood")) {
       throw new Error('trade({ from: <linked> }) on chain "hood" requires evmRpcUrl, because hood is an EVM chain: pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))');
     }
-    const rpc = this.evmRpc();
+    const rpc = this.evmRpc("hood");
     const from = built.walletAddress;
     const chainId = await fetchChainId(rpc);
     const baseNonce = await fetchNonce(rpc, from);
@@ -5970,10 +5973,10 @@ class CandleClient {
       throw new Error("selfLaunch(): blockhash-rebuild loop exited without returning or throwing");
     }
     const hoodBuilt = built;
-    if (!this.evmRpcUrl) {
+    if (!this.evmRpcUrlForChain("hood")) {
       throw new Error('selfLaunch() on chain "hood" requires evmRpcUrl, because hood is an EVM chain: pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))');
     }
-    const rpc = this.evmRpc();
+    const rpc = this.evmRpc("hood");
     const from = hoodBuilt.walletAddress;
     const chainId = await fetchChainId(rpc);
     const baseNonce = await fetchNonce(rpc, from);
@@ -6100,15 +6103,18 @@ class CandleClient {
     }
     return this.submitAtomicLaunch({ bundleId: built.bundleId, signedTxsBase64 });
   }
-  evmRpc() {
-    const url = this.evmRpcUrl;
+  evmRpc(chain = "hood") {
+    const url = this.evmRpcUrlForChain(chain);
     if (!url) {
-      throw new Error("evmRpc(): evmRpcUrl is unset -- callers must check this first");
+      throw new Error(`evmRpc(): no EVM RPC URL for chain "${chain}" -- callers must check this first`);
     }
     return {
       call: (method, params) => this.jsonRpcCall(url, method, params),
       callRaw: (method, params) => this.jsonRpcCallRaw(url, method, params)
     };
+  }
+  evmRpcUrlForChain(chain) {
+    return this.evmRpcUrls?.[chain] ?? (chain === "hood" ? this.evmRpcUrl : undefined);
   }
   async signBroadcastAndWaitEvmLeg(params, opts = {}) {
     try {
