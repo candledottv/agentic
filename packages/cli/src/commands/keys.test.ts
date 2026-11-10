@@ -508,6 +508,21 @@ describe("keys revoke", () => {
     expect((await configStore.readConfig()).keyPrefix).toBe("ck_liveab")
   })
 
+  test("a prefix starting with '-' is accepted, bare and after `--`", async () => {
+    for (const argv of [
+      ["keys", "revoke", "-Ab3dEf9"],
+      ["keys", "revoke", "--", "-Ab3dEf9"],
+    ]) {
+      const { fetch, calls } = createRoutedFetch({
+        "/api/v1/agent/keys/-Ab3dEf9": () => jsonResponse(200, { success: true }),
+      })
+      const deps = createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }) })
+      expect(await run(argv, deps)).toBe(0)
+      expect(calls[0]?.init.method).toBe("DELETE")
+      expect(calls[0]?.url).toContain("/keys/-Ab3dEf9")
+    }
+  })
+
   test("URL-encodes the prefix path segment (fix round 1, item 12)", async () => {
     const { fetch, calls } = createRoutedFetch({
       "/api/v1/agent/keys/weird%2Fprefix": () => jsonResponse(200, { success: true }),

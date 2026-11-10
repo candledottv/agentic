@@ -59,6 +59,7 @@ export async function keysRotate(args: string[], ctx: CommandContext): Promise<n
   const parsed = parseArgs(args, {
     valueFlags: ["--grace", "--idempotency-key"],
     booleanFlags: ["--now", "--finish", "--force", "--yes"],
+    keyPrefixPositional: true,
   })
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json)

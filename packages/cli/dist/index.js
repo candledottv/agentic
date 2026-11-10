@@ -92749,7 +92749,8 @@ async function keysRotate(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {
     valueFlags: ["--grace", "--idempotency-key"],
-    booleanFlags: ["--now", "--finish", "--force", "--yes"]
+    booleanFlags: ["--now", "--finish", "--force", "--yes"],
+    keyPrefixPositional: true
   });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, parsed.error, json);

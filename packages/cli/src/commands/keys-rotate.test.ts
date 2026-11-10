@@ -67,6 +67,26 @@ describe("keys rotate", () => {
     expect(out).toMatchObject({ key: NEW, stored: true, previousValidUntil: UNTIL })
   })
 
+  test("a prefix starting with '-' is accepted, bare and after `--`", async () => {
+    for (const argv of [
+      ["keys", "rotate", "-b3dEf9h", "--yes", "--json"],
+      ["keys", "rotate", "--yes", "--json", "--", "-b3dEf9h"],
+    ]) {
+      const { fetch, calls } = createRoutedFetch({
+        "/api/v1/agent/keys": () => jsonResponse(200, { keys: [{ keyPrefix: "-b3dEf9h", label: "dash", scopes: [] }] }),
+        "/api/v1/agent/keys/-b3dEf9h/rotate": () =>
+          jsonResponse(200, { key: NEW, keyPrefix: "-b3dEf9h", rotatedAt: 1, previousValidUntil: UNTIL }),
+      })
+      const deps = createTestDeps({
+        fetch,
+        store: createFakeStore({ device_token: "cndl_dvc_x" }),
+        stdout: createCapture(),
+      })
+      expect(await run(argv, deps)).toBe(0)
+      expect(post(calls)[0]?.url).toContain("/keys/-b3dEf9h/rotate")
+    }
+  })
+
   test("--now sends a zero grace; --force is passed through", async () => {
     const { fetch, calls } = routes()
     const code = await run(
