@@ -204,7 +204,7 @@ A TEE `launch()` can carry `buy`, only where the server has
 address, or pass `{ linkedWalletId, privyWalletId }` for an existing SDK integration. A named
 wallet's chain is inferred; supply `chain: "hood"` for an explicit Hood wallet object. Conflicting
 chains or quote assets are refused before building. The SDK uses your configured `privyAppId`
-and `secretStore` for TEE signing, and `solanaRpcUrl` / `evmRpcUrl` for caller broadcasts.
+and `secretStore` for TEE signing, and `solanaRpcUrl` / `evmRpcUrl` for caller broadcasts. `evmRpcUrls` maps a registry EVM chain slug to its RPC URL for chains beyond Hood; `evmRpcUrl` remains the Hood endpoint.
 
 ```ts
 await candle.launch({
@@ -566,6 +566,8 @@ Solana or EVM JSON-RPC failure throws `JsonRpcError`, with the RPC's numeric `co
 idempotency id they sent on these errors, and wrap any other failure in `CandleOperationError`:
 see "Retrying a write that failed or timed out" above. The full code table is on
 [Headless launch](https://docs.candle.tv/developers/headless-launch).
+
+The SDK also exports `OWNER_CONFIRM_ERROR_CODES` (`OWNER_CONFIRM_REQUIRED`, `OWNER_CONFIRM_NOT_FOUND`, `OWNER_CONFIRM_EXPIRED`) and the `OwnerConfirmDetail` type for callers of the owner routes with a `cndl_dvc_` device token. The SDK's own agent-key requests never see them. On `403 OWNER_CONFIRM_REQUIRED` nothing changed and the response body's `error.ownerConfirm` (an `OwnerConfirmDetail`: `confirmId`, `userCode`, `verificationUriComplete`, …) carries the approval link and code. `CandleApiError` does not carry it, so read the response yourself. After the owner approves in the browser, resend the identical request with the `Candle-Owner-Confirm: <confirmId>` header.
 
 ## Development
 
