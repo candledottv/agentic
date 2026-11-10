@@ -634,7 +634,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.19";
+var CLI_VERSION = "0.13.20";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -15709,11 +15709,23 @@ async function runSequencedLegs(ctx, key, opts) {
       await noteLanded(landedFrom(posted.raw, error));
       const evidence = {
         ...typeof error.stage === "string" ? { stage: error.stage } : {},
-        ...typeof error.signature === "string" ? { signature: error.signature } : {}
+        ...typeof error.signature === "string" ? { signature: error.signature } : {},
+        ...recoveryEvidenceFrom(posted.raw, error)
       };
+      const statusHint = ` Read candle swap status ${opts.clientId ?? current.operationId} --kind trade.`;
+      const reconciliationPending = evidence.reconciliation === "pending";
+      const confirmedLeg = Array.isArray(evidence.legEvidence) ? evidence.legEvidence.find((entry) => entry.outcome === "landed") ?? null : null;
       if (posted.status === 0 || error.stage === "unconfirmed") {
         const hash = typeof error.signature === "string" ? error.signature : signed.hash;
-        throw failWith("LEG_UNCONFIRMED", `The ${current.legKind} leg ${hash} was posted and its receipt was not seen; it may still land. Nothing was re-sent.`, 3, { hash, legKind: current.legKind, ...evidence });
+        throw failWith("LEG_UNCONFIRMED", `The ${current.legKind} leg ${hash} may have been broadcast; its receipt is not confirmed. Do not repeat this trade.${statusHint} Nothing was re-sent.`, 3, { hash, legKind: current.legKind, ...evidence });
+      }
+      if (reconciliationPending && confirmedLeg) {
+        const hash = typeof error.signature === "string" ? error.signature : signed.hash;
+        throw failWith("LEG_UNCONFIRMED", `The ${current.legKind} leg ${hash} confirmed; operation recording is pending. Do not repeat this trade.${statusHint}`, 3, { hash, legKind: current.legKind, ...evidence });
+      }
+      if (error.stage === "reverted") {
+        const hash = typeof error.signature === "string" ? error.signature : signed.hash;
+        throw failWith(posted.code ?? "TRADE_REVERTED", `The ${current.legKind} leg ${hash} reverted on Hood. Network fees may have been charged.`, landed.some((done) => done.kind === primary) ? 3 : 1, { hash, legKind: current.legKind, ...evidence });
       }
       throw failWith(posted.code ?? "REQUEST_FAILED", `The ${current.legKind} leg failed: ${posted.message}`, error.stage === "executed" ? 3 : 1, typeof error.signature === "string" ? { hash: error.signature, legKind: current.legKind, ...evidence } : { legKind: current.legKind, ...evidence });
     }
@@ -15731,7 +15743,18 @@ async function runSequencedLegs(ctx, key, opts) {
   }
 }
 function describeLanded(landed) {
-  return landed.length === 0 ? " No leg landed." : ` Landed: ${landed.map((leg) => `${leg.kind} ${safeText(leg.hash)}`).join(", ")}.`;
+  return landed.length === 0 ? " No leg is confirmed yet." : ` Confirmed: ${landed.map((leg) => `${leg.kind} ${safeText(leg.hash)}`).join(", ")}.`;
+}
+function recoveryEvidenceFrom(raw, error) {
+  const top = raw && typeof raw === "object" ? raw : {};
+  const pick = (key) => top[key] !== undefined ? top[key] : error[key];
+  const out = {};
+  for (const key of ["legEvidence", "reconciliation", "recoveryRequired", "safeAction", "pollAfterMs", "legIndex"]) {
+    const value = pick(key);
+    if (value !== undefined)
+      out[key] = value;
+  }
+  return out;
 }
 function errorObject(raw) {
   if (!raw || typeof raw !== "object")
@@ -39447,7 +39470,7 @@ var init_token_clusters = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.30";
+var SERVER_VERSION = "0.10.31";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -45832,6 +45855,7 @@ __export(exports_tools, {
   registerTools: () => registerTools,
   registerToolSubset: () => registerToolSubset,
   registerEligibleProfileTool: () => registerEligibleProfileTool,
+  recoveryNext: () => recoveryNext,
   plansMarkdown: () => plansMarkdown,
   operationNotFoundNext: () => operationNotFoundNext,
   buildRequest: () => buildRequest,
@@ -46352,6 +46376,14 @@ async function getOperation(args, cfg, doFetch) {
     ...res.ok ? {} : { isError: true }
   };
 }
+function recoveryNext(body, clientId2, kind) {
+  const error = typeof body.error === "object" && body.error !== null ? body.error : {};
+  const pick = (key) => error[key] !== undefined ? error[key] : body[key];
+  if (pick("safeAction") !== "read_status" && pick("recoveryRequired") !== true)
+    return null;
+  const poll = typeof pick("pollAfterMs") === "number" ? ` Wait about ${pick("pollAfterMs")} ms between reads.` : "";
+  return "A transaction for this operation may have been broadcast and its receipt is not confirmed or not yet " + `recorded. Do not call this tool again and do not use a new id. Read candle_get_operation with clientId ` + `"${clientId2}" and kind "${kind}" instead.${poll}`;
+}
 async function swap2(args, cfg, doFetch) {
   const clientSwapId = typeof args.clientSwapId === "string" && args.clientSwapId.length > 0 ? args.clientSwapId : randomUUID6();
   const { url, init } = buildRequest("candle_swap", { ...args, clientSwapId }, cfg);
@@ -46369,8 +46401,12 @@ async function swap2(args, cfg, doFetch) {
     const failed = transportError("clientSwapId", clientSwapId, thrown);
     return { content: [{ type: "text", text: failed.text }], isError: true };
   }
+  const answered = body;
+  const next = ok ? null : recoveryNext(answered, clientSwapId, "swap");
   return {
-    content: [{ type: "text", text: JSON.stringify({ clientSwapId, ...body }) }],
+    content: [
+      { type: "text", text: JSON.stringify({ clientSwapId, ...answered, ...next ? { next } : {} }) }
+    ],
     ...ok ? {} : { isError: true }
   };
 }
@@ -94980,7 +95016,7 @@ async function hoodLaunch(ctx, key, args) {
     onLanded: async () => {}
   });
   if (confirmedPlan && run2.landed.map((done) => done.kind).join() !== confirmedPlan.join())
-    throw new TradingError("INVALID_RESPONSE", `Candle ended the launch before every confirmed leg landed (${confirmedPlan.join(", ")}).${run2.landed.length === 0 ? " No leg landed." : ` Landed: ${run2.landed.map((done) => `${done.kind} ${safeText(done.hash)}`).join(", ")}.`}`, { details: { operationId: first.operationId, landedLegs: run2.landed } });
+    throw new TradingError("INVALID_RESPONSE", `Candle ended the launch before every confirmed leg landed (${confirmedPlan.join(", ")}).${run2.landed.length === 0 ? " No leg is confirmed yet." : ` Confirmed: ${run2.landed.map((done) => `${done.kind} ${safeText(done.hash)}`).join(", ")}.`}`, { details: { operationId: first.operationId, landedLegs: run2.landed } });
   return printTradingResult(ctx, {
     ...run2.final,
     ...await recordLaunchedToken(ctx, wallet3, run2.final),

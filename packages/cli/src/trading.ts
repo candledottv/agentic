@@ -1098,16 +1098,46 @@ export async function runSequencedLegs(
       const error = errorObject(posted.raw)
       await noteLanded(landedFrom(posted.raw, error))
       // BE-1397: the server's own stage and signature ride in the details beside `hash`.
+      // BE-3072: and its recovery evidence, in JSON mode as in words; unknown extra fields are safe.
       const evidence = {
         ...(typeof error.stage === "string" ? { stage: error.stage } : {}),
         ...(typeof error.signature === "string" ? { signature: error.signature } : {}),
+        ...recoveryEvidenceFrom(posted.raw, error),
       }
+      const statusHint = ` Read candle swap status ${opts.clientId ?? current.operationId} --kind trade.`
+      const reconciliationPending = (evidence as { reconciliation?: unknown }).reconciliation === "pending"
+      const confirmedLeg = Array.isArray((evidence as { legEvidence?: unknown }).legEvidence)
+        ? ((evidence as { legEvidence: Array<{ legIndex?: number; outcome?: string }> }).legEvidence.find(
+            (entry) => entry.outcome === "landed",
+          ) ?? null)
+        : null
       if (posted.status === 0 || error.stage === "unconfirmed") {
+        // The local signed hash survives a lost or malformed response, and an old server's error
+        // can never turn local uncertainty into "not sent" certainty: only exact evidence does.
         const hash = typeof error.signature === "string" ? error.signature : signed.hash
         throw failWith(
           "LEG_UNCONFIRMED",
-          `The ${current.legKind} leg ${hash} was posted and its receipt was not seen; it may still land. Nothing was re-sent.`,
+          `The ${current.legKind} leg ${hash} may have been broadcast; its receipt is not confirmed. Do not repeat this trade.${statusHint} Nothing was re-sent.`,
           3,
+          { hash, legKind: current.legKind, ...evidence },
+        )
+      }
+      if (reconciliationPending && confirmedLeg) {
+        const hash = typeof error.signature === "string" ? error.signature : signed.hash
+        throw failWith(
+          "LEG_UNCONFIRMED",
+          `The ${current.legKind} leg ${hash} confirmed; operation recording is pending. Do not repeat this trade.${statusHint}`,
+          3,
+          { hash, legKind: current.legKind, ...evidence },
+        )
+      }
+      if (error.stage === "reverted") {
+        const hash = typeof error.signature === "string" ? error.signature : signed.hash
+        throw failWith(
+          posted.code ?? "TRADE_REVERTED",
+          `The ${current.legKind} leg ${hash} reverted on Hood. Network fees may have been charged.`,
+          // After the trade leg succeeded a later revert is not a failed trade.
+          landed.some((done) => done.kind === primary) ? 3 : 1,
           { hash, legKind: current.legKind, ...evidence },
         )
       }
@@ -1142,10 +1172,27 @@ export async function runSequencedLegs(
   }
 }
 
+/**
+ * BE-3072: an empty list of confirmed legs is NOT negative chain evidence. "No leg landed" would
+ * need evidence covering every attempted leg (each proven not sent), which an empty array, absent
+ * fields or a transport failure cannot give, so the safe fallback never claims a negative.
+ */
 function describeLanded(landed: LandedLeg[]): string {
   return landed.length === 0
-    ? " No leg landed."
-    : ` Landed: ${landed.map((leg) => `${leg.kind} ${safeText(leg.hash)}`).join(", ")}.`
+    ? " No leg is confirmed yet."
+    : ` Confirmed: ${landed.map((leg) => `${leg.kind} ${safeText(leg.hash)}`).join(", ")}.`
+}
+
+/** The server's recovery evidence (spec section 7), read from the error body or its error object. */
+function recoveryEvidenceFrom(raw: unknown, error: Record<string, unknown>): Record<string, unknown> {
+  const top = raw && typeof raw === "object" ? (raw as Json) : {}
+  const pick = (key: string) => (top[key] !== undefined ? top[key] : error[key])
+  const out: Record<string, unknown> = {}
+  for (const key of ["legEvidence", "reconciliation", "recoveryRequired", "safeAction", "pollAfterMs", "legIndex"]) {
+    const value = pick(key)
+    if (value !== undefined) out[key] = value
+  }
+  return out
 }
 
 function errorObject(raw: unknown): Record<string, unknown> {

@@ -103,6 +103,16 @@ class CandleApiError extends Error {
   treasury;
   reason;
   retryAfter;
+  operationId;
+  landedLegs;
+  legEvidence;
+  reconciliation;
+  recoveryRequired;
+  safeAction;
+  pollAfterMs;
+  legIndex;
+  legKind;
+  statusKind;
   constructor(args) {
     super(args.message);
     this.name = "CandleApiError";
@@ -135,6 +145,26 @@ class CandleApiError extends Error {
       this.reason = args.reason;
     if (args.retryAfter !== undefined)
       this.retryAfter = args.retryAfter;
+    if (args.operationId !== undefined)
+      this.operationId = args.operationId;
+    if (args.landedLegs !== undefined)
+      this.landedLegs = args.landedLegs;
+    if (args.legEvidence !== undefined)
+      this.legEvidence = args.legEvidence;
+    if (args.reconciliation !== undefined)
+      this.reconciliation = args.reconciliation;
+    if (args.recoveryRequired !== undefined)
+      this.recoveryRequired = args.recoveryRequired;
+    if (args.safeAction !== undefined)
+      this.safeAction = args.safeAction;
+    if (args.pollAfterMs !== undefined)
+      this.pollAfterMs = args.pollAfterMs;
+    if (args.legIndex !== undefined)
+      this.legIndex = args.legIndex;
+    if (args.legKind !== undefined)
+      this.legKind = args.legKind;
+    if (args.statusKind !== undefined)
+      this.statusKind = args.statusKind;
   }
 }
 
@@ -321,8 +351,44 @@ function envelopeError(body) {
     ...typeof error.quoteAsset === "string" ? { quoteAsset: error.quoteAsset } : {},
     ...typeof error.treasury === "string" ? { treasury: error.treasury } : {},
     ...typeof error.reason === "string" ? { reason: error.reason } : {},
-    ...typeof error.retryAfter === "number" ? { retryAfter: error.retryAfter } : {}
+    ...typeof error.retryAfter === "number" ? { retryAfter: error.retryAfter } : {},
+    ...recoveryEvidenceOf(candidate, error)
   };
+}
+function recoveryEvidenceOf(top, error) {
+  const pick = (key) => error[key] !== undefined ? error[key] : top[key];
+  const out = {};
+  const operationId = pick("operationId");
+  if (typeof operationId === "string")
+    out.operationId = operationId;
+  const landed = pick("landedLegs");
+  if (Array.isArray(landed)) {
+    out.landedLegs = landed.filter((leg) => typeof leg === "object" && leg !== null && typeof leg.kind === "string" && typeof leg.hash === "string");
+  }
+  const legEvidence = pick("legEvidence");
+  if (Array.isArray(legEvidence))
+    out.legEvidence = legEvidence;
+  const reconciliation = pick("reconciliation");
+  if (reconciliation === "complete" || reconciliation === "pending")
+    out.reconciliation = reconciliation;
+  const recoveryRequired = pick("recoveryRequired");
+  if (typeof recoveryRequired === "boolean")
+    out.recoveryRequired = recoveryRequired;
+  const safeAction = pick("safeAction");
+  if (safeAction === "read_status" || safeAction === "continue_original" || safeAction === "none")
+    out.safeAction = safeAction;
+  const pollAfterMs = pick("pollAfterMs");
+  if (typeof pollAfterMs === "number")
+    out.pollAfterMs = pollAfterMs;
+  const legIndex = pick("legIndex");
+  if (typeof legIndex === "number")
+    out.legIndex = legIndex;
+  for (const key of ["legKind", "statusKind"]) {
+    const value = pick(key);
+    if (typeof value === "string")
+      out[key] = value;
+  }
+  return out;
 }
 function candleApiErrorFromResponse(status, bodyText) {
   let parsed;
@@ -4986,6 +5052,9 @@ function isRetryableLaunchFailure(error) {
     return true;
   if (error.stage === "executed" || error.stage === "unconfirmed" || error.mint !== undefined)
     return false;
+  if (error.recoveryRequired === true || error.safeAction === "read_status" || error.reconciliation === "pending") {
+    return false;
+  }
   if (error.code.startsWith("HTTP_"))
     return error.status >= 500;
   if (!error.retryable)
@@ -7011,7 +7080,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.19";
+var SDK_VERSION = "0.6.20";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

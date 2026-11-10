@@ -3762,6 +3762,10 @@ function retryDelayMs(retry: number): number {
 function isRetryableLaunchFailure(error: unknown): boolean {
   if (!(error instanceof CandleApiError)) return true
   if (error.stage === "executed" || error.stage === "unconfirmed" || error.mint !== undefined) return false
+  // BE-3072: recovery evidence is never permission to retry, whatever the older `retryable` says.
+  if (error.recoveryRequired === true || error.safeAction === "read_status" || error.reconciliation === "pending") {
+    return false
+  }
   if (error.code.startsWith("HTTP_")) return error.status >= 500
   if (!error.retryable) return false
   return error.status >= 500 || error.status === 409
@@ -7416,7 +7420,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.19"
+export const SDK_VERSION = "0.6.20"
 
 let sdkUpdateWarned = false
 

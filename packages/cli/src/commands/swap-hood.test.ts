@@ -129,6 +129,20 @@ interface Planned {
  */
 type Outcome = "land" | "revert" | "unconfirmed" | "executed" | "lost"
 
+/** BE-3072: the server's recovery evidence beside an uncertain/executed answer (spec section 7). */
+function recoveryExtras(outcome: Outcome): Record<string, unknown> {
+  return {
+    legEvidence: [
+      { legIndex: 1, kind: "trade", outcome: outcome === "executed" ? "landed" : "uncertain", chainId: 4663 },
+    ],
+    reconciliation: "complete",
+    recoveryRequired: outcome === "unconfirmed",
+    safeAction: outcome === "unconfirmed" ? "read_status" : "none",
+    ...(outcome === "unconfirmed" ? { pollAfterMs: 5000 } : {}),
+    futureField: { ignored: true },
+  }
+}
+
 interface FixtureOptions {
   legs?: Planned[]
   outcomes?: Outcome[]
@@ -360,8 +374,11 @@ async function fixture(opts: FixtureOptions = {}) {
         }
         return Response.json(
           swapRail
-            ? { success: false, error: { ...error, landedLegs: landed, operationId: "op-1" } }
-            : { success: false, error, landedLegs: landed, operationId: "op-1" },
+            ? {
+                success: false,
+                error: { ...error, landedLegs: landed, operationId: "op-1", ...recoveryExtras(outcome) },
+              }
+            : { success: false, error, landedLegs: landed, operationId: "op-1", ...recoveryExtras(outcome) },
           { status: 500 },
         )
       }
@@ -643,7 +660,7 @@ describe("H8: the sequenced leg loop", () => {
     expect(await run(sellArgs(), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("TRADE_REVERTED")
-    expect(String(failure.message)).toContain(`Landed: approval 0x${"1".repeat(64)}`)
+    expect(String(failure.message)).toContain(`Confirmed: approval 0x${"1".repeat(64)}`)
     const details = failure.details as { landedLegs: Array<{ kind: string }>; operationId: string }
     expect(details.operationId).toBe("op-1")
     expect(details.landedLegs.map((l) => l.kind)).toEqual(["approval"])
@@ -659,6 +676,34 @@ describe("H8: the sequenced leg loop", () => {
     expect((failure.details as { hash: string }).hash).toBe(`0x${"2".repeat(64)}`)
     expect(String(failure.message)).toContain("candle swap status hood-1")
     expect(f.calls.filter((call) => call.path.endsWith("/submit"))).toHaveLength(2)
+  })
+
+  test("BE-3072: an uncertain leg says it may have been broadcast, tells the agent not to repeat the trade, and keeps the evidence in JSON", async () => {
+    const f = await fixture({ outcomes: ["land", "unconfirmed"] })
+    expect(await run(sellArgs(), f.deps)).toBe(3)
+    const failure = lastJson(f.stdout.text)
+    expect(String(failure.message)).toContain("may have been broadcast; its receipt is not confirmed")
+    expect(String(failure.message)).toContain("Do not repeat this trade")
+    expect(String(failure.message)).toContain("--kind trade")
+    expect(String(failure.message)).not.toContain("No leg landed")
+    expect(failure.details).toMatchObject({
+      safeAction: "read_status",
+      pollAfterMs: 5000,
+      recoveryRequired: true,
+      reconciliation: "complete",
+      legEvidence: [expect.objectContaining({ outcome: "uncertain" })],
+    })
+    // Unknown extra fields are tolerated and not echoed as fabricated certainty.
+    expect(JSON.stringify(failure.details)).not.toContain("futureField")
+  })
+
+  test("BE-3072: a revert says so with the hash and fee warning, and an empty landed list never claims a negative", async () => {
+    const f = await fixture({ outcomes: ["revert"] })
+    expect(await run(sellArgs(), f.deps)).toBe(1)
+    const failure = lastJson(f.stdout.text)
+    expect(String(failure.message)).toMatch(/reverted on Hood\. Network fees may have been charged\./)
+    expect(String(failure.message)).toContain("No leg is confirmed yet")
+    expect(String(failure.message)).not.toContain("No leg landed")
   })
 
   test("BE-1397: an uncertain leg keeps the server's stage and signature beside its hash", async () => {

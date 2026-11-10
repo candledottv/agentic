@@ -597,7 +597,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
       const failure = lastJson(f.stdout.text)
       expect(failure.code).toBe("INVALID_RESPONSE")
-      expect(String(failure.message)).toContain("Landed: createCurve")
+      expect(String(failure.message)).toContain("Confirmed: createCurve")
       expect(signs(f.calls)).toHaveLength(2)
     })
 
@@ -669,7 +669,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       const failure = lastJson(f.stdout.text)
       expect(failure.code).toBe("INVALID_RESPONSE")
       expect(String(failure.message)).toContain("does not match what this operation confirmed")
-      expect(String(failure.message)).toContain("Landed: createCurve")
+      expect(String(failure.message)).toContain("Confirmed: createCurve")
       expect(signs(f.calls)).toHaveLength(signed)
     })
 
@@ -689,7 +689,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
       const failure = lastJson(f.stdout.text)
       expect(failure.code).toBe("INVALID_RESPONSE")
-      expect(String(failure.message)).toContain(`Landed: ${landedKind}`)
+      expect(String(failure.message)).toContain(`Confirmed: ${landedKind}`)
       expect(signs(f.calls)).toHaveLength(signed)
     })
 
@@ -708,7 +708,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("INVALID_RESPONSE")
-    expect(String(failure.message)).toContain("Landed: createCurve")
+    expect(String(failure.message)).toContain("Confirmed: createCurve")
     expect(signs(f.calls)).toHaveLength(1)
   })
 
@@ -827,7 +827,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("INVALID_RESPONSE")
-    expect(String(failure.message)).toContain("Landed: createCurve")
+    expect(String(failure.message)).toContain("Confirmed: createCurve")
     expect(signs(f.calls)).toHaveLength(1)
   })
 
@@ -843,7 +843,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     expect(await run(hoodLaunch(), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("INVALID_RESPONSE")
-    expect(String(failure.message)).toContain(`Landed: createCurve 0x${"1".repeat(64)}`)
+    expect(String(failure.message)).toContain(`Confirmed: createCurve 0x${"1".repeat(64)}`)
     const signed = signs(f.calls)
     expect(signed).toHaveLength(1)
     const relay = signed[0]?.body as { body: { params: { transaction: Record<string, unknown> } } }
@@ -860,7 +860,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("INVALID_RESPONSE")
     expect(String(failure.message)).toContain("planned leg count")
-    expect(String(failure.message)).toContain(`Landed: createCurve 0x${"1".repeat(64)}`)
+    expect(String(failure.message)).toContain(`Confirmed: createCurve 0x${"1".repeat(64)}`)
     expect(signs(f.calls)).toHaveLength(1)
   })
 
@@ -875,7 +875,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("INVALID_RESPONSE")
-    expect(String(failure.message)).toContain(`Landed: createCurve 0x${"1".repeat(64)}`)
+    expect(String(failure.message)).toContain(`Confirmed: createCurve 0x${"1".repeat(64)}`)
     expect(signs(f.calls)).toHaveLength(1)
     expect(f.calls.filter((call) => call.path === "/api/v1/launch/self/confirm")).toHaveLength(1)
   })
@@ -886,7 +886,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     })
     expect(await run(hoodLaunch(), f.deps)).toBe(1)
     expect(lastJson(f.stdout.text).code).toBe("INVALID_RESPONSE")
-    expect(String(lastJson(f.stdout.text).message)).toContain("No leg landed.")
+    expect(String(lastJson(f.stdout.text).message)).toContain("No leg is confirmed yet.")
     expect(signs(f.calls)).toEqual([])
   })
 
@@ -906,7 +906,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       const f = await fixture({ launchLegs: [{ kind: "createCurve", leg: curveLeg }] })
       expect(await run(hoodLaunch(), f.deps)).toBe(1)
       expect(lastJson(f.stdout.text).code).toBe("INVALID_RESPONSE")
-      expect(String(lastJson(f.stdout.text).message)).toContain("No leg landed.")
+      expect(String(lastJson(f.stdout.text).message)).toContain("No leg is confirmed yet.")
       expect(signs(f.calls)).toEqual([])
     })
 
@@ -940,7 +940,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
       expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
       const failure = lastJson(f.stdout.text)
       expect(failure.code).toBe("INVALID_RESPONSE")
-      expect(String(failure.message)).toContain("Landed: createCurve")
+      expect(String(failure.message)).toContain("Confirmed: createCurve")
       expect(signs(f.calls)).toHaveLength(1)
     })
 
@@ -963,7 +963,7 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     expect(await run(hoodLaunch(), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("LAUNCH_FAILED")
-    expect(String(failure.message)).toContain("No leg landed.")
+    expect(String(failure.message)).toContain("No leg is confirmed yet.")
     expect(signs(f.calls)).toHaveLength(1)
   })
 
@@ -1233,7 +1233,7 @@ describe("H11: candle transfer from a Hood TEE wallet", () => {
     expect(await run(transferArgs(["--to", "vault", "--asset", "ETH", "--amount", "1"]), f.deps)).toBe(1)
     const failure = lastJson(f.stdout.text)
     expect(failure.code).toBe("INVALID_RESPONSE")
-    expect(String(failure.message)).toContain(`Landed: transfer 0x${"1".repeat(64)}`)
+    expect(String(failure.message)).toContain(`Confirmed: transfer 0x${"1".repeat(64)}`)
     const signed = signs(f.calls)
     expect(signed).toHaveLength(1)
     const relay = signed[0]?.body as { body: { params: { transaction: Record<string, unknown> } } }

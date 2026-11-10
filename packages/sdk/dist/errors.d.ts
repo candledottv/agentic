@@ -79,6 +79,44 @@ export interface CandleErrorPayload {
     reason?: string;
     /** Epoch milliseconds after which a retryable refusal is worth retrying, when the server knows. */
     retryAfter?: number;
+    /** The operation a sequenced Hood refusal is about. */
+    operationId?: string;
+    /** BE-3072: confirmed legs, in order. Never an empty-list proof that nothing landed. */
+    landedLegs?: Array<{
+        kind: string;
+        hash: string;
+    }>;
+    /** BE-3072: exact per-leg evidence; `outcome` is landed, reverted, not_sent or uncertain. */
+    legEvidence?: HoodLegEvidence[];
+    /** `pending`: a known chain fact has not yet converged into the operation record. */
+    reconciliation?: "complete" | "pending";
+    /** True while the wallet is held by an unresolved or unrecorded leg. */
+    recoveryRequired?: boolean;
+    /** `read_status`: read the job status. Never a signal to resubmit or build a new trade. */
+    safeAction?: "read_status" | "continue_original" | "none";
+    /** Milliseconds to wait before the next status read. Guidance for reads only. */
+    pollAfterMs?: number;
+    legIndex?: number;
+    legKind?: string;
+    /** The job kind to read status with (`trade` for a Hood trade). */
+    statusKind?: string;
+}
+/** One attempted Hood leg's exact evidence (BE-3072). No signed bytes, ever. */
+export interface HoodLegEvidence {
+    legIndex: number;
+    kind: string;
+    outcome: "landed" | "reverted" | "not_sent" | "uncertain";
+    hash?: string;
+    chainId: number;
+    sender: string;
+    nonce?: number;
+    reason?: string;
+    receipt?: {
+        hash: string;
+        blockHash: string;
+        blockNumber: string;
+        status: "success" | "reverted";
+    };
 }
 /**
  * The codes a TEE bridge between Solana and Hood adds (Ember Phase 4c). `code` stays an open
@@ -151,6 +189,20 @@ export declare class CandleApiError extends Error {
     readonly reason?: string;
     /** See `CandleErrorPayload.retryAfter`. */
     readonly retryAfter?: number;
+    /** BE-3072 recovery evidence; see `CandleErrorPayload`. Present only when the server sent it. */
+    readonly operationId?: string;
+    readonly landedLegs?: Array<{
+        kind: string;
+        hash: string;
+    }>;
+    readonly legEvidence?: HoodLegEvidence[];
+    readonly reconciliation?: "complete" | "pending";
+    readonly recoveryRequired?: boolean;
+    readonly safeAction?: "read_status" | "continue_original" | "none";
+    readonly pollAfterMs?: number;
+    readonly legIndex?: number;
+    readonly legKind?: string;
+    readonly statusKind?: string;
     /**
      * The idempotency id of the one-call method this error left (see `OperationIds`). Set by the
      * SDK from the request it sent, never read from the server envelope, and absent on an error

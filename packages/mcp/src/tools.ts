@@ -986,6 +986,24 @@ async function getOperation(args: Record<string, unknown>, cfg: RequestConfig, d
 }
 
 /**
+ * BE-3072: when the API answers with recovery evidence that says to read status (an uncertain or
+ * unrecorded leg), the result gains a top-level `next` saying so in words, so a client that never
+ * read the description reads the job instead of invoking the tool again. Every other field is
+ * untouched, the evidence stays machine-readable, and the result stays an error.
+ */
+export function recoveryNext(body: Record<string, unknown>, clientId: string, kind: OperationKind): string | null {
+  const error = (typeof body.error === "object" && body.error !== null ? body.error : {}) as Record<string, unknown>
+  const pick = (key: string) => (error[key] !== undefined ? error[key] : body[key])
+  if (pick("safeAction") !== "read_status" && pick("recoveryRequired") !== true) return null
+  const poll = typeof pick("pollAfterMs") === "number" ? ` Wait about ${pick("pollAfterMs")} ms between reads.` : ""
+  return (
+    "A transaction for this operation may have been broadcast and its receipt is not confirmed or not yet " +
+    `recorded. Do not call this tool again and do not use a new id. Read candle_get_operation with clientId ` +
+    `"${clientId}" and kind "${kind}" instead.${poll}`
+  )
+}
+
+/**
  * candle_swap. The swap always has an id: a caller's own is used unchanged, and one is generated
  * when it is absent or empty, before the request is built. Without one a swap that fails in
  * transit can neither be replayed nor read back with candle_get_operation's kind "swap".
@@ -1015,8 +1033,12 @@ async function swap(args: Record<string, unknown>, cfg: RequestConfig, doFetch: 
     const failed = transportError("clientSwapId", clientSwapId, thrown)
     return { content: [{ type: "text" as const, text: failed.text }], isError: true }
   }
+  const answered = body as Record<string, unknown>
+  const next = ok ? null : recoveryNext(answered, clientSwapId, "swap")
   return {
-    content: [{ type: "text" as const, text: JSON.stringify({ clientSwapId, ...(body as Record<string, unknown>) }) }],
+    content: [
+      { type: "text" as const, text: JSON.stringify({ clientSwapId, ...answered, ...(next ? { next } : {}) }) },
+    ],
     ...(ok ? {} : { isError: true }),
   }
 }

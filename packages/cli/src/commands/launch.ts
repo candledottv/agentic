@@ -1560,8 +1560,8 @@ async function hoodLaunch(
       "INVALID_RESPONSE",
       `Candle ended the launch before every confirmed leg landed (${confirmedPlan.join(", ")}).${
         run.landed.length === 0
-          ? " No leg landed."
-          : ` Landed: ${run.landed.map((done) => `${done.kind} ${safeText(done.hash)}`).join(", ")}.`
+          ? " No leg is confirmed yet."
+          : ` Confirmed: ${run.landed.map((done) => `${done.kind} ${safeText(done.hash)}`).join(", ")}.`
       }`,
       { details: { operationId: first.operationId, landedLegs: run.landed } },
     )

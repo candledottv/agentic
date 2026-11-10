@@ -83,6 +83,37 @@ export interface CandleErrorPayload {
   reason?: string
   /** Epoch milliseconds after which a retryable refusal is worth retrying, when the server knows. */
   retryAfter?: number
+  /** The operation a sequenced Hood refusal is about. */
+  operationId?: string
+  /** BE-3072: confirmed legs, in order. Never an empty-list proof that nothing landed. */
+  landedLegs?: Array<{ kind: string; hash: string }>
+  /** BE-3072: exact per-leg evidence; `outcome` is landed, reverted, not_sent or uncertain. */
+  legEvidence?: HoodLegEvidence[]
+  /** `pending`: a known chain fact has not yet converged into the operation record. */
+  reconciliation?: "complete" | "pending"
+  /** True while the wallet is held by an unresolved or unrecorded leg. */
+  recoveryRequired?: boolean
+  /** `read_status`: read the job status. Never a signal to resubmit or build a new trade. */
+  safeAction?: "read_status" | "continue_original" | "none"
+  /** Milliseconds to wait before the next status read. Guidance for reads only. */
+  pollAfterMs?: number
+  legIndex?: number
+  legKind?: string
+  /** The job kind to read status with (`trade` for a Hood trade). */
+  statusKind?: string
+}
+
+/** One attempted Hood leg's exact evidence (BE-3072). No signed bytes, ever. */
+export interface HoodLegEvidence {
+  legIndex: number
+  kind: string
+  outcome: "landed" | "reverted" | "not_sent" | "uncertain"
+  hash?: string
+  chainId: number
+  sender: string
+  nonce?: number
+  reason?: string
+  receipt?: { hash: string; blockHash: string; blockNumber: string; status: "success" | "reverted" }
 }
 
 /**
@@ -170,6 +201,17 @@ export class CandleApiError extends Error {
   readonly reason?: string
   /** See `CandleErrorPayload.retryAfter`. */
   readonly retryAfter?: number
+  /** BE-3072 recovery evidence; see `CandleErrorPayload`. Present only when the server sent it. */
+  readonly operationId?: string
+  readonly landedLegs?: Array<{ kind: string; hash: string }>
+  readonly legEvidence?: HoodLegEvidence[]
+  readonly reconciliation?: "complete" | "pending"
+  readonly recoveryRequired?: boolean
+  readonly safeAction?: "read_status" | "continue_original" | "none"
+  readonly pollAfterMs?: number
+  readonly legIndex?: number
+  readonly legKind?: string
+  readonly statusKind?: string
   /**
    * The idempotency id of the one-call method this error left (see `OperationIds`). Set by the
    * SDK from the request it sent, never read from the server envelope, and absent on an error
@@ -203,6 +245,16 @@ export class CandleApiError extends Error {
     if (args.treasury !== undefined) this.treasury = args.treasury
     if (args.reason !== undefined) this.reason = args.reason
     if (args.retryAfter !== undefined) this.retryAfter = args.retryAfter
+    if (args.operationId !== undefined) this.operationId = args.operationId
+    if (args.landedLegs !== undefined) this.landedLegs = args.landedLegs
+    if (args.legEvidence !== undefined) this.legEvidence = args.legEvidence
+    if (args.reconciliation !== undefined) this.reconciliation = args.reconciliation
+    if (args.recoveryRequired !== undefined) this.recoveryRequired = args.recoveryRequired
+    if (args.safeAction !== undefined) this.safeAction = args.safeAction
+    if (args.pollAfterMs !== undefined) this.pollAfterMs = args.pollAfterMs
+    if (args.legIndex !== undefined) this.legIndex = args.legIndex
+    if (args.legKind !== undefined) this.legKind = args.legKind
+    if (args.statusKind !== undefined) this.statusKind = args.statusKind
   }
 }
 
@@ -617,7 +669,7 @@ export function withOperationIds(error: unknown, ids: OperationIds, flow: Operat
 /** Extracts the structured error payload when `body` is a Candle error envelope; null otherwise. */
 function envelopeError(body: unknown): CandleErrorPayload | null {
   if (typeof body !== "object" || body === null) return null
-  const candidate = body as { success?: unknown; error?: unknown }
+  const candidate = body as { success?: unknown; error?: unknown } & Record<string, unknown>
   if (candidate.success !== false) return null
   if (typeof candidate.error !== "object" || candidate.error === null) return null
   const error = candidate.error as Record<string, unknown>
@@ -648,7 +700,47 @@ function envelopeError(body: unknown): CandleErrorPayload | null {
     ...(typeof error.treasury === "string" ? { treasury: error.treasury } : {}),
     ...(typeof error.reason === "string" ? { reason: error.reason } : {}),
     ...(typeof error.retryAfter === "number" ? { retryAfter: error.retryAfter } : {}),
+    ...recoveryEvidenceOf(candidate, error),
   }
+}
+
+/**
+ * BE-3072: the recovery evidence rides inside `error` (swap, launch, transfer) or beside it (the
+ * trade rail). Both are read, each field only when its type is right; unknown fields are ignored.
+ */
+function recoveryEvidenceOf(top: Record<string, unknown>, error: Record<string, unknown>): Partial<CandleErrorPayload> {
+  const pick = (key: string) => (error[key] !== undefined ? error[key] : top[key])
+  const out: Partial<CandleErrorPayload> = {}
+  const operationId = pick("operationId")
+  if (typeof operationId === "string") out.operationId = operationId
+  const landed = pick("landedLegs")
+  if (Array.isArray(landed)) {
+    out.landedLegs = landed.filter(
+      (leg): leg is { kind: string; hash: string } =>
+        typeof leg === "object" &&
+        leg !== null &&
+        typeof (leg as { kind?: unknown }).kind === "string" &&
+        typeof (leg as { hash?: unknown }).hash === "string",
+    )
+  }
+  const legEvidence = pick("legEvidence")
+  if (Array.isArray(legEvidence)) out.legEvidence = legEvidence as HoodLegEvidence[]
+  const reconciliation = pick("reconciliation")
+  if (reconciliation === "complete" || reconciliation === "pending") out.reconciliation = reconciliation
+  const recoveryRequired = pick("recoveryRequired")
+  if (typeof recoveryRequired === "boolean") out.recoveryRequired = recoveryRequired
+  const safeAction = pick("safeAction")
+  if (safeAction === "read_status" || safeAction === "continue_original" || safeAction === "none")
+    out.safeAction = safeAction
+  const pollAfterMs = pick("pollAfterMs")
+  if (typeof pollAfterMs === "number") out.pollAfterMs = pollAfterMs
+  const legIndex = pick("legIndex")
+  if (typeof legIndex === "number") out.legIndex = legIndex
+  for (const key of ["legKind", "statusKind"] as const) {
+    const value = pick(key)
+    if (typeof value === "string") out[key] = value
+  }
+  return out
 }
 
 /** Builds the `CandleApiError` for a non-2xx response body (envelope-aware, see module doc). */

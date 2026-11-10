@@ -654,3 +654,12 @@ for the complete contract.
 During the verifier upgrade, rotation and finish may return retryable 503 with reason
 `rotation_verifier_not_ready` before changing any credential. Keep the existing secret
 and retry after the service is ready; the API does not silently shorten the grace guarantee.
+
+## Uncertain Hood legs (BE-3072)
+
+On Hood, when a leg's receipt is not confirmed, the CLI reports `LEG_UNCONFIRMED` (exit 3), keeps the
+hash it computed from its own signed bytes, and tells you not to repeat the trade and to read
+`candle swap status <id> --kind trade`. A revert exits 1 before the trade leg succeeded and 3 after.
+`No leg landed` is no longer printed on an empty list: it was never negative evidence; the CLI says
+`No leg is confirmed yet`. JSON output keeps `legEvidence`, `reconciliation`, `recoveryRequired`,
+`safeAction` and `pollAfterMs` from the server. Status makes no signing or send calls.

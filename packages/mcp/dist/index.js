@@ -477,7 +477,7 @@ function readClusterResult(value, mint) {
 }
 
 // src/version.ts
-var SERVER_VERSION = "0.10.30";
+var SERVER_VERSION = "0.10.31";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -7452,6 +7452,14 @@ async function getOperation(args, cfg, doFetch) {
     ...res.ok ? {} : { isError: true }
   };
 }
+function recoveryNext(body, clientId2, kind) {
+  const error = typeof body.error === "object" && body.error !== null ? body.error : {};
+  const pick = (key) => error[key] !== undefined ? error[key] : body[key];
+  if (pick("safeAction") !== "read_status" && pick("recoveryRequired") !== true)
+    return null;
+  const poll = typeof pick("pollAfterMs") === "number" ? ` Wait about ${pick("pollAfterMs")} ms between reads.` : "";
+  return "A transaction for this operation may have been broadcast and its receipt is not confirmed or not yet " + `recorded. Do not call this tool again and do not use a new id. Read candle_get_operation with clientId ` + `"${clientId2}" and kind "${kind}" instead.${poll}`;
+}
 async function swap(args, cfg, doFetch) {
   const clientSwapId = typeof args.clientSwapId === "string" && args.clientSwapId.length > 0 ? args.clientSwapId : randomUUID3();
   const { url, init } = buildRequest("candle_swap", { ...args, clientSwapId }, cfg);
@@ -7469,8 +7477,12 @@ async function swap(args, cfg, doFetch) {
     const failed = transportError("clientSwapId", clientSwapId, thrown);
     return { content: [{ type: "text", text: failed.text }], isError: true };
   }
+  const answered = body;
+  const next = ok ? null : recoveryNext(answered, clientSwapId, "swap");
   return {
-    content: [{ type: "text", text: JSON.stringify({ clientSwapId, ...body }) }],
+    content: [
+      { type: "text", text: JSON.stringify({ clientSwapId, ...answered, ...next ? { next } : {} }) }
+    ],
     ...ok ? {} : { isError: true }
   };
 }

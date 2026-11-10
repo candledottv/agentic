@@ -225,6 +225,7 @@ export type {
   BridgeErrorCode,
   CandleErrorPayload,
   CandleRoutingDetail,
+  HoodLegEvidence,
   OperationIds,
   OwnerConfirmDetail,
   OwnerConfirmErrorCode,

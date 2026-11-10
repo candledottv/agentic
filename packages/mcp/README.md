@@ -539,3 +539,10 @@ vendor requests or fabricated opening prices. The window requires the Postgres a
 `sinceMs` must be a non-negative integer Unix timestamp in milliseconds at or before now; invalid,
 blank, fractional or future inputs return `VALIDATION_FAILED` (400). Omitting it returns the existing
 all-time response without `window`.
+
+## Uncertain Hood legs (BE-3072)
+
+When a trade, swap, launch or transfer answer carries recovery evidence that says to read status,
+the result keeps every field (JSON text, `isError` true) and gains a top-level `next` telling the
+client not to call the tool again, not to use a new id, and to read `candle_get_operation` with the
+`clientId` and `kind`. `candle_get_operation` relays the operation's `recovery` evidence unchanged.

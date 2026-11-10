@@ -664,3 +664,11 @@ vendor requests or fabricated opening prices. The window requires the Postgres a
 `sinceMs` must be a non-negative integer Unix timestamp in milliseconds at or before now; invalid,
 blank, fractional or future inputs return `VALIDATION_FAILED` (400). Omitting it returns the existing
 all-time response without `window`.
+
+## Uncertain Hood legs (BE-3072)
+
+`CandleApiError` now carries `operationId`, `landedLegs`, `legEvidence`, `reconciliation`,
+`recoveryRequired`, `safeAction`, `pollAfterMs`, `legIndex`, `legKind` and `statusKind` when the server
+sends them (inside `error` or beside it). Fields of the wrong type are dropped and unknown fields are
+ignored. A refusal with `recoveryRequired`, `safeAction: "read_status"` or `reconciliation: "pending"` is
+never auto-retried and never a reason to build a new id: read the job status instead.
