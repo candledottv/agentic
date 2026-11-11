@@ -8465,6 +8465,10 @@ General quotes use POST /api/v1/trade/agent/quote; curve quotes/lifecycle descri
 Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND remains a legacy
 code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only
 404 is endpoint guidance, not a verdict that Candle cannot trade external tokens.
+A Hood token_unknown with error.discovery.provider.status "unknown" means the market-data provider
+does not describe the address yet: retry after retryAfterSeconds. A 503 on a Hood read names its
+cause in identity.cause and carries Retry-After. A 200 with an identity block (source "provider")
+is identity only: trade.routable is false and it is not a route; ask POST /api/v1/trade/agent/quote.
 candle_token_forensics also answers for Solana tokens the feed or Jupiter's index knows, with a partial
 report: on-chain developer (never a launchpad shared authority), went-to-zero record, token
 safety flags, same-funder insiders and cluster. Deploy-window stays unavailable without a
