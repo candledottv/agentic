@@ -1,3 +1,4 @@
+import type { WalletBusyDetails } from "./hood-tee";
 /**
  * Structured errors for the Candle agent SDK.
  *
@@ -45,6 +46,11 @@ export interface SignedTradeLeg {
     outcome: "landed" | "reverted" | "pending" | "lapsed" | "forwarding" | "unknown" | "refused";
 }
 export interface CandleErrorPayload {
+    operationKind?: WalletBusyDetails["operationKind"];
+    refId?: string;
+    clearingCondition?: string;
+    statusPath?: string;
+    statusCommand?: string;
     legs?: SignedTradeLeg[];
     routing?: CandleRoutingDetail;
     discovery?: Record<string, unknown>;
@@ -190,6 +196,11 @@ export declare class CandleApiError extends Error {
     /** See `CandleErrorPayload.retryAfter`. */
     readonly retryAfter?: number;
     /** BE-3072 recovery evidence; see `CandleErrorPayload`. Present only when the server sent it. */
+    readonly operationKind?: WalletBusyDetails["operationKind"];
+    readonly refId?: string;
+    readonly clearingCondition?: string;
+    readonly statusPath?: string;
+    readonly statusCommand?: string;
     readonly operationId?: string;
     readonly landedLegs?: Array<{
         kind: string;

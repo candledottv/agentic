@@ -15,6 +15,11 @@
   ],
   "version": 1,
   "categories": {
+    "operation_active": {
+      "retryable": true,
+      "action": "The Hood operation is still inside its active window. Read its operationId with candle swap status --operation; wait until the window ends before retrying the same recovery request. Never resend or rebuild the trade to clear this response.",
+      "codes": ["OPERATION_ACTIVE"]
+    },
     "auth": {
       "retryable": false,
       "action": "Fix the credential. Run `candle doctor` to tell 'no key' apart from 'wrong environment' and 'revoked'. OWNER_CONFIRM_REQUIRED is the exception and is retryable: a device-token owner step that widens authority needs the account owner to approve error.ownerConfirm.verificationUriComplete in a signed-in browser; then resend the identical request with Candle-Owner-Confirm: <confirmId>. The Candle CLI does this for you. Nothing changed until then.",

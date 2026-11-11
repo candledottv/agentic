@@ -1,3 +1,4 @@
+import type { HoodTeeOperation } from "./hood-tee"
 /**
  * Typed client for the Candle agent rail REST surface (docs/headless-launch.md and
  * docs/agent-trading.md are the authoritative endpoint references; apps/api/src/routes/{launch,
@@ -2412,17 +2413,8 @@ export interface TradeJob {
   createdAt: number
   updatedAt: number
   /** A Hood TEE trade only: its sequenced operation, leg by leg. `kind` and `status` are open strings. */
-  operation?: {
-    operationId: string
-    kind: string
-    status: string
-    plannedLegCount: number
-    currentLegIndex: number
-    legs: Array<{ kind: string; status: string; hash?: string; nonce?: number }>
-    expiresAt: number
-    /** The fee a trade that landed after its lock expired still owes, once the read has recorded it. */
-    feeOwed?: Record<string, unknown>
-  }
+  operation?: HoodTeeOperation
+  guard?: HoodTeeOperation["guard"]
 }
 
 /**
@@ -5201,6 +5193,29 @@ export class CandleClient {
    * For a linked payer, also check the wallet's recent transactions before sending again: see
    * `trade()`.
    */
+  /** Read-only legacy guard recovery; never signs or sends, even when the operation failed. */
+  async getHoodTeeOperation(operationId: string): Promise<HoodTeeOperation> {
+    this.requireKey("getHoodTeeOperation()")
+    const body = await this.requestJson<{ operation: HoodTeeOperation }>(
+      "GET",
+      `/api/v1/agent/hood-tee/operations/${encodeURIComponent(operationId)}`,
+    )
+    return body.operation
+  }
+
+  async recoverHoodTeeOperation(
+    operationId: string,
+    options: { candidateHash?: string } = {},
+  ): Promise<HoodTeeOperation> {
+    this.requireKey("recoverHoodTeeOperation()")
+    const body = await this.requestJson<{ operation: HoodTeeOperation }>(
+      "POST",
+      `/api/v1/agent/hood-tee/operations/${encodeURIComponent(operationId)}/recover`,
+      options,
+    )
+    return body.operation
+  }
+
   async getTradeJob(clientTradeId: string): Promise<TradeJob> {
     this.requireKey("getTradeJob()")
     const body = await this.requestJson<{ success: true; job: TradeJob }>(

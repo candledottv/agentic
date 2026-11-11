@@ -211,6 +211,7 @@ export const TOOL_NAMES = [
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
+  "candle_recover_operation",
   // FE-438: the creator fees this account's launched tokens can pay, and the claim.
   "candle_get_fees",
   "candle_claim_fees",
@@ -697,8 +698,31 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       }
     }
 
+    case "candle_recover_operation": {
+      const apiKey = requireApiKey(cfg)
+      const { operationId, candidateHash } = args as { operationId: string; candidateHash?: string }
+      if (!operationId) throw new Error("operationId is required")
+      return {
+        url: `${base}/api/v1/agent/hood-tee/operations/${encodeURIComponent(operationId)}/recover`,
+        init: {
+          method: "POST",
+          headers: jsonHeaders(apiKey),
+          body: JSON.stringify(candidateHash ? { candidateHash } : {}),
+        },
+      }
+    }
     case "candle_get_operation": {
       const apiKey = requireApiKey(cfg)
+      if (args.operationId !== undefined) {
+        if (args.clientId !== undefined || args.kind !== undefined || typeof args.operationId !== "string")
+          throw new Error("operationId is exclusive with clientId/kind")
+        return {
+          url: `${base}/api/v1/agent/hood-tee/operations/${encodeURIComponent(args.operationId)}`,
+          init: { method: "GET", headers: jsonHeaders(apiKey) },
+        }
+      }
+      if (typeof args.clientId !== "string" || !["trade", "swap", "launch"].includes(String(args.kind)))
+        throw new Error("Supply clientId and kind, or operationId")
       // Three rails, three ledgers, one tool. The path is chosen by `kind` rather than sniffed
       // from the id: clientTradeId, clientSwapId and clientLaunchId are all caller-chosen strings,
       // so there is nothing in an id to dispatch on, and guessing wrong returns a 404 for the
@@ -973,7 +997,13 @@ async function getOperation(args: Record<string, unknown>, cfg: RequestConfig, d
       // Not the API's envelope: relayed as it is, below.
     }
     const code = (body as { error?: { code?: unknown } } | null)?.error?.code
-    if (code === "JOB_NOT_FOUND") {
+    if (code === "JOB_NOT_FOUND" && args.operationId !== undefined) {
+      text = JSON.stringify({
+        ...(body as Record<string, unknown>),
+        outcome: "unknown",
+        next: "Operation lookup unavailable on this server; read the job by its client id. Do not repeat the trade.",
+      })
+    } else if (code === "JOB_NOT_FOUND") {
       const { clientId, kind } = args as { clientId: string; kind?: OperationKind }
       const next = operationNotFoundNext(clientId, kind === "launch" || kind === "swap" ? kind : "trade")
       text = JSON.stringify({ ...(body as Record<string, unknown>), outcome: "unknown", next })
@@ -1244,12 +1274,17 @@ const getAgentPositionsShape = {
 }
 
 const getOperationShape = {
+  operationId: z
+    .string()
+    .optional()
+    .describe(
+      "Explicit Hood TEE operation id, exclusive with clientId and kind; reads recovery and guard even for a terminal job",
+    ),
   clientId: z
     .string()
-    .describe("The clientTradeId, clientSwapId or clientLaunchId the write used, or that the tool echoed back to you"),
-  kind: z
-    .enum(["trade", "swap", "launch"])
-    .describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on"),
+    .optional()
+    .describe("The clientTradeId, clientSwapId or clientLaunchId the write used; requires kind"),
+  kind: z.enum(["trade", "swap", "launch"]).optional().describe("Required with clientId; omit with operationId"),
 }
 
 const vampCandidatesShape = {
@@ -2238,7 +2273,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "What happened to a write",
       description:
-        "Look up a trade, swap or launch by the id its write used, and find out whether it landed. " +
+        "Look up a trade, swap or launch by clientId and kind, or supply only operationId for a Hood TEE guard. While guard.recoveryRequired is true, read status and follow clearingCondition; never repeat the trade. " +
         "Reads only; moves nothing.\n\n" +
         "Call this after a timeout, after a restart, or any time you hold an id and do not know " +
         "the outcome. Do NOT re-send the write to find out.\n\n" +
@@ -2258,6 +2293,18 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: getOperationShape,
     },
     async (args) => getOperation(args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_recover_operation",
+    {
+      title: "Recover a Hood TEE leg by proof",
+      description:
+        "Read-only chain recovery: verifies a legacy leg's exact historical stamp and receipt. Never signs, sends or collects fees. An optional candidateHash is an untrusted locator. A hold remains until clearingCondition is met; read candle_get_operation with operationId, never repeat the trade.",
+      inputSchema: { operationId: z.string(), candidateHash: z.string().optional() },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (args) => callAndRelay("candle_recover_operation", args, getConfig(), doFetch),
   )
 
   register(

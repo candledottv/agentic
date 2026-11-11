@@ -103,6 +103,11 @@ class CandleApiError extends Error {
   treasury;
   reason;
   retryAfter;
+  operationKind;
+  refId;
+  clearingCondition;
+  statusPath;
+  statusCommand;
   operationId;
   landedLegs;
   legEvidence;
@@ -145,6 +150,16 @@ class CandleApiError extends Error {
       this.reason = args.reason;
     if (args.retryAfter !== undefined)
       this.retryAfter = args.retryAfter;
+    if (args.operationKind !== undefined)
+      this.operationKind = args.operationKind;
+    if (args.refId !== undefined)
+      this.refId = args.refId;
+    if (args.clearingCondition !== undefined)
+      this.clearingCondition = args.clearingCondition;
+    if (args.statusPath !== undefined)
+      this.statusPath = args.statusPath;
+    if (args.statusCommand !== undefined)
+      this.statusCommand = args.statusCommand;
     if (args.operationId !== undefined)
       this.operationId = args.operationId;
     if (args.landedLegs !== undefined)
@@ -358,6 +373,14 @@ function envelopeError(body) {
 function recoveryEvidenceOf(top, error) {
   const pick = (key) => error[key] !== undefined ? error[key] : top[key];
   const out = {};
+  for (const field of ["refId", "clearingCondition", "statusPath", "statusCommand"]) {
+    const value = pick(field);
+    if (typeof value === "string")
+      out[field] = value;
+  }
+  const operationKind = pick("operationKind");
+  if (operationKind === "trade" || operationKind === "swap" || operationKind === "launch" || operationKind === "transfer")
+    out.operationKind = operationKind;
   const operationId = pick("operationId");
   if (typeof operationId === "string")
     out.operationId = operationId;
@@ -5758,6 +5781,16 @@ class CandleClient {
   async postTradeBuild(req, op) {
     this.requireKey("buildTrade()");
     return this.requestJson("POST", "/api/v1/trade/agent/build", req, op);
+  }
+  async getHoodTeeOperation(operationId) {
+    this.requireKey("getHoodTeeOperation()");
+    const body = await this.requestJson("GET", `/api/v1/agent/hood-tee/operations/${encodeURIComponent(operationId)}`);
+    return body.operation;
+  }
+  async recoverHoodTeeOperation(operationId, options = {}) {
+    this.requireKey("recoverHoodTeeOperation()");
+    const body = await this.requestJson("POST", `/api/v1/agent/hood-tee/operations/${encodeURIComponent(operationId)}/recover`, options);
+    return body.operation;
   }
   async getTradeJob(clientTradeId) {
     this.requireKey("getTradeJob()");

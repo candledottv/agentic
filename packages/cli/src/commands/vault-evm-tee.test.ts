@@ -1212,14 +1212,11 @@ describe("WALLET_BUSY names the command that can see the holder", () => {
     throw new Error("expected WALLET_BUSY")
   }
 
-  test("swap, trade and launch name swap status; a transfer does not", () => {
-    expect(hint("swap")).toContain("candle swap status op-9")
-    expect(hint("swap")).not.toContain("--kind")
-    expect(hint("trade")).toContain("candle swap status op-9 --kind trade")
-    expect(hint("launch")).toContain("candle swap status op-9 --kind launch")
-    const transfer = hint("transfer")
-    expect(transfer).not.toContain("swap status")
-    expect(transfer).toContain("the transfer operation op-9")
+  test("every rail names the explicit operation lookup", () => {
+    for (const kind of ["swap", "trade", "launch", "transfer"]) {
+      expect(hint(kind)).toContain("candle swap status --operation op-9")
+      expect(hint(kind)).not.toContain("--kind")
+    }
   })
 })
 

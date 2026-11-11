@@ -77,6 +77,8 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_resolve_token: READ,
   candle_execution_status: READ,
   candle_get_operation: READ,
+  // BE-3096: proof recovery records observations only; no signing, sending or fee collection.
+  candle_recover_operation: READ,
   candle_get_fees: READ,
   candle_atomic_launch_dry_run: READ,
   candle_get_staking: READ,

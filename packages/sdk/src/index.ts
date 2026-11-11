@@ -247,6 +247,7 @@ export {
   TradeLandedUnconfirmedError,
   TradeLegOutcomeError,
 } from "./errors"
+export type { GuardReason, GuardSummary, HoodTeeOperation, WalletBusyDetails } from "./hood-tee"
 export {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   HYPERLIQUID_ALLOWED_ACTION_TYPES,

@@ -76,6 +76,7 @@ test("all registered tools are listed", () => {
     "candle_perps_thresholds",
     "candle_perps_tpsl",
     "candle_quote",
+    "candle_recover_operation",
     "candle_report_activity",
     "candle_resolve_token",
     "candle_set_profile_wallets",

@@ -1,43 +1,4 @@
-/**
- * Typed client for the Candle agent rail REST surface (docs/headless-launch.md and
- * docs/agent-trading.md are the authoritative endpoint references; apps/api/src/routes/{launch,
- * launch-headless,markets,verify,activity,users,uploads,agent,trade-agent,trade-agent-shared,
- * trade-agent-confirm}.ts are the implementations these types mirror).
- *
- * Design rules:
- * - Near-zero runtime dependencies: global `fetch` (injectable for tests), global `crypto` for
- *   the generated idempotency id and (via `importWallet`) for HPKE. Works on Bun and Node 18+.
- *   The SDK's only three package dependencies, `@hpke/core`, `@hpke/chacha20poly1305`, and
- *   `@scure/base` (wallet-import.ts), exist solely to serve `importWallet` below.
- * - The REST API is the authoritative validator (same stance as packages/mcp): request types
- *   describe the wire shape for autocomplete, they do not re-implement server validation.
- * - Every non-2xx response throws `CandleApiError` (see errors.ts). Methods that unwrap a
- *   payload (`getQuotePairs`, `getPresets`, `getMarket`, `getLaunchJob`, `getAgentProfile`)
- *   return the useful inner object; methods whose top-level body IS the useful object
- *   (`launch`, `dryRunLaunch`, `getQuote`, `getFeed`, `verify`) return the parsed body.
- * - `x-api-key` is attached when the client has a key, except on public tokenPages reads. The write/keyed
- *   endpoints (launch, dry run, jobs, activity, uploads) refuse to fetch at all without one,
- *   throwing a plain `Error` that names the missing option, so a misconfigured agent fails
- *   fast and locally instead of with a server 401.
- * - Embedded launch retries: `launch()` fills in `clientLaunchId` ("sdk-" + UUID) when the
- *   caller omits one and re-sends the SAME id on network errors, non-envelope 5xx responses,
- *   retryable envelopes with 5xx status, and the retryable in-flight 409. It never retries a
- *   non-retryable envelope (IDEMPOTENCY_CONFLICT with a different body, LAUNCH_DISABLED, every
- *   validation error), and it never retries a launch whose stage is `executed` or `unconfirmed`
- *   or whose error already names a mint. Backoff is 250ms * 2^n, jittered to 50-100% of that,
- *   capped at 8s, bounded by `maxRetries` (default 3 retries after the initial attempt).
- * - The id on every outcome. The six one-call write methods (`trade()`, `launch()`,
- *   `launchAsync()`, `selfLaunch()`, `buildAtomicLaunch()`, `launchAtomic()`) send one idempotency
- *   id per call, the caller's or a generated one, and once the first request carrying it has been
- *   sent, every exit exposes that id: on the returned value, and on the thrown error
- *   (`operationIds(error)`). A `CandleApiError` or `JsonRpcError` keeps its class and gains the id;
- *   anything else (a rejected fetch, a 2xx body that is not JSON, a plain Error from one of the
- *   method's own steps) is wrapped once, at the outermost method, in a `CandleOperationError` with
- *   the original as `cause`. An error raised before anything was sent (no API key) carries no id
- *   and is not wrapped. The SDK never reuses an id between calls and adds no retry of its own: a
- *   call that passes no id is a new operation. The retry is the caller's, with the id passed back.
- *   The README's "Retrying a write that failed or timed out" is the caller-facing procedure.
- */
+import type { HoodTeeOperation } from "./hood-tee";
 import { type SignedTradeLeg } from "./errors";
 import { type HyperliquidNetwork, type HyperliquidSubmitOutcome, type HyperliquidTypedData } from "./hyperliquid";
 import { type PerpsTpslParams, type PerpsWorkflowResult } from "./hyperliquid-manage";
@@ -2307,22 +2268,8 @@ export interface TradeJob {
     createdAt: number;
     updatedAt: number;
     /** A Hood TEE trade only: its sequenced operation, leg by leg. `kind` and `status` are open strings. */
-    operation?: {
-        operationId: string;
-        kind: string;
-        status: string;
-        plannedLegCount: number;
-        currentLegIndex: number;
-        legs: Array<{
-            kind: string;
-            status: string;
-            hash?: string;
-            nonce?: number;
-        }>;
-        expiresAt: number;
-        /** The fee a trade that landed after its lock expired still owes, once the read has recorded it. */
-        feeOwed?: Record<string, unknown>;
-    };
+    operation?: HoodTeeOperation;
+    guard?: HoodTeeOperation["guard"];
 }
 /**
  * POST /api/v1/trade/agent/submit request body. `signedTransactions` is the ordered signed legs:
@@ -4061,6 +4008,11 @@ export declare class CandleClient {
      * For a linked payer, also check the wallet's recent transactions before sending again: see
      * `trade()`.
      */
+    /** Read-only legacy guard recovery; never signs or sends, even when the operation failed. */
+    getHoodTeeOperation(operationId: string): Promise<HoodTeeOperation>;
+    recoverHoodTeeOperation(operationId: string, options?: {
+        candidateHash?: string;
+    }): Promise<HoodTeeOperation>;
     getTradeJob(clientTradeId: string): Promise<TradeJob>;
     /**
      * Confirm a LINKED payer's own broadcast trade: Candle verifies it landed on-chain, that it was

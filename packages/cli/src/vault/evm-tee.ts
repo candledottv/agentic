@@ -157,6 +157,7 @@ export async function appendEvmRecordForTrade(
 
 export type WalletLock =
   | { state: "free" }
+  | { state: "guarded"; operationId?: string; reason: string }
   | { state: "held"; operationId: string; kind: string; expiresAt: number }
   | { state: "unknown"; reason: string; suggestion?: string }
 
@@ -199,6 +200,7 @@ export async function readHoodTeeServer(ctx: CommandContext, entry: KeyEntry): P
     })
     if (!result.ok) return { lock: { state: "unknown", reason: result.message ?? `HTTP ${result.status}` } }
     const body = (result.body ?? {}) as {
+      guard?: { held?: boolean; incomplete?: boolean; operations?: Array<{ operationId?: string; reason?: string }> }
       address?: unknown
       activeOperation?: { operationId?: unknown; kind?: unknown; expiresAt?: unknown } | null
       tradedTokens?: unknown
@@ -229,6 +231,15 @@ export async function readHoodTeeServer(ctx: CommandContext, entry: KeyEntry): P
       ...(body.tradedTokensTruncated === true ? { tradedTokensTruncated: true } : {}),
       ...(bridges !== undefined ? { bridges } : {}),
     }
+    if (body.guard?.held === true || body.guard?.incomplete === true)
+      return {
+        lock: {
+          state: "guarded",
+          operationId: body.guard.operations?.[0]?.operationId,
+          reason: body.guard.operations?.[0]?.reason ?? "legacy_proof_incomplete",
+        },
+        ...extras,
+      }
     if (body.activeOperation === null) return { lock: { state: "free" }, ...extras }
     const op = body.activeOperation
     if (op === undefined || typeof op.operationId !== "string") {
@@ -252,10 +263,8 @@ export async function readHoodTeeServer(ctx: CommandContext, entry: KeyEntry): P
  * The command that can see this holder. `swap status` covers trade, swap and launch. A transfer
  * (or any later kind) is not one of those, so the hint does not name that command.
  */
-function busyStatusHint(kind: string, operationId: string): string {
-  if (kind === "swap") return `candle swap status ${operationId}`
-  if (kind === "trade" || kind === "launch") return `candle swap status ${operationId} --kind ${kind}`
-  return `the ${kind} operation ${operationId}`
+export function busyStatusHint(_kind: string, operationId: string): string {
+  return `candle swap status --operation ${operationId}`
 }
 
 /**
@@ -264,6 +273,13 @@ function busyStatusHint(kind: string, operationId: string): string {
  * Nothing is signed or broadcast on either refusal.
  */
 export function assertWalletLockFree(entry: KeyEntry, lock: WalletLock, now: number): void {
+  if (lock.state === "guarded")
+    throw new VaultError("WALLET_GUARDED", `This wallet is guarded (${lock.reason}); nothing was signed.`, {
+      suggestion: lock.operationId
+        ? `Read ${busyStatusHint("operation", lock.operationId)}. The hold clears only with verified recovery evidence.`
+        : "Read the wallet's Hood TEE guard; incomplete proof needs a reviewed disposition.",
+      details: { ...(lock.operationId ? { operationId: lock.operationId } : {}), reason: lock.reason },
+    })
   if (lock.state === "free") return
   if (lock.state === "held") {
     const left = Math.max(0, Math.ceil((lock.expiresAt - now) / 60_000))

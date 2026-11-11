@@ -88,7 +88,7 @@ import { setup } from "./commands/setup"
 import { sign, signMessage } from "./commands/sign"
 import { spendLimit, spendMaxPerCall, spendPause, spendResume, spendShow } from "./commands/spend"
 import { stake, stakeAdd, stakeClaim, stakeFinish, stakeRemove } from "./commands/stake"
-import { swap, swapStatus } from "./commands/swap"
+import { swap, swapRecover, swapStatus } from "./commands/swap"
 import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
 import { teeRebind, teeRebinds } from "./commands/tee-rebind"
 import { teeRename } from "./commands/tee-rename"
@@ -256,7 +256,7 @@ interface CommandRoute {
  */
 const COMMANDS: Record<string, CommandRoute> = {
   stake: { bare: stake, subcommands: { add: stakeAdd, remove: stakeRemove, finish: stakeFinish, claim: stakeClaim } },
-  swap: { bare: swap, subcommands: { status: swapStatus } },
+  swap: { bare: swap, subcommands: { status: swapStatus, recover: swapRecover } },
   // Transfer (BE-332 PR C): move funds out of a TEE wallet through its bound key, to
   // the account's own wallets or the wallet's vault. Server-built, relay-signed, never a vault key.
   transfer: { bare: transfer },

@@ -12638,6 +12638,7 @@ var init_errors2 = __esm(() => {
     "EVM_SWEEP_NEEDS_GAS",
     "EVM_SWEEP_INCOMPLETE",
     "WALLET_BUSY",
+    "WALLET_GUARDED",
     "WALLET_LOCK_UNKNOWN",
     "EVM_RECORD_UNAVAILABLE"
   ];
@@ -17609,14 +17610,16 @@ function swapJsonResult(result) {
 }
 function printTradingResult(ctx, result) {
   if (result.kind === "swap" && result.job && typeof result.job === "object") {
-    const job = result.job;
-    describeSwapEvidence(ctx, job, job.status === "failed");
+    const job2 = result.job;
+    describeSwapEvidence(ctx, job2, job2.status === "failed");
   }
   const printed = ctx.json && (result.kind === "swap" || result.kind === "trade") ? swapJsonResult(result) : result;
   ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(printed)}
 ` : `${JSON.stringify(result, null, 2)}
 `);
-  return 0;
+  const job = result.job;
+  const operation = job?.operation;
+  return operation?.guard?.recoveryRequired === true || operation?.recovery?.recoveryRequired === true ? 3 : 0;
 }
 function printCancelledResult(ctx, result) {
   printTradingResult(ctx, result);
@@ -17659,7 +17662,14 @@ async function lookupOperation(ctx, key, id, kind) {
   return found[0] ? { ...found[0], ...local?.signature ? { signature: local.signature } : {} } : null;
 }
 async function swapStatus(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--kind"], booleanFlags: ["--wait"] });
+  const parsed = parseArgs(args, { valueFlags: ["--kind", "--operation"], booleanFlags: ["--wait"] });
+  if (!("error" in parsed) && parsed.values["--operation"] !== undefined) {
+    if (parsed.positionals.length || parsed.values["--kind"] || parsed.booleans.has("--wait")) {
+      writeUsageFailure(ctx.deps, "Usage: candle swap status --operation <operationId>", ctx.json);
+      return 2;
+    }
+    return hoodOperationRead(ctx, parsed.values["--operation"]);
+  }
   if ("error" in parsed || parsed.positionals.length !== 1 || !validClientId(parsed.positionals[0] ?? "") || parsed.values["--kind"] !== undefined && !["trade", "swap", "launch"].includes(parsed.values["--kind"])) {
     writeUsageFailure(ctx.deps, "Usage: candle swap status <id> [--kind trade|swap|launch] [--wait]", ctx.json);
     return 2;
@@ -17672,7 +17682,7 @@ async function swapStatus(args, ctx) {
     const found = await lookupOperation(ctx, key, id, kind);
     if (!found)
       throw new TradingError("JOB_NOT_FOUND", `No operation ${id} is visible to key ${apiKeyPrefix(key) ?? "this key"} on the ${kind ?? "trade, swap, launch"} rail(s). Nothing was resent.`, {
-        suggestion: `Trade and launch jobs are readable by any key on this account; swap jobs only by the key that placed them. If another key or profile placed it, run: candle swap status ${id} --profile <that profile>`
+        suggestion: `${/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id) ? `If this is an operationId, read: candle swap status --operation ${id}. ` : ""}Trade and launch jobs are readable by any key on this account; swap jobs only by the key that placed them. If another key or profile placed it, run: candle swap status ${id} --profile <that profile>`
       });
     const result = parsed.booleans.has("--wait") ? await waitForSettlement(ctx, key, id, found, facts) : { ...found, ...bridgeStatusField(ctx, found, facts) };
     return printTradingResult(ctx, result);
@@ -18425,6 +18435,38 @@ async function bridgeSwap(ctx, args) {
 `.trim());
     return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } });
   }
+}
+async function hoodOperationRead(ctx, id, candidateHash, recover = false) {
+  if (!validClientId(id)) {
+    writeUsageFailure(ctx.deps, "An operationId is required", ctx.json);
+    return 2;
+  }
+  try {
+    const key = await tradingKey(ctx);
+    const path = `/api/v1/agent/hood-tee/operations/${encodeURIComponent(id)}${recover ? "/recover" : ""}`;
+    const result = await request(ctx, key, path, recover ? candidateHash ? { candidateHash } : {} : undefined);
+    const operation = result.operation;
+    const guard = operation?.guard;
+    ctx.deps.stdout.write(`${JSON.stringify(result, null, ctx.json ? undefined : 2)}
+`);
+    if (guard)
+      ctx.deps.stderr.write(`${safeText(guard.reason)}: ${safeText(guard.clearingCondition)} Read: candle swap status --operation ${id}.
+`);
+    return guard?.recoveryRequired === true || operation?.recovery?.recoveryRequired === true ? 3 : 0;
+  } catch (error) {
+    if (error instanceof TradingError && ["JOB_NOT_FOUND", "NOT_FOUND", "HTTP_404"].includes(error.code))
+      ctx.deps.stderr.write(`Operation lookup unavailable on this server; read the job by its client id.
+`);
+    return tradingFailure(ctx, error);
+  }
+}
+async function swapRecover(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--operation", "--hash"] });
+  if ("error" in parsed || parsed.positionals.length || !parsed.values["--operation"] || parsed.values["--hash"] !== undefined && !/^0x[0-9a-fA-F]{64}$/.test(parsed.values["--hash"])) {
+    writeUsageFailure(ctx.deps, "Usage: candle swap recover --operation <operationId> [--hash <0x…>]", ctx.json);
+    return 2;
+  }
+  return hoodOperationRead(ctx, parsed.values["--operation"], parsed.values["--hash"], true);
 }
 var isText = (value) => typeof value === "string" && value.length > 0, textsOf = (value) => Array.isArray(value) ? value.filter(isText) : [], AGENT_MAX_SLIPPAGE_BPS = 5000, SLIPPAGE_RANGE_MESSAGE, settlementSchema, bridgeFactsSchema, HOOD_TRADE_LEGS, bridgeBuildSchema;
 var init_swap = __esm(() => {
@@ -33811,6 +33853,15 @@ async function readHoodTeeServer(ctx, entry2) {
       ...body.tradedTokensTruncated === true ? { tradedTokensTruncated: true } : {},
       ...bridges !== undefined ? { bridges } : {}
     };
+    if (body.guard?.held === true || body.guard?.incomplete === true)
+      return {
+        lock: {
+          state: "guarded",
+          operationId: body.guard.operations?.[0]?.operationId,
+          reason: body.guard.operations?.[0]?.reason ?? "legacy_proof_incomplete"
+        },
+        ...extras
+      };
     if (body.activeOperation === null)
       return { lock: { state: "free" }, ...extras };
     const op = body.activeOperation;
@@ -33830,14 +33881,15 @@ async function readHoodTeeServer(ctx, entry2) {
     return { lock: { state: "unknown", reason: error instanceof Error ? error.message : String(error) } };
   }
 }
-function busyStatusHint(kind, operationId) {
-  if (kind === "swap")
-    return `candle swap status ${operationId}`;
-  if (kind === "trade" || kind === "launch")
-    return `candle swap status ${operationId} --kind ${kind}`;
-  return `the ${kind} operation ${operationId}`;
+function busyStatusHint(_kind, operationId) {
+  return `candle swap status --operation ${operationId}`;
 }
 function assertWalletLockFree(entry2, lock, now) {
+  if (lock.state === "guarded")
+    throw new VaultError("WALLET_GUARDED", `This wallet is guarded (${lock.reason}); nothing was signed.`, {
+      suggestion: lock.operationId ? `Read ${busyStatusHint("operation", lock.operationId)}. The hold clears only with verified recovery evidence.` : "Read the wallet's Hood TEE guard; incomplete proof needs a reviewed disposition.",
+      details: { ...lock.operationId ? { operationId: lock.operationId } : {}, reason: lock.reason }
+    });
   if (lock.state === "free")
     return;
   if (lock.state === "held") {
@@ -46157,8 +46209,32 @@ function buildRequest(name, args, cfg) {
         init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(swapBody(args)) }
       };
     }
+    case "candle_recover_operation": {
+      const apiKey = requireApiKey2(cfg);
+      const { operationId, candidateHash } = args;
+      if (!operationId)
+        throw new Error("operationId is required");
+      return {
+        url: `${base2}/api/v1/agent/hood-tee/operations/${encodeURIComponent(operationId)}/recover`,
+        init: {
+          method: "POST",
+          headers: jsonHeaders(apiKey),
+          body: JSON.stringify(candidateHash ? { candidateHash } : {})
+        }
+      };
+    }
     case "candle_get_operation": {
       const apiKey = requireApiKey2(cfg);
+      if (args.operationId !== undefined) {
+        if (args.clientId !== undefined || args.kind !== undefined || typeof args.operationId !== "string")
+          throw new Error("operationId is exclusive with clientId/kind");
+        return {
+          url: `${base2}/api/v1/agent/hood-tee/operations/${encodeURIComponent(args.operationId)}`,
+          init: { method: "GET", headers: jsonHeaders(apiKey) }
+        };
+      }
+      if (typeof args.clientId !== "string" || !["trade", "swap", "launch"].includes(String(args.kind)))
+        throw new Error("Supply clientId and kind, or operationId");
       const { clientId: clientId2, kind } = args;
       const id = encodeURIComponent(clientId2);
       const path = kind === "launch" ? `/api/v1/launch/headless/jobs/${id}` : kind === "swap" ? `/api/v1/agent/swap/by-client-id/${id}` : `/api/v1/trade/agent/jobs/${id}`;
@@ -46365,7 +46441,13 @@ async function getOperation(args, cfg, doFetch) {
       body = JSON.parse(text2);
     } catch {}
     const code = body?.error?.code;
-    if (code === "JOB_NOT_FOUND") {
+    if (code === "JOB_NOT_FOUND" && args.operationId !== undefined) {
+      text2 = JSON.stringify({
+        ...body,
+        outcome: "unknown",
+        next: "Operation lookup unavailable on this server; read the job by its client id. Do not repeat the trade."
+      });
+    } else if (code === "JOB_NOT_FOUND") {
       const { clientId: clientId2, kind } = args;
       const next = operationNotFoundNext(clientId2, kind === "launch" || kind === "swap" ? kind : "trade");
       text2 = JSON.stringify({ ...body, outcome: "unknown", next });
@@ -46709,7 +46791,7 @@ function registerToolSubset(server, options) {
   });
   register("candle_get_operation", {
     title: "What happened to a write",
-    description: "Look up a trade, swap or launch by the id its write used, and find out whether it landed. " + `Reads only; moves nothing.
+    description: "Look up a trade, swap or launch by clientId and kind, or supply only operationId for a Hood TEE guard. While guard.recoveryRequired is true, read status and follow clearingCondition; never repeat the trade. " + `Reads only; moves nothing.
 
 ` + "Call this after a timeout, after a restart, or any time you hold an id and do not know " + `the outcome. Do NOT re-send the write to find out.
 
@@ -46718,6 +46800,12 @@ function registerToolSubset(server, options) {
 ` + "- `built`/`submitted`: still in flight. Wait and ask again.\n" + "- kind `swap` (candle_swap's `clientSwapId`) answers `job.outcome` instead: `in_flight` " + "(ask again), `confirmed` (`job.hashes`), `failed` (refused before any broadcast; the SAME " + "request with the SAME id starts over), `partial` (`hashes[0]` landed, " + "a later leg did not) or `indeterminate` (broadcast, outcome unknown; check " + "`error.message`). `partial` and `indeterminate` are final for that id.\n" + `- 404 (\`JOB_NOT_FOUND\`): unknown, not an outcome. ${OPERATION_NOT_FOUND_RULE} The result ` + 'says the same in `outcome: "unknown"` and `next`.\n\n' + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
     inputSchema: getOperationShape
   }, async (args) => getOperation(args, getConfig(), doFetch));
+  register("candle_recover_operation", {
+    title: "Recover a Hood TEE leg by proof",
+    description: "Read-only chain recovery: verifies a legacy leg's exact historical stamp and receipt. Never signs, sends or collects fees. An optional candidateHash is an untrusted locator. A hold remains until clearingCondition is met; read candle_get_operation with operationId, never repeat the trade.",
+    inputSchema: { operationId: exports_external.string(), candidateHash: exports_external.string().optional() },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async (args) => callAndRelay("candle_recover_operation", args, getConfig(), doFetch));
   register("candle_get_staking", {
     title: "Read CNDL staking positions",
     description: "Read eligible embedded, linked and TEE Solana wallets: CNDL, sCNDL, withdrawals, unclaimed rewards, the pool wait and eligibility notes. Reads only. " + STAKING_DISCLOSURE,
@@ -47189,6 +47277,7 @@ var init_tools = __esm(() => {
     "candle_resolve_token",
     "candle_execution_status",
     "candle_get_operation",
+    "candle_recover_operation",
     "candle_get_fees",
     "candle_claim_fees",
     "candle_get_staking",
@@ -47332,8 +47421,9 @@ var init_tools = __esm(() => {
     kind: exports_external.enum(["spot", "perp"]).optional().describe("Only spot tokens or only Hyperliquid perps; omit for both")
   };
   getOperationShape = {
-    clientId: exports_external.string().describe("The clientTradeId, clientSwapId or clientLaunchId the write used, or that the tool echoed back to you"),
-    kind: exports_external.enum(["trade", "swap", "launch"]).describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on")
+    operationId: exports_external.string().optional().describe("Explicit Hood TEE operation id, exclusive with clientId and kind; reads recovery and guard even for a terminal job"),
+    clientId: exports_external.string().optional().describe("The clientTradeId, clientSwapId or clientLaunchId the write used; requires kind"),
+    kind: exports_external.enum(["trade", "swap", "launch"]).optional().describe("Required with clientId; omit with operationId")
   };
   vampCandidatesShape = {
     limit: exports_external.number().optional().describe("Entries to return, 1 to 50 (default 20)"),
@@ -77516,15 +77606,24 @@ var HELP = {
     intro: "Quote, swap and bridge on Solana or Hood; read an operation",
     summary: "Quote, confirm and swap on Solana or Hood, bridge between them; read an operation by id",
     description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent. The first buy after a launch is this command, unless the launch carried it with candle launch --buy. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and buy or sell a token that was not launched on Candle. Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force. With --dry-run, stdout reports per-check results and the quote; nothing is signed or sent. Otherwise with --json, stdout is one JSON value for every swap, trade, replay and status read: kind, status, clientTradeId, signature (the primary transaction, or null), signatures (a list) and raw (the original response); every human line is on stderr. The keys older versions printed stay beside them.",
-    usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
+    usage: [
+      "candle swap <from> <to> [flags]",
+      "candle swap status <id>",
+      "candle swap status --operation <operationId>",
+      "candle swap recover --operation <operationId> [--hash <0x…>]"
+    ],
     rows: [
       {
         invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee> [--to <tee>] [--wait]",
         description: "Quote, confirm and swap on Solana or Hood, or bridge between them"
       },
       {
-        invocation: "status <id> [--kind trade|swap|launch] [--wait]",
-        description: "Read an operation without resending it; --wait follows a bridge until it ends"
+        invocation: "status <id> [--kind trade|swap|launch] [--wait] | status --operation <operationId>",
+        description: "Read without resending; --wait follows a bridge. --operation reads a Hood TEE guard with no signing or sending, and exits 3 while held"
+      },
+      {
+        invocation: "recover --operation <operationId> [--hash <0x…>]",
+        description: "Recover a legacy leg by verified transaction proof; a hash is only a locator"
       }
     ],
     flags: [
@@ -79342,6 +79441,7 @@ var TOOL_CLASSES = {
   candle_resolve_token: READ,
   candle_execution_status: READ,
   candle_get_operation: READ,
+  candle_recover_operation: READ,
   candle_get_fees: READ,
   candle_atomic_launch_dry_run: READ,
   candle_get_staking: READ,
@@ -95628,6 +95728,7 @@ var MCP_TOOL_NAMES = [
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
+  "candle_recover_operation",
   "candle_get_fees",
   "candle_atomic_launch_dry_run",
   "candle_claim_fees",
@@ -117769,7 +117870,7 @@ function extractGlobalFlags(argv) {
 }
 var COMMANDS = {
   stake: { bare: stake, subcommands: { add: stakeAdd, remove: stakeRemove, finish: stakeFinish, claim: stakeClaim } },
-  swap: { bare: swap, subcommands: { status: swapStatus } },
+  swap: { bare: swap, subcommands: { status: swapStatus, recover: swapRecover } },
   transfer: { bare: transfer },
   launch: { bare: launch, subcommands: { status: launchStatus } },
   image: { subcommands: { upload: imageUpload } },

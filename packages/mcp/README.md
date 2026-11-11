@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-ninety-one tools over stdio, plus four Hyperliquid market reads (ninety-five in all; `candle_quote`, `candle_get_price_history`, `candle_get_trading_wallets` and `candle_get_spendable_balances` are in source only and not in the published 0.10.29), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+ninety-two tools over stdio, plus four Hyperliquid market reads (ninety-six in all; `candle_quote`, `candle_get_price_history`, `candle_get_trading_wallets` and `candle_get_spendable_balances` are in source only and not in the published 0.10.29), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, and backtest a strategy in hacc's strategy lab without hand-rolling HTTP calls. The five
@@ -39,7 +39,7 @@ environment.
 To mint a key for another agent without keeping it as the CLI profile's working key, run `candle keys create --access write --label agent-one --no-store` after device login. The key is printed once; put it in the intended agent's secret store. `--json` reports `stored: false` and exits 0. The profile's existing working key, prefix and scopes stay unchanged, even when it has no working key. Add `--embedded-wallet allow` at a terminal if this key needs the account's embedded wallet. This is a CLI storage option; it adds no MCP tool and does not change tool counts.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all ninety-five: the ninety-one tools in the table below plus the four Hyperliquid
+Unset means all ninety-six: the ninety-two tools in the table below plus the four Hyperliquid
 market reads. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
@@ -189,7 +189,8 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_get_account_pnl` | P&L for every agent profile on the account in one read (`candle pnl` without `--profile`) | `GET /api/v1/agent/keys/pnl` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_portfolio` | What the account's embedded and TEE wallets hold on Solana and Hood (Hood in `hood`), with prices; unpriced holdings say why, never zero | `GET /api/v1/agent/portfolio` | `CANDLE_AGENT_API_KEY` (`account:read`) |
 | `candle_execution_status` | One call before trading: the embedded wallets, the TEE wallets bound to this key (`tee`, each with `chain` and `spendable` — active, the key not paused, and the key holding a spend scope: `swap:write`, `transfer:write` or `launch:write`, with the key's scopes in `teeScopes`; `teeComplete: false` means more), tier, this key's limits (`limits.txLimitUse` has its USD limit use and when it resets), and its loss limits and stop state (a stopped key is `ready: false` with a top-level `stopped`); a failed read is named in `unreadable` | Composes `GET /api/v1/agent/wallets/embedded`, `/wallets/trading`, `/tier`, `/keys/self/limits` and `/keys/self/risk` | `CANDLE_AGENT_API_KEY` |
-| `candle_get_operation` | Look up a trade, swap or launch by the id its write used, and whether it landed. `kind: "swap"` reads a `candle_swap` by its `clientSwapId` and answers `job.outcome` (`in_flight`, `confirmed`, `failed`, `partial` or `indeterminate`) | `GET /api/v1/trade/agent/jobs/:clientId`, `/api/v1/agent/swap/by-client-id/:clientId` or `/api/v1/launch/headless/jobs/:clientId` | `CANDLE_AGENT_API_KEY` |
+| `candle_get_operation` | Read a Hood TEE operation using `operationId` exclusively, or use `clientId` plus `kind` for a trade, swap or launch job | `GET /api/v1/agent/hood-tee/operations/:operationId` or the owning rail job route | `CANDLE_AGENT_API_KEY` |
+| `candle_recover_operation` | Verify legacy Hood proof using `operationId` and optional untrusted `candidateHash`; requires the owning rail scope and swap key. Never signs, sends or collects fees | `POST /api/v1/agent/hood-tee/operations/:operationId/recover` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_fees` | The creator fees the account's launched tokens can pay: raw amounts from chain reads, and the reason a token cannot be claimed | `GET /api/v1/agent/fees` | `CANDLE_AGENT_API_KEY` (`account:read`) |
 | `candle_atomic_launch_dry_run` | Check a Solana launch with first buys and price each buy on the curve it would deploy; builds, reserves and writes nothing | `POST /api/v1/launch/atomic/dry-run` | `CANDLE_AGENT_API_KEY` (`launch:write`, `swap:write`, Pro or Max) |
 | `candle_claim_fees` | Collect one token's creator fees to the wallet fixed at launch (no destination argument); `dryRun` sends nothing | `POST /api/v1/agent/fees/:mint/claim` | `CANDLE_AGENT_API_KEY` (`launch:write`) |
@@ -268,7 +269,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-ninety-one tools:
+ninety-two tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.
@@ -546,3 +547,52 @@ When a trade, swap, launch or transfer answer carries recovery evidence that say
 the result keeps every field (JSON text, `isError` true) and gains a top-level `next` telling the
 client not to call the tool again, not to use a new id, and to read `candle_get_operation` with the
 `clientId` and `kind`. `candle_get_operation` relays the operation's `recovery` evidence unchanged.
+
+## Legacy Hood leg recovery and readable guards
+
+A `WALLET_BUSY` refusal names the guarded `operationId`, rail (`operationKind`), client `refId`,
+leg, fixed `reason`, `clearingCondition`, `statusPath` and `statusCommand`. An operation id is
+separate from a rail's client id:
+
+```sh
+candle swap status --operation <operationId>
+candle swap recover --operation <operationId> --hash <0x-transaction-hash>
+```
+
+`GET /api/v1/agent/hood-tee/operations/{operationId}` and
+`POST /api/v1/agent/hood-tee/operations/{operationId}/recover` return
+`{ success: true, operation: { ..., guard?, recovery? } }`. The POST body accepts only
+`{ candidateHash?: string }`. A locator names a transaction to verify; it never proves identity.
+Both paths use the account's owning rail scope (`swap:write`, `launch:read`, or `transfer:write`);
+swap operations also require the key that placed them. An unauthorized lookup returns the same
+404 `JOB_NOT_FOUND` as an unknown id. Recovery inside an active window returns 409
+`OPERATION_ACTIVE`, retryable true. Reads and recovery work while the trading switch is off.
+
+Legacy recovery reconstructs the exact signed type-2 envelope and verifies its hash, signer and
+historical Candle stamp before recording an exact-hash receipt. It needs no client-held bytes.
+It never signs, sends, rebroadcasts, restamps, returns a next leg, collects fees or revives the
+operation. Failed/expired parents and unattempted planned legs keep their labels. Proving one
+leg keeps every other unresolved leg held. A nonce count, elapsed time, missing transaction,
+allowance or terminal job label cannot clear a hold. `not_sent` requires positive bound claim
+proof that signing cannot have happened or happen later; pending/ambiguous claims remain held.
+
+While `guard.recoveryRequired` is true, read status and follow `clearingCondition`. CLI status and
+recover exit 3 while held. `legacy_identity_missing` can accept a locator; `nonce_conflict`,
+`receipt_conflict`, `legacy_candidate_conflict` and `legacy_proof_incomplete` keep the wallet held
+until the stated proof or a separately reviewed disposition exists. A landed leg stays landed.
+No rebuild or repeat-trade instruction follows an uncertain result.
+
+Every Hood rail job read carries its operation's `guard`, regardless of the job's terminal label.
+`GET /api/v1/agent/wallets/{walletId}/hood-tee` is the read-only locator of last resort, even with
+no job row: `guard: { held, incomplete, operations }` lists at most 10 held operations. A held
+failed/expired operation also makes `activeOperation` non-null for installed custody clients.
+Incomplete proof without a known holder omits `activeOperation`, so those clients fail closed.
+Current custody commands refuse `WALLET_GUARDED`. Preserve that compatibility projection during
+rollback. This endpoint performs no recovery writes.
+
+SDK: `getHoodTeeOperation(operationId)` and
+`recoverHoodTeeOperation(operationId, { candidateHash? })`; `GuardSummary` and `WalletBusyDetails`
+are exported. MCP: `candle_get_operation` accepts `operationId` exclusively instead of
+`clientId`/`kind`; `candle_recover_operation` accepts `operationId` and optional `candidateHash`.
+An older API without explicit operation lookup requires reading the job by its client id.
+These client source changes require a separate human package release; this repair bumps no version.

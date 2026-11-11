@@ -663,3 +663,52 @@ hash it computed from its own signed bytes, and tells you not to repeat the trad
 `No leg landed` is no longer printed on an empty list: it was never negative evidence; the CLI says
 `No leg is confirmed yet`. JSON output keeps `legEvidence`, `reconciliation`, `recoveryRequired`,
 `safeAction` and `pollAfterMs` from the server. Status makes no signing or send calls.
+
+## Legacy Hood leg recovery and readable guards
+
+A `WALLET_BUSY` refusal names the guarded `operationId`, rail (`operationKind`), client `refId`,
+leg, fixed `reason`, `clearingCondition`, `statusPath` and `statusCommand`. An operation id is
+separate from a rail's client id:
+
+```sh
+candle swap status --operation <operationId>
+candle swap recover --operation <operationId> --hash <0x-transaction-hash>
+```
+
+`GET /api/v1/agent/hood-tee/operations/{operationId}` and
+`POST /api/v1/agent/hood-tee/operations/{operationId}/recover` return
+`{ success: true, operation: { ..., guard?, recovery? } }`. The POST body accepts only
+`{ candidateHash?: string }`. A locator names a transaction to verify; it never proves identity.
+Both paths use the account's owning rail scope (`swap:write`, `launch:read`, or `transfer:write`);
+swap operations also require the key that placed them. An unauthorized lookup returns the same
+404 `JOB_NOT_FOUND` as an unknown id. Recovery inside an active window returns 409
+`OPERATION_ACTIVE`, retryable true. Reads and recovery work while the trading switch is off.
+
+Legacy recovery reconstructs the exact signed type-2 envelope and verifies its hash, signer and
+historical Candle stamp before recording an exact-hash receipt. It needs no client-held bytes.
+It never signs, sends, rebroadcasts, restamps, returns a next leg, collects fees or revives the
+operation. Failed/expired parents and unattempted planned legs keep their labels. Proving one
+leg keeps every other unresolved leg held. A nonce count, elapsed time, missing transaction,
+allowance or terminal job label cannot clear a hold. `not_sent` requires positive bound claim
+proof that signing cannot have happened or happen later; pending/ambiguous claims remain held.
+
+While `guard.recoveryRequired` is true, read status and follow `clearingCondition`. CLI status and
+recover exit 3 while held. `legacy_identity_missing` can accept a locator; `nonce_conflict`,
+`receipt_conflict`, `legacy_candidate_conflict` and `legacy_proof_incomplete` keep the wallet held
+until the stated proof or a separately reviewed disposition exists. A landed leg stays landed.
+No rebuild or repeat-trade instruction follows an uncertain result.
+
+Every Hood rail job read carries its operation's `guard`, regardless of the job's terminal label.
+`GET /api/v1/agent/wallets/{walletId}/hood-tee` is the read-only locator of last resort, even with
+no job row: `guard: { held, incomplete, operations }` lists at most 10 held operations. A held
+failed/expired operation also makes `activeOperation` non-null for installed custody clients.
+Incomplete proof without a known holder omits `activeOperation`, so those clients fail closed.
+Current custody commands refuse `WALLET_GUARDED`. Preserve that compatibility projection during
+rollback. This endpoint performs no recovery writes.
+
+SDK: `getHoodTeeOperation(operationId)` and
+`recoverHoodTeeOperation(operationId, { candidateHash? })`; `GuardSummary` and `WalletBusyDetails`
+are exported. MCP: `candle_get_operation` accepts `operationId` exclusively instead of
+`clientId`/`kind`; `candle_recover_operation` accepts `operationId` and optional `candidateHash`.
+An older API without explicit operation lookup requires reading the job by its client id.
+These client source changes require a separate human package release; this repair bumps no version.

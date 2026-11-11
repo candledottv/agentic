@@ -252,7 +252,12 @@ export function printTradingResult(ctx: CommandContext, result: Json): number {
   }
   const printed = ctx.json && (result.kind === "swap" || result.kind === "trade") ? swapJsonResult(result) : result
   ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(printed)}\n` : `${JSON.stringify(result, null, 2)}\n`)
-  return 0
+  const job = result.job as Json | undefined
+  const operation = job?.operation as Json | undefined
+  return (operation?.guard as Json | undefined)?.recoveryRequired === true ||
+    (operation?.recovery as Json | undefined)?.recoveryRequired === true
+    ? 3
+    : 0
 }
 
 /**
@@ -348,7 +353,14 @@ export async function lookupOperation(
   return found[0] ? { ...found[0], ...(local?.signature ? { signature: local.signature } : {}) } : null
 }
 export async function swapStatus(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--kind"], booleanFlags: ["--wait"] })
+  const parsed = parseArgs(args, { valueFlags: ["--kind", "--operation"], booleanFlags: ["--wait"] })
+  if (!("error" in parsed) && parsed.values["--operation"] !== undefined) {
+    if (parsed.positionals.length || parsed.values["--kind"] || parsed.booleans.has("--wait")) {
+      writeUsageFailure(ctx.deps, "Usage: candle swap status --operation <operationId>", ctx.json)
+      return 2
+    }
+    return hoodOperationRead(ctx, parsed.values["--operation"])
+  }
   if (
     "error" in parsed ||
     parsed.positionals.length !== 1 ||
@@ -369,7 +381,7 @@ export async function swapStatus(args: string[], ctx: CommandContext): Promise<n
         "JOB_NOT_FOUND",
         `No operation ${id} is visible to key ${apiKeyPrefix(key) ?? "this key"} on the ${kind ?? "trade, swap, launch"} rail(s). Nothing was resent.`,
         {
-          suggestion: `Trade and launch jobs are readable by any key on this account; swap jobs only by the key that placed them. If another key or profile placed it, run: candle swap status ${id} --profile <that profile>`,
+          suggestion: `${/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id) ? `If this is an operationId, read: candle swap status --operation ${id}. ` : ""}Trade and launch jobs are readable by any key on this account; swap jobs only by the key that placed them. If another key or profile placed it, run: candle swap status ${id} --profile <that profile>`,
         },
       )
     const result = parsed.booleans.has("--wait")
@@ -1463,4 +1475,49 @@ async function bridgeSwap(
     )
     return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } })
   }
+}
+
+/** Explicit operation-id mode never probes a rail client id or reaches a signer. */
+async function hoodOperationRead(
+  ctx: CommandContext,
+  id: string,
+  candidateHash?: string,
+  recover = false,
+): Promise<number> {
+  if (!validClientId(id)) {
+    writeUsageFailure(ctx.deps, "An operationId is required", ctx.json)
+    return 2
+  }
+  try {
+    const key = await tradingKey(ctx)
+    const path = `/api/v1/agent/hood-tee/operations/${encodeURIComponent(id)}${recover ? "/recover" : ""}`
+    const result = await request(ctx, key, path, recover ? (candidateHash ? { candidateHash } : {}) : undefined)
+    const operation = result.operation as Json | undefined
+    const guard = operation?.guard as Json | undefined
+    ctx.deps.stdout.write(`${JSON.stringify(result, null, ctx.json ? undefined : 2)}\n`)
+    if (guard)
+      ctx.deps.stderr.write(
+        `${safeText(guard.reason)}: ${safeText(guard.clearingCondition)} Read: candle swap status --operation ${id}.\n`,
+      )
+    return guard?.recoveryRequired === true || (operation?.recovery as Json | undefined)?.recoveryRequired === true
+      ? 3
+      : 0
+  } catch (error) {
+    if (error instanceof TradingError && ["JOB_NOT_FOUND", "NOT_FOUND", "HTTP_404"].includes(error.code))
+      ctx.deps.stderr.write("Operation lookup unavailable on this server; read the job by its client id.\n")
+    return tradingFailure(ctx, error)
+  }
+}
+export async function swapRecover(args: string[], ctx: CommandContext): Promise<number> {
+  const parsed = parseArgs(args, { valueFlags: ["--operation", "--hash"] })
+  if (
+    "error" in parsed ||
+    parsed.positionals.length ||
+    !parsed.values["--operation"] ||
+    (parsed.values["--hash"] !== undefined && !/^0x[0-9a-fA-F]{64}$/.test(parsed.values["--hash"]))
+  ) {
+    writeUsageFailure(ctx.deps, "Usage: candle swap recover --operation <operationId> [--hash <0x…>]", ctx.json)
+    return 2
+  }
+  return hoodOperationRead(ctx, parsed.values["--operation"], parsed.values["--hash"], true)
 }

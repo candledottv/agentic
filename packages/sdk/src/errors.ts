@@ -1,3 +1,4 @@
+import type { WalletBusyDetails } from "./hood-tee"
 /**
  * Structured errors for the Candle agent SDK.
  *
@@ -49,6 +50,11 @@ export interface SignedTradeLeg {
 }
 
 export interface CandleErrorPayload {
+  operationKind?: WalletBusyDetails["operationKind"]
+  refId?: string
+  clearingCondition?: string
+  statusPath?: string
+  statusCommand?: string
   legs?: SignedTradeLeg[]
   routing?: CandleRoutingDetail
   discovery?: Record<string, unknown>
@@ -202,6 +208,11 @@ export class CandleApiError extends Error {
   /** See `CandleErrorPayload.retryAfter`. */
   readonly retryAfter?: number
   /** BE-3072 recovery evidence; see `CandleErrorPayload`. Present only when the server sent it. */
+  readonly operationKind?: WalletBusyDetails["operationKind"]
+  readonly refId?: string
+  readonly clearingCondition?: string
+  readonly statusPath?: string
+  readonly statusCommand?: string
   readonly operationId?: string
   readonly landedLegs?: Array<{ kind: string; hash: string }>
   readonly legEvidence?: HoodLegEvidence[]
@@ -245,6 +256,11 @@ export class CandleApiError extends Error {
     if (args.treasury !== undefined) this.treasury = args.treasury
     if (args.reason !== undefined) this.reason = args.reason
     if (args.retryAfter !== undefined) this.retryAfter = args.retryAfter
+    if (args.operationKind !== undefined) this.operationKind = args.operationKind
+    if (args.refId !== undefined) this.refId = args.refId
+    if (args.clearingCondition !== undefined) this.clearingCondition = args.clearingCondition
+    if (args.statusPath !== undefined) this.statusPath = args.statusPath
+    if (args.statusCommand !== undefined) this.statusCommand = args.statusCommand
     if (args.operationId !== undefined) this.operationId = args.operationId
     if (args.landedLegs !== undefined) this.landedLegs = args.landedLegs
     if (args.legEvidence !== undefined) this.legEvidence = args.legEvidence
@@ -711,6 +727,18 @@ function envelopeError(body: unknown): CandleErrorPayload | null {
 function recoveryEvidenceOf(top: Record<string, unknown>, error: Record<string, unknown>): Partial<CandleErrorPayload> {
   const pick = (key: string) => (error[key] !== undefined ? error[key] : top[key])
   const out: Partial<CandleErrorPayload> = {}
+  for (const field of ["refId", "clearingCondition", "statusPath", "statusCommand"] as const) {
+    const value = pick(field)
+    if (typeof value === "string") out[field] = value
+  }
+  const operationKind = pick("operationKind")
+  if (
+    operationKind === "trade" ||
+    operationKind === "swap" ||
+    operationKind === "launch" ||
+    operationKind === "transfer"
+  )
+    out.operationKind = operationKind
   const operationId = pick("operationId")
   if (typeof operationId === "string") out.operationId = operationId
   const landed = pick("landedLegs")
