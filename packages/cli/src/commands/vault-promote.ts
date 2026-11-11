@@ -101,6 +101,7 @@ import {
 export async function vaultPromote(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--from", "--in-place", "--sweep-to", "--label", "--rpc-url", "--keystore", "--to-key"],
+    keyPrefixValueFlags: ["--to-key"],
     booleanFlags: ["--accept-unknown-exposure", "--accept-older-copy"],
     pathFlags: ["--keystore"],
   })

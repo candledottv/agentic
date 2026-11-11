@@ -96,11 +96,13 @@ function rebindRoute(
     failPreview?: Response
     /** Key signers: the target's active signer as the preview reports it. */
     signer?: { fingerprint: string; spkiSha256: string }
+    /** The target's prefix as this fake reports it (BE-3166: a dash-prefixed regression target). */
+    prefix?: string
   } = {},
 ) {
   const bodies: Record<string, unknown>[] = []
   const toKey = {
-    keyPrefix: TO,
+    keyPrefix: opts.prefix ?? TO,
     label: TO_LABEL,
     paused: false,
     walletScope: "all",
@@ -1351,5 +1353,118 @@ describe("promote-batch --to-key onto a key with a signer (5.2)", () => {
     expect(humanText(o.err)).toContain(humanText(`Tradable from the machine holding key ${TO_LABEL} (signer ${fp})`))
     const body = JSON.parse(jsonDocuments(o.out)[0] as string)
     expect(body.keys.map((k: { boundKeyPrefix: string }) => k.boundKeyPrefix)).toEqual([TO, TO])
+  })
+})
+
+// ── BE-3166: a key prefix can itself start with "-" ─────────────────────────────────────────
+
+describe("BE-3166: --to-key accepts a dash-prefixed key prefix", () => {
+  const DASH_TO = "-AbC1234"
+  /** The listing: a dash-prefixed target whose label is duplicated, so only the prefix selects it. */
+  const dashListing = () =>
+    keysListing({ keyPrefix: DASH_TO }, [
+      { keyPrefix: "Cd4eFg0i", label: TO_LABEL, scopes: ["swap:write"], environment: "production", createdAt: 4 },
+    ])
+
+  test("vault promote --from --to-key -AbC1234: the exact prefix selects the target and the rebind receives it byte for byte", async () => {
+    const f = await fixture(["cold"])
+    const rebind = rebindRoute({ prefix: DASH_TO })
+    const r = await runSingle(f, {
+      args: ["--from", "cold", "--to-key", DASH_TO],
+      lines: ["confirm"],
+      json: true,
+      keys: dashListing(),
+      rebind: rebind.handler,
+      routes: { [`/api/v1/agent/keys/${DASH_TO}/signer`]: () => signerView(DASH_TO) },
+    })
+    expect(r.code).toBe(0)
+    expect(r.submits.n).toBe(1)
+    const id = linkedId(r.submits.addresses[0] as string)
+    expect(rebind.bodies).toEqual([
+      { dryRun: true, toKeyPrefix: DASH_TO, wallets: [id] },
+      { toKeyPrefix: DASH_TO, walletIds: [id], expect: { [id]: IMPORTED_TO } },
+    ])
+    const body = lastLine(r.out)
+    expect(body).toMatchObject({ ok: true, mode: "fresh", boundKeyPrefix: DASH_TO })
+  })
+
+  test("promote-batch --to-key -AbC1234: the exact prefix is selected and carried into every rebind request", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const rebind = rebindRoute({ prefix: DASH_TO })
+    const o = await runBatch(f, {
+      file,
+      ack: "correct",
+      json: true,
+      deviceToken: true,
+      args: ["--to-key", DASH_TO],
+      api: {
+        keys: dashListing(),
+        rebind: rebind.handler,
+        routes: { [`/api/v1/agent/keys/${DASH_TO}/signer`]: () => signerView(DASH_TO) },
+      },
+    })
+    expect(o.code).toBe(0)
+    expect(o.submits.n).toBe(2)
+    const a = linkedId(f.addresses.a as string)
+    const b = linkedId(f.addresses.b as string)
+    expect(rebind.bodies).toEqual([
+      { dryRun: true, toKeyPrefix: DASH_TO, wallets: [a, b] },
+      { toKeyPrefix: DASH_TO, walletIds: [a, b], expect: { [a]: IMPORTED_TO, [b]: IMPORTED_TO } },
+    ])
+    const body = JSON.parse(jsonDocuments(o.out)[0] as string)
+    expect(body).toMatchObject({ ok: true, complete: true, promoted: 2 })
+    expect(body.keys.map((k: { boundKeyPrefix: string }) => k.boundKeyPrefix)).toEqual([DASH_TO, DASH_TO])
+    expect(body.controlledBy).toMatchObject({ keyPrefix: DASH_TO, keySource: "--to-key" })
+  })
+
+  test("vault promote: a missing, repeated, flag-shaped or malformed dash value is USAGE exit 2 before the unlock and any call", async () => {
+    for (const tail of [
+      ["--to-key"],
+      ["--to-key", "--to-key"],
+      ["--to-key", "--accept-unknown-exposure"],
+      ["--to-key", "-short"],
+    ]) {
+      const f = await fixture(["subject", "cold"])
+      const before = await readEntries(f)
+      const r = await runSingle(f, {
+        args: ["--in-place", "subject", "--sweep-to", "cold", "--rpc-url", RPC, ...tail],
+        lines: [],
+        json: true,
+      })
+      expect(r.code).toBe(2)
+      expect(JSON.parse(r.out.trim())).toEqual({ ok: false, code: "USAGE", message: "--to-key requires a value" })
+      expect(r.secretPrompts).toBe(0)
+      expect(r.linePrompts).toEqual([])
+      expect(r.submits.n).toBe(0)
+      // At most the account guard's own read, which every run makes first: nothing else.
+      expect(r.calls.filter((c) => !c.url.endsWith("/api/v1/agent/wallets/embedded"))).toHaveLength(0)
+      expect((await readEntries(f)).generation).toBe(before.generation)
+    }
+  })
+
+  test("promote-batch: a missing, repeated, flag-shaped or malformed dash value is USAGE exit 2 before the unlock and any call", async () => {
+    for (const tail of [
+      ["--to-key"],
+      ["--to-key", "--to-key"],
+      ["--to-key", "--token-holdings"],
+      ["--to-key", "-short"],
+    ]) {
+      const f = await fixture(["a", "b", "cold"])
+      const before = await readEntries(f)
+      const file = await pairsFile(f.dir, "a cold\nb cold\n")
+      const o = await runBatch(f, { file, json: true, deviceToken: true, args: tail, api: { keys: dashListing() } })
+      expect(o.code).toBe(2)
+      const docs = jsonDocuments(o.out)
+      expect(docs).toHaveLength(1)
+      expect(JSON.parse(docs[0] as string)).toEqual({ ok: false, code: "USAGE", message: "--to-key requires a value" })
+      expect(o.secretPrompts).toBe(0)
+      expect(o.linePrompts).toEqual([])
+      expect(o.inits.n).toBe(0)
+      expect(o.submits.n).toBe(0)
+      // At most the account guard's own read, which every run makes first: nothing else.
+      expect(o.calls.filter((c) => !c.url.endsWith("/api/v1/agent/wallets/embedded"))).toHaveLength(0)
+      expect((await readEntries(f)).generation).toBe(before.generation)
+    }
   })
 })

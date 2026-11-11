@@ -113452,6 +113452,7 @@ init_vault_support();
 async function vaultPromote(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--from", "--in-place", "--sweep-to", "--label", "--rpc-url", "--keystore", "--to-key"],
+    keyPrefixValueFlags: ["--to-key"],
     booleanFlags: ["--accept-unknown-exposure", "--accept-older-copy"],
     pathFlags: ["--keystore"]
   });
@@ -114583,6 +114584,7 @@ async function vaultPromoteBatch(args, ctx) {
   }
   const parsed = parseArgs(args, {
     valueFlags: ["--pairs-from", "--rpc-url", "--keystore", "--to-key"],
+    keyPrefixValueFlags: ["--to-key"],
     booleanFlags: ["--token-holdings", "--accept-unknown-exposure", "--accept-older-copy"],
     pathFlags: ["--keystore", "--pairs-from"]
   });

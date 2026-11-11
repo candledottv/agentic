@@ -245,6 +245,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
   }
   const parsed = parseArgs(args, {
     valueFlags: ["--pairs-from", "--rpc-url", "--keystore", "--to-key"],
+    keyPrefixValueFlags: ["--to-key"],
     booleanFlags: ["--token-holdings", "--accept-unknown-exposure", "--accept-older-copy"],
     pathFlags: ["--keystore", "--pairs-from"],
   })
