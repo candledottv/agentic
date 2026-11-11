@@ -27,8 +27,12 @@ So: a `null` is never a zero. An `unavailable` coverage is never a pass.
 ## 1. Gate the buy
 
 `candle_token_forensics` with `{ chain, mint }` returns deployer history, deploy-window buyers,
-same-funder insiders and cluster, plus `safety.summary` and six flags: `mintAuthority`,
-`freezeAuthority`, `tokenExtensions`, `lpLock`, `sellability`, and `liquidityDrain`.
+same-funder insiders and cluster, plus `safety.summary` and its flags: `mintAuthority`,
+`freezeAuthority`, `tokenExtensions`, `lpLock`, `sellability`, and `liquidityDrain`. A Hood report
+adds `buyability`, `taxes`, `ownerControl`, `contractRisk` and `creatorHistory`, from hacc's EVM
+contract read in `safety.evm`; that read runs only on the caller's own key (the MCP server sends a
+configured key on Hood), and without one those flags are `unknown` with `safety.evm.reason`
+(`no_key`, `hacc_forbidden`, `stale`, ...). A stale reading is never clear.
 Each flag carries `status` (`flagged`, `clear`, `unknown`, or `not_applicable`), `value`,
 `source`, `checkedAt`, and `detail`. A `not_applicable` flag is a check that does not apply to
 this token, neither a pass nor a warning: `liquidityDrain` answers it on a token past its 30-day
@@ -38,7 +42,7 @@ A routable `safety.sellProbe` is not clearance: an unknown `sellability` stays u
 refused probe is not a flag.
 
 **Refuse an unprompted buy when `safety.summary` is `flagged`, and name the flag and its detail.**
-`clear` means all six flags are clear or not applicable, not that a trade is guaranteed safe. `incomplete` means
+`clear` means every flag is clear or not applicable, not that a trade is guaranteed safe. `incomplete` means
 at least one reading is unknown; do not treat that as clearance. Read every flag even when the
 summary is incomplete: a hacc outage leaves that summary incomplete while feed liquidity can
 still be flagged. A `not_applicable` summary has no flags and applies to base assets only.

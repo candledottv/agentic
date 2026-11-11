@@ -713,6 +713,39 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     expect(description).toContain("does not verify those fields")
   })
 
+  // R96 A18 (BE-3150): the configured key rides Hood forensics only. Solana's request is the
+  // pre-change one, byte for byte, even with a key configured.
+  test("forensics sends x-api-key on Hood when configured, never on Solana", () => {
+    const HOOD = "0x00000000000000000000000000000000000000aa"
+    const SOL = "So11111111111111111111111111111111111111112"
+    const keyed = { apiUrl: "https://api.test", apiKey: "cndl_live_k" }
+    const keyless = { apiUrl: "https://api.test" }
+    const hood = buildRequest("candle_token_forensics", { chain: "hood", mint: HOOD }, keyed)
+    expect(hood.url).toBe(`https://api.test/api/v1/markets/hood/${HOOD}/forensics`)
+    expect(hood.init).toEqual({
+      method: "GET",
+      headers: { "Content-Type": "application/json", "x-api-key": "cndl_live_k" },
+    })
+    const hoodKeyless = buildRequest("candle_token_forensics", { chain: "hood", mint: HOOD }, keyless)
+    expect(hoodKeyless.init.headers).not.toHaveProperty("x-api-key")
+    const preChange = JSON.stringify({
+      url: `https://api.test/api/v1/markets/solana/${SOL}/forensics`,
+      init: { method: "GET", headers: { "Content-Type": "application/json" } },
+    })
+    for (const cfg of [keyed, keyless]) {
+      expect(JSON.stringify(buildRequest("candle_token_forensics", { chain: "solana", mint: SOL }, cfg))).toBe(
+        preChange,
+      )
+    }
+  })
+
+  test("forensics says a key is optional and read on Hood only", () => {
+    const d = describeOf("candle_token_forensics")
+    expect(d).toContain("No key needed; with a key, Hood contract safety reads hacc on that key's research plan")
+    expect(d).toContain("safety.evm")
+    expect(d).not.toContain("six sourced flags")
+  })
+
   test("forensics refuses to let MARKET_NOT_FOUND read as clean", () => {
     const d = describeOf("candle_token_forensics")
     expect(d).toContain("MARKET_NOT_FOUND")

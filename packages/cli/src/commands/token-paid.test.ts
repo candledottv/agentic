@@ -151,6 +151,32 @@ describe("the paid reads with no payment asked", () => {
     expect((f.routed.calls[0]?.init.headers as Record<string, string>)["x-api-key"]).toBeUndefined()
   })
 
+  // R96 A19: pins existing behavior. The CLI sends its configured API key on forensics, on either
+  // chain; on Hood that key is what lets the report carry hacc's EVM safety (BE-3150).
+  test("forensics sends the configured key on this path, Solana and Hood alike", async () => {
+    const HOOD = "0x00000000000000000000000000000000000000aa"
+    const stdout = createCapture()
+    const routed = createRoutedFetch({
+      [FORENSICS]: () => jsonResponse(200, { success: true, forensics: { mint: MINT } }),
+      [`/api/v1/markets/hood/${HOOD}/forensics`]: () => jsonResponse(200, { success: true, forensics: { mint: HOOD } }),
+    })
+    const deps = createTestDeps({
+      fetch: routed.fetch,
+      stdout,
+      stderr: createCapture(),
+      env: { CANDLE_API_URL: "https://api.test", CANDLE_API_KEY: "cndl_live_forensics" },
+    })
+    expect(await run(["token", "forensics", MINT, "--json"], deps)).toBe(0)
+    expect(await run(["token", "forensics", HOOD, "--chain", "hood", "--json"], deps)).toBe(0)
+    expect(routed.calls.map((c) => new URL(c.url).pathname)).toEqual([
+      FORENSICS,
+      `/api/v1/markets/hood/${HOOD}/forensics`,
+    ])
+    for (const call of routed.calls) {
+      expect((call.init.headers as Record<string, string>)["x-api-key"]).toBe("cndl_live_forensics")
+    }
+  })
+
   test("the vamp finder sends the profile's key and the query it was given", async () => {
     const f = plain(200, { success: true, candidates: [] }, { CANDLE_API_KEY: "cndl_live_x" })
     expect(await run(["token", "vamp-candidates", "--limit", "5", "--stage", "graduated", "--json"], f.deps)).toBe(0)

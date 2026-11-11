@@ -41,8 +41,10 @@ trade, or report activity, see the candle-setup skill to get an agent key.
    a launchpad shared authority is never the developer), the deployer's other launches and how
    they ended, who bought in the deploy window (the creator's own wallets are marked
    `disclosed`; strangers in the same slot are the bundle signal), same-funder insiders and
-   cluster, plus `safety.summary` and six sourced flags: `mintAuthority`, `freezeAuthority`,
-   `tokenExtensions`, `lpLock`, `sellability`, and `liquidityDrain`. Refuse an unprompted buy
+   cluster, plus `safety.summary` and sourced flags: `mintAuthority`, `freezeAuthority`,
+   `tokenExtensions`, `lpLock`, `sellability`, and `liquidityDrain` (Hood adds `buyability`,
+   `taxes`, `ownerControl`, `contractRisk` and `creatorHistory`, read from hacc on the caller's key;
+   `safety.evm.reason` says why when they are unknown). Refuse an unprompted buy
    when flagged and name the flag, source and detail. `unknown` or `incomplete` is not clearance;
    inspect all flags and `coverage` before proceeding. `not_applicable` has no flags for base
    assets. `launch.deployerLaunches` counts the launching wallet's launches including this mint
