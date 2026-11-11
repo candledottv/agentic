@@ -2019,7 +2019,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Get market state",
       description:
-        "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " +
+        "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " +
         EXTERNAL_MARKET_DISCLOSURE +
         " " +
         "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " +

@@ -759,7 +759,7 @@ export interface MarketState {
     /** Legacy lifecycle/curve/fee fields are non-authoritative for external tokens. */
     external?: boolean;
     decimals?: number;
-    quoteDecimals?: number;
+    quoteDecimals?: number | null;
     jupiterOk?: boolean;
     externalTradeable?: boolean;
     paperDiscoveryOk?: boolean;
@@ -772,6 +772,9 @@ export interface MarketState {
     curveAddress: string | null;
     poolAddress: string | null;
     quoteMint: string | null;
+    /** Pair id and static accepted ids, default first. Absent on older APIs. */
+    quoteAsset?: string | null;
+    quoteAssets?: string[];
     feeBps: number;
     graduationVenue: string;
     tier: string | null;

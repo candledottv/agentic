@@ -1429,6 +1429,18 @@ test("profile P&L window schema and relay preserve boundary coverage and null to
   expect(JSON.parse(result.text)).toMatchObject(body)
 })
 
+test("market tool describes the settlement pair and default-first acceptance list", () => {
+  const descriptions = new Map<string, string>()
+  const server = {
+    registerTool: (name: string, config: { description?: string }) => descriptions.set(name, config.description ?? ""),
+  } as unknown as Parameters<typeof registerTools>[0]
+  registerTools(server, { CANDLE_MCP_TOOLS: "candle_get_market" })
+  const description = descriptions.get("candle_get_market") ?? ""
+  expect(description).toContain("quoteAsset names the pool pair")
+  expect(description).toContain("quoteAssets lists accepted settlement ids")
+  expect(description).toContain("quoteAssets[0] the default")
+})
+
 // BE-3140 (R97): candle_get_swap_receipt, spec section 9 T1 to T8 and T11.
 describe("candle_get_swap_receipt", () => {
   const cfg = { apiUrl: "https://api.test/", apiKey: "cndl_live_k" }
