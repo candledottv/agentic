@@ -1,11 +1,11 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-ninety-two tools over stdio, plus four Hyperliquid market reads (ninety-six in all; `candle_quote`, `candle_get_price_history`, `candle_get_trading_wallets` and `candle_get_spendable_balances` are in source only and not in the published 0.10.29), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+ninety-two tools over stdio, plus four Hyperliquid market reads (ninety-six in all; ninety-five of them ship in the published 0.10.31 — `candle_recover_operation` is source only until the next release), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, and backtest a strategy in hacc's strategy lab without hand-rolling HTTP calls. The five
-strategy lab tools, `candle_get_trading_wallets` and `candle_get_spendable_balances` are unreleased source.
+strategy lab tools, `candle_get_trading_wallets` and `candle_get_spendable_balances` are in the published 0.10.31.
 
 Not sure this is the right tool? [How to choose: SDK, MCP or CLI](https://docs.candle.tv/developers/choose-a-surface).
 
@@ -15,7 +15,7 @@ Nineteen tools are read-only and need nothing but `CANDLE_API_URL` (which alread
 production): `candle_get_market`, `candle_get_price_history`, `candle_get_feed`, `candle_token_events`, `candle_token_card`, `candle_token_history`,
 `candle_token_page_about`, `candle_token_page_burns`, `candle_token_page_history`, `candle_token_page_updates`, `candle_token_page_comments`, `candle_token_forensics`, `candle_token_clusters`,
 `candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_get_agent_positions`, `candle_resolve_token` and `candle_get_plans`.
-All of them but `candle_get_price_history` (new in source, not yet published) are in the published 0.10.29; `candle_get_agent_positions` is new since 0.10.27.
+All of them are in the published 0.10.31; `candle_get_agent_positions` is new since 0.10.27 and `candle_get_price_history` is new since 0.10.29.
 With token-page reads enabled on the deployment, those nineteen work immediately without a key.
 Install the released server with no `env` block at all and its ten public reads work immediately:
 
@@ -135,7 +135,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_launch_token` | Launch a token on Candle | `POST /api/v1/launch/headless` (or `/dry-run` when `dryRun: true`); with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
 | `candle_get_market` | Get market state | `GET /api/v1/markets/:chain/:mint` | none |
 | `candle_get_price_history` | One Solana token's OHLC bars in USD per token, oldest first (interval 1m-1d, limit 1-500, `to` unix seconds); `source` and `volumeUnit` say whose bars. Hood is refused with its REST route | `GET /api/v1/markets/solana/:mint/candles` | none |
-| `candle_quote` | **Unreleased (source only; not in 0.10.29).** Price a buy or sell before making it; moves nothing. Returns `amountOut` in base units, `venue`, `quoteAsset`, `quoteDecimals`, `quotedAt`; `route` appears only on some answers. `amountRaw` is in base units. Limit 600 a minute per key | `POST /api/v1/trade/agent/quote` | `CANDLE_AGENT_API_KEY` with `swap:write` (a read-only key cannot quote) |
+| `candle_quote` | Price a buy or sell before making it; moves nothing. Returns `amountOut` in base units, `venue`, `quoteAsset`, `quoteDecimals`, `quotedAt`; `route` appears only on some answers. `amountRaw` is in base units. Limit 600 a minute per key | `POST /api/v1/trade/agent/quote` | `CANDLE_AGENT_API_KEY` with `swap:write` (a read-only key cannot quote) |
 | `candle_get_feed` | Get a token feed (`finalstretch`: at most the 200 most complete; `where` on `progress` narrows it) | `GET /api/v1/markets/feed?bucket=...` | none |
 | `candle_token_edit` | As the token's creator, set Candle's copy of its description and links; an unknown `socials` key is refused locally. Needs a `launch:write` key from the launching account; reuse `idempotencyKey` to retry. Off until the deployment switches it on (503 `METADATA_EDIT_DISABLED`) | `PATCH /api/v1/tokens/:chain/:mint/metadata` | `x-api-key` |
 | `candle_token_history` | A token's metadata edits, newest first, with the previous values | `GET /api/v1/tokens/:chain/:mint/metadata/history?limit=...&cursor=...` | none |
@@ -416,7 +416,7 @@ Tools: `candle_get_staking`, `candle_stake`, `candle_unstake`, `candle_finish_un
 writes MOVE REAL FUNDS. Linked/TEE builds return bytes for signing and SDK submit/confirm.
 Reward claims pay only the recorded owner and resolve the same signature when retried.
 
-Public page editing is on by default for new keys and existing absent-field keys; explicit denial stays off. Only a signed-in Privy session can restore a denied permission. Read keys and hosted Read connections never get `candle_update_profile`, `candle_upload_profile_image`, `candle_create_post` or `candle_delete_post`. Discovery refreshes permission and the admin lock; direct calls still enforce both. SDK/CLI/local MCP additions are unreleased source until the next npm release.
+Public page editing is on by default for new keys and existing absent-field keys; explicit denial stays off. Only a signed-in Privy session can restore a denied permission. Read keys and hosted Read connections never get `candle_update_profile`, `candle_upload_profile_image`, `candle_create_post` or `candle_delete_post`. Discovery refreshes permission and the admin lock; direct calls still enforce both. These additions ship in the published `@candledottv/mcp` 0.10.31, `@candledottv/agent-sdk` 0.6.20 and `@candledottv/cli` 0.13.20.
 
 ## Hyperliquid market reads (local clients)
 
@@ -441,7 +441,7 @@ SDK and local MCP cache market reads for five seconds; book and candle snapshots
 
 ## Token page tools (local clients)
 
-The sixteen `candle_token_page_*` tools below are in the published 0.10.29 and the bundled `candle mcp`.
+The sixteen `candle_token_page_*` tools below are in the published 0.10.31 and the bundled `candle mcp`.
 They are not offered by the hosted OAuth connector. Existing OAuth consent and key grants are
 unchanged; local keys need explicit `token-pages:read` or `token-pages:write` scopes. All token-page
 switches default off: `404`/`feature_off` is a refusal, not an empty page or permission grant.
