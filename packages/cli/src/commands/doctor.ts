@@ -116,9 +116,9 @@ async function teeLimitsRow(ctx: CommandContext, apiKey: string, wallets: { chai
 const DEVICE_TOKEN_ROW = "Device token beside signer"
 
 /** What the human report says in place of the row's long detail (the JSON row keeps the full
- * sentence): the same warning, set apart under the list, with the fix on its own line. */
+ * sentence): the same information, set apart under the list as a note, with the command on its own line. */
 const DEVICE_TOKEN_NOTICE =
-  "This machine holds a device token and a key signer, so it can approve its own signer request. Do not leave the trading machine logged in. If you signed in for a move, log out here and approve from the owner's machine:"
+  "This machine holds a device token and a key signer, so it can approve its own signer request. On a trading machine you signed in to for a move, you can log out here and approve from the owner's machine:"
 const DEVICE_TOKEN_FIX = "candle auth logout --profile <name>"
 
 function plural(count: number, one: string, many: string): string {
@@ -127,7 +127,7 @@ function plural(count: number, one: string, many: string): string {
 
 /**
  * The human report: the role, one line per check (a state mark, the check, its detail wrapped
- * under the detail column), the device-token warning set apart below, then the tally. The state
+ * under the detail column), the device-token note set apart below, then the tally. The state
  * is the first column's mark (`✓ ! ✗ –`, `ok ! x -` in plain mode), so a FAIL still reads
  * without color. Exit codes and `--json` rows are decided before this runs.
  */
@@ -152,7 +152,7 @@ export function renderDoctorReport(rows: CheckRow[], role: string, style: Termin
     for (const line of rest) out.push(`${" ".repeat(indent + markWidth + 1 + labelWidth + 2)}${line}`)
   }
   if (rows.some((row) => row.check === DEVICE_TOKEN_ROW)) {
-    out.push("", ...renderNotice("warning", DEVICE_TOKEN_NOTICE, style), `${" ".repeat(indent + 4)}${DEVICE_TOKEN_FIX}`)
+    out.push("", ...renderNotice("note", DEVICE_TOKEN_NOTICE, style), `${" ".repeat(indent + 4)}${DEVICE_TOKEN_FIX}`)
   }
   const count = (state: CheckRow["state"]) => rows.filter((row) => row.state === state).length
   const tally = [

@@ -91,7 +91,7 @@ export const SIGNER_POLL_MS = 5_000
 export const DEVICE_TOKEN_BESIDE_SIGNER_LINE =
   "Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine."
 
-/** Doctor's device-token row. `idle` is null when the signer's wallets could not be read. */
+/** Doctor's device-token row, informational (PASS). `idle` is null when the signer's wallets could not be read. */
 export function deviceTokenBesideSignerDetail(args: {
   role: "owner" | "bot"
   idle: boolean | null
@@ -103,15 +103,18 @@ export function deviceTokenBesideSignerDetail(args: {
       : args.prefixes.map((prefix) => `candle tee signer remove --key ${prefix}`).join("; ")
   if (args.role === "owner") {
     if (args.idle === true) {
-      return `Warning: this machine holds a device token as well as a key signer that owns no wallets. Remove the signer: ${remove}. Do not log this machine out: that would move the owner role off the machine that holds the vault.`
+      return `This machine holds a device token as well as a key signer that owns no wallets. Remove the signer: ${remove}. Do not log this machine out: that would move the owner role off the machine that holds the vault.`
     }
-    return `Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. This machine's role is owner, so remove the signer once it owns no wallets (${remove}) rather than logging out. Logging out would move the owner role off this machine.`
+    return `This machine holds a device token as well as a key signer. A machine with both can approve its own signer request. This machine's role is owner, so remove the signer once it owns no wallets (${remove}) rather than logging out. Logging out would move the owner role off this machine.`
   }
   if (args.idle === true) {
-    return `Warning: this machine holds a device token as well as a key signer that owns no wallets. Remove it: ${remove}. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine.`
+    return `This machine holds a device token as well as a key signer that owns no wallets. Remove it: ${remove}. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine.`
   }
-  return DEVICE_TOKEN_BESIDE_SIGNER_LINE
+  return DOCTOR_DEVICE_TOKEN_LINE
 }
+
+/** Doctor states the device-token fact as information, not a warning: the line without its "Warning: " lead. */
+const DOCTOR_DEVICE_TOKEN_LINE = DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: this/, "This")
 
 const unsupported = {
   code: "KEY_SIGNER_UNSUPPORTED",
@@ -1533,10 +1536,11 @@ export async function keySignerDoctorReport(
     const prefixes = [...new Set(entries.map((entry) => entry.keyPrefix))]
     rows.push({
       check: "Device token beside signer",
-      state: "WARN",
+      // Information, not a warning: holding both is a normal state on an owner machine and during a move.
+      state: "PASS",
       detail:
         creds.role === undefined
-          ? DEVICE_TOKEN_BESIDE_SIGNER_LINE
+          ? DOCTOR_DEVICE_TOKEN_LINE
           : deviceTokenBesideSignerDetail({ role: creds.role, idle, prefixes }),
     })
   }

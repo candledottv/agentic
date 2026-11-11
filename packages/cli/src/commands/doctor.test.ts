@@ -644,15 +644,18 @@ describe("doctor report layout", () => {
     { check: "Update", state: "SKIP" as const, detail: "could not check" },
     {
       check: "Device token beside signer",
-      state: "WARN" as const,
-      detail: "Warning: this machine holds a device token as well as a key signer.",
+      state: "PASS" as const,
+      detail: "This machine holds a device token as well as a key signer.",
     },
     { check: "API key valid", state: "FAIL" as const, detail: "revoked. Fix: candle auth login" },
   ]
 
-  test("the device-token warning is its own block under the list, with the fix on its own line", () => {
+  test("the device-token note is its own block under the list, with the command on its own line", () => {
     const text = renderDoctorReport(rows, "owner", styled)
-    expect(text).toContain("  ! Device token beside signer\n")
+    // Informational: a pass mark on the row, a note (not a warning) below, and no warning in the tally.
+    expect(text).not.toContain("  ! Device token beside signer\n")
+    expect(renderDoctorReport(rows, "owner", plain)).toContain("  ok Device token beside signer\n")
+    expect(text).not.toContain("warning")
     const lines = text.split("\n")
     const notice = lines.findIndex((line) => line.includes("so it can approve its own signer request"))
     expect(notice).toBeGreaterThan(lines.findIndex((line) => line.includes("API key valid")))
@@ -664,15 +667,15 @@ describe("doctor report layout", () => {
   })
 
   test("the tally counts each state, and plain mode keeps the same layout with ASCII marks", () => {
-    expect(renderDoctorReport(rows, "owner", styled)).toContain("1 passed · 1 warning · 1 failed · 1 skipped")
+    expect(renderDoctorReport(rows, "owner", styled)).toContain("2 passed · 1 failed · 1 skipped")
     const text = renderDoctorReport(rows, "owner", plain)
     expect(text).toContain("  ok Runtime version")
     expect(text).toContain("  x  API key valid")
     expect(text).toContain("  -  Update")
-    expect(text).toContain("1 passed - 1 warning - 1 failed - 1 skipped")
+    expect(text).toContain("2 passed - 1 failed - 1 skipped")
   })
 
-  test("no warning row, no warning block", () => {
+  test("no device-token row, no device-token note", () => {
     expect(renderDoctorReport(rows.slice(0, 2), "owner", styled)).not.toContain("approve its own signer request")
   })
 })

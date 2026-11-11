@@ -86456,15 +86456,16 @@ function deviceTokenBesideSignerDetail(args) {
   const remove = args.prefixes.length === 0 ? "candle tee signer remove --key <prefix>" : args.prefixes.map((prefix) => `candle tee signer remove --key ${prefix}`).join("; ");
   if (args.role === "owner") {
     if (args.idle === true) {
-      return `Warning: this machine holds a device token as well as a key signer that owns no wallets. Remove the signer: ${remove}. Do not log this machine out: that would move the owner role off the machine that holds the vault.`;
+      return `This machine holds a device token as well as a key signer that owns no wallets. Remove the signer: ${remove}. Do not log this machine out: that would move the owner role off the machine that holds the vault.`;
     }
-    return `Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. This machine's role is owner, so remove the signer once it owns no wallets (${remove}) rather than logging out. Logging out would move the owner role off this machine.`;
+    return `This machine holds a device token as well as a key signer. A machine with both can approve its own signer request. This machine's role is owner, so remove the signer once it owns no wallets (${remove}) rather than logging out. Logging out would move the owner role off this machine.`;
   }
   if (args.idle === true) {
-    return `Warning: this machine holds a device token as well as a key signer that owns no wallets. Remove it: ${remove}. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine.`;
+    return `This machine holds a device token as well as a key signer that owns no wallets. Remove it: ${remove}. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine.`;
   }
-  return DEVICE_TOKEN_BESIDE_SIGNER_LINE;
+  return DOCTOR_DEVICE_TOKEN_LINE;
 }
+var DOCTOR_DEVICE_TOKEN_LINE = DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: this/, "This");
 var unsupported = {
   code: "KEY_SIGNER_UNSUPPORTED",
   message: "This Candle API does not serve key signers yet; nothing changed.",
@@ -87530,8 +87531,8 @@ async function keySignerDoctorReport(ctx, creds) {
     const prefixes = [...new Set(entries3.map((entry2) => entry2.keyPrefix))];
     rows.push({
       check: "Device token beside signer",
-      state: "WARN",
-      detail: creds.role === undefined ? DEVICE_TOKEN_BESIDE_SIGNER_LINE : deviceTokenBesideSignerDetail({ role: creds.role, idle, prefixes })
+      state: "PASS",
+      detail: creds.role === undefined ? DOCTOR_DEVICE_TOKEN_LINE : deviceTokenBesideSignerDetail({ role: creds.role, idle, prefixes })
     });
   }
   const reachableWalletIds = view === null ? [] : allSignerWallets(view).filter((wallet3) => wallet3.signerQuorumId && readableQuorums.has(wallet3.signerQuorumId)).map((wallet3) => wallet3.id);
@@ -87635,7 +87636,7 @@ async function teeLimitsRow(ctx, apiKey, wallets2) {
   };
 }
 var DEVICE_TOKEN_ROW = "Device token beside signer";
-var DEVICE_TOKEN_NOTICE = "This machine holds a device token and a key signer, so it can approve its own signer request. Do not leave the trading machine logged in. If you signed in for a move, log out here and approve from the owner's machine:";
+var DEVICE_TOKEN_NOTICE = "This machine holds a device token and a key signer, so it can approve its own signer request. On a trading machine you signed in to for a move, you can log out here and approve from the owner's machine:";
 var DEVICE_TOKEN_FIX = "candle auth logout --profile <name>";
 function plural2(count2, one, many) {
   return `${count2} ${count2 === 1 ? one : many}`;
@@ -87662,7 +87663,7 @@ function renderDoctorReport(rows, role, style) {
       out.push(`${" ".repeat(indent + markWidth + 1 + labelWidth + 2)}${line}`);
   }
   if (rows.some((row2) => row2.check === DEVICE_TOKEN_ROW)) {
-    out.push("", ...renderNotice("warning", DEVICE_TOKEN_NOTICE, style), `${" ".repeat(indent + 4)}${DEVICE_TOKEN_FIX}`);
+    out.push("", ...renderNotice("note", DEVICE_TOKEN_NOTICE, style), `${" ".repeat(indent + 4)}${DEVICE_TOKEN_FIX}`);
   }
   const count2 = (state) => rows.filter((row2) => row2.state === state).length;
   const tally = [

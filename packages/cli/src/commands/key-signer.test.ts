@@ -814,7 +814,9 @@ describe("T12: doctor's key-signer rows", () => {
     ])
     expect(rows.find((r) => r.check === "Key signer")?.state).toBe("WARN")
     expect(rows.find((r) => r.check === "Key signer")?.detail).toContain("is not on this machine")
-    expect(rows.find((r) => r.check === "Device token beside signer")?.state).toBe("WARN")
+    // Information, not a warning: the row is a PASS and its detail carries no "Warning:" lead.
+    expect(rows.find((r) => r.check === "Device token beside signer")?.state).toBe("PASS")
+    expect(rows.find((r) => r.check === "Device token beside signer")?.detail).not.toMatch(/^Warning:/)
   })
 
   test("a machine with no key signer gets no rows and makes no request", async () => {
@@ -862,11 +864,15 @@ describe("T12: doctor's key-signer rows", () => {
     const idle = await besideSignerDetail("bot", false)
     expect(idle).toContain("that owns no wallets")
     expect(idle).toContain("auth logout")
-    expect(await besideSignerDetail("bot", true)).toBe(DEVICE_TOKEN_BESIDE_SIGNER_LINE)
+    expect(await besideSignerDetail("bot", true)).toBe(
+      DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: this/, "This"),
+    )
   })
 
   test("omitting the role keeps the historical device-token line", async () => {
-    expect(await besideSignerDetail(undefined, false)).toBe(DEVICE_TOKEN_BESIDE_SIGNER_LINE)
+    expect(await besideSignerDetail(undefined, false)).toBe(
+      DEVICE_TOKEN_BESIDE_SIGNER_LINE.replace(/^Warning: this/, "This"),
+    )
   })
 })
 
