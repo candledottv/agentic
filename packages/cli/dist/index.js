@@ -84,6 +84,127 @@ var __callDispose = (stack, error, hasError) => {
   return next();
 };
 
+// ../mcp/src/api-key-file.ts
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { resolve } from "node:path";
+function hasApiKeyFile(env) {
+  return Boolean(env.CANDLE_API_KEY_FILE?.trim());
+}
+function assertApiKeySources(env) {
+  if (hasApiKeyFile(env) && (env.CANDLE_API_KEY?.trim() || env.CANDLE_AGENT_API_KEY?.trim())) {
+    throw new ApiKeyFileError("API_KEY_SOURCE_CONFLICT", "CANDLE_API_KEY_FILE conflicts with CANDLE_API_KEY or CANDLE_AGENT_API_KEY. Unset the raw sources or unset CANDLE_API_KEY_FILE.");
+  }
+}
+function requireDescriptorMetadata(stat) {
+  if ([stat.uid, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs].some((value) => typeof value !== "bigint")) {
+    throw new ApiKeyFileError("API_KEY_FILE_UNSUPPORTED", "CANDLE_API_KEY_FILE requires POSIX descriptor metadata. Use an existing credential source or a supported host.");
+  }
+}
+function invalid(rule) {
+  throw new ApiKeyFileError("API_KEY_FILE_INVALID", `CANDLE_API_KEY_FILE ${rule}. Fix the file locally.`);
+}
+function readApiKeyFile(path, io = apiKeyFileIo) {
+  let fd;
+  let key = "";
+  let failure;
+  try {
+    const uid = io.effectiveUid();
+    if (!["linux", "darwin"].includes(io.platform) || uid === undefined || !io.constants.O_NOFOLLOW || !io.constants.O_NONBLOCK || !io.open || !io.stat || !io.read || !io.close) {
+      throw new ApiKeyFileError("API_KEY_FILE_UNSUPPORTED", "CANDLE_API_KEY_FILE requires Linux or macOS with POSIX descriptor checks. Use an existing credential source or a supported host.");
+    }
+    fd = io.open(path, io.constants.O_RDONLY | io.constants.O_NOFOLLOW | io.constants.O_NONBLOCK);
+    const before = io.stat(fd);
+    requireDescriptorMetadata(before);
+    const mode = Number(before.mode & 0o7777n);
+    if (!before.isFile() || before.uid !== BigInt(uid) || mode !== 256 && mode !== 384) {
+      invalid("must be a regular file owned by the effective user with mode 0400 or 0600");
+    }
+    if (before.size > 4096n)
+      invalid("must be at most 4096 bytes");
+    const bytes = Buffer.alloc(4097);
+    let count = 0;
+    while (count < bytes.length) {
+      const read = io.read(fd, bytes, count, bytes.length - count);
+      if (read === 0)
+        break;
+      count += read;
+    }
+    const after = io.stat(fd);
+    requireDescriptorMetadata(after);
+    if (!after.isFile() || count > 4096 || BigInt(count) !== before.size || before.uid !== after.uid || before.mode !== after.mode || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs)
+      invalid("must remain unchanged while being read");
+    let end = count;
+    if (bytes[end - 1] === 10) {
+      end--;
+      if (bytes[end - 1] === 13)
+        end--;
+    }
+    if (end === 0)
+      invalid("must contain one nonempty printable ASCII token, optionally followed by LF or CRLF");
+    for (let i = 0;i < end; i++) {
+      const byte = bytes[i] ?? 0;
+      if (byte < 33 || byte > 126)
+        invalid("must contain one nonempty printable ASCII token, optionally followed by LF or CRLF");
+    }
+    key = bytes.subarray(0, end).toString("ascii");
+  } catch (error) {
+    const code = error?.code;
+    failure = error instanceof ApiKeyFileError ? error : code === "ELOOP" ? new ApiKeyFileError("API_KEY_FILE_INVALID", "CANDLE_API_KEY_FILE must not be a final-component symlink. Fix the file locally.") : ["ENOSYS", "ENOTSUP"].includes(String(code)) ? new ApiKeyFileError("API_KEY_FILE_UNSUPPORTED", "CANDLE_API_KEY_FILE requires POSIX descriptor checks. Use an existing credential source or a supported host.") : new ApiKeyFileError("API_KEY_FILE_UNREADABLE", "Cannot read CANDLE_API_KEY_FILE. Check the configured path and access.");
+  } finally {
+    if (fd !== undefined) {
+      try {
+        io.close(fd);
+      } catch {
+        failure ??= new ApiKeyFileError("API_KEY_FILE_UNREADABLE", "Cannot close CANDLE_API_KEY_FILE. Check local file access.");
+      }
+    }
+  }
+  if (failure)
+    throw failure;
+  return key;
+}
+function apiKeyFileSnapshot(env, load = readApiKeyFile, cwd = process.cwd()) {
+  env = { ...env };
+  const selected = hasApiKeyFile(env);
+  const path = selected ? resolve(cwd, env.CANDLE_API_KEY_FILE ?? "") : undefined;
+  let result;
+  return () => {
+    result ??= Promise.resolve().then(async () => {
+      assertApiKeySources(env);
+      if (path === undefined)
+        return;
+      try {
+        return await load(path);
+      } catch (error) {
+        if (error instanceof ApiKeyFileError)
+          throw error;
+        throw new ApiKeyFileError("API_KEY_FILE_UNREADABLE", "Cannot read CANDLE_API_KEY_FILE. Check the configured path and access.");
+      }
+    });
+    return result;
+  };
+}
+var ApiKeyFileError, apiKeyFileIo;
+var init_api_key_file = __esm(() => {
+  ApiKeyFileError = class ApiKeyFileError extends Error {
+    code;
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+      this.name = "ApiKeyFileError";
+    }
+  };
+  apiKeyFileIo = {
+    platform: process.platform,
+    effectiveUid: () => process.geteuid?.(),
+    constants,
+    open: openSync,
+    stat: (fd) => fstatSync(fd, { bigint: true }),
+    read: (fd, buffer, offset, length) => readSync(fd, buffer, offset, length, null),
+    close: closeSync
+  };
+});
+
 // src/client.ts
 function setOwnerConfirmHooks(hooks) {
   const previous = installedOwnerConfirmHooks;
@@ -5697,13 +5818,16 @@ function keyedRedirectGuard(doFetch) {
   };
 }
 function resolveConfig(env = process.env) {
+  assertApiKeySources(env);
+  const fileKey = hasApiKeyFile(env) ? readApiKeyFile(env.CANDLE_API_KEY_FILE ?? "") : undefined;
   const apiUrl = env.CANDLE_API_URL?.trim() || DEFAULT_API_URL2;
   assertTransportSecurity(apiUrl, env);
-  const apiKey = env.CANDLE_AGENT_API_KEY?.trim() || env.CANDLE_API_KEY?.trim();
+  const apiKey = fileKey ?? (env.CANDLE_AGENT_API_KEY?.trim() || env.CANDLE_API_KEY?.trim());
   return apiKey ? { apiUrl, apiKey } : { apiUrl };
 }
 var DEFAULT_API_URL2 = "https://api.alpha.candle.tv", REDIRECT_STATUSES2, MAX_REDIRECTS2 = 5, CrossOriginRedirectError2;
 var init_client2 = __esm(() => {
+  init_api_key_file();
   REDIRECT_STATUSES2 = new Set([301, 302, 303, 307, 308]);
   CrossOriginRedirectError2 = class CrossOriginRedirectError2 extends Error {
     from;
@@ -5909,7 +6033,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/image.ts
-import { constants } from "node:fs";
+import { constants as constants2 } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 function configuredImageDir(env) {
@@ -5935,16 +6059,16 @@ function errno(error) {
   return error?.code;
 }
 async function realImageDir(imageDir, fs) {
-  const invalid = () => new ImageRefusal("IMAGE_DIR_INVALID", `CANDLE_IMAGE_DIR must be an absolute path to an existing directory, and not the filesystem root. ${NOTHING_UPLOADED}`);
+  const invalid2 = () => new ImageRefusal("IMAGE_DIR_INVALID", `CANDLE_IMAGE_DIR must be an absolute path to an existing directory, and not the filesystem root. ${NOTHING_UPLOADED}`);
   if (!isAbsolute(imageDir))
-    throw invalid();
+    throw invalid2();
   try {
     const real = await fs.realpath(imageDir);
     if (dirname(real) === real || !(await fs.lstat(real, { bigint: true })).isDirectory())
-      throw invalid();
+      throw invalid2();
     return real;
   } catch {
-    throw invalid();
+    throw invalid2();
   }
 }
 async function missingInside(dirReal, path, fs) {
@@ -5987,7 +6111,7 @@ async function readImageInDir(imageDir, imagePath, fs = nodeFs, field = "imagePa
     throw outside();
   let handle;
   try {
-    handle = await fs.open(fileReal, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    handle = await fs.open(fileReal, constants2.O_RDONLY | (constants2.O_NOFOLLOW ?? 0) | (constants2.O_NONBLOCK ?? 0));
   } catch (error) {
     throw errno(error) === "ELOOP" ? outside() : unreadable("it could not be opened");
   }
@@ -6078,24 +6202,24 @@ async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
   const hasUrl = typeof rest.imageUrl === "string" && rest.imageUrl.length > 0;
   const hasBannerPath = typeof bannerPath === "string" && bannerPath.length > 0;
   const hasBannerUrl = typeof rest.bannerUrl === "string" && rest.bannerUrl.length > 0;
-  const invalid = (message) => ({ refused: { code: "MCP_VALIDATION", message } });
+  const invalid2 = (message) => ({ refused: { code: "MCP_VALIDATION", message } });
   if (imageDir === undefined) {
     if (imagePath !== undefined)
-      return invalid(`imagePath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass imageUrl, an https URL. ${NOTHING_UPLOADED}`);
+      return invalid2(`imagePath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass imageUrl, an https URL. ${NOTHING_UPLOADED}`);
     if (bannerPath !== undefined)
-      return invalid(`bannerPath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass bannerUrl, an https URL. ${NOTHING_UPLOADED}`);
+      return invalid2(`bannerPath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass bannerUrl, an https URL. ${NOTHING_UPLOADED}`);
     return { args: rest };
   }
   if (hasPath && hasUrl)
-    return invalid(`Pass exactly one of imageUrl or imagePath, not both. ${NOTHING_UPLOADED}`);
+    return invalid2(`Pass exactly one of imageUrl or imagePath, not both. ${NOTHING_UPLOADED}`);
   if (hasBannerPath && hasBannerUrl)
-    return invalid(`Pass at most one of bannerUrl or bannerPath, not both. ${NOTHING_UPLOADED}`);
+    return invalid2(`Pass at most one of bannerUrl or bannerPath, not both. ${NOTHING_UPLOADED}`);
   if (!hasPath && !hasUrl)
-    return invalid("Pass imageUrl (an https URL) or imagePath (an absolute path to an image file inside CANDLE_IMAGE_DIR).");
+    return invalid2("Pass imageUrl (an https URL) or imagePath (an absolute path to an image file inside CANDLE_IMAGE_DIR).");
   if (!hasPath && !hasBannerPath)
     return { args: rest };
   if (!cfg.apiKey)
-    return invalid(`CANDLE_AGENT_API_KEY is required to upload an image; the key needs the launch:write scope. ${NOTHING_UPLOADED}`);
+    return invalid2(`CANDLE_AGENT_API_KEY is required to upload an image; the key needs the launch:write scope. ${NOTHING_UPLOADED}`);
   const read = async (path, field) => {
     try {
       return await readImageInDir(imageDir, path, fs, field);
@@ -6135,7 +6259,7 @@ async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
       if (uploaded === undefined)
         return result2;
       const why = "refused" in result2 ? result2.refused.message : result2.uploadFailed;
-      return invalid(`The banner upload failed: ${why} The image was already uploaded to ${uploaded}; pass that as imageUrl on the retry. No launch was attempted.`);
+      return invalid2(`The banner upload failed: ${why} The image was already uploaded to ${uploaded}; pass that as imageUrl on the retry. No launch was attempted.`);
     }
     uploadedBanner = result2.url;
     launchArgs.bannerUrl = uploadedBanner;
@@ -6189,7 +6313,7 @@ function createLabClient(options) {
   const doFetch = options.fetch ?? globalThis.fetch;
   const callMs = options.callTimeoutMs ?? LAB_CALL_TIMEOUT_MS;
   const now = options.now ?? Date.now;
-  const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve2) => setTimeout(resolve2, ms)));
   async function call(method, path, valid = () => true, body, timeoutMs = callMs) {
     const controller = new AbortController;
     let timedOut = false;
@@ -10077,7 +10201,7 @@ function perpsMarketGate(meta, ctx, minOpenInterestUsd) {
     return { tradeable: false, reason: "minOpenInterest" };
   return { tradeable: true, reason: null };
 }
-function resolve(snapshot, coin) {
+function resolve2(snapshot, coin) {
   if (/^[A-Za-z0-9]{1,20}$/.test(coin)) {
     const exact = snapshot.universe.findIndex((row) => row.name === coin);
     if (exact !== -1)
@@ -10321,7 +10445,7 @@ class PerpsMarketReader {
   async market(coin) {
     this.key();
     const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    const asset = resolve(core, coin);
+    const asset = resolve2(core, coin);
     const meta = at(core.universe, asset);
     const ctx = at(core.ctxs, asset);
     return {
@@ -10347,7 +10471,7 @@ class PerpsMarketReader {
     if (opts.sigFigs !== undefined)
       bounded(opts.sigFigs, 5, 2, 5, "sigFigs");
     const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical2 = at(core.universe, resolve(core, coin)).name;
+    const canonical2 = at(core.universe, resolve2(core, coin)).name;
     const value = await info(this.opts.fetcher, this.opts.network, {
       type: "l2Book",
       coin: canonical2,
@@ -10388,7 +10512,7 @@ class PerpsMarketReader {
     this.key();
     const window = perpsCandleWindow(opts, this.now());
     const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical2 = at(core.universe, resolve(core, coin)).name;
+    const canonical2 = at(core.universe, resolve2(core, coin)).name;
     const value = await info(this.opts.fetcher, this.opts.network, {
       type: "candleSnapshot",
       req: { coin: canonical2, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
@@ -10423,7 +10547,7 @@ class PerpsMarketReader {
     this.key();
     const window = perpsFundingWindow(opts, this.now());
     const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical2 = at(core.universe, resolve(core, coin)).name;
+    const canonical2 = at(core.universe, resolve2(core, coin)).name;
     const value = await info(this.opts.fetcher, this.opts.network, {
       type: "fundingHistory",
       coin: canonical2,
@@ -10515,7 +10639,7 @@ var init_hyperliquid_markets = __esm(() => {
 function isTime(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
-function invalid(field, message) {
+function invalid2(field, message) {
   return new PerpsHistoryError("VALIDATION_FAILED", message, { field });
 }
 function unavailable2(message, retryAfterMs) {
@@ -10546,16 +10670,16 @@ function encodeCursor(state) {
 }
 function decodeCursor(cursor) {
   if (cursor.length > PERPS_HISTORY_MAX_CURSOR_LENGTH || !cursor.startsWith("ph1."))
-    throw invalid("cursor", "cursor is not one this client issued");
+    throw invalid2("cursor", "cursor is not one this client issued");
   let state;
   try {
     state = JSON.parse(base64UrlDecode(cursor.slice(4)));
   } catch {
-    throw invalid("cursor", "cursor is not one this client issued");
+    throw invalid2("cursor", "cursor is not one this client issued");
   }
   const ok = state !== null && typeof state === "object" && state.v === 1 && (state.k === "fills" || state.k === "funding") && (state.n === "mainnet" || state.n === "testnet") && typeof state.w === "string" && EVM_ADDRESS_RE2.test(state.w) && isTime(state.s) && isTime(state.e) && state.s <= state.e && Number.isSafeInteger(state.l) && state.l >= 1 && state.l <= PERPS_HISTORY_MAX_LIMIT[state.k] && isTime(state.t) && state.t >= state.s && state.t <= state.e && Array.isArray(state.b) && state.b.every((id) => typeof id === "string" && id.length <= 512) && Number.isSafeInteger(state.c) && state.c >= 0;
   if (!ok)
-    throw invalid("cursor", "cursor is not one this client issued");
+    throw invalid2("cursor", "cursor is not one this client issued");
   return state;
 }
 function canonical2(value) {
@@ -10641,35 +10765,35 @@ function resolveWindow(req) {
   const kind = req.kind;
   const address = req.address.toLowerCase();
   if (!EVM_ADDRESS_RE2.test(address))
-    throw invalid("wallet", "The wallet's Hyperliquid account is not an EVM address");
+    throw invalid2("wallet", "The wallet's Hyperliquid account is not an EVM address");
   for (const field of ["startTime", "endTime"]) {
     const value = options[field];
     if (value !== undefined && !isTime(value))
-      throw invalid(field, `${field} must be a whole, non-negative number of epoch milliseconds`);
+      throw invalid2(field, `${field} must be a whole, non-negative number of epoch milliseconds`);
   }
   const max = PERPS_HISTORY_MAX_LIMIT[kind];
   if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > max))
-    throw invalid("limit", `limit must be a whole number from 1 to ${max} for ${kind}`);
+    throw invalid2("limit", `limit must be a whole number from 1 to ${max} for ${kind}`);
   if (options.cursor !== undefined) {
     if (typeof options.cursor !== "string" || options.cursor.length === 0)
-      throw invalid("cursor", "cursor is not one this client issued");
+      throw invalid2("cursor", "cursor is not one this client issued");
     const state = decodeCursor(options.cursor);
     if (state.k !== kind)
-      throw invalid("cursor", `This cursor pages ${state.k}, not ${kind}`);
+      throw invalid2("cursor", `This cursor pages ${state.k}, not ${kind}`);
     if (state.n !== req.network)
-      throw invalid("cursor", `This cursor pages ${state.n}, not ${req.network}`);
+      throw invalid2("cursor", `This cursor pages ${state.n}, not ${req.network}`);
     if (state.w !== address)
-      throw invalid("cursor", "This cursor pages another wallet");
+      throw invalid2("cursor", "This cursor pages another wallet");
     if (options.startTime !== undefined && options.startTime !== state.s || options.endTime !== undefined && options.endTime !== state.e || options.limit !== undefined && options.limit !== state.l)
-      throw invalid("cursor", "The window or page size changed; start again without a cursor");
+      throw invalid2("cursor", "The window or page size changed; start again without a cursor");
     return { state };
   }
   const endTime = options.endTime ?? req.now();
   const startTime = options.startTime ?? Math.max(0, endTime - PERPS_HISTORY_DEFAULT_WINDOW_MS);
   if (!isTime(endTime))
-    throw invalid("endTime", "endTime must be epoch milliseconds");
+    throw invalid2("endTime", "endTime must be epoch milliseconds");
   if (startTime > endTime)
-    throw invalid("startTime", "startTime must not be after endTime");
+    throw invalid2("startTime", "startTime must not be after endTime");
   return {
     state: {
       v: 1,
@@ -10840,7 +10964,7 @@ function pickSettings(raw) {
   return out;
 }
 async function hyperliquidInfo(fetcher, network, body, opts = {}) {
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve2) => setTimeout(resolve2, ms)));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve3) => setTimeout(resolve3, ms)));
   for (let attempt = 0;; attempt++) {
     const controller = new AbortController;
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? INFO_TIMEOUT_MS);
@@ -10876,7 +11000,7 @@ async function hyperliquidInfo(fetcher, network, body, opts = {}) {
   }
 }
 async function readHyperliquidMarketSnapshot(fetcher, network, opts = {}) {
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve2) => setTimeout(resolve2, ms)));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve3) => setTimeout(resolve3, ms)));
   let limited = false;
   const watched = async (url, init) => {
     const res = await fetcher(url, init);
@@ -13202,8 +13326,13 @@ async function swap(args, cfg, doFetch) {
     ...ok ? {} : { isError: true }
   };
 }
-function registerTools(server, env = process.env) {
-  const cfg = resolveConfig(env);
+function serverConfig(server, env, resolved) {
+  const cfg = localServerConfigs.get(server) ?? resolved ?? resolveConfig(env);
+  localServerConfigs.set(server, cfg);
+  return cfg;
+}
+function registerTools(server, env = process.env, resolved) {
+  const cfg = serverConfig(server, env, resolved);
   const allowed = resolveToolAllowlist(env);
   registerToolSubset(server, {
     tools: [...allowed].filter((name) => !isProfileEditTool(name)),
@@ -13877,8 +14006,8 @@ function registerToolSubset(server, options) {
     annotations: labRead
   }, labTool("candle_lab_edges"));
 }
-async function registerEligibleProfileTool(server, env = process.env, doFetch = fetch) {
-  const cfg = resolveConfig(env);
+async function registerEligibleProfileTool(server, env = process.env, doFetch = fetch, resolved) {
+  const cfg = serverConfig(server, env, resolved);
   const allowlist = resolveToolAllowlist(env);
   const wanted = PROFILE_EDIT_TOOL_NAMES.filter((name) => allowlist.has(name));
   let eligible = false;
@@ -13906,7 +14035,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, SWAP_RECEIPT_DESCRIPTION, SWAP_SETTLEMENT_REREAD, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, getSwapReceiptShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, SWAP_RECEIPT_DESCRIPTION, SWAP_SETTLEMENT_REREAD, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, getSwapReceiptShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID, localServerConfigs;
 var init_tools = __esm(() => {
   init_zod();
   init_chain_registry();
@@ -14254,6 +14383,7 @@ var init_tools = __esm(() => {
     mints: exports_external.array(exports_external.string()).optional().describe("Extra token mints/contracts to sweep besides the chain's base assets (own-wallet destinations only).")
   };
   PROFILE_PNL_HYPERLIQUID = "While Hyperliquid is enabled, `hyperliquid` reports the profile's main perps over every EVM TEE wallet bound " + "to it, per binding period (`coverage: 'profile'`): realized gross, funding (positive received, negative paid), " + "fees (builder fees included), realizedNetUsd = gross + funding - fees, `unrealizedUsd` at each wallet's " + "cutoff, and `netUsd` = realized net + unrealized, with `markedAt` (the oldest wallet cutoff) and open " + "`positions` (each `fundingNetUsd` positive when earned). Facts and unrealized stop at the same cutoff; each " + "`byWallet` period is `live` (reconciled on this read, not yet settled) or `settled` (a stored snapshot). " + "When `read` is true, `pnl.totalUsd` includes `netUsd` and `perpsInTotal` is true. When `read` is false, " + "`pnl.totalUsd` is spot only, `perpsInTotal` is false and `reason` says why; that is never a zero. Check " + "`historyPartial` and `partialReasons`.";
+  localServerConfigs = new WeakMap;
 });
 
 // ../../node_modules/@noble/hashes/esm/_md.js
@@ -20076,7 +20206,7 @@ function apiKeyPrefix(key) {
   return;
 }
 function credentialEnvOverrides(env) {
-  return ["CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"].filter((name) => env[name]?.trim());
+  return ["CANDLE_API_KEY_FILE", "CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"].filter((name) => env[name]?.trim());
 }
 function identityLine(profile, account, apiUrl, overrides, username, options = {}) {
   const address = account === undefined ? undefined : shortId(account, options.full);
@@ -20097,7 +20227,7 @@ async function printIdentity(ctx) {
   if (overrides.length > 0) {
     account = undefined;
     username = undefined;
-    const key = ctx.deps.env.CANDLE_API_KEY?.trim();
+    const key = ctx.deps.env.CANDLE_API_KEY_FILE?.trim() || ctx.deps.env.CANDLE_API_KEY?.trim() ? (await resolveApiCredential(ctx.deps, ctx.profile)).key : undefined;
     if (key) {
       const lookup = await fetchAccount(ctx.deps, ctx.apiUrl, key);
       if (lookup.account)
@@ -20149,6 +20279,7 @@ function profileTable(config, now) {
 var ProfileFleetOnlyError, PRE_PROFILE_FIELDS, API_KEY_PREFIXES, API_KEY_RANDOM_LENGTH = 43, INVALID_RPC_HOST = "invalid (fix with profile set)";
 var init_profiles = __esm(() => {
   init_account();
+  init_deps();
   init_presentation();
   init_render();
   ProfileFleetOnlyError = class ProfileFleetOnlyError extends Error {
@@ -22706,7 +22837,7 @@ __export(exports_store, {
   candleConfigDir: () => candleConfigDir,
   CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
 });
-import { access, chmod as chmod3, constants as constants2, mkdir as mkdir3, readFile as readFile5, stat as stat2 } from "node:fs/promises";
+import { access, chmod as chmod3, constants as constants3, mkdir as mkdir3, readFile as readFile5, stat as stat2 } from "node:fs/promises";
 import { dirname as dirname4, join as join3 } from "node:path";
 function candleConfigDir(env, home) {
   const configured = env.CANDLE_CONFIG_DIR?.trim();
@@ -22746,7 +22877,7 @@ function errnoOf(error) {
 }
 async function writableDir(path) {
   try {
-    await access(path, constants2.W_OK | constants2.X_OK);
+    await access(path, constants3.W_OK | constants3.X_OK);
     return;
   } catch (error) {
     return errnoOf(error);
@@ -23215,7 +23346,7 @@ async function withFileLock(target, fn) {
       if (Date.now() > deadline) {
         throw new Error(`Timed out waiting for ${lockPath}. Another candle process is writing; if none is running, delete that file.`);
       }
-      await new Promise((resolve2) => setTimeout(resolve2, RETRY_MS));
+      await new Promise((resolve3) => setTimeout(resolve3, RETRY_MS));
     }
   }
   try {
@@ -23388,18 +23519,18 @@ async function promptVisibleLine(promptText) {
 }
 async function readVisibleLine(promptText, io) {
   const readline = await import("node:readline");
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
     rl.question(promptText, (answer) => {
       rl.close();
-      resolve2(answer);
+      resolve3(answer);
     });
     onInterrupted(rl, io, reject);
   });
 }
 async function readHiddenLine(promptText, io) {
   const readline = await import("node:readline");
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
     const rlInternals = rl;
     rlInternals._writeToOutput = (text) => {
@@ -23410,7 +23541,7 @@ async function readHiddenLine(promptText, io) {
       rl.close();
       io.output.write(`
 `);
-      resolve2(answer);
+      resolve3(answer);
     });
     onInterrupted(rl, io, reject);
   });
@@ -23440,6 +23571,8 @@ var init_secret_store = __esm(() => {
 
 // src/deps.ts
 async function resolveDeviceToken(deps, profile) {
+  if (hasApiKeyFile(deps.env))
+    await resolveApiCredential(deps, profile);
   if (profile !== undefined)
     assertOrdinaryProfile(await deps.readConfig(), profile);
   const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim();
@@ -23452,20 +23585,53 @@ async function resolveDeviceToken(deps, profile) {
   const stored = await deps.store.get(ref);
   return stored ?? undefined;
 }
-async function resolveApiKey(deps, profile) {
+function beginCredentialInvocation(deps) {
+  const scoped = { ...deps, env: { ...deps.env } };
+  return { ...scoped, resolvedApiKeyFile: apiKeyFileSnapshot(scoped.env, scoped.loadApiKeyFile) };
+}
+async function resolveApiCredential(deps, profile) {
+  if (hasApiKeyFile(deps.env)) {
+    let load = deps.resolvedApiKeyFile ?? fileSnapshots.get(deps);
+    if (!load) {
+      load = apiKeyFileSnapshot(deps.env, deps.loadApiKeyFile);
+      fileSnapshots.set(deps, load);
+    }
+    const key2 = await load();
+    if (profile !== undefined)
+      assertOrdinaryProfile(await deps.readConfig(), profile);
+    return { key: key2, source: "file" };
+  }
   if (profile !== undefined)
     assertOrdinaryProfile(await deps.readConfig(), profile);
   const fromEnv = deps.env.CANDLE_API_KEY?.trim();
   if (fromEnv)
-    return fromEnv;
+    return { key: fromEnv, source: "env" };
   const ref = profile ? profileSecretRef(profile, "apiKey") : SECRET_REFS.apiKey;
-  const stored = await deps.store.get(ref);
-  return stored ?? undefined;
+  const key = await deps.store.get(ref) ?? undefined;
+  return { key, source: key ? profile ? "profile" : "legacy" : "none" };
 }
+async function resolveExternalApiCredential(deps) {
+  if (hasApiKeyFile(deps.env)) {
+    let load = deps.resolvedApiKeyFile ?? fileSnapshots.get(deps);
+    if (!load) {
+      load = apiKeyFileSnapshot(deps.env, deps.loadApiKeyFile);
+      fileSnapshots.set(deps, load);
+    }
+    return { key: await load(), source: "file" };
+  }
+  const fromEnv = deps.env.CANDLE_API_KEY?.trim();
+  return fromEnv ? { key: fromEnv, source: "env" } : undefined;
+}
+async function resolveApiKey(deps, profile) {
+  return (await resolveApiCredential(deps, profile)).key;
+}
+var fileSnapshots;
 var init_deps = __esm(() => {
+  init_api_key_file();
   init_ownership();
   init_profiles();
   init_secret_store();
+  fileSnapshots = new WeakMap;
 });
 
 // src/key-signers.ts
@@ -26181,6 +26347,10 @@ var init_trading_checks = __esm(() => {
 // src/commands/swap.ts
 import { randomUUID as randomUUID5 } from "node:crypto";
 function tradingFailure(ctx, error, id) {
+  if (error instanceof ApiKeyFileError) {
+    writeLocalFailure(ctx.deps, { code: error.code, message: error.message }, ctx.json);
+    return 1;
+  }
   if (error instanceof TradingUsage) {
     writeUsageFailure(ctx.deps, error.message, ctx.json);
     return 2;
@@ -27212,6 +27382,7 @@ async function swapRecover(args, ctx) {
 var isText = (value) => typeof value === "string" && value.length > 0, textsOf = (value) => Array.isArray(value) ? value.filter(isText) : [], AGENT_MAX_SLIPPAGE_BPS = 5000, SLIPPAGE_RANGE_MESSAGE, settlementSchema, SWAP_RECEIPT_USAGE = "Usage: candle swap receipt <hash> | candle swap receipt --client-swap-id <id>", BRIDGE_STATUS_WORDS, bridgeFactsSchema, HOOD_TRADE_LEGS, bridgeBuildSchema;
 var init_swap = __esm(() => {
   init_zod();
+  init_api_key_file();
   init_swap_receipt();
   init_tools();
   init_args();
@@ -27540,7 +27711,7 @@ async function readSignerRoles(rpc, addresses, opts) {
     } catch {}
     return { ...base2, target: programData, unresolvedProgram: true };
   };
-  await new Promise((resolve2) => {
+  await new Promise((resolve3) => {
     const pump = () => {
       let skippedAny = false;
       while (active < cap && next < tasks.length) {
@@ -27575,7 +27746,7 @@ async function readSignerRoles(rpc, addresses, opts) {
       if (skippedAny)
         progress();
       if (active === 0 && next >= tasks.length)
-        resolve2();
+        resolve3();
     };
     pump();
   });
@@ -28050,7 +28221,8 @@ function accountUnresolved(reason) {
 }
 async function readControlledBy(ctx) {
   const { deps } = ctx;
-  const apiKey = await resolveApiKey(deps, ctx.profile);
+  const credential = await resolveApiCredential(deps, ctx.profile);
+  const apiKey = credential.key;
   if (!apiKey)
     throw accountUnresolved("no API key is available");
   const keyPrefix = apiKeyPrefix(apiKey);
@@ -28071,7 +28243,7 @@ async function readControlledBy(ctx) {
     throw accountUnresolved("the response carried no account");
   }
   const username = typeof body.username === "string" && body.username.length > 0 ? body.username : null;
-  const keySource = deps.env.CANDLE_API_KEY?.trim() ? "env" : ctx.profile !== undefined ? "profile" : "default";
+  const keySource = credential.source === "legacy" || credential.source === "none" ? "default" : credential.source;
   const apiUrlFrom = ctx.apiUrlFlag !== undefined ? "--api-url" : deps.env.CANDLE_API_URL?.trim() ? "CANDLE_API_URL" : undefined;
   return {
     account: body.account,
@@ -28111,7 +28283,7 @@ async function readKeyLabel(ctx, keyPrefix) {
 }
 function renderControlledBy(controlledBy, n) {
   const subject = n === 1 ? "This key" : `These ${n} keys`;
-  const source = controlledBy.keySource === "env" ? "CANDLE_API_KEY" : controlledBy.keySource === "profile" ? `profile ${controlledBy.profileName ?? ""}`.trimEnd() : "default credentials";
+  const source = controlledBy.keySource === "file" ? "CANDLE_API_KEY_FILE" : controlledBy.keySource === "env" ? "CANDLE_API_KEY" : controlledBy.keySource === "profile" ? `profile ${controlledBy.profileName ?? ""}`.trimEnd() : "default credentials";
   const cleaned = controlledBy.keyLabel !== null ? labelCell(controlledBy.keyLabel) : "";
   const label = cleaned.length > 0 ? `(${cleaned})  ` : "";
   const environment = controlledBy.environment ?? "not a Candle host";
@@ -29250,7 +29422,7 @@ var init_ecies = __esm(() => {
 });
 
 // src/vault/enclave.ts
-import { access as access2, constants as constants3 } from "node:fs/promises";
+import { access as access2, constants as constants4 } from "node:fs/promises";
 import { dirname as dirname7, join as join7 } from "node:path";
 function parseReleasePolicy(value) {
   const bad = (detail) => {
@@ -29278,7 +29450,7 @@ function parseReleasePolicy(value) {
 }
 async function isExecutable(path) {
   try {
-    await access2(path, constants3.X_OK);
+    await access2(path, constants4.X_OK);
     return true;
   } catch {
     return false;
@@ -29835,11 +30007,11 @@ var init_platform = __esm(() => {
 });
 
 // src/vault/fido2.ts
-import { access as access3, constants as constants4 } from "node:fs/promises";
+import { access as access3, constants as constants5 } from "node:fs/promises";
 import { dirname as dirname8, join as join8 } from "node:path";
 async function isExecutable2(path) {
   try {
-    await access3(path, constants4.X_OK);
+    await access3(path, constants5.X_OK);
     return true;
   } catch {
     return false;
@@ -38977,6 +39149,10 @@ async function typedConfirm(io, label, address, action) {
   return typed.trim().toLowerCase() === "confirm";
 }
 function writeVaultFailure(ctx, error) {
+  if (error instanceof ApiKeyFileError) {
+    writeLocalFailure(ctx.deps, { code: error.code, message: error.message }, ctx.json);
+    return 1;
+  }
   if (isUsageError(error))
     return usage2(ctx, error.message);
   if (isVaultError(error)) {
@@ -39071,6 +39247,7 @@ function takeRepeatedFlag(args, flag) {
 }
 var noTerminalRefusals, PASSPHRASE_ONLY_PREFIX = "Passphrase only: ";
 var init_vault_support = __esm(() => {
+  init_api_key_file();
   init_args();
   init_presentation();
   init_render();
@@ -41564,15 +41741,15 @@ class Chacha20Poly1305Context {
     return await this._open(iv, data, aad);
   }
   _seal(iv, data, aad) {
-    return new Promise((resolve2) => {
+    return new Promise((resolve3) => {
       const ret = chacha20poly1305(this._key, new Uint8Array(iv), new Uint8Array(aad)).encrypt(new Uint8Array(data));
-      resolve2(ret.buffer);
+      resolve3(ret.buffer);
     });
   }
   _open(iv, data, aad) {
-    return new Promise((resolve2) => {
+    return new Promise((resolve3) => {
       const ret = chacha20poly1305(this._key, new Uint8Array(iv), new Uint8Array(aad)).decrypt(new Uint8Array(data));
-      resolve2(ret.buffer);
+      resolve3(ret.buffer);
     });
   }
 }
@@ -41765,8 +41942,8 @@ class Mutex {
   }
   async lock() {
     let releaseLock;
-    const nextLock = new Promise((resolve2) => {
-      releaseLock = resolve2;
+    const nextLock = new Promise((resolve3) => {
+      releaseLock = resolve3;
     });
     const previousLock = __classPrivateFieldGet(this, _Mutex_locked, "f");
     __classPrivateFieldSet(this, _Mutex_locked, nextLock, "f");
@@ -48595,7 +48772,7 @@ class Protocol {
   }
   request(request2, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken } = options !== null && options !== undefined ? options : {};
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       var _a, _b, _c, _d, _e, _f;
       if (!this._transport) {
         reject(new Error("Not connected"));
@@ -48646,7 +48823,7 @@ class Protocol {
         }
         try {
           const result2 = resultSchema.parse(response.result);
-          resolve2(result2);
+          resolve3(result2);
         } catch (error) {
           reject(error);
         }
@@ -49121,11 +49298,11 @@ var require_codegen = __commonJS((exports) => {
       const rhs = this.rhs === undefined ? "" : ` = ${this.rhs}`;
       return `${varKind} ${this.name}${rhs};` + _n;
     }
-    optimizeNames(names, constants5) {
+    optimizeNames(names, constants6) {
       if (!names[this.name.str])
         return;
       if (this.rhs)
-        this.rhs = optimizeExpr(this.rhs, names, constants5);
+        this.rhs = optimizeExpr(this.rhs, names, constants6);
       return this;
     }
     get names() {
@@ -49143,10 +49320,10 @@ var require_codegen = __commonJS((exports) => {
     render({ _n }) {
       return `${this.lhs} = ${this.rhs};` + _n;
     }
-    optimizeNames(names, constants5) {
+    optimizeNames(names, constants6) {
       if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
         return;
-      this.rhs = optimizeExpr(this.rhs, names, constants5);
+      this.rhs = optimizeExpr(this.rhs, names, constants6);
       return this;
     }
     get names() {
@@ -49212,8 +49389,8 @@ var require_codegen = __commonJS((exports) => {
     optimizeNodes() {
       return `${this.code}` ? this : undefined;
     }
-    optimizeNames(names, constants5) {
-      this.code = optimizeExpr(this.code, names, constants5);
+    optimizeNames(names, constants6) {
+      this.code = optimizeExpr(this.code, names, constants6);
       return this;
     }
     get names() {
@@ -49243,12 +49420,12 @@ var require_codegen = __commonJS((exports) => {
       }
       return nodes.length > 0 ? this : undefined;
     }
-    optimizeNames(names, constants5) {
+    optimizeNames(names, constants6) {
       const { nodes } = this;
       let i = nodes.length;
       while (i--) {
         const n = nodes[i];
-        if (n.optimizeNames(names, constants5))
+        if (n.optimizeNames(names, constants6))
           continue;
         subtractNames(names, n.names);
         nodes.splice(i, 1);
@@ -49305,12 +49482,12 @@ var require_codegen = __commonJS((exports) => {
         return;
       return this;
     }
-    optimizeNames(names, constants5) {
+    optimizeNames(names, constants6) {
       var _a;
-      this.else = (_a = this.else) === null || _a === undefined ? undefined : _a.optimizeNames(names, constants5);
-      if (!(super.optimizeNames(names, constants5) || this.else))
+      this.else = (_a = this.else) === null || _a === undefined ? undefined : _a.optimizeNames(names, constants6);
+      if (!(super.optimizeNames(names, constants6) || this.else))
         return;
-      this.condition = optimizeExpr(this.condition, names, constants5);
+      this.condition = optimizeExpr(this.condition, names, constants6);
       return this;
     }
     get names() {
@@ -49335,10 +49512,10 @@ var require_codegen = __commonJS((exports) => {
     render(opts) {
       return `for(${this.iteration})` + super.render(opts);
     }
-    optimizeNames(names, constants5) {
-      if (!super.optimizeNames(names, constants5))
+    optimizeNames(names, constants6) {
+      if (!super.optimizeNames(names, constants6))
         return;
-      this.iteration = optimizeExpr(this.iteration, names, constants5);
+      this.iteration = optimizeExpr(this.iteration, names, constants6);
       return this;
     }
     get names() {
@@ -49376,10 +49553,10 @@ var require_codegen = __commonJS((exports) => {
     render(opts) {
       return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
     }
-    optimizeNames(names, constants5) {
-      if (!super.optimizeNames(names, constants5))
+    optimizeNames(names, constants6) {
+      if (!super.optimizeNames(names, constants6))
         return;
-      this.iterable = optimizeExpr(this.iterable, names, constants5);
+      this.iterable = optimizeExpr(this.iterable, names, constants6);
       return this;
     }
     get names() {
@@ -49424,11 +49601,11 @@ var require_codegen = __commonJS((exports) => {
       (_b = this.finally) === null || _b === undefined || _b.optimizeNodes();
       return this;
     }
-    optimizeNames(names, constants5) {
+    optimizeNames(names, constants6) {
       var _a, _b;
-      super.optimizeNames(names, constants5);
-      (_a = this.catch) === null || _a === undefined || _a.optimizeNames(names, constants5);
-      (_b = this.finally) === null || _b === undefined || _b.optimizeNames(names, constants5);
+      super.optimizeNames(names, constants6);
+      (_a = this.catch) === null || _a === undefined || _a.optimizeNames(names, constants6);
+      (_b = this.finally) === null || _b === undefined || _b.optimizeNames(names, constants6);
       return this;
     }
     get names() {
@@ -49702,7 +49879,7 @@ var require_codegen = __commonJS((exports) => {
   function addExprNames(names, from) {
     return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
   }
-  function optimizeExpr(expr, names, constants5) {
+  function optimizeExpr(expr, names, constants6) {
     if (expr instanceof code_1.Name)
       return replaceName(expr);
     if (!canOptimize(expr))
@@ -49717,14 +49894,14 @@ var require_codegen = __commonJS((exports) => {
       return items;
     }, []));
     function replaceName(n) {
-      const c = constants5[n.str];
+      const c = constants6[n.str];
       if (c === undefined || names[n.str] !== 1)
         return n;
       delete names[n.str];
       return c;
     }
     function canOptimize(e) {
-      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants5[c.str] !== undefined);
+      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants6[c.str] !== undefined);
     }
   }
   function subtractNames(names, from) {
@@ -51629,7 +51806,7 @@ var require_compile = __commonJS((exports) => {
     const schOrFunc = root.refs[ref];
     if (schOrFunc)
       return schOrFunc;
-    let _sch = resolve2.call(this, root, ref);
+    let _sch = resolve3.call(this, root, ref);
     if (_sch === undefined) {
       const schema = (_a = root.localRefs) === null || _a === undefined ? undefined : _a[ref];
       const { schemaId } = this.opts;
@@ -51656,7 +51833,7 @@ var require_compile = __commonJS((exports) => {
   function sameSchemaEnv(s1, s2) {
     return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
   }
-  function resolve2(root, ref) {
+  function resolve3(root, ref) {
     let sch;
     while (typeof (sch = this.refs[ref]) == "string")
       ref = sch;
@@ -52242,7 +52419,7 @@ var require_fast_uri = __commonJS((exports, module) => {
     }
     return uri;
   }
-  function resolve2(baseURI, relativeURI, options) {
+  function resolve3(baseURI, relativeURI, options) {
     const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
     const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
     const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
@@ -52527,7 +52704,7 @@ var require_fast_uri = __commonJS((exports, module) => {
   var fastUri = {
     SCHEMES,
     normalize: normalize3,
-    resolve: resolve2,
+    resolve: resolve3,
     resolveComponent,
     equal,
     serialize,
@@ -53335,8 +53512,8 @@ var require_multipleOf = __commonJS((exports) => {
       const { gen: gen2, data, schemaCode, it } = cxt;
       const prec = it.opts.multipleOfPrecision;
       const res = gen2.let("res");
-      const invalid2 = prec ? (0, codegen_1._)`Math.abs(Math.round(${res}) - ${res}) > 1e-${prec}` : (0, codegen_1._)`${res} !== parseInt(${res})`;
-      cxt.fail$data((0, codegen_1._)`(${schemaCode} === 0 || (${res} = ${data}/${schemaCode}, ${invalid2}))`);
+      const invalid3 = prec ? (0, codegen_1._)`Math.abs(Math.round(${res}) - ${res}) > 1e-${prec}` : (0, codegen_1._)`${res} !== parseInt(${res})`;
+      cxt.fail$data((0, codegen_1._)`(${schemaCode} === 0 || (${res} = ${data}/${schemaCode}, ${invalid3}))`);
     }
   };
   exports.default = def;
@@ -58007,12 +58184,12 @@ class StdioServerTransport {
     (_a = this.onclose) === null || _a === undefined || _a.call(this);
   }
   send(message) {
-    return new Promise((resolve2) => {
+    return new Promise((resolve3) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve2();
+        resolve3();
       } else {
-        this._stdout.once("drain", resolve2);
+        this._stdout.once("drain", resolve3);
       }
     });
   }
@@ -73259,7 +73436,7 @@ class Protocol2 {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1000;
-        await new Promise((resolve6) => setTimeout(resolve6, pollInterval));
+        await new Promise((resolve7) => setTimeout(resolve7, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -73271,7 +73448,7 @@ class Protocol2 {
   }
   request(request2, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve6, reject) => {
+    return new Promise((resolve7, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -73349,7 +73526,7 @@ class Protocol2 {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve6(parseResult.data);
+            resolve7(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -73540,12 +73717,12 @@ class Protocol2 {
         interval = task.pollInterval;
       }
     } catch {}
-    return new Promise((resolve6, reject) => {
+    return new Promise((resolve7, reject) => {
       if (signal.aborted) {
         reject(new McpError2(ErrorCode2.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve6, interval);
+      const timeoutId = setTimeout(resolve7, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError2(ErrorCode2.InvalidRequest, "Request cancelled"));
@@ -74368,7 +74545,7 @@ class McpServer2 {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5000;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve6) => setTimeout(resolve6, pollInterval));
+      await new Promise((resolve7) => setTimeout(resolve7, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError2(ErrorCode2.InternalError, `Task ${taskId} not found during polling`);
@@ -74992,12 +75169,12 @@ class StdioServerTransport2 {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve6) => {
+    return new Promise((resolve7) => {
       const json = serializeMessage2(message);
       if (this._stdout.write(json)) {
-        resolve6();
+        resolve7();
       } else {
-        this._stdout.once("drain", resolve6);
+        this._stdout.once("drain", resolve7);
       }
     });
   }
@@ -75012,27 +75189,29 @@ __export(exports_server, {
   runStdioServer: () => runStdioServer,
   createCandleMcpServer: () => createCandleMcpServer
 });
-function createCandleMcpServer(env = process.env) {
+function createCandleMcpServer(env = process.env, resolved) {
   const server = new McpServer2({ name: "candle-mcp", version: SERVER_VERSION }, { instructions: INSTRUCTIONS });
-  registerTools(server, env);
+  registerTools(server, env, resolved ?? resolveConfig(env));
   return server;
 }
 async function runStdioServer(env = process.env, transport = new StdioServerTransport2) {
-  const server = createCandleMcpServer(env);
-  await registerEligibleProfileTool(server, env);
+  env = { ...env };
+  const cfg = resolveConfig(env);
+  const server = createCandleMcpServer(env, cfg);
+  await registerEligibleProfileTool(server, env, undefined, cfg);
   await server.connect(transport);
   const dispatch = transport.onmessage;
   transport.onmessage = (message, extra) => {
     if ("method" in message && message.method === "tools/list") {
-      registerEligibleProfileTool(server, env).then(() => dispatch?.(message, extra));
+      registerEligibleProfileTool(server, env, undefined, cfg).then(() => dispatch?.(message, extra));
     } else
       dispatch?.(message, extra);
   };
-  await new Promise((resolve6) => {
+  await new Promise((resolve7) => {
     const sdkOnClose = transport.onclose;
     transport.onclose = () => {
       sdkOnClose?.();
-      resolve6();
+      resolve7();
     };
   });
 }
@@ -75040,6 +75219,7 @@ var INSTRUCTIONS;
 var init_server3 = __esm(() => {
   init_mcp2();
   init_stdio4();
+  init_client2();
   init_market_disclosure();
   init_tools();
   INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You hold a scoped API key, never a private key; signing and funding stay with the key owner's wallet.
@@ -75114,6 +75294,7 @@ Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv â
 });
 
 // src/index.ts
+init_api_key_file();
 init_client();
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -76396,6 +76577,8 @@ async function authStatus(args, ctx) {
     return 2;
   }
   const config = await deps.readConfig();
+  const credential = await resolveApiCredential(deps, ctx.profile);
+  const apiKey = credential.key;
   let coreOwned = false;
   const deviceToken = await resolveDeviceToken(deps, ctx.profile).catch((error) => {
     if (!(error instanceof ProfileCoreOwnedError))
@@ -76403,7 +76586,6 @@ async function authStatus(args, ctx) {
     coreOwned = true;
     return;
   });
-  const apiKey = await resolveApiKey(deps, ctx.profile);
   const rows = [];
   if (coreOwned) {
     rows.push({
@@ -76448,15 +76630,18 @@ async function authStatus(args, ctx) {
   const configPath = configFilePathForDisplay(deps.env);
   const profileFields = effectiveProfileFields(config, ctx.profile);
   const cachedAccount = ctx.profile !== undefined ? profileFields.account : undefined;
+  const shownKeyPrefix = credential.source === "file" ? apiKey ? apiKeyPrefix(apiKey) : undefined : profileFields.keyPrefix;
   const mismatch = ctx.profile !== undefined && account !== undefined && cachedAccount !== undefined && account !== cachedAccount && credentialEnvOverrides(deps.env).length === 0;
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       backend: deps.backend,
       profile: ctx.profile,
       deviceTokenPrefix: profileFields.deviceTokenPrefix,
-      keyPrefix: profileFields.keyPrefix,
+      keyPrefix: shownKeyPrefix,
+      apiKeySource: credential.source,
       account,
       cachedAccount,
+      envOverrides: credentialEnvOverrides(deps.env),
       apiUrl,
       configPath,
       rows
@@ -76464,9 +76649,10 @@ async function authStatus(args, ctx) {
 `);
     return exitCode;
   }
-  const shownAccount = account ?? profileFields.account;
-  const shownUsername = account !== undefined ? username : profileFields.username;
-  deps.stdout.write(`${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername, identityStyle(deps, "stdout"))}
+  const overrides = deps.env.CANDLE_API_KEY_FILE?.trim() ? credentialEnvOverrides(deps.env) : [];
+  const shownAccount = overrides.length ? account : account ?? profileFields.account;
+  const shownUsername = overrides.length ? undefined : account !== undefined ? username : profileFields.username;
+  deps.stdout.write(`${identityLine(ctx.profile, shownAccount, apiUrl, overrides.length ? overrides : undefined, shownUsername, identityStyle(deps, "stdout"))}
 `);
   const style = terminalStyle(deps, "stdout");
   if (mismatch) {
@@ -76479,7 +76665,7 @@ ${heading("Credentials", style)}
 ${fields([
     ["Backend", deps.backend],
     ["Device token prefix", profileFields.deviceTokenPrefix],
-    ["API key prefix", profileFields.keyPrefix],
+    ["API key prefix", shownKeyPrefix],
     ["Config file", configPath]
   ], style).join(`
 `)}
@@ -77745,6 +77931,10 @@ var ENVIRONMENT = [
     name: "CANDLE_X402_PAY_TO",
     description: "Devnet tests only: the address devnet x402 payments go to (mainnet pays its pinned address)"
   },
+  {
+    name: "CANDLE_API_KEY_FILE",
+    description: "Owner-only API-key file (Linux/macOS 0400/0600); exclusive, conflicts with raw key variables; restart MCP after replacement"
+  },
   { name: "CANDLE_API_KEY", description: "An agent API key; beats the stored one" },
   { name: "CANDLE_DEVICE_TOKEN", description: "A device token, for key-management commands" },
   {
@@ -77790,6 +77980,7 @@ var ENV_API = [
   "CANDLE_PROFILE",
   "CANDLE_API_URL",
   "CANDLE_API_KEY",
+  "CANDLE_API_KEY_FILE",
   "CANDLE_DEVICE_TOKEN",
   "CANDLE_KEYRING_PASSPHRASE"
 ];
@@ -78741,7 +78932,7 @@ var HELP = {
       { invocation: "resume <prefix>", description: "Resume a stopped key with the device token" },
       {
         invocation: "rotate <prefix|label> ([--grace <duration> | --now] [--force] [--yes] | --finish)",
-        description: "Give a key a new secret, keeping its prefix, label, access, limits, wallets and history. The old secret works through --grace (default 1h, at most 24h) or stops at once with --now; --finish ends an open window early. The profile's own key is replaced in the keychain; update CANDLE_API_KEY and other copies yourself. --force rotates again while a window is open"
+        description: "Give a key a new secret, keeping its prefix, label, access, limits, wallets and history. The old secret works through --grace (default 1h, at most 24h) or stops at once with --now; --finish ends an open window early. The profile's own key is replaced in the keychain; update CANDLE_API_KEY or CANDLE_API_KEY_FILE yourself and restart MCP. --force rotates again while a window is open"
       },
       { invocation: "revoke <prefix>", description: "Revoke an API key permanently" },
       {
@@ -79579,7 +79770,7 @@ async function completion(args, ctx) {
 init_agent_key_access();
 init_args();
 init_client();
-import { closeSync, writeSync } from "node:fs";
+import { closeSync as closeSync2, writeSync } from "node:fs";
 import { join as join11 } from "node:path";
 
 // src/core/agent-profiles.ts
@@ -81842,8 +82033,8 @@ class SignalService {
         this.armIdle();
     }
     if (!this.snapshotSeen) {
-      const ready = new Promise((resolve2) => this.waiters.push(resolve2));
-      const wait = this.deps.waitForSnapshot ?? ((ms, until) => Promise.race([until, new Promise((resolve2) => this.schedule(resolve2, ms))]));
+      const ready = new Promise((resolve3) => this.waiters.push(resolve3));
+      const wait = this.deps.waitForSnapshot ?? ((ms, until) => Promise.race([until, new Promise((resolve3) => this.schedule(resolve3, ms))]));
       await wait(SIGNAL_QUERY_WAIT_MS, ready);
     }
     const rows = this.rowsCache.filter((row2) => query2.chain === undefined || row2.chain === query2.chain).filter((row2) => query2.mint === undefined || sameWallet(row2.chain, row2.mint, query2.mint)).filter((row2) => query2.pattern === undefined || row2.pattern === query2.pattern).slice(0, query2.limit);
@@ -81941,8 +82132,8 @@ class SignalService {
       const parsed = frame.signals.map(parseStreamRow).filter((row2) => row2 !== undefined);
       this.rowsCache = replaceTape(parsed);
       this.snapshotSeen = true;
-      for (const resolve2 of this.waiters.splice(0))
-        resolve2();
+      for (const resolve3 of this.waiters.splice(0))
+        resolve3();
       this.deps.events.publish("signals", this.snapshotAll());
       this.deps.events.publish("signals:mine", this.snapshotMine());
       return;
@@ -82699,8 +82890,8 @@ var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var TURN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 var MESSAGE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 var MAX_SEND_BYTES = 64 * 1024;
-var defaultSleep = (ms) => new Promise((resolve2) => {
-  const timer = setTimeout(resolve2, ms);
+var defaultSleep = (ms) => new Promise((resolve3) => {
+  const timer = setTimeout(resolve3, ms);
   timer.unref?.();
 });
 function refusalError(refusal2) {
@@ -83376,11 +83567,11 @@ class CoreServer {
     }
     await rm4(path, { force: true });
     const server = createServer((socket) => this.accept(socket));
-    await new Promise((resolve2, reject) => {
+    await new Promise((resolve3, reject) => {
       server.once("error", reject);
       server.listen(path, () => {
         server.off("error", reject);
-        resolve2();
+        resolve3();
       });
     });
     await chmod9(path, 384);
@@ -83393,7 +83584,7 @@ class CoreServer {
     const server = this.server;
     this.server = undefined;
     if (server)
-      await new Promise((resolve2) => server.close(() => resolve2()));
+      await new Promise((resolve3) => server.close(() => resolve3()));
     await rm4(this.options.socketPath, { force: true });
   }
   async disconnect(clientId2, reason) {
@@ -85623,7 +85814,7 @@ ${USAGE5}`, json);
       try {
         writeSync(viewTokenFd, `${tokens.viewToken}
 `);
-        closeSync(viewTokenFd);
+        closeSync2(viewTokenFd);
       } catch {
         writeLocalFailure(deps, { code: "CORE_VIEW_TOKEN_FD", message: `Could not write the view token to descriptor ${viewTokenFd}.` }, json);
         return 1;
@@ -85648,7 +85839,7 @@ Socket: ${paths.socket}
 `);
     }
     const running = server;
-    await new Promise((resolve2) => {
+    await new Promise((resolve3) => {
       let unsubscribe;
       let done = false;
       const finish = (reason) => {
@@ -85657,7 +85848,7 @@ Socket: ${paths.socket}
         done = true;
         stopReason = reason;
         unsubscribe?.();
-        resolve2();
+        resolve3();
       };
       running.onViewCount((count2) => {
         if (count2 !== 0 || !running.hadView())
@@ -85895,9 +86086,9 @@ class CoreClientError extends Error {
   }
 }
 async function connectCore(input) {
-  const socket = await new Promise((resolve2, reject) => {
+  const socket = await new Promise((resolve3, reject) => {
     const s = createConnection(input.socketPath);
-    s.once("connect", () => resolve2(s));
+    s.once("connect", () => resolve3(s));
     s.once("error", (error) => {
       reject(error.code === "ENOENT" || error.code === "ECONNREFUSED" ? new CoreClientError("CORE_NOT_RUNNING", `No Candle core is listening at ${input.socketPath}. Start it with candle tui.`) : error);
     });
@@ -85946,8 +86137,8 @@ async function connectCore(input) {
       if (closed)
         return Promise.reject(new CoreClientError("CORE_DISCONNECTED", "The Candle core closed the connection."));
       const id = nextId++;
-      return new Promise((resolve2, reject) => {
-        pending.set(id, { resolve: resolve2, reject });
+      return new Promise((resolve3, reject) => {
+        pending.set(id, { resolve: resolve3, reject });
         socket.write(encodeLine({ jsonrpc: "2.0", id, method, params: params ?? {} }));
       });
     },
@@ -86083,6 +86274,7 @@ ${USAGE6}`, json);
 }
 
 // src/commands/doctor.ts
+init_api_key_file();
 init_agent_key_access();
 init_args();
 init_client();
@@ -86104,7 +86296,7 @@ function assertSafeRef(ref) {
 }
 var RUN_TIMEOUT_MS = 1e4;
 function run(bin, args, stdin) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
     let stdout = "";
     let stderr = "";
@@ -86133,7 +86325,7 @@ function run(bin, args, stdin) {
         return;
       settled = true;
       clearTimeout(timeout);
-      resolve2({ status: code ?? -1, stdout, stderr });
+      resolve3({ status: code ?? -1, stdout, stderr });
     });
     if (stdin !== undefined)
       child.stdin.write(stdin);
@@ -87874,7 +88066,7 @@ var DOCTOR_ROW_IDS = {
 };
 var API_KEY_CHECK = "API key valid";
 function keyRotationRow(until, source) {
-  const fix = source === "CANDLE_API_KEY" ? "update CANDLE_API_KEY where this key is deployed to the new secret" : "store the new secret with candle auth login, or rotate from this profile with candle keys rotate";
+  const fix = source === "CANDLE_API_KEY_FILE" ? "replace the old secret in CANDLE_API_KEY_FILE and restart MCP; the CLI did not update the file" : source === "CANDLE_API_KEY" ? "update CANDLE_API_KEY where this key is deployed to the new secret" : "store the new secret with candle auth login, or rotate from this profile with candle keys rotate";
   return {
     check: "Key rotation",
     state: "WARN",
@@ -87991,6 +88183,20 @@ async function doctor(args, ctx) {
     writeUsageFailure(deps, "--role must be owner, bot, or auto", json);
     return 2;
   }
+  if (hasApiKeyFile(deps.env)) {
+    try {
+      await resolveApiKey(deps, ctx.profile);
+    } catch (error) {
+      if (!(error instanceof ApiKeyFileError))
+        throw error;
+      writeLocalFailure(deps, {
+        code: error.code,
+        message: error.message,
+        details: { rows: [{ check: "API key", state: "FAIL", code: error.code, detail: error.message }] }
+      }, json);
+      return 1;
+    }
+  }
   const rows = [];
   const config = await deps.readConfig();
   const fields2 = effectiveProfileFields(config, ctx.profile);
@@ -88041,7 +88247,11 @@ async function doctor(args, ctx) {
     coreOwned = true;
     return;
   }));
-  const apiKey = await readCredential(() => resolveApiKey(deps, ctx.profile));
+  let apiCredential;
+  const apiKey = await readCredential(async () => {
+    apiCredential = await resolveApiCredential(deps, ctx.profile);
+    return apiCredential.key;
+  });
   const role = requestedRole === "auto" ? apiKey && !deviceToken ? "bot" : "owner" : requestedRole;
   rows.push(deviceToken || apiKey ? {
     check: "Credentials present",
@@ -88058,7 +88268,10 @@ async function doctor(args, ctx) {
       value: apiUrl,
       source: ctx.apiUrlFlag !== undefined ? "--api-url" : deps.env.CANDLE_API_URL?.trim() ? "CANDLE_API_URL" : ctx.profile && config.profiles?.[ctx.profile]?.apiUrl?.trim() ? `profile ${ctx.profile}` : config.apiUrl?.trim() ? "config" : "default"
     },
-    apiKey: { source: source(apiKey, "CANDLE_API_KEY"), prefix: apiKey ? apiKeyPrefix(apiKey) ?? null : null },
+    apiKey: {
+      source: apiCredential?.source === "file" ? "CANDLE_API_KEY_FILE" : source(apiKey, "CANDLE_API_KEY"),
+      prefix: apiKey ? apiKeyPrefix(apiKey) ?? null : null
+    },
     deviceToken: { source: source(deviceToken, "CANDLE_DEVICE_TOKEN") }
   };
   rows.push({ check: "API URL", state: "PASS", detail: `${apiUrl} (from ${provenance.apiUrl.source})` }, {
@@ -88329,7 +88542,7 @@ init_solana_endpoint();
 // src/vault/domains.ts
 init_errors2();
 import { homedir as homedir4 } from "node:os";
-import { basename as basename2, dirname as dirname10, isAbsolute as isAbsolute2, join as join12, resolve as resolve2, sep as sep2 } from "node:path";
+import { basename as basename2, dirname as dirname10, isAbsolute as isAbsolute2, join as join12, resolve as resolve3, sep as sep2 } from "node:path";
 var ICLOUD_DRIVE_SEGMENTS = ["Library", "Mobile Documents", "com~apple~CloudDocs"];
 var ICLOUD_SHORTHAND = "icloud";
 var ICLOUD_BACKUP_FOLDER = "Candle";
@@ -88378,7 +88591,7 @@ function placeResolvedPath(absolute, home) {
   return "unknown";
 }
 async function classifyDestination(path, opts) {
-  const absolute = isAbsolute2(path) ? path : resolve2(path);
+  const absolute = isAbsolute2(path) ? path : resolve3(path);
   const spelledHome = opts.home ?? homedir4();
   let home;
   try {
@@ -93308,15 +93521,23 @@ async function keysRotate(args, ctx) {
       storeError = error instanceof Error ? error.message : String(error);
     }
   }
-  const envKey = deps.env.CANDLE_API_KEY?.trim();
-  const envNamesKey = envKey !== undefined && envKey !== "" && apiKeyPrefix(envKey) === keyPrefix;
+  let credential;
+  try {
+    credential = await resolveExternalApiCredential(deps);
+  } catch {
+    credential = undefined;
+  }
+  const namesKey = credential?.key !== undefined && apiKeyPrefix(credential.key) === keyPrefix;
+  const envNamesKey = credential?.source === "env" && namesKey;
+  const fileNamesKey = credential?.source === "file" && namesKey;
   const until = body.previousValidUntil;
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       ...body,
       stored,
       ...storeError ? { storeError } : {},
-      ...envNamesKey ? { candleApiKeyStale: true } : {}
+      ...envNamesKey ? { candleApiKeyStale: true } : {},
+      ...fileNamesKey ? { candleApiKeyFileStale: true } : {}
     })}
 `);
     return storeError ? 1 : 0;
@@ -93338,6 +93559,9 @@ async function keysRotate(args, ctx) {
 `)}
 `);
   const deadline = until === null ? "now" : `before ${formatTime(until)}`;
+  if (fileNamesKey) {
+    notice(deps, "stderr", "warning", `CANDLE_API_KEY_FILE still holds the old secret. The file was not updated. Replace it ${deadline} and restart MCP.`);
+  }
   if (envNamesKey) {
     notice(deps, "stderr", "warning", `CANDLE_API_KEY holds the old secret, and this CLI cannot change it. Update CANDLE_API_KEY where this key is deployed ${deadline}.`);
   }
@@ -93637,7 +93861,7 @@ function createLabClient2(options) {
   const doFetch = options.fetch ?? globalThis.fetch;
   const callMs = options.callTimeoutMs ?? LAB_CALL_TIMEOUT_MS2;
   const now = options.now ?? Date.now;
-  const sleep = options.sleep ?? ((ms) => new Promise((resolve3) => setTimeout(resolve3, ms)));
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms)));
   async function call2(method, path, valid = () => true, body, timeoutMs = callMs) {
     const controller = new AbortController;
     let timedOut = false;
@@ -96064,6 +96288,7 @@ var READ_ONLY_TOOL_NAMES = [
   "candle_get_plans"
 ];
 var CREDENTIAL_ENV_NAMES = [
+  "CANDLE_API_KEY_FILE",
   "CANDLE_API_KEY",
   "CANDLE_AGENT_API_KEY",
   "CANDLE_DEVICE_TOKEN",
@@ -97274,7 +97499,7 @@ function perpsMarketGate2(meta, ctx, minOpenInterestUsd) {
     return { tradeable: false, reason: "minOpenInterest" };
   return { tradeable: true, reason: null };
 }
-function resolve3(snapshot, coin) {
+function resolve4(snapshot, coin) {
   if (/^[A-Za-z0-9]{1,20}$/.test(coin)) {
     const exact = snapshot.universe.findIndex((row2) => row2.name === coin);
     if (exact !== -1)
@@ -97552,7 +97777,7 @@ class PerpsMarketReader2 {
   async market(coin) {
     this.key();
     const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    const asset = resolve3(core, coin);
+    const asset = resolve4(core, coin);
     const meta = at2(core.universe, asset);
     const ctx = at2(core.ctxs, asset);
     return {
@@ -97578,7 +97803,7 @@ class PerpsMarketReader2 {
     if (opts.sigFigs !== undefined)
       bounded2(opts.sigFigs, 5, 2, 5, "sigFigs");
     const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical4 = at2(core.universe, resolve3(core, coin)).name;
+    const canonical4 = at2(core.universe, resolve4(core, coin)).name;
     const value = await info2(this.opts.fetcher, this.opts.network, {
       type: "l2Book",
       coin: canonical4,
@@ -97619,7 +97844,7 @@ class PerpsMarketReader2 {
     this.key();
     const window = perpsCandleWindow2(opts, this.now());
     const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical4 = at2(core.universe, resolve3(core, coin)).name;
+    const canonical4 = at2(core.universe, resolve4(core, coin)).name;
     const value = await info2(this.opts.fetcher, this.opts.network, {
       type: "candleSnapshot",
       req: { coin: canonical4, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
@@ -97654,7 +97879,7 @@ class PerpsMarketReader2 {
     this.key();
     const window = perpsFundingWindow2(opts, this.now());
     const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical4 = at2(core.universe, resolve3(core, coin)).name;
+    const canonical4 = at2(core.universe, resolve4(core, coin)).name;
     const value = await info2(this.opts.fetcher, this.opts.network, {
       type: "fundingHistory",
       coin: canonical4,
@@ -97718,7 +97943,7 @@ var EVM_ADDRESS_RE4 = /^0x[0-9a-f]{40}$/;
 function isTime2(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
-function invalid2(field, message) {
+function invalid3(field, message) {
   return new PerpsHistoryError2("VALIDATION_FAILED", message, { field });
 }
 function unavailable5(message, retryAfterMs2) {
@@ -97749,16 +97974,16 @@ function encodeCursor2(state) {
 }
 function decodeCursor2(cursor) {
   if (cursor.length > PERPS_HISTORY_MAX_CURSOR_LENGTH2 || !cursor.startsWith("ph1."))
-    throw invalid2("cursor", "cursor is not one this client issued");
+    throw invalid3("cursor", "cursor is not one this client issued");
   let state;
   try {
     state = JSON.parse(base64UrlDecode2(cursor.slice(4)));
   } catch {
-    throw invalid2("cursor", "cursor is not one this client issued");
+    throw invalid3("cursor", "cursor is not one this client issued");
   }
   const ok = state !== null && typeof state === "object" && state.v === 1 && (state.k === "fills" || state.k === "funding") && (state.n === "mainnet" || state.n === "testnet") && typeof state.w === "string" && EVM_ADDRESS_RE4.test(state.w) && isTime2(state.s) && isTime2(state.e) && state.s <= state.e && Number.isSafeInteger(state.l) && state.l >= 1 && state.l <= PERPS_HISTORY_MAX_LIMIT2[state.k] && isTime2(state.t) && state.t >= state.s && state.t <= state.e && Array.isArray(state.b) && state.b.every((id) => typeof id === "string" && id.length <= 512) && Number.isSafeInteger(state.c) && state.c >= 0;
   if (!ok)
-    throw invalid2("cursor", "cursor is not one this client issued");
+    throw invalid3("cursor", "cursor is not one this client issued");
   return state;
 }
 function canonical4(value) {
@@ -97844,35 +98069,35 @@ function resolveWindow2(req) {
   const kind = req.kind;
   const address = req.address.toLowerCase();
   if (!EVM_ADDRESS_RE4.test(address))
-    throw invalid2("wallet", "The wallet's Hyperliquid account is not an EVM address");
+    throw invalid3("wallet", "The wallet's Hyperliquid account is not an EVM address");
   for (const field of ["startTime", "endTime"]) {
     const value = options[field];
     if (value !== undefined && !isTime2(value))
-      throw invalid2(field, `${field} must be a whole, non-negative number of epoch milliseconds`);
+      throw invalid3(field, `${field} must be a whole, non-negative number of epoch milliseconds`);
   }
   const max = PERPS_HISTORY_MAX_LIMIT2[kind];
   if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > max))
-    throw invalid2("limit", `limit must be a whole number from 1 to ${max} for ${kind}`);
+    throw invalid3("limit", `limit must be a whole number from 1 to ${max} for ${kind}`);
   if (options.cursor !== undefined) {
     if (typeof options.cursor !== "string" || options.cursor.length === 0)
-      throw invalid2("cursor", "cursor is not one this client issued");
+      throw invalid3("cursor", "cursor is not one this client issued");
     const state = decodeCursor2(options.cursor);
     if (state.k !== kind)
-      throw invalid2("cursor", `This cursor pages ${state.k}, not ${kind}`);
+      throw invalid3("cursor", `This cursor pages ${state.k}, not ${kind}`);
     if (state.n !== req.network)
-      throw invalid2("cursor", `This cursor pages ${state.n}, not ${req.network}`);
+      throw invalid3("cursor", `This cursor pages ${state.n}, not ${req.network}`);
     if (state.w !== address)
-      throw invalid2("cursor", "This cursor pages another wallet");
+      throw invalid3("cursor", "This cursor pages another wallet");
     if (options.startTime !== undefined && options.startTime !== state.s || options.endTime !== undefined && options.endTime !== state.e || options.limit !== undefined && options.limit !== state.l)
-      throw invalid2("cursor", "The window or page size changed; start again without a cursor");
+      throw invalid3("cursor", "The window or page size changed; start again without a cursor");
     return { state };
   }
   const endTime = options.endTime ?? req.now();
   const startTime = options.startTime ?? Math.max(0, endTime - PERPS_HISTORY_DEFAULT_WINDOW_MS2);
   if (!isTime2(endTime))
-    throw invalid2("endTime", "endTime must be epoch milliseconds");
+    throw invalid3("endTime", "endTime must be epoch milliseconds");
   if (startTime > endTime)
-    throw invalid2("startTime", "startTime must not be after endTime");
+    throw invalid3("startTime", "startTime must not be after endTime");
   return {
     state: {
       v: 1,
@@ -98105,7 +98330,7 @@ class HyperliquidReadError2 extends Error {
 var INFO_TIMEOUT_MS2 = 5000;
 var RATE_LIMIT_RETRY_MS2 = 1000;
 async function hyperliquidInfo2(fetcher, network2, body, opts = {}) {
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms)));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
   for (let attempt = 0;; attempt++) {
     const controller = new AbortController;
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? INFO_TIMEOUT_MS2);
@@ -98141,7 +98366,7 @@ async function hyperliquidInfo2(fetcher, network2, body, opts = {}) {
   }
 }
 async function readHyperliquidMarketSnapshot2(fetcher, network2, opts = {}) {
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms)));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
   let limited = false;
   const watched = async (url, init) => {
     const res = await fetcher(url, init);
@@ -98655,10 +98880,10 @@ function abortableSleep(sleep, ms, signal) {
     return sleep(ms);
   if (signal.aborted)
     return Promise.resolve();
-  return new Promise((resolve4) => {
+  return new Promise((resolve5) => {
     const done = () => {
       signal.removeEventListener("abort", done);
-      resolve4();
+      resolve5();
     };
     signal.addEventListener("abort", done);
     sleep(ms).then(done, done);
@@ -101077,6 +101302,7 @@ async function perpsReduceOnly(args, ctx) {
 }
 
 // src/commands/perps-markets.ts
+init_api_key_file();
 init_args();
 init_deps();
 init_presentation();
@@ -101220,6 +101446,10 @@ async function read2(ctx, argv, command) {
     }
     return 0;
   } catch (error) {
+    if (error instanceof ApiKeyFileError) {
+      writeLocalFailure(ctx.deps, { code: error.code, message: error.message }, ctx.json);
+      return 1;
+    }
     if (error instanceof PerpsMarketError2) {
       if (error.code === "PERPS_USAGE") {
         writeUsageFailure(ctx.deps, error.message, ctx.json);
@@ -103623,7 +103853,7 @@ init_human_output();
 
 // src/plugins.ts
 import { spawn as spawn2 } from "node:child_process";
-import { accessSync, constants as constants5, readdirSync, statSync } from "node:fs";
+import { accessSync, constants as constants6, readdirSync, statSync } from "node:fs";
 import { delimiter, join as join14 } from "node:path";
 var PLUGIN_PREFIX = "candle-";
 var RESERVED_HELPER_NAMES = ["fido2", "enclave"];
@@ -103634,7 +103864,7 @@ function executableAt(path) {
   try {
     if (!statSync(path).isFile())
       return false;
-    accessSync(path, constants5.X_OK);
+    accessSync(path, constants6.X_OK);
     return true;
   } catch {
     return false;
@@ -103743,16 +103973,16 @@ function pluginEnvironment(input) {
   return env;
 }
 function realRunPlugin(path, args, env) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve5) => {
     let child;
     try {
       child = spawn2(path, args, { stdio: "inherit", env });
     } catch {
-      resolve4(1);
+      resolve5(1);
       return;
     }
-    child.on("error", () => resolve4(1));
-    child.on("close", (code) => resolve4(code ?? 1));
+    child.on("error", () => resolve5(1));
+    child.on("close", (code) => resolve5(code ?? 1));
   });
 }
 function pluginInvocation(argv, env, isBuiltIn) {
@@ -107513,9 +107743,9 @@ function parseRenamePairs(contents) {
       continue;
     }
     rows.push({ line, from, to });
-    const invalid3 = validateLabel(to);
-    if (invalid3 !== undefined)
-      findings.push({ line, problem: invalid3 });
+    const invalid4 = validateLabel(to);
+    if (invalid4 !== undefined)
+      findings.push({ line, problem: invalid4 });
   }
   for (const field of ["from", "to"]) {
     const seen = new Map;
@@ -107596,9 +107826,9 @@ async function vaultRename(args, ctx) {
     return usage2(ctx, RENAME_USAGE);
   }
   if (!batch && next !== undefined) {
-    const invalid3 = validateLabel(next);
-    if (invalid3 !== undefined)
-      return usage2(ctx, invalid3);
+    const invalid4 = validateLabel(next);
+    if (invalid4 !== undefined)
+      return usage2(ctx, invalid4);
     if (old === next)
       return usage2(ctx, SAME_STRING_LINE);
   }
@@ -107856,9 +108086,9 @@ async function teeRename(args, ctx) {
       return refusal3(ctx, parsedFile.findings, 2);
     pairs = parsedFile.rows;
   } else {
-    const invalid3 = validateLabel(next);
-    if (invalid3 !== undefined)
-      return usage2(ctx, invalid3);
+    const invalid4 = validateLabel(next);
+    if (invalid4 !== undefined)
+      return usage2(ctx, invalid4);
     if (old === next)
       return usage2(ctx, SAME_STRING_LINE);
     pairs = [{ line: 0, from: old, to: next }];
@@ -109675,7 +109905,7 @@ init_args();
 init_human_output();
 init_presentation();
 import { chmod as chmod13, copyFile, mkdir as mkdir11, stat as stat6 } from "node:fs/promises";
-import nodePath, { dirname as dirname11, resolve as resolve4 } from "node:path";
+import nodePath, { dirname as dirname11, resolve as resolve5 } from "node:path";
 init_crypto();
 init_errors2();
 init_evm_record();
@@ -110008,7 +110238,7 @@ function fileModeOctal(mode) {
 }
 function resolveBackupDestination(to, deps) {
   if (to.trim().toLowerCase() !== ICLOUD_SHORTHAND)
-    return { path: resolve4(to) };
+    return { path: resolve5(to) };
   const home = homeDirOf(deps.env);
   return { path: icloudBackupPath(home, deps.now()), requires: icloudDriveDir(home) };
 }
@@ -110087,7 +110317,7 @@ async function vaultVerifyBackup(args, ctx) {
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
-    const target = resolve4(copyPath);
+    const target = resolve5(copyPath);
     const copyRaw = await readVaultRaw(target);
     if (copyRaw === null)
       throw new VaultError("VAULT_MISSING", `No file at ${target}.`, {
@@ -110788,8 +111018,8 @@ init_errors2();
 init_promote_support();
 init_store();
 init_vault_support();
-import { access as access4, chmod as chmod14, constants as constants6, lstat as lstat2, writeFile as writeFile13 } from "node:fs/promises";
-import { dirname as dirname12, resolve as resolve5 } from "node:path";
+import { access as access4, chmod as chmod14, constants as constants7, lstat as lstat2, writeFile as writeFile13 } from "node:fs/promises";
+import { dirname as dirname12, resolve as resolve6 } from "node:path";
 async function vaultExportKey(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--to"],
@@ -110809,7 +111039,7 @@ async function vaultExportKey(args, ctx) {
     return 1;
   if (!requireTty(ctx, "vault export-key"))
     return 1;
-  const destination = resolve5(to);
+  const destination = resolve6(to);
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
     return usage2(ctx, resolvedVault.error);
@@ -110923,7 +111153,7 @@ async function assertExportTargetWritable(destination) {
     throw error;
   }
   try {
-    await access4(parent, constants6.W_OK);
+    await access4(parent, constants7.W_OK);
   } catch {
     throw new VaultError("VAULT_WRITE_FAILED", `${parent} is not writable.`, {
       suggestion: "Choose a directory you can write to, or fix its permissions, then retry."
@@ -111688,7 +111918,7 @@ async function createVault(request2, clock) {
   if (indexRequiresVersion4(seedIndex)) {
     orphaned = await moveAsideOrphanRecord(request2.path, {
       now: clock.now,
-      sleep: clock.sleep ?? ((ms) => new Promise((resolve6) => setTimeout(resolve6, ms)))
+      sleep: clock.sleep ?? ((ms) => new Promise((resolve7) => setTimeout(resolve7, ms)))
     });
   }
   const dek = freshDek();
@@ -115796,14 +116026,14 @@ function parseCounts(count3, teeCount, externalCount, rpcUrl, evmCount, evmTeeCo
     return evmTeeParsed;
   const allOmitted = vaultCount === undefined && teeParsed === undefined && externalParsed === undefined;
   const scan2 = rpcUrl !== undefined;
-  const resolve6 = (value) => {
+  const resolve7 = (value) => {
     if (value !== undefined)
       return value;
     return scan2 ? undefined : 1;
   };
-  const solanaVault = allOmitted && !scan2 ? 1 : resolve6(vaultCount);
-  const solanaTee = allOmitted && !scan2 ? 1 : resolve6(teeParsed);
-  const solanaExternal = allOmitted && !scan2 ? 1 : resolve6(externalParsed);
+  const solanaVault = allOmitted && !scan2 ? 1 : resolve7(vaultCount);
+  const solanaTee = allOmitted && !scan2 ? 1 : resolve7(teeParsed);
+  const solanaExternal = allOmitted && !scan2 ? 1 : resolve7(externalParsed);
   return {
     solanaVault,
     solanaTee,
@@ -117978,9 +118208,11 @@ async function clearConfig() {
 
 // src/index.ts
 init_ownership();
+init_deps();
 init_file_lock();
 
 // src/guard.ts
+init_api_key_file();
 init_account();
 init_profiles();
 async function verifyProfileAccount(ctx, config) {
@@ -117989,6 +118221,8 @@ async function verifyProfileAccount(ctx, config) {
     return { ok: true, skipped: "--no-verify-account" };
   if (!profile)
     return { ok: true, skipped: "no profile" };
+  if (hasApiKeyFile(deps.env))
+    return { ok: true, skipped: "CANDLE_API_KEY_FILE external override" };
   if (credentialEnvOverrides(deps.env).length > 0)
     return { ok: true, skipped: "env override" };
   const cached = effectiveProfileFields(config, profile).account;
@@ -118375,6 +118609,7 @@ function extractOwnerConfirmFlags(argv) {
   return { argv: [...kept, ...tail], open: open8, noWait };
 }
 async function run2(argv, deps) {
+  deps = beginCredentialInvocation(deps);
   const confirmFlags = extractOwnerConfirmFlags(argv);
   argv = confirmFlags.argv;
   const confirmState = { pendingWithoutWait: false };
@@ -118406,6 +118641,11 @@ async function runWithConfirm(argv, deps) {
   try {
     code = await runCommand(argv, deps);
   } catch (error2) {
+    if (error2 instanceof ApiKeyFileError) {
+      const parsed2 = extractGlobalFlags(argv);
+      writeLocalFailure(deps, { code: error2.code, message: error2.message }, !("error" in parsed2) && parsed2.flags.json);
+      return 1;
+    }
     if (error2 instanceof ProfileFleetOnlyError) {
       const parsed2 = extractGlobalFlags(argv);
       writeLocalFailure(deps, { code: error2.code, message: error2.message }, !("error" in parsed2) && parsed2.flags.json);
@@ -118506,7 +118746,8 @@ async function runCommand(argv, deps) {
       vaultDevice: flags2.vaultDevice
     });
   }
-  const config2 = cmd === "doctor" ? await deps.readConfig() : await migrateProfiles(deps);
+  const keylessMcp = cmd === "mcp" && tokens.includes("--read-only");
+  const config2 = cmd === "doctor" || keylessMcp ? await deps.readConfig() : await migrateProfiles(deps);
   const isAuthLogin = cmd === "auth" && sub === "login";
   const isProfileCommand = cmd === "profile";
   const resolution = isAuthLogin ? resolveProfileNameForLogin(config2, { flag: flags2.profile, env: deps.env }) : isProfileCommand ? { ok: true, name: undefined } : resolveProfileName(config2, { flag: flags2.profile, env: deps.env });
@@ -118599,7 +118840,7 @@ function unknownCommand(deps, token2, word3) {
 }
 async function migrateProfiles(deps) {
   const before = await deps.readConfig();
-  if (deps.env.CANDLE_API_KEY?.trim() || deps.env.CANDLE_DEVICE_TOKEN?.trim())
+  if (hasApiKeyFile(deps.env) || deps.env.CANDLE_API_KEY?.trim() || deps.env.CANDLE_DEVICE_TOKEN?.trim())
     return before;
   const { config: config2, migrated } = migratedConfig(before);
   if (!migrated)
@@ -118628,12 +118869,12 @@ function realOpenBrowser(serverUrl) {
 }
 var HELPER_WORKING_DIRECTORY = "/";
 function realSpawnHelper(path, requestLine, opts) {
-  return new Promise((resolve6) => {
+  return new Promise((resolve7) => {
     let child;
     try {
       child = spawn3(path, opts.args ?? [], { stdio: ["pipe", "pipe", "pipe"], cwd: HELPER_WORKING_DIRECTORY });
     } catch (error2) {
-      resolve6({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf4(error2) });
+      resolve7({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf4(error2) });
       return;
     }
     const out = [];
@@ -118646,7 +118887,7 @@ function realSpawnHelper(path, requestLine, opts) {
         return;
       settled = true;
       clearTimeout(timer);
-      resolve6({ stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), ...result2 });
+      resolve7({ stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), ...result2 });
     };
     let exited;
     const timer = setTimeout(() => {
@@ -118695,7 +118936,7 @@ async function buildRealDeps() {
       }
     },
     now: () => Date.now(),
-    sleep: (ms) => new Promise((resolve6) => setTimeout(resolve6, ms)),
+    sleep: (ms) => new Promise((resolve7) => setTimeout(resolve7, ms)),
     openBrowser: realOpenBrowser,
     env: process.env,
     nodeVersion: process.versions.node,
@@ -118709,10 +118950,10 @@ async function buildRealDeps() {
     },
     readFile: (path) => readFile21(path, "utf8"),
     readBytes: (path) => readFile21(path),
-    readStdin: () => new Promise((resolve6, reject) => {
+    readStdin: () => new Promise((resolve7, reject) => {
       const chunks = [];
       process.stdin.on("data", (chunk) => chunks.push(chunk));
-      process.stdin.on("end", () => resolve6(new Uint8Array(Buffer.concat(chunks))));
+      process.stdin.on("end", () => resolve7(new Uint8Array(Buffer.concat(chunks))));
       process.stdin.on("error", reject);
       process.stdin.resume();
     }),
@@ -118752,13 +118993,13 @@ async function buildRealDeps() {
   };
 }
 function realRunHook(command, stdin, env, timeoutMs) {
-  return new Promise((resolve6) => {
+  return new Promise((resolve7) => {
     let timedOut = false;
     let child;
     try {
       child = spawn3(command, { shell: true, env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
     } catch (err) {
-      resolve6({
+      resolve7({
         exitCode: null,
         signal: null,
         timedOut: false,
@@ -118776,11 +119017,11 @@ function realRunHook(command, stdin, env, timeoutMs) {
     child.stdin?.end(stdin);
     child.on("error", (err) => {
       clearTimeout(timer);
-      resolve6({ exitCode: null, signal: null, timedOut, error: err.message });
+      resolve7({ exitCode: null, signal: null, timedOut, error: err.message });
     });
     child.on("close", (exitCode, signal) => {
       clearTimeout(timer);
-      resolve6({ exitCode, signal, timedOut });
+      resolve7({ exitCode, signal, timedOut });
     });
   });
 }

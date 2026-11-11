@@ -95,6 +95,11 @@ export const ENVIRONMENT: EnvVar[] = [
     name: "CANDLE_X402_PAY_TO",
     description: "Devnet tests only: the address devnet x402 payments go to (mainnet pays its pinned address)",
   },
+  {
+    name: "CANDLE_API_KEY_FILE",
+    description:
+      "Owner-only API-key file (Linux/macOS 0400/0600); exclusive, conflicts with raw key variables; restart MCP after replacement",
+  },
   { name: "CANDLE_API_KEY", description: "An agent API key; beats the stored one" },
   { name: "CANDLE_DEVICE_TOKEN", description: "A device token, for key-management commands" },
   {
@@ -153,8 +158,9 @@ export const ENV_NOT_IN_HELP: Record<string, string> = {
   CANDLE_VAULT_FAKE_OS_MAJOR: "Test only: pins the macOS major version the platform checks read.",
   CANDLE_INSTALL_DIR: "Read by install.sh, not by this binary.",
   CANDLE_INSTALL_ALLOW_UNSIGNED: "Read by install.sh, not by this binary.",
-  CANDLE_AGENT_API_KEY: "Set BY `candle mcp` for the server it hosts; never read by the CLI.",
-  CANDLE_MCP_TOOLS: "Set BY `candle mcp` for the server it hosts; never read by the CLI.",
+  CANDLE_AGENT_API_KEY:
+    "Set BY `candle mcp` for its server; the CLI reads it only to refuse a file/raw-source conflict.",
+  CANDLE_MCP_TOOLS: "Set BY `candle mcp` for its server; the CLI reads it only to refuse a file/raw-source conflict.",
   CANDLE_PLUGIN_RPC_URL: "Written into a plug-in's environment, never read. Documented on the plugins topic.",
   CANDLE_PLUGIN_NETWORK: "Written into a plug-in's environment, never read. Documented on the plugins topic.",
   CANDLE_PLUGIN_WALLET: "Prefix written into a plug-in's environment, never read. Documented on the plugins topic.",
@@ -167,6 +173,7 @@ const ENV_API = [
   "CANDLE_PROFILE",
   "CANDLE_API_URL",
   "CANDLE_API_KEY",
+  "CANDLE_API_KEY_FILE",
   "CANDLE_DEVICE_TOKEN",
   "CANDLE_KEYRING_PASSPHRASE",
 ]
@@ -1220,7 +1227,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "rotate <prefix|label> ([--grace <duration> | --now] [--force] [--yes] | --finish)",
         description:
-          "Give a key a new secret, keeping its prefix, label, access, limits, wallets and history. The old secret works through --grace (default 1h, at most 24h) or stops at once with --now; --finish ends an open window early. The profile's own key is replaced in the keychain; update CANDLE_API_KEY and other copies yourself. --force rotates again while a window is open",
+          "Give a key a new secret, keeping its prefix, label, access, limits, wallets and history. The old secret works through --grace (default 1h, at most 24h) or stops at once with --now; --finish ends an open window early. The profile's own key is replaced in the keychain; update CANDLE_API_KEY or CANDLE_API_KEY_FILE yourself and restart MCP. --force rotates again while a window is open",
       },
       { invocation: "revoke <prefix>", description: "Revoke an API key permanently" },
       {

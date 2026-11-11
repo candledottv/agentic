@@ -97,6 +97,64 @@ describe("keys rotate", () => {
     expect(JSON.parse(String(post(calls)[0]?.init.body))).toEqual({ graceSeconds: 0, force: true })
   })
 
+  test("device-token-only rotation still prints the new secret when the API-key store cannot be read", async () => {
+    for (const json of [true, false]) {
+      const { fetch } = routes()
+      const stdout = createCapture()
+      const store = createFakeStore()
+      store.get = async () => {
+        throw new Error("synthetic store unavailable")
+      }
+      const deps = createTestDeps({
+        fetch,
+        store,
+        stdout,
+        stderr: createCapture(),
+        env: { CANDLE_DEVICE_TOKEN: "cndl_dvc_x" },
+      })
+      const code = await run(["keys", "rotate", "Ab3dEf9h", "--yes", ...(json ? ["--json"] : [])], deps)
+      expect(code).toBe(0)
+      expect(stdout.text).toContain(NEW)
+      if (json) expect(JSON.parse(stdout.text)).toMatchObject({ key: NEW, stored: false })
+    }
+  })
+
+  test("an own-key store write and read failure still prints the new secret with the error", async () => {
+    for (const json of [true, false]) {
+      // Armed only once the rotation POST lands, so config migration still works.
+      let armed = false
+      const { fetch } = routes(() => {
+        armed = true
+        return jsonResponse(200, { key: NEW, keyPrefix: "Ab3dEf9h", rotatedAt: 1, previousValidUntil: UNTIL })
+      })
+      const stdout = createCapture()
+      const stderr = createCapture()
+      const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: OLD })
+      const realGet = store.get.bind(store)
+      store.get = async (ref: string) => {
+        if (armed && ref === SLOT) throw new Error("synthetic read failure")
+        return realGet(ref)
+      }
+      const realSet = store.set.bind(store)
+      store.set = async (ref: string, value: string) => {
+        if (armed) throw new Error("synthetic write failure")
+        return realSet(ref, value)
+      }
+      const deps = createTestDeps({ fetch, store, stdout, stderr })
+      await deps.writeConfig({ keyPrefix: "Ab3dEf9h" })
+      const code = await run(["keys", "rotate", "Ab3dEf9h", "--yes", ...(json ? ["--json"] : [])], deps)
+      expect(code).toBe(1)
+      expect(stdout.text).toContain(NEW)
+      if (json)
+        expect(JSON.parse(stdout.text)).toMatchObject({
+          key: NEW,
+          stored: false,
+          storeError: "synthetic write failure",
+        })
+      else expect(stderr.text).toContain("synthetic write failure")
+    }
+  })
+
   test("CANDLE_API_KEY holding the old secret is named, since the CLI cannot change it", async () => {
     const { fetch } = routes()
     const stderr = createCapture()

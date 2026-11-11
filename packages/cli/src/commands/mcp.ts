@@ -198,6 +198,7 @@ export const READ_ONLY_TOOL_NAMES = [
  * (or a wrapper around it) may legitimately need.
  */
 export const CREDENTIAL_ENV_NAMES = [
+  "CANDLE_API_KEY_FILE",
   "CANDLE_API_KEY",
   "CANDLE_AGENT_API_KEY",
   "CANDLE_DEVICE_TOKEN",

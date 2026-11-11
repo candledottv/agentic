@@ -12,6 +12,8 @@
  * get_agent_profile) don't need one, and `buildRequest` in tools.ts is what throws a clear error
  * for the write tools (launch, report) when it's missing.
  */
+
+import { assertApiKeySources, hasApiKeyFile, readApiKeyFile } from "./api-key-file"
 export interface RequestConfig {
   apiUrl: string
   apiKey?: string
@@ -156,10 +158,12 @@ export function keyedRedirectGuard<R extends { status: number }>(doFetch: Guarda
  * other source.
  */
 export function resolveConfig(env: Record<string, string | undefined> = process.env): RequestConfig {
+  assertApiKeySources(env)
+  const fileKey = hasApiKeyFile(env) ? readApiKeyFile(env.CANDLE_API_KEY_FILE ?? "") : undefined
   const apiUrl = env.CANDLE_API_URL?.trim() || DEFAULT_API_URL
   assertTransportSecurity(apiUrl, env)
   // CANDLE_API_KEY is the CLI's variable for the same credential; accept it as an alias so the
   // public install docs teach ONE name per credential. The MCP's own name keeps precedence.
-  const apiKey = env.CANDLE_AGENT_API_KEY?.trim() || env.CANDLE_API_KEY?.trim()
+  const apiKey = fileKey ?? (env.CANDLE_AGENT_API_KEY?.trim() || env.CANDLE_API_KEY?.trim())
   return apiKey ? { apiUrl, apiKey } : { apiUrl }
 }

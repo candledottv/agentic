@@ -36,10 +36,11 @@ import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest, insecureApiUrlFault } from "../client"
 import { ProfileCoreOwnedError } from "../core/ownership"
 import type { CommandContext } from "../deps"
-import { resolveApiKey, resolveDeviceToken } from "../deps"
+import { resolveApiCredential, resolveDeviceToken } from "../deps"
 import { writeFields, writeSuccess } from "../human-output"
 import { fields, heading, notice, success, symbols, terminalStyle } from "../presentation"
 import {
+  apiKeyPrefix,
   credentialEnvOverrides,
   defaultProfileNameFor,
   effectiveProfileFields,
@@ -777,13 +778,14 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   const config = await deps.readConfig()
   // BE-1665 (K-11): on a core-owned profile the device token is in the core-only slot, which this
   // command cannot read. That is a fact to report, not a failure of the status command.
+  const credential = await resolveApiCredential(deps, ctx.profile)
+  const apiKey = credential.key
   let coreOwned = false
   const deviceToken = await resolveDeviceToken(deps, ctx.profile).catch((error: unknown) => {
     if (!(error instanceof ProfileCoreOwnedError)) throw error
     coreOwned = true
     return undefined
   })
-  const apiKey = await resolveApiKey(deps, ctx.profile)
 
   const rows: CheckRow[] = []
 
@@ -857,6 +859,8 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // `profile use`, re-caches from the stored key that was never acting. The `cachedAccount` field
   // is unconditional; only the sentence and its suggestion are gated.
   const cachedAccount = ctx.profile !== undefined ? profileFields.account : undefined
+  const shownKeyPrefix =
+    credential.source === "file" ? (apiKey ? apiKeyPrefix(apiKey) : undefined) : profileFields.keyPrefix
   const mismatch =
     ctx.profile !== undefined &&
     account !== undefined &&
@@ -870,9 +874,11 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
         backend: deps.backend,
         profile: ctx.profile,
         deviceTokenPrefix: profileFields.deviceTokenPrefix,
-        keyPrefix: profileFields.keyPrefix,
+        keyPrefix: shownKeyPrefix,
+        apiKeySource: credential.source,
         account,
         cachedAccount,
+        envOverrides: credentialEnvOverrides(deps.env),
         apiUrl,
         configPath,
         rows,
@@ -889,10 +895,11 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // its username (or none) is shown beside it; only when falling back to the cached account is the
   // cached username used. Mixing them -- a live account with a cached handle -- would print a
   // handle that belongs to a DIFFERENT account, in the very command meant to reveal a mismatch.
-  const shownAccount = account ?? profileFields.account
-  const shownUsername = account !== undefined ? username : profileFields.username
+  const overrides = deps.env.CANDLE_API_KEY_FILE?.trim() ? credentialEnvOverrides(deps.env) : []
+  const shownAccount = overrides.length ? account : (account ?? profileFields.account)
+  const shownUsername = overrides.length ? undefined : account !== undefined ? username : profileFields.username
   deps.stdout.write(
-    `${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername, identityStyle(deps, "stdout"))}\n`,
+    `${identityLine(ctx.profile, shownAccount, apiUrl, overrides.length ? overrides : undefined, shownUsername, identityStyle(deps, "stdout"))}\n`,
   )
   // `profile use` is the cheapest of the three repairs (it re-caches the account from this very
   // key); the guard's own refusal names the other two, which cost a re-authentication or a skipped
@@ -911,7 +918,7 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
       [
         ["Backend", deps.backend],
         ["Device token prefix", profileFields.deviceTokenPrefix],
-        ["API key prefix", profileFields.keyPrefix],
+        ["API key prefix", shownKeyPrefix],
         ["Config file", configPath],
       ],
       style,

@@ -24,6 +24,7 @@ import { realpathSync } from "node:fs"
 import { chmod, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises"
 import { homedir, hostname } from "node:os"
 import { pathToFileURL } from "node:url"
+import { ApiKeyFileError, hasApiKeyFile } from "../../mcp/src/api-key-file"
 import { browserUrl, resolveApiUrl, setOwnerConfirmHooks } from "./client"
 import { agentPositions } from "./commands/agent-positions"
 import { agentPost } from "./commands/agent-post"
@@ -145,7 +146,7 @@ import {
   ProfileCoreOwnedError,
   profileNamesTouched,
 } from "./core/ownership"
-import type { CommandContext, Deps } from "./deps"
+import { beginCredentialInvocation, type CommandContext, type Deps } from "./deps"
 import { ConfigDirUnwritableError } from "./file-lock"
 import { verifyProfileAccount } from "./guard"
 import { renderTopic, renderTopLevel } from "./help"
@@ -634,6 +635,7 @@ function extractOwnerConfirmFlags(argv: string[]): { argv: string[]; open: boole
 }
 
 export async function run(argv: string[], deps: Deps): Promise<number> {
+  deps = beginCredentialInvocation(deps)
   const confirmFlags = extractOwnerConfirmFlags(argv)
   argv = confirmFlags.argv
   const confirmState: OwnerConfirmRunState = { pendingWithoutWait: false }
@@ -672,6 +674,11 @@ async function runWithConfirm(argv: string[], deps: Deps): Promise<number> {
   try {
     code = await runCommand(argv, deps)
   } catch (error) {
+    if (error instanceof ApiKeyFileError) {
+      const parsed = extractGlobalFlags(argv)
+      writeLocalFailure(deps, { code: error.code, message: error.message }, !("error" in parsed) && parsed.flags.json)
+      return 1
+    }
     if (error instanceof ProfileFleetOnlyError) {
       const parsed = extractGlobalFlags(argv)
       writeLocalFailure(deps, { code: error.code, message: error.message }, !("error" in parsed) && parsed.flags.json)
@@ -843,7 +850,9 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   }
 
   // Doctor must be able to diagnose a locked legacy store without migrating it first.
-  const config = cmd === "doctor" ? await deps.readConfig() : await migrateProfiles(deps)
+  const keylessMcp = cmd === "mcp" && tokens.includes("--read-only")
+  // Read-only MCP never consults API-key inputs or migrates credential slots.
+  const config = cmd === "doctor" || keylessMcp ? await deps.readConfig() : await migrateProfiles(deps)
   // `auth login` resolves LENIENTLY about EXISTENCE (resolveProfileNameForLogin): its `--profile`
   // may name a profile to CREATE, so it must not be gated by resolveProfileName's "does this name
   // already exist" refusal, which exists to protect a command ACTING as an already-selected
@@ -1052,7 +1061,7 @@ async function migrateProfiles(deps: Deps): Promise<CliConfig> {
   const before = await deps.readConfig()
   // An environment override must not touch the store, even for a legacy config.
   // Defer migration as a whole so a skipped slot is not lost on the next run.
-  if (deps.env.CANDLE_API_KEY?.trim() || deps.env.CANDLE_DEVICE_TOKEN?.trim()) return before
+  if (hasApiKeyFile(deps.env) || deps.env.CANDLE_API_KEY?.trim() || deps.env.CANDLE_DEVICE_TOKEN?.trim()) return before
   const { config, migrated } = migratedConfig(before)
   if (!migrated) return before
   for (const [legacyRef, kind] of [

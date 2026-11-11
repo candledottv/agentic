@@ -30,8 +30,8 @@ Install the released server with no `env` block at all and its ten public reads 
 }
 ```
 
-Add `CANDLE_AGENT_API_KEY` only once you're ready to launch, trade, or report activity, see
-Environment below -- or skip env editing entirely: install the Candle CLI
+Configure an API key only once you're ready to launch, trade, or report activity, using
+an external key file or the Environment options below -- or skip env editing entirely: install the Candle CLI
 (`curl -fsSL https://candle.tv/install.sh | bash` or `brew install candledottv/tap/candle`), run
 `candle auth login`, and `candle mcp` launches this server with the stored key and API URL in its
 environment.
@@ -94,6 +94,38 @@ On Solana, where the API has `CURVE_LAUNCH_RULES_ENABLED` on, both launch tools 
 For a full walkthrough of `candle_launch_and_seed` and `candle_trade`, including the keyless read
 tools, getting a key, funding the embedded wallet, and idempotent retries, see
 [Candle MCP server](https://docs.candle.tv/developers/mcp-server).
+
+## External key files (unreleased source support)
+
+Instead of either raw key variable, the host may configure:
+
+```json
+{"mcpServers":{"candle":{"command":"candle-mcp","env":{"CANDLE_API_KEY_FILE":"/run/user/1000/candle/agent.key"}}}}
+```
+
+Remove both `CANDLE_AGENT_API_KEY` and `CANDLE_API_KEY` from the host environment. A nonblank
+file path plus either nonblank raw key is `API_KEY_SOURCE_CONFLICT`, even for identical keys,
+before any file open. Without a file the existing raw precedence remains
+`CANDLE_AGENT_API_KEY` then `CANDLE_API_KEY`, trimming blanks. A blank file variable selects
+no file; nonblank paths preserve spaces, and relative paths use the initial working directory
+without shell/tilde expansion. Prefer an absolute path.
+
+Linux/macOS require a regular file owned by the effective UID, mode exactly 0400 or 0600,
+with no final-component symlink. Place it in a trusted directory. The entire file is at most
+4096 bytes, containing one nonempty printable ASCII token without spaces and optionally one
+LF or CRLF. Windows or missing POSIX primitives fail `API_KEY_FILE_UNSUPPORTED`; unreadable
+files fail `API_KEY_FILE_UNREADABLE`; type/owner/mode/content/size or concurrent metadata
+changes fail `API_KEY_FILE_INVALID`. Errors omit the path, OS errors and secret. No fallback.
+
+The server validates once before connecting stdio or authenticated discovery. Tools and later
+`tools/list` eligibility refreshes keep that startup key. Replace the file atomically and restart
+MCP after rotation; changing it does not update a running server. The bytes remain in private
+memory, never environment variables, argv, printed configs or credential stores. The host's
+nonsecret path may be inherited by ordinary children; this is not isolation from root or
+same-UID processes, and POSIX mode checks do not audit extended ACLs. Bundled `candle mcp`
+uses the CLI's resolved key in memory; `candle mcp --read-only` ignores all key inputs and
+conflicts with zero file reads. A separately authorized human npm/binary release is required
+before installed-package support can be claimed.
 
 ## Environment
 

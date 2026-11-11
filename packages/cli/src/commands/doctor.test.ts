@@ -45,6 +45,38 @@ function healthyStores() {
 
 const flat = (text: string): string => text.replace(/\s+/g, " ")
 
+test("file provenance uses acting B, never cached A, and all doctor consumers share one read", async () => {
+  let reads = 0
+  const key = "synthetic-doctor-file-key"
+  const { fetch, calls } = createRoutedFetch({
+    ...HEALTHY_ROUTES,
+    "/api/v1/agent/wallets/embedded": () =>
+      jsonResponse(200, { account: "acting-B", wallets: { solana: { address: "abc", delegated: true }, evm: null } }),
+  })
+  const stdout = createCapture()
+  const deps = createTestDeps({
+    ...createFakeConfigStore({
+      profiles: { fixture: { account: "cached-A", username: "cached-name" } },
+      activeProfile: "fixture",
+    }),
+    fetch,
+    stdout,
+    env: { CANDLE_API_KEY_FILE: "/fixture", CANDLE_DEVICE_TOKEN: "device-fixture" },
+    loadApiKeyFile: () => {
+      reads++
+      return key
+    },
+  })
+  expect(await run(["doctor", "--json"], deps)).toBe(0)
+  const body = JSON.parse(stdout.text)
+  expect(body.provenance.apiKey).toEqual({ source: "CANDLE_API_KEY_FILE", prefix: null })
+  expect(body.account).toBe("acting-B")
+  expect(body.cachedAccount).toBe("cached-A")
+  expect(reads).toBe(1)
+  expect(stdout.text.includes(key)).toBe(false)
+  expect(calls.some((call) => new Headers(call.init.headers).get("x-api-key") === key)).toBe(true)
+})
+
 /** One doctor row, its wrapped detail joined: from its mark to the next row's mark or the tally. */
 const rowOf = (text: string, label: string): string | undefined =>
   flat(text).match(new RegExp(`[✓✗–!] ${label} .*?(?= [✓✗–!] [A-Z]| \\d+ passed|$)`))?.[0]

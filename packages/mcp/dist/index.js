@@ -1,8 +1,198 @@
 #!/usr/bin/env node
 
+// src/api-key-file.ts
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+class ApiKeyFileError extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "ApiKeyFileError";
+  }
+}
+function hasApiKeyFile(env) {
+  return Boolean(env.CANDLE_API_KEY_FILE?.trim());
+}
+function assertApiKeySources(env) {
+  if (hasApiKeyFile(env) && (env.CANDLE_API_KEY?.trim() || env.CANDLE_AGENT_API_KEY?.trim())) {
+    throw new ApiKeyFileError("API_KEY_SOURCE_CONFLICT", "CANDLE_API_KEY_FILE conflicts with CANDLE_API_KEY or CANDLE_AGENT_API_KEY. Unset the raw sources or unset CANDLE_API_KEY_FILE.");
+  }
+}
+var apiKeyFileIo = {
+  platform: process.platform,
+  effectiveUid: () => process.geteuid?.(),
+  constants,
+  open: openSync,
+  stat: (fd) => fstatSync(fd, { bigint: true }),
+  read: (fd, buffer, offset, length) => readSync(fd, buffer, offset, length, null),
+  close: closeSync
+};
+function requireDescriptorMetadata(stat) {
+  if ([stat.uid, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs].some((value) => typeof value !== "bigint")) {
+    throw new ApiKeyFileError("API_KEY_FILE_UNSUPPORTED", "CANDLE_API_KEY_FILE requires POSIX descriptor metadata. Use an existing credential source or a supported host.");
+  }
+}
+function invalid(rule) {
+  throw new ApiKeyFileError("API_KEY_FILE_INVALID", `CANDLE_API_KEY_FILE ${rule}. Fix the file locally.`);
+}
+function readApiKeyFile(path, io = apiKeyFileIo) {
+  let fd;
+  let key = "";
+  let failure;
+  try {
+    const uid = io.effectiveUid();
+    if (!["linux", "darwin"].includes(io.platform) || uid === undefined || !io.constants.O_NOFOLLOW || !io.constants.O_NONBLOCK || !io.open || !io.stat || !io.read || !io.close) {
+      throw new ApiKeyFileError("API_KEY_FILE_UNSUPPORTED", "CANDLE_API_KEY_FILE requires Linux or macOS with POSIX descriptor checks. Use an existing credential source or a supported host.");
+    }
+    fd = io.open(path, io.constants.O_RDONLY | io.constants.O_NOFOLLOW | io.constants.O_NONBLOCK);
+    const before = io.stat(fd);
+    requireDescriptorMetadata(before);
+    const mode = Number(before.mode & 0o7777n);
+    if (!before.isFile() || before.uid !== BigInt(uid) || mode !== 256 && mode !== 384) {
+      invalid("must be a regular file owned by the effective user with mode 0400 or 0600");
+    }
+    if (before.size > 4096n)
+      invalid("must be at most 4096 bytes");
+    const bytes = Buffer.alloc(4097);
+    let count = 0;
+    while (count < bytes.length) {
+      const read = io.read(fd, bytes, count, bytes.length - count);
+      if (read === 0)
+        break;
+      count += read;
+    }
+    const after = io.stat(fd);
+    requireDescriptorMetadata(after);
+    if (!after.isFile() || count > 4096 || BigInt(count) !== before.size || before.uid !== after.uid || before.mode !== after.mode || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs)
+      invalid("must remain unchanged while being read");
+    let end = count;
+    if (bytes[end - 1] === 10) {
+      end--;
+      if (bytes[end - 1] === 13)
+        end--;
+    }
+    if (end === 0)
+      invalid("must contain one nonempty printable ASCII token, optionally followed by LF or CRLF");
+    for (let i = 0;i < end; i++) {
+      const byte = bytes[i] ?? 0;
+      if (byte < 33 || byte > 126)
+        invalid("must contain one nonempty printable ASCII token, optionally followed by LF or CRLF");
+    }
+    key = bytes.subarray(0, end).toString("ascii");
+  } catch (error) {
+    const code = error?.code;
+    failure = error instanceof ApiKeyFileError ? error : code === "ELOOP" ? new ApiKeyFileError("API_KEY_FILE_INVALID", "CANDLE_API_KEY_FILE must not be a final-component symlink. Fix the file locally.") : ["ENOSYS", "ENOTSUP"].includes(String(code)) ? new ApiKeyFileError("API_KEY_FILE_UNSUPPORTED", "CANDLE_API_KEY_FILE requires POSIX descriptor checks. Use an existing credential source or a supported host.") : new ApiKeyFileError("API_KEY_FILE_UNREADABLE", "Cannot read CANDLE_API_KEY_FILE. Check the configured path and access.");
+  } finally {
+    if (fd !== undefined) {
+      try {
+        io.close(fd);
+      } catch {
+        failure ??= new ApiKeyFileError("API_KEY_FILE_UNREADABLE", "Cannot close CANDLE_API_KEY_FILE. Check local file access.");
+      }
+    }
+  }
+  if (failure)
+    throw failure;
+  return key;
+}
+
 // src/server.ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+
+// src/client.ts
+var DEFAULT_API_URL = "https://api.alpha.candle.tv";
+function isLoopbackHost(hostname) {
+  const host = hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost"))
+    return true;
+  if (host === "::1" || host === "[::1]")
+    return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+function isPrivateHost(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host.includes(".") && !host.includes(":"))
+    return true;
+  if (/\.(local|internal|home\.arpa)$/.test(host))
+    return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^f[cd][0-9a-f]{2}:/.test(host))
+    return true;
+  return /^fe[89ab][0-9a-f]:/.test(host);
+}
+function assertTransportSecurity(apiUrl, env) {
+  let parsed;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new Error(`CANDLE_API_URL is not a valid URL: ${JSON.stringify(apiUrl)}`);
+  }
+  if (parsed.protocol === "https:")
+    return;
+  if (parsed.protocol !== "http:") {
+    throw new Error(`CANDLE_API_URL must be http or https, got ${parsed.protocol.replace(":", "")}`);
+  }
+  if (isLoopbackHost(parsed.hostname))
+    return;
+  if (env.CANDLE_ALLOW_INSECURE_HTTP?.trim() && isPrivateHost(parsed.hostname))
+    return;
+  throw new Error(`Refusing to send credentials in the clear to ${parsed.origin}. Set CANDLE_API_URL to an https:// ` + (isPrivateHost(parsed.hostname) ? "URL, or set CANDLE_ALLOW_INSECURE_HTTP=1 if this really is a trusted local endpoint." : "URL. CANDLE_ALLOW_INSECURE_HTTP does not apply here: it covers private networks only, " + "and this is a public address."));
+}
+var REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+var MAX_REDIRECTS = 5;
+
+class CrossOriginRedirectError extends Error {
+  from;
+  to;
+  constructor(from, to) {
+    super(`The API at ${from} redirected to ${to}, another origin. Not followed, so the API key was not sent there.`);
+    this.from = from;
+    this.to = to;
+    this.name = "CrossOriginRedirectError";
+  }
+}
+function keyedRedirectGuard(doFetch) {
+  return async (url, init) => {
+    if (!init?.headers || !new Headers(init.headers).has("x-api-key"))
+      return doFetch(url, init);
+    let current = url;
+    let next = { ...init, redirect: "manual" };
+    for (let hops = 0;; hops++) {
+      const response = await doFetch(current, next);
+      const headers = response.headers;
+      const location = REDIRECT_STATUSES.has(response.status) ? headers?.get?.("location") : null;
+      if (!location)
+        return response;
+      const from = new URL(current);
+      const target = new URL(location, from);
+      if (target.origin !== from.origin)
+        throw new CrossOriginRedirectError(from.origin, target.origin);
+      if (hops >= MAX_REDIRECTS)
+        throw new Error(`More than ${MAX_REDIRECTS} redirects from ${url}`);
+      const method = (next.method ?? "GET").toUpperCase();
+      if (response.status === 303 && method !== "GET" && method !== "HEAD" || (response.status === 301 || response.status === 302) && method === "POST") {
+        next = { ...next, method: "GET", body: undefined };
+      }
+      current = target.href;
+    }
+  };
+}
+function resolveConfig(env = process.env) {
+  assertApiKeySources(env);
+  const fileKey = hasApiKeyFile(env) ? readApiKeyFile(env.CANDLE_API_KEY_FILE ?? "") : undefined;
+  const apiUrl = env.CANDLE_API_URL?.trim() || DEFAULT_API_URL;
+  assertTransportSecurity(apiUrl, env);
+  const apiKey = fileKey ?? (env.CANDLE_AGENT_API_KEY?.trim() || env.CANDLE_API_KEY?.trim());
+  return apiKey ? { apiUrl, apiKey } : { apiUrl };
+}
 
 // src/market-disclosure.ts
 var EXTERNAL_MARKET_DISCLOSURE = "For external tokens (external: true), buysOpen, sellsOpen, quoteMint, feeBps, venue, " + "graduationVenue and poolAddress are compatibility placeholders, not measured facts about " + "trading availability, pool pairing, fees or pool venue; trade.routable is stored eligibility " + "and does not verify those fields.";
@@ -299,98 +489,6 @@ function chainSchema(description) {
   }).describe(description ?? `"${listed}"`);
 }
 
-// src/client.ts
-var DEFAULT_API_URL = "https://api.alpha.candle.tv";
-function isLoopbackHost(hostname) {
-  const host = hostname.toLowerCase();
-  if (host === "localhost" || host.endsWith(".localhost"))
-    return true;
-  if (host === "::1" || host === "[::1]")
-    return true;
-  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
-}
-function isPrivateHost(hostname) {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (!host.includes(".") && !host.includes(":"))
-    return true;
-  if (/\.(local|internal|home\.arpa)$/.test(host))
-    return true;
-  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
-    return true;
-  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host))
-    return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host))
-    return true;
-  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host))
-    return true;
-  if (/^f[cd][0-9a-f]{2}:/.test(host))
-    return true;
-  return /^fe[89ab][0-9a-f]:/.test(host);
-}
-function assertTransportSecurity(apiUrl, env) {
-  let parsed;
-  try {
-    parsed = new URL(apiUrl);
-  } catch {
-    throw new Error(`CANDLE_API_URL is not a valid URL: ${JSON.stringify(apiUrl)}`);
-  }
-  if (parsed.protocol === "https:")
-    return;
-  if (parsed.protocol !== "http:") {
-    throw new Error(`CANDLE_API_URL must be http or https, got ${parsed.protocol.replace(":", "")}`);
-  }
-  if (isLoopbackHost(parsed.hostname))
-    return;
-  if (env.CANDLE_ALLOW_INSECURE_HTTP?.trim() && isPrivateHost(parsed.hostname))
-    return;
-  throw new Error(`Refusing to send credentials in the clear to ${parsed.origin}. Set CANDLE_API_URL to an https:// ` + (isPrivateHost(parsed.hostname) ? "URL, or set CANDLE_ALLOW_INSECURE_HTTP=1 if this really is a trusted local endpoint." : "URL. CANDLE_ALLOW_INSECURE_HTTP does not apply here: it covers private networks only, " + "and this is a public address."));
-}
-var REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-var MAX_REDIRECTS = 5;
-
-class CrossOriginRedirectError extends Error {
-  from;
-  to;
-  constructor(from, to) {
-    super(`The API at ${from} redirected to ${to}, another origin. Not followed, so the API key was not sent there.`);
-    this.from = from;
-    this.to = to;
-    this.name = "CrossOriginRedirectError";
-  }
-}
-function keyedRedirectGuard(doFetch) {
-  return async (url, init) => {
-    if (!init?.headers || !new Headers(init.headers).has("x-api-key"))
-      return doFetch(url, init);
-    let current = url;
-    let next = { ...init, redirect: "manual" };
-    for (let hops = 0;; hops++) {
-      const response = await doFetch(current, next);
-      const headers = response.headers;
-      const location = REDIRECT_STATUSES.has(response.status) ? headers?.get?.("location") : null;
-      if (!location)
-        return response;
-      const from = new URL(current);
-      const target = new URL(location, from);
-      if (target.origin !== from.origin)
-        throw new CrossOriginRedirectError(from.origin, target.origin);
-      if (hops >= MAX_REDIRECTS)
-        throw new Error(`More than ${MAX_REDIRECTS} redirects from ${url}`);
-      const method = (next.method ?? "GET").toUpperCase();
-      if (response.status === 303 && method !== "GET" && method !== "HEAD" || (response.status === 301 || response.status === 302) && method === "POST") {
-        next = { ...next, method: "GET", body: undefined };
-      }
-      current = target.href;
-    }
-  };
-}
-function resolveConfig(env = process.env) {
-  const apiUrl = env.CANDLE_API_URL?.trim() || DEFAULT_API_URL;
-  assertTransportSecurity(apiUrl, env);
-  const apiKey = env.CANDLE_AGENT_API_KEY?.trim() || env.CANDLE_API_KEY?.trim();
-  return apiKey ? { apiUrl, apiKey } : { apiUrl };
-}
-
 // src/cluster-read.ts
 import { z as z2 } from "zod";
 
@@ -577,7 +675,7 @@ function percentOfBalance(balanceRaw, percent) {
 }
 
 // src/image.ts
-import { constants } from "node:fs";
+import { constants as constants2 } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 var MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -616,16 +714,16 @@ function errno(error) {
   return error?.code;
 }
 async function realImageDir(imageDir, fs) {
-  const invalid = () => new ImageRefusal("IMAGE_DIR_INVALID", `CANDLE_IMAGE_DIR must be an absolute path to an existing directory, and not the filesystem root. ${NOTHING_UPLOADED}`);
+  const invalid2 = () => new ImageRefusal("IMAGE_DIR_INVALID", `CANDLE_IMAGE_DIR must be an absolute path to an existing directory, and not the filesystem root. ${NOTHING_UPLOADED}`);
   if (!isAbsolute(imageDir))
-    throw invalid();
+    throw invalid2();
   try {
     const real = await fs.realpath(imageDir);
     if (dirname(real) === real || !(await fs.lstat(real, { bigint: true })).isDirectory())
-      throw invalid();
+      throw invalid2();
     return real;
   } catch {
-    throw invalid();
+    throw invalid2();
   }
 }
 async function missingInside(dirReal, path, fs) {
@@ -668,7 +766,7 @@ async function readImageInDir(imageDir, imagePath, fs = nodeFs, field = "imagePa
     throw outside();
   let handle;
   try {
-    handle = await fs.open(fileReal, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    handle = await fs.open(fileReal, constants2.O_RDONLY | (constants2.O_NOFOLLOW ?? 0) | (constants2.O_NONBLOCK ?? 0));
   } catch (error) {
     throw errno(error) === "ELOOP" ? outside() : unreadable("it could not be opened");
   }
@@ -759,24 +857,24 @@ async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
   const hasUrl = typeof rest.imageUrl === "string" && rest.imageUrl.length > 0;
   const hasBannerPath = typeof bannerPath === "string" && bannerPath.length > 0;
   const hasBannerUrl = typeof rest.bannerUrl === "string" && rest.bannerUrl.length > 0;
-  const invalid = (message) => ({ refused: { code: "MCP_VALIDATION", message } });
+  const invalid2 = (message) => ({ refused: { code: "MCP_VALIDATION", message } });
   if (imageDir === undefined) {
     if (imagePath !== undefined)
-      return invalid(`imagePath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass imageUrl, an https URL. ${NOTHING_UPLOADED}`);
+      return invalid2(`imagePath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass imageUrl, an https URL. ${NOTHING_UPLOADED}`);
     if (bannerPath !== undefined)
-      return invalid(`bannerPath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass bannerUrl, an https URL. ${NOTHING_UPLOADED}`);
+      return invalid2(`bannerPath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass bannerUrl, an https URL. ${NOTHING_UPLOADED}`);
     return { args: rest };
   }
   if (hasPath && hasUrl)
-    return invalid(`Pass exactly one of imageUrl or imagePath, not both. ${NOTHING_UPLOADED}`);
+    return invalid2(`Pass exactly one of imageUrl or imagePath, not both. ${NOTHING_UPLOADED}`);
   if (hasBannerPath && hasBannerUrl)
-    return invalid(`Pass at most one of bannerUrl or bannerPath, not both. ${NOTHING_UPLOADED}`);
+    return invalid2(`Pass at most one of bannerUrl or bannerPath, not both. ${NOTHING_UPLOADED}`);
   if (!hasPath && !hasUrl)
-    return invalid("Pass imageUrl (an https URL) or imagePath (an absolute path to an image file inside CANDLE_IMAGE_DIR).");
+    return invalid2("Pass imageUrl (an https URL) or imagePath (an absolute path to an image file inside CANDLE_IMAGE_DIR).");
   if (!hasPath && !hasBannerPath)
     return { args: rest };
   if (!cfg.apiKey)
-    return invalid(`CANDLE_AGENT_API_KEY is required to upload an image; the key needs the launch:write scope. ${NOTHING_UPLOADED}`);
+    return invalid2(`CANDLE_AGENT_API_KEY is required to upload an image; the key needs the launch:write scope. ${NOTHING_UPLOADED}`);
   const read = async (path, field) => {
     try {
       return await readImageInDir(imageDir, path, fs, field);
@@ -816,7 +914,7 @@ async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
       if (uploaded === undefined)
         return result;
       const why = "refused" in result ? result.refused.message : result.uploadFailed;
-      return invalid(`The banner upload failed: ${why} The image was already uploaded to ${uploaded}; pass that as imageUrl on the retry. No launch was attempted.`);
+      return invalid2(`The banner upload failed: ${why} The image was already uploaded to ${uploaded}; pass that as imageUrl on the retry. No launch was attempted.`);
     }
     uploadedBanner = result.url;
     launchArgs.bannerUrl = uploadedBanner;
@@ -4797,7 +4895,7 @@ var EVM_ADDRESS_RE2 = /^0x[0-9a-f]{40}$/;
 function isTime(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
-function invalid(field, message) {
+function invalid2(field, message) {
   return new PerpsHistoryError("VALIDATION_FAILED", message, { field });
 }
 function unavailable2(message, retryAfterMs) {
@@ -4828,16 +4926,16 @@ function encodeCursor(state) {
 }
 function decodeCursor(cursor) {
   if (cursor.length > PERPS_HISTORY_MAX_CURSOR_LENGTH || !cursor.startsWith("ph1."))
-    throw invalid("cursor", "cursor is not one this client issued");
+    throw invalid2("cursor", "cursor is not one this client issued");
   let state;
   try {
     state = JSON.parse(base64UrlDecode(cursor.slice(4)));
   } catch {
-    throw invalid("cursor", "cursor is not one this client issued");
+    throw invalid2("cursor", "cursor is not one this client issued");
   }
   const ok = state !== null && typeof state === "object" && state.v === 1 && (state.k === "fills" || state.k === "funding") && (state.n === "mainnet" || state.n === "testnet") && typeof state.w === "string" && EVM_ADDRESS_RE2.test(state.w) && isTime(state.s) && isTime(state.e) && state.s <= state.e && Number.isSafeInteger(state.l) && state.l >= 1 && state.l <= PERPS_HISTORY_MAX_LIMIT[state.k] && isTime(state.t) && state.t >= state.s && state.t <= state.e && Array.isArray(state.b) && state.b.every((id) => typeof id === "string" && id.length <= 512) && Number.isSafeInteger(state.c) && state.c >= 0;
   if (!ok)
-    throw invalid("cursor", "cursor is not one this client issued");
+    throw invalid2("cursor", "cursor is not one this client issued");
   return state;
 }
 function canonical2(value) {
@@ -4923,35 +5021,35 @@ function resolveWindow(req) {
   const kind = req.kind;
   const address = req.address.toLowerCase();
   if (!EVM_ADDRESS_RE2.test(address))
-    throw invalid("wallet", "The wallet's Hyperliquid account is not an EVM address");
+    throw invalid2("wallet", "The wallet's Hyperliquid account is not an EVM address");
   for (const field of ["startTime", "endTime"]) {
     const value = options[field];
     if (value !== undefined && !isTime(value))
-      throw invalid(field, `${field} must be a whole, non-negative number of epoch milliseconds`);
+      throw invalid2(field, `${field} must be a whole, non-negative number of epoch milliseconds`);
   }
   const max = PERPS_HISTORY_MAX_LIMIT[kind];
   if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > max))
-    throw invalid("limit", `limit must be a whole number from 1 to ${max} for ${kind}`);
+    throw invalid2("limit", `limit must be a whole number from 1 to ${max} for ${kind}`);
   if (options.cursor !== undefined) {
     if (typeof options.cursor !== "string" || options.cursor.length === 0)
-      throw invalid("cursor", "cursor is not one this client issued");
+      throw invalid2("cursor", "cursor is not one this client issued");
     const state = decodeCursor(options.cursor);
     if (state.k !== kind)
-      throw invalid("cursor", `This cursor pages ${state.k}, not ${kind}`);
+      throw invalid2("cursor", `This cursor pages ${state.k}, not ${kind}`);
     if (state.n !== req.network)
-      throw invalid("cursor", `This cursor pages ${state.n}, not ${req.network}`);
+      throw invalid2("cursor", `This cursor pages ${state.n}, not ${req.network}`);
     if (state.w !== address)
-      throw invalid("cursor", "This cursor pages another wallet");
+      throw invalid2("cursor", "This cursor pages another wallet");
     if (options.startTime !== undefined && options.startTime !== state.s || options.endTime !== undefined && options.endTime !== state.e || options.limit !== undefined && options.limit !== state.l)
-      throw invalid("cursor", "The window or page size changed; start again without a cursor");
+      throw invalid2("cursor", "The window or page size changed; start again without a cursor");
     return { state };
   }
   const endTime = options.endTime ?? req.now();
   const startTime = options.startTime ?? Math.max(0, endTime - PERPS_HISTORY_DEFAULT_WINDOW_MS);
   if (!isTime(endTime))
-    throw invalid("endTime", "endTime must be epoch milliseconds");
+    throw invalid2("endTime", "endTime must be epoch milliseconds");
   if (startTime > endTime)
-    throw invalid("startTime", "startTime must not be after endTime");
+    throw invalid2("startTime", "startTime must not be after endTime");
   return {
     state: {
       v: 1,
@@ -7893,8 +7991,14 @@ var sweepShape = {
   mints: z10.array(z10.string()).optional().describe("Extra token mints/contracts to sweep besides the chain's base assets (own-wallet destinations only).")
 };
 var PROFILE_PNL_HYPERLIQUID = "While Hyperliquid is enabled, `hyperliquid` reports the profile's main perps over every EVM TEE wallet bound " + "to it, per binding period (`coverage: 'profile'`): realized gross, funding (positive received, negative paid), " + "fees (builder fees included), realizedNetUsd = gross + funding - fees, `unrealizedUsd` at each wallet's " + "cutoff, and `netUsd` = realized net + unrealized, with `markedAt` (the oldest wallet cutoff) and open " + "`positions` (each `fundingNetUsd` positive when earned). Facts and unrealized stop at the same cutoff; each " + "`byWallet` period is `live` (reconciled on this read, not yet settled) or `settled` (a stored snapshot). " + "When `read` is true, `pnl.totalUsd` includes `netUsd` and `perpsInTotal` is true. When `read` is false, " + "`pnl.totalUsd` is spot only, `perpsInTotal` is false and `reason` says why; that is never a zero. Check " + "`historyPartial` and `partialReasons`.";
-function registerTools(server, env = process.env) {
-  const cfg = resolveConfig(env);
+var localServerConfigs = new WeakMap;
+function serverConfig(server, env, resolved) {
+  const cfg = localServerConfigs.get(server) ?? resolved ?? resolveConfig(env);
+  localServerConfigs.set(server, cfg);
+  return cfg;
+}
+function registerTools(server, env = process.env, resolved) {
+  const cfg = serverConfig(server, env, resolved);
   const allowed = resolveToolAllowlist(env);
   registerToolSubset(server, {
     tools: [...allowed].filter((name) => !isProfileEditTool(name)),
@@ -8568,8 +8672,8 @@ function registerToolSubset(server, options) {
     annotations: labRead
   }, labTool("candle_lab_edges"));
 }
-async function registerEligibleProfileTool(server, env = process.env, doFetch = fetch) {
-  const cfg = resolveConfig(env);
+async function registerEligibleProfileTool(server, env = process.env, doFetch = fetch, resolved) {
+  const cfg = serverConfig(server, env, resolved);
   const allowlist = resolveToolAllowlist(env);
   const wanted = PROFILE_EDIT_TOOL_NAMES.filter((name) => allowlist.has(name));
   let eligible = false;
@@ -8668,19 +8772,21 @@ Two chains: solana and hood. Most tools take an explicit chain — resolve it wi
 Writes are idempotent by client token and may be asynchronous: poll candle_execution_status or candle_get_operation rather than re-issuing a call. Re-issuing is how you double-spend.
 
 Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv — and AGENTS.md in github.com/candledottv/agentic.`;
-function createCandleMcpServer(env = process.env) {
+function createCandleMcpServer(env = process.env, resolved) {
   const server = new McpServer({ name: "candle-mcp", version: SERVER_VERSION }, { instructions: INSTRUCTIONS });
-  registerTools(server, env);
+  registerTools(server, env, resolved ?? resolveConfig(env));
   return server;
 }
 async function runStdioServer(env = process.env, transport = new StdioServerTransport) {
-  const server = createCandleMcpServer(env);
-  await registerEligibleProfileTool(server, env);
+  env = { ...env };
+  const cfg = resolveConfig(env);
+  const server = createCandleMcpServer(env, cfg);
+  await registerEligibleProfileTool(server, env, undefined, cfg);
   await server.connect(transport);
   const dispatch = transport.onmessage;
   transport.onmessage = (message, extra) => {
     if ("method" in message && message.method === "tools/list") {
-      registerEligibleProfileTool(server, env).then(() => dispatch?.(message, extra));
+      registerEligibleProfileTool(server, env, undefined, cfg).then(() => dispatch?.(message, extra));
     } else
       dispatch?.(message, extra);
   };
@@ -8694,4 +8800,12 @@ async function runStdioServer(env = process.env, transport = new StdioServerTran
 }
 
 // src/index.ts
-await runStdioServer();
+try {
+  await runStdioServer();
+} catch (error) {
+  if (!(error instanceof ApiKeyFileError))
+    throw error;
+  process.stderr.write(`${error.code}: ${error.message}
+`);
+  process.exitCode = 1;
+}

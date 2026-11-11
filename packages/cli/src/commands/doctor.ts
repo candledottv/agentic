@@ -1,11 +1,13 @@
 /** Setup diagnostics for owner and bot machines. Stable ids are emitted with every JSON row. */
+
+import { ApiKeyFileError, hasApiKeyFile } from "../../../mcp/src/api-key-file"
 import { sortAgentKeyScopes } from "../agent-key-access"
 import { isUsageError, parseArgs } from "../args"
 import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
 import { ProfileCoreOwnedError } from "../core/ownership"
 import type { CommandContext, Deps } from "../deps"
-import { resolveApiKey, resolveDeviceToken } from "../deps"
+import { type ResolvedApiCredential, resolveApiCredential, resolveApiKey, resolveDeviceToken } from "../deps"
 import { SecretStoreLockedError } from "../keychain"
 import {
   accent,
@@ -21,7 +23,7 @@ import {
 } from "../presentation"
 import { apiKeyPrefix, credentialEnvOverrides, effectiveProfileFields, printIdentity } from "../profiles"
 import { compareVersions, detectInstall, fetchLatest, helperAssetName, releaseBaseUrl, updateHomeFor } from "../release"
-import { formatTime, renderError, writeUsageFailure } from "../render"
+import { formatTime, renderError, writeLocalFailure, writeUsageFailure } from "../render"
 import { parseTeeReadiness, TEE_CHAIN_ASSETS } from "../tee-readiness"
 import { HELPER_ENV, HELPER_NAME, locateFido2Helper } from "../vault/fido2"
 import { CONFIG_DIR_ENV, candleConfigDir, defaultVaultPath, fileExists } from "../vault/store"
@@ -68,9 +70,11 @@ const API_KEY_CHECK = "API key valid"
 /** BE-2648: the WARN row for an API key in a rotation's grace window. `source` is where the key came from. */
 export function keyRotationRow(until: string, source: string): CheckRow {
   const fix =
-    source === "CANDLE_API_KEY"
-      ? "update CANDLE_API_KEY where this key is deployed to the new secret"
-      : "store the new secret with candle auth login, or rotate from this profile with candle keys rotate"
+    source === "CANDLE_API_KEY_FILE"
+      ? "replace the old secret in CANDLE_API_KEY_FILE and restart MCP; the CLI did not update the file"
+      : source === "CANDLE_API_KEY"
+        ? "update CANDLE_API_KEY where this key is deployed to the new secret"
+        : "store the new secret with candle auth login, or rotate from this profile with candle keys rotate"
   return {
     check: "Key rotation",
     state: "WARN",
@@ -213,6 +217,24 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
     writeUsageFailure(deps, "--role must be owner, bot, or auto", json)
     return 2
   }
+  // Validate the exclusive file source before even a device-token probe or a store read.
+  if (hasApiKeyFile(deps.env)) {
+    try {
+      await resolveApiKey(deps, ctx.profile)
+    } catch (error) {
+      if (!(error instanceof ApiKeyFileError)) throw error
+      writeLocalFailure(
+        deps,
+        {
+          code: error.code,
+          message: error.message,
+          details: { rows: [{ check: "API key", state: "FAIL", code: error.code, detail: error.message }] },
+        },
+        json,
+      )
+      return 1
+    }
+  }
   const rows: CheckRow[] = []
   // The acting profile's own non-secret fields (or the legacy top-level ones pre-profile), read
   // once: two rows below want something out of them, and doctor never writes config.
@@ -290,7 +312,11 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
       return undefined
     }),
   )
-  const apiKey = await readCredential(() => resolveApiKey(deps, ctx.profile))
+  let apiCredential: ResolvedApiCredential | undefined
+  const apiKey = await readCredential(async () => {
+    apiCredential = await resolveApiCredential(deps, ctx.profile)
+    return apiCredential.key
+  })
   const role = requestedRole === "auto" ? (apiKey && !deviceToken ? "bot" : "owner") : requestedRole
   rows.push(
     deviceToken || apiKey
@@ -322,7 +348,10 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
                 ? "config"
                 : "default",
     },
-    apiKey: { source: source(apiKey, "CANDLE_API_KEY"), prefix: apiKey ? (apiKeyPrefix(apiKey) ?? null) : null },
+    apiKey: {
+      source: apiCredential?.source === "file" ? "CANDLE_API_KEY_FILE" : source(apiKey, "CANDLE_API_KEY"),
+      prefix: apiKey ? (apiKeyPrefix(apiKey) ?? null) : null,
+    },
     deviceToken: { source: source(deviceToken, "CANDLE_DEVICE_TOKEN") },
   }
   rows.push(

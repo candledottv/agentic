@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
+import { ApiKeyFileError } from "../../../mcp/src/api-key-file"
 import {
   readSwapReceipt,
   SWAP_RECEIPT_MAX_HASH_CHARS,
@@ -99,6 +100,10 @@ import { swapCheck } from "../trading-checks"
  * endpoint that fails validation) is the `USAGE` envelope, exit 2.
  */
 export function tradingFailure(ctx: CommandContext, error: unknown, id?: string): number {
+  if (error instanceof ApiKeyFileError) {
+    writeLocalFailure(ctx.deps, { code: error.code, message: error.message }, ctx.json)
+    return 1
+  }
   if (error instanceof TradingUsage) {
     writeUsageFailure(ctx.deps, error.message, ctx.json)
     return 2

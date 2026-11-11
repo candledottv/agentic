@@ -9,9 +9,7 @@
 
 import { fetchAccount } from "./account"
 import type { CliConfig, ProfileConfig } from "./config"
-// Type-only: deps.ts imports a value from this module, so a value import back here would form a
-// runtime cycle. A type import is erased at compile time and carries no such risk.
-import type { CommandContext } from "./deps"
+import { type CommandContext, resolveApiCredential } from "./deps"
 import { bold, fullIds, type StyleDeps, symbols, type TerminalStyle, terminalStyle } from "./presentation"
 import { shortId } from "./render"
 
@@ -242,7 +240,7 @@ export function apiKeyPrefix(key: string): string | undefined {
 /** The credential env vars that BEAT the store (see deps.ts's resolvers), named where they are
  * acting. Non-blank only: an exported-but-empty variable overrides nothing. */
 export function credentialEnvOverrides(env: Record<string, string | undefined>): string[] {
-  return ["CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"].filter((name) => env[name]?.trim())
+  return ["CANDLE_API_KEY_FILE", "CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"].filter((name) => env[name]?.trim())
 }
 
 /**
@@ -314,7 +312,10 @@ export async function printIdentity(ctx: CommandContext): Promise<void> {
     // about the acting credential may stand in its place, never the profile's own cached fields.
     account = undefined
     username = undefined
-    const key = ctx.deps.env.CANDLE_API_KEY?.trim()
+    const key =
+      ctx.deps.env.CANDLE_API_KEY_FILE?.trim() || ctx.deps.env.CANDLE_API_KEY?.trim()
+        ? (await resolveApiCredential(ctx.deps, ctx.profile)).key
+        : undefined
     if (key) {
       const lookup = await fetchAccount(ctx.deps, ctx.apiUrl, key)
       if (lookup.account) account = lookup.account

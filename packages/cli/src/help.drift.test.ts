@@ -23,6 +23,29 @@ import { ALIASES, NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, routesToCo
 
 const sorted = (words: readonly string[]) => [...words].sort()
 
+test("file credential help and package docs agree on source, conflict, platform and restart", () => {
+  const file = ENVIRONMENT.find((entry) => entry.name === "CANDLE_API_KEY_FILE")
+  expect(file?.description).toContain("0400/0600")
+  expect(file?.description).toContain("conflicts")
+  expect(file?.description).toContain("restart MCP")
+  expect(ENV_NOT_IN_HELP.CANDLE_AGENT_API_KEY).toContain("only to refuse a file/raw-source conflict")
+  for (const path of [join(import.meta.dir, "../README.md"), join(import.meta.dir, "../../mcp/README.md")]) {
+    const doc = readFileSync(path, "utf8")
+    for (const term of [
+      "CANDLE_API_KEY_FILE",
+      "API_KEY_SOURCE_CONFLICT",
+      "API_KEY_FILE_UNSUPPORTED",
+      "Windows",
+      "4096",
+      "restart",
+      "root",
+      "unreleased source",
+    ]) {
+      expect(doc).toContain(term)
+    }
+  }
+})
+
 test("TEE diagnostics document signing and dry-run restrictions", () => {
   expect(documentedSubcommands(HELP.tee as Topic)).toContain("check")
   expect(documentedFlags(HELP.tee as Topic)).toEqual(

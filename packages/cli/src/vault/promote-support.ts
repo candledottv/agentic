@@ -7,7 +7,7 @@
  */
 import { apiRequest } from "../client"
 import { type KeyRow, labelCell } from "../commands/keys"
-import { type CommandContext, resolveApiKey, resolveDeviceToken } from "../deps"
+import { type CommandContext, resolveApiCredential, resolveApiKey, resolveDeviceToken } from "../deps"
 import { apiKeyPrefix, candleEnvironment } from "../profiles"
 import type { SolanaRpc } from "../solana-lite"
 import { VaultError } from "./errors"
@@ -443,7 +443,7 @@ export interface ControlledBy {
   keyPrefix: string
   /** The key's label from `GET /keys`, or null whenever D4 prints nothing. */
   keyLabel: string | null
-  keySource: "env" | "profile" | "default"
+  keySource: "file" | "env" | "profile" | "default"
   /** The profile name, for the `profile <name>` clause; absent for `env` and `default`. */
   profileName?: string
   apiUrl: string
@@ -493,7 +493,8 @@ function accountUnresolved(reason: string): VaultError {
  */
 export async function readControlledBy(ctx: CommandContext): Promise<ControlledBy> {
   const { deps } = ctx
-  const apiKey = await resolveApiKey(deps, ctx.profile)
+  const credential = await resolveApiCredential(deps, ctx.profile)
+  const apiKey = credential.key
   if (!apiKey) throw accountUnresolved("no API key is available")
   const keyPrefix = apiKeyPrefix(apiKey)
   if (keyPrefix === undefined) throw accountUnresolved("the API key is not in the cndl_live_ or cndl_test_ shape")
@@ -512,11 +513,8 @@ export async function readControlledBy(ctx: CommandContext): Promise<ControlledB
   }
   const username = typeof body.username === "string" && body.username.length > 0 ? body.username : null
 
-  const keySource: ControlledBy["keySource"] = deps.env.CANDLE_API_KEY?.trim()
-    ? "env"
-    : ctx.profile !== undefined
-      ? "profile"
-      : "default"
+  const keySource: ControlledBy["keySource"] =
+    credential.source === "legacy" || credential.source === "none" ? "default" : credential.source
   const apiUrlFrom: ControlledBy["apiUrlFrom"] | undefined =
     ctx.apiUrlFlag !== undefined ? "--api-url" : deps.env.CANDLE_API_URL?.trim() ? "CANDLE_API_URL" : undefined
 
@@ -567,11 +565,13 @@ async function readKeyLabel(ctx: CommandContext, keyPrefix: string): Promise<str
 export function renderControlledBy(controlledBy: ControlledBy, n: number): string {
   const subject = n === 1 ? "This key" : `These ${n} keys`
   const source =
-    controlledBy.keySource === "env"
-      ? "CANDLE_API_KEY"
-      : controlledBy.keySource === "profile"
-        ? `profile ${controlledBy.profileName ?? ""}`.trimEnd()
-        : "default credentials"
+    controlledBy.keySource === "file"
+      ? "CANDLE_API_KEY_FILE"
+      : controlledBy.keySource === "env"
+        ? "CANDLE_API_KEY"
+        : controlledBy.keySource === "profile"
+          ? `profile ${controlledBy.profileName ?? ""}`.trimEnd()
+          : "default credentials"
   const cleaned = controlledBy.keyLabel !== null ? labelCell(controlledBy.keyLabel) : ""
   const label = cleaned.length > 0 ? `(${cleaned})  ` : ""
   const environment = controlledBy.environment ?? "not a Candle host"
@@ -605,11 +605,11 @@ export interface ControlledByJson {
   username: string | null
   keyPrefix: string
   keyLabel: string | null
-  keySource: "env" | "profile" | "default" | "--to-key"
+  keySource: "file" | "env" | "profile" | "default" | "--to-key"
   apiUrl: string
   environment: "production" | "staging" | null
   /** BE-322, only with `--to-key`: the key the import ran under, which the fields above then do not name. */
-  importedUnder?: { keyPrefix: string; keyLabel: string | null; keySource: "env" | "profile" | "default" }
+  importedUnder?: { keyPrefix: string; keyLabel: string | null; keySource: "file" | "env" | "profile" | "default" }
 }
 
 /**

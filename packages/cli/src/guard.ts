@@ -1,3 +1,4 @@
+import { hasApiKeyFile } from "../../mcp/src/api-key-file"
 /**
  * The strict account guard (docs/superpowers/specs/2026-08-19-cli-profiles-design.md, "The
  * mismatch guard", settled strict on 2026-08-19). Before an authenticated command acts, the
@@ -38,6 +39,7 @@ export async function verifyProfileAccount(ctx: CommandContext, config: CliConfi
   const { deps, profile } = ctx
   if (!ctx.verifyAccount) return { ok: true, skipped: "--no-verify-account" }
   if (!profile) return { ok: true, skipped: "no profile" }
+  if (hasApiKeyFile(deps.env)) return { ok: true, skipped: "CANDLE_API_KEY_FILE external override" }
   if (credentialEnvOverrides(deps.env).length > 0) return { ok: true, skipped: "env override" }
   const cached = effectiveProfileFields(config, profile).account
   if (!cached) return { ok: true, skipped: "no cached account" }

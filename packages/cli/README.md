@@ -111,7 +111,7 @@ chosen words from your saved copy. Clear your terminal's scrollback too: the CLI
 | `candle keys signer approve <code> --key <prefix\|label> [--reject]`, `candle keys signer move <prefix\|label> [--to-key <prefix\|label>]` | Key signers for bots on a different machine from the vault. `approve` accepts (or rejects) a key's signer request with the device token, after you type the full fingerprint the trading machine printed. `move`, on the machine holding a wallet's current signer, moves every wallet on the key onto its active signer; `--to-key` moves a revoked key's wallets to a live key. |
 | `candle keys stop <prefix>` | Pause one key using the device token. Its requests are refused with `PROFILE_PAUSED` until resumed; the key and its local credential are kept. Repeating the command succeeds. |
 | `candle keys resume <prefix>` | Resume a stopped key using the device token. Repeating the command succeeds. An API key cannot stop or resume itself; a revoked key cannot be resumed. |
-| `candle keys rotate <prefix\|label> ([--grace <duration> \| --now] [--force] [--yes] [--idempotency-key <key>] \| --finish)` | Gives a key a new secret and keeps its prefix, label, access, limits, wallets and history. The old secret keeps working through `--grace` (default `1h`, at most `24h`) or stops at once with `--now`; `--finish` ends an open window early. When the key is the CLI's own, the new secret replaces it in the keychain. A copy in `CANDLE_API_KEY` or anywhere else must be updated by hand before the window ends; `candle doctor` warns while the old secret is in use. Each run sends an `Idempotency-Key` and retries a dropped connection once; if there is still no answer, rerun with the printed `--idempotency-key` to recover the first secret. |
+| `candle keys rotate <prefix\|label> ([--grace <duration> \| --now] [--force] [--yes] [--idempotency-key <key>] \| --finish)` | Gives a key a new secret and keeps its prefix, label, access, limits, wallets and history. The old secret keeps working through `--grace` (default `1h`, at most `24h`) or stops at once with `--now`; `--finish` ends an open window early. When the key is the CLI's own, the new secret replaces it in the keychain. A copy in `CANDLE_API_KEY_FILE`, `CANDLE_API_KEY` or anywhere else must be updated by hand before the window ends; `candle doctor` warns while the old secret is in use. Each run sends an `Idempotency-Key` and retries a dropped connection once; if there is still no answer, rerun with the printed `--idempotency-key` to recover the first secret. |
 | `candle keys revoke <prefix>` | Revokes an API key by prefix. Revoking the CLI's own stored key also clears it locally. A prefix can start with `-`; the key commands accept it as typed, and `--` (`candle keys revoke -- -QVeHyie`) ends the options on any command. |
 | `candle keys wallets <prefix>`, `keys wallets set <prefix> --wallets <id,id>`, `keys wallets scope <prefix> --scope all\|selected` | Each key is an agent profile with its own wallet set: list it, replace it, or limit the profile to its assigned wallets. |
 | `candle wallets` (alias `candle wallet`) | Shows the account's embedded (launch) wallets and any linked wallets, using the API key, with a `Signer` column saying whether this machine holds each linked wallet's signing key and a `Trusted` column saying whether it is yours (linked while signed in, or marked with `trust`). It links and revokes; it never generates or prints a key, which the vault now derives. |
@@ -163,7 +163,7 @@ chosen words from your saved copy. Clear your terminal's scrollback too: the CLI
 | `candle profile rename <old> <new>` | Renames a profile. |
 | `candle profile remove <name> --yes` | Deletes a profile and its stored credentials. |
 | `candle profile set <name> --rpc-url <url>\|--clear-rpc-url` | Sets or clears this profile's Solana RPC, used when `--rpc-url` and `CANDLE_SOLANA_RPC_URL` are not given. Only its host is ever shown. |
-| `candle mcp [--tools <a,b,c>] [--read-only] [--print-config]` | Runs the Candle MCP server (built into this binary) with this CLI's stored API key and API URL in its environment, so an MCP client config is just `{"mcpServers": {"candle": {"command": "/Users/you/.local/bin/candle", "args": ["mcp"]}}}` -- the absolute path, because GUI hosts launch servers with the app's environment and never see your PATH. Run `--print-config` to print that block filled in for this install. `--read-only` starts it with no key and only the seven keyless read tools; `--tools` pins an explicit allowlist. The server is bundled into the binary, so the host needs nothing else installed. With `CANDLE_IMAGE_DIR` set to an absolute directory path in its environment, the two launch tools accept `imagePath` for an image file inside that directory; the upload is public and permanent, on a dry run too. |
+| `candle mcp [--tools <a,b,c>] [--read-only] [--print-config]` | Runs the Candle MCP server (built into this binary) with this CLI's resolved API key and API URL in a private in-process configuration, so an MCP client config is just `{"mcpServers": {"candle": {"command": "/Users/you/.local/bin/candle", "args": ["mcp"]}}}` -- the absolute path, because GUI hosts launch servers with the app's environment and never see your PATH. Run `--print-config` to print that block filled in for this install. `--read-only` starts it with no key and only the seven keyless read tools; `--tools` pins an explicit allowlist. The server is bundled into the binary, so the host needs nothing else installed. With `CANDLE_IMAGE_DIR` set to an absolute directory path in its environment, the two launch tools accept `imagePath` for an image file inside that directory; the upload is public and permanent, on a dry run too. |
 | `candle doctor` | Runs a full health check (runtime, backend, credentials, API reachability, credential validity, wallet delegation, the install method, the account's plan and its trade fee, and whether the `candle-fido2` security key helper is beside the binary) as a PASS/FAIL/SKIP table meant for pasting into a bug report. Exits nonzero on any FAIL. |
 | `candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]` | Verifies a release asset's Sigstore bundle against the trusted root compiled into this binary. No network, no credentials, and nothing else installed: the bundle carries the certificate and the transparency-log entry. `--identity` defaults to the release identity for the version in a `latest.json` sitting beside the bundle; `--issuer` defaults to GitHub Actions'. Prints `Release signature verified` with the full file, identity, provenance and issuer fields and exits 0, or the reason on stderr and exits 1. |
 | `candle update [--check] [--to <tag>]` | Replaces this binary, and the `candle-fido2` helper beside it, with the latest signed release. Nothing is renamed until both downloads pass; the binary is renamed over the running binary only after its SHA-256 matches both SHA256SUMS and `latest.json` AND its Sigstore bundle verifies in process against that exact version's release workflow. `--check` reports what is available and installs nothing; `--to <tag>` pins a release (an older one installs, with a warning). A Homebrew or npm install is left alone, with the command that owns it printed instead. |
@@ -383,7 +383,7 @@ address is shortened (`FfU8…8pPD`; `--full` prints it whole) and an `https://`
 `auth login` and `doctor`, which carry `profile` and `account`; `auth status` and `doctor` also
 carry `cachedAccount`, the account the profile recorded, whenever a profile is resolved; scripts
 get identity from `auth status --json`. The account is cached
-at login from the API. Where the line is printed and `CANDLE_API_KEY` or `CANDLE_DEVICE_TOKEN` is
+at login from the API. Where the line is printed and `CANDLE_API_KEY_FILE`, `CANDLE_API_KEY` or `CANDLE_DEVICE_TOKEN` is
 overriding the stored credential, it reads `Account <address> (CANDLE_API_KEY override)` when the
 overriding key could be asked which account it belongs to, and
 `Account unknown (CANDLE_API_KEY override)` when it could not (offline, revoked, or a
@@ -398,7 +398,7 @@ both and the repairs in order of cost. A key that was legitimately re-issued is 
 re-authenticates instead; `--no-verify-account` skips the check for one invocation without
 repairing anything. An unreachable API turns the check into a warning, never a failure. The
 check is skipped when
-`CANDLE_API_KEY` or `CANDLE_DEVICE_TOKEN` is overriding the stored credential, when a profile has
+`CANDLE_API_KEY_FILE`, `CANDLE_API_KEY` or `CANDLE_DEVICE_TOKEN` is overriding the stored credential, when a profile has
 no cached account or no stored key, and for the commands that only read the identity or repair it:
 `auth login`, `auth status`, `auth logout`, `doctor`, `verify` (which acts as no identity at all:
 two files and a signature), `plans` (a public read that sends no credential) and the `profile`
@@ -415,6 +415,7 @@ the profile they were migrated into.
 | Variable | Effect |
 | --- | --- |
 | `CANDLE_DEVICE_TOKEN` | Overrides the stored device token for this process. Every command that needs the device token checks this first, before the store. |
+| `CANDLE_API_KEY_FILE` | Exclusive external API-key source; Linux/macOS regular file owned by the effective UID, mode exactly 0400 or 0600. Conflicts with either raw key variable; no stored-key fallback. |
 | `CANDLE_API_KEY` | Overrides the stored API key for this process, same precedence as above. |
 | `CANDLE_API_URL` | Overrides the API base URL, beating the stored config value (but not an explicit `--api-url` flag). |
 | `CANDLE_PROFILE` | Selects the profile when `--profile` is not given. |
@@ -432,6 +433,44 @@ the profile they were migrated into.
 
 `CANDLE_DEVICE_TOKEN` and `CANDLE_API_KEY` together mean CI needs no storage backend at all: set
 both and every command works without ever touching a keychain or the encrypted file.
+
+### External key files (unreleased source support)
+
+A host may supply an absolute path with both raw key variables absent:
+
+```sh
+CANDLE_API_KEY_FILE=/run/user/1000/candle/agent.key candle wallets
+CANDLE_API_KEY_FILE=/run/user/1000/candle/agent.key candle mcp
+```
+
+The file is read once per invocation, including identity, doctor and requests. It is never
+imported into a profile or credential store. File identity replaces the cached profile account;
+logout clears stored credentials but the external source remains active until unset. Rotation
+never rewrites this file: replace the old secret before the grace deadline (immediately for
+`--now`) and restart MCP. JSON rotation reports `candleApiKeyFileStale: true` when applicable.
+
+A nonblank file setting conflicts with either nonblank `CANDLE_API_KEY` or
+`CANDLE_AGENT_API_KEY`, even for equal values, before any file/store read. Without a file,
+the CLI uses `CANDLE_API_KEY`, then the selected profile slot (or legacy slot without a profile);
+the standalone MCP alias `CANDLE_AGENT_API_KEY` does not supply a CLI credential.
+Blank inputs select no file. Relative paths use the invocation's initial working directory;
+spaces in a nonblank path are preserved, with no shell or tilde expansion.
+
+Use a trusted directory. Final symlinks, other owners, modes other than 0400/0600, nonregular
+files, more than 4096 bytes, and changes during reading are refused. The file must contain one
+nonempty printable ASCII token without spaces, optionally followed by one LF or CRLF. Windows
+and hosts lacking the required POSIX primitives refuse file input. Errors use
+`API_KEY_SOURCE_CONFLICT`, `API_KEY_FILE_UNSUPPORTED`, `API_KEY_FILE_UNREADABLE` or
+`API_KEY_FILE_INVALID` and omit paths and key bytes; repair the file locally rather than relying
+on a fallback. Help/version/completion stay local. `mcp --read-only` ignores every key source
+and does not load the file, including with `--print-config`.
+
+The key stays in private memory; it is never inserted into environment variables, argv, launch
+config or saved files. Ordinary browser/helper/hook/keychain children retain the nonsecret path;
+plugins keep their environment allowlist and receive neither the path nor key. This reduces
+environment exposure, not access by root or another process with the same UID. Extended ACLs
+are not audited. Source readiness does not imply an installed npm/binary release supports this;
+publication is a separately authorized human release.
 
 ## What this CLI deliberately does not do
 

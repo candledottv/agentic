@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
-import { resolveDeviceToken } from "../deps"
+import { resolveDeviceToken, resolveExternalApiCredential } from "../deps"
 import { bold, fields, notice, success, terminalStyle } from "../presentation"
 import { apiKeyPrefix, effectiveProfileFields, printIdentity, profileSecretRef } from "../profiles"
 import { formatTime } from "../render"
@@ -227,8 +227,16 @@ export async function keysRotate(args: string[], ctx: CommandContext): Promise<n
       storeError = error instanceof Error ? error.message : String(error)
     }
   }
-  const envKey = deps.env.CANDLE_API_KEY?.trim()
-  const envNamesKey = envKey !== undefined && envKey !== "" && apiKeyPrefix(envKey) === keyPrefix
+  // Stale-warning provenance only; the replacement secret is already issued, so nothing here may throw.
+  let credential: Awaited<ReturnType<typeof resolveExternalApiCredential>>
+  try {
+    credential = await resolveExternalApiCredential(deps)
+  } catch {
+    credential = undefined
+  }
+  const namesKey = credential?.key !== undefined && apiKeyPrefix(credential.key) === keyPrefix
+  const envNamesKey = credential?.source === "env" && namesKey
+  const fileNamesKey = credential?.source === "file" && namesKey
   const until = body.previousValidUntil
 
   if (json) {
@@ -238,6 +246,7 @@ export async function keysRotate(args: string[], ctx: CommandContext): Promise<n
         stored,
         ...(storeError ? { storeError } : {}),
         ...(envNamesKey ? { candleApiKeyStale: true } : {}),
+        ...(fileNamesKey ? { candleApiKeyFileStale: true } : {}),
       })}\n`,
     )
     return storeError ? 1 : 0
@@ -264,6 +273,14 @@ export async function keysRotate(args: string[], ctx: CommandContext): Promise<n
     ).join("\n")}\n`,
   )
   const deadline = until === null ? "now" : `before ${formatTime(until)}`
+  if (fileNamesKey) {
+    notice(
+      deps,
+      "stderr",
+      "warning",
+      `CANDLE_API_KEY_FILE still holds the old secret. The file was not updated. Replace it ${deadline} and restart MCP.`,
+    )
+  }
   if (envNamesKey) {
     notice(
       deps,

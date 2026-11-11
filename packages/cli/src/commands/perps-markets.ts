@@ -6,6 +6,8 @@
  * one shape (`markets`, `market`, `book` or `candles` on the shared envelope). Human text below
  * is only the `markets` screen.
  */
+
+import { ApiKeyFileError } from "../../../mcp/src/api-key-file"
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import {
@@ -181,6 +183,10 @@ async function read(ctx: CommandContext, argv: string[], command: Command): Prom
     }
     return 0
   } catch (error) {
+    if (error instanceof ApiKeyFileError) {
+      writeLocalFailure(ctx.deps, { code: error.code, message: error.message }, ctx.json)
+      return 1
+    }
     if (error instanceof PerpsMarketError) {
       if (error.code === "PERPS_USAGE") {
         writeUsageFailure(ctx.deps, error.message, ctx.json)

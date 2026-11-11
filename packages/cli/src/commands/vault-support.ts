@@ -7,6 +7,7 @@
  * without a TTY when a secret has to be collected; `--json` output never contains a secret.
  */
 import { dirname, resolve as resolvePath } from "node:path"
+import { ApiKeyFileError } from "../../../mcp/src/api-key-file"
 import { isUsageError, type ParsedArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
 import { notice as outputNotice } from "../presentation"
@@ -1190,6 +1191,10 @@ export async function typedConfirm(
 
 /** Writes a vault failure in whichever mode this invocation is in, and answers its exit code. */
 export function writeVaultFailure(ctx: CommandContext, error: unknown): number {
+  if (error instanceof ApiKeyFileError) {
+    writeLocalFailure(ctx.deps, { code: error.code, message: error.message }, ctx.json)
+    return 1
+  }
   // A `CANDLE_CONFIG_DIR` refusal raised from inside `candleConfigDir` (D4) is a usage error, not a
   // vault one: same exit 2 and same `USAGE` envelope a mistyped flag gets.
   if (isUsageError(error)) return usage(ctx, error.message)

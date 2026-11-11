@@ -11,6 +11,13 @@
  * this bin do so on a machine that has node and may not have bun. `bun run src/index.ts` still
  * works for local development because an explicit interpreter ignores the shebang.
  */
+import { ApiKeyFileError } from "./api-key-file"
 import { runStdioServer } from "./server"
 
-await runStdioServer()
+try {
+  await runStdioServer()
+} catch (error) {
+  if (!(error instanceof ApiKeyFileError)) throw error
+  process.stderr.write(`${error.code}: ${error.message}\n`)
+  process.exitCode = 1
+}

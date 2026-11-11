@@ -15,6 +15,8 @@
  * to no flag at all).
  */
 
+import { apiKeyFileSnapshot, hasApiKeyFile } from "../../mcp/src/api-key-file"
+
 import type { HeldUnlock } from "./commands/vault-support"
 import type { CliConfig, ProfileConfig } from "./config"
 import { isCoreOwned, ProfileCoreOwnedError } from "./core/ownership"
@@ -58,6 +60,10 @@ export interface Deps {
   /** Best-effort browser launch. Real implementation (index.ts) tries open/xdg-open/start and
    * swallows failure; the URL is always printed by the caller regardless, for SSH sessions. */
   openBrowser: (url: string) => void
+  /** Dedicated bounded credential reader; separate from ordinary UTF-8 file reads. */
+  loadApiKeyFile?: (path: string) => string | Promise<string>
+  /** Internal invocation state, preserved when a command redirects writers by spreading Deps. */
+  resolvedApiKeyFile?: () => Promise<string | undefined>
   env: Record<string, string | undefined>
   /** The running Node version string (e.g. "22.23.2"), for `doctor`'s runtime-version check.
    * Real implementation reads `process.versions.node`; injected here (rather than doctor.ts
@@ -286,6 +292,8 @@ export interface CommandContext {
  * through here. A profile with nothing stored resolves to undefined, never to another identity.
  * A core-owned profile (BE-1665, K-11) throws `ProfileCoreOwnedError` instead. */
 export async function resolveDeviceToken(deps: Deps, profile?: string): Promise<string | undefined> {
+  // A device-authenticated request must not hide an invalid exclusive API-key input.
+  if (hasApiKeyFile(deps.env)) await resolveApiCredential(deps, profile)
   if (profile !== undefined) assertOrdinaryProfile(await deps.readConfig(), profile)
   const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim()
   if (fromEnv) return fromEnv
@@ -300,14 +308,57 @@ export async function resolveDeviceToken(deps: Deps, profile?: string): Promise<
   return stored ?? undefined
 }
 
-/** Resolves the API key: `CANDLE_API_KEY` env override first, then the profile's ref, else legacy.
- * For a core-owned profile (BE-1665, K-11) the profile's ref holds only its Read key: the Write
- * key is in the core-only slot. */
-export async function resolveApiKey(deps: Deps, profile?: string): Promise<string | undefined> {
+/** Internal provenance; serialize only explicitly selected public fields, never the key. */
+export type ApiKeySource = "file" | "env" | "profile" | "legacy" | "none"
+export interface ResolvedApiCredential {
+  key?: string
+  source: ApiKeySource
+}
+const fileSnapshots = new WeakMap<Deps, () => Promise<string | undefined>>()
+
+/** A new run gets a private environment/path snapshot, even when a host reuses its Deps. */
+export function beginCredentialInvocation(deps: Deps): Deps {
+  const scoped = { ...deps, env: { ...deps.env } }
+  return { ...scoped, resolvedApiKeyFile: apiKeyFileSnapshot(scoped.env, scoped.loadApiKeyFile) }
+}
+
+export async function resolveApiCredential(deps: Deps, profile?: string): Promise<ResolvedApiCredential> {
+  if (hasApiKeyFile(deps.env)) {
+    let load = deps.resolvedApiKeyFile ?? fileSnapshots.get(deps)
+    if (!load) {
+      load = apiKeyFileSnapshot(deps.env, deps.loadApiKeyFile)
+      fileSnapshots.set(deps, load)
+    }
+    // Source validation precedes store access, including a profile's API-key slot.
+    const key = await load()
+    if (profile !== undefined) assertOrdinaryProfile(await deps.readConfig(), profile)
+    return { key, source: "file" }
+  }
   if (profile !== undefined) assertOrdinaryProfile(await deps.readConfig(), profile)
   const fromEnv = deps.env.CANDLE_API_KEY?.trim()
-  if (fromEnv) return fromEnv
+  if (fromEnv) return { key: fromEnv, source: "env" }
   const ref = profile ? profileSecretRef(profile, "apiKey") : SECRET_REFS.apiKey
-  const stored = await deps.store.get(ref)
-  return stored ?? undefined
+  const key = (await deps.store.get(ref)) ?? undefined
+  return { key, source: key ? (profile ? "profile" : "legacy") : "none" }
+}
+
+/** The external (file or raw env) API-key source only, never the profile/legacy store slot.
+ * For provenance checks that must not add a store dependency (e.g. after a rotation). */
+export async function resolveExternalApiCredential(deps: Deps): Promise<ResolvedApiCredential | undefined> {
+  if (hasApiKeyFile(deps.env)) {
+    let load = deps.resolvedApiKeyFile ?? fileSnapshots.get(deps)
+    if (!load) {
+      load = apiKeyFileSnapshot(deps.env, deps.loadApiKeyFile)
+      fileSnapshots.set(deps, load)
+    }
+    return { key: await load(), source: "file" }
+  }
+  const fromEnv = deps.env.CANDLE_API_KEY?.trim()
+  return fromEnv ? { key: fromEnv, source: "env" } : undefined
+}
+
+/** Exclusive file source, otherwise raw env then the selected profile/legacy slot.
+ * A core-owned profile's ordinary slot holds only its Read key, never the core's Write key. */
+export async function resolveApiKey(deps: Deps, profile?: string): Promise<string | undefined> {
+  return (await resolveApiCredential(deps, profile)).key
 }

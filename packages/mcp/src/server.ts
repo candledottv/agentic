@@ -19,6 +19,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
+import { type RequestConfig, resolveConfig } from "./client"
 import { EXTERNAL_MARKET_DISCLOSURE } from "./market-disclosure"
 import { registerEligibleProfileTool, registerTools } from "./tools"
 import { SERVER_VERSION } from "./version"
@@ -111,9 +112,12 @@ Writes are idempotent by client token and may be asynchronous: poll candle_execu
 Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv — and AGENTS.md in github.com/candledottv/agentic.`
 
 /** The MCP server with the agent-rail tools registered, not yet connected to a transport. */
-export function createCandleMcpServer(env: Record<string, string | undefined> = process.env): McpServer {
+export function createCandleMcpServer(
+  env: Record<string, string | undefined> = process.env,
+  resolved?: RequestConfig,
+): McpServer {
   const server = new McpServer({ name: "candle-mcp", version: SERVER_VERSION }, { instructions: INSTRUCTIONS })
-  registerTools(server, env)
+  registerTools(server, env, resolved ?? resolveConfig(env))
   return server
 }
 
@@ -137,13 +141,15 @@ export async function runStdioServer(
   // process's real stdin. Every caller uses the default.
   transport: Transport = new StdioServerTransport(),
 ): Promise<void> {
-  const server = createCandleMcpServer(env)
-  await registerEligibleProfileTool(server, env)
+  env = { ...env }
+  const cfg = resolveConfig(env)
+  const server = createCandleMcpServer(env, cfg)
+  await registerEligibleProfileTool(server, env, undefined, cfg)
   await server.connect(transport)
   const dispatch = transport.onmessage
   transport.onmessage = (message, extra) => {
     if ("method" in message && message.method === "tools/list") {
-      void registerEligibleProfileTool(server, env).then(() => dispatch?.(message, extra))
+      void registerEligibleProfileTool(server, env, undefined, cfg).then(() => dispatch?.(message, extra))
     } else dispatch?.(message, extra)
   }
   await new Promise<void>((resolve) => {
