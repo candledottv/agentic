@@ -113704,7 +113704,7 @@ async function reopenFromDisk(path, reopen, previous) {
     throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, {
       suggestion: "The vault was there when this run started. Check nothing moved or removed it, then: candle vault status"
     });
-  return reopen(path, raw);
+  return reopen(path, raw, "re-opening the vault to verify its current contents");
 }
 async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
   if ("error" in parsed)
@@ -114109,7 +114109,7 @@ async function runTeeImport(ctx, opts) {
   const account = name2 !== undefined ? config.profiles?.[name2]?.account ?? "" : "";
   const importedAt = new Date(ctx.deps.now()).toISOString();
   const raw = await requireVaultRaw(ctx, opts.resolvedVault);
-  const vault = await opts.reopenForWrite(opts.resolvedVault.path, raw);
+  const vault = await opts.reopenForWrite(opts.resolvedVault.path, raw, "re-opening the vault to save the import result");
   let committed;
   try {
     committed = await commitVault(vault, {

@@ -316,6 +316,12 @@ describe("T40: vault promote --from and vault fund", () => {
 
     const code = await run(["vault", "promote", "--from", "cold", "--json"], deps)
     expect(code).toBe(0)
+    // R92: one initial unlock notice; each real re-derivation explains why the file is opened again.
+    expect(err.text.split("\n").filter((line) => line.includes("Argon2id"))).toEqual([
+      "Deriving the vault key (Argon2id, 19 MiB)",
+      "Deriving the vault key (Argon2id, 19 MiB) -- re-opening the vault to save the import result",
+      "Deriving the vault key (Argon2id, 19 MiB) -- re-opening the vault to verify its current contents",
+    ])
     expect(importCalls.n).toBe(1)
     expect(prompts).toEqual([`Type confirm to promote a new TEE wallet with pinned vault ${cold}: `])
     expect(err.text).toContain(`vault ${groupAddress(cold)}\n`)
@@ -412,6 +418,11 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
         deps,
       )
       expect(code).toBe(0)
+      expect(err.text.split("\n").filter((line) => line.includes("Argon2id"))).toEqual([
+        "Deriving the vault key (Argon2id, 19 MiB)",
+        "Deriving the vault key (Argon2id, 19 MiB) -- re-opening the vault to verify its current contents",
+        "Deriving the vault key (Argon2id, 19 MiB) -- re-opening the vault to save the import result",
+      ])
       // R5: the holdings display covers BOTH programs, and names which is which. A read that only
       // listed classic Token accounts would promote this key while hiding what it holds.
       expect(humanText(out.text)).toContain(
