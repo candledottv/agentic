@@ -477,7 +477,7 @@ function readClusterResult(value, mint) {
 }
 
 // src/version.ts
-var SERVER_VERSION = "0.10.31";
+var SERVER_VERSION = "0.10.32";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -6576,6 +6576,144 @@ function planTableMarkdown(table) {
 `);
 }
 
+// src/swap-receipt.ts
+var SWAP_RECEIPT_MAX_HASH_CHARS = 128;
+var SWAP_RECEIPT_EXACTLY_ONE = "Supply exactly one of hash or clientSwapId";
+var SWAP_RECEIPT_HASH_NOT_FOUND_NEXT = "No receipt for this hash on this key. Only the key that made a one-shot swap can read its receipt, and a " + "swap that answered receiptStored: false has none. The swap may still have landed: read candle_get_operation " + "by its clientSwapId. Do not resend it.";
+var SWAP_RECEIPT_NOT_FOUND_NEXT = "The swap is confirmed, but this key cannot read its receipt: another key on the account made it, or its " + "receipt was not stored (receiptStored: false). Reconcile from chain with hashes. Do not resend it.";
+var SWAP_RECEIPT_UNAVAILABLE_NEXT = "The swap was found, but its receipt could not be read just now. Try again in 15 seconds. Do not resend it.";
+var SWAP_RECEIPT_NO_HASH_NEXT = "No transaction hash yet, so there is no settlement to read.";
+var SWAP_RECEIPT_NOT_WRITTEN_NEXT = "A leg was broadcast but the swap did not complete, so no receipt was written. error says where the funds " + "are. Do not resend it.";
+function swapReceiptNoHashNext(outcome) {
+  if (outcome === "in_flight")
+    return `${SWAP_RECEIPT_NO_HASH_NEXT} Read again later.`;
+  if (outcome === "failed")
+    return `${SWAP_RECEIPT_NO_HASH_NEXT} Nothing was broadcast.`;
+  return SWAP_RECEIPT_NO_HASH_NEXT;
+}
+function swapReceiptTarget(args) {
+  const hasHash = args.hash !== undefined;
+  const hasId = args.clientSwapId !== undefined;
+  if (hasHash === hasId)
+    throw new Error(SWAP_RECEIPT_EXACTLY_ONE);
+  if (hasHash) {
+    const hash = args.hash;
+    if (typeof hash !== "string" || hash.length === 0 || hash.length > SWAP_RECEIPT_MAX_HASH_CHARS) {
+      throw new Error(`hash must be 1 to ${SWAP_RECEIPT_MAX_HASH_CHARS} characters`);
+    }
+    return { hash };
+  }
+  const clientSwapId = args.clientSwapId;
+  if (typeof clientSwapId !== "string" || clientSwapId.length === 0) {
+    throw new Error("clientSwapId must be a non-empty string");
+  }
+  return { clientSwapId };
+}
+function swapReceiptPath(hash) {
+  return `/api/v1/agent/swap/receipts/${encodeURIComponent(hash)}`;
+}
+function swapByClientIdPath(clientSwapId) {
+  return `/api/v1/agent/swap/by-client-id/${encodeURIComponent(clientSwapId)}`;
+}
+function swapReceiptFirstPath(target) {
+  return "hash" in target ? swapReceiptPath(target.hash) : swapByClientIdPath(target.clientSwapId);
+}
+function parseObject(text) {
+  try {
+    const value = JSON.parse(text);
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function errorCode2(body) {
+  const error = body?.error;
+  return error !== null && typeof error === "object" ? error.code : undefined;
+}
+function result(body, isError, receipt, job) {
+  return { text: JSON.stringify(body), body, isError, ...receipt ? { receipt } : {}, ...job ? { job } : {} };
+}
+function stepTwoError(status, body) {
+  const error = body?.error;
+  if (error !== null && typeof error === "object" && typeof error.code === "string") {
+    const { code, message, retryable } = error;
+    return {
+      code,
+      ...typeof message === "string" ? { message } : {},
+      retryable: typeof retryable === "boolean" ? retryable : true
+    };
+  }
+  return { code: "RECEIPT_UNAVAILABLE", message: `The receipt read answered HTTP ${status}.`, retryable: true };
+}
+async function readSwapReceipt(target, get, operationNotFoundNext) {
+  if ("hash" in target) {
+    const res = await get(swapReceiptPath(target.hash));
+    const body = parseObject(res.text);
+    if (res.status === 404 && body && errorCode2(body) === "RECEIPT_NOT_FOUND") {
+      return result({ ...body, next: SWAP_RECEIPT_HASH_NOT_FOUND_NEXT }, true);
+    }
+    return { text: res.text, body, isError: !res.ok };
+  }
+  const clientSwapId = target.clientSwapId;
+  const row = await get(swapByClientIdPath(clientSwapId));
+  const rowBody = parseObject(row.text);
+  if (!row.ok) {
+    if (row.status === 404 && rowBody && errorCode2(rowBody) === "JOB_NOT_FOUND") {
+      return result({ ...rowBody, outcome: "unknown", next: operationNotFoundNext(clientSwapId, "swap") }, true);
+    }
+    return { text: row.text, body: rowBody, isError: true };
+  }
+  const job = rowBody?.job;
+  if (job === null || typeof job !== "object" || typeof job.outcome !== "string") {
+    return result({
+      success: false,
+      clientSwapId,
+      error: { code: "INVALID_RESPONSE", message: "The swap row read returned no job.", retryable: true }
+    }, true);
+  }
+  const jobRow = job;
+  const outcome = jobRow.outcome;
+  const rawHashes = jobRow.hashes;
+  const hashes = Array.isArray(rawHashes) ? rawHashes.filter((hash) => typeof hash === "string") : [];
+  const jobError = jobRow.error;
+  const withJobError = jobError !== null && typeof jobError === "object" ? { error: jobError } : {};
+  const base2 = { clientSwapId, outcome, hashes };
+  if (outcome === "confirmed" && hashes.length > 0) {
+    const receipt = await get(swapReceiptPath(hashes[0]));
+    const receiptBody = parseObject(receipt.text);
+    const settlement = receiptBody?.settlement;
+    if (receipt.ok && settlement !== null && typeof settlement === "object") {
+      return result({ success: true, ...base2, receipt: "read", settlement }, false, "read", jobRow);
+    }
+    if (receipt.status === 404 && errorCode2(receiptBody) === "RECEIPT_NOT_FOUND") {
+      return result({ success: true, ...base2, receipt: "not_found", next: SWAP_RECEIPT_NOT_FOUND_NEXT }, false, "not_found", jobRow);
+    }
+    return result({
+      success: false,
+      ...base2,
+      receipt: "unavailable",
+      error: stepTwoError(receipt.status, receiptBody),
+      next: SWAP_RECEIPT_UNAVAILABLE_NEXT
+    }, true, "unavailable", jobRow);
+  }
+  if ((outcome === "partial" || outcome === "indeterminate") && hashes.length > 0) {
+    return result({ success: true, ...base2, receipt: "not_written", ...withJobError, next: SWAP_RECEIPT_NOT_WRITTEN_NEXT }, false, "not_written", jobRow);
+  }
+  return result({ success: true, ...base2, receipt: "no_hash", ...withJobError, next: swapReceiptNoHashNext(outcome) }, false, "no_hash", jobRow);
+}
+function swapReceiptTransportError(target, thrown) {
+  const detail = thrown instanceof Error ? thrown.message : String(thrown);
+  return JSON.stringify({
+    ...target,
+    success: false,
+    error: {
+      code: "MCP_TRANSPORT",
+      message: `The receipt read failed in transit (${detail}). A read moves nothing: read again with the same ` + `${"hash" in target ? "hash" : "clientSwapId"}. Do not resend the swap.`,
+      retryable: true
+    }
+  });
+}
+
 // src/token-metadata.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { z as z8 } from "zod";
@@ -6902,6 +7040,7 @@ var TOOL_NAMES = [
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
+  "candle_get_swap_receipt",
   "candle_recover_operation",
   "candle_get_fees",
   "candle_claim_fees",
@@ -7264,6 +7403,13 @@ function buildRequest(name, args, cfg) {
       const path = kind === "launch" ? `/api/v1/launch/headless/jobs/${id}` : kind === "swap" ? `/api/v1/agent/swap/by-client-id/${id}` : `/api/v1/trade/agent/jobs/${id}`;
       return { url: `${base2}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } };
     }
+    case "candle_get_swap_receipt": {
+      const target = swapReceiptTarget(args);
+      return {
+        url: `${base2}${swapReceiptFirstPath(target)}`,
+        init: { method: "GET", headers: jsonHeaders(requireApiKey2(cfg)) }
+      };
+    }
     case "candle_trade_execute": {
       const { clientTradeId } = args;
       return {
@@ -7483,6 +7629,25 @@ async function getOperation(args, cfg, doFetch) {
     ...res.ok ? {} : { isError: true }
   };
 }
+async function getSwapReceipt(args, cfg, doFetch) {
+  buildRequest("candle_get_swap_receipt", args, cfg);
+  const target = swapReceiptTarget(args);
+  const base2 = cfg.apiUrl.replace(/\/$/, "");
+  const headers2 = jsonHeaders(requireApiKey2(cfg));
+  const get = async (path) => {
+    const res = await doFetch(`${base2}${path}`, { method: "GET", headers: headers2 });
+    noteVersionHeaders(res);
+    return { ok: res.ok, status: res.status, text: await res.text() };
+  };
+  try {
+    const answer = await readSwapReceipt(target, get, operationNotFoundNext);
+    return { content: [{ type: "text", text: answer.text }], ...answer.isError ? { isError: true } : {} };
+  } catch (thrown) {
+    return { content: [{ type: "text", text: swapReceiptTransportError(target, thrown) }], isError: true };
+  }
+}
+var SWAP_RECEIPT_DESCRIPTION = "Read how a one-shot candle_swap settled, remeasured from chain and Relay now. Moves nothing and never " + "resends the swap. Pass exactly one of hash (any hash from that swap's hashes) or clientSwapId. Answers " + "settlement.state: settled with settledOutRaw (what arrived), pending (not filled yet), failed (bridgeStatus " + "says refund, fallback or failure when Relay reported it), or uncertain (reconcile from chain). Only the key " + "that made the swap can read its receipt. Each call reads chain and Relay for up to 8 seconds: poll no faster " + "than every 15 seconds. A swap from candle_trade or a build/submit swap is read with candle_get_operation instead.";
+var SWAP_SETTLEMENT_REREAD = "When settlement.state is pending or uncertain, read it again with candle_get_swap_receipt (clientSwapId, or " + "any hash from hashes); do not resend the swap to learn it.";
 function recoveryNext(body, clientId2, kind) {
   const error = typeof body.error === "object" && body.error !== null ? body.error : {};
   const pick = (key) => error[key] !== undefined ? error[key] : body[key];
@@ -7618,6 +7783,10 @@ var getOperationShape = {
   operationId: z10.string().optional().describe("Explicit Hood TEE operation id, exclusive with clientId and kind; reads recovery and guard even for a terminal job"),
   clientId: z10.string().optional().describe("The clientTradeId, clientSwapId or clientLaunchId the write used; requires kind"),
   kind: z10.enum(["trade", "swap", "launch"]).optional().describe("Required with clientId; omit with operationId")
+};
+var getSwapReceiptShape = {
+  hash: z10.string().min(1).max(SWAP_RECEIPT_MAX_HASH_CHARS).optional().describe("Any hash from the swap's `hashes`. Exclusive with clientSwapId"),
+  clientSwapId: z10.string().optional().describe("The clientSwapId candle_swap returned. Exclusive with hash")
 };
 var vampCandidatesShape = {
   limit: z10.number().optional().describe("Entries to return, 1 to 50 (default 20)"),
@@ -8032,6 +8201,12 @@ function registerToolSubset(server, options) {
 ` + "- `built`/`submitted`: still in flight. Wait and ask again.\n" + "- kind `swap` (candle_swap's `clientSwapId`) answers `job.outcome` instead: `in_flight` " + "(ask again), `confirmed` (`job.hashes`), `failed` (refused before any broadcast; the SAME " + "request with the SAME id starts over), `partial` (`hashes[0]` landed, " + "a later leg did not) or `indeterminate` (broadcast, outcome unknown; check " + "`error.message`). `partial` and `indeterminate` are final for that id.\n" + `- 404 (\`JOB_NOT_FOUND\`): unknown, not an outcome. ${OPERATION_NOT_FOUND_RULE} The result ` + 'says the same in `outcome: "unknown"` and `next`.\n\n' + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
     inputSchema: getOperationShape
   }, async (args) => getOperation(args, getConfig(), doFetch));
+  register("candle_get_swap_receipt", {
+    title: "How a one-shot swap settled",
+    description: SWAP_RECEIPT_DESCRIPTION,
+    inputSchema: getSwapReceiptShape,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async (args) => getSwapReceipt(args, getConfig(), doFetch));
   register("candle_recover_operation", {
     title: "Recover a Hood TEE leg by proof",
     description: "Read-only chain recovery: verifies a legacy leg's exact historical stamp and receipt. Never signs, sends or collects fees. An optional candidateHash is an untrusted locator. A hold remains until clearingCondition is met; read candle_get_operation with operationId, never repeat the trade.",
@@ -8130,29 +8305,29 @@ function registerToolSubset(server, options) {
     description: "Balances and prices for the wallets Candle already knows on this account, on both chains: the " + "embedded wallet and every TEE wallet. Solana wallets are in `embedded` and `tee` (SOL as raw " + "`lamports`, tokens as raw `amountRaw` with `decimals`). Hood wallets are in `hood.embedded` and " + "`hood.tee` (ETH as raw `wei`, ERC-20s including USDG), never in the top-level arrays. Every " + "wallet and holding carries `chain`. Prices are in `prices`: a Solana mint under its own " + "address, Hood ETH under `hood:native`, and a Hood token under `hood:<contract lowercased>`, so " + "lowercase the address before looking it up. An unpriced entry is `priceUsd: null`, never zero; " + "a Hood one says why in `unpricedReason` (no-market-row, unusable-price, stale-mark, " + "source-unavailable), and `hood.unpriced` / `hood.unpricedByReason` count them. A Hood token " + "mark older than six hours is not used, so many Hood tokens read unpriced. A wallet whose read " + "failed has null balances, never zero, and is listed in `unavailable` (Solana) or " + "`hood.unavailable`; check `complete` before quoting a total. `walletsComplete` is false only " + "when the wallet list itself was cut off, and is absent on a server that predates it: then " + "`complete: false` may be a cut-off list or a failed read. Vault and external wallets are " + "not included: Candle does not know their addresses (the Candle CLI's `candle portfolio` reads " + "them over your own RPC). Needs a key with the account:read scope; without it the answer is " + "SCOPE_MISSING. A server that predates Hood in the portfolio omits `hood` and `chain`. Reads " + "only; moves nothing." + (options.localHyperliquid ? " This local server adds `hyperliquid`: each Hood TEE wallet's Hyperliquid account (account value, " + "unrealized P&L, positions, risk level at the default thresholds) read live from Hyperliquid, with a " + "subtotal. It is not in the ledger and is never part of any total. `read: false` with a reason, or " + "entries in `unread`, means those accounts are unknown, not empty." : ""),
     inputSchema: {}
   }, async () => {
-    const result = await callAndRelay("candle_get_portfolio", {}, getConfig(), doFetch);
-    if (!options.localHyperliquid || result.isError)
-      return result;
-    const text = await withPortfolioSection(result.content[0]?.text ?? "", doFetch, env);
-    return { ...result, content: [{ type: "text", text }] };
+    const result2 = await callAndRelay("candle_get_portfolio", {}, getConfig(), doFetch);
+    if (!options.localHyperliquid || result2.isError)
+      return result2;
+    const text = await withPortfolioSection(result2.content[0]?.text ?? "", doFetch, env);
+    return { ...result2, content: [{ type: "text", text }] };
   });
   register("candle_resolve_token", {
     title: "Resolve a contract address to a token",
     description: "Turn a bare contract address or mint into Candle's market for it: chain, symbol, " + "decimals, quote asset, and whether Candle can trade it. Start here when a human gives " + "you an address and nothing else. The chain is read off the address's own shape and is " + "not guessed, so it does not need to be supplied. Reads only; moves nothing. A 404 means " + "Candle has no market for that address, which is an answer, not a failure to retry. " + EXTERNAL_MARKET_DISCLOSURE,
     inputSchema: resolveTokenShape
   }, async (args) => {
-    const result = await resolveToken(args, getConfig(), doFetch);
-    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+    const result2 = await resolveToken(args, getConfig(), doFetch);
+    return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   });
   register("candle_execution_status", {
     title: "Can this key execute right now",
     description: "One call before trading: the embedded wallets to spend from, the TEE wallets bound to this " + "key, the tier that decides what may be traded, this key's own spend limits, and its loss " + "limits and stop state (risk: lossLimits, state, stopped, tripped). `wallets` is the embedded " + "read. `tee` lists the first page of TEE wallets with `chain` (solana or evm), `active` and " + "`spendable` (active, the key not paused — `teePaused` says whether it is — and the key " + "holding a spend scope: swap:write, transfer:write or launch:write; `teeScopes` lists the " + "key's scopes, so a read-only key shows its wallets with `spendable: false`); " + "`teeComplete: false` means more, which candle_get_trading_wallets lists. candle_trade and " + "candle_swap spend the embedded wallet; a TEE wallet is signed locally (the perps tools, the " + "candle CLI's --wallet). A stopped key reports ready: false and a top-level stopped naming " + "the bound that broke; every trade answers RISK_LIMIT_REACHED until an account owner resumes " + "it, so stop trading and say why rather than retrying. Any scope can read its own. Reads " + "only; moves nothing. Call it when " + "a run starts, or after an authorization error, rather than inferring readiness from a " + "failed trade. If a read could not be completed the tool says which one and does NOT " + "claim the account is unready: an unreachable endpoint and a missing tier are different " + "problems with different fixes.",
     inputSchema: {}
   }, async () => {
-    const result = await executionStatus(getConfig(), doFetch, {
+    const result2 = await executionStatus(getConfig(), doFetch, {
       teeWallets: options.embeddedExecutionStatus !== true
     });
-    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+    return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   });
   register("candle_swap", {
     title: "Convert between base assets",
@@ -8168,7 +8343,7 @@ function registerToolSubset(server, options) {
 
 ` + 'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' + "callers that already compute them. Test-environment keys are refused: every leg settles " + `on a live venue.
 
-` + "This tool spends the embedded wallets. A TEE wallet also bridges, from SOL or USDC to ETH " + "or USDG or back, but only into the same key's TEE wallet on the other chain, with no Candle " + "fee: that runs through `candle swap` with the wallet's bound key, not this tool.",
+` + "This tool spends the embedded wallets. A TEE wallet also bridges, from SOL or USDC to ETH " + "or USDG or back, but only into the same key's TEE wallet on the other chain, with no Candle " + "fee: that runs through `candle swap` with the wallet's bound key, not this tool.\n\n" + SWAP_SETTLEMENT_REREAD,
     inputSchema: swapShape
   }, async (args) => swap(args, getConfig(), doFetch));
   register("candle_transfer", {
@@ -8181,8 +8356,8 @@ function registerToolSubset(server, options) {
     description: "Sweep the embedded wallet on one chain to a destination: every base asset (plus any explicitly named mints), one transfer per asset with amountRaw 'max'. Assets with nothing spendable are reported as empty, not errors.",
     inputSchema: sweepShape
   }, async (args) => {
-    const result = await executeSweep(args, getConfig(), doFetch);
-    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+    const result2 = await executeSweep(args, getConfig(), doFetch);
+    return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   });
   register("candle_trade", {
     title: "Buy or sell a token",
@@ -8204,8 +8379,8 @@ function registerToolSubset(server, options) {
 ` + "- If you no longer hold the result, do not re-send to find out what happened. Ask " + "candle_get_operation with the clientTradeId. A 404 there is unknown, not an outcome. " + OPERATION_NOT_FOUND_RULE,
     inputSchema: tradeShape
   }, async (args) => {
-    const result = await executeTrade(args, getConfig(), doFetch);
-    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+    const result2 = await executeTrade(args, getConfig(), doFetch);
+    return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   });
   register("candle_trade_execute", {
     title: "Execute a deferred trade",
@@ -8225,10 +8400,10 @@ function registerToolSubset(server, options) {
     description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed, then " + "return the fresh market state and token links in one result. On solana a seed makes this " + (options.headlessSeed === true ? "the seed is a separate first-buy transaction in the same Jito bundle as the launch, so " + "both land or neither does. That works on every plan, Free included, and needs no " + "swap:write. On hood the seed is " : "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " + "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " + "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is ") + "a best-effort follow-up. A launch with no seed works on every plan, Free included. MOVES " + "REAL FUNDS unless dryRun; dry-run first, which spends nothing. Seeds above the platform " + "dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH): at most 0.5 SOL / 500 USDC / 2,000,000 " + "CNDL, or on an exp- curve 10% of the threshold when that is lower; the server holds the " + "creator's own seed to the effective ceiling, so launch with the largest devBuy it allows " + "and top up with candle_trade. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
     inputSchema: imageDir ? localLaunchAndSeedShape : launchAndSeedShape
   }, async (args) => {
-    const result = await executeLaunchAndSeed(args, getConfig(), doFetch, imageDir, undefined, {
+    const result2 = await executeLaunchAndSeed(args, getConfig(), doFetch, imageDir, undefined, {
       headlessSeed: options.headlessSeed === true
     });
-    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+    return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   });
   const marketRead = createPerpsMarketExecutor(getConfig, env, doFetch);
   for (const name of PERPS_MARKET_TOOL_NAMES) {
@@ -8238,13 +8413,13 @@ function registerToolSubset(server, options) {
       inputSchema: perpsMarketShapes[name],
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     }, async (args) => {
-      const result = await marketRead(name, args);
-      return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+      const result2 = await marketRead(name, args);
+      return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
     });
   }
   const perpsTool = (tool) => async (args) => {
-    const result = await executePerps(tool, args, getConfig(), env, doFetch);
-    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+    const result2 = await executePerps(tool, args, getConfig(), env, doFetch);
+    return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   };
   const perpsWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " + "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " + "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " + "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE. A refusal names the limit " + "that refused it (error.limit).";
   register("candle_perps_setup", {
@@ -8349,12 +8524,12 @@ function registerToolSubset(server, options) {
     description: "MOVES REAL FUNDS unless submit is false. Deposit onto the key's Hyperliquid account through Relay: SOL or " + "USDC from its Solana TEE wallet, or ETH or USDG from its Hood TEE wallet, credited as Hyperliquid perps " + "USDC at the key's EVM TEE wallet's own address (Candle resolves it; no recipient is taken). Refused below a " + "floor that covers Hyperliquid's 1 USDC first-deposit charge. No Candle fee. Needs swap:write (any cap on " + "the asset still applies), and CANDLE_KEY_SIGNER_PEM_FILE to sign. There is no withdrawal from Hyperliquid yet.",
     inputSchema: perpsDepositShape
   }, async (args) => {
-    const result = await executePerpsDeposit(args, getConfig(), env, doFetch);
-    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+    const result2 = await executePerpsDeposit(args, getConfig(), env, doFetch);
+    return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   });
   const labTool = (tool) => async (args) => {
-    const result = await executeLabTool(tool, args, getConfig(), env, doFetch);
-    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+    const result2 = await executeLabTool(tool, args, getConfig(), env, doFetch);
+    return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   };
   const labRead = {
     readOnlyHint: true,

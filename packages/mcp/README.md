@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-ninety-two tools over stdio, plus four Hyperliquid market reads (ninety-six in all; ninety-five of them ship in the published 0.10.31 — `candle_recover_operation` is source only until the next release), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+ninety-three tools over stdio, plus four Hyperliquid market reads (ninety-seven in all; ninety-five of them ship in the published 0.10.31 — `candle_recover_operation` and `candle_get_swap_receipt` are source only until the next release), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, and backtest a strategy in hacc's strategy lab without hand-rolling HTTP calls. The five
@@ -39,7 +39,7 @@ environment.
 To mint a key for another agent without keeping it as the CLI profile's working key, run `candle keys create --access write --label agent-one --no-store` after device login. The key is printed once; put it in the intended agent's secret store. `--json` reports `stored: false` and exits 0. The profile's existing working key, prefix and scopes stay unchanged, even when it has no working key. Add `--embedded-wallet allow` at a terminal if this key needs the account's embedded wallet. This is a CLI storage option; it adds no MCP tool and does not change tool counts.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all ninety-six: the ninety-two tools in the table below plus the four Hyperliquid
+Unset means all ninety-seven: the ninety-three tools in the table below plus the four Hyperliquid
 market reads. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
@@ -190,6 +190,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_get_portfolio` | What the account's embedded and TEE wallets hold on Solana and Hood (Hood in `hood`), with prices; unpriced holdings say why, never zero | `GET /api/v1/agent/portfolio` | `CANDLE_AGENT_API_KEY` (`account:read`) |
 | `candle_execution_status` | One call before trading: the embedded wallets, the TEE wallets bound to this key (`tee`, each with `chain` and `spendable` — active, the key not paused, and the key holding a spend scope: `swap:write`, `transfer:write` or `launch:write`, with the key's scopes in `teeScopes`; `teeComplete: false` means more), tier, this key's limits (`limits.txLimitUse` has its USD limit use and when it resets), and its loss limits and stop state (a stopped key is `ready: false` with a top-level `stopped`); a failed read is named in `unreadable` | Composes `GET /api/v1/agent/wallets/embedded`, `/wallets/trading`, `/tier`, `/keys/self/limits` and `/keys/self/risk` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_operation` | Read a Hood TEE operation using `operationId` exclusively, or use `clientId` plus `kind` for a trade, swap or launch job | `GET /api/v1/agent/hood-tee/operations/:operationId` or the owning rail job route | `CANDLE_AGENT_API_KEY` |
+| `candle_get_swap_receipt` | How a one-shot `candle_swap` settled, remeasured from chain and Relay now. Exactly one of `hash` (any hash from the swap's `hashes`, 1 to 128 characters) or `clientSwapId`. The clientSwapId form reads the swap's row and then, only for a `confirmed` row, the receipt of `hashes[0]`; its answer adds `receipt` (`read`, `no_hash`, `not_written`, `not_found` or `unavailable`) and a `next`. Only the key that made the swap can read its receipt. Each call reads for up to 8 seconds: poll no faster than every 15 seconds. Moves nothing and never resends the swap. See "Reading a one-shot swap's settlement" | `GET /api/v1/agent/swap/receipts/:hash`, and `GET /api/v1/agent/swap/by-client-id/:clientSwapId` first for the clientSwapId form | `CANDLE_AGENT_API_KEY` (`swap:write`) |
 | `candle_recover_operation` | Verify legacy Hood proof using `operationId` and optional untrusted `candidateHash`; requires the owning rail scope and swap key. Never signs, sends or collects fees | `POST /api/v1/agent/hood-tee/operations/:operationId/recover` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_fees` | The creator fees the account's launched tokens can pay: raw amounts from chain reads, and the reason a token cannot be claimed | `GET /api/v1/agent/fees` | `CANDLE_AGENT_API_KEY` (`account:read`) |
 | `candle_atomic_launch_dry_run` | Check a Solana launch with first buys and price each buy on the curve it would deploy; builds, reserves and writes nothing | `POST /api/v1/launch/atomic/dry-run` | `CANDLE_AGENT_API_KEY` (`launch:write`, `swap:write`, Pro or Max) |
@@ -266,10 +267,32 @@ Anything else is refused before signing -- an agent key can never approve its ow
 tokens before the native asset (the native asset pays the fees), plus any `mints` named
 explicitly. Assets with nothing spendable report `empty`; a failed asset never stops the rest.
 
+## Reading a one-shot swap's settlement
+
+A one-shot `candle_swap` that bridges measures its settlement once, within 3 seconds, so a bridge
+usually answers `settlement.state: "pending"`. Read it again with `candle_get_swap_receipt`, by the
+`clientSwapId` the swap returned or by any hash from its `hashes`. Do not resend the swap to learn
+it: a same-id resend replays the stored first answer.
+
+- `settlement.state` is `settled` (with `settledOutRaw`, what arrived), `pending` (not filled yet),
+  `failed` or `uncertain` (reconcile from chain). A failed bridge carries `bridgeStatus` (`refund`,
+  `fallback` or `failure`) when Relay's own status is why it failed. `refund` and `fallback` both
+  mean Relay refunded the deposit (`fallback` is the name Relay's status endpoint gives a refund).
+  No refund amount or hash is measured, so none is reported.
+- Only the key that made the swap can read its receipt. With `clientSwapId`, a confirmed swap made
+  by another key on the account answers `receipt: "not_found"`, a success, with `outcome` and
+  `hashes` to reconcile from chain; with a hash it is a 404 `RECEIPT_NOT_FOUND` carrying `next`.
+- A `partial` or `indeterminate` swap has no receipt (`receipt: "not_written"`, and `error` says
+  where the funds are), and an in-flight one has no hash yet (`receipt: "no_hash"`). Neither costs a
+  second read.
+- Each call remeasures for up to 8 seconds. Poll no faster than every 15 seconds.
+- A swap made with `candle_trade`, or a build/submit swap (`candle swap` in the CLI), is read with
+  `candle_get_operation` instead. The CLI reads a one-shot swap with `candle swap receipt`.
+
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-ninety-two tools:
+ninety-three tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.

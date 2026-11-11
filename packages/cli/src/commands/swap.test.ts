@@ -1332,3 +1332,153 @@ describe("BE-2569 (W2): one --json result shape for swap and trade", () => {
     expect(only(f)).toMatchObject({ kind: "swap", status: "cancelled", signature: null, signatures: [] })
   })
 })
+
+// BE-3140 (R97): `candle swap receipt`, spec section 9 T12 to T14.
+describe("candle swap receipt", () => {
+  const ROW = "/api/v1/agent/swap/by-client-id/"
+  const RECEIPT = "/api/v1/agent/swap/receipts/"
+  const settled = {
+    state: "settled",
+    legs: [],
+    in: { asset: "SOL", raw: "1" },
+    expectedOutRaw: "1",
+    settledOutRaw: "876375",
+    settledOutSource: "bridge_fill",
+  }
+  const refunded = {
+    state: "failed",
+    legs: [],
+    in: { asset: "SOL", raw: "1" },
+    expectedOutRaw: "1",
+    bridgeStatus: "refund",
+  }
+  const missing = { success: false, error: { code: "RECEIPT_NOT_FOUND", message: "No receipt for this hash" } }
+
+  /** Every request made, and a fake API answering by path. */
+  function receiptFixture(routes: { row?: [number, unknown]; receipt?: [number, unknown] }) {
+    const seen: { method: string; path: string }[] = []
+    const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname
+      seen.push({ method: init?.method ?? "GET", path })
+      const route = path.startsWith(ROW) ? routes.row : path.startsWith(RECEIPT) ? routes.receipt : undefined
+      if (!route) throw new Error(`Unexpected ${path}`)
+      return Response.json(route[1], { status: route[0] })
+    }) as typeof fetch
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const deps = createTestDeps({ fetch: fetcher, env: { CANDLE_API_KEY: "bound-key" }, stdout, stderr })
+    return { deps, seen, stdout, stderr }
+  }
+  /** T14 (I1): every request any case below made. */
+  const allSeen: { method: string; path: string }[] = []
+  async function receipt(args: string[], routes: Parameters<typeof receiptFixture>[0] = {}) {
+    const f = receiptFixture(routes)
+    const code = await run(["swap", "receipt", ...args], f.deps)
+    allSeen.push(...f.seen)
+    return { ...f, code }
+  }
+
+  test("T12: both, neither, an extra positional, a bad id or a long hash is USAGE, exit 2, and nothing is read", async () => {
+    for (const args of [
+      [],
+      ["0xabc", "--client-swap-id", "s-1"],
+      ["0xabc", "0xdef"],
+      ["--client-swap-id", "bad id!"],
+      ["x".repeat(129)],
+    ]) {
+      const f = await receipt([...args, "--json"])
+      expect(f.code).toBe(2)
+      expect(JSON.parse(f.stdout.text)).toMatchObject({ ok: false, code: "USAGE" })
+      expect(f.seen).toEqual([])
+    }
+  })
+
+  test("T12/T13: the hash form prints the API's body on --json and the raw amount, never a guessed decimal", async () => {
+    const body = { success: true, settlement: settled }
+    const f = await receipt(["0xab/c", "--json"], { receipt: [200, body] })
+    expect(f.code).toBe(0)
+    expect(JSON.parse(f.stdout.text)).toEqual(body)
+    expect(f.stderr.text).toContain("settled 876375 (raw units)")
+    expect(f.seen).toEqual([{ method: "GET", path: `${RECEIPT}0xab%2Fc` }])
+  })
+
+  test("T13: the clientSwapId form prints 4.1's object, and settled <amount> <asset> from the row", async () => {
+    const job = { clientSwapId: "s-1", outcome: "confirmed", to: "USDG", hashes: ["Leg1"] }
+    const f = await receipt(["--client-swap-id", "s-1", "--json"], {
+      row: [200, { success: true, job }],
+      receipt: [200, { success: true, settlement: settled }],
+    })
+    expect(f.code).toBe(0)
+    expect(JSON.parse(f.stdout.text)).toEqual({
+      success: true,
+      clientSwapId: "s-1",
+      outcome: "confirmed",
+      hashes: ["Leg1"],
+      receipt: "read",
+      settlement: settled,
+    })
+    expect(f.stderr.text).toContain("settled 0.876375 USDG")
+    expect(f.seen.map((r) => r.path)).toEqual([`${ROW}s-1`, `${RECEIPT}Leg1`])
+  })
+
+  test("T13: a refunded bridge says so in its Settlement line", async () => {
+    const f = await receipt(["0xabc"], { receipt: [200, { success: true, settlement: refunded }] })
+    expect(f.code).toBe(0)
+    expect(f.stderr.text).toContain("Settlement: failed (refunded)")
+    const fallback = await receipt(["0xabc"], {
+      receipt: [200, { success: true, settlement: { ...refunded, bridgeStatus: "fallback" } }],
+    })
+    expect(fallback.stderr.text).toContain("Settlement: failed (refunded, Relay fallback)")
+  })
+
+  test("T13: a confirmed row whose receipt 404s is not_found, exit 0, and prints M2", async () => {
+    const f = await receipt(["--client-swap-id", "s-1"], {
+      row: [200, { success: true, job: { outcome: "confirmed", hashes: ["Leg1"] } }],
+      receipt: [404, missing],
+    })
+    expect(f.code).toBe(0)
+    expect(JSON.parse(f.stdout.text)).toMatchObject({ receipt: "not_found", success: true })
+    expect(f.stderr.text).toContain("The swap is confirmed, but this key cannot read its receipt")
+  })
+
+  test("T13: a partial row is not_written with one read; an in-flight row is no_hash", async () => {
+    const partial = await receipt(["--client-swap-id", "s-1", "--json"], {
+      row: [200, { success: true, job: { outcome: "partial", hashes: ["Leg1"], error: { code: "LEG2_FAILED" } } }],
+    })
+    expect(partial.code).toBe(0)
+    expect(JSON.parse(partial.stdout.text)).toMatchObject({ receipt: "not_written", error: { code: "LEG2_FAILED" } })
+    expect(partial.seen).toHaveLength(1)
+    const inFlight = await receipt(["--client-swap-id", "s-1"], {
+      row: [200, { success: true, job: { outcome: "in_flight", hashes: [] } }],
+    })
+    expect(inFlight.code).toBe(0)
+    expect(inFlight.stderr.text).toContain("Read again later.")
+  })
+
+  test("T13: a hash 404 exits 1 with RECEIPT_NOT_FOUND and M1 as the suggestion", async () => {
+    const f = await receipt(["0xnotours", "--json"], { receipt: [404, missing] })
+    expect(f.code).toBe(1)
+    const out = JSON.parse(f.stdout.text)
+    expect(out).toMatchObject({ ok: false, code: "RECEIPT_NOT_FOUND" })
+    expect(out.suggestion).toContain("Only the key that made a one-shot swap can read its receipt")
+  })
+
+  test("an unknown clientSwapId exits 1 with JOB_NOT_FOUND and the swap's not-found guidance", async () => {
+    const f = await receipt(["--client-swap-id", "s-1", "--json"], {
+      row: [404, { success: false, error: { code: "JOB_NOT_FOUND", message: "No swap with this clientSwapId" } }],
+    })
+    expect(f.code).toBe(1)
+    const out = JSON.parse(f.stdout.text)
+    expect(out).toMatchObject({ ok: false, code: "JOB_NOT_FOUND", details: { outcome: "unknown" } })
+    expect(out.suggestion).toContain('No swap record under id "s-1"')
+    expect(f.seen).toHaveLength(1)
+  })
+
+  test("T14 (I1): every request the command made was a GET to the receipt or by-client-id route", () => {
+    expect(allSeen.length).toBeGreaterThan(5)
+    for (const request of allSeen) {
+      expect(request.method).toBe("GET")
+      expect(/^\/api\/v1\/agent\/swap\/(?:receipts|by-client-id)\/[^/]+$/.test(request.path)).toBe(true)
+    }
+  })
+})

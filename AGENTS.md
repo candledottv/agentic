@@ -55,7 +55,7 @@ for parameters and limits.
 
 ## The tool surface
 
-Ninety-six tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_trade_execute`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl`, `candle_get_trading_wallets`, `candle_get_spendable_balances`, `candle_recover_operation` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Nineteen source tools need no key at all, so a client can be pointed at the server and used before
+Ninety-seven tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_trade_execute`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl`, `candle_get_trading_wallets`, `candle_get_spendable_balances`, `candle_recover_operation`, `candle_get_swap_receipt` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Nineteen source tools need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -136,6 +136,7 @@ anyone signs up for anything.
 | Tool | Key | What it does |
 | --- | --- | --- |
 | `candle_get_operation` | yes | read a Hood guard using `operationId` exclusively, or a trade/swap/launch job using `clientId` and `kind`. Call after a timeout instead of writing again |
+| `candle_get_swap_receipt` | yes | how a one-shot `candle_swap` settled, remeasured now, by `clientSwapId` or any hash from `hashes`; a failed bridge says `bridgeStatus` (`refund`, `fallback`, `failure`). Reads only; never resend the swap to learn it. Poll no faster than every 15 seconds |
 | `candle_recover_operation` | yes | verify legacy Hood proof using `operationId` and optional untrusted `candidateHash`; owning rail scope and swap key required. No signing, sending or fee collection |
 
 **Creator fees**

@@ -77,6 +77,8 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_resolve_token: READ,
   candle_execution_status: READ,
   candle_get_operation: READ,
+  // BE-3140 (R97): a one-shot swap's settlement, remeasured. GET only; never resends the swap.
+  candle_get_swap_receipt: READ,
   // BE-3096: proof recovery records observations only; no signing, sending or fee collection.
   candle_recover_operation: READ,
   candle_get_fees: READ,

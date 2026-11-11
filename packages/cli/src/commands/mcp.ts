@@ -106,6 +106,7 @@ export const MCP_TOOL_NAMES = [
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
+  "candle_get_swap_receipt",
   "candle_recover_operation",
   "candle_get_fees",
   "candle_atomic_launch_dry_run",

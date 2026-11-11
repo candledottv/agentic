@@ -9,7 +9,9 @@
  * verbatim -- this package never reinterprets an error body, it relays exactly what the endpoint
  * sent. Two tools ADD top-level fields to that body and change none of its own: `candle_swap`
  * adds the `clientSwapId` it sent, and `candle_get_operation` adds `outcome` and `next` to a 404
- * `JOB_NOT_FOUND` (see `swap` and `getOperation` below). One tool narrows the body's own list:
+ * `JOB_NOT_FOUND` (see `swap` and `getOperation` below), and `candle_get_swap_receipt` adds `next`
+ * to a hash read's 404 `RECEIPT_NOT_FOUND` and builds its own object for the clientSwapId form
+ * (swap-receipt.ts). One tool narrows the body's own list:
  * `candle_token_events`, called with `kind`, filters the relayed `events` to that kind and adds
  * `filteredByKind`, because the route has no kind parameter (see `tokenEventsRelay` below). That
  * body is NOT one uniform shape
@@ -88,6 +90,13 @@ import {
 } from "./perps-markets"
 import { perpsRiskShapes, withPortfolioSection } from "./perps-risk"
 import { PLAN_CAPABILITY_NOTE, type PlanTable, planPromotionLine, planTableMarkdown } from "./plans"
+import {
+  readSwapReceipt,
+  SWAP_RECEIPT_MAX_HASH_CHARS,
+  swapReceiptFirstPath,
+  swapReceiptTarget,
+  swapReceiptTransportError,
+} from "./swap-receipt"
 import {
   TOKEN_EDIT_DESCRIPTION,
   TOKEN_HISTORY_DESCRIPTION,
@@ -211,6 +220,8 @@ export const TOOL_NAMES = [
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
+  // BE-3140 (R97): a one-shot candle_swap's settlement, remeasured now, by hash or clientSwapId.
+  "candle_get_swap_receipt",
   "candle_recover_operation",
   // FE-438: the creator fees this account's launched tokens can pay, and the claim.
   "candle_get_fees",
@@ -741,6 +752,14 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
             : `/api/v1/trade/agent/jobs/${id}`
       return { url: `${base}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } }
     }
+    case "candle_get_swap_receipt": {
+      // The first read only: the clientSwapId form's second read is `getSwapReceipt`'s (BE-3140).
+      const target = swapReceiptTarget(args)
+      return {
+        url: `${base}${swapReceiptFirstPath(target)}`,
+        init: { method: "GET", headers: jsonHeaders(requireApiKey(cfg)) },
+      }
+    }
 
     case "candle_trade_execute": {
       const { clientTradeId } = args as { clientTradeId: string }
@@ -1019,6 +1038,46 @@ async function getOperation(args: Record<string, unknown>, cfg: RequestConfig, d
 }
 
 /**
+ * candle_get_swap_receipt (BE-3140, R97): a one-shot swap's settlement, remeasured now. The hash
+ * form relays the receipt route's answer, adding `next` to a 404 `RECEIPT_NOT_FOUND`; the
+ * clientSwapId form reads the row and then, for a `confirmed` row only, the receipt of
+ * `hashes[0]` (swap-receipt.ts). GET only, to those two routes. A bad input throws before any
+ * fetch; a fetch that throws is `MCP_TRANSPORT` worded for a read.
+ */
+async function getSwapReceipt(args: Record<string, unknown>, cfg: RequestConfig, doFetch: FetchLike) {
+  // Validates the input and the key before anything is fetched.
+  buildRequest("candle_get_swap_receipt", args, cfg)
+  const target = swapReceiptTarget(args)
+  const base = cfg.apiUrl.replace(/\/$/, "")
+  const headers = jsonHeaders(requireApiKey(cfg))
+  const get = async (path: string) => {
+    const res = await doFetch(`${base}${path}`, { method: "GET", headers })
+    noteVersionHeaders(res)
+    return { ok: res.ok, status: res.status, text: await res.text() }
+  }
+  try {
+    const answer = await readSwapReceipt(target, get, operationNotFoundNext)
+    return { content: [{ type: "text" as const, text: answer.text }], ...(answer.isError ? { isError: true } : {}) }
+  } catch (thrown) {
+    return { content: [{ type: "text" as const, text: swapReceiptTransportError(target, thrown) }], isError: true }
+  }
+}
+
+/** The stdio description; the hosted connector words it for a connection (apps/api/src/mcp/hosted.ts). */
+export const SWAP_RECEIPT_DESCRIPTION =
+  "Read how a one-shot candle_swap settled, remeasured from chain and Relay now. Moves nothing and never " +
+  "resends the swap. Pass exactly one of hash (any hash from that swap's hashes) or clientSwapId. Answers " +
+  "settlement.state: settled with settledOutRaw (what arrived), pending (not filled yet), failed (bridgeStatus " +
+  "says refund, fallback or failure when Relay reported it), or uncertain (reconcile from chain). Only the key " +
+  "that made the swap can read its receipt. Each call reads chain and Relay for up to 8 seconds: poll no faster " +
+  "than every 15 seconds. A swap from candle_trade or a build/submit swap is read with candle_get_operation instead."
+
+/** G3: the sentence both servers' candle_swap descriptions end with. */
+export const SWAP_SETTLEMENT_REREAD =
+  "When settlement.state is pending or uncertain, read it again with candle_get_swap_receipt (clientSwapId, or " +
+  "any hash from hashes); do not resend the swap to learn it."
+
+/**
  * BE-3072: when the API answers with recovery evidence that says to read status (an uncertain or
  * unrecorded leg), the result gains a top-level `next` saying so in words, so a client that never
  * read the description reads the job instead of invoking the tool again. Every other field is
@@ -1288,6 +1347,16 @@ const getOperationShape = {
     .optional()
     .describe("The clientTradeId, clientSwapId or clientLaunchId the write used; requires kind"),
   kind: z.enum(["trade", "swap", "launch"]).optional().describe("Required with clientId; omit with operationId"),
+}
+
+const getSwapReceiptShape = {
+  hash: z
+    .string()
+    .min(1)
+    .max(SWAP_RECEIPT_MAX_HASH_CHARS)
+    .optional()
+    .describe("Any hash from the swap's `hashes`. Exclusive with clientSwapId"),
+  clientSwapId: z.string().optional().describe("The clientSwapId candle_swap returned. Exclusive with hash"),
 }
 
 const vampCandidatesShape = {
@@ -2299,6 +2368,17 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
   )
 
   register(
+    "candle_get_swap_receipt",
+    {
+      title: "How a one-shot swap settled",
+      description: SWAP_RECEIPT_DESCRIPTION,
+      inputSchema: getSwapReceiptShape,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (args) => getSwapReceipt(args, getConfig(), doFetch),
+  )
+
+  register(
     "candle_recover_operation",
     {
       title: "Recover a Hood TEE leg by proof",
@@ -2727,7 +2807,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "on a live venue.\n\n" +
         "This tool spends the embedded wallets. A TEE wallet also bridges, from SOL or USDC to ETH " +
         "or USDG or back, but only into the same key's TEE wallet on the other chain, with no Candle " +
-        "fee: that runs through `candle swap` with the wallet's bound key, not this tool.",
+        "fee: that runs through `candle swap` with the wallet's bound key, not this tool.\n\n" +
+        SWAP_SETTLEMENT_REREAD,
       inputSchema: swapShape,
     },
     async (args) => swap(args, getConfig(), doFetch),

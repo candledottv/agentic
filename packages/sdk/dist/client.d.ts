@@ -2943,6 +2943,13 @@ export interface SwapSettlement {
         slot?: number;
         blockNumber?: number;
     };
+    /**
+     * Relay's terminal status when it is why a cross-chain swap is `failed`: `refund` (Relay reports
+     * the deposit refunded), `fallback` (the name Relay's status endpoint gives a refund, so also a
+     * refund) or `failure` (Relay reports the fill failed). Absent when a leg or the destination transaction failed on chain, on every
+     * other state, and from an older API. No refund amount or hash is carried.
+     */
+    bridgeStatus?: "refund" | "fallback" | "failure";
 }
 /** One balance of one wallet in `wallets.selfBalances()`. */
 export interface SelfWalletBalance {
@@ -4637,7 +4644,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.20";
+export declare const SDK_VERSION = "0.6.21";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

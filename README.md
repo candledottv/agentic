@@ -80,7 +80,7 @@ Ask an agent to call `candle_get_feed` with `{ "bucket": "new" }` and it works b
 
 ## The tool surface
 
-Ninety-six tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_trade_execute`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl`, `candle_get_trading_wallets`, `candle_get_spendable_balances`, `candle_recover_operation` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Nineteen source tools need no key, so a client can be pointed at the server and used before anyone
+Ninety-seven tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_trade_execute`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl`, `candle_get_trading_wallets`, `candle_get_spendable_balances`, `candle_recover_operation`, `candle_get_swap_receipt` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Nineteen source tools need no key, so a client can be pointed at the server and used before anyone
 signs up.
 
 | | Tool | Key | What it does |
@@ -144,6 +144,7 @@ signs up.
 | | `candle_atomic_launch_dry_run` | yes | check a Solana launch with first buys and price each buy; builds and writes nothing (needs `launch:write`, `swap:write`, Pro or Max) |
 | | `candle_report_activity` | yes | report agent activity for verification |
 | **What happened?** | `candle_get_operation` | yes | read a Hood guard using `operationId` exclusively, or a trade/swap/launch job using `clientId` and `kind` |
+| | `candle_get_swap_receipt` | yes | how a one-shot `candle_swap` settled, remeasured now, by `clientSwapId` or any hash from `hashes`; a failed bridge says `bridgeStatus` (`refund`, `fallback`, `failure`). Reads only; poll no faster than every 15 seconds |
 | | `candle_recover_operation` | yes | verify legacy Hood proof using `operationId` and optional untrusted `candidateHash`; owning rail scope and swap key required. No signing, sending or fee collection |
 | **Creator fees** | `candle_get_fees` | yes | the creator fees your launched tokens can pay, and why one cannot be claimed (needs `account:read`) |
 | | `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch; no destination argument, `dryRun` first (needs `launch:write`; always on) |

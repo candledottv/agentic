@@ -3,7 +3,16 @@ import { z } from "zod"
 import { launchFieldHelp } from "./launch-schema"
 import type { FetchLike } from "./orchestrate"
 import {
+  SWAP_RECEIPT_HASH_NOT_FOUND_NEXT,
+  SWAP_RECEIPT_NOT_FOUND_NEXT,
+  SWAP_RECEIPT_NOT_WRITTEN_NEXT,
+  SWAP_RECEIPT_UNAVAILABLE_NEXT,
+  swapReceiptNoHashNext,
+} from "./swap-receipt"
+import {
   buildRequest,
+  OPERATION_NOT_FOUND_RULE,
+  operationNotFoundNext,
   PROFILE_EDIT_TOOL_NAMES,
   registerToolSubset,
   registerTools,
@@ -40,6 +49,7 @@ test("all registered tools are listed", () => {
     "candle_get_profile_wallets",
     "candle_get_spendable_balances",
     "candle_get_staking",
+    "candle_get_swap_receipt",
     "candle_get_trading_wallets",
     "candle_get_wallets",
     "candle_lab_edges",
@@ -1417,4 +1427,248 @@ test("profile P&L window schema and relay preserve boundary coverage and null to
   const result = await call("candle_get_profile_pnl", { keyPrefix: "own", sinceMs: 120000 })
   expect(result.result.isError).toBeUndefined()
   expect(JSON.parse(result.text)).toMatchObject(body)
+})
+
+// BE-3140 (R97): candle_get_swap_receipt, spec section 9 T1 to T8 and T11.
+describe("candle_get_swap_receipt", () => {
+  const cfg = { apiUrl: "https://api.test/", apiKey: "cndl_live_k" }
+  const RECEIPT = "/api/v1/agent/swap/receipts/"
+  const ROW = "/api/v1/agent/swap/by-client-id/"
+  const SETTLEMENT = {
+    state: "failed",
+    legs: [{ chain: "solana", hash: "Leg1", status: "confirmed" }],
+    in: { asset: "SOL", raw: "1000000000" },
+    expectedOutRaw: "870000",
+    bridgeStatus: "refund",
+  }
+  const receiptBody = JSON.stringify({ success: true, settlement: SETTLEMENT })
+  const receiptMissing = JSON.stringify({
+    success: false,
+    error: { code: "RECEIPT_NOT_FOUND", message: "No receipt for this hash" },
+  })
+  const row = (job: Record<string, unknown>) => JSON.stringify({ success: true, job: { clientSwapId: "s-1", ...job } })
+
+  /** A fake API: records every request and answers by path. */
+  function api(routes: { row?: [number, string]; receipt?: [number, string] }) {
+    const seen: { url: string; method: string }[] = []
+    const doFetch: FetchLike = async (url, init) => {
+      seen.push({ url, method: init?.method ?? "GET" })
+      const path = new URL(url).pathname
+      if (path.startsWith(ROW) && routes.row) return answer(...routes.row)
+      if (path.startsWith(RECEIPT) && routes.receipt) return answer(...routes.receipt)
+      return answer(500, "unexpected")
+    }
+    return { seen, ...toolsWith(["candle_get_swap_receipt"], doFetch) }
+  }
+  /** T4 (I1): every request any case below sent is a GET to one of the two routes. */
+  const allSeen: { url: string; method: string }[] = []
+  const tracked = (routes: Parameters<typeof api>[0]) => {
+    const made = api(routes)
+    return {
+      ...made,
+      call: async (args: Record<string, unknown>) => {
+        const out = await made.call("candle_get_swap_receipt", args)
+        allSeen.push(...made.seen)
+        return out
+      },
+    }
+  }
+
+  test("T1: the hash form is one GET to the receipt route, encoded, with the key", () => {
+    const built = buildRequest("candle_get_swap_receipt", { hash: "0xab/c d" }, cfg)
+    expect(built.url).toBe("https://api.test/api/v1/agent/swap/receipts/0xab%2Fc%20d")
+    expect(built.init.method).toBe("GET")
+    expect((built.init.headers as Record<string, string>)["x-api-key"]).toBe("cndl_live_k")
+    expect(built.init.body).toBeUndefined()
+  })
+
+  test("T2: both, neither, empty or a hash past 128 characters throws before any fetch", async () => {
+    const bad = [{ hash: "h", clientSwapId: "s-1" }, {}, { hash: "" }, { clientSwapId: "" }, { hash: "x".repeat(129) }]
+    for (const args of bad) {
+      expect(() => buildRequest("candle_get_swap_receipt", args, cfg)).toThrow()
+      const { call, seen } = api({ receipt: [200, receiptBody], row: [200, row({ outcome: "confirmed" })] })
+      await expect(call("candle_get_swap_receipt", args)).rejects.toThrow()
+      expect(seen).toEqual([])
+    }
+    expect(() => buildRequest("candle_get_swap_receipt", { hash: "h", clientSwapId: "s" }, cfg)).toThrow(
+      "Supply exactly one of hash or clientSwapId",
+    )
+    expect(() => buildRequest("candle_get_swap_receipt", { hash: "x".repeat(128) }, cfg)).not.toThrow()
+    const { tools } = api({})
+    const schema = z.object(tools.get("candle_get_swap_receipt")?.inputSchema as z.ZodRawShape)
+    expect(schema.safeParse({ hash: "x".repeat(129) }).success).toBe(false)
+    expect(schema.safeParse({ hash: "" }).success).toBe(false)
+  })
+
+  test("the hash form relays the API's answer unchanged", async () => {
+    const { call, seen } = tracked({ receipt: [200, receiptBody] })
+    const { result, text } = await call({ hash: "Leg1" })
+    expect(text).toBe(receiptBody)
+    expect(result.isError).toBeUndefined()
+    expect(seen.map((r) => r.url)).toEqual([`https://api.test${RECEIPT}Leg1`])
+    for (const [status, sent] of [
+      [503, JSON.stringify({ success: false, error: { code: "SWAP_FAILED", retryable: true } })],
+      [403, JSON.stringify({ success: false, error: { code: "FORBIDDEN" } })],
+    ] as [number, string][]) {
+      const relayed = await tracked({ receipt: [status, sent] }).call({ hash: "Leg1" })
+      expect(relayed.text).toBe(sent)
+      expect(relayed.result.isError).toBe(true)
+    }
+  })
+
+  test("T3: a confirmed row is two GETs, the second on hashes[0], and carries the settlement", async () => {
+    const { call, seen } = tracked({
+      row: [200, row({ outcome: "confirmed", hashes: ["Leg1", "Leg2"] })],
+      receipt: [200, receiptBody],
+    })
+    const { result, text } = await call({ clientSwapId: "s-1" })
+    expect(result.isError).toBeUndefined()
+    expect(JSON.parse(text)).toEqual({
+      success: true,
+      clientSwapId: "s-1",
+      outcome: "confirmed",
+      hashes: ["Leg1", "Leg2"],
+      receipt: "read",
+      settlement: SETTLEMENT,
+    })
+    expect(seen.map((r) => r.url)).toEqual([`https://api.test${ROW}s-1`, `https://api.test${RECEIPT}Leg1`])
+  })
+
+  test("T5 (I3): a confirmed row whose receipt 404s is not_found, a success, never 'not settled'", async () => {
+    const { call } = tracked({
+      row: [200, row({ outcome: "confirmed", hashes: ["Leg1"] })],
+      receipt: [404, receiptMissing],
+    })
+    const { result, text } = await call({ clientSwapId: "s-1" })
+    const body = JSON.parse(text)
+    expect(result.isError).toBeUndefined()
+    expect(body).toEqual({
+      success: true,
+      clientSwapId: "s-1",
+      outcome: "confirmed",
+      hashes: ["Leg1"],
+      receipt: "not_found",
+      next: SWAP_RECEIPT_NOT_FOUND_NEXT,
+    })
+    expect("settlement" in body).toBe(false)
+    expect(text.toLowerCase()).not.toContain("not settled")
+    expect(text.toLowerCase()).not.toContain("no settlement")
+  })
+
+  test("a confirmed row whose receipt read fails otherwise is unavailable, an error, with M3", async () => {
+    const limited = JSON.stringify({
+      success: false,
+      error: { code: "RATE_LIMITED", message: "slow", retryable: true },
+    })
+    const { call } = tracked({ row: [200, row({ outcome: "confirmed", hashes: ["Leg1"] })], receipt: [429, limited] })
+    const { result, text } = await call({ clientSwapId: "s-1" })
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(text)).toEqual({
+      success: false,
+      clientSwapId: "s-1",
+      outcome: "confirmed",
+      hashes: ["Leg1"],
+      receipt: "unavailable",
+      error: { code: "RATE_LIMITED", message: "slow", retryable: true },
+      next: SWAP_RECEIPT_UNAVAILABLE_NEXT,
+    })
+  })
+
+  test("T6 (D4, I6): every other outcome is one read, and the receipt route is never asked", async () => {
+    const jobError = { code: "LEG2_FAILED", message: "SOL is in the wallet", retryable: false }
+    const cases: [Record<string, unknown>, string, string][] = [
+      [{ outcome: "in_flight", hashes: [] }, "no_hash", swapReceiptNoHashNext("in_flight")],
+      [{ outcome: "failed", hashes: [] }, "no_hash", swapReceiptNoHashNext("failed")],
+      [{ outcome: "confirmed", hashes: [] }, "no_hash", swapReceiptNoHashNext("confirmed")],
+      [{ outcome: "partial", hashes: ["Leg1"], error: jobError }, "not_written", SWAP_RECEIPT_NOT_WRITTEN_NEXT],
+      [{ outcome: "indeterminate", hashes: ["Leg1"], error: jobError }, "not_written", SWAP_RECEIPT_NOT_WRITTEN_NEXT],
+    ]
+    for (const [job, receipt, next] of cases) {
+      const { call, seen } = tracked({ row: [200, row(job)], receipt: [200, receiptBody] })
+      const { result, text } = await call({ clientSwapId: "s-1" })
+      const body = JSON.parse(text)
+      expect(seen).toHaveLength(1)
+      expect(result.isError).toBeUndefined()
+      expect(body.success).toBe(true)
+      expect(body.receipt).toBe(receipt)
+      expect(body.outcome).toBe(job.outcome)
+      expect(body.next).toBe(next)
+      expect("settlement" in body).toBe(false)
+      if (receipt === "not_written") expect(body.error).toEqual(jobError)
+    }
+    expect(swapReceiptNoHashNext("in_flight")).toBe(
+      "No transaction hash yet, so there is no settlement to read. Read again later.",
+    )
+    expect(swapReceiptNoHashNext("failed")).toBe(
+      "No transaction hash yet, so there is no settlement to read. Nothing was broadcast.",
+    )
+  })
+
+  test("T7: an unknown clientSwapId is the API's 404 plus outcome unknown and the swap next", async () => {
+    const missing = { success: false, error: { code: "JOB_NOT_FOUND", message: "No swap with this clientSwapId" } }
+    const { call, seen } = tracked({ row: [404, JSON.stringify(missing)] })
+    const { result, text } = await call({ clientSwapId: "s-1" })
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(text)).toEqual({ ...missing, outcome: "unknown", next: operationNotFoundNext("s-1", "swap") })
+    expect(seen).toHaveLength(1)
+    expect(OPERATION_NOT_FOUND_RULE).toContain("A swap sent without a `clientSwapId` has no record at all")
+    // Any other failure of the row read is relayed as it came.
+    const refused = JSON.stringify({ success: false, error: { code: "SWAP_FAILED", retryable: true } })
+    const relayed = await tracked({ row: [503, refused] }).call({ clientSwapId: "s-1" })
+    expect(relayed.text).toBe(refused)
+    expect(relayed.result.isError).toBe(true)
+  })
+
+  test("T8: a hash 404 RECEIPT_NOT_FOUND keeps the API's body, adds M1, and stays an error", async () => {
+    const { call } = tracked({ receipt: [404, receiptMissing] })
+    const { result, text } = await call({ hash: "Leg9" })
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(text)).toEqual({ ...JSON.parse(receiptMissing), next: SWAP_RECEIPT_HASH_NOT_FOUND_NEXT })
+    expect(SWAP_RECEIPT_HASH_NOT_FOUND_NEXT).toContain("Do not resend it")
+  })
+
+  test("a fetch that throws is MCP_TRANSPORT for a read, carrying the id, never a resend", async () => {
+    const { call } = toolsWith(["candle_get_swap_receipt"], async () => {
+      throw new Error("socket hang up")
+    })
+    for (const args of [{ clientSwapId: "s-1" }, { hash: "Leg1" }]) {
+      const { result, text } = await call("candle_get_swap_receipt", args)
+      const body = JSON.parse(text)
+      expect(result.isError).toBe(true)
+      expect(body).toMatchObject({ ...args, success: false, error: { code: "MCP_TRANSPORT", retryable: true } })
+      expect(body.error.message).toContain("Do not resend the swap")
+    }
+  })
+
+  test("T4 (I1): every request the tool made was a GET to the receipt or by-client-id route", () => {
+    expect(allSeen.length).toBeGreaterThan(10)
+    for (const request of allSeen) {
+      expect(request.method).toBe("GET")
+      const path = new URL(request.url).pathname
+      expect(/^\/api\/v1\/agent\/swap\/(?:receipts|by-client-id)\/[^/]+$/.test(path)).toBe(true)
+    }
+  })
+
+  test("it registers read-only with the description, and T11: candle_swap points at it", () => {
+    const registered: Record<string, { description?: string; annotations?: Record<string, boolean> }> = {}
+    registerTools(
+      {
+        registerTool: (name: string, config: (typeof registered)[string]) => {
+          registered[name] = config
+        },
+      } as never,
+      {},
+    )
+    const tool = registered.candle_get_swap_receipt
+    expect(tool?.annotations).toEqual({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    })
+    expect(tool?.description).toContain("Moves nothing and never resends the swap")
+    expect(tool?.description).toContain("poll no faster than every 15 seconds")
+    expect(registered.candle_swap?.description).toContain("candle_get_swap_receipt")
+    expect(registered.candle_swap?.description).toContain("do not resend the swap to learn it")
+  })
 })

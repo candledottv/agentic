@@ -285,6 +285,8 @@ export const HELP: Record<string, Topic> = {
       "candle swap status <id>",
       "candle swap status --operation <operationId>",
       "candle swap recover --operation <operationId> [--hash <0x…>]",
+      "candle swap receipt <hash>",
+      "candle swap receipt --client-swap-id <id>",
     ],
     rows: [
       {
@@ -299,6 +301,10 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "recover --operation <operationId> [--hash <0x…>]",
         description: "Recover a legacy leg by verified transaction proof; a hash is only a locator",
+      },
+      {
+        invocation: "receipt <hash> | receipt --client-swap-id <id>",
+        description: "Re-read a one-shot swap's settlement from chain (a swap made through MCP or the SDK); reads only",
       },
     ],
     flags: [
@@ -318,6 +324,7 @@ export const HELP: Record<string, Topic> = {
       "candle vault fund AgentOneAddress --amount 1 --asset SOL   # vault to vault: fund the Solana TEE wallet",
       "candle swap SOL ETH --amount 1 --wallet AgentOne   # bridge into this key's Hood TEE wallet",
       "candle swap status op_123 --wait",
+      "candle swap receipt --client-swap-id my-swap-1 --json   # a one-shot swap made through MCP or the SDK",
       "candle tee disable 0xHoodOneAddress   # then: candle tee sweep 0xHoodOneAddress",
     ],
     env: ENV_API,
