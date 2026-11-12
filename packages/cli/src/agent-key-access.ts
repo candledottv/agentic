@@ -42,6 +42,8 @@ export const AGENT_KEY_SCOPES = [
   // wallet under its limits. Owner-granted and in no default; only the Trade perps preset names it
   // (2026-10-17 C spec, section 7). It moves no funds off the account: no transfer, no withdrawal.
   "perps:write",
+  // Self-service only by explicit grant. No preset or device default includes notifications.
+  "telegram:notify",
 ] as const
 export type AgentKeyScope = (typeof AGENT_KEY_SCOPES)[number]
 

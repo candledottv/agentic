@@ -39,7 +39,8 @@
         "TEST_ENVIRONMENT_FORBIDDEN",
         "LOOSEN_REQUIRES_SESSION",
         "KEY_SIGNER_OWNER_INVALID",
-        "SIWX_INVALID"
+        "SIWX_INVALID",
+        "IDENTITY_UNVERIFIED"
       ]
     },
     "rate_limit": {
@@ -149,7 +150,7 @@
     },
     "transient": {
       "retryable": true,
-      "action": "Honor explicit error.retryable before this default. Back off only when retryable, reusing the SAME idempotency id. hood_market_unavailable is a twice-failed address and remains retryable:false; wait for a changed condition, never spin or pause all Hood tokens. Do not reuse the id when `stage` is `executed`, or when `stage` is `unconfirmed` and `retryable` is false. An unconfirmed approval that did not send the trade has `retryable: true` and may reuse the id. UNKNOWN on a token metadata edit: retry with the SAME Idempotency-Key; the edit may already be recorded, and the retry finishes it without a second version.",
+      "action": "Honor explicit error.retryable before this default. Back off only when retryable, reusing the SAME idempotency id. hood_market_unavailable is a twice-failed address and remains retryable:false; wait for a changed condition, never spin or pause all Hood tokens. Do not reuse the id when `stage` is `executed`, or when `stage` is `unconfirmed` and `retryable` is false. An unconfirmed approval that did not send the trade has `retryable: true` and may reuse the id. UNKNOWN on a token metadata edit: retry with the SAME Idempotency-Key; the edit may already be recorded, and the retry finishes it without a second version. TELEGRAM_LINK_SYNCING and TELEGRAM_RELAY_UNAVAILABLE: resend the SAME requestId, label and text after retryAfter; a new requestId could notify twice.",
       "codes": [
         "BUILD_TIMEOUT",
         "LAUNCH_FAILED",
@@ -163,12 +164,14 @@
         "FEE_CLAIM_FAILED",
         "WALLET_IMPORT_FAILED",
         "REBIND_RECONCILE_INCOMPLETE",
-        "UNKNOWN"
+        "UNKNOWN",
+        "TELEGRAM_LINK_SYNCING",
+        "TELEGRAM_RELAY_UNAVAILABLE"
       ]
     },
     "state_conflict": {
       "retryable": false,
-      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. TRADE_UNRECORDED means the trade LANDED (error.stage executed, error.signature is the transaction) and only Candle's record of it failed: never trade again, reconcile by signature. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id. BRIDGE_IN_FLIGHT: a bridge into or out of this wallet is still open; read `candle swap status` and record the sweep once it closes or its two hours pass. HOLD_NOT_RELEASABLE: the trade's USD window hold stays; when error.retryable is true, call again after retryAfter (or at once for reason `changed`). FEE_NOT_CLAIMABLE: nothing was signed; error.reason says who can claim or why not (below_dust, wallet_not_signable, not_recipient, insufficient_gas, fee_wallet_designated, claimable_via_web_session), and only below_dust and insufficient_gas change with time or funding. ACCOUNT_EXISTS and PAYER_IN_SIGNUP: the wallet already has an account or a signup under way; do not create another. INPUT_MISMATCH and SIGNER_MISMATCH on an account signup: resume with the original inputs and signer, never new ones. TERMS_VERSION_STALE: show the version in error.data and ask again. NOT_TOKEN_CREATOR, TOKEN_NOT_FOUND, TOKEN_NOT_LIVE, ONCHAIN_METADATA_TOKEN and TEE_LAUNCHED_HOOD_TOKEN refuse a token metadata edit and wrote nothing: only the launching account may edit, the token must be a confirmed Candle token, and a post-cutover Hood token is edited on chain with POST /api/v1/hood/metadata/edit instead. ALLOW_LAUNCH_NOT_ENFORCED: the owner's allowLaunch off was saved, but this server does not read it, so the key still launches; to stop it, pause the key, move it to Read, or rebind the wallet. ALREADY_ON_PAID_PLAN and CHECKOUT_IN_PROGRESS answer a signed-in card checkout: the account already holds a paid plan, or a checkout for it is already under way (it may already be paid). Never start another purchase; read the account's billing state.",
+      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. TRADE_UNRECORDED means the trade LANDED (error.stage executed, error.signature is the transaction) and only Candle's record of it failed: never trade again, reconcile by signature. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id. BRIDGE_IN_FLIGHT: a bridge into or out of this wallet is still open; read `candle swap status` and record the sweep once it closes or its two hours pass. HOLD_NOT_RELEASABLE: the trade's USD window hold stays; when error.retryable is true, call again after retryAfter (or at once for reason `changed`). FEE_NOT_CLAIMABLE: nothing was signed; error.reason says who can claim or why not (below_dust, wallet_not_signable, not_recipient, insufficient_gas, fee_wallet_designated, claimable_via_web_session), and only below_dust and insufficient_gas change with time or funding. ACCOUNT_EXISTS and PAYER_IN_SIGNUP: the wallet already has an account or a signup under way; do not create another. INPUT_MISMATCH and SIGNER_MISMATCH on an account signup: resume with the original inputs and signer, never new ones. TERMS_VERSION_STALE: show the version in error.data and ask again. NOT_TOKEN_CREATOR, TOKEN_NOT_FOUND, TOKEN_NOT_LIVE, ONCHAIN_METADATA_TOKEN and TEE_LAUNCHED_HOOD_TOKEN refuse a token metadata edit and wrote nothing: only the launching account may edit, the token must be a confirmed Candle token, and a post-cutover Hood token is edited on chain with POST /api/v1/hood/metadata/edit instead. ALLOW_LAUNCH_NOT_ENFORCED: the owner's allowLaunch off was saved, but this server does not read it, so the key still launches; to stop it, pause the key, move it to Read, or rebind the wallet. TELEGRAM_NOT_LINKED, TELEGRAM_CONSENT_REQUIRED and TELEGRAM_CHAT_STOPPED refuse a client Telegram notification until the member links Telegram, accepts the Quant bot's terms or sends /start; NOT_FOUND is a notification id this account does not own. When the body carries notificationId with admissionUnknown, read that id with GET /api/v1/telegram/notifications/:id instead of sending a new request. The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. TRADE_UNRECORDED means the trade LANDED (error.stage executed, error.signature is the transaction) and only Candle's record of it failed: never trade again, reconcile by signature. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id. BRIDGE_IN_FLIGHT: a bridge into or out of this wallet is still open; read `candle swap status` and record the sweep once it closes or its two hours pass. HOLD_NOT_RELEASABLE: the trade's USD window hold stays; when error.retryable is true, call again after retryAfter (or at once for reason `changed`). FEE_NOT_CLAIMABLE: nothing was signed; error.reason says who can claim or why not (below_dust, wallet_not_signable, not_recipient, insufficient_gas, fee_wallet_designated, claimable_via_web_session), and only below_dust and insufficient_gas change with time or funding. ACCOUNT_EXISTS and PAYER_IN_SIGNUP: the wallet already has an account or a signup under way; do not create another. INPUT_MISMATCH and SIGNER_MISMATCH on an account signup: resume with the original inputs and signer, never new ones. TERMS_VERSION_STALE: show the version in error.data and ask again. NOT_TOKEN_CREATOR, TOKEN_NOT_FOUND, TOKEN_NOT_LIVE, ONCHAIN_METADATA_TOKEN and TEE_LAUNCHED_HOOD_TOKEN refuse a token metadata edit and wrote nothing: only the launching account may edit, the token must be a confirmed Candle token, and a post-cutover Hood token is edited on chain with POST /api/v1/hood/metadata/edit instead. ALLOW_LAUNCH_NOT_ENFORCED: the owner's allowLaunch off was saved, but this server does not read it, so the key still launches; to stop it, pause the key, move it to Read, or rebind the wallet. ALREADY_ON_PAID_PLAN and CHECKOUT_IN_PROGRESS answer a signed-in card checkout: the account already holds a paid plan, or a checkout for it is already under way (it may already be paid). Never start another purchase; read the account's billing state.",
       "codes": [
         "IDEMPOTENCY_CONFLICT",
         "ALREADY_ON_PAID_PLAN",
@@ -216,7 +219,11 @@
         "NOT_TOKEN_CREATOR",
         "TOKEN_NOT_LIVE",
         "ONCHAIN_METADATA_TOKEN",
-        "TEE_LAUNCHED_HOOD_TOKEN"
+        "TEE_LAUNCHED_HOOD_TOKEN",
+        "NOT_FOUND",
+        "TELEGRAM_NOT_LINKED",
+        "TELEGRAM_CONSENT_REQUIRED",
+        "TELEGRAM_CHAT_STOPPED"
       ]
     },
     "quota": {
@@ -233,7 +240,7 @@
     },
     "availability": {
       "retryable": true,
-      "action": "The capability is switched off or a required leg is absent in this environment. Retry later; escalate if it persists. TEST_FLEET_PRODUCTION_DISABLED is a standing refusal on any deployment that is not staging: do not retry it there.",
+      "action": "The capability is switched off or a required leg is absent in this environment. Retry later; escalate if it persists. TEST_FLEET_PRODUCTION_DISABLED is a standing refusal on any deployment that is not staging: do not retry it there. TELEGRAM_NOTIFICATIONS_DISABLED with reason paused clears by itself; with reason disabled it waits on a switch.",
       "codes": [
         "LAUNCH_DISABLED",
         "FEE_LEG_MISSING",
@@ -246,7 +253,8 @@
         "LAUNCH_RULES_UNAVAILABLE",
         "TEST_FLEET_PRODUCTION_DISABLED",
         "ACCOUNTS_UNAVAILABLE",
-        "METADATA_EDIT_DISABLED"
+        "METADATA_EDIT_DISABLED",
+        "TELEGRAM_NOTIFICATIONS_DISABLED"
       ]
     },
     "venue_refused": {
