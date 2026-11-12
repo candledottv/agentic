@@ -41,6 +41,7 @@ import {
   effectiveEmbeddedWallet,
   withdrawNeedsEmbeddedWalletLine,
 } from "./keys-embedded-wallet"
+import { resolveTargetKey } from "./tee-rebind"
 
 const KEYS_PATH = "/api/v1/agent/keys"
 
@@ -508,10 +509,10 @@ export async function keysRevoke(args: string[], ctx: CommandContext): Promise<n
     return 2
   }
   if (parsed.positionals.length !== 1) {
-    deps.stderr.write("Usage: candle keys revoke <prefix>\n")
+    deps.stderr.write("Usage: candle keys revoke <prefix|label>\n")
     return 2
   }
-  const prefix = parsed.positionals[0] as string
+  const target = parsed.positionals[0] as string
 
   await printIdentity(ctx)
 
@@ -520,6 +521,18 @@ export async function keysRevoke(args: string[], ctx: CommandContext): Promise<n
     writeLocalFailure(deps, NO_DEVICE_TOKEN, json)
     return 1
   }
+
+  // A label resolves to its prefix the way `keys access` does (BE-3298): sent as-is, the API read
+  // it as a prefix and answered "Key not found" for a live key. Two live keys with one label refuse.
+  const resolved = await resolveTargetKey(ctx, deviceToken, target, {
+    codePrefix: "KEY_REVOKE",
+    writeListFailure: (failure) => {
+      writeFailure(deps, failure, { apiUrl, authType: "device" }, json)
+      return 1
+    },
+  })
+  if (!resolved.ok) return resolved.code
+  const prefix = resolved.keyPrefix
 
   const result = await apiRequest(`${KEYS_PATH}/${encodeURIComponent(prefix)}`, {
     method: "DELETE",

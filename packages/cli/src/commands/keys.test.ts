@@ -462,12 +462,21 @@ describe("keys create --no-store", () => {
 })
 
 describe("keys revoke", () => {
+  // `GET /keys` as `keys list` reads it: what revoke resolves a label against (BE-3298).
+  const listRoute = (keys: Array<{ keyPrefix: string; label?: string; revokedAt?: number }>) => () =>
+    jsonResponse(200, {
+      success: true,
+      tier: "free",
+      keys: keys.map((key) => ({ scopes: ["launch:write"], environment: "production", createdAt: 1000, ...key })),
+    })
+
   test("revoking the stored prefix also clears the local api_key ref and says so", async () => {
     const { fetch, calls } = createRoutedFetch({
-      "/api/v1/agent/keys/ck_liveab": () => jsonResponse(200, { success: true }),
+      "/api/v1/agent/keys": listRoute([{ keyPrefix: "ck_livab" }]),
+      "/api/v1/agent/keys/ck_livab": () => jsonResponse(200, { success: true }),
     })
     const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_stored" })
-    const configStore = createFakeConfigStore({ keyPrefix: "ck_liveab" })
+    const configStore = createFakeConfigStore({ keyPrefix: "ck_livab" })
     const stdout = createCapture()
     // This config's legacy `keyPrefix` is silently migrated to profile "default" on the very
     // first dispatch (profiles.ts's migratedConfig), so `deps` must wire ALL four config-store
@@ -475,10 +484,10 @@ describe("keys revoke", () => {
     // needed) -- `updateProfile` is how the revoke actually clears the migrated profile's key.
     const deps = createTestDeps({ fetch, store, stdout, ...configStore })
 
-    const code = await run(["keys", "revoke", "ck_liveab"], deps)
+    const code = await run(["keys", "revoke", "ck_livab"], deps)
 
     expect(code).toBe(0)
-    expect(calls[0]?.init.method).toBe("DELETE")
+    expect(calls.at(-1)?.init.method).toBe("DELETE")
     // The ref and field this clears are the namespaced ones the migrated "default" profile
     // actually uses -- not the untouched legacy `api_key` / top-level `keyPrefix`, which
     // migration deliberately leaves in place so a rollback to a pre-profile CLI keeps working.
@@ -489,10 +498,11 @@ describe("keys revoke", () => {
 
   test("revoking a DIFFERENT prefix leaves the stored api_key ref untouched", async () => {
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/keys/ck_liveother": () => jsonResponse(200, { success: true }),
+      "/api/v1/agent/keys": listRoute([{ keyPrefix: "ck_livab" }, { keyPrefix: "ck_other" }]),
+      "/api/v1/agent/keys/ck_other": () => jsonResponse(200, { success: true }),
     })
     const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_stored" })
-    const configStore = createFakeConfigStore({ keyPrefix: "ck_liveab" })
+    const configStore = createFakeConfigStore({ keyPrefix: "ck_livab" })
     const deps = createTestDeps({
       fetch,
       store,
@@ -501,11 +511,11 @@ describe("keys revoke", () => {
       clearConfig: configStore.clearConfig,
     })
 
-    const code = await run(["keys", "revoke", "ck_liveother"], deps)
+    const code = await run(["keys", "revoke", "ck_other"], deps)
 
     expect(code).toBe(0)
     expect(await store.get(SECRET_REFS.apiKey)).toBe("ck_live_stored")
-    expect((await configStore.readConfig()).keyPrefix).toBe("ck_liveab")
+    expect((await configStore.readConfig()).keyPrefix).toBe("ck_livab")
   })
 
   test("a prefix starting with '-' is accepted, bare and after `--`", async () => {
@@ -514,26 +524,129 @@ describe("keys revoke", () => {
       ["keys", "revoke", "--", "-Ab3dEf9"],
     ]) {
       const { fetch, calls } = createRoutedFetch({
+        "/api/v1/agent/keys": listRoute([{ keyPrefix: "-Ab3dEf9" }]),
         "/api/v1/agent/keys/-Ab3dEf9": () => jsonResponse(200, { success: true }),
       })
       const deps = createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }) })
       expect(await run(argv, deps)).toBe(0)
-      expect(calls[0]?.init.method).toBe("DELETE")
-      expect(calls[0]?.url).toContain("/keys/-Ab3dEf9")
+      expect(calls.at(-1)?.init.method).toBe("DELETE")
+      expect(calls.at(-1)?.url).toContain("/keys/-Ab3dEf9")
     }
   })
 
-  test("URL-encodes the prefix path segment (fix round 1, item 12)", async () => {
+  test("a prefix is revoked unchanged: one list read, then DELETE on that prefix, as before", async () => {
     const { fetch, calls } = createRoutedFetch({
-      "/api/v1/agent/keys/weird%2Fprefix": () => jsonResponse(200, { success: true }),
+      "/api/v1/agent/keys": listRoute([
+        { keyPrefix: "_S6xSIrz", label: "be2949-acs2" },
+        { keyPrefix: "Zq9Lw2Xa", label: "other" },
+      ]),
+      "/api/v1/agent/keys/_S6xSIrz": () => jsonResponse(200, { success: true }),
     })
-    const store = createFakeStore({ device_token: "cndl_dvc_x" })
-    const deps = createTestDeps({ fetch, store })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, stdout, store: createFakeStore({ device_token: "cndl_dvc_x" }) })
 
-    const code = await run(["keys", "revoke", "weird/prefix"], deps)
+    expect(await run(["keys", "revoke", "_S6xSIrz", "--json"], deps)).toBe(0)
+    expect(calls.map((call) => call.init.method ?? "GET")).toEqual(["GET", "DELETE"])
+    expect(new URL(calls[1]?.url as string).pathname).toBe("/api/v1/agent/keys/_S6xSIrz")
+    expect(JSON.parse(stdout.text)).toEqual({ success: true, keyPrefix: "_S6xSIrz", clearedLocal: false })
+  })
+
+  test("a prefix still revokes when the key list cannot be read", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(500, { error: { code: "INTERNAL", message: "boom" } }),
+      "/api/v1/agent/keys/_S6xSIrz": () => jsonResponse(200, { success: true }),
+    })
+    const deps = createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }) })
+
+    expect(await run(["keys", "revoke", "_S6xSIrz"], deps)).toBe(0)
+    expect(calls.at(-1)?.init.method).toBe("DELETE")
+    expect(calls.at(-1)?.url).toContain("/keys/_S6xSIrz")
+  })
+
+  test("a label resolves to its live key's prefix, and the DELETE names the prefix (BE-3298)", async () => {
+    const { fetch, calls, unmatched } = createRoutedFetch({
+      "/api/v1/agent/keys": listRoute([
+        // A revoked key with the same label is not a match: only live keys resolve.
+        { keyPrefix: "OldKey01", label: "be2949-acs2", revokedAt: 500 },
+        { keyPrefix: "_S6xSIrz", label: "be2949-acs2" },
+        { keyPrefix: "Zq9Lw2Xa", label: "other" },
+      ]),
+      "/api/v1/agent/keys/_S6xSIrz": () => jsonResponse(200, { success: true }),
+    })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, stdout, store: createFakeStore({ device_token: "cndl_dvc_x" }) })
+
+    const code = await run(["keys", "revoke", "be2949-acs2"], deps)
 
     expect(code).toBe(0)
-    expect(calls[0]?.url).toContain("weird%2Fprefix")
+    expect(unmatched).toHaveLength(0)
+    expect(calls.at(-1)?.init.method).toBe("DELETE")
+    expect(new URL(calls.at(-1)?.url as string).pathname).toBe("/api/v1/agent/keys/_S6xSIrz")
+    expect(stdout.text).toContain("Revoked key _S6xSIrz.")
+  })
+
+  test("a label that names the stored key clears it locally, as the prefix would", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": listRoute([{ keyPrefix: "ck_livab", label: "my bot" }]),
+      "/api/v1/agent/keys/ck_livab": () => jsonResponse(200, { success: true }),
+    })
+    const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_stored" })
+    const configStore = createFakeConfigStore({ keyPrefix: "ck_livab" })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, store, stdout, ...configStore })
+
+    expect(await run(["keys", "revoke", "my bot"], deps)).toBe(0)
+    expect(await store.get("profile:default:api_key")).toBeNull()
+    expect((await configStore.readConfig()).profiles?.default?.keyPrefix).toBeUndefined()
+  })
+
+  test("an ambiguous label (two live keys) refuses, lists both prefixes and revokes nothing", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/keys": listRoute([
+        { keyPrefix: "_S6xSIrz", label: "twin" },
+        { keyPrefix: "Zq9Lw2Xa", label: "twin" },
+      ]),
+    })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, stdout, store: createFakeStore({ device_token: "cndl_dvc_x" }) })
+
+    const code = await run(["keys", "revoke", "twin", "--json"], deps)
+
+    expect(code).toBe(1)
+    expect(calls.map((call) => call.init.method ?? "GET")).toEqual(["GET"])
+    const body = JSON.parse(stdout.text)
+    expect(body.code).toBe("KEY_REVOKE_KEY_AMBIGUOUS")
+    expect(body.message).toContain('2 active keys are named "twin"')
+    expect(body.suggestion).toContain("_S6xSIrz")
+    expect(body.suggestion).toContain("Zq9Lw2Xa")
+  })
+
+  test("an unknown label refuses locally with the named keys and revokes nothing", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/keys": listRoute([{ keyPrefix: "_S6xSIrz", label: "be2949-acs2" }]),
+    })
+    const stderr = createCapture()
+    const deps = createTestDeps({ fetch, stderr, store: createFakeStore({ device_token: "cndl_dvc_x" }) })
+
+    const code = await run(["keys", "revoke", "no-such-name"], deps)
+
+    expect(code).toBe(1)
+    expect(calls.map((call) => call.init.method ?? "GET")).toEqual(["GET"])
+    expect(stderr.text).toContain('No active key on this account is named "no-such-name".')
+    expect(stderr.text).toContain("_S6xSIrz be2949-acs2")
+    expect(stderr.text).not.toContain("Revoked")
+  })
+
+  test("a label is refused, not sent as a prefix, when the key list cannot be read", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(500, { error: { code: "INTERNAL", message: "boom" } }),
+    })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, stdout, store: createFakeStore({ device_token: "cndl_dvc_x" }) })
+
+    expect(await run(["keys", "revoke", "be2949-acs2", "--json"], deps)).toBe(1)
+    expect(calls.map((call) => call.init.method ?? "GET")).toEqual(["GET"])
+    expect(JSON.parse(stdout.text).ok).toBe(false)
   })
 })
 
@@ -876,13 +989,16 @@ describe("profiles", () => {
   })
 
   test("keys revoke of the stored key clears the profile's key and prefix", async () => {
-    const { fetch } = createRoutedFetch({ "/api/v1/agent/keys/ck_live_ne": () => jsonResponse(200, { success: true }) })
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [{ keyPrefix: "ck_livne" }] }),
+      "/api/v1/agent/keys/ck_livne": () => jsonResponse(200, { success: true }),
+    })
     const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "ck_live_new" })
     const config = createFakeConfigStore({
-      profiles: { staging: { keyPrefix: "ck_live_ne" } },
+      profiles: { staging: { keyPrefix: "ck_livne" } },
       activeProfile: "staging",
     })
-    const code = await run(["keys", "revoke", "ck_live_ne"], createTestDeps({ fetch, store, ...config }))
+    const code = await run(["keys", "revoke", "ck_livne"], createTestDeps({ fetch, store, ...config }))
     expect(code).toBe(0)
     expect(await store.get("profile:staging:api_key")).toBeNull()
     expect((await config.readConfig()).profiles?.staging?.keyPrefix).toBeUndefined()

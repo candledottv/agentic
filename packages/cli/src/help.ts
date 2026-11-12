@@ -1222,14 +1222,17 @@ export const HELP: Record<string, Topic> = {
         description:
           "The profile's own key gives up the embedded wallet, with no prompt. A key can never allow itself: the owner does that with keys update",
       },
-      { invocation: "stop <prefix>", description: "Pause one key with the device token; reversible with keys resume" },
-      { invocation: "resume <prefix>", description: "Resume a stopped key with the device token" },
+      {
+        invocation: "stop <prefix|label>",
+        description: "Pause one key with the device token; reversible with keys resume",
+      },
+      { invocation: "resume <prefix|label>", description: "Resume a stopped key with the device token" },
       {
         invocation: "rotate <prefix|label> ([--grace <duration> | --now] [--force] [--yes] | --finish)",
         description:
           "Give a key a new secret, keeping its prefix, label, access, limits, wallets and history. The old secret works through --grace (default 1h, at most 24h) or stops at once with --now; --finish ends an open window early. The profile's own key is replaced in the keychain; update CANDLE_API_KEY or CANDLE_API_KEY_FILE yourself and restart MCP. --force rotates again while a window is open",
       },
-      { invocation: "revoke <prefix>", description: "Revoke an API key permanently" },
+      { invocation: "revoke <prefix|label>", description: "Revoke an API key permanently" },
       {
         invocation: "signer approve <code> --key <prefix|label> [--reject]",
         description:

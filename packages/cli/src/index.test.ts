@@ -82,7 +82,7 @@ describe("dispatch", () => {
       createTestDeps({ fetch: unusedFetch, stdout: help, stderr: helpErr }),
     )
     expect(helpCode).not.toBe(0)
-    expect(help.text + helpErr.text).not.toContain("Usage: candle keys revoke <prefix>")
+    expect(help.text + helpErr.text).not.toContain("Usage: candle keys revoke <prefix|label>")
 
     // `--profile ghost` after `--` is two positionals (a usage error), not a profile selection.
     const profile = createCapture()
@@ -91,7 +91,7 @@ describe("dispatch", () => {
       createTestDeps({ fetch: unusedFetch, stderr: profile }),
     )
     expect(code).toBe(2)
-    expect(profile.text).toContain("Usage: candle keys revoke <prefix>")
+    expect(profile.text).toContain("Usage: candle keys revoke <prefix|label>")
   })
 
   // The dispatch table and each command's subcommand map are plain objects, so a bare index
