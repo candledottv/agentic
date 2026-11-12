@@ -139,7 +139,7 @@ signs up.
 | | `candle_swap` | yes | convert base assets; a pair spanning both chains is a bridge |
 | | `candle_transfer` | yes | move an asset to an own or owner-approved address |
 | | `candle_sweep` | yes | sweep a wallet's base assets to one destination |
-| | `candle_launch_token` | yes | launch a token on Solana or Hood; `mode` `exp-a`, `exp-b` or `exp-c` picks an experimental preset curve, and `mode: "exp-custom"` with `curve` picks your own Solana curve where the deployment has switched it on (`dryRun: true` first) |
+| | `candle_launch_token` | yes | launch a token on Solana or Hood; `mode` `exp-a`, `exp-b` or `exp-c` picks an experimental preset curve, and `mode: "exp-custom"` with `curve` picks your own Solana curve, permanently available (`dryRun: true` first) |
 | | `candle_launch_and_seed` | yes | launch from the embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), on every plan |
 | | `candle_atomic_launch_dry_run` | yes | check a Solana launch with first buys and price each buy; builds and writes nothing (needs `launch:write`, `swap:write`, Pro or Max) |
 | | `candle_report_activity` | yes | report agent activity for verification |

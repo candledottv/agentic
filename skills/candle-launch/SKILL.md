@@ -94,7 +94,7 @@ slowly), and G, how much it raises before it graduates.
   66,000 to 16,500,000 CNDL), under a price ceiling that binds for a small V on SOL and always
   binds first on CNDL. The dev buy is at most 10% of G. A refusal is `CURVE_OUT_OF_RANGE` with a
   `reason`, and at the ceiling `maxThresholdRaw` names the largest G that fits. `GET
-  /api/v1/launch/curve-options` (no key) says whether the deployment takes `exp-custom`.
+  /api/v1/launch/curve-options` (no key) reports `customCurves: true` and the dev-buy ceilings.
 - **Open to everyone:** these curves have no Believer NFT gate.
 - **Fees:** 1% on the curve and 0.5% in the pool it graduates into. Over the HTTP API (not these
   MCP tools) a launch may add `creatorFeeBps: 100` or `200`, an extra 1% or 2% on both, paid to the

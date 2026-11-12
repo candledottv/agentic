@@ -156,8 +156,8 @@ export type Chain = "solana" | "hood" | (string & {})
  * otherwise, so client code needs no gate of its own.
  *
  * Then the experimental fast curves (Solana, SOL or CNDL): the presets `exp-a`, `exp-b` and
- * `exp-c`, and `exp-custom`, which takes the launcher's own V and G in `curve`. `exp-custom` is
- * creatable only where the API has EXP_CUSTOM_CURVES on; elsewhere it is refused as an unknown mode.
+ * `exp-c`, and `exp-custom`, which takes the launcher's own V and G in `curve`. Custom curves are
+ * permanently available.
  */
 export type LaunchTier =
   | "open"

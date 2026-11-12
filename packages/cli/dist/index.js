@@ -6858,7 +6858,7 @@ var init_launch_definition = __esm(() => {
       {
         key: "curve.virtualQuote",
         type: "decimal",
-        help: "exp-custom's virtual quote, in whole quote units: 1 to 100 SOL or 66000 to 6600000 CNDL; requires --curve-g and EXP_CUSTOM_CURVES.",
+        help: "exp-custom's virtual quote, in whole quote units: 1 to 100 SOL or 66000 to 6600000 CNDL; requires --curve-g.",
         modes: [
           "exp-custom"
         ],
@@ -6897,7 +6897,7 @@ var init_launch_definition = __esm(() => {
       {
         key: "curve.threshold",
         type: "decimal",
-        help: "exp-custom's graduation threshold, in whole quote units: 1 to 250 SOL or 66000 to 16500000 CNDL; requires --curve-v and EXP_CUSTOM_CURVES.",
+        help: "exp-custom's graduation threshold, in whole quote units: 1 to 250 SOL or 66000 to 16500000 CNDL; requires --curve-v.",
         modes: [
           "exp-custom"
         ],
@@ -77051,7 +77051,7 @@ var LAUNCH_DEFINITION2 = {
     {
       key: "curve.virtualQuote",
       type: "decimal",
-      help: "exp-custom's virtual quote, in whole quote units: 1 to 100 SOL or 66000 to 6600000 CNDL; requires --curve-g and EXP_CUSTOM_CURVES.",
+      help: "exp-custom's virtual quote, in whole quote units: 1 to 100 SOL or 66000 to 6600000 CNDL; requires --curve-g.",
       modes: [
         "exp-custom"
       ],
@@ -77090,7 +77090,7 @@ var LAUNCH_DEFINITION2 = {
     {
       key: "curve.threshold",
       type: "decimal",
-      help: "exp-custom's graduation threshold, in whole quote units: 1 to 250 SOL or 66000 to 16500000 CNDL; requires --curve-v and EXP_CUSTOM_CURVES.",
+      help: "exp-custom's graduation threshold, in whole quote units: 1 to 250 SOL or 66000 to 16500000 CNDL; requires --curve-v.",
       modes: [
         "exp-custom"
       ],

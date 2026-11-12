@@ -3767,7 +3767,7 @@ var LAUNCH_DEFINITION = {
     {
       key: "curve.virtualQuote",
       type: "decimal",
-      help: "exp-custom's virtual quote, in whole quote units: 1 to 100 SOL or 66000 to 6600000 CNDL; requires --curve-g and EXP_CUSTOM_CURVES.",
+      help: "exp-custom's virtual quote, in whole quote units: 1 to 100 SOL or 66000 to 6600000 CNDL; requires --curve-g.",
       modes: [
         "exp-custom"
       ],
@@ -3806,7 +3806,7 @@ var LAUNCH_DEFINITION = {
     {
       key: "curve.threshold",
       type: "decimal",
-      help: "exp-custom's graduation threshold, in whole quote units: 1 to 250 SOL or 66000 to 16500000 CNDL; requires --curve-v and EXP_CUSTOM_CURVES.",
+      help: "exp-custom's graduation threshold, in whole quote units: 1 to 250 SOL or 66000 to 16500000 CNDL; requires --curve-v.",
       modes: [
         "exp-custom"
       ],

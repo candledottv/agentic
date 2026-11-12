@@ -312,7 +312,7 @@ export declare const LAUNCH_DEFINITION: {
     }, {
         readonly key: "curve.virtualQuote";
         readonly type: "decimal";
-        readonly help: "exp-custom's virtual quote, in whole quote units: 1 to 100 SOL or 66000 to 6600000 CNDL; requires --curve-g and EXP_CUSTOM_CURVES.";
+        readonly help: "exp-custom's virtual quote, in whole quote units: 1 to 100 SOL or 66000 to 6600000 CNDL; requires --curve-g.";
         readonly modes: readonly ["exp-custom"];
         readonly chains: readonly ["solana"];
         readonly requires: readonly ["curve.threshold"];
@@ -344,7 +344,7 @@ export declare const LAUNCH_DEFINITION: {
     }, {
         readonly key: "curve.threshold";
         readonly type: "decimal";
-        readonly help: "exp-custom's graduation threshold, in whole quote units: 1 to 250 SOL or 66000 to 16500000 CNDL; requires --curve-v and EXP_CUSTOM_CURVES.";
+        readonly help: "exp-custom's graduation threshold, in whole quote units: 1 to 250 SOL or 66000 to 16500000 CNDL; requires --curve-v.";
         readonly modes: readonly ["exp-custom"];
         readonly chains: readonly ["solana"];
         readonly requires: readonly ["curve.virtualQuote"];
