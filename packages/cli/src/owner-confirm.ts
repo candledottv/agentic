@@ -18,6 +18,17 @@ export interface OwnerConfirmRunState {
   pendingWithoutWait: boolean
 }
 
+/** `4C…6jDX`-style: enough of a wallet to eyeball against the browser's account. */
+export function shortWallet(wallet: string): string {
+  return wallet.length >= 12 ? `${wallet.slice(0, 4)}…${wallet.slice(-4)}` : wallet
+}
+
+/** BE-3296: `Economic-Brown-Mollusk (3Cir…6jDX)`, or just the short wallet when there is no name. */
+export function accountLabel(account: { wallet: string; displayName: string | null }): string {
+  const short = shortWallet(account.wallet)
+  return account.displayName ? `${account.displayName} (${short})` : short
+}
+
 /** The `--json` pending line (7.1 step 1): everything the person needs, never the `confirmId` secret. */
 export function ownerConfirmPendingLine(challenge: OwnerConfirmChallenge): string {
   return JSON.stringify({
@@ -30,6 +41,7 @@ export function ownerConfirmPendingLine(challenge: OwnerConfirmChallenge): strin
       expiresIn: challenge.expiresIn,
       step: challenge.step,
       summary: challenge.summary,
+      ...(challenge.account ? { account: challenge.account } : {}),
     },
   })
 }
@@ -49,11 +61,15 @@ export function cliOwnerConfirmHooks(
         deps.stderr.write(`${ownerConfirmPendingLine(challenge)}\n`)
       } else {
         const minutes = Math.max(1, Math.round(challenge.expiresIn / 60))
+        // BE-3296: name the account the request was made as, so a wrong-account browser is obvious
+        // before it ever answers "Request not found". Absent on an older API: the old line stands.
+        const as = challenge.account ? ` as ${accountLabel(challenge.account)}` : ""
         deps.stderr.write(
           [
-            `This needs your approval in the browser: ${challenge.summary}`,
+            `This needs your approval in the browser${as}: ${challenge.summary}`,
             `Open ${challenge.verificationUriComplete}`,
             `Code: ${challenge.userCode}`,
+            ...(challenge.account ? [`The browser must be signed in as ${accountLabel(challenge.account)}.`] : []),
             "Only approve if you just ran this command.",
             opts.wait ? `Waiting for approval (expires in ${minutes} minute${minutes === 1 ? "" : "s"})...` : "",
           ]

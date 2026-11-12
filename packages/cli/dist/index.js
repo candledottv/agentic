@@ -225,6 +225,11 @@ function ownerConfirmChallengeOf(result) {
   const verificationUriComplete = str("verificationUriComplete");
   if (!confirmId || !userCode || !verificationUriComplete)
     return null;
+  const accountRaw = oc.account;
+  const account = accountRaw && typeof accountRaw === "object" && !Array.isArray(accountRaw) && typeof accountRaw.wallet === "string" ? {
+    wallet: accountRaw.wallet,
+    displayName: typeof accountRaw.displayName === "string" ? accountRaw.displayName : null
+  } : undefined;
   return {
     confirmId,
     userCode,
@@ -234,6 +239,7 @@ function ownerConfirmChallengeOf(result) {
     interval: Math.max(1, num("interval") ?? 5),
     step: str("step") ?? "",
     summary: str("summary") ?? "",
+    ...account ? { account } : {},
     reason: str("reason") ?? "required"
   };
 }
@@ -755,7 +761,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.23";
+var CLI_VERSION = "0.13.24";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -85278,6 +85284,13 @@ init_evm_lite();
 init_client();
 var EXIT_OWNER_CONFIRM_PENDING = 7;
 var OWN_NO_WAIT_COMMANDS = [["tee"], ["lab"], ["wallets", "authorize"]];
+function shortWallet(wallet3) {
+  return wallet3.length >= 12 ? `${wallet3.slice(0, 4)}…${wallet3.slice(-4)}` : wallet3;
+}
+function accountLabel(account) {
+  const short = shortWallet(account.wallet);
+  return account.displayName ? `${account.displayName} (${short})` : short;
+}
 function ownerConfirmPendingLine(challenge) {
   return JSON.stringify({
     ok: false,
@@ -85288,7 +85301,8 @@ function ownerConfirmPendingLine(challenge) {
       verificationUriComplete: challenge.verificationUriComplete,
       expiresIn: challenge.expiresIn,
       step: challenge.step,
-      summary: challenge.summary
+      summary: challenge.summary,
+      ...challenge.account ? { account: challenge.account } : {}
     }
   });
 }
@@ -85305,10 +85319,12 @@ function cliOwnerConfirmHooks(deps, opts, state) {
 `);
       } else {
         const minutes = Math.max(1, Math.round(challenge.expiresIn / 60));
+        const as = challenge.account ? ` as ${accountLabel(challenge.account)}` : "";
         deps.stderr.write([
-          `This needs your approval in the browser: ${challenge.summary}`,
+          `This needs your approval in the browser${as}: ${challenge.summary}`,
           `Open ${challenge.verificationUriComplete}`,
           `Code: ${challenge.userCode}`,
+          ...challenge.account ? [`The browser must be signed in as ${accountLabel(challenge.account)}.`] : [],
           "Only approve if you just ran this command.",
           opts.wait ? `Waiting for approval (expires in ${minutes} minute${minutes === 1 ? "" : "s"})...` : ""
         ].filter(Boolean).join(`

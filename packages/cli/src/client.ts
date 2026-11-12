@@ -100,6 +100,11 @@ export interface OwnerConfirmChallenge {
   interval: number
   step: string
   summary: string
+  /**
+   * BE-3296: the account the request was made as, so the approval prompt can name it and say which
+   * account the browser must be signed in as. Absent from an older API, and from nothing else.
+   */
+  account?: { wallet: string; displayName: string | null }
   reason: string
 }
 
@@ -147,6 +152,14 @@ export function ownerConfirmChallengeOf(result: ApiResult): OwnerConfirmChalleng
   const userCode = str("userCode")
   const verificationUriComplete = str("verificationUriComplete")
   if (!confirmId || !userCode || !verificationUriComplete) return null
+  const accountRaw = oc.account as Record<string, unknown> | undefined
+  const account =
+    accountRaw && typeof accountRaw === "object" && !Array.isArray(accountRaw) && typeof accountRaw.wallet === "string"
+      ? {
+          wallet: accountRaw.wallet,
+          displayName: typeof accountRaw.displayName === "string" ? accountRaw.displayName : null,
+        }
+      : undefined
   return {
     confirmId,
     userCode,
@@ -156,6 +169,7 @@ export function ownerConfirmChallengeOf(result: ApiResult): OwnerConfirmChalleng
     interval: Math.max(1, num("interval") ?? 5),
     step: str("step") ?? "",
     summary: str("summary") ?? "",
+    ...(account ? { account } : {}),
     reason: str("reason") ?? "required",
   }
 }

@@ -25,7 +25,11 @@ const API = "https://api.example.test"
 const CONFIRM_ID = "c".repeat(43)
 const STATUS_PATH = "/api/v1/agent/device/confirm/status"
 
-function confirmRequired(reason = "required", userCode = "KQ7M-3XPD") {
+function confirmRequired(
+  reason = "required",
+  userCode = "KQ7M-3XPD",
+  account?: { wallet: string; displayName: string | null },
+) {
   return jsonResponse(403, {
     success: false,
     error: {
@@ -41,6 +45,7 @@ function confirmRequired(reason = "required", userCode = "KQ7M-3XPD") {
         interval: 5,
         step: "keys.mint",
         summary: "Create API key with account:read; embedded wallet denied",
+        ...(account ? { account } : {}),
         reason,
       },
     },
@@ -249,6 +254,36 @@ describe("apiRequest: the confirm flow (7.1 steps 2 to 5)", () => {
     })
     expect(line).not.toContain(CONFIRM_ID)
   })
+
+  test("BE-3296: the pending line carries the account when the 403 names one, and omits it when not", () => {
+    const account = { wallet: "3Cirbe5kAAAA111111111111111111111111116jDX", displayName: "Economic-Brown-Mollusk" }
+    const withAccount = ownerConfirmPendingLine({
+      confirmId: CONFIRM_ID,
+      userCode: "KQ7M-3XPD",
+      verificationUri: "https://candle.tv/dev/agent/confirm",
+      verificationUriComplete: "https://candle.tv/dev/agent/confirm?code=KQ7M-3XPD",
+      expiresIn: 300,
+      interval: 5,
+      step: "keys.mint",
+      summary: "s",
+      account,
+      reason: "required",
+    })
+    expect(JSON.parse(withAccount).ownerConfirm.account).toEqual(account)
+    const noName = ownerConfirmPendingLine({
+      confirmId: CONFIRM_ID,
+      userCode: "KQ7M-3XPD",
+      verificationUri: "https://candle.tv/dev/agent/confirm",
+      verificationUriComplete: "https://candle.tv/dev/agent/confirm?code=KQ7M-3XPD",
+      expiresIn: 300,
+      interval: 5,
+      step: "keys.mint",
+      summary: "s",
+      account: { wallet: account.wallet, displayName: null },
+      reason: "required",
+    })
+    expect(JSON.parse(noName).ownerConfirm.account).toEqual({ wallet: account.wallet, displayName: null })
+  })
 })
 
 describe("run(): keys create through the confirm (AC20)", () => {
@@ -299,6 +334,73 @@ describe("run(): keys create through the confirm (AC20)", () => {
     expect(await t.store.get(SECRET_REFS.apiKey)).toBe(NEW_KEY)
     // No browser without --open.
     expect(t.opened).toHaveLength(0)
+  })
+
+  test("BE-3296: names the account the request was made as, and the account the browser needs", async () => {
+    const account = { wallet: "3Cirbe5kAAAA111111111111111111111111116jDX", displayName: "Economic-Brown-Mollusk" }
+    const routed = createRoutedFetch({
+      "/api/v1/agent/keys": [
+        () => confirmRequired("required", "KQ7M-3XPD", account),
+        () =>
+          jsonResponse(200, {
+            success: true,
+            key: NEW_KEY,
+            keyPrefix: "ck_livenn",
+            scopes: ["account:read"],
+            environment: "production",
+          }),
+      ],
+      [STATUS_PATH]: [status("pending"), status("approved")],
+    })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const deps = createTestDeps({
+      fetch: routed.fetch,
+      store: createFakeStore({ device_token: "cndl_dvc_x" }),
+      readConfig: createFakeConfigStore().readConfig,
+      writeConfig: createFakeConfigStore().writeConfig,
+      clearConfig: createFakeConfigStore().clearConfig,
+      stdout,
+      stderr,
+    })
+    expect(await run(["keys", "create"], deps)).toBe(0)
+    expect(stderr.text).toContain(
+      "This needs your approval in the browser as Economic-Brown-Mollusk (3Cir…6jDX): Create API key with account:read; embedded wallet denied",
+    )
+    expect(stderr.text).toContain("The browser must be signed in as Economic-Brown-Mollusk (3Cir…6jDX).")
+    expect(stderr.text).not.toContain(CONFIRM_ID)
+  })
+
+  test("BE-3296: without a display name the prompt names the short wallet alone", async () => {
+    const account = { wallet: "3Cirbe5kAAAA111111111111111111111111116jDX", displayName: null }
+    const routed = createRoutedFetch({
+      "/api/v1/agent/keys": [
+        () => confirmRequired("required", "KQ7M-3XPD", account),
+        () =>
+          jsonResponse(200, {
+            success: true,
+            key: NEW_KEY,
+            keyPrefix: "ck_livenn",
+            scopes: ["account:read"],
+            environment: "production",
+          }),
+      ],
+      [STATUS_PATH]: [status("pending"), status("approved")],
+    })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const deps = createTestDeps({
+      fetch: routed.fetch,
+      store: createFakeStore({ device_token: "cndl_dvc_x" }),
+      readConfig: createFakeConfigStore().readConfig,
+      writeConfig: createFakeConfigStore().writeConfig,
+      clearConfig: createFakeConfigStore().clearConfig,
+      stdout,
+      stderr,
+    })
+    expect(await run(["keys", "create"], deps)).toBe(0)
+    expect(stderr.text).toContain("This needs your approval in the browser as 3Cir…6jDX:")
+    expect(stderr.text).toContain("The browser must be signed in as 3Cir…6jDX.")
   })
 
   test("--open opens the console page", async () => {

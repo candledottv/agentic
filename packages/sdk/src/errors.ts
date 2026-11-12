@@ -168,6 +168,12 @@ export interface OwnerConfirmDetail {
   step: string
   /** Built by the server from the parsed request, never caller text. */
   summary: string
+  /**
+   * BE-3296: the account the request was made as ({ wallet, displayName }), so a terminal can name
+   * it in its approval prompt. `displayName` is null when the account row carries no username;
+   * absent entirely from an older API.
+   */
+  account?: { wallet: string; displayName: string | null }
   reason:
     | "required"
     | "grant_pending"
