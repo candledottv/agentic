@@ -1,6 +1,6 @@
 # @candledottv/cli
 
-The Candle CLI (current version 0.13.0): authorize a device from your browser, keep your own keys
+The Candle CLI (current version 0.13.23): authorize a device from your browser, keep your own keys
 in an encrypted vault on this machine, hand an agent a TEE wallet it can trade, and manage API
 keys, wallets, and setup health from the terminal. Zero runtime dependencies; the whole thing is
 one self-contained `dist/index.js` that runs under plain Node.
@@ -122,7 +122,7 @@ chosen words from your saved copy. Clear your terminal's scrollback too: the CLI
 | `candle wallets allow-launch\|disallow-launch <label\|address\|id\|prefix*>...` | Deprecated. Where the server has `TEE_LAUNCH_BY_SCOPE_ENABLED` on, a key's `launch:write` decides TEE launches: `allow-launch` saves the value and exits 0, and `disallow-launch` saves it, prints the server's `ALLOW_LAUNCH_NOT_ENFORCED` message and exits 1, because no launch is stopped. A server with the switch off still lets TEE wallets pay for a launch (`candle launch`) only after `allow-launch`. Owner only, over the device token; the screen shows each wallet's label, address and bound key before a typed confirm. `disallow-launch --yes` skips the confirm. |
 | `candle wallets close-empty [--wallet embedded\|<tee address\|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes]` | Closes a wallet's empty token accounts and returns their rent to it, after a preview: the embedded wallet (`transfer:write`), or a Solana TEE wallet bound to the key (`swap:write`), whose close transactions Candle builds, this machine checks and the key signer approves. `--preview` prints what would close — the whole preview as one JSON document on stdout under `--json` — and closes, signs and prompts nothing; headless without `--yes`, the `CONFIRMATION_REQUIRED` refusal carries that same preview under `details`. |
 | `candle vault init\|status\|list\|new-key\|rename\|phrase show\|restore\|reconcile-exposure` | The encrypted local vault, `vault.enc` (Tier 1). `init` creates it with a passphrase factor and a 24-word recovery phrase (and no key), labels its read-back derivation as verification, and leaves security-key enrollment to the separate optional `candle vault enroll security-key` command; `new-key` derives a key inside it (`--count`, `--labels-from <file>` for many under one unlock), `list [filter] [--balances]` shows one line per key, `rename` changes a label only, `phrase show` displays the phrase on a terminal (never in `--json`, a log or a pipe), and `restore --phrase` rebuilds the derived keys on another machine with a new passphrase (`--count`, `--tee-count`, `--external-count`, `--evm-count` and `--evm-tee-count` for EVM keys and Hood TEE wallets, or a Solana gap scan with `--rpc-url`); a restored vault never allocates new keys. `reconcile-exposure` re-reads the account and adds exposure records, clearing nothing. No key ever leaves the vault to reach Candle. See [CLI custody](https://docs.candle.tv/developers/cli-custody). |
-| `candle vault factor list\|add passphrase\|add security-key\|add touch-id\|add passkey\|remove` (or `vault enroll <kind>`), `vault backup --to <path>\|icloud`, `vault verify-backup <path>` | What can open the vault, and proving a copy of it works: `backup` verifies the copy in full before reporting (a copy is sealed, keeping only the passphrase and security-key envelopes, unless it goes to a recognised local disk or removable drive, so a cloud folder and any path the CLI cannot place are both sealed unless `--accept-shared-domain` is passed), and `verify-backup` re-checks an existing one against this vault's key and address set. `add security-key` enrolls a FIDO2 security key (CTAP2 `hmac-secret`, user-verified with the key's PIN or biometric) through the bundled `candle-fido2` helper (`--install-helper` fetches and verifies this release's helper first); one key is not a recoverable factor, two keys are a pair, an enrolled key can authorize adding another, and the passphrase stays the recovery floor. `add touch-id` and `add passkey` are refused with `VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM` until the Apple-signed helper ships. Every vault command then takes `--factor <id\|passphrase\|security-key>` to say which envelope opens it and `--device <id>` to name the key when several are attached. |
+| `candle vault factor list\|add passphrase\|add security-key\|add touch-id\|add passkey\|remove` (or `vault enroll <kind>`), `vault backup --to <path>\|icloud`, `vault verify-backup <path>` | What can open the vault, and proving a copy of it works: `backup` verifies the copy in full before reporting (a copy is sealed, keeping only the passphrase and security-key envelopes, unless it goes to a recognised local disk or removable drive, so a cloud folder and any path the CLI cannot place are both sealed unless `--accept-shared-domain` is passed), and `verify-backup` re-checks an existing one against this vault's key and address set. `add security-key` enrolls a FIDO2 security key (CTAP2 `hmac-secret`, user-verified with the key's PIN or biometric) through the bundled `candle-fido2` helper (`--install-helper` fetches and verifies this release's helper first); one key is not a recoverable factor, two keys are a pair, an enrolled key can authorize adding another, and the passphrase stays the recovery floor. `add touch-id` is available in 0.13.23 on supported Macs with the signed `candle-enclave.app`; npm ships no native helper. `add passkey` remains unavailable (`VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM`): the shipped helper lacks the associated-domain entitlement. Every vault command then takes `--factor <id\|passphrase\|security-key\|touch-id>` to say which envelope opens it and `--device <id>` to name the key when several are attached. |
 | `candle vault transfer\|promote\|promote-batch\|fund\|demote\|export-key` | Moving value and authority. `transfer` and `fund` sign locally after showing the decoded transaction (`transfer` from a vault key or a promoted TEE wallet, which warns when an agent may be trading it and reports the finalized transfer to Candle's history; `fund` reaches a TEE wallet from its pinned vault key, or an external wallet, with no `--yes`; both verify once, at the unlock, which names the send, then show the destination grouped in fours and take a typed `confirm`); `promote --from <cold label>` derives a fresh TEE wallet pinned to that key (an EVM vault key becomes a Hood TEE wallet), shows the pinned vault address and asks you to type `confirm` to promote the new wallet (promotion moves no funds), `promote --in-place <label> --sweep-to <cold label>` promotes a key at its own address after a typed warning, `promote-batch --pairs-from <file>` does many in place under one unlock, `--to-key` binds the result to another of your keys, and `demote` (disable then sweep; `--emergency` sweeps even when the stop request fails) sends it back to its pinned vault; `export-key` is the one ceremony that writes a single private key to a file you name. `demote` takes several addresses, or `--all --empty` for every Solana TEE wallet with nothing left to sweep, under one unlock and one typed `confirm` (`--yes` skips it), with a result line per wallet and one `--json` document. |
 | `candle external new\|list\|sweep` | External wallets for outside tools: keys on the vault's third branch (`m/44'/501'/n'/2'`), never delegated to Privy and never registered with Candle. `new` allocates one (and moves the vault to format version 3; refused in a restored vault), `list` shows them, and `sweep <external> --to <vault>` sends everything back to a named vault key, signed locally, confirmed by a typed `confirm` after the vault key's address is shown. See [Bring your own services](https://docs.candle.tv/developers/cli#bring-your-own-services). |
 | `candle sign [--file <path>] --wallet <external>... [--broadcast] [--yes]`, `candle sign message --wallet <external> [--file <path>] [--yes]` | The generic signer: a base64 transaction any tool built, legacy or v0, decoded (lookup tables resolved) and simulated over your own RPC before it is displayed and signed with an external wallet only. A vault key, a TEE wallet or an unnamed signer is refused; a failing simulation is refused with no override; `--yes` skips the confirmation prompt and nothing else. `sign message` signs the exact bytes of a file or of stdin. |
@@ -294,16 +294,21 @@ The npm package ships no native helper: there the factor is refused with `VAULT_
 until a release build's `candle-fido2` is installed and `CANDLE_FIDO2_HELPER` points at it. No
 other factor is ever substituted for one that is refused.
 
-The Touch ID factor (`candle vault factor add touch-id`; not yet released) needs
-the signed `candle-enclave.app` helper, which the darwin tarball, the installer script and Homebrew
-place beside `candle` once a release ships it; a release cut before Apple's approval ships no
-helper and the CLI refuses the factor with a typed code that says so. The CLI verifies the
+The Touch ID factor (`candle vault factor add touch-id`) is available in
+[0.13.23](https://github.com/candledottv/cli/releases/tag/cli-v0.13.23) on Apple silicon Macs and Intel
+Macs with a T2 chip. It needs the signed `candle-enclave.app` helper, which the darwin tarball,
+the installer script and Homebrew place beside `candle`. The npm package ships no native helper:
+install the matching signed bundle and set `CANDLE_ENCLAVE_HELPER`, or the command refuses with
+`VAULT_HELPER_MISSING`. An untrusted helper is `VAULT_HELPER_UNTRUSTED`; Linux and a Mac without
+a Secure Enclave are `VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM`. The CLI verifies the
 helper's code signature with `/usr/bin/codesign` before trusting it, and `CANDLE_ENCLAVE_HELPER`
 points at a bundle elsewhere. The factor opens the vault on one Mac only and is never a recovery
 factor; the passphrase remains the recovery floor.
 
-The synced passkey factor (`candle vault factor add passkey`; not yet released)
-runs through the same signed helper on macOS 15 or later, and needs the helper's
+The synced passkey factor (`candle vault factor add passkey`) remains unavailable in 0.13.23:
+the shipped helper deliberately omits `webcredentials:cli.candle.tv`, so it refuses with
+`VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM` and explains the missing entitlement. A future release
+needs macOS 15 or later and the helper's
 associated-domains entitlement for `webcredentials:cli.candle.tv` with an embedded provisioning
 profile, plus an `apple-app-site-association` served at
 `https://cli.candle.tv/.well-known/apple-app-site-association` (status 200, no redirect,
@@ -434,7 +439,7 @@ the profile they were migrated into.
 `CANDLE_DEVICE_TOKEN` and `CANDLE_API_KEY` together mean CI needs no storage backend at all: set
 both and every command works without ever touching a keychain or the encrypted file.
 
-### External key files (unreleased source support)
+### External key files (CLI 0.13.22 and later)
 
 A host may supply an absolute path with both raw key variables absent:
 
@@ -469,8 +474,9 @@ The key stays in private memory; it is never inserted into environment variables
 config or saved files. Ordinary browser/helper/hook/keychain children retain the nonsecret path;
 plugins keep their environment allowlist and receive neither the path nor key. This reduces
 environment exposure, not access by root or another process with the same UID. Extended ACLs
-are not audited. Source readiness does not imply an installed npm/binary release supports this;
-publication is a separately authorized human release.
+are not audited. This is available in `candle` and the bundled `candle mcp` from CLI 0.13.22.
+For standalone `candle-mcp` (`@candledottv/mcp`), this remains unreleased source support:
+version 0.10.32 does not include it and needs its own next release.
 
 ## What this CLI deliberately does not do
 
