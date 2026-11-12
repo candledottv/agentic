@@ -2308,8 +2308,7 @@ export interface EvmSignTransactionParams {
  *
  * A TEE payer (Ember Phase 4c) may also start from USDC, and needs `clientTradeId`: the server
  * then resolves the destination to this key's own TEE wallet on Hood (`toWalletId` names one when
- * the key has several), honours any cap on the origin asset (none is required), and charges no fee. That bridge is
- * gated by the server's `TEE_BRIDGE_ENABLED`; with it off the build answers `PAIR_UNSUPPORTED`.
+ * the key has several), honours any cap on the origin asset (none is required), and charges no fee. TEE bridging is always enabled.
  * A Hood-origin bridge signs one leg at a time and is not this call; `candle swap` runs it.
  */
 export interface LinkedSwapRequest {
