@@ -1,7 +1,7 @@
 {
   "macosHelper": {
-    "release": "omit",
+    "release": "signed",
     "bundleId": "tv.candle.cli.enclave",
-    "teamId": ""
+    "teamId": "ZC2DLBZS4U"
   }
 }

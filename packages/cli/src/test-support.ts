@@ -12,7 +12,12 @@ import type { CliConfig, ProfileConfig } from "./config"
 import type { Deps } from "./deps"
 import { realRunPlugin } from "./plugins"
 import type { SecretStore } from "./secret-store"
-import { RELEASE_POLICY } from "./vault/release-policy"
+import type { ReleasePolicy } from "./vault/enclave"
+
+/** The `omit` release policy (no signed helper), the default every test's deps start from. */
+export const OMIT_RELEASE_POLICY: ReleasePolicy = {
+  macosHelper: { release: "omit", bundleId: "tv.candle.cli.enclave", teamId: "" },
+}
 
 /**
  * The home every test resolves the default config directory from (BE-274, D1). Never the machine's
@@ -254,9 +259,10 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     spawnHelper: async (path: string) => {
       throw new Error(`no spawnHelper fake configured (asked to run ${path})`)
     },
-    // The checked-in policy, exactly as the real deps read it: `omit` until Apple approves. A
-    // test of the signed path injects its own.
-    releasePolicy: RELEASE_POLICY,
+    // `omit` by default, whatever release-policy.json says (it is `signed` since BE-3251): a test
+    // reaches the signed helper path only by injecting a signed policy, so a test that reaches it
+    // by accident still fails loud. release-policy.test.ts pins the checked-in file itself.
+    releasePolicy: OMIT_RELEASE_POLICY,
     writeBytes: async (path: string) => {
       throw new Error(`no writeBytes fake configured (asked for ${path})`)
     },

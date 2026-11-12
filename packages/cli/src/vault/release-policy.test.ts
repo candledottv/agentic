@@ -9,9 +9,9 @@ import { parseReleasePolicy } from "./enclave"
 import { RELEASE_POLICY } from "./release-policy"
 
 describe("release-policy.json", () => {
-  test("parses, and is omit with no team id until Apple approves the AD-1 enrolment", () => {
-    expect(RELEASE_POLICY.macosHelper.release).toBe("omit")
-    expect(RELEASE_POLICY.macosHelper.teamId).toBe("")
+  test("parses, and is signed by team ZC2DLBZS4U since Apple approved the AD-1 enrolment (BE-3251)", () => {
+    expect(RELEASE_POLICY.macosHelper.release).toBe("signed")
+    expect(RELEASE_POLICY.macosHelper.teamId).toBe("ZC2DLBZS4U")
     expect(RELEASE_POLICY.macosHelper.bundleId).toBe("tv.candle.cli.enclave")
   })
 

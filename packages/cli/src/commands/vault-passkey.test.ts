@@ -29,11 +29,10 @@ import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fid
 import { humanText } from "../human-output.test-support"
 import { realSpawnHelper, run } from "../index"
 import { tempDirs } from "../temp-dirs.test-support"
-import { createCapture, createTestDeps } from "../test-support"
+import { createCapture, createTestDeps, OMIT_RELEASE_POLICY } from "../test-support"
 import { AASA_URL, CODESIGN_PATH, codesignRequirement, ENCLAVE_HELPER_ENV, type ReleasePolicy } from "../vault/enclave"
 import { HELPER_ENV } from "../vault/fido2"
 import { trackSecrets } from "../vault/hygiene"
-import { RELEASE_POLICY } from "../vault/release-policy"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { closeVault, unlockWithPassphrase } from "../vault/store"
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
@@ -200,7 +199,7 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
     arch: opts.arch ?? "arm64",
     isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true, stderr: opts.tty ?? true },
     spawnHelper,
-    releasePolicy: (opts.policy ?? "signed") === "signed" ? SIGNED : RELEASE_POLICY,
+    releasePolicy: (opts.policy ?? "signed") === "signed" ? SIGNED : OMIT_RELEASE_POLICY,
     promptSecret: async (text: string) => {
       asked.push(`secret: ${text}`)
       const next = secrets.shift()

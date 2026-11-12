@@ -755,7 +755,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.21";
+var CLI_VERSION = "0.13.22";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -13482,7 +13482,7 @@ function registerToolSubset(server, options) {
   });
   register("candle_get_market", {
     title: "Get market state",
-    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
+    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch));
   register("candle_quote", {
@@ -118315,9 +118315,9 @@ init_evm_tee();
 // release-policy.json
 var release_policy_default = {
   macosHelper: {
-    release: "omit",
+    release: "signed",
     bundleId: "tv.candle.cli.enclave",
-    teamId: ""
+    teamId: "ZC2DLBZS4U"
   }
 };
 

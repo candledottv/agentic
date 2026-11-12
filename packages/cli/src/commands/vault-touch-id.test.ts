@@ -18,11 +18,10 @@ import { type EnclaveLogEntry, type EnclaveScript, scriptedEnclaveBackend } from
 import { humanText } from "../human-output.test-support"
 import { realSpawnHelper, run } from "../index"
 import { tempDirs } from "../temp-dirs.test-support"
-import { createCapture, createTestDeps } from "../test-support"
+import { createCapture, createTestDeps, OMIT_RELEASE_POLICY } from "../test-support"
 import { pointFromSpki } from "../vault/ecies"
 import { CODESIGN_PATH, codesignRequirement, ENCLAVE_HELPER_ENV, type ReleasePolicy } from "../vault/enclave"
 import { trackSecrets } from "../vault/hygiene"
-import { RELEASE_POLICY } from "../vault/release-policy"
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
 import { unlockInteractively } from "./vault-support"
 
@@ -138,7 +137,7 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
     arch: opts.arch ?? "arm64",
     isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true, stderr: opts.tty ?? true },
     spawnHelper,
-    releasePolicy: (opts.policy ?? "signed") === "signed" ? SIGNED : RELEASE_POLICY,
+    releasePolicy: (opts.policy ?? "signed") === "signed" ? SIGNED : OMIT_RELEASE_POLICY,
     promptSecret: async (text: string) => {
       asked.push(`secret: ${text}`)
       const next = secrets.shift()
