@@ -12,18 +12,14 @@
   <array>
     <string>__TEAM_ID__.__BUNDLE_ID__</string>
   </array>
-  <!-- The synced passkey factor (BE-135, AD-2): AuthenticationServices serves a relying party only
-       to an app whose associated-domains entitlement names it AND whose domain serves an
-       apple-app-site-association listing this app's application identifier
-       (__TEAM_ID__.__BUNDLE_ID__) under webcredentials. Under Developer ID this entitlement needs
-       a provisioning profile embedded in the bundle (Contents/embedded.provisionprofile), which
-       the release job supplies from APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64. Whether a
-       Developer ID-distributed app obtains associated domains for passkeys at all is T57's first
-       question. -->
-  <key>com.apple.developer.associated-domains</key>
-  <array>
-    <string>webcredentials:cli.candle.tv</string>
-  </array>
+  <!-- No com.apple.developer.associated-domains entitlement (BE-3251, 2026-11-12): the synced passkey
+       factor (BE-135) needs webcredentials:cli.candle.tv in BOTH this entitlement and the Developer ID
+       provisioning profile, plus a cli.candle.tv apple-app-site-association listing this app. The
+       current profile has no Associated Domains and the AASA lists no app, so this helper ships the
+       Secure Enclave (Touch ID) factor only. The CLI already reports passkey as unavailable when the
+       helper's associatedDomains is empty (vault/platform.ts). The profile is still embedded: it
+       authorizes the application identifier and keychain access group above. Adding passkeys back
+       is this entitlement, a profile with Associated Domains, and the AASA entry (T57). -->
   <!-- Hardened runtime, no exceptions: no JIT, no unsigned memory, no library validation bypass. -->
 </dict>
 </plist>

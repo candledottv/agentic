@@ -16,12 +16,13 @@ name: Release CLI
 # bundle, and latest.json names it; a missing secret, a failed signature, notarization or staple
 # fails the release, so an unsigned helper is never published.
 #
-# Ember Phase 2 PR G (BE-135, AD-2) adds the synced passkey factor to the same helper, which needs
-# the associated-domains entitlement (webcredentials:cli.candle.tv) and, under Developer ID, a
-# provisioning profile embedded in the bundle. Under "signed" that profile is one more required
-# input, APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64; it is checked against the team, the
-# bundle id, the entitlement and its expiry before the build, and a missing or wrong one fails
-# the job like the other six. Under "omit" nothing changes.
+# Under Developer ID the helper embeds a provisioning profile that authorizes its application
+# identifier and keychain access group. Under "signed" that profile is one more required input,
+# APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64; it is checked against the team, the bundle id
+# and its expiry before the build, and a missing or wrong one fails the job like the other six.
+# The synced passkey factor (Ember PR G, BE-135) also needs webcredentials:cli.candle.tv in the
+# entitlements and the profile; it is not shipped yet (BE-3251), so neither is required here.
+# Under "omit" nothing changes.
 #
 # One file, two homes (spec 2026-10-23-candle-github, section 9). This workflow runs in
 # candledottv/agentic, where every version through the bridge release is cut, and the same file runs
@@ -136,11 +137,12 @@ jobs:
           done
           [ -z "$missing" ] || { echo "release-policy.json says signed, and these secrets are not set on this repository:${missing}"; exit 1; }
           [ "${APPLE_TEAM_ID}" = "${POLICY_TEAM_ID}" ] || { echo "APPLE_TEAM_ID does not match release-policy.json macosHelper.teamId (${POLICY_TEAM_ID})"; exit 1; }
-      # The Developer ID provisioning profile the associated-domains entitlement needs (PR G). It
-      # is decoded once, checked against the team, the bundle id, the entitlement and its expiry,
-      # and embedded by build.sh as Contents/embedded.provisionprofile. A profile for another
-      # team or bundle, or one without the webcredentials domain, would sign cleanly and fail
-      # only on a user's Mac at the first passkey ceremony, so it is refused here instead.
+      # The Developer ID provisioning profile that authorizes the helper's application identifier
+      # and keychain access group (the Secure Enclave key). It is decoded once, checked against the
+      # team, the bundle id and its expiry, and embedded by build.sh as
+      # Contents/embedded.provisionprofile. A profile for another team or bundle would sign cleanly
+      # and fail only on a user's Mac at the first unlock, so it is refused here instead. The
+      # passkey factor's associated domain is not shipped yet (BE-3251), so it is not required.
       - name: Decode and check the provisioning profile
         if: steps.policy.outputs.policy == 'signed'
         id: profile
@@ -155,8 +157,6 @@ jobs:
           security cms -D -i "$profile" > "$plist"
           app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$plist")"
           [ "$app_id" = "${APPLE_TEAM_ID}.${BUNDLE_ID}" ] || { echo "the provisioning profile is for ${app_id}, not ${APPLE_TEAM_ID}.${BUNDLE_ID}"; exit 1; }
-          /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.associated-domains' "$plist" | grep -q 'webcredentials:cli.candle.tv' \
-            || { echo "the provisioning profile's associated-domains entitlement does not include webcredentials:cli.candle.tv"; exit 1; }
           /usr/libexec/PlistBuddy -c 'Print :TeamIdentifier' "$plist" | grep -q "$APPLE_TEAM_ID" \
             || { echo "the provisioning profile's TeamIdentifier does not include ${APPLE_TEAM_ID}"; exit 1; }
           expires="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$plist")"
@@ -210,9 +210,18 @@ jobs:
           requirement="=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"${TEAM_ID}\" and identifier \"${BUNDLE_ID}\""
           /usr/bin/codesign --verify --strict --deep --verbose=2 -R "$requirement" "$app"
           /usr/bin/codesign -d --entitlements - "$app"
-          # The signed entitlements must carry the associated domain the passkey factor needs (PR G).
-          /usr/bin/codesign -d --entitlements - "$app" 2>&1 | grep -q 'webcredentials:cli.candle.tv' \
-            || { echo "the signed helper's entitlements do not carry webcredentials:cli.candle.tv"; exit 1; }
+          # The signed entitlements, read as a plist, must carry exactly the keychain access group the
+          # Secure Enclave key needs, and no associated-domains entitlement (the profile has none).
+          signed_plist="${RUNNER_TEMP}/candle-enclave.signed-entitlements.plist"
+          /usr/bin/codesign -d --entitlements - --xml "$app" > "$signed_plist" \
+            || { echo "could not read the signed helper's entitlements"; exit 1; }
+          group="$(/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' "$signed_plist")" \
+            || { echo "the signed helper has no keychain-access-groups entitlement"; exit 1; }
+          [ "$group" = "${TEAM_ID}.${BUNDLE_ID}" ] \
+            || { echo "the signed helper's keychain access group is ${group}, not ${TEAM_ID}.${BUNDLE_ID}"; exit 1; }
+          if /usr/libexec/PlistBuddy -c 'Print :com.apple.developer.associated-domains' "$signed_plist" >/dev/null 2>&1; then
+            echo "the signed helper carries com.apple.developer.associated-domains, which the profile does not authorize"; exit 1
+          fi
           rm -f "$PROFILE"
           printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "${RUNNER_TEMP}/notary.p8"
           ditto -c -k --keepParent "$app" "${RUNNER_TEMP}/notarize.zip"
@@ -235,7 +244,7 @@ jobs:
           ditto -c -k --keepParent "$app" "macos-helper/${asset}"
           sha="$(shasum -a 256 "macos-helper/${asset}" | awk '{print $1}')"
           jq -n --arg tag "${GITHUB_REF_NAME}" --arg commit "${GITHUB_SHA}" --arg asset "$asset" --arg sha "$sha" --arg team "$TEAM_ID" --arg bundle "$BUNDLE_ID" \
-            '{status: "included", policy: "signed", tag: $tag, commit: $commit, asset: $asset, sha256: $sha, teamId: $team, bundleId: $bundle, associatedDomains: ["webcredentials:cli.candle.tv"], provisioningProfile: true}' > macos-helper/macos-helper-state.json
+            '{status: "included", policy: "signed", tag: $tag, commit: $commit, asset: $asset, sha256: $sha, teamId: $team, bundleId: $bundle, associatedDomains: [], provisioningProfile: true}' > macos-helper/macos-helper-state.json
           cat macos-helper/macos-helper-state.json
       - name: Remove the temporary keychain
         if: always() && steps.cert.outputs.keychain != ''

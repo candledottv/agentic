@@ -755,7 +755,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.22";
+var CLI_VERSION = "0.13.23";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {

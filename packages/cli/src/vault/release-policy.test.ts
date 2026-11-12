@@ -65,12 +65,40 @@ describe("release-policy.json", () => {
       expect(workflow).toMatch(new RegExp(`for name in [^\\n]*\\b${secret}\\b`))
     }
     // The profile is embedded by build.sh (fifth argument) and the signed entitlements are checked
-    // for the passkey factor's associated domain.
+    // for the keychain access group. The passkey factor's associated domain is not shipped yet
+    // (BE-3251: the profile has no Associated Domains), so the job must not require it.
     expect(workflow).toContain('"$TEAM_ID" "$PROFILE"')
     expect(workflow).toContain("embedded.provisionprofile")
-    expect(workflow).toContain("webcredentials:cli.candle.tv")
+    expect(workflow).not.toContain("grep -q 'webcredentials:cli.candle.tv'")
+    // The signed entitlements are read as a plist, not grepped: the group must be entry 0 and equal,
+    // and associated-domains must be absent. The read fails closed.
+    expect(workflow).toContain("codesign -d --entitlements - --xml")
+    expect(workflow).toContain("Print :keychain-access-groups:0")
+    expect(workflow).toContain('[ "$group" = "${TEAM_ID}.${BUNDLE_ID}" ]')
+    expect(workflow).toContain("Print :com.apple.developer.associated-domains")
+    expect(workflow).not.toContain('grep -q "${TEAM_ID}.${BUNDLE_ID}"')
+    // The kept profile gates: app id, TeamIdentifier and expiry refusals.
+    expect(workflow).toContain("Print :Entitlements:com.apple.application-identifier")
+    expect(workflow).toContain('[ "$app_id" = "${APPLE_TEAM_ID}.${BUNDLE_ID}" ]')
+    expect(workflow).toContain("Print :TeamIdentifier")
+    expect(workflow).toContain("TeamIdentifier does not include")
+    expect(workflow).toContain("Print :ExpirationDate")
+    expect(workflow).toContain("the provisioning profile expired on")
     // The policy is the only switch: the job never reads a credential to decide.
     expect(workflow).toContain('"omit"')
     expect(workflow).toContain('"signed"')
+  })
+
+  test("the entitlements template keeps the app identifier and keychain group, and has no associated domains", async () => {
+    const template = await readFile(
+      join(import.meta.dir, "..", "enclave-helper", "app", "entitlements.plist.template"),
+      "utf8",
+    )
+    // Strip comments, which mention the removed key by name.
+    const body = template.replace(/<!--[\s\S]*?-->/g, "")
+    expect(body).toContain("<key>com.apple.application-identifier</key>")
+    expect(body).toContain("<key>keychain-access-groups</key>")
+    expect(body.match(/<string>__TEAM_ID__\.__BUNDLE_ID__<\/string>/g)?.length).toBe(2)
+    expect(body).not.toContain("com.apple.developer.associated-domains")
   })
 })
