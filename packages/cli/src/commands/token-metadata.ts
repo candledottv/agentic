@@ -54,6 +54,7 @@ function usageFor(ctx: CommandContext, line: string): Usage {
 
 /** `--chain`, else the mint's shape: `0x` is Hood (the documented default, spec section 5). */
 export function chainFor(mint: string, given: string | undefined): Chain | undefined {
+  // chain-lint-allowed: the documented bare-0x CLI default (spec section 5), kept until the CLI resolves the default EVM chain from the registry
   const chain = given ?? (mint.startsWith("0x") ? "hood" : "solana")
   return chain === "solana" || isEvmChainSlug(chain) ? chain : undefined
 }

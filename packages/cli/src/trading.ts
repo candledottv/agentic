@@ -289,6 +289,7 @@ export function chainName(chain: TradeChain): string {
  * base58 address.
  */
 export function walletNameChain(name: string): TradeChain | undefined {
+  // chain-lint-allowed: a stored wallet id carries no chain; the shape is the only certain signal until wallet records are keyed by chain
   return /^0x[0-9a-fA-F]{40}$/.test(name) ? "hood" : undefined
 }
 

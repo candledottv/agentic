@@ -1575,6 +1575,7 @@ function displayFor(
   keyLimitUsd?: string,
 ): Card["display"] {
   const contract = text(params.mint ?? params.outputMint ?? params.tokenMint ?? params.token ?? params.address ?? "")
+  // chain-lint-allowed: card params carry no chain unless passed; display default per the bare-0x ruling (spec section 5)
   const chain = text(params.chain) || (contract.startsWith("0x") ? "hood" : contract ? "solana" : "")
   const side = text(params.side ?? params.direction)
   const symbol = text(params.symbol ?? params.ticker)
