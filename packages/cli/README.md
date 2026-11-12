@@ -307,14 +307,15 @@ factor; the passphrase remains the recovery floor.
 
 The synced passkey factor (`candle vault factor add passkey`) remains unavailable in 0.13.23:
 the shipped helper deliberately omits `webcredentials:cli.candle.tv`, so it refuses with
-`VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM` and explains the missing entitlement. A future release
-needs macOS 15 or later and the helper's
+`VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM` and explains the missing entitlement. Passkey enrollment
+has not yet been checked on real Macs. A future release needs macOS 15 or later and the helper's
 associated-domains entitlement for `webcredentials:cli.candle.tv` with an embedded provisioning
 profile, plus an `apple-app-site-association` served at
 `https://cli.candle.tv/.well-known/apple-app-site-association` (status 200, no redirect,
 `Content-Type: application/json`, `{"webcredentials":{"apps":["<TEAM ID>.tv.candle.cli.enclave"]}}`).
-Each missing piece is a typed refusal before any passkey sheet, and the refusal names what must be
-served. The passkey follows the Apple account, so it is a recoverable factor; two are one factor,
+A missing association refuses with `VAULT_FACTOR_UNAVAILABLE` before any passkey sheet and names
+what must be served; serving it allows real enrollment when the local requirements are met.
+The passkey follows the Apple account, so it is a recoverable factor; two are one factor,
 and a copy of the vault is sealed (passphrase and security-key envelopes only) by default unless it goes to a
 recognised local disk or removable drive, so that one account never holds
 both the blob and a factor that opens it. iCloud Drive and other cloud folders are sealed for that
