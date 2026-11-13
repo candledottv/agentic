@@ -18,6 +18,7 @@
  * Exit codes: 0 done, 1 refused or failed (the server's code), 2 usage or local input refused
  * (nothing was sent), 3 outcome unknown.
  */
+
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import { isEvmChainSlug } from "../chain-registry"
@@ -25,7 +26,8 @@ import { type ApiResult, apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { writeFields, writeHeading } from "../human-output"
 import { launchFlagFields } from "../launch-options"
-import { errorEnvelope, terminalText, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
+import { errorEnvelope, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
+import { escapeTerminalText as terminalText } from "../terminal-text"
 import { tokenHistory as tokenPageHistory } from "./token-pages"
 
 export const EXIT_OUTCOME_UNKNOWN = 3
@@ -332,6 +334,6 @@ export async function tokenHistory(args: string[], ctx: CommandContext): Promise
       }),
     ])
   }
-  if (data.nextCursor) ctx.deps.stdout.write(`\nMore: --cursor ${data.nextCursor}\n`)
+  if (data.nextCursor) ctx.deps.stdout.write(`\nMore: --cursor ${terminalText(data.nextCursor)}\n`)
   return 0
 }

@@ -44,6 +44,7 @@ import { writeLocalFailure, writeUsageFailure } from "../render"
 import { describeRpcFailure, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { solanaSpendProblem } from "../solana-verify"
+import { terminalLines } from "../terminal-text"
 import {
   BASES,
   baseAsset,
@@ -264,7 +265,9 @@ export function printTradingResult(ctx: CommandContext, result: Json): number {
     describeSwapEvidence(ctx, job, job.status === "failed")
   }
   const printed = ctx.json && (result.kind === "swap" || result.kind === "trade") ? swapJsonResult(result) : result
-  ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(printed)}\n` : `${JSON.stringify(result, null, 2)}\n`)
+  ctx.deps.stdout.write(
+    ctx.json ? `${JSON.stringify(printed)}\n` : `${terminalLines(JSON.stringify(result, null, 2))}\n`,
+  )
   const job = result.job as Json | undefined
   const operation = job?.operation as Json | undefined
   return (operation?.guard as Json | undefined)?.recoveryRequired === true ||
@@ -488,7 +491,7 @@ export async function swapReceipt(args: string[], ctx: CommandContext): Promise<
       return 1
     }
     describeReceipt(ctx, body, answer.job)
-    ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(body)}\n` : `${JSON.stringify(body, null, 2)}\n`)
+    ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(body)}\n` : `${terminalLines(JSON.stringify(body, null, 2))}\n`)
     return 0
   } catch (error) {
     return tradingFailure(ctx, error)
@@ -499,7 +502,7 @@ export async function swapReceipt(args: string[], ctx: CommandContext): Promise<
 function describeReceipt(ctx: CommandContext, body: Json, job: Json | undefined): void {
   const settlement = body.settlement
   if (settlement === null || typeof settlement !== "object") {
-    if (typeof body.next === "string") ctx.deps.stderr.write(`${body.next}\n`)
+    if (typeof body.next === "string") ctx.deps.stderr.write(`${terminalLines(body.next)}\n`)
     return
   }
   const { state, settledOutRaw, bridgeStatus } = settlement as Json
@@ -1625,7 +1628,8 @@ async function hoodOperationRead(
     const result = await request(ctx, key, path, recover ? (candidateHash ? { candidateHash } : {}) : undefined)
     const operation = result.operation as Json | undefined
     const guard = operation?.guard as Json | undefined
-    ctx.deps.stdout.write(`${JSON.stringify(result, null, ctx.json ? undefined : 2)}\n`)
+    const output = JSON.stringify(result, null, ctx.json ? undefined : 2)
+    ctx.deps.stdout.write(`${ctx.json ? output : terminalLines(output)}\n`)
     if (guard)
       ctx.deps.stderr.write(
         `${safeText(guard.reason)}: ${safeText(guard.clearingCondition)} Read: candle swap status --operation ${id}.\n`,

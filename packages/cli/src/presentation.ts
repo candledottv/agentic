@@ -1,4 +1,5 @@
 import type { Deps } from "./deps"
+import { terminalLines, escapeTerminalText as terminalText } from "./terminal-text"
 import { TERMINAL_TOKENS } from "./terminal-theme"
 import { CLI_VERSION } from "./version"
 
@@ -56,6 +57,7 @@ export function terminalStyle(deps: StyleDeps, stream: "stdout" | "stderr", mach
 }
 
 export function accent(text: string, style: TerminalStyle, role: keyof typeof TERMINAL_TOKENS.light = "brand"): string {
+  text = terminalLines(text)
   if (!style.color) return text
   const token = TERMINAL_TOKENS[style.theme][role]
   const code =
@@ -271,6 +273,7 @@ export function symbols(style: TerminalStyle): Symbols {
 
 /** SGR other than a color (bold, dim). Gated like `accent`: no color means no escape codes. */
 function sgr(text: string, style: TerminalStyle, code: string): string {
+  text = terminalLines(text)
   return style.color && text ? `\x1b[${code}m${text}\x1b[0m` : text
 }
 
@@ -286,13 +289,13 @@ export function dim(text: string, style: TerminalStyle): string {
  * A heading longer than the prose width wraps at word boundaries, continuation flush left, so it
  * is never wider than the terminal. Text that already fits is unchanged, byte for byte. */
 export function heading(text: string, style: TerminalStyle): string {
-  return wrapText(text, proseWidth(style))
+  return wrapText(terminalLines(text), proseWidth(style))
     .map((line) => bold(line, style))
     .join("\n")
 }
 
 /** A value the caller did not have: `undefined`, `null` or an empty string. */
-export type FieldValue = string | number | undefined | null
+export type FieldValue = string | number | undefined | null | { text: string; role: "positive" | "negative" }
 
 /**
  * Label and value lines, the labels in one dim column padded to the widest label plus two. A
@@ -310,26 +313,38 @@ export function fields(
   style: TerminalStyle,
   indent = 2,
 ): string[] {
+  rows = rows.map(([label, value]) => [terminalText(label), value])
   const budget = proseWidth(style)
   const pad = " ".repeat(Math.min(indent, Math.max(0, budget)))
   const labelWidth = Math.max(0, ...rows.map(([label]) => displayWidth(label)))
   const sideWidth = budget - pad.length - labelWidth - 2
   const out: string[] = []
   for (const [label, raw] of rows) {
-    const value = raw === undefined || raw === null || raw === "" ? symbols(style).missing : String(raw)
+    const paint = (text: string) => (typeof raw === "object" && raw !== null ? accent(text, style, raw.role) : text)
+    const value =
+      raw === undefined || raw === null || raw === ""
+        ? symbols(style).missing
+        : terminalText(typeof raw === "object" ? raw.text : String(raw))
     if (sideWidth >= 1 && fitsWidth(value, sideWidth)) {
       const [first = "", ...rest] = value.split("\n").flatMap((line) => wrapText(line, sideWidth))
-      out.push(`${pad}${dim(padDisplay(label, labelWidth), style)}  ${first}`)
-      for (const line of rest) out.push(`${pad}${" ".repeat(labelWidth + 2)}${line}`)
+      out.push(`${pad}${dim(padDisplay(label, labelWidth), style)}  ${paint(first)}`)
+      for (const line of rest) out.push(`${pad}${" ".repeat(labelWidth + 2)}${paint(line)}`)
     } else {
-      out.push(...stackedField(label, value, style, pad, budget))
+      out.push(...stackedField(label, value, style, pad, budget, paint))
     }
   }
   return out
 }
 
 /** Label, then the value underneath it, once the side-by-side column is too narrow for prose. */
-function stackedField(label: string, value: string, style: TerminalStyle, pad: string, budget: number): string[] {
+function stackedField(
+  label: string,
+  value: string,
+  style: TerminalStyle,
+  pad: string,
+  budget: number,
+  paint: (text: string) => string,
+): string[] {
   const labelBudget = Math.max(1, budget - pad.length)
   const out = wrapText(label, labelBudget).map((line) => `${pad}${dim(line, style)}`)
   const nested = budget - pad.length - 2
@@ -344,7 +359,7 @@ function stackedField(label: string, value: string, style: TerminalStyle, pad: s
     valuePad = ""
   }
   for (const part of value.split("\n")) {
-    for (const line of wrapText(part, valueWidth)) out.push(line ? `${valuePad}${line}` : "")
+    for (const line of wrapText(part, valueWidth)) out.push(line ? `${valuePad}${paint(line)}` : "")
   }
   return out
 }
@@ -358,6 +373,7 @@ export type NoticeLevel = "note" | "warning" | "danger"
  * paragraph inside the same notice.
  */
 export function renderNotice(level: NoticeLevel, text: string, style: TerminalStyle, indent = 2): string[] {
+  text = terminalLines(text)
   const sym = symbols(style)
   const mark = level === "note" ? sym.note : level === "warning" ? sym.warning : sym.danger
   const budget = proseWidth(style)
@@ -399,6 +415,7 @@ export function notice(deps: NoticeDeps, stream: "stdout" | "stderr", level: Not
  * the prose width wraps with the mark's column accounted for, and continuation lines run under
  * the text, not the mark. Text that already fits is unchanged, byte for byte. */
 export function success(text: string, style: TerminalStyle): string {
+  text = terminalLines(text)
   const mark = symbols(style).ok
   const hang = " ".repeat(displayWidth(mark) + 1)
   const budget = Math.max(1, proseWidth(style) - displayWidth(mark) - 1)

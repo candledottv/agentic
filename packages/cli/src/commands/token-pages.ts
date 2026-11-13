@@ -19,6 +19,7 @@
  * Exit codes: 0 done, 1 refused or failed (the server's code), 2 usage or a local input refusal
  * (nothing was sent), 3 outcome unknown, 4 revision conflict.
  */
+
 import { createHash, randomUUID } from "node:crypto"
 import { base58, base64 } from "@scure/base"
 import { parseArgs } from "../args"
@@ -27,7 +28,8 @@ import { type ApiResult, apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { writeFields, writeHeading } from "../human-output"
 import { notice } from "../presentation"
-import { terminalText, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
+import { writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
+import { escapeTerminalText as terminalText } from "../terminal-text"
 
 export const EXIT_OUTCOME_UNKNOWN = 3
 export const EXIT_REVISION_CONFLICT = 4
@@ -125,7 +127,7 @@ function writeRefusal(ctx: CommandContext, refusal: Refusal, suggestion?: string
     )
     return
   }
-  ctx.deps.stderr.write(`${suggestion ? `${message} ${suggestion}` : message}\n`)
+  ctx.deps.stderr.write(`${terminalText(suggestion ? `${message} ${suggestion}` : message)}\n`)
 }
 
 /** Any non-2xx answer: the token page refusal envelope, else the CLI's ordinary error rendering. */
@@ -379,7 +381,7 @@ function writeAbout(ctx: CommandContext, about: About): void {
     ])
     if (v.newerAwaitingReview) notice(ctx.deps, "stdout", "note", "A newer version is hidden pending review.")
     if (v.linksWithheld) notice(ctx.deps, "stdout", "note", "Links are withheld pending review.")
-    ctx.deps.stdout.write(`\n${terminalTextKeepingLines(v.text)}\n`)
+    ctx.deps.stdout.write(`\n${terminalText(v.text)}\n`)
   }
   writeHeading(ctx.deps, "stdout", "Supply, measured by Candle")
   const facts = about.facts.filter((f) => f.status === "known" || f.status === "stale")
@@ -390,14 +392,6 @@ function writeAbout(ctx: CommandContext, about: About): void {
       "stdout",
       facts.map((f) => [terminalText(f.metric), factValue(f)] as const),
     )
-}
-
-/** Holder text with its line breaks and tabs kept and every other control character dropped. */
-function terminalTextKeepingLines(text: string): string {
-  return text
-    .split("\n")
-    .map((line) => terminalText(line.replace(/\t/g, "    ")))
-    .join("\n")
 }
 
 export async function tokenAbout(args: string[], ctx: CommandContext): Promise<number> {
@@ -761,9 +755,9 @@ export async function tokenHistory(args: string[], ctx: CommandContext): Promise
       ["Restored from", item.restoredFrom ?? undefined],
       ["State", item.tombstone ?? "visible"],
     ])
-    if (item.text !== null) ctx.deps.stdout.write(`\n${terminalTextKeepingLines(item.text)}\n`)
+    if (item.text !== null) ctx.deps.stdout.write(`\n${terminalText(item.text)}\n`)
   }
-  if (data.nextCursor) ctx.deps.stdout.write(`\nMore: --cursor ${data.nextCursor}\n`)
+  if (data.nextCursor) ctx.deps.stdout.write(`\nMore: --cursor ${terminalText(data.nextCursor)}\n`)
   return 0
 }
 
@@ -960,9 +954,9 @@ export async function tokenComments(args: string[], ctx: CommandContext): Promis
       ["State", item.tombstone ?? "visible"],
       ["Links", item.linksWithheld ? "withheld pending review" : undefined],
     ])
-    if (item.text !== null) ctx.deps.stdout.write(`\n${terminalTextKeepingLines(item.text)}\n`)
+    if (item.text !== null) ctx.deps.stdout.write(`\n${terminalText(item.text)}\n`)
   }
-  if (data.nextCursor) ctx.deps.stdout.write(`\nMore: --cursor ${data.nextCursor}\n`)
+  if (data.nextCursor) ctx.deps.stdout.write(`\nMore: --cursor ${terminalText(data.nextCursor)}\n`)
   return 0
 }
 export async function tokenPost(args: string[], ctx: CommandContext): Promise<number> {

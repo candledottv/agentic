@@ -256,9 +256,23 @@ describe("keys list: Name and Access", () => {
   test("a label carrying a newline and a bidi override renders on one line with neither", async () => {
     const { stdout } = await list([{ ...JPVPY8GS, label: "evil\nname‮gnp.exe" }])
     const row = stdout.split("\n").find((line) => line.trimStart().startsWith("JpVPY8gs")) ?? ""
-    expect(row).toContain("evil name gnp.exe  Write")
+    expect(row).toContain("evil\\nname gnp.exe  Write")
     expect(stdout).not.toContain("‮")
     expect(stdout.split("\n").some((line) => line.startsWith("name"))).toBe(false)
+  })
+
+  test("hostile labels are escaped on human screens and exact under --json", async () => {
+    const label = "evil\x1b[2J\rname\x07"
+    for (const args of [[], ["--plain"], ["--no-color"]]) {
+      const { stdout } = await list([{ ...JPVPY8GS, label }], args)
+      expect(stdout).toContain("evil\\x1b[2J\\rname\\x07")
+      expect(stdout).not.toContain("\r")
+      expect(stdout).not.toContain("\x07")
+      expect(stdout).not.toContain("\x1b[2J")
+    }
+    const { payload, stdout } = await list([{ ...JPVPY8GS, label }], ["--json"])
+    expect(stdout).toBe(`${JSON.stringify(payload)}\n`)
+    expect(JSON.parse(stdout).keys[0].label).toBe(label)
   })
 
   test("--json is the API's payload, byte for byte, with or without --scopes", async () => {

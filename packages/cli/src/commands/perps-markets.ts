@@ -19,6 +19,7 @@ import {
 } from "../hyperliquid-markets"
 import { notice, symbols, terminalStyle } from "../presentation"
 import { renderTable, writeLocalFailure, writeUsageFailure } from "../render"
+import { terminalLines } from "../terminal-text"
 import { safeText } from "../trading"
 import { formatUsd } from "../usd"
 import { perpsRequest } from "./perps"
@@ -162,7 +163,7 @@ async function read(ctx: CommandContext, argv: string[], command: Command): Prom
       return 0
     }
     for (const warning of result.warnings) notice(ctx.deps, "stderr", "note", `${safeText(warning)}\n`.trim())
-    const out = (line: string) => ctx.deps.stdout.write(`${line}\n`)
+    const out = (line: string) => ctx.deps.stdout.write(`${terminalLines(line)}\n`)
     out(
       `Hyperliquid ${result.network}; OI floor $${result.gate.minOpenInterestUsd} (${result.gate.source}). Tradeability is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`,
     )

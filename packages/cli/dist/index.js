@@ -734,6 +734,23 @@ var init_agent_key_access = __esm(() => {
   ];
 });
 
+// src/terminal-text.ts
+function escapeTerminalText(value) {
+  return value.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, (char) => {
+    if (char === `
+`)
+      return "\\n";
+    if (char === "\r")
+      return "\\r";
+    return `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`;
+  });
+}
+function terminalLines(value) {
+  return value.split(`
+`).map(escapeTerminalText).join(`
+`);
+}
+
 // src/terminal-theme.ts
 var TERMINAL_TOKENS;
 var init_terminal_theme = __esm(() => {
@@ -781,6 +798,7 @@ function terminalStyle(deps, stream, machine = false) {
   };
 }
 function accent(text, style, role = "brand") {
+  text = terminalLines(text);
   if (!style.color)
     return text;
   const token = TERMINAL_TOKENS[style.theme][role];
@@ -944,6 +962,7 @@ function symbols(style) {
   return style.styled ? UNICODE_SYMBOLS : ASCII_SYMBOLS;
 }
 function sgr(text, style, code) {
+  text = terminalLines(text);
   return style.color && text ? `\x1B[${code}m${text}\x1B[0m` : text;
 }
 function bold(text, style) {
@@ -953,30 +972,32 @@ function dim(text, style) {
   return sgr(text, style, "2");
 }
 function heading(text, style) {
-  return wrapText(text, proseWidth(style)).map((line) => bold(line, style)).join(`
+  return wrapText(terminalLines(text), proseWidth(style)).map((line) => bold(line, style)).join(`
 `);
 }
 function fields(rows, style, indent = 2) {
+  rows = rows.map(([label, value]) => [escapeTerminalText(label), value]);
   const budget = proseWidth(style);
   const pad = " ".repeat(Math.min(indent, Math.max(0, budget)));
   const labelWidth = Math.max(0, ...rows.map(([label]) => displayWidth(label)));
   const sideWidth = budget - pad.length - labelWidth - 2;
   const out = [];
   for (const [label, raw] of rows) {
-    const value = raw === undefined || raw === null || raw === "" ? symbols(style).missing : String(raw);
+    const paint = (text) => typeof raw === "object" && raw !== null ? accent(text, style, raw.role) : text;
+    const value = raw === undefined || raw === null || raw === "" ? symbols(style).missing : escapeTerminalText(typeof raw === "object" ? raw.text : String(raw));
     if (sideWidth >= 1 && fitsWidth(value, sideWidth)) {
       const [first = "", ...rest] = value.split(`
 `).flatMap((line) => wrapText(line, sideWidth));
-      out.push(`${pad}${dim(padDisplay(label, labelWidth), style)}  ${first}`);
+      out.push(`${pad}${dim(padDisplay(label, labelWidth), style)}  ${paint(first)}`);
       for (const line of rest)
-        out.push(`${pad}${" ".repeat(labelWidth + 2)}${line}`);
+        out.push(`${pad}${" ".repeat(labelWidth + 2)}${paint(line)}`);
     } else {
-      out.push(...stackedField(label, value, style, pad, budget));
+      out.push(...stackedField(label, value, style, pad, budget, paint));
     }
   }
   return out;
 }
-function stackedField(label, value, style, pad, budget) {
+function stackedField(label, value, style, pad, budget, paint) {
   const labelBudget = Math.max(1, budget - pad.length);
   const out = wrapText(label, labelBudget).map((line) => `${pad}${dim(line, style)}`);
   const nested = budget - pad.length - 2;
@@ -993,11 +1014,12 @@ function stackedField(label, value, style, pad, budget) {
   for (const part of value.split(`
 `)) {
     for (const line of wrapText(part, valueWidth))
-      out.push(line ? `${valuePad}${line}` : "");
+      out.push(line ? `${valuePad}${paint(line)}` : "");
   }
   return out;
 }
 function renderNotice(level, text, style, indent = 2) {
+  text = terminalLines(text);
   const sym = symbols(style);
   const mark = level === "note" ? sym.note : level === "warning" ? sym.warning : sym.danger;
   const budget = proseWidth(style);
@@ -1027,6 +1049,7 @@ ${renderNotice(level, text, style).join(`
 `);
 }
 function success(text, style) {
+  text = terminalLines(text);
   const mark = symbols(style).ok;
   const hang = " ".repeat(displayWidth(mark) + 1);
   const budget = Math.max(1, proseWidth(style) - displayWidth(mark) - 1);
@@ -1048,17 +1071,19 @@ var init_presentation = __esm(() => {
 });
 
 // src/render.ts
-function formatScopesForSummary(scopes) {
-  return sortAgentKeyScopes(scopes).map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope === "transfer:bound" ? `${scope} (${TRANSFER_BOUND_NOTE})` : scope === "perps:write" ? `${scope} (${PERPS_WRITE_NOTE})` : scope).join(", ");
-}
 function terminalText(value) {
   return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+function formatScopesForSummary(scopes) {
+  return sortAgentKeyScopes(scopes).map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope === "transfer:bound" ? `${scope} (${TRANSFER_BOUND_NOTE})` : scope === "perps:write" ? `${scope} (${PERPS_WRITE_NOTE})` : scope).join(", ");
 }
 function numericColumn(rows, col) {
   const known = rows.map((row) => row[col] ?? "").filter((cell) => cell !== "" && cell !== "–" && cell !== "-");
   return known.length > 0 && known.every((cell) => NUMERIC_CELL.test(cell));
 }
 function renderTable(headers, rows, options) {
+  headers = headers.map(escapeTerminalText);
+  rows = rows.map((row) => row.map((cell) => escapeTerminalText(cell ?? "")));
   if (!options)
     return renderPlainTable(headers, rows);
   const specs = headers.map((_, col) => options.columns?.[col] ?? {});
@@ -1219,6 +1244,14 @@ function errorParts(result, ctx) {
   return { message: result.message, fixes: result.uiHint ? [{ label: result.uiHint }] : [] };
 }
 function renderErrorBlock(parts, style) {
+  parts = {
+    message: terminalLines(parts.message),
+    fixes: parts.fixes.map((fix) => ({
+      ...fix,
+      label: terminalLines(fix.label),
+      ...fix.command ? { command: terminalLines(fix.command) } : {}
+    }))
+  };
   const budget = proseWidth(style);
   const out = [...errorMessageLines(parts.message, style, budget)];
   if (parts.fixes.length === 0)
@@ -1286,7 +1319,7 @@ function writeFailure(deps, result, ctx, json) {
     deps.stdout.write(`${JSON.stringify(errorEnvelope(result, ctx))}
 `);
   else
-    deps.stderr.write(`${renderError(result, ctx)}
+    deps.stderr.write(`${terminalLines(renderError(result, ctx))}
 `);
 }
 function writeLocalFailure(deps, failure2, json) {
@@ -1298,7 +1331,7 @@ function writeLocalFailure(deps, failure2, json) {
   const separator = failure2.suggestion?.includes(`
 `) ? `
 ` : " ";
-  deps.stderr.write(`${failure2.suggestion ? `${failure2.message}${separator}${failure2.suggestion}` : failure2.message}
+  deps.stderr.write(`${terminalLines(failure2.suggestion ? `${failure2.message}${separator}${failure2.suggestion}` : failure2.message)}
 `);
 }
 function writeUsageFailure(deps, message, json) {
@@ -1306,7 +1339,7 @@ function writeUsageFailure(deps, message, json) {
     deps.stdout.write(`${JSON.stringify({ ok: false, code: "USAGE", message })}
 `);
   else
-    deps.stderr.write(`${message}
+    deps.stderr.write(`${terminalLines(message)}
 `);
 }
 function portalDevicesUrl(apiUrl, portalOrigin) {
@@ -20215,10 +20248,13 @@ function credentialEnvOverrides(env) {
   return ["CANDLE_API_KEY_FILE", "CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"].filter((name) => env[name]?.trim());
 }
 function identityLine(profile, account, apiUrl, overrides, username, options = {}) {
-  const address = account === undefined ? undefined : shortId(account, options.full);
+  profile = profile === undefined ? undefined : escapeTerminalText(profile);
+  username = username === undefined ? undefined : escapeTerminalText(username);
+  overrides = overrides?.map(escapeTerminalText);
+  const address = account === undefined ? undefined : escapeTerminalText(shortId(account, options.full));
   const shown = overrides?.length ? address ? `${address} (${overrides.join(", ")} override)` : `unknown (${overrides.join(", ")} override)` : username && address ? `${username} (${address})` : address ?? "unknown";
   const name = profile ?? "none";
-  const host = apiUrl.replace(/^https:\/\//i, "").replace(/\/+$/, "");
+  const host = escapeTerminalText(apiUrl).replace(/^https:\/\//i, "").replace(/\/+$/, "");
   const sep2 = options.style ? symbols(options.style).note : "·";
   return `Profile ${options.style ? bold(name, options.style) : name} ${sep2} Account ${shown} ${sep2} ${host}`;
 }
@@ -26452,7 +26488,7 @@ function printTradingResult(ctx, result2) {
   }
   const printed = ctx.json && (result2.kind === "swap" || result2.kind === "trade") ? swapJsonResult(result2) : result2;
   ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(printed)}
-` : `${JSON.stringify(result2, null, 2)}
+` : `${terminalLines(JSON.stringify(result2, null, 2))}
 `);
   const job = result2.job;
   const operation = job?.operation;
@@ -26578,7 +26614,7 @@ async function swapReceipt(args, ctx) {
     }
     describeReceipt(ctx, body, answer.job);
     ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(body)}
-` : `${JSON.stringify(body, null, 2)}
+` : `${terminalLines(JSON.stringify(body, null, 2))}
 `);
     return 0;
   } catch (error) {
@@ -26589,7 +26625,7 @@ function describeReceipt(ctx, body, job) {
   const settlement = body.settlement;
   if (settlement === null || typeof settlement !== "object") {
     if (typeof body.next === "string")
-      ctx.deps.stderr.write(`${body.next}
+      ctx.deps.stderr.write(`${terminalLines(body.next)}
 `);
     return;
   }
@@ -27364,7 +27400,8 @@ async function hoodOperationRead(ctx, id, candidateHash, recover = false) {
     const result2 = await request(ctx, key, path, recover ? candidateHash ? { candidateHash } : {} : undefined);
     const operation = result2.operation;
     const guard = operation?.guard;
-    ctx.deps.stdout.write(`${JSON.stringify(result2, null, ctx.json ? undefined : 2)}
+    const output = JSON.stringify(result2, null, ctx.json ? undefined : 2);
+    ctx.deps.stdout.write(`${ctx.json ? output : terminalLines(output)}
 `);
     if (guard)
       ctx.deps.stderr.write(`${safeText(guard.reason)}: ${safeText(guard.clearingCondition)} Read: candle swap status --operation ${id}.
@@ -47613,11 +47650,10 @@ function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
 function labelCell(label) {
   if (!label)
     return "";
-  const cleaned = Array.from(label).map((ch) => {
+  const cleaned = Array.from(escapeTerminalText(label)).map((ch) => {
     const code = ch.codePointAt(0) ?? 0;
-    const isControl = code < 32 || code >= 127 && code <= 159;
     const isBidiOrInvisible = code >= 8203 && code <= 8207 || code >= 8234 && code <= 8238 || code >= 8294 && code <= 8297 || code === 65279;
-    return isControl || isBidiOrInvisible ? " " : ch;
+    return isBidiOrInvisible ? " " : ch;
   }).join("");
   return cleaned.replace(/\s+/g, " ").trim();
 }
@@ -86292,7 +86328,7 @@ ${USAGE6}`, json);
   } catch (error) {
     if (!(error instanceof CoreClientError))
       throw error;
-    deps.stderr.write(`${error.code}: ${error.message}
+    deps.stderr.write(`${terminalLines(`${error.code}: ${error.message}`)}
 `);
     return 1;
   }
@@ -92005,7 +92041,7 @@ async function help(args, ctx) {
   }
   const topic = renderTopic(word3, terminalStyle(ctx.deps, "stdout", ctx.json), args.includes("--more"));
   if (topic === undefined) {
-    ctx.deps.stderr.write(`Unknown command: ${word3}
+    ctx.deps.stderr.write(`Unknown command: ${escapeTerminalText(word3)}
 `);
     ctx.deps.stderr.write(renderTopLevel());
     return 1;
@@ -92645,7 +92681,7 @@ function writeRefusal(ctx, refusal3, suggestion) {
 `);
     return;
   }
-  ctx.deps.stderr.write(`${suggestion ? `${message} ${suggestion}` : message}
+  ctx.deps.stderr.write(`${escapeTerminalText(suggestion ? `${message} ${suggestion}` : message)}
 `);
 }
 function writeApiFailure(ctx, result2, authType) {
@@ -92740,8 +92776,8 @@ function identity2(who) {
   if (who.kind === "candle")
     return "Candle";
   if (who.kind === "agent")
-    return terminalText(who.name ?? "Agent");
-  return terminalText(who.name ?? who.account);
+    return escapeTerminalText(who.name ?? "Agent");
+  return escapeTerminalText(who.name ?? who.account);
 }
 function sectionText(bytes, section2) {
   if (bytes.length > TOKEN_PAGE_BODY_CAP_BYTES)
@@ -92780,7 +92816,7 @@ function factValue(fact) {
   if (fact.raw === undefined)
     return fact.status;
   const value = fact.decimals ? rawUnits2(fact.raw, fact.decimals) : fact.raw;
-  return `${value}${fact.unit === "token" ? "" : ` ${fact.unit}`} (${fact.status}, ${fact.coverage}, ${terminalText(fact.source)}${fact.measuredAt ? `, ${fact.measuredAt}` : ""})`;
+  return `${value}${fact.unit === "token" ? "" : ` ${fact.unit}`} (${fact.status}, ${fact.coverage}, ${escapeTerminalText(fact.source)}${fact.measuredAt ? `, ${fact.measuredAt}` : ""})`;
 }
 function rawUnits2(raw, decimals) {
   if (!/^\d+$/.test(raw))
@@ -92822,7 +92858,7 @@ function writeAbout(ctx, about) {
     if (v.linksWithheld)
       notice(ctx.deps, "stdout", "note", "Links are withheld pending review.");
     ctx.deps.stdout.write(`
-${terminalTextKeepingLines(v.text)}
+${escapeTerminalText(v.text)}
 `);
   }
   writeHeading(ctx.deps, "stdout", "Supply, measured by Candle");
@@ -92831,12 +92867,7 @@ ${terminalTextKeepingLines(v.text)}
     ctx.deps.stdout.write(`  Measurements unavailable
 `);
   else
-    writeFields(ctx.deps, "stdout", facts.map((f) => [terminalText(f.metric), factValue(f)]));
-}
-function terminalTextKeepingLines(text3) {
-  return text3.split(`
-`).map((line) => terminalText(line.replace(/\t/g, "    "))).join(`
-`);
+    writeFields(ctx.deps, "stdout", facts.map((f) => [escapeTerminalText(f.metric), factValue(f)]));
 }
 async function tokenAbout(args, ctx) {
   const usage4 = usageFor(ctx, USAGE9.about);
@@ -93150,12 +93181,12 @@ async function tokenHistory(args, ctx) {
     ]);
     if (item.text !== null)
       ctx.deps.stdout.write(`
-${terminalTextKeepingLines(item.text)}
+${escapeTerminalText(item.text)}
 `);
   }
   if (data.nextCursor)
     ctx.deps.stdout.write(`
-More: --cursor ${data.nextCursor}
+More: --cursor ${escapeTerminalText(data.nextCursor)}
 `);
   return 0;
 }
@@ -93341,12 +93372,12 @@ async function tokenComments(args, ctx) {
     ]);
     if (item.text !== null)
       ctx.deps.stdout.write(`
-${terminalTextKeepingLines(item.text)}
+${escapeTerminalText(item.text)}
 `);
   }
   if (data.nextCursor)
     ctx.deps.stdout.write(`
-More: --cursor ${data.nextCursor}
+More: --cursor ${escapeTerminalText(data.nextCursor)}
 `);
   return 0;
 }
@@ -101467,7 +101498,7 @@ async function read2(ctx, argv, command) {
     for (const warning of result2.warnings)
       notice(ctx.deps, "stderr", "note", `${safeText(warning)}
 `.trim());
-    const out = (line) => ctx.deps.stdout.write(`${line}
+    const out = (line) => ctx.deps.stdout.write(`${terminalLines(line)}
 `);
     out(`Hyperliquid ${result2.network}; OI floor $${result2.gate.minOpenInterestUsd} (${result2.gate.source}). Tradeability is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`);
     if ("market" in result2) {
@@ -102885,7 +102916,7 @@ async function runPaidRead(ctx, input) {
       ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, ...paid.payment ? { payment: paid.payment } : {}, ...paid.servedFromCredit ? { servedFromCredit: true } : {} })}
 `);
     } else {
-      ctx.deps.stdout.write(`${JSON.stringify(data, null, 2)}
+      ctx.deps.stdout.write(`${terminalLines(JSON.stringify(data, null, 2))}
 `);
     }
     return 0;
@@ -104299,6 +104330,9 @@ function financialHeading(text4, style) {
 function signed(text4, style) {
   return /^\+/.test(text4) ? accent(text4, style, "positive") : /^[-−]/.test(text4) ? accent(text4, style, "negative") : text4;
 }
+function signedField(text4) {
+  return /^\+/.test(text4) ? { text: text4, role: "positive" } : /^[-−]/.test(text4) ? { text: text4, role: "negative" } : text4;
+}
 function financialTable(ctx, headers2, rows, columns) {
   const style = terminalStyle(ctx.deps, "stdout");
   const clean3 = rows.map((row2) => row2.map(terminalText));
@@ -104315,7 +104349,7 @@ function financialTable(ctx, headers2, rows, columns) {
   if (style.width >= 60 && table.split(`
 `).every((line) => displayWidth(line) <= style.width))
     return table;
-  return clean3.map((row2) => fields(headers2.map((label, col) => [label, specs[col]?.signed ? signed(row2[col] ?? "", style) : row2[col]]), style).join(`
+  return clean3.map((row2) => fields(headers2.map((label, col) => [label, specs[col]?.signed ? signedField(row2[col] ?? "") : row2[col]]), style).join(`
 `)).join(`
 
 `);
@@ -104329,7 +104363,7 @@ function writeFinancialLines(ctx, rows) {
   for (const [label = "", value = "", note = ""] of rows) {
     const head = `  ${dim(padDisplay(label, labelWidth), style)}  ${" ".repeat(valueWidth - displayWidth(value))}${signed(value, style)}`;
     if (displayWidth(head) > style.width) {
-      ctx.deps.stdout.write(`${fields([[label, signed(value, style)]], style).join(`
+      ctx.deps.stdout.write(`${fields([[label, signedField(value)]], style).join(`
 `)}
 `);
       if (note)
@@ -106319,10 +106353,12 @@ async function quantAsk(args, ctx) {
       })}
 `);
     } else {
-      ctx.deps.stdout.write(`${answer2}
+      ctx.deps.stdout.write(`${result2.paragraphs.map(escapeTerminalText).join(`
+
+`)}
 `);
       if (remaining !== undefined) {
-        ctx.deps.stderr.write(`${remaining} Quant answer${remaining === 1 ? "" : "s"} left today${resetsAt !== undefined ? `, resets at ${resetsAt}` : ""}.
+        ctx.deps.stderr.write(`${remaining} Quant answer${remaining === 1 ? "" : "s"} left today${resetsAt !== undefined ? `, resets at ${escapeTerminalText(String(resetsAt))}` : ""}.
 `);
       }
     }
@@ -108476,10 +108512,10 @@ function eventLine(event, widths) {
   const { doing, detail } = action(event);
   return [
     formatTime(event.at).padEnd(widths.time),
-    event.kind.padEnd(widths.kind),
-    who(event).padEnd(widths.who),
-    doing,
-    detail
+    escapeTerminalText(event.kind).padEnd(widths.kind),
+    escapeTerminalText(who(event)).padEnd(widths.who),
+    escapeTerminalText(doing),
+    escapeTerminalText(detail)
   ].filter((cell) => cell.trim().length > 0).join("  ").trimEnd();
 }
 async function tokenEvents(args, ctx) {
@@ -108560,7 +108596,7 @@ async function tokenEvents(args, ctx) {
     const widths = {
       time: Math.max(...events.map((event) => formatTime(event.at).length)),
       kind: Math.max(...events.map((event) => event.kind.length)),
-      who: Math.max(...events.map((event) => who(event).length))
+      who: Math.max(...events.map((event) => escapeTerminalText(who(event)).length))
     };
     for (const event of events)
       out.write(`${eventLine(event, widths)}
@@ -108758,7 +108794,7 @@ ${retry}
     ["Result", payload.changed ? "edited" : "nothing changed"],
     ["Version", payload.version === null ? "-" : String(payload.version)],
     ...payload.changed ? [["Changed", changedOf(body)]] : [],
-    ["Description", payload.description ? terminalText(payload.description) : "-"],
+    ["Description", payload.description ? escapeTerminalText(payload.description) : "-"],
     ...linkRows(payload.socials)
   ]);
   return 0;
@@ -108812,18 +108848,18 @@ async function tokenHistory2(args, ctx) {
     writeHeading(ctx.deps, "stdout", `version ${item.version}`);
     writeFields(ctx.deps, "stdout", [
       ["At", item.createdAt],
-      ["By", item.author?.name ? terminalText(item.author.name) : "Agent"],
+      ["By", item.author?.name ? escapeTerminalText(item.author.name) : "Agent"],
       ["Changed", item.changedFields.join(", ")],
       ...item.changedFields.map((field) => {
         const now = field === "description" ? item.description : item.socials[field.slice("socials.".length)];
         const was = field === "description" ? item.prevDescription : item.prevSocials[field.slice("socials.".length)];
-        return [field, `${was ? terminalText(was) : "-"} -> ${now ? terminalText(now) : "-"}`];
+        return [field, `${was ? escapeTerminalText(was) : "-"} -> ${now ? escapeTerminalText(now) : "-"}`];
       })
     ]);
   }
   if (data.nextCursor)
     ctx.deps.stdout.write(`
-More: --cursor ${data.nextCursor}
+More: --cursor ${escapeTerminalText(data.nextCursor)}
 `);
   return 0;
 }
@@ -118722,7 +118758,7 @@ async function runWithConfirm(argv, deps) {
 async function runCommand(argv, deps) {
   const extracted = extractGlobalFlags(argv);
   if ("error" in extracted) {
-    deps.stderr.write(`${extracted.error}
+    deps.stderr.write(`${escapeTerminalText(extracted.error)}
 `);
     return 2;
   }
@@ -118843,7 +118879,7 @@ async function runCommand(argv, deps) {
       return 1;
     }
     if (verdict.warning)
-      deps.stderr.write(`${verdict.warning}
+      deps.stderr.write(`${terminalLines(verdict.warning)}
 `);
   }
   if (ROUTED_COMMANDS.has(word3) && routesToCommand(cmd, sub))
@@ -118874,7 +118910,7 @@ function splitFix(message) {
 }
 function unknownCommand(deps, token2, word3) {
   if (token2 !== undefined)
-    deps.stderr.write(`Unknown command: ${token2}
+    deps.stderr.write(`Unknown command: ${escapeTerminalText(token2)}
 `);
   deps.stderr.write((word3 === undefined ? undefined : renderTopic(word3)) ?? renderTopLevel());
   return 1;
@@ -119090,12 +119126,12 @@ if (isMainModule) {
       process.exitCode = 1;
       if (stream === process.stderr)
         return;
-      process.stderr.write(`Unexpected error: ${err?.message ?? String(err)}
+      process.stderr.write(`Unexpected error: ${escapeTerminalText(err?.message ?? String(err))}
 `);
     });
   }
   await main().catch((err) => {
-    process.stderr.write(`Unexpected error: ${err instanceof Error ? err.message : String(err)}
+    process.stderr.write(`Unexpected error: ${escapeTerminalText(err instanceof Error ? err.message : String(err))}
 `);
     process.exitCode = 1;
   });

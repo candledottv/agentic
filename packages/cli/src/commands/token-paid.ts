@@ -8,6 +8,7 @@
  * A configured API key is sent when there is one: the key's account is credited for the payment and
  * its credits are drawn first (5.1 rule 1, 3.7).
  */
+
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import { isEvmChainSlug } from "../chain-registry"
@@ -16,6 +17,7 @@ import { type CommandContext, resolveApiKey } from "../deps"
 import { writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { resolveSolanaEndpoint, solanaClientFor } from "../solana-endpoint"
 import { createSolanaRpc } from "../solana-lite"
+import { terminalLines } from "../terminal-text"
 import { type PaidCallResult, paidRequest } from "../x402/pay"
 import { DEVNET_RPC_URL, SOLANA_DEVNET, type X402ClientNetwork } from "../x402/select"
 import { spendPaths } from "../x402/spend-log"
@@ -110,7 +112,7 @@ async function runPaidRead(
         `${JSON.stringify({ ok: true, data, ...(paid.payment ? { payment: paid.payment } : {}), ...(paid.servedFromCredit ? { servedFromCredit: true } : {}) })}\n`,
       )
     } else {
-      ctx.deps.stdout.write(`${JSON.stringify(data, null, 2)}\n`)
+      ctx.deps.stdout.write(`${terminalLines(JSON.stringify(data, null, 2))}\n`)
     }
     return 0
   })

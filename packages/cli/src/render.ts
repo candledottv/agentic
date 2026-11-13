@@ -24,6 +24,15 @@ import {
   wrapText,
 } from "./presentation"
 
+import { escapeTerminalText, terminalLines } from "./terminal-text"
+
+/** Legacy control stripping also used in persisted core/RPC values. Keep that contract;
+ * human renderers use escapeTerminalText so controls stay visible. */
+export function terminalText(value: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point.
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+}
+
 /** Mirrors `apps/api/src/lib/agent-keys.ts`'s `AGENT_KEY_SCOPES`, duplicated here since the CLI
  * has zero runtime dependencies and no cross-package import (spec decision 4: the CLI is
  * standalone). Order matches the API's own array. */
@@ -79,18 +88,6 @@ export function formatScopesForSummary(scopes: readonly string[]): string {
     .join(", ")
 }
 
-/**
- * Text from a server, made safe to print on a terminal (BE-316 review): every C0 and C1 control
- * character removed, DEL included. A token's symbol and name reach Candle from market data anyone
- * can influence by minting a token, so `\x1b[2J` in a symbol would otherwise clear or recolour the
- * rows around it -- in a table that carries balances and a total. `--json` needs none of this:
- * `JSON.stringify` escapes control characters.
- */
-export function terminalText(value: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point.
-  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
-}
-
 /** One column of a `renderTable` given options. Every field is optional. */
 export interface TableColumn {
   /** `auto` (the default) right-aligns a column whose every known cell reads as a number. */
@@ -139,6 +136,8 @@ function numericColumn(rows: string[][], col: number): boolean {
  * escape codes. `…` and `–` stay one column.
  */
 export function renderTable(headers: string[], rows: string[][], options?: TableOptions): string {
+  headers = headers.map(escapeTerminalText)
+  rows = rows.map((row) => row.map((cell) => escapeTerminalText(cell ?? "")))
   if (!options) return renderPlainTable(headers, rows)
   const specs = headers.map((_, col) => options.columns?.[col] ?? {})
   const align = headers.map((_, col) => {
@@ -405,6 +404,14 @@ export function errorParts(result: FailureLike, ctx: ErrorRenderContext): ErrorP
  *     Mint a new key:   candle keys create
  */
 export function renderErrorBlock(parts: ErrorParts, style: TerminalStyle): string[] {
+  parts = {
+    message: terminalLines(parts.message),
+    fixes: parts.fixes.map((fix) => ({
+      ...fix,
+      label: terminalLines(fix.label),
+      ...(fix.command ? { command: terminalLines(fix.command) } : {}),
+    })),
+  }
   const budget = proseWidth(style)
   const out = [...errorMessageLines(parts.message, style, budget)]
   if (parts.fixes.length === 0) return out
@@ -519,7 +526,7 @@ export function writeFailure(
   json: boolean,
 ): void {
   if (json) deps.stdout.write(`${JSON.stringify(errorEnvelope(result, ctx))}\n`)
-  else deps.stderr.write(`${renderError(result, ctx)}\n`)
+  else deps.stderr.write(`${terminalLines(renderError(result, ctx))}\n`)
 }
 
 /**
@@ -549,7 +556,9 @@ export function writeLocalFailure(
     return
   }
   const separator = failure.suggestion?.includes("\n") ? "\n" : " "
-  deps.stderr.write(`${failure.suggestion ? `${failure.message}${separator}${failure.suggestion}` : failure.message}\n`)
+  deps.stderr.write(
+    `${terminalLines(failure.suggestion ? `${failure.message}${separator}${failure.suggestion}` : failure.message)}\n`,
+  )
 }
 
 /**
@@ -560,7 +569,7 @@ export function writeLocalFailure(
  */
 export function writeUsageFailure(deps: ModeWriters, message: string, json: boolean): void {
   if (json) deps.stdout.write(`${JSON.stringify({ ok: false, code: "USAGE", message })}\n`)
-  else deps.stderr.write(`${message}\n`)
+  else deps.stderr.write(`${terminalLines(message)}\n`)
 }
 
 /**

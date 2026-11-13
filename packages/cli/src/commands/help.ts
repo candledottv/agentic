@@ -13,6 +13,7 @@
 import type { CommandContext } from "../deps"
 import { renderTopic, renderTopLevel } from "../help"
 import { terminalStyle } from "../presentation"
+import { escapeTerminalText as terminalText } from "../terminal-text"
 
 export async function help(args: string[], ctx: CommandContext): Promise<number> {
   const word = args.find((arg) => arg !== "--more")
@@ -22,7 +23,7 @@ export async function help(args: string[], ctx: CommandContext): Promise<number>
   }
   const topic = renderTopic(word, terminalStyle(ctx.deps, "stdout", ctx.json), args.includes("--more"))
   if (topic === undefined) {
-    ctx.deps.stderr.write(`Unknown command: ${word}\n`)
+    ctx.deps.stderr.write(`Unknown command: ${terminalText(word)}\n`)
     ctx.deps.stderr.write(renderTopLevel())
     return 1
   }

@@ -4,6 +4,7 @@ import {
   accent,
   dim,
   displayWidth,
+  type FieldValue,
   fields,
   fitsWidth,
   fullIds,
@@ -40,6 +41,10 @@ function signed(text: string, style: TerminalStyle): string {
       : text
 }
 
+function signedField(text: string): FieldValue {
+  return /^\+/.test(text) ? { text, role: "positive" } : /^[-−]/.test(text) ? { text, role: "negative" } : text
+}
+
 /** Keep numbers whole. If the remaining columns cannot fit, stack all fields per row. */
 export function financialTable(
   ctx: CommandContext,
@@ -64,7 +69,7 @@ export function financialTable(
   return clean
     .map((row) =>
       fields(
-        headers.map((label, col) => [label, specs[col]?.signed ? signed(row[col] ?? "", style) : row[col]]),
+        headers.map((label, col) => [label, specs[col]?.signed ? signedField(row[col] ?? "") : row[col]]),
         style,
       ).join("\n"),
     )
@@ -81,7 +86,7 @@ export function writeFinancialLines(ctx: CommandContext, rows: string[][]): void
   for (const [label = "", value = "", note = ""] of rows) {
     const head = `  ${dim(padDisplay(label, labelWidth), style)}  ${" ".repeat(valueWidth - displayWidth(value))}${signed(value, style)}`
     if (displayWidth(head) > style.width) {
-      ctx.deps.stdout.write(`${fields([[label, signed(value, style)]], style).join("\n")}\n`)
+      ctx.deps.stdout.write(`${fields([[label, signedField(value)]], style).join("\n")}\n`)
       if (note)
         ctx.deps.stdout.write(
           `${wrapText(terminalText(note), Math.max(1, proseWidth(style) - 4))

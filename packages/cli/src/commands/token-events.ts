@@ -6,12 +6,14 @@
  * parameter: a filtered page still reports the route's `nextCursor`, so `--before` continues the
  * same mixed page whatever the filter.
  */
+
 import { parseArgs } from "../args"
 import { isEvmChainSlug } from "../chain-registry"
 import { type ApiResult, apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { writeFields } from "../human-output"
 import { formatTime, writeFailure, writeUsageFailure } from "../render"
+import { escapeTerminalText as terminalText } from "../terminal-text"
 import { formatPrice, formatUsd, shortAddress } from "../usd"
 
 const KINDS = ["trade", "signal", "callout"] as const
@@ -96,10 +98,10 @@ function eventLine(event: TokenEventRow, widths: { time: number; kind: number; w
   const { doing, detail } = action(event)
   return [
     formatTime(event.at).padEnd(widths.time),
-    event.kind.padEnd(widths.kind),
-    who(event).padEnd(widths.who),
-    doing,
-    detail,
+    terminalText(event.kind).padEnd(widths.kind),
+    terminalText(who(event)).padEnd(widths.who),
+    terminalText(doing),
+    terminalText(detail),
   ]
     .filter((cell) => cell.trim().length > 0)
     .join("  ")
@@ -187,7 +189,7 @@ export async function tokenEvents(args: string[], ctx: CommandContext): Promise<
     const widths = {
       time: Math.max(...events.map((event) => formatTime(event.at).length)),
       kind: Math.max(...events.map((event) => event.kind.length)),
-      who: Math.max(...events.map((event) => who(event).length)),
+      who: Math.max(...events.map((event) => terminalText(who(event)).length)),
     }
     for (const event of events) out.write(`${eventLine(event, widths)}\n`)
   }

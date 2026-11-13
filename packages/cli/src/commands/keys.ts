@@ -28,6 +28,7 @@ import { bold, fields, heading, notice, success, symbols, terminalStyle } from "
 import { effectiveProfileFields, printIdentity, profileSecretRef } from "../profiles"
 import { formatAgo, formatTime, renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { SECRET_REFS } from "../secret-store"
+import { escapeTerminalText as terminalText } from "../terminal-text"
 import {
   embeddedWalletSummary,
   scopeSummary,
@@ -103,26 +104,19 @@ function mintedByLabel(mintedBy: string | undefined, ownDeviceTokenPrefix: strin
   return mintedBy
 }
 
-/**
- * A key's name as one table cell. The API trims a label but does not strip control characters, so
- * a newline would break the fixed-width table and a bidi override could make the row read as
- * something else. Both become a space, runs of whitespace collapse, and the result is trimmed: the
- * same classes `sanitizeClientName` in apps/api's agent-device route names, written as a code-point
- * filter for the same reason (biome's `noControlCharactersInRegex`). Render-only; `--json` carries
- * the stored value.
- */
+/** Render-only: controls stay visible; bidi/invisible characters retain the existing space
+ * replacement. JSON, key lookup and API requests keep the original label. */
 export function labelCell(label: string | undefined): string {
   if (!label) return ""
-  const cleaned = Array.from(label)
+  const cleaned = Array.from(terminalText(label))
     .map((ch) => {
       const code = ch.codePointAt(0) ?? 0
-      const isControl = code < 0x20 || (code >= 0x7f && code <= 0x9f)
       const isBidiOrInvisible =
         (code >= 0x200b && code <= 0x200f) ||
         (code >= 0x202a && code <= 0x202e) ||
         (code >= 0x2066 && code <= 0x2069) ||
         code === 0xfeff
-      return isControl || isBidiOrInvisible ? " " : ch
+      return isBidiOrInvisible ? " " : ch
     })
     .join("")
   return cleaned.replace(/\s+/g, " ").trim()

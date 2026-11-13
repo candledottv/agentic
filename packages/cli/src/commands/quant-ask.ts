@@ -19,6 +19,7 @@
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { createQuantKeyClient, newClientTurnId, type QuantKeyClient, type QuantRefusal } from "../quant"
+import { escapeTerminalText as terminalText } from "../terminal-text"
 import { decodePaymentRequired, PAYMENT_REQUIRED_HEADER } from "../x402/codec"
 import { usdcText } from "../x402/select"
 import {
@@ -336,10 +337,10 @@ export async function quantAsk(args: string[], ctx: CommandContext): Promise<num
         })}\n`,
       )
     } else {
-      ctx.deps.stdout.write(`${answer}\n`)
+      ctx.deps.stdout.write(`${result.paragraphs.map(terminalText).join("\n\n")}\n`)
       if (remaining !== undefined) {
         ctx.deps.stderr.write(
-          `${remaining} Quant answer${remaining === 1 ? "" : "s"} left today${resetsAt !== undefined ? `, resets at ${resetsAt}` : ""}.\n`,
+          `${remaining} Quant answer${remaining === 1 ? "" : "s"} left today${resetsAt !== undefined ? `, resets at ${terminalText(String(resetsAt))}` : ""}.\n`,
         )
       }
     }

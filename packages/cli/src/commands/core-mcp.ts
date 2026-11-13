@@ -13,6 +13,7 @@
  * harness token the user pasted into this harness's config (`--token`, or `CANDLE_CORE_TOKEN` to
  * keep it off the process list), and that token can only read and propose (A-2, A-3).
  */
+
 import { z } from "zod"
 import { parseArgs } from "../args"
 import { isCoreLocalTool } from "../core/classify"
@@ -23,6 +24,7 @@ import { corePaths } from "../core/paths"
 import { CORE_OPERATION_KINDS } from "../core/tools-face"
 import type { CommandContext } from "../deps"
 import { writeLocalFailure, writeUsageFailure } from "../render"
+import { terminalLines } from "../terminal-text"
 import { CLI_VERSION } from "../version"
 
 const USAGE = "Usage: candle core mcp [--token <harness token>] [--harness <kind>]"
@@ -161,7 +163,7 @@ export async function coreMcp(args: string[], ctx: CommandContext): Promise<numb
   } catch (error) {
     if (!(error instanceof CoreClientError)) throw error
     // stdout belongs to MCP once a harness runs this, so the failure goes to stderr in both modes.
-    deps.stderr.write(`${error.code}: ${error.message}\n`)
+    deps.stderr.write(`${terminalLines(`${error.code}: ${error.message}`)}\n`)
     return 1
   }
   const server = await buildCoreMcpServer(connection)

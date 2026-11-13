@@ -171,6 +171,7 @@ import {
 import { platformKey } from "./release"
 import { writeLocalFailure, writeUsageFailure } from "./render"
 import { defaultSecretsPath, promptHiddenSecret, promptVisibleLine, SECRET_REFS } from "./secret-store"
+import { terminalLines, escapeTerminalText as terminalText } from "./terminal-text"
 import { teeCheck } from "./trading-checks"
 import { maybeWriteUpdateNotice } from "./update-notice"
 import { appendEvmRecordForTrade } from "./vault/evm-tee"
@@ -748,7 +749,7 @@ async function runWithConfirm(argv: string[], deps: Deps): Promise<number> {
 async function runCommand(argv: string[], deps: Deps): Promise<number> {
   const extracted = extractGlobalFlags(argv)
   if ("error" in extracted) {
-    deps.stderr.write(`${extracted.error}\n`)
+    deps.stderr.write(`${terminalText(extracted.error)}\n`)
     return 2
   }
   const { rest, flags } = extracted
@@ -980,7 +981,7 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
     }
     // The warning stays on stderr in BOTH modes: the command is about to run and its own output
     // owns stdout, which under `--json` must carry exactly one JSON value.
-    if (verdict.warning) deps.stderr.write(`${verdict.warning}\n`)
+    if (verdict.warning) deps.stderr.write(`${terminalLines(verdict.warning)}\n`)
   }
 
   // x402 C7 (spec 6.3): auto-renew, when its local flag is on and the period ends within 3 days.
@@ -1046,7 +1047,7 @@ function splitFix(message: string): { message: string; suggestion?: string } {
  * command word has no topic, so the top level is the answer -- that is the screen listing the
  * words there are. Both go to stderr, as they always have. */
 function unknownCommand(deps: Deps, token: string | undefined, word?: string): number {
-  if (token !== undefined) deps.stderr.write(`Unknown command: ${token}\n`)
+  if (token !== undefined) deps.stderr.write(`Unknown command: ${terminalText(token)}\n`)
   deps.stderr.write((word === undefined ? undefined : renderTopic(word)) ?? renderTopLevel())
   return 1
 }
@@ -1368,7 +1369,7 @@ if (isMainModule) {
       reported = true
       process.exitCode = 1
       if (stream === process.stderr) return
-      process.stderr.write(`Unexpected error: ${err?.message ?? String(err)}\n`)
+      process.stderr.write(`Unexpected error: ${terminalText(err?.message ?? String(err))}\n`)
     })
   }
   // AWAITED at the top level, not fired and forgotten (Ember Phase 2, BE-136, T49). Under Bun a
@@ -1381,7 +1382,7 @@ if (isMainModule) {
   // whatever handles the loop happens to have. The parity test drives the compiled binary on a
   // pseudo-terminal and is the check that this line stays.
   await main().catch((err) => {
-    process.stderr.write(`Unexpected error: ${err instanceof Error ? err.message : String(err)}\n`)
+    process.stderr.write(`Unexpected error: ${terminalText(err instanceof Error ? err.message : String(err))}\n`)
     process.exitCode = 1
   })
 }

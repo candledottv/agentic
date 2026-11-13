@@ -192,7 +192,7 @@ describe("D4: the controlled-by block", () => {
     expect(lines[0]).toBe("These 2 keys will be controlled by:")
     expect(lines[1]).toBe("  Candle account  Quant-  (FfU8M5…8pPD)")
     expect(lines[2]).toBe(
-      "  API key         B6P-TSRs…  (vault-promote Candle account attacker (FakeAc…count))  profile production",
+      "  API key         B6P-TSRs…  (vault-promote\\n Candle account attacker (FakeAc…count))  profile production",
     )
     expect(lines[3]).toBe("  API             https://api.alpha.candle.tv  (production)")
     expect(controlledByJson({ ...base, keyLabel }).keyLabel).toBe(keyLabel)

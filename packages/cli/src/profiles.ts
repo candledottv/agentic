@@ -12,6 +12,7 @@ import type { CliConfig, ProfileConfig } from "./config"
 import { type CommandContext, resolveApiCredential } from "./deps"
 import { bold, fullIds, type StyleDeps, symbols, type TerminalStyle, terminalStyle } from "./presentation"
 import { shortId } from "./render"
+import { escapeTerminalText as terminalText } from "./terminal-text"
 
 export type { ProfileConfig }
 
@@ -280,7 +281,10 @@ export function identityLine(
   username?: string,
   options: { style?: TerminalStyle; full?: boolean } = {},
 ): string {
-  const address = account === undefined ? undefined : shortId(account, options.full)
+  profile = profile === undefined ? undefined : terminalText(profile)
+  username = username === undefined ? undefined : terminalText(username)
+  overrides = overrides?.map(terminalText)
+  const address = account === undefined ? undefined : terminalText(shortId(account, options.full))
   const shown = overrides?.length
     ? address
       ? `${address} (${overrides.join(", ")} override)`
@@ -289,7 +293,9 @@ export function identityLine(
       ? `${username} (${address})`
       : (address ?? "unknown")
   const name = profile ?? "none"
-  const host = apiUrl.replace(/^https:\/\//i, "").replace(/\/+$/, "")
+  const host = terminalText(apiUrl)
+    .replace(/^https:\/\//i, "")
+    .replace(/\/+$/, "")
   const sep = options.style ? symbols(options.style).note : "·"
   return `Profile ${options.style ? bold(name, options.style) : name} ${sep} Account ${shown} ${sep} ${host}`
 }

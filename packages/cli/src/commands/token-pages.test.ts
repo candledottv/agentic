@@ -202,7 +202,7 @@ test("comments list is public, sends no key, validates paging and renders tombst
   expect(await run(["token", "comments", MINT, "--limit", "2", "--cursor", "abc"], f.deps)).toBe(0)
   expect(f.calls[0]).toMatchObject({ method: "GET", path: `${PAGE}/comments`, search: "?limit=2&cursor=abc" })
   expect(f.calls[0]?.headers.get("x-api-key")).toBeNull()
-  expect(f.stdout.text).toContain("first line\nsecond")
+  expect(f.stdout.text).toContain("first line\\nsecond\\x07")
   expect(f.stdout.text).not.toContain("\u0007")
   expect(f.stdout.text).toContain("removed")
   expect(f.stdout.text).toContain("withheld pending review")
@@ -281,8 +281,8 @@ describe("about and history are public reads", () => {
     expect(f.stdout.text).toContain("0.62%")
     expect(f.stdout.text).toContain("1449747")
     expect(f.stdout.text).toContain("Links are withheld pending review.")
-    // Holder text keeps its line breaks and loses every other control character.
-    expect(f.stdout.text).toContain("line one\nline two\n")
+    // Holder text visibly escapes controls, including its own line breaks.
+    expect(f.stdout.text).toContain("line one\\nline two\\x07\n")
     expect(f.stdout.text).not.toContain("\u0007")
     expect(f.stdout.text).not.toContain("locked")
   })
