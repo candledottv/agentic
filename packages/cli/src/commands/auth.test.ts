@@ -412,9 +412,10 @@ describe("auth login: --label names the key as well as the device", () => {
     expect(patchCalls(calls)).toHaveLength(0)
   })
 
-  // Key default without transfer (2026-10-08 spec, section 6): a scope-less login whose key was
-  // not issued yet reports what the device route will grant, the Write preset, not every scope.
-  test("no key and no --scopes: the authorized scopes are Write, without transfer", async () => {
+  // Key default without transfer (2026-10-08 spec, section 6), and without trade since BE-3323
+  // (audit F3 item 3): a scope-less login whose key was not issued yet reports what the device
+  // route will grant -- the four non-fund scopes, swap:write no longer included by omission.
+  test("no key and no --scopes: the authorized scopes are the non-fund default, without swap:write", async () => {
     const { fetch } = createRoutedFetch(labelRoutes(undefined, null))
     const stdout = createCapture()
 
@@ -425,7 +426,8 @@ describe("auth login: --label names the key as well as the device", () => {
 
     expect(code).toBe(0)
     const line = stdout.text.split("Authorized scopes (no key issued yet)\n")[1] ?? ""
-    expect(line).toContain("    account:read\n    activity:write\n    launch:read\n    launch:write\n    swap:write")
+    expect(line).toContain("    account:read\n    activity:write\n    launch:read\n    launch:write")
+    expect(line).not.toContain("swap:write")
     expect(line).not.toContain("transfer:write")
     expect(line).not.toContain("transfer:bound")
   })

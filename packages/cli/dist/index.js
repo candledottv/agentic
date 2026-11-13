@@ -76799,7 +76799,6 @@ ${USAGE3}` : USAGE3, ctx.json);
 
 // src/commands/auth.ts
 init_account();
-init_agent_key_access();
 init_args();
 import { homedir as homedir3 } from "node:os";
 import { join as join9 } from "node:path";
@@ -76833,6 +76832,7 @@ init_keys();
 init_keys_embedded_wallet();
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
 var DEVICE_TOKEN_PATH = "/api/v1/agent/device/token";
+var DEVICE_LOGIN_DEFAULT_SCOPES = ["launch:write", "launch:read", "account:read", "activity:write"];
 var MAX_CLIENT_NAME_LENGTH = 64;
 function expiresInWords(seconds) {
   return seconds % 60 === 0 ? `${seconds / 60}m` : `${seconds}s`;
@@ -77207,7 +77207,7 @@ Run: candle keys update ${body.apiKey.keyPrefix} --embedded-wallet ${requested.e
 Name it in the key manager: ${portalOrigin}/dev/agent` : ""}`);
     }
   } else if (body.apiKeyError) {
-    const authorizedScopes = requested.scopes ?? scopesForPreset("readwrite");
+    const authorizedScopes = requested.scopes ?? DEVICE_LOGIN_DEFAULT_SCOPES;
     deps.stdout.write(scopeSummary(authorizedScopes, style, "Authorized scopes (no key issued yet)"));
     notice(deps, "stdout", "warning", `${body.apiKeyError}
 Run: candle keys create`);

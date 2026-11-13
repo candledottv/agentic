@@ -4,7 +4,8 @@
  * `auth login`'s binding sequence (task-3-brief.md Step 4):
  *   1. POST /device/code, clientName = label ?? `candle-cli/<version>@<hostname>`, capped at the
  *      server's 64 characters (see MAX_CLIENT_NAME_LENGTH), scopes omitted unless --scopes was
- *      given (omitted = the server's all-four default).
+ *      given (omitted = the server's omission default, the four non-fund scopes: no swap:write
+ *      since BE-3323; name --scopes to trade).
  *   2. Print the user code and verificationUriComplete; unless --no-browser, best-effort open the
  *      browser; the URL is ALWAYS printed too, for SSH sessions. In `--json` mode this progress
  *      goes to stderr as one JSON object (R60) instead of plain lines, so stdout stays exactly
@@ -30,7 +31,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { fetchAccount } from "../account"
-import { scopesForPreset } from "../agent-key-access"
 import { parseArgs, parseScopesList } from "../args"
 import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest, insecureApiUrlFault } from "../client"
@@ -66,6 +66,15 @@ import { confirmCreateAllow, EMBEDDED_WALLET_CHOICES, type EmbeddedWalletPermiss
 
 const DEVICE_CODE_PATH = "/api/v1/agent/device/code"
 const DEVICE_TOKEN_PATH = "/api/v1/agent/device/token"
+
+/**
+ * What the server's device route grants when `POST /device/code` omits `scopes`, mirrored from
+ * `DEVICE_DEFAULT_SCOPES` in apps/api/src/lib/agent-keys.ts (BE-3323, audit F3 item 3): the four
+ * non-fund scopes, `swap:write` NOT included. Shown only in the no-key informational summary
+ * ("Authorized scopes (no key issued yet)"), which must not claim a fund-moving grant the server
+ * no longer makes by omission. A login that names `--scopes` shows the named list instead.
+ */
+const DEVICE_LOGIN_DEFAULT_SCOPES: readonly string[] = ["launch:write", "launch:read", "account:read", "activity:write"]
 
 /**
  * `POST /device/code` validates `clientName` at 64 characters against the RAW string, BEFORE it
@@ -634,7 +643,7 @@ async function finishLogin(
       )
     }
   } else if (body.apiKeyError) {
-    const authorizedScopes = requested.scopes ?? scopesForPreset("readwrite")
+    const authorizedScopes = requested.scopes ?? DEVICE_LOGIN_DEFAULT_SCOPES
     deps.stdout.write(scopeSummary(authorizedScopes, style, "Authorized scopes (no key issued yet)"))
     notice(deps, "stdout", "warning", `${body.apiKeyError}\nRun: candle keys create`)
   }
