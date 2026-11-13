@@ -530,7 +530,11 @@ export async function swapCheck(args: string[], ctx: CommandContext): Promise<nu
         "Dry run checks Solana TEE pairs; Hood and bridge pairs are unsupported.",
       )
     if (parsed.values["--to"] !== undefined || parsed.booleans.has("--wait")) {
-      writeUsageFailure(ctx.deps, "--to and --wait are for a bridge.", ctx.json)
+      writeUsageFailure(
+        ctx.deps,
+        "--to selects a bridge destination; --wait follows a bridge or a Hood TEE swap without --dry-run. Follow a Hood swap with candle swap status --operation <id>, or a job with candle swap status <client-trade-id>.",
+        ctx.json,
+      )
       return 2
     }
     if (from.asset === to.asset || (!from.base && !to.base))

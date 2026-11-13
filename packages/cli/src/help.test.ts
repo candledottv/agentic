@@ -13,6 +13,16 @@ const styleAt = (width: number) =>
   terminalStyle(createTestDeps({ fetch: unusedFetch, columns: { stdout: width } }), "stdout", false)
 
 describe("release B help", () => {
+  test("Hood wait help names all legs, timeout, exit codes and explicit status lookup", () => {
+    const screen = normalize(renderTopic("swap", styleAt(100), true) ?? "")
+    expect(screen).toContain("--wait follows the trade and fee legs for up to ten minutes")
+    expect(screen).toContain("candle swap status --operation <id>")
+    expect(screen).toContain(
+      "exit 0 means completed, 1 failed, and 3 partial execution, unresolved settlement or timeout",
+    )
+    expect(screen).toContain("status --operation <operationId> [--wait]")
+  })
+
   test("tui help names Candle Harness and explains installation and the legacy fallback", () => {
     const screen = normalize(renderTopic("tui", styleAt(100), true) ?? "")
     expect(screen).toContain("Candle Harness")

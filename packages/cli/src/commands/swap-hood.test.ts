@@ -170,6 +170,7 @@ interface FixtureOptions {
   /** BE-505: `settlement` on the swap rail's `completed` payload. Absent by default, as an older API answers. */
   settlement?: unknown
   feeSignature?: string
+  operationReads?: unknown[]
 }
 
 async function fixture(opts: FixtureOptions = {}) {
@@ -183,6 +184,7 @@ async function fixture(opts: FixtureOptions = {}) {
     { kind: "feeTransfer", leg: leg(9, treasury, "0x", "5000") },
   ]
   const outcomes = [...(opts.outcomes ?? planned.map(() => "land" as Outcome))]
+  const operationReads = [...(opts.operationReads ?? [])]
   const landed: Array<{ kind: string; hash: string }> = []
   let index = 0
   let built = false
@@ -229,6 +231,22 @@ async function fixture(opts: FixtureOptions = {}) {
                     ? "0xf4240"
                     : "0x0"
       return ok({ jsonrpc: "2.0", id: body.id, result })
+    }
+    if (path === "/api/v1/agent/hood-tee/operations/op-1") {
+      const value = operationReads.length > 1 ? operationReads.shift() : operationReads[0]
+      if (value === "unavailable")
+        return Response.json({ error: { code: "UNAVAILABLE", message: "offline" } }, { status: 503 })
+      return ok(
+        value ?? {
+          success: true,
+          operation: {
+            operationId: "op-1",
+            status: "completed",
+            plannedLegCount: planned.length,
+            legs: planned.map((leg) => ({ kind: leg.kind, status: "landed" })),
+          },
+        },
+      )
     }
     if (path.includes("/jobs/"))
       return built
@@ -1494,4 +1512,132 @@ test("embedded ETH to USDG builds and confirms on swap rail, with no execute pro
   expect(f.calls.find((call) => call.path === "/api/v1/agent/swap/submit")?.body).toMatchObject({ swapId: "swap-1" })
   expect(f.calls.some((call) => call.path.endsWith("/sign") || call.path === "/api/v1/trade/agent/execute")).toBe(false)
   expect(f.stderr.text).toContain("settled")
+})
+
+describe("BE-3360: Hood TEE --wait", () => {
+  const operation = (status: string, legs: Array<{ kind: string; status: string }>, extra = {}) => ({
+    success: true,
+    operation: { operationId: "op-1", status, plannedLegCount: 2, legs, ...extra },
+  })
+  const trade = { kind: "trade", status: "landed" }
+  const fee = { kind: "feeTransfer", status: "landed" }
+  const pending = operation("active", [trade, { ...fee, status: "broadcast" }])
+  const complete = operation("completed", [trade, fee])
+  const reads = (calls: Array<{ path: string }>) => calls.filter((c) => c.path.includes("/hood-tee/operations/"))
+
+  test("waits for both legs and prints exactly the operation-status response", async () => {
+    const f = await fixture({ legs: buyLegs, operationReads: [pending, complete] })
+    expect(await run(buyArgs(["--wait"]), f.deps)).toBe(0)
+    expect(JSON.parse(f.stdout.text)).toEqual(complete)
+    expect(reads(f.calls)).toHaveLength(2)
+    expect(f.calls.filter((c) => c.path.endsWith("/submit"))).toHaveLength(2)
+    expect(f.calls.filter((c) => c.path.endsWith("/sign"))).toHaveLength(2)
+    expect(await run(["swap", "status", "--operation", "op-1", "--json"], { ...f.deps, stdout: createCapture() })).toBe(
+      0,
+    )
+  })
+
+  test("base-pair swap --wait uses its sequenced operation on the swap rail", async () => {
+    const f = await fixture({
+      legs: [{ kind: "trade", leg: leg(4, HOOD_KYBER_ROUTER, ethToUsdg, "500000000000000000") }],
+    })
+    expect(
+      await run(
+        ["swap", "ETH", "USDG", "--amount", "0.5", "--client-trade-id", "hood-2", "--wait", "--yes", "--json"],
+        f.deps,
+      ),
+    ).toBe(0)
+    expect(JSON.parse(f.stdout.text)).toMatchObject({ operation: { status: "completed", plannedLegCount: 1 } })
+    expect(f.calls.filter((c) => c.path.endsWith("/submit")).map((c) => c.path)).toEqual(["/api/v1/agent/swap/submit"])
+  })
+
+  test.each([
+    operation("completed", [trade, { ...fee, status: "broadcast" }]),
+    operation("completed", [trade]),
+  ])("completed parent cannot hide an unfinished or missing fee leg", async (result) => {
+    const f = await fixture({ operationReads: [result] })
+    expect(await run(["swap", "status", "--operation", "op-1", "--wait", "--json"], f.deps)).toBe(3)
+    expect(JSON.parse(f.stdout.text)).toEqual(result)
+  })
+
+  test("a status response for another operation is refused", async () => {
+    const f = await fixture({
+      operationReads: [{ ...complete, operation: { ...complete.operation, operationId: "other" } }],
+    })
+    expect(await run(["swap", "status", "--operation", "op-1", "--wait", "--json"], f.deps)).toBe(3)
+    expect(JSON.parse(f.stdout.text)).toMatchObject({ code: "HOOD_WAIT_UNAVAILABLE" })
+  })
+
+  test("an uncertain fee is followed by reads only, without resubmitting", async () => {
+    const f = await fixture({ legs: buyLegs, outcomes: ["land", "unconfirmed"], operationReads: [pending, complete] })
+    expect(await run(buyArgs(["--wait"]), f.deps)).toBe(0)
+    expect(JSON.parse(f.stdout.text)).toEqual(complete)
+    expect(f.calls.filter((c) => c.path.endsWith("/submit"))).toHaveLength(2)
+    expect(reads(f.calls)).toHaveLength(2)
+  })
+
+  test("timeout preserves the pending operation and exits 3 with a status hint", async () => {
+    const f = await fixture({ legs: buyLegs, outcomes: ["land", "unconfirmed"], operationReads: [pending] })
+    const start = f.deps.now()
+    expect(await run(buyArgs(["--wait"]), f.deps)).toBe(3)
+    expect(f.deps.now() - start).toBe(600_000)
+    expect(JSON.parse(f.stdout.text)).toEqual(pending)
+    expect(f.stderr.text).toContain("Still not final after ten minutes")
+    expect(f.stderr.text).toContain("candle swap status --operation op-1")
+    expect(f.calls.filter((c) => c.path.endsWith("/submit"))).toHaveLength(2)
+  })
+
+  test.each([
+    [
+      "reverted trade",
+      ["revert"],
+      operation("failed", [
+        { ...trade, status: "failed" },
+        { ...fee, status: "planned" },
+      ]),
+      1,
+    ],
+    ["reverted fee", ["land", "revert"], operation("failed", [trade, { ...fee, status: "failed" }]), 3],
+  ] as const)("%s has the matching exit code and final operation", async (_name, outcomes, result, exit) => {
+    const f = await fixture({ legs: buyLegs, outcomes: [...outcomes], operationReads: [result] })
+    expect(await run(buyArgs(["--wait"]), f.deps)).toBe(exit)
+    expect(JSON.parse(f.stdout.text)).toEqual(result)
+    expect(reads(f.calls)).toHaveLength(1)
+  })
+
+  test("a failed status with an unresolved guard is still followed, never called successful", async () => {
+    const guarded = operation("failed", [trade, { ...fee, status: "broadcast" }], { guard: { recoveryRequired: true } })
+    const f = await fixture({ operationReads: [guarded] })
+    expect(await run(["swap", "status", "--operation", "op-1", "--wait", "--json"], f.deps)).toBe(3)
+    expect(JSON.parse(f.stdout.text)).toEqual(guarded)
+    expect(f.calls.every((c) => c.body === undefined)).toBe(true)
+  })
+
+  test("a read failure after sending exits 3 and preserves the operation id and local evidence", async () => {
+    const f = await fixture({ legs: buyLegs, outcomes: ["land", "unconfirmed"], operationReads: ["unavailable"] })
+    expect(await run(buyArgs(["--wait"]), f.deps)).toBe(3)
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      code: "HOOD_WAIT_UNAVAILABLE",
+      details: { operationId: "op-1", legKind: "feeTransfer" },
+    })
+    expect(f.stdout.text).toContain("candle swap status --operation op-1")
+  })
+
+  test("replaying an existing client id follows its operation without building or signing", async () => {
+    const f = await fixture({ legs: buyLegs, operationReads: [pending, complete] })
+    expect(await run(buyArgs(), f.deps)).toBe(0)
+    const count = f.calls.length
+    const stdout = createCapture()
+    expect(await run(buyArgs(["--wait"]), { ...f.deps, stdout })).toBe(0)
+    expect(JSON.parse(stdout.text)).toEqual(complete)
+    expect(f.calls.slice(count).every((c) => c.body === undefined)).toBe(true)
+  })
+
+  test("embedded --wait refuses before building and names how to follow", async () => {
+    const f = await fixture({ rows: [], embedded: { evm: hoodEmbedded } })
+    expect(await run(buyArgs(["--wait"]), f.deps)).toBe(2)
+    expect(JSON.parse(f.stdout.text)).toMatchObject({ code: "USAGE" })
+    expect(f.stdout.text).toContain("candle swap status --operation <id>")
+    expect(builds(f.calls)).toHaveLength(0)
+  })
 })

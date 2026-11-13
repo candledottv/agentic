@@ -25724,6 +25724,76 @@ var init_hood_legs = __esm(() => {
   V4_SWAP_PARAMS = { tuple: [V4_POOL_KEY, "bool", "uint", "uint", "uint", "bytes"] };
 });
 
+// src/hood-operation-wait.ts
+async function waitForHoodOperation(ctx, key, id, evidence) {
+  const deadline = ctx.deps.now() + WAIT_MS;
+  const hint = `candle swap status --operation ${safeText(id)}`;
+  const readCtx = {
+    ...ctx,
+    deps: {
+      ...ctx.deps,
+      fetch: (input, init) => ctx.deps.fetch(input, {
+        ...init,
+        signal: AbortSignal.timeout(Math.max(1, deadline - ctx.deps.now()))
+      })
+    }
+  };
+  for (;; ) {
+    let result2;
+    try {
+      result2 = responseSchema.parse(await request(readCtx, key, `/api/v1/agent/hood-tee/operations/${encodeURIComponent(id)}`));
+      if (result2.operation.operationId !== id)
+        throw new Error("The server returned a different operation");
+    } catch (error) {
+      throw new TradingError("HOOD_WAIT_UNAVAILABLE", `Could not follow Hood settlement. Do not repeat the swap. Read ${hint}.`, {
+        exitCode: 3,
+        details: {
+          ...evidence,
+          operationId: id,
+          readCode: error instanceof TradingError ? error.code : "INVALID_RESPONSE"
+        }
+      });
+    }
+    const op = result2.operation;
+    const held = op.guard?.recoveryRequired === true || op.recovery?.recoveryRequired === true;
+    const completed = op.status === "completed" && op.legs.length === op.plannedLegCount && op.legs.every((leg) => leg.status === "landed");
+    const failed = op.status === "failed" || op.status === "expired";
+    const final = !held && (completed || failed);
+    if (final || ctx.deps.now() >= deadline) {
+      ctx.deps.stdout.write(`${JSON.stringify(result2, null, ctx.json ? undefined : 2)}
+`);
+      if (!final)
+        ctx.deps.stderr.write(`Still not final after ten minutes. Do not repeat the swap. Read ${hint}.
+`);
+      else if (failed)
+        ctx.deps.stderr.write(`Hood operation ${safeText(op.status)}. Do not repeat the swap. Read ${hint}.
+`);
+      if (!final)
+        return 3;
+      if (completed)
+        return 0;
+      return op.legs.some((leg) => leg.kind === "trade" && leg.status === "landed") ? 3 : 1;
+    }
+    await ctx.deps.sleep(Math.min(POLL_MS, deadline - ctx.deps.now()));
+  }
+}
+var WAIT_MS, POLL_MS = 5000, responseSchema;
+var init_hood_operation_wait = __esm(() => {
+  init_zod();
+  init_trading();
+  WAIT_MS = 10 * 60000;
+  responseSchema = exports_external.object({
+    operation: exports_external.object({
+      operationId: exports_external.string(),
+      status: exports_external.enum(["active", "completed", "failed", "expired"]),
+      plannedLegCount: exports_external.number().int().positive(),
+      legs: exports_external.array(exports_external.object({ kind: exports_external.string(), status: exports_external.string() }).passthrough()),
+      guard: exports_external.object({ recoveryRequired: exports_external.boolean() }).passthrough().optional(),
+      recovery: exports_external.object({ recoveryRequired: exports_external.boolean() }).passthrough().optional()
+    }).passthrough()
+  }).passthrough();
+});
+
 // src/human-output.ts
 function writeFields(deps, stream, rows, title) {
   const style = terminalStyle(deps, stream);
@@ -26330,7 +26400,7 @@ async function swapCheck(args, ctx) {
     if (from.chain !== "solana" || to.chain !== "solana")
       throw new TradingError("VALIDATION_FAILED", "Dry run checks Solana TEE pairs; Hood and bridge pairs are unsupported.");
     if (parsed.values["--to"] !== undefined || parsed.booleans.has("--wait")) {
-      writeUsageFailure(ctx.deps, "--to and --wait are for a bridge.", ctx.json);
+      writeUsageFailure(ctx.deps, "--to selects a bridge destination; --wait follows a bridge or a Hood TEE swap without --dry-run. Follow a Hood swap with candle swap status --operation <id>, or a job with candle swap status <client-trade-id>.", ctx.json);
       return 2;
     }
     if (from.asset === to.asset || !from.base && !to.base)
@@ -26537,11 +26607,11 @@ async function lookupOperation(ctx, key, id, kind) {
 async function swapStatus(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--kind", "--operation"], booleanFlags: ["--wait"] });
   if (!("error" in parsed) && parsed.values["--operation"] !== undefined) {
-    if (parsed.positionals.length || parsed.values["--kind"] || parsed.booleans.has("--wait")) {
-      writeUsageFailure(ctx.deps, "Usage: candle swap status --operation <operationId>", ctx.json);
+    if (parsed.positionals.length || parsed.values["--kind"]) {
+      writeUsageFailure(ctx.deps, "Usage: candle swap status --operation <operationId> [--wait]", ctx.json);
       return 2;
     }
-    return hoodOperationRead(ctx, parsed.values["--operation"]);
+    return hoodOperationRead(ctx, parsed.values["--operation"], undefined, false, parsed.booleans.has("--wait"));
   }
   if ("error" in parsed || parsed.positionals.length !== 1 || !validClientId(parsed.positionals[0] ?? "") || parsed.values["--kind"] !== undefined && !["trade", "swap", "launch"].includes(parsed.values["--kind"])) {
     writeUsageFailure(ctx.deps, "Usage: candle swap status <id> [--kind trade|swap|launch] [--wait]", ctx.json);
@@ -26748,8 +26818,9 @@ async function swap2(args, ctx) {
         slippage,
         ...bridge
       });
-    if (flags["--to"] !== undefined || parsed.booleans.has("--wait"))
-      throw new TradingUsage("--to and --wait are for a bridge: SOL or USDC to ETH or USDG, or back.");
+    const unsupportedWait = "--to is for a bridge: SOL or USDC to ETH or USDG, or back. --wait follows a bridge or a Hood TEE swap. Follow a Hood swap with candle swap status --operation <id>; use candle swap status <client-trade-id> for a job.";
+    if (flags["--to"] !== undefined)
+      throw new TradingUsage(unsupportedWait);
     const chain2 = pairChain(fromAsset, toAsset);
     const walletFlag = flags["--wallet"];
     const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag);
@@ -26757,6 +26828,7 @@ async function swap2(args, ctx) {
       throw chainMismatch(`--wallet ${safeText(walletFlag)}`, named, chain2);
     if (chain2 === "hood")
       return await hoodSwap(ctx, {
+        wait: parsed.booleans.has("--wait"),
         flags,
         yes: parsed.booleans.has("--yes"),
         id,
@@ -26764,6 +26836,8 @@ async function swap2(args, ctx) {
         from: fromAsset,
         to: toAsset
       });
+    if (parsed.booleans.has("--wait"))
+      throw new TradingUsage(unsupportedWait);
     const from = fromAsset.asset;
     const to = toAsset.asset;
     if (from === to)
@@ -26989,9 +27063,19 @@ async function hoodSwap(ctx, args) {
   const kind = from.base && to.base ? "swap" : "trade";
   const key = await tradingKey(ctx);
   const prior = await lookupOperation(ctx, key, id, kind);
+  const replay = async (result2) => {
+    if (!args.wait)
+      return printTradingResult(ctx, result2);
+    const operation = result2.job?.operation;
+    if (typeof operation?.operationId !== "string")
+      throw new TradingUsage(`No Hood TEE operationId is available. Follow with candle swap status ${id}; a Hood TEE swap uses candle swap status --operation <id>.`);
+    return waitForHoodOperation(ctx, key, operation.operationId);
+  };
   if (prior)
-    return printTradingResult(ctx, prior);
+    return replay(prior);
   const payer = await tradingPayer(ctx, key, flags["--wallet"], "swap:write", "hood");
+  if (args.wait && payer.kind !== "tee")
+    throw new TradingUsage(`--wait follows a bridge or a Hood TEE swap. Follow this swap with candle swap status ${id}; a Hood TEE swap uses candle swap status --operation <id>.`);
   const payerAddress = payer.kind === "tee" ? payer.wallet.address : payer.address;
   const rpc = lazyEvmRpc(ctx, flags["--rpc-url"]);
   const decimals = await hoodDecimals(from, rpc);
@@ -27031,7 +27115,7 @@ async function hoodSwap(ctx, args) {
     ...payer.kind === "embedded" ? { deferExecution: true } : {}
   });
   if (built.job || built.status === "executed")
-    return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
+    return replay({ ...built, clientTradeId: id, kind });
   const body = kind === "swap" ? built.payload : built;
   const data = swapBuildSchema.parse(body);
   const echoed = kind === "swap" ? body?.recipient : body?.walletAddress;
@@ -27115,7 +27199,7 @@ async function hoodSwap(ctx, args) {
     treasury: () => hoodFeeTreasury(rpc()),
     curve: () => registeredCurveFor(rpc(), token2)
   });
-  const run = await runSequencedLegs(ctx, key, {
+  const execute = () => runSequencedLegs(ctx, key, {
     wallet: wallet3,
     first: sequenced,
     submitPath: kind === "swap" ? "/api/v1/agent/swap/submit" : "/api/v1/trade/agent/submit",
@@ -27131,6 +27215,16 @@ async function hoodSwap(ctx, args) {
         notices.push(notice2);
     }
   });
+  let run;
+  try {
+    run = await execute();
+  } catch (error) {
+    if (args.wait && error instanceof TradingError && (error.exitCode === 3 || error.details?.stage === "reverted"))
+      return waitForHoodOperation(ctx, key, sequenced.operationId, error.details);
+    throw error;
+  }
+  if (args.wait)
+    return waitForHoodOperation(ctx, key, sequenced.operationId);
   const settled = kind === "swap" ? reportSettlement(ctx, run.final.settlement, { asset: to.asset, decimals: outDecimals }, id) : {};
   return printTradingResult(ctx, {
     ...run.final,
@@ -27389,13 +27483,15 @@ async function bridgeSwap(ctx, args) {
     return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } });
   }
 }
-async function hoodOperationRead(ctx, id, candidateHash, recover = false) {
+async function hoodOperationRead(ctx, id, candidateHash, recover = false, wait = false) {
   if (!validClientId(id)) {
     writeUsageFailure(ctx.deps, "An operationId is required", ctx.json);
     return 2;
   }
   try {
     const key = await tradingKey(ctx);
+    if (wait)
+      return await waitForHoodOperation(ctx, key, id);
     const path = `/api/v1/agent/hood-tee/operations/${encodeURIComponent(id)}${recover ? "/recover" : ""}`;
     const result2 = await request(ctx, key, path, recover ? candidateHash ? { candidateHash } : {} : undefined);
     const operation = result2.operation;
@@ -27433,6 +27529,7 @@ var init_swap = __esm(() => {
   init_client();
   init_evm_lite();
   init_hood_legs();
+  init_hood_operation_wait();
   init_human_output();
   init_presentation();
   init_profiles();
@@ -78118,7 +78215,7 @@ var HELP = {
     group: "Trade",
     intro: "Quote, swap and bridge on Solana or Hood; read an operation",
     summary: "Quote, confirm and swap on Solana or Hood, bridge between them; read an operation by id",
-    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent. The first buy after a launch is this command, unless the launch carried it with candle launch --buy. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and buy or sell a token that was not launched on Candle. Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force. With --dry-run, stdout reports per-check results and the quote; nothing is signed or sent. Otherwise with --json, stdout is one JSON value for every swap, trade, replay and status read: kind, status, clientTradeId, signature (the primary transaction, or null), signatures (a list) and raw (the original response); every human line is on stderr. The keys older versions printed stay beside them.",
+    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent. The first buy after a launch is this command, unless the launch carried it with candle launch --buy. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. On a Hood TEE swap, --wait follows the trade and fee legs for up to ten minutes and prints the same operation response as candle swap status --operation <id>; exit 0 means completed, 1 failed, and 3 partial execution, unresolved settlement or timeout. Embedded and Solana same-chain swaps use candle swap status <client-trade-id>. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and buy or sell a token that was not launched on Candle. Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force. With --dry-run, stdout reports per-check results and the quote; nothing is signed or sent. Otherwise with --json, stdout is one JSON value: swaps, trades, replays and job status reads carry kind, status, clientTradeId, signature (the primary transaction, or null), signatures (a list) and raw (the original response); Hood --wait and explicit --operation reads return the operation response. Every human line is on stderr. The keys older versions printed stay beside them.",
     usage: [
       "candle swap <from> <to> [flags]",
       "candle swap status <id>",
@@ -78133,8 +78230,8 @@ var HELP = {
         description: "Quote, confirm and swap on Solana or Hood, or bridge between them"
       },
       {
-        invocation: "status <id> [--kind trade|swap|launch] [--wait] | status --operation <operationId>",
-        description: "Read without resending; --wait follows a bridge. --operation reads a Hood TEE guard with no signing or sending, and exits 3 while held"
+        invocation: "status <id> [--kind trade|swap|launch] [--wait] | status --operation <operationId> [--wait]",
+        description: "Read without resending; --wait follows a bridge. --operation reads a Hood TEE guard; add --wait to follow all legs for up to ten minutes (0 completed, 1 failed, 3 partial or unresolved)"
       },
       {
         invocation: "recover --operation <operationId> [--hash <0x…>]",

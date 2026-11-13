@@ -376,9 +376,18 @@ describe("R1: which pairs bridge", () => {
     expect(f.calls).toEqual([])
   })
 
-  test("--to and --wait on a same-chain swap are a usage error before any request", async () => {
+  test("--to on a same-chain swap is a usage error before any request", async () => {
     const f = await fixture()
     expect(await run(["swap", "SOL", "USDC", "--amount", "1", "--to", "hood", "--yes", "--json"], f.deps)).toBe(2)
+    expect(f.calls).toEqual([])
+    expect(lastJson(f.stdout.text).message).toContain("candle swap status --operation <id>")
+  })
+
+  test("Solana same-chain --wait names the status command before any request", async () => {
+    const f = await fixture()
+    expect(await run(["swap", "SOL", "USDC", "--amount", "1", "--wait", "--yes", "--json"], f.deps)).toBe(2)
+    expect(lastJson(f.stdout.text)).toMatchObject({ code: "USAGE" })
+    expect(lastJson(f.stdout.text).message).toContain("candle swap status --operation <id>")
     expect(f.calls).toEqual([])
   })
 
