@@ -26,7 +26,12 @@ export interface GuardSummary {
 export interface HoodTeeOperation {
     operationId: string;
     kind: "trade" | "swap" | "launch" | "transfer";
+    /** Displayed status; a reconciled legacy `failed` row reads `expired` (see `storedStatus`). */
     status: "active" | "completed" | "failed" | "expired";
+    /** Present only when `status` was derived differently from the stored value. */
+    storedStatus?: "active" | "completed" | "failed" | "expired";
+    /** Whether this operation holds the wallet. The one field to read; `legs[].legacyHeld` is history. */
+    held?: boolean;
     plannedLegCount: number;
     currentLegIndex: number;
     expiresAt: number;
@@ -37,6 +42,7 @@ export interface HoodTeeOperation {
         nonce?: number;
         outcome?: "uncertain" | "landed" | "reverted" | "not_sent";
         reason?: string;
+        /** History marker stamped when a legacy leg was promoted; never a lock. Read `held`. */
         legacyHeld?: true;
         stampSuperseded?: true;
         conflictHash?: string;

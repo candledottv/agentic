@@ -78476,7 +78476,7 @@ var HELP = {
       },
       {
         invocation: "status <id> [--kind trade|swap|launch] [--wait] | status --operation <operationId> [--wait]",
-        description: "Read without resending; --wait follows a bridge. --operation reads a Hood TEE guard; add --wait to follow all legs for up to ten minutes (0 completed, 1 failed, 3 partial or unresolved)"
+        description: "Read without resending; --wait follows a bridge. --operation reads a Hood TEE guard; add --wait to follow all legs for up to ten minutes (0 completed, 1 failed, 3 partial or unresolved). held is the wallet-hold field; a leg's legacyHeld is history, not a lock"
       },
       {
         invocation: "recover --operation <operationId> [--hash <0x…>]",
