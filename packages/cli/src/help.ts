@@ -86,7 +86,10 @@ export const ENVIRONMENT: EnvVar[] = [
   },
   { name: "CANDLE_PROFILE", description: "The profile to act as, when --profile is not given" },
   { name: "CANDLE_API_URL", description: "API base URL, when --api-url is not given" },
-  { name: "CANDLE_HACC_URL", description: "Strategy lab base URL (default https://api.hacc.fun); HTTPS only" },
+  {
+    name: "CANDLE_HACC_URL",
+    description: "hacc base URL for the strategy lab and signal records (default https://api.hacc.fun); HTTPS only",
+  },
   {
     name: "CANDLE_X402_NETWORK",
     description: "The network per-use x402 payments are made on: mainnet (default) or devnet, for tests",
@@ -1132,6 +1135,42 @@ export const HELP: Record<string, Topic> = {
       "candle lab replay cancel <job-id>",
       "candle lab runners --hours 24",
       "candle lab edges --days 7 --min-n 15",
+    ],
+    env: [...ENV_API, "CANDLE_HACC_URL"],
+  },
+  signals: {
+    group: "Account",
+    intro: "hacc's scorecard and per-signal measured records",
+    summary: "hacc's daily scorecard and each signal's measured record, read-only",
+    description:
+      "Reads hacc's public signal records with this profile's production agent key: the daily scorecard (signal lift against the matched baseline, and per source, rule and horizon the count, coverage, conservative and priced mean net returns, tail counts and delay), a page of per-signal records newest first, or one signal's record (entry and per-horizon statuses, conservative and priced net returns, the 24 h path and the matched baseline). Returns are fractions on the wire and shown here as percents; the conservative figure counts a horizon with no print as a total loss, and a priced figure is blank unless the entry and that horizon were both priced. Backfilled rows are history recorded after the fact. Read-only: three GETs to hacc, nothing written, traded or moved. Every output ends with, and every --json value carries as measure, the fixed line \"Measured record, not a forecast.\", on errors, empty pages and 404s too. A record is a fact about the past, never a forecast or advice. --json preserves hacc's body. A device token or test key cannot read them.",
+    usage: ["candle signals <scorecard|records|record> [flags]"],
+    rows: [
+      { invocation: "scorecard [--date YYYY-MM-DD]", description: "The latest daily scorecard, or one day's" },
+      {
+        invocation: "records [--source <source>] [--before <id>] [--limit n]",
+        description: "Per-signal records, newest first; --before takes the previous page's next_before",
+      },
+      {
+        invocation: "record <source> <source-id>",
+        description: "One signal's record: the signal id for pattern, chain:mint for launch_read",
+      },
+    ],
+    flags: [
+      { invocation: "--date <YYYY-MM-DD>", description: "A calendar day; absent reads the latest scorecard" },
+      {
+        invocation: "--source <source>",
+        description: "pattern, quant_call, holder_band or launch_read; absent lists every published source",
+      },
+      { invocation: "--before <id>", description: "Ledger id cursor: the previous page's next_before" },
+      { invocation: "--limit <n>", description: "Page size, 1 to 100 (hacc's default 50)" },
+    ],
+    examples: [
+      "candle signals scorecard",
+      "candle signals scorecard --date 2026-11-12 --json",
+      "candle signals records --source pattern --limit 20",
+      "candle signals record pattern 12345",
+      "candle signals record launch_read solana:<mint> --json",
     ],
     env: [...ENV_API, "CANDLE_HACC_URL"],
   },

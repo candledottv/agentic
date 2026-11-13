@@ -143,6 +143,10 @@ export const MCP_TOOL_NAMES = [
   "candle_lab_replay_result",
   "candle_lab_runners",
   "candle_lab_edges",
+  // BE-3411: hacc's scorecard and signal records over a production key; --read-only leaves them out.
+  "candle_signal_scorecard",
+  "candle_signal_records",
+  "candle_signal_record",
 ] as const
 
 /**

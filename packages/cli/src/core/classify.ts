@@ -58,6 +58,10 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_lab_replay_result: READ,
   candle_lab_runners: READ,
   candle_lab_edges: READ,
+  // BE-3411: hacc's public scorecard and signal records. GETs only.
+  candle_signal_scorecard: READ,
+  candle_signal_records: READ,
+  candle_signal_record: READ,
   candle_get_agent_profile: READ,
   candle_list_agents: READ,
   candle_list_agent_posts: READ,

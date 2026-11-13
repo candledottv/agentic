@@ -82,6 +82,16 @@ describe("the help data stays in step with dispatch", () => {
     expect(topic.description).toContain("The lab never trades")
   })
 
+  test("signals help documents the three read-only records reads, the fixed line and hacc override (BE-3411)", () => {
+    const topic = HELP.signals as Topic
+    expect(documentedSubcommands(topic)).toEqual(["scorecard", "records", "record"])
+    expect(documentedFlags(topic)).toEqual(expect.arrayContaining(["--date", "--source", "--before", "--limit"]))
+    expect(topic.description).toContain('"Measured record, not a forecast."')
+    expect(topic.description).toContain("Read-only")
+    expect(topic.env).toContain("CANDLE_HACC_URL")
+    expect(ENVIRONMENT.find((e) => e.name === "CANDLE_HACC_URL")?.description).toContain("signal records")
+  })
+
   test("T1: every routed word has a topic, and every topic routes", () => {
     const documented = Object.keys(HELP).map((word) => ALIASES[word] ?? word)
     expect(sorted(documented)).toEqual(sorted([...ROUTED_COMMANDS]))

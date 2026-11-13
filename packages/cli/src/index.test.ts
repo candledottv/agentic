@@ -65,6 +65,31 @@ describe("dispatch", () => {
     }
   })
 
+  test("signals routes scorecard, records and record to hacc's public GETs (BE-3411)", async () => {
+    expect(ROUTED_COMMANDS.has("signals")).toBe(true)
+    expect(ROUTED_SUBCOMMANDS.signals).toEqual(["scorecard", "records", "record"])
+    const measure = "Measured record, not a forecast."
+    for (const [args, path, body] of [
+      [["scorecard"], "/v1/public/scorecard", { date: "2026-11-12", rows: [], measure }],
+      [["scorecard", "--date", "2026-11-12"], "/v1/public/scorecard/2026-11-12", { date: "2026-11-12", measure }],
+      [["records", "--limit", "5"], "/v1/public/signal-records", { records: [], next_before: null, measure }],
+      [["record", "pattern", "42"], "/v1/public/signal-records/pattern/42", { source: "pattern", measure }],
+    ] as const) {
+      const stdout = createCapture()
+      const network = createRoutedFetch({ [path]: () => jsonResponse(200, body) })
+      const deps = createTestDeps({
+        fetch: network.fetch,
+        stdout,
+        env: { CANDLE_API_KEY: "cndl_live_signals_fixture" },
+      })
+      expect(await run(["signals", ...args, "--json"], deps)).toBe(0)
+      expect(JSON.parse(stdout.text)).toEqual(body)
+      expect(network.unmatched).toEqual([])
+      expect(network.calls).toHaveLength(1)
+      expect(network.calls[0]?.init.method).toBe("GET")
+    }
+  })
+
   test("an unknown top-level command names the offending token, then prints help, and exits 1", async () => {
     const stderr = createCapture()
     const code = await run(["frobnicate"], createTestDeps({ fetch: unusedFetch, stderr }))

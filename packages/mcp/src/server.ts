@@ -103,6 +103,8 @@ LAUNCHING A COPY: candle_vamp_candidates (a key with account:read) lists Solana 
 
 STRATEGY LAB (a production key, cndl_live_): candle_lab_status first, then candle_lab_replay returns a job_id at once and candle_lab_replay_result reads it (no more often than every 5 seconds; a replay runs up to ten minutes); candle_lab_runners and candle_lab_edges read its tables. The key's plan decides access and hacc refuses with code lab_plan, lab_quota, lab_active or lab_busy. Backtests are a model of the past; the lab never trades.
 
+SIGNAL RECORDS (a production key, cndl_live_; read-only): candle_signal_scorecard reads hacc's daily scorecard, candle_signal_records a page of per-signal measured records (page with before = next_before), candle_signal_record one signal's record. Every result carries measure: "Measured record, not a forecast." Quote that line with any figure from it; never say a signal will win.
+
 WRITING (trade, launch, transfer, sweep, swap) needs a key. If a call returns an auth error, the fix is on the human's side: they run \`candle auth login\`, which authorizes a device in the browser and stores the credentials. Do not ask them to paste a key into a config file, and do not retry the call until they confirm.
 
 Two chains: solana and hood. Most tools take an explicit chain — resolve it with candle_resolve_token rather than guessing.

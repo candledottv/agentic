@@ -87,6 +87,7 @@ import { scan } from "./commands/scan"
 import { secretsList, secretsRemove, secretsSet } from "./commands/secrets"
 import { setup } from "./commands/setup"
 import { sign, signMessage } from "./commands/sign"
+import { signalsRecord, signalsRecords, signalsScorecard } from "./commands/signals"
 import { spendLimit, spendMaxPerCall, spendPause, spendResume, spendShow } from "./commands/spend"
 import { stake, stakeAdd, stakeClaim, stakeFinish, stakeRemove } from "./commands/stake"
 import { swap, swapReceipt, swapRecover, swapStatus } from "./commands/swap"
@@ -319,6 +320,8 @@ const COMMANDS: Record<string, CommandRoute> = {
   // x402 C4 (spec 7.3): Quant's terms over the key route, which a paid Quant turn needs first.
   quant: { subcommands: { ask: quantAsk, terms: quantTerms } },
   lab: { subcommands: { status: labStatus, replay: labReplay, runners: labRunners, edges: labEdges } },
+  // BE-3411 (hacc north-star CL1): hacc's public scorecard and signal records. Read-only GETs.
+  signals: { subcommands: { scorecard: signalsScorecard, records: signalsRecords, record: signalsRecord } },
   // x402 C7 (BE-1878): Pro or Max by x402 from a vault key, the wallet-as-identity signup, and the
   // local auto-renew flag. Plan payments are outside the per-use limits (spec 10.3).
   plan: {

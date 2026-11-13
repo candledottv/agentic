@@ -55,7 +55,7 @@ for parameters and limits.
 
 ## The tool surface
 
-Ninety-seven tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_trade_execute`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl`, `candle_get_trading_wallets`, `candle_get_spendable_balances`, `candle_recover_operation`, `candle_get_swap_receipt` and the five strategy lab tools await a human-owned release. Public page editing and posts are released. Nineteen source tools need no key at all, so a client can be pointed at the server and used before
+One hundred tools in current source; sixty-one are in published `@candledottv/mcp` 0.10.25. The sixteen token-page tools, `candle_token_clusters`, `candle_token_edit`, `candle_token_history`, `candle_trade_execute`, `candle_get_paper_inventory`, `candle_get_profile_paper`, `candle_get_account_pnl`, `candle_get_trading_wallets`, `candle_get_spendable_balances`, `candle_recover_operation`, `candle_get_swap_receipt`, the five strategy lab tools and the three signal record tools await a human-owned release. Public page editing and posts are released. Nineteen source tools need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -181,6 +181,16 @@ anyone signs up for anything.
 | `candle_perps_candles` | yes, any scope | one market's candles; read-only, no signer, local server only |
 
 **Strategy lab (hacc), local server only, a production key:** `candle_lab_status` first; `candle_lab_replay` returns a job id at once and `candle_lab_replay_result` reads it (no more often than every 5 seconds; read the lead card first); `candle_lab_runners` and `candle_lab_edges` read its tables. The plan decides access, and a refusal's `code` (`lab_plan`, `lab_quota`, `lab_active`, `lab_busy`) says why. Backtests are a model of the past; the lab never trades.
+
+**Measured signals (hacc), local server only, a production key, source only until the next release:**
+`candle_signal_scorecard` reads daily aggregates (latest or `date`); `candle_signal_records` pages
+measured records with optional `source`, `before` and `limit` (1–100); `candle_signal_record` reads
+one record by `source` and `source_id`. The CLI equivalents are `candle signals scorecard [--date YYYY-MM-DD]`,
+`candle signals records [--source <source>] [--before <id>] [--limit 1-100]` and
+`candle signals record <source> <source-id>`. These are read-only GETs directly to hacc and are
+absent from the hosted connector. Every result, including errors and empty results, carries
+`measure: "Measured record, not a forecast."`. Quote the exact sentence with any figure:
+Measured record, not a forecast.
 
 ## Which CLI command do I need?
 

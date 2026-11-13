@@ -12483,6 +12483,205 @@ var init_plans = __esm(() => {
   PLAN_LABELS = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
 });
 
+// ../mcp/src/signal-records.ts
+function isObject2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function withMeasure(body) {
+  return { ...isObject2(body) ? body : {}, measure: MEASURE };
+}
+function isScorecardDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
+    return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+function isRecordSource(value) {
+  return typeof value === "string" && RECORD_SOURCES.includes(value);
+}
+function localRefusal(code, message) {
+  return { ok: false, refusal: { status: 0, code, message, body: withMeasure({ error: message, code }) } };
+}
+function createSignalRecordsClient(options) {
+  const base2 = new URL(options.apiUrl ?? SIGNAL_RECORDS_DEFAULT_URL);
+  if (base2.protocol !== "https:" || base2.username || base2.password || base2.search || base2.hash) {
+    throw new Error("Signal records need an HTTPS CANDLE_HACC_URL without credentials, query or fragment.");
+  }
+  const root = base2.toString().replace(/\/+$/, "");
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const timeoutMs = options.timeoutMs ?? SIGNAL_RECORDS_TIMEOUT_MS;
+  async function get(path) {
+    const controller = new AbortController;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      const response = await doFetch(`${root}${path}`, {
+        method: "GET",
+        redirect: "error",
+        signal: controller.signal,
+        headers: { authorization: `Bearer ${options.apiKey}`, accept: "application/json" }
+      });
+      const received = await response.json().catch(() => {
+        return;
+      });
+      if (timedOut)
+        return localRefusal("TIMEOUT", "The signal records request timed out.");
+      if (!response.ok) {
+        const message = isObject2(received) && typeof received.error === "string" ? received.error : `Signal records request failed (${response.status}).`;
+        const code = isObject2(received) && typeof received.code === "string" ? received.code : response.status === 404 ? "NOT_FOUND" : `HTTP_${response.status}`;
+        return {
+          ok: false,
+          refusal: {
+            status: response.status,
+            code,
+            message,
+            body: withMeasure(isObject2(received) ? received : { error: message })
+          }
+        };
+      }
+      if (!isObject2(received))
+        return localRefusal("BAD_RESPONSE", "hacc returned an unreadable response.");
+      return { ok: true, status: response.status, body: withMeasure(received) };
+    } catch {
+      return timedOut ? localRefusal("TIMEOUT", "The signal records request timed out.") : localRefusal("NETWORK_ERROR", "Could not reach hacc.");
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return {
+    scorecard(date) {
+      if (date !== undefined && !isScorecardDate(date)) {
+        return Promise.resolve(localRefusal("INVALID_DATE", "date must be YYYY-MM-DD."));
+      }
+      return get(date === undefined ? "/v1/public/scorecard" : `/v1/public/scorecard/${date}`);
+    },
+    records(query2 = {}) {
+      const search = new URLSearchParams;
+      if (query2.source !== undefined) {
+        if (!isRecordSource(query2.source)) {
+          return Promise.resolve(localRefusal("INVALID_SOURCE", `source must be one of ${RECORD_SOURCES.join(", ")}.`));
+        }
+        search.set("source", query2.source);
+      }
+      if (query2.before !== undefined) {
+        if (!Number.isSafeInteger(query2.before) || query2.before < 1) {
+          return Promise.resolve(localRefusal("INVALID_BEFORE", "before must be a positive integer."));
+        }
+        search.set("before", String(query2.before));
+      }
+      if (query2.limit !== undefined) {
+        if (!Number.isInteger(query2.limit) || query2.limit < 1 || query2.limit > RECORDS_LIMIT_MAX) {
+          return Promise.resolve(localRefusal("INVALID_LIMIT", `limit must be an integer from 1 to ${RECORDS_LIMIT_MAX}.`));
+        }
+        search.set("limit", String(query2.limit));
+      }
+      return get(`/v1/public/signal-records${search.size ? `?${search}` : ""}`);
+    },
+    record(source, sourceId) {
+      if (!isRecordSource(source)) {
+        return Promise.resolve(localRefusal("INVALID_SOURCE", `source must be one of ${RECORD_SOURCES.join(", ")}.`));
+      }
+      if (typeof sourceId !== "string" || sourceId.length < 1 || sourceId.length > SOURCE_ID_MAX) {
+        return Promise.resolve(localRefusal("INVALID_SOURCE_ID", `source_id must be 1 to ${SOURCE_ID_MAX} characters.`));
+      }
+      return get(`/v1/public/signal-records/${source}/${encodeURIComponent(sourceId)}`);
+    }
+  };
+}
+var SIGNAL_RECORDS_DEFAULT_URL = "https://api.hacc.fun", SIGNAL_RECORDS_TIMEOUT_MS = 1e4, MEASURE = "Measured record, not a forecast.", RECORD_SOURCES, RECORDS_LIMIT_MAX = 100, SOURCE_ID_MAX = 128;
+var init_signal_records = __esm(() => {
+  RECORD_SOURCES = ["pattern", "quant_call", "holder_band", "launch_read"];
+});
+
+// ../mcp/src/signal-record-tools.ts
+function refusal2(code, error) {
+  return { text: JSON.stringify({ error, code, measure: MEASURE }), isError: true };
+}
+function answerText2(answer) {
+  if (answer.ok)
+    return { text: JSON.stringify(answer.body), isError: false };
+  const { status, code, message, body } = answer.refusal;
+  return {
+    text: JSON.stringify({ error: message, code, ...status ? { status, body } : {}, measure: MEASURE }),
+    isError: true
+  };
+}
+async function executeSignalRecordTool(name, args, cfg, env, doFetch) {
+  const apiKey = cfg.apiKey;
+  if (!apiKey?.startsWith("cndl_live_")) {
+    return refusal2("SIGNAL_RECORDS_PRODUCTION_KEY_REQUIRED", SIGNAL_RECORDS_PRODUCTION_KEY_MESSAGE);
+  }
+  let hacc;
+  try {
+    hacc = createSignalRecordsClient({
+      apiKey,
+      apiUrl: env.CANDLE_HACC_URL?.trim() || undefined,
+      fetch: doFetch
+    });
+  } catch {
+    return refusal2("SIGNAL_RECORDS_URL_INVALID", "Signal records need a valid HTTPS CANDLE_HACC_URL without credentials, query or fragment.");
+  }
+  switch (name) {
+    case "candle_signal_scorecard":
+      return answerText2(await hacc.scorecard(args.date));
+    case "candle_signal_records": {
+      const a = args;
+      return answerText2(await hacc.records({ source: a.source, before: a.before, limit: a.limit }));
+    }
+    case "candle_signal_record": {
+      const a = args;
+      return answerText2(await hacc.record(a.source, a.source_id));
+    }
+  }
+}
+var SIGNAL_RECORDS_PRODUCTION_KEY_MESSAGE = "Signal records need a production agent key. Create one with `candle keys create`.", SIGNAL_RECORD_ANNOTATIONS, SIGNAL_RECORD_TITLES, signalRecordValidationErrorMap = (issue, ctx) => {
+  const detail = exports_external.defaultErrorMap(issue, ctx).message;
+  const path = issue.path.length ? `${issue.path.join(".")}: ` : "";
+  throw new Error(refusal2("SIGNAL_RECORDS_INVALID_ARGUMENTS", `Invalid arguments: ${path}${detail}`).text);
+}, validationParams, source, signalRecordShapes, FIXED_LINE_NOTE, KEY_NOTE, SIGNAL_RECORD_DESCRIPTIONS;
+var init_signal_record_tools = __esm(() => {
+  init_zod();
+  init_signal_records();
+  SIGNAL_RECORD_ANNOTATIONS = { readOnlyHint: true, openWorldHint: true };
+  SIGNAL_RECORD_TITLES = {
+    candle_signal_scorecard: "hacc signal scorecard",
+    candle_signal_records: "hacc signal records",
+    candle_signal_record: "hacc signal record"
+  };
+  validationParams = {
+    errorMap: (issue, ctx) => {
+      if (ctx.data === undefined && issue.path.length === 0)
+        return exports_external.defaultErrorMap(issue, ctx);
+      return signalRecordValidationErrorMap(issue, ctx);
+    }
+  };
+  source = exports_external.enum(RECORD_SOURCES, validationParams);
+  signalRecordShapes = {
+    candle_signal_scorecard: {
+      date: exports_external.string(validationParams).date().optional().describe("YYYY-MM-DD; absent is the latest.")
+    },
+    candle_signal_records: {
+      source: source.optional(),
+      before: exports_external.number(validationParams).int().min(1).optional().describe("The previous page's next_before."),
+      limit: exports_external.number(validationParams).int().min(1).max(RECORDS_LIMIT_MAX).default(50)
+    },
+    candle_signal_record: {
+      source,
+      source_id: exports_external.string(validationParams).min(1).max(SOURCE_ID_MAX).describe("The source's own id: the signal id for pattern, chain:mint for launch_read.")
+    }
+  };
+  FIXED_LINE_NOTE = ' Every response carries measure: "Measured record, not a forecast." Quote that line with any figure you take from ' + "it. A record is a fact, never a forecast or advice.";
+  KEY_NOTE = " Needs a production agent key (cndl_live_), sent to hacc as a Bearer; read-only. Optional CANDLE_HACC_URL " + "overrides https://api.hacc.fun (https only).";
+  SIGNAL_RECORD_DESCRIPTIONS = {
+    candle_signal_scorecard: "The daily hacc scorecard's signal aggregates: signal lift against the matched baseline, and per source, rule " + `and horizon counts, mean net returns, tails and delay.${FIXED_LINE_NOTE}${KEY_NOTE}`,
+    candle_signal_records: "Per-signal measured records, newest first: marks, conservative and priced net returns, the 24 h path and the " + `matched baseline.${FIXED_LINE_NOTE}${KEY_NOTE}`,
+    candle_signal_record: `One signal's measured record.${FIXED_LINE_NOTE}${KEY_NOTE}`
+  };
+});
+
 // ../mcp/src/token-metadata.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 function editSocialsSchema() {
@@ -12763,6 +12962,7 @@ __export(exports_tools, {
   SWAP_SETTLEMENT_REREAD: () => SWAP_SETTLEMENT_REREAD,
   SWAP_RECEIPT_DESCRIPTION: () => SWAP_RECEIPT_DESCRIPTION,
   STAKING_DISCLOSURE: () => STAKING_DISCLOSURE,
+  SIGNAL_RECORD_TOOL_NAMES: () => SIGNAL_RECORD_TOOL_NAMES,
   PROFILE_PNL_HYPERLIQUID: () => PROFILE_PNL_HYPERLIQUID,
   PROFILE_EDIT_TOOL_NAMES: () => PROFILE_EDIT_TOOL_NAMES,
   OPERATION_NOT_FOUND_RULE: () => OPERATION_NOT_FOUND_RULE,
@@ -13391,7 +13591,7 @@ function registerToolSubset(server, options) {
   const register = (name, definition, handler) => {
     if (!allowed.has(name))
       return;
-    const inputSchema = isProfileEditTool(name) || isTokenPageTool(name) ? exports_external.object(definition.inputSchema).strict() : definition.inputSchema;
+    const inputSchema = isSignalRecordTool(name) ? exports_external.object(definition.inputSchema, { errorMap: signalRecordValidationErrorMap }).strict() : isProfileEditTool(name) || isTokenPageTool(name) ? exports_external.object(definition.inputSchema).strict() : definition.inputSchema;
     const registered = server.registerTool(name, { ...definition, inputSchema, ...options.metadata?.[name] }, handler);
     if (isProfileEditTool(name) && registered) {
       const tools = localProfileTools.get(server) ?? new Map;
@@ -14044,6 +14244,28 @@ function registerToolSubset(server, options) {
     inputSchema: labShapes.candle_lab_edges,
     annotations: labRead
   }, labTool("candle_lab_edges"));
+  const signalRecordTool = (tool) => async (args) => {
+    const result2 = await executeSignalRecordTool(tool, args, getConfig(), env, doFetch);
+    return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
+  };
+  register("candle_signal_scorecard", {
+    title: SIGNAL_RECORD_TITLES.candle_signal_scorecard,
+    description: SIGNAL_RECORD_DESCRIPTIONS.candle_signal_scorecard,
+    inputSchema: signalRecordShapes.candle_signal_scorecard,
+    annotations: { ...SIGNAL_RECORD_ANNOTATIONS }
+  }, signalRecordTool("candle_signal_scorecard"));
+  register("candle_signal_records", {
+    title: SIGNAL_RECORD_TITLES.candle_signal_records,
+    description: SIGNAL_RECORD_DESCRIPTIONS.candle_signal_records,
+    inputSchema: signalRecordShapes.candle_signal_records,
+    annotations: { ...SIGNAL_RECORD_ANNOTATIONS }
+  }, signalRecordTool("candle_signal_records"));
+  register("candle_signal_record", {
+    title: SIGNAL_RECORD_TITLES.candle_signal_record,
+    description: SIGNAL_RECORD_DESCRIPTIONS.candle_signal_record,
+    inputSchema: signalRecordShapes.candle_signal_record,
+    annotations: { ...SIGNAL_RECORD_ANNOTATIONS }
+  }, signalRecordTool("candle_signal_record"));
 }
 async function registerEligibleProfileTool(server, env = process.env, doFetch = fetch, resolved) {
   const cfg = serverConfig(server, env, resolved);
@@ -14074,7 +14296,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, SWAP_RECEIPT_DESCRIPTION, SWAP_SETTLEMENT_REREAD, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, getSwapReceiptShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID, localServerConfigs;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, SIGNAL_RECORD_TOOL_NAMES, isSignalRecordTool = (name) => SIGNAL_RECORD_TOOL_NAMES.includes(name), PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, SWAP_RECEIPT_DESCRIPTION, SWAP_SETTLEMENT_REREAD, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getOperationShape, getSwapReceiptShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID, localServerConfigs;
 var init_tools = __esm(() => {
   init_zod();
   init_chain_registry();
@@ -14090,6 +14312,7 @@ var init_tools = __esm(() => {
   init_perps_markets();
   init_perps_risk();
   init_plans();
+  init_signal_record_tools();
   init_swap_receipt();
   init_token_metadata();
   init_token_pages();
@@ -14196,7 +14419,10 @@ var init_tools = __esm(() => {
     "candle_lab_replay",
     "candle_lab_replay_result",
     "candle_lab_runners",
-    "candle_lab_edges"
+    "candle_lab_edges",
+    "candle_signal_scorecard",
+    "candle_signal_records",
+    "candle_signal_record"
   ];
   LAB_TOOL_NAMES = [
     "candle_lab_status",
@@ -14204,6 +14430,11 @@ var init_tools = __esm(() => {
     "candle_lab_replay_result",
     "candle_lab_runners",
     "candle_lab_edges"
+  ];
+  SIGNAL_RECORD_TOOL_NAMES = [
+    "candle_signal_scorecard",
+    "candle_signal_records",
+    "candle_signal_record"
   ];
   PROFILE_EDIT_TOOL_NAMES = [
     "candle_update_profile",
@@ -18084,17 +18315,17 @@ function resolveEvmRpcUrl(flag, envValue, flagName) {
   const fromFlag = flag?.trim() || undefined;
   const fromEnv = envValue?.trim() || undefined;
   const url = fromFlag ?? fromEnv ?? DEFAULT_HOOD_RPC_URL;
-  const source = fromFlag !== undefined ? flagName : fromEnv !== undefined ? EVM_RPC_URL_ENV : undefined;
+  const source2 = fromFlag !== undefined ? flagName : fromEnv !== undefined ? EVM_RPC_URL_ENV : undefined;
   let parsed;
   try {
     parsed = new URL(url);
   } catch {
-    return { error: `${source ?? flagName} is not a valid URL: ${url}` };
+    return { error: `${source2 ?? flagName} is not a valid URL: ${url}` };
   }
   const local = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
   if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
     return {
-      error: `${source ?? flagName} must be https:// (plain http is allowed only for 127.0.0.1 / localhost).`
+      error: `${source2 ?? flagName} must be https:// (plain http is allowed only for 127.0.0.1 / localhost).`
     };
   }
   return { url, builtIn: url === DEFAULT_HOOD_RPC_URL };
@@ -22884,9 +23115,9 @@ import { dirname as dirname4, join as join3 } from "node:path";
 function candleConfigDir(env, home) {
   const configured = env.CANDLE_CONFIG_DIR?.trim();
   if (configured) {
-    const refusal2 = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured);
-    if (refusal2 !== undefined)
-      throw new UsageError(refusal2);
+    const refusal3 = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured);
+    if (refusal3 !== undefined)
+      throw new UsageError(refusal3);
     return configured;
   }
   return join3(home, ".config", "candle");
@@ -23968,23 +24199,23 @@ var init_key_signers = __esm(() => {
 });
 
 // src/solana-endpoint.ts
-function validateSolanaRpcUrl(url, source) {
+function validateSolanaRpcUrl(url, source2) {
   let parsed;
   try {
     parsed = new URL(url);
   } catch {
-    return `${source} is not a valid URL`;
+    return `${source2} is not a valid URL`;
   }
   const local = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
   if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
-    return `${source} must be https:// (plain http is allowed only for 127.0.0.1 / localhost).`;
+    return `${source2} must be https:// (plain http is allowed only for 127.0.0.1 / localhost).`;
   }
   return;
 }
-function sourceLabel(source, ctx) {
-  if (source === "flag")
+function sourceLabel(source2, ctx) {
+  if (source2 === "flag")
     return "--rpc-url";
-  if (source === "env")
+  if (source2 === "env")
     return RPC_URL_ENV;
   return `profile ${ctx.profile}'s rpcUrl`;
 }
@@ -24004,13 +24235,13 @@ function resolveSolanaEndpoint(ctx, flag, config) {
     ["env", ctx.deps.env[RPC_URL_ENV]?.trim() || undefined],
     ["profile", profileUrl]
   ];
-  for (const [source, url] of candidates) {
+  for (const [source2, url] of candidates) {
     if (url === undefined)
       continue;
-    const fault = validateSolanaRpcUrl(url, sourceLabel(source, ctx));
+    const fault = validateSolanaRpcUrl(url, sourceLabel(source2, ctx));
     if (fault !== undefined)
       return { error: fault };
-    return { url, host: new URL(url).host, source };
+    return { url, host: new URL(url).host, source: source2 };
   }
   return { url: PUBLIC_SOLANA_RPC, host: PUBLIC_SOLANA_RPC_HOST, source: "default" };
 }
@@ -26531,16 +26762,16 @@ function tradeSignatures(result2) {
   const job = nested("job");
   const sources = [result2, payload, job];
   const operation = job.operation && typeof job.operation === "object" ? job.operation : {};
-  const legs = [...sources.map((source) => source.landedLegs), operation.legs].flatMap((value) => Array.isArray(value) ? value.filter((leg) => leg !== null && typeof leg === "object") : []);
-  const primary = sources.map((source) => source.signature).find(isText) ?? legs.find((leg) => (leg.kind === "trade" || leg.kind === "bridgeDeposit") && isText(leg.hash))?.hash;
+  const legs = [...sources.map((source2) => source2.landedLegs), operation.legs].flatMap((value) => Array.isArray(value) ? value.filter((leg) => leg !== null && typeof leg === "object") : []);
+  const primary = sources.map((source2) => source2.signature).find(isText) ?? legs.find((leg) => (leg.kind === "trade" || leg.kind === "bridgeDeposit") && isText(leg.hash))?.hash;
   return [
     ...new Set([
       ...isText(primary) ? [primary] : [],
-      ...sources.flatMap((source) => [
-        ...isText(source.signature) ? [source.signature] : [],
-        ...textsOf(source.signatures),
-        ...textsOf(source.hashes),
-        ...isText(source.feeSignature) ? [source.feeSignature] : []
+      ...sources.flatMap((source2) => [
+        ...isText(source2.signature) ? [source2.signature] : [],
+        ...textsOf(source2.signatures),
+        ...textsOf(source2.hashes),
+        ...isText(source2.feeSignature) ? [source2.feeSignature] : []
       ]),
       ...legs.map((leg) => leg.hash).filter(isText)
     ])
@@ -28432,7 +28663,7 @@ async function readKeyLabel(ctx, keyPrefix) {
 }
 function renderControlledBy(controlledBy, n) {
   const subject = n === 1 ? "This key" : `These ${n} keys`;
-  const source = controlledBy.keySource === "file" ? "CANDLE_API_KEY_FILE" : controlledBy.keySource === "env" ? "CANDLE_API_KEY" : controlledBy.keySource === "profile" ? `profile ${controlledBy.profileName ?? ""}`.trimEnd() : "default credentials";
+  const source2 = controlledBy.keySource === "file" ? "CANDLE_API_KEY_FILE" : controlledBy.keySource === "env" ? "CANDLE_API_KEY" : controlledBy.keySource === "profile" ? `profile ${controlledBy.profileName ?? ""}`.trimEnd() : "default credentials";
   const cleaned = controlledBy.keyLabel !== null ? labelCell(controlledBy.keyLabel) : "";
   const label = cleaned.length > 0 ? `(${cleaned})  ` : "";
   const environment = controlledBy.environment ?? "not a Candle host";
@@ -28442,7 +28673,7 @@ function renderControlledBy(controlledBy, n) {
     return [
       `${subject} will be controlled by:`,
       `  Candle account  ${controlledBy.username ?? "(no username)"}  (${shortAddress2(controlledBy.account)})`,
-      `  API key         ${controlledBy.keyPrefix}…  ${label}${source}`,
+      `  API key         ${controlledBy.keyPrefix}…  ${label}${source2}`,
       `  API             ${controlledBy.apiUrl}  (${environment}${from})`
     ].join(`
 `);
@@ -28452,7 +28683,7 @@ function renderControlledBy(controlledBy, n) {
     `${subject} will be controlled by:`,
     `  Candle account  ${controlledBy.username ?? "(no username)"}  (${shortAddress2(controlledBy.account)})`,
     toKey.signer !== undefined ? `  API key         ${toKey.keyPrefix}…  ${toLabel}--to-key, owned by its signer ${toKey.signer} from the import` : `  API key         ${toKey.keyPrefix}…  ${toLabel}--to-key, bound by a rebind after the import`,
-    `  imported under  ${controlledBy.keyPrefix}…  ${label}${source}`,
+    `  imported under  ${controlledBy.keyPrefix}…  ${label}${source2}`,
     `  API             ${controlledBy.apiUrl}  (${environment}${from})`,
     ...toKey.warnings
   ].join(`
@@ -46527,7 +46758,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       try {
         const tokenProgram = decodePubkey(acct.programId);
         const mint = decodePubkey(acct.mint);
-        const source = decodePubkey(acct.pubkey);
+        const source2 = decodePubkey(acct.pubkey);
         const destination = associatedTokenAddress(vaultKey, mint, tokenProgram);
         const instructions = [];
         const amount = BigInt(acct.amountRaw);
@@ -46540,7 +46771,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             profile = await readMintProfile(rpc, acct.mint);
             const hook = await resolveTransferHookAccounts(rpc, {
               profile,
-              source,
+              source: source2,
               destination,
               owner: teePubkey,
               amount
@@ -46579,7 +46810,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             destinationFrozen = existing.data[TOKEN_ACCOUNT_STATE_OFFSET] === TOKEN_ACCOUNT_STATE_FROZEN;
           }
           instructions.push(tokenTransferChecked({
-            source,
+            source: source2,
             mint,
             destination,
             owner: teePubkey,
@@ -46589,7 +46820,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             extraAccounts
           }));
         }
-        instructions.push(tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey, tokenProgram }));
+        instructions.push(tokenCloseAccount({ account: source2, destination: teePubkey, owner: teePubkey, tokenProgram }));
         const pending = {
           kind: amount > 0n ? "token" : "close",
           mint: acct.mint,
@@ -53570,12 +53801,12 @@ var require_ref = __commonJS((exports) => {
     function callSyncRef() {
       cxt.result((0, code_1.callValidateCode)(cxt, v, passCxt), () => addEvaluatedFrom(v), () => addErrorsFrom(v));
     }
-    function addErrorsFrom(source) {
-      const errs = (0, codegen_1._)`${source}.errors`;
+    function addErrorsFrom(source2) {
+      const errs = (0, codegen_1._)`${source2}.errors`;
       gen2.assign(names_1.default.vErrors, (0, codegen_1._)`${names_1.default.vErrors} === null ? ${errs} : ${names_1.default.vErrors}.concat(${errs})`);
       gen2.assign(names_1.default.errors, (0, codegen_1._)`${names_1.default.vErrors}.length`);
     }
-    function addEvaluatedFrom(source) {
+    function addEvaluatedFrom(source2) {
       var _a;
       if (!it.opts.unevaluated)
         return;
@@ -53586,7 +53817,7 @@ var require_ref = __commonJS((exports) => {
             it.props = util_1.mergeEvaluated.props(gen2, schEvaluated.props, it.props);
           }
         } else {
-          const props = gen2.var("props", (0, codegen_1._)`${source}.evaluated.props`);
+          const props = gen2.var("props", (0, codegen_1._)`${source2}.evaluated.props`);
           it.props = util_1.mergeEvaluated.props(gen2, props, it.props, codegen_1.Name);
         }
       }
@@ -53596,7 +53827,7 @@ var require_ref = __commonJS((exports) => {
             it.items = util_1.mergeEvaluated.items(gen2, schEvaluated.items, it.items);
           }
         } else {
-          const items = gen2.var("items", (0, codegen_1._)`${source}.evaluated.items`);
+          const items = gen2.var("items", (0, codegen_1._)`${source2}.evaluated.items`);
           it.items = util_1.mergeEvaluated.items(gen2, items, it.items, codegen_1.Name);
         }
       }
@@ -56391,13 +56622,13 @@ function parseStringDef(def, refs) {
 function escapeLiteralCheckValue(literal, refs) {
   return refs.patternStrategy === "escape" ? escapeNonAlphaNumeric(literal) : literal;
 }
-function escapeNonAlphaNumeric(source) {
+function escapeNonAlphaNumeric(source2) {
   let result2 = "";
-  for (let i = 0;i < source.length; i++) {
-    if (!ALPHA_NUMERIC.has(source[i])) {
+  for (let i = 0;i < source2.length; i++) {
+    if (!ALPHA_NUMERIC.has(source2[i])) {
       result2 += "\\";
     }
-    result2 += source[i];
+    result2 += source2[i];
   }
   return result2;
 }
@@ -56466,60 +56697,60 @@ function stringifyRegExpWithFlags(regex, refs) {
     m: regex.flags.includes("m"),
     s: regex.flags.includes("s")
   };
-  const source = flags.i ? regex.source.toLowerCase() : regex.source;
+  const source2 = flags.i ? regex.source.toLowerCase() : regex.source;
   let pattern = "";
   let isEscaped = false;
   let inCharGroup = false;
   let inCharRange = false;
-  for (let i = 0;i < source.length; i++) {
+  for (let i = 0;i < source2.length; i++) {
     if (isEscaped) {
-      pattern += source[i];
+      pattern += source2[i];
       isEscaped = false;
       continue;
     }
     if (flags.i) {
       if (inCharGroup) {
-        if (source[i].match(/[a-z]/)) {
+        if (source2[i].match(/[a-z]/)) {
           if (inCharRange) {
-            pattern += source[i];
-            pattern += `${source[i - 2]}-${source[i]}`.toUpperCase();
+            pattern += source2[i];
+            pattern += `${source2[i - 2]}-${source2[i]}`.toUpperCase();
             inCharRange = false;
-          } else if (source[i + 1] === "-" && source[i + 2]?.match(/[a-z]/)) {
-            pattern += source[i];
+          } else if (source2[i + 1] === "-" && source2[i + 2]?.match(/[a-z]/)) {
+            pattern += source2[i];
             inCharRange = true;
           } else {
-            pattern += `${source[i]}${source[i].toUpperCase()}`;
+            pattern += `${source2[i]}${source2[i].toUpperCase()}`;
           }
           continue;
         }
-      } else if (source[i].match(/[a-z]/)) {
-        pattern += `[${source[i]}${source[i].toUpperCase()}]`;
+      } else if (source2[i].match(/[a-z]/)) {
+        pattern += `[${source2[i]}${source2[i].toUpperCase()}]`;
         continue;
       }
     }
     if (flags.m) {
-      if (source[i] === "^") {
+      if (source2[i] === "^") {
         pattern += `(^|(?<=[\r
 ]))`;
         continue;
-      } else if (source[i] === "$") {
+      } else if (source2[i] === "$") {
         pattern += `($|(?=[\r
 ]))`;
         continue;
       }
     }
-    if (flags.s && source[i] === ".") {
-      pattern += inCharGroup ? `${source[i]}\r
-` : `[${source[i]}\r
+    if (flags.s && source2[i] === ".") {
+      pattern += inCharGroup ? `${source2[i]}\r
+` : `[${source2[i]}\r
 ]`;
       continue;
     }
-    pattern += source[i];
-    if (source[i] === "\\") {
+    pattern += source2[i];
+    if (source2[i] === "\\") {
       isEscaped = true;
-    } else if (inCharGroup && source[i] === "]") {
+    } else if (inCharGroup && source2[i] === "]") {
       inCharGroup = false;
-    } else if (!inCharGroup && source[i] === "[") {
+    } else if (!inCharGroup && source2[i] === "[") {
       inCharGroup = true;
     }
   }
@@ -58362,11 +58593,11 @@ var require_envelope = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Signature = exports.Envelope = undefined;
   exports.Envelope = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        payload: isSet(object5.payload) ? Buffer.from(bytesFromBase64(object5.payload)) : Buffer.alloc(0),
-        payloadType: isSet(object5.payloadType) ? globalThis.String(object5.payloadType) : "",
-        signatures: globalThis.Array.isArray(object5?.signatures) ? object5.signatures.map((e) => exports.Signature.fromJSON(e)) : []
+        payload: isSet(object6.payload) ? Buffer.from(bytesFromBase64(object6.payload)) : Buffer.alloc(0),
+        payloadType: isSet(object6.payloadType) ? globalThis.String(object6.payloadType) : "",
+        signatures: globalThis.Array.isArray(object6?.signatures) ? object6.signatures.map((e) => exports.Signature.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -58384,10 +58615,10 @@ var require_envelope = __commonJS((exports) => {
     }
   };
   exports.Signature = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        sig: isSet(object5.sig) ? Buffer.from(bytesFromBase64(object5.sig)) : Buffer.alloc(0),
-        keyid: isSet(object5.keyid) ? globalThis.String(object5.keyid) : ""
+        sig: isSet(object6.sig) ? Buffer.from(bytesFromBase64(object6.sig)) : Buffer.alloc(0),
+        keyid: isSet(object6.keyid) ? globalThis.String(object6.keyid) : ""
       };
     },
     toJSON(message) {
@@ -58417,10 +58648,10 @@ var require_timestamp = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Timestamp = undefined;
   exports.Timestamp = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        seconds: isSet(object5.seconds) ? globalThis.String(object5.seconds) : "0",
-        nanos: isSet(object5.nanos) ? globalThis.Number(object5.nanos) : 0
+        seconds: isSet(object6.seconds) ? globalThis.String(object6.seconds) : "0",
+        nanos: isSet(object6.nanos) ? globalThis.Number(object6.nanos) : 0
       };
     },
     toJSON(message) {
@@ -58459,8 +58690,8 @@ var require_sigstore_common = __commonJS((exports) => {
     HashAlgorithm2[HashAlgorithm2["SHA3_256"] = 4] = "SHA3_256";
     HashAlgorithm2[HashAlgorithm2["SHA3_384"] = 5] = "SHA3_384";
   })(HashAlgorithm || (exports.HashAlgorithm = HashAlgorithm = {}));
-  function hashAlgorithmFromJSON(object5) {
-    switch (object5) {
+  function hashAlgorithmFromJSON(object6) {
+    switch (object6) {
       case 0:
       case "HASH_ALGORITHM_UNSPECIFIED":
         return HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED;
@@ -58480,11 +58711,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "SHA3_384":
         return HashAlgorithm.SHA3_384;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum HashAlgorithm");
+        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum HashAlgorithm");
     }
   }
-  function hashAlgorithmToJSON(object5) {
-    switch (object5) {
+  function hashAlgorithmToJSON(object6) {
+    switch (object6) {
       case HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED:
         return "HASH_ALGORITHM_UNSPECIFIED";
       case HashAlgorithm.SHA2_256:
@@ -58498,7 +58729,7 @@ var require_sigstore_common = __commonJS((exports) => {
       case HashAlgorithm.SHA3_384:
         return "SHA3_384";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum HashAlgorithm");
+        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum HashAlgorithm");
     }
   }
   var PublicKeyDetails;
@@ -58528,8 +58759,8 @@ var require_sigstore_common = __commonJS((exports) => {
     PublicKeyDetails2[PublicKeyDetails2["ML_DSA_65"] = 21] = "ML_DSA_65";
     PublicKeyDetails2[PublicKeyDetails2["ML_DSA_87"] = 22] = "ML_DSA_87";
   })(PublicKeyDetails || (exports.PublicKeyDetails = PublicKeyDetails = {}));
-  function publicKeyDetailsFromJSON(object5) {
-    switch (object5) {
+  function publicKeyDetailsFromJSON(object6) {
+    switch (object6) {
       case 0:
       case "PUBLIC_KEY_DETAILS_UNSPECIFIED":
         return PublicKeyDetails.PUBLIC_KEY_DETAILS_UNSPECIFIED;
@@ -58603,11 +58834,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "ML_DSA_87":
         return PublicKeyDetails.ML_DSA_87;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum PublicKeyDetails");
+        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum PublicKeyDetails");
     }
   }
-  function publicKeyDetailsToJSON(object5) {
-    switch (object5) {
+  function publicKeyDetailsToJSON(object6) {
+    switch (object6) {
       case PublicKeyDetails.PUBLIC_KEY_DETAILS_UNSPECIFIED:
         return "PUBLIC_KEY_DETAILS_UNSPECIFIED";
       case PublicKeyDetails.PKCS1_RSA_PKCS1V5:
@@ -58657,7 +58888,7 @@ var require_sigstore_common = __commonJS((exports) => {
       case PublicKeyDetails.ML_DSA_87:
         return "ML_DSA_87";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum PublicKeyDetails");
+        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum PublicKeyDetails");
     }
   }
   var SubjectAlternativeNameType;
@@ -58667,8 +58898,8 @@ var require_sigstore_common = __commonJS((exports) => {
     SubjectAlternativeNameType2[SubjectAlternativeNameType2["URI"] = 2] = "URI";
     SubjectAlternativeNameType2[SubjectAlternativeNameType2["OTHER_NAME"] = 3] = "OTHER_NAME";
   })(SubjectAlternativeNameType || (exports.SubjectAlternativeNameType = SubjectAlternativeNameType = {}));
-  function subjectAlternativeNameTypeFromJSON(object5) {
-    switch (object5) {
+  function subjectAlternativeNameTypeFromJSON(object6) {
+    switch (object6) {
       case 0:
       case "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED":
         return SubjectAlternativeNameType.SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED;
@@ -58682,11 +58913,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "OTHER_NAME":
         return SubjectAlternativeNameType.OTHER_NAME;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum SubjectAlternativeNameType");
+        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum SubjectAlternativeNameType");
     }
   }
-  function subjectAlternativeNameTypeToJSON(object5) {
-    switch (object5) {
+  function subjectAlternativeNameTypeToJSON(object6) {
+    switch (object6) {
       case SubjectAlternativeNameType.SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED:
         return "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED";
       case SubjectAlternativeNameType.EMAIL:
@@ -58696,14 +58927,14 @@ var require_sigstore_common = __commonJS((exports) => {
       case SubjectAlternativeNameType.OTHER_NAME:
         return "OTHER_NAME";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum SubjectAlternativeNameType");
+        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum SubjectAlternativeNameType");
     }
   }
   exports.HashOutput = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        algorithm: isSet(object5.algorithm) ? hashAlgorithmFromJSON(object5.algorithm) : 0,
-        digest: isSet(object5.digest) ? Buffer.from(bytesFromBase64(object5.digest)) : Buffer.alloc(0)
+        algorithm: isSet(object6.algorithm) ? hashAlgorithmFromJSON(object6.algorithm) : 0,
+        digest: isSet(object6.digest) ? Buffer.from(bytesFromBase64(object6.digest)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -58718,10 +58949,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.MessageSignature = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        messageDigest: isSet(object5.messageDigest) ? exports.HashOutput.fromJSON(object5.messageDigest) : undefined,
-        signature: isSet(object5.signature) ? Buffer.from(bytesFromBase64(object5.signature)) : Buffer.alloc(0)
+        messageDigest: isSet(object6.messageDigest) ? exports.HashOutput.fromJSON(object6.messageDigest) : undefined,
+        signature: isSet(object6.signature) ? Buffer.from(bytesFromBase64(object6.signature)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -58736,8 +58967,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.LogId = {
-    fromJSON(object5) {
-      return { keyId: isSet(object5.keyId) ? Buffer.from(bytesFromBase64(object5.keyId)) : Buffer.alloc(0) };
+    fromJSON(object6) {
+      return { keyId: isSet(object6.keyId) ? Buffer.from(bytesFromBase64(object6.keyId)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -58748,9 +58979,9 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.RFC3161SignedTimestamp = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        signedTimestamp: isSet(object5.signedTimestamp) ? Buffer.from(bytesFromBase64(object5.signedTimestamp)) : Buffer.alloc(0)
+        signedTimestamp: isSet(object6.signedTimestamp) ? Buffer.from(bytesFromBase64(object6.signedTimestamp)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -58762,11 +58993,11 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.PublicKey = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        rawBytes: isSet(object5.rawBytes) ? Buffer.from(bytesFromBase64(object5.rawBytes)) : undefined,
-        keyDetails: isSet(object5.keyDetails) ? publicKeyDetailsFromJSON(object5.keyDetails) : 0,
-        validFor: isSet(object5.validFor) ? exports.TimeRange.fromJSON(object5.validFor) : undefined
+        rawBytes: isSet(object6.rawBytes) ? Buffer.from(bytesFromBase64(object6.rawBytes)) : undefined,
+        keyDetails: isSet(object6.keyDetails) ? publicKeyDetailsFromJSON(object6.keyDetails) : 0,
+        validFor: isSet(object6.validFor) ? exports.TimeRange.fromJSON(object6.validFor) : undefined
       };
     },
     toJSON(message) {
@@ -58784,8 +59015,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.PublicKeyIdentifier = {
-    fromJSON(object5) {
-      return { hint: isSet(object5.hint) ? globalThis.String(object5.hint) : "" };
+    fromJSON(object6) {
+      return { hint: isSet(object6.hint) ? globalThis.String(object6.hint) : "" };
     },
     toJSON(message) {
       const obj = {};
@@ -58796,8 +59027,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.ObjectIdentifier = {
-    fromJSON(object5) {
-      return { id: globalThis.Array.isArray(object5?.id) ? object5.id.map((e) => globalThis.Number(e)) : [] };
+    fromJSON(object6) {
+      return { id: globalThis.Array.isArray(object6?.id) ? object6.id.map((e) => globalThis.Number(e)) : [] };
     },
     toJSON(message) {
       const obj = {};
@@ -58808,10 +59039,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.ObjectIdentifierValuePair = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        oid: isSet(object5.oid) ? exports.ObjectIdentifier.fromJSON(object5.oid) : undefined,
-        value: isSet(object5.value) ? Buffer.from(bytesFromBase64(object5.value)) : Buffer.alloc(0)
+        oid: isSet(object6.oid) ? exports.ObjectIdentifier.fromJSON(object6.oid) : undefined,
+        value: isSet(object6.value) ? Buffer.from(bytesFromBase64(object6.value)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -58826,10 +59057,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.DistinguishedName = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        organization: isSet(object5.organization) ? globalThis.String(object5.organization) : "",
-        commonName: isSet(object5.commonName) ? globalThis.String(object5.commonName) : ""
+        organization: isSet(object6.organization) ? globalThis.String(object6.organization) : "",
+        commonName: isSet(object6.commonName) ? globalThis.String(object6.commonName) : ""
       };
     },
     toJSON(message) {
@@ -58844,8 +59075,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.X509Certificate = {
-    fromJSON(object5) {
-      return { rawBytes: isSet(object5.rawBytes) ? Buffer.from(bytesFromBase64(object5.rawBytes)) : Buffer.alloc(0) };
+    fromJSON(object6) {
+      return { rawBytes: isSet(object6.rawBytes) ? Buffer.from(bytesFromBase64(object6.rawBytes)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -58856,10 +59087,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.SubjectAlternativeName = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        type: isSet(object5.type) ? subjectAlternativeNameTypeFromJSON(object5.type) : 0,
-        identity: isSet(object5.regexp) ? { $case: "regexp", regexp: globalThis.String(object5.regexp) } : isSet(object5.value) ? { $case: "value", value: globalThis.String(object5.value) } : undefined
+        type: isSet(object6.type) ? subjectAlternativeNameTypeFromJSON(object6.type) : 0,
+        identity: isSet(object6.regexp) ? { $case: "regexp", regexp: globalThis.String(object6.regexp) } : isSet(object6.value) ? { $case: "value", value: globalThis.String(object6.value) } : undefined
       };
     },
     toJSON(message) {
@@ -58876,9 +59107,9 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.X509CertificateChain = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        certificates: globalThis.Array.isArray(object5?.certificates) ? object5.certificates.map((e) => exports.X509Certificate.fromJSON(e)) : []
+        certificates: globalThis.Array.isArray(object6?.certificates) ? object6.certificates.map((e) => exports.X509Certificate.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -58890,10 +59121,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.TimeRange = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        start: isSet(object5.start) ? fromJsonTimestamp(object5.start) : undefined,
-        end: isSet(object5.end) ? fromJsonTimestamp(object5.end) : undefined
+        start: isSet(object6.start) ? fromJsonTimestamp(object6.start) : undefined,
+        end: isSet(object6.end) ? fromJsonTimestamp(object6.end) : undefined
       };
     },
     toJSON(message) {
@@ -58938,10 +59169,10 @@ var require_sigstore_rekor = __commonJS((exports) => {
   exports.TransparencyLogEntry = exports.InclusionPromise = exports.InclusionProof = exports.Checkpoint = exports.KindVersion = undefined;
   var sigstore_common_1 = require_sigstore_common();
   exports.KindVersion = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        kind: isSet(object5.kind) ? globalThis.String(object5.kind) : "",
-        version: isSet(object5.version) ? globalThis.String(object5.version) : ""
+        kind: isSet(object6.kind) ? globalThis.String(object6.kind) : "",
+        version: isSet(object6.version) ? globalThis.String(object6.version) : ""
       };
     },
     toJSON(message) {
@@ -58956,8 +59187,8 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.Checkpoint = {
-    fromJSON(object5) {
-      return { envelope: isSet(object5.envelope) ? globalThis.String(object5.envelope) : "" };
+    fromJSON(object6) {
+      return { envelope: isSet(object6.envelope) ? globalThis.String(object6.envelope) : "" };
     },
     toJSON(message) {
       const obj = {};
@@ -58968,13 +59199,13 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.InclusionProof = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        logIndex: isSet(object5.logIndex) ? globalThis.String(object5.logIndex) : "0",
-        rootHash: isSet(object5.rootHash) ? Buffer.from(bytesFromBase64(object5.rootHash)) : Buffer.alloc(0),
-        treeSize: isSet(object5.treeSize) ? globalThis.String(object5.treeSize) : "0",
-        hashes: globalThis.Array.isArray(object5?.hashes) ? object5.hashes.map((e) => Buffer.from(bytesFromBase64(e))) : [],
-        checkpoint: isSet(object5.checkpoint) ? exports.Checkpoint.fromJSON(object5.checkpoint) : undefined
+        logIndex: isSet(object6.logIndex) ? globalThis.String(object6.logIndex) : "0",
+        rootHash: isSet(object6.rootHash) ? Buffer.from(bytesFromBase64(object6.rootHash)) : Buffer.alloc(0),
+        treeSize: isSet(object6.treeSize) ? globalThis.String(object6.treeSize) : "0",
+        hashes: globalThis.Array.isArray(object6?.hashes) ? object6.hashes.map((e) => Buffer.from(bytesFromBase64(e))) : [],
+        checkpoint: isSet(object6.checkpoint) ? exports.Checkpoint.fromJSON(object6.checkpoint) : undefined
       };
     },
     toJSON(message) {
@@ -58998,9 +59229,9 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.InclusionPromise = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        signedEntryTimestamp: isSet(object5.signedEntryTimestamp) ? Buffer.from(bytesFromBase64(object5.signedEntryTimestamp)) : Buffer.alloc(0)
+        signedEntryTimestamp: isSet(object6.signedEntryTimestamp) ? Buffer.from(bytesFromBase64(object6.signedEntryTimestamp)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -59012,15 +59243,15 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.TransparencyLogEntry = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        logIndex: isSet(object5.logIndex) ? globalThis.String(object5.logIndex) : "0",
-        logId: isSet(object5.logId) ? sigstore_common_1.LogId.fromJSON(object5.logId) : undefined,
-        kindVersion: isSet(object5.kindVersion) ? exports.KindVersion.fromJSON(object5.kindVersion) : undefined,
-        integratedTime: isSet(object5.integratedTime) ? globalThis.String(object5.integratedTime) : "0",
-        inclusionPromise: isSet(object5.inclusionPromise) ? exports.InclusionPromise.fromJSON(object5.inclusionPromise) : undefined,
-        inclusionProof: isSet(object5.inclusionProof) ? exports.InclusionProof.fromJSON(object5.inclusionProof) : undefined,
-        canonicalizedBody: isSet(object5.canonicalizedBody) ? Buffer.from(bytesFromBase64(object5.canonicalizedBody)) : Buffer.alloc(0)
+        logIndex: isSet(object6.logIndex) ? globalThis.String(object6.logIndex) : "0",
+        logId: isSet(object6.logId) ? sigstore_common_1.LogId.fromJSON(object6.logId) : undefined,
+        kindVersion: isSet(object6.kindVersion) ? exports.KindVersion.fromJSON(object6.kindVersion) : undefined,
+        integratedTime: isSet(object6.integratedTime) ? globalThis.String(object6.integratedTime) : "0",
+        inclusionPromise: isSet(object6.inclusionPromise) ? exports.InclusionPromise.fromJSON(object6.inclusionPromise) : undefined,
+        inclusionProof: isSet(object6.inclusionProof) ? exports.InclusionProof.fromJSON(object6.inclusionProof) : undefined,
+        canonicalizedBody: isSet(object6.canonicalizedBody) ? Buffer.from(bytesFromBase64(object6.canonicalizedBody)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -59068,9 +59299,9 @@ var require_sigstore_bundle = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var sigstore_rekor_1 = require_sigstore_rekor();
   exports.TimestampVerificationData = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        rfc3161Timestamps: globalThis.Array.isArray(object5?.rfc3161Timestamps) ? object5.rfc3161Timestamps.map((e) => sigstore_common_1.RFC3161SignedTimestamp.fromJSON(e)) : []
+        rfc3161Timestamps: globalThis.Array.isArray(object6?.rfc3161Timestamps) ? object6.rfc3161Timestamps.map((e) => sigstore_common_1.RFC3161SignedTimestamp.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -59082,14 +59313,14 @@ var require_sigstore_bundle = __commonJS((exports) => {
     }
   };
   exports.VerificationMaterial = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        content: isSet(object5.publicKey) ? { $case: "publicKey", publicKey: sigstore_common_1.PublicKeyIdentifier.fromJSON(object5.publicKey) } : isSet(object5.x509CertificateChain) ? {
+        content: isSet(object6.publicKey) ? { $case: "publicKey", publicKey: sigstore_common_1.PublicKeyIdentifier.fromJSON(object6.publicKey) } : isSet(object6.x509CertificateChain) ? {
           $case: "x509CertificateChain",
-          x509CertificateChain: sigstore_common_1.X509CertificateChain.fromJSON(object5.x509CertificateChain)
-        } : isSet(object5.certificate) ? { $case: "certificate", certificate: sigstore_common_1.X509Certificate.fromJSON(object5.certificate) } : undefined,
-        tlogEntries: globalThis.Array.isArray(object5?.tlogEntries) ? object5.tlogEntries.map((e) => sigstore_rekor_1.TransparencyLogEntry.fromJSON(e)) : [],
-        timestampVerificationData: isSet(object5.timestampVerificationData) ? exports.TimestampVerificationData.fromJSON(object5.timestampVerificationData) : undefined
+          x509CertificateChain: sigstore_common_1.X509CertificateChain.fromJSON(object6.x509CertificateChain)
+        } : isSet(object6.certificate) ? { $case: "certificate", certificate: sigstore_common_1.X509Certificate.fromJSON(object6.certificate) } : undefined,
+        tlogEntries: globalThis.Array.isArray(object6?.tlogEntries) ? object6.tlogEntries.map((e) => sigstore_rekor_1.TransparencyLogEntry.fromJSON(e)) : [],
+        timestampVerificationData: isSet(object6.timestampVerificationData) ? exports.TimestampVerificationData.fromJSON(object6.timestampVerificationData) : undefined
       };
     },
     toJSON(message) {
@@ -59111,11 +59342,11 @@ var require_sigstore_bundle = __commonJS((exports) => {
     }
   };
   exports.Bundle = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        mediaType: isSet(object5.mediaType) ? globalThis.String(object5.mediaType) : "",
-        verificationMaterial: isSet(object5.verificationMaterial) ? exports.VerificationMaterial.fromJSON(object5.verificationMaterial) : undefined,
-        content: isSet(object5.messageSignature) ? { $case: "messageSignature", messageSignature: sigstore_common_1.MessageSignature.fromJSON(object5.messageSignature) } : isSet(object5.dsseEnvelope) ? { $case: "dsseEnvelope", dsseEnvelope: envelope_1.Envelope.fromJSON(object5.dsseEnvelope) } : undefined
+        mediaType: isSet(object6.mediaType) ? globalThis.String(object6.mediaType) : "",
+        verificationMaterial: isSet(object6.verificationMaterial) ? exports.VerificationMaterial.fromJSON(object6.verificationMaterial) : undefined,
+        content: isSet(object6.messageSignature) ? { $case: "messageSignature", messageSignature: sigstore_common_1.MessageSignature.fromJSON(object6.messageSignature) } : isSet(object6.dsseEnvelope) ? { $case: "dsseEnvelope", dsseEnvelope: envelope_1.Envelope.fromJSON(object6.dsseEnvelope) } : undefined
       };
     },
     toJSON(message) {
@@ -59153,8 +59384,8 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     ServiceSelector2[ServiceSelector2["ANY"] = 2] = "ANY";
     ServiceSelector2[ServiceSelector2["EXACT"] = 3] = "EXACT";
   })(ServiceSelector || (exports.ServiceSelector = ServiceSelector = {}));
-  function serviceSelectorFromJSON(object5) {
-    switch (object5) {
+  function serviceSelectorFromJSON(object6) {
+    switch (object6) {
       case 0:
       case "SERVICE_SELECTOR_UNDEFINED":
         return ServiceSelector.SERVICE_SELECTOR_UNDEFINED;
@@ -59168,11 +59399,11 @@ var require_sigstore_trustroot = __commonJS((exports) => {
       case "EXACT":
         return ServiceSelector.EXACT;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum ServiceSelector");
+        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum ServiceSelector");
     }
   }
-  function serviceSelectorToJSON(object5) {
-    switch (object5) {
+  function serviceSelectorToJSON(object6) {
+    switch (object6) {
       case ServiceSelector.SERVICE_SELECTOR_UNDEFINED:
         return "SERVICE_SELECTOR_UNDEFINED";
       case ServiceSelector.ALL:
@@ -59182,18 +59413,18 @@ var require_sigstore_trustroot = __commonJS((exports) => {
       case ServiceSelector.EXACT:
         return "EXACT";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object5 + " for enum ServiceSelector");
+        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum ServiceSelector");
     }
   }
   exports.TransparencyLogInstance = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        baseUrl: isSet(object5.baseUrl) ? globalThis.String(object5.baseUrl) : "",
-        hashAlgorithm: isSet(object5.hashAlgorithm) ? (0, sigstore_common_1.hashAlgorithmFromJSON)(object5.hashAlgorithm) : 0,
-        publicKey: isSet(object5.publicKey) ? sigstore_common_1.PublicKey.fromJSON(object5.publicKey) : undefined,
-        logId: isSet(object5.logId) ? sigstore_common_1.LogId.fromJSON(object5.logId) : undefined,
-        checkpointKeyId: isSet(object5.checkpointKeyId) ? sigstore_common_1.LogId.fromJSON(object5.checkpointKeyId) : undefined,
-        operator: isSet(object5.operator) ? globalThis.String(object5.operator) : ""
+        baseUrl: isSet(object6.baseUrl) ? globalThis.String(object6.baseUrl) : "",
+        hashAlgorithm: isSet(object6.hashAlgorithm) ? (0, sigstore_common_1.hashAlgorithmFromJSON)(object6.hashAlgorithm) : 0,
+        publicKey: isSet(object6.publicKey) ? sigstore_common_1.PublicKey.fromJSON(object6.publicKey) : undefined,
+        logId: isSet(object6.logId) ? sigstore_common_1.LogId.fromJSON(object6.logId) : undefined,
+        checkpointKeyId: isSet(object6.checkpointKeyId) ? sigstore_common_1.LogId.fromJSON(object6.checkpointKeyId) : undefined,
+        operator: isSet(object6.operator) ? globalThis.String(object6.operator) : ""
       };
     },
     toJSON(message) {
@@ -59220,13 +59451,13 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.CertificateAuthority = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        subject: isSet(object5.subject) ? sigstore_common_1.DistinguishedName.fromJSON(object5.subject) : undefined,
-        uri: isSet(object5.uri) ? globalThis.String(object5.uri) : "",
-        certChain: isSet(object5.certChain) ? sigstore_common_1.X509CertificateChain.fromJSON(object5.certChain) : undefined,
-        validFor: isSet(object5.validFor) ? sigstore_common_1.TimeRange.fromJSON(object5.validFor) : undefined,
-        operator: isSet(object5.operator) ? globalThis.String(object5.operator) : ""
+        subject: isSet(object6.subject) ? sigstore_common_1.DistinguishedName.fromJSON(object6.subject) : undefined,
+        uri: isSet(object6.uri) ? globalThis.String(object6.uri) : "",
+        certChain: isSet(object6.certChain) ? sigstore_common_1.X509CertificateChain.fromJSON(object6.certChain) : undefined,
+        validFor: isSet(object6.validFor) ? sigstore_common_1.TimeRange.fromJSON(object6.validFor) : undefined,
+        operator: isSet(object6.operator) ? globalThis.String(object6.operator) : ""
       };
     },
     toJSON(message) {
@@ -59250,13 +59481,13 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.TrustedRoot = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        mediaType: isSet(object5.mediaType) ? globalThis.String(object5.mediaType) : "",
-        tlogs: globalThis.Array.isArray(object5?.tlogs) ? object5.tlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
-        certificateAuthorities: globalThis.Array.isArray(object5?.certificateAuthorities) ? object5.certificateAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : [],
-        ctlogs: globalThis.Array.isArray(object5?.ctlogs) ? object5.ctlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
-        timestampAuthorities: globalThis.Array.isArray(object5?.timestampAuthorities) ? object5.timestampAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : []
+        mediaType: isSet(object6.mediaType) ? globalThis.String(object6.mediaType) : "",
+        tlogs: globalThis.Array.isArray(object6?.tlogs) ? object6.tlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
+        certificateAuthorities: globalThis.Array.isArray(object6?.certificateAuthorities) ? object6.certificateAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : [],
+        ctlogs: globalThis.Array.isArray(object6?.ctlogs) ? object6.ctlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
+        timestampAuthorities: globalThis.Array.isArray(object6?.timestampAuthorities) ? object6.timestampAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -59280,15 +59511,15 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.SigningConfig = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        mediaType: isSet(object5.mediaType) ? globalThis.String(object5.mediaType) : "",
-        caUrls: globalThis.Array.isArray(object5?.caUrls) ? object5.caUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        oidcUrls: globalThis.Array.isArray(object5?.oidcUrls) ? object5.oidcUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        rekorTlogUrls: globalThis.Array.isArray(object5?.rekorTlogUrls) ? object5.rekorTlogUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        rekorTlogConfig: isSet(object5.rekorTlogConfig) ? exports.ServiceConfiguration.fromJSON(object5.rekorTlogConfig) : undefined,
-        tsaUrls: globalThis.Array.isArray(object5?.tsaUrls) ? object5.tsaUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        tsaConfig: isSet(object5.tsaConfig) ? exports.ServiceConfiguration.fromJSON(object5.tsaConfig) : undefined
+        mediaType: isSet(object6.mediaType) ? globalThis.String(object6.mediaType) : "",
+        caUrls: globalThis.Array.isArray(object6?.caUrls) ? object6.caUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        oidcUrls: globalThis.Array.isArray(object6?.oidcUrls) ? object6.oidcUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        rekorTlogUrls: globalThis.Array.isArray(object6?.rekorTlogUrls) ? object6.rekorTlogUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        rekorTlogConfig: isSet(object6.rekorTlogConfig) ? exports.ServiceConfiguration.fromJSON(object6.rekorTlogConfig) : undefined,
+        tsaUrls: globalThis.Array.isArray(object6?.tsaUrls) ? object6.tsaUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        tsaConfig: isSet(object6.tsaConfig) ? exports.ServiceConfiguration.fromJSON(object6.tsaConfig) : undefined
       };
     },
     toJSON(message) {
@@ -59318,12 +59549,12 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.Service = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        url: isSet(object5.url) ? globalThis.String(object5.url) : "",
-        majorApiVersion: isSet(object5.majorApiVersion) ? globalThis.Number(object5.majorApiVersion) : 0,
-        validFor: isSet(object5.validFor) ? sigstore_common_1.TimeRange.fromJSON(object5.validFor) : undefined,
-        operator: isSet(object5.operator) ? globalThis.String(object5.operator) : ""
+        url: isSet(object6.url) ? globalThis.String(object6.url) : "",
+        majorApiVersion: isSet(object6.majorApiVersion) ? globalThis.Number(object6.majorApiVersion) : 0,
+        validFor: isSet(object6.validFor) ? sigstore_common_1.TimeRange.fromJSON(object6.validFor) : undefined,
+        operator: isSet(object6.operator) ? globalThis.String(object6.operator) : ""
       };
     },
     toJSON(message) {
@@ -59344,10 +59575,10 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.ServiceConfiguration = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        selector: isSet(object5.selector) ? serviceSelectorFromJSON(object5.selector) : 0,
-        count: isSet(object5.count) ? globalThis.Number(object5.count) : 0
+        selector: isSet(object6.selector) ? serviceSelectorFromJSON(object6.selector) : 0,
+        count: isSet(object6.count) ? globalThis.Number(object6.count) : 0
       };
     },
     toJSON(message) {
@@ -59362,11 +59593,11 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.ClientTrustConfig = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        mediaType: isSet(object5.mediaType) ? globalThis.String(object5.mediaType) : "",
-        trustedRoot: isSet(object5.trustedRoot) ? exports.TrustedRoot.fromJSON(object5.trustedRoot) : undefined,
-        signingConfig: isSet(object5.signingConfig) ? exports.SigningConfig.fromJSON(object5.signingConfig) : undefined
+        mediaType: isSet(object6.mediaType) ? globalThis.String(object6.mediaType) : "",
+        trustedRoot: isSet(object6.trustedRoot) ? exports.TrustedRoot.fromJSON(object6.trustedRoot) : undefined,
+        signingConfig: isSet(object6.signingConfig) ? exports.SigningConfig.fromJSON(object6.signingConfig) : undefined
       };
     },
     toJSON(message) {
@@ -59396,11 +59627,11 @@ var require_sigstore_verification = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var sigstore_trustroot_1 = require_sigstore_trustroot();
   exports.CertificateIdentity = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        issuer: isSet(object5.issuer) ? globalThis.String(object5.issuer) : "",
-        san: isSet(object5.san) ? sigstore_common_1.SubjectAlternativeName.fromJSON(object5.san) : undefined,
-        oids: globalThis.Array.isArray(object5?.oids) ? object5.oids.map((e) => sigstore_common_1.ObjectIdentifierValuePair.fromJSON(e)) : []
+        issuer: isSet(object6.issuer) ? globalThis.String(object6.issuer) : "",
+        san: isSet(object6.san) ? sigstore_common_1.SubjectAlternativeName.fromJSON(object6.san) : undefined,
+        oids: globalThis.Array.isArray(object6?.oids) ? object6.oids.map((e) => sigstore_common_1.ObjectIdentifierValuePair.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -59418,9 +59649,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.CertificateIdentities = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        identities: globalThis.Array.isArray(object5?.identities) ? object5.identities.map((e) => exports.CertificateIdentity.fromJSON(e)) : []
+        identities: globalThis.Array.isArray(object6?.identities) ? object6.identities.map((e) => exports.CertificateIdentity.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -59432,9 +59663,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.PublicKeyIdentities = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        publicKeys: globalThis.Array.isArray(object5?.publicKeys) ? object5.publicKeys.map((e) => sigstore_common_1.PublicKey.fromJSON(e)) : []
+        publicKeys: globalThis.Array.isArray(object6?.publicKeys) ? object6.publicKeys.map((e) => sigstore_common_1.PublicKey.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -59446,17 +59677,17 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        signers: isSet(object5.certificateIdentities) ? {
+        signers: isSet(object6.certificateIdentities) ? {
           $case: "certificateIdentities",
-          certificateIdentities: exports.CertificateIdentities.fromJSON(object5.certificateIdentities)
-        } : isSet(object5.publicKeys) ? { $case: "publicKeys", publicKeys: exports.PublicKeyIdentities.fromJSON(object5.publicKeys) } : undefined,
-        tlogOptions: isSet(object5.tlogOptions) ? exports.ArtifactVerificationOptions_TlogOptions.fromJSON(object5.tlogOptions) : undefined,
-        ctlogOptions: isSet(object5.ctlogOptions) ? exports.ArtifactVerificationOptions_CtlogOptions.fromJSON(object5.ctlogOptions) : undefined,
-        tsaOptions: isSet(object5.tsaOptions) ? exports.ArtifactVerificationOptions_TimestampAuthorityOptions.fromJSON(object5.tsaOptions) : undefined,
-        integratedTsOptions: isSet(object5.integratedTsOptions) ? exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions.fromJSON(object5.integratedTsOptions) : undefined,
-        observerOptions: isSet(object5.observerOptions) ? exports.ArtifactVerificationOptions_ObserverTimestampOptions.fromJSON(object5.observerOptions) : undefined
+          certificateIdentities: exports.CertificateIdentities.fromJSON(object6.certificateIdentities)
+        } : isSet(object6.publicKeys) ? { $case: "publicKeys", publicKeys: exports.PublicKeyIdentities.fromJSON(object6.publicKeys) } : undefined,
+        tlogOptions: isSet(object6.tlogOptions) ? exports.ArtifactVerificationOptions_TlogOptions.fromJSON(object6.tlogOptions) : undefined,
+        ctlogOptions: isSet(object6.ctlogOptions) ? exports.ArtifactVerificationOptions_CtlogOptions.fromJSON(object6.ctlogOptions) : undefined,
+        tsaOptions: isSet(object6.tsaOptions) ? exports.ArtifactVerificationOptions_TimestampAuthorityOptions.fromJSON(object6.tsaOptions) : undefined,
+        integratedTsOptions: isSet(object6.integratedTsOptions) ? exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions.fromJSON(object6.integratedTsOptions) : undefined,
+        observerOptions: isSet(object6.observerOptions) ? exports.ArtifactVerificationOptions_ObserverTimestampOptions.fromJSON(object6.observerOptions) : undefined
       };
     },
     toJSON(message) {
@@ -59485,11 +59716,11 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TlogOptions = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        threshold: isSet(object5.threshold) ? globalThis.Number(object5.threshold) : 0,
-        performOnlineVerification: isSet(object5.performOnlineVerification) ? globalThis.Boolean(object5.performOnlineVerification) : false,
-        disable: isSet(object5.disable) ? globalThis.Boolean(object5.disable) : false
+        threshold: isSet(object6.threshold) ? globalThis.Number(object6.threshold) : 0,
+        performOnlineVerification: isSet(object6.performOnlineVerification) ? globalThis.Boolean(object6.performOnlineVerification) : false,
+        disable: isSet(object6.disable) ? globalThis.Boolean(object6.disable) : false
       };
     },
     toJSON(message) {
@@ -59507,10 +59738,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_CtlogOptions = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        threshold: isSet(object5.threshold) ? globalThis.Number(object5.threshold) : 0,
-        disable: isSet(object5.disable) ? globalThis.Boolean(object5.disable) : false
+        threshold: isSet(object6.threshold) ? globalThis.Number(object6.threshold) : 0,
+        disable: isSet(object6.disable) ? globalThis.Boolean(object6.disable) : false
       };
     },
     toJSON(message) {
@@ -59525,10 +59756,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TimestampAuthorityOptions = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        threshold: isSet(object5.threshold) ? globalThis.Number(object5.threshold) : 0,
-        disable: isSet(object5.disable) ? globalThis.Boolean(object5.disable) : false
+        threshold: isSet(object6.threshold) ? globalThis.Number(object6.threshold) : 0,
+        disable: isSet(object6.disable) ? globalThis.Boolean(object6.disable) : false
       };
     },
     toJSON(message) {
@@ -59543,10 +59774,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        threshold: isSet(object5.threshold) ? globalThis.Number(object5.threshold) : 0,
-        disable: isSet(object5.disable) ? globalThis.Boolean(object5.disable) : false
+        threshold: isSet(object6.threshold) ? globalThis.Number(object6.threshold) : 0,
+        disable: isSet(object6.disable) ? globalThis.Boolean(object6.disable) : false
       };
     },
     toJSON(message) {
@@ -59561,10 +59792,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_ObserverTimestampOptions = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        threshold: isSet(object5.threshold) ? globalThis.Number(object5.threshold) : 0,
-        disable: isSet(object5.disable) ? globalThis.Boolean(object5.disable) : false
+        threshold: isSet(object6.threshold) ? globalThis.Number(object6.threshold) : 0,
+        disable: isSet(object6.disable) ? globalThis.Boolean(object6.disable) : false
       };
     },
     toJSON(message) {
@@ -59579,9 +59810,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.Artifact = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        data: isSet(object5.artifactUri) ? { $case: "artifactUri", artifactUri: globalThis.String(object5.artifactUri) } : isSet(object5.artifact) ? { $case: "artifact", artifact: Buffer.from(bytesFromBase64(object5.artifact)) } : isSet(object5.artifactDigest) ? { $case: "artifactDigest", artifactDigest: sigstore_common_1.HashOutput.fromJSON(object5.artifactDigest) } : undefined
+        data: isSet(object6.artifactUri) ? { $case: "artifactUri", artifactUri: globalThis.String(object6.artifactUri) } : isSet(object6.artifact) ? { $case: "artifact", artifact: Buffer.from(bytesFromBase64(object6.artifact)) } : isSet(object6.artifactDigest) ? { $case: "artifactDigest", artifactDigest: sigstore_common_1.HashOutput.fromJSON(object6.artifactDigest) } : undefined
       };
     },
     toJSON(message) {
@@ -59597,12 +59828,12 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.Input = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        artifactTrustRoot: isSet(object5.artifactTrustRoot) ? sigstore_trustroot_1.TrustedRoot.fromJSON(object5.artifactTrustRoot) : undefined,
-        artifactVerificationOptions: isSet(object5.artifactVerificationOptions) ? exports.ArtifactVerificationOptions.fromJSON(object5.artifactVerificationOptions) : undefined,
-        bundle: isSet(object5.bundle) ? sigstore_bundle_1.Bundle.fromJSON(object5.bundle) : undefined,
-        artifact: isSet(object5.artifact) ? exports.Artifact.fromJSON(object5.artifact) : undefined
+        artifactTrustRoot: isSet(object6.artifactTrustRoot) ? sigstore_trustroot_1.TrustedRoot.fromJSON(object6.artifactTrustRoot) : undefined,
+        artifactVerificationOptions: isSet(object6.artifactVerificationOptions) ? exports.ArtifactVerificationOptions.fromJSON(object6.artifactVerificationOptions) : undefined,
+        bundle: isSet(object6.bundle) ? sigstore_bundle_1.Bundle.fromJSON(object6.bundle) : undefined,
+        artifact: isSet(object6.artifact) ? exports.Artifact.fromJSON(object6.artifact) : undefined
       };
     },
     toJSON(message) {
@@ -60595,14 +60826,14 @@ var require_encoding = __commonJS((exports) => {
 var require_json = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.canonicalize = canonicalize;
-  function canonicalize(object5) {
+  function canonicalize(object6) {
     let buffer = "";
-    if (object5 === null || typeof object5 !== "object" || object5.toJSON != null) {
-      buffer += JSON.stringify(object5);
-    } else if (Array.isArray(object5)) {
+    if (object6 === null || typeof object6 !== "object" || object6.toJSON != null) {
+      buffer += JSON.stringify(object6);
+    } else if (Array.isArray(object6)) {
       buffer += "[";
       let first = true;
-      object5.forEach((element) => {
+      object6.forEach((element) => {
         if (!first) {
           buffer += ",";
         }
@@ -60613,14 +60844,14 @@ var require_json = __commonJS((exports) => {
     } else {
       buffer += "{";
       let first = true;
-      Object.keys(object5).sort().forEach((property) => {
+      Object.keys(object6).sort().forEach((property) => {
         if (!first) {
           buffer += ",";
         }
         first = false;
         buffer += JSON.stringify(property);
         buffer += ":";
-        buffer += canonicalize(object5[property]);
+        buffer += canonicalize(object6[property]);
       });
       buffer += "}";
     }
@@ -62184,8 +62415,8 @@ var require_verifier = __commonJS((exports) => {
   exports.Signature = exports.Verifier = exports.PublicKey = undefined;
   var sigstore_common_1 = require_sigstore_common();
   exports.PublicKey = {
-    fromJSON(object5) {
-      return { rawBytes: isSet(object5.rawBytes) ? Buffer.from(bytesFromBase64(object5.rawBytes)) : Buffer.alloc(0) };
+    fromJSON(object6) {
+      return { rawBytes: isSet(object6.rawBytes) ? Buffer.from(bytesFromBase64(object6.rawBytes)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -62196,10 +62427,10 @@ var require_verifier = __commonJS((exports) => {
     }
   };
   exports.Verifier = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        verifier: isSet(object5.publicKey) ? { $case: "publicKey", publicKey: exports.PublicKey.fromJSON(object5.publicKey) } : isSet(object5.x509Certificate) ? { $case: "x509Certificate", x509Certificate: sigstore_common_1.X509Certificate.fromJSON(object5.x509Certificate) } : undefined,
-        keyDetails: isSet(object5.keyDetails) ? (0, sigstore_common_1.publicKeyDetailsFromJSON)(object5.keyDetails) : 0
+        verifier: isSet(object6.publicKey) ? { $case: "publicKey", publicKey: exports.PublicKey.fromJSON(object6.publicKey) } : isSet(object6.x509Certificate) ? { $case: "x509Certificate", x509Certificate: sigstore_common_1.X509Certificate.fromJSON(object6.x509Certificate) } : undefined,
+        keyDetails: isSet(object6.keyDetails) ? (0, sigstore_common_1.publicKeyDetailsFromJSON)(object6.keyDetails) : 0
       };
     },
     toJSON(message) {
@@ -62216,10 +62447,10 @@ var require_verifier = __commonJS((exports) => {
     }
   };
   exports.Signature = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        content: isSet(object5.content) ? Buffer.from(bytesFromBase64(object5.content)) : Buffer.alloc(0),
-        verifier: isSet(object5.verifier) ? exports.Verifier.fromJSON(object5.verifier) : undefined
+        content: isSet(object6.content) ? Buffer.from(bytesFromBase64(object6.content)) : Buffer.alloc(0),
+        verifier: isSet(object6.verifier) ? exports.Verifier.fromJSON(object6.verifier) : undefined
       };
     },
     toJSON(message) {
@@ -62252,10 +62483,10 @@ var require_dsse3 = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var verifier_1 = require_verifier();
   exports.DSSERequestV002 = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        envelope: isSet(object5.envelope) ? envelope_1.Envelope.fromJSON(object5.envelope) : undefined,
-        verifiers: globalThis.Array.isArray(object5?.verifiers) ? object5.verifiers.map((e) => verifier_1.Verifier.fromJSON(e)) : []
+        envelope: isSet(object6.envelope) ? envelope_1.Envelope.fromJSON(object6.envelope) : undefined,
+        verifiers: globalThis.Array.isArray(object6?.verifiers) ? object6.verifiers.map((e) => verifier_1.Verifier.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -62270,10 +62501,10 @@ var require_dsse3 = __commonJS((exports) => {
     }
   };
   exports.DSSELogEntryV002 = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        payloadHash: isSet(object5.payloadHash) ? sigstore_common_1.HashOutput.fromJSON(object5.payloadHash) : undefined,
-        signatures: globalThis.Array.isArray(object5?.signatures) ? object5.signatures.map((e) => verifier_1.Signature.fromJSON(e)) : []
+        payloadHash: isSet(object6.payloadHash) ? sigstore_common_1.HashOutput.fromJSON(object6.payloadHash) : undefined,
+        signatures: globalThis.Array.isArray(object6?.signatures) ? object6.signatures.map((e) => verifier_1.Signature.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -62299,10 +62530,10 @@ var require_hashedrekord = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var verifier_1 = require_verifier();
   exports.HashedRekordRequestV002 = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        digest: isSet(object5.digest) ? Buffer.from(bytesFromBase64(object5.digest)) : Buffer.alloc(0),
-        signature: isSet(object5.signature) ? verifier_1.Signature.fromJSON(object5.signature) : undefined
+        digest: isSet(object6.digest) ? Buffer.from(bytesFromBase64(object6.digest)) : Buffer.alloc(0),
+        signature: isSet(object6.signature) ? verifier_1.Signature.fromJSON(object6.signature) : undefined
       };
     },
     toJSON(message) {
@@ -62317,10 +62548,10 @@ var require_hashedrekord = __commonJS((exports) => {
     }
   };
   exports.HashedRekordLogEntryV002 = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        data: isSet(object5.data) ? sigstore_common_1.HashOutput.fromJSON(object5.data) : undefined,
-        signature: isSet(object5.signature) ? verifier_1.Signature.fromJSON(object5.signature) : undefined
+        data: isSet(object6.data) ? sigstore_common_1.HashOutput.fromJSON(object6.data) : undefined,
+        signature: isSet(object6.signature) ? verifier_1.Signature.fromJSON(object6.signature) : undefined
       };
     },
     toJSON(message) {
@@ -62352,11 +62583,11 @@ var require_entry = __commonJS((exports) => {
   var dsse_1 = require_dsse3();
   var hashedrekord_1 = require_hashedrekord();
   exports.Entry = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        kind: isSet(object5.kind) ? globalThis.String(object5.kind) : "",
-        apiVersion: isSet(object5.apiVersion) ? globalThis.String(object5.apiVersion) : "",
-        spec: isSet(object5.spec) ? exports.Spec.fromJSON(object5.spec) : undefined
+        kind: isSet(object6.kind) ? globalThis.String(object6.kind) : "",
+        apiVersion: isSet(object6.apiVersion) ? globalThis.String(object6.apiVersion) : "",
+        spec: isSet(object6.spec) ? exports.Spec.fromJSON(object6.spec) : undefined
       };
     },
     toJSON(message) {
@@ -62374,9 +62605,9 @@ var require_entry = __commonJS((exports) => {
     }
   };
   exports.Spec = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        spec: isSet(object5.hashedRekordV002) ? { $case: "hashedRekordV002", hashedRekordV002: hashedrekord_1.HashedRekordLogEntryV002.fromJSON(object5.hashedRekordV002) } : isSet(object5.dsseV002) ? { $case: "dsseV002", dsseV002: dsse_1.DSSELogEntryV002.fromJSON(object5.dsseV002) } : undefined
+        spec: isSet(object6.hashedRekordV002) ? { $case: "hashedRekordV002", hashedRekordV002: hashedrekord_1.HashedRekordLogEntryV002.fromJSON(object6.hashedRekordV002) } : isSet(object6.dsseV002) ? { $case: "dsseV002", dsseV002: dsse_1.DSSELogEntryV002.fromJSON(object6.dsseV002) } : undefined
       };
     },
     toJSON(message) {
@@ -62390,12 +62621,12 @@ var require_entry = __commonJS((exports) => {
     }
   };
   exports.CreateEntryRequest = {
-    fromJSON(object5) {
+    fromJSON(object6) {
       return {
-        spec: isSet(object5.hashedRekordRequestV002) ? {
+        spec: isSet(object6.hashedRekordRequestV002) ? {
           $case: "hashedRekordRequestV002",
-          hashedRekordRequestV002: hashedrekord_1.HashedRekordRequestV002.fromJSON(object5.hashedRekordRequestV002)
-        } : isSet(object5.dsseRequestV002) ? { $case: "dsseRequestV002", dsseRequestV002: dsse_1.DSSERequestV002.fromJSON(object5.dsseRequestV002) } : undefined
+          hashedRekordRequestV002: hashedrekord_1.HashedRekordRequestV002.fromJSON(object6.hashedRekordRequestV002)
+        } : isSet(object6.dsseRequestV002) ? { $case: "dsseRequestV002", dsseRequestV002: dsse_1.DSSERequestV002.fromJSON(object6.dsseRequestV002) } : undefined
       };
     },
     toJSON(message) {
@@ -63185,10 +63416,10 @@ var init_util2 = __esm(() => {
         return obj[e];
       });
     };
-    util4.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object5) => {
+    util4.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object6) => {
       const keys = [];
-      for (const key in object5) {
-        if (Object.prototype.hasOwnProperty.call(object5, key)) {
+      for (const key in object6) {
+        if (Object.prototype.hasOwnProperty.call(object6, key)) {
           keys.push(key);
         }
       }
@@ -67032,7 +67263,7 @@ __export(exports_util, {
   joinValues: () => joinValues,
   issue: () => issue,
   isPlainObject: () => isPlainObject2,
-  isObject: () => isObject9,
+  isObject: () => isObject11,
   hexToUint8Array: () => hexToUint8Array,
   getSizableOrigin: () => getSizableOrigin,
   getParsedType: () => getParsedType3,
@@ -67106,10 +67337,10 @@ function cached(getter) {
 function nullish(input) {
   return input === null || input === undefined;
 }
-function cleanRegex(source) {
-  const start = source.startsWith("^") ? 1 : 0;
-  const end = source.endsWith("$") ? source.length - 1 : source.length;
-  return source.slice(start, end);
+function cleanRegex(source2) {
+  const start = source2.startsWith("^") ? 1 : 0;
+  const end = source2.endsWith("$") ? source2.length - 1 : source2.length;
+  return source2.slice(start, end);
 }
 function floatSafeRemainder3(val, step) {
   const valDecCount = (val.toString().split(".")[1] || "").length;
@@ -67126,9 +67357,9 @@ function floatSafeRemainder3(val, step) {
   const stepInt = Number.parseInt(step.toFixed(decCount).replace(".", ""));
   return valInt % stepInt / 10 ** decCount;
 }
-function defineLazy(object5, key, getter) {
+function defineLazy(object6, key, getter) {
   let value = undefined;
-  Object.defineProperty(object5, key, {
+  Object.defineProperty(object6, key, {
     get() {
       if (value === EVALUATING) {
         return;
@@ -67140,7 +67371,7 @@ function defineLazy(object5, key, getter) {
       return value;
     },
     set(v) {
-      Object.defineProperty(object5, key, {
+      Object.defineProperty(object6, key, {
         value: v
       });
     },
@@ -67199,11 +67430,11 @@ function esc(str2) {
 function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
-function isObject9(data) {
+function isObject11(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 function isPlainObject2(o) {
-  if (isObject9(o) === false)
+  if (isObject11(o) === false)
     return false;
   const ctor = o.constructor;
   if (ctor === undefined)
@@ -67211,7 +67442,7 @@ function isPlainObject2(o) {
   if (typeof ctor !== "function")
     return true;
   const prot = ctor.prototype;
-  if (isObject9(prot) === false)
+  if (isObject11(prot) === false)
     return false;
   if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) {
     return false;
@@ -69092,13 +69323,13 @@ var init_schemas = __esm(() => {
       }
       return propValues;
     });
-    const isObject10 = isObject9;
+    const isObject12 = isObject11;
     const catchall = def.catchall;
     let value;
     inst._zod.parse = (payload, ctx) => {
       value ?? (value = _normalized.value);
       const input = payload.value;
-      if (!isObject10(input)) {
+      if (!isObject12(input)) {
         payload.issues.push({
           expected: "object",
           code: "invalid_type",
@@ -69196,7 +69427,7 @@ var init_schemas = __esm(() => {
       return (payload, ctx) => fn(shape, payload, ctx);
     };
     let fastpass;
-    const isObject10 = isObject9;
+    const isObject12 = isObject11;
     const jit = !globalConfig.jitless;
     const allowsEval2 = allowsEval;
     const fastEnabled = jit && allowsEval2.value;
@@ -69205,7 +69436,7 @@ var init_schemas = __esm(() => {
     inst._zod.parse = (payload, ctx) => {
       value ?? (value = _normalized.value);
       const input = payload.value;
-      if (!isObject10(input)) {
+      if (!isObject12(input)) {
         payload.issues.push({
           expected: "object",
           code: "invalid_type",
@@ -69309,7 +69540,7 @@ var init_schemas = __esm(() => {
     });
     inst._zod.parse = (payload, ctx) => {
       const input = payload.value;
-      if (!isObject9(input)) {
+      if (!isObject11(input)) {
         payload.issues.push({
           code: "invalid_type",
           expected: "object",
@@ -71237,7 +71468,7 @@ var init_parse2 = __esm(() => {
 });
 
 // ../../node_modules/@modelcontextprotocol/sdk/node_modules/zod/v4/mini/schemas.js
-function object5(shape, params) {
+function object6(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -71319,11 +71550,11 @@ function isZ4Schema(s) {
 function objectFromShape(shape) {
   const values = Object.values(shape);
   if (values.length === 0)
-    return object5({});
+    return object6({});
   const allV4 = values.every(isZ4Schema);
   const allV3 = values.every((s) => !isZ4Schema(s));
   if (allV4)
-    return object5(shape);
+    return object6(shape);
   if (allV3)
     return objectType2(shape);
   throw new Error("Mixed Zod versions detected in object shape.");
@@ -71594,7 +71825,7 @@ function never2(params) {
 function array2(element, params) {
   return _array(ZodArray3, element, params);
 }
-function object6(shape, params) {
+function object7(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -72276,30 +72507,30 @@ var init_types4 = __esm(() => {
     ttl: union2([number3(), _null3()]).optional(),
     pollInterval: number3().optional()
   });
-  TaskMetadataSchema = object6({
+  TaskMetadataSchema = object7({
     ttl: number3().optional()
   });
-  RelatedTaskMetadataSchema = object6({
+  RelatedTaskMetadataSchema = object7({
     taskId: string3()
   });
   RequestMetaSchema2 = looseObject({
     progressToken: ProgressTokenSchema2.optional(),
     [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
   });
-  BaseRequestParamsSchema2 = object6({
+  BaseRequestParamsSchema2 = object7({
     _meta: RequestMetaSchema2.optional()
   });
   TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema2.extend({
     task: TaskMetadataSchema.optional()
   });
-  RequestSchema2 = object6({
+  RequestSchema2 = object7({
     method: string3(),
     params: BaseRequestParamsSchema2.loose().optional()
   });
-  NotificationsParamsSchema2 = object6({
+  NotificationsParamsSchema2 = object7({
     _meta: RequestMetaSchema2.optional()
   });
-  NotificationSchema2 = object6({
+  NotificationSchema2 = object7({
     method: string3(),
     params: NotificationsParamsSchema2.loose().optional()
   });
@@ -72307,16 +72538,16 @@ var init_types4 = __esm(() => {
     _meta: RequestMetaSchema2.optional()
   });
   RequestIdSchema2 = union2([string3(), number3().int()]);
-  JSONRPCRequestSchema2 = object6({
+  JSONRPCRequestSchema2 = object7({
     jsonrpc: literal2(JSONRPC_VERSION2),
     id: RequestIdSchema2,
     ...RequestSchema2.shape
   }).strict();
-  JSONRPCNotificationSchema2 = object6({
+  JSONRPCNotificationSchema2 = object7({
     jsonrpc: literal2(JSONRPC_VERSION2),
     ...NotificationSchema2.shape
   }).strict();
-  JSONRPCResultResponseSchema = object6({
+  JSONRPCResultResponseSchema = object7({
     jsonrpc: literal2(JSONRPC_VERSION2),
     id: RequestIdSchema2,
     result: ResultSchema2
@@ -72331,10 +72562,10 @@ var init_types4 = __esm(() => {
     ErrorCode3[ErrorCode3["InternalError"] = -32603] = "InternalError";
     ErrorCode3[ErrorCode3["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
   })(ErrorCode2 || (ErrorCode2 = {}));
-  JSONRPCErrorResponseSchema = object6({
+  JSONRPCErrorResponseSchema = object7({
     jsonrpc: literal2(JSONRPC_VERSION2),
     id: RequestIdSchema2.optional(),
-    error: object6({
+    error: object7({
       code: number3().int(),
       message: string3(),
       data: unknown2().optional()
@@ -72356,16 +72587,16 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/cancelled"),
     params: CancelledNotificationParamsSchema2
   });
-  IconSchema2 = object6({
+  IconSchema2 = object7({
     src: string3(),
     mimeType: string3().optional(),
     sizes: array2(string3()).optional(),
     theme: _enum(["light", "dark"]).optional()
   });
-  IconsSchema2 = object6({
+  IconsSchema2 = object7({
     icons: array2(IconSchema2).optional()
   });
-  BaseMetadataSchema2 = object6({
+  BaseMetadataSchema2 = object7({
     name: string3(),
     title: string3().optional()
   });
@@ -72376,7 +72607,7 @@ var init_types4 = __esm(() => {
     websiteUrl: string3().optional(),
     description: string3().optional()
   });
-  FormElicitationCapabilitySchema = intersection2(object6({
+  FormElicitationCapabilitySchema = intersection2(object7({
     applyDefaults: boolean3().optional()
   }), record6(string3(), unknown2()));
   ElicitationCapabilitySchema = preprocess((value) => {
@@ -72386,7 +72617,7 @@ var init_types4 = __esm(() => {
       }
     }
     return value;
-  }, intersection2(object6({
+  }, intersection2(object7({
     form: FormElicitationCapabilitySchema.optional(),
     url: AssertObjectSchema2.optional()
   }), record6(string3(), unknown2()).optional()));
@@ -72411,14 +72642,14 @@ var init_types4 = __esm(() => {
       }).optional()
     }).optional()
   });
-  ClientCapabilitiesSchema2 = object6({
+  ClientCapabilitiesSchema2 = object7({
     experimental: record6(string3(), AssertObjectSchema2).optional(),
-    sampling: object6({
+    sampling: object7({
       context: AssertObjectSchema2.optional(),
       tools: AssertObjectSchema2.optional()
     }).optional(),
     elicitation: ElicitationCapabilitySchema.optional(),
-    roots: object6({
+    roots: object7({
       listChanged: boolean3().optional()
     }).optional(),
     tasks: ClientTasksCapabilitySchema.optional()
@@ -72432,18 +72663,18 @@ var init_types4 = __esm(() => {
     method: literal2("initialize"),
     params: InitializeRequestParamsSchema2
   });
-  ServerCapabilitiesSchema2 = object6({
+  ServerCapabilitiesSchema2 = object7({
     experimental: record6(string3(), AssertObjectSchema2).optional(),
     logging: AssertObjectSchema2.optional(),
     completions: AssertObjectSchema2.optional(),
-    prompts: object6({
+    prompts: object7({
       listChanged: boolean3().optional()
     }).optional(),
-    resources: object6({
+    resources: object7({
       subscribe: boolean3().optional(),
       listChanged: boolean3().optional()
     }).optional(),
-    tools: object6({
+    tools: object7({
       listChanged: boolean3().optional()
     }).optional(),
     tasks: ServerTasksCapabilitySchema.optional()
@@ -72462,12 +72693,12 @@ var init_types4 = __esm(() => {
     method: literal2("ping"),
     params: BaseRequestParamsSchema2.optional()
   });
-  ProgressSchema2 = object6({
+  ProgressSchema2 = object7({
     progress: number3(),
     total: optional2(number3()),
     message: optional2(string3())
   });
-  ProgressNotificationParamsSchema2 = object6({
+  ProgressNotificationParamsSchema2 = object7({
     ...NotificationsParamsSchema2.shape,
     ...ProgressSchema2.shape,
     progressToken: ProgressTokenSchema2
@@ -72486,7 +72717,7 @@ var init_types4 = __esm(() => {
     nextCursor: CursorSchema2.optional()
   });
   TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-  TaskSchema = object6({
+  TaskSchema = object7({
     taskId: string3(),
     status: TaskStatusSchema,
     ttl: union2([number3(), _null3()]),
@@ -72530,7 +72761,7 @@ var init_types4 = __esm(() => {
     })
   });
   CancelTaskResultSchema = ResultSchema2.merge(TaskSchema);
-  ResourceContentsSchema2 = object6({
+  ResourceContentsSchema2 = object7({
     uri: string3(),
     mimeType: optional2(string3()),
     _meta: record6(string3(), unknown2()).optional()
@@ -72550,12 +72781,12 @@ var init_types4 = __esm(() => {
     blob: Base64Schema2
   });
   RoleSchema = _enum(["user", "assistant"]);
-  AnnotationsSchema = object6({
+  AnnotationsSchema = object7({
     audience: array2(RoleSchema).optional(),
     priority: number3().min(0).max(1).optional(),
     lastModified: exports_iso2.datetime({ offset: true }).optional()
   });
-  ResourceSchema2 = object6({
+  ResourceSchema2 = object7({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     uri: string3(),
@@ -72564,7 +72795,7 @@ var init_types4 = __esm(() => {
     annotations: AnnotationsSchema.optional(),
     _meta: optional2(looseObject({}))
   });
-  ResourceTemplateSchema2 = object6({
+  ResourceTemplateSchema2 = object7({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     uriTemplate: string3(),
@@ -72617,12 +72848,12 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/resources/updated"),
     params: ResourceUpdatedNotificationParamsSchema2
   });
-  PromptArgumentSchema2 = object6({
+  PromptArgumentSchema2 = object7({
     name: string3(),
     description: optional2(string3()),
     required: optional2(boolean3())
   });
-  PromptSchema2 = object6({
+  PromptSchema2 = object7({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     description: optional2(string3()),
@@ -72643,34 +72874,34 @@ var init_types4 = __esm(() => {
     method: literal2("prompts/get"),
     params: GetPromptRequestParamsSchema2
   });
-  TextContentSchema2 = object6({
+  TextContentSchema2 = object7({
     type: literal2("text"),
     text: string3(),
     annotations: AnnotationsSchema.optional(),
     _meta: record6(string3(), unknown2()).optional()
   });
-  ImageContentSchema2 = object6({
+  ImageContentSchema2 = object7({
     type: literal2("image"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
     _meta: record6(string3(), unknown2()).optional()
   });
-  AudioContentSchema2 = object6({
+  AudioContentSchema2 = object7({
     type: literal2("audio"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
     _meta: record6(string3(), unknown2()).optional()
   });
-  ToolUseContentSchema = object6({
+  ToolUseContentSchema = object7({
     type: literal2("tool_use"),
     name: string3(),
     id: string3(),
     input: record6(string3(), unknown2()),
     _meta: record6(string3(), unknown2()).optional()
   });
-  EmbeddedResourceSchema2 = object6({
+  EmbeddedResourceSchema2 = object7({
     type: literal2("resource"),
     resource: union2([TextResourceContentsSchema2, BlobResourceContentsSchema2]),
     annotations: AnnotationsSchema.optional(),
@@ -72686,7 +72917,7 @@ var init_types4 = __esm(() => {
     ResourceLinkSchema2,
     EmbeddedResourceSchema2
   ]);
-  PromptMessageSchema2 = object6({
+  PromptMessageSchema2 = object7({
     role: RoleSchema,
     content: ContentBlockSchema2
   });
@@ -72698,26 +72929,26 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/prompts/list_changed"),
     params: NotificationsParamsSchema2.optional()
   });
-  ToolAnnotationsSchema2 = object6({
+  ToolAnnotationsSchema2 = object7({
     title: string3().optional(),
     readOnlyHint: boolean3().optional(),
     destructiveHint: boolean3().optional(),
     idempotentHint: boolean3().optional(),
     openWorldHint: boolean3().optional()
   });
-  ToolExecutionSchema = object6({
+  ToolExecutionSchema = object7({
     taskSupport: _enum(["required", "optional", "forbidden"]).optional()
   });
-  ToolSchema2 = object6({
+  ToolSchema2 = object7({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     description: string3().optional(),
-    inputSchema: object6({
+    inputSchema: object7({
       type: literal2("object"),
       properties: record6(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
     }).catchall(unknown2()),
-    outputSchema: object6({
+    outputSchema: object7({
       type: literal2("object"),
       properties: record6(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
@@ -72752,7 +72983,7 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/tools/list_changed"),
     params: NotificationsParamsSchema2.optional()
   });
-  ListChangedOptionsBaseSchema = object6({
+  ListChangedOptionsBaseSchema = object7({
     autoRefresh: boolean3().default(true),
     debounceMs: number3().int().nonnegative().default(300)
   });
@@ -72773,23 +73004,23 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/message"),
     params: LoggingMessageNotificationParamsSchema2
   });
-  ModelHintSchema2 = object6({
+  ModelHintSchema2 = object7({
     name: string3().optional()
   });
-  ModelPreferencesSchema2 = object6({
+  ModelPreferencesSchema2 = object7({
     hints: array2(ModelHintSchema2).optional(),
     costPriority: number3().min(0).max(1).optional(),
     speedPriority: number3().min(0).max(1).optional(),
     intelligencePriority: number3().min(0).max(1).optional()
   });
-  ToolChoiceSchema = object6({
+  ToolChoiceSchema = object7({
     mode: _enum(["auto", "required", "none"]).optional()
   });
-  ToolResultContentSchema = object6({
+  ToolResultContentSchema = object7({
     type: literal2("tool_result"),
     toolUseId: string3().describe("The unique identifier for the corresponding tool call."),
     content: array2(ContentBlockSchema2).default([]),
-    structuredContent: object6({}).loose().optional(),
+    structuredContent: object7({}).loose().optional(),
     isError: boolean3().optional(),
     _meta: record6(string3(), unknown2()).optional()
   });
@@ -72801,7 +73032,7 @@ var init_types4 = __esm(() => {
     ToolUseContentSchema,
     ToolResultContentSchema
   ]);
-  SamplingMessageSchema2 = object6({
+  SamplingMessageSchema2 = object7({
     role: RoleSchema,
     content: union2([SamplingMessageContentBlockSchema, array2(SamplingMessageContentBlockSchema)]),
     _meta: record6(string3(), unknown2()).optional()
@@ -72834,13 +73065,13 @@ var init_types4 = __esm(() => {
     role: RoleSchema,
     content: union2([SamplingMessageContentBlockSchema, array2(SamplingMessageContentBlockSchema)])
   });
-  BooleanSchemaSchema2 = object6({
+  BooleanSchemaSchema2 = object7({
     type: literal2("boolean"),
     title: string3().optional(),
     description: string3().optional(),
     default: boolean3().optional()
   });
-  StringSchemaSchema2 = object6({
+  StringSchemaSchema2 = object7({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
@@ -72849,7 +73080,7 @@ var init_types4 = __esm(() => {
     format: _enum(["email", "uri", "date", "date-time"]).optional(),
     default: string3().optional()
   });
-  NumberSchemaSchema2 = object6({
+  NumberSchemaSchema2 = object7({
     type: _enum(["number", "integer"]),
     title: string3().optional(),
     description: string3().optional(),
@@ -72857,24 +73088,24 @@ var init_types4 = __esm(() => {
     maximum: number3().optional(),
     default: number3().optional()
   });
-  UntitledSingleSelectEnumSchemaSchema2 = object6({
+  UntitledSingleSelectEnumSchemaSchema2 = object7({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
     enum: array2(string3()),
     default: string3().optional()
   });
-  TitledSingleSelectEnumSchemaSchema2 = object6({
+  TitledSingleSelectEnumSchemaSchema2 = object7({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
-    oneOf: array2(object6({
+    oneOf: array2(object7({
       const: string3(),
       title: string3()
     })),
     default: string3().optional()
   });
-  LegacyTitledEnumSchemaSchema2 = object6({
+  LegacyTitledEnumSchemaSchema2 = object7({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
@@ -72883,26 +73114,26 @@ var init_types4 = __esm(() => {
     default: string3().optional()
   });
   SingleSelectEnumSchemaSchema2 = union2([UntitledSingleSelectEnumSchemaSchema2, TitledSingleSelectEnumSchemaSchema2]);
-  UntitledMultiSelectEnumSchemaSchema2 = object6({
+  UntitledMultiSelectEnumSchemaSchema2 = object7({
     type: literal2("array"),
     title: string3().optional(),
     description: string3().optional(),
     minItems: number3().optional(),
     maxItems: number3().optional(),
-    items: object6({
+    items: object7({
       type: literal2("string"),
       enum: array2(string3())
     }),
     default: array2(string3()).optional()
   });
-  TitledMultiSelectEnumSchemaSchema2 = object6({
+  TitledMultiSelectEnumSchemaSchema2 = object7({
     type: literal2("array"),
     title: string3().optional(),
     description: string3().optional(),
     minItems: number3().optional(),
     maxItems: number3().optional(),
-    items: object6({
-      anyOf: array2(object6({
+    items: object7({
+      anyOf: array2(object7({
         const: string3(),
         title: string3()
       }))
@@ -72915,7 +73146,7 @@ var init_types4 = __esm(() => {
   ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
     mode: literal2("form").optional(),
     message: string3(),
-    requestedSchema: object6({
+    requestedSchema: object7({
       type: literal2("object"),
       properties: record6(string3(), PrimitiveSchemaDefinitionSchema2),
       required: array2(string3()).optional()
@@ -72943,21 +73174,21 @@ var init_types4 = __esm(() => {
     action: _enum(["accept", "decline", "cancel"]),
     content: preprocess((val) => val === null ? undefined : val, record6(string3(), union2([string3(), number3(), boolean3(), array2(string3())])).optional())
   });
-  ResourceTemplateReferenceSchema2 = object6({
+  ResourceTemplateReferenceSchema2 = object7({
     type: literal2("ref/resource"),
     uri: string3()
   });
-  PromptReferenceSchema2 = object6({
+  PromptReferenceSchema2 = object7({
     type: literal2("ref/prompt"),
     name: string3()
   });
   CompleteRequestParamsSchema2 = BaseRequestParamsSchema2.extend({
     ref: union2([PromptReferenceSchema2, ResourceTemplateReferenceSchema2]),
-    argument: object6({
+    argument: object7({
       name: string3(),
       value: string3()
     }),
-    context: object6({
+    context: object7({
       arguments: record6(string3(), string3()).optional()
     }).optional()
   });
@@ -72972,7 +73203,7 @@ var init_types4 = __esm(() => {
       hasMore: optional2(boolean3())
     })
   });
-  RootSchema2 = object6({
+  RootSchema2 = object7({
     uri: string3().startsWith("file://"),
     name: string3().optional(),
     _meta: record6(string3(), unknown2()).optional()
@@ -75443,6 +75674,8 @@ LAUNCHING A COPY: candle_vamp_candidates (a key with account:read) lists Solana 
 
 STRATEGY LAB (a production key, cndl_live_): candle_lab_status first, then candle_lab_replay returns a job_id at once and candle_lab_replay_result reads it (no more often than every 5 seconds; a replay runs up to ten minutes); candle_lab_runners and candle_lab_edges read its tables. The key's plan decides access and hacc refuses with code lab_plan, lab_quota, lab_active or lab_busy. Backtests are a model of the past; the lab never trades.
 
+SIGNAL RECORDS (a production key, cndl_live_; read-only): candle_signal_scorecard reads hacc's daily scorecard, candle_signal_records a page of per-signal measured records (page with before = next_before), candle_signal_record one signal's record. Every result carries measure: "Measured record, not a forecast." Quote that line with any figure from it; never say a signal will win.
+
 WRITING (trade, launch, transfer, sweep, swap) needs a key. If a call returns an auth error, the fix is on the human's side: they run \`candle auth login\`, which authorizes a device in the browser and stores the credentials. Do not ask them to paste a key into a config file, and do not retry the call until they confirm.
 
 Two chains: solana and hood. Most tools take an explicit chain — resolve it with candle_resolve_token rather than guessing.
@@ -75706,7 +75939,7 @@ class ChainRegistryError2 extends Error {
 }
 var EVM_ADDRESS2 = /^0x[0-9a-fA-F]{40}$/;
 var SOLANA_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-var isObject2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isObject3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function fail4(path, why) {
   throw new Error(`chain registry: ${path} ${why}`);
 }
@@ -75724,7 +75957,7 @@ function needNumber2(o, key, path) {
 }
 function needObject2(o, key, path) {
   const v = o[key];
-  if (!isObject2(v))
+  if (!isObject3(v))
     fail4(`${path}.${key}`, "must be an object");
   return v;
 }
@@ -75741,7 +75974,7 @@ function needNullableAddress2(o, key, path) {
     needAddress2(o[key], `${path}.${key}`);
 }
 function checkToken2(v, path) {
-  if (!isObject2(v))
+  if (!isObject3(v))
     fail4(path, "must be an object");
   needString2(v, "symbol", path);
   needAddress2(v.address, `${path}.address`);
@@ -75750,7 +75983,7 @@ function checkToken2(v, path) {
 function checkAddressSet2(v, path, keys) {
   if (v === null)
     return;
-  if (!isObject2(v))
+  if (!isObject3(v))
     fail4(path, "must be an object or null");
   for (const k of keys)
     needAddress2(v[k], `${path}.${k}`);
@@ -75775,14 +76008,14 @@ function checkEvm2(evm, path) {
   needNullableAddress2(evm, "multicall3", path);
   const dex = needObject2(evm, "dex", path);
   checkAddressSet2(dex.uniswapV3, `${path}.dex.uniswapV3`, ["factory", "router", "quoter"]);
-  if (isObject2(dex.uniswapV3) && !/^0x[0-9a-fA-F]{64}$/.test(String(dex.uniswapV3.initCodeHash)))
+  if (isObject3(dex.uniswapV3) && !/^0x[0-9a-fA-F]{64}$/.test(String(dex.uniswapV3.initCodeHash)))
     fail4(`${path}.dex.uniswapV3.initCodeHash`, "must be 0x plus 64 hex digits");
   checkAddressSet2(dex.uniswapV4, `${path}.dex.uniswapV4`, ["poolManager", "universalRouter", "quoter", "stateView"]);
   needNullableAddress2(dex, "permit2", `${path}.dex`);
   if (!Array.isArray(evm.aggregators))
     fail4(`${path}.aggregators`, "must be an array");
   evm.aggregators.forEach((a, i) => {
-    if (!isObject2(a))
+    if (!isObject3(a))
       fail4(`${path}.aggregators[${i}]`, "must be an object");
     needString2(a, "id", `${path}.aggregators[${i}]`);
     needString2(a, "vendorChainSlug", `${path}.aggregators[${i}]`);
@@ -75810,7 +76043,7 @@ function validateChainEntries2(raw) {
   const chainIds = new Set;
   raw.forEach((item, i) => {
     const path = `entry[${i}]`;
-    if (!isObject2(item))
+    if (!isObject3(item))
       fail4(path, "must be an object");
     needString2(item, "slug", path);
     needString2(item, "family", path);
@@ -75838,7 +76071,7 @@ function validateChainEntries2(raw) {
     if (item.family === "evm") {
       if (item.addressFormat !== "evm-hex20")
         fail4(`${path}.addressFormat`, "must be evm-hex20 for an evm entry");
-      if (!isObject2(item.evm))
+      if (!isObject3(item.evm))
         fail4(`${path}.evm`, "is required on an evm entry");
       checkEvm2(item.evm, `${path}.evm`);
       const id = item.evm.chainId;
@@ -78081,7 +78314,10 @@ var ENVIRONMENT = [
   },
   { name: "CANDLE_PROFILE", description: "The profile to act as, when --profile is not given" },
   { name: "CANDLE_API_URL", description: "API base URL, when --api-url is not given" },
-  { name: "CANDLE_HACC_URL", description: "Strategy lab base URL (default https://api.hacc.fun); HTTPS only" },
+  {
+    name: "CANDLE_HACC_URL",
+    description: "hacc base URL for the strategy lab and signal records (default https://api.hacc.fun); HTTPS only"
+  },
   {
     name: "CANDLE_X402_NETWORK",
     description: "The network per-use x402 payments are made on: mainnet (default) or devnet, for tests"
@@ -79008,6 +79244,41 @@ var HELP = {
       "candle lab replay cancel <job-id>",
       "candle lab runners --hours 24",
       "candle lab edges --days 7 --min-n 15"
+    ],
+    env: [...ENV_API, "CANDLE_HACC_URL"]
+  },
+  signals: {
+    group: "Account",
+    intro: "hacc's scorecard and per-signal measured records",
+    summary: "hacc's daily scorecard and each signal's measured record, read-only",
+    description: `Reads hacc's public signal records with this profile's production agent key: the daily scorecard (signal lift against the matched baseline, and per source, rule and horizon the count, coverage, conservative and priced mean net returns, tail counts and delay), a page of per-signal records newest first, or one signal's record (entry and per-horizon statuses, conservative and priced net returns, the 24 h path and the matched baseline). Returns are fractions on the wire and shown here as percents; the conservative figure counts a horizon with no print as a total loss, and a priced figure is blank unless the entry and that horizon were both priced. Backfilled rows are history recorded after the fact. Read-only: three GETs to hacc, nothing written, traded or moved. Every output ends with, and every --json value carries as measure, the fixed line "Measured record, not a forecast.", on errors, empty pages and 404s too. A record is a fact about the past, never a forecast or advice. --json preserves hacc's body. A device token or test key cannot read them.`,
+    usage: ["candle signals <scorecard|records|record> [flags]"],
+    rows: [
+      { invocation: "scorecard [--date YYYY-MM-DD]", description: "The latest daily scorecard, or one day's" },
+      {
+        invocation: "records [--source <source>] [--before <id>] [--limit n]",
+        description: "Per-signal records, newest first; --before takes the previous page's next_before"
+      },
+      {
+        invocation: "record <source> <source-id>",
+        description: "One signal's record: the signal id for pattern, chain:mint for launch_read"
+      }
+    ],
+    flags: [
+      { invocation: "--date <YYYY-MM-DD>", description: "A calendar day; absent reads the latest scorecard" },
+      {
+        invocation: "--source <source>",
+        description: "pattern, quant_call, holder_band or launch_read; absent lists every published source"
+      },
+      { invocation: "--before <id>", description: "Ledger id cursor: the previous page's next_before" },
+      { invocation: "--limit <n>", description: "Page size, 1 to 100 (hacc's default 50)" }
+    ],
+    examples: [
+      "candle signals scorecard",
+      "candle signals scorecard --date 2026-11-12 --json",
+      "candle signals records --source pattern --limit 20",
+      "candle signals record pattern 12345",
+      "candle signals record launch_read solana:<mint> --json"
     ],
     env: [...ENV_API, "CANDLE_HACC_URL"]
   },
@@ -80056,6 +80327,9 @@ var TOOL_CLASSES = {
   candle_lab_replay_result: READ,
   candle_lab_runners: READ,
   candle_lab_edges: READ,
+  candle_signal_scorecard: READ,
+  candle_signal_records: READ,
+  candle_signal_record: READ,
   candle_get_agent_profile: READ,
   candle_list_agents: READ,
   candle_list_agent_posts: READ,
@@ -80222,8 +80496,8 @@ function reconcileMessage(kind, readable) {
   const launch = kind === "launch" ? " The dry run is not run again." : "";
   return `Candle could not confirm this ${what}.${check} Re-send the same request (it can never run twice), or stop tracking it.${launch}`;
 }
-function transferReconcileMessage(source, id) {
-  if (source === "embedded") {
+function transferReconcileMessage(source2, id) {
+  if (source2 === "embedded") {
     return "Candle could not confirm this transfer, and cannot read it back by an id. Check the source wallet in an explorer, then say what you found. It is never sent again; a new transfer is a new card.";
   }
   return `Candle could not confirm this transfer${id ? ` (${id})` : ""}. Check it by its signature, send the same signed transaction again while it can still land (never a new one), or stop tracking it.`;
@@ -80831,19 +81105,19 @@ function decimalToRaw3(value, decimals) {
   return raw > 0n ? raw : undefined;
 }
 async function parseTransferInput(input, decimalsFor2) {
-  const source = input.source;
-  if (source === null || typeof source !== "object")
+  const source2 = input.source;
+  if (source2 === null || typeof source2 !== "object")
     throw refused("INVALID_SOURCE", "Choose a wallet to send from.");
-  if (source.kind !== "vault" && source.kind !== "embedded") {
+  if (source2.kind !== "vault" && source2.kind !== "embedded") {
     throw refused("INVALID_SOURCE", "A transfer sends from a vault wallet or the embedded wallet.");
   }
   const rawChain = input.chain;
   if (typeof rawChain !== "string" || rawChain !== "solana" && !isEvmChainSlug(rawChain))
     throw refused("INVALID_CHAIN", `chain is one of ${["solana", ...enabledEvmChainSlugs()].join(", ")}.`);
   const chain2 = rawChain;
-  if (typeof source.address !== "string" || source.address.length === 0)
+  if (typeof source2.address !== "string" || source2.address.length === 0)
     throw refused("INVALID_SOURCE", "The source wallet's address is missing.");
-  const sourceAddress = normalizeAddress(chain2, source.address);
+  const sourceAddress = normalizeAddress(chain2, source2.address);
   const rawAsset = input.asset;
   let asset;
   if (rawAsset !== null && typeof rawAsset === "object" && typeof rawAsset.symbol === "string") {
@@ -80882,8 +81156,8 @@ async function parseTransferInput(input, decimalsFor2) {
     throw refused("INVALID_DESTINATION", "The destination is the source itself.");
   return {
     source: {
-      kind: source.kind,
-      ...typeof source.walletId === "string" && source.walletId.length > 0 ? { walletId: source.walletId } : {},
+      kind: source2.kind,
+      ...typeof source2.walletId === "string" && source2.walletId.length > 0 ? { walletId: source2.walletId } : {},
       address: sourceAddress
     },
     chain: chain2,
@@ -81673,8 +81947,8 @@ class CardBook {
       });
     }
     const params = card2.params;
-    const source = op.transfer?.source ?? params.source.kind;
-    if (source === "embedded") {
+    const source2 = op.transfer?.source ?? params.source.kind;
+    if (source2 === "embedded") {
       if (action !== "attest_sent" && action !== "attest_not_sent") {
         throw refused("TRANSFER_NEVER_RESENT", "An embedded-wallet transfer is never sent again. Check the source wallet in an explorer, then say whether it was sent.");
       }
@@ -82872,16 +83146,16 @@ function refusalOf(status, body) {
   const record4 = asRecord(body) ?? {};
   const relayCode = typeof record4.code === "string" ? record4.code : undefined;
   const code = quantRefusalCode(body) ?? `HTTP_${status}`;
-  const refusal2 = { code, status, shape: relayCode !== undefined ? "relay" : "envelope" };
+  const refusal3 = { code, status, shape: relayCode !== undefined ? "relay" : "envelope" };
   if (typeof record4.retryable === "boolean")
-    refusal2.retryable = record4.retryable;
+    refusal3.retryable = record4.retryable;
   if (typeof record4.resetsAt === "string" || typeof record4.resetsAt === "number")
-    refusal2.resetsAt = record4.resetsAt;
+    refusal3.resetsAt = record4.resetsAt;
   if (typeof record4.turnId === "string")
-    refusal2.turnId = record4.turnId;
+    refusal3.turnId = record4.turnId;
   if (typeof record4.limit === "number")
-    refusal2.limit = record4.limit;
-  return refusal2;
+    refusal3.limit = record4.limit;
+  return refusal3;
 }
 function parseStatus(body) {
   const b = asRecord(body);
@@ -83060,17 +83334,17 @@ var defaultSleep = (ms) => new Promise((resolve3) => {
   const timer = setTimeout(resolve3, ms);
   timer.unref?.();
 });
-function refusalError(refusal2) {
-  const details = { status: refusal2.status, shape: refusal2.shape };
-  if (refusal2.retryable !== undefined)
-    details.retryable = refusal2.retryable;
-  if (refusal2.resetsAt !== undefined)
-    details.resetsAt = refusal2.resetsAt;
-  if (refusal2.turnId !== undefined)
-    details.turnId = refusal2.turnId;
-  if (refusal2.limit !== undefined)
-    details.limit = refusal2.limit;
-  return refused(refusal2.code, `Quant refused: ${refusal2.code}.`, details);
+function refusalError(refusal3) {
+  const details = { status: refusal3.status, shape: refusal3.shape };
+  if (refusal3.retryable !== undefined)
+    details.retryable = refusal3.retryable;
+  if (refusal3.resetsAt !== undefined)
+    details.resetsAt = refusal3.resetsAt;
+  if (refusal3.turnId !== undefined)
+    details.turnId = refusal3.turnId;
+  if (refusal3.limit !== undefined)
+    details.limit = refusal3.limit;
+  return refused(refusal3.code, `Quant refused: ${refusal3.code}.`, details);
 }
 
 class QuantService {
@@ -83273,8 +83547,8 @@ ${text2}` : text2;
           break;
         continue;
       }
-      const refusal2 = answer2.refusal;
-      if (refusal2.code === "too_many_polls") {
+      const refusal3 = answer2.refusal;
+      if (refusal3.code === "too_many_polls") {
         tooMany++;
         if (tooMany > TOO_MANY_POLLS_RETRIES) {
           failure3 = "too_many_polls";
@@ -83283,7 +83557,7 @@ ${text2}` : text2;
         await sleep(TOO_MANY_POLLS_WAIT_MS);
         continue;
       }
-      if (refusal2.shape === "transport") {
+      if (refusal3.shape === "transport") {
         lost++;
         if (lost > LOST_POLL_RETRIES) {
           failure3 = "QUANT_UNREACHABLE";
@@ -83292,7 +83566,7 @@ ${text2}` : text2;
         await sleep(Math.min(1000 * lost, 5000));
         continue;
       }
-      failure3 = refusal2.code;
+      failure3 = refusal3.code;
       break;
     }
     if (this.poll !== poll)
@@ -84321,7 +84595,7 @@ var text2 = (body, isError = false) => ({
   content: [{ type: "text", text: JSON.stringify(body) }],
   ...isError ? { isError: true } : {}
 });
-var refusal2 = (code, message, extra = {}) => text2({ success: false, error: { code, message }, ...extra }, true);
+var refusal3 = (code, message, extra = {}) => text2({ success: false, error: { code, message }, ...extra }, true);
 var NEXT_PENDING = (kind, idKey) => `The user must approve this in the Candle TUI. Read the outcome with candle_get_operation using this id (kind: ${kind}). Never send it again under a new id; to retry, send the same request with the same ${idKey}.`;
 var NEXT_FINAL = "Final. Do not propose this again unless the user asks.";
 var NEXT_UNKNOWN = "Do not propose this again; the user is resolving it in the Candle TUI.";
@@ -84394,8 +84668,8 @@ function relay(answer2) {
   if (answer2.kind === "result")
     return answer2.result;
   if (answer2.kind === "refused")
-    return refusal2(answer2.code, answer2.message);
-  return refusal2("CORE_CALL_FAILED", answer2.message);
+    return refusal3(answer2.code, answer2.message);
+  return refusal3("CORE_CALL_FAILED", answer2.message);
 }
 function registerToolFace(server, deps) {
   server.handle("tools.list", async () => ({ tools: offeredTools() }));
@@ -84421,7 +84695,7 @@ function registerToolFace(server, deps) {
         tool: name,
         code: "TOOL_NOT_CLASSIFIED"
       });
-      return refusal2("TOOL_NOT_CLASSIFIED", `${name} is not a tool this core has classified, so it is refused.`);
+      return refusal3("TOOL_NOT_CLASSIFIED", `${name} is not a tool this core has classified, so it is refused.`);
     }
     if (verdict.class === "card" && verdict.kind === "transfer") {
       await deps.journal.append({
@@ -84430,11 +84704,11 @@ function registerToolFace(server, deps) {
         tool: name,
         code: "TRANSFER_USER_ONLY"
       });
-      return refusal2("TRANSFER_USER_ONLY", "Only you can start a transfer, from the Candle TUI.");
+      return refusal3("TRANSFER_USER_ONLY", "Only you can start a transfer, from the Candle TUI.");
     }
     if (isCoreLocalTool(name)) {
       if (deps.coreLocal === undefined)
-        return refusal2("METHOD_NOT_AVAILABLE", `${name} is not in this build of the core.`);
+        return refusal3("METHOD_NOT_AVAILABLE", `${name} is not in this build of the core.`);
       return deps.coreLocal(name, callArgs);
     }
     if (name === "candle_get_operation")
@@ -84442,7 +84716,7 @@ function registerToolFace(server, deps) {
     if (verdict.class === "read") {
       const readKey2 = deps.readKey();
       if (readKey2 === undefined)
-        return refusal2("NO_READ_KEY", "The core holds no Read key for this profile. Sign in with candle auth login.");
+        return refusal3("NO_READ_KEY", "The core holds no Read key for this profile. Sign in with candle auth login.");
       return relay(await deps.executor.call(name, callArgs, readKey2));
     }
     if (verdict.class === "paper" || verdict.class === "dry_run") {
@@ -84468,7 +84742,7 @@ function registerToolFace(server, deps) {
           tool: name,
           code: error.code
         });
-        return refusal2(error.code, error.message);
+        return refusal3(error.code, error.message);
       }
     }
     const heldId = verdict.idKey === "coreOpId" ? undefined : callArgs[verdict.idKey];
@@ -84481,7 +84755,7 @@ function registerToolFace(server, deps) {
           tool: name,
           code: "OP_ID_CONFLICT"
         });
-        return refusal2("OP_ID_CONFLICT", "That operation id is held for a different request. Never reuse an id for new parameters.", {
+        return refusal3("OP_ID_CONFLICT", "That operation id is held for a different request. Never reuse an id for new parameters.", {
           opId: heldId
         });
       }
@@ -84494,14 +84768,14 @@ function registerToolFace(server, deps) {
         tool: name,
         code: "NO_VIEW_ATTACHED"
       });
-      return refusal2("NO_VIEW_ATTACHED", "No Candle TUI view is attached, so no card can be shown. Nothing was queued.");
+      return refusal3("NO_VIEW_ATTACHED", "No Candle TUI view is attached, so no card can be shown. Nothing was queued.");
     }
     try {
       return cardAnswer(await deps.cards.propose({ tool: name, params: callArgs }, origin));
     } catch (error) {
       if (!(error instanceof RpcError))
         throw error;
-      return refusal2(error.code, error.message, error.details);
+      return refusal3(error.code, error.message, error.details);
     }
   });
 }
@@ -84509,9 +84783,9 @@ async function getOperation2(args, deps) {
   const clientId2 = args.clientId;
   const kind = args.kind;
   if (typeof clientId2 !== "string" || clientId2.length === 0)
-    return refusal2("MCP_VALIDATION", "clientId must be a string.");
+    return refusal3("MCP_VALIDATION", "clientId must be a string.");
   if (typeof kind !== "string" || !CORE_OPERATION_KINDS.includes(kind)) {
-    return refusal2("MCP_VALIDATION", `kind is one of ${CORE_OPERATION_KINDS.join(", ")}.`);
+    return refusal3("MCP_VALIDATION", `kind is one of ${CORE_OPERATION_KINDS.join(", ")}.`);
   }
   const held = deps.cards.held(clientId2);
   if (held !== undefined)
@@ -84519,10 +84793,10 @@ async function getOperation2(args, deps) {
   if (kind === "trade" || kind === "launch") {
     const readKey2 = deps.readKey();
     if (readKey2 === undefined)
-      return refusal2("NO_READ_KEY", "The core holds no Read key for this profile.");
+      return refusal3("NO_READ_KEY", "The core holds no Read key for this profile.");
     return relay(await deps.executor.call("candle_get_operation", { clientId: clientId2, kind }, readKey2));
   }
-  return refusal2("OPERATION_NOT_HELD", `The core issued no ${kind} operation under this id. A swap the core did not issue is read by replaying it with its clientSwapId.`);
+  return refusal3("OPERATION_NOT_HELD", `The core issued no ${kind} operation under this id. A swap the core did not issue is read by replaying it with its clientSwapId.`);
 }
 
 // src/core/transfer-chain.ts
@@ -84673,8 +84947,8 @@ async function planTransfer(input) {
     throw new VaultError("VAULT_UNREADABLE", `Could not read mint ${mintAddress}: ${asMessage(error)}`);
   }
   const decimals = profile.decimals;
-  const source = ataFor(profile, fromKey);
-  const raw = max ? tokenAccountAmount((await rpc.getAccountInfo(encodePubkey(source)))?.data ?? new Uint8Array) : decimalToRaw4(input.amount, decimals);
+  const source2 = ataFor(profile, fromKey);
+  const raw = max ? tokenAccountAmount((await rpc.getAccountInfo(encodePubkey(source2)))?.data ?? new Uint8Array) : decimalToRaw4(input.amount, decimals);
   if (max && raw === 0n) {
     throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${input.from} holds no ${input.asset} in its source token account; max leaves nothing to send. Nothing was signed or sent.`);
   }
@@ -84694,9 +84968,9 @@ async function planTransfer(input) {
     instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint, tokenProgram }));
     accountCreationLines.push(`create associated token account ${encodePubkey(destination)} (idempotent)`, `account owner ${input.to}`, `account rent ${rent} lamports, paid by ${input.from} if created`);
   }
-  const sourceState = await tokenAccountFrozen(rpc, encodePubkey(source));
+  const sourceState = await tokenAccountFrozen(rpc, encodePubkey(source2));
   const riskLines = profile.risks.map((risk) => `warning     ${risk.message}`);
-  const hook = await resolveTransferHookAccounts(rpc, { profile, source, destination, owner: fromKey, amount: raw });
+  const hook = await resolveTransferHookAccounts(rpc, { profile, source: source2, destination, owner: fromKey, amount: raw });
   const hookLines = [];
   if (profile.transferHookProgram) {
     hookLines.push(hook.ok ? `hook        ${profile.transferHookProgram}: ${hook.accounts.length} extra account(s) resolved` : `hook        ${profile.transferHookProgram}: extra accounts could NOT be resolved (${hook.reason}); the send is expected to fail as TOKEN_2022_EXTRA_ACCOUNTS_MISSING`);
@@ -84708,7 +84982,7 @@ async function planTransfer(input) {
     feeLines.push(`post-fee    ${postFeeAmountRaw} raw arrives (${feeRaw} raw withheld by the mint at epoch ${epoch2})`);
   }
   instructions.push(tokenTransferChecked({
-    source,
+    source: source2,
     mint,
     destination,
     owner: fromKey,
@@ -84726,7 +85000,7 @@ async function planTransfer(input) {
     from: input.from,
     to: input.to,
     instructions,
-    sourceTokenAccount: encodePubkey(source),
+    sourceTokenAccount: encodePubkey(source2),
     ...accountRent !== undefined ? { accountRent } : {},
     token: {
       profile,
@@ -84931,8 +85205,8 @@ function createTransferChain(chainDeps) {
       return { raw: raw2, decimals: 9 };
     }
     const profile = await deps.solana.read(() => readMintProfile(solanaRpc, asset === "USDC" ? USDC_MINT2 : asset));
-    const source = encodePubkey(ataFor(profile, decodePubkey(params.source.address)));
-    const account = await deps.solana.read(() => solanaRpc.getAccountInfo(source));
+    const source2 = encodePubkey(ataFor(profile, decodePubkey(params.source.address)));
+    const account = await deps.solana.read(() => solanaRpc.getAccountInfo(source2));
     const raw = account === null ? 0n : tokenAccountAmount2(account.data);
     if (raw === 0n)
       throw refused("TRANSFER_INSUFFICIENT_FUNDS", `${params.source.address} holds none of this token; there is nothing to send.`);
@@ -86853,9 +87127,9 @@ async function preflightToKey(ctx, raw, opts) {
     return { ok: false, exit: resolved.code };
   const keyPrefix = resolved.keyPrefix;
   const row2 = keys.find((key) => key.keyPrefix === keyPrefix);
-  const refusal3 = targetKeyRefusal(row2, keyPrefix, deps.now());
-  if (refusal3 !== null)
-    return refuse3(refusal3);
+  const refusal4 = targetKeyRefusal(row2, keyPrefix, deps.now());
+  if (refusal4 !== null)
+    return refuse3(refusal4);
   const target = row2;
   const walletScope = target.walletScope === "selected" ? "selected" : "all";
   if (walletScope === "selected") {
@@ -87646,16 +87920,16 @@ async function keysSignerMove(args, ctx) {
   const apiKey = await resolveApiKey(deps, ctx.profile);
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   const ownKeyPrefix = apiKey !== undefined ? apiKeyPrefix(apiKey) : undefined;
-  let source;
+  let source2;
   let auth;
   if (apiKey !== undefined && toKeyRaw === undefined && (sourceRaw === ownKeyPrefix || sourceRaw === "self")) {
-    source = ownKeyPrefix ?? sourceRaw;
+    source2 = ownKeyPrefix ?? sourceRaw;
     auth = { apiKey };
   } else if (deviceToken !== undefined) {
     const resolved = await resolveTargetKey(ctx, deviceToken, sourceRaw, { codePrefix: "KEY_SIGNER" });
     if (!resolved.ok)
       return resolved.code;
-    source = resolved.keyPrefix;
+    source2 = resolved.keyPrefix;
     auth = { deviceToken };
   } else if (apiKey !== undefined && toKeyRaw === undefined) {
     const self = await readSigner(ctx, "self", { apiKey });
@@ -87669,7 +87943,7 @@ async function keysSignerMove(args, ctx) {
       }, json);
       return 1;
     }
-    source = view2.keyPrefix;
+    source2 = view2.keyPrefix;
     auth = { apiKey };
   } else {
     writeScreenLocalFailure(deps, toKeyRaw !== undefined ? DEVICE_TOKEN_REQUIRED : {
@@ -87678,8 +87952,8 @@ async function keysSignerMove(args, ctx) {
     }, json);
     return 1;
   }
-  if (!KEY_PREFIX_RE.test(source)) {
-    writeScreenUsageFailure(deps, `Not a key prefix: ${source}. ${USAGE_KEYS_SIGNER}`, json);
+  if (!KEY_PREFIX_RE.test(source2)) {
+    writeScreenUsageFailure(deps, `Not a key prefix: ${source2}. ${USAGE_KEYS_SIGNER}`, json);
     return 2;
   }
   if (toKeyRaw !== undefined) {
@@ -87687,9 +87961,9 @@ async function keysSignerMove(args, ctx) {
       writeScreenLocalFailure(deps, DEVICE_TOKEN_REQUIRED, json);
       return 1;
     }
-    return moveToLiveKey(ctx, deviceToken, source, toKeyRaw);
+    return moveToLiveKey(ctx, deviceToken, source2, toKeyRaw);
   }
-  const read = await readSigner(ctx, "apiKey" in auth ? "self" : source, auth);
+  const read = await readSigner(ctx, "apiKey" in auth ? "self" : source2, auth);
   if (!read.ok)
     return writeSignerReadFailure(ctx, read);
   const view = read.body;
@@ -87697,8 +87971,8 @@ async function keysSignerMove(args, ctx) {
   if (active === null) {
     writeScreenLocalFailure(deps, {
       code: "KEY_SIGNER_MISSING",
-      message: `Key ${source} has no active signer, so there is nothing to move its wallets onto. Nothing changed.`,
-      suggestion: `Approve one first (candle tee signer new --key ${source} on the trading machine), or, for a revoked key, move the wallets to a live key: candle keys signer move ${source} --to-key <prefix|label> (device token).`
+      message: `Key ${source2} has no active signer, so there is nothing to move its wallets onto. Nothing changed.`,
+      suggestion: `Approve one first (candle tee signer new --key ${source2} on the trading machine), or, for a revoked key, move the wallets to a live key: candle keys signer move ${source2} --to-key <prefix|label> (device token).`
     }, json);
     return 1;
   }
@@ -87740,7 +88014,7 @@ async function keysSignerMove(args, ctx) {
     }
   }
   const cleanup = await deleteDrainedSlots(ctx, {
-    source,
+    source: source2,
     auth,
     deviceToken,
     apiKey,
@@ -87748,19 +88022,19 @@ async function keysSignerMove(args, ctx) {
     targetQuorumId: active.signerQuorumId
   });
   return reportMove(ctx, {
-    source,
-    target: { keyPrefix: source, fingerprint: active.fingerprint },
+    source: source2,
+    target: { keyPrefix: source2, fingerprint: active.fingerprint },
     alreadyOn: view.wallets.onSigner.length,
     outcomes,
     cleanup
   });
 }
-async function moveToLiveKey(ctx, deviceToken, source, toKeyRaw) {
+async function moveToLiveKey(ctx, deviceToken, source2, toKeyRaw) {
   const { deps, json } = ctx;
   const target = await resolveTargetKey(ctx, deviceToken, toKeyRaw, { codePrefix: "KEY_SIGNER" });
   if (!target.ok)
     return target.code;
-  const read = await readSigner(ctx, source, { deviceToken });
+  const read = await readSigner(ctx, source2, { deviceToken });
   if (!read.ok)
     return writeSignerReadFailure(ctx, read);
   const ids = allSignerWallets(read.body).map((w) => w.id);
@@ -87810,7 +88084,7 @@ async function moveToLiveKey(ctx, deviceToken, source, toKeyRaw) {
       else if ("changed" in committed)
         writeScreenLocalFailure(deps, committed.changed, json);
       else
-        writeScreenLocalFailure(deps, rebindFailureDetails(committed.result, { fromKeyPrefixes: [source] }), json);
+        writeScreenLocalFailure(deps, rebindFailureDetails(committed.result, { fromKeyPrefixes: [source2] }), json);
       return 1;
     }
     for (const row2 of committed.result.body.rebound) {
@@ -87820,9 +88094,9 @@ async function moveToLiveKey(ctx, deviceToken, source, toKeyRaw) {
 `.trim());
     }
   }
-  const cleanup = await deleteDrainedSlots(ctx, { source, auth: { deviceToken }, deviceToken, apiKey: undefined, used });
+  const cleanup = await deleteDrainedSlots(ctx, { source: source2, auth: { deviceToken }, deviceToken, apiKey: undefined, used });
   return reportMove(ctx, {
-    source,
+    source: source2,
     target: { keyPrefix: target.keyPrefix, fingerprint: toKey?.signer?.fingerprint ?? null },
     alreadyOn: 0,
     outcomes,
@@ -88241,8 +88515,8 @@ var DOCTOR_ROW_IDS = {
   "Key rotation": "key_rotation"
 };
 var API_KEY_CHECK = "API key valid";
-function keyRotationRow(until, source) {
-  const fix = source === "CANDLE_API_KEY_FILE" ? "replace the old secret in CANDLE_API_KEY_FILE and restart MCP; the CLI did not update the file" : source === "CANDLE_API_KEY" ? "update CANDLE_API_KEY where this key is deployed to the new secret" : "store the new secret with candle auth login, or rotate from this profile with candle keys rotate";
+function keyRotationRow(until, source2) {
+  const fix = source2 === "CANDLE_API_KEY_FILE" ? "replace the old secret in CANDLE_API_KEY_FILE and restart MCP; the CLI did not update the file" : source2 === "CANDLE_API_KEY" ? "update CANDLE_API_KEY where this key is deployed to the new secret" : "store the new secret with candle auth login, or rotate from this profile with candle keys rotate";
   return {
     check: "Key rotation",
     state: "WARN",
@@ -88438,17 +88712,17 @@ async function doctor(args, ctx) {
     state: "FAIL",
     detail: "No credential found. Fix: run candle auth login, or export CANDLE_API_KEY."
   });
-  const source = (value, envName) => deps.env[envName]?.trim() ? envName : value ? ctx.profile ? `profile ${ctx.profile}` : "legacy store" : "none";
+  const source2 = (value, envName) => deps.env[envName]?.trim() ? envName : value ? ctx.profile ? `profile ${ctx.profile}` : "legacy store" : "none";
   const provenance = {
     apiUrl: {
       value: apiUrl,
       source: ctx.apiUrlFlag !== undefined ? "--api-url" : deps.env.CANDLE_API_URL?.trim() ? "CANDLE_API_URL" : ctx.profile && config.profiles?.[ctx.profile]?.apiUrl?.trim() ? `profile ${ctx.profile}` : config.apiUrl?.trim() ? "config" : "default"
     },
     apiKey: {
-      source: apiCredential?.source === "file" ? "CANDLE_API_KEY_FILE" : source(apiKey, "CANDLE_API_KEY"),
+      source: apiCredential?.source === "file" ? "CANDLE_API_KEY_FILE" : source2(apiKey, "CANDLE_API_KEY"),
       prefix: apiKey ? apiKeyPrefix(apiKey) ?? null : null
     },
-    deviceToken: { source: source(deviceToken, "CANDLE_DEVICE_TOKEN") }
+    deviceToken: { source: source2(deviceToken, "CANDLE_DEVICE_TOKEN") }
   };
   rows.push({ check: "API URL", state: "PASS", detail: `${apiUrl} (from ${provenance.apiUrl.source})` }, {
     check: "API key",
@@ -91281,7 +91555,7 @@ async function sweepEverythingTo(input) {
     try {
       const tokenProgram = decodePubkey(acct.programId);
       const mint = decodePubkey(acct.mint);
-      const source = decodePubkey(acct.pubkey);
+      const source2 = decodePubkey(acct.pubkey);
       const destinationAta = associatedTokenAddress(destinationKey, mint, tokenProgram);
       const instructions = [];
       const amount = BigInt(acct.amountRaw);
@@ -91294,7 +91568,7 @@ async function sweepEverythingTo(input) {
           profile = await readMintProfile(rpc, acct.mint);
           const hook = await resolveTransferHookAccounts(rpc, {
             profile,
-            source,
+            source: source2,
             destination: destinationAta,
             owner: ownerKey,
             amount
@@ -91321,7 +91595,7 @@ async function sweepEverythingTo(input) {
           destinationFrozen = existing.data[TOKEN_ACCOUNT_STATE_OFFSET3] === TOKEN_ACCOUNT_STATE_FROZEN3;
         }
         instructions.push(tokenTransferChecked({
-          source,
+          source: source2,
           mint,
           destination: destinationAta,
           owner: ownerKey,
@@ -91331,7 +91605,7 @@ async function sweepEverythingTo(input) {
           extraAccounts
         }));
       }
-      instructions.push(tokenCloseAccount({ account: source, destination: ownerKey, owner: ownerKey, tokenProgram }));
+      instructions.push(tokenCloseAccount({ account: source2, destination: ownerKey, owner: ownerKey, tokenProgram }));
       const kind = amount > 0n ? "token" : "close";
       const outcome = await broadcastAndFinalize2(rpc, ctx, secret64, ownerKey, instructions);
       if (outcome.status === "finalized") {
@@ -91858,8 +92132,8 @@ async function externalSweep(args, ctx) {
   });
   if ("error" in parsed)
     return usage2(ctx, parsed.error);
-  const [source, extra] = parsed.positionals;
-  if (!source || extra !== undefined) {
+  const [source2, extra] = parsed.positionals;
+  if (!source2 || extra !== undefined) {
     return usage2(ctx, "Usage: candle external sweep <external> --to <vault> [--rpc-url <url>]");
   }
   const to = parsed.values["--to"];
@@ -91881,12 +92155,12 @@ async function externalSweep(args, ctx) {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-      reason: describeSend(`everything from ${source}`, undefined, to)
+      reason: describeSend(`everything from ${source2}`, undefined, to)
     });
     const vault = hold(opened.vault);
-    assertNotEvmEntry(vault.index, source, "external sweep");
+    assertNotEvmEntry(vault.index, source2, "external sweep");
     assertNotEvmEntry(vault.index, to, "external sweep");
-    const sourceEntry = requireExternalEntry(vault.index, source);
+    const sourceEntry = requireExternalEntry(vault.index, source2);
     const destination = findVaultRoleEntry(vault.index, to);
     if (destination === undefined || destination.role !== "vault") {
       const other = vault.index.entries.find((candidate) => candidate.label === to || candidate.address === to);
@@ -92784,10 +93058,10 @@ function refusalOf2(result2) {
     return null;
   return { status: result2.status, code: error, extra };
 }
-function writeRefusal(ctx, refusal3, suggestion) {
-  const message = REFUSALS[refusal3.code] ?? `Candle refused the request (${refusal3.code}).`;
+function writeRefusal(ctx, refusal4, suggestion) {
+  const message = REFUSALS[refusal4.code] ?? `Candle refused the request (${refusal4.code}).`;
   if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: false, code: refusal3.code, status: refusal3.status, message, ...refusal3.extra, ...suggestion ? { suggestion } : {} })}
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: false, code: refusal4.code, status: refusal4.status, message, ...refusal4.extra, ...suggestion ? { suggestion } : {} })}
 `);
     return;
   }
@@ -92795,9 +93069,9 @@ function writeRefusal(ctx, refusal3, suggestion) {
 `);
 }
 function writeApiFailure(ctx, result2, authType) {
-  const refusal3 = refusalOf2(result2);
-  if (refusal3) {
-    writeRefusal(ctx, refusal3);
+  const refusal4 = refusalOf2(result2);
+  if (refusal4) {
+    writeRefusal(ctx, refusal4);
     return 1;
   }
   const failure3 = result2;
@@ -93080,9 +93354,9 @@ async function tokenClaim(args, ctx) {
   if (result2 === "unknown")
     return writeUnknown(ctx, idempotencyKey);
   if (!result2.ok) {
-    const refusal3 = refusalOf2(result2);
-    if (refusal3?.code === "invalid_signature" && creator && !challengeId) {
-      writeRefusal(ctx, refusal3, `This account's known wallets do not include the verified creator, so the claim needs a signed challenge: candle token claim ${address} --chain ${chain2} --creator --challenge`);
+    const refusal4 = refusalOf2(result2);
+    if (refusal4?.code === "invalid_signature" && creator && !challengeId) {
+      writeRefusal(ctx, refusal4, `This account's known wallets do not include the verified creator, so the claim needs a signed challenge: candle token claim ${address} --chain ${chain2} --creator --challenge`);
       return 1;
     }
     return writeApiFailure(ctx, result2, "key");
@@ -93226,10 +93500,10 @@ async function tokenSection(args, ctx) {
   if (result2 === "unknown")
     return writeUnknown(ctx, idempotencyKey);
   if (!result2.ok) {
-    const refusal3 = refusalOf2(result2);
-    if (refusal3?.code === "revision_conflict") {
-      const latest = refusal3.extra.latest;
-      writeRefusal(ctx, refusal3, `${latest?.revision !== undefined ? `The latest is revision ${latest.revision}. ` : ""}${action === "set" ? SECTION_SUGGESTION : "Rerun with --base-revision set to the latest revision."}`);
+    const refusal4 = refusalOf2(result2);
+    if (refusal4?.code === "revision_conflict") {
+      const latest = refusal4.extra.latest;
+      writeRefusal(ctx, refusal4, `${latest?.revision !== undefined ? `The latest is revision ${latest.revision}. ` : ""}${action === "set" ? SECTION_SUGGESTION : "Rerun with --base-revision set to the latest revision."}`);
       return EXIT_REVISION_CONFLICT;
     }
     return writeApiFailure(ctx, result2, "key");
@@ -94157,14 +94431,14 @@ async function client(ctx) {
   }
 }
 function failure3(answer2, ctx, statusRoute = false) {
-  const { refusal: refusal3 } = answer2;
-  if (ctx.json && refusal3.body !== undefined)
-    ctx.deps.stdout.write(`${JSON.stringify(refusal3.body)}
+  const { refusal: refusal4 } = answer2;
+  if (ctx.json && refusal4.body !== undefined)
+    ctx.deps.stdout.write(`${JSON.stringify(refusal4.body)}
 `);
   else {
-    const body = object3(refusal3.body);
-    const message = statusRoute && refusal3.status === 404 ? "the lab on this server predates `candle lab status`" : `${refusal3.message}${refusal3.status === 429 && body.resets_at ? ` Resets at ${text3(body.resets_at)}.` : ""}`;
-    writeLocalFailure(ctx.deps, { code: refusal3.code, message: terminalText(message) }, ctx.json);
+    const body = object3(refusal4.body);
+    const message = statusRoute && refusal4.status === 404 ? "the lab on this server predates `candle lab status`" : `${refusal4.message}${refusal4.status === 429 && body.resets_at ? ` Resets at ${text3(body.resets_at)}.` : ""}`;
+    writeLocalFailure(ctx.deps, { code: refusal4.code, message: terminalText(message) }, ctx.json);
   }
   return 1;
 }
@@ -94313,8 +94587,8 @@ ${REPLAY_USAGE}`);
   }
   let definition;
   try {
-    const source = stdin ? new TextDecoder().decode(await ctx.deps.readStdin()) : await ctx.deps.readFile(v["--definition"]);
-    const value = JSON.parse(source);
+    const source2 = stdin ? new TextDecoder().decode(await ctx.deps.readStdin()) : await ctx.deps.readFile(v["--definition"]);
+    const value = JSON.parse(source2);
     if (value === null || typeof value !== "object" || Array.isArray(value))
       throw new Error("Invalid definition");
     definition = value;
@@ -96446,7 +96720,10 @@ var MCP_TOOL_NAMES = [
   "candle_lab_replay",
   "candle_lab_replay_result",
   "candle_lab_runners",
-  "candle_lab_edges"
+  "candle_lab_edges",
+  "candle_signal_scorecard",
+  "candle_signal_records",
+  "candle_signal_record"
 ];
 var READ_ONLY_TOOL_NAMES = [
   "candle_get_market",
@@ -97264,9 +97541,9 @@ function verifyPerpsBuild2(build, opts) {
       if (shapeRefusal)
         return { ok: false, reason: shapeRefusal };
       if (type === "order") {
-        const refusal3 = checkBuilderField2(action, opts.builder);
-        if (refusal3)
-          return { ok: false, reason: refusal3 };
+        const refusal4 = checkBuilderField2(action, opts.builder);
+        if (refusal4)
+          return { ok: false, reason: refusal4 };
       } else if ("builder" in action) {
         return { ok: false, reason: `a ${type} action carries no builder` };
       }
@@ -98489,8 +98766,8 @@ function perpsRiskFromLimits2(body) {
   const effective = isRecord3(record6.perpsRiskEffective) ? effectivePerpsRisk2(pickSettings2(record6.perpsRiskEffective)) : effectivePerpsRisk2(stored);
   if (perpsRiskProblem2(effective) !== null)
     return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
-  const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
-  return { thresholds: { ...effective, source }, stored };
+  const source2 = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
+  return { thresholds: { ...effective, source: source2 }, stored };
 }
 function pickSettings2(raw) {
   const out = {};
@@ -99685,9 +99962,9 @@ async function perpsThresholds(args, ctx) {
       return 1;
     }
     const { thresholds: thresholds2, stored } = perpsRiskFromLimits2(result2.body);
-    const { source, ...effective } = thresholds2;
+    const { source: source2, ...effective } = thresholds2;
     if (ctx.json) {
-      ctx.deps.stdout.write(`${JSON.stringify({ stored, effective, source, defaults: HYPERLIQUID_RISK_DEFAULTS2 })}
+      ctx.deps.stdout.write(`${JSON.stringify({ stored, effective, source: source2, defaults: HYPERLIQUID_RISK_DEFAULTS2 })}
 `);
       return 0;
     }
@@ -101708,7 +101985,7 @@ function parseSendAssetAmount(value, form) {
     return null;
   return BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, "0"));
 }
-function isObject3(value) {
+function isObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function exactKeys3(value, keys) {
@@ -101719,15 +101996,15 @@ function sameEvm(a, b) {
   return typeof a === "string" && EVM_ADDRESS_RE5.test(a) && a.toLowerCase() === b.toLowerCase();
 }
 function typesMatch(types4, expected) {
-  if (!isObject3(types4) || !exactKeys3(types4, Object.keys(expected)))
+  if (!isObject4(types4) || !exactKeys3(types4, Object.keys(expected)))
     return false;
   return Object.entries(expected).every(([key, want]) => {
     const fields2 = types4[key];
-    return Array.isArray(fields2) && fields2.length === want.length && fields2.every((field, i) => isObject3(field) && exactKeys3(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
+    return Array.isArray(fields2) && fields2.length === want.length && fields2.every((field, i) => isObject4(field) && exactKeys3(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
   });
 }
 function domainMatches(domain, expected) {
-  return isObject3(domain) && exactKeys3(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
+  return isObject4(domain) && exactKeys3(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
 }
 function verifyWithdrawMapping(build, expect) {
   const refuse3 = (reason) => ({ ok: false, reason });
@@ -101746,14 +102023,14 @@ function verifyWithdrawMapping(build, expect) {
   if (parseWithdrawAmount(build.amountUsdc) !== expect.amountMicros)
     return refuse3("the build is for another amount");
   const typed = build.typedData;
-  if (!isObject3(typed) || typed.primary_type !== "NonceMapping")
+  if (!isObject4(typed) || typed.primary_type !== "NonceMapping")
     return refuse3("the typed data is not a NonceMapping");
   if (!domainMatches(typed.domain, { name: "RelayNonceMapping", version: "2", chainId: 1 }))
     return refuse3("the NonceMapping domain is not Relay's");
   if (!typesMatch(typed.types, RELAY_NONCE_MAPPING_TYPES))
     return refuse3("the NonceMapping type list differs");
   const message = typed.message;
-  if (!isObject3(message) || !exactKeys3(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
+  if (!isObject4(message) || !exactKeys3(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
     return refuse3("the NonceMapping message has other fields");
   if (message.chainId !== "hyperliquid")
     return refuse3("the NonceMapping names another chain");
@@ -101775,14 +102052,14 @@ function verifyWithdrawSendAsset(authorization, expect) {
   if (pins === null)
     return refuse3("no withdrawal pins are set");
   const typed = authorization.typedData;
-  if (!isObject3(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
+  if (!isObject4(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
     return refuse3("the typed data is not a SendAsset");
   if (!domainMatches(typed.domain, { name: "HyperliquidSignTransaction", version: "1", chainId: 42161 }))
     return refuse3("the SendAsset domain is not Hyperliquid's user-signed domain");
   if (!typesMatch(typed.types, HYPERLIQUID_SEND_ASSET_TYPES))
     return refuse3("the SendAsset type list differs");
   const m = typed.message;
-  if (!isObject3(m) || !exactKeys3(m, SEND_ASSET_KEYS))
+  if (!isObject4(m) || !exactKeys3(m, SEND_ASSET_KEYS))
     return refuse3("the SendAsset message has other fields");
   if (m.hyperliquidChain !== "Mainnet")
     return refuse3("the SendAsset is not on Mainnet");
@@ -101801,7 +102078,7 @@ function verifyWithdrawSendAsset(authorization, expect) {
   if (typeof m.destination !== "string" || !pins.depositories.includes(m.destination.toLowerCase()))
     return refuse3("the SendAsset destination is not a Relay depository on the allow-list");
   const action = authorization.action;
-  if (!isObject3(action) || !exactKeys3(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
+  if (!isObject4(action) || !exactKeys3(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
     return refuse3("the action has other fields");
   if (action.type !== "sendAsset" || action.signatureChainId !== "0xa4b1")
     return refuse3("the action is not a sendAsset");
@@ -101996,9 +102273,9 @@ async function perpsWithdraw(args, ctx) {
       clientWithdrawalId: id,
       exchangeResponse: exchange
     }).catch(() => null);
-    const refusal3 = venueRefusal(exchange);
-    if (refusal3)
-      throw new TradingError("PERPS_VENUE_REFUSED", refusal3, { details: { clientWithdrawalId: id, exchange } });
+    const refusal4 = venueRefusal(exchange);
+    if (refusal4)
+      throw new TradingError("PERPS_VENUE_REFUSED", refusal4, { details: { clientWithdrawalId: id, exchange } });
     notice(ctx.deps, "stderr", "note", `Submitted to Hyperliquid; following Relay's fill.
 `.trim());
     const deadline = ctx.deps.now() + WITHDRAW_POLL_MS;
@@ -102053,7 +102330,7 @@ class X402DecodeError extends Error {
   }
 }
 var BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
-var isObject4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var isString = (value) => typeof value === "string";
 function encodeHeader(value) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64");
@@ -102068,12 +102345,12 @@ function decodeHeader(value) {
   } catch {
     throw new X402DecodeError("not JSON");
   }
-  if (!isObject4(parsed))
+  if (!isObject5(parsed))
     throw new X402DecodeError("not a JSON object");
   return parsed;
 }
 function parseRequirements(value) {
-  if (!isObject4(value))
+  if (!isObject5(value))
     throw new X402DecodeError("requirements are not an object");
   const { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, extra } = value;
   if (!isString(scheme) || !isString(network2) || !isString(amount) || !isString(asset) || !isString(payTo)) {
@@ -102082,7 +102359,7 @@ function parseRequirements(value) {
   if (typeof maxTimeoutSeconds !== "number" || !Number.isInteger(maxTimeoutSeconds)) {
     throw new X402DecodeError("maxTimeoutSeconds is not an integer");
   }
-  if (extra !== undefined && !isObject4(extra))
+  if (extra !== undefined && !isObject5(extra))
     throw new X402DecodeError("extra is not an object");
   return { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, ...extra ? { extra } : {} };
 }
@@ -102091,7 +102368,7 @@ function decodePaymentRequired(header) {
   if (object5.x402Version !== X402_VERSION)
     throw new X402DecodeError("x402Version is not 2");
   const resource = object5.resource;
-  if (!isObject4(resource) || !isString(resource.url))
+  if (!isObject5(resource) || !isString(resource.url))
     throw new X402DecodeError("resource is missing");
   if (!Array.isArray(object5.accepts))
     throw new X402DecodeError("accepts is not an array");
@@ -102106,7 +102383,7 @@ function decodePaymentRequired(header) {
       ...isString(resource.mimeType) ? { mimeType: resource.mimeType } : {}
     },
     accepts: object5.accepts.map(parseRequirements),
-    ...isObject4(object5.extensions) ? { extensions: object5.extensions } : {}
+    ...isObject5(object5.extensions) ? { extensions: object5.extensions } : {}
   };
 }
 function paymentRequiredOf(headers2) {
@@ -102158,11 +102435,11 @@ function signupSignerRef(spkiSha256) {
 function planStatePath(paths) {
   return paths.log.replace(/\.jsonl$/, ".plan.json");
 }
-var isObject5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject6 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var str = (value) => typeof value === "string" ? value : undefined;
 var plan = (value) => value === "pro" || value === "max" ? value : undefined;
 function parsePending(value) {
-  if (!isObject5(value) || !isObject5(value.body))
+  if (!isObject6(value) || !isObject6(value.body))
     return;
   const p = plan(value.plan);
   const { id, path, paymentHeader, amountRaw, payer, startedAt } = value;
@@ -102191,7 +102468,7 @@ function parsePending(value) {
   };
 }
 function parseSigner(value) {
-  if (!isObject5(value))
+  if (!isObject6(value))
     return;
   const { spkiSha256, publicKeyDer, fingerprint, payer, createdAt } = value;
   if (typeof spkiSha256 !== "string" || !/^[0-9a-f]{64}$/.test(spkiSha256) || typeof publicKeyDer !== "string" || typeof fingerprint !== "string" || typeof payer !== "string" || typeof createdAt !== "string") {
@@ -102208,7 +102485,7 @@ function parsePlanState(text4) {
   } catch {
     return { autoRenew: false };
   }
-  if (!isObject5(raw))
+  if (!isObject6(raw))
     return { autoRenew: false };
   const ceiling = str(raw.renewCeilingRaw);
   const pending = parsePending(raw.pending);
@@ -102655,14 +102932,14 @@ init_client();
 // src/x402/siwx.ts
 init_esm();
 var SIWX_EXTENSION = "sign-in-with-x";
-var isObject6 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject7 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 function spendChallengeOf(extensions, apiHost, network2) {
   const extension = extensions?.[SIWX_EXTENSION];
-  if (!isObject6(extension) || !isObject6(extension.info))
+  if (!isObject7(extension) || !isObject7(extension.info))
     return null;
   const info3 = extension.info;
   const chains = Array.isArray(extension.supportedChains) ? extension.supportedChains : [];
-  const chain2 = chains.find((c) => isObject6(c) && c.chainId === network2 && c.type === "ed25519");
+  const chain2 = chains.find((c) => isObject7(c) && c.chainId === network2 && c.type === "ed25519");
   if (!chain2)
     return null;
   const { domain, uri, version, nonce, issuedAt, expirationTime } = info3;
@@ -102838,10 +103115,10 @@ async function paidRequest(input) {
   let required = paymentRequiredOf(first.headers);
   if (!required)
     return plain(first);
-  const refused2 = (result2, refusal3) => ({
+  const refused2 = (result2, refusal4) => ({
     result: result2,
     payment: null,
-    refusal: refusal3,
+    refusal: refusal4,
     servedFromCredit: false
   });
   const network2 = networkConfig(input.env);
@@ -103122,9 +103399,9 @@ function isSolanaAddress2(value) {
     return false;
   }
 }
-var isObject7 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var isObject8 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 function quotedPlanOf(raw) {
-  const plan2 = isObject7(raw) && isObject7(raw.plan) ? raw.plan : null;
+  const plan2 = isObject8(raw) && isObject8(raw.plan) ? raw.plan : null;
   if (!plan2)
     return null;
   const n = (v) => typeof v === "string" && /^[0-9]{1,20}$/.test(v) ? BigInt(v) : null;
@@ -103136,14 +103413,14 @@ function quotedPlanOf(raw) {
   return { listRaw, creditRaw, dueRaw, signup: plan2.signup === true };
 }
 function receiptOf(body) {
-  if (!isObject7(body) || body.status !== "fulfilled" || typeof body.account !== "string")
+  if (!isObject8(body) || body.status !== "fulfilled" || typeof body.account !== "string")
     return null;
   if (body.plan !== "pro" && body.plan !== "max")
     return null;
   const paid = typeof body.amountPaidUsdMicros === "string" && /^[0-9]{1,20}$/.test(body.amountPaidUsdMicros);
-  const s = isObject7(body.signup) ? body.signup : null;
-  const signer = s && isObject7(s.signer) ? s.signer : null;
-  const wallets2 = s && isObject7(s.wallets) ? s.wallets : null;
+  const s = isObject8(body.signup) ? body.signup : null;
+  const signer = s && isObject8(s.signer) ? s.signer : null;
+  const wallets2 = s && isObject8(s.wallets) ? s.wallets : null;
   const signup = s && typeof s.keyPrefix === "string" && signer && typeof signer.fingerprint === "string" && typeof signer.signerQuorumId === "string" && wallets2 && typeof wallets2.solana === "string" && typeof wallets2.evm === "string" ? {
     keyPrefix: s.keyPrefix,
     fingerprint: signer.fingerprint,
@@ -103561,7 +103838,7 @@ async function runPlanPayment(ctx, run2) {
         return 1;
       }
     }
-    const termsUrl = isObject7(quote.raw) && isObject7(quote.raw.terms) && typeof quote.raw.terms.url === "string" ? quote.raw.terms.url : CANDLE_TERMS_URL;
+    const termsUrl = isObject8(quote.raw) && isObject8(quote.raw.terms) && typeof quote.raw.terms.url === "string" ? quote.raw.terms.url : CANDLE_TERMS_URL;
     writeFields(deps, json || run2.mode === "auto" ? "stderr" : "stdout", [
       ["Plan", `Candle ${planName(run2.plan)}, 30 days${renew ? " (renewal)" : ""}${isSignup ? ", new account" : ""}`],
       ...quoted && quoted.creditRaw > 0n ? [
@@ -103696,7 +103973,7 @@ async function serverPlan(ctx, apiKey) {
     env: ctx.deps.env,
     fetch: ctx.deps.fetch
   });
-  if (!result2.ok || !isObject7(result2.body))
+  if (!result2.ok || !isObject8(result2.body))
     return null;
   const tier = typeof result2.body.tier === "string" ? result2.body.tier : null;
   const expires = result2.body.maxTierExpiresAt;
@@ -103796,9 +104073,9 @@ async function planStatus(args, ctx) {
     if (!payments.ok && payments.status === 404) {
       paymentNote = "x402 payment history is not available yet on this Candle server; any payment shown is this machine's record.";
     }
-    if (payments.ok && isObject7(payments.body) && Array.isArray(payments.body.payments)) {
-      const found = payments.body.payments.find((p) => isObject7(p) && p.kind === PLAN_SPEND_KIND);
-      lastServer = isObject7(found) ? found : null;
+    if (payments.ok && isObject8(payments.body) && Array.isArray(payments.body.payments)) {
+      const found = payments.body.payments.find((p) => isObject8(p) && p.kind === PLAN_SPEND_KIND);
+      lastServer = isObject8(found) ? found : null;
     }
   }
   const local = foldSpendLog(await readSpendLog(paths)).filter((e) => e.kind === PLAN_SPEND_KIND).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
@@ -106236,42 +106513,42 @@ function offerFailure(status, headers2, body) {
   }
   return { code: "PAYMENT_REQUIRED", message, details };
 }
-function turnRefusal(refusal3) {
-  const details = { status: refusal3.status };
-  if (refusal3.retryable !== undefined)
-    details.retryable = refusal3.retryable;
-  switch (refusal3.code) {
+function turnRefusal(refusal4) {
+  const details = { status: refusal4.status };
+  if (refusal4.retryable !== undefined)
+    details.retryable = refusal4.retryable;
+  switch (refusal4.code) {
     case "limit_reached":
       return {
-        code: refusal3.code,
-        message: refusal3.resetsAt !== undefined ? `This account has used today's Quant answers. They reset at ${refusal3.resetsAt}.` : "This account has used today's Quant answers.",
-        details: { ...details, ...refusal3.resetsAt !== undefined ? { resetsAt: refusal3.resetsAt } : {} }
+        code: refusal4.code,
+        message: refusal4.resetsAt !== undefined ? `This account has used today's Quant answers. They reset at ${refusal4.resetsAt}.` : "This account has used today's Quant answers.",
+        details: { ...details, ...refusal4.resetsAt !== undefined ? { resetsAt: refusal4.resetsAt } : {} }
       };
     case "turn_in_progress":
       return {
-        code: refusal3.code,
-        message: `Quant is already answering another question on this account${refusal3.turnId ? ` (turn ${refusal3.turnId})` : ""}. Try again when it ends.`,
-        details: { ...details, ...refusal3.turnId ? { turnId: refusal3.turnId } : {} }
+        code: refusal4.code,
+        message: `Quant is already answering another question on this account${refusal4.turnId ? ` (turn ${refusal4.turnId})` : ""}. Try again when it ends.`,
+        details: { ...details, ...refusal4.turnId ? { turnId: refusal4.turnId } : {} }
       };
     case "text_too_long":
       return {
-        code: refusal3.code,
-        message: refusal3.limit !== undefined ? `Too long: Quant takes up to ${refusal3.limit} characters.` : "Too long for Quant.",
-        details: { ...details, ...refusal3.limit !== undefined ? { limit: refusal3.limit } : {} }
+        code: refusal4.code,
+        message: refusal4.limit !== undefined ? `Too long: Quant takes up to ${refusal4.limit} characters.` : "Too long for Quant.",
+        details: { ...details, ...refusal4.limit !== undefined ? { limit: refusal4.limit } : {} }
       };
     case "RATE_LIMITED":
-      return { code: refusal3.code, message: "Too many requests just now. Wait a minute and ask again.", details };
+      return { code: refusal4.code, message: "Too many requests just now. Wait a minute and ask again.", details };
     case "VALIDATION_FAILED":
-      return { code: refusal3.code, message: "The API refused the question as malformed.", details };
+      return { code: refusal4.code, message: "The API refused the question as malformed.", details };
     case "NO_IDENTITY_WALLET":
       return {
-        code: refusal3.code,
+        code: refusal4.code,
         message: "This key's account has no identity wallet, and Quant answers per identity wallet.",
         details
       };
     case "TERMS_REQUIRED":
       return {
-        code: refusal3.code,
+        code: refusal4.code,
         message: "Quant's terms are not accepted on this account yet.",
         suggestion: "Run: candle quant terms",
         details
@@ -106281,14 +106558,14 @@ function turnRefusal(refusal3) {
       return {
         code: "QUANT_UNREACHABLE",
         message: `No answer from the API after ${QUANT_ASK_SEND_TRIES} tries.`,
-        details: { ...details, cause: refusal3.code }
+        details: { ...details, cause: refusal4.code }
       };
   }
-  if (refusal3.status === 404)
+  if (refusal4.status === 404)
     return offFailure();
   return {
-    code: refusal3.code,
-    message: `Quant refused the question: ${refusal3.code} (HTTP ${refusal3.status}).`,
+    code: refusal4.code,
+    message: `Quant refused the question: ${refusal4.code} (HTTP ${refusal4.status}).`,
     details
   };
 }
@@ -106305,23 +106582,23 @@ async function follow(client2, ctx, turnId, signal) {
     if (signal.aborted)
       break;
     if (!answer2.ok) {
-      const refusal3 = answer2.refusal;
-      if (refusal3.code === "too_many_polls" && ++tooMany <= TOO_MANY_POLLS_RETRIES2) {
+      const refusal4 = answer2.refusal;
+      if (refusal4.code === "too_many_polls" && ++tooMany <= TOO_MANY_POLLS_RETRIES2) {
         await ctx.deps.sleep(TOO_MANY_POLLS_WAIT_MS2);
         continue;
       }
-      if (refusal3.shape === "transport" && ++lost <= LOST_POLL_RETRIES2) {
+      if (refusal4.shape === "transport" && ++lost <= LOST_POLL_RETRIES2) {
         await ctx.deps.sleep(Math.min(1000 * lost, 5000));
         continue;
       }
-      if (refusal3.status === 404 && refusal3.code === "HTTP_404")
+      if (refusal4.status === 404 && refusal4.code === "HTTP_404")
         return { ok: false, failure: offFailure() };
       return {
         ok: false,
         failure: {
-          code: refusal3.code === "TIMEOUT" || refusal3.code === "NETWORK_ERROR" ? "QUANT_UNREACHABLE" : refusal3.code,
-          message: `Lost Quant's answer while it was being written: ${refusal3.code}.`,
-          details: { turnId, status: refusal3.status }
+          code: refusal4.code === "TIMEOUT" || refusal4.code === "NETWORK_ERROR" ? "QUANT_UNREACHABLE" : refusal4.code,
+          message: `Lost Quant's answer while it was being written: ${refusal4.code}.`,
+          details: { turnId, status: refusal4.status }
         }
       };
     }
@@ -106416,21 +106693,21 @@ async function quantAsk(args, ctx) {
   try {
     const clientTurnId = newClientTurnId();
     let turnId;
-    let refusal3;
+    let refusal4;
     for (let attempt = 1;attempt <= QUANT_ASK_SEND_TRIES; attempt++) {
       const sent = await client2.sendTurn({ text: text4, clientTurnId });
       if (sent.ok) {
         turnId = sent.body.turnId;
         break;
       }
-      refusal3 = sent.refusal;
-      if (refusal3.shape !== "transport" || stop.signal.aborted)
+      refusal4 = sent.refusal;
+      if (refusal4.shape !== "transport" || stop.signal.aborted)
         break;
     }
     if (turnId === undefined) {
       if (reason === "interrupted")
         return await stopped(ctx, client2, undefined, reason, timeoutS);
-      const failure4 = refusal3?.status === 402 && offer ? offerFailure(offer.status, offer.headers, offer.body) : turnRefusal(refusal3 ?? { code: "BAD_RESPONSE", status: 0, shape: "transport" });
+      const failure4 = refusal4?.status === 402 && offer ? offerFailure(offer.status, offer.headers, offer.body) : turnRefusal(refusal4 ?? { code: "BAD_RESPONSE", status: 0, shape: "transport" });
       writeScreenLocalFailure(ctx.deps, failure4, ctx.json);
       return 1;
     }
@@ -106606,15 +106883,15 @@ var OTHER_CHAIN = "Candle trades Solana and Hood today; that is not a Solana or 
 function chainOfAddress(address, chain2) {
   return requestAddressChain2(address, chain2);
 }
-var isObject8 = (value) => value !== null && typeof value === "object";
+var isObject9 = (value) => value !== null && typeof value === "object";
 function readCard(body) {
-  if (!isObject8(body) || body.success !== true || !isObject8(body.card))
+  if (!isObject9(body) || body.success !== true || !isObject9(body.card))
     return null;
   const card2 = body.card;
   const blocks = ["identity", "market", "forensics", "events", "hacc", "sameName", "sources", "links"];
   if (typeof card2.mint !== "string" || typeof card2.chain !== "string" || !getChain2(card2.chain))
     return null;
-  if (!blocks.every((block2) => isObject8(card2[block2])))
+  if (!blocks.every((block2) => isObject9(card2[block2])))
     return null;
   return card2;
 }
@@ -107315,6 +107592,412 @@ async function signMessage2(args, ctx) {
   });
 }
 
+// src/commands/signals.ts
+init_args();
+init_deps();
+init_human_output();
+init_render();
+
+// src/signal-records.ts
+var SIGNAL_RECORDS_DEFAULT_URL2 = "https://api.hacc.fun";
+var SIGNAL_RECORDS_TIMEOUT_MS2 = 1e4;
+var MEASURE2 = "Measured record, not a forecast.";
+var RECORD_SOURCES2 = ["pattern", "quant_call", "holder_band", "launch_read"];
+var RECORDS_LIMIT_MAX2 = 100;
+var SOURCE_ID_MAX2 = 128;
+function isObject10(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function withMeasure2(body) {
+  return { ...isObject10(body) ? body : {}, measure: MEASURE2 };
+}
+function isScorecardDate2(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
+    return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+function isRecordSource2(value) {
+  return typeof value === "string" && RECORD_SOURCES2.includes(value);
+}
+function localRefusal2(code, message) {
+  return { ok: false, refusal: { status: 0, code, message, body: withMeasure2({ error: message, code }) } };
+}
+function createSignalRecordsClient2(options) {
+  const base2 = new URL(options.apiUrl ?? SIGNAL_RECORDS_DEFAULT_URL2);
+  if (base2.protocol !== "https:" || base2.username || base2.password || base2.search || base2.hash) {
+    throw new Error("Signal records need an HTTPS CANDLE_HACC_URL without credentials, query or fragment.");
+  }
+  const root = base2.toString().replace(/\/+$/, "");
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const timeoutMs = options.timeoutMs ?? SIGNAL_RECORDS_TIMEOUT_MS2;
+  async function get(path) {
+    const controller = new AbortController;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      const response = await doFetch(`${root}${path}`, {
+        method: "GET",
+        redirect: "error",
+        signal: controller.signal,
+        headers: { authorization: `Bearer ${options.apiKey}`, accept: "application/json" }
+      });
+      const received = await response.json().catch(() => {
+        return;
+      });
+      if (timedOut)
+        return localRefusal2("TIMEOUT", "The signal records request timed out.");
+      if (!response.ok) {
+        const message = isObject10(received) && typeof received.error === "string" ? received.error : `Signal records request failed (${response.status}).`;
+        const code = isObject10(received) && typeof received.code === "string" ? received.code : response.status === 404 ? "NOT_FOUND" : `HTTP_${response.status}`;
+        return {
+          ok: false,
+          refusal: {
+            status: response.status,
+            code,
+            message,
+            body: withMeasure2(isObject10(received) ? received : { error: message })
+          }
+        };
+      }
+      if (!isObject10(received))
+        return localRefusal2("BAD_RESPONSE", "hacc returned an unreadable response.");
+      return { ok: true, status: response.status, body: withMeasure2(received) };
+    } catch {
+      return timedOut ? localRefusal2("TIMEOUT", "The signal records request timed out.") : localRefusal2("NETWORK_ERROR", "Could not reach hacc.");
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return {
+    scorecard(date2) {
+      if (date2 !== undefined && !isScorecardDate2(date2)) {
+        return Promise.resolve(localRefusal2("INVALID_DATE", "date must be YYYY-MM-DD."));
+      }
+      return get(date2 === undefined ? "/v1/public/scorecard" : `/v1/public/scorecard/${date2}`);
+    },
+    records(query3 = {}) {
+      const search = new URLSearchParams;
+      if (query3.source !== undefined) {
+        if (!isRecordSource2(query3.source)) {
+          return Promise.resolve(localRefusal2("INVALID_SOURCE", `source must be one of ${RECORD_SOURCES2.join(", ")}.`));
+        }
+        search.set("source", query3.source);
+      }
+      if (query3.before !== undefined) {
+        if (!Number.isSafeInteger(query3.before) || query3.before < 1) {
+          return Promise.resolve(localRefusal2("INVALID_BEFORE", "before must be a positive integer."));
+        }
+        search.set("before", String(query3.before));
+      }
+      if (query3.limit !== undefined) {
+        if (!Number.isInteger(query3.limit) || query3.limit < 1 || query3.limit > RECORDS_LIMIT_MAX2) {
+          return Promise.resolve(localRefusal2("INVALID_LIMIT", `limit must be an integer from 1 to ${RECORDS_LIMIT_MAX2}.`));
+        }
+        search.set("limit", String(query3.limit));
+      }
+      return get(`/v1/public/signal-records${search.size ? `?${search}` : ""}`);
+    },
+    record(source2, sourceId) {
+      if (!isRecordSource2(source2)) {
+        return Promise.resolve(localRefusal2("INVALID_SOURCE", `source must be one of ${RECORD_SOURCES2.join(", ")}.`));
+      }
+      if (typeof sourceId !== "string" || sourceId.length < 1 || sourceId.length > SOURCE_ID_MAX2) {
+        return Promise.resolve(localRefusal2("INVALID_SOURCE_ID", `source_id must be 1 to ${SOURCE_ID_MAX2} characters.`));
+      }
+      return get(`/v1/public/signal-records/${source2}/${encodeURIComponent(sourceId)}`);
+    }
+  };
+}
+
+// src/commands/signals.ts
+var PRODUCTION_KEY_MESSAGE2 = "Signal records need a production agent key. Create one with `candle keys create`.";
+var SCORECARD_USAGE = "Usage: candle signals scorecard [--date YYYY-MM-DD]";
+var RECORDS_USAGE = `Usage: candle signals records [--source ${RECORD_SOURCES2.join("|")}] [--before <id>] [--limit 1-${RECORDS_LIMIT_MAX2}]`;
+var RECORD_USAGE = `Usage: candle signals record <${RECORD_SOURCES2.join("|")}> <source-id>`;
+var HORIZONS = ["15m", "1h", "4h", "24h"];
+function object5(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function text4(value) {
+  return value === undefined || value === null || value === "" ? "—" : terminalText(String(value));
+}
+function percent2(value, signed2 = false) {
+  if (typeof value !== "number" || !Number.isFinite(value))
+    return "—";
+  const shown = (value * 100).toFixed(2);
+  return `${signed2 && value > 0 ? "+" : ""}${shown}%`;
+}
+function bool(value) {
+  return value === true ? "yes" : value === false ? "no" : "—";
+}
+function measureLine(ctx, stream) {
+  ctx.deps[stream].write(`
+${MEASURE2}
+`);
+}
+function usage13(ctx, message) {
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: false, code: "USAGE", message, measure: MEASURE2 })}
+`);
+  else {
+    ctx.deps.stderr.write(`${terminalLines(message)}
+`);
+    measureLine(ctx, "stderr");
+  }
+  return 2;
+}
+function refuse3(ctx, code, message, details) {
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: false, code, message, ...details ? { details } : {}, measure: MEASURE2 })}
+`);
+  } else {
+    ctx.deps.stderr.write(`${terminalLines(message)}
+`);
+    measureLine(ctx, "stderr");
+  }
+  return 1;
+}
+async function client2(ctx) {
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (!apiKey?.startsWith("cndl_live_")) {
+    refuse3(ctx, "SIGNAL_RECORDS_PRODUCTION_KEY_REQUIRED", PRODUCTION_KEY_MESSAGE2);
+    return;
+  }
+  try {
+    return createSignalRecordsClient2({
+      apiKey,
+      apiUrl: ctx.deps.env.CANDLE_HACC_URL?.trim() || undefined,
+      fetch: ctx.deps.fetch
+    });
+  } catch {
+    refuse3(ctx, "SIGNAL_RECORDS_URL_INVALID", "Signal records need a valid HTTPS CANDLE_HACC_URL without credentials, query or fragment.");
+  }
+}
+function answer2(ctx, result2, render2) {
+  if (!result2.ok) {
+    const { status, code, message, body } = result2.refusal;
+    return refuse3(ctx, code, message, status ? { status, body } : undefined);
+  }
+  if (ctx.json)
+    ctx.deps.stdout.write(`${JSON.stringify(result2.body)}
+`);
+  else {
+    render2(result2.body);
+    measureLine(ctx, "stdout");
+  }
+  return 0;
+}
+async function signalsScorecard(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--date"] });
+  if ("error" in parsed)
+    return usage13(ctx, `${parsed.error}
+${SCORECARD_USAGE}`);
+  const date2 = parsed.values["--date"];
+  if (parsed.positionals.length || date2 !== undefined && !isScorecardDate2(date2))
+    return usage13(ctx, SCORECARD_USAGE);
+  const hacc = await client2(ctx);
+  if (!hacc)
+    return 1;
+  return answer2(ctx, await hacc.scorecard(date2), (body) => {
+    const window = object5(body.window);
+    const universes = Array.isArray(body.baseline_universes) ? body.baseline_universes.map(text4).join(", ") : "—";
+    writeFields(ctx.deps, "stdout", [
+      ["Date", text4(body.date)],
+      ["As of", text4(body.as_of)],
+      ["Window", `${text4(window.from)} to ${text4(window.to)}`],
+      ["Signal lift (24h)", percent2(body.signal_lift, true)],
+      ["Signal pairs", text4(body.signal_pairs)],
+      ["Pending 24h", text4(body.pending_24h)],
+      ["Baselines", universes || "—"]
+    ], "hacc scorecard");
+    const rows = Array.isArray(body.rows) ? body.rows.map(object5) : [];
+    ctx.deps.stdout.write(`
+`);
+    if (!rows.length) {
+      ctx.deps.stdout.write(`No scorecard rows for this day.
+`);
+      return;
+    }
+    writeTable(ctx.deps, "stdout", [
+      "Source",
+      "Rule",
+      "Variant",
+      "Horizon",
+      "Count",
+      "Coverage",
+      "Mean (conservative)",
+      "Mean (priced)",
+      "Baseline",
+      "Lift",
+      "2x/5x/20x",
+      "Delay p50/p95 s",
+      "Marked"
+    ], rows.map((row2) => [
+      text4(row2.source),
+      text4(row2.rule_id),
+      text4(row2.variant),
+      text4(row2.horizon),
+      text4(row2.count),
+      percent2(row2.coverage),
+      percent2(row2.mean_conservative, true),
+      percent2(row2.mean_priced, true),
+      percent2(row2.baseline_mean, true),
+      percent2(row2.lift, true),
+      `${text4(row2.tail_2x)}/${text4(row2.tail_5x)}/${text4(row2.tail_20x)}`,
+      `${text4(row2.delay_p50_s)}/${text4(row2.delay_p95_s)}`,
+      [row2.shadow === true ? "shadow" : "", row2.backfilled === true ? "backfilled" : ""].filter(Boolean).join(", ") || "—"
+    ]), [
+      {},
+      { priority: 6 },
+      { priority: 5 },
+      {},
+      {},
+      {},
+      {},
+      { priority: 3 },
+      {},
+      {},
+      { priority: 4 },
+      { priority: 1 },
+      {}
+    ]);
+  });
+}
+function integerFlag(value, min, max) {
+  if (value === undefined)
+    return;
+  if (!/^\d+$/.test(value))
+    return null;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= min && n <= max ? n : null;
+}
+async function signalsRecords(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--source", "--before", "--limit"] });
+  if ("error" in parsed)
+    return usage13(ctx, `${parsed.error}
+${RECORDS_USAGE}`);
+  const v = parsed.values;
+  const source2 = v["--source"];
+  const before = integerFlag(v["--before"], 1, Number.MAX_SAFE_INTEGER);
+  const limit = integerFlag(v["--limit"], 1, RECORDS_LIMIT_MAX2);
+  if (parsed.positionals.length || source2 !== undefined && !isRecordSource2(source2) || before === null || limit === null)
+    return usage13(ctx, RECORDS_USAGE);
+  const hacc = await client2(ctx);
+  if (!hacc)
+    return 1;
+  const query3 = {
+    ...source2 !== undefined && isRecordSource2(source2) ? { source: source2 } : {},
+    ...before !== undefined ? { before } : {},
+    ...limit !== undefined ? { limit } : {}
+  };
+  return answer2(ctx, await hacc.records(query3), (body) => {
+    const records = Array.isArray(body.records) ? body.records.map(object5) : [];
+    if (!records.length)
+      ctx.deps.stdout.write(`No signal records on this page.
+`);
+    else
+      writeTable(ctx.deps, "stdout", [
+        "Source",
+        "Id",
+        "Variant",
+        "Chain",
+        "Emitted",
+        "Entry",
+        "24h status",
+        "Net 24h (conservative)",
+        "Net 24h (priced)",
+        "Max multiple",
+        "Baseline 24h",
+        "Backfilled"
+      ], records.map((record6) => [
+        text4(record6.source),
+        text4(record6.source_id),
+        text4(record6.variant),
+        text4(record6.chain),
+        text4(record6.emitted_at),
+        text4(record6.entry_status),
+        text4(object5(record6.outcome_status)["24h"]),
+        percent2(object5(record6.net_return_conservative)["24h"], true),
+        percent2(object5(record6.net_return_priced)["24h"], true),
+        text4(object5(record6.path_24h).max_multiple),
+        percent2(object5(object5(record6.baseline).net_return_conservative)["24h"], true),
+        bool(record6.backfilled)
+      ]), [
+        { id: true },
+        { id: true },
+        { priority: 3 },
+        { priority: 4 },
+        { priority: 6 },
+        { priority: 2 },
+        { priority: 5 },
+        {},
+        { priority: 1 },
+        { priority: 2 },
+        { priority: 5 },
+        {}
+      ]);
+    if (typeof body.next_before === "number") {
+      ctx.deps.stdout.write(`
+Next page: candle signals records --before ${body.next_before}${source2 ? ` --source ${source2}` : ""}
+`);
+    }
+  });
+}
+async function signalsRecord(args, ctx) {
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed)
+    return usage13(ctx, `${parsed.error}
+${RECORD_USAGE}`);
+  const [source2, sourceId] = parsed.positionals;
+  if (parsed.positionals.length !== 2 || !isRecordSource2(source2) || !sourceId || sourceId.length > 128)
+    return usage13(ctx, RECORD_USAGE);
+  const hacc = await client2(ctx);
+  if (!hacc)
+    return 1;
+  return answer2(ctx, await hacc.record(source2, sourceId), (record6) => {
+    const path = object5(record6.path_24h);
+    const baseline = object5(record6.baseline);
+    writeFields(ctx.deps, "stdout", [
+      ["Source", text4(record6.source)],
+      ["Id", text4(record6.source_id)],
+      ["Variant", text4(record6.variant)],
+      ["Chain", text4(record6.chain)],
+      ["Emitted", text4(record6.emitted_at)],
+      ["Backfilled", bool(record6.backfilled)],
+      ["Entry", text4(record6.entry_status)]
+    ], "hacc signal record");
+    ctx.deps.stdout.write(`
+`);
+    const status = object5(record6.outcome_status);
+    const conservative = object5(record6.net_return_conservative);
+    const priced = object5(record6.net_return_priced);
+    const baselineNet = object5(baseline.net_return_conservative);
+    writeTable(ctx.deps, "stdout", ["Horizon", "Status", "Net (conservative)", "Net (priced)", "Baseline (conservative)"], HORIZONS.map((h) => [
+      h,
+      text4(status[h]),
+      percent2(conservative[h], true),
+      percent2(priced[h], true),
+      percent2(baselineNet[h], true)
+    ]), Array.from({ length: 5 }, () => ({})));
+    ctx.deps.stdout.write(`
+`);
+    writeFields(ctx.deps, "stdout", [
+      ["Max multiple (24h)", text4(path.max_multiple)],
+      ["Reached 2x/5x/20x", `${bool(path.hit_2x)}/${bool(path.hit_5x)}/${bool(path.hit_20x)}`],
+      ["Drawdown before 2x", percent2(path.drawdown_before_2x, true)],
+      ["24h path settled", bool(path.settled)],
+      [
+        "Baseline",
+        Object.keys(baseline).length ? `${text4(baseline.match)} (${text4(baseline.universe)})` : "none matched"
+      ]
+    ]);
+  });
+}
+
 // src/commands/spend.ts
 init_args();
 init_client();
@@ -107626,7 +108309,7 @@ async function runStake(action, args, ctx) {
     valueFlags: ["--wallet", "--client-stake-id"],
     booleanFlags: ["--yes", ...action === "claim" ? ["--all"] : []]
   });
-  const usage13 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
+  const usage14 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
@@ -107635,7 +108318,7 @@ async function runStake(action, args, ctx) {
   const id = values["--client-stake-id"] ?? `stake-${randomUUID15()}`;
   const all = booleans.has("--all");
   if (!validClientId(id) || id.length > 128 || (action === "positions" ? positionals.length !== 0 : action === "finish" ? positionals.length > 1 : action === "claim" ? all ? positionals.length !== 0 : positionals.length !== 1 : positionals.length !== 1)) {
-    writeUsageFailure(ctx.deps, usage13, ctx.json);
+    writeUsageFailure(ctx.deps, usage14, ctx.json);
     return 2;
   }
   try {
@@ -107859,16 +108542,16 @@ function resolveRenameTarget(index, old, id) {
 // src/vault/rename-batch.ts
 init_format();
 var MAX_RENAME_BATCH = 256;
-function csvCells(text4) {
+function csvCells(text5) {
   const cells = [];
   let cell = "";
   let quoted = false;
   let closed = false;
-  for (let i = 0;i < text4.length; i++) {
-    const char = text4[i];
+  for (let i = 0;i < text5.length; i++) {
+    const char = text5[i];
     if (quoted) {
       if (char === '"') {
-        if (text4[i + 1] === '"') {
+        if (text5[i + 1] === '"') {
           cell += '"';
           i++;
         } else {
@@ -107894,7 +108577,7 @@ function csvCells(text4) {
   return cells;
 }
 function parseRenamePairs(contents) {
-  const lines = contents.split(/\r?\n/).map((text4, at3) => ({ text: text4, line: at3 + 1 })).filter(({ text: text4 }) => text4.trim() !== "" && !/^\s*#/.test(text4));
+  const lines = contents.split(/\r?\n/).map((text5, at3) => ({ text: text5, line: at3 + 1 })).filter(({ text: text5 }) => text5.trim() !== "" && !/^\s*#/.test(text5));
   const rows = [];
   const findings = [];
   const header = csvCells(lines[0]?.text ?? "")?.map((cell) => cell.trim()) ?? [];
@@ -107909,11 +108592,11 @@ function parseRenamePairs(contents) {
   if (data.length < 1 || data.length > MAX_RENAME_BATCH) {
     findings.push({ line: 0, problem: `A rename file must hold 1 to ${MAX_RENAME_BATCH} rows; found ${data.length}.` });
   }
-  for (const { text: text4, line } of data) {
+  for (const { text: text5, line } of data) {
     let from;
     let to;
     if (csv) {
-      const cells = csvCells(text4);
+      const cells = csvCells(text5);
       if (cells === undefined || cells.length !== header.length) {
         findings.push({ line, problem: "Malformed CSV row or field count does not match the header." });
         continue;
@@ -107921,7 +108604,7 @@ function parseRenamePairs(contents) {
       from = cells[header.indexOf("from")];
       to = cells[header.indexOf("to")];
     } else {
-      const match = /^(\S+)[ \t]+(\S+)([ \t]*)$/.exec(text4);
+      const match = /^(\S+)[ \t]+(\S+)([ \t]*)$/.exec(text5);
       if (match !== null)
         [from, to] = [match[1], `${match[2]}${match[3]}`];
     }
@@ -108176,7 +108859,7 @@ function rerunFile(rows) {
     return rows.map((row2) => `${row2.from} ${row2.to}`);
   return ["from,to", ...rows.map((row2) => `${row2.from},"${row2.to.replaceAll('"', '""')}"`)];
 }
-function refusal3(ctx, findings, exit) {
+function refusal4(ctx, findings, exit) {
   const message = "TEE rename refused. Nothing was changed.";
   if (ctx.json)
     writeJson(ctx.deps, { ok: false, code: "TEE_RENAME_BATCH_REFUSED", message, findings });
@@ -108207,7 +108890,7 @@ function serverFailure(ctx, result2, pairs, batch) {
       };
     });
     if (batch)
-      return refusal3(ctx, findings, 1);
+      return refusal4(ctx, findings, 1);
     writeLocalFailure(deps, {
       code: "TEE_RENAME_REFUSED",
       message: `${findings.map((finding) => finding.problem).join(" ")} Nothing was changed.`,
@@ -108270,7 +108953,7 @@ async function teeRename(args, ctx) {
     }
     const parsedFile = parseRenamePairs(contents);
     if (parsedFile.findings.length > 0)
-      return refusal3(ctx, parsedFile.findings, 2);
+      return refusal4(ctx, parsedFile.findings, 2);
     pairs = parsedFile.rows;
   } else {
     const invalid4 = validateLabel(next);
@@ -108349,7 +109032,7 @@ async function teeRename(args, ctx) {
     }
     if (findings.length > 0) {
       if (batch)
-        return refusal3(ctx, findings, 1);
+        return refusal4(ctx, findings, 1);
       writeLocalFailure(deps, {
         code: twice ? "VAULT_LABEL_AMBIGUOUS" : "VAULT_LABEL_TAKEN",
         message: `${findings.map((finding) => finding.problem).join(" ")} Nothing was changed.`,
@@ -108501,12 +109184,12 @@ function readClusterResult2(value, mint) {
   if (v.status !== "available" || v.chain !== "solana" || v.source !== "third_party" || !["hit", "miss"].includes(v.cache) || typeof v.fetchedAt !== "string" || typeof v.expiresAt !== "string" || !Number.isFinite(Date.parse(v.fetchedAt)) || !(Date.parse(v.expiresAt) > Date.parse(v.fetchedAt)))
     return null;
   const a = v.analysis;
-  const percent2 = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 100;
-  if (!a || !percent2(a.clusterSupplyPct) || !Array.isArray(a.clusters) || !a.clusters.length || a.clusters.length > 100)
+  const percent3 = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 100;
+  if (!a || !percent3(a.clusterSupplyPct) || !Array.isArray(a.clusters) || !a.clusters.length || a.clusters.length > 100)
     return null;
   let addresses = 0;
   for (const c of a.clusters) {
-    if (!c || !percent2(c.supplyPct) || c.supplyPct > a.clusterSupplyPct + 0.01 || !Array.isArray(c.addresses) || !Array.isArray(c.tags) || c.tags.length > 32 || c.tags.some((t) => typeof t !== "string" || t.length > 100) || c.addresses.some((x) => typeof x !== "string" || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(x)))
+    if (!c || !percent3(c.supplyPct) || c.supplyPct > a.clusterSupplyPct + 0.01 || !Array.isArray(c.addresses) || !Array.isArray(c.tags) || c.tags.length > 32 || c.tags.some((t) => typeof t !== "string" || t.length > 100) || c.addresses.some((x) => typeof x !== "string" || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(x)))
       return null;
     addresses += c.addresses.length;
   }
@@ -108826,27 +109509,27 @@ function mayHaveCommitted(result2) {
   return result2.retryable === true || result2.status >= 500 && result2.retryable !== false;
 }
 async function tokenEdit(args, ctx) {
-  const usage13 = usageFor2(ctx, EDIT_USAGE);
+  const usage14 = usageFor2(ctx, EDIT_USAGE);
   const split2 = splitClears(args);
   if ("error" in split2)
-    return usage13(split2.error);
+    return usage14(split2.error);
   const parsed = parseArgs(split2.rest, {
     valueFlags: ["--chain", "--idempotency-key", ...EDIT_FIELDS.map((field) => field.cli.flag)]
   });
   if ("error" in parsed)
-    return usage13(parsed.error);
+    return usage14(parsed.error);
   const [mint] = parsed.positionals;
   if (parsed.positionals.length !== 1 || !mint)
-    return usage13();
+    return usage14();
   const chain2 = chainFor(mint, parsed.values["--chain"]);
   if (!chain2)
-    return usage13("--chain must be solana or hood.");
+    return usage14("--chain must be solana or hood.");
   const body = editBodyOf(parsed.values, split2.clears);
   if ("error" in body)
-    return usage13(body.error);
+    return usage14(body.error);
   const given2 = parsed.values["--idempotency-key"];
   if (given2 !== undefined && (given2.length < 1 || given2.length > 128)) {
-    return usage13("--idempotency-key must be 1 to 128 characters.");
+    return usage14("--idempotency-key must be 1 to 128 characters.");
   }
   const idempotencyKey = given2 ?? randomUUID16();
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
@@ -108917,14 +109600,14 @@ async function tokenHistory2(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
   if ("error" in parsed || parsed.positionals.length !== 1)
     return tokenHistory(args, ctx);
-  const usage13 = usageFor2(ctx, HISTORY_USAGE);
+  const usage14 = usageFor2(ctx, HISTORY_USAGE);
   const mint = parsed.positionals[0];
   const chain2 = chainFor(mint, parsed.values["--chain"]);
   if (!chain2)
-    return usage13("--chain must be solana or hood.");
+    return usage14("--chain must be solana or hood.");
   const limit = parsed.values["--limit"];
   if (limit !== undefined && (!/^[1-9]\d?$/.test(limit) || Number(limit) > 50)) {
-    return usage13("--limit is a whole number from 1 to 50.");
+    return usage14("--limit is a whole number from 1 to 50.");
   }
   const query3 = new URLSearchParams({
     ...limit !== undefined ? { limit } : {},
@@ -109011,11 +109694,11 @@ async function readWithdrawalAddresses(ctx, key) {
     throw new TradingError("INVALID_RESPONSE", "The withdrawal allowlist read did not return a list.");
   return body.addresses;
 }
-async function resolveDestination(ctx, key, source, to, chain2 = "solana") {
+async function resolveDestination(ctx, key, source2, to, chain2 = "solana") {
   const hood = chain2 === "hood";
   const same = (a, b) => hood ? sameEvmAddress(a, b) : a === b;
   if (to === "vault") {
-    const lifecycle = await request(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(source.id)}/lifecycle`);
+    const lifecycle = await request(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(source2.id)}/lifecycle`);
     const vault = lifecycle.vaultDestination;
     if (typeof vault !== "string" || vault.length === 0)
       throw new TradingError("VAULT_NOT_PINNED", "This wallet has no pinned vault recorded on Candle, so --to vault names nothing. Pass the address instead.");
@@ -109027,16 +109710,16 @@ async function resolveDestination(ctx, key, source, to, chain2 = "solana") {
     return { kind: "vault", address: checked.address };
   }
   const rowChain2 = hood ? "evm" : "solana";
-  const rows = (await readLinkedWallets(ctx, key)).filter((row2) => row2.chain === rowChain2 && row2.revokedAt === undefined && !same(row2.address, source.address));
+  const rows = (await readLinkedWallets(ctx, key)).filter((row2) => row2.chain === rowChain2 && row2.revokedAt === undefined && !same(row2.address, source2.address));
   const matches2 = rows.filter((row2) => row2.label === to || row2._id === to || same(row2.address, to));
   if (matches2.length > 1)
     throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${matches2.length} linked wallets: ${matches2.map((row2) => `${row2.label ?? ""} (${row2._id}, ${row2.address})`.trim()).join("; ")}. Name one by id or address.`);
   const match = matches2[0];
   if (match)
     return { kind: "linked", address: match.address, id: match._id, ...match.label ? { label: match.label } : {} };
-  if (same(to, source.address))
+  if (same(to, source2.address))
     throw new TradingError("DESTINATION_IS_SOURCE", "--to names the wallet the funds would leave. Name a different destination.");
-  const allowlist = (await readWithdrawalAddresses(ctx, key)).filter((row2) => row2.chain === chain2 && row2.revokedAt === undefined && !same(row2.address, source.address));
+  const allowlist = (await readWithdrawalAddresses(ctx, key)).filter((row2) => row2.chain === chain2 && row2.revokedAt === undefined && !same(row2.address, source2.address));
   const approved = allowlist.filter((row2) => row2.label === to || row2.id === to || same(row2.address, to));
   if (approved.length > 1)
     throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${approved.length} approved withdrawal addresses: ${approved.map((row2) => `${row2.label ?? ""} (${row2.id}, ${row2.address})`.trim()).join("; ")}. Name one by id or address.`);
@@ -109316,7 +109999,7 @@ async function hoodTransfer(ctx, args) {
     first,
     submitPath: "/api/v1/agent/transfer/submit",
     submitFields: { transferId },
-    unwrap: (answer2) => answer2,
+    unwrap: (answer3) => answer3,
     primaryLeg: "transfer",
     allowedLegs: ["transfer"],
     checkLeg: (_kind, leg2) => transferLegMoves(leg2, { token: tokenAddress, to: destination.address, amountRaw }),
@@ -109464,7 +110147,7 @@ function stepReporter(write3, tty, ascii = false) {
 }
 function commandSteps(ctx) {
   const style = terminalStyle(ctx.deps, "stderr", ctx.json);
-  const reporter = stepReporter(ctx.json ? () => {} : (text4) => ctx.deps.stderr.write(text4), style.motion, !style.styled);
+  const reporter = stepReporter(ctx.json ? () => {} : (text5) => ctx.deps.stderr.write(text5), style.motion, !style.styled);
   return { ...reporter, [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: () => reporter.stop() };
 }
 function formatBytes(n) {
@@ -111002,7 +111685,7 @@ async function demoteOne(ctx, session, row2, values, booleans) {
     if (booleans.has(flag))
       args.push(flag);
   const covered = row2.destination === null ? null : `Type confirm to sweep everything to ${row2.destination}: `;
-  const promptLine = async (text4) => text4 === covered ? "confirm" : ctx.deps.promptLine(text4);
+  const promptLine = async (text5) => text5 === covered ? "confirm" : ctx.deps.promptLine(text5);
   const captured = [];
   const errLines = [];
   const stdout = ctx.json ? { write: (chunk) => void captured.push(chunk) } : ctx.deps.stdout;
@@ -111060,11 +111743,11 @@ async function demoteOne(ctx, session, row2, values, booleans) {
   return outcome;
 }
 function firstSentence(chunk) {
-  const text4 = chunk.replace(/\s+/g, " ").replace(/^[^\p{L}\p{N}]+/u, "").trim();
-  if (text4 === "")
+  const text5 = chunk.replace(/\s+/g, " ").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+  if (text5 === "")
     return;
-  const end = text4.search(/\.(\s|$)/);
-  return end < 0 ? text4 : text4.slice(0, end + 1);
+  const end = text5.search(/\.(\s|$)/);
+  return end < 0 ? text5 : text5.slice(0, end + 1);
 }
 function writeResultLine(deps, outcome) {
   const word3 = { done: "done", incomplete: "incomplete", failed: "FAILED", skipped: "skipped" }[outcome.status];
@@ -112378,8 +113061,8 @@ This vault has exactly one recoverable factor: the passphrase. Lose it and no co
       notice(deps, "stdout", "note", `
 This vault has a 24-word recovery phrase. It re-derives every key this vault derives, on any BIP-39 wallet, and it is the only way back if you lose both the file and your backups.
 `.trim());
-      const answer2 = (await deps.promptLine("Show the recovery phrase now? Type yes to see it, anything else to skip: ")).trim().toLowerCase();
-      if (answer2 === "yes") {
+      const answer3 = (await deps.promptLine("Show the recovery phrase now? Type yes to see it, anything else to skip: ")).trim().toLowerCase();
+      if (answer3 === "yes") {
         await runPhraseCeremony(ctx, vault);
       } else {
         notice(deps, "stdout", "note", `Skipped. You can run the ceremony later with: candle vault phrase show
@@ -112432,8 +113115,8 @@ Nothing has a copy of this vault yet. A copy in iCloud Drive is a copy of the ci
 `.trim());
   notice(deps, "stdout", "note", `This vault holds no keys yet, so what a copy taken now protects is the root every key comes back from. Back it up again after your first \`vault new-key\`: until then \`verify-backup\` will report this copy as stale, correctly.
 `.trim());
-  const answer2 = (await deps.promptLine("Back up your encrypted vault to iCloud Drive now? Type yes to back it up, anything else to skip: ")).trim().toLowerCase();
-  if (answer2 !== "yes") {
+  const answer3 = (await deps.promptLine("Back up your encrypted vault to iCloud Drive now? Type yes to back it up, anything else to skip: ")).trim().toLowerCase();
+  if (answer3 !== "yes") {
     notice(deps, "stdout", "note", `Skipped. Back it up whenever you like with: candle vault backup --to ${ICLOUD_SHORTHAND}
 `.trim());
     return;
@@ -112985,9 +113668,9 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
   if (parsed.values["--from"] !== undefined) {
     return usage2(ctx, "--from applies to an external wallet only; a TEE wallet is funded from its pinned vault key.");
   }
-  const client2 = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
-  if ("error" in client2)
-    return usage2(ctx, client2.error);
+  const client3 = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in client3)
+    return usage2(ctx, client3.error);
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "vault fund"))
@@ -113027,15 +113710,15 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
       throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${teeEntry.address} has no pinned EVM vault key in this vault to fund from.`, { suggestion: "Nothing was signed. candle vault status lists this vault's keys and their pins." });
     }
     assertVaultSigner(fromEntry);
-    ctx.deps.stderr.write(`${hoodHostLine(client2, "the chain id")}
+    ctx.deps.stderr.write(`${hoodHostLine(client3, "the chain id")}
 `);
-    await assertHoodChain(client2);
+    await assertHoodChain(client3);
     notice(ctx.deps, "stdout", "note", `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
 `.trim());
     return runEvmTransfer({
       ctx,
-      rpcUrl: client2.url,
-      builtIn: client2.builtIn,
+      rpcUrl: client3.url,
+      builtIn: client3.builtIn,
       pinHoodChain: true,
       from: fromEntry,
       to: teeEntry.address,
@@ -113045,7 +113728,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
       decryptSecret: () => decryptKey(vault, fromEntry.id),
       usage: (line) => usage2(ctx, line),
       writeJson: (value) => writeJson(ctx.deps, { ...value, tee: teeEntry.address })
-    }, client2.rpc);
+    }, client3.rpc);
   });
 }
 function refuseRetiredFund(ctx, address) {
@@ -113144,13 +113827,13 @@ function mapLegacyTeeEntry(entry2, keyId, grant, createdAtFallback) {
   return { entry: mapped, secret64 };
 }
 function buildTeeMeta(entry2, lifecycle, grant) {
-  const source = entry2.tee;
-  const network2 = source?.network ?? "solana-mainnet";
+  const source2 = entry2.tee;
+  const network2 = source2?.network ?? "solana-mainnet";
   if (network2 !== "solana-mainnet") {
     throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry2.address} names network ${String(network2)}; only solana-mainnet migrates.`);
   }
   const meta = { network: network2, lifecycle };
-  carryOptional(meta, source, [
+  carryOptional(meta, source2, [
     "vaultDestination",
     "boundKeyPrefix",
     "remoteAuthority",
@@ -113186,11 +113869,11 @@ function buildTeeMeta(entry2, lifecycle, grant) {
   }
   return meta;
 }
-function carryOptional(target, source, fields2) {
-  if (source === undefined)
+function carryOptional(target, source2, fields2) {
+  if (source2 === undefined)
     return;
   for (const field of fields2) {
-    const value = source[field];
+    const value = source2[field];
     if (value !== undefined)
       target[field] = value;
   }
@@ -113849,16 +114532,16 @@ init_promote_support();
 init_store();
 init_vault_support();
 function hoodClientFor(ctx, parsed) {
-  const client2 = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
-  if ("error" in client2)
-    return { exit: usage2(ctx, client2.error) };
-  return client2;
+  const client3 = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in client3)
+    return { exit: usage2(ctx, client3.error) };
+  return client3;
 }
-async function promoteHeight(ctx, client2) {
-  notice(ctx.deps, "stderr", "note", `${hoodHostLine(client2, "the chain id and the current Hood height")}
+async function promoteHeight(ctx, client3) {
+  notice(ctx.deps, "stderr", "note", `${hoodHostLine(client3, "the chain id and the current Hood height")}
 `.trim());
-  await assertHoodChain(client2);
-  return client2.rpc.blockNumber();
+  await assertHoodChain(client3);
+  return client3.rpc.blockNumber();
 }
 function importKeyHex(secret) {
   return bytesToHex2(secret);
@@ -113877,11 +114560,11 @@ async function promoteEvmFresh(input, fromLabel) {
     acceptUnknownExposure: acceptUnknown,
     chain: "evm"
   });
-  const client2 = hoodClientFor(ctx, parsed);
-  if ("exit" in client2)
-    return client2.exit;
+  const client3 = hoodClientFor(ctx, parsed);
+  if ("exit" in client3)
+    return client3.exit;
   await refuseWithoutRoom(ctx);
-  const height = await promoteHeight(ctx, client2);
+  const height = await promoteHeight(ctx, client3);
   const teeIndex = nextAllocatableIndex(nextIndexOf(vault.index.hd, "evmTee"), exposedIndexesOf(vault.index.hd, "evmTee"));
   const derivationPath = evmTeePath(teeIndex);
   const root = await decryptRoot(vault);
@@ -114014,9 +114697,9 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
   const { ctx, parsed, opened, hold, resolvedVault, toKey } = input;
   let vault = hold(opened.vault);
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
-  const client2 = hoodClientFor(ctx, parsed);
-  if ("exit" in client2)
-    return client2.exit;
+  const client3 = hoodClientFor(ctx, parsed);
+  if ("exit" in client3)
+    return client3.exit;
   const first = assertEvmInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
     acceptUnknownExposure: acceptUnknown
   });
@@ -114030,8 +114713,8 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
     warnings: [...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")],
     ...toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}
   });
-  const height = await promoteHeight(ctx, client2);
-  const holdings2 = await readEvmHoldings(client2.rpc, first.subject.address);
+  const height = await promoteHeight(ctx, client3);
+  const holdings2 = await readEvmHoldings(client3.rpc, first.subject.address);
   for (const line of holdingsLines(first.subject.address, holdings2, new Date(ctx.deps.now()).toISOString())) {
     notice(ctx.deps, "stdout", "note", `${line}
 `.trim());
@@ -114388,9 +115071,9 @@ async function refuseWithoutRoom(ctx) {
     notice(ctx.deps, "stderr", "note", unreadableRoomLine(read3.reason).trim());
     return;
   }
-  const refusal4 = singleRoomRefusal(read3.room);
-  if (refusal4 !== null)
-    throw refusal4;
+  const refusal5 = singleRoomRefusal(read3.room);
+  if (refusal5 !== null)
+    throw refusal5;
 }
 async function reopenFromDisk(path, reopen, previous) {
   closeVault(previous);
@@ -114907,8 +115590,8 @@ function parsePairsFile(contents, opts) {
     const orderAt = at3("order");
     const valueAt = at3("value_usd");
     hasValueUsd = valueAt !== -1;
-    for (const { line, text: text4 } of meaningful.slice(1)) {
-      const cells = text4.split(",").map((cell) => cell.trim());
+    for (const { line, text: text5 } of meaningful.slice(1)) {
+      const cells = text5.split(",").map((cell) => cell.trim());
       if (cells.length !== headerCells.length) {
         findings.push({
           line,
@@ -114941,8 +115624,8 @@ function parsePairsFile(contents, opts) {
       ]
     };
   } else {
-    for (const { line, text: text4 } of meaningful) {
-      const fields2 = text4.trim().split(/\s+/);
+    for (const { line, text: text5 } of meaningful) {
+      const fields2 = text5.trim().split(/\s+/);
       if (fields2.length !== 2) {
         findings.push({
           line,
@@ -115055,7 +115738,7 @@ async function preflightBatch(index, rows, opts) {
   const failures = [];
   const pinnedBy = new Map;
   const promotedBy = new Map;
-  const refuse3 = (row2, failure4) => {
+  const refuse4 = (row2, failure4) => {
     failures.push({
       line: row2.line,
       label: row2.label,
@@ -115068,7 +115751,7 @@ async function preflightBatch(index, rows, opts) {
   };
   const refuseWith = (row2, error, why) => {
     if (isVaultError(error)) {
-      refuse3(row2, {
+      refuse4(row2, {
         code: error.code,
         message: error.message,
         ...error.suggestion !== undefined ? { suggestion: error.suggestion } : {},
@@ -115076,7 +115759,7 @@ async function preflightBatch(index, rows, opts) {
       });
       return;
     }
-    refuse3(row2, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) });
+    refuse4(row2, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) });
   };
   for (const row2 of rows) {
     const classified = classifyRow(index, row2);
@@ -115100,7 +115783,7 @@ async function preflightBatch(index, rows, opts) {
     if (classified.state === "conflict") {
       const subject = classified.subject;
       const lifecycle = subject.tee?.lifecycle ?? "unknown";
-      refuse3(row2, {
+      refuse4(row2, {
         code: "PROMOTE_ALREADY_TEE_WALLET",
         message: `${subject.label ?? subject.address} is already a TEE wallet (${lifecycle}).`,
         why: classified.onDisk !== undefined ? `On disk it sweeps to ${classified.onDisk}; this file says ${row2.destination} (${classified.destinationAddress}).` : `Its lifecycle is ${lifecycle}, which is not resumable; this file says ${row2.destination}.`
@@ -115114,7 +115797,7 @@ async function preflightBatch(index, rows, opts) {
         destinationAddress: classified.destinationAddress
       });
       if (!reconciled.ok) {
-        refuse3(row2, reconciled.failure);
+        refuse4(row2, reconciled.failure);
         continue;
       }
       planned.push({
@@ -115132,7 +115815,7 @@ async function preflightBatch(index, rows, opts) {
         acceptUnknownExposure: opts.acceptUnknownExposure
       });
       if (resume) {
-        refuse3(row2, {
+        refuse4(row2, {
           code: "PROMOTE_ALREADY_TEE_WALLET",
           message: `${subject.label ?? subject.address} is already a TEE wallet (${subject.tee?.lifecycle ?? "unknown"}).`
         });
@@ -115172,15 +115855,15 @@ function annotate(error, row2, classified, pinnedBy, promotedBy) {
 var CONTINUATION_SENTENCE = (total) => `Each row was checked against the vault as it will be when the rows above it have run, so this is
 ` + `every row that fails on that basis. Fix these rows and run again; the next run re-checks all ${total}
 ` + `from scratch.`;
-function writeBatchRefusal(deps, json, refusal4) {
-  const n = refusal4.rows.length;
+function writeBatchRefusal(deps, json, refusal5) {
+  const n = refusal5.rows.length;
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       ok: false,
       code: "PROMOTE_BATCH_REFUSED",
-      message: `${n} of ${refusal4.total} rows cannot run; nothing was written.`,
+      message: `${n} of ${refusal5.total} rows cannot run; nothing was written.`,
       suggestion: "Fix the rows below and run again; the next run re-checks every row from scratch.",
-      rows: refusal4.rows.map((row2) => ({
+      rows: refusal5.rows.map((row2) => ({
         line: row2.line,
         label: row2.label,
         destination: row2.destination,
@@ -115192,18 +115875,18 @@ function writeBatchRefusal(deps, json, refusal4) {
 `);
     return;
   }
-  const table = renderTable(["line", "label", "destination", "code", "why"], refusal4.rows.map((row2) => [
+  const table = renderTable(["line", "label", "destination", "code", "why"], refusal5.rows.map((row2) => [
     String(row2.line),
     row2.label,
     row2.destination,
     row2.code,
     row2.why !== undefined ? `${row2.message} ${row2.why}` : row2.message
   ]));
-  deps.stderr.write(`This batch was refused and NOTHING was written. ${n} of ${refusal4.total} rows cannot run:
+  deps.stderr.write(`This batch was refused and NOTHING was written. ${n} of ${refusal5.total} rows cannot run:
 
 ${table}
 
-${CONTINUATION_SENTENCE(refusal4.total)}
+${CONTINUATION_SENTENCE(refusal5.total)}
 `);
 }
 function parseValueUsdCell(raw) {
@@ -115802,10 +116485,10 @@ async function verifySubjectSecret(vault, subject) {
 }
 async function reconcileForPreflight(ctx, row2, subject, resolved) {
   const { onDisk } = resolved;
-  const refuse3 = (failure4) => ({ ok: false, failure: failure4 });
+  const refuse4 = (failure4) => ({ ok: false, failure: failure4 });
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
-    return refuse3({
+    return refuse4({
       code: "PROMOTE_RECONCILE_INCOMPLETE",
       message: "No API key is available; reconciliation cannot run.",
       suggestion: "Run: candle keys create"
@@ -115817,7 +116500,7 @@ async function reconcileForPreflight(ctx, row2, subject, resolved) {
     const name2 = ctx.profile ?? config.activeProfile;
     const cached = name2 !== undefined ? config.profiles?.[name2]?.account : undefined;
     if (cached === undefined || cached === "") {
-      return refuse3({
+      return refuse4({
         code: "PROMOTE_RECONCILE_INCOMPLETE",
         message: "This entry has no grant identity, and this profile has no cached account to assert."
       });
@@ -115829,7 +116512,7 @@ async function reconcileForPreflight(ctx, row2, subject, resolved) {
     verdict = await reconcileGrant(ctx, subject, { assertedAccount });
   } catch (error) {
     if (isVaultError(error)) {
-      return refuse3({
+      return refuse4({
         code: error.code,
         message: error.message,
         ...error.suggestion !== undefined ? { suggestion: error.suggestion } : {}
@@ -115838,17 +116521,17 @@ async function reconcileForPreflight(ctx, row2, subject, resolved) {
     throw error;
   }
   if (verdict.kind === "unreadable") {
-    return refuse3({ code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason });
+    return refuse4({ code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason });
   }
   if (verdict.kind === "unresolved") {
-    return refuse3({
+    return refuse4({
       code: "PROMOTE_OUTCOME_UNRESOLVED",
       message: `No authoritative grant or stranding record for ${subject.address}; the outcome is not established.`,
       suggestion: "Nothing was written. Demote under --emergency if funds must move, then promote a fresh key."
     });
   }
   if (verdict.kind === "strand-final") {
-    return refuse3({
+    return refuse4({
       code: "PROMOTE_ALREADY_TEE_WALLET",
       message: `${subject.address} is stranded; it is never re-promotable.`,
       suggestion: `Run: candle vault promote --in-place ${row2.label} (which records the stranding), then remove this row from the file.`
@@ -115858,7 +116541,7 @@ async function reconcileForPreflight(ctx, row2, subject, resolved) {
   const account = assertedAccount ?? subject.tee?.grantIdentity?.account ?? verdict.account;
   if (onDisk !== undefined) {
     if (server !== undefined && server !== onDisk) {
-      return refuse3({
+      return refuse4({
         code: "GRANT_BINDING_MISMATCH",
         message: `The recorded vault destination ${onDisk} does not match the server's ${server}.`
       });
@@ -115866,7 +116549,7 @@ async function reconcileForPreflight(ctx, row2, subject, resolved) {
     return { ok: true, destinationAddress: onDisk, ...assertedAccount !== undefined ? { account } : {} };
   }
   if (server === undefined) {
-    return refuse3({
+    return refuse4({
       code: "GRANT_DESTINATION_UNRESOLVED",
       message: `The server lists ${subject.address} but carries no vault destination to adopt.`,
       suggestion: "Choose a vault key with `vault demote --sweep-to`, or wait until the grant records a destination."
@@ -115874,7 +116557,7 @@ async function reconcileForPreflight(ctx, row2, subject, resolved) {
   }
   const fileDestination = resolved.destinationAddress;
   if (server !== fileDestination) {
-    return refuse3({
+    return refuse4({
       code: "GRANT_BINDING_MISMATCH",
       message: `The server-reported vault destination ${server} does not match this file's ${row2.destination} (${fileDestination}).`,
       why: `Row ${row2.line} names a different destination from the grant the server holds; the file and the server describe different migrations.`
@@ -117480,7 +118163,7 @@ function writeFailure2(ctx, result2) {
 }
 async function setAllowLaunch(args, ctx, enabled) {
   const { deps, apiUrl, json } = ctx;
-  const usage13 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
+  const usage14 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
   const command = enabled ? "wallets allow-launch" : "wallets disallow-launch";
   const parsed = parseArgs(args, enabled ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -117488,7 +118171,7 @@ async function setAllowLaunch(args, ctx, enabled) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage13}`, json);
+    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage14}`, json);
     return 2;
   }
   const skipConfirm = !enabled && parsed.booleans.has("--yes");
@@ -117546,9 +118229,9 @@ async function setAllowLaunch(args, ctx, enabled) {
   else {
     deps.stderr.write(`${screen[0]}
 `);
-    for (const text4 of screen.slice(1))
-      if (text4)
-        notice(deps, "stderr", "warning", text4);
+    for (const text5 of screen.slice(1))
+      if (text5)
+        notice(deps, "stderr", "warning", text5);
   }
   if (!skipConfirm) {
     const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to ${enabled ? "allow" : "stop"} launches from ${n === 1 ? "this wallet" : `these ${n} wallets`}: `);
@@ -118027,30 +118710,30 @@ function closeProblem(transaction, wallet3, accounts) {
   return null;
 }
 function checkedBuild(build, wallet3, previewed) {
-  const refuse3 = (why) => new TradingError("INVALID_RESPONSE", `The close Candle built ${why}; nothing was signed.`);
+  const refuse4 = (why) => new TradingError("INVALID_RESPONSE", `The close Candle built ${why}; nothing was signed.`);
   if (build.status !== "built" || build.wallet !== wallet3)
-    throw refuse3(`does not name the TEE wallet ${wallet3}`);
+    throw refuse4(`does not name the TEE wallet ${wallet3}`);
   const list = build.transactions;
   if (!Array.isArray(list) || list.length === 0)
-    throw refuse3("has no transactions");
+    throw refuse4("has no transactions");
   const indexes2 = new Set;
   const closing2 = new Set;
   const out = [];
   for (const entry2 of list) {
     const { index, unsignedTransaction, accounts } = entry2 ?? {};
     if (typeof index !== "number" || !Number.isInteger(index) || indexes2.has(index) || typeof unsignedTransaction !== "string" || !Array.isArray(accounts) || !accounts.every((a) => typeof a === "string"))
-      throw refuse3("is not a list of indexed transactions");
+      throw refuse4("is not a list of indexed transactions");
     indexes2.add(index);
     for (const account of accounts) {
       if (!previewed.has(account))
-        throw refuse3(`closes ${safeText(account)}, which the preview did not list`);
+        throw refuse4(`closes ${safeText(account)}, which the preview did not list`);
       if (closing2.has(account))
-        throw refuse3(`closes ${safeText(account)} twice`);
+        throw refuse4(`closes ${safeText(account)} twice`);
       closing2.add(account);
     }
     const problem = closeProblem(unsignedTransaction, wallet3, new Set(accounts));
     if (problem)
-      throw refuse3(`transaction ${index} ${safeText(problem)}`);
+      throw refuse4(`transaction ${index} ${safeText(problem)}`);
     out.push({ index, unsignedTransaction, accounts });
   }
   return out.sort((a, b) => a.index - b.index);
@@ -118245,7 +118928,7 @@ function trustTable(rows, style) {
 }
 async function setTrust(args, ctx, trusted) {
   const { deps, apiUrl, json } = ctx;
-  const usage13 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
+  const usage14 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
   const command = trusted ? "wallets trust" : "wallets untrust";
   const parsed = parseArgs(args, trusted ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -118253,7 +118936,7 @@ async function setTrust(args, ctx, trusted) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage13}`, json);
+    writeScreenUsageFailure(deps, `Name at least one wallet. ${usage14}`, json);
     return 2;
   }
   const skipConfirm = !trusted && parsed.booleans.has("--yes");
@@ -118312,9 +118995,9 @@ async function setTrust(args, ctx, trusted) {
   else {
     deps.stderr.write(`${screen[0]}
 `);
-    for (const text4 of screen.slice(1))
-      if (text4)
-        notice(deps, "stderr", "warning", text4);
+    for (const text5 of screen.slice(1))
+      if (text5)
+        notice(deps, "stderr", "warning", text5);
   }
   if (!skipConfirm) {
     const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to ${trusted ? "trust" : "untrust"} ${n === 1 ? "this wallet" : `these ${n} wallets`}: `);
@@ -118611,6 +119294,7 @@ var COMMANDS = {
   },
   quant: { subcommands: { ask: quantAsk, terms: quantTerms } },
   lab: { subcommands: { status: labStatus, replay: labReplay, runners: labRunners, edges: labEdges } },
+  signals: { subcommands: { scorecard: signalsScorecard, records: signalsRecords, record: signalsRecord } },
   plan: {
     subcommands: { buy: planBuy, status: planStatus, renew: planRenew, "auto-renew": planAutoRenew }
   },

@@ -1,10 +1,10 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-ninety-three tools over stdio, plus four Hyperliquid market reads (ninety-seven in all; ninety-five of them ship in the published 0.10.31 — `candle_recover_operation` and `candle_get_swap_receipt` are source only until the next release), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+ninety-six tools over stdio, plus four Hyperliquid market reads (one hundred in all; ninety-five of them ship in the published 0.10.31 — `candle_recover_operation`, `candle_get_swap_receipt` and the three hacc signal record tools are source only until the next release), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
-check an agent profile, and backtest a strategy in hacc's strategy lab without hand-rolling HTTP calls. The five
+check an agent profile, backtest a strategy in hacc's strategy lab, and read hacc's scorecard and signal records without hand-rolling HTTP calls. The five
 strategy lab tools, `candle_get_trading_wallets` and `candle_get_spendable_balances` are in the published 0.10.31.
 
 Not sure this is the right tool? [How to choose: SDK, MCP or CLI](https://docs.candle.tv/developers/choose-a-surface).
@@ -39,7 +39,7 @@ environment.
 To mint a key for another agent without keeping it as the CLI profile's working key, run `candle keys create --access write --label agent-one --no-store` after device login. The key is printed once; put it in the intended agent's secret store. `--json` reports `stored: false` and exits 0. The profile's existing working key, prefix and scopes stay unchanged, even when it has no working key. Add `--embedded-wallet allow` at a terminal if this key needs the account's embedded wallet. This is a CLI storage option; it adds no MCP tool and does not change tool counts.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all ninety-seven: the ninety-three tools in the table below plus the four Hyperliquid
+Unset means all one hundred: the ninety-six tools in the table below plus the four Hyperliquid
 market reads. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
@@ -157,7 +157,7 @@ before installed-package support can be claimed.
   to `testnet` to trade testnet.
 - `CANDLE_API_KEY` -- alias for `CANDLE_AGENT_API_KEY`, the same variable name the Candle CLI uses
   for this credential. Set either one; if both are set, `CANDLE_AGENT_API_KEY` takes precedence.
-- `CANDLE_HACC_URL` -- the strategy lab tools only: overrides hacc's lab, `https://api.hacc.fun`. HTTPS only,
+- `CANDLE_HACC_URL` -- the strategy lab and signal record tools only: overrides hacc, `https://api.hacc.fun`. HTTPS only,
   without credentials, query or fragment; anything else is refused before the key is sent.
 
 ## Tools
@@ -257,6 +257,9 @@ before installed-package support can be claimed.
 | `candle_lab_replay_result` | Read one replay job: status, and when done the result with its lead card first | hacc `GET /v1/strategy-lab/replay/:id` | `CANDLE_AGENT_API_KEY` (production) |
 | `candle_lab_runners` | The lab's runners table | hacc `GET /v1/strategy-lab/runners` | `CANDLE_AGENT_API_KEY` (production) |
 | `candle_lab_edges` | The lab's edges table, net of the round-trip cost it states | hacc `GET /v1/strategy-lab/edges` | `CANDLE_AGENT_API_KEY` (production) |
+| `candle_signal_scorecard` | hacc's daily scorecard: signal lift against the matched baseline, and per source, rule and horizon counts, coverage, conservative and priced mean net returns, tails and delay. Read-only; every result, errors included, carries `measure: "Measured record, not a forecast."` | hacc `GET /v1/public/scorecard[/:date]` | `CANDLE_AGENT_API_KEY` (production) |
+| `candle_signal_records` | A page of per-signal measured records, newest first (`source`, `before` = the previous page's `next_before`, `limit` 1–100). Read-only; every result carries the fixed line | hacc `GET /v1/public/signal-records` | `CANDLE_AGENT_API_KEY` (production) |
+| `candle_signal_record` | One signal's measured record: per-horizon statuses, conservative and priced net returns, the 24 h path and the matched baseline. Read-only; every result, a 404 included, carries the fixed line | hacc `GET /v1/public/signal-records/:source/:sourceId` | `CANDLE_AGENT_API_KEY` (production) |
 
 ### Launching with an image file
 
@@ -324,7 +327,7 @@ it: a same-id resend replays the stored first answer.
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-ninety-three tools:
+ninety-six tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.

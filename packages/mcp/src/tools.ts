@@ -91,6 +91,15 @@ import {
 import { perpsRiskShapes, withPortfolioSection } from "./perps-risk"
 import { PLAN_CAPABILITY_NOTE, type PlanTable, planPromotionLine, planTableMarkdown } from "./plans"
 import {
+  executeSignalRecordTool,
+  SIGNAL_RECORD_ANNOTATIONS,
+  SIGNAL_RECORD_DESCRIPTIONS,
+  SIGNAL_RECORD_TITLES,
+  type SignalRecordToolName,
+  signalRecordShapes,
+  signalRecordValidationErrorMap,
+} from "./signal-record-tools"
+import {
   readSwapReceipt,
   SWAP_RECEIPT_MAX_HASH_CHARS,
   swapReceiptFirstPath,
@@ -265,6 +274,11 @@ export const TOOL_NAMES = [
   "candle_lab_replay_result",
   "candle_lab_runners",
   "candle_lab_edges",
+  // BE-3411 (hacc north-star CL1): hacc's public scorecard and signal records over a production
+  // agent key, read-only, stdio only. Never registered on the hosted server (apps/api/src/mcp/hosted.ts).
+  "candle_signal_scorecard",
+  "candle_signal_records",
+  "candle_signal_record",
 ] as const
 
 export type ToolName = (typeof TOOL_NAMES)[number]
@@ -277,6 +291,15 @@ export const LAB_TOOL_NAMES = [
   "candle_lab_runners",
   "candle_lab_edges",
 ] as const satisfies readonly (ToolName & LabToolName)[]
+
+/** hacc's scorecard and signal records (BE-3411). Local only: the hosted test asserts none is offered. */
+export const SIGNAL_RECORD_TOOL_NAMES = [
+  "candle_signal_scorecard",
+  "candle_signal_records",
+  "candle_signal_record",
+] as const satisfies readonly (ToolName & SignalRecordToolName)[]
+const isSignalRecordTool = (name: ToolName): name is SignalRecordToolName =>
+  (SIGNAL_RECORD_TOOL_NAMES as readonly ToolName[]).includes(name)
 
 /**
  * The tools that write the agent's own public page. Never registered up front: a server offers
@@ -334,6 +357,7 @@ type RestToolName = Exclude<
   | PerpsMarketToolName
   | "candle_perps_deposit"
   | LabToolName
+  | SignalRecordToolName
 >
 
 /**
@@ -1779,9 +1803,12 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     if (!allowed.has(name)) return
     // Owner-only or unknown fields must be refused rather than stripped from a mixed patch or post.
     const inputSchema =
-      isProfileEditTool(name) || isTokenPageTool(name)
-        ? z.object(definition.inputSchema).strict()
-        : definition.inputSchema
+      // BE-3411: preserve the strict catalog schema, including measured errors before the handler.
+      isSignalRecordTool(name)
+        ? z.object(definition.inputSchema, { errorMap: signalRecordValidationErrorMap }).strict()
+        : isProfileEditTool(name) || isTokenPageTool(name)
+          ? z.object(definition.inputSchema).strict()
+          : definition.inputSchema
     const registered = (server.registerTool as (...a: unknown[]) => RegisteredTool)(
       name,
       { ...definition, inputSchema, ...options.metadata?.[name] },
@@ -3359,6 +3386,46 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       annotations: labRead,
     },
     labTool("candle_lab_edges"),
+  )
+
+  // BE-3411 (hacc north-star CL1): hacc's scorecard and signal records, called from this machine
+  // with the configured key (signal-record-tools.ts). Three GETs; each result carries the fixed line.
+  const signalRecordTool = (tool: SignalRecordToolName) => async (args: Record<string, unknown>) => {
+    const result = await executeSignalRecordTool(tool, args, getConfig(), env, doFetch)
+    return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
+  }
+
+  register(
+    "candle_signal_scorecard",
+    {
+      title: SIGNAL_RECORD_TITLES.candle_signal_scorecard,
+      description: SIGNAL_RECORD_DESCRIPTIONS.candle_signal_scorecard,
+      inputSchema: signalRecordShapes.candle_signal_scorecard,
+      annotations: { ...SIGNAL_RECORD_ANNOTATIONS },
+    },
+    signalRecordTool("candle_signal_scorecard"),
+  )
+
+  register(
+    "candle_signal_records",
+    {
+      title: SIGNAL_RECORD_TITLES.candle_signal_records,
+      description: SIGNAL_RECORD_DESCRIPTIONS.candle_signal_records,
+      inputSchema: signalRecordShapes.candle_signal_records,
+      annotations: { ...SIGNAL_RECORD_ANNOTATIONS },
+    },
+    signalRecordTool("candle_signal_records"),
+  )
+
+  register(
+    "candle_signal_record",
+    {
+      title: SIGNAL_RECORD_TITLES.candle_signal_record,
+      description: SIGNAL_RECORD_DESCRIPTIONS.candle_signal_record,
+      inputSchema: signalRecordShapes.candle_signal_record,
+      annotations: { ...SIGNAL_RECORD_ANNOTATIONS },
+    },
+    signalRecordTool("candle_signal_record"),
   )
 }
 
