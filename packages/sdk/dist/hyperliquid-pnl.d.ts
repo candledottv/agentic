@@ -58,7 +58,26 @@ export interface HyperliquidWalletPnl {
 export type HyperliquidPnlUnavailableCode = "hyperliquid_unavailable" | "ingest_incomplete"
 /** Cannot fit this request's fixed budget without a certified snapshot; retries alone cannot help. */
  | "live_budget_exceeded" | "cutoff_unreconciled" | "account_mode" | "no_profile" | "test_key" | "too_many_wallets";
-export type HyperliquidPnlSection = (HyperliquidPnlFigures & {
+export interface HyperliquidEmbeddedOrders {
+    /** Durable orders owned by this key; shared-account funding and PnL are not assigned to it. */
+    attribution: "key_orders_only";
+    rows: {
+        id: string;
+        walletAddress: string;
+        kind: string;
+        network: "mainnet" | "testnet";
+        builtAt: number;
+        status: string;
+        coin?: string;
+        cloid?: string;
+        clientId?: string;
+    }[];
+    truncated: boolean;
+}
+export type HyperliquidPnlSection = HyperliquidPnlValue & {
+    embeddedOrders?: HyperliquidEmbeddedOrders;
+};
+type HyperliquidPnlValue = (HyperliquidPnlFigures & {
     read: true;
     network: "mainnet" | "testnet";
     /** Every EVM TEE wallet bound to the key's profile, per binding period. */
@@ -89,4 +108,5 @@ export type HyperliquidPnlSection = (HyperliquidPnlFigures & {
     code: HyperliquidPnlUnavailableCode;
     reason: string;
 };
+export {};
 //# sourceMappingURL=hyperliquid-pnl.d.ts.map

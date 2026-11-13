@@ -21,7 +21,7 @@ import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
 import { writeFields, writeSuccess } from "../human-output"
-import { HYPERLIQUID_CLOID_RE, type HyperliquidTypedData } from "../hyperliquid"
+import { HYPERLIQUID_CLOID_RE, type HyperliquidTypedData, hyperliquidSignatureHex } from "../hyperliquid"
 import {
   PerpsWorkflowError,
   type PerpsWorkflowIo,
@@ -193,12 +193,12 @@ async function workflowIo(
   opts: { wallet?: string; yes: boolean; submit: boolean; signOnly: boolean },
 ): Promise<PerpsWorkflowIo> {
   const key = await tradingKey(ctx)
-  const { wallet } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE)
-  if (!wallet) throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.")
+  const { wallet: signerWallet, row: wallet } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE)
   const builder = builderPin(ctx)
   // A failed read never says "unrestricted": the plan is then checked as for a reduce-only key.
   const reduceOnly = await perpsRequest(ctx, key, "/api/v1/agent/keys/self/perps-reduce-only").catch(() => null)
 
+  let embeddedSignature: unknown
   return {
     network: perpsNetwork(ctx),
     walletId: wallet.id,
@@ -207,14 +207,19 @@ async function workflowIo(
     keyReduceOnly: reduceOnly === null ? true : reduceOnly.perpsReduceOnly === true,
     fetcher: ctx.deps.fetch as never,
     now: ctx.deps.now,
-    build: (path, body) => perpsRequest(ctx, key, path, body as Json),
+    build: async (path, body) => {
+      const build = await perpsRequest(ctx, key, path, body as Json)
+      embeddedSignature = build.signature
+      return build
+    },
     read: (path) => perpsRequest(ctx, key, path),
     sign: async (typedData: HyperliquidTypedData) => {
+      if (wallet.id === "embedded") return hyperliquidSignatureHex(embeddedSignature)
       const relay = await perpsRequest(
         ctx,
         key,
         `/api/v1/agent/wallets/${encodeURIComponent(wallet.id)}/sign`,
-        typedDataAuthorization(wallet, typedData) as unknown as Json,
+        typedDataAuthorization(signerWallet!, typedData) as unknown as Json,
       )
       if (typeof relay.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(relay.signature))
         throw new TradingError("INVALID_RESPONSE", "The relay did not return a signature.")

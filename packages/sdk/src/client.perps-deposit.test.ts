@@ -9,6 +9,31 @@ const WALLET = "hood-tee"
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
 
+test("embedded deposit needs no signer secret and returns the durable server job", async () => {
+  const calls: string[] = []
+  const c = new CandleClient({
+    apiUrl: "https://api.test",
+    apiKey: "key",
+    fetch: (async (input, init) => {
+      calls.push(String(input))
+      expect(JSON.parse(String(init?.body)).walletId).toBe("embedded")
+      return json({ success: true, job: { clientDepositId: "embedded-1", status: "submitted" } })
+    }) as typeof fetch,
+  })
+  expect(
+    (
+      await c.perpsDeposit({
+        walletId: "embedded",
+        account: ACCOUNT,
+        clientDepositId: "embedded-1",
+        asset: "USDG",
+        amountRaw: "25000000",
+      })
+    ).job,
+  ).toMatchObject({ clientDepositId: "embedded-1" })
+  expect(calls).toEqual(["https://api.test/api/v1/agent/perps/deposit"])
+})
+
 async function client(responses: Response[]) {
   const store = new InMemorySecretStore()
   const { privateKeyPem } = await generateSignerKeypair()

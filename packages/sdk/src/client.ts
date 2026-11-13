@@ -77,7 +77,9 @@ import {
   hyperliquidExchangeBody,
   hyperliquidExchangeOutcome,
   hyperliquidRelayBody,
+  hyperliquidSignatureHex,
   type PerpsIntentMethod,
+  PerpsMaybeLanded,
   perpsSetupStatusProblem,
   resolveHyperliquidBuilder,
   verifyPerpsBuild,
@@ -2552,7 +2554,7 @@ export interface PerpsWalletRef {
   /** The linked wallet's row id (the relay's :id, and the secretStore key). */
   walletId: string
   /** The same wallet's Privy wallet id, the authorization signature's URL target. */
-  privyWalletId: string
+  privyWalletId?: string
   /** Sign and submit (default), or stop after the build and its check and return the build. */
   submit?: boolean
 }
@@ -2634,6 +2636,9 @@ export type PerpsScheduleCancelParams = PerpsWalletRef &
 
 /** What a perps build route returns: the plaintext action, its nonce, and the stamped typed data. */
 export interface PerpsBuild {
+  signer?: "embedded"
+  signature?: { r: string; s: string; v: number }
+  clientId?: string
   success: true
   perpOrderId: string
   kind: "open" | "close" | "modify" | "cancel" | "leverage" | "margin" | "setup" | "tpsl" | "scheduleCancel"
@@ -2995,7 +3000,7 @@ export interface PerpsDepositParams {
   /** The paying TEE wallet's row id (the relay's :id, and the secretStore key). */
   walletId: string
   /** The paying wallet's Privy wallet id. */
-  privyWalletId: string
+  privyWalletId?: string
   /** The Hyperliquid account: the EVM TEE wallet's address. The build is refused if it names another. */
   account: string
   /** From Solana only: the EVM TEE wallet whose Hyperliquid account receives. Omit from Hood. */
@@ -3060,6 +3065,13 @@ export interface PerpsDepositBuild {
     data: string
     value: string
   }
+}
+
+export interface PerpsEmbeddedDepositResult {
+  success: true
+  job?: Record<string, unknown>
+  preview?: boolean
+  [field: string]: unknown
 }
 
 export interface PerpsDepositResult {
@@ -6337,13 +6349,22 @@ export class CandleClient {
     this.requireKey("perpsOpen()")
     this.perpsBuilder()
     const { walletId, privyWalletId: _p, submit: _s, ...order } = params
-    const clientId = perpsClientId(params.clientId)
+    const clientId = perpsClientId(
+      params.clientId ?? (params.walletId === "embedded" ? `0x${crypto.randomUUID().replaceAll("-", "")}` : undefined),
+    )
     const build = await this.requestJson<PerpsBuild | PerpsReplay>("POST", "/api/v1/agent/perps/open", {
       walletId,
       ...order,
       ...(clientId !== undefined ? { clientId } : {}),
+    }).catch((error: unknown) => {
+      if (walletId === "embedded" && (!(error instanceof CandleApiError) || error.status >= 500))
+        throw new PerpsMaybeLanded(clientId ?? null, clientId ?? null, null)
+      throw error
     })
-    const replay = perpsReplayOf(build, walletId, clientId)
+    const replay =
+      walletId === "embedded" && "signature" in build && build.signature
+        ? null
+        : perpsReplayOf(build, walletId, clientId)
     if (replay) return replay
     return this.perpsComplete(build as PerpsBuild, { ...params, ...(clientId ? { clientId } : {}) }, "open")
   }
@@ -6357,13 +6378,22 @@ export class CandleClient {
       throw new Error("perpsClose(): give a size or a pct, not both")
     this.perpsBuilder()
     const { walletId, privyWalletId: _p, submit: _s, ...close } = params
-    const clientId = perpsClientId(params.clientId)
+    const clientId = perpsClientId(
+      params.clientId ?? (params.walletId === "embedded" ? `0x${crypto.randomUUID().replaceAll("-", "")}` : undefined),
+    )
     const build = await this.requestJson<PerpsBuild | PerpsReplay>("POST", "/api/v1/agent/perps/close", {
       walletId,
       ...close,
       ...(clientId !== undefined ? { clientId } : {}),
+    }).catch((error: unknown) => {
+      if (walletId === "embedded" && (!(error instanceof CandleApiError) || error.status >= 500))
+        throw new PerpsMaybeLanded(clientId ?? null, clientId ?? null, null)
+      throw error
     })
-    const replay = perpsReplayOf(build, walletId, clientId)
+    const replay =
+      walletId === "embedded" && "signature" in build && build.signature
+        ? null
+        : perpsReplayOf(build, walletId, clientId)
     if (replay) return replay
     return this.perpsComplete(build as PerpsBuild, { ...params, ...(clientId ? { clientId } : {}) }, "close")
   }
@@ -6507,6 +6537,15 @@ export class CandleClient {
 
   /** The address of an EVM TEE wallet bound to this key, from Candle's own list of the key's wallets. */
   private async perpsWalletAddress(walletId: string): Promise<string> {
+    if (walletId === "embedded") {
+      const result = await this.requestJson<{ wallets: { evm?: { address: string } | null } }>(
+        "GET",
+        "/api/v1/agent/wallets/embedded",
+      )
+      if (!result.wallets.evm?.address || !/^0x[0-9a-fA-F]{40}$/.test(result.wallets.evm.address))
+        throw new Error("Embedded EVM wallet missing")
+      return result.wallets.evm.address.toLowerCase()
+    }
     let cursor: string | null = null
     for (let page = 0; page < 10; page++) {
       const query: string = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""
@@ -6775,8 +6814,24 @@ export class CandleClient {
    * with `perpsDepositStatus()`. Candle checks Relay's steps before it stamps them; `candle perps
    * deposit` additionally decodes them on the caller's machine.
    */
-  async perpsDeposit(params: PerpsDepositParams): Promise<PerpsDepositResult> {
+  async perpsDeposit(params: PerpsDepositParams & { walletId: "embedded" }): Promise<PerpsEmbeddedDepositResult>
+  async perpsDeposit(params: PerpsDepositParams): Promise<PerpsDepositResult>
+  async perpsDeposit(params: PerpsDepositParams): Promise<PerpsDepositResult | PerpsEmbeddedDepositResult> {
     this.requireKey("perpsDeposit()")
+    if (params.walletId === "embedded") {
+      if (params.perpsWalletId !== undefined && params.perpsWalletId !== "embedded")
+        throw new Error("Embedded deposits land only on their own account")
+      return this.requestJson<PerpsEmbeddedDepositResult>("POST", "/api/v1/agent/perps/deposit", {
+        clientDepositId: params.clientDepositId,
+        walletId: "embedded",
+        asset: params.asset,
+        amountRaw: params.amountRaw,
+        ...(params.maxSlippageBps !== undefined ? { maxSlippageBps: params.maxSlippageBps } : {}),
+        ...(params.submit === false ? { preview: true } : {}),
+      })
+    }
+    if (!params.privyWalletId) throw new Error("TEE deposit signing requires privyWalletId")
+
     const build = await this.requestJson<PerpsDepositBuild & { job?: unknown }>("POST", "/api/v1/agent/perps/deposit", {
       clientDepositId: params.clientDepositId,
       walletId: params.walletId,
@@ -6888,6 +6943,13 @@ export class CandleClient {
     ref: PerpsWalletRef,
     method: PerpsIntentMethod,
   ): Promise<PerpsActionResult> {
+    if (
+      ref.walletId === "embedded" &&
+      (build.walletId !== "embedded" ||
+        build.signer !== "embedded" ||
+        build.address.toLowerCase() !== (await this.perpsWalletAddress("embedded")))
+    )
+      throw new Error("Embedded perps account mismatch")
     build = { ...build, preview: { ...build.preview, builderTrust: this.perpsBuilderTrust() } }
     const params = ref as unknown as Record<string, unknown>
     const opts = {
@@ -6907,11 +6969,14 @@ export class CandleClient {
           })
     if (!check.ok) throw new Error(`perps: refused to sign this build: ${check.reason}`)
     if (ref.submit === false) return { build, signature: null, submitted: false, exchange: null }
-    const signature = await this.signLinkedTypedData({
-      linkedWalletId: ref.walletId,
-      privyWalletId: ref.privyWalletId,
-      typedData: build.typedData,
-    })
+    const signature =
+      ref.walletId === "embedded"
+        ? hyperliquidSignatureHex(build.signature)
+        : await this.signLinkedTypedData({
+            linkedWalletId: ref.walletId,
+            privyWalletId: ref.privyWalletId,
+            typedData: build.typedData,
+          })
     try {
       const res = await this.fetchImpl(HYPERLIQUID_EXCHANGE_URLS[this.hyperliquidNetwork], {
         method: "POST",
@@ -6920,11 +6985,29 @@ export class CandleClient {
       })
       const text = await res.text()
       if (!res.ok) {
+        if (ref.walletId === "embedded")
+          throw new PerpsMaybeLanded(
+            build.clientId ?? null,
+            build.cloid ?? null,
+            hyperliquidExchangeBody(build.action, build.nonce, signature),
+          )
         return { build, signature, submitted: false, exchange: null, submitError: `HTTP ${res.status}: ${text}` }
       }
       const exchange = JSON.parse(text) as unknown
+      if (ref.walletId === "embedded" && hyperliquidExchangeOutcome(exchange).status === "unknown")
+        throw new PerpsMaybeLanded(
+          build.clientId ?? null,
+          build.cloid ?? null,
+          hyperliquidExchangeBody(build.action, build.nonce, signature),
+        )
       return { build, signature, submitted: true, exchange, outcome: hyperliquidExchangeOutcome(exchange) }
     } catch (err) {
+      if (ref.walletId === "embedded")
+        throw new PerpsMaybeLanded(
+          build.clientId ?? null,
+          build.cloid ?? null,
+          hyperliquidExchangeBody(build.action, build.nonce, signature),
+        )
       return {
         build,
         signature,
@@ -7001,6 +7084,7 @@ export class CandleClient {
     const address = await this.perpsWalletAddress(ref.walletId)
     const builder = this.perpsBuilder()
     const reduceOnly = await this.getPerpsReduceOnly().catch(() => null)
+    let embeddedSignature: unknown
     return {
       network: this.hyperliquidNetwork,
       walletId: ref.walletId,
@@ -7010,10 +7094,16 @@ export class CandleClient {
       keyReduceOnly: reduceOnly === null ? true : reduceOnly.perpsReduceOnly,
       fetcher: this.fetchImpl as never,
       now: Date.now,
-      build: (path, body) => this.requestJson<Record<string, unknown>>("POST", path, body),
+      build: async (path, body) => {
+        const build = await this.requestJson<Record<string, unknown>>("POST", path, body)
+        embeddedSignature = build.signature
+        return build
+      },
       read: (path) => this.requestJson<Record<string, unknown>>("GET", path),
       sign: (typedData) =>
-        this.signLinkedTypedData({ linkedWalletId: ref.walletId, privyWalletId: ref.privyWalletId, typedData }),
+        ref.walletId === "embedded"
+          ? Promise.resolve(hyperliquidSignatureHex(embeddedSignature))
+          : this.signLinkedTypedData({ linkedWalletId: ref.walletId, privyWalletId: ref.privyWalletId, typedData }),
       mode: ref.submit === false ? "no-submit" : "submit",
       cloid: () => {
         const bytes = new Uint8Array(16)
@@ -7083,12 +7173,54 @@ export class CandleClient {
     const amountMicros = parseWithdrawAmount(params.amountUsdc)
     if (amountMicros === null) throw new Error("perpsWithdraw: amountUsdc must be a positive decimal, at most 6 dp")
     const id = params.clientWithdrawalId ?? `withdraw-${crypto.randomUUID()}`
-    const build = await this.perps.withdraw.build({
-      clientWithdrawalId: id,
-      amountUsdc: params.amountUsdc,
-      to: params.to,
-      wallet: params.walletId,
-    })
+    const build = await this.perps.withdraw
+      .build({
+        clientWithdrawalId: id,
+        amountUsdc: params.amountUsdc,
+        to: params.to,
+        wallet: params.walletId,
+      })
+      .catch((error: unknown) => {
+        if (params.walletId === "embedded" && (!(error instanceof CandleApiError) || error.status >= 500))
+          throw new PerpsMaybeLanded(id, null, null)
+        throw error
+      })
+    if (params.walletId === "embedded") {
+      const answer = build as unknown as Record<string, unknown>
+      const destination = answer.to as { address?: string; chain?: string } | undefined
+      if (
+        build.id !== id ||
+        answer.signer !== "embedded" ||
+        destination?.chain !== params.to ||
+        (answer.from as { address?: string } | undefined)?.address?.toLowerCase() !== params.account.toLowerCase() ||
+        !params.ownDestinations.some((a) => a.toLowerCase() === destination?.address?.toLowerCase())
+      )
+        throw new Error("Embedded withdrawal destination mismatch")
+      const send = verifyWithdrawSendAsset(build as never, {
+        mappingNonce: build.nonce,
+        amountMicros,
+        pins: this.perpsWithdrawPins,
+      })
+      if (!send.ok) throw new Error(`Embedded withdrawal refused: ${send.reason}`)
+      const signature = hyperliquidSignatureHex(answer.signature)
+      const body = hyperliquidExchangeBody(answer.action as Record<string, unknown>, build.nonce, signature)
+      try {
+        const res = await this.fetchImpl(HYPERLIQUID_EXCHANGE_URLS.mainnet, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })
+        const exchange = await res.json()
+        if (!res.ok || hyperliquidExchangeOutcome(exchange).status === "unknown")
+          throw new PerpsMaybeLanded(id, null, body)
+        await this.perps.withdraw
+          .reportSubmitted({ clientWithdrawalId: id, exchangeResponse: exchange })
+          .catch(() => {})
+        return { build, authorization: build as never, signature, submitted: true, exchange }
+      } catch {
+        throw new PerpsMaybeLanded(id, null, body)
+      }
+    }
     if (build.status !== "quoted") {
       throw new Error(`perpsWithdraw: withdrawal ${id} is already ${build.status}; read it with perps.withdraw.get()`)
     }
@@ -7152,9 +7284,10 @@ export class CandleClient {
    */
   private async signLinkedTypedData(params: {
     linkedWalletId: string
-    privyWalletId: string
+    privyWalletId?: string
     typedData: HyperliquidTypedData
   }): Promise<string> {
+    if (!params.privyWalletId) throw new Error("TEE perps signing requires privyWalletId")
     if (!this.privyAppId) {
       throw new Error("perps signing requires privyAppId in CandleClientOptions (the relay's Privy app id)")
     }

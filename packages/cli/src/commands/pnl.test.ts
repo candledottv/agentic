@@ -858,6 +858,28 @@ describe("Hyperliquid profile PnL", () => {
     expect(h.stderr.text).toBe("")
   })
 
+  test("Hyperliquid lists key-scoped embedded orders even without a TEE profile", async () => {
+    const h = harness({
+      withProfiles: true,
+      profile: Response.json({
+        ...SPOT_TOTAL,
+        hyperliquid: {
+          read: false,
+          code: "no_profile",
+          reason: "No TEE profile",
+          embeddedOrders: {
+            attribution: "key_orders_only",
+            truncated: false,
+            rows: [{ id: "order-embedded", kind: "open", coin: "BTC", status: "built", builtAt: AT }],
+          },
+        },
+      }),
+    })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    expect(h.stdout.text).toContain("order-embedded")
+    expect(flat(h.stdout.text)).toContain("not attributed to individual keys")
+  })
+
   test("Hyperliquid signed gains and losses use the kit colors", async () => {
     const h = harness({
       withProfiles: true,

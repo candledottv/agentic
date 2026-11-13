@@ -256,6 +256,36 @@ const SIGNATURE = `0x${"1b".repeat(65)}`
 const relayCalls = (calls: { url: string }[]) => calls.filter((c) => c.url.includes("/sign"))
 
 describe("perpsWithdraw()", () => {
+  test("embedded withdraw verifies SendAsset, skips both relay signatures and reports the client submission", async () => {
+    const embedded = {
+      ...build(),
+      ...authorization(),
+      signer: "embedded",
+      from: { walletId: "embedded", address: ACCOUNT, network: "mainnet" },
+      to: { chain: "solana", walletId: "embedded", address: SOLANA },
+      signature: { r: `0x${"a".repeat(64)}`, s: `0x${"b".repeat(64)}`, v: 27 },
+    }
+    const { client: c, calls } = await client([
+      json(embedded),
+      json({ status: "ok", response: { type: "default" } }),
+      json({ success: true }),
+    ])
+    expect((await c.perpsWithdraw({ ...params, walletId: "embedded", privyWalletId: undefined })).submitted).toBe(true)
+    expect(relayCalls(calls)).toHaveLength(0)
+    expect(calls.some((call) => call.url.includes("/authorize"))).toBe(false)
+    expect(calls[1]?.url).toBe("https://api.hyperliquid.xyz/exchange")
+  })
+  test("embedded lost build answer carries the withdrawal id for a same-id retry", async () => {
+    const { client: c } = await client([])
+    const { PerpsMaybeLanded } = await import("./hyperliquid")
+    try {
+      await c.perpsWithdraw({ ...params, walletId: "embedded" })
+      throw new Error("expected maybe-landed")
+    } catch (error) {
+      expect(error).toBeInstanceOf(PerpsMaybeLanded)
+      expect((error as InstanceType<typeof PerpsMaybeLanded>).clientId).toBe("w-1")
+    }
+  })
   test("with no pins passed, the shipped pins apply and the build is requested", async () => {
     const { client: c, calls } = await client([], "shipped")
     await expect(c.perpsWithdraw(params)).rejects.toThrow("no response queued")

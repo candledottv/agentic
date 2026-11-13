@@ -38,7 +38,7 @@ export const AGENT_KEY_SCOPES = [
   // wallets the owner linked while signed in or marked trusted, or to that wallet's own vault.
   // Only the third preset grants it; never Write.
   "transfer:bound",
-  // Hyperliquid perps (2026-10-01 spec, HL-ED-3): set up and trade perps from the key's EVM TEE
+  // Hyperliquid perps (2026-10-01 spec, HL-ED-3): set up and trade perps from the key's EVM TEE or embedded
   // wallet under its limits. Owner-granted and in no default; only the Trade perps preset names it
   // (2026-10-17 C spec, section 7). It moves no funds off the account: no transfer, no withdrawal.
   "perps:write",

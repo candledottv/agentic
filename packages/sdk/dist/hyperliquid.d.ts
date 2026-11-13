@@ -354,5 +354,15 @@ export declare function hyperliquidRelayBody(typedData: HyperliquidTypedData): {
         typed_data: HyperliquidTypedData;
     };
 };
+/** Normalize the recorded embedded signature to the same wire form as a relay signature. */
+export declare function hyperliquidSignatureHex(value: unknown): string;
+/** Submission may have landed: retry only the same signed body or client id. */
+export declare class PerpsMaybeLanded extends Error {
+    readonly clientId: string | null;
+    readonly cloid: string | null;
+    readonly exchangeBody: Record<string, unknown> | null;
+    readonly code = "PERPS_MAYBE_LANDED";
+    constructor(clientId: string | null, cloid: string | null, exchangeBody: Record<string, unknown> | null);
+}
 export {};
 //# sourceMappingURL=hyperliquid.d.ts.map

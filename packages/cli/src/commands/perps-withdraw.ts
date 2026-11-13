@@ -23,7 +23,13 @@ import { parseArgs } from "../args"
 import { isEvmChainSlug } from "../chain-registry"
 import type { CommandContext } from "../deps"
 import { writeFields } from "../human-output"
-import { HYPERLIQUID_EXCHANGE_URLS, type HyperliquidTypedData, hyperliquidExchangeBody } from "../hyperliquid"
+import {
+  HYPERLIQUID_EXCHANGE_URLS,
+  type HyperliquidTypedData,
+  hyperliquidExchangeBody,
+  hyperliquidExchangeOutcome,
+  hyperliquidSignatureHex,
+} from "../hyperliquid"
 import {
   CANDLE_PERPS_WITHDRAW_PINS,
   formatWithdrawAmount,
@@ -158,7 +164,82 @@ export async function perpsWithdraw(args: string[], ctx: CommandContext): Promis
       )
     }
     const key = await tradingKey(ctx)
-    const { wallet } = await perpsWallet(ctx, key, parsed.values["--wallet"], WITHDRAW_SCOPE)
+    const { wallet, row } = await perpsWallet(ctx, key, parsed.values["--wallet"], WITHDRAW_SCOPE)
+    if (row.id === "embedded") {
+      // chain-lint-allowed: BE-3408 permits withdrawals only to own Solana or Hood wallets.
+      if (to !== "solana" && to !== "hood") throw new TradingError("VALIDATION_FAILED", "Withdraw to solana or hood")
+      const discovered = await perpsRequest(ctx, key, "/api/v1/agent/wallets/embedded")
+      // chain-lint-allowed: the venue withdrawal route is pinned to Hood (4663), not arbitrary EVM.
+      const destination = (discovered.wallets as Record<string, unknown>)[to === "hood" ? "evm" : "solana"] as {
+        address?: string
+      } | null
+      if (!destination?.address) throw new TradingError("AGENT_WALLET_MISSING", "Embedded destination wallet missing")
+      writeFields(ctx.deps, "stderr", [
+        ["Withdrawal", id],
+        ["Withdraw", `${amount} USDC`],
+        ["Hyperliquid account", row.address],
+        ["Destination", `Own embedded ${to} wallet`],
+        ["To", destination.address],
+      ])
+      const positions = await perpsRequest(ctx, key, "/api/v1/agent/perps/positions?walletId=embedded")
+      if (Array.isArray(positions.positions) && positions.positions.length)
+        notice(ctx.deps, "stderr", "warning", "Open positions: withdrawing margin raises liquidation risk.")
+      if (
+        (await ctx.deps.promptLine(`Type confirm to withdraw ${amount} USDC to ${destination.address}: `))
+          .trim()
+          .toLowerCase() !== "confirm"
+      )
+        throw new TradingError("CANCELLED", "Withdrawal cancelled", { exitCode: CANCELLED_EXIT })
+      const answer = await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw", {
+        walletId: "embedded",
+        clientWithdrawalId: id,
+        amountUsdc: amount,
+        to,
+      })
+      if (!answer.signature) return printTradingResult(ctx, answer)
+      const from = answer.from as { address?: string }
+      const target = answer.to as { address?: string; chain?: string }
+      if (
+        answer.id !== id ||
+        answer.signer !== "embedded" ||
+        from?.address?.toLowerCase() !== row.address.toLowerCase() ||
+        target?.address?.toLowerCase() !== destination.address.toLowerCase() ||
+        target?.chain !== to
+      )
+        throw new TradingError("PERPS_BUILD_REFUSED", "Withdrawal destination mismatch")
+      const send = verifyWithdrawSendAsset(answer as unknown as PerpsWithdrawAuthorization, {
+        mappingNonce: Number(answer.nonce),
+        amountMicros,
+        pins,
+      })
+      if (!send.ok) throw new TradingError("PERPS_BUILD_REFUSED", `Withdrawal refused: ${send.reason}`)
+      const signature = hyperliquidSignatureHex(answer.signature)
+      const exchangeBody = hyperliquidExchangeBody(
+        answer.action as Record<string, unknown>,
+        Number(answer.nonce),
+        signature,
+      )
+      try {
+        const res = await ctx.deps.fetch(HYPERLIQUID_EXCHANGE_URLS.mainnet, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(exchangeBody),
+        })
+        const exchange = await res.json()
+        if (!res.ok || hyperliquidExchangeOutcome(exchange).status === "unknown")
+          throw new Error("Unconfirmed venue answer")
+        await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw/submitted", {
+          clientWithdrawalId: id,
+          exchangeResponse: exchange,
+        } as Json).catch(() => {})
+        return printTradingResult(ctx, { ...answer, signature, exchange })
+      } catch {
+        throw new TradingError("PERPS_MAYBE_LANDED", "Check withdrawal status; retry only the same id or signed body", {
+          exitCode: 3,
+          details: { clientId: id, exchangeBody },
+        })
+      }
+    }
     if (!wallet) throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.")
     // The destinations this key owns on the chain asked for: the build must land on one of them.
     const { rows } = await listTradingWallets(ctx, key)

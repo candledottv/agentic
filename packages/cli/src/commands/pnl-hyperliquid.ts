@@ -12,6 +12,21 @@ export function writeHyperliquidPnl(ctx: CommandContext, section: HyperliquidPnl
   const style = terminalStyle(ctx.deps, "stdout")
   const time = (ms: number) => formatTime(ms, { now: ctx.deps.now() })
   out.write(`\n${financialHeading("Hyperliquid", style)}\n`)
+  if (section.embeddedOrders) {
+    out.write(`${fields([["Embedded orders for this key", section.embeddedOrders.rows.length]], style).join("\n")}\n`)
+    for (const row of section.embeddedOrders.rows)
+      out.write(
+        `${terminalText(row.kind)} ${terminalText(row.coin ?? "")} ${terminalText(row.status)} ${terminalText(row.clientId ?? row.id)}\n`,
+      )
+    notice(
+      ctx.deps,
+      "stdout",
+      "note",
+      "Embedded rows are scoped to this key. Shared-account funding and PnL are not attributed to individual keys.",
+    )
+    if (section.embeddedOrders.truncated)
+      notice(ctx.deps, "stdout", "warning", "Only recent embedded orders are shown.")
+  }
   if (!section.read) {
     notice(ctx.deps, "stdout", "warning", `Unavailable: ${terminalText(section.reason)}`)
     return

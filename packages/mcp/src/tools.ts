@@ -3010,7 +3010,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     )
   }
 
-  // Hyperliquid perps B (BE-646): perpetuals from the key's EVM TEE wallet. Every write is built by
+  // Hyperliquid perps B (BE-646): perpetuals from the key's EVM TEE or embedded wallet. Every write is built by
   // Candle, checked here before signing (hash, action type, builder), relay-signed, and submitted
   // to Hyperliquid by this server. Writes need CANDLE_KEY_SIGNER_PEM_FILE.
   const perpsTool = (tool: PerpsToolName) => async (args: Record<string, unknown>) => {
@@ -3021,7 +3021,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " +
     "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " +
     "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " +
-    "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE. A refusal names the limit " +
+    "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE for TEE signing. wallet=embedded uses the recorded server signature and requires no PEM; the embedded switch ships off. Embedded open/close generate client ids; repeat only the same id after an uncertain result. A refusal names the limit " +
     "that refused it (error.limit)."
 
   register(
@@ -3029,7 +3029,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Set up Hyperliquid perps",
       description:
-        "Approve Candle's Hyperliquid builder fee (0.1%) once for the key's EVM TEE wallet, and report the " +
+        "Approve Candle's Hyperliquid builder fee (0.1%) once for the key's EVM TEE or embedded wallet, and report the " +
         "account's mode and balance. Idempotent: nothing is signed when the approval is already on Hyperliquid. " +
         "Refused (PERPS_ACCOUNT_MODE) unless Hyperliquid itself shows the account in standard mode." +
         perpsWrite,
@@ -3082,7 +3082,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Perps orders",
       description:
-        "Open orders on Hyperliquid for the key's EVM TEE wallet, and every action Candle built for it with what " +
+        "Open orders on Hyperliquid for the key's EVM TEE or embedded wallet, and every action Candle built for it with what " +
         "the venue shows. Reads only; moves nothing.",
       inputSchema: perpsShapes.candle_perps_orders,
     },
@@ -3094,7 +3094,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Perps positions",
       description:
-        "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE wallet, read " +
+        "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE or embedded wallet, read " +
         "live by its address. Also `rows` (per position: side, size, entry, mark, unrealized P&L, ROE, leverage, " +
         "liquidation price, liquidation distance, funding since open with Hyperliquid's sign where positive is paid, " +
         "margin, value, level), `accountLine` and `risk` (the candle_perps_risk report without positions), read by " +
@@ -3114,7 +3114,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Perps account line",
       description:
-        "The Hyperliquid account line for the key's EVM TEE wallet: account value and margin used (totals, " +
+        "The Hyperliquid account line for the key's EVM TEE or embedded wallet: account value and margin used (totals, " +
         "isolated included), cross account value, free margin (an estimate), withdrawable (what can leave), " +
         "cross maintenance margin and the cross margin ratio (liquidation at 1), unrealized P&L, and over a recent " +
         "window (`since`, default 24h) realized P&L, fees and funding (positive received), with the risk level." +
@@ -3128,7 +3128,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Perps liquidation risk",
       description:
-        "The risk level now for the key's EVM TEE wallet: `level` ok, warn or critical, the `drivers` that put it " +
+        "The risk level now for the key's EVM TEE or embedded wallet: `level` ok, warn or critical, the `drivers` that put it " +
         "there (a position closer to liquidation than the warn or critical distance, default 15% and 7%; the cross " +
         "margin ratio above 0.6 or 0.8; a position with no mark is at least warn), `closest` at ok, the thresholds " +
         "applied, the account line and every position. warn and critical are results, not errors. An account mode " +
@@ -3167,7 +3167,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
   )
 
   const historyNote =
-    " Read directly from Hyperliquid's public /info for the key's EVM TEE wallet (Candle only resolves which wallet; " +
+    " Read directly from Hyperliquid's public /info for the key's EVM TEE or embedded wallet (Candle only resolves which wallet; " +
     "the API key never goes to Hyperliquid), so any key that can list its wallets can read it and no signer is needed. " +
     "Wallet-level live venue data, not Candle's ledger and not an all-time total. Default window: the last 7 days, " +
     "fixed on the first page; pass nextCursor back as cursor for the next. truncated means coverage stopped short " +
@@ -3307,7 +3307,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       title: "Deposit to Hyperliquid",
       description:
         "MOVES REAL FUNDS unless submit is false. Deposit onto the key's Hyperliquid account through Relay: SOL or " +
-        "USDC from its Solana TEE wallet, or ETH or USDG from its Hood TEE wallet, credited as Hyperliquid perps " +
+        "USDC from its Solana wallet, or ETH or USDG from its Hood wallet (TEE or wallet=embedded), credited as Hyperliquid perps " +
         "USDC at the key's EVM TEE wallet's own address (Candle resolves it; no recipient is taken). Refused below a " +
         "floor that covers Hyperliquid's 1 USDC first-deposit charge. No Candle fee. Needs swap:write (any cap on " +
         "the asset still applies), and CANDLE_KEY_SIGNER_PEM_FILE to sign. There is no withdrawal from Hyperliquid yet.",

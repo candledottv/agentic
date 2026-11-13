@@ -66,7 +66,25 @@ export type HyperliquidPnlUnavailableCode =
   | "test_key"
   | "too_many_wallets"
 
-export type HyperliquidPnlSection =
+export interface HyperliquidEmbeddedOrders {
+  /** Durable orders owned by this key; shared-account funding and PnL are not assigned to it. */
+  attribution: "key_orders_only"
+  rows: {
+    id: string
+    walletAddress: string
+    kind: string
+    network: "mainnet" | "testnet"
+    builtAt: number
+    status: string
+    coin?: string
+    cloid?: string
+    clientId?: string
+  }[]
+  truncated: boolean
+}
+
+export type HyperliquidPnlSection = HyperliquidPnlValue & { embeddedOrders?: HyperliquidEmbeddedOrders }
+type HyperliquidPnlValue =
   | (HyperliquidPnlFigures & {
       read: true
       network: "mainnet" | "testnet"

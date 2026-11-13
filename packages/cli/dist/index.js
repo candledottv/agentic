@@ -9636,6 +9636,16 @@ function hyperliquidExchangeBody(action, nonce, signature) {
 function hyperliquidRelayBody(typedData) {
   return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
 }
+function hyperliquidSignatureHex(value) {
+  if (typeof value === "string") {
+    hyperliquidSplitSignature(value);
+    return value;
+  }
+  const sig = value;
+  if (!sig || typeof sig.r !== "string" || typeof sig.s !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(sig.r) || !/^0x[0-9a-fA-F]{64}$/.test(sig.s) || ![0, 1, 27, 28].includes(Number(sig.v)))
+    throw new Error("Invalid embedded Hyperliquid signature");
+  return `${sig.r}${sig.s.slice(2)}${Number(sig.v).toString(16).padStart(2, "0")}`;
+}
 var HYPERLIQUID_ALLOWED_ACTION_TYPES, HYPERLIQUID_EXCHANGE_URLS, HYPERLIQUID_INFO_URLS, CANDLE_HYPERLIQUID_BUILDER_ADDRESS = "0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b", HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID = "0xa4b1", ZERO_ADDRESS = "0x0000000000000000000000000000000000000000", UINT64_MAX, INT64_MIN, EVM_ADDRESS_RE, HYPERLIQUID_CLOID_RE, HYPERLIQUID_STANDARD_ACCOUNT_MODES, ACTION_KEYS, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100, HYPERLIQUID_MID_DRIFT_BPS = 100, HYPERLIQUID_TPSL_SLIPPAGE_BPS = 500, HYPERLIQUID_SCHEDULE_CANCEL_MIN_LEAD_MS = 5000, HYPERLIQUID_SCHEDULE_CANCEL_DRIFT_MS = 60000;
 var init_hyperliquid = __esm(() => {
   init_sha3();
@@ -11683,18 +11693,32 @@ async function call(cfg, fetch2, method, path, body) {
   if (!res.ok) {
     if (res.status === 404 && (typeof parsed !== "object" || parsed === null))
       throw new Refusal(fail2("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."));
-    throw new Refusal({ text: typeof parsed === "string" ? parsed : JSON.stringify(parsed), isError: true });
+    throw Object.assign(new Refusal({ text: typeof parsed === "string" ? parsed : JSON.stringify(parsed), isError: true }), { httpStatus: res.status });
   }
   if (typeof parsed !== "object" || parsed === null)
     throw new Refusal(fail2("INVALID_RESPONSE", "Not a JSON object"));
   return parsed;
 }
 async function walletFor(cfg, fetch2, name, scope) {
+  const embedded = async () => {
+    const found = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/embedded");
+    const evm2 = found.wallets?.evm;
+    if (!evm2?.address || scope && found.embeddedWalletPermission === "denied")
+      throw new Refusal(fail2("AGENT_WALLET_MISSING", "Embedded EVM wallet unavailable"));
+    return { row: { id: "embedded", address: evm2.address.toLowerCase(), chain: "evm" }, appId: "" };
+  };
+  if (name === "embedded")
+    return embedded();
   const listed = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/trading");
   if (scope && !(Array.isArray(listed.scopes) && listed.scopes.includes(scope)))
     throw new Refusal(fail2("SCOPE_MISSING", `The key needs ${scope}.`));
   const rows = Array.isArray(listed.page) ? listed.page : [];
   const evm = rows.filter((row) => row.chain === "evm");
+  if (name === undefined && evm.length === 0) {
+    const fallback = await embedded().catch(() => null);
+    if (fallback)
+      return fallback;
+  }
   const matches = name === undefined ? evm : evm.filter((row) => row.id === name || row.label === name || row.address.toLowerCase() === name.toLowerCase());
   if (matches.length !== 1)
     throw new Refusal(fail2("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row) => row.label ?? row.id).join(", ")}`));
@@ -11756,7 +11780,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     if (tool === "candle_perps_reduce_only")
       return await executeReduceOnly(args, cfg, fetch2);
     const { wallet: _w, submit: _s, ...rest } = args;
-    const clientId2 = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined;
+    let clientId2 = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined;
     let fields2 = { ...rest, ...clientId2 !== undefined ? { clientId: clientId2 } : {} };
     let path = PATHS[tool];
     let method = path.split("/").at(-1);
@@ -11803,10 +11827,17 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       if (problem)
         return fail2("MCP_VALIDATION", problem);
     }
+    if (args.submit !== false && name !== "embedded" && !env.CANDLE_KEY_SIGNER_PEM_FILE?.trim())
+      return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE for TEE signing, or name wallet embedded.");
+    const { row, appId } = await walletFor(cfg, fetch2, name, "perps:write");
+    if (row.id === "embedded" && ["open", "close"].includes(method) && clientId2 === undefined) {
+      clientId2 = `0x${randomBytes2(16).toString("hex")}`;
+      fields2.clientId = clientId2;
+    }
     const willSubmit = args.submit !== false;
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
     let signerPem = null;
-    if (willSubmit) {
+    if (willSubmit && row.id !== "embedded") {
       if (!pemFile)
         return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
       try {
@@ -11816,9 +11847,11 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         return fail2("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
       }
     }
-    const { row, appId } = await walletFor(cfg, fetch2, name, "perps:write");
     const builder = builderPin(env);
+    let embeddedSignature;
     const relaySign = async (typedData) => {
+      if (row.id === "embedded")
+        return hyperliquidSignatureHex(embeddedSignature);
       if (signerPem === null || !appId || !row.privyWalletId)
         throw new Refusal(fail2("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers."));
       const body = hyperliquidRelayBody(typedData);
@@ -11848,7 +11881,11 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         keyReduceOnly: reduceOnly === null ? true : reduceOnly.perpsReduceOnly === true,
         fetcher: fetch2,
         now: Date.now,
-        build: (p, body) => call(cfg, fetch2, "POST", p, body),
+        build: async (p, body) => {
+          const build2 = await call(cfg, fetch2, "POST", p, body);
+          embeddedSignature = build2.signature;
+          return build2;
+        },
         read: (p) => call(cfg, fetch2, "GET", p),
         sign: relaySign,
         mode: willSubmit ? "submit" : "no-submit",
@@ -11874,11 +11911,19 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
         return fail2("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`, { mode });
     }
-    const build = await call(cfg, fetch2, "POST", path, {
-      walletId: row.id,
-      ...fields2,
-      ...tool === "candle_perps_open" ? { type: fields2.price === undefined ? "market" : "limit" } : {}
-    });
+    let build;
+    try {
+      build = await call(cfg, fetch2, "POST", path, {
+        walletId: row.id,
+        ...fields2,
+        ...tool === "candle_perps_open" ? { type: fields2.price === undefined ? "market" : "limit" } : {}
+      });
+    } catch (error) {
+      const status = error instanceof Refusal ? Number(error.httpStatus) : NaN;
+      if (row.id !== "embedded" || !clientId2 || status >= 400 && status < 500)
+        throw error;
+      throw new Refusal(fail2("PERPS_MAYBE_LANDED", "The build answer was lost. Retry the same clientId; read orders and reconcile before continuing.", { clientId: clientId2, cloid: clientId2, exchangeBody: null }));
+    }
     build.preview = {
       ...build.preview,
       builderTrust: {
@@ -11893,7 +11938,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     }
     if (build.ready === true)
       return { text: JSON.stringify(build) };
-    if (build.replayed === true) {
+    if (build.replayed === true && row.id !== "embedded") {
       if (clientId2 === undefined || build.clientId !== clientId2 || build.walletId !== row.id)
         return fail2("PERPS_BUILD_REFUSED", "Refused a replay that does not name this request's client id and wallet. Nothing was signed.");
       return { text: JSON.stringify(build) };
@@ -11910,8 +11955,9 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     const check = method === "setup" ? verifyPerpsBuild(build, verifyOpts) : await verifyPerpsBuildAgainstVenue(build, { ...verifyOpts, fetcher: fetch2 });
     if (!check.ok)
       return fail2("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
-    if (!willSubmit || signerPem === null)
-      return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
+    if (!willSubmit || signerPem === null && row.id !== "embedded")
+      return { text: JSON.stringify({ ...build, signed: row.id === "embedded", submitted: false }) };
+    embeddedSignature = build.signature;
     const signature = await relaySign(build.typedData);
     const exchangeBody = hyperliquidExchangeBody(build.action, build.nonce, signature);
     let exchange;
@@ -11926,7 +11972,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         throw new Error(`HTTP ${res.status}`);
       exchange = JSON.parse(text);
     } catch (error) {
-      return fail2("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`, { perpOrderId: build.perpOrderId, exchangeBody });
+      return fail2("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`, { clientId: clientId2 ?? null, cloid: build.cloid ?? null, perpOrderId: build.perpOrderId, exchangeBody });
     }
     const outcome = hyperliquidExchangeOutcome(exchange);
     const accepted = outcome.status === "confirmed";
@@ -11962,6 +12008,8 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       });
     if (outcome.status === "unknown")
       return fail2("PERPS_SUBMIT_FAILED", `Hyperliquid's answer could not be read (${outcome.error}); reconcile before acting again.`, {
+        clientId: clientId2 ?? null,
+        cloid: build.cloid ?? null,
         perpOrderId: build.perpOrderId,
         exchangeBody,
         exchange
@@ -12048,6 +12096,25 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
   const hood = spec.chain === "evm";
   const clientDepositId = typeof args.clientDepositId === "string" ? args.clientDepositId : `deposit-${crypto.randomUUID()}`;
   const willSubmit = args.submit !== false;
+  if (args.wallet === "embedded") {
+    if (args.perpsWallet !== undefined && args.perpsWallet !== "embedded")
+      return fail2("MCP_VALIDATION", "Embedded deposits land only on their own Hyperliquid account");
+    try {
+      const result2 = await call(cfg, fetch2, "POST", "/api/v1/agent/perps/deposit", {
+        clientDepositId,
+        walletId: "embedded",
+        asset,
+        amountRaw,
+        ...typeof args.maxSlippageBps === "number" ? { maxSlippageBps: args.maxSlippageBps } : {},
+        ...willSubmit ? {} : { preview: true }
+      });
+      return { text: JSON.stringify(result2) };
+    } catch (error) {
+      if (error instanceof Refusal)
+        return error.tool;
+      throw error;
+    }
+  }
   let signerPem = null;
   if (willSubmit) {
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
@@ -12197,9 +12264,9 @@ var init_perps = __esm(() => {
     ...PERPS_RISK_TOOL_NAMES
   ];
   decimal3 = exports_external.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decimal string");
-  wallet2 = exports_external.string().optional().describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.");
-  submit = exports_external.boolean().optional().describe("false: build and check only, sign and submit nothing. Default true.");
-  clientId = exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Optional client order id (0x + 32 hex) used as the order's cloid. Retrying with the same id and request returns " + "the original operation (replayed: true) and signs nothing; the same id with another request is refused " + "(PERPS_CLIENT_ID_CONFLICT). It deduplicates, it does not resume. Use a new id for a new order.");
+  wallet2 = exports_external.string().optional().describe("The EVM TEE wallet by id, address or label, or embedded. Defaults to the only TEE, then embedded when permitted.");
+  submit = exports_external.boolean().optional().describe("false: build and check without venue submission. Embedded builds already carry the server signature. Default true.");
+  clientId = exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Optional client order id (0x + 32 hex) used as the order's cloid. Retrying with the same id and request returns " + "the original operation (replayed: true); embedded returns its stored signature and resumes submission. Another request under that id is refused (PERPS_CLIENT_ID_CONFLICT). Embedded open/close generate an id when omitted. Use a new id for a new order.");
   epochMs = exports_external.number().int().min(0);
   perpsShapes = {
     candle_perps_setup: { wallet: wallet2, submit },
@@ -14098,10 +14165,10 @@ function registerToolSubset(server, options) {
     const result2 = await executePerps(tool, args, getConfig(), env, doFetch);
     return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   };
-  const perpsWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " + "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " + "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " + "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE. A refusal names the limit " + "that refused it (error.limit).";
+  const perpsWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " + "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " + "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " + "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE for TEE signing. wallet=embedded uses the recorded server signature and requires no PEM; the embedded switch ships off. Embedded open/close generate client ids; repeat only the same id after an uncertain result. A refusal names the limit " + "that refused it (error.limit).";
   register("candle_perps_setup", {
     title: "Set up Hyperliquid perps",
-    description: "Approve Candle's Hyperliquid builder fee (0.1%) once for the key's EVM TEE wallet, and report the " + "account's mode and balance. Idempotent: nothing is signed when the approval is already on Hyperliquid. " + "Refused (PERPS_ACCOUNT_MODE) unless Hyperliquid itself shows the account in standard mode." + perpsWrite,
+    description: "Approve Candle's Hyperliquid builder fee (0.1%) once for the key's EVM TEE or embedded wallet, and report the " + "account's mode and balance. Idempotent: nothing is signed when the approval is already on Hyperliquid. " + "Refused (PERPS_ACCOUNT_MODE) unless Hyperliquid itself shows the account in standard mode." + perpsWrite,
     inputSchema: perpsShapes.candle_perps_setup
   }, perpsTool("candle_perps_setup"));
   register("candle_perps_open", {
@@ -14121,23 +14188,23 @@ function registerToolSubset(server, options) {
   }, perpsTool("candle_perps_cancel"));
   register("candle_perps_orders", {
     title: "Perps orders",
-    description: "Open orders on Hyperliquid for the key's EVM TEE wallet, and every action Candle built for it with what " + "the venue shows. Reads only; moves nothing.",
+    description: "Open orders on Hyperliquid for the key's EVM TEE or embedded wallet, and every action Candle built for it with what " + "the venue shows. Reads only; moves nothing.",
     inputSchema: perpsShapes.candle_perps_orders
   }, perpsTool("candle_perps_orders"));
   register("candle_perps_positions", {
     title: "Perps positions",
-    description: "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE wallet, read " + "live by its address. Also `rows` (per position: side, size, entry, mark, unrealized P&L, ROE, leverage, " + "liquidation price, liquidation distance, funding since open with Hyperliquid's sign where positive is paid, " + "margin, value, level), `accountLine` and `risk` (the candle_perps_risk report without positions), read by " + "this server from Hyperliquid directly. Reads only; moves nothing.",
+    description: "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE or embedded wallet, read " + "live by its address. Also `rows` (per position: side, size, entry, mark, unrealized P&L, ROE, leverage, " + "liquidation price, liquidation distance, funding since open with Hyperliquid's sign where positive is paid, " + "margin, value, level), `accountLine` and `risk` (the candle_perps_risk report without positions), read by " + "this server from Hyperliquid directly. Reads only; moves nothing.",
     inputSchema: perpsShapes.candle_perps_positions
   }, perpsTool("candle_perps_positions"));
   const riskRead = " Read by this server from Hyperliquid's public API; Candle is asked only for the wallet and the key's " + "thresholds. Reads only; moves nothing. Phase 1 has no server-side monitor: nothing warns you unless you " + "poll candle_perps_risk.";
   register("candle_perps_account", {
     title: "Perps account line",
-    description: "The Hyperliquid account line for the key's EVM TEE wallet: account value and margin used (totals, " + "isolated included), cross account value, free margin (an estimate), withdrawable (what can leave), " + "cross maintenance margin and the cross margin ratio (liquidation at 1), unrealized P&L, and over a recent " + "window (`since`, default 24h) realized P&L, fees and funding (positive received), with the risk level." + riskRead,
+    description: "The Hyperliquid account line for the key's EVM TEE or embedded wallet: account value and margin used (totals, " + "isolated included), cross account value, free margin (an estimate), withdrawable (what can leave), " + "cross maintenance margin and the cross margin ratio (liquidation at 1), unrealized P&L, and over a recent " + "window (`since`, default 24h) realized P&L, fees and funding (positive received), with the risk level." + riskRead,
     inputSchema: perpsRiskShapes.candle_perps_account
   }, perpsTool("candle_perps_account"));
   register("candle_perps_risk", {
     title: "Perps liquidation risk",
-    description: "The risk level now for the key's EVM TEE wallet: `level` ok, warn or critical, the `drivers` that put it " + "there (a position closer to liquidation than the warn or critical distance, default 15% and 7%; the cross " + "margin ratio above 0.6 or 0.8; a position with no mark is at least warn), `closest` at ok, the thresholds " + "applied, the account line and every position. warn and critical are results, not errors. An account mode " + "this cannot read, or a stale read, is an error with code PERPS_ACCOUNT_MODE or PERPS_READ_STALE: never " + "treat it as ok. One stateless read; poll it to watch (no hysteresis here)." + riskRead,
+    description: "The risk level now for the key's EVM TEE or embedded wallet: `level` ok, warn or critical, the `drivers` that put it " + "there (a position closer to liquidation than the warn or critical distance, default 15% and 7%; the cross " + "margin ratio above 0.6 or 0.8; a position with no mark is at least warn), `closest` at ok, the thresholds " + "applied, the account line and every position. warn and critical are results, not errors. An account mode " + "this cannot read, or a stale read, is an error with code PERPS_ACCOUNT_MODE or PERPS_READ_STALE: never " + "treat it as ok. One stateless read; poll it to watch (no hysteresis here)." + riskRead,
     inputSchema: perpsRiskShapes.candle_perps_risk
   }, perpsTool("candle_perps_risk"));
   register("candle_perps_thresholds", {
@@ -14150,7 +14217,7 @@ function registerToolSubset(server, options) {
     description: "Tighten this key's own Hyperliquid risk thresholds (bps): a higher distance, a lower ratio or a wider " + "band. A field set to null clears it; clear: true clears all. Anything looser than what applies now, " + "defaults included (clearing a field stored stricter than its default counts), is refused with " + "LOOSEN_REQUIRES_SESSION: only the owner loosens, with candle perps thresholds set --key <prefix>. " + "Changes only when warnings fire; moves no funds.",
     inputSchema: perpsRiskShapes.candle_perps_set_thresholds
   }, perpsTool("candle_perps_set_thresholds"));
-  const historyNote = " Read directly from Hyperliquid's public /info for the key's EVM TEE wallet (Candle only resolves which wallet; " + "the API key never goes to Hyperliquid), so any key that can list its wallets can read it and no signer is needed. " + "Wallet-level live venue data, not Candle's ledger and not an all-time total. Default window: the last 7 days, " + "fixed on the first page; pass nextCursor back as cursor for the next. truncated means coverage stopped short " + "(warnings say why). Rate limits and timeouts are errors (PERPS_UNAVAILABLE), never an empty page. Reads only.";
+  const historyNote = " Read directly from Hyperliquid's public /info for the key's EVM TEE or embedded wallet (Candle only resolves which wallet; " + "the API key never goes to Hyperliquid), so any key that can list its wallets can read it and no signer is needed. " + "Wallet-level live venue data, not Candle's ledger and not an all-time total. Default window: the last 7 days, " + "fixed on the first page; pass nextCursor back as cursor for the next. truncated means coverage stopped short " + "(warnings say why). Rate limits and timeouts are errors (PERPS_UNAVAILABLE), never an empty page. Reads only.";
   register("candle_perps_fills", {
     title: "Perps fills",
     description: "One page of the wallet's Hyperliquid perp fills: time, coin, side, size, price, closedPnl (gross), fee " + "(already includes builderFee; never subtract it again). Hyperliquid serves only the 10,000 most recent " + "fills." + historyNote,
@@ -14198,7 +14265,7 @@ function registerToolSubset(server, options) {
   }, perpsTool("candle_perps_reduce_only"));
   register("candle_perps_deposit", {
     title: "Deposit to Hyperliquid",
-    description: "MOVES REAL FUNDS unless submit is false. Deposit onto the key's Hyperliquid account through Relay: SOL or " + "USDC from its Solana TEE wallet, or ETH or USDG from its Hood TEE wallet, credited as Hyperliquid perps " + "USDC at the key's EVM TEE wallet's own address (Candle resolves it; no recipient is taken). Refused below a " + "floor that covers Hyperliquid's 1 USDC first-deposit charge. No Candle fee. Needs swap:write (any cap on " + "the asset still applies), and CANDLE_KEY_SIGNER_PEM_FILE to sign. There is no withdrawal from Hyperliquid yet.",
+    description: "MOVES REAL FUNDS unless submit is false. Deposit onto the key's Hyperliquid account through Relay: SOL or " + "USDC from its Solana wallet, or ETH or USDG from its Hood wallet (TEE or wallet=embedded), credited as Hyperliquid perps " + "USDC at the key's EVM TEE wallet's own address (Candle resolves it; no recipient is taken). Refused below a " + "floor that covers Hyperliquid's 1 USDC first-deposit charge. No Candle fee. Needs swap:write (any cap on " + "the asset still applies), and CANDLE_KEY_SIGNER_PEM_FILE to sign. There is no withdrawal from Hyperliquid yet.",
     inputSchema: perpsDepositShape
   }, async (args) => {
     const result2 = await executePerpsDeposit(args, getConfig(), env, doFetch);
@@ -98328,6 +98395,16 @@ function hyperliquidExchangeBody2(action, nonce, signature) {
 function hyperliquidRelayBody2(typedData) {
   return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
 }
+function hyperliquidSignatureHex2(value) {
+  if (typeof value === "string") {
+    hyperliquidSplitSignature2(value);
+    return value;
+  }
+  const sig = value;
+  if (!sig || typeof sig.r !== "string" || typeof sig.s !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(sig.r) || !/^0x[0-9a-fA-F]{64}$/.test(sig.s) || ![0, 1, 27, 28].includes(Number(sig.v)))
+    throw new Error("Invalid embedded Hyperliquid signature");
+  return `${sig.r}${sig.s.slice(2)}${Number(sig.v).toString(16).padStart(2, "0")}`;
+}
 
 // src/hyperliquid-markets.ts
 var INFO_URLS2 = {
@@ -100600,7 +100677,9 @@ async function perpsRequest(ctx, key, path, body) {
   if (!result2.ok) {
     if (result2.status === 404 && !result2.code)
       throw new TradingError("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes (the API predates them).");
-    throw new TradingError(result2.code ?? "REQUEST_FAILED", result2.message);
+    throw Object.assign(new TradingError(result2.code ?? "REQUEST_FAILED", result2.message), {
+      httpStatus: result2.status
+    });
   }
   if (!result2.body || typeof result2.body !== "object")
     throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.");
@@ -100617,8 +100696,26 @@ function builderPin2(ctx) {
   }
 }
 async function perpsWallet(ctx, key, name2, scope) {
+  const embedded = async () => {
+    const found = await perpsRequest(ctx, key, "/api/v1/agent/wallets/embedded");
+    const evm2 = found.wallets?.evm;
+    if (scope && found.embeddedWalletPermission === "denied")
+      throw new TradingError("EMBEDDED_WALLET_NOT_PERMITTED", "Embedded wallet access denied");
+    if (!evm2?.address)
+      throw new TradingError("AGENT_WALLET_MISSING", "Embedded EVM wallet missing");
+    return { row: { id: "embedded", address: evm2.address.toLowerCase() } };
+  };
+  if (name2 === "embedded")
+    return embedded();
   const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, scope);
   const evm = rows.filter((row3) => row3.chain === "evm");
+  if (name2 === undefined && evm.length === 0) {
+    const fallback = await embedded().catch(() => null);
+    if (fallback) {
+      notice(ctx.deps, "stderr", "note", "Using the embedded wallet (no EVM TEE wallet on this key).");
+      return fallback;
+    }
+  }
   const matches = name2 === undefined ? evm : evm.filter((row3) => matchesName(row3, name2));
   if (matches.length !== 1) {
     throw new TradingError("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it. Hyperliquid perps sign only from one. Give it one: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix> (candle tee new is Solana only), and candle tee signer new --key <prefix> on the machine that trades." : matches.length === 0 ? `No EVM TEE wallet on this key is called "${name2}". Bound to this key: ${evm.map(describeWallet).join("; ")}.` : `Name one EVM TEE wallet with --wallet: ${matches.map(describeWallet).join("; ")}.`);
@@ -100695,7 +100792,7 @@ async function confirm(ctx, build, address, yes) {
     return true;
   if (!ctx.deps.isTTY.stdin)
     throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.");
-  return (await ctx.deps.promptLine("Sign and submit? [y/N] ")).trim().toLowerCase() === "y";
+  return (await ctx.deps.promptLine(build.signer === "embedded" ? "Send? [y/N] " : "Sign and submit? [y/N] ")).trim().toLowerCase() === "y";
 }
 function venueRefusal(exchange) {
   if (!exchange || typeof exchange !== "object")
@@ -100712,9 +100809,7 @@ function venueRefusal(exchange) {
 }
 async function runPerpsWrite(ctx, opts) {
   const key = await tradingKey(ctx);
-  const { wallet: wallet3 } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE);
-  if (!wallet3)
-    throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.");
+  const { wallet: signerWallet, row: wallet3 } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE);
   const builder = builderPin2(ctx);
   const net = perpsNetwork(ctx);
   const method = opts.method ?? opts.path.split("/").at(-1);
@@ -100728,8 +100823,20 @@ async function runPerpsWrite(ctx, opts) {
     if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES2.includes(mode))
       throw new TradingError("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${safeText(mode)} mode. Candle trades only a standard account and does not change modes; switch it back to standard mode on Hyperliquid, then run setup again. This is not a missing fee approval. Nothing was requested or signed.`);
   }
+  if (wallet3.id === "embedded" && ["open", "close"].includes(method) && opts.body.clientId == null) {
+    opts.body = { ...opts.body, clientId: `0x${randomUUID11().replaceAll("-", "")}` };
+    writeFields(ctx.deps, "stderr", [["Client id", String(opts.body.clientId)]]);
+  }
   const clientId2 = typeof opts.body.clientId === "string" ? opts.body.clientId : undefined;
-  const build = await perpsRequest(ctx, key, opts.path, { walletId: wallet3.id, ...opts.body });
+  let build;
+  try {
+    build = await perpsRequest(ctx, key, opts.path, { walletId: wallet3.id, ...opts.body });
+  } catch (error) {
+    const status = error instanceof TradingError ? Number(error.httpStatus) : NaN;
+    if (wallet3.id !== "embedded" || !clientId2 || status >= 400 && status < 500)
+      throw error;
+    throw new TradingError("PERPS_MAYBE_LANDED", "The build answer was lost. Retry the same client id; read candle perps orders or POST /perps/reconcile before continuing.", { exitCode: 3, details: { clientId: clientId2, cloid: clientId2, exchangeBody: null } });
+  }
   build.preview = {
     ...build.preview,
     builderTrust: {
@@ -100749,7 +100856,7 @@ async function runPerpsWrite(ctx, opts) {
   }
   if (build.ready === true)
     return printTradingResult(ctx, build);
-  if (build.replayed === true) {
+  if (build.replayed === true && wallet3.id !== "embedded") {
     if (clientId2 === undefined || build.clientId !== clientId2 || build.walletId !== wallet3.id)
       throw new TradingError("PERPS_BUILD_REFUSED", "Refused a replay that does not name this request's client id and wallet. Nothing was signed.");
     notice(ctx.deps, "stderr", "note", `Client id ${clientId2} already names order ${safeText(build.perpOrderId)} (${safeText(build.status)}${build.venueStatus ? `, ${safeText(build.venueStatus)} on Hyperliquid` : ""}). Nothing was signed or sent; use a new --client-id for a new order.
@@ -100773,11 +100880,11 @@ async function runPerpsWrite(ctx, opts) {
   if (!check.ok)
     throw new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
   if (!opts.submit)
-    return printTradingResult(ctx, { ...build, signed: false, submitted: false });
+    return printTradingResult(ctx, { ...build, signed: wallet3.id === "embedded", submitted: false });
   if (!await confirm(ctx, build, wallet3.address, opts.yes)) {
     throw new TradingError("CANCELLED", "Nothing was signed.", { exitCode: CANCELLED_EXIT });
   }
-  const relay2 = await perpsRequest(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet3.id)}/sign`, typedDataAuthorization(wallet3, build.typedData));
+  const relay2 = wallet3.id === "embedded" ? { signature: hyperliquidSignatureHex2(build.signature) } : await perpsRequest(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet3.id)}/sign`, typedDataAuthorization(signerWallet, build.typedData));
   const signature = relay2.signature;
   if (typeof signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(signature))
     throw new TradingError("INVALID_RESPONSE", "The relay did not return a signature.");
@@ -100807,7 +100914,15 @@ async function runPerpsWrite(ctx, opts) {
       throw new Error(`HTTP ${res.status}`);
     exchange = JSON.parse(text4);
   } catch (error) {
-    throw new TradingError("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). The signed action is in details.exchangeBody; nothing was lost.`, { exitCode: 3, details: { perpOrderId: build.perpOrderId, exchangeBody } });
+    throw new TradingError("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). The signed action is in details.exchangeBody; nothing was lost.`, {
+      exitCode: 3,
+      details: {
+        clientId: clientId2 ?? null,
+        cloid: build.cloid ?? null,
+        perpOrderId: build.perpOrderId,
+        exchangeBody
+      }
+    });
   }
   const outcome = hyperliquidExchangeOutcome2(exchange);
   if (outcome.status === "rejected")
@@ -100819,7 +100934,16 @@ async function runPerpsWrite(ctx, opts) {
       }
     });
   if (outcome.status === "unknown")
-    throw new TradingError("PERPS_SUBMIT_FAILED", `Signed and submitted, but Hyperliquid's answer could not be read (${safeText(outcome.error)}). The signed action is in details.exchangeBody; check candle perps orders before acting again.`, { exitCode: 3, details: { perpOrderId: build.perpOrderId, exchangeBody, exchange } });
+    throw new TradingError("PERPS_SUBMIT_FAILED", `Signed and submitted, but Hyperliquid's answer could not be read (${safeText(outcome.error)}). The signed action is in details.exchangeBody; check candle perps orders before acting again.`, {
+      exitCode: 3,
+      details: {
+        clientId: clientId2 ?? null,
+        cloid: build.cloid ?? null,
+        perpOrderId: build.perpOrderId,
+        exchangeBody,
+        exchange
+      }
+    });
   const extra = await afterConfirmed(ctx, key, net, wallet3, build, method, opts.body, exchange);
   return printTradingResult(ctx, {
     ...extra,
@@ -100898,7 +101022,7 @@ async function perpsSetup(args, ctx) {
   if ("error" in parsed)
     return usage8(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage8(ctx, "Usage: candle perps setup [--wallet <tee>] [--yes]");
+    return usage8(ctx, "Usage: candle perps setup [--wallet <tee|embedded>] [--yes]");
   try {
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/setup",
@@ -100909,7 +101033,7 @@ async function perpsSetup(args, ctx) {
     return tradingFailure(ctx, error);
   }
 }
-var OPEN_USAGE = "Usage: candle perps open <coin> <long|short> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--tp <px>] [--sl <px>] [--client-id <0x+32 hex>] [--wallet <tee>] [--yes]";
+var OPEN_USAGE = "Usage: candle perps open <coin> <long|short> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--tp <px>] [--sl <px>] [--client-id <0x+32 hex>] [--wallet <tee|embedded>] [--yes]";
 function clientIdFlag(value) {
   if (value === undefined)
     return;
@@ -100975,7 +101099,7 @@ async function perpsClose(args, ctx) {
     return usage8(ctx, parsed.error);
   const [coin] = parsed.positionals;
   if (parsed.positionals.length !== 1 || !coin)
-    return usage8(ctx, "Usage: candle perps close <coin> [--size <n> | --pct <1-100>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee>] [--yes]");
+    return usage8(ctx, "Usage: candle perps close <coin> [--size <n> | --pct <1-100>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee|embedded>] [--yes]");
   const size = parsed.values["--size"];
   if (size !== undefined && !DEC_RE3.test(size))
     return usage8(ctx, "--size must be a plain decimal.");
@@ -101013,7 +101137,7 @@ async function perpsCancel(args, ctx) {
     return usage8(ctx, parsed.error);
   const [cloid] = parsed.positionals;
   if (parsed.positionals.length !== 1 || !cloid || !CLOID_RE2.test(cloid))
-    return usage8(ctx, "Usage: candle perps cancel <cloid> [--wallet <tee>] [--yes]  (cloid: 0x + 32 hex)");
+    return usage8(ctx, "Usage: candle perps cancel <cloid> [--wallet <tee|embedded>] [--yes]  (cloid: 0x + 32 hex)");
   try {
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/cancel",
@@ -101034,7 +101158,7 @@ async function perpsLeverage(args, ctx) {
   const [coin, leverage] = parsed.positionals;
   const n = Number(leverage);
   if (parsed.positionals.length !== 2 || !coin || !Number.isInteger(n) || n < 1)
-    return usage8(ctx, "Usage: candle perps leverage <coin> <x> [--isolated] [--wallet <tee>] [--yes]");
+    return usage8(ctx, "Usage: candle perps leverage <coin> <x> [--isolated] [--wallet <tee|embedded>] [--yes]");
   try {
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/leverage",
@@ -101057,7 +101181,7 @@ async function perpsPositions(args, ctx) {
   if ("error" in parsed)
     return usage8(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
-    return usage8(ctx, "Usage: candle perps positions [--wallet <tee>]");
+    return usage8(ctx, "Usage: candle perps positions [--wallet <tee|embedded>]");
   try {
     const key = await tradingKey(ctx);
     const { row: row2 } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
@@ -101096,7 +101220,7 @@ async function perpsOrders(args, ctx) {
     return usage8(ctx, parsed.error);
   const limit = parsed.values["--limit"];
   if (parsed.positionals.length !== 0 || limit !== undefined && !/^[1-9][0-9]{0,2}$/.test(limit))
-    return usage8(ctx, "Usage: candle perps orders [--wallet <tee>] [--limit <n>]");
+    return usage8(ctx, "Usage: candle perps orders [--wallet <tee|embedded>] [--limit <n>]");
   try {
     const key = await tradingKey(ctx);
     const { row: row2 } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
@@ -101146,7 +101270,7 @@ function epochMs2(value) {
   return /^[0-9]{1,16}$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
 }
 async function perpsHistory(kind, args, ctx) {
-  const usageLine = `Usage: candle perps ${kind} [--wallet <tee>] [--start-time <ms>] [--end-time <ms>] [--limit <n>] [--cursor <cursor>]`;
+  const usageLine = `Usage: candle perps ${kind} [--wallet <tee|embedded>] [--start-time <ms>] [--end-time <ms>] [--limit <n>] [--cursor <cursor>]`;
   const parsed = parseArgs(args, HISTORY_FLAGS);
   if ("error" in parsed)
     return usage8(ctx, parsed.error);
@@ -101209,7 +101333,7 @@ function perpsFunding(args, ctx) {
 var HYPERLIQUID_RELAY_CHAIN_ID2 = 1337;
 var HYPERLIQUID_RELAY_USDC2 = "0x00000000000000000000000000000000";
 var DEPOSIT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
-var DEPOSIT_USAGE = "Usage: candle perps deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee>] [--to <evm tee>] [--id <clientDepositId>] [--slippage-bps <n>] [--rpc-url <url>] [--yes] [--no-submit] | candle perps deposit status <clientDepositId>";
+var DEPOSIT_USAGE = "Usage: candle perps deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee|embedded>] [--to <evm tee>] [--id <clientDepositId>] [--slippage-bps <n>] [--rpc-url <url>] [--yes] [--no-submit] | candle perps deposit status <clientDepositId>";
 var plannedDepositLegsSchema = exports_external.array(exports_external.object({
   kind: exports_external.enum(["approval", "bridgeDeposit"]),
   to: exports_external.string().regex(/^0x[0-9a-fA-F]{40}$/),
@@ -101285,8 +101409,31 @@ async function perpsDeposit(args, ctx) {
   try {
     const key = await tradingKey(ctx);
     const payer = await tradingPayer(ctx, key, values["--wallet"], "swap:write", origin);
-    if (payer.kind !== "tee")
-      throw new TradingError("TEE_WALLET_REQUIRED", `A Hyperliquid deposit pays only from this key's ${origin === "hood" ? "Hood" : "Solana"} TEE wallet, and ${safeText(payer.address)} is the embedded wallet. Name the TEE wallet with --wallet. Nothing was built.`);
+    if (payer.kind !== "tee") {
+      if (values["--to"] !== undefined && values["--to"] !== "embedded")
+        throw new TradingError("VALIDATION_FAILED", "Embedded deposits land only in their own Hyperliquid account");
+      const body = {
+        clientDepositId: id,
+        walletId: "embedded",
+        asset,
+        amountRaw: rawAmount(amount, BRIDGE_ASSETS[asset].decimals),
+        maxSlippageBps: slippageBps
+      };
+      const preview2 = await perpsRequest(ctx, key, "/api/v1/agent/perps/deposit", { ...body, preview: true });
+      if (parsed.booleans.has("--no-submit"))
+        return printTradingResult(ctx, preview2);
+      writeFields(ctx.deps, "stderr", [
+        ["Deposit", id],
+        ["Amount", `${amount} ${asset}`],
+        ["Destination", "Own embedded Hyperliquid account"]
+      ]);
+      if (!parsed.booleans.has("--yes") && (await ctx.deps.promptLine("Send? [y/N] ")).trim().toLowerCase() !== "y")
+        throw new TradingError("CANCELLED", "Deposit cancelled", { exitCode: CANCELLED_EXIT });
+      const result3 = await perpsRequest(ctx, key, "/api/v1/agent/perps/deposit", body);
+      const statusRead = `/api/v1/agent/perps/deposit/${encodeURIComponent(id)}`;
+      const status = await perpsRequest(ctx, key, statusRead);
+      return printTradingResult(ctx, { ...result3, ...status, statusRead });
+    }
     const wallet3 = payer.wallet;
     let destination;
     if (origin === "hood") {
@@ -102025,11 +102172,10 @@ async function perpsScheduleCancel(args, ctx) {
 }
 async function workflowIo(ctx, opts) {
   const key = await tradingKey(ctx);
-  const { wallet: wallet3 } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE);
-  if (!wallet3)
-    throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.");
+  const { wallet: signerWallet, row: wallet3 } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE);
   const builder = builderPin2(ctx);
   const reduceOnly = await perpsRequest(ctx, key, "/api/v1/agent/keys/self/perps-reduce-only").catch(() => null);
+  let embeddedSignature;
   return {
     network: perpsNetwork(ctx),
     walletId: wallet3.id,
@@ -102038,10 +102184,16 @@ async function workflowIo(ctx, opts) {
     keyReduceOnly: reduceOnly === null ? true : reduceOnly.perpsReduceOnly === true,
     fetcher: ctx.deps.fetch,
     now: ctx.deps.now,
-    build: (path, body) => perpsRequest(ctx, key, path, body),
+    build: async (path, body) => {
+      const build = await perpsRequest(ctx, key, path, body);
+      embeddedSignature = build.signature;
+      return build;
+    },
     read: (path) => perpsRequest(ctx, key, path),
     sign: async (typedData) => {
-      const relay2 = await perpsRequest(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet3.id)}/sign`, typedDataAuthorization(wallet3, typedData));
+      if (wallet3.id === "embedded")
+        return hyperliquidSignatureHex2(embeddedSignature);
+      const relay2 = await perpsRequest(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet3.id)}/sign`, typedDataAuthorization(signerWallet, typedData));
       if (typeof relay2.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(relay2.signature))
         throw new TradingError("INVALID_RESPONSE", "The relay did not return a signature.");
       return relay2.signature;
@@ -102694,13 +102846,74 @@ async function perpsWithdraw(args, ctx) {
       throw new TradingError("PERPS_WITHDRAW_UNVERIFIED", "Hyperliquid withdrawals wait on a recorded verification of Relay's quote shape in this release. Nothing was built.");
     }
     const key = await tradingKey(ctx);
-    const { wallet: wallet3 } = await perpsWallet(ctx, key, parsed.values["--wallet"], WITHDRAW_SCOPE);
+    const { wallet: wallet3, row: row2 } = await perpsWallet(ctx, key, parsed.values["--wallet"], WITHDRAW_SCOPE);
+    if (row2.id === "embedded") {
+      if (to !== "solana" && to !== "hood")
+        throw new TradingError("VALIDATION_FAILED", "Withdraw to solana or hood");
+      const discovered = await perpsRequest(ctx, key, "/api/v1/agent/wallets/embedded");
+      const destination = discovered.wallets[to === "hood" ? "evm" : "solana"];
+      if (!destination?.address)
+        throw new TradingError("AGENT_WALLET_MISSING", "Embedded destination wallet missing");
+      writeFields(ctx.deps, "stderr", [
+        ["Withdrawal", id],
+        ["Withdraw", `${amount} USDC`],
+        ["Hyperliquid account", row2.address],
+        ["Destination", `Own embedded ${to} wallet`],
+        ["To", destination.address]
+      ]);
+      const positions2 = await perpsRequest(ctx, key, "/api/v1/agent/perps/positions?walletId=embedded");
+      if (Array.isArray(positions2.positions) && positions2.positions.length)
+        notice(ctx.deps, "stderr", "warning", "Open positions: withdrawing margin raises liquidation risk.");
+      if ((await ctx.deps.promptLine(`Type confirm to withdraw ${amount} USDC to ${destination.address}: `)).trim().toLowerCase() !== "confirm")
+        throw new TradingError("CANCELLED", "Withdrawal cancelled", { exitCode: CANCELLED_EXIT });
+      const answer2 = await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw", {
+        walletId: "embedded",
+        clientWithdrawalId: id,
+        amountUsdc: amount,
+        to
+      });
+      if (!answer2.signature)
+        return printTradingResult(ctx, answer2);
+      const from = answer2.from;
+      const target = answer2.to;
+      if (answer2.id !== id || answer2.signer !== "embedded" || from?.address?.toLowerCase() !== row2.address.toLowerCase() || target?.address?.toLowerCase() !== destination.address.toLowerCase() || target?.chain !== to)
+        throw new TradingError("PERPS_BUILD_REFUSED", "Withdrawal destination mismatch");
+      const send2 = verifyWithdrawSendAsset(answer2, {
+        mappingNonce: Number(answer2.nonce),
+        amountMicros,
+        pins
+      });
+      if (!send2.ok)
+        throw new TradingError("PERPS_BUILD_REFUSED", `Withdrawal refused: ${send2.reason}`);
+      const signature2 = hyperliquidSignatureHex2(answer2.signature);
+      const exchangeBody2 = hyperliquidExchangeBody2(answer2.action, Number(answer2.nonce), signature2);
+      try {
+        const res = await ctx.deps.fetch(HYPERLIQUID_EXCHANGE_URLS2.mainnet, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(exchangeBody2)
+        });
+        const exchange2 = await res.json();
+        if (!res.ok || hyperliquidExchangeOutcome2(exchange2).status === "unknown")
+          throw new Error("Unconfirmed venue answer");
+        await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw/submitted", {
+          clientWithdrawalId: id,
+          exchangeResponse: exchange2
+        }).catch(() => {});
+        return printTradingResult(ctx, { ...answer2, signature: signature2, exchange: exchange2 });
+      } catch {
+        throw new TradingError("PERPS_MAYBE_LANDED", "Check withdrawal status; retry only the same id or signed body", {
+          exitCode: 3,
+          details: { clientId: id, exchangeBody: exchangeBody2 }
+        });
+      }
+    }
     if (!wallet3)
       throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.");
     const { rows } = await listTradingWallets(ctx, key);
     if (to !== "solana" && to !== "hood")
       throw new TradingError("PERPS_WITHDRAW_UNVERIFIED", `A withdrawal lands on this key's Solana or Hood TEE wallet; "${to}" has no TEE wallet to land on yet. Nothing was built.`);
-    const ownDestinations = to === "hood" ? [wallet3.address] : rows.filter((row2) => row2.chain === "solana").map((row2) => row2.address);
+    const ownDestinations = to === "hood" ? [wallet3.address] : rows.filter((row3) => row3.chain === "solana").map((row3) => row3.address);
     if (ownDestinations.length === 0)
       throw new TradingError("TEE_WALLET_REQUIRED", "This key has no Solana TEE wallet, so --to solana has nowhere to land. Withdraw --to hood instead.");
     writeFields(ctx.deps, "stderr", [["Withdrawal", id]]);
@@ -105290,6 +105503,17 @@ function writeHyperliquidPnl(ctx, section2) {
   out.write(`
 ${financialHeading("Hyperliquid", style)}
 `);
+  if (section2.embeddedOrders) {
+    out.write(`${fields([["Embedded orders for this key", section2.embeddedOrders.rows.length]], style).join(`
+`)}
+`);
+    for (const row2 of section2.embeddedOrders.rows)
+      out.write(`${terminalText(row2.kind)} ${terminalText(row2.coin ?? "")} ${terminalText(row2.status)} ${terminalText(row2.clientId ?? row2.id)}
+`);
+    notice(ctx.deps, "stdout", "note", "Embedded rows are scoped to this key. Shared-account funding and PnL are not attributed to individual keys.");
+    if (section2.embeddedOrders.truncated)
+      notice(ctx.deps, "stdout", "warning", "Only recent embedded orders are shown.");
+  }
   if (!section2.read) {
     notice(ctx.deps, "stdout", "warning", `Unavailable: ${terminalText(section2.reason)}`);
     return;

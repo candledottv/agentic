@@ -1416,3 +1416,37 @@ export function hyperliquidExchangeBody(action: Record<string, unknown>, nonce: 
 export function hyperliquidRelayBody(typedData: HyperliquidTypedData) {
   return { method: "eth_signTypedData_v4" as const, params: { typed_data: typedData } }
 }
+
+/** Normalize the recorded embedded signature to the same wire form as a relay signature. */
+export function hyperliquidSignatureHex(value: unknown): string {
+  if (typeof value === "string") {
+    hyperliquidSplitSignature(value)
+    return value
+  }
+  const sig = value as { r?: unknown; s?: unknown; v?: unknown } | null
+  if (
+    !sig ||
+    typeof sig.r !== "string" ||
+    typeof sig.s !== "string" ||
+    !/^0x[0-9a-fA-F]{64}$/.test(sig.r) ||
+    !/^0x[0-9a-fA-F]{64}$/.test(sig.s) ||
+    ![0, 1, 27, 28].includes(Number(sig.v))
+  )
+    throw new Error("Invalid embedded Hyperliquid signature")
+  return `${sig.r}${sig.s.slice(2)}${Number(sig.v).toString(16).padStart(2, "0")}`
+}
+
+/** Submission may have landed: retry only the same signed body or client id. */
+export class PerpsMaybeLanded extends Error {
+  readonly code = "PERPS_MAYBE_LANDED"
+  constructor(
+    readonly clientId: string | null,
+    readonly cloid: string | null,
+    readonly exchangeBody: Record<string, unknown> | null,
+  ) {
+    super(
+      "Hyperliquid submission may have landed. Check perps orders and reconcile; reuse the same client id or signed body.",
+    )
+    this.name = "PerpsMaybeLanded"
+  }
+}

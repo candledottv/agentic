@@ -698,3 +698,73 @@ describe("perpsFillsPage and perpsFundingPage", () => {
     ])
   })
 })
+
+describe("BE-3408 embedded rail", () => {
+  function embeddedClient(fail = false, replay = false) {
+    const calls: Recorded[] = []
+    const fetcher = (async (input, init) => {
+      const url = String(input),
+        body = init?.body ? JSON.parse(String(init.body)) : undefined
+      calls.push({ url, body })
+      if (url.endsWith("/wallets/embedded"))
+        return json(200, { wallets: { evm: { address: ADDRESS } }, embeddedWalletPermission: "allowed" })
+      if (url.endsWith("/perps/open")) {
+        const action = orderBuild().action
+        ;(action.orders as { c: string }[])[0]!.c = body.clientId
+        const build = orderBuild(action)
+        return json(200, {
+          ...build,
+          walletId: "embedded",
+          signer: "embedded",
+          clientId: body.clientId,
+          cloid: body.clientId,
+          replayed: replay,
+          signature: { r: `0x${"a".repeat(64)}`, s: `0x${"b".repeat(64)}`, v: 28 },
+        })
+      }
+      if (url.endsWith("/info")) return market()
+      if (url.endsWith("/exchange")) {
+        if (fail) throw new Error("lost venue answer")
+        return json(200, { status: "ok", response: { type: "order", data: { statuses: [{ filled: { oid: 1 } }] } } })
+      }
+      throw new Error(`Unexpected ${url}`)
+    }) as typeof fetch
+    return {
+      calls,
+      c: new CandleClient({
+        apiUrl: "https://api.test",
+        apiKey: "bound-key",
+        fetch: fetcher,
+        hyperliquidBuilder: BUILDER,
+      }),
+    }
+  }
+  test("auto client id, no secret store or relay call, client submits recorded signature", async () => {
+    const { c, calls } = embeddedClient()
+    const result = await c.perpsOpen({ walletId: "embedded", coin: "BTC", side: "long", size: "0.01" })
+    expect(result.submitted).toBe(true)
+    expect(calls.some((c) => c.url.endsWith("/sign"))).toBe(false)
+    expect((calls.find((c) => c.url.endsWith("/perps/open"))?.body as { clientId: string }).clientId).toMatch(
+      /^0x[0-9a-f]{32}$/,
+    )
+    expect(result.signature).toBe(SIGNATURE)
+  })
+  test("a signed replay is submitted with its stored nonce", async () => {
+    const { c, calls } = embeddedClient(false, true)
+    const result = await c.perpsOpen({ walletId: "embedded", coin: "BTC", side: "long", size: "0.01" })
+    expect(result.submitted).toBe(true)
+    expect((calls.find((c) => c.url.endsWith("/exchange"))?.body as { nonce: number }).nonce).toBe(1_790_000_000_000)
+  })
+  test("lost venue response throws PerpsMaybeLanded carrying the original id and body", async () => {
+    const { c } = embeddedClient(true)
+    const { PerpsMaybeLanded } = await import("./hyperliquid")
+    try {
+      await c.perpsOpen({ walletId: "embedded", coin: "BTC", side: "long", size: "0.01" })
+      throw new Error("Expected maybe-landed")
+    } catch (error) {
+      expect(error).toBeInstanceOf(PerpsMaybeLanded)
+      expect((error as InstanceType<typeof PerpsMaybeLanded>).clientId).toMatch(/^0x[0-9a-f]{32}$/)
+      expect((error as InstanceType<typeof PerpsMaybeLanded>).exchangeBody?.nonce).toBe(1_790_000_000_000)
+    }
+  })
+})

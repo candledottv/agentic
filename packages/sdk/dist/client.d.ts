@@ -2398,7 +2398,7 @@ export interface PerpsWalletRef {
     /** The linked wallet's row id (the relay's :id, and the secretStore key). */
     walletId: string;
     /** The same wallet's Privy wallet id, the authorization signature's URL target. */
-    privyWalletId: string;
+    privyWalletId?: string;
     /** Sign and submit (default), or stop after the build and its check and return the build. */
     submit?: boolean;
 }
@@ -2476,6 +2476,13 @@ export type PerpsScheduleCancelParams = PerpsWalletRef & ({
 });
 /** What a perps build route returns: the plaintext action, its nonce, and the stamped typed data. */
 export interface PerpsBuild {
+    signer?: "embedded";
+    signature?: {
+        r: string;
+        s: string;
+        v: number;
+    };
+    clientId?: string;
     success: true;
     perpOrderId: string;
     kind: "open" | "close" | "modify" | "cancel" | "leverage" | "margin" | "setup" | "tpsl" | "scheduleCancel";
@@ -2808,7 +2815,7 @@ export interface PerpsDepositParams {
     /** The paying TEE wallet's row id (the relay's :id, and the secretStore key). */
     walletId: string;
     /** The paying wallet's Privy wallet id. */
-    privyWalletId: string;
+    privyWalletId?: string;
     /** The Hyperliquid account: the EVM TEE wallet's address. The build is refused if it names another. */
     account: string;
     /** From Solana only: the EVM TEE wallet whose Hyperliquid account receives. Omit from Hood. */
@@ -2885,6 +2892,12 @@ export interface PerpsDepositBuild {
         data: string;
         value: string;
     };
+}
+export interface PerpsEmbeddedDepositResult {
+    success: true;
+    job?: Record<string, unknown>;
+    preview?: boolean;
+    [field: string]: unknown;
 }
 export interface PerpsDepositResult {
     build: PerpsDepositBuild;
@@ -4559,6 +4572,9 @@ export declare class CandleClient {
      * with `perpsDepositStatus()`. Candle checks Relay's steps before it stamps them; `candle perps
      * deposit` additionally decodes them on the caller's machine.
      */
+    perpsDeposit(params: PerpsDepositParams & {
+        walletId: "embedded";
+    }): Promise<PerpsEmbeddedDepositResult>;
     perpsDeposit(params: PerpsDepositParams): Promise<PerpsDepositResult>;
     /** A deposit's job: what was built and submitted, the Hood operation, and Relay's fill status. */
     perpsDepositStatus(clientDepositId: string): Promise<{

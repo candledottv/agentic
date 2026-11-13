@@ -153,6 +153,10 @@ function domainMatches(domain: unknown, expected: { name: string; version: strin
 
 /** What `POST /agent/perps/withdraw` answers for a quoted withdrawal. */
 export interface PerpsWithdrawBuild {
+  signer?: "embedded"
+  /** Embedded authorization returns the durably recorded SendAsset signature and action. */
+  signature?: { r: string; s: string; v: number }
+  action?: Record<string, unknown>
   id: string
   status: string
   from: { walletId: string; address: string; network: string }

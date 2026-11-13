@@ -39,6 +39,7 @@ import {
   hyperliquidExchangeBody,
   hyperliquidExchangeOutcome,
   hyperliquidRelayBody,
+  hyperliquidSignatureHex,
   type PerpsIntentMethod,
   perpsSetupStatusProblem,
   resolveHyperliquidBuilder,
@@ -94,16 +95,22 @@ const decimal = z.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decima
 const wallet = z
   .string()
   .optional()
-  .describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.")
-const submit = z.boolean().optional().describe("false: build and check only, sign and submit nothing. Default true.")
+  .describe(
+    "The EVM TEE wallet by id, address or label, or embedded. Defaults to the only TEE, then embedded when permitted.",
+  )
+const submit = z
+  .boolean()
+  .optional()
+  .describe(
+    "false: build and check without venue submission. Embedded builds already carry the server signature. Default true.",
+  )
 const clientId = z
   .string()
   .regex(/^0x[0-9a-fA-F]{32}$/)
   .optional()
   .describe(
     "Optional client order id (0x + 32 hex) used as the order's cloid. Retrying with the same id and request returns " +
-      "the original operation (replayed: true) and signs nothing; the same id with another request is refused " +
-      "(PERPS_CLIENT_ID_CONFLICT). It deduplicates, it does not resume. Use a new id for a new order.",
+      "the original operation (replayed: true); embedded returns its stored signature and resumes submission. Another request under that id is refused (PERPS_CLIENT_ID_CONFLICT). Embedded open/close generate an id when omitted. Use a new id for a new order.",
   )
 const epochMs = z.number().int().min(0)
 const history = (max: number) => ({
@@ -287,7 +294,10 @@ export async function call(
     // An API that predates the perps router answers a bare 404.
     if (res.status === 404 && (typeof parsed !== "object" || parsed === null))
       throw new Refusal(fail("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."))
-    throw new Refusal({ text: typeof parsed === "string" ? parsed : JSON.stringify(parsed), isError: true })
+    throw Object.assign(
+      new Refusal({ text: typeof parsed === "string" ? parsed : JSON.stringify(parsed), isError: true }),
+      { httpStatus: res.status },
+    )
   }
   if (typeof parsed !== "object" || parsed === null) throw new Refusal(fail("INVALID_RESPONSE", "Not a JSON object"))
   return parsed as Record<string, unknown>
@@ -299,11 +309,23 @@ export async function walletFor(
   name: string | undefined,
   scope?: string,
 ): Promise<{ row: WalletRow; appId: string }> {
+  const embedded = async () => {
+    const found = await call(cfg, fetch, "GET", "/api/v1/agent/wallets/embedded")
+    const evm = (found.wallets as { evm?: { address?: string } | null } | undefined)?.evm
+    if (!evm?.address || (scope && found.embeddedWalletPermission === "denied"))
+      throw new Refusal(fail("AGENT_WALLET_MISSING", "Embedded EVM wallet unavailable"))
+    return { row: { id: "embedded", address: evm.address.toLowerCase(), chain: "evm" }, appId: "" }
+  }
+  if (name === "embedded") return embedded()
   const listed = await call(cfg, fetch, "GET", "/api/v1/agent/wallets/trading")
   if (scope && !(Array.isArray(listed.scopes) && listed.scopes.includes(scope)))
     throw new Refusal(fail("SCOPE_MISSING", `The key needs ${scope}.`))
   const rows = (Array.isArray(listed.page) ? listed.page : []) as WalletRow[]
   const evm = rows.filter((row) => row.chain === "evm")
+  if (name === undefined && evm.length === 0) {
+    const fallback = await embedded().catch(() => null)
+    if (fallback) return fallback
+  }
   const matches =
     name === undefined
       ? evm
@@ -388,7 +410,7 @@ export async function executePerps(
     // A write. Inputs are checked first, then the signer, both before any build, so a request that
     // cannot be signed stamps nothing.
     const { wallet: _w, submit: _s, ...rest } = args
-    const clientId = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined
+    let clientId = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined
     let fields: Record<string, unknown> = { ...rest, ...(clientId !== undefined ? { clientId } : {}) }
     let path = PATHS[tool]
     let method = path.split("/").at(-1) as PerpsIntentMethod
@@ -431,10 +453,17 @@ export async function executePerps(
       const problem = perpsTpslParamsProblem(fields as never)
       if (problem) return fail("MCP_VALIDATION", problem)
     }
+    if (args.submit !== false && name !== "embedded" && !env.CANDLE_KEY_SIGNER_PEM_FILE?.trim())
+      return fail("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE for TEE signing, or name wallet embedded.")
+    const { row, appId } = await walletFor(cfg, fetch, name, "perps:write")
+    if (row.id === "embedded" && ["open", "close"].includes(method) && clientId === undefined) {
+      clientId = `0x${randomBytes(16).toString("hex")}`
+      fields.clientId = clientId
+    }
     const willSubmit = args.submit !== false
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim()
     let signerPem: string | null = null
-    if (willSubmit) {
+    if (willSubmit && row.id !== "embedded") {
       if (!pemFile)
         return fail(
           "SIGNER_UNAVAILABLE",
@@ -447,9 +476,10 @@ export async function executePerps(
         return fail("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.")
       }
     }
-    const { row, appId } = await walletFor(cfg, fetch, name, "perps:write")
     const builder = builderPin(env)
+    let embeddedSignature: unknown
     const relaySign = async (typedData: HyperliquidTypedData): Promise<string> => {
+      if (row.id === "embedded") return hyperliquidSignatureHex(embeddedSignature)
       if (signerPem === null || !appId || !row.privyWalletId)
         throw new Refusal(fail("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers."))
       const body = hyperliquidRelayBody(typedData)
@@ -481,7 +511,11 @@ export async function executePerps(
         keyReduceOnly: reduceOnly === null ? true : reduceOnly.perpsReduceOnly === true,
         fetcher: fetch as never,
         now: Date.now,
-        build: (p, body) => call(cfg, fetch, "POST", p, body),
+        build: async (p, body) => {
+          const build = await call(cfg, fetch, "POST", p, body)
+          embeddedSignature = build.signature
+          return build
+        },
         read: (p) => call(cfg, fetch, "GET", p),
         sign: relaySign,
         mode: willSubmit ? "submit" : "no-submit",
@@ -516,11 +550,24 @@ export async function executePerps(
           { mode },
         )
     }
-    const build = await call(cfg, fetch, "POST", path, {
-      walletId: row.id,
-      ...fields,
-      ...(tool === "candle_perps_open" ? { type: fields.price === undefined ? "market" : "limit" } : {}),
-    })
+    let build: Record<string, unknown>
+    try {
+      build = await call(cfg, fetch, "POST", path, {
+        walletId: row.id,
+        ...fields,
+        ...(tool === "candle_perps_open" ? { type: fields.price === undefined ? "market" : "limit" } : {}),
+      })
+    } catch (error) {
+      const status = error instanceof Refusal ? Number((error as Refusal & { httpStatus?: number }).httpStatus) : NaN
+      if (row.id !== "embedded" || !clientId || (status >= 400 && status < 500)) throw error
+      throw new Refusal(
+        fail(
+          "PERPS_MAYBE_LANDED",
+          "The build answer was lost. Retry the same clientId; read orders and reconcile before continuing.",
+          { clientId, cloid: clientId, exchangeBody: null },
+        ),
+      )
+    }
     build.preview = {
       ...(build.preview as Record<string, unknown> | undefined),
       builderTrust: {
@@ -534,7 +581,7 @@ export async function executePerps(
     }
     if (build.ready === true) return { text: JSON.stringify(build) }
     // A retry under a client order id: the original operation, and nothing signed or sent.
-    if (build.replayed === true) {
+    if (build.replayed === true && row.id !== "embedded") {
       if (clientId === undefined || build.clientId !== clientId || build.walletId !== row.id)
         return fail(
           "PERPS_BUILD_REFUSED",
@@ -563,9 +610,10 @@ export async function executePerps(
         : await verifyPerpsBuildAgainstVenue(build as never, { ...verifyOpts, fetcher: fetch as never })
     if (!check.ok)
       return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`)
-    if (!willSubmit || signerPem === null)
-      return { text: JSON.stringify({ ...build, signed: false, submitted: false }) }
+    if (!willSubmit || (signerPem === null && row.id !== "embedded"))
+      return { text: JSON.stringify({ ...build, signed: row.id === "embedded", submitted: false }) }
 
+    embeddedSignature = build.signature
     const signature = await relaySign(build.typedData as HyperliquidTypedData)
     const exchangeBody = hyperliquidExchangeBody(
       build.action as Record<string, unknown>,
@@ -587,7 +635,7 @@ export async function executePerps(
       return fail(
         "PERPS_SUBMIT_FAILED",
         `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`,
-        { perpOrderId: build.perpOrderId, exchangeBody },
+        { clientId: clientId ?? null, cloid: build.cloid ?? null, perpOrderId: build.perpOrderId, exchangeBody },
       )
     }
     // Judged per leg (spec D, section 3): HTTP 200 alone is not confirmation.
@@ -628,6 +676,8 @@ export async function executePerps(
         "PERPS_SUBMIT_FAILED",
         `Hyperliquid's answer could not be read (${outcome.error}); reconcile before acting again.`,
         {
+          clientId: clientId ?? null,
+          cloid: build.cloid ?? null,
           perpOrderId: build.perpOrderId,
           exchangeBody,
           exchange,
@@ -783,6 +833,24 @@ export async function executePerpsDeposit(
   const clientDepositId =
     typeof args.clientDepositId === "string" ? args.clientDepositId : `deposit-${crypto.randomUUID()}`
   const willSubmit = args.submit !== false
+  if (args.wallet === "embedded") {
+    if (args.perpsWallet !== undefined && args.perpsWallet !== "embedded")
+      return fail("MCP_VALIDATION", "Embedded deposits land only on their own Hyperliquid account")
+    try {
+      const result = await call(cfg, fetch, "POST", "/api/v1/agent/perps/deposit", {
+        clientDepositId,
+        walletId: "embedded",
+        asset,
+        amountRaw,
+        ...(typeof args.maxSlippageBps === "number" ? { maxSlippageBps: args.maxSlippageBps } : {}),
+        ...(willSubmit ? {} : { preview: true }),
+      })
+      return { text: JSON.stringify(result) }
+    } catch (error) {
+      if (error instanceof Refusal) return error.tool
+      throw error
+    }
+  }
   let signerPem: string | null = null
   if (willSubmit) {
     const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim()

@@ -1493,6 +1493,30 @@ function hyperliquidExchangeBody(action, nonce, signature) {
 function hyperliquidRelayBody(typedData) {
   return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
 }
+function hyperliquidSignatureHex(value) {
+  if (typeof value === "string") {
+    hyperliquidSplitSignature(value);
+    return value;
+  }
+  const sig = value;
+  if (!sig || typeof sig.r !== "string" || typeof sig.s !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(sig.r) || !/^0x[0-9a-fA-F]{64}$/.test(sig.s) || ![0, 1, 27, 28].includes(Number(sig.v)))
+    throw new Error("Invalid embedded Hyperliquid signature");
+  return `${sig.r}${sig.s.slice(2)}${Number(sig.v).toString(16).padStart(2, "0")}`;
+}
+
+class PerpsMaybeLanded extends Error {
+  clientId;
+  cloid;
+  exchangeBody;
+  code = "PERPS_MAYBE_LANDED";
+  constructor(clientId, cloid, exchangeBody) {
+    super("Hyperliquid submission may have landed. Check perps orders and reconcile; reuse the same client id or signed body.");
+    this.clientId = clientId;
+    this.cloid = cloid;
+    this.exchangeBody = exchangeBody;
+    this.name = "PerpsMaybeLanded";
+  }
+}
 
 // src/hyperliquid-manage.ts
 var PERPS_FLATTEN_MAX_STEPS = 100;
@@ -6331,13 +6355,17 @@ class CandleClient {
     this.requireKey("perpsOpen()");
     this.perpsBuilder();
     const { walletId, privyWalletId: _p, submit: _s, ...order } = params;
-    const clientId = perpsClientId(params.clientId);
+    const clientId = perpsClientId(params.clientId ?? (params.walletId === "embedded" ? `0x${crypto.randomUUID().replaceAll("-", "")}` : undefined));
     const build = await this.requestJson("POST", "/api/v1/agent/perps/open", {
       walletId,
       ...order,
       ...clientId !== undefined ? { clientId } : {}
+    }).catch((error) => {
+      if (walletId === "embedded" && (!(error instanceof CandleApiError) || error.status >= 500))
+        throw new PerpsMaybeLanded(clientId ?? null, clientId ?? null, null);
+      throw error;
     });
-    const replay = perpsReplayOf(build, walletId, clientId);
+    const replay = walletId === "embedded" && "signature" in build && build.signature ? null : perpsReplayOf(build, walletId, clientId);
     if (replay)
       return replay;
     return this.perpsComplete(build, { ...params, ...clientId ? { clientId } : {} }, "open");
@@ -6348,13 +6376,17 @@ class CandleClient {
       throw new Error("perpsClose(): give a size or a pct, not both");
     this.perpsBuilder();
     const { walletId, privyWalletId: _p, submit: _s, ...close } = params;
-    const clientId = perpsClientId(params.clientId);
+    const clientId = perpsClientId(params.clientId ?? (params.walletId === "embedded" ? `0x${crypto.randomUUID().replaceAll("-", "")}` : undefined));
     const build = await this.requestJson("POST", "/api/v1/agent/perps/close", {
       walletId,
       ...close,
       ...clientId !== undefined ? { clientId } : {}
+    }).catch((error) => {
+      if (walletId === "embedded" && (!(error instanceof CandleApiError) || error.status >= 500))
+        throw new PerpsMaybeLanded(clientId ?? null, clientId ?? null, null);
+      throw error;
     });
-    const replay = perpsReplayOf(build, walletId, clientId);
+    const replay = walletId === "embedded" && "signature" in build && build.signature ? null : perpsReplayOf(build, walletId, clientId);
     if (replay)
       return replay;
     return this.perpsComplete(build, { ...params, ...clientId ? { clientId } : {} }, "close");
@@ -6460,6 +6492,12 @@ class CandleClient {
     });
   }
   async perpsWalletAddress(walletId) {
+    if (walletId === "embedded") {
+      const result = await this.requestJson("GET", "/api/v1/agent/wallets/embedded");
+      if (!result.wallets.evm?.address || !/^0x[0-9a-fA-F]{40}$/.test(result.wallets.evm.address))
+        throw new Error("Embedded EVM wallet missing");
+      return result.wallets.evm.address.toLowerCase();
+    }
     let cursor = null;
     for (let page = 0;page < 10; page++) {
       const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
@@ -6620,6 +6658,20 @@ class CandleClient {
   }
   async perpsDeposit(params) {
     this.requireKey("perpsDeposit()");
+    if (params.walletId === "embedded") {
+      if (params.perpsWalletId !== undefined && params.perpsWalletId !== "embedded")
+        throw new Error("Embedded deposits land only on their own account");
+      return this.requestJson("POST", "/api/v1/agent/perps/deposit", {
+        clientDepositId: params.clientDepositId,
+        walletId: "embedded",
+        asset: params.asset,
+        amountRaw: params.amountRaw,
+        ...params.maxSlippageBps !== undefined ? { maxSlippageBps: params.maxSlippageBps } : {},
+        ...params.submit === false ? { preview: true } : {}
+      });
+    }
+    if (!params.privyWalletId)
+      throw new Error("TEE deposit signing requires privyWalletId");
     const build = await this.requestJson("POST", "/api/v1/agent/perps/deposit", {
       clientDepositId: params.clientDepositId,
       walletId: params.walletId,
@@ -6704,6 +6756,8 @@ class CandleClient {
     };
   }
   async perpsComplete(build, ref, method) {
+    if (ref.walletId === "embedded" && (build.walletId !== "embedded" || build.signer !== "embedded" || build.address.toLowerCase() !== await this.perpsWalletAddress("embedded")))
+      throw new Error("Embedded perps account mismatch");
     build = { ...build, preview: { ...build.preview, builderTrust: this.perpsBuilderTrust() } };
     const params = ref;
     const opts = {
@@ -6722,7 +6776,7 @@ class CandleClient {
       throw new Error(`perps: refused to sign this build: ${check.reason}`);
     if (ref.submit === false)
       return { build, signature: null, submitted: false, exchange: null };
-    const signature = await this.signLinkedTypedData({
+    const signature = ref.walletId === "embedded" ? hyperliquidSignatureHex(build.signature) : await this.signLinkedTypedData({
       linkedWalletId: ref.walletId,
       privyWalletId: ref.privyWalletId,
       typedData: build.typedData
@@ -6735,11 +6789,17 @@ class CandleClient {
       });
       const text = await res.text();
       if (!res.ok) {
+        if (ref.walletId === "embedded")
+          throw new PerpsMaybeLanded(build.clientId ?? null, build.cloid ?? null, hyperliquidExchangeBody(build.action, build.nonce, signature));
         return { build, signature, submitted: false, exchange: null, submitError: `HTTP ${res.status}: ${text}` };
       }
       const exchange = JSON.parse(text);
+      if (ref.walletId === "embedded" && hyperliquidExchangeOutcome(exchange).status === "unknown")
+        throw new PerpsMaybeLanded(build.clientId ?? null, build.cloid ?? null, hyperliquidExchangeBody(build.action, build.nonce, signature));
       return { build, signature, submitted: true, exchange, outcome: hyperliquidExchangeOutcome(exchange) };
     } catch (err) {
+      if (ref.walletId === "embedded")
+        throw new PerpsMaybeLanded(build.clientId ?? null, build.cloid ?? null, hyperliquidExchangeBody(build.action, build.nonce, signature));
       return {
         build,
         signature,
@@ -6789,6 +6849,7 @@ class CandleClient {
     const address = await this.perpsWalletAddress(ref.walletId);
     const builder = this.perpsBuilder();
     const reduceOnly = await this.getPerpsReduceOnly().catch(() => null);
+    let embeddedSignature;
     return {
       network: this.hyperliquidNetwork,
       walletId: ref.walletId,
@@ -6797,9 +6858,13 @@ class CandleClient {
       keyReduceOnly: reduceOnly === null ? true : reduceOnly.perpsReduceOnly,
       fetcher: this.fetchImpl,
       now: Date.now,
-      build: (path, body) => this.requestJson("POST", path, body),
+      build: async (path, body) => {
+        const build = await this.requestJson("POST", path, body);
+        embeddedSignature = build.signature;
+        return build;
+      },
       read: (path) => this.requestJson("GET", path),
-      sign: (typedData) => this.signLinkedTypedData({ linkedWalletId: ref.walletId, privyWalletId: ref.privyWalletId, typedData }),
+      sign: (typedData) => ref.walletId === "embedded" ? Promise.resolve(hyperliquidSignatureHex(embeddedSignature)) : this.signLinkedTypedData({ linkedWalletId: ref.walletId, privyWalletId: ref.privyWalletId, typedData }),
       mode: ref.submit === false ? "no-submit" : "submit",
       cloid: () => {
         const bytes = new Uint8Array(16);
@@ -6842,7 +6907,40 @@ class CandleClient {
       amountUsdc: params.amountUsdc,
       to: params.to,
       wallet: params.walletId
+    }).catch((error) => {
+      if (params.walletId === "embedded" && (!(error instanceof CandleApiError) || error.status >= 500))
+        throw new PerpsMaybeLanded(id, null, null);
+      throw error;
     });
+    if (params.walletId === "embedded") {
+      const answer = build;
+      const destination = answer.to;
+      if (build.id !== id || answer.signer !== "embedded" || destination?.chain !== params.to || answer.from?.address?.toLowerCase() !== params.account.toLowerCase() || !params.ownDestinations.some((a) => a.toLowerCase() === destination?.address?.toLowerCase()))
+        throw new Error("Embedded withdrawal destination mismatch");
+      const send2 = verifyWithdrawSendAsset(build, {
+        mappingNonce: build.nonce,
+        amountMicros,
+        pins: this.perpsWithdrawPins
+      });
+      if (!send2.ok)
+        throw new Error(`Embedded withdrawal refused: ${send2.reason}`);
+      const signature2 = hyperliquidSignatureHex(answer.signature);
+      const body = hyperliquidExchangeBody(answer.action, build.nonce, signature2);
+      try {
+        const res = await this.fetchImpl(HYPERLIQUID_EXCHANGE_URLS.mainnet, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const exchange2 = await res.json();
+        if (!res.ok || hyperliquidExchangeOutcome(exchange2).status === "unknown")
+          throw new PerpsMaybeLanded(id, null, body);
+        await this.perps.withdraw.reportSubmitted({ clientWithdrawalId: id, exchangeResponse: exchange2 }).catch(() => {});
+        return { build, authorization: build, signature: signature2, submitted: true, exchange: exchange2 };
+      } catch {
+        throw new PerpsMaybeLanded(id, null, body);
+      }
+    }
     if (build.status !== "quoted") {
       throw new Error(`perpsWithdraw: withdrawal ${id} is already ${build.status}; read it with perps.withdraw.get()`);
     }
@@ -6903,6 +7001,8 @@ class CandleClient {
     };
   }
   async signLinkedTypedData(params) {
+    if (!params.privyWalletId)
+      throw new Error("TEE perps signing requires privyWalletId");
     if (!this.privyAppId) {
       throw new Error("perps signing requires privyAppId in CandleClientOptions (the relay's Privy app id)");
     }
@@ -7813,6 +7913,7 @@ export {
   QUANT_CALL_TIMEOUT_MS,
   QUANT_AGENT_PATH,
   PerpsWorkflowError,
+  PerpsMaybeLanded,
   PerpsMarketReader,
   PerpsMarketError,
   PerpsHistoryError,

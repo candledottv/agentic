@@ -606,3 +606,72 @@ describe("the management tools (BE-1584)", () => {
     expect(JSON.parse(result.text)).toMatchObject({ operation: "tpsl", complete: true })
   })
 })
+
+test("BE-3408: embedded tools need no PEM, generate ids and submit the recorded signature", async () => {
+  const paths: string[] = []
+  let clientId: string | undefined
+  const fetcher = (async (input: string, init?: RequestInit) => {
+    const url = String(input),
+      body = init?.body ? JSON.parse(String(init.body)) : undefined
+    paths.push(url)
+    if (url.endsWith("/wallets/embedded"))
+      return Response.json({ wallets: { evm: { address: ADDRESS } }, embeddedWalletPermission: "allowed" })
+    if (url.endsWith("/perps/open")) {
+      clientId = body.clientId
+      const action = order()
+      action.orders[0]!.c = clientId!
+      return Response.json({
+        ...build(action),
+        walletId: "embedded",
+        signer: "embedded",
+        clientId,
+        cloid: clientId,
+        signature: { r: `0x${"a".repeat(64)}`, s: `0x${"b".repeat(64)}`, v: 28 },
+      })
+    }
+    if (url.endsWith("/info"))
+      return Response.json([{ universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] }, [{ midPx: "60000" }]])
+    if (url.endsWith("/exchange"))
+      return Response.json({ status: "ok", response: { type: "order", data: { statuses: [{ resting: { oid: 1 } }] } } })
+    throw new Error(`Unexpected ${url}`)
+  }) as FetchLike
+  const result = await executePerps(
+    "candle_perps_open",
+    { wallet: "embedded", coin: "BTC", side: "long", size: "0.01" },
+    cfg,
+    { CANDLE_HYPERLIQUID_BUILDER: BUILDER },
+    fetcher,
+  )
+  expect(result.isError).not.toBe(true)
+  expect(clientId).toMatch(/^0x[0-9a-f]{32}$/)
+  expect(paths.some((path) => path.endsWith("/sign"))).toBe(false)
+  expect(paths).toContain("https://api.hyperliquid.xyz/exchange")
+})
+
+test("BE-3408: a lost embedded build answer retains the generated retry id", async () => {
+  let clientId: string | undefined
+  const fetcher = (async (input: string, init?: RequestInit) => {
+    if (String(input).endsWith("/wallets/embedded"))
+      return Response.json({ wallets: { evm: { address: ADDRESS } }, embeddedWalletPermission: "allowed" })
+    if (String(input).endsWith("/perps/open")) {
+      clientId = JSON.parse(String(init?.body)).clientId
+      throw new Error("lost build answer")
+    }
+    throw new Error(`Unexpected ${input}`)
+  }) as FetchLike
+  const result = await executePerps(
+    "candle_perps_open",
+    { wallet: "embedded", coin: "BTC", side: "long", size: "0.01" },
+    cfg,
+    { CANDLE_HYPERLIQUID_BUILDER: BUILDER },
+    fetcher,
+  )
+  expect(result.isError).toBe(true)
+  expect(JSON.parse(result.text)).toMatchObject({
+    clientId,
+    cloid: clientId,
+    error: { code: "PERPS_MAYBE_LANDED" },
+    exchangeBody: null,
+  })
+  expect(clientId).toMatch(/^0x[0-9a-f]{32}$/)
+})
