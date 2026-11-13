@@ -23,9 +23,11 @@ import {
   rawAmount,
   relaySign,
   request,
+  rowChain,
   safeText,
   selectTradingPayer,
   swapBuildSchema,
+  type TradeChain,
   TradingError,
   TradingUsage,
   type TradingWallet,
@@ -169,6 +171,12 @@ async function inspectReport(
   records: LinkedRow[],
   payable?: unknown,
   name?: string,
+  /**
+   * The operation's chain. A swap dry run passes its pair's chain; `tee check` passes its
+   * `--chain`, or nothing, and then each wallet is checked on its own chain (BE-3359). This is the
+   * same read-only `inspectTradingWallet` the real payer resolution runs; nothing is built.
+   */
+  chain?: TradeChain,
 ): Promise<{ report: WalletReport; wallet?: TradingWallet }> {
   const checks: WalletCheck[] = [pass("key"), payable ? failure("payable", payable) : pass("payable")]
   checks.push(
@@ -186,10 +194,17 @@ async function inspectReport(
     return { report }
   }
   checks.push(walletRecordCheck(row, listing.rows, records))
-  const inspected = await inspectTradingWallet(ctx, row, listing.appId, "swap:write", "solana", {
-    apiKey: key,
-    keyPrefix: listing.keyPrefix,
-  })
+  const inspected = await inspectTradingWallet(
+    ctx,
+    row,
+    listing.appId,
+    "swap:write",
+    chain ?? rowChain(row) ?? "solana",
+    {
+      apiKey: key,
+      keyPrefix: listing.keyPrefix,
+    },
+  )
   const active = inspected.failures.filter((error) => error.code !== "SIGNER_UNAVAILABLE")
   checks.push(...(active.length ? active.map((error) => failure("active", error)) : [pass("active")]))
   const signer = inspected.failures.find((error) => error.code === "SIGNER_UNAVAILABLE")
@@ -413,20 +428,26 @@ async function buildCheck(
 }
 
 export async function teeCheck(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--label-prefix", "--max", "--rpc-url"], booleanFlags: ["--sign"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--label-prefix", "--max", "--rpc-url", "--chain"],
+    booleanFlags: ["--sign"],
+  })
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
     return 2
   }
   const max = Number(parsed.values["--max"] ?? "10")
+  const chainFlag = parsed.values["--chain"]
   if (
     (!parsed.positionals.length && parsed.values["--label-prefix"] === undefined) ||
     !Number.isSafeInteger(max) ||
-    max < 1
+    max < 1 ||
+    // chain-lint-allowed: --chain names a TradeChain, the trading rail's two chains (solana, hood).
+    (chainFlag !== undefined && chainFlag !== "solana" && chainFlag !== "hood")
   ) {
     writeUsageFailure(
       ctx.deps,
-      "Usage: candle tee check <address|id|label>... [--label-prefix <p>] [--sign] [--max <n>] [--rpc-url <url>]",
+      "Usage: candle tee check <address|id|label>... [--label-prefix <p>] [--chain solana|hood] [--sign] [--max <n>] [--rpc-url <url>]",
       ctx.json,
     )
     return 2
@@ -479,8 +500,16 @@ export async function teeCheck(args: string[], ctx: CommandContext): Promise<num
         records,
         payable,
         name,
+        chainFlag as TradeChain | undefined,
       )
-      if (sign && wallet)
+      if (sign && wallet?.chain === "evm")
+        // A Hood build opens a guarded sequenced operation that holds the wallet until it expires
+        // (30 minutes) with no way to release it, so the check never builds one (BE-3359).
+        report.checks.push({
+          ...skipped("sign", "hood"),
+          message: "Signing is checked on Solana wallets only; a Hood test build would hold the wallet.",
+        })
+      else if (sign && wallet)
         await buildCheck(ctx, key, wallet, report, "SOL", "USDC", "0.000001", 50, parsed.values["--rpc-url"], true)
       else
         report.checks.push(
@@ -554,7 +583,16 @@ export async function swapCheck(args: string[], ctx: CommandContext): Promise<nu
       payable = error
     }
     const records = await readWalletRecords(ctx, key)
-    const { report, wallet } = await inspectReport(ctx, key, row, listing, records, payable, parsed.values["--wallet"])
+    const { report, wallet } = await inspectReport(
+      ctx,
+      key,
+      row,
+      listing,
+      records,
+      payable,
+      parsed.values["--wallet"],
+      from.chain,
+    )
     if (wallet)
       await buildCheck(
         ctx,

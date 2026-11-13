@@ -49,7 +49,7 @@ test("file credential help and package docs agree on source, conflict, platform 
 test("TEE diagnostics document signing and dry-run restrictions", () => {
   expect(documentedSubcommands(HELP.tee as Topic)).toContain("check")
   expect(documentedFlags(HELP.tee as Topic)).toEqual(
-    expect.arrayContaining(["--label-prefix", "--sign", "--max", "--rpc-url"]),
+    expect.arrayContaining(["--label-prefix", "--chain", "--sign", "--max", "--rpc-url"]),
   )
   expect(documentedFlags(HELP.swap as Topic)).toContain("--dry-run")
   expect(HELP.tee?.rows.find((r) => r.invocation.startsWith("check "))?.description).toContain("never broadcasts")

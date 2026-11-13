@@ -1581,9 +1581,10 @@ export const HELP: Record<string, Topic> = {
     usage: ["candle tee <subcommand> [flags]"],
     rows: [
       {
-        invocation: "check <address|id|label>... [--label-prefix <p>] [--sign] [--max <n>] [--rpc-url <url>]",
+        invocation:
+          "check <address|id|label>... [--label-prefix <p>] [--chain solana|hood] [--sign] [--max <n>] [--rpc-url <url>]",
         description:
-          "Check payable membership, record parity and this machine's signer without spending. --sign builds a tiny SOL/USDC quote, checks spend, signs and simulates; never broadcasts (default cap 10). Needs swap:write",
+          "Check payable membership, record parity and this machine's signer without spending. Each wallet is checked on its own chain; --chain checks every wallet against one chain (CHAIN_MISMATCH otherwise). --sign builds a tiny SOL/USDC quote on a Solana wallet, checks spend, signs and simulates; never broadcasts (default cap 10). A Hood wallet skips sign: a Hood build holds the wallet. Needs swap:write",
       },
       {
         invocation: "new [--label <name>]",
@@ -1660,6 +1661,7 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle tee check --label-prefix pool- --json",
       "candle tee check AgentOne --sign --rpc-url <url>",
+      "candle tee check hood-1 --chain hood --json",
       "candle tee new --label AgentOne",
       "candle tee status AgentOneAddress",
       "candle tee sweep AgentOneAddress",

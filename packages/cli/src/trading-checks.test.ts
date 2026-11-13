@@ -344,7 +344,8 @@ describe("TEE checks and dry runs", () => {
       expect(inspected.failures[0]?.code).toBe(code)
       await expect(completeTradingWallet(f.ctx, broken, "app", "swap:write")).rejects.toMatchObject({ code })
       await expect(tradingPayer(f.ctx, "key", broken.id)).rejects.toMatchObject({ code })
-      const { output } = await f.invoke(["tee", "check", broken.id])
+      // tradingPayer defaults to a Solana operation, so tee check names that chain (BE-3359).
+      const { output } = await f.invoke(["tee", "check", broken.id, "--chain", "solana"])
       expect(output.wallets[0].checks.some((c: WalletCheck) => c.code === code)).toBe(true)
       if (name === "combined")
         expect(inspected.failures.map((e) => e.code)).toEqual([
@@ -554,6 +555,86 @@ describe("TEE checks and dry runs", () => {
     const { output } = await f.invoke(["tee", "check", "pool-1"])
     expect(output.code).toBe("API_KEY_REQUIRED")
     expect(output.wallets).toBeUndefined()
+    expect(f.calls).toHaveLength(0)
+  })
+})
+
+// BE-3359: `active` used a Solana operation chain for every wallet, so a healthy Hood wallet failed
+// with CHAIN_MISMATCH and the whole run read success: false.
+describe("tee check on Hood wallets (BE-3359)", () => {
+  const hood: TradingWalletRow = {
+    id: "hood-wallet",
+    address: "0x9A451fb443617EdD585067Db312786E434dD4d14",
+    label: "hood-1",
+    chain: "evm",
+    active: true,
+    allowLaunch: false,
+    privyWalletId: "privy-hood",
+  }
+  const hoodRecord = { _id: hood.id, address: hood.address, label: hood.label, chain: "evm", profile: "ember-tee" }
+  const both = () => fixture({ rows: [row, hood], records: [record, hoodRecord] })
+  const walletChecks = (output: CheckOutput, label: string) => {
+    const report = output.wallets.find((w) => w.label === label)
+    if (!report) throw new Error(`Missing report for ${label}`)
+    return Object.fromEntries(report.checks.map((c) => [c.id, c]))
+  }
+
+  test("a healthy Hood wallet passes active beside an unchanged Solana wallet, reads only", async () => {
+    const f = await both()
+    const { exit, output } = await f.invoke(["tee", "check", "pool-1", "hood-1"])
+    expect(exit).toBe(0)
+    expect(output).toMatchObject({ success: true, summary: { total: 2, pass: 2, fail: 0 } })
+    for (const label of ["pool-1", "hood-1"]) {
+      const checks = walletChecks(output, label)
+      for (const id of ["key", "payable", "scope", "record", "active", "signer"])
+        expect(checks[id]?.status).toBe("pass")
+      expect(checks.sign).toMatchObject({ status: "skipped", because: "--sign not set" })
+    }
+    expect(f.calls.every((c) => c.body === undefined)).toBe(true)
+  })
+
+  test("--sign skips a Hood wallet without building, and still signs the Solana wallet", async () => {
+    const f = await both()
+    const { exit, output } = await f.invoke(["tee", "check", "pool-1", "hood-1", "--sign"])
+    expect(exit).toBe(0)
+    expect(walletChecks(output, "hood-1").sign).toMatchObject({ status: "skipped", because: "hood" })
+    expect(walletChecks(output, "hood-1").quote).toBeUndefined()
+    expect(walletChecks(output, "pool-1").sign?.status).toBe("pass")
+    const built = f.calls.filter((c) => c.path.endsWith("/build"))
+    expect(built).toHaveLength(1)
+    expect(built[0]?.body.payer.linkedWalletId).toBe(row.id)
+    expect(f.calls.filter((c) => c.path.endsWith("/sign"))).toHaveLength(1)
+    expect(f.calls.some((c) => c.path.includes("hood-tee"))).toBe(false)
+  })
+
+  test("an explicit --chain still fails a wallet on the other chain with CHAIN_MISMATCH", async () => {
+    const solana = await both()
+    const onSolana = await solana.invoke(["tee", "check", "pool-1", "hood-1", "--chain", "solana"])
+    expect(onSolana.exit).toBe(1)
+    expect(walletChecks(onSolana.output, "pool-1").active?.status).toBe("pass")
+    expect(walletChecks(onSolana.output, "hood-1").active).toMatchObject({ status: "fail", code: "CHAIN_MISMATCH" })
+    const hoodRun = await both()
+    const onHood = await hoodRun.invoke(["tee", "check", "pool-1", "hood-1", "--chain", "hood"])
+    expect(onHood.exit).toBe(1)
+    expect(walletChecks(onHood.output, "hood-1").active?.status).toBe("pass")
+    expect(walletChecks(onHood.output, "pool-1").active).toMatchObject({ status: "fail", code: "CHAIN_MISMATCH" })
+    expect(onHood.output.summary).toEqual({ total: 2, pass: 1, fail: 1 })
+  })
+
+  test("a Solana-pair dry run on a Hood wallet still fails active with CHAIN_MISMATCH", async () => {
+    const f = await both()
+    const { exit, output } = await f.invoke(["swap", "SOL", "USDC", "--amount", "1", "--wallet", "hood-1", "--dry-run"])
+    expect(exit).toBe(1)
+    expect(check(output, "active")).toMatchObject({ status: "fail", code: "CHAIN_MISMATCH" })
+    expect(check(output, "quote")).toMatchObject({ status: "skipped", because: "active" })
+    expect(f.calls.some((c) => c.path.endsWith("/build"))).toBe(false)
+  })
+
+  test("an unknown --chain is a usage error before any read", async () => {
+    const f = await both()
+    const { exit, output } = await f.invoke(["tee", "check", "hood-1", "--chain", "base"])
+    expect(exit).toBe(2)
+    expect(output.code).toBe("USAGE")
     expect(f.calls).toHaveLength(0)
   })
 })

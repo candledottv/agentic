@@ -26117,7 +26117,7 @@ function walletRecordCheck(row, trading, records) {
     differences
   } : pass("record");
 }
-async function inspectReport(ctx, key, row, listing, records, payable, name) {
+async function inspectReport(ctx, key, row, listing, records, payable, name, chain2) {
   const checks = [pass("key"), payable ? failure2("payable", payable) : pass("payable")];
   checks.push(listing.scopes.includes("swap:write") ? pass("scope") : failure2("scope", new TradingError("SCOPE_MISSING", "The bound key needs swap:write.")));
   const report = {
@@ -26130,7 +26130,7 @@ async function inspectReport(ctx, key, row, listing, records, payable, name) {
     return { report };
   }
   checks.push(walletRecordCheck(row, listing.rows, records));
-  const inspected = await inspectTradingWallet(ctx, row, listing.appId, "swap:write", "solana", {
+  const inspected = await inspectTradingWallet(ctx, row, listing.appId, "swap:write", chain2 ?? rowChain(row) ?? "solana", {
     apiKey: key,
     keyPrefix: listing.keyPrefix
   });
@@ -26323,14 +26323,18 @@ async function buildCheck(ctx, key, wallet3, report, from, to, amount, slippage,
   }
 }
 async function teeCheck(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--label-prefix", "--max", "--rpc-url"], booleanFlags: ["--sign"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--label-prefix", "--max", "--rpc-url", "--chain"],
+    booleanFlags: ["--sign"]
+  });
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
   }
   const max = Number(parsed.values["--max"] ?? "10");
-  if (!parsed.positionals.length && parsed.values["--label-prefix"] === undefined || !Number.isSafeInteger(max) || max < 1) {
-    writeUsageFailure(ctx.deps, "Usage: candle tee check <address|id|label>... [--label-prefix <p>] [--sign] [--max <n>] [--rpc-url <url>]", ctx.json);
+  const chainFlag = parsed.values["--chain"];
+  if (!parsed.positionals.length && parsed.values["--label-prefix"] === undefined || !Number.isSafeInteger(max) || max < 1 || chainFlag !== undefined && chainFlag !== "solana" && chainFlag !== "hood") {
+    writeUsageFailure(ctx.deps, "Usage: candle tee check <address|id|label>... [--label-prefix <p>] [--chain solana|hood] [--sign] [--max <n>] [--rpc-url <url>]", ctx.json);
     return 2;
   }
   try {
@@ -26362,8 +26366,13 @@ async function teeCheck(args, ctx) {
     for (const name of targets) {
       const matches = listing.rows.filter((row) => matchesName(row, name));
       const payable = matches.length === 1 ? undefined : new TradingError("TEE_WALLET_REQUIRED", `"${safeText(name)}" matches ${matches.length} TEE wallets. Bound to this key: ${listing.rows.map(describeWallet).join("; ") || "no TEE wallets bound to this key"}.`);
-      const { report, wallet: wallet3 } = await inspectReport(ctx, key, matches.length === 1 ? matches[0] : undefined, listing, records, payable, name);
-      if (sign4 && wallet3)
+      const { report, wallet: wallet3 } = await inspectReport(ctx, key, matches.length === 1 ? matches[0] : undefined, listing, records, payable, name, chainFlag);
+      if (sign4 && wallet3?.chain === "evm")
+        report.checks.push({
+          ...skipped("sign", "hood"),
+          message: "Signing is checked on Solana wallets only; a Hood test build would hold the wallet."
+        });
+      else if (sign4 && wallet3)
         await buildCheck(ctx, key, wallet3, report, "SOL", "USDC", "0.000001", 50, parsed.values["--rpc-url"], true);
       else
         report.checks.push(skipped("sign", sign4 ? report.checks.find((check) => check.status === "fail")?.id ?? "signer" : "--sign not set"));
@@ -26423,7 +26432,7 @@ async function swapCheck(args, ctx) {
       payable = error;
     }
     const records = await readWalletRecords(ctx, key);
-    const { report, wallet: wallet3 } = await inspectReport(ctx, key, row, listing, records, payable, parsed.values["--wallet"]);
+    const { report, wallet: wallet3 } = await inspectReport(ctx, key, row, listing, records, payable, parsed.values["--wallet"], from.chain);
     if (wallet3)
       await buildCheck(ctx, key, wallet3, report, from.asset, to.asset, parsed.values["--amount"], slippage, parsed.values["--rpc-url"], false);
     else
@@ -79388,8 +79397,8 @@ var HELP = {
     usage: ["candle tee <subcommand> [flags]"],
     rows: [
       {
-        invocation: "check <address|id|label>... [--label-prefix <p>] [--sign] [--max <n>] [--rpc-url <url>]",
-        description: "Check payable membership, record parity and this machine's signer without spending. --sign builds a tiny SOL/USDC quote, checks spend, signs and simulates; never broadcasts (default cap 10). Needs swap:write"
+        invocation: "check <address|id|label>... [--label-prefix <p>] [--chain solana|hood] [--sign] [--max <n>] [--rpc-url <url>]",
+        description: "Check payable membership, record parity and this machine's signer without spending. Each wallet is checked on its own chain; --chain checks every wallet against one chain (CHAIN_MISMATCH otherwise). --sign builds a tiny SOL/USDC quote on a Solana wallet, checks spend, signs and simulates; never broadcasts (default cap 10). A Hood wallet skips sign: a Hood build holds the wallet. Needs swap:write"
       },
       {
         invocation: "new [--label <name>]",
@@ -79455,6 +79464,7 @@ var HELP = {
     examples: [
       "candle tee check --label-prefix pool- --json",
       "candle tee check AgentOne --sign --rpc-url <url>",
+      "candle tee check hood-1 --chain hood --json",
       "candle tee new --label AgentOne",
       "candle tee status AgentOneAddress",
       "candle tee sweep AgentOneAddress",
