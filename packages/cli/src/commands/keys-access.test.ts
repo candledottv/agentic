@@ -532,6 +532,21 @@ describe("T-B10: an API without the route", () => {
 })
 
 describe("T-B11: --history", () => {
+  test("old and new profile events never render as access changes; JSON retains the complete history", async () => {
+    const changes = [
+      { eventKind: "profile_edit", changeId: "new-content" },
+      { change: "profile_edit", changeId: "old-content" },
+    ]
+    for (const json of [false, true]) {
+      const { fetch } = createRoutedFetch({
+        [HISTORY_PATH]: () => jsonResponse(200, { success: true, changes }),
+      })
+      const { deps, stdout } = depsFor(fetch)
+      expect(await run(["keys", "access", PREFIX, "--history", ...(json ? ["--json"] : [])], deps)).toBe(0)
+      if (json) expect(JSON.parse(stdout.text).changes).toEqual(changes)
+      else expect(stdout.text).toContain(`No access changes on key ${PREFIX}.`)
+    }
+  })
   const rows = [
     {
       changeId: "c2",

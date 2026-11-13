@@ -104,6 +104,8 @@ export interface AccessResponse {
 }
 
 interface AccessChangeRow {
+  eventKind?: "access_change" | "profile_edit"
+  change?: string
   changeId: string
   at: number
   keyPrefix: string
@@ -466,7 +468,10 @@ async function keysAccessHistory(target: string, ctx: CommandContext): Promise<n
     deps.stdout.write(`${JSON.stringify({ ...(result.body as object), command: "keys access" })}\n`)
     return 0
   }
-  const rows = (result.body as { changes?: AccessChangeRow[] }).changes ?? []
+  const rows = ((result.body as { changes?: AccessChangeRow[] }).changes ?? []).filter(
+    // Older APIs identify content edits only through `change`; JSON output above keeps every row.
+    (row) => row.eventKind !== "profile_edit" && row.change !== "profile_edit",
+  )
   if (rows.length === 0) {
     notice(deps, "stdout", "note", `No access changes on key ${resolved.keyPrefix}.`)
     return 0

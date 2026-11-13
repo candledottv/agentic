@@ -92481,7 +92481,7 @@ async function keysAccessHistory(target, ctx) {
 `);
     return 0;
   }
-  const rows = result2.body.changes ?? [];
+  const rows = (result2.body.changes ?? []).filter((row2) => row2.eventKind !== "profile_edit" && row2.change !== "profile_edit");
   if (rows.length === 0) {
     notice(deps, "stdout", "note", `No access changes on key ${resolved.keyPrefix}.`);
     return 0;
