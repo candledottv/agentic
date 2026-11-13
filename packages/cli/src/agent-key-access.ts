@@ -167,7 +167,7 @@ export interface AgentKeyCapabilities {
   read: boolean
   launch: boolean
   trade: boolean
-  /** `lp:write`: open, add to, remove and claim Meteora DAMM v2 positions from a TEE wallet. */
+  /** `lp:write`: open, add to, remove and claim Meteora DAMM v2 positions from a TEE or the embedded wallet. */
   lp: boolean
   transfer: boolean
   /** `transfer:bound`: move funds out of the wallet this key runs, to the account's own wallets. */

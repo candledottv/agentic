@@ -50,7 +50,7 @@ import { keysWallets } from "./commands/keys-wallets"
 import { labEdges, labReplay, labRunners, labStatus } from "./commands/lab"
 import { launch } from "./commands/launch"
 import { launchStatus } from "./commands/launch-status"
-import { lpAdd, lpClaim, lpPools, lpPositions, lpRemove } from "./commands/lp"
+import { lpAdd, lpClaim, lpPools, lpPositions, lpRemove, lpStatus } from "./commands/lp"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import {
   perpsCancel,
@@ -329,7 +329,16 @@ const COMMANDS: Record<string, CommandRoute> = {
   },
   // Ember Phase 3 PR D (BE-315, R4): Meteora DAMM v2 liquidity from a TEE wallet, on the agent
   // rail under the bound key's opt-in `lp:write`. Server-built, relay-signed, never a vault key.
-  lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
+  lp: {
+    subcommands: {
+      pools: lpPools,
+      add: lpAdd,
+      positions: lpPositions,
+      remove: lpRemove,
+      claim: lpClaim,
+      status: lpStatus,
+    },
+  },
   // Hyperliquid perps B (BE-646): perpetuals from the key's EVM TEE wallet under the bound key's
   // opt-in `perps:write`. Server-built, checked here before signing, relay-signed, submitted here.
   perps: {

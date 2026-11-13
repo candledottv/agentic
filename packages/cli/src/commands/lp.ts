@@ -12,10 +12,17 @@
  * The server half (#1200, behind `LP_ENABLED`) owns admission, the pre-artifact Ember spend gate on
  * an add, the thin-pool and Token-2022 warnings (R5, both pool tokens), the idempotent build per
  * client id, and the confirm that reads actual token deltas. This file only drives it.
+ *
+ * BE-3406: `--wallet embedded` runs the same commands from the account's embedded Solana wallet. There
+ * the server builds, signs (Privy), broadcasts and confirms in one call (`POST /agent/lp/{action}`),
+ * so this machine signs and sends nothing, and `--rpc-url` is ignored. An uncertain outcome
+ * (`LP_UNCONFIRMED`) exits 3 with the signature; `candle lp status <clientTradeId>` reads and settles
+ * it without a second write. A `remove` or `claim` with no `--wallet` and no Solana TEE wallet on the
+ * key uses the embedded wallet and says so (spec D5); `add` names its wallet, as before.
  */
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
-import { apiRequest } from "../client"
+import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { writeFields } from "../human-output"
 import { notice } from "../presentation"
@@ -164,9 +171,28 @@ export async function lpPools(args: string[], ctx: CommandContext): Promise<numb
 export async function lpPositions(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, { valueFlags: ["--wallet"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
-  if (parsed.positionals.length !== 0) return usage(ctx, "Usage: candle lp positions [--wallet <tee>]")
+  if (parsed.positionals.length !== 0) return usage(ctx, "Usage: candle lp positions [--wallet <tee>|embedded]")
   try {
     const key = await tradingKey(ctx)
+    if (parsed.values["--wallet"] === EMBEDDED) {
+      const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, "/api/v1/agent/lp/positions?wallet=embedded"))
+      if (ctx.json) return printTradingResult(ctx, { success: true, wallet: EMBEDDED, positions: positions.positions })
+      if (positions.positions.length === 0) {
+        ctx.deps.stdout.write("No DAMM v2 positions in the embedded wallet.\n")
+        return 0
+      }
+      writeFields(ctx.deps, "stdout", [["Wallet", EMBEDDED]])
+      for (const position of positions.positions)
+        writeFields(ctx.deps, "stdout", [
+          ["Position", safeText(position.position)],
+          ["Pool", safeText(position.pool)],
+          [
+            "Position value",
+            position.valueUsd === null || position.valueUsd === undefined ? undefined : formatUsd(position.valueUsd),
+          ],
+        ])
+      return 0
+    }
     // A read `requireAgentKey("any")` admits: no scope is demanded of the key here.
     const { rows } = await listTradingWallets(ctx, key)
     const name = parsed.values["--wallet"]
@@ -232,17 +258,154 @@ export async function lpPositions(args: string[], ctx: CommandContext): Promise<
   }
 }
 
+// ── the embedded wallet (BE-3406) ─────────────────────────────────────────────────────────────
+
+const EMBEDDED = "embedded"
+
+interface EmbeddedLp {
+  action: LpAction
+  id: string
+  key: string
+  intent: string
+  body: Json
+  yes: boolean
+  rpcUrl?: string
+}
+
+/** The embedded one-shot's refusal: exit 3 with the signature when it may still land. */
+function embeddedFailure(result: Extract<ApiResult, { ok: false }>, id: string): TradingError {
+  if (result.status === 404 && !result.code)
+    return new TradingError(
+      "LP_NOT_ENABLED",
+      "This Candle deployment does not serve LP routes (LP_ENABLED is off there, or the API predates them).",
+    )
+  const error = (result.raw as { error?: { signature?: unknown; stage?: unknown } } | undefined)?.error
+  const signature = typeof error?.signature === "string" ? error.signature : undefined
+  const stage = typeof error?.stage === "string" ? error.stage : undefined
+  const code = result.code ?? "REQUEST_FAILED"
+  if (code === "LP_UNCONFIRMED")
+    return new TradingError(
+      code,
+      `${result.message}${signature && !result.message.includes(signature) ? ` Signature: ${signature}.` : ""}`,
+      {
+        exitCode: 3,
+        suggestion: `candle lp status ${id}`,
+        details: { clientTradeId: id, ...(signature ? { signature } : {}), ...(stage ? { stage } : {}) },
+      },
+    )
+  return new TradingError(code, result.message, {
+    ...(result.uiHint ? { suggestion: result.uiHint } : {}),
+    ...(signature || stage
+      ? { details: { clientTradeId: id, ...(signature ? { signature } : {}), ...(stage ? { stage } : {}) } }
+      : {}),
+  })
+}
+
+async function runEmbeddedLp(ctx: CommandContext, plan: EmbeddedLp): Promise<number> {
+  const stream = ctx.json ? "stderr" : "stdout"
+  writeFields(ctx.deps, stream, [
+    ["Intent", safeText(plan.intent)],
+    ["Payer", "embedded wallet (Candle signs and broadcasts)"],
+    ["Operation", plan.id],
+  ])
+  if (plan.rpcUrl !== undefined)
+    notice(
+      ctx.deps,
+      "stderr",
+      "note",
+      "Candle signs and broadcasts for the embedded wallet: --rpc-url sends nothing here.",
+    )
+  if (!plan.yes) {
+    if (!ctx.deps.isTTY.stdin)
+      throw new TradingError(
+        "CONFIRMATION_REQUIRED",
+        "Run interactively to confirm, or use --yes for an ordinary LP prompt.",
+      )
+    if ((await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() !== "y")
+      return printCancelledResult(ctx, {
+        success: true,
+        status: "cancelled",
+        clientTradeId: plan.id,
+        kind: "lp",
+        action: plan.action,
+        wallet: EMBEDDED,
+      })
+  }
+  const result = await apiRequest(`/api/v1/agent/lp/${plan.action}`, {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: plan.key },
+    auth: "key",
+    method: "POST",
+    body: { clientTradeId: plan.id, ...plan.body },
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env,
+  })
+  if (!result.ok) throw embeddedFailure(result, plan.id)
+  const body = (result.body ?? {}) as Json
+  if (!ctx.json && typeof body.signature === "string")
+    ctx.deps.stderr.write(`LP ${plan.action} signature: ${body.signature}\n`)
+  return printTradingResult(ctx, { ...body, clientTradeId: plan.id, kind: "lp", action: plan.action })
+}
+
+// ── status ────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `candle lp status <clientTradeId>`: the operation's state, settled from the chain by the server when
+ * an embedded operation may still land. Exit 3 while it is still unconfirmed, 0 otherwise.
+ */
+export async function lpStatus(args: string[], ctx: CommandContext): Promise<number> {
+  const parsed = parseArgs(args, {})
+  if ("error" in parsed) return usage(ctx, parsed.error)
+  const id = parsed.positionals[0]
+  if (parsed.positionals.length !== 1 || !id || !validClientId(id))
+    return usage(ctx, "Usage: candle lp status <clientTradeId>")
+  try {
+    const key = await tradingKey(ctx)
+    const read = await lpRequest(ctx, key, `/api/v1/agent/lp/operations/${encodeURIComponent(id)}`)
+    const state = typeof read.state === "string" ? read.state : "unknown"
+    if (ctx.json) printTradingResult(ctx, { ...read, kind: "lp" })
+    else
+      writeFields(ctx.deps, "stdout", [
+        ["Operation", id],
+        ["State", safeText(state)],
+        ["Action", typeof read.action === "string" ? safeText(read.action) : undefined],
+        ["Position", typeof read.position === "string" ? safeText(read.position) : undefined],
+        [
+          "Signature",
+          typeof read.signature === "string"
+            ? safeText(read.signature)
+            : typeof read.submittedSignature === "string"
+              ? `${safeText(read.submittedSignature)} (not confirmed)`
+              : undefined,
+        ],
+      ])
+    return state === "unconfirmed" || state === "signed" ? 3 : 0
+  } catch (error) {
+    return tradingFailure(ctx, error, id)
+  }
+}
+
 // ── the shared write path ─────────────────────────────────────────────────────────────────────
 
-/** Which bound TEE wallet holds `position`: the one named, or the one whose positions list it. */
+/**
+ * Which wallet holds `position`: the TEE wallet named, or the bound TEE wallet whose positions list
+ * it. Null is the embedded wallet: `--wallet embedded`, or (spec D5) no `--wallet` and no Solana TEE
+ * wallet on the key, which the command says. The server still refuses a key denied the embedded
+ * wallet before anything is recorded.
+ */
 async function walletHolding(
   ctx: CommandContext,
   key: string,
   position: string,
   name: string | undefined,
-): Promise<TradingWallet> {
+): Promise<TradingWallet | null> {
+  if (name === EMBEDDED) return null
   if (name !== undefined) return tradingWallet(ctx, key, name, LP_SCOPE)
   const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, LP_SCOPE)
+  if (!rows.some((row) => row.chain === "solana")) {
+    notice(ctx.deps, "stderr", "note", "No TEE wallet on this key: using the account's embedded wallet.")
+    return null
+  }
   for (const row of rows) {
     if (row.chain !== "solana") continue
     const positions = lpPositionsSchema.parse(
@@ -455,22 +618,35 @@ export async function lpAdd(args: string[], ctx: CommandContext): Promise<number
   if ("error" in parsed) return usage(ctx, parsed.error)
   const flags = parsed.values
   const id = flags["--client-trade-id"] ?? `lp-${randomUUID()}`
+  const addUsage =
+    "Usage: candle lp add <pool> --amount <decimal> <token> --wallet <tee>|embedded [--position <nft-mint>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]"
+  // `add` names its wallet, as before (D5 keeps today's resolution): a TEE wallet or `embedded`.
   if (parsed.positionals.length !== 2 || !flags["--amount"] || !flags["--wallet"] || !validClientId(id))
-    return usage(
-      ctx,
-      "Usage: candle lp add <pool> --amount <decimal> <token> --wallet <tee> [--position <nft-mint>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]",
-    )
+    return usage(ctx, addUsage)
   try {
     const pool = solanaAddress(parsed.positionals[0] as string, "The pool")
     const token = poolToken(parsed.positionals[1] as string)
     const position = flags["--position"] ? solanaAddress(flags["--position"], "--position") : undefined
     rawAmount(flags["--amount"], 18)
     const slippageBps = slippageOf(flags["--slippage-bps"])
-    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
     const key = await tradingKey(ctx)
-    const wallet = await tradingWallet(ctx, key, flags["--wallet"], LP_SCOPE)
+    const embedded = flags["--wallet"] === EMBEDDED
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
+    const wallet = embedded ? null : await tradingWallet(ctx, key, flags["--wallet"] as string, LP_SCOPE)
     const decimals = await decimalsFor(ctx, baseAsset(token) ?? token, () => Promise.resolve(solana))
     const amountRaw = rawAmount(flags["--amount"], decimals)
+    const intent = `Add ${decimalAmount(amountRaw, decimals)} ${baseAsset(token) ?? token} of liquidity to DAMM v2 pool ${pool}${position ? ` (position ${position})` : " (new position)"}`
+    const body = { pool, token, amountRaw, slippageBps, ...(position ? { position } : {}) }
+    if (!wallet)
+      return await runEmbeddedLp(ctx, {
+        action: "add",
+        id,
+        key,
+        intent,
+        body,
+        yes: parsed.booleans.has("--yes"),
+        ...(flags["--rpc-url"] !== undefined ? { rpcUrl: flags["--rpc-url"] } : {}),
+      })
     return await runLpOperation(ctx, {
       action: "add",
       id,
@@ -478,8 +654,8 @@ export async function lpAdd(args: string[], ctx: CommandContext): Promise<number
       wallet,
       solana,
       yes: parsed.booleans.has("--yes"),
-      intent: `Add ${decimalAmount(amountRaw, decimals)} ${baseAsset(token) ?? token} of liquidity to DAMM v2 pool ${pool}${position ? ` (position ${position})` : " (new position)"}`,
-      body: { pool, token, amountRaw, slippageBps, ...(position ? { position } : {}) },
+      intent,
+      body,
     })
   } catch (error) {
     return tradingFailure(ctx, error, id)
@@ -506,14 +682,29 @@ export async function lpRemove(args: string[], ctx: CommandContext): Promise<num
   )
     return usage(
       ctx,
-      "Usage: candle lp remove <position> --percent <0.01-100> [--wallet <tee>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]",
+      "Usage: candle lp remove <position> --percent <0.01-100> [--wallet <tee>|embedded] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]",
     )
   try {
     const position = solanaAddress(parsed.positionals[0] as string, "The position")
     const slippageBps = slippageOf(flags["--slippage-bps"])
-    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
     const key = await tradingKey(ctx)
+    const intent =
+      percent === 100
+        ? `Remove all liquidity from position ${position}, claim its fees and close it (rent returns to the wallet)`
+        : `Remove ${percent}% of the liquidity in position ${position}`
+    const body = { position, percent, slippageBps }
     const wallet = await walletHolding(ctx, key, position, flags["--wallet"])
+    if (!wallet)
+      return await runEmbeddedLp(ctx, {
+        action: "remove",
+        id,
+        key,
+        intent,
+        body,
+        yes: parsed.booleans.has("--yes"),
+        ...(flags["--rpc-url"] !== undefined ? { rpcUrl: flags["--rpc-url"] } : {}),
+      })
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
     return await runLpOperation(ctx, {
       action: "remove",
       id,
@@ -521,11 +712,8 @@ export async function lpRemove(args: string[], ctx: CommandContext): Promise<num
       wallet,
       solana,
       yes: parsed.booleans.has("--yes"),
-      intent:
-        percent === 100
-          ? `Remove all liquidity from position ${position}, claim its fees and close it (rent returns to the wallet)`
-          : `Remove ${percent}% of the liquidity in position ${position}`,
-      body: { position, percent, slippageBps },
+      intent,
+      body,
     })
   } catch (error) {
     return tradingFailure(ctx, error, id)
@@ -545,13 +733,24 @@ export async function lpClaim(args: string[], ctx: CommandContext): Promise<numb
   if (parsed.positionals.length !== 1 || !validClientId(id))
     return usage(
       ctx,
-      "Usage: candle lp claim <position> [--wallet <tee>] [--client-trade-id <id>] [--rpc-url <url>] [--yes]",
+      "Usage: candle lp claim <position> [--wallet <tee>|embedded] [--client-trade-id <id>] [--rpc-url <url>] [--yes]",
     )
   try {
     const position = solanaAddress(parsed.positionals[0] as string, "The position")
-    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
     const key = await tradingKey(ctx)
+    const intent = `Claim the fees and any rewards of position ${position}`
     const wallet = await walletHolding(ctx, key, position, flags["--wallet"])
+    if (!wallet)
+      return await runEmbeddedLp(ctx, {
+        action: "claim",
+        id,
+        key,
+        intent,
+        body: { position },
+        yes: parsed.booleans.has("--yes"),
+        ...(flags["--rpc-url"] !== undefined ? { rpcUrl: flags["--rpc-url"] } : {}),
+      })
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
     return await runLpOperation(ctx, {
       action: "claim",
       id,
@@ -559,7 +758,7 @@ export async function lpClaim(args: string[], ctx: CommandContext): Promise<numb
       wallet,
       solana,
       yes: parsed.booleans.has("--yes"),
-      intent: `Claim the fees and any rewards of position ${position}`,
+      intent,
       body: { position },
     })
   } catch (error) {

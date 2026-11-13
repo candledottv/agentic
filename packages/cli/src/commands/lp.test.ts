@@ -48,6 +48,10 @@ interface Options {
   /** BE-355 (T11, T12): RPC methods that always answer HTTP 429. */
   rpcRateLimit?: string[]
   rpcSendFailure?: { code: number; message: string; data?: unknown }
+  /** BE-3406: what the embedded one-shot `POST /agent/lp/{action}` answers. */
+  embedded?: { status: number; body: unknown }
+  /** BE-3406: what `GET /agent/lp/operations/:id` answers. */
+  operation?: Record<string, unknown>
 }
 
 async function fixture(opts: Options = {}) {
@@ -95,6 +99,17 @@ async function fixture(opts: Options = {}) {
             },
           ],
         })
+      if (/^\/api\/v1\/agent\/lp\/(add|remove|claim)$/.test(path)) {
+        const answer = opts.embedded ?? {
+          status: 200,
+          body: { success: true, wallet: "embedded", signature, action: path.split("/")[5], replay: false },
+        }
+        return Response.json(answer.body, { status: answer.status })
+      }
+      if (path.startsWith("/api/v1/agent/lp/operations/"))
+        return ok(opts.operation ?? { success: true, state: "confirmed", signature, action: "add" })
+      if (path === "/api/v1/agent/lp/positions" && url.searchParams.get("wallet") === "embedded")
+        return ok({ success: true, wallet: "embedded", positions: [] })
       if (path === "/api/v1/agent/lp/positions") {
         const wallet = url.searchParams.get("linkedWalletId")
         const holder = opts.holder ?? "wallet"
@@ -552,5 +567,119 @@ describe("BE-355: rate limits after the signature (T11, T12)", () => {
     expect(out.message).toContain(signature)
     expect(rpcMethods(f)).toEqual(["sendTransaction", "getSignatureStatuses", "getSignatureStatuses"])
     expect(f.calls.some((c) => c.path === "/api/v1/agent/lp/confirm")).toBe(false)
+  })
+})
+
+describe("candle lp: the embedded wallet (BE-3406)", () => {
+  const embeddedAdd = [
+    "lp",
+    "add",
+    POOL,
+    "--amount",
+    "1",
+    "USDC",
+    "--wallet",
+    "embedded",
+    "--client-trade-id",
+    "e-1",
+    "--yes",
+    "--json",
+  ]
+
+  test("add --wallet embedded calls the one-shot once; nothing is signed or sent from this machine", async () => {
+    const f = await fixture()
+    expect(await run(embeddedAdd, f.deps)).toBe(0)
+    const posted = f.calls.filter((c) => c.path === "/api/v1/agent/lp/add")
+    expect(posted).toHaveLength(1)
+    expect(posted[0]?.body).toEqual({
+      clientTradeId: "e-1",
+      pool: POOL,
+      token: USDC_MINT,
+      amountRaw: "1000000",
+      slippageBps: 100,
+    })
+    expect(
+      f.calls.some((c) => c.path.endsWith("/sign") || c.path.endsWith("/build") || c.path.endsWith("/confirm")),
+    ).toBe(false)
+    expect(f.calls.some((c) => c.path === "/rpc" && c.body?.method === "sendTransaction")).toBe(false)
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ wallet: "embedded", signature, clientTradeId: "e-1" })
+  })
+
+  test("LP_UNCONFIRMED exits 3 with the signature and points at candle lp status", async () => {
+    const f = await fixture({
+      embedded: {
+        status: 409,
+        body: {
+          success: false,
+          error: {
+            code: "LP_UNCONFIRMED",
+            message: "This LP operation may still land.",
+            retryable: false,
+            stage: "unconfirmed",
+            signature,
+          },
+        },
+      },
+    })
+    expect(await run(embeddedAdd, f.deps)).toBe(3)
+    const out = JSON.parse(f.stdout.text.trim())
+    expect(out).toMatchObject({ ok: false, code: "LP_UNCONFIRMED" })
+    expect(JSON.stringify(out)).toContain(signature)
+    expect(JSON.stringify(out)).toContain("candle lp status e-1")
+  })
+
+  test("a terminal refusal exits 1", async () => {
+    const f = await fixture({
+      embedded: {
+        status: 409,
+        body: {
+          success: false,
+          error: { code: "LP_REVERTED", message: "reverted", retryable: false, stage: "reverted", signature },
+        },
+      },
+    })
+    expect(await run(embeddedAdd, f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ code: "LP_REVERTED" })
+  })
+
+  test("remove and claim take --wallet embedded; with no TEE wallet on the key the embedded wallet is the default", async () => {
+    const f = await fixture()
+    expect(
+      await run(
+        ["lp", "claim", POSITION, "--wallet", "embedded", "--client-trade-id", "e-2", "--yes", "--json"],
+        f.deps,
+      ),
+    ).toBe(0)
+    expect(f.calls.find((c) => c.path === "/api/v1/agent/lp/claim")?.body).toEqual({
+      clientTradeId: "e-2",
+      position: POSITION,
+    })
+    const none = await fixture({ teeWallets: 0 })
+    expect(await run(removeArgs, none.deps)).toBe(0)
+    expect(none.calls.find((c) => c.path === "/api/v1/agent/lp/remove")?.body).toEqual({
+      clientTradeId: "lp-2",
+      position: POSITION,
+      percent: 100,
+      slippageBps: 100,
+    })
+    expect(humanText(none.stderr.text)).toContain(humanText("using the account's embedded wallet"))
+  })
+
+  test("lp status reads the operation: 0 when settled, 3 while it may still land", async () => {
+    const f = await fixture()
+    expect(await run(["lp", "status", "e-1", "--json"], f.deps)).toBe(0)
+    expect(f.calls.map((c) => c.path)).toEqual(["/api/v1/agent/lp/operations/e-1"])
+    const pending = await fixture({ operation: { success: true, state: "unconfirmed", submittedSignature: signature } })
+    expect(await run(["lp", "status", "e-1"], pending.deps)).toBe(3)
+    expect(humanText(pending.stdout.text)).toContain(humanText("(not confirmed)"))
+    const usage = await fixture()
+    expect(await run(["lp", "status", "--json"], usage.deps)).toBe(2)
+  })
+
+  test("positions --wallet embedded reads the embedded wallet", async () => {
+    const f = await fixture()
+    expect(await run(["lp", "positions", "--wallet", "embedded", "--json"], f.deps)).toBe(0)
+    expect(f.calls.map((c) => `${c.path}${c.query}`)).toEqual(["/api/v1/agent/lp/positions?wallet=embedded"])
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ wallet: "embedded", positions: [] })
   })
 })

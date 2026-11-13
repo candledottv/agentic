@@ -385,9 +385,10 @@ export const HELP: Record<string, Topic> = {
   lp: {
     group: "Trade",
     intro: "Meteora DAMM v2 liquidity from a TEE wallet",
-    summary: "Meteora DAMM v2 liquidity from a TEE wallet: pools, add, positions, remove, claim",
+    summary:
+      "Meteora DAMM v2 liquidity from a TEE or the embedded wallet: pools, add, positions, remove, claim, status",
     description:
-      "Provide liquidity on any Meteora DAMM v2 pool from a TEE wallet, through its bound key (scope lp:write, opt-in). Every write is quoted, shown with the pool's Token-2022 warnings, confirmed, signed by Candle's relay and broadcast over your RPC; no Candle fee. Only configured raw caps and USD limits apply to deposits; unset means unlimited and zero still binds. A sweep closes open positions itself (tee sweep).",
+      "Provide liquidity on any Meteora DAMM v2 pool from a TEE wallet, through its bound key (scope lp:write, opt-in). Every write is quoted, shown with the pool's Token-2022 warnings, confirmed, signed by Candle's relay and broadcast over your RPC; no Candle fee. Only configured raw caps and USD limits apply to deposits; unset means unlimited and zero still binds. A sweep closes open positions itself (tee sweep). With --wallet embedded, Candle builds, signs and broadcasts from the account's embedded wallet in one call; an outcome that may still land exits 3 with its signature, and candle lp status reads it.",
     usage: ["candle lp <subcommand> [flags]"],
     rows: [
       {
@@ -395,18 +396,29 @@ export const HELP: Record<string, Topic> = {
         description: "Pools listing a token: liquidity, fee, 24h volume, estimated yield",
       },
       {
-        invocation: "add <pool> --amount <n> <token> --wallet <tee> [--position <nft>]",
+        invocation: "add <pool> --amount <n> <token> --wallet <tee>|embedded [--position <nft>]",
         description: "Open a position, or add to one; the other side follows the pool's ratio",
       },
-      { invocation: "positions [--wallet <tee>]", description: "Every position across your TEE wallets" },
       {
-        invocation: "remove <position> --percent <n> [--wallet <tee>]",
+        invocation: "positions [--wallet <tee>|embedded]",
+        description: "Every position across your TEE wallets, or the embedded wallet's",
+      },
+      {
+        invocation: "remove <position> --percent <n> [--wallet <tee>|embedded]",
         description: "Withdraw; at 100% also claims fees and closes the position",
       },
-      { invocation: "claim <position> [--wallet <tee>]", description: "Claim fees and any rewards" },
+      { invocation: "claim <position> [--wallet <tee>|embedded]", description: "Claim fees and any rewards" },
+      {
+        invocation: "status <clientTradeId>",
+        description: "An operation's state; settles one that may still land (exit 3 while it may)",
+      },
     ],
     flags: [
-      { invocation: "--wallet <tee>", description: "The TEE wallet by id, address or unique label" },
+      {
+        invocation: "--wallet <tee>|embedded",
+        description:
+          "The TEE wallet by id, address or unique label, or embedded (remove and claim default to it when the key has no TEE wallet)",
+      },
       { invocation: "--rpc-url <url>", description: "Your own Solana RPC (optional; see candle help profile)" },
       {
         invocation: "--client-trade-id <id>",
@@ -420,6 +432,8 @@ export const HELP: Record<string, Topic> = {
       "candle lp add <pool> --amount 0.5 SOL --wallet AgentOne",
       "candle lp positions",
       "candle lp remove <position> --percent 100 --wallet AgentOne",
+      "candle lp add <pool> --amount 0.5 SOL --wallet embedded --client-trade-id lp-1",
+      "candle lp status lp-1",
     ],
     env: ENV_API,
   },
