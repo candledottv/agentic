@@ -1224,9 +1224,13 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation: "stop <prefix|label>",
-        description: "Pause one key with the device token; reversible with keys resume",
+        description: "Pause one key with the device token (starting it again is done in the signed-in console)",
       },
-      { invocation: "resume <prefix|label>", description: "Resume a stopped key with the device token" },
+      {
+        invocation: "resume <prefix|label>",
+        description:
+          "Resume a stopped key in the signed-in console, because the server refuses a device token here (LOOSEN_REQUIRES_SESSION)",
+      },
       {
         invocation: "rotate <prefix|label> ([--grace <duration> | --now] [--force] [--yes] | --finish)",
         description:

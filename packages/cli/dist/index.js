@@ -78983,9 +78983,12 @@ var HELP = {
       },
       {
         invocation: "stop <prefix|label>",
-        description: "Pause one key with the device token; reversible with keys resume"
+        description: "Pause one key with the device token (starting it again is done in the signed-in console)"
       },
-      { invocation: "resume <prefix|label>", description: "Resume a stopped key with the device token" },
+      {
+        invocation: "resume <prefix|label>",
+        description: "Resume a stopped key in the signed-in console, because the server refuses a device token here (LOOSEN_REQUIRES_SESSION)"
+      },
       {
         invocation: "rotate <prefix|label> ([--grace <duration> | --now] [--force] [--yes] | --finish)",
         description: "Give a key a new secret, keeping its prefix, label, access, limits, wallets and history. The old secret works through --grace (default 1h, at most 24h) or stops at once with --now; --finish ends an open window early. The profile's own key is replaced in the keychain; update CANDLE_API_KEY or CANDLE_API_KEY_FILE yourself and restart MCP. --force rotates again while a window is open"

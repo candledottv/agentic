@@ -143,3 +143,14 @@ describe("release B help", () => {
     }
   })
 })
+
+describe("keys resume help (BE-3329)", () => {
+  test("sends owners to the signed-in console and never promises a device-token resume", async () => {
+    const stdout = createCapture()
+    const code = await run(["keys", "--help"], createTestDeps({ stdout, fetch: unusedFetch }))
+    expect(code).toBe(0)
+    const text = stdout.text.replace(/\s+/g, " ")
+    expect(text).toContain("signed-in console")
+    expect(text).not.toContain("Resume a stopped key with the device token")
+  })
+})
