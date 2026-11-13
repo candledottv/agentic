@@ -1305,7 +1305,8 @@ export function safeText(value: unknown): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: server-supplied text must not control the terminal.
   return String(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
 }
-export async function confirmQuote(ctx: CommandContext, quote: QuoteDisplay, yes: boolean): Promise<boolean> {
+/** The quote lines `confirmQuote` prints, without the prompt (BE-3369: a refused Hood preview still shows them). */
+export function printQuote(ctx: CommandContext, quote: QuoteDisplay): void {
   const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
   if (quote.intent) output.write(`${safeText(quote.intent)}\n`)
   if (quote.wallet) output.write(`Payer: ${safeText(quote.wallet)}\n`)
@@ -1324,6 +1325,9 @@ export async function confirmQuote(ctx: CommandContext, quote: QuoteDisplay, yes
   if (quote.reserve) output.write(`Gas reserve: ${safeText(quote.reserve)}\n`)
   for (const risk of quote.tokenRisks ?? [])
     output.write(`Warning (${safeText(risk.mint)}): ${safeText(risk.message)}\n`)
+}
+export async function confirmQuote(ctx: CommandContext, quote: QuoteDisplay, yes: boolean): Promise<boolean> {
+  printQuote(ctx, quote)
   if (yes) return true
   if (!ctx.deps.isTTY.stdin)
     throw new TradingError(

@@ -171,6 +171,18 @@ interface FixtureOptions {
   settlement?: unknown
   feeSignature?: string
   operationReads?: unknown[]
+  /**
+   * BE-3369: the Hood TEE preview routes. Default: answered from the planned legs with a free wallet.
+   * `missing` is an API that predates them (a bare 404); an object is merged over the default body;
+   * a `{ status, error }` answers that refusal.
+   */
+  preview?: "missing" | Record<string, unknown> | { status: number; error: Record<string, unknown> }
+  /** BE-3369: the cancel route. Default: cancelled. `missing` is a bare 404. */
+  cancel?: "missing" | Record<string, unknown> | { status: number; error: Record<string, unknown> }
+  /** BE-3369: the TEE build answers this refusal instead of building. */
+  buildRefusal?: { status: number; error: Record<string, unknown> }
+  /** BE-3369: a TEE build that answers with these quote fields (a server that ignored the accept bound). */
+  buildQuote?: { minOutRaw?: string; feeBps?: number }
 }
 
 async function fixture(opts: FixtureOptions = {}) {
@@ -232,6 +244,54 @@ async function fixture(opts: FixtureOptions = {}) {
                     : "0x0"
       return ok({ jsonrpc: "2.0", id: body.id, result })
     }
+    const answer = (value: unknown, fallback: Record<string, unknown>) => {
+      if (value === "missing") return new Response("404 Not Found", { status: 404 })
+      if (value && typeof value === "object" && "status" in value && "error" in value) {
+        const refusal = value as { status: number; error: Record<string, unknown> }
+        return Response.json({ success: false, error: refusal.error }, { status: refusal.status })
+      }
+      return ok({ ...fallback, ...((value as Record<string, unknown> | undefined) ?? {}) })
+    }
+    if (path === "/api/v1/trade/agent/preview" || path === "/api/v1/agent/swap/preview") {
+      const swapRail = path.includes("swap")
+      return answer(opts.preview, {
+        success: true,
+        mode: "preview",
+        chain: "hood",
+        walletAddress: hoodTee,
+        artifacts: {
+          venue: swapRail ? "hood-dex" : (opts.venue ?? "dex"),
+          quoteSource: swapRail ? "kyber" : (opts.venue ?? "dex"),
+          priceImpactPct: null,
+          quoteAsset: swapRail ? "eth" : body.quoteAsset,
+          tokenRisks: [],
+        },
+        fee: swapRail ? { bps: 0, feeRaw: "0" } : { bps: 100, feeRaw: opts.fee ?? "5000" },
+        expectedOutRaw: swapRail ? "100" : "130000",
+        minOutRaw: swapRail ? "99" : "123456",
+        legs: planned.map((p) => p.kind),
+        firstLeg: {
+          kind: planned[0]?.kind,
+          gas: "120000",
+          maxFeePerGas: "2000000000",
+          maxPriorityFeePerGas: "1000000",
+        },
+        gas: { ok: true },
+        wallet: { held: false },
+        limitsChecked: "raw caps only; the USD window is reserved on confirm",
+        quotedAt: 1,
+      })
+    }
+    if (path === "/api/v1/agent/hood-tee/operations/op-1/cancel")
+      return answer(opts.cancel, {
+        success: true,
+        ok: true,
+        status: "cancelled",
+        operationId: "op-1",
+        retiredClaims: 1,
+      })
+    if (opts.buildRefusal && body?.payer?.type === "linked" && path.endsWith("/build"))
+      return Response.json({ success: false, error: opts.buildRefusal.error }, { status: opts.buildRefusal.status })
     if (path === "/api/v1/agent/hood-tee/operations/op-1") {
       const value = operationReads.length > 1 ? operationReads.shift() : operationReads[0]
       if (value === "unavailable")
@@ -305,10 +365,10 @@ async function fixture(opts: FixtureOptions = {}) {
         status: "built",
         clientTradeId: body.clientTradeId,
         chain: "hood",
-        minOutRaw: "123456",
+        minOutRaw: opts.buildQuote?.minOutRaw ?? "123456",
         expectedOutRaw: "130000",
         fee: {
-          bps: 100,
+          bps: opts.buildQuote?.feeBps ?? 100,
           feeRaw: opts.fee ?? "5000",
           treasury: opts.feeTreasury === undefined ? treasury : opts.feeTreasury,
         },
@@ -657,7 +717,7 @@ describe("H8: the sequenced leg loop", () => {
     expect(quote.legs).toEqual(["approve", "trade", "fee"])
   })
 
-  test("declining the quote signs nothing and says the build still holds the wallet", async () => {
+  test("declining the previewed quote builds nothing, signs nothing and leaves the wallet free (BE-3369)", async () => {
     const f = await fixture({ prompt: "n" })
     f.deps.isTTY.stdin = true
     expect(
@@ -666,11 +726,13 @@ describe("H8: the sequenced leg loop", () => {
         f.deps,
       ),
     ).toBe(5)
-    expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
+    expect(f.calls.some((call) => /\/(build|sign|cancel)$/.test(call.path))).toBe(false)
     const result = lastJson(f.stdout.text)
     expect(result.status).toBe("cancelled")
-    expect(result.walletHeldUntil).toBe(10_000)
-    expect(f.stderr.text).toContain("WALLET_BUSY")
+    expect(result.walletHeld).toBe(false)
+    expect(result).not.toHaveProperty("operationId")
+    expect(result).not.toHaveProperty("walletHeldUntil")
+    expect(f.stderr.text).toContain("the wallet is not held")
   })
 
   test("a reverted leg exits 1 and lists the legs that landed", async () => {
@@ -1639,5 +1701,416 @@ describe("BE-3360: Hood TEE --wait", () => {
     expect(JSON.parse(f.stdout.text)).toMatchObject({ code: "USAGE" })
     expect(f.stdout.text).toContain("candle swap status --operation <id>")
     expect(builds(f.calls)).toHaveLength(0)
+  })
+})
+
+describe("BE-3369 (BE-3361 B3): preview before confirmation, and swap cancel", () => {
+  const writes = <T extends { path: string }>(calls: T[]) =>
+    calls.filter((call) => /\/(preview|build|sign|submit|cancel)$/.test(call.path)).map((call) => call.path)
+  const noYes = (args: string[]) => args.filter((arg) => arg !== "--yes")
+
+  test("T20: no TTY and no --yes: only the preview runs, CONFIRMATION_REQUIRED, nothing built or held", async () => {
+    const f = await fixture({ legs: buyLegs })
+    f.deps.isTTY.stdin = false
+    expect(await run(noYes(buyArgs()), f.deps)).toBe(1)
+    expect(writes(f.calls)).toEqual(["/api/v1/trade/agent/preview"])
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("CONFIRMATION_REQUIRED")
+    expect(failure.details).toEqual({ walletHeld: false, clientTradeId: "hood-1" })
+    expect(JSON.stringify(failure)).not.toContain("operationId")
+    expect(String(failure.message)).toContain("Nothing was built; the wallet is not held.")
+    // The quote was shown before the refusal, from the preview.
+    expect(humanText(f.stderr.text)).toContain(humanText("Legs, signed one at a time: trade, fee"))
+    // Nothing was claimed locally either: the same id confirms and builds on the next run.
+    f.deps.isTTY.stdin = true
+    expect(await run(buyArgs(), f.deps)).toBe(0)
+    expect(builds(f.calls)).toHaveLength(1)
+  })
+
+  test("T20: the preview body is the build body without clientTradeId, and holds no operation", async () => {
+    const f = await fixture()
+    f.deps.isTTY.stdin = false
+    await run(noYes(sellArgs()), f.deps)
+    const preview = f.calls.find((call) => call.path === "/api/v1/trade/agent/preview")?.body
+    expect(preview).toEqual({
+      chain: "hood",
+      mint: token,
+      side: "sell",
+      quoteAsset: "eth",
+      amountRaw: AMOUNT.toString(),
+      maxSlippageBps: 50,
+      payer: { type: "linked", linkedWalletId: "hood-tee" },
+    })
+  })
+
+  test("T21: --yes previews, then builds with the same clientTradeId and the previewed bounds, then runs the legs", async () => {
+    const f = await fixture({ legs: buyLegs })
+    expect(await run(buyArgs(), f.deps)).toBe(0)
+    expect(writes(f.calls)).toEqual([
+      "/api/v1/trade/agent/preview",
+      "/api/v1/trade/agent/build",
+      "/api/v1/agent/wallets/hood-tee/sign",
+      "/api/v1/trade/agent/submit",
+      "/api/v1/agent/wallets/hood-tee/sign",
+      "/api/v1/trade/agent/submit",
+    ])
+    expect(builds(f.calls)[0]?.body).toMatchObject({
+      clientTradeId: "hood-1",
+      acceptMinOutRaw: "123456",
+      acceptFeeBps: 100,
+    })
+    const result = lastJson(f.stdout.text)
+    expect(result.operationId).toBe("op-1")
+    expect((result.landedLegs as Array<{ kind: string }>).map((l) => l.kind)).toEqual(["trade", "feeTransfer"])
+  })
+
+  test("T21: an ETH to USDG swap previews on the swap rail and confirms its bounds on the swap build", async () => {
+    const f = await fixture({
+      legs: [{ kind: "trade", leg: leg(4, HOOD_KYBER_ROUTER, ethToUsdg, "500000000000000000") }],
+    })
+    expect(
+      await run(["swap", "ETH", "USDG", "--amount", "0.5", "--client-trade-id", "hood-2", "--yes", "--json"], f.deps),
+    ).toBe(0)
+    expect(writes(f.calls).slice(0, 2)).toEqual(["/api/v1/agent/swap/preview", "/api/v1/agent/swap/build"])
+    const preview = f.calls.find((call) => call.path === "/api/v1/agent/swap/preview")?.body
+    expect(preview).not.toHaveProperty("clientTradeId")
+    expect(preview).toMatchObject({ from: "ETH", to: "USDG", amountRaw: "500000000000000000" })
+    expect(builds(f.calls)[0]?.body).toMatchObject({ clientTradeId: "hood-2", acceptMinOutRaw: "99", acceptFeeBps: 0 })
+  })
+
+  test("T22: an API without the preview builds, then cancels the unconfirmed operation on decline", async () => {
+    const f = await fixture({ preview: "missing", prompt: "n" })
+    expect(await run(noYes(sellArgs()), f.deps)).toBe(5)
+    expect(writes(f.calls)).toEqual([
+      "/api/v1/trade/agent/preview",
+      "/api/v1/trade/agent/build",
+      "/api/v1/agent/hood-tee/operations/op-1/cancel",
+    ])
+    // The legacy build carries no accept bound: there was no preview to bind it to.
+    expect(builds(f.calls)[0]?.body).not.toHaveProperty("acceptMinOutRaw")
+    const result = lastJson(f.stdout.text)
+    expect(result).toMatchObject({ status: "cancelled", operationId: "op-1", walletHeld: false, released: true })
+    expect(f.stderr.text).toContain("Operation op-1 was cancelled; the wallet is not held.")
+  })
+
+  test("T22: legacy CONFIRMATION_REQUIRED cancels the operation it just built", async () => {
+    const f = await fixture({ preview: "missing" })
+    f.deps.isTTY.stdin = false
+    expect(await run(noYes(sellArgs()), f.deps)).toBe(1)
+    expect(writes(f.calls).at(-1)).toBe("/api/v1/agent/hood-tee/operations/op-1/cancel")
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("CONFIRMATION_REQUIRED")
+    expect(failure.details).toMatchObject({ operationId: "op-1", walletHeld: false, released: true })
+  })
+
+  test("T22: legacy decline on an API without cancel prints today's note: the operation holds the wallet", async () => {
+    const f = await fixture({ preview: "missing", cancel: "missing", prompt: "n" })
+    expect(await run(noYes(sellArgs()), f.deps)).toBe(5)
+    const result = lastJson(f.stdout.text)
+    expect(result).toMatchObject({ operationId: "op-1", walletHeld: true, walletHeldUntil: 10_000 })
+    expect(f.stderr.text).toContain("holds this wallet until")
+    expect(f.stderr.text).toContain("WALLET_BUSY")
+    expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
+  })
+
+  test("T22: legacy decline where cancel refuses names the refusal and the hold", async () => {
+    const f = await fixture({
+      preview: "missing",
+      cancel: { status: 503, error: { code: "FEATURE_DISABLED", message: "Cancel is switched off" } },
+      prompt: "n",
+    })
+    expect(await run(noYes(sellArgs()), f.deps)).toBe(5)
+    const result = lastJson(f.stdout.text)
+    expect(result).toMatchObject({
+      walletHeld: true,
+      walletHeldUntil: 10_000,
+      cancelRefused: { code: "FEATURE_DISABLED" },
+    })
+    expect(humanText(f.stderr.text)).toContain(humanText("cancel answered FEATURE_DISABLED (Cancel is switched off)."))
+  })
+
+  test("T23: a held wallet exits WALLET_BUSY with no prompt and prints the cancel command", async () => {
+    let prompted = false
+    const f = await fixture({
+      preview: {
+        wallet: {
+          held: true,
+          operationId: "op-7",
+          expiresAt: 1_800_000,
+          cancelCommand: "candle swap cancel --operation op-7",
+        },
+      },
+    })
+    f.deps.promptLine = async () => {
+      prompted = true
+      return "y"
+    }
+    expect(await run(noYes(sellArgs()), f.deps)).toBe(1)
+    expect(prompted).toBe(false)
+    expect(writes(f.calls)).toEqual(["/api/v1/trade/agent/preview"])
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("WALLET_BUSY")
+    expect(failure.suggestion).toContain("candle swap cancel --operation op-7")
+    expect(failure.details).toMatchObject({
+      walletHeld: true,
+      operationId: "op-7",
+      cancelCommand: "candle swap cancel --operation op-7",
+    })
+  })
+
+  test("T23: a guarded wallet names its status command and offers no cancel", async () => {
+    const f = await fixture({
+      preview: {
+        wallet: {
+          held: true,
+          guarded: true,
+          operationId: "op-8",
+          statusCommand: "candle swap status --operation op-8",
+        },
+      },
+    })
+    expect(await run(sellArgs(), f.deps)).toBe(1)
+    expect(writes(f.calls)).toEqual(["/api/v1/trade/agent/preview"])
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("WALLET_BUSY")
+    expect(String(failure.message)).toContain("may have been broadcast")
+    expect(failure.suggestion).toBe("Read: candle swap status --operation op-8")
+    expect(JSON.stringify(failure)).not.toContain("swap cancel")
+  })
+
+  test("a preview with too little gas exits GAS_INSUFFICIENT before the prompt, holding nothing", async () => {
+    const f = await fixture({
+      preview: {
+        gas: {
+          ok: false,
+          shortfallWei: "1000",
+          requiredWei: "3000",
+          reserveWei: "500",
+          balanceWei: "2000",
+        },
+      },
+    })
+    expect(await run(sellArgs(), f.deps)).toBe(1)
+    expect(writes(f.calls)).toEqual(["/api/v1/trade/agent/preview"])
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("GAS_INSUFFICIENT")
+    expect(failure.details).toMatchObject({ shortfallWei: "1000", walletHeld: false })
+  })
+
+  const shortGas = { ok: false, shortfallWei: "1000", requiredWei: "3000", reserveWei: "500", balanceWei: "2000" }
+
+  test("insufficient gas on a held wallet keeps the hold, the cancel command and the gas facts", async () => {
+    const f = await fixture({
+      preview: {
+        gas: shortGas,
+        wallet: {
+          held: true,
+          operationId: "op-7",
+          expiresAt: 1_800_000,
+          cancelCommand: "candle swap cancel --operation op-7",
+        },
+      },
+    })
+    expect(await run(sellArgs(), f.deps)).toBe(1)
+    expect(writes(f.calls)).toEqual(["/api/v1/trade/agent/preview"])
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("WALLET_BUSY")
+    expect(String(failure.message)).toContain("short by")
+    expect(failure.suggestion).toContain("candle swap cancel --operation op-7")
+    expect(failure.details).toMatchObject({
+      walletHeld: true,
+      operationId: "op-7",
+      shortfallWei: "1000",
+      balanceWei: "2000",
+    })
+  })
+
+  test("insufficient gas on a guarded wallet keeps the guard, the warning and the status command", async () => {
+    const f = await fixture({
+      preview: {
+        gas: shortGas,
+        wallet: {
+          held: true,
+          guarded: true,
+          operationId: "op-8",
+          statusCommand: "candle swap status --operation op-8",
+        },
+      },
+    })
+    expect(await run(sellArgs(), f.deps)).toBe(1)
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("WALLET_BUSY")
+    expect(String(failure.message)).toContain("Do not repeat the trade")
+    expect(failure.suggestion).toBe("Read: candle swap status --operation op-8")
+    expect(failure.details).toMatchObject({
+      walletHeld: true,
+      guarded: true,
+      statusCommand: "candle swap status --operation op-8",
+      shortfallWei: "1000",
+    })
+    expect(JSON.stringify(failure)).not.toContain("swap cancel")
+  })
+
+  test("a malformed build response after the hold still carries the cancel command and signs nothing", async () => {
+    const f = await fixture({ buildQuote: { minOutRaw: "invalid" } })
+    expect(await run(sellArgs(), f.deps)).toBe(1)
+    expect(f.calls.some((call) => /\/sign$/.test(call.path))).toBe(false)
+    const failure = lastJson(f.stdout.text)
+    expect(failure.details).toMatchObject({
+      operationId: "op-1",
+      cancelCommand: "candle swap cancel --operation op-1",
+    })
+  })
+
+  test("T25: QUOTE_MOVED on the confirmed build prints both numbers, exits 1 and signs nothing", async () => {
+    const f = await fixture({
+      buildRefusal: {
+        status: 409,
+        error: {
+          code: "QUOTE_MOVED",
+          message: "The quote changed; preview and confirm the new numbers",
+          retryable: true,
+          expectedOutRaw: "120000",
+          minOutRaw: "110000",
+          feeBps: 100,
+        },
+      },
+    })
+    expect(await run(sellArgs(), f.deps)).toBe(1)
+    expect(f.calls.some((call) => /\/(sign|cancel)$/.test(call.path))).toBe(false)
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("QUOTE_MOVED")
+    expect(failure.message).toContain(
+      "Minimum received 0.000000000000123456 ETH -> 0.000000000000110000 ETH; tier fee 100 -> 100 bps.",
+    )
+    expect(failure.details).toEqual({
+      previewed: { minOutRaw: "123456", feeBps: 100, expectedOutRaw: "130000" },
+      current: { minOutRaw: "110000", feeBps: 100, expectedOutRaw: "120000" },
+    })
+  })
+
+  test("T25: a build that comes back worse than the preview is cancelled and never signed", async () => {
+    const f = await fixture({ buildQuote: { minOutRaw: "100000" } })
+    expect(await run(sellArgs(), f.deps)).toBe(1)
+    expect(writes(f.calls)).toEqual([
+      "/api/v1/trade/agent/preview",
+      "/api/v1/trade/agent/build",
+      "/api/v1/agent/hood-tee/operations/op-1/cancel",
+    ])
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("QUOTE_MOVED")
+    expect(String(failure.message)).toContain("worse quote")
+    expect(failure.details).toMatchObject({ operationId: "op-1", walletHeld: false, released: true })
+  })
+
+  test("a refusal after the confirmed build and before any signature names the cancel command", async () => {
+    // The trade leg names a router this machine does not pin, so its check refuses it before signing.
+    const f = await fixture({
+      legs: [{ kind: "trade", leg: leg(8, attacker, v3Sell(token, AMOUNT, hoodTee)) }],
+    })
+    expect(await run(sellArgs(), f.deps)).toBe(1)
+    expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("INVALID_RESPONSE")
+    expect(failure.suggestion).toContain("candle swap cancel --operation op-1")
+    expect(failure.details).toMatchObject({ cancelCommand: "candle swap cancel --operation op-1" })
+  })
+
+  describe("T24: candle swap cancel", () => {
+    const cancelArgs = (extra: string[] = []) => ["swap", "cancel", "--operation", "op-1", ...extra]
+
+    test("cancelled: exit 0, one line, and the server's answer in JSON", async () => {
+      const f = await fixture()
+      expect(await run(cancelArgs(), f.deps)).toBe(0)
+      expect(f.stdout.text).toBe("Operation op-1 released; nothing was signed.\n")
+      const g = await fixture()
+      expect(await run(cancelArgs(["--json"]), g.deps)).toBe(0)
+      expect(lastJson(g.stdout.text)).toMatchObject({
+        status: "cancelled",
+        operationId: "op-1",
+        retiredClaims: 1,
+        message: "Operation op-1 released; nothing was signed.",
+      })
+      expect(writes(g.calls)).toEqual(["/api/v1/agent/hood-tee/operations/op-1/cancel"])
+    })
+
+    test("unchanged: exit 0 and the status the operation ended with", async () => {
+      const f = await fixture({ cancel: { unchanged: true, status: "expired" } })
+      expect(await run(cancelArgs(), f.deps)).toBe(0)
+      expect(f.stdout.text).toBe("Operation op-1 already ended (expired).\n")
+    })
+
+    test("MAY_BE_SIGNED: exit 3, not released, do not repeat the trade", async () => {
+      const f = await fixture({
+        cancel: {
+          status: 409,
+          error: { code: "MAY_BE_SIGNED", message: "server words", stage: "may_be_signed", safeAction: "read_status" },
+        },
+      })
+      expect(await run(cancelArgs(["--json"]), f.deps)).toBe(3)
+      const failure = lastJson(f.stdout.text)
+      expect(failure.code).toBe("MAY_BE_SIGNED")
+      expect(failure.message).toBe(
+        "A leg of op-1 may have been signed. Not released. Do not repeat the trade. Read: candle swap status --operation op-1.",
+      )
+      expect(failure.details).toMatchObject({ stage: "may_be_signed", operationId: "op-1" })
+    })
+
+    for (const code of [
+      "NOT_CANCELLABLE",
+      "CANCEL_UNSUPPORTED",
+      "NOT_OPERATION_OWNER",
+      "OPERATION_NOT_FOUND",
+      "PROOF_INCOMPLETE",
+    ]) {
+      test(`${code}: exit 1 with the server's message`, async () => {
+        const f = await fixture({
+          cancel: {
+            status: code === "OPERATION_NOT_FOUND" ? 404 : 409,
+            error: { code, message: `refused \u001b[31m${code}` },
+          },
+        })
+        expect(await run(cancelArgs(["--json"]), f.deps)).toBe(1)
+        const failure = lastJson(f.stdout.text)
+        expect(failure.code).toBe(code)
+        // safeText: the server's control characters never reach the terminal.
+        expect(failure.message).toBe(`refused  [31m${code}`)
+      })
+    }
+
+    test("an API without cancel says so and changes nothing (exit 1)", async () => {
+      const f = await fixture({ cancel: "missing" })
+      expect(await run(cancelArgs(["--json"]), f.deps)).toBe(1)
+      const failure = lastJson(f.stdout.text)
+      expect(failure.code).toBe("CANCEL_UNAVAILABLE")
+      expect(failure.message).toContain("30-minute window")
+    })
+
+    test("FEATURE_DISABLED says to wait for the window", async () => {
+      const f = await fixture({
+        cancel: { status: 503, error: { code: "FEATURE_DISABLED", message: "Cancel is switched off" } },
+      })
+      expect(await run(cancelArgs(["--json"]), f.deps)).toBe(1)
+      expect(lastJson(f.stdout.text).suggestion).toContain("Wait for the operation's 30-minute window")
+    })
+
+    test("usage: --operation is required, and nothing is sent", async () => {
+      for (const argv of [
+        ["swap", "cancel"],
+        ["swap", "cancel", "op-1"],
+        ["swap", "cancel", "--operation", "bad id"],
+      ]) {
+        const f = await fixture()
+        expect(await run([...argv, "--json"], f.deps)).toBe(2)
+        expect(lastJson(f.stdout.text).message).toBe("Usage: candle swap cancel --operation <operationId>")
+        expect(f.calls).toEqual([])
+      }
+    })
+
+    test("help lists cancel", async () => {
+      const f = await fixture()
+      expect(await run(["help", "swap"], f.deps)).toBe(0)
+      expect(f.stdout.text).toContain("cancel --operation <operationId>")
+    })
   })
 })

@@ -422,9 +422,13 @@ describe("T1, T2, T3, T6: a sealed copy carries the passphrase and the security 
     expect(await run(["vault", "backup", "--to", to, "--json", "--keystore", v.vaultPath], b.deps)).toBe(0)
     expect(b.asked[0]).toContain("Unlock with:")
     expect(b.asked[0]).toContain(`id ${v.keyId}`)
-    // The restricted chooser lists the key and neither of the envelopes the copy leaves out.
-    expect(b.asked[0]).not.toContain("s1")
-    expect(b.asked[0]).not.toContain("t1")
+    // The restricted chooser lists the key and neither of the envelopes the copy leaves out. The
+    // key's id is random and can itself contain "s1" or "t1", so it is masked before the check.
+    const chooser = (b.asked[0] ?? "").replaceAll(v.keyId, "<key>").replaceAll(v.passphraseId, "<passphrase>")
+    expect(chooser).not.toContain("s1")
+    expect(chooser).not.toContain("t1")
+    expect(chooser).not.toContain("synced passkey")
+    expect(chooser).not.toContain("Touch ID")
     // BE-294: the silent probe before the menu is the only helper call; no key is asserted.
     expect(b.calls.map((call) => call.op)).toEqual(["probe"])
     expect(b.stderr.text).not.toContain(PASSPHRASE_ONLY_PREFIX)

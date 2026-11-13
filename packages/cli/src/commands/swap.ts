@@ -69,6 +69,7 @@ import {
   operationSchema,
   pairChain,
   plannedLegKinds,
+  printQuote,
   type QuoteDisplay,
   rawAmount,
   relaySign,
@@ -1014,16 +1015,9 @@ function describeHoodLegs(
   primary: "trade" | "bridgeDeposit" = "trade",
 ): string[] {
   const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee, primary)
-  const names: Record<string, string> = {
-    approval: "approve",
-    permit2Approval: "Permit2 approve",
-    trade: "trade",
-    feeTransfer: "fee",
-    bridgeDeposit: "bridge deposit",
-  }
   return kinds
-    ? kinds.map((kind) => names[kind] ?? kind)
-    : [`${first.plannedLegCount} legs, starting with ${names[first.legKind] ?? first.legKind}`]
+    ? kinds.map((kind) => HOOD_LEG_NAMES[kind] ?? kind)
+    : [`${first.plannedLegCount} legs, starting with ${HOOD_LEG_NAMES[first.legKind] ?? first.legKind}`]
 }
 
 /**
@@ -1091,191 +1085,701 @@ async function hoodSwap(
     if (amountRaw === "0") throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.")
   } else amountRaw = rawAmount(flags["--amount"] as string, decimals)
   if (payer.kind === "embedded" && kind === "trade") await assertDeferredExecuteSupported(ctx, key, id)
-  if (!(await claimOperation(ctx, key, id, kind)))
-    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
-  writeFields(ctx.deps, "stderr", [["Operation", id]])
   const payerBody = payer.kind === "tee" ? { type: "linked", linkedWalletId: payer.wallet.id } : { type: "main" }
   const base = (from.base ?? to.base) as string
   const token = from.base ? to.asset : from.asset
-  const built =
-    kind === "swap"
-      ? await requestSwapBuild(ctx, key, {
+  const intent = `Swap ${decimalAmount(amountRaw, decimals)} ${from.asset} to ${to.asset} on Hood`
+  const swapBody: Json = {
+    clientTradeId: id,
+    from: from.asset,
+    to: to.asset,
+    amountRaw,
+    maxSlippageBps: args.slippage,
+    payer: payerBody,
+  }
+  const tradeBody: Json = {
+    clientTradeId: id,
+    chain: "hood",
+    mint: token,
+    side: from.base ? "buy" : "sell",
+    quoteAsset: base.toLowerCase(),
+    amountRaw,
+    maxSlippageBps: args.slippage,
+    payer: payerBody,
+    ...(payer.kind === "embedded" ? { deferExecution: true } : {}),
+  }
+  // BE-3369 (BE-3361 4.5): a Hood TEE payer previews first. The preview holds nothing, so a run that
+  // stops before confirmation (no TTY, a decline, a held wallet, too little gas) leaves the wallet
+  // free. An API without the route answers a bare 404, and the build-then-confirm flow below runs.
+  let preview: HoodPreviewBody | undefined
+  if (payer.kind === "tee") {
+    preview = await hoodPreview(ctx, key, kind === "swap" ? swapBody : tradeBody, kind)
+    if (preview) {
+      if (!sameEvmAddress(preview.walletAddress, payerAddress))
+        throw new TradingError(
+          "INVALID_RESPONSE",
+          "The Hood preview does not name the requested payer; nothing was built.",
+        )
+      if (kind === "trade" && preview.artifacts.quoteAsset !== base.toLowerCase())
+        throw new TradingError(
+          "PAIR_UNSUPPORTED",
+          `This token settles in ${safeText(preview.artifacts.quoteAsset ?? "an unknown asset")}, not ${base}. Nothing was built.`,
+        )
+      const shown = previewQuote(preview, { intent, wallet: payerAddress, kind, token, from, to, outDecimals })
+      const stop = previewStop(preview)
+      if (stop) {
+        printQuote(ctx, shown)
+        return tradingFailure(ctx, stop)
+      }
+      let confirmed: boolean
+      try {
+        confirmed = await confirmQuote(ctx, shown, args.yes)
+      } catch (error) {
+        if (!(error instanceof TradingError && error.code === "CONFIRMATION_REQUIRED")) throw error
+        // Nothing was built, so there is no operation to name and no status to read.
+        return tradingFailure(
+          ctx,
+          new TradingError(error.code, `${error.message} Nothing was built; the wallet is not held.`, {
+            details: { walletHeld: false, clientTradeId: id },
+          }),
+        )
+      }
+      if (!confirmed) {
+        outputNotice(ctx.deps, "stderr", "note", "Nothing was built or signed; the wallet is not held.")
+        return printCancelledResult(ctx, {
+          success: true,
+          status: "cancelled",
           clientTradeId: id,
-          from: from.asset,
-          to: to.asset,
-          amountRaw,
-          maxSlippageBps: args.slippage,
-          payer: payerBody,
+          kind,
+          quote: shown,
+          walletHeld: false,
         })
-      : await request(ctx, key, "/api/v1/trade/agent/build", {
-          clientTradeId: id,
-          chain: "hood",
-          mint: token,
-          side: from.base ? "buy" : "sell",
-          quoteAsset: base.toLowerCase(),
-          amountRaw,
-          maxSlippageBps: args.slippage,
-          payer: payerBody,
-          ...(payer.kind === "embedded" ? { deferExecution: true } : {}),
-        })
+      }
+    }
+  }
+  if (!(await claimOperation(ctx, key, id, kind)))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
+  writeFields(ctx.deps, "stderr", [["Operation", id]])
+  // The confirmed build carries the previewed minimum and fee: a plan that moved answers QUOTE_MOVED
+  // before the server takes the lock. Both fields are consent, not intent, and stay out of requestHash.
+  const accepted = preview ? { acceptMinOutRaw: preview.minOutRaw, acceptFeeBps: preview.fee.bps } : {}
+  let built: Json
+  try {
+    built = preview
+      ? await hoodPost(
+          ctx,
+          key,
+          kind === "swap" ? "/api/v1/agent/swap/build" : "/api/v1/trade/agent/build",
+          kind === "swap" ? { ...swapBody, ...accepted } : { ...tradeBody, ...accepted },
+        )
+      : kind === "swap"
+        ? await requestSwapBuild(ctx, key, swapBody)
+        : await request(ctx, key, "/api/v1/trade/agent/build", tradeBody)
+  } catch (error) {
+    if (preview && error instanceof TradingError && error.code === "QUOTE_MOVED")
+      return tradingFailure(ctx, quoteMoved(preview, error.details ?? {}, { to: to.asset, outDecimals }))
+    throw error
+  }
   if (built.job || built.status === "executed") return replay({ ...built, clientTradeId: id, kind })
   const body = (kind === "swap" ? built.payload : built) as Json | undefined
-  const data = swapBuildSchema.parse(body)
-  const echoed = kind === "swap" ? body?.recipient : body?.walletAddress
-  if (body?.chain !== "hood" || typeof echoed !== "string" || echoed.toLowerCase() !== payerAddress.toLowerCase())
-    throw new TradingError("INVALID_RESPONSE", "The Hood build does not name the requested payer; nothing was signed.")
-  const artifacts = kind === "swap" ? { ...data, quoteAsset: undefined, quoteSource: undefined } : data.artifacts
-  if (!artifacts) throw new TradingError("INVALID_RESPONSE", "Missing quote artifacts.")
-  if (kind === "trade" && artifacts.quoteAsset !== base.toLowerCase())
-    throw new TradingError(
-      "PAIR_UNSUPPORTED",
-      `This token settles in ${artifacts.quoteAsset ?? "an unknown asset"}, not ${base}. Nothing was signed.`,
-    )
-  // D4: a Hood TEE wallet signs one leg at a time. A deployment that answers with every leg at
-  // once predates the sequenced rail, and its legs are never signed from this wallet.
-  let sequenced: SequencedBody | undefined
-  if (payer.kind === "tee") {
-    const parsed = sequencedSchema.safeParse(body)
-    if (!parsed.success)
+  // BE-3369 (4.5 step 6): after a confirmed build holds the wallet, a failure before any leg is signed
+  // names the way out. Only on an API that has the preview, so it has cancel too.
+  const holdId = preview && typeof body?.operationId === "string" ? body.operationId : undefined
+  let signedAny = false
+  try {
+    const data = swapBuildSchema.parse(body)
+    const echoed = kind === "swap" ? body?.recipient : body?.walletAddress
+    if (body?.chain !== "hood" || typeof echoed !== "string" || echoed.toLowerCase() !== payerAddress.toLowerCase())
       throw new TradingError(
-        "SEQUENCED_RAIL_REQUIRED",
-        "A Hood TEE wallet trades one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.",
+        "INVALID_RESPONSE",
+        "The Hood build does not name the requested payer; nothing was signed.",
       )
-    sequenced = parsed.data
-  }
-  const minimumRaw =
-    !from.base && artifacts.venue === "curve"
-      ? (BigInt(data.minOutRaw) > BigInt(data.fee.feeRaw)
-          ? BigInt(data.minOutRaw) - BigInt(data.fee.feeRaw)
-          : 0n
-        ).toString()
-      : data.minOutRaw
-  const quote: QuoteDisplay & Json = {
-    intent: `Swap ${decimalAmount(amountRaw, decimals)} ${from.asset} to ${to.asset} on Hood`,
-    wallet: payerAddress,
-    venue: artifacts.quoteSource ?? artifacts.venue,
-    priceImpactPct: artifacts.priceImpactPct ?? null,
-    fee: data.fee,
-    minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to.asset}`,
-    minOutRaw: data.minOutRaw,
-    minimumReceivedRaw: minimumRaw,
-    tokenRisks: artifacts.tokenRisks ?? [],
-  }
-  if (sequenced) {
-    const leg = sequenced.nextLeg
-    const maxFee = BigInt(leg.maxFeePerGas)
-    const reserve = sweepReserveFloor(maxFee, kind === "trade" ? [token] : [])
-    quote.legs = describeHoodLegs(sequenced, BigInt(data.fee.feeRaw) > 0n)
-    quote.gas = `the ${sequenced.legKind} leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`
-    quote.reserve = `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a trade never spends it`
-    quote.operationId = sequenced.operationId
-  }
-  if (!(await confirmQuote(ctx, quote, args.yes))) {
-    // The build already holds the wallet (D4, one operation per wallet), and nothing releases an
-    // operation that never sent a leg: the next Hood build for it is WALLET_BUSY until the window closes.
-    if (sequenced)
-      outputNotice(
-        ctx.deps,
-        "stderr",
-        "note",
-        `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.\n`.trim(),
+    const artifacts = kind === "swap" ? { ...data, quoteAsset: undefined, quoteSource: undefined } : data.artifacts
+    if (!artifacts) throw new TradingError("INVALID_RESPONSE", "Missing quote artifacts.")
+    if (kind === "trade" && artifacts.quoteAsset !== base.toLowerCase())
+      throw new TradingError(
+        "PAIR_UNSUPPORTED",
+        `This token settles in ${artifacts.quoteAsset ?? "an unknown asset"}, not ${base}. Nothing was signed.`,
       )
-    return printCancelledResult(ctx, {
-      success: true,
-      status: "cancelled",
-      clientTradeId: id,
-      kind,
-      quote,
-      ...(sequenced ? { operationId: sequenced.operationId, walletHeldUntil: sequenced.expiresAt } : {}),
+    // D4: a Hood TEE wallet signs one leg at a time. A deployment that answers with every leg at
+    // once predates the sequenced rail, and its legs are never signed from this wallet.
+    let sequenced: SequencedBody | undefined
+    if (payer.kind === "tee") {
+      const parsed = sequencedSchema.safeParse(body)
+      if (!parsed.success)
+        throw new TradingError(
+          "SEQUENCED_RAIL_REQUIRED",
+          "A Hood TEE wallet trades one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.",
+        )
+      sequenced = parsed.data
+    }
+    // Defensive (4.5 step 5): the server already refused a moved quote before the lock. A build that
+    // still came back worse than what was confirmed is released here and never signed.
+    if (
+      preview &&
+      sequenced &&
+      (BigInt(data.minOutRaw) < BigInt(preview.minOutRaw) || data.fee.bps !== preview.fee.bps)
+    ) {
+      const release = await cancelHeldOperation(ctx, key, sequenced.operationId)
+      const moved = quoteMoved(
+        preview,
+        { minOutRaw: data.minOutRaw, feeBps: data.fee.bps },
+        { to: to.asset, outDecimals },
+        `Candle built a worse quote than the one confirmed; nothing was signed. ${releaseNote(release, sequenced)}`,
+      )
+      return tradingFailure(
+        ctx,
+        new TradingError(moved.code, moved.message, {
+          details: { ...moved.details, ...releaseFacts(release, sequenced) },
+        }),
+      )
+    }
+    const minimumRaw =
+      !from.base && artifacts.venue === "curve"
+        ? (BigInt(data.minOutRaw) > BigInt(data.fee.feeRaw)
+            ? BigInt(data.minOutRaw) - BigInt(data.fee.feeRaw)
+            : 0n
+          ).toString()
+        : data.minOutRaw
+    const quote: QuoteDisplay & Json = {
+      intent,
+      wallet: payerAddress,
+      venue: artifacts.quoteSource ?? artifacts.venue,
+      priceImpactPct: artifacts.priceImpactPct ?? null,
+      fee: data.fee,
+      minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to.asset}`,
+      minOutRaw: data.minOutRaw,
+      minimumReceivedRaw: minimumRaw,
+      tokenRisks: artifacts.tokenRisks ?? [],
+    }
+    if (sequenced) {
+      const leg = sequenced.nextLeg
+      const maxFee = BigInt(leg.maxFeePerGas)
+      const reserve = sweepReserveFloor(maxFee, kind === "trade" ? [token] : [])
+      quote.legs = describeHoodLegs(sequenced, BigInt(data.fee.feeRaw) > 0n)
+      quote.gas = `the ${sequenced.legKind} leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`
+      quote.reserve = `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a trade never spends it`
+      quote.operationId = sequenced.operationId
+    }
+    // With a preview the member already confirmed; the build's own quote is recorded, not asked again.
+    if (!preview) {
+      let confirmed: boolean
+      try {
+        confirmed = await confirmQuote(ctx, quote, args.yes)
+      } catch (error) {
+        // BE-3369 (4.5 step 7): the legacy build already holds the wallet. Release it, then refuse.
+        if (!(sequenced && error instanceof TradingError && error.code === "CONFIRMATION_REQUIRED")) throw error
+        const release = await cancelHeldOperation(ctx, key, sequenced.operationId)
+        outputNotice(ctx.deps, "stderr", "note", releaseNote(release, sequenced))
+        throw new TradingError(error.code, error.message, {
+          ...(error.suggestion ? { suggestion: error.suggestion } : {}),
+          details: { clientTradeId: id, ...releaseFacts(release, sequenced) },
+        })
+      }
+      if (!confirmed) {
+        const release = sequenced ? await cancelHeldOperation(ctx, key, sequenced.operationId) : undefined
+        if (sequenced && release) outputNotice(ctx.deps, "stderr", "note", releaseNote(release, sequenced))
+        return printCancelledResult(ctx, {
+          success: true,
+          status: "cancelled",
+          clientTradeId: id,
+          kind,
+          quote,
+          ...(sequenced && release ? releaseFacts(release, sequenced) : {}),
+        })
+      }
+    }
+    if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+      throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.")
+    if (payer.kind === "embedded") {
+      const executed =
+        kind === "swap"
+          ? await request(ctx, key, "/api/v1/agent/swap/submit", { clientTradeId: id, swapId: data.swapId })
+          : await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id })
+      const settled =
+        kind === "swap"
+          ? reportSettlement(
+              ctx,
+              (executed.payload as Json | undefined)?.settlement,
+              { asset: to.asset, decimals: outDecimals },
+              id,
+            )
+          : {}
+      return printTradingResult(ctx, {
+        ...executed,
+        ...settled,
+        clientTradeId: id,
+        kind,
+        quote,
+        wallet: safeText(payerAddress),
+      })
+    }
+    const wallet = payer.wallet as TradingWallet
+    if (wallet.chain !== "evm" || !sequenced)
+      throw chainMismatch(`TEE wallet ${wallet.id}`, wallet.chain === "evm" ? "hood" : "solana", "hood")
+    const operationId = sequenced.operationId
+    const recorded = kind === "trade" ? token : HOOD_USDG_ADDRESS
+    const notices: string[] = []
+    // Every leg is held to what was confirmed here (hood-legs.ts): the input asset and amount, the
+    // pinned routers or the registry's curve for this token, and the fee the quote showed, paid to
+    // the treasury the chain names (the build's `fee.treasury` is display only). A base swap carries
+    // no fee, so any fee leg on it is refused.
+    const feeRaw = BigInt(data.fee.feeRaw)
+    const feeAsset = artifacts.quoteAsset === "usdg" ? "usdg" : "eth"
+    const checkLeg = hoodTradeLegCheck({
+      wallet: wallet.address,
+      inputToken: from.asset === "ETH" ? undefined : from.asset === "USDG" ? HOOD_USDG_ADDRESS : from.asset,
+      amountRaw: BigInt(amountRaw),
+      outputToken: to.asset === "ETH" ? undefined : to.asset === "USDG" ? HOOD_USDG_ADDRESS : to.asset,
+      minOutRaw: BigInt(data.minOutRaw),
+      venue: kind === "trade" && artifacts.venue === "curve" ? "curve" : "dex",
+      ...(kind === "trade" && feeRaw > 0n ? { fee: { cap: feeRaw, asset: feeAsset } } : {}),
+      treasury: () => hoodFeeTreasury(rpc()),
+      curve: () => registeredCurveFor(rpc(), token),
     })
-  }
-  if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
-    throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.")
-  if (payer.kind === "embedded") {
-    const executed =
-      kind === "swap"
-        ? await request(ctx, key, "/api/v1/agent/swap/submit", { clientTradeId: id, swapId: data.swapId })
-        : await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id })
+    const execute = () =>
+      runSequencedLegs(ctx, key, {
+        wallet,
+        first: sequenced,
+        submitPath: kind === "swap" ? "/api/v1/agent/swap/submit" : "/api/v1/trade/agent/submit",
+        submitFields: kind === "swap" ? { clientTradeId: id, swapId: data.swapId } : { clientTradeId: id },
+        unwrap: (answer) => (kind === "swap" ? ((answer.payload ?? {}) as Json) : answer),
+        clientId: id,
+        kind,
+        allowedLegs: HOOD_TRADE_LEGS,
+        checkLeg,
+        onSigned: () => {
+          signedAny = true
+        },
+        onLanded: async (_leg: LandedLeg) => {
+          const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded))
+          if (notice) notices.push(notice)
+        },
+      })
+    let run: Awaited<ReturnType<typeof execute>>
+    try {
+      run = await execute()
+    } catch (error) {
+      if (args.wait && error instanceof TradingError && (error.exitCode === 3 || error.details?.stage === "reverted"))
+        return waitForHoodOperation(ctx, key, operationId, error.details)
+      throw error
+    }
+    if (args.wait) return waitForHoodOperation(ctx, key, operationId)
+    // BE-505 (R8.4): the Hood sequenced `completed` payload carries `settlement` itself.
     const settled =
-      kind === "swap"
-        ? reportSettlement(
-            ctx,
-            (executed.payload as Json | undefined)?.settlement,
-            { asset: to.asset, decimals: outDecimals },
-            id,
-          )
-        : {}
+      kind === "swap" ? reportSettlement(ctx, run.final.settlement, { asset: to.asset, decimals: outDecimals }, id) : {}
     return printTradingResult(ctx, {
-      ...executed,
+      ...run.final,
       ...settled,
       clientTradeId: id,
       kind,
+      chain: "hood",
       quote,
-      wallet: safeText(payerAddress),
+      wallet: safeText(wallet.address),
+      operationId,
+      landedLegs: run.landed,
+      evmRecord: { token: toChecksumAddress(recorded), notices },
     })
-  }
-  const wallet = payer.wallet as TradingWallet
-  if (wallet.chain !== "evm" || !sequenced)
-    throw chainMismatch(`TEE wallet ${wallet.id}`, wallet.chain === "evm" ? "hood" : "solana", "hood")
-  const recorded = kind === "trade" ? token : HOOD_USDG_ADDRESS
-  const notices: string[] = []
-  // Every leg is held to what was confirmed here (hood-legs.ts): the input asset and amount, the
-  // pinned routers or the registry's curve for this token, and the fee the quote showed, paid to
-  // the treasury the chain names (the build's `fee.treasury` is display only). A base swap carries
-  // no fee, so any fee leg on it is refused.
-  const feeRaw = BigInt(data.fee.feeRaw)
-  const feeAsset = artifacts.quoteAsset === "usdg" ? "usdg" : "eth"
-  const checkLeg = hoodTradeLegCheck({
-    wallet: wallet.address,
-    inputToken: from.asset === "ETH" ? undefined : from.asset === "USDG" ? HOOD_USDG_ADDRESS : from.asset,
-    amountRaw: BigInt(amountRaw),
-    outputToken: to.asset === "ETH" ? undefined : to.asset === "USDG" ? HOOD_USDG_ADDRESS : to.asset,
-    minOutRaw: BigInt(data.minOutRaw),
-    venue: kind === "trade" && artifacts.venue === "curve" ? "curve" : "dex",
-    ...(kind === "trade" && feeRaw > 0n ? { fee: { cap: feeRaw, asset: feeAsset } } : {}),
-    treasury: () => hoodFeeTreasury(rpc()),
-    curve: () => registeredCurveFor(rpc(), token),
-  })
-  const execute = () =>
-    runSequencedLegs(ctx, key, {
-      wallet,
-      first: sequenced,
-      submitPath: kind === "swap" ? "/api/v1/agent/swap/submit" : "/api/v1/trade/agent/submit",
-      submitFields: kind === "swap" ? { clientTradeId: id, swapId: data.swapId } : { clientTradeId: id },
-      unwrap: (answer) => (kind === "swap" ? ((answer.payload ?? {}) as Json) : answer),
-      clientId: id,
-      kind,
-      allowedLegs: HOOD_TRADE_LEGS,
-      checkLeg,
-      onLanded: async (_leg: LandedLeg) => {
-        const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded))
-        if (notice) notices.push(notice)
-      },
-    })
-  let run: Awaited<ReturnType<typeof execute>>
-  try {
-    run = await execute()
   } catch (error) {
-    if (args.wait && error instanceof TradingError && (error.exitCode === 3 || error.details?.stage === "reverted"))
-      return waitForHoodOperation(ctx, key, sequenced.operationId, error.details)
-    throw error
+    throw holdId && !signedAny ? withCancelHint(error, holdId) : error
   }
-  if (args.wait) return waitForHoodOperation(ctx, key, sequenced.operationId)
-  // BE-505 (R8.4): the Hood sequenced `completed` payload carries `settlement` itself.
-  const settled =
-    kind === "swap" ? reportSettlement(ctx, run.final.settlement, { asset: to.asset, decimals: outDecimals }, id) : {}
-  return printTradingResult(ctx, {
-    ...run.final,
-    ...settled,
-    clientTradeId: id,
-    kind,
-    chain: "hood",
-    quote,
-    wallet: safeText(wallet.address),
-    operationId: sequenced.operationId,
-    landedLegs: run.landed,
-    evmRecord: { token: toChecksumAddress(recorded), notices },
+}
+
+// ── BE-3369 (BE-3361 B3): a Hood TEE preview before confirmation, and swap cancel ────────────
+
+/** `POST /trade/agent/preview` and `POST /agent/swap/preview` (BE-3368): display facts only, never signable. */
+const hoodPreviewSchema = z
+  .object({
+    mode: z.literal("preview"),
+    chain: z.literal("hood"),
+    walletAddress: z.string().min(1),
+    artifacts: z
+      .object({
+        venue: z.string(),
+        quoteSource: z.string().optional(),
+        priceImpactPct: z.string().nullable().optional(),
+        quoteAsset: z.string().optional(),
+        tokenRisks: z.array(z.object({ mint: z.string(), message: z.string() }).passthrough()).default([]),
+      })
+      .passthrough(),
+    fee: z.object({ bps: z.number().int().nonnegative(), feeRaw: z.string().regex(/^\d+$/) }).passthrough(),
+    expectedOutRaw: z.string().regex(/^\d+$/),
+    minOutRaw: z.string().regex(/^\d+$/),
+    legs: z.array(z.string()).min(1),
+    firstLeg: z.object({
+      kind: z.string(),
+      gas: z.string().regex(/^\d+$/),
+      maxFeePerGas: z.string().regex(/^\d+$/),
+      maxPriorityFeePerGas: z.string().regex(/^\d+$/),
+    }),
+    gas: z
+      .object({
+        ok: z.boolean(),
+        shortfallWei: z.string().optional(),
+        requiredWei: z.string().optional(),
+        reserveWei: z.string().optional(),
+        balanceWei: z.string().optional(),
+      })
+      .passthrough(),
+    wallet: z
+      .object({
+        held: z.boolean(),
+        guarded: z.boolean().optional(),
+        operationId: z.string().optional(),
+        expiresAt: z.number().finite().optional(),
+        cancelCommand: z.string().optional(),
+        statusCommand: z.string().optional(),
+      })
+      .passthrough(),
+    limitsChecked: z.string().optional(),
+    quotedAt: z.number().finite().optional(),
   })
+  .passthrough()
+type HoodPreviewBody = z.infer<typeof hoodPreviewSchema>
+
+/** Error-envelope fields a Hood preview, build or cancel refusal carries that the CLI keeps (all additive). */
+const HOOD_ERROR_FACTS = [
+  "field",
+  "operationId",
+  "cancelCommand",
+  "statusCommand",
+  "statusPath",
+  "retryAfter",
+  "reason",
+  "stage",
+  "safeAction",
+  "expectedOutRaw",
+  "minOutRaw",
+  "feeBps",
+  "shortfallWei",
+  "requiredWei",
+  "reserveWei",
+  "balanceWei",
+] as const
+
+/**
+ * One POST that keeps the refusal's facts (QUOTE_MOVED's numbers, WALLET_BUSY's cancel command).
+ * `optional`: a bare 404 with no Candle error code is an API that predates the route, answered
+ * `undefined`; a Candle 404 (OPERATION_NOT_FOUND) is a refusal like any other.
+ */
+async function hoodPost(ctx: CommandContext, key: string, path: string, body: Json): Promise<Json>
+async function hoodPost(
+  ctx: CommandContext,
+  key: string,
+  path: string,
+  body: Json,
+  optional: true,
+): Promise<Json | undefined>
+async function hoodPost(
+  ctx: CommandContext,
+  key: string,
+  path: string,
+  body: Json,
+  optional = false,
+): Promise<Json | undefined> {
+  const result = await apiRequest(path, {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    method: "POST",
+    body,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env,
+  })
+  if (result.ok) {
+    if (!result.body || typeof result.body !== "object")
+      throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.")
+    return result.body as Json
+  }
+  if (optional && result.status === 404 && result.code === undefined) return undefined
+  const error = (result.raw as { error?: Json } | null | undefined)?.error
+  const details: Json = {}
+  for (const field of HOOD_ERROR_FACTS) {
+    if (error?.[field] !== undefined) details[field] = error[field]
+  }
+  throw new TradingError(result.code ?? "REQUEST_FAILED", safeText(result.message), {
+    ...(Object.keys(details).length ? { details } : {}),
+  })
+}
+
+/** The preview for this rail, or `undefined` on an API without the route (legacy flow). */
+async function hoodPreview(
+  ctx: CommandContext,
+  key: string,
+  buildBody: Json,
+  kind: OperationKind,
+): Promise<HoodPreviewBody | undefined> {
+  const { clientTradeId: _ignored, deferExecution: _never, ...previewBody } = buildBody
+  const answer = await hoodPost(
+    ctx,
+    key,
+    kind === "swap" ? "/api/v1/agent/swap/preview" : "/api/v1/trade/agent/preview",
+    previewBody,
+    true,
+  )
+  if (!answer) return undefined
+  const parsed = hoodPreviewSchema.safeParse(answer)
+  if (!parsed.success)
+    throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete Hood preview; nothing was built.")
+  return parsed.data
+}
+
+const HOOD_LEG_NAMES: Record<string, string> = {
+  approval: "approve",
+  permit2Approval: "Permit2 approve",
+  trade: "trade",
+  feeTransfer: "fee",
+  bridgeDeposit: "bridge deposit",
+}
+
+/** The quote a preview shows: the same lines a build's quote shows, with no operation behind it. */
+function previewQuote(
+  preview: HoodPreviewBody,
+  args: {
+    intent: string
+    wallet: string
+    kind: OperationKind
+    token: string
+    from: TradeAsset
+    to: TradeAsset
+    outDecimals: number
+  },
+): QuoteDisplay & Json {
+  const { artifacts, fee, firstLeg } = preview
+  const minimumRaw =
+    !args.from.base && artifacts.venue === "curve"
+      ? (BigInt(preview.minOutRaw) > BigInt(fee.feeRaw)
+          ? BigInt(preview.minOutRaw) - BigInt(fee.feeRaw)
+          : 0n
+        ).toString()
+      : preview.minOutRaw
+  const maxFee = BigInt(firstLeg.maxFeePerGas)
+  const reserve = sweepReserveFloor(maxFee, args.kind === "trade" ? [args.token] : [])
+  return {
+    intent: args.intent,
+    wallet: args.wallet,
+    venue: artifacts.quoteSource ?? artifacts.venue,
+    priceImpactPct: artifacts.priceImpactPct ?? null,
+    fee,
+    minimumReceived: `${decimalAmount(minimumRaw, args.outDecimals)} ${args.to.asset}`,
+    minOutRaw: preview.minOutRaw,
+    minimumReceivedRaw: minimumRaw,
+    expectedOutRaw: preview.expectedOutRaw,
+    tokenRisks: artifacts.tokenRisks,
+    legs: preview.legs.map((kind) => HOOD_LEG_NAMES[kind] ?? kind),
+    gas: `the ${firstLeg.kind} leg up to ${formatUnits(BigInt(firstLeg.gas) * maxFee, 18)} ETH (gas ${firstLeg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`,
+    reserve: `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a trade never spends it`,
+    ...(preview.limitsChecked ? { limitsChecked: preview.limitsChecked } : {}),
+  }
+}
+
+const weiText = (value: string | undefined) =>
+  value !== undefined && /^\d+$/.test(value) ? `${formatUnits(BigInt(value), 18)} ETH` : "unknown"
+
+/** A preview that must not reach the prompt: too little gas (4.5 step 2) or a held wallet (step 3). */
+function previewStop(preview: HoodPreviewBody): TradingError | undefined {
+  const { gas, wallet } = preview
+  const gasFacts: Json = {}
+  if (!gas.ok)
+    for (const field of ["shortfallWei", "requiredWei", "reserveWei", "balanceWei"] as const)
+      if (gas[field] !== undefined) gasFacts[field] = gas[field]
+  const gasText = `The wallet holds ${weiText(gas.balanceWei)} and needs ${weiText(gas.requiredWei)} for gas (including a ${weiText(gas.reserveWei)} reserve), short by ${weiText(gas.shortfallWei)}.`
+  if (!gas.ok && !wallet.held)
+    return new TradingError("GAS_INSUFFICIENT", `${gasText} Nothing was built; the wallet is not held.`, {
+      suggestion: "Add ETH to the wallet, then run the swap again.",
+      details: { ...gasFacts, walletHeld: false },
+    })
+  if (!wallet.held) return undefined
+  // A held or guarded wallet outranks a gas shortfall: keep the hold facts and the gas facts together.
+  const gasNote = gas.ok ? "" : ` ${gasText} Gas is also short; deal with the hold first, then add ETH.`
+  const operationId = safeText(wallet.operationId ?? "unknown")
+  const statusCommand = `candle swap status --operation ${operationId}`
+  if (wallet.guarded)
+    return new TradingError(
+      "WALLET_BUSY",
+      `This wallet has an unresolved operation ${operationId}; it may have been broadcast. Do not repeat the trade. Nothing was built.${gasNote}`,
+      {
+        suggestion: `Read: ${safeText(wallet.statusCommand ?? statusCommand)}`,
+        details: {
+          walletHeld: true,
+          guarded: true,
+          operationId: wallet.operationId,
+          statusCommand: wallet.statusCommand ?? statusCommand,
+          ...gasFacts,
+        },
+      },
+    )
+  const until = wallet.expiresAt !== undefined ? ` until ${new Date(wallet.expiresAt).toISOString()}` : ""
+  return new TradingError(
+    "WALLET_BUSY",
+    `Operation ${operationId} holds this wallet${until}. Nothing was built.${gasNote}`,
+    {
+      suggestion: wallet.cancelCommand
+        ? `If nobody confirmed it, release it with ${safeText(wallet.cancelCommand)}; it refuses if a leg may have been signed.`
+        : `Another key opened it; it ends when it finishes or its window closes. Read: ${statusCommand}`,
+      details: {
+        walletHeld: true,
+        operationId: wallet.operationId,
+        ...gasFacts,
+        ...(wallet.expiresAt !== undefined ? { retryAfter: wallet.expiresAt } : {}),
+        ...(wallet.cancelCommand ? { cancelCommand: wallet.cancelCommand } : {}),
+      },
+    },
+  )
+}
+
+/** QUOTE_MOVED (4.2): the previewed and the current numbers, side by side. Nothing is held. */
+function quoteMoved(
+  preview: HoodPreviewBody,
+  current: Json,
+  out: { to: string; outDecimals: number },
+  lead = "The quote moved after the preview. Nothing was built; the wallet is not held.",
+): TradingError {
+  const minOut =
+    typeof current.minOutRaw === "string" && /^\d+$/.test(current.minOutRaw) ? current.minOutRaw : undefined
+  const feeBps = typeof current.feeBps === "number" ? current.feeBps : undefined
+  const minimum = (raw: string | undefined) =>
+    raw === undefined ? "unknown" : `${decimalAmount(raw, out.outDecimals)} ${out.to}`
+  return new TradingError(
+    "QUOTE_MOVED",
+    `${lead} Minimum received ${minimum(preview.minOutRaw)} -> ${minimum(minOut)}; tier fee ${preview.fee.bps} -> ${feeBps ?? "unknown"} bps.`,
+    {
+      suggestion: "Run the swap again to see the new quote.",
+      details: {
+        previewed: { minOutRaw: preview.minOutRaw, feeBps: preview.fee.bps, expectedOutRaw: preview.expectedOutRaw },
+        current: {
+          ...(minOut !== undefined ? { minOutRaw: minOut } : {}),
+          ...(feeBps !== undefined ? { feeBps } : {}),
+          ...(typeof current.expectedOutRaw === "string" ? { expectedOutRaw: current.expectedOutRaw } : {}),
+        },
+      },
+    },
+  )
+}
+
+const hoodCancelPath = (operationId: string) =>
+  `/api/v1/agent/hood-tee/operations/${encodeURIComponent(operationId)}/cancel`
+const hoodCancelCommand = (operationId: string) => `candle swap cancel --operation ${operationId}`
+
+type Release =
+  | { state: "released" }
+  | { state: "ended"; status: string }
+  | { state: "unavailable" }
+  | { state: "refused"; code: string; message: string }
+
+/** Ask the server to end an operation this run built and nobody confirmed. Never throws. */
+async function cancelHeldOperation(ctx: CommandContext, key: string, operationId: string): Promise<Release> {
+  try {
+    const answer = await hoodPost(ctx, key, hoodCancelPath(operationId), {}, true)
+    if (!answer) return { state: "unavailable" }
+    if (answer.status === "cancelled" && answer.unchanged !== true) return { state: "released" }
+    return { state: "ended", status: safeText(answer.status ?? "unknown") }
+  } catch (error) {
+    return {
+      state: "refused",
+      code: error instanceof TradingError ? error.code : "REQUEST_FAILED",
+      message: safeText(error instanceof Error ? describeRpcFailure(error) : String(error)),
+    }
+  }
+}
+
+function releaseNote(release: Release, held: SequencedBody): string {
+  const id = held.operationId
+  const until = new Date(held.expiresAt).toISOString()
+  switch (release.state) {
+    case "released":
+      return `Nothing was signed. Operation ${id} was cancelled; the wallet is not held.`
+    case "ended":
+      return `Nothing was signed. Operation ${id} already ended (${release.status}); the wallet is not held.`
+    case "unavailable":
+      return `Nothing was signed. Operation ${id} holds this wallet until ${until}; a new Hood trade from it is refused as WALLET_BUSY until then.`
+    case "refused":
+      return `Nothing was signed. Operation ${id} holds this wallet until ${until}; cancel answered ${release.code} (${release.message.replace(/\.$/, "")}). A new Hood trade from it is refused as WALLET_BUSY until then.`
+  }
+}
+
+function releaseFacts(release: Release, held: SequencedBody): Json {
+  if (release.state === "released" || release.state === "ended")
+    return { operationId: held.operationId, walletHeld: false, released: release.state === "released" }
+  return {
+    operationId: held.operationId,
+    walletHeld: true,
+    walletHeldUntil: held.expiresAt,
+    ...(release.state === "refused" ? { cancelRefused: { code: release.code, message: release.message } } : {}),
+  }
+}
+
+/** A refusal after the confirmed build held the wallet and before any leg was signed (4.5 step 6). */
+function withCancelHint(error: unknown, operationId: string): unknown {
+  // A parse or unexpected failure before any signature is a refusal too: normalize it so the hint still lands.
+  if (error instanceof TradingError && error.exitCode !== 1) return error
+  const refusal =
+    error instanceof TradingError
+      ? error
+      : new TradingError(
+          "TRADING_FAILED",
+          `The build response could not be used: ${safeText(error instanceof Error ? describeRpcFailure(error) : String(error))}. Nothing was signed.`,
+        )
+  const hint = `Operation ${operationId} may still hold this wallet. If no leg was signed, release it with ${hoodCancelCommand(operationId)}; it refuses if a leg may have been signed.`
+  return new TradingError(refusal.code, refusal.message, {
+    suggestion: refusal.suggestion ? `${refusal.suggestion} ${hint}` : hint,
+    details: { ...(refusal.details ?? {}), operationId, cancelCommand: hoodCancelCommand(operationId) },
+  })
+}
+
+const SWAP_CANCEL_USAGE = "Usage: candle swap cancel --operation <operationId>"
+
+/**
+ * `candle swap cancel --operation <id>` (BE-3361 4.4, 4.5): end a Hood TEE trade or swap operation
+ * no leg of which can have been signed, so the wallet is free before its 30-minute window closes.
+ * Only the key that opened the operation may cancel it. The server decides; this never signs.
+ *
+ * Exit 0 cancelled or already ended; 3 when a leg may have been signed (do not repeat the trade);
+ * 1 for every other refusal; 2 on usage.
+ */
+export async function swapCancel(args: string[], ctx: CommandContext): Promise<number> {
+  const parsed = parseArgs(args, { valueFlags: ["--operation"] })
+  const id = "error" in parsed || parsed.positionals.length ? undefined : parsed.values["--operation"]
+  if (id === undefined || !validClientId(id)) {
+    writeUsageFailure(ctx.deps, SWAP_CANCEL_USAGE, ctx.json)
+    return 2
+  }
+  const statusCommand = `candle swap status --operation ${id}`
+  try {
+    const key = await tradingKey(ctx)
+    const answer = await hoodPost(ctx, key, hoodCancelPath(id), {}, true)
+    if (!answer)
+      throw new TradingError(
+        "CANCEL_UNAVAILABLE",
+        `This Candle deployment has no swap cancel. Nothing changed; operation ${id} releases the wallet when its 30-minute window closes.`,
+        { suggestion: `Read: ${statusCommand}` },
+      )
+    const released = answer.status === "cancelled" && answer.unchanged !== true
+    const message = released
+      ? `Operation ${id} released; nothing was signed.`
+      : `Operation ${id} already ended (${safeText(answer.status ?? "unknown")}).`
+    ctx.deps.stdout.write(ctx.json ? `${JSON.stringify({ ...answer, operationId: id, message })}\n` : `${message}\n`)
+    return 0
+  } catch (error) {
+    if (error instanceof TradingError && error.code === "MAY_BE_SIGNED")
+      return tradingFailure(
+        ctx,
+        new TradingError(
+          error.code,
+          `A leg of ${id} may have been signed. Not released. Do not repeat the trade. Read: ${statusCommand}.`,
+          { exitCode: 3, details: { ...(error.details ?? {}), operationId: id } },
+        ),
+      )
+    if (error instanceof TradingError && error.code === "FEATURE_DISABLED")
+      return tradingFailure(
+        ctx,
+        new TradingError(error.code, error.message, {
+          suggestion: `Wait for the operation's 30-minute window to close. Read: ${statusCommand}`,
+          details: { ...(error.details ?? {}), operationId: id },
+        }),
+      )
+    return tradingFailure(ctx, error)
+  }
 }
 
 // ── Ember Phase 4c: the bridge (R1, R4) ──────────────────────────────────────────────────────
