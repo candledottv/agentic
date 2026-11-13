@@ -1335,7 +1335,7 @@ export const HELP: Record<string, Topic> = {
         invocation:
           "close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes]",
         description:
-          "Close a wallet's empty token accounts and return their rent to it, after a preview: the embedded wallet (transfer:write), or a TEE wallet bound to this key, signed by its key signer (swap:write). --preview prints what would close (one JSON document on stdout under --json) and closes nothing",
+          "Close a wallet's empty token accounts and return their rent to it, after a preview: the embedded wallet (swap:write or transfer:write), or a TEE wallet bound to this key, signed by its key signer (swap:write). --preview prints what would close (one JSON document on stdout under --json) and closes nothing",
       },
     ],
     flags: [

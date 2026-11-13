@@ -2,7 +2,7 @@
  * `candle wallet close-empty` (BE-418, BE-1687): close a wallet's empty token accounts and take
  * their rent back into that same wallet, with the preview and confirm `candle swap` uses.
  *
- * The embedded wallet (the default, `--wallet embedded` or its address), `transfer:write`:
+ * The embedded wallet (the default, `--wallet embedded` or its address), `swap:write` or `transfer:write`:
  *
  *   POST /agent/wallets/embedded/close-empty/preview  ->  confirm  ->  POST /agent/wallets/embedded/close-empty
  *

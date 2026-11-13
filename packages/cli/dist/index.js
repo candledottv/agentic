@@ -778,7 +778,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.24";
+var CLI_VERSION = "0.13.25";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -79183,7 +79183,7 @@ var HELP = {
       },
       {
         invocation: "close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes]",
-        description: "Close a wallet's empty token accounts and return their rent to it, after a preview: the embedded wallet (transfer:write), or a TEE wallet bound to this key, signed by its key signer (swap:write). --preview prints what would close (one JSON document on stdout under --json) and closes nothing"
+        description: "Close a wallet's empty token accounts and return their rent to it, after a preview: the embedded wallet (swap:write or transfer:write), or a TEE wallet bound to this key, signed by its key signer (swap:write). --preview prints what would close (one JSON document on stdout under --json) and closes nothing"
       }
     ],
     flags: [
