@@ -40,6 +40,8 @@ async function fixture(
     noSigner?: boolean
     embedded?: boolean
     denied?: boolean
+    preview?: Record<string, unknown>
+    previewStatus?: number
     buildError?: string
     badBuild?: Record<string, unknown>
     spendError?: unknown
@@ -99,6 +101,9 @@ async function fixture(
         embeddedWalletPermission: opts.denied ? "denied" : "allowed",
       })
     if (path === "/api/v1/agent/keys/self/signer") return ok({ active: null })
+    if (path === "/rpc" && body?.method === "eth_call")
+      return ok({ jsonrpc: "2.0", id: body.id, result: `0x${"12".padStart(64, "0")}` })
+    if (path.endsWith("/preview")) return Response.json(opts.preview ?? {}, { status: opts.previewStatus ?? 200 })
     if (path.endsWith("/build")) {
       if (opts.buildError)
         return Response.json({ error: { code: opts.buildError, message: opts.buildError } }, { status: 400 })
@@ -174,7 +179,12 @@ async function fixture(
   }) as typeof fetch
   const deps = createTestDeps({
     fetch: fetcher,
-    env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_KEY: "bound-key", CANDLE_SOLANA_RPC_URL: "http://localhost/rpc" },
+    env: {
+      CANDLE_CONFIG_DIR: dir,
+      CANDLE_API_KEY: "bound-key",
+      CANDLE_SOLANA_RPC_URL: "http://localhost/rpc",
+      CANDLE_EVM_RPC_URL: "http://localhost/rpc",
+    },
     store: createFakeStore(
       opts.noSigner
         ? {}
@@ -439,12 +449,12 @@ describe("TEE checks and dry runs", () => {
       expect(f.calls).toHaveLength(0)
     })
   for (const pair of [
-    ["ETH", "USDG"],
-    ["SOL", "ETH"],
+    ["CNDL", "ETH"],
+    ["SOL", "0x0000000000000000000000000000000000000011"],
   ])
     test(`refuses ${pair.join("/")} before runners`, async () => {
       const f = await fixture()
-      expect((await f.invoke(["swap", ...pair, "--amount", "1", "--dry-run"])).output.code).toBe("VALIDATION_FAILED")
+      expect((await f.invoke(["swap", ...pair, "--amount", "1", "--dry-run"])).output.code).toBe("CHAIN_MISMATCH")
       expect(f.calls).toHaveLength(0)
     })
   for (const mode of ["embedded", "ambiguous", "denied"] as const)
@@ -636,5 +646,228 @@ describe("tee check on Hood wallets (BE-3359)", () => {
     expect(exit).toBe(2)
     expect(output.code).toBe("USAGE")
     expect(f.calls).toHaveLength(0)
+  })
+})
+
+describe("Hood and bridge dry-run previews (BE-3363)", () => {
+  const hood: TradingWalletRow = {
+    id: "hood-wallet",
+    address: "0x9A451fb443617EdD585067Db312786E434dD4d14",
+    label: "hood-1",
+    chain: "evm",
+    active: true,
+    allowLaunch: false,
+    privyWalletId: "privy-hood",
+  }
+  const hoodRecord = { _id: hood.id, address: hood.address, label: hood.label, chain: "evm", profile: "ember-tee" }
+  const preview = (extra: Record<string, unknown> = {}) => ({
+    success: true,
+    mode: "preview",
+    chain: "hood",
+    walletAddress: hood.address,
+    artifacts: { venue: "uniswap", quoteSource: "uniswap", quoteAsset: "eth", tokenRisks: [] },
+    fee: { bps: 0, feeRaw: "0" },
+    expectedOutRaw: "1000000",
+    minOutRaw: "990000",
+    legs: ["trade"],
+    firstLeg: { kind: "trade", gas: "150000", maxFeePerGas: "2000000000", maxPriorityFeePerGas: "1000000000" },
+    gas: { ok: true, reserveWei: "50000" },
+    wallet: { held: false },
+    limitsChecked: "raw caps only; the USD window is reserved on confirm",
+    quotedAt: 1000,
+    ...extra,
+  })
+  const setup = (body: Record<string, unknown>, opts: { previewStatus?: number; rows?: TradingWalletRow[] } = {}) =>
+    fixture({
+      rows: opts.rows ?? [row, hood],
+      records: [record, hoodRecord],
+      preview: body,
+      previewStatus: opts.previewStatus,
+    })
+  const noBuild = async (f: Awaited<ReturnType<typeof fixture>>) => {
+    expect(await readdir(f.dir)).not.toContain("operations")
+    expect(f.calls.filter((c) => c.body && !c.path.endsWith("/preview") && c.path !== "/rpc")).toHaveLength(0)
+    expect(f.calls.some((c) => /build|submit|relay-sign|swap-jobs|operations/.test(c.path))).toBe(false)
+  }
+  test("Hood base swap quotes identical raw figures through preview only", async () => {
+    const f = await setup(preview())
+    const { exit, output } = await f.invoke([
+      "swap",
+      "ETH",
+      "USDG",
+      "--amount",
+      "0.0025",
+      "--wallet",
+      "hood-1",
+      "--dry-run",
+    ])
+    expect(exit).toBe(0)
+    expect(output.quote).toMatchObject({
+      expectedOutRaw: "1000000",
+      minOutRaw: "990000",
+      fee: { bps: 0, feeRaw: "0" },
+      destination: { address: hood.address, ok: true },
+      firstLeg: { gas: "150000" },
+    })
+    expect(f.calls.find((c) => c.path.endsWith("/preview"))?.body as Record<string, unknown>).toEqual({
+      from: "ETH",
+      to: "USDG",
+      amountRaw: "2500000000000000",
+      maxSlippageBps: 50,
+      payer: { type: "linked", linkedWalletId: hood.id },
+    })
+    await noBuild(f)
+  })
+  for (const sell of [false, true])
+    test(`Hood token ${sell ? "sell" : "buy"} shares the trade preview and tier fee`, async () => {
+      const token = "0x0000000000000000000000000000000000000011"
+      const f = await setup(preview({ fee: { bps: 25, feeRaw: "500" }, legs: ["approval", "trade", "feeTransfer"] }))
+      const { exit, output } = await f.invoke([
+        "swap",
+        ...(sell ? [token, "ETH"] : ["ETH", token]),
+        "--amount",
+        "0.01",
+        "--wallet",
+        "hood-1",
+        "--dry-run",
+      ])
+      expect(exit).toBe(0)
+      expect(output.quote.fee).toEqual({ bps: 25, feeRaw: "500" })
+      expect(f.calls.find((c) => c.path === "/api/v1/trade/agent/preview")?.body).toMatchObject({
+        chain: "hood",
+        mint: token,
+        side: sell ? "sell" : "buy",
+        quoteAsset: "eth",
+        amountRaw: "10000000000000000",
+      })
+      await noBuild(f)
+    })
+  for (const [name, fields, code] of [
+    [
+      "held",
+      { wallet: { held: true, operationId: "held-op", cancelCommand: "candle swap cancel --operation held-op" } },
+      "WALLET_BUSY",
+    ],
+    ["gas", { gas: { ok: false, shortfallWei: "20", reserveWei: "50000" } }, "GAS_INSUFFICIENT"],
+    ["wrong payer", { walletAddress: "0x0000000000000000000000000000000000000011" }, "INVALID_RESPONSE"],
+  ] as const)
+    test(`Hood ${name} refuses without a build or fallback`, async () => {
+      const f = await setup(preview(fields))
+      const { exit, output } = await f.invoke([
+        "swap",
+        "ETH",
+        "USDG",
+        "--amount",
+        "0.0025",
+        "--wallet",
+        "hood-1",
+        "--dry-run",
+      ])
+      expect(exit).toBe(1)
+      expect(output.checks.some((c: WalletCheck) => c.code === code)).toBe(true)
+      await noBuild(f)
+    })
+  test("preview 404 never falls back to build", async () => {
+    const f = await setup({}, { previewStatus: 404 })
+    const { exit, output } = await f.invoke(["swap", "ETH", "USDG", "--amount", "1", "--wallet", "hood-1", "--dry-run"])
+    expect(exit).toBe(1)
+    expect(output.checks.some((c: WalletCheck) => c.code === "PREVIEW_UNSUPPORTED")).toBe(true)
+    await noBuild(f)
+  })
+  for (const [from, to] of [
+    ["SOL", "ETH"],
+    ["USDC", "USDG"],
+    ["ETH", "SOL"],
+    ["USDG", "USDC"],
+  ] as const)
+    test(`${from}/${to} uses only preview and checks the destination and zero fee`, async () => {
+      const hoodOrigin = from === "ETH" || from === "USDG"
+      const origin = hoodOrigin ? hood : row
+      const destination = hoodOrigin ? row : hood
+      const f = await setup(
+        preview({
+          chain: hoodOrigin ? "hood" : "solana",
+          walletAddress: origin.address,
+          artifacts: { venue: "relay" },
+          route: { venue: "relay", from, to },
+          destination: {
+            ok: true,
+            linkedWalletId: destination.id,
+            address: destination.address,
+            chain: hoodOrigin ? "solana" : "hood",
+          },
+          outDecimals: to === "ETH" ? 18 : to === "SOL" ? 9 : 6,
+          minOutRaw: "995000",
+          legs: from === "USDG" ? ["approval", "bridgeDeposit"] : ["bridgeDeposit"],
+          firstLeg: {
+            kind: from === "USDG" ? "approval" : "bridgeDeposit",
+            gas: "150000",
+            maxFeePerGas: "2000000000",
+            maxPriorityFeePerGas: "1000000000",
+          },
+          gas: { ok: true, networkFeeRaw: "5000", asset: "SOL" },
+          venueCostUsd: 0.02,
+        }),
+      )
+      const { exit, output } = await f.invoke([
+        "swap",
+        from,
+        to,
+        "--amount",
+        "0.01",
+        "--wallet",
+        origin.label as string,
+        "--to",
+        destination.label as string,
+        "--dry-run",
+      ])
+      expect(exit).toBe(0)
+      expect(output.quote).toMatchObject({
+        expectedOutRaw: "1000000",
+        minOutRaw: "995000",
+        destination: { address: destination.address, ok: true },
+        route: { venue: "relay", from, to },
+        venueCostUsd: 0.02,
+      })
+      expect(f.calls.find((c) => c.path.endsWith("/preview"))?.body.toWalletId).toBe(destination.id)
+      await noBuild(f)
+    })
+  test("bridge recipient substitution and a nonzero fee fail closed", async () => {
+    for (const fields of [
+      {
+        destination: {
+          ok: true,
+          linkedWalletId: hood.id,
+          address: "0x0000000000000000000000000000000000000011",
+          chain: "hood",
+        },
+      },
+      { fee: { bps: 1, feeRaw: "1" } },
+    ]) {
+      const f = await setup(
+        preview({
+          chain: "solana",
+          walletAddress: row.address,
+          artifacts: { venue: "relay" },
+          route: { venue: "relay", from: "SOL", to: "ETH" },
+          destination: { ok: true, linkedWalletId: hood.id, address: hood.address, chain: "hood" },
+          outDecimals: 18,
+          ...fields,
+        }),
+      )
+      const { exit, output } = await f.invoke([
+        "swap",
+        "SOL",
+        "ETH",
+        "--amount",
+        "1",
+        "--wallet",
+        "pool-1",
+        "--dry-run",
+      ])
+      expect(exit).toBe(1)
+      expect(output.checks.some((c: WalletCheck) => c.code === "INVALID_RESPONSE")).toBe(true)
+      await noBuild(f)
+    }
   })
 })

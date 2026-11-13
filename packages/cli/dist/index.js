@@ -26707,21 +26707,22 @@ async function swapCheck(args, ctx) {
     }
     const from = classifyAsset(parsed.positionals[0]);
     const to = classifyAsset(parsed.positionals[1]);
-    if (from.chain !== "solana" || to.chain !== "solana")
-      throw new TradingError("VALIDATION_FAILED", "Dry run checks Solana TEE pairs; Hood and bridge pairs are unsupported.");
-    if (parsed.values["--to"] !== undefined || parsed.booleans.has("--wait")) {
-      writeUsageFailure(ctx.deps, "--to selects a bridge destination; --wait follows a bridge or a Hood TEE swap without --dry-run. Follow a Hood swap with candle swap status --operation <id>, or a job with candle swap status <client-trade-id>.", ctx.json);
+    const bridge = bridgePair(from, to);
+    if (from.chain !== to.chain && !bridge)
+      throw new TradingError("CHAIN_MISMATCH", "Only SOL or USDC and ETH or USDG bridge between chains.");
+    if (!bridge && parsed.values["--to"] !== undefined || parsed.booleans.has("--wait")) {
+      writeUsageFailure(ctx.deps, "--to selects a bridge destination; --wait cannot be used with --dry-run.", ctx.json);
       return 2;
     }
-    if (from.asset === to.asset || !from.base && !to.base)
-      throw new TradingError("PAIR_UNSUPPORTED", "Choose distinct assets with SOL, USDC or CNDL on one side.");
+    if (from.asset === to.asset || !bridge && !from.base && !to.base)
+      throw new TradingError("PAIR_UNSUPPORTED", "Choose distinct assets with a base asset on one side.");
     rawAmount(parsed.values["--amount"], 18);
     const key = await tradingKey(ctx);
     const listing = await diagnosticListing(ctx, key);
     let row;
     let payable;
     try {
-      const selected = await selectTradingPayer(ctx, key, parsed.values["--wallet"], listing);
+      const selected = await selectTradingPayer(ctx, key, parsed.values["--wallet"], listing, from.chain);
       if (selected.kind === "embedded")
         throw new TradingError("VALIDATION_FAILED", "dry run checks TEE payers");
       row = selected.row;
@@ -26734,7 +26735,9 @@ async function swapCheck(args, ctx) {
     }
     const records = await readWalletRecords(ctx, key);
     const { report, wallet: wallet3 } = await inspectReport(ctx, key, row, listing, records, payable, parsed.values["--wallet"], from.chain);
-    if (wallet3)
+    if (wallet3 && (from.chain === "hood" || bridge))
+      await previewCheck(ctx, key, wallet3, report, listing, from, to, parsed.values, slippage);
+    else if (wallet3)
       await buildCheck(ctx, key, wallet3, report, from.asset, to.asset, parsed.values["--amount"], slippage, parsed.values["--rpc-url"], false);
     else
       report.checks.push(skipped("quote", report.checks.find((check) => check.status === "fail")?.id ?? "signer"), skipped("spend", "quote"));
@@ -26743,13 +26746,130 @@ async function swapCheck(args, ctx) {
     return tradingFailure(ctx, error);
   }
 }
-var pass = (id) => ({ id, status: "pass" }), skipped = (id, because) => ({ id, status: "skipped", because }), linkedRow;
+async function previewCheck(ctx, key, wallet3, report, listing, from, to, flags, slippage) {
+  const blocked = report.checks.find((check) => check.status === "fail");
+  if (blocked) {
+    report.checks.push(skipped("quote", blocked.id));
+    return;
+  }
+  try {
+    const bridge = bridgePair(from, to);
+    const payer = { type: "linked", linkedWalletId: wallet3.id };
+    if (bridge) {
+      const matching = flags["--to"] === undefined ? listing.rows.filter((row) => rowChain(row) === to.chain && row.active) : listing.rows.filter((row) => matchesName(row, flags["--to"]));
+      const destination = matching[0];
+      if (matching.length !== 1 || !destination || rowChain(destination) !== to.chain || !destination.active)
+        throw new TradingError("BRIDGE_DESTINATION_MISSING", "Name one verified-active TEE destination on the other chain with --to.");
+      const amountRaw2 = rawAmount(flags["--amount"], BRIDGE_ASSETS[bridge.from].decimals);
+      const answer = await request(ctx, key, "/api/v1/agent/swap/preview", {
+        from: from.asset,
+        to: to.asset,
+        amountRaw: amountRaw2,
+        maxSlippageBps: slippage,
+        payer,
+        toWalletId: destination.id
+      });
+      const parsed = bridgePreviewSchema().safeParse(answer);
+      if (!parsed.success)
+        throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete bridge preview.");
+      const data = parsed.data;
+      const same = (a, b, chain2) => chain2 === "hood" ? sameEvmAddress(a, b) : a === b;
+      if (data.chain !== from.chain || !same(data.walletAddress, wallet3.address, from.chain) || data.route.from !== from.asset || data.route.to !== to.asset || data.destination.chain !== to.chain || data.destination.linkedWalletId !== destination.id || !same(data.destination.address, destination.address, to.chain) || data.outDecimals !== BRIDGE_ASSETS[bridge.to].decimals || data.fee.bps !== 0 || data.fee.feeRaw !== "0")
+        throw new TradingError("INVALID_RESPONSE", "The bridge preview does not match the payer, pair, destination or zero Candle fee.");
+      if (from.chain === "hood") {
+        if (!data.firstLeg || !bridgePlanAdmitted(bridge.from, data.legs) || data.firstLeg.kind !== data.legs[0])
+          throw new TradingError("INVALID_RESPONSE", "The preview has no complete Hood bridge gas or leg plan.");
+      } else if (data.legs.length !== 1 || data.legs[0] !== "bridgeDeposit" || !/^[0-9]+$/.test(String(data.gas.networkFeeRaw ?? "")) || data.gas.asset !== "SOL")
+        throw new TradingError("INVALID_RESPONSE", "The preview has no complete Solana deposit fee.");
+      const minimum = (BigInt(data.expectedOutRaw) * BigInt(1e4 - slippage) / 10000n).toString();
+      if (data.minOutRaw !== minimum)
+        throw new TradingError("INVALID_RESPONSE", "The bridge minimum differs from the quoted slippage bound.");
+      report.quote = {
+        venue: "relay",
+        route: data.route,
+        destination: data.destination,
+        fee: data.fee,
+        expectedOutRaw: data.expectedOutRaw,
+        minOutRaw: data.minOutRaw,
+        minimumReceivedRaw: data.minOutRaw,
+        minimumReceived: `${decimalAmount(data.minOutRaw, data.outDecimals)} ${to.asset}`,
+        legs: data.legs,
+        gas: data.gas,
+        ...data.firstLeg ? { firstLeg: data.firstLeg } : {},
+        ...data.venueCostUsd !== undefined ? { venueCostUsd: data.venueCostUsd } : {},
+        ...data.venueTimeEstimateSec !== undefined ? { venueTimeEstimateSec: data.venueTimeEstimateSec } : {},
+        wallet: data.wallet,
+        limitsChecked: data.limitsChecked,
+        quotedAt: data.quotedAt
+      };
+      report.checks.push(pass("destination"), pass("quote"));
+      if (!data.gas.ok)
+        report.checks.push(failure2("gas", new TradingError("GAS_INSUFFICIENT", "The preview reports insufficient gas; nothing was built.")));
+      else
+        report.checks.push(pass("gas"));
+      if (data.wallet.held)
+        report.checks.push(failure2("wallet", new TradingError("WALLET_BUSY", data.wallet.statusCommand ?? data.wallet.cancelCommand ?? "The wallet is held by another operation.")));
+      return;
+    }
+    const rpc = lazyEvmRpc(ctx, flags["--rpc-url"]);
+    const decimals = await hoodDecimals(from, rpc);
+    const outDecimals = await hoodDecimals(to, rpc);
+    const amountRaw = rawAmount(flags["--amount"], decimals);
+    const kind = from.base && to.base ? "swap" : "trade";
+    const token2 = from.base ? to.asset : from.asset;
+    const base2 = from.base ?? to.base;
+    const body = kind === "swap" ? { from: from.asset, to: to.asset, amountRaw, maxSlippageBps: slippage, payer } : {
+      chain: "hood",
+      mint: token2,
+      side: from.base ? "buy" : "sell",
+      quoteAsset: base2?.toLowerCase(),
+      amountRaw,
+      maxSlippageBps: slippage,
+      payer
+    };
+    const preview = await hoodPreview(ctx, key, body, kind);
+    if (!preview)
+      throw new TradingError("PREVIEW_UNSUPPORTED", "This API has no read-only preview; update the API before using --dry-run. Nothing was built.");
+    if (!sameEvmAddress(preview.walletAddress, wallet3.address) || kind === "trade" && preview.artifacts.quoteAsset !== base2?.toLowerCase())
+      throw new TradingError("INVALID_RESPONSE", "The preview does not name the requested Hood payer or quote asset.");
+    report.quote = {
+      ...previewQuote(preview, { intent: "Dry run", wallet: wallet3.address, kind, token: token2, from, to, outDecimals }),
+      route: preview.artifacts.route ?? { venue: preview.artifacts.venue, from: from.asset, to: to.asset },
+      destination: { ok: true, address: wallet3.address, linkedWalletId: wallet3.id, chain: "hood" },
+      gasFacts: preview.gas,
+      firstLeg: preview.firstLeg,
+      wallet: preview.wallet,
+      quotedAt: preview.quotedAt
+    };
+    report.checks.push(pass("quote"), pass("destination"));
+    const stop = previewStop(preview);
+    report.checks.push(stop ? failure2(stop.code === "GAS_INSUFFICIENT" ? "gas" : "wallet", stop) : pass("gas"));
+  } catch (error) {
+    report.checks.push(failure2("quote", error));
+  }
+}
+var pass = (id) => ({ id, status: "pass" }), skipped = (id, because) => ({ id, status: "skipped", because }), linkedRow, bridgePreviewSchema = () => hoodPreviewSchema.extend({
+  chain: exports_external.enum(["hood", "solana"]),
+  firstLeg: hoodPreviewSchema.shape.firstLeg.optional(),
+  route: exports_external.object({ venue: exports_external.literal("relay"), from: exports_external.string(), to: exports_external.string() }),
+  destination: exports_external.object({
+    ok: exports_external.literal(true),
+    linkedWalletId: exports_external.string(),
+    address: exports_external.string(),
+    chain: exports_external.enum(["hood", "solana"])
+  }),
+  outDecimals: exports_external.number().int().nonnegative(),
+  venueCostUsd: exports_external.number().finite().nonnegative().optional(),
+  venueTimeEstimateSec: exports_external.number().finite().nonnegative().optional()
+});
 var init_trading_checks = __esm(() => {
   init_ed25519();
   init_esm();
   init_zod();
   init_args();
+  init_bridge();
   init_swap();
+  init_evm_lite();
   init_render();
   init_solana_alt();
   init_solana_endpoint();
@@ -78899,7 +79019,7 @@ var HELP = {
     flags: [
       {
         invocation: "--dry-run",
-        description: "Check a Solana TEE payer, build the quote and check spend, then stop. Never signs, sends, prompts or saves an operation. Refuses --yes, --percent and --client-trade-id; embedded, Hood and bridge payers are unsupported"
+        description: "Check a TEE payer and quote. Hood swaps and bridges preview fees, legs, gas, route and destination without builds or locks; Solana same-chain checks the built payload. Never signs, sends, prompts or saves a local operation. Refuses --yes, --percent, --wait and --client-trade-id; embedded payers are unsupported"
       }
     ],
     examples: [

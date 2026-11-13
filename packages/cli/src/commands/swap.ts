@@ -1388,7 +1388,7 @@ async function hoodSwap(
 // ── BE-3369 (BE-3361 B3): a Hood TEE preview before confirmation, and swap cancel ────────────
 
 /** `POST /trade/agent/preview` and `POST /agent/swap/preview` (BE-3368): display facts only, never signable. */
-const hoodPreviewSchema = z
+export const hoodPreviewSchema = z
   .object({
     mode: z.literal("preview"),
     chain: z.literal("hood"),
@@ -1503,7 +1503,7 @@ async function hoodPost(
 }
 
 /** The preview for this rail, or `undefined` on an API without the route (legacy flow). */
-async function hoodPreview(
+export async function hoodPreview(
   ctx: CommandContext,
   key: string,
   buildBody: Json,
@@ -1533,7 +1533,7 @@ const HOOD_LEG_NAMES: Record<string, string> = {
 }
 
 /** The quote a preview shows: the same lines a build's quote shows, with no operation behind it. */
-function previewQuote(
+export function previewQuote(
   preview: HoodPreviewBody,
   args: {
     intent: string
@@ -1577,7 +1577,7 @@ const weiText = (value: string | undefined) =>
   value !== undefined && /^\d+$/.test(value) ? `${formatUnits(BigInt(value), 18)} ETH` : "unknown"
 
 /** A preview that must not reach the prompt: too little gas (4.5 step 2) or a held wallet (step 3). */
-function previewStop(preview: HoodPreviewBody): TradingError | undefined {
+export function previewStop(preview: HoodPreviewBody): TradingError | undefined {
   const { gas, wallet } = preview
   const gasFacts: Json = {}
   if (!gas.ok)

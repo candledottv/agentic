@@ -4,8 +4,21 @@ import { ed25519 } from "@noble/curves/ed25519"
 import { base58 } from "@scure/base"
 import { z } from "zod"
 import { parseArgs } from "./args"
-import { decimalsFor, lazySolanaClient, tradingFailure, tradingRead } from "./commands/swap"
+import { BRIDGE_ASSETS, bridgePair, bridgePlanAdmitted } from "./bridge"
+import {
+  decimalsFor,
+  hoodDecimals,
+  hoodPreview,
+  hoodPreviewSchema,
+  lazyEvmRpc,
+  lazySolanaClient,
+  previewQuote,
+  previewStop,
+  tradingFailure,
+  tradingRead,
+} from "./commands/swap"
 import type { CommandContext } from "./deps"
+import { sameEvmAddress } from "./evm-lite"
 import { writeUsageFailure } from "./render"
 import { decodeStrictBase64, decodeTransaction } from "./solana-alt"
 import { describeRpcFailure } from "./solana-endpoint"
@@ -27,6 +40,7 @@ import {
   safeText,
   selectTradingPayer,
   swapBuildSchema,
+  type TradeAsset,
   type TradeChain,
   TradingError,
   TradingUsage,
@@ -553,28 +567,22 @@ export async function swapCheck(args: string[], ctx: CommandContext): Promise<nu
     }
     const from = classifyAsset(parsed.positionals[0] as string)
     const to = classifyAsset(parsed.positionals[1] as string)
-    if (from.chain !== "solana" || to.chain !== "solana")
-      throw new TradingError(
-        "VALIDATION_FAILED",
-        "Dry run checks Solana TEE pairs; Hood and bridge pairs are unsupported.",
-      )
-    if (parsed.values["--to"] !== undefined || parsed.booleans.has("--wait")) {
-      writeUsageFailure(
-        ctx.deps,
-        "--to selects a bridge destination; --wait follows a bridge or a Hood TEE swap without --dry-run. Follow a Hood swap with candle swap status --operation <id>, or a job with candle swap status <client-trade-id>.",
-        ctx.json,
-      )
+    const bridge = bridgePair(from, to)
+    if (from.chain !== to.chain && !bridge)
+      throw new TradingError("CHAIN_MISMATCH", "Only SOL or USDC and ETH or USDG bridge between chains.")
+    if ((!bridge && parsed.values["--to"] !== undefined) || parsed.booleans.has("--wait")) {
+      writeUsageFailure(ctx.deps, "--to selects a bridge destination; --wait cannot be used with --dry-run.", ctx.json)
       return 2
     }
-    if (from.asset === to.asset || (!from.base && !to.base))
-      throw new TradingError("PAIR_UNSUPPORTED", "Choose distinct assets with SOL, USDC or CNDL on one side.")
+    if (from.asset === to.asset || (!bridge && !from.base && !to.base))
+      throw new TradingError("PAIR_UNSUPPORTED", "Choose distinct assets with a base asset on one side.")
     rawAmount(parsed.values["--amount"], 18)
     const key = await tradingKey(ctx)
     const listing = await diagnosticListing(ctx, key)
     let row: TradingWalletRow | undefined
     let payable: unknown
     try {
-      const selected = await selectTradingPayer(ctx, key, parsed.values["--wallet"], listing)
+      const selected = await selectTradingPayer(ctx, key, parsed.values["--wallet"], listing, from.chain)
       if (selected.kind === "embedded") throw new TradingError("VALIDATION_FAILED", "dry run checks TEE payers")
       row = selected.row
     } catch (error) {
@@ -593,7 +601,10 @@ export async function swapCheck(args: string[], ctx: CommandContext): Promise<nu
       parsed.values["--wallet"],
       from.chain,
     )
-    if (wallet)
+    // chain-lint-allowed: BE-3363 consumes the Hood-only sequenced preview and Relay bridge rails.
+    if (wallet && (from.chain === "hood" || bridge))
+      await previewCheck(ctx, key, wallet, report, listing, from, to, parsed.values, slippage)
+    else if (wallet)
       await buildCheck(
         ctx,
         key,
@@ -614,5 +625,187 @@ export async function swapCheck(args: string[], ctx: CommandContext): Promise<nu
     return printWalletReports(ctx, [report], true)
   } catch (error) {
     return tradingFailure(ctx, error)
+  }
+}
+
+const bridgePreviewSchema = () =>
+  hoodPreviewSchema.extend({
+    chain: z.enum(["hood", "solana"]),
+    firstLeg: hoodPreviewSchema.shape.firstLeg.optional(),
+    route: z.object({ venue: z.literal("relay"), from: z.string(), to: z.string() }),
+    destination: z.object({
+      ok: z.literal(true),
+      linkedWalletId: z.string(),
+      address: z.string(),
+      chain: z.enum(["hood", "solana"]),
+    }),
+    outDecimals: z.number().int().nonnegative(),
+    venueCostUsd: z.number().finite().nonnegative().optional(),
+    venueTimeEstimateSec: z.number().finite().nonnegative().optional(),
+  })
+
+/** Preview-only rails never call /build, claim a local operation, prompt or fall back to a build. */
+async function previewCheck(
+  ctx: CommandContext,
+  key: string,
+  wallet: TradingWallet,
+  report: WalletReport,
+  listing: TradingWalletListing,
+  from: TradeAsset,
+  to: TradeAsset,
+  flags: Record<string, string>,
+  slippage: number,
+) {
+  const blocked = report.checks.find((check) => check.status === "fail")
+  if (blocked) {
+    report.checks.push(skipped("quote", blocked.id))
+    return
+  }
+  try {
+    const bridge = bridgePair(from, to)
+    const payer = { type: "linked", linkedWalletId: wallet.id }
+    if (bridge) {
+      const matching =
+        flags["--to"] === undefined
+          ? listing.rows.filter((row) => rowChain(row) === to.chain && row.active)
+          : listing.rows.filter((row) => matchesName(row, flags["--to"] as string))
+      const destination = matching[0]
+      if (matching.length !== 1 || !destination || rowChain(destination) !== to.chain || !destination.active)
+        throw new TradingError(
+          "BRIDGE_DESTINATION_MISSING",
+          "Name one verified-active TEE destination on the other chain with --to.",
+        )
+      const amountRaw = rawAmount(flags["--amount"] as string, BRIDGE_ASSETS[bridge.from].decimals)
+      const answer = await request(ctx, key, "/api/v1/agent/swap/preview", {
+        from: from.asset,
+        to: to.asset,
+        amountRaw,
+        maxSlippageBps: slippage,
+        payer,
+        toWalletId: destination.id,
+      })
+      const parsed = bridgePreviewSchema().safeParse(answer)
+      if (!parsed.success)
+        throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete bridge preview.")
+      const data = parsed.data
+      // chain-lint-allowed: These bridge rails are pinned to Hood EVM addresses and Solana base58.
+      const same = (a: string, b: string, chain: TradeChain) => (chain === "hood" ? sameEvmAddress(a, b) : a === b)
+      if (
+        data.chain !== from.chain ||
+        !same(data.walletAddress, wallet.address, from.chain) ||
+        data.route.from !== from.asset ||
+        data.route.to !== to.asset ||
+        data.destination.chain !== to.chain ||
+        data.destination.linkedWalletId !== destination.id ||
+        !same(data.destination.address, destination.address, to.chain) ||
+        data.outDecimals !== BRIDGE_ASSETS[bridge.to].decimals ||
+        data.fee.bps !== 0 ||
+        data.fee.feeRaw !== "0"
+      )
+        throw new TradingError(
+          "INVALID_RESPONSE",
+          "The bridge preview does not match the payer, pair, destination or zero Candle fee.",
+        )
+      // chain-lint-allowed: These are the pinned Hood bridge leg plans, not general EVM routes.
+      if (from.chain === "hood") {
+        if (
+          !data.firstLeg ||
+          !bridgePlanAdmitted(bridge.from as "ETH" | "USDG", data.legs as Array<"approval" | "bridgeDeposit">) ||
+          data.firstLeg.kind !== data.legs[0]
+        )
+          throw new TradingError("INVALID_RESPONSE", "The preview has no complete Hood bridge gas or leg plan.")
+      } else if (
+        data.legs.length !== 1 ||
+        data.legs[0] !== "bridgeDeposit" ||
+        !/^[0-9]+$/.test(String(data.gas.networkFeeRaw ?? "")) ||
+        data.gas.asset !== "SOL"
+      )
+        throw new TradingError("INVALID_RESPONSE", "The preview has no complete Solana deposit fee.")
+      const minimum = ((BigInt(data.expectedOutRaw) * BigInt(10_000 - slippage)) / 10_000n).toString()
+      if (data.minOutRaw !== minimum)
+        throw new TradingError("INVALID_RESPONSE", "The bridge minimum differs from the quoted slippage bound.")
+      report.quote = {
+        venue: "relay",
+        route: data.route,
+        destination: data.destination,
+        fee: data.fee,
+        expectedOutRaw: data.expectedOutRaw,
+        minOutRaw: data.minOutRaw,
+        minimumReceivedRaw: data.minOutRaw,
+        minimumReceived: `${decimalAmount(data.minOutRaw, data.outDecimals)} ${to.asset}`,
+        legs: data.legs,
+        gas: data.gas,
+        ...(data.firstLeg ? { firstLeg: data.firstLeg } : {}),
+        ...(data.venueCostUsd !== undefined ? { venueCostUsd: data.venueCostUsd } : {}),
+        ...(data.venueTimeEstimateSec !== undefined ? { venueTimeEstimateSec: data.venueTimeEstimateSec } : {}),
+        wallet: data.wallet,
+        limitsChecked: data.limitsChecked,
+        quotedAt: data.quotedAt,
+      }
+      report.checks.push(pass("destination"), pass("quote"))
+      if (!data.gas.ok)
+        report.checks.push(
+          failure(
+            "gas",
+            new TradingError("GAS_INSUFFICIENT", "The preview reports insufficient gas; nothing was built."),
+          ),
+        )
+      else report.checks.push(pass("gas"))
+      if (data.wallet.held)
+        report.checks.push(
+          failure(
+            "wallet",
+            new TradingError(
+              "WALLET_BUSY",
+              data.wallet.statusCommand ?? data.wallet.cancelCommand ?? "The wallet is held by another operation.",
+            ),
+          ),
+        )
+      return
+    }
+    const rpc = lazyEvmRpc(ctx, flags["--rpc-url"])
+    const decimals = await hoodDecimals(from, rpc)
+    const outDecimals = await hoodDecimals(to, rpc)
+    const amountRaw = rawAmount(flags["--amount"] as string, decimals)
+    const kind = from.base && to.base ? "swap" : "trade"
+    const token = from.base ? to.asset : from.asset
+    const base = from.base ?? to.base
+    const body =
+      kind === "swap"
+        ? { from: from.asset, to: to.asset, amountRaw, maxSlippageBps: slippage, payer }
+        : {
+            chain: "hood",
+            mint: token,
+            side: from.base ? "buy" : "sell",
+            quoteAsset: base?.toLowerCase(),
+            amountRaw,
+            maxSlippageBps: slippage,
+            payer,
+          }
+    const preview = await hoodPreview(ctx, key, body, kind)
+    if (!preview)
+      throw new TradingError(
+        "PREVIEW_UNSUPPORTED",
+        "This API has no read-only preview; update the API before using --dry-run. Nothing was built.",
+      )
+    if (
+      !sameEvmAddress(preview.walletAddress, wallet.address) ||
+      (kind === "trade" && preview.artifacts.quoteAsset !== base?.toLowerCase())
+    )
+      throw new TradingError("INVALID_RESPONSE", "The preview does not name the requested Hood payer or quote asset.")
+    report.quote = {
+      ...previewQuote(preview, { intent: "Dry run", wallet: wallet.address, kind, token, from, to, outDecimals }),
+      route: preview.artifacts.route ?? { venue: preview.artifacts.venue, from: from.asset, to: to.asset },
+      destination: { ok: true, address: wallet.address, linkedWalletId: wallet.id, chain: "hood" },
+      gasFacts: preview.gas,
+      firstLeg: preview.firstLeg,
+      wallet: preview.wallet,
+      quotedAt: preview.quotedAt,
+    }
+    report.checks.push(pass("quote"), pass("destination"))
+    const stop = previewStop(preview)
+    report.checks.push(stop ? failure(stop.code === "GAS_INSUFFICIENT" ? "gas" : "wallet", stop) : pass("gas"))
+  } catch (error) {
+    report.checks.push(failure("quote", error))
   }
 }

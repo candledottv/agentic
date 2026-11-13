@@ -327,7 +327,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "--dry-run",
         description:
-          "Check a Solana TEE payer, build the quote and check spend, then stop. Never signs, sends, prompts or saves an operation. Refuses --yes, --percent and --client-trade-id; embedded, Hood and bridge payers are unsupported",
+          "Check a TEE payer and quote. Hood swaps and bridges preview fees, legs, gas, route and destination without builds or locks; Solana same-chain checks the built payload. Never signs, sends, prompts or saves a local operation. Refuses --yes, --percent, --wait and --client-trade-id; embedded payers are unsupported",
       },
     ],
     examples: [
