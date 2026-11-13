@@ -2121,8 +2121,36 @@ export interface TradeRace {
   dflowPriorityFeeLamports?: string
 }
 
+/** Optional consent guards on a confirmed Hood TEE build. */
+export interface ConfirmedQuoteBounds {
+  /** Refuse a Hood TEE build when its minimum output falls below the confirmed preview. Not part of requestHash. */
+  acceptMinOutRaw?: string
+  /** Refuse a Hood TEE build when its fee differs from the confirmed preview. Not part of requestHash. */
+  acceptFeeBps?: number
+}
+
+/** POST /api/v1/trade/agent/preview. Only Hood EVM TEE payers are supported. */
+export type PreviewTradeRequest = Omit<BuildTradeRequest, "clientTradeId" | "payer"> & {
+  clientTradeId?: string
+  chain?: "hood"
+  payer: Extract<TradePayer, { type: "linked" }>
+}
+
+/** POST /api/v1/agent/swap/build for the same-chain Hood TEE rail. */
+export interface HoodSwapBuildRequest extends ConfirmedQuoteBounds {
+  from: "ETH" | "USDG"
+  to: "ETH" | "USDG"
+  amountRaw: string
+  payer: { type: "linked"; linkedWalletId: string }
+  maxSlippageBps?: number
+  clientTradeId?: string
+}
+
+/** POST /api/v1/agent/swap/preview; clientTradeId is ignored. */
+export type PreviewHoodSwapRequest = HoodSwapBuildRequest
+
 /** POST /api/v1/trade/agent/build request body. */
-export interface BuildTradeRequest {
+export interface BuildTradeRequest extends ConfirmedQuoteBounds {
   /** Idempotency key, unique per account; shared with the matching confirmTrade() call. */
   clientTradeId: string
   mint: string

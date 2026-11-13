@@ -61,6 +61,7 @@ export type {
   CloseEmptyAccountsRequest,
   CloseEmptyAccountsResult,
   CloseEmptyAccountsUnresolved,
+  ConfirmedQuoteBounds,
   ConfirmSelfLaunchRequest,
   ConfirmSelfLaunchResult,
   ConfirmTradeRequest,
@@ -77,6 +78,7 @@ export type {
   FeedResult,
   FeedToken,
   GetAgentPositionsOptions,
+  HoodSwapBuildRequest,
   HoodTradeArtifacts,
   ImportWalletResult,
   LaunchAtomicFirstBuyRequest,
@@ -150,6 +152,8 @@ export type {
   PortfolioUnpricedReason,
   PresetsPayload,
   PreviewCloseEmptyAccountsRequest,
+  PreviewHoodSwapRequest,
+  PreviewTradeRequest,
   ProfileBoardPnl,
   ProfileChainPnl,
   ProfileClosedPosition,
@@ -247,7 +251,7 @@ export {
   TradeLandedUnconfirmedError,
   TradeLegOutcomeError,
 } from "./errors"
-export type { GuardReason, GuardSummary, HoodTeeOperation, WalletBusyDetails } from "./hood-tee"
+export type { GuardReason, GuardSummary, HoodPreview, HoodTeeOperation, WalletBusyDetails } from "./hood-tee"
 export {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   HYPERLIQUID_ALLOWED_ACTION_TYPES,

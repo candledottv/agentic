@@ -161,7 +161,7 @@ async function fixture(opts: Options = {}) {
   const planned = opts.legs ?? []
   const landed: Array<{ kind: string; hash: string }> = []
   let index = 0
-  let built = opts.built ?? false
+  const builtIds = new Set(opts.built ? ["b-1"] : [])
   let jobReads = 0
   const sequenced = (i: number) => ({
     mode: "sequenced",
@@ -220,7 +220,9 @@ async function fixture(opts: Options = {}) {
       throw new Error(`unexpected Solana RPC ${body.method}`)
     }
     if (path.includes("/jobs/")) {
-      if (!built) return Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
+      const clientTradeId = decodeURIComponent(path.split("/").at(-1) ?? "")
+      if (!opts.built && !builtIds.has(clientTradeId))
+        return Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
       if (opts.jobsDown)
         return Response.json(
           { error: { code: "SERVICE_UNAVAILABLE", message: "try again", retryable: true } },
@@ -229,7 +231,7 @@ async function fixture(opts: Options = {}) {
       const jobs = opts.jobs ?? [{ status: "built" }]
       const job = jobs[Math.min(jobReads, jobs.length - 1)]
       jobReads += 1
-      return ok({ success: true, job: { clientTradeId: "b-1", kind: "swap", ...job } })
+      return ok({ success: true, job: { clientTradeId, kind: "swap", ...job } })
     }
     if (path === "/api/v1/agent/wallets/trading")
       return ok({
@@ -253,7 +255,7 @@ async function fixture(opts: Options = {}) {
       })
     if (path === "/api/v1/agent/keys/self/limits") return ok({ success: true, keyLimits: null })
     if (path === "/api/v1/agent/swap/build") {
-      built = true
+      builtIds.add(String(body.clientTradeId))
       const hood = body.from === "ETH" || body.from === "USDG"
       const destination = hood ? solanaTee : body.toWalletId === "hood-tee-2" ? hoodTee2 : hoodTee
       return ok({
@@ -449,6 +451,26 @@ describe("4c-ED-1: the destination is this key's own TEE wallet", () => {
 })
 
 describe("Solana origin (4c-ED-6)", () => {
+  test("R14: an unconfirmed Solana-origin bridge stays built/not_broadcast and does not block the next call", async () => {
+    const f = await fixture({ prompt: "n" })
+    const noConfirmation = bridgeArgs("SOL", "ETH", "1").filter((arg) => arg !== "--yes")
+    expect(await run(noConfirmation, f.deps)).toBe(5)
+    const declined = lastJson(f.stdout.text)
+    expect(declined).toMatchObject({ status: "cancelled" })
+    expect(declined.operationId).toBeUndefined()
+    expect(f.calls.some((call) => call.path.endsWith("/sign") || call.path.endsWith("/submit"))).toBe(false)
+    expect(await run(["swap", "status", "b-1", "--json"], f.deps)).toBe(0)
+    expect(lastJson(f.stdout.text).bridgeStatus).toMatchObject({ phase: "not_broadcast" })
+    expect(
+      await run(
+        bridgeArgs("SOL", "ETH", "1").map((arg) => (arg === "b-1" ? "b-2" : arg)),
+        f.deps,
+      ),
+    ).toBe(0)
+    expect(apiPaths(f.calls).some((path) => path.endsWith("/preview") || path.endsWith("/cancel"))).toBe(false)
+    expect(f.calls.filter((call) => call.path === "/api/v1/agent/swap/build")).toHaveLength(2)
+  })
+
   test("SOL to ETH: checked, relay-signed, submitted; the deposit prints and the command returns", async () => {
     const f = await fixture()
     expect(await run(bridgeArgs("SOL", "ETH", "1"), f.deps)).toBe(0)

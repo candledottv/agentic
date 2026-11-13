@@ -74,3 +74,37 @@ export interface WalletBusyDetails {
   statusPath?: string
   statusCommand?: string
 }
+
+/** Display-only Hood preview. It carries no nonce, transaction bytes or sign hash. */
+export interface HoodPreview {
+  success: true
+  mode: "preview"
+  chain: "hood"
+  walletAddress: string
+  artifacts: {
+    venue: string
+    quoteSource: string
+    priceImpactPct: string | null
+    quoteAsset: string
+    tokenRisks: unknown[]
+    route?: unknown
+  }
+  fee: { bps: number; feeRaw: string }
+  expectedOutRaw: string
+  minOutRaw: string
+  legs: string[]
+  firstLeg: { kind: string; gas: string; maxFeePerGas: string; maxPriorityFeePerGas: string }
+  gas: { ok: true } | { ok: false; shortfallWei: string; requiredWei: string; reserveWei: string; balanceWei: string }
+  wallet:
+    | { held: false }
+    | {
+        held: true
+        guarded?: boolean
+        operationId: string
+        expiresAt?: number
+        cancelCommand?: string
+        statusCommand?: string
+      }
+  limitsChecked: "raw caps only; the USD window is reserved on confirm"
+  quotedAt: number
+}

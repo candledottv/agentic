@@ -15,6 +15,11 @@
   ],
   "version": 1,
   "categories": {
+    "quote_moved": {
+      "retryable": true,
+      "action": "The confirmed Hood quote no longer meets acceptMinOutRaw or acceptFeeBps. No new operation was acquired. Read a fresh preview and confirm its minimum output and fee before building again; do not sign a leg from this refusal.",
+      "codes": ["QUOTE_MOVED"]
+    },
     "operation_active": {
       "retryable": true,
       "action": "The Hood operation is still inside its active window. Read its operationId with candle swap status --operation; wait until the window ends before retrying the same recovery request. Never resend or rebuild the trade to clear this response.",
@@ -87,6 +92,7 @@
       "codes": [
         "VALIDATION_FAILED",
         "FEE_WALLET_UNSUPPORTED",
+        "PREVIEW_UNSUPPORTED",
         "POOL_FEE_WITH_CREATOR_FEE_UNSUPPORTED",
         "CLOSE_REFUSED",
         "INVALID_NAME_BYTES",
