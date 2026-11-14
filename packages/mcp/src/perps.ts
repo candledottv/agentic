@@ -453,8 +453,6 @@ export async function executePerps(
       const problem = perpsTpslParamsProblem(fields as never)
       if (problem) return fail("MCP_VALIDATION", problem)
     }
-    if (args.submit !== false && name !== "embedded" && !env.CANDLE_KEY_SIGNER_PEM_FILE?.trim())
-      return fail("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE for TEE signing, or name wallet embedded.")
     const { row, appId } = await walletFor(cfg, fetch, name, "perps:write")
     if (row.id === "embedded" && ["open", "close"].includes(method) && clientId === undefined) {
       clientId = `0x${randomBytes(16).toString("hex")}`
